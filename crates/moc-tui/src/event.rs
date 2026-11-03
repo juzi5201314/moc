@@ -27,7 +27,9 @@ use moc_protocol::{
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::app::{App, ChartHit, CtrlCPending, ENGINES, Focus, ScrollbackDrag};
+use crate::app::{App, ChartHit, CtrlCPending, Focus, ScrollbackDrag};
+use crate::commands::CommandId;
+use moc_protocol::commands::{CommandRef, CommandSpec};
 use crate::input::{InputEvent, InputThread};
 use crate::modal::{
     CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal, PlanPane, SessionScope,
@@ -176,6 +178,7 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
         app.startup_cwd = config.cwd.clone();
         app.models = config.models;
         app.fusion_defaults = config.fusion.clone();
+        app.features = config.features;
         if config.default_model.is_none() && opts.model.is_none() {
             app.set_notice("首次启动：请添加供应商并选择至少一个模型");
             return Ok(None);
@@ -973,10 +976,7 @@ async fn event_loop(
                         app.focus = crate::app::Focus::Prompt;
                     }
                     Some(AppEvent::Plugins(plugins)) => {
-                        app.plugin_commands = plugins
-                            .iter()
-                            .flat_map(|plugin| plugin.commands.iter().cloned())
-                            .collect();
+                        app.commands.set_plugins(&plugins);
                         app.plugins = plugins;
                     }
                     Some(AppEvent::PluginOutput { name, text, error }) => {
@@ -1088,10 +1088,7 @@ async fn event_loop(
                                 }
                                 Err(_) => {
                                     app.completion =
-                        crate::widgets::completion::CompletionState::derive(
-                            app.prompt_text(),
-                            &app.plugin_commands,
-                        );
+                        crate::widgets::completion::CompletionState::derive(app);
                                 }
                             }
                         }
@@ -2099,10 +2096,11 @@ fn handle_engine_menu_mouse(
             let entry = app
                 .engine_menu
                 .as_ref()
-                .and_then(|menu| menu.entry_at(mouse.column, mouse.row));
+                .and_then(|menu| menu.entry_at(mouse.column, mouse.row))
+                .and_then(|index| app.engine_menu.as_ref()?.engines.get(index).copied());
             app.engine_menu = None;
-            if let Some(index) = entry {
-                set_engine(app, connection, ENGINES[index]);
+            if let Some(engine) = entry {
+                set_engine(app, connection, engine);
             }
             true
         }
@@ -3055,12 +3053,13 @@ fn plan_read_key(
         }
         // 「在新会话执行」的目标引擎循环；其他动作忽略该字段。
         (KeyCode::Char('m'), KeyModifiers::NONE) => {
+            let engines: Vec<SessionEngine> = app.engines().collect();
             if let Some(Modal::Plan { state }) = app.modal.as_mut() {
-                let index = ENGINES
+                let index = engines
                     .iter()
                     .position(|engine| *engine == state.execution_engine)
                     .unwrap_or(0);
-                state.execution_engine = ENGINES[(index + 1) % ENGINES.len()];
+                state.execution_engine = engines[(index + 1) % engines.len()];
             }
         }
         (KeyCode::Char('s'), KeyModifiers::NONE) => submit_plan_review(app, connection),
@@ -5989,14 +5988,97 @@ pub(crate) fn display_text_of(parts: &[InputPart]) -> String {
         .join("\n")
 }
 
-/// 执行斜杠命令。
+/// `execute_command` 的解析结果：先把借用 `app.commands` 的部分取出成自有值，
+/// 分派阶段才能对 `app` 做可变操作。
+enum ResolvedCommand {
+    Builtin(&'static CommandSpec<CommandId>),
+    Plugin(moc_protocol::commands::PluginCommand),
+    Unknown,
+}
+
 fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String) {
     let (name, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
+    let resolved = match app.commands.resolve(name) {
+        Some(CommandRef::Builtin(spec)) => ResolvedCommand::Builtin(spec),
+        Some(CommandRef::Plugin(command)) => ResolvedCommand::Plugin(command.clone()),
+        None => ResolvedCommand::Unknown,
+    };
+    match resolved {
+        ResolvedCommand::Builtin(spec) => {
+            // 注册表静态门控：flag、会话、旁支聚焦、运行中。
+            if let Some(flag) = spec.flag
+                && !app.features.enabled(flag)
+            {
+                app.set_notice(format!(
+                    "/{} 依赖的特性 {} 已禁用（见 /features）",
+                    spec.name,
+                    flag.spec().key
+                ));
+                return;
+            }
+            if spec.needs_session && app.session.is_none() {
+                app.set_notice("当前没有活动会话");
+                return;
+            }
+            if !spec.available_in_side && app.focused.is_some() {
+                app.set_notice(format!("聚焦子代理时不能执行 /{}", spec.name));
+                return;
+            }
+            if !spec.available_during_task && app.busy() {
+                app.set_notice(format!("正在运行中，暂时不能执行 /{}", spec.name));
+                return;
+            }
+            dispatch_command(app, connection, spec.id, rest);
+        }
+        ResolvedCommand::Plugin(command) => {
+            // 插件命令兜底：名字由 `plugin/list` 提供，执行结果写进转写。
+            let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+                app.set_notice("当前没有活动会话");
+                return;
+            };
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            let name = command.name;
+            let args = rest.trim().to_owned();
+            tokio::spawn(async move {
+                match client
+                    .call::<PluginRunCommand>(PluginRunCommandParams {
+                        session_id,
+                        name: name.clone(),
+                        args,
+                    })
+                    .await
+                {
+                    Ok(result) => {
+                        let _ = events.send(AppEvent::PluginOutput {
+                            name,
+                            text: result.text,
+                            error: false,
+                        });
+                    }
+                    Err(error) => {
+                        let _ = events.send(AppEvent::PluginOutput {
+                            name,
+                            text: format!("插件命令执行失败：{error}"),
+                            error: true,
+                        });
+                    }
+                }
+            });
+        }
+        ResolvedCommand::Unknown => {
+            app.set_notice(format!("未知命令：{name}"));
+        }
+    }
+}
+
+/// 内置命令分派：注册表门控过了以后按 `CommandId` 落到具体处理器。
+fn dispatch_command(app: &mut App, connection: &EmbeddedConnection, id: CommandId, rest: &str) {
     let session_id = app.session.as_ref().map(|session| session.id.clone());
-    match name {
-        "/btw" => crate::btw::reopen(app),
-        "/confirm-plan" => confirm_plan(app, connection),
-        "/close" => {
+    match id {
+        CommandId::Btw => crate::btw::reopen(app),
+        CommandId::ConfirmPlan => confirm_plan(app, connection),
+        CommandId::Close => {
             let Some(session_id) = session_id else {
                 app.set_notice("当前没有活动会话");
                 return;
@@ -6019,9 +6101,9 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                 }
             });
         }
-        "/agents" => open_subagents(app, connection),
-        "/config" | "/settings" => crate::settings::open(app, connection),
-        "/new" => {
+        CommandId::Agents => open_subagents(app, connection),
+        CommandId::Config => crate::settings::open(app, connection),
+        CommandId::New => {
             let client = connection.client.clone();
             let events = app.events.clone();
             let (cwd, model, engine, fast_mode) = app
@@ -6064,66 +6146,49 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                 }
             });
         }
-        "/plugins" => {
-            if app.session.is_none() {
-                app.set_notice("当前没有活动会话");
-                return;
-            }
-            match rest.trim() {
-                "" => refresh_plugins(app, connection, true, false),
-                "reload" => refresh_plugins(app, connection, true, true),
-                _ => app.set_notice("用法：/plugins [reload]"),
-            }
-        }
-        "/usage" => {
-            if app.session.is_none() {
-                app.set_notice("当前没有活动会话");
-                return;
-            }
-            refresh_usage(app, connection, true);
-        }
-        "/doctor" => app.push_note(crate::doctor::report(app), false),
-        "/help" => app.modal = Some(Modal::Help { scroll: 0 }),
-        "/context" => open_context_content(app, connection),
-        "/quit" => app.should_quit = true,
-        "/compact" => {
-            if let Some(session_id) = session_id {
-                let client = connection.client.clone();
-                let events = app.events.clone();
-                let instructions = (!rest.trim().is_empty()).then(|| rest.trim().to_owned());
-                app.inflight_session_ops.insert(session_id.clone());
-                tokio::spawn(async move {
-                    let outcome = client
-                        .call::<SessionCompact>(SessionCompactParams {
-                            session_id: session_id.clone(),
-                            instructions,
-                        })
-                        .await;
-                    let _ = events.send(AppEvent::SessionControlSettled {
-                        session_id,
-                        notice: Some("上下文压缩已完成".into()),
-                        result: outcome
-                            .map(|_| None)
-                            .map_err(|error| format!("上下文压缩失败：{error}")),
-                    });
+        CommandId::Plugins => match rest.trim() {
+            "" => refresh_plugins(app, connection, true, false),
+            "reload" => refresh_plugins(app, connection, true, true),
+            _ => app.set_notice("用法：/plugins [reload]"),
+        },
+        CommandId::Usage => refresh_usage(app, connection, true),
+        CommandId::Doctor => app.push_note(crate::doctor::report(app), false),
+        CommandId::Help => app.modal = Some(Modal::Help { scroll: 0 }),
+        CommandId::Context => open_context_content(app, connection),
+        CommandId::Quit => app.should_quit = true,
+        CommandId::Compact => {
+            // needs_session 已在分派前检查。
+            let session_id = session_id.expect("needs_session 已校验");
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            let instructions = (!rest.trim().is_empty()).then(|| rest.trim().to_owned());
+            app.inflight_session_ops.insert(session_id.clone());
+            tokio::spawn(async move {
+                let outcome = client
+                    .call::<SessionCompact>(SessionCompactParams {
+                        session_id: session_id.clone(),
+                        instructions,
+                    })
+                    .await;
+                let _ = events.send(AppEvent::SessionControlSettled {
+                    session_id,
+                    notice: Some("上下文压缩已完成".into()),
+                    result: outcome
+                        .map(|_| None)
+                        .map_err(|error| format!("上下文压缩失败：{error}")),
                 });
-            } else {
-                app.set_notice("当前没有活动会话");
-            }
+            });
         }
-        "/engine" => cycle_engine(app, connection),
-        "/clm-experimental" => set_engine(app, connection, SessionEngine::ClmExperimental),
-        "/autonomy" => set_autonomy(app, connection, rest),
-        "/permission" => set_permission(app, connection, rest),
-        "/plan" => toggle_plan(app, connection),
-        "/ask" => ask_once(app, connection, rest),
-        "/retry" => retry(app, connection),
-        "/model" => app.open_model_picker(),
-        "/workflow" => {
-            let Some(session_id) = session_id.clone() else {
-                app.set_notice("当前没有活动会话");
-                return;
-            };
+        CommandId::Engine => cycle_engine(app, connection),
+        CommandId::ClmExperimental => set_engine(app, connection, SessionEngine::ClmExperimental),
+        CommandId::Autonomy => set_autonomy(app, connection, rest),
+        CommandId::Permission => set_permission(app, connection, rest),
+        CommandId::Plan => toggle_plan(app, connection),
+        CommandId::Ask => ask_once(app, connection, rest),
+        CommandId::Retry => retry(app, connection),
+        CommandId::Model => app.open_model_picker(),
+        CommandId::Workflow => {
+            let session_id = session_id.expect("needs_session 已校验");
             let client = connection.client.clone();
             let events = app.events.clone();
             let prompt_text = rest.to_string();
@@ -6156,80 +6221,42 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                 }
             });
         }
-        "/workflows" => open_workflow_runs(app, connection),
-        "/jobs" => {
-            if let Some(session_id) = session_id {
-                let client = connection.client.clone();
-                let events = app.events.clone();
-                tokio::spawn(async move {
-                    match client
-                        .call::<moc_protocol::methods::JobList>(
-                            moc_protocol::methods::JobListParams { session_id },
-                        )
-                        .await
-                    {
-                        Ok(result) => {
-                            let _ = events.send(AppEvent::OpenJobsModal(result.jobs));
-                        }
-                        Err(error) => {
-                            let _ =
-                                events.send(AppEvent::Notice(format!("获取任务列表失败：{error}")));
-                        }
+        CommandId::Workflows => open_workflow_runs(app, connection),
+        CommandId::Jobs => {
+            let session_id = session_id.expect("needs_session 已校验");
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            tokio::spawn(async move {
+                match client
+                    .call::<moc_protocol::methods::JobList>(
+                        moc_protocol::methods::JobListParams { session_id },
+                    )
+                    .await
+                {
+                    Ok(result) => {
+                        let _ = events.send(AppEvent::OpenJobsModal(result.jobs));
                     }
-                });
-            } else {
-                app.set_notice("当前没有活动会话");
-            }
-        }
-        "/resume" => open_session_picker(app, connection),
-        other => {
-            // 插件命令兜底：名字由 `plugin/list` 提供，执行结果写进转写。
-            let name = other.trim_start_matches('/').to_owned();
-            if app
-                .plugin_commands
-                .iter()
-                .any(|command| command.name == name)
-            {
-                let Some(session_id) = session_id else {
-                    app.set_notice("当前没有活动会话");
-                    return;
-                };
-                let client = connection.client.clone();
-                let events = app.events.clone();
-                let args = rest.trim().to_owned();
-                tokio::spawn(async move {
-                    match client
-                        .call::<PluginRunCommand>(PluginRunCommandParams {
-                            session_id,
-                            name: name.clone(),
-                            args,
-                        })
-                        .await
-                    {
-                        Ok(result) => {
-                            let _ = events.send(AppEvent::PluginOutput {
-                                name,
-                                text: result.text,
-                                error: false,
-                            });
-                        }
-                        Err(error) => {
-                            let _ = events.send(AppEvent::PluginOutput {
-                                name,
-                                text: format!("插件命令执行失败：{error}"),
-                                error: true,
-                            });
-                        }
+                    Err(error) => {
+                        let _ =
+                            events.send(AppEvent::Notice(format!("获取任务列表失败：{error}")));
                     }
-                });
-                return;
-            }
-            app.set_notice(format!("未知命令：{other}"));
+                }
+            });
         }
+        CommandId::Resume => open_session_picker(app, connection),
+        CommandId::Features => show_features(app),
     }
 }
 
-/// 循环切换引擎：standard → ptc → clm。会话跑过第一条提示后引擎锁定。
+/// `/features`：特性注册表一览——阶段、有效状态与上下文成本。
+fn show_features(app: &mut App) {
+    app.push_note(
+        moc_protocol::features::format_features(&app.features),
+        false,
+    );
+}
+
+/// 循环切换引擎：按特性 flag 过滤后的清单循环。会话跑过第一条提示后引擎锁定。
 fn cycle_engine(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session) = app.session.as_ref() else {
         app.set_notice("当前没有活动会话");
@@ -6239,11 +6266,12 @@ fn cycle_engine(app: &mut App, connection: &EmbeddedConnection) {
         app.set_notice("会话引擎已锁定；换引擎请新建会话");
         return;
     }
-    let index = ENGINES
+    let engines: Vec<SessionEngine> = app.engines().collect();
+    let index = engines
         .iter()
         .position(|engine| *engine == session.engine)
         .unwrap_or(0);
-    set_engine(app, connection, ENGINES[(index + 1) % ENGINES.len()]);
+    set_engine(app, connection, engines[(index + 1) % engines.len()]);
 }
 
 /// `/plan`：切换 plan 模式；引擎不受影响，可在任意引擎上叠加。
@@ -6461,7 +6489,7 @@ fn handle_engine_menu_key(
     let Some(menu) = app.engine_menu.as_ref() else {
         return false;
     };
-    let count = ENGINES.len();
+    let count = menu.engines.len();
     let selected = menu.selected.min(count - 1);
     match (code, modifiers) {
         (KeyCode::Esc, _) => {
@@ -6481,8 +6509,14 @@ fn handle_engine_menu_key(
             true
         }
         (KeyCode::Enter, KeyModifiers::NONE) => {
+            let engine = app
+                .engine_menu
+                .as_ref()
+                .and_then(|menu| menu.engines.get(selected).copied());
             app.engine_menu = None;
-            set_engine(app, connection, ENGINES[selected]);
+            if let Some(engine) = engine {
+                set_engine(app, connection, engine);
+            }
             true
         }
         _ => {
@@ -6920,11 +6954,8 @@ mod tests {
             }
         }
         let plugins = plugins.expect("收到清单");
-        // 主循环收到清单时会同步补全表；这里手动同步一次，不重复跑整个事件循环。
-        app.plugin_commands = plugins
-            .iter()
-            .flat_map(|plugin| plugin.commands.iter().cloned())
-            .collect();
+        // 主循环收到清单时会同步命令注册表；这里手动同步一次，不重复跑整个事件循环。
+        app.commands.set_plugins(&plugins);
         app.plugins = plugins.clone();
         assert_eq!(plugins[0].name, "demo");
         assert_eq!(plugins[0].commands[0].name, "demo");
@@ -6933,9 +6964,9 @@ mod tests {
             "清单里要列出插件命令"
         );
         // 清单顺带刷新补全表；插件命令与内置命令一起参与前缀匹配。
-        let completion =
-            crate::widgets::completion::CompletionState::derive("/demo", &app.plugin_commands)
-                .expect("插件命令可补全");
+        app.prompt.insert_str_raw("/demo");
+        let completion = crate::widgets::completion::CompletionState::derive(&app)
+            .expect("插件命令可补全");
         assert_eq!(completion.candidates[0].value, "/demo");
 
         app.blocks.clear();
@@ -8090,11 +8121,28 @@ mod tests {
 
     fn app_with_completion() -> App {
         let mut app = app();
+        // /r 的候选里 /retry 需要会话；补一个会话保留双候选的回绕语义。
+        app.session = Some(moc_protocol::SessionInfo {
+            id: "ses_completion".into(),
+            title: "补全".into(),
+            model: "test/model".into(),
+            permission: moc_protocol::SessionPermission::Full,
+            engine: SessionEngine::Standard,
+            autonomy: moc_protocol::SessionAutonomy::Default,
+            plan_active: false,
+            fast_mode: false,
+            engine_locked: false,
+            parent_session_id: None,
+            forked_from: None,
+            agent_preset: None,
+            delegation_depth: 0,
+            cwd: "/tmp".into(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            lock: None,
+        });
         app.prompt.insert_str_raw("/r");
-        app.completion = crate::widgets::completion::CompletionState::derive(
-            app.prompt_text(),
-            &app.plugin_commands,
-        );
+        app.completion = crate::widgets::completion::CompletionState::derive(&app);
         app
     }
 
@@ -8270,10 +8318,7 @@ mod tests {
     async fn terminal_event_arrows_preserve_completion_selection() {
         let (core, connection, mut app) = setup_test_app().await;
         app.prompt.insert_str_raw("/co");
-        app.completion = crate::widgets::completion::CompletionState::derive(
-            app.prompt_text(),
-            &app.plugin_commands,
-        );
+        app.completion = crate::widgets::completion::CompletionState::derive(&app);
         assert!(app.completion.is_some());
         assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(0));
 
@@ -8381,11 +8426,7 @@ mod tests {
     async fn completion_mouse_click_selects_and_accepts_candidate() {
         let (core, connection, mut app) = setup_test_app().await;
         app.prompt.insert_str_raw("/co");
-        let mut completion = crate::widgets::completion::CompletionState::derive(
-            app.prompt_text(),
-            &app.plugin_commands,
-        )
-        .unwrap();
+        let mut completion = crate::widgets::completion::CompletionState::derive(&app).unwrap();
         let menu_area = ratatui::layout::Rect::new(2, 10, 40, 6);
         completion.area = menu_area;
         completion.visible_count = 3;
@@ -8415,11 +8456,7 @@ mod tests {
     async fn completion_mouse_hover_and_scroll_and_dismiss() {
         let (core, connection, mut app) = setup_test_app().await;
         app.prompt.insert_str_raw("/co");
-        let mut completion = crate::widgets::completion::CompletionState::derive(
-            app.prompt_text(),
-            &app.plugin_commands,
-        )
-        .unwrap();
+        let mut completion = crate::widgets::completion::CompletionState::derive(&app).unwrap();
         let menu_area = ratatui::layout::Rect::new(2, 10, 40, 6);
         completion.area = menu_area;
         completion.visible_count = 3;
@@ -9902,7 +9939,7 @@ mod tests {
     #[tokio::test]
     async fn every_slash_command_has_an_execution_branch() {
         let (core, connection, mut app) = setup_test_app().await;
-        for command in crate::widgets::completion::SLASH_COMMANDS {
+        for spec in crate::commands::COMMANDS {
             // 逐条重置：模态、设置页、提示、退出标记与忙标记都不该影响下一条
             app.modal = None;
             app.settings = None;
@@ -9910,14 +9947,14 @@ mod tests {
             app.should_quit = false;
             app.inflight_session_ops.clear();
 
-            execute_command(&mut app, &connection, command.name.to_owned());
+            execute_command(&mut app, &connection, format!("/{}", spec.name));
             let notice = app.notice.clone().unwrap_or_default();
             assert!(
                 !notice.starts_with("未知命令"),
-                "{} 没有处理分支（提示：{notice}）",
-                command.name
+                "/{} 没有处理分支（提示：{notice}）",
+                spec.name
             );
-            if command.name == "/quit" {
+            if spec.name == "quit" {
                 assert!(app.should_quit, "/quit 应走既有退出路径");
             }
         }
@@ -10006,7 +10043,10 @@ mod tests {
 
         execute_command(&mut app, &connection, "/retry".to_owned());
 
-        assert_eq!(app.notice.as_deref(), Some("正在运行中，暂时不能重试"));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("正在运行中，暂时不能执行 /retry")
+        );
         assert!(app.inflight_prompts.is_empty(), "被拒的重试不得占通道");
 
         connection.shutdown().await;

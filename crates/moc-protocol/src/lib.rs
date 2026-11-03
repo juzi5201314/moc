@@ -342,8 +342,10 @@
 #![forbid(unsafe_code)]
 
 pub mod client;
+pub mod commands;
 pub mod connection;
 pub mod error;
+pub mod features;
 pub mod frame;
 pub mod message;
 pub mod method;

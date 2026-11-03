@@ -28,6 +28,39 @@ pub(super) struct ConfigDocument {
     pub web_fetch: WebFetchConfig,
     pub agents: AgentsConfig,
     pub workflow: WorkflowConfig,
+    pub features: FeaturesConfig,
+}
+
+/// `[features]` 段：特性注册表自有开关的覆盖值；键=bool。
+///
+/// 只接受 [`moc_protocol::features::features_owned_keys`] 列出的键（当前
+/// `clm`、`ptc`）；挂在已有配置段上的 flag（如 `workflow.enabled`）须回到
+/// 原段配置，在 `[features]` 里写会被校验拒绝并指向正确路径。
+pub type FeaturesConfig = BTreeMap<String, bool>;
+
+pub(super) fn validate_features(features: &FeaturesConfig) -> Result<(), CoreError> {
+    use moc_protocol::features::{FEATURES, FlagToggle, features_owned_keys};
+    for key in features.keys() {
+        match FEATURES.iter().find(|spec| spec.key == key.as_str()) {
+            Some(spec) if spec.toggle == FlagToggle::Features => {}
+            Some(spec) => {
+                let FlagToggle::Existing(path) = spec.toggle else {
+                    unreachable!("刚判过非 Features")
+                };
+                return Err(CoreError::Config(format!(
+                    "features.{key}: 该特性由 {path} 控制，请直接配置它"
+                )));
+            }
+            None => {
+                let keys: Vec<_> = features_owned_keys().collect();
+                return Err(CoreError::Config(format!(
+                    "features.{key}: 未知特性开关（可用键: {}）",
+                    keys.join(", ")
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `[workflow]` 段：动态 workflow 开关与上限。

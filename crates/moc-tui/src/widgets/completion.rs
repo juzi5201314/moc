@@ -1,131 +1,16 @@
 //! 斜杠命令与资源 URI 补全菜单状态。
+//!
+//! 命令名与参数的候选数据来自 `crate::commands::COMMANDS` 注册表（含插件命令
+//! 这一动态来源）；本文件只负责把注册表候选翻译成菜单条目与命中区域。
 
 use std::ops::Range;
 
 use moc_protocol::ResourceCandidate;
+use moc_protocol::commands::{ArgCompletion, CommandCandidate, CommandSpec, DynamicArg};
 use ratatui::layout::Rect;
 
-/// 一条斜杠命令。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SlashCommand {
-    pub name: &'static str,
-    pub description: &'static str,
-}
-
-/// 插件命令在补全里的名字：`/` 加插件命令名。
-fn plugin_candidate(command: &moc_protocol::methods::PluginCommandInfo) -> CompletionCandidate {
-    CompletionCandidate {
-        value: format!("/{}", command.name),
-        label: format!("/{}", command.name),
-        description: if command.description.is_empty() {
-            "插件命令".to_owned()
-        } else {
-            command.description.clone()
-        },
-        append_space: true,
-        source: CompletionSource::Slash,
-    }
-}
-
-/// 内置斜杠命令表。
-pub const SLASH_COMMANDS: &[SlashCommand] = &[
-    SlashCommand {
-        name: "/btw",
-        description: "旁路问答：带问题继续线程；不带问题重开面板",
-    },
-    SlashCommand {
-        name: "/config",
-        description: "打开设置：模型、供应商、界面等",
-    },
-    SlashCommand {
-        name: "/settings",
-        description: "打开设置（/config 别名）",
-    },
-    SlashCommand {
-        name: "/help",
-        description: "快捷键与命令帮助",
-    },
-    SlashCommand {
-        name: "/new",
-        description: "新建会话",
-    },
-    SlashCommand {
-        name: "/workflow",
-        description: "激活 workflow（可附指令）",
-    },
-    SlashCommand {
-        name: "/workflows",
-        description: "workflow run 列表",
-    },
-    SlashCommand {
-        name: "/model",
-        description: "切换模型",
-    },
-    SlashCommand {
-        name: "/resume",
-        description: "恢复历史会话",
-    },
-    SlashCommand {
-        name: "/engine",
-        description: "切换会话引擎：standard／ptc／clm（仅空白会话可切）",
-    },
-    SlashCommand {
-        name: "/autonomy",
-        description: "切换自主程度：default／dont_ask／unattended",
-    },
-    SlashCommand {
-        name: "/plan",
-        description: "进入／退出计划模式（与引擎正交的叠加态）",
-    },
-    SlashCommand {
-        name: "/clm-experimental",
-        description: "切换 CLM 实验引擎；启用后本会话固定使用 CLM",
-    },
-    SlashCommand {
-        name: "/permission",
-        description: "切换 full / workspace / workspace-only 权限，或清空会话授权",
-    },
-    SlashCommand {
-        name: "/ask",
-        description: "本条消息按问答模式处理（只读）",
-    },
-    SlashCommand {
-        name: "/retry",
-        description: "接着现有上下文继续跑（不追加用户消息）",
-    },
-    SlashCommand {
-        name: "/compact",
-        description: "手动压缩上下文",
-    },
-    SlashCommand {
-        name: "/context",
-        description: "查看上下文内容",
-    },
-    SlashCommand {
-        name: "/usage",
-        description: "查看当前会话模型用量",
-    },
-    SlashCommand {
-        name: "/doctor",
-        description: "终端能力诊断：探测结果与修复建议",
-    },
-    SlashCommand {
-        name: "/quit",
-        description: "退出 moc",
-    },
-    SlashCommand {
-        name: "/confirm-plan",
-        description: "计划模式下重新审阅已写入的待审计划",
-    },
-    SlashCommand {
-        name: "/plugins",
-        description: "查看插件：来源、工具与斜杠命令；/plugins reload 重载",
-    },
-    SlashCommand {
-        name: "/close",
-        description: "卸载当前会话并释放跨进程写租约",
-    },
-];
+use crate::app::App;
+use crate::commands::CommandId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionSource {
@@ -142,17 +27,66 @@ pub struct CompletionCandidate {
     pub source: CompletionSource,
 }
 
-impl CompletionCandidate {
-    fn slash(command: &SlashCommand) -> Self {
-        Self {
-            value: command.name.into(),
-            label: command.name.into(),
-            description: command.description.into(),
-            append_space: true,
-            source: CompletionSource::Slash,
-        }
-    }
+/// 当前上下文下这条内置命令是否可提示（与 `execute_command` 的门控一致）。
+fn command_visible(app: &App, spec: &CommandSpec<CommandId>) -> bool {
+    spec.flag.is_none_or(|flag| app.features.enabled(flag))
+        && (spec.available_in_side || !app.focused_agent())
+        && (spec.available_during_task || !app.busy())
+        && (!spec.needs_session || app.session.is_some())
+}
 
+/// 注册表候选 → 菜单条目。
+fn command_candidate(candidate: CommandCandidate) -> CompletionCandidate {
+    CompletionCandidate {
+        value: candidate.value,
+        label: candidate.label,
+        description: candidate.description,
+        append_space: candidate.append_space,
+        source: CompletionSource::Slash,
+    }
+}
+
+/// 参数段候选：按命令 spec 的 args 声明供给；插件命令与自由文本参数不出候选。
+fn arg_candidates(app: &App, name: &str, args: &str) -> Option<Vec<CompletionCandidate>> {
+    // 只补全第一个参数；`args` 里再出现空白说明参数已完整。
+    if args.contains(char::is_whitespace) {
+        return None;
+    }
+    let spec = app.commands.builtin(name)?;
+    let values: Vec<String> = match &spec.args {
+        ArgCompletion::None => return None,
+        ArgCompletion::Choices(choices) => choices.iter().map(|choice| (*choice).to_owned()).collect(),
+        ArgCompletion::Dynamic(kind) => dynamic_args(app, *kind),
+    };
+    Some(
+        values
+            .into_iter()
+            .filter(|value| value.starts_with(args))
+            .map(|value| CompletionCandidate {
+                label: value.clone(),
+                value,
+                description: format!("/{} 参数", spec.name),
+                append_space: false,
+                source: CompletionSource::Slash,
+            })
+            .collect(),
+    )
+}
+
+/// 动态参数候选的实际数据；每种来源从 app 状态取当前可用集合。
+fn dynamic_args(app: &App, kind: DynamicArg) -> Vec<String> {
+    match kind {
+        // `clear` 清空本会话授权，与各权限模式并列。
+        DynamicArg::SandboxMode => app
+            .sandbox_modes
+            .iter()
+            .map(|mode| mode.as_str().to_owned())
+            .chain(std::iter::once("clear".to_owned()))
+            .collect(),
+    }
+}
+
+impl CompletionCandidate {
     pub fn resource(candidate: ResourceCandidate) -> Self {
         Self {
             value: candidate.uri,
@@ -181,35 +115,29 @@ pub struct CompletionState {
 impl CompletionState {
     /// 依据首行 `/` 前缀计算候选；无候选时返回 `None`。
     ///
-    /// `plugins` 是当前工作区插件注册的命令，与内置命令一起参与前缀匹配；
-    /// 同名时内置命令在前，分派也以内置为准。
-    pub fn derive(
-        text: &str,
-        plugins: &[moc_protocol::methods::PluginCommandInfo],
-    ) -> Option<Self> {
-        let first_line = text.lines().next().unwrap_or_default();
+    /// 命令名候选经注册表过滤：hidden、flag 关闭、聚焦旁支不可用、运行中不可用、
+    /// 无会话的命令都不提示。空格之后进入参数段，按命令 spec 的 args 声明补全。
+    pub fn derive(app: &App) -> Option<Self> {
+        let first_line = app.prompt.text.lines().next().unwrap_or_default();
         let query = first_line.strip_prefix('/')?;
-        if query.contains(char::is_whitespace) {
-            return None;
-        }
-        let candidates: Vec<_> = SLASH_COMMANDS
-            .iter()
-            .filter(|command| command.name[1..].starts_with(query))
-            .map(CompletionCandidate::slash)
-            .chain(
-                plugins
-                    .iter()
-                    .filter(|command| command.name.starts_with(query))
-                    .map(plugin_candidate),
-            )
-            .collect();
+        let (candidates, replace_start) = match query.split_once(char::is_whitespace) {
+            None => (
+                app.commands
+                    .complete(query, |spec| command_visible(app, spec))
+                    .into_iter()
+                    .map(command_candidate)
+                    .collect::<Vec<_>>(),
+                0,
+            ),
+            Some((name, args)) => (arg_candidates(app, name, args)?, name.len() + 2),
+        };
         if candidates.is_empty() {
             return None;
         }
         Some(Self {
             candidates,
             selected: 0,
-            replace_range: 0..first_line.len(),
+            replace_range: replace_start..first_line.len(),
             area: Rect::default(),
             offset: 0,
             visible_count: 0,
@@ -308,18 +236,45 @@ impl CompletionState {
 mod tests {
     use super::*;
 
+    fn app(text: &str) -> App {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.prompt.text = text.to_owned();
+        app
+    }
+
     #[test]
     fn derive_table_filters_closes_and_keeps_order() {
-        let state = CompletionState::derive("/r", &[]).expect("有候选");
-        assert_eq!(state.candidates.len(), 2);
-        assert_eq!(state.candidates[0].value, "/resume");
-        assert_eq!(state.candidates[1].value, "/retry");
+        let state = CompletionState::derive(&app("/r")).expect("有候选");
+        // `/resume` 不需会话而 `/retry` 需要：无会话时只剩前者。
+        assert_eq!(
+            state
+                .candidates
+                .iter()
+                .map(|candidate| candidate.value.as_str())
+                .collect::<Vec<_>>(),
+            ["/resume"]
+        );
 
-        // 参数一旦开始、非命令文本或无匹配前缀都不提供候选。
-        assert!(CompletionState::derive("/model ", &[]).is_none());
-        assert!(CompletionState::derive("聊天文本", &[]).is_none());
-        assert!(CompletionState::derive("/zzz", &[]).is_none());
+        // 非命令文本或无匹配前缀都不提供候选。
+        assert!(CompletionState::derive(&app("聊天文本")).is_none());
+        assert!(CompletionState::derive(&app("/zzz")).is_none());
     }
+
+    #[test]
+    fn argument_candidates_follow_spec() {
+        // `/autonomy` 的固定取值进候选，命中前缀才出现。
+        let state = CompletionState::derive(&app("/autonomy un")).expect("参数候选");
+        assert_eq!(state.candidates.len(), 1);
+        assert_eq!(state.candidates[0].value, "unattended");
+        assert!(!state.candidates[0].append_space);
+        assert_eq!(state.replace_range, "/autonomy ".len().."/autonomy un".len());
+
+        // 完整参数（再跟空格）与无参数命令都没有候选。
+        assert!(CompletionState::derive(&app("/autonomy default x")).is_none());
+        assert!(CompletionState::derive(&app("/new ")).is_none());
+    }
+
     #[test]
     fn resource_candidate_keeps_namespace_without_space() {
         let state = CompletionState::from_resources(
@@ -339,7 +294,7 @@ mod tests {
 
     #[test]
     fn entry_at_detects_candidate_rows_and_ignores_borders() {
-        let mut state = CompletionState::derive("/r", &[]).expect("有候选");
+        let mut state = CompletionState::derive(&app("/")).expect("有候选");
         state.area = Rect::new(10, 5, 30, 5);
         state.visible_count = 2;
 

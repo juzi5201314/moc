@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::features::FeatureStates;
 use crate::method::{ClientRequest, Method};
 
 /// `config/get`。
@@ -44,6 +45,9 @@ pub struct ConfigGetResult {
     /// `[models.fusion]` 配置的组合；两侧都配置时才有值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fusion: Option<FusionPair>,
+    /// 特性开关快照（`[features]` 覆盖合成后的有效状态）；旧报文没有时按注册表默认。
+    #[serde(default)]
+    pub features: FeatureStates,
 }
 
 /// Fusion 组合的两侧模型，均为规范 `供应商/模型:等级` selector。
@@ -167,6 +171,7 @@ mod tests {
                 lead: "deepseek-flash:max".into(),
                 sidekick: "deepseek-flash:off".into(),
             }),
+            features: FeatureStates::defaults(),
         };
         assert_eq!(
             serde_json::to_value(&result).expect("可序列化"),
@@ -176,7 +181,8 @@ mod tests {
                 "agents": [{ "id": "build", "display_name": "Build" }],
                 "default_agent": "build",
                 "cwd": "/home/soeur/project/moc",
-                "fusion": {"lead": "deepseek-flash:max", "sidekick": "deepseek-flash:off"}
+                "fusion": {"lead": "deepseek-flash:max", "sidekick": "deepseek-flash:off"},
+                "features": {"clm": true, "ptc": true, "workflow": true, "plugins": true, "mcp": true, "skills": true, "web_search": true, "web_fetch": true}
             })
         );
         let round_trip: ConfigGetResult =

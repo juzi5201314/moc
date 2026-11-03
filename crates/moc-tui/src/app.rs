@@ -335,8 +335,10 @@ pub struct App {
     /// 启动时新会话是否直接进 plan 叠加态（`--plan`）。
     pub startup_plan: bool,
     pub startup_pending: Option<String>,
-    /// 本工作区插件注册的斜杠命令，供补全与命令分派使用。
-    pub plugin_commands: Vec<moc_protocol::methods::PluginCommandInfo>,
+    /// 命令注册表：内置命令元数据 + 本工作区插件命令的动态来源。
+    pub commands: crate::commands::Registry,
+    /// `config/get` 下发的特性开关快照；命令门控与引擎清单共用。
+    pub features: moc_protocol::features::FeatureStates,
     /// 最近一次 `plugin/list` 的结果，供 `/plugins` 展示。
     pub plugins: Vec<moc_protocol::methods::PluginInfo>,
     pub subagents: std::collections::BTreeMap<String, crate::subagent::SubagentView>,
@@ -592,7 +594,8 @@ impl App {
             startup_engine: SessionEngine::Standard,
             startup_plan: false,
             startup_pending: None,
-            plugin_commands: Vec::new(),
+            commands: crate::commands::registry(),
+            features: moc_protocol::features::FeatureStates::defaults(),
             plugins: Vec::new(),
             subagents: std::collections::BTreeMap::new(),
             subagent_selected: None,
@@ -1408,13 +1411,28 @@ impl App {
         }
 
         self.completion = None;
+        let engines: Vec<SessionEngine> = self.engines().collect();
         let current = self.session.as_ref().map(|session| session.engine);
         self.engine_menu = Some(EngineMenu {
             selected: current
-                .and_then(|engine| ENGINES.iter().position(|candidate| *candidate == engine))
+                .and_then(|engine| engines.iter().position(|candidate| *candidate == engine))
                 .unwrap_or(0),
+            engines,
             area: Rect::default(),
         });
+    }
+
+    /// 特性 flag 允许使用的引擎清单（[`ENGINES`] 顺序）。
+    pub fn engines(&self) -> impl Iterator<Item = SessionEngine> + '_ {
+        ENGINES
+            .iter()
+            .copied()
+            .filter(|engine| self.features.engine_available(*engine))
+    }
+
+    /// 有在飞提示或会话操作：`available_during_task=false` 的命令此时不提示也不执行。
+    pub fn busy(&self) -> bool {
+        self.prompt_running || !self.inflight_session_ops.is_empty()
     }
 
     /// 打开会话恢复选择器（列表由调用方异步填充后更新）。
@@ -1604,7 +1622,7 @@ impl App {
 
     pub fn prompt_changed(&mut self) {
         self.prompt_revision = self.prompt_revision.wrapping_add(1);
-        self.completion = CompletionState::derive(&self.prompt.text, &self.plugin_commands);
+        self.completion = CompletionState::derive(self);
         self.completion_prefix = None;
     }
 
@@ -2239,8 +2257,10 @@ pub fn ordered_selection(
 
 /// 点击图例引擎名后就地弹出的菜单。
 pub struct EngineMenu {
-    /// 键盘 / 悬停高亮的条目下标（[`ENGINES`] 顺序）。
+    /// 键盘 / 悬停高亮的条目下标（`engines` 顺序）。
     pub selected: usize,
+    /// 可选项：按特性 flag 过滤后的引擎清单（打开菜单时的快照）。
+    pub engines: Vec<SessionEngine>,
     /// 上一帧绘制的菜单区域；鼠标命中使用。
     pub area: Rect,
 }
@@ -2252,7 +2272,7 @@ impl EngineMenu {
             return None;
         }
         let index = usize::from(row.checked_sub(self.area.y.saturating_add(1))?);
-        (index < ENGINES.len()).then_some(index)
+        (index < self.engines.len()).then_some(index)
     }
 }
 
@@ -2321,7 +2341,7 @@ fn trimmable_tail_block(block: &Block, keep_reply: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{EngineMenu, engine_label, model_selector_label};
+    use super::{ENGINES, EngineMenu, engine_label, model_selector_label};
     use moc_protocol::SessionEngine;
     use ratatui::layout::Rect;
 
@@ -2431,6 +2451,7 @@ mod tests {
     fn engine_menu_hit_testing_skips_borders() {
         let menu = EngineMenu {
             selected: 1,
+            engines: ENGINES.to_vec(),
             area: Rect::new(10, 5, 24, 6),
         };
         assert_eq!(menu.entry_at(11, 5), None, "上边框不是条目");

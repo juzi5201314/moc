@@ -31,6 +31,7 @@ use moc_protocol::methods::{
     SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument,
     WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
+use moc_protocol::features::flag_for_engine;
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode, UpdateSink};
 use parking_lot::RwLock;
 use serde_json::json;
@@ -1090,6 +1091,7 @@ impl AgentService for Core {
             default_agent: Some("moc".into()),
             cwd: config.cwd.to_string_lossy().into_owned(),
             fusion,
+            features: config.features,
         })
     }
     async fn plugin_list(
@@ -1355,6 +1357,18 @@ impl AgentService for Core {
         let cwd = std::fs::canonicalize(&cwd)
             .map_err(|error| invalid_params(format!("cwd 无效：{error}")))?;
         let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
+        if let Some(flag) = flag_for_engine(params.engine)
+            && !config.feature_enabled(flag)
+        {
+            return Err(invalid_params(format!(
+                "引擎 {} 已被特性开关 [features] {} = false 禁用",
+                serde_json::to_value(params.engine)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_default(),
+                flag.spec().key,
+            )));
+        }
         let selector = params.model.as_deref().unwrap_or("default");
         let model = config.resolve_model(selector).map_err(|error| {
             let selectors: Vec<String> = config
@@ -1850,6 +1864,24 @@ impl AgentService for Core {
             .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        // 特性门控按会话所属项目判定；锁定状态下也要先挡住禁用引擎。
+        if let Some(flag) = flag_for_engine(params.engine) {
+            let cwd = record.state.lock().await.session.cwd.clone();
+            let config = self
+                .inner
+                .project_config(std::path::Path::new(&cwd))
+                .map_err(to_rpc)?;
+            if !config.feature_enabled(flag) {
+                return Err(invalid_params(format!(
+                    "引擎 {} 已被特性开关 [features] {} = false 禁用",
+                    serde_json::to_value(params.engine)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .unwrap_or_default(),
+                    flag.spec().key,
+                )));
+            }
+        }
         let from = record.state.lock().await.engine;
         // 引擎锁在 `Sessions::set_engine` 里判定：有提示历史即拒绝。
         let mut info = self

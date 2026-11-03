@@ -221,6 +221,7 @@ fn test_f2_05_engine_menu_uses_rounded_borders() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.engine_menu = Some(moc_tui::app::EngineMenu {
         selected: 0,
+        engines: moc_tui::app::ENGINES.to_vec(),
         area: Rect::default(),
     });
     app.engine_area = Rect::new(70, 20, 10, 1);
@@ -707,7 +708,8 @@ fn test_f7_05_long_command_descriptions_not_prematurely_truncated() {
 
 #[test]
 fn test_f8_01_help_modal_contains_three_distinct_sections() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 35);
+    // 帮助内容来自注册表分节，35 行终端放不下；80 行确保整卡可见。
+    let (mut app, _rx, mut terminal) = create_test_terminal(100, 80);
     app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
@@ -724,7 +726,8 @@ fn test_f8_01_help_modal_contains_three_distinct_sections() {
 
 #[test]
 fn test_f8_02_help_modal_session_commands_included() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 35);
+    // 帮助内容来自注册表分节，35 行终端放不下；80 行确保整卡可见。
+    let (mut app, _rx, mut terminal) = create_test_terminal(100, 80);
     app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
@@ -736,7 +739,8 @@ fn test_f8_02_help_modal_session_commands_included() {
 
 #[test]
 fn test_f8_03_help_modal_editing_shortcuts_included() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 35);
+    // 帮助内容来自注册表分节，35 行终端放不下；80 行确保整卡可见。
+    let (mut app, _rx, mut terminal) = create_test_terminal(100, 80);
     app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
@@ -747,7 +751,8 @@ fn test_f8_03_help_modal_editing_shortcuts_included() {
 
 #[test]
 fn test_f8_04_help_modal_bypass_interaction_included() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 35);
+    // 帮助内容来自注册表分节，35 行终端放不下；80 行确保整卡可见。
+    let (mut app, _rx, mut terminal) = create_test_terminal(100, 80);
     app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
@@ -758,7 +763,8 @@ fn test_f8_04_help_modal_bypass_interaction_included() {
 
 #[test]
 fn test_f8_05_help_modal_sections_rendered_with_header_styling() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 35);
+    // 帮助内容来自注册表分节，35 行终端放不下；80 行确保整卡可见。
+    let (mut app, _rx, mut terminal) = create_test_terminal(100, 80);
     app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);

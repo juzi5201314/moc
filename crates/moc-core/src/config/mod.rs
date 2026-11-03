@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use globset::GlobBuilder;
 use moc_llm::LlmConfig;
 use moc_protocol::SessionPermission;
+use moc_protocol::features::{FeatureFlag, FeatureStates};
 use toml::Value;
 
 use crate::CoreConfig;
@@ -29,7 +30,8 @@ pub mod web;
 pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ROLE_NONE, ThinkingLevel};
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
-    EditConfig, FindConfig, GrepConfig, HOST_PLUGIN_KEYS, JobConfig, JobOverflow, LimitsConfig,
+    EditConfig, FeaturesConfig, FindConfig, GrepConfig, HOST_PLUGIN_KEYS, JobConfig, JobOverflow,
+    LimitsConfig,
     WorkflowConfig,
     OnDenied, OutputConfig, PluginsConfig, PtcConfig, ReadConfig, RemoteCompactionConfig,
     RetentionConfig, ShakeConfig, SkillsConfig, SoftMethod, SystemPromptConfig, TodoConfig,
@@ -113,6 +115,8 @@ pub struct ResolvedConfig {
     pub web_fetch: ResolvedWebFetch,
     pub agents: schema::AgentsConfig,
     pub workflow: schema::WorkflowConfig,
+    /// 特性开关状态快照：`[features]` 覆盖与各段 `enabled` 合成，加载时定死。
+    pub features: FeatureStates,
     providers: BTreeMap<String, model::ResolvedProvider>,
     base_raw: Value,
     overlays: Vec<PathBuf>,
@@ -235,6 +239,7 @@ impl ResolvedConfig {
         schema::validate_ptc(&document.tools.ptc)?;
         schema::validate_agents(&document.agents)?;
         schema::validate_limits(&document.limits)?;
+        let features = resolve_features(&document, web_search_key.is_some())?;
         if document.tools.job.max_running == 0 || document.tools.job.max_wait_secs == 0 {
             return Err(CoreError::Config(
                 "tools.job: max_running 与 max_wait_secs 必须大于 0".into(),
@@ -278,10 +283,16 @@ impl ResolvedConfig {
             },
             agents: document.agents,
             workflow: document.workflow,
+            features,
             providers,
             base_raw,
             overlays,
         })
+    }
+
+    /// 特性 flag 是否启用（注册表快照查询）；引擎/工作流等门控共用。
+    pub fn feature_enabled(&self, flag: FeatureFlag) -> bool {
+        self.features.enabled(flag)
     }
 
     /// 汇总该项目的全部 MCP server 配置：TOML `[mcp.servers]`、用户
@@ -327,6 +338,31 @@ impl ResolvedConfig {
         };
         Ok(moc_mcp::resolve_all(&self.mcp, &source))
     }
+}
+
+/// 把 `[features]` 覆盖与各段 `enabled` 合成注册表快照。
+///
+/// `Existing` 开关读原配置段（保持单点来源）；`Features` 自有开关读 `[features]`
+/// 覆盖值、缺省用注册表默认。`web_search` 以 `available()` 为准——没有 API key 时
+/// 工具本就不进表，flag 如实反映。
+fn resolve_features(
+    document: &ConfigDocument,
+    web_search_available: bool,
+) -> Result<FeatureStates, CoreError> {
+    schema::validate_features(&document.features)?;
+    Ok(FeatureStates::resolve(|flag| match flag {
+        FeatureFlag::Clm | FeatureFlag::Ptc => document
+            .features
+            .get(flag.spec().key)
+            .copied()
+            .unwrap_or(flag.spec().default_enabled),
+        FeatureFlag::Workflow => document.workflow.enabled,
+        FeatureFlag::Plugins => document.plugins.enabled,
+        FeatureFlag::Mcp => document.mcp.enabled,
+        FeatureFlag::Skills => document.skills.enabled,
+        FeatureFlag::WebSearch => web_search_available,
+        FeatureFlag::WebFetch => document.web_fetch.enabled,
+    }))
 }
 
 /// 解析配置中的所有 provider/model，供 CLI 列表与配置检查使用。
@@ -1294,5 +1330,67 @@ max_output_tokens = 128000
             Err(error) => error,
         };
         assert!(error.to_string().contains("web_search.api_key"));
+    }
+
+    #[test]
+    fn feature_flags_follow_overrides_and_existing_sections() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        let cwd = dir.path().join("work");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::create_dir_all(&cwd).expect("创建 cwd");
+        let config_path = home.join("config.toml");
+        fs::write(&config_path, provider_config("literal")).expect("写配置");
+        let config =
+            ResolvedConfig::load(&core_config(&home, &cwd, vec![])).expect("默认配置可解析");
+        // 默认全开：自有键走注册表默认，已有段读各自 enabled。
+        assert!(config.feature_enabled(FeatureFlag::Ptc));
+        assert!(config.feature_enabled(FeatureFlag::Workflow));
+        assert!(config.features.engine_available(moc_protocol::SessionEngine::Ptc));
+
+        fs::write(
+            &config_path,
+            format!(
+                "{}\n[features]\nptc=false\n[workflow]\nenabled=false\n",
+                provider_config("literal")
+            ),
+        )
+        .expect("写覆盖配置");
+        let config =
+            ResolvedConfig::load(&core_config(&home, &cwd, vec![])).expect("覆盖配置可解析");
+        assert!(!config.feature_enabled(FeatureFlag::Ptc));
+        assert!(!config.features.engine_available(moc_protocol::SessionEngine::Ptc));
+        assert!(config.features.engine_available(moc_protocol::SessionEngine::Standard));
+        assert!(!config.feature_enabled(FeatureFlag::Workflow));
+        assert!(config.feature_enabled(FeatureFlag::Clm), "未覆盖的键保持默认");
+    }
+
+    #[test]
+    fn feature_flags_reject_unknown_and_foreign_keys() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::write(
+            home.join("config.toml"),
+            format!("{}\n[features]\nbogus=true\n", provider_config("literal")),
+        )
+        .expect("写配置");
+        let error = match ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())) {
+            Ok(_) => panic!("未知 features 键应报错"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("features.bogus"));
+
+        // 挂在已有配置段上的键在 [features] 里拒绝并指向正确路径。
+        fs::write(
+            home.join("config.toml"),
+            format!("{}\n[features]\nworkflow=false\n", provider_config("literal")),
+        )
+        .expect("写配置");
+        let error = match ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())) {
+            Ok(_) => panic!("已有段的 features 键应报错"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("workflow.enabled"));
     }
 }

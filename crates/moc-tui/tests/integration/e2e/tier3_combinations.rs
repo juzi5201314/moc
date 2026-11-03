@@ -40,6 +40,7 @@ fn test_combo_02_engine_switch_during_slash_palette() {
     app.engine_area = Rect::new(50, 20, 10, 1);
     app.engine_menu = Some(EngineMenu {
         selected: 1,
+        engines: moc_tui::app::ENGINES.to_vec(),
         area: Rect::new(20, 10, 40, 8),
     });
     terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
@@ -319,6 +320,7 @@ fn test_combo_20_engine_menu_selection_updates_session_engine() {
     app.session = Some(sample_session_info("ses-test", "Session Test", "/tmp"));
     app.engine_menu = Some(EngineMenu {
         selected: 1, // Ptc
+        engines: moc_tui::app::ENGINES.to_vec(),
         area: Rect::new(30, 10, 40, 8),
     });
     terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();

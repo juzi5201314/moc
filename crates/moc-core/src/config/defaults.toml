@@ -1,5 +1,14 @@
 # moc-core 默认配置。用户配置按表递归覆盖，数组与标量整体替换。
 
+# 特性开关覆盖：只接受注册表自有键（clm、ptc）。workflow/plugins/mcp/skills/
+# web_search/web_fetch 等特性由各自配置段的 enabled 控制（见 /features 一览），
+# 误写进本段会被校验拒绝并提示正确路径。
+[features]
+# CLM 实验引擎（SessionEngine::ClmExperimental）
+clm = true
+# PTC 引擎（SessionEngine::Ptc）：模型只调 run_code，工具经代码沙盒触达
+ptc = true
+
 [models.roles]
 default = ""
 explore = "inherit"

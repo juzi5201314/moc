@@ -1,0 +1,460 @@
+//! TUI 斜杠命令表：每条命令一份 [`CommandSpec`] 元数据，分派、补全、帮助与
+//! 门控都从这一张表取事实。处理器实现仍在 `event.rs`；这里只登记元数据。
+
+use moc_protocol::commands::{
+    ArgCompletion, CommandGroup, CommandRegistry, CommandSpec, DynamicArg,
+};
+use moc_protocol::features::FeatureFlag;
+
+/// TUI 内置命令 id：`execute_command` 按它分派到具体处理器。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandId {
+    Btw,
+    ConfirmPlan,
+    Close,
+    Agents,
+    Config,
+    New,
+    Plugins,
+    Usage,
+    Doctor,
+    Help,
+    Context,
+    Quit,
+    Compact,
+    Engine,
+    ClmExperimental,
+    Autonomy,
+    Permission,
+    Plan,
+    Ask,
+    Retry,
+    Model,
+    Workflow,
+    Workflows,
+    Jobs,
+    Resume,
+    Features,
+}
+
+/// 自主程度命令的取值（与 `SessionAutonomy` 的 serde 名一致）。
+const AUTONOMY_CHOICES: &[&str] = &["default", "dont_ask", "unattended"];
+
+/// TUI 内置命令表：同一批记录驱动 `execute_command` 分派、斜杠补全与帮助模态。
+///
+/// `needs_session`/`available_*` 是静态门控声明；依赖会话实时状态的更细判定
+/// （plan 激活、引擎锁、授权集）仍由处理器自查。
+pub const COMMANDS: &[CommandSpec<CommandId>] = &[
+    CommandSpec {
+        id: CommandId::New,
+        name: "new",
+        aliases: &[],
+        usage: "",
+        description: "新建会话",
+        group: CommandGroup::Session,
+        needs_session: false,
+        available_during_task: true,
+        // 聚焦栈挂在会话树上：新建会直接换掉 app.session，旁支里禁用。
+        available_in_side: false,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Resume,
+        name: "resume",
+        aliases: &[],
+        usage: "",
+        description: "恢复历史会话",
+        group: CommandGroup::Session,
+        needs_session: false,
+        available_during_task: true,
+        available_in_side: false,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Close,
+        name: "close",
+        aliases: &[],
+        usage: "",
+        description: "卸载当前会话并释放跨进程写租约",
+        group: CommandGroup::Session,
+        needs_session: true,
+        available_during_task: false,
+        available_in_side: false,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Quit,
+        name: "quit",
+        aliases: &["exit"],
+        usage: "",
+        description: "退出 moc",
+        group: CommandGroup::Session,
+        needs_session: false,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Plan,
+        name: "plan",
+        aliases: &[],
+        usage: "",
+        description: "进入／退出计划模式（与引擎正交的叠加态）",
+        group: CommandGroup::Mode,
+        needs_session: true,
+        available_during_task: false,
+        available_in_side: false,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::ConfirmPlan,
+        name: "confirm-plan",
+        aliases: &[],
+        usage: "",
+        description: "计划模式下重新审阅已写入的待审计划",
+        group: CommandGroup::Mode,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Model,
+        name: "model",
+        aliases: &[],
+        usage: "",
+        description: "切换模型",
+        group: CommandGroup::Mode,
+        needs_session: true,
+        available_during_task: false,
+        available_in_side: false,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Engine,
+        name: "engine",
+        aliases: &[],
+        usage: "",
+        description: "切换会话引擎（仅空白会话可切）",
+        group: CommandGroup::Mode,
+        needs_session: true,
+        available_during_task: false,
+        available_in_side: false,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::ClmExperimental,
+        name: "clm-experimental",
+        aliases: &[],
+        usage: "",
+        description: "切换 CLM 实验引擎；启用后本会话固定使用 CLM",
+        group: CommandGroup::Mode,
+        needs_session: true,
+        available_during_task: false,
+        available_in_side: false,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: Some(FeatureFlag::Clm),
+    },
+    CommandSpec {
+        id: CommandId::Autonomy,
+        name: "autonomy",
+        aliases: &[],
+        usage: "[default|dont_ask|unattended]",
+        description: "切换自主程度",
+        group: CommandGroup::Mode,
+        needs_session: true,
+        available_during_task: false,
+        available_in_side: false,
+        hidden: false,
+        args: ArgCompletion::Choices(AUTONOMY_CHOICES),
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Permission,
+        name: "permission",
+        aliases: &[],
+        usage: "[<模式>|clear]",
+        description: "切换权限模式，或清空本会话沙盒授权",
+        group: CommandGroup::Mode,
+        needs_session: true,
+        available_during_task: false,
+        available_in_side: false,
+        hidden: false,
+        args: ArgCompletion::Dynamic(DynamicArg::SandboxMode),
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Ask,
+        name: "ask",
+        aliases: &[],
+        usage: "<问题>",
+        description: "本条消息按问答模式处理（只读）",
+        group: CommandGroup::Mode,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Retry,
+        name: "retry",
+        aliases: &[],
+        usage: "",
+        description: "接着现有上下文继续跑（不追加用户消息）",
+        group: CommandGroup::Context,
+        needs_session: true,
+        available_during_task: false,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Compact,
+        name: "compact",
+        aliases: &[],
+        usage: "[指令]",
+        description: "手动压缩上下文",
+        group: CommandGroup::Context,
+        needs_session: true,
+        available_during_task: false,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Context,
+        name: "context",
+        aliases: &[],
+        usage: "",
+        description: "查看上下文内容",
+        group: CommandGroup::Context,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Usage,
+        name: "usage",
+        aliases: &[],
+        usage: "",
+        description: "查看当前会话模型用量",
+        group: CommandGroup::Context,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Agents,
+        name: "agents",
+        aliases: &[],
+        usage: "",
+        description: "子代理名册：聚焦、停止、查看",
+        group: CommandGroup::Agents,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Jobs,
+        name: "jobs",
+        aliases: &[],
+        usage: "",
+        description: "后台任务列表",
+        group: CommandGroup::Agents,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Workflow,
+        name: "workflow",
+        aliases: &[],
+        usage: "[指令]",
+        description: "激活 workflow（可附指令）",
+        group: CommandGroup::Agents,
+        needs_session: true,
+        available_during_task: false,
+        available_in_side: false,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: Some(FeatureFlag::Workflow),
+    },
+    CommandSpec {
+        id: CommandId::Workflows,
+        name: "workflows",
+        aliases: &[],
+        usage: "",
+        description: "workflow run 列表",
+        group: CommandGroup::Agents,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: Some(FeatureFlag::Workflow),
+    },
+    CommandSpec {
+        id: CommandId::Plugins,
+        name: "plugins",
+        aliases: &[],
+        usage: "[reload]",
+        description: "查看插件：来源、工具与斜杠命令",
+        group: CommandGroup::Plugins,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::Choices(&["reload"]),
+        flag: Some(FeatureFlag::Plugins),
+    },
+    CommandSpec {
+        id: CommandId::Btw,
+        name: "btw",
+        aliases: &[],
+        usage: "[问题]",
+        description: "旁路问答：带问题继续线程；不带问题重开面板",
+        group: CommandGroup::Ui,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Config,
+        name: "config",
+        aliases: &["settings"],
+        usage: "",
+        description: "打开设置：模型、供应商、界面等",
+        group: CommandGroup::Ui,
+        needs_session: false,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Features,
+        name: "features",
+        aliases: &[],
+        usage: "",
+        description: "特性开关一览：阶段、状态与上下文成本",
+        group: CommandGroup::Ui,
+        needs_session: false,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Help,
+        name: "help",
+        aliases: &[],
+        usage: "",
+        description: "快捷键与命令帮助",
+        group: CommandGroup::Ui,
+        needs_session: false,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Doctor,
+        name: "doctor",
+        aliases: &[],
+        usage: "",
+        description: "终端能力诊断：探测结果与修复建议",
+        group: CommandGroup::Ui,
+        needs_session: false,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+];
+
+/// TUI 命令注册表类型。
+pub type Registry = CommandRegistry<CommandId>;
+
+/// 以 TUI 命令表建注册表；插件命令随后按 `plugin/list` 结果并入。
+pub fn registry() -> Registry {
+    CommandRegistry::new(COMMANDS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_spec_resolves_by_name_and_alias() {
+        let registry = registry();
+        let mut ids: Vec<CommandId> = Vec::new();
+        for spec in COMMANDS {
+            assert_eq!(registry.builtin(spec.name).map(|s| s.id), Some(spec.id));
+            ids.push(spec.id);
+            for alias in spec.aliases {
+                match registry.resolve(alias) {
+                    Some(moc_protocol::commands::CommandRef::Builtin(found)) => {
+                        assert_eq!(found.id, spec.id, "别名 /{alias} 未指回原命令")
+                    }
+                    _ => panic!("别名 /{alias} 未解析为内置命令"),
+                }
+            }
+        }
+        let total = ids.len();
+        ids.sort_by_key(|id| *id as u8);
+        ids.dedup();
+        assert_eq!(ids.len(), total, "存在重复 CommandId");
+    }
+
+    #[test]
+    fn aliases_are_unique_across_table() {
+        let mut all: Vec<&str> = COMMANDS
+            .iter()
+            .flat_map(|spec| std::iter::once(spec.name).chain(spec.aliases.iter().copied()))
+            .collect();
+        let total = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), total, "命令名/别名存在重复");
+    }
+}

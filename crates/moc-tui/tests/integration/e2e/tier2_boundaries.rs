@@ -98,6 +98,7 @@ fn test_f1_b4_engine_menu_popup_opacity_clears_noise() {
     app.engine_area = Rect::new(50, 20, 10, 1);
     app.engine_menu = Some(EngineMenu {
         selected: 0,
+        engines: moc_tui::app::ENGINES.to_vec(),
         area: Rect::new(30, 10, 40, 10),
     });
     terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
@@ -158,6 +159,7 @@ fn test_f2_b2_narrow_modal_border_width_3() {
     let (mut app, _rx, mut terminal) = create_test_terminal(3, 10);
     app.engine_menu = Some(EngineMenu {
         selected: 0,
+        engines: moc_tui::app::ENGINES.to_vec(),
         area: Rect::new(0, 0, 3, 5),
     });
     terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
@@ -170,6 +172,7 @@ fn test_f2_b3_minimal_height_modal_border() {
     let (mut app, _rx, mut terminal) = create_test_terminal(30, 2);
     app.engine_menu = Some(EngineMenu {
         selected: 0,
+        engines: moc_tui::app::ENGINES.to_vec(),
         area: Rect::new(0, 0, 30, 2),
     });
     terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
@@ -200,6 +203,7 @@ fn test_f2_b5_engine_menu_four_corners_intact() {
     let (mut app, _rx, mut terminal) = create_test_terminal(60, 20);
     app.engine_menu = Some(EngineMenu {
         selected: 0,
+        engines: moc_tui::app::ENGINES.to_vec(),
         area: Rect::new(5, 5, 40, 8),
     });
     terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
@@ -1067,6 +1071,7 @@ fn test_f19_b5_context_breakdown_tooltip_or_stats() {
 fn test_f20_b1_engine_menu_selection_wrap() {
     let menu = EngineMenu {
         selected: 2,
+        engines: moc_tui::app::ENGINES.to_vec(),
         area: Rect::new(0, 0, 40, 10),
     };
     assert_eq!(menu.selected, 2);
@@ -1076,6 +1081,7 @@ fn test_f20_b1_engine_menu_selection_wrap() {
 fn test_f20_b2_engine_menu_up_arrow_wrap() {
     let menu = EngineMenu {
         selected: 0,
+        engines: moc_tui::app::ENGINES.to_vec(),
         area: Rect::new(0, 0, 40, 10),
     };
     assert_eq!(menu.selected, 0);
@@ -1099,6 +1105,7 @@ fn test_f20_b4_engine_menu_esc_dismiss() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
     app.engine_menu = Some(EngineMenu {
         selected: 1,
+        engines: moc_tui::app::ENGINES.to_vec(),
         area: Rect::default(),
     });
     assert!(app.engine_menu.is_some());
@@ -1112,6 +1119,7 @@ fn test_f20_b5_engine_menu_options_count() {
     app.engine_area = Rect::new(50, 20, 10, 1);
     app.engine_menu = Some(EngineMenu {
         selected: 0,
+        engines: moc_tui::app::ENGINES.to_vec(),
         area: Rect::new(20, 5, 40, 10),
     });
     terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();

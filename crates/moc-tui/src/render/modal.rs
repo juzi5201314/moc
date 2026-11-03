@@ -3,6 +3,7 @@
 //! 浮层画在滚动区之后（覆盖其内容）；模态居中，宽度按内容取值（帮助为双列快捷键表，
 //! 普通模态上限 96 列，带选项预览的提问放宽到 120 列），高度按内容收缩。全部使用主题槽位。
 
+use moc_protocol::commands::CommandGroup;
 use moc_protocol::methods::{ContextUsageResult, PlanStatus};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -141,8 +142,10 @@ pub fn draw_engine_menu(frame: &mut Frame, app: &mut App) {
     };
     let theme = app.theme;
     let current = app.session.as_ref().map(|session| session.engine);
-    let selected = menu.selected;
-    let label_width = crate::app::ENGINES
+    // 引擎清单拷出来再画，后面还要对 app.engine_menu 做可变借用写回 area。
+    let (selected, engines, saved_area) =
+        (menu.selected, menu.engines.clone(), menu.area);
+    let label_width = engines
         .iter()
         .map(|engine| str_width(crate::app::engine_label(*engine)))
         .max()
@@ -151,9 +154,9 @@ pub fn draw_engine_menu(frame: &mut Frame, app: &mut App) {
     let width = u16::try_from(2 + label_width + 2 + 2)
         .unwrap_or(u16::MAX)
         .min(frame_area.width);
-    let height = u16::try_from(crate::app::ENGINES.len() + 2).unwrap_or(u16::MAX);
-    let area = if !menu.area.is_empty() {
-        menu.area
+    let height = u16::try_from(engines.len() + 2).unwrap_or(u16::MAX);
+    let area = if !saved_area.is_empty() {
+        saved_area
     } else {
         let anchor = app.engine_area;
         let x = (anchor.x.saturating_add(anchor.width))
@@ -170,7 +173,7 @@ pub fn draw_engine_menu(frame: &mut Frame, app: &mut App) {
     if let Some(menu_mut) = app.engine_menu.as_mut() {
         menu_mut.area = area;
     }
-    let lines: Vec<Line<'static>> = crate::app::ENGINES
+    let lines: Vec<Line<'static>> = engines
         .iter()
         .enumerate()
         .map(|(index, engine)| {
@@ -561,8 +564,8 @@ const HELP_INDENT: usize = 2;
 type HelpColumn = (usize, usize);
 
 struct HelpSection {
-    title: &'static str,
-    rows: Vec<(String, &'static str)>,
+    title: String,
+    rows: Vec<(String, String)>,
 }
 
 /// 快捷键帮助内容：会话与通用、输入与编辑、旁路交互三组，组标题加粗着色。
@@ -580,54 +583,105 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
     };
     let fixed_keys =
         |list: &[&str]| labels::keys(&list.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>());
-    let sections = [
+    let mut sections = vec![
         HelpSection {
-            title: "会话与通用",
+            title: "会话与通用".to_owned(),
             rows: vec![
-                (get_key("model"), "选择模型"),
-                (get_key("engine"), "切换会话引擎"),
-                (get_key("config"), "打开设置"),
-                (get_key("agents"), "打开子代理管理"),
-                (get_key("resume"), "恢复会话"),
-                (get_key("thinking"), "切换思考显示档位"),
-                (get_key("thinking_level"), "切换思考等级"),
-                (get_key("tools"), "切换工具显示档位"),
-                (get_key("help"), "帮助菜单"),
-                ("/confirm-plan".into(), "重新审阅待确认的计划"),
-                ("/plugins [reload]".into(), "查看/重载已加载插件"),
-                ("/doctor".into(), "终端能力诊断"),
-                ("/close".into(), "卸载会话并释放写租约"),
-            ],
-        },
-        HelpSection {
-            title: "输入与编辑",
-            rows: vec![
-                (get_key("send"), "发送消息"),
-                (get_key("queue"), "排队发送"),
-                (get_key("newline"), "插入换行"),
-                (get_key("cancel"), "停止当前生成 / 退出"),
-                (get_key("focus"), "切换输入焦点"),
-                (get_key("clear"), "清空输入"),
-                (get_key("line_start"), "移动到行首"),
-                (get_key("line_end"), "移动到行尾"),
-                (get_key("delete_word"), "删除前一词"),
-                (get_key("delete_to_end"), "删除至行尾"),
-                (get_key("paste_image"), "粘贴图片或文本"),
-                (get_key("queue_edit"), "编辑排队中的消息"),
-            ],
-        },
-        HelpSection {
-            title: "旁路交互 (BTW)",
-            rows: vec![
-                ("/btw <问题>".into(), "旁路追问(不写历史)"),
-                (fixed_keys(&["alt+b", "tab"]), "旁路展开与焦点切换"),
-                (fixed_keys(&["esc", "ctrl+c"]), "收起旁路 / 取消生成"),
-                (fixed_keys(&["c", "x"]), "复制回答 / 清空旁路"),
+                (get_key("model"), "选择模型".to_owned()),
+                (get_key("engine"), "切换会话引擎".to_owned()),
+                (get_key("config"), "打开设置".to_owned()),
+                (get_key("agents"), "打开子代理管理".to_owned()),
+                (get_key("resume"), "恢复会话".to_owned()),
+                (get_key("thinking"), "切换思考显示档位".to_owned()),
+                (get_key("thinking_level"), "切换思考等级".to_owned()),
+                (get_key("tools"), "切换工具显示档位".to_owned()),
+                (get_key("help"), "帮助菜单".to_owned()),
             ],
         },
     ];
+    // 斜杠命令按注册表分组成节；flag 关闭的命令仍列出并注明，帮助就是给人查的。
+    for group in [
+        CommandGroup::Session,
+        CommandGroup::Mode,
+        CommandGroup::Context,
+        CommandGroup::Agents,
+        CommandGroup::Plugins,
+        CommandGroup::Ui,
+    ] {
+        let mut rows = Vec::new();
+        for spec in app
+            .commands
+            .builtins()
+            .iter()
+            .filter(|spec| !spec.hidden && spec.group == group)
+        {
+            let usage = if spec.usage.is_empty() {
+                format!("/{}", spec.name)
+            } else {
+                format!("/{} {}", spec.name, spec.usage)
+            };
+            let disabled = spec.flag.is_some_and(|flag| !app.features.enabled(flag));
+            rows.push((
+                usage,
+                if disabled {
+                    format!("{}（特性已禁用）", spec.description)
+                } else {
+                    spec.description.to_owned()
+                },
+            ));
+        }
+        if group == CommandGroup::Plugins {
+            rows.extend(app.commands.plugins().iter().map(|command| {
+                (
+                    if command.usage.is_empty() {
+                        format!("/{}", command.name)
+                    } else {
+                        format!("/{} {}", command.name, command.usage)
+                    },
+                    if command.description.is_empty() {
+                        format!("插件命令（{}）", command.plugin)
+                    } else {
+                        command.description.clone()
+                    },
+                )
+            }));
+        }
+        if !rows.is_empty() {
+            sections.push(HelpSection {
+                title: format!("命令 · {}", group.label()),
+                rows,
+            });
+        }
+    }
+    sections.push(HelpSection {
+        title: "输入与编辑".to_owned(),
+        rows: vec![
+            (get_key("send"), "发送消息".to_owned()),
+            (get_key("queue"), "排队发送".to_owned()),
+            (get_key("newline"), "插入换行".to_owned()),
+            (get_key("cancel"), "停止当前生成 / 退出".to_owned()),
+            (get_key("focus"), "切换输入焦点".to_owned()),
+            (get_key("clear"), "清空输入".to_owned()),
+            (get_key("line_start"), "移动到行首".to_owned()),
+            (get_key("line_end"), "移动到行尾".to_owned()),
+            (get_key("delete_word"), "删除前一词".to_owned()),
+            (get_key("delete_to_end"), "删除至行尾".to_owned()),
+            (get_key("paste_image"), "粘贴图片或文本".to_owned()),
+            (get_key("queue_edit"), "编辑排队中的消息".to_owned()),
+        ],
+    });
+    sections.push(HelpSection {
+        title: "旁路交互 (BTW)".to_owned(),
+        rows: vec![
+            ("/btw <问题>".into(), "旁路追问(不写历史)".to_owned()),
+            (fixed_keys(&["alt+b", "tab"]), "旁路展开与焦点切换".to_owned()),
+            (fixed_keys(&["esc", "ctrl+c"]), "收起旁路 / 取消生成".to_owned()),
+            (fixed_keys(&["c", "x"]), "复制回答 / 清空旁路".to_owned()),
+        ],
+    });
+    let sections = sections;
 
-    let all_rows: Vec<&(String, &'static str)> = sections.iter().flat_map(|s| &s.rows).collect();
+    let all_rows: Vec<&(String, String)> = sections.iter().flat_map(|s| &s.rows).collect();
     let unified = measure_column_refs(&all_rows);
 
     let two_columns = HELP_INDENT + unified.1 + HELP_COLUMN_GAP + unified.1 <= max_width;
@@ -646,7 +700,7 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
             lines.push(Line::from(String::new()));
         }
         lines.push(Line::from(Span::styled(
-            section.title,
+            section.title.clone(),
             Style::new()
                 .fg(theme.accent_warning)
                 .add_modifier(Modifier::BOLD),
@@ -679,7 +733,7 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
     (lines, width.min(max_width))
 }
 
-fn measure_column_refs(rows: &[&(String, &'static str)]) -> HelpColumn {
+fn measure_column_refs(rows: &[&(String, String)]) -> HelpColumn {
     let key_width = rows
         .iter()
         .map(|(key, _)| str_width(key))
@@ -695,7 +749,7 @@ fn measure_column_refs(rows: &[&(String, &'static str)]) -> HelpColumn {
 
 /// 帮助表的一格：键位右补齐到列内 `key_width`，整格再补齐到列宽。
 fn help_cell(
-    row: &(String, &'static str),
+    row: &(String, String),
     column: HelpColumn,
     theme: &crate::theme::Theme,
 ) -> [Span<'static>; 4] {
@@ -4173,7 +4227,9 @@ mod tests {
         use ratatui::buffer::CellWidth;
         use ratatui::layout::Rect;
 
-        let mut completion = CompletionState::derive("/he", &[]).expect("构造补全状态");
+        let mut app_for_completion = App::new(Theme::global(), unbounded_channel().0);
+        app_for_completion.prompt.insert_str_raw("/he");
+        let mut completion = CompletionState::derive(&app_for_completion).expect("构造补全状态");
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
         let prompt_area = Rect::new(0, 10, 80, 3);
         terminal
@@ -4223,6 +4279,7 @@ mod tests {
         let mut app = App::new(Theme::global(), events);
         app.engine_menu = Some(EngineMenu {
             selected: 0,
+            engines: crate::app::ENGINES.to_vec(),
             area: Rect::default(),
         });
         app.engine_area = Rect::new(50, 20, 10, 1);

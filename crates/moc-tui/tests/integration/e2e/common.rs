@@ -331,8 +331,13 @@ pub fn sample_queued_prompt(id: u64, text: &str) -> moc_tui::queue::QueuedPrompt
 
 /// Helper fixture for sample CompletionState.
 pub fn sample_completion_state(query: &str) -> moc_tui::widgets::completion::CompletionState {
-    moc_tui::widgets::completion::CompletionState::derive(query, &[])
-        .unwrap_or_else(|| moc_tui::widgets::completion::CompletionState::derive("/", &[]).unwrap())
+    let (events_tx, _events_rx) = unbounded_channel();
+    let mut app = App::new(Theme::global(), events_tx);
+    app.prompt.text = query.to_owned();
+    moc_tui::widgets::completion::CompletionState::derive(&app).unwrap_or_else(|| {
+        app.prompt.text = "/".to_owned();
+        moc_tui::widgets::completion::CompletionState::derive(&app).unwrap()
+    })
 }
 
 /// Helper fixture for sample CompletionCandidate.

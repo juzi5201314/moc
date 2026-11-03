@@ -4,13 +4,15 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use moc_core::{Core, CoreConfig, PtcWorkerCommand, resolve_models};
+use moc_protocol::commands::CommandRef;
+use moc_protocol::features::FeatureStates;
 use moc_protocol::methods::{
-    AskAnswer, AskResult, ClientCapabilities, ClientInfo, InputPart, ModelSwitchOverflow,
-    PermissionRequestParams, PermissionResult, PlanAction, PlanStatus, PluginInfo, PluginList,
-    PluginListParams, PluginReload, PluginReloadParams, PluginRunCommand, PluginRunCommandParams,
-    SessionAutonomy, SessionCancel, SessionCancelParams, SessionCompact, SessionCompactParams,
-    SessionEngine, SessionInfo, SessionList, SessionListParams, SessionLoad, SessionLoadParams,
-    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission,
+    AskAnswer, AskResult, ClientCapabilities, ClientInfo, ConfigGet, ConfigGetParams, InputPart,
+    ModelSwitchOverflow, PermissionRequestParams, PermissionResult, PlanAction, PlanStatus,
+    PluginInfo, PluginList, PluginListParams, PluginReload, PluginReloadParams, PluginRunCommand,
+    PluginRunCommandParams, SessionAutonomy, SessionCancel, SessionCancelParams, SessionCompact,
+    SessionCompactParams, SessionEngine, SessionInfo, SessionList, SessionListParams, SessionLoad,
+    SessionLoadParams, SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission,
     SessionPlanApprove, SessionPlanApproveParams, SessionPlanMode, SessionPlanModeParams,
     SessionPrompt, SessionRequestAsk, SessionRequestPermission, SessionRetry, SessionRetryParams,
     SessionSetAutonomy, SessionSetAutonomyParams, SessionSetEngine, SessionSetEngineParams,
@@ -23,6 +25,7 @@ use moc_protocol::{
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::args::CliArgs;
+use crate::commands::{CommandId, Registry};
 use crate::render::Renderer;
 
 pub(crate) type Input = Arc<AsyncMutex<tokio::sync::mpsc::Receiver<std::io::Result<String>>>>;
@@ -396,6 +399,13 @@ async fn run_repl(
         session.cwd,
         session.permission.as_str()
     );
+    // 特性快照与 TUI 同一来源：config/get 返回的 FeatureStates；拉取失败按默认处理。
+    let registry = crate::commands::registry();
+    let features = client
+        .call::<ConfigGet>(ConfigGetParams {})
+        .await
+        .map(|config| config.features)
+        .unwrap_or_else(|_| FeatureStates::defaults());
     loop {
         print!("\n> ");
         std::io::stdout().flush()?;
@@ -417,7 +427,7 @@ async fn run_repl(
             continue;
         }
         if let Some(command) = line.strip_prefix('/') {
-            match run_command(client, command, &mut session, input).await {
+            match run_command(client, &registry, &features, command, &mut session, input).await {
                 Ok(CommandResult::Continue) => continue,
                 Ok(CommandResult::Quit) => break,
                 Err(error) => eprintln!("命令失败：{error:#}"),
@@ -433,25 +443,39 @@ async fn run_repl(
 
 async fn run_command(
     client: &ClientHandle,
+    registry: &Registry,
+    features: &FeatureStates,
     command: &str,
     session: &mut SessionInfo,
     input: &Input,
 ) -> anyhow::Result<CommandResult> {
     let (name, argument) = command.split_once(' ').unwrap_or((command, ""));
     let argument = argument.trim();
-    // 命令表是唯一来源：`/help` 的文本、这张表与下面的分派分支必须一致，
-    // `help_matches_command_table` 用例把「帮助承诺了不存在的命令」挡在 CI 里。
-    if !name.is_empty() && !COMMANDS.contains(&name) {
-        // 插件命令不在内置表里：先问 core 这个工作区注册了什么，再决定是否未知。
+    if name.is_empty() {
+        return Ok(CommandResult::Continue);
+    }
+    // 命令表是唯一来源：解析（含别名）由注册表完成，`/help` 与分派分支共用同一批
+    // `CommandSpec`；未命中内置命令时再问 core 这是不是插件注册的命令。
+    let Some(CommandRef::Builtin(spec)) = registry.resolve(name) else {
         if run_plugin_command(client, session, name, argument).await? {
             return Ok(CommandResult::Continue);
         }
         print_unknown_command(name);
         return Ok(CommandResult::Continue);
+    };
+    if let Some(flag) = spec.flag
+        && !features.enabled(flag)
+    {
+        eprintln!(
+            "/{} 依赖的特性 {} 已禁用（见 /features）",
+            spec.name,
+            flag.spec().key
+        );
+        return Ok(CommandResult::Continue);
     }
-    match name {
-        "quit" | "exit" => return Ok(CommandResult::Quit),
-        "cancel" => {
+    match spec.id {
+        CommandId::Quit => return Ok(CommandResult::Quit),
+        CommandId::Cancel => {
             let result = client
                 .call::<SessionCancel>(SessionCancelParams {
                     session_id: session.id.clone(),
@@ -466,13 +490,16 @@ async fn run_command(
                 }
             );
         }
-        "help" => print_help(),
-        "plugins" => match argument {
+        CommandId::Help => print!("{}", crate::commands::help_text(features)),
+        CommandId::Features => {
+            print!("{}", moc_protocol::features::format_features(features))
+        }
+        CommandId::Plugins => match argument {
             "" => print_plugins(client, &session.id).await?,
             "reload" => reload_plugins(client, &session.id).await?,
             _ => bail!("用法：/plugins [reload]"),
         },
-        "new" => {
+        CommandId::New => {
             *session = client
                 .call::<SessionNew>(SessionNewParams {
                     cwd: Some(session.cwd.clone()),
@@ -485,11 +512,11 @@ async fn run_command(
                 .await?;
             println!("新会话：{}", session.id);
         }
-        "sessions" => {
+        CommandId::Sessions => {
             let result = client.call::<SessionList>(SessionListParams {}).await?;
             print_sessions(&result.sessions);
         }
-        "engine" => {
+        CommandId::Engine => {
             let next = parse_engine(argument)?;
             if session.engine_locked {
                 bail!("会话引擎已锁定；换引擎请新建会话");
@@ -504,7 +531,7 @@ async fn run_command(
                 println!("CLM 实验引擎已启用；本会话首次请求后引擎锁定");
             }
         }
-        "clm-experimental" => {
+        CommandId::ClmExperimental => {
             if session.engine_locked {
                 bail!("会话引擎已锁定；换引擎请新建会话");
             }
@@ -516,7 +543,7 @@ async fn run_command(
                 .await?;
             println!("CLM 实验引擎已启用；本会话首次请求后引擎锁定");
         }
-        "autonomy" => {
+        CommandId::Autonomy => {
             let autonomy = match argument {
                 "" => match session.autonomy {
                     SessionAutonomy::Default => SessionAutonomy::DontAsk,
@@ -535,7 +562,7 @@ async fn run_command(
                 })
                 .await?;
         }
-        "permission" => {
+        CommandId::Permission => {
             let clear = argument == "clear";
             let permission = match argument {
                 "full" => SessionPermission::Full,
@@ -557,7 +584,7 @@ async fn run_command(
                 println!("权限已切换为 {}", session.permission.as_str());
             }
         }
-        "plan" => {
+        CommandId::Plan => {
             let active = if argument.is_empty() {
                 !session.plan_active
             } else {
@@ -574,7 +601,7 @@ async fn run_command(
                 send_prompt(client, &session.id, argument.to_owned(), None).await?;
             }
         }
-        "ask" => {
+        CommandId::Ask => {
             if argument.is_empty() {
                 bail!("用法：/ask <问题>");
             }
@@ -586,8 +613,8 @@ async fn run_command(
             )
             .await?;
         }
-        "approve" => approve_plan(client, argument, session).await?,
-        "compact" => {
+        CommandId::Approve => approve_plan(client, argument, session).await?,
+        CommandId::Compact => {
             let result = client
                 .call::<SessionCompact>(SessionCompactParams {
                     session_id: session.id.clone(),
@@ -606,7 +633,7 @@ async fn run_command(
                 );
             }
         }
-        "usage" => {
+        CommandId::Usage => {
             let result = client
                 .call::<SessionUsage>(SessionUsageParams {
                     session_id: session.id.clone(),
@@ -614,7 +641,7 @@ async fn run_command(
                 .await?;
             print_usage(&result);
         }
-        "model" => {
+        CommandId::Model => {
             if argument.is_empty() {
                 bail!("用法：/model <selector>");
             }
@@ -655,10 +682,10 @@ async fn run_command(
                 None => println!("模型已切换为 {}", session.model),
             }
         }
-        "retry" => {
+        CommandId::Retry => {
             send_retry(client, &session.id).await?;
         }
-        "agents" => {
+        CommandId::Agents => {
             let result = client
                 .call::<moc_protocol::methods::AgentList>(moc_protocol::methods::AgentListParams {
                     session_id: session.id.clone(),
@@ -674,56 +701,9 @@ async fn run_command(
                 );
             }
         }
-        "" => {}
-        _ => print_unknown_command(name),
     }
     Ok(CommandResult::Continue)
 }
-
-/// 全部 REPL 命令名；`/help` 文本必须与它一一对应（见下方用例）。
-const COMMANDS: &[&str] = &[
-    "help",
-    "quit",
-    "exit",
-    "cancel",
-    "new",
-    "sessions",
-    "engine",
-    "clm-experimental",
-    "autonomy",
-    "permission",
-    "plan",
-    "ask",
-    "retry",
-    "approve",
-    "agents",
-    "compact",
-    "usage",
-    "model",
-    "plugins",
-];
-
-/// 帮助文本：一行一条命令，行首必须是 `/<命令名>`。
-const HELP_TEXT: &str = "\
-/help                     显示本帮助
-/quit                     退出
-/exit                     退出（同 /quit）
-/cancel                   取消当前提示（运行中按 Ctrl+C）
-/engine <standard|ptc|clm>  切换会话引擎（跑过首条提示后引擎锁定）
-/clm-experimental         启用 CLM 实验引擎；首次请求后引擎锁定
-/autonomy [default|dont_ask|unattended]  切换自主程度；无参数时循环
-/permission <full|workspace|workspace-only|clear> 切换命令权限或清空本会话沙盒授权
-/plan [提示词]            进入/退出计划模式；带提示词时进入并发送
-/ask <问题>               仅本条消息按问答模式（只读）处理
-/retry                    接着现有上下文继续跑（不追加用户消息，仅空闲时可用）
-/approve <execute|compact|new [引擎]|reject>  处理已提交的计划
-/agents                   列出当前会话的直接子代理（创建、交流、停止都在 TUI）
-/compact                  压缩当前上下文
-/usage                    查看当前会话模型用量
-/new                      创建新会话
-/sessions                 列出会话
-/model <selector>         切换模型（装不下当前上下文时先询问再压缩）
-/plugins [reload]         查看已加载的插件；reload 重载插件宿主并重新发现";
 
 /// 执行插件注册的斜杠命令；名字不存在时返回 `false`，交给内置命令的未知分支。
 async fn run_plugin_command(
@@ -1204,37 +1184,7 @@ fn format_duration(active_ms: u64) -> String {
     }
 }
 
-fn print_help() {
-    println!("{HELP_TEXT}");
-}
-
 enum CommandResult {
     Continue,
     Quit,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 帮助文本与命令表必须一一对应：`/undo` 曾经只存在于帮助里，
-    /// 而 `/help`、`/exit` 又漏收。
-    #[test]
-    fn help_matches_command_table() {
-        let listed: Vec<&str> = HELP_TEXT
-            .lines()
-            .filter_map(|line| line.strip_prefix('/'))
-            .filter_map(|rest| rest.split_whitespace().next())
-            .collect();
-        assert_eq!(
-            listed.len(),
-            HELP_TEXT.lines().count(),
-            "帮助每行都必须以 `/<命令名>` 开头"
-        );
-        let mut listed_sorted = listed.clone();
-        listed_sorted.sort_unstable();
-        let mut commands_sorted = COMMANDS.to_vec();
-        commands_sorted.sort_unstable();
-        assert_eq!(listed_sorted, commands_sorted, "帮助文本与命令表必须一致");
-    }
 }
