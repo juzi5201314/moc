@@ -20,11 +20,12 @@ import {
   SquareTerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import { toast } from "sonner";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { toolBody } from "@/components/chat/tool-views";
 import { DiffStat, diffStats } from "@/components/panels/diff-file";
+import { Button } from "@/components/ui/button";
 import { formatDuration } from "@/lib/format";
 import {
   BRIEF_BODY_ROWS,
@@ -44,6 +45,7 @@ import { type ActivityKind, activityKind, activitySnippet, activityVerb } from "
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type { ImageSource, JobResult } from "@/protocol/types";
+import { reanswerAsk } from "@/store/actions";
 import { usePrefs } from "@/store/prefs";
 
 const KIND_ICON: Record<ActivityKind, ReactNode> = {
@@ -328,8 +330,46 @@ function ToolRow({
     if (!tool.job) return;
     void rpc
       .call<JobResult>("job/background", { session_id: sessionId, job_id: tool.job.job_id })
-      .catch((error) => toast.error(`转后台失败：${error instanceof Error ? error.message : String(error)}`));
+      .catch((error) =>
+        toast.error(`转后台失败：${error instanceof Error ? error.message : String(error)}`),
+      );
   };
+  // 已收场的提问可以重答：core 截回未回答状态后按原参数重放提问卡片。
+  const canReask = tool.name === "ask" && tool.status !== "running";
+  const [reasking, setReasking] = useState(false);
+  const reask = () => {
+    if (reasking) return;
+    setReasking(true);
+    void reanswerAsk(sessionId, tool.toolCallId).finally(() => setReasking(false));
+  };
+  const headerAction = canBackground ? (
+    <Button
+      type="button"
+      variant="ghost"
+      size="xs"
+      className="h-auto rounded px-1 text-2xs text-brand hover:bg-brand/10 hover:text-brand"
+      onClick={(event) => {
+        event.stopPropagation();
+        background();
+      }}
+    >
+      转后台
+    </Button>
+  ) : canReask ? (
+    <Button
+      type="button"
+      variant="ghost"
+      size="xs"
+      disabled={reasking}
+      className="h-auto rounded px-1 text-2xs text-brand hover:bg-brand/10 hover:text-brand"
+      onClick={(event) => {
+        event.stopPropagation();
+        reask();
+      }}
+    >
+      重新作答
+    </Button>
+  ) : undefined;
   return (
     <div>
       <RowHeader
@@ -340,28 +380,7 @@ function ToolRow({
         mono={headline.mono}
         failed={failed}
         suffix={toolSuffix(tool, headline.stat, headline.statError, now)}
-        action={
-          canBackground ? (
-            <span
-              role="button"
-              tabIndex={0}
-              className="rounded px-1 text-2xs text-brand hover:bg-brand/10"
-              onClick={(event) => {
-                event.stopPropagation();
-                background();
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  background();
-                }
-              }}
-            >
-              转后台
-            </span>
-          ) : undefined
-        }
+        action={headerAction}
         interactive={interactive}
         open={level === "full"}
         onToggle={toggle}

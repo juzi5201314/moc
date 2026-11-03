@@ -662,6 +662,94 @@ impl SessionTable {
         self.load(session_id, None).await
     }
 
+    /// 重新作答前置：把 `tool_call_id` 标识的 `ask` 调用截回未回答状态。
+    ///
+    /// 含该调用的 assistant 消息原样保留；该调用的结果条目及其后全部丢弃——
+    /// 不压回退栈：新结果紧接着落库，旧尾部本来就没有可接的位置。同一
+    /// assistant 消息里排在该调用之后、结果随尾部被砍的兄弟调用回到「未
+    /// 回答」状态，由下一次提示的 pending 修补兜底标记。截断引用的子代理
+    /// 按与 [`Self::rewind`] 相同的规则标孤儿。返回待重放的调用。
+    pub async fn prepare_reask(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+    ) -> Result<ToolCall, CoreError> {
+        let record = self.get(session_id).await?;
+        let (call, kept, tail) = {
+            let state = record.state.lock().await;
+            let pos_call = state
+                .entries
+                .iter()
+                .position(|entry| {
+                    matches!(
+                        entry,
+                        Entry::Message { message, .. }
+                            if message.role == Role::Assistant
+                                && message.tool_calls().any(|call| call.id == tool_call_id)
+                    )
+                })
+                .ok_or_else(|| {
+                    CoreError::Session(format!("INVALID_PARAMS: 工具调用不存在：{tool_call_id}"))
+                })?;
+            let Entry::Message { message, .. } = &state.entries[pos_call] else {
+                unreachable!("position 已锁定 assistant 消息");
+            };
+            let call = message
+                .tool_calls()
+                .find(|call| call.id == tool_call_id)
+                .expect("position 已锁定调用")
+                .clone();
+            if call.name != "ask" {
+                return Err(CoreError::Session(format!(
+                    "INVALID_PARAMS: 只能重新作答 ask 调用，{} 是 {}",
+                    call.id, call.name
+                )));
+            }
+            // 结果条目：调用消息之后、装着该调用结果的第一条 Tool 消息。
+            // 找不到说明这次提问还没收场——卡片仍挂着，没有可「重新」的回答。
+            let Some(offset) = state.entries[pos_call + 1..].iter().position(|entry| {
+                matches!(
+                    entry,
+                    Entry::Message { message, .. }
+                        if message.role == Role::Tool
+                            && message
+                                .tool_results()
+                                .any(|result| result.tool_call_id == tool_call_id)
+                )
+            }) else {
+                return Err(CoreError::Session(
+                    "INVALID_PARAMS: 该提问还没有结果，无需重新作答".into(),
+                ));
+            };
+            let end = pos_call + 1 + offset;
+            (
+                call,
+                state.entries[..end].to_vec(),
+                state.entries[end..].to_vec(),
+            )
+        };
+        // 孤儿标记规则与 rewind 相同（见 rewind 注释）。
+        let new_orphans: BTreeSet<String> = if tail.is_empty() {
+            BTreeSet::new()
+        } else {
+            let kept_refs = entries::referenced_agent_ids(&kept);
+            entries::referenced_agent_ids(&tail)
+                .difference(&kept_refs)
+                .cloned()
+                .collect()
+        };
+        self.rewrite(session_id, kept).await?;
+        if !new_orphans.is_empty() {
+            let ids = {
+                let mut marks = record.orphaned_agents.lock();
+                marks.extend(new_orphans);
+                marks.clone()
+            };
+            persist_orphans(&record.paths, &ids).await?;
+        }
+        Ok(call)
+    }
+
     /// 追加新 entry；持有状态锁时不跨文件 I/O 的 await。
     ///
     /// transcript 文件还不存在时（新会话尚未写盘），先写 header 再写 entry，完成延迟
@@ -2204,6 +2292,194 @@ mod tests {
             .expect("回退到助手工具调用");
         assert_eq!(rewound_again.entries.len(), 3);
         assert_eq!(rewound_again.entries[0].id, first_user.id());
+    }
+
+    /// 重新作答前置：含调用的 assistant 消息保留，ask 的结果与之后全部截掉。
+    #[tokio::test]
+    async fn prepare_reask_keeps_call_drops_result_and_tail() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let info = table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionEngine::Standard,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+                false,
+            )
+            .await
+            .expect("创建会话");
+        table
+            .append_message(&info.id, Message::user_text("提问"), None, None)
+            .await
+            .expect("用户消息");
+        // 先一个已收场的普通调用：它的结果在 ask 之前，截断后保留。
+        table
+            .append_message(
+                &info.id,
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentPart::ToolCall(ToolCall::new(
+                        "call_read",
+                        "read",
+                        "{}",
+                    ))],
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("read 调用");
+        table
+            .append_message(
+                &info.id,
+                Message::tool_result("call_read", "读完了", false),
+                None,
+                None,
+            )
+            .await
+            .expect("read 结果");
+        // 含 ask 调用的 assistant 消息；同消息中 ask 之后还有一个兄弟调用，
+        // 它的结果随尾部被砍，回到「未回答」状态交给 pending 修补。
+        table
+            .append_message(
+                &info.id,
+                Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        ContentPart::ToolCall(ToolCall::new(
+                            "call_ask",
+                            "ask",
+                            r#"{"questions":[{"id":"q","question":"选哪个？","options":[{"label":"A"},{"label":"B"}]}]}"#,
+                        )),
+                        ContentPart::ToolCall(ToolCall::new("call_after", "edit", "{}")),
+                    ],
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("ask 调用");
+        for (id, content) in [("call_ask", "A"), ("call_after", "写完了")] {
+            table
+                .append_message(
+                    &info.id,
+                    Message::tool_result(id, content, false),
+                    None,
+                    None,
+                )
+                .await
+                .expect("工具结果");
+        }
+        table
+            .append_message(
+                &info.id,
+                Message::assistant_text("按你的选择做完了"),
+                None,
+                None,
+            )
+            .await
+            .expect("后续回复");
+
+        let call = table
+            .prepare_reask(&info.id, "call_ask")
+            .await
+            .expect("截回未回答状态");
+        assert_eq!(call.id, "call_ask");
+        assert_eq!(call.name, "ask");
+        // 保留到 ask 结果之前：user、read 调用+结果、含 ask 的消息，共 4 条。
+        let loaded = table.load(&info.id, None).await.expect("重读会话");
+        assert_eq!(loaded.entries.len(), 4);
+        let last = loaded.entries.last().expect("末尾消息");
+        assert_eq!(last.message.role, Role::Assistant);
+        assert!(last.message.tool_calls().any(|call| call.id == "call_ask"));
+        // 截断已落盘：换一张表重读，ask 之后的尾部确实不在。
+        let reloaded = SessionTable::new(directory.path().join("sessions"), true)
+            .load(&info.id, None)
+            .await
+            .expect("从磁盘重读");
+        assert_eq!(reloaded.entries.len(), 4);
+        // 新答案落库后尾部是 Tool 消息，retry 可以放行（turn_completed 为假）。
+        table
+            .append_message(
+                &info.id,
+                Message::tool_result("call_ask", "B", false),
+                None,
+                None,
+            )
+            .await
+            .expect("新答案落库");
+        let entries = table
+            .get(&info.id)
+            .await
+            .unwrap()
+            .state
+            .lock()
+            .await
+            .entries
+            .clone();
+        assert!(!crate::service::prompt::turn_completed(&entries));
+    }
+
+    /// 重新作答只接受已收场的 ask 调用：非 ask、没有结果、不存在的调用都拒绝。
+    #[tokio::test]
+    async fn prepare_reask_rejects_non_ask_unsettled_and_unknown_calls() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let info = table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionEngine::Standard,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+                false,
+            )
+            .await
+            .expect("创建会话");
+        table
+            .append_message(
+                &info.id,
+                Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        ContentPart::ToolCall(ToolCall::new("call_read", "read", "{}")),
+                        ContentPart::ToolCall(ToolCall::new("call_ask", "ask", "{}")),
+                    ],
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("调用消息");
+        table
+            .append_message(
+                &info.id,
+                Message::tool_result("call_read", "读完了", false),
+                None,
+                None,
+            )
+            .await
+            .expect("read 结果");
+
+        let error = table
+            .prepare_reask(&info.id, "call_read")
+            .await
+            .expect_err("非 ask 调用必须拒绝");
+        assert!(error.to_string().contains("ask"), "{error}");
+        let error = table
+            .prepare_reask(&info.id, "call_ask")
+            .await
+            .expect_err("还没结果的提问必须拒绝");
+        assert!(error.to_string().contains("还没有结果"), "{error}");
+        let error = table
+            .prepare_reask(&info.id, "call_missing")
+            .await
+            .expect_err("不存在的调用必须拒绝");
+        assert!(error.to_string().contains("不存在"), "{error}");
     }
 
     #[tokio::test]

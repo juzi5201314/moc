@@ -42,9 +42,9 @@ use crate::methods::{
     SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
     SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
     SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams,
-    SessionPlanReviseParams, SessionPlanReviseResult, SessionRedoParams, SessionRenameParams,
-    SessionRetryParams, SessionRewindParams, SessionSetAutonomyParams, SessionSetEngineParams,
-    SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
+    SessionPlanReviseParams, SessionPlanReviseResult, SessionReaskParams, SessionRedoParams,
+    SessionRenameParams, SessionRetryParams, SessionRewindParams, SessionSetAutonomyParams,
+    SessionSetEngineParams, SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
     SessionUpdateParams, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
     WebStateDocument, WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams,
@@ -361,6 +361,15 @@ pub trait AgentService: Send + Sync + 'static {
         &self,
         _ctx: RequestContext,
         _params: SessionRedoParams,
+    ) -> impl Future<Output = Result<SessionLoadResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 重新作答：把某个 `ask` 调用截回未回答状态并原样重放，新答案落库为其结果。
+    fn session_reask(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionReaskParams,
     ) -> impl Future<Output = Result<SessionLoadResult, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }

@@ -65,6 +65,22 @@ pub struct SessionRedoParams {
     pub entry_id: String,
 }
 
+/// `session/reask`：把某个已收场的 `ask` 调用截回未回答状态并原样重放，
+/// 让用户重新作答；答案落库为该调用的新结果。前端随后用 `session/retry`
+/// 让模型带着新答案继续。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionReask;
+
+/// `session/reask` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionReaskParams {
+    /// 目标会话。
+    pub session_id: String,
+    /// 要重新作答的 `ask` 工具调用 ID。
+    pub tool_call_id: String,
+}
+
 /// `session/unload`：释放会话的常驻资源（不删除会话、不影响列表）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionUnload;
@@ -854,6 +870,14 @@ impl Method for SessionRedo {
 }
 
 impl ClientRequest for SessionRedo {}
+
+impl Method for SessionReask {
+    const NAME: &'static str = "session/reask";
+    type Params = SessionReaskParams;
+    type Result = SessionLoadResult;
+}
+
+impl ClientRequest for SessionReask {}
 
 impl Method for SessionUnload {
     const NAME: &'static str = "session/unload";

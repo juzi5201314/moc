@@ -19,8 +19,9 @@ use moc_protocol::{
     SessionLoadParams, SessionLoadResult, SessionModelOverflowAction, SessionNew, SessionNewParams,
     SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff,
     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanMode, SessionPlanModeParams,
-    SessionPlanRevise, SessionPlanReviseParams, SessionRedo, SessionRedoParams, SessionRewind,
-    SessionRewindParams, SessionSetEngine, SessionSetEngineParams, SessionSetModel,
+    SessionPlanRevise, SessionPlanReviseParams, SessionReask, SessionReaskParams, SessionRedo,
+    SessionRedoParams, SessionRewind, SessionRewindParams, SessionSetEngine, SessionSetEngineParams,
+    SessionSetModel,
     SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
     SessionUsage, SessionUsageParams, UpstreamField,
 };
@@ -718,6 +719,45 @@ fn apply_rewound(
     );
 }
 
+/// 重新作答收尾：视图切到截断后的历史（含新答案的工具结果），随即
+/// `session/retry` 让模型带着新答案续跑。
+fn apply_reasked(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    result: anyhow::Result<moc_protocol::SessionLoadResult>,
+) {
+    let loaded = match result {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            if let Some(session) = app.session.as_ref() {
+                app.inflight_session_ops.remove(&session.id);
+            }
+            app.set_notice(format!("重新作答失败：{error}"));
+            return;
+        }
+    };
+    let session_id = loaded.session.id.clone();
+    app.inflight_session_ops.remove(&session_id);
+    app.switch_session(
+        loaded.session,
+        crate::transcript_restore::blocks_from_entries_with_children(
+            &loaded.entries,
+            &loaded.child_calls,
+        ),
+    );
+    app.todos = loaded.todos;
+    app.usage = Default::default();
+    app.set_notice("已重新作答，正在继续".to_owned());
+    refresh_context(app, connection, false);
+    refresh_usage(app, connection, false);
+    load_subagents_for_parent(
+        app,
+        &connection.client,
+        app.session.as_ref().map(|session| session.id.clone()),
+    );
+    crate::queue::send_retry(&connection.client, session_id, app.events.clone());
+}
+
 fn restore_user_message(
     prompt: &mut crate::widgets::prompt::PromptState,
     message: &moc_protocol::Message,
@@ -873,6 +913,9 @@ async fn event_loop(
                         result,
                     }) => {
                         apply_rewound(app, connection, selected, is_redo, *result);
+                    }
+                    Some(AppEvent::Reasked { result }) => {
+                        apply_reasked(app, connection, *result);
                     }
                     Some(AppEvent::HistoryPageLoaded { prepend, result }) => {
                         apply_history_page(app, prepend, result);
@@ -3625,6 +3668,47 @@ fn handle_modal_key(
                     }
                     (KeyCode::Char('f' | 'F' | '/'), KeyModifiers::NONE) => {
                         state.start_filter();
+                    }
+                    // 选中含 ask 调用的条目时重新作答：core 截回未回答状态、按原参数重弹提问卡片。
+                    (KeyCode::Char('r' | 'R'), KeyModifiers::NONE) => {
+                        if !state.loading {
+                            let reask_call = state.selected_item_ref().and_then(|item| {
+                                (!item.future).then(|| {
+                                    item.entry
+                                        .message
+                                        .tool_calls()
+                                        .find(|call| call.name == "ask")
+                                        .map(|call| call.id.clone())
+                                })?
+                            });
+                            let Some(tool_call_id) = reask_call else {
+                                state.error = Some("选中的条目没有可重新作答的提问".into());
+                                return;
+                            };
+                            let Some(session_id) = session_id.clone() else {
+                                state.error = Some("当前没有活动会话".into());
+                                return;
+                            };
+                            // 先关模态：重放的提问卡片要在主界面弹出作答。
+                            // 作答期间会话对外表现为「操作在飞」，用户输入进队列
+                            // 而不是撞 SessionBusy。
+                            close = true;
+                            app.inflight_session_ops.insert(session_id.clone());
+                            let client = connection.client.clone();
+                            let events = events.clone();
+                            tokio::spawn(async move {
+                                let result = client
+                                    .call::<SessionReask>(SessionReaskParams {
+                                        session_id,
+                                        tool_call_id,
+                                    })
+                                    .await
+                                    .map_err(anyhow::Error::from);
+                                let _ = events.send(AppEvent::Reasked {
+                                    result: Box::new(result),
+                                });
+                            });
+                        }
                     }
                     (KeyCode::PageUp, _) => state.scroll_detail(-6),
                     (KeyCode::PageDown, _) => state.scroll_detail(6),

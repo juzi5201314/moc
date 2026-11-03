@@ -11,7 +11,7 @@ use crate::{
         reminder::{self, Reminder},
         sandbox_contract,
     },
-    tools::ToolCtx,
+    tools::{ToolCtx, ToolOutput},
 };
 use moc_llm::{FinishReason, Message, Role, Usage};
 use moc_protocol::{
@@ -101,6 +101,61 @@ pub async fn run_retry(
         agent_message: None,
     };
     run_prompt_entry(inner, ctx, params, true).await
+}
+
+/// 重新作答：把 `tool_call_id` 标识的 ask 调用截回未回答状态后原样重放，
+/// 新答案落库为该调用的结果。
+///
+/// 调用方须先持提示锁——重放期间会话对外表现为「进行中的操作」。会话停在
+/// 「等模型续跑」的状态，前端随后用 `session/retry` 让模型带着新答案继续。
+pub(crate) async fn run_reask(
+    inner: &Arc<CoreInner>,
+    ctx: &RequestContext,
+    session_id: &str,
+    record: &Arc<crate::session::SessionRecord>,
+    tool_call_id: &str,
+) -> Result<(), RpcError> {
+    let call = inner
+        .sessions
+        .prepare_reask(session_id, tool_call_id)
+        .await
+        .map_err(to_rpc)?;
+    // 参数原样取自落库调用，反向请求走与首次提问完全相同的管线。`prompt_id`
+    // 只给前端标记请求归属；重放不在提示轮次里，用独立前缀避免误并入某个
+    // live turn。
+    let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
+    let started = Instant::now();
+    let outcome = match crate::tools::ask::run_ask(
+        &record.state,
+        &ctx.requester(),
+        session_id,
+        &format!("reask_{}", crate::ids::entry_id()),
+        args,
+        true,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => error.into_outcome(),
+    };
+    let ToolOutput::Text(content) = outcome.content else {
+        unreachable!("ask 只产生文本结果");
+    };
+    persist_tool_result(
+        inner,
+        session_id,
+        call.id,
+        content,
+        outcome.is_error,
+        outcome.status.unwrap_or(if outcome.is_error {
+            ToolStatus::Error
+        } else {
+            ToolStatus::Completed
+        }),
+        started.elapsed().as_millis() as u64,
+    )
+    .await
+    .map_err(to_rpc)
 }
 
 async fn run_prompt_entry(

@@ -13,12 +13,14 @@ import type {
   PromptMode,
   PromptResult,
   SessionEngine,
+  SessionLoadResult,
   SessionPlanApproveResult,
 } from "@/protocol/types";
 import { toInput, useComposer } from "./composer";
 import {
   newSession,
   openSession,
+  reopenWith,
   setSessionAutonomy,
   setSessionPermission,
   syncEntryIds,
@@ -174,6 +176,28 @@ export async function retrySession(sessionId: string): Promise<void> {
       await rpc.call<PromptResult>("session/retry", { session_id: sessionId });
     } catch (error) {
       useTranscript.getState().localStatus(sessionId, "error", `重试失败：${errorText(error)}`);
+      return;
+    }
+    await afterPrompt(sessionId);
+  });
+}
+
+/**
+ * 重新作答：core 把该 ask 调用截回未回答状态、按原参数重新弹出提问卡片
+ * （本调用会挂起直到作答收场）。答案落库后接着 `session/retry` 让模型带着
+ * 新答案续跑；用户再次跳过/取消时按「未回答」落库，同样续跑交给模型。
+ */
+export async function reanswerAsk(sessionId: string, toolCallId: string): Promise<void> {
+  await ownPrompt(sessionId, async () => {
+    try {
+      const result = await rpc.call<SessionLoadResult>("session/reask", {
+        session_id: sessionId,
+        tool_call_id: toolCallId,
+      });
+      await reopenWith(sessionId, result);
+      await rpc.call<PromptResult>("session/retry", { session_id: sessionId });
+    } catch (error) {
+      useTranscript.getState().localStatus(sessionId, "error", `重新作答失败：${errorText(error)}`);
       return;
     }
     await afterPrompt(sessionId);

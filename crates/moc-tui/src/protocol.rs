@@ -134,6 +134,10 @@ pub enum AppEvent {
         // 装箱收窄枚举：SessionLoadResult 比其余变体大 200+ 字节。
         result: Box<anyhow::Result<moc_protocol::SessionLoadResult>>,
     },
+    /// 重新作答完成：ask 已按新答案落库，视图切到截断后的历史，随后续跑。
+    Reasked {
+        result: Box<anyhow::Result<moc_protocol::SessionLoadResult>>,
+    },
     /// 会占住会话提示锁的前端操作收尾（模型切换、思考等级切换、手动压缩）。
     ///
     /// 先解除 [`crate::app::App::inflight_session_ops`] 忙标记，再继续派发队列。

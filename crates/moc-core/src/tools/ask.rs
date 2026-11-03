@@ -1,12 +1,17 @@
 //! ask 工具：向前端发反向请求，向用户提问。
 
+use std::sync::Arc;
+
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
 use moc_protocol::{
-    AskOption, AskParams, AskQuestion, AskResult, RpcCallError, RpcErrorCode, SessionRequestAsk,
+    AskOption, AskParams, AskQuestion, AskResult, Requester, RpcCallError, RpcErrorCode,
+    SessionRequestAsk,
 };
 use serde::Deserialize;
 use serde_json::Value;
+
+use crate::session::state::SessionState;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 
@@ -84,66 +89,81 @@ impl Tool for AskTool {
         args: Value,
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
-            let questions = normalize_questions(args)?;
-            // Don't Ask 及以上：不打扰用户——有推荐项选推荐项，没有就把决定
-            // 交回模型；答复都标明用户没有参与。
-            let autonomy = ctx.state.lock().await.session.autonomy;
-            if autonomy >= moc_protocol::SessionAutonomy::DontAsk {
-                return Ok(ToolOutcome::success(auto_answers(&questions)));
-            }
-            let request_id = crate::ids::entry_id();
-            let params = AskParams {
-                session_id: ctx.session_id.clone(),
-                prompt_id: ctx.prompt_id.clone(),
-                request_id,
-                questions: questions.clone(),
-            };
-            // 不设超时：用户不作答就一直等，问题在前端保持显示；取消、跳过、
-            // 提示中止或连接断开都会收场。用户主动不回答是正常收场而不是前端
-            // 故障：回明确语义，模型不会收到错误，也就不会为「提问失败」道歉
-            // 或重试。
-            let result = ask_settled(
-                ctx.request
-                    .requester()
-                    .request::<SessionRequestAsk>(params)
-                    .await,
-            )?;
-            if result.answers.is_empty() {
-                return Ok(ToolOutcome::success("The user did not answer."));
-            }
-            let answers: Vec<String> = questions
-                .iter()
-                .map(|question| {
-                    let Some(answer) = result
-                        .answers
-                        .iter()
-                        .find(|answer| answer.id == question.id)
-                    else {
-                        return "The user did not answer.".into();
-                    };
-                    let selected = answer.selected.join(", ");
-                    match (selected.is_empty(), answer.custom.as_deref()) {
-                        (_, Some(custom)) if !custom.is_empty() && selected.is_empty() => {
-                            custom.to_owned()
-                        }
-                        (_, Some(custom)) if !custom.is_empty() => format!("{selected} ({custom})"),
-                        (false, _) => selected,
-                        _ => "The user did not answer.".into(),
-                    }
-                })
-                .collect();
-            let output = if answers.len() == 1 {
-                answers[0].clone()
-            } else {
-                let mut output = String::from("User answers:\n");
-                for (question, answer) in questions.iter().zip(answers) {
-                    output.push_str(&format!("{}: {}\n", question.id, answer));
-                }
-                output
-            };
-            Ok(ToolOutcome::success(output))
+            run_ask(
+                &ctx.state,
+                &ctx.request.requester(),
+                &ctx.session_id,
+                &ctx.prompt_id,
+                args,
+                false,
+            )
+            .await
         })
     }
+}
+
+/// ask 执行体：规范化 → 自主程度检查 → 反向请求 → 格式化答案。
+/// `session/reask` 重放历史调用时复用同一入口；`prompt_id` 只是给前端
+/// 标记请求归属的展示字段，重放时传独立的 reask 标记。`force` 跳过
+/// Don't Ask 自动代答——用户主动点的「重新作答」就是要亲手回答。
+pub(crate) async fn run_ask(
+    state: &Arc<tokio::sync::Mutex<SessionState>>,
+    requester: &Requester,
+    session_id: &str,
+    prompt_id: &str,
+    args: Value,
+    force: bool,
+) -> Result<ToolOutcome, ToolError> {
+    let questions = normalize_questions(args)?;
+    // Don't Ask 及以上：不打扰用户——有推荐项选推荐项，没有就把决定
+    // 交回模型；答复都标明用户没有参与。
+    let autonomy = state.lock().await.session.autonomy;
+    if !force && autonomy >= moc_protocol::SessionAutonomy::DontAsk {
+        return Ok(ToolOutcome::success(auto_answers(&questions)));
+    }
+    let params = AskParams {
+        session_id: session_id.to_owned(),
+        prompt_id: prompt_id.to_owned(),
+        request_id: crate::ids::entry_id(),
+        questions: questions.clone(),
+    };
+    // 不设超时：用户不作答就一直等，问题在前端保持显示；取消、跳过、
+    // 提示中止或连接断开都会收场。用户主动不回答是正常收场而不是前端
+    // 故障：回明确语义，模型不会收到错误，也就不会为「提问失败」道歉
+    // 或重试。
+    let result = ask_settled(requester.request::<SessionRequestAsk>(params).await)?;
+    if result.answers.is_empty() {
+        return Ok(ToolOutcome::success("The user did not answer."));
+    }
+    let answers: Vec<String> = questions
+        .iter()
+        .map(|question| {
+            let Some(answer) = result
+                .answers
+                .iter()
+                .find(|answer| answer.id == question.id)
+            else {
+                return "The user did not answer.".into();
+            };
+            let selected = answer.selected.join(", ");
+            match (selected.is_empty(), answer.custom.as_deref()) {
+                (_, Some(custom)) if !custom.is_empty() && selected.is_empty() => custom.to_owned(),
+                (_, Some(custom)) if !custom.is_empty() => format!("{selected} ({custom})"),
+                (false, _) => selected,
+                _ => "The user did not answer.".into(),
+            }
+        })
+        .collect();
+    let output = if answers.len() == 1 {
+        answers[0].clone()
+    } else {
+        let mut output = String::from("User answers:\n");
+        for (question, answer) in questions.iter().zip(answers) {
+            output.push_str(&format!("{}: {}\n", question.id, answer));
+        }
+        output
+    };
+    Ok(ToolOutcome::success(output))
 }
 
 /// Don't Ask 自主程度下的自动代答：有推荐项选推荐项并注明自动代答，没有推荐项

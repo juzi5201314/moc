@@ -126,13 +126,13 @@ pub use session::{
     SessionEngine, SessionInfo, SessionList, SessionListParams, SessionListResult, SessionLoad,
     SessionLoadPage, SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams,
     SessionLoadResult, SessionLockInfo, SessionModelOverflowAction, SessionNew, SessionNewParams,
-    SessionPermission, SessionRedo, SessionRedoParams, SessionRename, SessionRenameParams,
-    SessionRewind, SessionRewindParams, SessionSetAutonomy, SessionSetAutonomyParams,
-    SessionSetEngine, SessionSetEngineParams, SessionSetFastMode, SessionSetFastModeParams,
-    SessionSetModel, SessionSetModelParams, SessionSetModelResult, SessionSetPermission,
-    SessionSetPermissionParams, SessionUnload, SessionUnloadParams, SessionUnlock,
-    SessionUnlockParams, SessionUsage, SessionUsageParams, SessionUsageResult, ToolExecution,
-    ToolStatus, TranscriptChildCall, TranscriptEntry, UsageSource,
+    SessionPermission, SessionReask, SessionReaskParams, SessionRedo, SessionRedoParams,
+    SessionRename, SessionRenameParams, SessionRewind, SessionRewindParams, SessionSetAutonomy,
+    SessionSetAutonomyParams, SessionSetEngine, SessionSetEngineParams, SessionSetFastMode,
+    SessionSetFastModeParams, SessionSetModel, SessionSetModelParams, SessionSetModelResult,
+    SessionSetPermission, SessionSetPermissionParams, SessionUnload, SessionUnloadParams,
+    SessionUnlock, SessionUnlockParams, SessionUsage, SessionUsageParams, SessionUsageResult,
+    ToolExecution, ToolStatus, TranscriptChildCall, TranscriptEntry, UsageSource,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{
@@ -185,6 +185,7 @@ mod tests {
             (<SessionLoad as Method>::NAME, "session/load"),
             (<SessionRewind as Method>::NAME, "session/rewind"),
             (<SessionRedo as Method>::NAME, "session/redo"),
+            (<SessionReask as Method>::NAME, "session/reask"),
             (<SessionUnload as Method>::NAME, "session/unload"),
             (<SessionRename as Method>::NAME, "session/rename"),
             (<SessionDelete as Method>::NAME, "session/delete"),

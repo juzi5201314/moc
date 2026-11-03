@@ -24,12 +24,12 @@ use moc_protocol::methods::{
     SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
     SessionNewParams, SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult,
     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult,
-    SessionRedoParams, SessionRenameParams, SessionRetryParams, SessionRewindParams,
-    SessionSetAutonomyParams, SessionSetEngineParams, SessionSetFastModeParams,
-    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate, SessionUsageParams, SessionUsageResult, UnsteerParams,
-    UnsteerResult, WebStateDocument, WebStateGetParams, WebStateSaveParams,
-    WorkspaceGitBranchParams, WorkspaceGitBranchResult,
+    SessionReaskParams, SessionRedoParams, SessionRenameParams, SessionRetryParams,
+    SessionRewindParams, SessionSetAutonomyParams, SessionSetEngineParams,
+    SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
+    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
+    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument,
+    WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode, UpdateSink};
 use parking_lot::RwLock;
@@ -561,6 +561,46 @@ pub struct Core {
 }
 
 impl Core {
+    /// 截断历史后被标孤儿的子代理：还在跑的停掉并广播状态。
+    ///
+    /// rewind/reask 共用——孤儿代理的收尾投递会污染截断后的历史、也会作废
+    /// 前滚尾部；redo 接回引用后标记摘除，但已停的代理不会复活。
+    async fn stop_orphaned_agents(&self, ctx: &RequestContext, session_id: &str) {
+        let orphaned = self.inner.sessions.orphan_marks(session_id).await;
+        if orphaned.is_empty() {
+            return;
+        }
+        let stopped = {
+            let mut registry = self.inner.agents.lock().await;
+            let mut stopped = Vec::new();
+            for runtime in registry.items.values_mut() {
+                if runtime.info.parent_id == session_id
+                    && crate::agents::live(runtime.info.status)
+                    && orphaned.contains(&runtime.info.id)
+                {
+                    runtime.cancel.cancel();
+                    runtime.info.status = moc_protocol::methods::AgentStatus::Stopped;
+                    stopped.push(runtime.info.clone());
+                }
+            }
+            stopped
+        };
+        // 与 finish 的正常收尾同样推送状态变化，前端能立刻看到停杀结果。
+        for info in stopped {
+            let _ = ctx
+                .updates()
+                .emit(
+                    session_id.to_owned(),
+                    SessionUpdate::AgentStatusChanged {
+                        agent_id: info.id,
+                        status: info.status,
+                        last_message: info.last_message,
+                    },
+                )
+                .await;
+        }
+    }
+
     pub fn config_home(&self) -> PathBuf {
         self.inner.config().home.clone()
     }
@@ -1509,41 +1549,46 @@ impl AgentService for Core {
         loaded.session.permission = self.inner.effective_permission(loaded.session.permission);
         // 原地回退不是新会话开始，不再注入插件 session_start 消息——
         // 那会向截断后的历史追加新条目，使刚压栈的前滚尾部立刻失效。
-        // rewind 已把「尾部引用过、前缀不引用」的子代理标成孤儿：还在跑的要停掉，
-        // 否则它们的收尾投递会污染回退后的历史，也会作废前滚尾部。redo 接回
-        // 引用后标记摘除，但已停的代理不会复活——接回的只是历史记录。
-        let orphaned = record.orphaned_agents.lock().clone();
-        if !orphaned.is_empty() {
-            let stopped = {
-                let mut registry = self.inner.agents.lock().await;
-                let mut stopped = Vec::new();
-                for runtime in registry.items.values_mut() {
-                    if runtime.info.parent_id == params.session_id
-                        && crate::agents::live(runtime.info.status)
-                        && orphaned.contains(&runtime.info.id)
-                    {
-                        runtime.cancel.cancel();
-                        runtime.info.status = moc_protocol::methods::AgentStatus::Stopped;
-                        stopped.push(runtime.info.clone());
-                    }
-                }
-                stopped
-            };
-            // 与 finish 的正常收尾同样推送状态变化，前端能立刻看到停杀结果。
-            for info in stopped {
-                let _ = ctx
-                    .updates()
-                    .emit(
-                        params.session_id.clone(),
-                        SessionUpdate::AgentStatusChanged {
-                            agent_id: info.id,
-                            status: info.status,
-                            last_message: info.last_message,
-                        },
-                    )
-                    .await;
-            }
-        }
+        // rewind 已把「尾部引用过、前缀不引用」的子代理标成孤儿，还在跑的要停掉。
+        self.stop_orphaned_agents(&ctx, &params.session_id).await;
+        Ok(loaded)
+    }
+
+    async fn session_reask(
+        &self,
+        ctx: RequestContext,
+        params: SessionReaskParams,
+    ) -> Result<SessionLoadResult, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
+        self.inner
+            .sessions
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
+            .await
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        prompt::run_reask(
+            &self.inner,
+            &ctx,
+            &params.session_id,
+            &record,
+            &params.tool_call_id,
+        )
+        .await?;
+        // 与 rewind 相同：截断标记的孤儿子代理还在跑的要停掉。
+        self.stop_orphaned_agents(&ctx, &params.session_id).await;
+        let mut loaded = self
+            .inner
+            .sessions
+            .load(&params.session_id, None)
+            .await
+            .map_err(to_rpc)?;
+        loaded.session.lock = None;
+        loaded.session.permission = self.inner.effective_permission(loaded.session.permission);
         Ok(loaded)
     }
 

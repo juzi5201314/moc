@@ -40,10 +40,10 @@ use crate::methods::{
     PluginRunCommand, PromptParams, ResourceComplete, SessionBash, SessionBtw, SessionBtwCancel,
     SessionCancel, SessionCancelResult, SessionCompact, SessionContext, SessionContextContent,
     SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew, SessionPlanApprove,
-    SessionPlanDiff, SessionPlanMode, SessionPlanRevise, SessionPrompt, SessionRedo, SessionRename,
-    SessionRetry, SessionRewind, SessionSetAutonomy, SessionSetEngine, SessionSetFastMode,
-    SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock,
-    SessionUnsteer, SessionUsage, SessionWorkflowActivate, SessionWorkflowApprove,
+    SessionPlanDiff, SessionPlanMode, SessionPlanRevise, SessionPrompt, SessionReask, SessionRedo,
+    SessionRename, SessionRetry, SessionRewind, SessionSetAutonomy, SessionSetEngine,
+    SessionSetFastMode, SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload,
+    SessionUnlock, SessionUnsteer, SessionUsage, SessionWorkflowActivate, SessionWorkflowApprove,
     SessionWorkflowArtifact, SessionWorkflowResume, SessionWorkflowRun, SessionWorkflowRuns,
     SessionWorkflowSetRoleModel, SessionWorkflowStop, WebStateGet, WebStateSave,
     WorkspaceGitBranch,
@@ -752,6 +752,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_redo(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionReask as Method>::NAME => {
+                let params = params_from_value::<SessionReask>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_reask(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

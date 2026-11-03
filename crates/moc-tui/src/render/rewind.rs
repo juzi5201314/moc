@@ -817,6 +817,21 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
             Span::styled("f// 搜索过滤", Style::new().fg(theme.text_secondary)),
             Some(KeyCode::Char('f')),
         );
+        // 选中含提问调用的历史条目时提示可重新作答。
+        if state.selected_item_ref().is_some_and(|item| {
+            !item.future
+                && item
+                    .entry
+                    .message
+                    .tool_calls()
+                    .any(|call| call.name == "ask")
+        }) {
+            push(sep(), None);
+            push(
+                Span::styled("R 重新作答", Style::new().fg(theme.accent_model)),
+                Some(KeyCode::Char('r')),
+            );
+        }
         push(sep(), None);
         push(
             Span::styled("Esc 取消", Style::new().fg(theme.gray_dim)),

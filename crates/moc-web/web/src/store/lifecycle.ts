@@ -462,7 +462,8 @@ export async function redo(sessionId: string, entryId: string): Promise<void> {
   await reopenWith(sessionId, result);
 }
 
-async function reopenWith(sessionId: string, result: SessionLoadResult): Promise<void> {
+/** 原地截断类操作（rewind/reask）共用：用返回的 load 结果重开转写视图。 */
+export async function reopenWith(sessionId: string, result: SessionLoadResult): Promise<void> {
   useTranscript.getState().drop(sessionId);
   useSessions.getState().upsert(result.session);
   await openSession(sessionId);
