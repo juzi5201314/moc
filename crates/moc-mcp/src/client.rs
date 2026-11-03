@@ -8,10 +8,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
-use rmcp::ServiceExt;
+use rmcp::ClientServiceExt;
 use rmcp::handler::client::ClientHandler;
-use rmcp::model::{ClientCapabilities, ClientConfig, Implementation};
-use rmcp::service::{NotificationContext, RoleClient, RunningService};
+use rmcp::model::{
+    ClientCapabilities, ClientConfig, ElicitationCapability, FormElicitationCapability,
+    Implementation, ProtocolVersion, UrlElicitationCapability,
+};
+use rmcp::service::{ClientLifecycleMode, NotificationContext, RoleClient, RunningService};
 use rmcp::transport::TokioChildProcess;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
@@ -32,6 +35,36 @@ pub(crate) struct ClientHandlerBridge {
     tool_list_changed: mpsc::UnboundedSender<()>,
 }
 
+/// 启动握手：先 `server/discover` 协商（2026-07-28 的 inline 生命周期），
+/// 对端不支持 discover 时回退 legacy `initialize`。MRTR（SEP-2322）只在
+/// 协商到 2026-07-28 的连接上启用，legacy 路径行为与此前一致。
+pub(crate) async fn serve_bridge<T, E, A>(
+    server: &str,
+    handler: ClientHandlerBridge,
+    transport: T,
+) -> Result<Connection, McpError>
+where
+    T: rmcp::transport::IntoTransport<RoleClient, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    handler
+        .serve_with_lifecycle(
+            transport,
+            ClientLifecycleMode::Auto {
+                // 新→旧全量列出：discover-capable 的旧版服务端也能选中共同版本，
+                // 而不是因仅支持旧版而直接失败。
+                preferred_versions: ProtocolVersion::KNOWN_VERSIONS
+                    .iter()
+                    .rev()
+                    .cloned()
+                    .collect(),
+                legacy_version: Some(ProtocolVersion::V_2025_11_25),
+            },
+        )
+        .await
+        .map_err(|error| McpError::Transport(format!("handshake with `{server}` failed: {error}")))
+}
+
 impl ClientHandlerBridge {
     pub(crate) fn new(tool_list_changed: mpsc::UnboundedSender<()>) -> Self {
         Self { tool_list_changed }
@@ -42,7 +75,18 @@ impl ClientHandler for ClientHandlerBridge {
     fn get_info(&self) -> ClientConfig {
         let mut info = Implementation::from_build_env();
         info.name = "moc".into();
-        ClientConfig::new(ClientCapabilities::default(), info)
+        // 只声明能完整兑现的能力：elicitation 表单/URL 两种模式都由
+        // `McpManager::call` 注入的 fulfiller 经 `session/request_ask` 落到用户；
+        // sampling 与 roots 不声明（sampling 需要嵌套模型调用，roots 已 deprecated）。
+        // 注意旧协议版本下的独立 `elicitation/create` 请求仍会进来，由 rmcp
+        // 默认 handler 回 decline——合法降级。
+        let mut capabilities = ClientCapabilities::default();
+        capabilities.elicitation = Some(
+            ElicitationCapability::new()
+                .with_form(FormElicitationCapability::new())
+                .with_url(UrlElicitationCapability::new()),
+        );
+        ClientConfig::new(capabilities, info)
     }
 
     async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
@@ -115,10 +159,7 @@ async fn connect_stdio(
         });
     }
     let handler = ClientHandlerBridge::new(tool_list_changed);
-    handler
-        .serve(transport)
-        .await
-        .map_err(|error| McpError::Transport(format!("handshake with `{server}` failed: {error}")))
+    serve_bridge(server, handler, transport).await
 }
 
 async fn connect_http(
@@ -145,8 +186,5 @@ async fn connect_http(
     config.custom_headers = custom_headers;
     let transport = StreamableHttpClientTransport::with_client(reqwest::Client::new(), config);
     let handler = ClientHandlerBridge::new(tool_list_changed);
-    handler
-        .serve(transport)
-        .await
-        .map_err(|error| McpError::Transport(format!("handshake with `{server}` failed: {error}")))
+    serve_bridge(server, handler, transport).await
 }

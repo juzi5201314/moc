@@ -80,9 +80,11 @@ impl Tool for McpTool {
         args: Value,
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
+            // MRTR 履行端：server 在调用中索要输入时经 `session/request_ask` 问用户。
+            let input = super::mcp_input::fulfiller(ctx, &self.info);
             let output = match self
                 .manager
-                .call(&self.info, args, ctx.cancel.clone())
+                .call(&self.info, args, ctx.cancel.clone(), Some(&input))
                 .await
             {
                 Ok(output) => output,

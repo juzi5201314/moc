@@ -9,6 +9,7 @@ pub mod config;
 pub mod content;
 pub mod error;
 pub mod manager;
+pub mod mrtr;
 
 pub use config::{
     JsonSource, McpDocument, RawServerSpec, ServerConfig, ToolFilter, Transport,
@@ -17,3 +18,4 @@ pub use config::{
 pub use content::{ImageData, ToolOutput};
 pub use error::McpError;
 pub use manager::{McpManager, McpNotice, McpSnapshot, McpToolInfo, ServerStatus};
+pub use mrtr::{InputFulfiller, PendingInput};

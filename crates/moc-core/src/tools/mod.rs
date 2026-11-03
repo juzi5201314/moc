@@ -15,6 +15,7 @@ pub(crate) mod clm;
 pub mod job;
 pub(crate) mod job_log;
 pub mod mcp;
+mod mcp_input;
 pub mod output;
 pub mod plan;
 pub mod plugin;

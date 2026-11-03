@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 use rmcp::ServiceError;
-use rmcp::model::CallToolRequestParams;
+use rmcp::model::{CallToolRequestParams, CallToolResponse, InputResponses};
 use rmcp::service::{Peer, RoleClient};
 use serde_json::Value;
 use tokio::sync::{Semaphore, mpsc, watch};
@@ -22,9 +22,13 @@ use crate::client::{Connection, Connector};
 use crate::config::{CompiledToolFilter, ServerConfig};
 use crate::content::{ToolOutput, map_call_result};
 use crate::error::McpError;
+use crate::mrtr::{InputFulfiller, default_fulfiller, has_requests, translate};
 
 /// 调用遇到连接错误后，等待重连成功的最长时长。
 const RECONNECT_WAIT: Duration = Duration::from_secs(15);
+
+/// 只有 `requestState` 没有 `inputRequests` 的 MRTR 轮次之间的最小间隔。
+const STATE_ONLY_BACKOFF: Duration = Duration::from_millis(50);
 
 /// 重连预算与退避参数。
 ///
@@ -319,11 +323,16 @@ impl McpManager {
     /// 含断线后的重连等待与重试，保证同 server 调用不交错。连接层故障时等待重连
     /// （至多 [`RECONNECT_WAIT`]）并重试一次；服务端错误与超时不重试，
     /// 避免副作用型工具被重复执行。
+    ///
+    /// `input` 是 MRTR（SEP-2322）履行端：server 返回 `input_required` 时逐键
+    /// 履行 `inputRequests` 并原样回显 `requestState` 重试。`None` 时使用
+    /// 默认兜底（elicitation decline、空 roots、sampling 报错）。
     pub async fn call(
         &self,
         info: &McpToolInfo,
         args: Value,
         cancel: CancellationToken,
+        input: Option<&InputFulfiller>,
     ) -> Result<ToolOutput, McpError> {
         let slot = self
             .slots
@@ -344,7 +353,7 @@ impl McpManager {
                 status_of(slot)
             ))
         })?;
-        match call_once(&peer, slot, info, args.clone(), cancel.clone()).await {
+        match call_once(&peer, slot, info, args.clone(), cancel.clone(), input).await {
             Ok(output) => Ok(output),
             Err(error) if error.is_retriable() && !self.shutdown.is_cancelled() => {
                 let deadline = Instant::now() + RECONNECT_WAIT;
@@ -358,7 +367,7 @@ impl McpManager {
                     match tokio::time::timeout_at(deadline.into(), generation.changed()).await {
                         Ok(Ok(())) => match connected_peer(slot) {
                             Some(peer) => {
-                                return call_once(&peer, slot, info, args, cancel).await;
+                                return call_once(&peer, slot, info, args, cancel, input).await;
                             }
                             // 仍在重连，继续等待代际变化。
                             None => continue,
@@ -490,12 +499,19 @@ fn map_service_error(error: ServiceError) -> McpError {
     }
 }
 
+/// 一轮 `tools/call` + 可能的 MRTR 后续轮。
+///
+/// 每次 wire 往返都受 `call_timeout_secs` 与 `cancel` 约束；履行 `inputRequests`
+/// 的等待只受 `cancel` 约束（与 ask 一致——用户思考不计入线超时）。`requestState`
+/// 按规范逐字节回显；超过 [`rmcp::model::DEFAULT_MRTR_MAX_ROUNDS`] 轮仍无最终结果
+/// 按服务端行为异常报错。
 async fn call_once(
     peer: &Peer<RoleClient>,
     slot: &ServerSlot,
     info: &McpToolInfo,
     args: Value,
     cancel: CancellationToken,
+    input: Option<&InputFulfiller>,
 ) -> Result<ToolOutput, McpError> {
     let Some(arguments) = args.as_object().cloned() else {
         return Err(McpError::Tool(format!(
@@ -508,18 +524,71 @@ async fn call_once(
     params.arguments = Some(arguments);
 
     let timeout = Duration::from_secs(slot.config.call_timeout_secs);
-    let result = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => return Err(McpError::Cancelled),
-        _ = tokio::time::sleep(timeout) => {
-            return Err(McpError::Timeout(slot.config.call_timeout_secs));
+    let fallback;
+    let fulfiller = match input {
+        Some(fulfiller) => fulfiller,
+        None => {
+            fallback = default_fulfiller();
+            &fallback
         }
-        result = peer.call_tool(params) => result,
     };
-    match result {
-        Ok(result) => Ok(map_call_result(&result)),
-        Err(error) => Err(map_service_error(error)),
+    for _round in 0..rmcp::model::DEFAULT_MRTR_MAX_ROUNDS {
+        let response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(McpError::Cancelled),
+            _ = tokio::time::sleep(timeout) => {
+                return Err(McpError::Timeout(slot.config.call_timeout_secs));
+            }
+            result = peer.call_tool_once(params.clone()) => result,
+        };
+        let required = match response.map_err(map_service_error)? {
+            CallToolResponse::Complete(result) => return Ok(map_call_result(&result)),
+            CallToolResponse::InputRequired(required) => required,
+            // tasks 扩展（SEP-2663）未声明：spec 不允许 server 在此返回 task。
+            CallToolResponse::Task(_) => {
+                return Err(McpError::Tool(format!(
+                    "tool `{}` returned resultType `task`, which moc does not support",
+                    info.qualified
+                )));
+            }
+            // rmcp 标注 non_exhaustive：未知 resultType 按服务端行为异常报错。
+            _ => {
+                return Err(McpError::Tool(format!(
+                    "tool `{}` returned an unsupported result type",
+                    info.qualified
+                )));
+            }
+        };
+        let had_requests = has_requests(required.input_requests.as_ref());
+        let mut responses = InputResponses::new();
+        if let Some(requests) = required.input_requests {
+            for (key, request) in requests {
+                let pending = translate(&request)?;
+                let response = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(McpError::Cancelled),
+                    response = fulfiller(pending) => response,
+                }?;
+                responses.insert(key, response);
+            }
+        }
+        params.input_responses = (!responses.is_empty()).then_some(responses);
+        params.request_state = required.request_state;
+        if !had_requests {
+            // state-only 轮：server 借 requestState 做无状态续跑，
+            // 立即重试即可，加一拍退避防两端忙轮询。
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(McpError::Cancelled),
+                _ = tokio::time::sleep(STATE_ONLY_BACKOFF) => {}
+            }
+        }
     }
+    Err(McpError::Tool(format!(
+        "tool `{}` kept requesting input after {} rounds",
+        info.qualified,
+        rmcp::model::DEFAULT_MRTR_MAX_ROUNDS
+    )))
 }
 
 /// 单个 server 的终身监督：连接 → 监听变更/关闭 → 重连退避 → 预算耗尽放弃。
@@ -720,14 +789,19 @@ mod tests {
     use rmcp::ServiceExt;
     use rmcp::handler::server::ServerHandler;
     use rmcp::model::{
-        CallToolResponse, CallToolResult, ContentBlock, ListToolsResult, ServerCapabilities,
-        ServerConfig as RmcpServerInfo, ServerNotification, Tool, ToolsCapability,
+        CallToolResponse, CallToolResult, ContentBlock, ElicitRequest, ElicitRequestParams,
+        ElicitationSchema, InputRequest, InputRequests, InputRequiredResult, ListToolsResult,
+        ServerCapabilities, ServerConfig as RmcpServerInfo, ServerNotification, Tool,
+        ToolsCapability,
     };
     use rmcp::service::{RequestContext, RoleServer};
     use serde_json::json;
     use std::sync::atomic::AtomicUsize;
 
     const CONNECT: u64 = 5;
+
+    /// MRTR 测试里要逐字节回显的 state（含各种需要原样存活的字符）。
+    const TRICKY_STATE: &str = "state {占} ~:/?#[]@!$&'()*+,;= 终";
 
     #[derive(Default)]
     struct TestState {
@@ -741,6 +815,8 @@ mod tests {
         /// `slow` 工具的在飞数与观测到的峰值（供每 server 并发上限用例）。
         inflight: AtomicUsize,
         max_inflight: AtomicUsize,
+        /// `loop` 工具收到的 `tools/call` 轮数（供 MRTR 上限用例）。
+        rounds: AtomicUsize,
     }
 
     struct TestServer {
@@ -780,6 +856,9 @@ mod tests {
                 Tool::new("refresh", "触发 list_changed", schema(json!({}))),
                 Tool::new("die", "让服务端退出", schema(json!({}))),
                 Tool::new("slow", "延迟应答，用于观测并发", schema(json!({}))),
+                Tool::new("elicit", "先要一次用户名再应答", schema(json!({}))),
+                Tool::new("stately", "只靠 requestState 续跑一轮", schema(json!({}))),
+                Tool::new("loop", "永远 input_required", schema(json!({}))),
             ];
             if self.state.generation.load(Ordering::SeqCst) >= 1 {
                 tools.push(Tool::new("extra", "刷新后出现", schema(json!({}))));
@@ -832,6 +911,61 @@ mod tests {
                     self.state.inflight.fetch_sub(1, Ordering::SeqCst);
                     Ok(CallToolResult::success(vec![ContentBlock::text("ok")]).into())
                 }
+                "elicit" => match request.request_state.as_deref() {
+                    None => {
+                        let schema: ElicitationSchema = serde_json::from_value(json!({
+                            "type": "object",
+                            "properties": {"name": {"type": "string"}},
+                            "required": ["name"],
+                        }))
+                        .expect("表单 schema 可解析");
+                        let mut requests = InputRequests::new();
+                        requests.insert(
+                            "who".into(),
+                            InputRequest::Elicitation(ElicitRequest::new(
+                                ElicitRequestParams::FormElicitationParams {
+                                    meta: None,
+                                    message: "Please provide your name".into(),
+                                    requested_schema: schema,
+                                },
+                            )),
+                        );
+                        Ok(
+                            InputRequiredResult::new(Some(requests), Some(TRICKY_STATE.into()))
+                                .into(),
+                        )
+                    }
+                    Some(state) => {
+                        assert_eq!(state, TRICKY_STATE, "requestState 必须逐字节回显");
+                        let name = request
+                            .input_responses
+                            .as_ref()
+                            .and_then(|responses| responses.get("who"))
+                            .and_then(|response| response["content"]["name"].as_str())
+                            .unwrap_or("<missing>");
+                        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                            "hello {name}"
+                        ))])
+                        .into())
+                    }
+                },
+                "stately" => match request.request_state.as_deref() {
+                    None => {
+                        assert!(request.input_responses.is_none());
+                        Ok(InputRequiredResult::from_request_state("s-1").into())
+                    }
+                    Some("s-1") => {
+                        Ok(CallToolResult::success(vec![ContentBlock::text("done")]).into())
+                    }
+                    Some(other) => Err(rmcp::model::ErrorData::invalid_params(
+                        format!("unexpected state {other}"),
+                        None,
+                    )),
+                },
+                "loop" => {
+                    self.state.rounds.fetch_add(1, Ordering::SeqCst);
+                    Ok(InputRequiredResult::from_request_state("again").into())
+                }
                 other => Err(rmcp::model::ErrorData::invalid_params(
                     format!("未知工具 {other}"),
                     None,
@@ -862,10 +996,12 @@ mod tests {
                         Err(error) => eprintln!("[test-server] serve 失败：{error}"),
                     }
                 });
-                ClientHandlerBridge::new(tool_list_changed)
-                    .serve(client_io)
-                    .await
-                    .map_err(|error| McpError::Transport(error.to_string()))
+                crate::client::serve_bridge(
+                    "test",
+                    ClientHandlerBridge::new(tool_list_changed),
+                    client_io,
+                )
+                .await
             })
         })
     }
@@ -892,10 +1028,12 @@ mod tests {
                         drop(service);
                     }
                 });
-                ClientHandlerBridge::new(tool_list_changed)
-                    .serve(client_io)
-                    .await
-                    .map_err(|error| McpError::Transport(error.to_string()))
+                crate::client::serve_bridge(
+                    "test",
+                    ClientHandlerBridge::new(tool_list_changed),
+                    client_io,
+                )
+                .await
             })
         })
     }
@@ -952,13 +1090,18 @@ mod tests {
         );
         manager.start().await;
         let tools = connected_tools(&manager, Duration::from_secs(5)).await;
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 7);
         let echo = tools.iter().find(|t| t.name == "echo").unwrap();
         assert_eq!(echo.qualified, "mcp__test__echo");
         assert!(!echo.read_only);
 
         let output = manager
-            .call(echo, json!({"text": "你好"}), CancellationToken::new())
+            .call(
+                echo,
+                json!({"text": "你好"}),
+                CancellationToken::new(),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(output.text, "echo: 你好");
@@ -966,7 +1109,7 @@ mod tests {
         let snapshot = manager.snapshot().await;
         assert!(matches!(
             snapshot.statuses.get("test"),
-            Some(ServerStatus::Connected { tool_count: 4 })
+            Some(ServerStatus::Connected { tool_count: 7 })
         ));
         manager.shutdown().await;
     }
@@ -981,18 +1124,18 @@ mod tests {
         );
         manager.start().await;
         let tools = connected_tools(&manager, Duration::from_secs(5)).await;
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 7);
 
         let refresh = tools.iter().find(|t| t.name == "refresh").unwrap();
         manager
-            .call(refresh, json!({}), CancellationToken::new())
+            .call(refresh, json!({}), CancellationToken::new(), None)
             .await
             .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let count = manager.snapshot().await.tools.len();
-            if count == 5 {
+            if count == 8 {
                 break;
             }
             assert!(
@@ -1024,7 +1167,7 @@ mod tests {
 
         let die = tools.iter().find(|t| t.name == "die").unwrap();
         manager
-            .call(die, json!({}), CancellationToken::new())
+            .call(die, json!({}), CancellationToken::new(), None)
             .await
             .unwrap();
 
@@ -1068,7 +1211,14 @@ mod tests {
         let mut config = test_server("test", true);
         config.tools = crate::config::ToolFilter {
             allow: Vec::new(),
-            deny: vec!["refresh".into(), "die".into(), "slow".into()],
+            deny: vec![
+                "refresh".into(),
+                "die".into(),
+                "slow".into(),
+                "elicit".into(),
+                "stately".into(),
+                "loop".into(),
+            ],
         }
         .compile()
         .unwrap();
@@ -1100,7 +1250,7 @@ mod tests {
             let info = Arc::clone(&slow);
             calls.push(tokio::spawn(async move {
                 manager
-                    .call(&info, json!({}), CancellationToken::new())
+                    .call(&info, json!({}), CancellationToken::new(), None)
                     .await
             }));
         }
@@ -1133,7 +1283,7 @@ mod tests {
             let info = Arc::clone(&slow);
             calls.push(tokio::spawn(async move {
                 manager
-                    .call(&info, json!({}), CancellationToken::new())
+                    .call(&info, json!({}), CancellationToken::new(), None)
                     .await
             }));
         }
@@ -1168,7 +1318,7 @@ mod tests {
             read_only: false,
         };
         let result = manager
-            .call(&info, json!({}), CancellationToken::new())
+            .call(&info, json!({}), CancellationToken::new(), None)
             .await;
         assert!(matches!(result, Err(McpError::Transport(_))));
         manager.shutdown().await;
@@ -1232,6 +1382,121 @@ mod tests {
                 Some(ServerStatus::Failed { .. })
             ),
             "预算已清零，不该进入 Failed"
+        );
+        manager.shutdown().await;
+    }
+
+    /// MRTR 全链路：`input_required`（elicitation + requestState）→ fulfiller
+    /// 作答 → 带 `inputResponses` 与逐字节回显的 state 重试 → 最终结果。
+    #[tokio::test]
+    async fn mrtr_elicitation_round_completes_the_call() {
+        let state = Arc::new(TestState::default());
+        let manager = McpManager::build(
+            vec![test_server("test", true)],
+            CancellationToken::new(),
+            |_| test_connector(state.clone()),
+        );
+        manager.start().await;
+        let tools = connected_tools(&manager, Duration::from_secs(5)).await;
+        let elicit = tools.iter().find(|t| t.name == "elicit").unwrap();
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let fulfiller: InputFulfiller = {
+            let seen = seen.clone();
+            Arc::new(move |pending| {
+                seen.lock().unwrap().push(format!("{pending:?}"));
+                Box::pin(async move {
+                    match pending {
+                        crate::mrtr::PendingInput::ElicitForm { message, schema } => {
+                            assert_eq!(message, "Please provide your name");
+                            assert!(schema["properties"]["name"].is_object());
+                            Ok(json!({"action": "accept", "content": {"name": "小明"}}))
+                        }
+                        other => Err(McpError::Tool(format!("unexpected request: {other:?}"))),
+                    }
+                })
+            })
+        };
+
+        let output = manager
+            .call(
+                elicit,
+                json!({}),
+                CancellationToken::new(),
+                Some(&fulfiller),
+            )
+            .await
+            .unwrap();
+        assert_eq!(output.text, "hello 小明");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        manager.shutdown().await;
+    }
+
+    /// fulfiller 回 decline 也是合法答复：重试照常发出，server 给最终结果。
+    #[tokio::test]
+    async fn mrtr_decline_is_a_valid_response() {
+        let state = Arc::new(TestState::default());
+        let manager = McpManager::build(
+            vec![test_server("test", true)],
+            CancellationToken::new(),
+            |_| test_connector(state.clone()),
+        );
+        manager.start().await;
+        let tools = connected_tools(&manager, Duration::from_secs(5)).await;
+        let elicit = tools.iter().find(|t| t.name == "elicit").unwrap();
+        let output = manager
+            .call(elicit, json!({}), CancellationToken::new(), None)
+            .await
+            .unwrap();
+        // 默认兜底回 decline：server 收到的 content 缺 name，按 <missing> 收场。
+        assert_eq!(output.text, "hello <missing>");
+        manager.shutdown().await;
+    }
+
+    /// 只有 `requestState` 的轮次不传 `inputResponses`，直接续跑至最终结果。
+    #[tokio::test]
+    async fn mrtr_state_only_round_retries_immediately() {
+        let state = Arc::new(TestState::default());
+        let manager = McpManager::build(
+            vec![test_server("test", true)],
+            CancellationToken::new(),
+            |_| test_connector(state.clone()),
+        );
+        manager.start().await;
+        let tools = connected_tools(&manager, Duration::from_secs(5)).await;
+        let stately = tools.iter().find(|t| t.name == "stately").unwrap();
+        let output = manager
+            .call(stately, json!({}), CancellationToken::new(), None)
+            .await
+            .unwrap();
+        assert_eq!(output.text, "done");
+        manager.shutdown().await;
+    }
+
+    /// server 无限 input_required 时，调用在轮数上限处以明确错误收场。
+    #[tokio::test]
+    async fn mrtr_round_cap_fails_instead_of_spinning() {
+        let state = Arc::new(TestState::default());
+        let manager = McpManager::build(
+            vec![test_server("test", true)],
+            CancellationToken::new(),
+            |_| test_connector(state.clone()),
+        );
+        manager.start().await;
+        let tools = connected_tools(&manager, Duration::from_secs(5)).await;
+        let loopy = tools.iter().find(|t| t.name == "loop").unwrap();
+        let error = manager
+            .call(loopy, json!({}), CancellationToken::new(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, McpError::Tool(ref message) if message.contains("requesting input")),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            state.rounds.load(Ordering::SeqCst),
+            rmcp::model::DEFAULT_MRTR_MAX_ROUNDS,
+            "轮数应正好到上限"
         );
         manager.shutdown().await;
     }

@@ -206,7 +206,7 @@ fn preview_text(preview: &Option<String>) -> Option<String> {
 
 /// 反向请求的收场映射：用户取消（本地取消或前端回 `-32001`）按「未回答」
 /// 成功收场——空答案在 `run` 里输出统一的未回答文本；其余错误才是前端故障。
-fn ask_settled(result: Result<AskResult, RpcCallError>) -> Result<AskResult, ToolError> {
+pub(crate) fn ask_settled(result: Result<AskResult, RpcCallError>) -> Result<AskResult, ToolError> {
     match result {
         Ok(result) => Ok(result),
         Err(RpcCallError::Cancelled) => Ok(AskResult {
