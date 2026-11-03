@@ -27,6 +27,7 @@ pub fn create_test_terminal(
 }
 
 /// Creates a test app instance with a specific color-level resolved theme.
+#[allow(dead_code)]
 pub fn create_test_terminal_with_level(
     width: u16,
     height: u16,
@@ -96,6 +97,7 @@ pub fn buffer_squashed_rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
 }
 
 /// Checks whether any cell inside an area has a specific background color.
+#[allow(dead_code)]
 pub fn area_has_bg(buffer: &Buffer, area: Rect, expected_bg: Color) -> bool {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
@@ -129,6 +131,7 @@ pub fn prefill_noise(terminal: &mut Terminal<TestBackend>, noise_char: &str, noi
 }
 
 /// Checks if any noise characters leak through inside a given Rect.
+#[allow(dead_code)]
 pub fn count_leaked_noise(buffer: &Buffer, area: Rect, noise_char: &str) -> usize {
     let mut leaks = 0;
     for y in area.top()..area.bottom() {
@@ -166,6 +169,7 @@ pub fn is_rounded_box(buffer: &Buffer, rect: Rect) -> bool {
 }
 
 /// Checks if four corners of a rect match the sharp box-drawing corners ┌ ┐ └ ┘.
+#[allow(dead_code)]
 pub fn is_sharp_box(buffer: &Buffer, rect: Rect) -> bool {
     if rect.width < 2 || rect.height < 2 {
         return false;

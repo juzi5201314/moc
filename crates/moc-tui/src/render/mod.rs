@@ -612,7 +612,10 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     // workflow 胶囊：活跃 run / 待审批徽标，点击打开审批或 run 面板。
     app.workflow_capsule_area = Rect::default();
     let runs_n = app.workflow.active_runs.len();
-    let approvals_n = app.workflow.pending_approvals;
+    // 计数 = 排队审批 + 最小化审批（parked 也算待决，否则无活跃 run 时
+    // 胶囊不显示、没法重开）。
+    let approvals_n = app.workflow.queued_approvals.len()
+        + usize::from(app.workflow.parked_approval.is_some());
     if runs_n + approvals_n > 0 {
         let capsule = if approvals_n > 0 {
             format!("⚙{runs_n}跑·{approvals_n}审")

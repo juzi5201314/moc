@@ -1054,10 +1054,9 @@ async fn event_loop(
                         });
                     }
                     Some(AppEvent::OpenWorkflowApproval(request)) => {
-                        app.workflow.pending_approvals = app
-                            .workflow
-                            .pending_approvals
-                            .saturating_sub(1);
+                        app.workflow
+                            .queued_approvals
+                            .retain(|a| a.request_id != request.request_id);
                         app.modal = Some(Modal::WorkflowApproval {
                             state: Box::new(crate::workflow::WorkflowApprovalState::new(
                                 request,
@@ -1457,9 +1456,9 @@ fn handle_mouse_with_connection(
             }
             return;
         }
-        // workflow 胶囊：有最小化审批优先重开，否则打开 run 列表。
+        // workflow 胶囊：最小化审批优先重开，其次弹出排队审批，否则打开 run 列表。
         if app.modal.is_none() && app.workflow_capsule_area.contains(position.into()) {
-            if let Some(state) = app.workflow.parked_approval.take() {
+            if let Some(state) = take_next_approval(app) {
                 app.modal = Some(Modal::WorkflowApproval { state });
             } else {
                 open_workflow_runs(app, connection);
@@ -5502,17 +5501,36 @@ fn apply_workflow_update(
     use moc_protocol::methods::WorkflowEvent as E;
     match event {
         E::ApprovalRequested { request } => {
-            // 已有 modal 占用时只计胶囊（用户处理完会回来）；空档时直接弹窗。
+            // modal 占用时完整载荷进队列（丢载荷该 run 的审批永远到不了，run 挂死）；
+            // 空档时直接弹窗。
             if app.modal.is_some() {
-                app.workflow.pending_approvals = app.workflow.pending_approvals.saturating_add(1);
+                app.workflow.queued_approvals.push_back(request);
             } else {
                 app.modal = Some(Modal::WorkflowApproval {
                     state: Box::new(crate::workflow::WorkflowApprovalState::new(request)),
                 });
             }
         }
-        E::ApprovalResolved { .. } => {
-            app.workflow.pending_approvals = app.workflow.pending_approvals.saturating_sub(1);
+        E::ApprovalResolved { request_id, .. } => {
+            app.workflow
+                .queued_approvals
+                .retain(|a| a.request_id != request_id);
+            // 打开的审批窗或最小化票正是该 request → 一并关掉/清掉。
+            let modal_is_request = matches!(
+                app.modal.as_ref(),
+                Some(Modal::WorkflowApproval { state }) if state.request.request_id == request_id
+            );
+            if modal_is_request {
+                app.modal = None;
+            }
+            if app
+                .workflow
+                .parked_approval
+                .as_ref()
+                .is_some_and(|s| s.request.request_id == request_id)
+            {
+                app.workflow.parked_approval = None;
+            }
         }
         E::RunStatus { status } => {
             let active = matches!(
@@ -11520,6 +11538,17 @@ mod config_picker_tests {
 #[path = "event_plan_tests.rs"]
 mod plan_tests;
 
+/// 胶囊点击取下一个待开审批：最小化（parked）票优先，其次队首排队请求。
+fn take_next_approval(app: &mut App) -> Option<Box<crate::workflow::WorkflowApprovalState>> {
+    if let Some(state) = app.workflow.parked_approval.take() {
+        return Some(state);
+    }
+    app.workflow
+        .queued_approvals
+        .pop_front()
+        .map(|request| Box::new(crate::workflow::WorkflowApprovalState::new(request)))
+}
+
 /// 打开 workflow run 列表：`session/workflow_runs` → `AppEvent::OpenWorkflowRuns`。
 fn open_workflow_runs(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
@@ -11543,4 +11572,88 @@ fn open_workflow_runs(app: &mut App, connection: &EmbeddedConnection) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod workflow_approval_tests {
+    use super::*;
+    use moc_protocol::methods::{WorkflowApproval, WorkflowApprovalKind, WorkflowEvent};
+
+    fn approval(id: &str) -> Box<WorkflowApproval> {
+        Box::new(WorkflowApproval {
+            request_id: id.into(),
+            run_id: "r1".into(),
+            script: String::new(),
+            plan: serde_json::json!({}),
+            defaults: moc_protocol::methods::WorkflowApprovalDefaults {
+                role_models: Default::default(),
+                model_ref_map: Default::default(),
+            },
+            args: serde_json::Value::Null,
+            max_concurrency: 0,
+            kind: WorkflowApprovalKind::Launch,
+            new_commands: None,
+        })
+    }
+
+    #[test]
+    fn approval_queues_while_modal_busy() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), tx);
+        // modal 占用 → 完整载荷进队列。
+        app.modal = Some(Modal::Help { scroll: 0 });
+        apply_workflow_update(
+            &mut app,
+            "r1".into(),
+            WorkflowEvent::ApprovalRequested { request: approval("a1") },
+        );
+        assert_eq!(app.workflow.queued_approvals.len(), 1);
+        assert_eq!(app.workflow.queued_approvals[0].request_id, "a1");
+        // ApprovalResolved 按 request_id 移除。
+        apply_workflow_update(
+            &mut app,
+            "r1".into(),
+            WorkflowEvent::ApprovalResolved {
+                request_id: "a1".into(),
+                approved: true,
+                feedback: None,
+            },
+        );
+        assert!(app.workflow.queued_approvals.is_empty());
+    }
+
+    #[test]
+    fn approval_opens_modal_and_take_next_pops_queue() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), tx);
+        // 空档 → 直接弹窗。
+        apply_workflow_update(
+            &mut app,
+            "r1".into(),
+            WorkflowEvent::ApprovalRequested { request: approval("a1") },
+        );
+        assert!(matches!(app.modal, Some(Modal::WorkflowApproval { .. })));
+        // 打开中的审批被服务端 resolve → modal 关闭。
+        apply_workflow_update(
+            &mut app,
+            "r1".into(),
+            WorkflowEvent::ApprovalResolved {
+                request_id: "a1".into(),
+                approved: true,
+                feedback: None,
+            },
+        );
+        assert!(app.modal.is_none());
+        // 排队请求可被胶囊点击打开。
+        app.modal = Some(Modal::Help { scroll: 0 });
+        apply_workflow_update(
+            &mut app,
+            "r1".into(),
+            WorkflowEvent::ApprovalRequested { request: approval("a2") },
+        );
+        app.modal = None;
+        let state = take_next_approval(&mut app).expect("队首应可弹出");
+        assert_eq!(state.request.request_id, "a2");
+        assert!(app.workflow.queued_approvals.is_empty());
+    }
 }

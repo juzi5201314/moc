@@ -3,7 +3,7 @@
 //! 布局是纯函数：`phase_layers` 把 plan 的 phase 集合按边（site 级 → phase 级
 //! 聚合）做最长路径分层，同层横排；数据边与顺序边分开计数，供渲染层区分。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use moc_protocol::methods::{
     WorkflowApproval, WorkflowPhaseState, WorkflowRoleState, WorkflowRunStatus,
@@ -218,10 +218,12 @@ pub fn apply_workflow_pick(
     }
 }
 
-/// 状态栏胶囊：待审批数 + 活跃 run 数 + 最小化审批的回放票。
+/// 状态栏胶囊：排队审批（modal 占用时到达的请求，载荷完整保留）+ 活跃 run
+/// 数 + 最小化审批的回放票。
 #[derive(Debug, Default)]
 pub struct WorkflowCapsule {
-    pub pending_approvals: usize,
+    /// modal 占用时到达的审批请求按到达序排队；胶囊点击弹出队首。
+    pub queued_approvals: VecDeque<Box<WorkflowApproval>>,
     /// 当前活跃 run 的标题（有且仅有一个时显示名字）。
     pub active_runs: BTreeMap<String, String>,
     /// 最小化（Esc）的审批状态：胶囊点击重开。审批仍挂起，不算已决。
@@ -790,6 +792,7 @@ fn artifact_lines(
     let title = spec
         .get("title")
         .and_then(|v| v.as_str())
+        .or_else(|| artifact.get("title").and_then(|v| v.as_str()))
         .unwrap_or(id);
     let ver = if versions > 1 {
         format!(" v{version}/{versions}")
@@ -802,24 +805,18 @@ fn artifact_lines(
     ))];
     let items = artifact_items(artifact, reports);
     match member {
-        "file" => {
-            let path = spec.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-            let mime = spec
+        // file/markdown 条目是 {artifact_id, member, version, file,
+        // content_type?, title?, description?, primary?}；内容按 'o' 打开。
+        "file" | "markdown" => {
+            let file = artifact.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+            let mime = artifact
                 .get("content_type")
                 .and_then(|v| v.as_str())
-                .unwrap_or("text/plain");
+                .unwrap_or("application/octet-stream");
             out.push(Line::from(Span::styled(
-                format!("    📄 {path} ({mime})"),
+                format!("    📄 {file} ({mime})"),
                 dim,
             )));
-        }
-        "markdown" => {
-            let content = spec.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            for line in crate::render::markdown::render_markdown(content, width.saturating_sub(4), theme) {
-                let mut spans = vec![Span::raw("    ")];
-                spans.extend(line.spans);
-                out.push(Line::from(spans));
-            }
         }
         "chart" => {
             out.extend(chart_artifact_lines(&spec, &items, width.saturating_sub(6), theme));

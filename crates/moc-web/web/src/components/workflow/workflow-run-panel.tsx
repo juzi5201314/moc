@@ -101,7 +101,7 @@ function ArtifactBlock({
   return (
     <div className="space-y-1">
       <div className="text-ui text-foreground">
-        [{member}] {String(spec.title ?? id)}
+        [{member}] {String(spec.title ?? artifact.title ?? id)}
       </div>
       {versions.length > 1 && (
         <Select
@@ -298,7 +298,7 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
   if (!panelRun || !view) return null;
 
   const stoppable = view.status?.state === "running" || view.status?.state === "pending";
-  const resumable = view.status?.state === "stopped" || view.status?.state === "errored";
+  const resumable = view.status?.state === "stopped";
 
   return (
     <Dialog open onOpenChange={(o) => !o && useWorkflow.setState({ panelRun: null })}>
