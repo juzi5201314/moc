@@ -117,6 +117,10 @@ pub struct SessionState {
     pub clm_context: Option<String>,
     /// spawn 时快照的 agent preset 契约；普通会话与普通子代理为 `None`。
     pub agent: Option<super::entries::AgentSessionMeta>,
+    /// 当前持久目标快照；无目标或已清除为 `None`（回放自 `GoalChange` 条目）。
+    pub goal: Option<super::entries::GoalSnapshot>,
+    /// 当前目标已落库的续跑轮数；只统计 `goal_id` 匹配当前目标的 Message.goal 条目。
+    pub goal_rounds_started: u32,
     pub last_entry_id: String,
 }
 
@@ -183,6 +187,8 @@ impl SessionState {
             native_input: None,
             clm_context: None,
             agent: agent.clone(),
+            goal: None,
+            goal_rounds_started: 0,
             notices: Vec::new(),
             reminder_digests: BTreeMap::new(),
             last_entry_id: first.id().to_owned(),
@@ -210,10 +216,12 @@ impl SessionState {
                 tool,
                 bash,
                 agent,
+                goal,
                 reminder,
                 ..
             } => {
                 // 提醒是模型内部状态，不是用户提示：算进 `prompt_sequence` 会让 prompt ID 错位。
+                // goal 续跑轮是一个完整提示（需要独立的 prompt_id），照常计数。
                 if message.role == Role::User
                     && bash.is_none()
                     && agent.is_none()
@@ -222,6 +230,15 @@ impl SessionState {
                     self.prompt_sequence = self.prompt_sequence.saturating_add(1);
                     // 有了第一条用户提示，引擎随即锁定。
                     self.session.engine_locked = true;
+                }
+                // 只统计已落库且属于当前目标的轮次；其它目标或编辑前的旧轮不计。
+                if let Some(meta) = goal
+                    && self
+                        .goal
+                        .as_ref()
+                        .is_some_and(|current| meta.goal_id == current.id)
+                {
+                    self.goal_rounds_started = self.goal_rounds_started.max(meta.round);
                 }
                 if let Some(stamp) = reminder {
                     for item in &stamp.items {
@@ -339,6 +356,18 @@ impl SessionState {
             }
             Entry::WorkflowActivated { active, .. } => {
                 self.workflow_activated = *active;
+            }
+            Entry::GoalChange { goal, .. } => {
+                // 同一目标的连续变更（edit/phase 迁移）不清零轮数；
+                // 新目标（id 不同）与清除墓碑才归零。
+                let same_goal = self
+                    .goal
+                    .as_ref()
+                    .is_some_and(|current| goal.as_ref().is_some_and(|next| next.id == current.id));
+                self.goal = goal.clone();
+                if !same_goal {
+                    self.goal_rounds_started = 0;
+                }
             }
             Entry::PermissionChange { permission, .. } => {
                 self.permission = *permission;
@@ -580,6 +609,7 @@ mod tests {
                 tool: None,
                 finish_reason: None,
                 agent: None,
+                goal: None,
             },
             header.id().into(),
             11,
@@ -591,6 +621,7 @@ mod tests {
                 tool: None,
                 finish_reason: None,
                 agent: None,
+                goal: None,
             },
             assistant.id().into(),
             12,
@@ -601,6 +632,7 @@ mod tests {
                 tool: None,
                 finish_reason: None,
                 agent: None,
+                goal: None,
             },
             second.id().into(),
             13,
@@ -637,6 +669,7 @@ mod tests {
                 tool: None,
                 finish_reason: None,
                 agent: None,
+                goal: None,
             },
             header_id,
             11,
@@ -783,6 +816,7 @@ mod tests {
                 tool: None,
                 finish_reason: None,
                 agent: None,
+                goal: None,
             },
             header.id().to_owned(),
             11,
@@ -889,5 +923,106 @@ mod tests {
         assert_eq!(state.usage.input_tokens, 0);
         assert_eq!(state.usage_at, 0);
         assert!(!state.server_compaction_disabled);
+    }
+
+    /// 目标快照由 GoalChange 回放；续跑计数只认当前目标 id 的轮次，
+    /// 换目标（新 id）归零、编辑（同 id）保留、墓碑清空。
+    #[test]
+    fn goal_snapshot_and_rounds_replay() {
+        use crate::session::entries::GoalSnapshot;
+        use moc_protocol::methods::{GoalPhase, GoalRoundMeta};
+
+        fn goal(id: &str, revision: u32) -> GoalSnapshot {
+            GoalSnapshot {
+                id: id.into(),
+                revision,
+                objective: "跑到达成".into(),
+                phase: GoalPhase::Active,
+                blocked_reason: None,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            }
+        }
+        fn round(goal_id: &str, round: u32) -> EntryPayload {
+            EntryPayload::Message {
+                message: Message::user_text(format!("round {round}")),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+                goal: Some(GoalRoundMeta {
+                    goal_id: goal_id.into(),
+                    revision: 1,
+                    round,
+                }),
+            }
+        }
+
+        let header = Entry::header(
+            "ses_123456789abc".into(),
+            "/tmp/project".into(),
+            "p/model".into(),
+            SessionEngine::Standard,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            "标题".into(),
+            10,
+        );
+        let mut state = SessionState::from_entries(vec![header]).expect("记录链完整");
+        let push = |state: &mut SessionState, payload: EntryPayload| {
+            let entry = Entry::from_payload(payload, state.last_entry_id.clone(), 11);
+            state.apply_entry(entry);
+        };
+        // 一条不相关的用户消息不该计入轮数。
+        push(
+            &mut state,
+            EntryPayload::Message {
+                message: Message::user_text("普通提问"),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+                goal: None,
+            },
+        );
+        push(
+            &mut state,
+            EntryPayload::GoalChange {
+                goal: Some(goal("goal_a", 1)),
+            },
+        );
+        push(&mut state, round("goal_a", 1));
+        push(&mut state, round("goal_a", 2));
+        assert_eq!(
+            state.goal.as_ref().map(|goal| goal.id.as_str()),
+            Some("goal_a")
+        );
+        assert_eq!(state.goal_rounds_started, 2);
+
+        // 同 id 的目标编辑：计数保留（rounds 是这个目标的历史）。
+        push(
+            &mut state,
+            EntryPayload::GoalChange {
+                goal: Some(goal("goal_a", 2)),
+            },
+        );
+        assert_eq!(state.goal_rounds_started, 2);
+        assert_eq!(state.goal.as_ref().expect("目标").revision, 2);
+
+        // 新目标（新 id）：计数归零重算。
+        push(
+            &mut state,
+            EntryPayload::GoalChange {
+                goal: Some(goal("goal_b", 1)),
+            },
+        );
+        assert_eq!(state.goal_rounds_started, 0);
+        push(&mut state, round("goal_b", 1));
+        // 旧 id 的迟到轮次条目不再计入新目标。
+        push(&mut state, round("goal_a", 3));
+        assert_eq!(state.goal_rounds_started, 1);
+
+        // 清除墓碑：目标与计数一起消失。
+        push(&mut state, EntryPayload::GoalChange { goal: None });
+        assert!(state.goal.is_none());
+        assert_eq!(state.goal_rounds_started, 0);
     }
 }

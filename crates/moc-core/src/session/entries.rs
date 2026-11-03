@@ -116,9 +116,20 @@ pub enum Entry {
         /// 代理间消息的来源信息；普通输入没有这个字段。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<moc_protocol::methods::AgentMessageMeta>,
+        /// goal 续跑轮的来源信息；普通输入没有这个字段。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        goal: Option<moc_protocol::methods::GoalRoundMeta>,
         /// 运行时提醒标记；`None` 表示普通对话消息。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reminder: Option<moc_protocol::ReminderStamp>,
+    },
+    /// 会话目标的完整快照（`session/goal` 与 `update_goal` 工具的每次变更写一条）；
+    /// `goal` 为 `None` 是清除墓碑。
+    GoalChange {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        goal: Option<GoalSnapshot>,
     },
     /// 一次上下文压缩。
     Compaction {
@@ -286,6 +297,8 @@ pub enum EntryPayload {
         finish_reason: Option<FinishReason>,
         /// 代理间消息的来源信息；普通输入为 `None`。
         agent: Option<moc_protocol::methods::AgentMessageMeta>,
+        /// goal 续跑轮的来源信息；普通输入为 `None`。
+        goal: Option<moc_protocol::methods::GoalRoundMeta>,
     },
     /// 运行时提醒：一段按条目差分后写入历史的 `Role::Custom` 消息。
     ///
@@ -378,6 +391,25 @@ pub enum EntryPayload {
         content: String,
     },
     ResetBoundary,
+    /// 目标变更；`None` 载荷是清除墓碑。
+    GoalChange {
+        goal: Option<GoalSnapshot>,
+    },
+}
+
+/// 目标快照的可持久化部分；`rounds_started` 由带 `goal` 标记的 Message 条目回放
+/// 得到，`armed` 是进程内属性，两者都不进条目。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalSnapshot {
+    pub id: String,
+    pub revision: u32,
+    pub objective: String,
+    pub phase: moc_protocol::methods::GoalPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<moc_protocol::methods::GoalBlockReason>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
 }
 
 impl EntryPayload {
@@ -540,6 +572,7 @@ impl Entry {
                 tool,
                 finish_reason,
                 agent,
+                goal,
             } => Self::Message {
                 id,
                 parent_id,
@@ -549,6 +582,7 @@ impl Entry {
                 finish_reason,
                 bash: None,
                 agent,
+                goal,
                 reminder: None,
             },
             EntryPayload::Reminder { message, items } => Self::Message {
@@ -560,6 +594,7 @@ impl Entry {
                 finish_reason: None,
                 bash: None,
                 agent: None,
+                goal: None,
                 reminder: Some(moc_protocol::ReminderStamp { items }),
             },
             EntryPayload::Bash {
@@ -575,6 +610,7 @@ impl Entry {
                 finish_reason: None,
                 bash: Some(command),
                 agent: None,
+                goal: None,
                 reminder: None,
             },
             EntryPayload::Compaction {
@@ -732,6 +768,12 @@ impl Entry {
                 parent_id,
                 at_ms,
             },
+            EntryPayload::GoalChange { goal } => Self::GoalChange {
+                id,
+                parent_id,
+                at_ms,
+                goal,
+            },
         }
     }
     pub fn id(&self) -> &str {
@@ -754,7 +796,8 @@ impl Entry {
             | Self::PtcState { id, .. }
             | Self::Usage { id, .. }
             | Self::ClmContext { id, .. }
-            | Self::ResetBoundary { id, .. } => id,
+            | Self::ResetBoundary { id, .. }
+            | Self::GoalChange { id, .. } => id,
         }
     }
 
@@ -778,7 +821,8 @@ impl Entry {
             | Self::PtcState { parent_id, .. }
             | Self::Usage { parent_id, .. }
             | Self::ClmContext { parent_id, .. }
-            | Self::ResetBoundary { parent_id, .. } => parent_id.as_deref(),
+            | Self::ResetBoundary { parent_id, .. }
+            | Self::GoalChange { parent_id, .. } => parent_id.as_deref(),
         }
     }
     pub fn at_ms(&self) -> u64 {
@@ -801,7 +845,8 @@ impl Entry {
             | Self::PtcState { at_ms, .. }
             | Self::Usage { at_ms, .. }
             | Self::ClmContext { at_ms, .. }
-            | Self::ResetBoundary { at_ms, .. } => *at_ms,
+            | Self::ResetBoundary { at_ms, .. }
+            | Self::GoalChange { at_ms, .. } => *at_ms,
         }
     }
 
@@ -840,6 +885,7 @@ impl Entry {
                 tool,
                 bash,
                 agent,
+                goal,
                 reminder,
                 ..
             } => Some(TranscriptEntry {
@@ -849,6 +895,7 @@ impl Entry {
                 tool: tool.clone(),
                 bash: bash.clone(),
                 agent: agent.clone(),
+                goal_round: goal.clone(),
                 reminder: reminder.clone(),
             }),
             _ => None,

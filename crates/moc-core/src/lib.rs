@@ -11,6 +11,7 @@ mod concurrency;
 pub mod config;
 mod error;
 mod fs;
+pub(crate) mod goal;
 pub mod hashline;
 pub mod ids;
 pub mod limits;

@@ -1,13 +1,13 @@
 //! 真实协议连接与固定本地上游下的中断、压缩和计划状态转移。
 use crate::support;
 
+use crate::support::{Harness, complete, text_stream, tool_stream};
 use moc_protocol::{FinishReason, Role, methods::*};
 use serde_json::{Value, json};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use crate::support::{Harness, complete, text_stream, tool_stream};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
@@ -117,6 +117,7 @@ async fn cancel_persists_partial_output_and_repairs_unexecuted_calls() {
                 }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
     });
@@ -242,6 +243,7 @@ async fn fatal_upstream_error_emits_error_and_releases_session_lock() {
             }],
             mode: None,
             agent_message: None,
+            goal_round: None,
         })
         .await;
     assert!(result.is_err());
@@ -493,6 +495,7 @@ async fn disconnected_frontend_persists_partial_text_before_connection_finishes(
                 }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
     });
@@ -1145,6 +1148,7 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
                 }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
     });

@@ -1,3 +1,4 @@
+use super::{Harness, complete, text_stream};
 use moc_protocol::{
     InputPart, PromptParams, SessionEngine, SessionLoad, SessionLoadParams, SessionPrompt,
     SessionSteer, SessionUnsteer, SessionUpdate, SteerParams, UnsteerParams,
@@ -8,7 +9,6 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
-use super::{Harness, complete, text_stream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -142,6 +142,7 @@ async fn steering_is_delivered_after_the_current_response_and_before_next_reques
                 }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
             .unwrap()
@@ -224,6 +225,7 @@ async fn unsteer_removes_pending_steering_before_boundary() {
                 }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
             .unwrap()

@@ -5,7 +5,12 @@
 import { toast } from "sonner";
 import { AUTONOMY } from "@/lib/autonomy";
 import { rpc } from "@/protocol/client";
-import type { CommandMeta, PluginRunCommandResult } from "@/protocol/types";
+import type {
+  CommandMeta,
+  GoalAction,
+  PluginRunCommandResult,
+  SessionGoalResult,
+} from "@/protocol/types";
 import { retrySession, sendPrompt } from "@/store/actions";
 import { useBtw } from "@/store/btw";
 import { toInput, useComposer } from "@/store/composer";
@@ -199,6 +204,52 @@ export function runSlash(
     case "model":
       useUi.getState().set({ modelPicker: sessionId });
       break;
+    case "goal": {
+      // 与 cli/tui 同一套解析：空=查看，edit <objective> 改原文，其余整段当新目标建。
+      const rest = args.trim();
+      const action = ((): GoalAction | null => {
+        if (rest === "") return { action: "show" };
+        if (rest === "clear") return { action: "clear" };
+        if (rest === "pause") return { action: "pause" };
+        if (rest === "resume") return { action: "resume" };
+        if (rest === "edit") return null;
+        const edit = rest.match(/^edit\s+(.+)$/s);
+        if (edit) return { action: "edit", objective: edit[1].trim() };
+        return { action: "create", objective: rest };
+      })();
+      if (!action) {
+        toast("用法：/goal edit <objective>");
+        break;
+      }
+      void rpc
+        .call<SessionGoalResult>("session/goal", {
+          session_id: sessionId,
+          action,
+        })
+        .then((result) => {
+          const goal = result.goal;
+          if (!goal) {
+            toast("当前没有目标；/goal <objective> 创建");
+            return;
+          }
+          const phase =
+            goal.phase === "active"
+              ? "进行中"
+              : goal.phase === "paused"
+                ? "已暂停"
+                : goal.phase === "blocked"
+                  ? "已阻塞"
+                  : "已完成";
+          toast(`目标：${goal.objective}`, {
+            description: `${phase} · 已跑 ${goal.rounds_started} 轮 · ${goal.armed ? "自动续跑" : "续跑已停"}`,
+          });
+          useTranscript.getState().mutate(sessionId, (view) => {
+            view.goal = goal;
+          });
+        })
+        .catch((error) => toast.error(`目标操作失败：${errorText(error)}`));
+      break;
+    }
     case "btw":
       useLayout.getState().openInspector("btw");
       if (!useBtw.getState().ask(sessionId, args)) toast("上一个旁路问题还在回答中");

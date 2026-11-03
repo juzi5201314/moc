@@ -39,14 +39,14 @@ use crate::methods::{
     JobBackground, JobKill, JobList, JobReadOutput, Ping, PingResult, PluginList, PluginReload,
     PluginRunCommand, PromptParams, ResourceComplete, SessionBash, SessionBtw, SessionBtwCancel,
     SessionCancel, SessionCancelResult, SessionCompact, SessionContext, SessionContextContent,
-    SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew, SessionPlanApprove,
-    SessionPlanDiff, SessionPlanMode, SessionPlanRevise, SessionPrompt, SessionReask, SessionRedo,
-    SessionRename, SessionRetry, SessionRewind, SessionSetAutonomy, SessionSetEngine,
-    SessionSetFastMode, SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload,
-    SessionUnlock, SessionUnsteer, SessionUsage, SessionWorkflowActivate, SessionWorkflowApprove,
-    SessionWorkflowArtifact, SessionWorkflowResume, SessionWorkflowRun, SessionWorkflowRuns,
-    SessionWorkflowSetRoleModel, SessionWorkflowStop, WebStateGet, WebStateSave,
-    WorkspaceGitBranch,
+    SessionDelete, SessionGoal, SessionList, SessionLoad, SessionLoadPage, SessionNew,
+    SessionPlanApprove, SessionPlanDiff, SessionPlanMode, SessionPlanRevise, SessionPrompt,
+    SessionReask, SessionRedo, SessionRename, SessionRetry, SessionRewind, SessionSetAutonomy,
+    SessionSetEngine, SessionSetFastMode, SessionSetModel, SessionSetPermission, SessionSteer,
+    SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage, SessionWorkflowActivate,
+    SessionWorkflowApprove, SessionWorkflowArtifact, SessionWorkflowResume, SessionWorkflowRun,
+    SessionWorkflowRuns, SessionWorkflowSetRoleModel, SessionWorkflowStop, WebStateGet,
+    WebStateSave, WorkspaceGitBranch,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
@@ -842,6 +842,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_set_fast_mode(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionGoal as Method>::NAME => {
+                let params = params_from_value::<SessionGoal>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_goal(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

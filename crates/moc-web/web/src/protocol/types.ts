@@ -290,6 +290,37 @@ export type AgentMessageMeta = {
   delivery: AgentMessageOutcome;
 };
 
+// ---------- goal ----------
+
+export type GoalPhase = "active" | "paused" | "blocked" | "complete";
+
+export type GoalBlockReason = { code: string; message: string };
+
+/** 一轮 goal 续跑的来源标记（`Entry::Message.goal` / `goal_round_message` 更新）。 */
+export type GoalRoundMeta = { goal_id: string; revision: number; round: number };
+
+export type GoalView = {
+  id: string;
+  revision: number;
+  objective: string;
+  phase: GoalPhase;
+  blocked_reason?: GoalBlockReason;
+  rounds_started: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+  armed: boolean;
+};
+
+export type GoalAction =
+  | { action: "show" }
+  | { action: "create"; objective: string }
+  | { action: "edit"; objective: string }
+  | { action: "pause" }
+  | { action: "resume" }
+  | { action: "clear" };
+
+export type SessionGoalResult = { goal?: GoalView };
+
 export type AgentInfo = {
   id: string;
   parent_id: string;
@@ -326,6 +357,7 @@ export type TranscriptEntry = {
   tool?: ToolExecution;
   bash?: BashCommand;
   agent?: AgentMessageMeta;
+  goal_round?: GoalRoundMeta;
   reminder?: ReminderStamp;
 };
 
@@ -411,6 +443,7 @@ export type SessionLoadResult = {
   todos?: TodoPhase[];
   plans?: PlanInfo[];
   child_calls?: TranscriptChildCall[];
+  goal?: GoalView;
 };
 
 export type SessionLoadPageResult = {
@@ -423,6 +456,7 @@ export type SessionLoadPageResult = {
   content_truncated?: boolean;
   // 最近一次回退截掉、仍可前滚接回的条目（core 进程内存态，重启即失效）。
   redo_entries?: TranscriptEntry[];
+  goal?: GoalView;
 };
 
 export type SessionModelOverflowAction = "switch" | "compact" | "ask";
@@ -715,6 +749,8 @@ export type SessionUpdate =
   | { type: "plan_mode_changed"; active: boolean }
   | { type: "model_changed"; model: string }
   | { type: "fast_mode_changed"; enabled: boolean }
+  | { type: "goal_changed"; goal: GoalView | null }
+  | { type: "goal_round_message"; meta: GoalRoundMeta; body: string }
   | { type: "todo_changed"; phases: TodoPhase[] }
   | { type: "todo_reminder"; prompt_id: string; open_items: number }
   | { type: "plan_submitted"; plan: PlanInfo }
@@ -767,6 +803,8 @@ export const SESSION_UPDATE_TYPES: Record<SessionUpdateType, true> = {
   plan_mode_changed: true,
   model_changed: true,
   fast_mode_changed: true,
+  goal_changed: true,
+  goal_round_message: true,
   todo_changed: true,
   todo_reminder: true,
   plan_submitted: true,

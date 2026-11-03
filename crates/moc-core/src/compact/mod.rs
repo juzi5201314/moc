@@ -130,8 +130,10 @@ pub(crate) async fn model_context(
     model: &crate::ResolvedModel,
 ) -> Result<ModelContext, CoreError> {
     let cwd = std::path::Path::new(&state.session.cwd);
-    let skills =
-        inner.session_skills(cwd, crate::workflow::workflows_active(state, &config.workflow))?;
+    let skills = inner.session_skills(
+        cwd,
+        crate::workflow::workflows_active(state, &config.workflow),
+    )?;
     let summary = inner.mcp_summary(config).await?;
     let tool_declarations = inner
         .tool_declarations(
@@ -833,6 +835,7 @@ mod tests {
                 tool: None,
                 finish_reason: None,
                 agent: None,
+                goal: None,
             },
             header.id().to_owned(),
             2,

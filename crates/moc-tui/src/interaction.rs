@@ -44,6 +44,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                                 None,
                                 Vec::new(),
                                 false,
+                                None,
                             ));
                         }
                         Err(error) => {

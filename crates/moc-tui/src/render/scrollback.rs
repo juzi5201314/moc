@@ -554,7 +554,7 @@ fn estimate_entry_height(entry: &Entry, app: &App, level: DetailLevel, width: u1
             }
         }
         Block::Tool(tool) => estimate_tool_height(tool, app, level, width),
-        Block::AgentMessage { body, .. } => {
+        Block::AgentMessage { body, .. } | Block::GoalRound { body, .. } => {
             // 与 `agent_message_block` 同源：简略档是预览行数 + 省略行，隐藏档只剩标题行。
             let rows = wrapped_text_rows(body, prose_width(width)).len();
             let (shown, omitted) = match level {
@@ -793,6 +793,9 @@ fn render_entry_single(
         Block::Tool(tool) => render_tool(tool, app, width, level, spawn_images),
         Block::AgentMessage { meta, body } => {
             EntryLines::plain(agent_message_block(meta, body, width, theme, level))
+        }
+        Block::GoalRound { meta, body } => {
+            EntryLines::plain(goal_round_block(meta, body, width, theme, level))
         }
         Block::Todo { phases } => EntryLines::plain(render_todo(phases, app, width)),
         Block::Note { text, error } => EntryLines::plain(note_block(text, *error, width, theme)),
@@ -1177,6 +1180,59 @@ fn agent_message_block(
             Span::styled("◀ ", Style::new().fg(theme.accent_tool)),
             Span::styled(meta.from_title.clone(), Style::new().fg(theme.text_primary)),
             Span::styled(format!("{}{word}", labels::SEP), Style::new().fg(color)),
+        ]),
+        width,
+    )];
+    let indent = " ".repeat(PROSE_INDENT);
+    let rows = wrapped_text_rows(body, prose_width(width));
+    let total = rows.len();
+    let shown = match level {
+        DetailLevel::Hidden => 0,
+        DetailLevel::Brief => total.min(AGENT_MESSAGE_PREVIEW_ROWS),
+        DetailLevel::Full => total,
+    };
+    for row in rows.into_iter().take(shown) {
+        lines.push(Line::from(vec![
+            Span::raw(indent.clone()),
+            Span::styled(row, Style::new().fg(theme.text_primary)),
+        ]));
+    }
+    if shown < total && level != DetailLevel::Hidden {
+        lines.push(Line::from(vec![
+            Span::raw(indent),
+            Span::styled(
+                labels::more_lines(total - shown),
+                Style::new().fg(theme.gray_dim),
+            ),
+        ]));
+    }
+    lines.push(Line::default());
+    lines
+}
+
+/// goal 续跑轮卡片：标题给 `goal` 与轮次，正文同代理消息卡片排版。
+fn goal_round_block(
+    meta: &moc_protocol::methods::GoalRoundMeta,
+    body: &str,
+    width: usize,
+    theme: &Theme,
+    level: DetailLevel,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![clip_line(
+        Line::from(vec![
+            Span::raw(" ".repeat(TITLE_INDENT)),
+            Span::styled("◇ ", Style::new().fg(theme.accent_running)),
+            Span::styled(
+                "goal ".to_owned(),
+                Style::new()
+                    .fg(theme.accent_running)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("round {}{}", meta.round, labels::SEP),
+                Style::new().fg(theme.text_primary),
+            ),
+            Span::styled("auto".to_owned(), Style::new().fg(theme.gray_bright)),
         ]),
         width,
     )];

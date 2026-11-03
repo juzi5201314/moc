@@ -153,6 +153,7 @@ mod tests {
                 tool: None,
                 finish_reason: None,
                 agent: None,
+                goal: None,
             },
             header.id().into(),
             2,

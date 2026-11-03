@@ -621,6 +621,45 @@ function AgentMessageRow({
   );
 }
 
+function GoalRoundRow({
+  block,
+  axis,
+}: {
+  block: Extract<Block, { kind: "goal-round" }>;
+  axis: DetailLevel;
+}) {
+  const [level, setLevel] = useState(axis);
+  const head = headLines(block.body, BRIEF_BODY_ROWS);
+  const lines = level === "full" ? block.body : head.lines.join("\n");
+  return (
+    <div>
+      <RowHeader
+        icon={<BotIcon />}
+        verb={`目标续跑 · 第 ${block.round} 轮`}
+        interactive
+        open={level === "full"}
+        onToggle={() => setLevel(toggledLevel(axis, level))}
+      />
+      {level !== "hidden" && (
+        <Body>
+          <div className="rounded-xl bg-code px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground">
+            {lines}
+            {level === "brief" && head.hidden > 0 && (
+              <button
+                type="button"
+                onClick={() => setLevel("full")}
+                className="mt-1 block text-2xs text-text-tertiary hover:text-foreground"
+              >
+                ⋯ 还有 {head.hidden} 行
+              </button>
+            )}
+          </div>
+        </Body>
+      )}
+    </div>
+  );
+}
+
 /** 一组连续的活动行。行的 key 带上所属层的档位：档位一变就按新档位重建，收回手动展开。 */
 export function ActivityGroup({
   blocks,
@@ -679,6 +718,8 @@ export function ActivityGroup({
             );
           case "agent-message":
             return <AgentMessageRow key={`${block.id}:${tools}`} block={block} axis={tools} />;
+          case "goal-round":
+            return <GoalRoundRow key={`${block.id}:${tools}`} block={block} axis={tools} />;
           case "status":
             return (
               <RowHeader

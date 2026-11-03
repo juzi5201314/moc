@@ -115,6 +115,7 @@ impl PlanHarness {
                 }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
             .expect("计划轮次");

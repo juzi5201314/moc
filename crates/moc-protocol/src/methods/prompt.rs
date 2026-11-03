@@ -80,6 +80,10 @@ pub struct PromptParams {
     /// 本条输入是代理间消息：携带来源元信息，落库为 `Entry::Message.agent`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_message: Option<super::agent::AgentMessageMeta>,
+    /// 本条输入是一轮 goal 续跑：携带来源元信息，落库为 `Entry::Message.goal`。
+    /// 只由 core 内部的续轮驱动设置，前端不直接传。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_round: Option<super::session::GoalRoundMeta>,
 }
 
 /// `session/retry` 的参数。
@@ -180,6 +184,7 @@ mod tests {
             }],
             mode: None,
             agent_message: None,
+            goal_round: None,
         };
         assert_eq!(
             serde_json::to_value(&params).expect("可序列化"),

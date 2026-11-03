@@ -65,6 +65,7 @@ pub(crate) async fn wake_for_jobs(
             input: Vec::new(),
             mode: None,
             agent_message: None,
+            goal_round: None,
         },
         record,
         prompt_lock,
@@ -99,6 +100,7 @@ pub async fn run_retry(
         input: Vec::new(),
         mode: None,
         agent_message: None,
+        goal_round: None,
     };
     run_prompt_entry(inner, ctx, params, true).await
 }
@@ -219,6 +221,8 @@ pub(crate) async fn run_prompt_with_lock(
     };
     let guard = PromptGuard::new(ctx.cancel().child_token(), parent_guard);
     *runtime.guard.lock() = Some(Arc::clone(&guard));
+    // `/goal pause` 按这个标记识别该不该中止当前提示；仅续跑轮有值。
+    *runtime.goal_active_round.lock() = params.goal_round.clone();
     let scoped_ctx = ctx.with_cancel(guard.cancel.clone());
     let result = run_prompt_locked(
         Arc::clone(&inner),
@@ -276,6 +280,7 @@ pub(crate) async fn run_prompt_with_lock(
         result
     };
     *runtime.guard.lock() = None;
+    *runtime.goal_active_round.lock() = None;
     // 推送失败只影响前端能否看到，不能跳过后面的清理：steering 复位、修复工具调用配对、
     // 写入补充消息和广播解锁都必须执行。
     let finished = match &result {
@@ -384,6 +389,24 @@ pub(crate) async fn run_prompt_with_lock(
             wake_for_jobs(Arc::clone(&inner), ctx.clone(), session_id.clone()).await;
         }
     }
+    // 目标续跑只在一切正常时接力：用户取消、循环终止、RPC 错误、length/cancelled
+    // 收场一律摘掉 armed，需要 `/goal resume`（或工具的 update/resume）才恢复。
+    let keep_armed = result.as_ref().is_ok_and(|outcome| {
+        !ctx.cancel().is_cancelled()
+            && !matches!(
+                outcome.finish_reason,
+                FinishReason::Cancelled | FinishReason::LoopDetected | FinishReason::Length
+            )
+    });
+    if !keep_armed {
+        runtime
+            .goal_armed
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    // 必须先释放提示锁再评估续跑：本轮收尾持有 `_prompt` 时 try_prompt_lock 必失败，
+    // 续跑会被自己挡掉。
+    drop(_prompt);
+    crate::goal::maybe_continue(&inner, &ctx, &session_id).await;
     result
 }
 
@@ -523,8 +546,11 @@ async fn run_prompt_locked(
         state_snapshot.session.is_subagent(),
     );
     let agent_meta = params.agent_message.clone();
+    let goal_meta = params.goal_round.clone();
     let source = if agent_meta.is_some() {
         "agent"
+    } else if goal_meta.is_some() {
+        "goal"
     } else {
         "user"
     };
@@ -556,13 +582,19 @@ async fn run_prompt_locked(
                 }
                 None => message,
             };
-            // 代理消息原样写入会话：skill 调用对用户输入的改写不适用于代理投递的消息。
-            let message = if agent_meta.is_none() {
+            // 代理与 goal 续跑消息原样写入会话：skill 调用对用户输入的改写不适用。
+            let message = if agent_meta.is_none() && goal_meta.is_none() {
                 apply_skill_invocation(
                     &inner,
                     message,
                     &state_snapshot.session.cwd,
-                    crate::workflow::workflows_active(&state_snapshot, &inner.project_config(std::path::Path::new(&state_snapshot.session.cwd)).map_err(to_rpc)?.workflow),
+                    crate::workflow::workflows_active(
+                        &state_snapshot,
+                        &inner
+                            .project_config(std::path::Path::new(&state_snapshot.session.cwd))
+                            .map_err(to_rpc)?
+                            .workflow,
+                    ),
                 )
                 .await?
             } else {
@@ -592,15 +624,34 @@ async fn run_prompt_locked(
                     .await
                     .map_err(protocol_to_rpc)?;
             }
-            None => {
-                inner
-                    .sessions
-                    .append_message(&params.session_id, user_message.clone(), None, None)
-                    .await
-                    .map_err(to_rpc)?;
-            }
+            None => match &goal_meta {
+                Some(meta) => {
+                    inner
+                        .sessions
+                        .append_goal_message(&params.session_id, user_message.clone(), meta.clone())
+                        .await
+                        .map_err(to_rpc)?;
+                    update
+                        .emit(
+                            params.session_id.clone(),
+                            SessionUpdate::GoalRoundMessage {
+                                meta: meta.clone(),
+                                body: user_message.text(),
+                            },
+                        )
+                        .await
+                        .map_err(protocol_to_rpc)?;
+                }
+                None => {
+                    inner
+                        .sessions
+                        .append_message(&params.session_id, user_message.clone(), None, None)
+                        .await
+                        .map_err(to_rpc)?;
+                }
+            },
         }
-        if state_snapshot.session.title == "新会话" {
+        if state_snapshot.session.title == "新会话" && goal_meta.is_none() {
             let title = user_message
                 .text()
                 .lines()
@@ -897,6 +948,27 @@ async fn run_prompt_locked(
                     None => candidates.push(Reminder::retract(
                         reminder::key::ROSTER,
                         "The earlier agent roster no longer applies: this session currently has no parent agent or siblings to coordinate with.",
+                    )),
+                }
+                // goal 上下文：有目标时注入，无目标（或已清除）时撤回旧条目。
+                let goal_view = {
+                    let state = record.state.lock().await;
+                    crate::goal::view(
+                        state.goal.as_ref(),
+                        state.goal_rounds_started,
+                        runtime
+                            .goal_armed
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    )
+                };
+                match &goal_view {
+                    Some(goal) => candidates.push(Reminder::durable(
+                        reminder::key::GOAL,
+                        crate::goal::goal_context(goal),
+                    )),
+                    None => candidates.push(Reminder::retract(
+                        reminder::key::GOAL,
+                        "The earlier goal context no longer applies: this session has no goal.",
                     )),
                 }
                 // MCP 服务器可以在会话中途刷新工具列表：索引走提醒通道，系统前缀
@@ -1587,6 +1659,8 @@ async fn run_prompt_locked(
             permission,
             allow_agents: state_snapshot.session.delegation_depth < project_config.agents.max_depth,
             subagent,
+            user_initiated: agent_meta.is_none() && goal_meta.is_none(),
+            goal_round: goal_meta.clone(),
             tool_policy: state_snapshot
                 .agent
                 .as_ref()
@@ -1949,6 +2023,7 @@ mod tests {
                 tool: None,
                 finish_reason,
                 agent: None,
+                goal: None,
             },
             "parent".into(),
             at_ms,

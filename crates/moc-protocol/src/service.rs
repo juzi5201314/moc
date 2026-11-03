@@ -38,13 +38,14 @@ use crate::methods::{
     PermissionResult, PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
     PluginRunCommandParams, PluginRunCommandResult, PromptParams, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams,
-    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
-    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
-    SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams,
-    SessionPlanReviseParams, SessionPlanReviseResult, SessionReaskParams, SessionRedoParams,
-    SessionRenameParams, SessionRetryParams, SessionRewindParams, SessionSetAutonomyParams,
-    SessionSetEngineParams, SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
+    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionGoalParams,
+    SessionGoalResult, SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
+    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
+    SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
+    SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams, SessionPlanReviseResult,
+    SessionReaskParams, SessionRedoParams, SessionRenameParams, SessionRetryParams,
+    SessionRewindParams, SessionSetAutonomyParams, SessionSetEngineParams,
+    SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
     SessionUpdateParams, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
     WebStateDocument, WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams,
@@ -445,6 +446,16 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: SessionSetFastModeParams,
     ) -> impl Future<Output = Result<SessionInfo, RpcError>> + Send;
+
+    /// 查看或变更会话目标；目标活跃时每轮提示结束自动续跑，直到达成或被叫停。
+    ///
+    /// 目标相位与 armed 的变化经 [`SessionUpdate::GoalChanged`] 推送；
+    /// 每个自动续跑轮的消息经 [`SessionUpdate::GoalRoundMessage`] 推送。
+    fn session_goal(
+        &self,
+        ctx: RequestContext,
+        params: SessionGoalParams,
+    ) -> impl Future<Output = Result<SessionGoalResult, RpcError>> + Send;
 
     /// 批准或拒绝已提交计划。
     fn session_plan_approve(

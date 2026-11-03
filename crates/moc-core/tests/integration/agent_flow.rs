@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::support::{Harness, transcript_entries};
 use moc_llm::Role;
 use moc_protocol::methods::{
     AgentList, AgentListParams, AgentMessage, AgentMessageOutcome, AgentMessageParams, AgentSpawn,
@@ -17,7 +18,6 @@ use moc_protocol::methods::{
 };
 use parking_lot::Mutex;
 use serde_json::{Value, json};
-use crate::support::{Harness, transcript_entries};
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
     matchers::{method, path},
@@ -1999,6 +1999,7 @@ async fn fusion_cancel_stops_a_background_sidekick() {
                 }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
     });

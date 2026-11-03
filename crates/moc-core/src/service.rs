@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use moc_llm::Client;
+use moc_protocol::features::flag_for_engine;
 use moc_protocol::methods::{
     AgentListParams, AgentListResult, AgentMessageParams, AgentMessageResult, AgentProfile,
     AgentSpawnParams, AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams,
@@ -20,18 +21,18 @@ use moc_protocol::methods::{
     PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
     SessionAutonomy, SessionCompactParams, SessionContextContentParams, SessionContextParams,
-    SessionDeleteParams, SessionEngine, SessionInfo, SessionListParams, SessionListResult,
-    SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
-    SessionNewParams, SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult,
-    SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult,
-    SessionReaskParams, SessionRedoParams, SessionRenameParams, SessionRetryParams,
-    SessionRewindParams, SessionSetAutonomyParams, SessionSetEngineParams,
-    SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
-    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
-    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument,
-    WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
+    SessionDeleteParams, SessionEngine, SessionGoalParams, SessionGoalResult, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
+    SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPermission,
+    SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
+    SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult, SessionReaskParams,
+    SessionRedoParams, SessionRenameParams, SessionRetryParams, SessionRewindParams,
+    SessionSetAutonomyParams, SessionSetEngineParams, SessionSetFastModeParams,
+    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdate, SessionUsageParams, SessionUsageResult, UnsteerParams,
+    UnsteerResult, WebStateDocument, WebStateGetParams, WebStateSaveParams,
+    WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
-use moc_protocol::features::flag_for_engine;
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode, UpdateSink};
 use parking_lot::RwLock;
 use serde_json::json;
@@ -58,6 +59,13 @@ pub(crate) struct SessionRuntime {
     /// 代理间消息的收件箱。运行中的提示在两轮之间取走消息并写入会话。
     pub agent_inbox: Mutex<crate::agents::AgentInbox>,
     pub guard: parking_lot::Mutex<Option<Arc<prompt::guard::PromptGuard>>>,
+    /// 本进程是否允许该会话的目标自动续跑；不落库，会话加载时恒为 `false`，
+    /// 由 `session/goal` 的 create/resume 或 `create_goal`/`update_goal` 工具置位。
+    pub goal_armed: std::sync::atomic::AtomicBool,
+    /// 正在跑的 goal 续跑轮的来源标记；`/goal pause` 用它识别该不该中止当前提示。
+    pub goal_active_round: parking_lot::Mutex<Option<moc_protocol::methods::GoalRoundMeta>>,
+    /// 目标操作串行化：RPC 与工具侧的读-改-写互斥。
+    pub goal_op: tokio::sync::Mutex<()>,
     /// Grok Build 两遍压缩中提前摘要（prefire）的状态；用同步原语实现，不跨任务持有异步锁。
     pub grok_prefire: crate::compact::grok_build::prefire::PrefireState,
     /// 本会话累积的沙盒授权；模式切换或 `clear_grants` 时清空。
@@ -86,6 +94,9 @@ impl SessionRuntime {
             steering: Mutex::new(management::Steering::default()),
             agent_inbox: Mutex::new(crate::agents::AgentInbox::default()),
             guard: parking_lot::Mutex::new(None),
+            goal_armed: std::sync::atomic::AtomicBool::new(false),
+            goal_active_round: parking_lot::Mutex::new(None),
+            goal_op: tokio::sync::Mutex::new(()),
             grok_prefire: crate::compact::grok_build::prefire::PrefireState::default(),
             sandbox_grants: Arc::new(RwLock::new(crate::sandbox::SandboxGrants::default())),
             sandbox_scratch: scratch,
@@ -1201,7 +1212,10 @@ impl AgentService for Core {
             let state = record.state.lock().await;
             crate::workflow::workflows_active(&state, &config.workflow)
         };
-        let skills = self.inner.session_skills(&cwd, workflows_active).map_err(to_rpc)?;
+        let skills = self
+            .inner
+            .session_skills(&cwd, workflows_active)
+            .map_err(to_rpc)?;
         let context = crate::resources::ResourceContext {
             session_id: &params.session_id,
             cwd: &cwd,
@@ -1513,6 +1527,9 @@ impl AgentService for Core {
             .await
             .map_err(to_rpc)?;
         result.session.permission = self.inner.effective_permission(result.session.permission);
+        if result.goal.is_some() {
+            result.goal = goal_with_armed(&self.inner, &params.session_id, &record).await;
+        }
         Ok(result)
     }
 
@@ -1533,6 +1550,15 @@ impl AgentService for Core {
             .await
             .map_err(to_rpc)?;
         result.session.permission = self.inner.effective_permission(result.session.permission);
+        if result.goal.is_some() {
+            let record = self
+                .inner
+                .sessions
+                .get(&params.session_id)
+                .await
+                .map_err(to_rpc)?;
+            result.goal = goal_with_armed(&self.inner, &params.session_id, &record).await;
+        }
         Ok(result)
     }
     async fn session_rewind(
@@ -1561,6 +1587,9 @@ impl AgentService for Core {
             .map_err(to_rpc)?;
         loaded.session.lock = None;
         loaded.session.permission = self.inner.effective_permission(loaded.session.permission);
+        if loaded.goal.is_some() {
+            loaded.goal = goal_with_armed(&self.inner, &params.session_id, &record).await;
+        }
         // 原地回退不是新会话开始，不再注入插件 session_start 消息——
         // 那会向截断后的历史追加新条目，使刚压栈的前滚尾部立刻失效。
         // rewind 已把「尾部引用过、前缀不引用」的子代理标成孤儿，还在跑的要停掉。
@@ -1603,6 +1632,9 @@ impl AgentService for Core {
             .map_err(to_rpc)?;
         loaded.session.lock = None;
         loaded.session.permission = self.inner.effective_permission(loaded.session.permission);
+        if loaded.goal.is_some() {
+            loaded.goal = goal_with_armed(&self.inner, &params.session_id, &record).await;
+        }
         Ok(loaded)
     }
 
@@ -1632,6 +1664,9 @@ impl AgentService for Core {
             .map_err(to_rpc)?;
         loaded.session.lock = None;
         loaded.session.permission = self.inner.effective_permission(loaded.session.permission);
+        if loaded.goal.is_some() {
+            loaded.goal = goal_with_armed(&self.inner, &params.session_id, &record).await;
+        }
         Ok(loaded)
     }
 
@@ -1989,6 +2024,16 @@ impl AgentService for Core {
             .await
             .map_err(protocol_to_rpc)?;
         Ok(info)
+    }
+
+    async fn session_goal(
+        &self,
+        ctx: RequestContext,
+        params: SessionGoalParams,
+    ) -> Result<SessionGoalResult, RpcError> {
+        crate::goal::apply_action(&self.inner, &ctx, &params.session_id, params.action)
+            .await
+            .map(|goal| SessionGoalResult { goal })
     }
 
     async fn session_plan_mode(
@@ -2379,8 +2424,9 @@ impl AgentService for Core {
         };
         let data = std::fs::read(&path)
             .map_err(|e| to_rpc(CoreError::Session(format!("artifact unreadable: {e}"))))?;
-        let content = serde_json::from_slice::<serde_json::Value>(&data)
-            .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&data).to_string()));
+        let content = serde_json::from_slice::<serde_json::Value>(&data).unwrap_or_else(|_| {
+            serde_json::Value::String(String::from_utf8_lossy(&data).to_string())
+        });
         Ok(moc_protocol::WorkflowArtifactResult {
             artifact_id: params.artifact_id,
             version,
@@ -2575,7 +2621,7 @@ fn write_lease_error(
     to_rpc(error)
 }
 
-fn to_rpc(error: CoreError) -> RpcError {
+pub(crate) fn to_rpc(error: CoreError) -> RpcError {
     let message = error.to_string();
     let code = if message.contains("SESSION_NOT_FOUND") {
         RpcErrorCode::SessionNotFound
@@ -2593,6 +2639,24 @@ fn to_rpc(error: CoreError) -> RpcError {
         RpcErrorCode::InternalError
     };
     RpcError::new(code.code(), message)
+}
+
+/// load 系结果的 armed 补丁：`SessionTable` 读不到本进程 runtime，这里统一补；
+/// 冷加载会话没有 runtime 记录，armed 天然为 `false`（续跑不自行复活）。
+async fn goal_with_armed(
+    inner: &Arc<CoreInner>,
+    session_id: &str,
+    record: &Arc<crate::session::SessionRecord>,
+) -> Option<moc_protocol::methods::GoalView> {
+    let runtime = inner.runtime(session_id).await;
+    let state = record.state.lock().await;
+    crate::goal::view(
+        state.goal.as_ref(),
+        state.goal_rounds_started,
+        runtime
+            .goal_armed
+            .load(std::sync::atomic::Ordering::Relaxed),
+    )
 }
 
 pub(crate) fn invalid_params(message: impl Into<String>) -> RpcError {
@@ -2797,4 +2861,3 @@ mod management;
 pub(crate) mod mode;
 pub(crate) mod model;
 pub(crate) mod prompt;
-

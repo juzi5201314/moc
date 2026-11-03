@@ -106,6 +106,11 @@ pub enum AppEvent {
         /// 是否把明细写进转写（`/usage`）；状态栏刷新为后台静默。
         show: bool,
     },
+    /// `/goal` 命令回执：更新 `app.goal` 并把渲染文本写进转写。
+    GoalResult {
+        goal: Option<moc_protocol::methods::GoalView>,
+        text: String,
+    },
     /// 上下文估算完成。
     ContextUsage(ContextUsageResult),
     /// 上下文正文读取完成。
@@ -126,6 +131,8 @@ pub enum AppEvent {
         Vec<moc_protocol::methods::TodoPhase>,
         /// 只读打开：另一个 core 进程持有写租约。
         bool,
+        /// 会话当前目标快照；`SessionLoadResult.goal`。
+        Option<moc_protocol::methods::GoalView>,
     ),
     /// 会话回退/前滚完成；`is_redo` 区分向前滚（选中的是已回退节点，不还原到输入框）。
     Rewound {

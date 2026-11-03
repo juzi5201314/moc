@@ -318,6 +318,7 @@ mod tests {
                     tool: None,
                     finish_reason: None,
                     agent: None,
+                    goal: None,
                 },
                 parent,
                 2,

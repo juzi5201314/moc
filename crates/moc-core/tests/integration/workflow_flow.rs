@@ -200,6 +200,7 @@ async fn workflow_end_to_end_with_model_override() {
                     }],
                     mode: None,
                     agent_message: None,
+                    goal_round: None,
                 })
                 .await
                 .expect("prompt 成功")
@@ -371,6 +372,7 @@ async fn workflow_reject_returns_feedback() {
                 input: vec![InputPart::Text { text: "go".into() }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
             .expect("prompt")
@@ -745,6 +747,7 @@ async fn drive_run(
                 input: vec![InputPart::Text { text }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
     });
@@ -1183,6 +1186,7 @@ async fn amend_imports_then_seeds_from_divergence() {
                 }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await;
     });
@@ -1362,6 +1366,7 @@ async fn set_role_model_reroutes_later_asks() {
                 input: vec![InputPart::Text { text: "go".into() }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await;
     });
@@ -1494,6 +1499,7 @@ async fn hole_fill_with_new_command_approval() {
                 input: vec![InputPart::Text { text: "go".into() }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
     }));
@@ -1543,6 +1549,7 @@ async fn hole_fill_with_new_command_approval() {
                                 }],
                                 mode: None,
                                 agent_message: None,
+                    goal_round: None,
                             })
                             .await
                             .expect("fill prompt 成功");
@@ -1622,6 +1629,7 @@ return { names, head, git: git_status };
                     input: vec![InputPart::Text { text: "go".into() }],
                     mode: None,
                     agent_message: None,
+                    goal_round: None,
                 })
                 .await
                 .expect("prompt 成功")

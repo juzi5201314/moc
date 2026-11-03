@@ -21,6 +21,11 @@ pub fn plan_id() -> String {
     format!("plan_{}", short_uuid())
 }
 
+/// 创建目标标识。
+pub fn goal_id() -> String {
+    format!("goal_{}", short_uuid())
+}
+
 /// 创建当前会话内单调递增的提示标识。
 pub fn prompt_id(sequence: u64) -> String {
     format!("prompt_{sequence}")

@@ -259,6 +259,7 @@ pub fn send_prompt(
                 input: parts,
                 mode,
                 agent_message: None,
+                goal_round: None,
             })
             .await
             .map(|_| ())

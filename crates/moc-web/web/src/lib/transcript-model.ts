@@ -6,6 +6,7 @@ import type {
   ContentPart,
   ContextUsageResult,
   FinishReason,
+  GoalView,
   ImageSource,
   JobInfo,
   Message,
@@ -68,6 +69,7 @@ export type Block =
       atMs: number;
     }
   | { kind: "agent-message"; id: string; from: string; body: string; atMs: number }
+  | { kind: "goal-round"; id: string; round: number; body: string; atMs: number }
   | {
       kind: "reasoning";
       id: string;
@@ -149,6 +151,8 @@ export type SessionView = {
   context: ContextUsageResult | null;
   compactingId: string | null;
   jobs: Record<string, JobInfo>;
+  /** 当前会话目标（`goal_changed` 最新快照）；无目标为 null。 */
+  goal: GoalView | null;
   seq: number;
 };
 
@@ -172,6 +176,7 @@ export function createView(info: SessionInfo): SessionView {
     context: null,
     compactingId: null,
     jobs: {},
+    goal: null,
     seq: 0,
   };
 }
@@ -278,6 +283,16 @@ export function entriesToBlocks(
         kind: "agent-message",
         id: nextId(),
         from: entry.agent.from_title,
+        body: messageText(message),
+        atMs: entry.at_ms,
+      });
+      continue;
+    }
+    if (entry.goal_round) {
+      blocks.push({
+        kind: "goal-round",
+        id: nextId(),
+        round: entry.goal_round.round,
         body: messageText(message),
         atMs: entry.at_ms,
       });
@@ -890,6 +905,18 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         body: update.body,
         atMs: now,
       });
+      break;
+    case "goal_round_message":
+      view.blocks.push({
+        kind: "goal-round",
+        id: nextId(view),
+        round: update.meta.round,
+        body: update.body,
+        atMs: now,
+      });
+      break;
+    case "goal_changed":
+      view.goal = update.goal;
       break;
     default:
       break;

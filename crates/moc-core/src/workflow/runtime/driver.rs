@@ -1371,6 +1371,7 @@ mod tests {
             finish_reason: None,
             bash: None,
             agent: None,
+            goal: None,
             reminder: None,
         }
     }
@@ -1385,6 +1386,7 @@ mod tests {
             finish_reason: None,
             bash: None,
             agent: None,
+            goal: None,
             reminder: None,
         }
     }

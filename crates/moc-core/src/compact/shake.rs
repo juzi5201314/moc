@@ -212,6 +212,7 @@ mod tests {
                 tool: None,
                 finish_reason: None,
                 agent: None,
+                goal: None,
             },
             parent.to_owned(),
             2,

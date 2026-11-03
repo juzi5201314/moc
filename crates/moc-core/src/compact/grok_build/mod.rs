@@ -446,6 +446,7 @@ mod tests {
                 tool: None,
                 finish_reason: None,
                 agent: None,
+                goal: None,
             },
             state.last_entry_id.clone(),
             2,

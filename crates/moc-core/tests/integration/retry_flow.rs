@@ -3,10 +3,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::support::{Harness, text_stream};
 use moc_protocol::methods::*;
 use moc_protocol::{FinishReason, Role, RpcErrorCode};
 use serde_json::Value;
-use crate::support::{Harness, text_stream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
@@ -105,6 +105,7 @@ async fn retry_drops_the_interrupted_turn_before_asking_again() {
                 }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
     });
@@ -206,6 +207,7 @@ async fn retry_replays_tools_that_never_ran_without_asking_the_model() {
                 }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
     });
@@ -291,6 +293,7 @@ async fn retry_resends_context_without_appending_user_message() {
             }],
             mode: None,
             agent_message: None,
+            goal_round: None,
         })
         .await
         .expect_err("上游 500 的提示应失败");

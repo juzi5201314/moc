@@ -13,6 +13,7 @@ mod context_content_flow;
 mod fast_mode_flow;
 mod fs_create_dir_flow;
 mod fs_list_flow;
+mod goal_flow;
 mod grok_build_compaction;
 mod loop_guard_flow;
 mod plugin_flow;

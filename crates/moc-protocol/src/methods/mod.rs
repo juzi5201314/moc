@@ -120,19 +120,21 @@ pub use resources::{
 };
 pub use session::{
     CompactResult, ContextContentResult, ContextContentSection, ContextUsageResult,
-    ContextUsageSection, ModelSwitchOverflow, ModelUsageSummary, ReminderItem, ReminderStamp,
-    SessionAutonomy, SessionCompact, SessionCompactParams, SessionContext, SessionContextContent,
+    ContextUsageSection, GoalAction, GoalBlockReason, GoalPhase, GoalRoundMeta, GoalView,
+    ModelSwitchOverflow, ModelUsageSummary, ReminderItem, ReminderStamp, SessionAutonomy,
+    SessionCompact, SessionCompactParams, SessionContext, SessionContextContent,
     SessionContextContentParams, SessionContextParams, SessionDelete, SessionDeleteParams,
-    SessionEngine, SessionInfo, SessionList, SessionListParams, SessionListResult, SessionLoad,
-    SessionLoadPage, SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams,
-    SessionLoadResult, SessionLockInfo, SessionModelOverflowAction, SessionNew, SessionNewParams,
-    SessionPermission, SessionReask, SessionReaskParams, SessionRedo, SessionRedoParams,
-    SessionRename, SessionRenameParams, SessionRewind, SessionRewindParams, SessionSetAutonomy,
-    SessionSetAutonomyParams, SessionSetEngine, SessionSetEngineParams, SessionSetFastMode,
-    SessionSetFastModeParams, SessionSetModel, SessionSetModelParams, SessionSetModelResult,
-    SessionSetPermission, SessionSetPermissionParams, SessionUnload, SessionUnloadParams,
-    SessionUnlock, SessionUnlockParams, SessionUsage, SessionUsageParams, SessionUsageResult,
-    ToolExecution, ToolStatus, TranscriptChildCall, TranscriptEntry, UsageSource,
+    SessionEngine, SessionGoal, SessionGoalParams, SessionGoalResult, SessionInfo, SessionList,
+    SessionListParams, SessionListResult, SessionLoad, SessionLoadPage, SessionLoadPageParams,
+    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionLockInfo,
+    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission, SessionReask,
+    SessionReaskParams, SessionRedo, SessionRedoParams, SessionRename, SessionRenameParams,
+    SessionRewind, SessionRewindParams, SessionSetAutonomy, SessionSetAutonomyParams,
+    SessionSetEngine, SessionSetEngineParams, SessionSetFastMode, SessionSetFastModeParams,
+    SessionSetModel, SessionSetModelParams, SessionSetModelResult, SessionSetPermission,
+    SessionSetPermissionParams, SessionUnload, SessionUnloadParams, SessionUnlock,
+    SessionUnlockParams, SessionUsage, SessionUsageParams, SessionUsageResult, ToolExecution,
+    ToolStatus, TranscriptChildCall, TranscriptEntry, UsageSource,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{
@@ -201,6 +203,7 @@ mod tests {
                 <SessionSetFastMode as Method>::NAME,
                 "session/set_fast_mode",
             ),
+            (<SessionGoal as Method>::NAME, "session/goal"),
             (<SessionPlanMode as Method>::NAME, "session/plan_mode"),
             (<SessionPlanApprove as Method>::NAME, "session/plan_approve"),
             (<SessionPlanRevise as Method>::NAME, "session/plan_revise"),
@@ -281,6 +284,7 @@ mod tests {
         client::<SessionSetAutonomy>();
         client::<SessionSetModel>();
         client::<SessionSetFastMode>();
+        client::<SessionGoal>();
         client::<SessionPlanMode>();
         client::<SessionPlanApprove>();
         client::<AgentSpawn>();

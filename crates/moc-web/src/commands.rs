@@ -11,6 +11,7 @@ use moc_protocol::features::FeatureFlag;
 pub enum CommandId {
     New,
     Plan,
+    Goal,
     Autonomy,
     Ask,
     Retry,
@@ -56,6 +57,20 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         available_in_side: false,
         hidden: false,
         args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Goal,
+        name: "goal",
+        aliases: &[],
+        usage: "[<objective>|edit <objective>|pause|resume|clear]",
+        description: "查看或设置会话目标；目标存在时每轮提示结束自动续跑，直到达成或叫停",
+        group: CommandGroup::Session,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: false,
+        hidden: false,
+        args: ArgCompletion::Choices(&["edit", "pause", "resume", "clear"]),
         flag: None,
     },
     CommandSpec {

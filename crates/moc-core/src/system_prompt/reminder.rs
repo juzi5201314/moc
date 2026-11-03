@@ -25,6 +25,8 @@ pub mod key {
     pub const CYCLE: &str = "cycle";
     pub const THINKING: &str = "thinking";
     pub const NOTICE: &str = "notice";
+    /// 持久目标上下文（目标存在期间每轮注入）。
+    pub const GOAL: &str = "goal";
 }
 
 /// 条目的注入策略。

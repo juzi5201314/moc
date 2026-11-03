@@ -1679,6 +1679,7 @@ mod tests {
             tool: None,
             bash: None,
             agent: None,
+            goal_round: None,
             reminder: None,
         };
         let mut state = RewindState::default();
@@ -1713,6 +1714,7 @@ mod tests {
             tool: None,
             bash: None,
             agent: None,
+            goal_round: None,
             reminder: None,
         };
         let mut state = RewindState::default();

@@ -22,9 +22,9 @@ use moc_protocol::methods::{
     PluginListParams, PluginListResult, PluginRunCommandParams, PluginRunCommandResult,
     PromptParams, PromptResult, ServerCapabilities, ServerInfo, SessionAutonomy,
     SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
-    SessionEngine, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
-    SessionLoadResult, SessionLockInfo, SessionNewParams, SessionPermission,
-    SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
+    SessionEngine, SessionGoalParams, SessionGoalResult, SessionInfo, SessionListParams,
+    SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo, SessionNewParams,
+    SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
     SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams, SessionPlanReviseResult,
     SessionRenameParams, SessionRequestAsk, SessionRetryParams, SessionSetAutonomyParams,
     SessionSetEngineParams, SessionSetFastModeParams, SessionSetModelParams,
@@ -298,6 +298,7 @@ fn transcript(session_id: &str) -> Vec<TranscriptEntry> {
             }),
             bash: None,
             agent: None,
+            goal_round: None,
             reminder: None,
         })
         .collect()
@@ -490,6 +491,7 @@ impl ScriptedService {
                     tool: None,
                     bash: None,
                     agent: None,
+                    goal_round: None,
                     reminder: None,
                 });
             }
@@ -672,6 +674,7 @@ impl AgentService for ScriptedService {
             todos: Vec::new(),
             plans: Vec::new(),
             child_calls: Vec::new(),
+            goal: None,
         })
     }
 
@@ -828,6 +831,14 @@ impl AgentService for ScriptedService {
         Err(RpcError::of(RpcErrorCode::NotSupported))
     }
 
+    async fn session_goal(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionGoalParams,
+    ) -> Result<SessionGoalResult, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+
     async fn session_plan_approve(
         &self,
         _ctx: RequestContext,
@@ -964,6 +975,7 @@ impl AgentService for ScriptedService {
                 input: Vec::new(),
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             },
         )
         .await
@@ -1066,6 +1078,8 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::Error { .. } => "error",
         SessionUpdate::PromptRewound { .. } => "prompt_rewound",
         SessionUpdate::Workflow { .. } => "workflow",
+        SessionUpdate::GoalChanged { .. } => "goal_changed",
+        SessionUpdate::GoalRoundMessage { .. } => "goal_round_message",
     }
 }
 
@@ -1143,6 +1157,7 @@ pub fn prompt_params(session_id: &str, text: &str) -> PromptParams {
         }],
         mode: None,
         agent_message: None,
+        goal_round: None,
     }
 }
 

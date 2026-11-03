@@ -157,6 +157,8 @@ pub struct App {
     pub scroll_max_offset: usize,
     /// Todo 清单（`TodoChanged` 最新快照）。
     pub todos: Vec<TodoPhase>,
+    /// 当前会话目标（`GoalChanged` 最新快照）；无目标为 `None`。
+    pub goal: Option<moc_protocol::methods::GoalView>,
     /// 右上角 todo HUD 的交互与命中状态。
     pub todo_hud: TodoHudState,
     /// 思考块的显示档位（ctrl+t 循环）。
@@ -503,6 +505,7 @@ impl App {
             history_load_requested: false,
             scroll_max_offset: 0,
             todos: Vec::new(),
+            goal: None,
             todo_hud: TodoHudState::default(),
             thinking_detail: DetailLevel::default(),
             tool_detail: DetailLevel::default(),
@@ -1484,6 +1487,7 @@ impl App {
         self.cost_usd = 0.0;
         self.todos.clear();
         self.todo_hud.reset();
+        self.goal = None;
         self.session = Some(info);
         self.blocks = blocks;
         self.context_usage = None;

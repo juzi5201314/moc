@@ -47,6 +47,14 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
             }));
             continue;
         }
+        // goal 续跑轮：带轮次标记的用户消息，恢复成独立卡片而不是普通输入。
+        if let Some(meta) = &record.goal_round {
+            blocks.push(Entry::new(Block::GoalRound {
+                meta: meta.clone(),
+                body: message.text(),
+            }));
+            continue;
+        }
         // 运行时提醒是模型内部状态，不属于对话，不进 scrollback。
         if record.reminder.is_some() {
             continue;
@@ -211,6 +219,7 @@ mod tests {
             tool,
             bash: None,
             agent: None,
+            goal_round: None,
             reminder: None,
         }
     }

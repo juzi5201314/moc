@@ -884,6 +884,7 @@ mod tests {
                     tool: None,
                     bash: None,
                     agent: None,
+                    goal_round: None,
                     reminder: None,
                 },
                 TranscriptEntry {
@@ -893,6 +894,7 @@ mod tests {
                     tool: None,
                     bash: None,
                     agent: None,
+                    goal_round: None,
                     reminder: None,
                 },
             ],

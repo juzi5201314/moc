@@ -73,9 +73,11 @@ impl Renderer {
                     E::ApprovalRequested { request } => {
                         // 文本版编排图：phase 列表 + role 默认模型 + 命令集。
                         let _ = writeln!(out, "\n[workflow 审批 {}]", request.request_id);
-                        if let Some(phases) = request.plan.get("phases").and_then(|p| p.as_array()) {
+                        if let Some(phases) = request.plan.get("phases").and_then(|p| p.as_array())
+                        {
                             for phase in phases {
-                                let name = phase.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                let name =
+                                    phase.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                                 let _ = writeln!(out, "  ↓ {name}");
                             }
                         }
@@ -85,10 +87,8 @@ impl Renderer {
                         for (id, model) in &request.defaults.model_ref_map {
                             let _ = writeln!(out, "  model({id}) → {model}");
                         }
-                        if let Some(commands) = request
-                            .plan
-                            .get("commands")
-                            .and_then(|c| c.as_array())
+                        if let Some(commands) =
+                            request.plan.get("commands").and_then(|c| c.as_array())
                         {
                             for command in commands {
                                 let text = command
@@ -105,7 +105,9 @@ impl Renderer {
                         }
                         let decision = workflow_decision_prompt(&mut out, state.input.clone());
                         let client = self.0.lock().client.clone();
-                        if let Some((client, session_id)) = client.zip(self.0.lock().session_id.clone()) {
+                        if let Some((client, session_id)) =
+                            client.zip(self.0.lock().session_id.clone())
+                        {
                             let request_id = request.request_id.clone();
                             tokio::spawn(async move {
                                 let _ = client
@@ -121,7 +123,11 @@ impl Renderer {
                         }
                     }
                     E::ApprovalResolved { approved, .. } => {
-                        let _ = writeln!(out, "[workflow 审批：{}]", if approved { "已批准" } else { "已拒绝" });
+                        let _ = writeln!(
+                            out,
+                            "[workflow 审批：{}]",
+                            if approved { "已批准" } else { "已拒绝" }
+                        );
                     }
                     E::RunStatus { status } => {
                         let label = match status {
@@ -145,7 +151,10 @@ impl Renderer {
                     E::HoleFilled { name } => {
                         let _ = writeln!(out, "[workflow {run_id} hole 已填：{name}]");
                     }
-                    E::Report { .. } | E::Artifact { .. } | E::NodeUpdated { .. } | E::Usage { .. } => {}
+                    E::Report { .. }
+                    | E::Artifact { .. }
+                    | E::NodeUpdated { .. }
+                    | E::Usage { .. } => {}
                 }
             }
             SessionUpdate::AgentMessage { meta, body } => {
@@ -387,6 +396,20 @@ impl Renderer {
             SessionUpdate::PermissionRequested { tool_call_id, .. } => {
                 let _ = writeln!(out, "\n[等待工具授权：{tool_call_id}]");
             }
+            SessionUpdate::GoalChanged { goal } => {
+                let Some(goal) = goal else {
+                    let _ = writeln!(out, "\n[目标已清除]");
+                    return;
+                };
+                let _ = writeln!(
+                    out,
+                    "\n[目标：{} · 轮次 {}]",
+                    goal.objective, goal.rounds_started
+                );
+            }
+            SessionUpdate::GoalRoundMessage { meta, .. } => {
+                let _ = writeln!(out, "\n[目标续跑：第 {} 轮]", meta.round);
+            }
             SessionUpdate::PermissionResolved { .. }
             | SessionUpdate::PromptStarted { .. }
             | SessionUpdate::SteeringApplied { .. }
@@ -456,9 +479,7 @@ fn workflow_decision_prompt(
         let _ = out.flush();
         // handle() 在 runtime worker 上跑：直接 blocking_recv 会 panic——用
         // block_in_place 让出 worker 再阻塞取行（repl 是 multi_thread）。
-        let line = match tokio::task::block_in_place(|| {
-            input.blocking_lock().blocking_recv()
-        }) {
+        let line = match tokio::task::block_in_place(|| input.blocking_lock().blocking_recv()) {
             Some(Ok(line)) => line,
             _ => return WorkflowDecision::Reject { feedback: None },
         };
@@ -518,10 +539,7 @@ mod tests {
             parse_workflow_decision("n too big"),
             DecisionParse::Reject(Some("too big".into()))
         );
-        assert_eq!(
-            parse_workflow_decision("n"),
-            DecisionParse::Reject(None)
-        );
+        assert_eq!(parse_workflow_decision("n"), DecisionParse::Reject(None));
         assert_eq!(
             parse_workflow_decision("planner=test/gpt-4"),
             DecisionParse::Override("planner".into(), "test/gpt-4".into())
@@ -541,7 +559,9 @@ mod tests {
         match decision {
             moc_protocol::methods::WorkflowDecision::Approve { role_models, .. } => {
                 assert_eq!(
-                    role_models.and_then(|m| m.get("planner").cloned()).as_deref(),
+                    role_models
+                        .and_then(|m| m.get("planner").cloned())
+                        .as_deref(),
                     Some("test/gpt-4")
                 );
             }

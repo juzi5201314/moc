@@ -239,7 +239,10 @@ pub enum SessionUpdate {
     EngineChanged { engine: SessionEngine },
     /// workflow run 事件（审批、phase/node 状态、log/report/artifact/hole/usage）。
     /// 前端未实现 workflow 时可直接丢弃。
-    Workflow { run_id: String, event: super::workflow::WorkflowEvent },
+    Workflow {
+        run_id: String,
+        event: super::workflow::WorkflowEvent,
+    },
     /// 会话自主程度变化（`session/set_autonomy`）。
     AutonomyChanged { autonomy: SessionAutonomy },
     /// plan 模式变化（`session/plan_mode`，或计划批准退出 plan）。
@@ -248,6 +251,20 @@ pub enum SessionUpdate {
     ModelChanged { model: String },
     /// Fast Mode 开关变化（`session/set_fast_mode`）。
     FastModeChanged { enabled: bool },
+    /// 会话目标变化（`session/goal` 或 `update_goal` 工具）；`None` 表示目标被清除。
+    GoalChanged {
+        /// 变更后的当前目标投影。
+        goal: Option<super::session::GoalView>,
+    },
+    /// core 自动续跑的一轮 goal round 已写入会话（作为一条带来源标记的用户消息）。
+    ///
+    /// 前端把它渲染成带 `goal round N` 标记的消息块；轮次上限不存在，`round` 只作计数。
+    GoalRoundMessage {
+        /// 本轮的来源元信息。
+        meta: super::session::GoalRoundMeta,
+        /// 写入会话的正文。
+        body: String,
+    },
     /// Todo 清单变化。
     TodoChanged { phases: Vec<TodoPhase> },
     /// 隐式注入了一次 todo 提醒；前端按工具样式展示占位行，提醒本身无参数与结果。

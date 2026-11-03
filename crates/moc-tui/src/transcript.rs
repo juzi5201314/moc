@@ -383,6 +383,11 @@ pub enum Block {
         meta: moc_protocol::methods::AgentMessageMeta,
         body: String,
     },
+    /// goal 自动续跑的一轮（带轮次标记的用户消息）。
+    GoalRound {
+        meta: moc_protocol::methods::GoalRoundMeta,
+        body: String,
+    },
     /// Todo 清单快照（`TodoChanged` 时替换前一块，而非追加）。
     Todo { phases: Vec<TodoPhase> },
     /// 系统提示（授权等待、错误、压缩等）。
@@ -393,7 +398,7 @@ impl Block {
     /// 块是否响应折叠切换。
     pub fn foldable(&self) -> bool {
         match self {
-            Block::Thinking { .. } | Block::AgentMessage { .. } => true,
+            Block::Thinking { .. } | Block::AgentMessage { .. } | Block::GoalRound { .. } => true,
             Block::Tool(tool) => tool.has_body(),
             Block::User { .. }
             | Block::Assistant { .. }

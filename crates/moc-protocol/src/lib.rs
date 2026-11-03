@@ -152,7 +152,8 @@
 //!     PluginListParams, PluginListResult, PluginRunCommandParams, PluginRunCommandResult,
 //!     PromptParams, ServerCapabilities, ServerInfo, SessionCompactParams,
 //!     SessionContextContentParams, SessionContextParams,
-//!     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
+//!     SessionDeleteParams, SessionGoalParams, SessionGoalResult, SessionInfo, SessionListParams,
+//!     SessionListResult, SessionLoadParams,
 //!     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
 //!     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams,
 //!     SessionPlanReviseResult,
@@ -195,6 +196,14 @@
 //!         _ctx: RequestContext,
 //!         _params: SessionSetPermissionParams,
 //!     ) -> Result<SessionInfo, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!
+//!     async fn session_goal(
+//!         &self,
+//!         _ctx: RequestContext,
+//!         _params: SessionGoalParams,
+//!     ) -> Result<SessionGoalResult, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!

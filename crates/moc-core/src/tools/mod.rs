@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod declarations;
 pub mod edit;
 pub mod find;
+pub mod goal;
 pub mod grep;
 mod scope;
 pub(crate) use scope::resolve_scan_root;
@@ -180,6 +181,11 @@ pub struct ToolCtx {
     pub allow_agents: bool,
     /// 当前是否在子代理里；决定 `yield` 是否可用。
     pub subagent: bool,
+    /// 本轮提示是否人类直发：`create_goal`/`update_goal` 的部分动作只对它开放。
+    /// agent 唤醒轮与 goal 续跑轮都为 `false`。
+    pub user_initiated: bool,
+    /// 本轮提示的 goal 续跑来源标记；非续跑轮为 `None`。
+    pub goal_round: Option<moc_protocol::methods::GoalRoundMeta>,
     /// preset 快照的工具面策略；嵌套（PTC）调用经 ToolCtx 克隆原样继承。
     pub tool_policy: Option<crate::agents::ToolPolicy>,
     pub nested: bool,
@@ -391,6 +397,9 @@ impl ToolRegistry {
                 Arc::new(crate::skills::tool::SkillTool),
                 Arc::new(websearch::WebSearchTool),
                 Arc::new(websearch::WebFetchTool),
+                Arc::new(goal::GetGoalTool),
+                Arc::new(goal::CreateGoalTool),
+                Arc::new(goal::UpdateGoalTool),
             ],
         }
     }
@@ -424,10 +433,10 @@ impl ToolRegistry {
                 name if Self::is_parent_only_tool(name) => scope.control_agents,
                 // 交付最终结果只对子代理有意义：顶层会话没有父代理可交付。
                 "yield" => scope.subagent,
+                // 目标是顶层会话概念：子代理会话不开放目标面。
+                name if Self::is_goal_tool(name) => !scope.subagent,
                 // workflow 工具只在会话激活后可见（零泄漏）。
-                name if crate::workflow::runtime::WORKFLOW_TOOLS.contains(&name) => {
-                    scope.workflows
-                }
+                name if crate::workflow::runtime::WORKFLOW_TOOLS.contains(&name) => scope.workflows,
                 _ => true,
             })
             // preset 快照的策略对内置、MCP 与插件工具统一生效。
@@ -459,6 +468,11 @@ impl ToolRegistry {
     /// 创建、停止、等待子代理的工具；子代理里全部去掉。
     fn is_parent_only_tool(name: &str) -> bool {
         matches!(name, "spawn_agent" | "stop_agent" | "wait_agent")
+    }
+
+    /// 持久目标三件套；只在顶层会话可见。
+    fn is_goal_tool(name: &str) -> bool {
+        matches!(name, "get_goal" | "create_goal" | "update_goal")
     }
 
     pub fn all(&self) -> &[Arc<dyn Tool>] {

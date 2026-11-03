@@ -400,6 +400,7 @@ impl SessionTable {
             todos: state.todos.clone(),
             plans: state.plans.clone(),
             child_calls: state.child_calls.clone(),
+            goal: crate::goal::view(state.goal.as_ref(), state.goal_rounds_started, false),
         })
     }
 
@@ -456,6 +457,7 @@ impl SessionTable {
                 tool: entry.tool.clone(),
                 bash: entry.bash.clone(),
                 agent: entry.agent.clone(),
+                goal_round: entry.goal_round.clone(),
                 reminder: entry.reminder.clone(),
             });
         }
@@ -510,6 +512,7 @@ impl SessionTable {
             child_calls,
             content_truncated,
             redo_entries,
+            goal: crate::goal::view(state.goal.as_ref(), state.goal_rounds_started, false),
         })
     }
     /// 原地回退：把会话历史截回目标消息，不产生新会话。
@@ -817,6 +820,7 @@ impl SessionTable {
                 tool,
                 finish_reason,
                 agent: None,
+                goal: None,
             },
         )
         .await
@@ -836,9 +840,40 @@ impl SessionTable {
                 tool: None,
                 finish_reason: None,
                 agent: Some(agent),
+                goal: None,
             },
         )
         .await
+    }
+
+    /// 追加一条 goal 续跑消息 entry（带来源信息）。
+    pub async fn append_goal_message(
+        &self,
+        session_id: &str,
+        message: Message,
+        goal: moc_protocol::methods::GoalRoundMeta,
+    ) -> Result<Entry, CoreError> {
+        self.append(
+            session_id,
+            EntryPayload::Message {
+                message,
+                tool: None,
+                finish_reason: None,
+                agent: None,
+                goal: Some(goal),
+            },
+        )
+        .await
+    }
+
+    /// 追加一条目标变更 entry；`None` 载荷是清除墓碑。
+    pub async fn append_goal_change(
+        &self,
+        session_id: &str,
+        goal: Option<entries::GoalSnapshot>,
+    ) -> Result<Entry, CoreError> {
+        self.append(session_id, EntryPayload::GoalChange { goal })
+            .await
     }
 
     /// 追加一条运行时提醒 entry。
@@ -1351,6 +1386,7 @@ mod tests {
                     tool: None,
                     finish_reason: None,
                     agent: None,
+                    goal: None,
                 },
                 "e0".into(),
                 0,
@@ -1361,6 +1397,7 @@ mod tests {
                 message: Message::user_text("ping"),
                 tool: None,
                 finish_reason: None,
+                goal: None,
                 agent: Some(AgentMessageMeta {
                     from_id: "ses_sender".into(),
                     from_title: "sender".into(),

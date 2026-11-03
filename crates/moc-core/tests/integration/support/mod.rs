@@ -97,7 +97,13 @@ impl Harness {
         Self::build_with_ask(root, core).await
     }
 
-    fn core_with(url: &str, api: &str, default: &str, plan: &str, extra: &str) -> (tempfile::TempDir, Arc<Core>) {
+    fn core_with(
+        url: &str,
+        api: &str,
+        default: &str,
+        plan: &str,
+        extra: &str,
+    ) -> (tempfile::TempDir, Arc<Core>) {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         let cwd = root.path().join("work");
@@ -237,6 +243,7 @@ impl Harness {
                 input: vec![InputPart::Text { text: text.into() }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
             .unwrap()
@@ -450,16 +457,19 @@ pub fn moc_test_bin() -> Option<std::path::PathBuf> {
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| root.join("target"));
-        let bin = target.join("debug").join(if cfg!(windows) { "moc.exe" } else { "moc" });
+        let bin = target
+            .join("debug")
+            .join(if cfg!(windows) { "moc.exe" } else { "moc" });
         if bin.exists() {
             return Some(bin);
         }
-        let built = std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-            .args(["build", "-p", "moc-cli", "--bin", "moc"])
-            .current_dir(&root)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let built =
+            std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+                .args(["build", "-p", "moc-cli", "--bin", "moc"])
+                .current_dir(&root)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
         (built && bin.exists()).then_some(bin)
     })
     .clone()
@@ -468,7 +478,9 @@ pub fn moc_test_bin() -> Option<std::path::PathBuf> {
 /// 需要 moc 二进制的测试入口守卫：解析不到时打印原因并跳过。
 pub fn require_moc_bin(suite: &str) -> bool {
     if moc_test_bin().is_none() {
-        eprintln!("skip {suite}: 无法定位 moc 可执行文件（设 MOC_TEST_BIN 或先 cargo build -p moc-cli）");
+        eprintln!(
+            "skip {suite}: 无法定位 moc 可执行文件（设 MOC_TEST_BIN 或先 cargo build -p moc-cli）"
+        );
         return false;
     }
     true

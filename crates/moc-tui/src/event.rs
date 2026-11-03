@@ -20,16 +20,14 @@ use moc_protocol::{
     SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff,
     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanMode, SessionPlanModeParams,
     SessionPlanRevise, SessionPlanReviseParams, SessionReask, SessionReaskParams, SessionRedo,
-    SessionRedoParams, SessionRewind, SessionRewindParams, SessionSetEngine, SessionSetEngineParams,
-    SessionSetModel,
-    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
-    SessionUsage, SessionUsageParams, UpstreamField,
+    SessionRedoParams, SessionRewind, SessionRewindParams, SessionSetEngine,
+    SessionSetEngineParams, SessionSetModel, SessionSetModelParams, SessionSetPermission,
+    SessionSetPermissionParams, SessionUpdate, SessionUsage, SessionUsageParams, UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::app::{App, ChartHit, CtrlCPending, Focus, ScrollbackDrag};
 use crate::commands::CommandId;
-use moc_protocol::commands::{CommandRef, CommandSpec};
 use crate::input::{InputEvent, InputThread};
 use crate::modal::{
     CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal, PlanPane, SessionScope,
@@ -41,6 +39,7 @@ use crate::terminal::TerminalGuard;
 use crate::theme::Theme;
 use crate::transcript::{DetailLevel, ToolCallFinish, ToolCallStart};
 use crate::widgets::prompt::{clamp_cursor, cursor_next, cursor_prev};
+use moc_protocol::commands::{CommandRef, CommandSpec};
 
 /// TUI 启动参数（从 CLI 参数翻译而来）。
 #[derive(Debug, Clone, Default)]
@@ -593,6 +592,7 @@ fn apply_focus_loaded(
     let todos = page.todos;
     app.switch_session(page.session, blocks);
     app.todos = todos;
+    app.goal = page.goal;
     if returning && let Some((draft, scroll)) = app.focus_restore.take() {
         if !draft.is_empty() {
             app.prompt.insert_str_raw(&draft);
@@ -705,6 +705,7 @@ fn apply_rewound(
         ),
     );
     app.todos = loaded.todos;
+    app.goal = loaded.goal;
     app.prompt.clear();
     if restore_user {
         restore_user_message(&mut app.prompt, &selected_message);
@@ -754,6 +755,7 @@ fn apply_reasked(
         ),
     );
     app.todos = loaded.todos;
+    app.goal = loaded.goal;
     app.usage = Default::default();
     app.set_notice("已重新作答，正在继续".to_owned());
     refresh_context(app, connection, false);
@@ -810,8 +812,8 @@ async fn event_loop(
     const ACTIVITY_TICK: std::time::Duration = std::time::Duration::from_millis(120);
     // 全量重绘逃生门：终端声称支持 2026 但实际撕裂时，用 `MOC_FULL_REPAINT=1`
     // 强制每帧清屏重画（代价是整屏写入与位图重传，仅作排障手段）。
-    let full_repaint = std::env::var("MOC_FULL_REPAINT")
-        .is_ok_and(|value| !value.is_empty() && value != "0");
+    let full_repaint =
+        std::env::var("MOC_FULL_REPAINT").is_ok_and(|value| !value.is_empty() && value != "0");
     let mut view = render::ScrollbackView::new();
     let mut next_frame = tokio::time::Instant::now();
     let mut next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
@@ -1094,6 +1096,10 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::Notice(message)) => app.set_notice(message),
+                    Some(AppEvent::GoalResult { goal, text }) => {
+                        app.goal = goal;
+                        app.push_note(text, false);
+                    }
                     Some(AppEvent::OpenJobsModal(jobs)) => {
                         app.modal = Some(Modal::Jobs {
                             jobs,
@@ -1188,12 +1194,14 @@ async fn event_loop(
                         before_entry_id,
                         todos,
                         read_only,
+                        goal,
                     )) => {
                         app.modal = None;
                         let cwd = info.cwd.clone();
                         let id = info.id.clone();
                         let lock_holder = info.lock.clone();
                         app.switch_session(info, blocks);
+                        app.goal = goal;
                         app.read_only = read_only;
                         if read_only {
                             let holder = lock_holder
@@ -2384,6 +2392,7 @@ fn apply_history_page(
         app.prepend_history(blocks);
     } else {
         app.switch_session(page.session, blocks);
+        app.goal = page.goal;
     }
     app.set_history_cursor(page.has_more, before_entry_id);
 }
@@ -3877,14 +3886,9 @@ fn handle_modal_key(
                             }
                             crate::modal::ModelTarget::WorkflowRole { .. } => {
                                 // 先整体取出（借用期拿不走 back 箱），写回后统一还原。
-                                let owned = std::mem::replace(
-                                    target,
-                                    crate::modal::ModelTarget::Session,
-                                );
-                                if let crate::modal::ModelTarget::WorkflowRole {
-                                    key,
-                                    back,
-                                } = owned
+                                let owned =
+                                    std::mem::replace(target, crate::modal::ModelTarget::Session);
+                                if let crate::modal::ModelTarget::WorkflowRole { key, back } = owned
                                 {
                                     let (back, action) =
                                         crate::workflow::apply_workflow_pick(back, &key, selector);
@@ -3922,10 +3926,7 @@ fn handle_modal_key(
                         return_plan_review = true;
                     } else if matches!(target, crate::modal::ModelTarget::WorkflowRole { .. }) {
                         // 取消选择：原样放回回程票，不写覆盖。
-                        let owned = std::mem::replace(
-                            target,
-                            crate::modal::ModelTarget::Session,
-                        );
+                        let owned = std::mem::replace(target, crate::modal::ModelTarget::Session);
                         if let crate::modal::ModelTarget::WorkflowRole { back, .. } = owned {
                             workflow_back = Some(*back);
                         }
@@ -4160,6 +4161,7 @@ fn handle_modal_key(
                                     before_entry_id,
                                     loaded.todos,
                                     read_only,
+                                    loaded.goal,
                                 ));
                             }
                             Err(error) => {
@@ -4305,16 +4307,12 @@ fn handle_modal_key(
                         // 选中 role/ref → 打开模型选择器；回程票带回整个审批状态。
                         if let Some(target) = state.focus_target() {
                             let current = match &target {
-                                crate::workflow::FocusTarget::Role(id) => state
-                                    .role_models
-                                    .get(id)
-                                    .cloned()
-                                    .unwrap_or_default(),
-                                crate::workflow::FocusTarget::ModelRef(id) => state
-                                    .model_ref_map
-                                    .get(id)
-                                    .cloned()
-                                    .unwrap_or_default(),
+                                crate::workflow::FocusTarget::Role(id) => {
+                                    state.role_models.get(id).cloned().unwrap_or_default()
+                                }
+                                crate::workflow::FocusTarget::ModelRef(id) => {
+                                    state.model_ref_map.get(id).cloned().unwrap_or_default()
+                                }
                             };
                             workflow_picker = Some((target, current));
                         }
@@ -4370,9 +4368,8 @@ fn handle_modal_key(
                 }
                 (KeyCode::Enter, KeyModifiers::NONE) => {
                     if let Some(run) = filtered.get(picker.selected) {
-                        workflow_action = Some(crate::workflow::WorkflowAction::OpenRun(
-                            run.run_id.clone(),
-                        ));
+                        workflow_action =
+                            Some(crate::workflow::WorkflowAction::OpenRun(run.run_id.clone()));
                     }
                     close = true;
                 }
@@ -4402,9 +4399,7 @@ fn handle_modal_key(
                 }
             }
             (KeyCode::Char('s'), KeyModifiers::NONE) => {
-                workflow_action = Some(crate::workflow::WorkflowAction::Stop(
-                    state.run_id.clone(),
-                ));
+                workflow_action = Some(crate::workflow::WorkflowAction::Stop(state.run_id.clone()));
             }
             (KeyCode::Char('r'), KeyModifiers::NONE) => {
                 workflow_action = Some(crate::workflow::WorkflowAction::Resume(
@@ -4528,9 +4523,7 @@ fn handle_modal_key(
     // workflow：模型选择器回程（审批窗/run 面板）。
     if let Some(back) = workflow_back {
         app.modal = Some(match back {
-            crate::workflow::WorkflowRoleBack::Approval(state) => {
-                Modal::WorkflowApproval { state }
-            }
+            crate::workflow::WorkflowRoleBack::Approval(state) => Modal::WorkflowApproval { state },
             crate::workflow::WorkflowRoleBack::Run(state) => Modal::WorkflowRun { state },
         });
     }
@@ -4560,9 +4553,7 @@ fn handle_modal_key(
         && let Some(modal) = app.modal.take()
     {
         let back = match modal {
-            Modal::WorkflowApproval { state } => {
-                crate::workflow::WorkflowRoleBack::Approval(state)
-            }
+            Modal::WorkflowApproval { state } => crate::workflow::WorkflowRoleBack::Approval(state),
             Modal::WorkflowRun { state } => crate::workflow::WorkflowRoleBack::Run(state),
             other => {
                 app.modal = Some(other);
@@ -4589,10 +4580,7 @@ fn handle_modal_key(
                 crate::workflow::WorkflowAction::Stop(run_id) => {
                     if let Err(error) = client
                         .call::<moc_protocol::methods::SessionWorkflowStop>(
-                            moc_protocol::methods::SessionWorkflowRunParams {
-                                session_id,
-                                run_id,
-                            },
+                            moc_protocol::methods::SessionWorkflowRunParams { session_id, run_id },
                         )
                         .await
                     {
@@ -4603,10 +4591,7 @@ fn handle_modal_key(
                 crate::workflow::WorkflowAction::Resume(run_id) => {
                     if let Err(error) = client
                         .call::<moc_protocol::methods::SessionWorkflowResume>(
-                            moc_protocol::methods::SessionWorkflowRunParams {
-                                session_id,
-                                run_id,
-                            },
+                            moc_protocol::methods::SessionWorkflowRunParams { session_id, run_id },
                         )
                         .await
                     {
@@ -4617,10 +4602,7 @@ fn handle_modal_key(
                 crate::workflow::WorkflowAction::OpenRun(run_id) => {
                     match client
                         .call::<moc_protocol::methods::SessionWorkflowRun>(
-                            moc_protocol::methods::SessionWorkflowRunParams {
-                                session_id,
-                                run_id,
-                            },
+                            moc_protocol::methods::SessionWorkflowRunParams { session_id, run_id },
                         )
                         .await
                     {
@@ -4628,8 +4610,8 @@ fn handle_modal_key(
                             let _ = events.send(AppEvent::OpenWorkflowRun(Box::new(snapshot)));
                         }
                         Err(error) => {
-                            let _ = events
-                                .send(AppEvent::Notice(format!("读取 run 失败：{error}")));
+                            let _ =
+                                events.send(AppEvent::Notice(format!("读取 run 失败：{error}")));
                         }
                     }
                 }
@@ -4645,8 +4627,8 @@ fn handle_modal_key(
                         )
                         .await
                     {
-                        let _ = events
-                            .send(AppEvent::Notice(format!("role 模型热改失败：{error}")));
+                        let _ =
+                            events.send(AppEvent::Notice(format!("role 模型热改失败：{error}")));
                     }
                 }
                 crate::workflow::WorkflowAction::ViewArtifact(run_id, artifact_id) => {
@@ -5047,6 +5029,7 @@ pub(crate) fn apply_plan_execution_loaded(
                 ),
             );
             app.todos = loaded.todos;
+            app.goal = loaded.goal;
             app.set_history_cursor(loaded.truncated, before);
             refresh_git_branch(app, &cwd);
             refresh_context(app, connection, false);
@@ -5299,6 +5282,12 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::AgentMessage { meta, body } => {
             app.push_block(Block::AgentMessage { meta, body })
+        }
+        SessionUpdate::GoalRoundMessage { meta, body } => {
+            app.push_block(Block::GoalRound { meta, body })
+        }
+        SessionUpdate::GoalChanged { goal } => {
+            app.goal = goal;
         }
 
         SessionUpdate::ToolProgress {
@@ -5688,7 +5677,9 @@ fn apply_workflow_update(
             if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
                 && state.run_id == run_id
             {
-                state.holes.push(serde_json::json!({"name": name, "prompt": prompt}));
+                state
+                    .holes
+                    .push(serde_json::json!({"name": name, "prompt": prompt}));
             }
             app.set_notice(format!("workflow hole 打开：{name}"));
         }
@@ -5696,9 +5687,9 @@ fn apply_workflow_update(
             if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
                 && state.run_id == run_id
             {
-                state
-                    .holes
-                    .retain(|hole| hole.get("name").and_then(|v| v.as_str()) != Some(name.as_str()));
+                state.holes.retain(|hole| {
+                    hole.get("name").and_then(|v| v.as_str()) != Some(name.as_str())
+                });
             }
         }
         E::Usage { usage } => {
@@ -6138,6 +6129,7 @@ fn dispatch_command(app: &mut App, connection: &EmbeddedConnection, id: CommandI
                             None,
                             Vec::new(),
                             false,
+                            None,
                         ));
                     }
                     Err(error) => {
@@ -6184,6 +6176,7 @@ fn dispatch_command(app: &mut App, connection: &EmbeddedConnection, id: CommandI
         CommandId::Autonomy => set_autonomy(app, connection, rest),
         CommandId::Permission => set_permission(app, connection, rest),
         CommandId::Plan => toggle_plan(app, connection),
+        CommandId::Goal => goal_command(app, connection, rest),
         CommandId::Ask => ask_once(app, connection, rest),
         CommandId::Retry => retry(app, connection),
         CommandId::Model => app.open_model_picker(),
@@ -6228,17 +6221,16 @@ fn dispatch_command(app: &mut App, connection: &EmbeddedConnection, id: CommandI
             let events = app.events.clone();
             tokio::spawn(async move {
                 match client
-                    .call::<moc_protocol::methods::JobList>(
-                        moc_protocol::methods::JobListParams { session_id },
-                    )
+                    .call::<moc_protocol::methods::JobList>(moc_protocol::methods::JobListParams {
+                        session_id,
+                    })
                     .await
                 {
                     Ok(result) => {
                         let _ = events.send(AppEvent::OpenJobsModal(result.jobs));
                     }
                     Err(error) => {
-                        let _ =
-                            events.send(AppEvent::Notice(format!("获取任务列表失败：{error}")));
+                        let _ = events.send(AppEvent::Notice(format!("获取任务列表失败：{error}")));
                     }
                 }
             });
@@ -6292,6 +6284,94 @@ fn toggle_plan(app: &mut App, connection: &EmbeddedConnection) {
             Ok(_) => {}
             Err(error) => {
                 let _ = events.send(AppEvent::Notice(format!("切换计划状态失败：{error}")));
+            }
+        }
+    });
+}
+
+/// `/goal […]` 的参数 → `session/goal` 动作：空为查看，`edit <objective>` 改原文，
+/// 其余整段当新目标建。
+fn parse_goal_action(rest: &str) -> Result<moc_protocol::methods::GoalAction, String> {
+    use moc_protocol::methods::GoalAction;
+    let rest = rest.trim();
+    match rest {
+        "" => Ok(GoalAction::Show),
+        "clear" => Ok(GoalAction::Unset),
+        "pause" => Ok(GoalAction::Pause),
+        "resume" => Ok(GoalAction::Resume),
+        "edit" => Err("用法：/goal edit <objective>".to_owned()),
+        _ => match rest.strip_prefix("edit") {
+            Some(after) if after.starts_with(char::is_whitespace) => Ok(GoalAction::Edit {
+                objective: after.trim().to_owned(),
+            }),
+            _ => Ok(GoalAction::Create {
+                objective: rest.to_owned(),
+            }),
+        },
+    }
+}
+
+/// `/goal` 回执写进转写的渲染文本。
+fn render_goal_note(goal: Option<&moc_protocol::methods::GoalView>) -> String {
+    let Some(goal) = goal else {
+        return "当前没有目标；/goal <objective> 创建".to_owned();
+    };
+    let phase = match goal.phase {
+        moc_protocol::methods::GoalPhase::Active => crate::render::labels::status::ACTIVE,
+        moc_protocol::methods::GoalPhase::Paused => crate::render::labels::status::PAUSED,
+        moc_protocol::methods::GoalPhase::Blocked => crate::render::labels::status::BLOCKED,
+        moc_protocol::methods::GoalPhase::Complete => crate::render::labels::status::DONE,
+    };
+    let mut text = format!(
+        "目标：{}\n状态：{phase}{}轮次：{}\n续跑：{}",
+        goal.objective,
+        goal.blocked_reason
+            .as_ref()
+            .map(|reason| format!("\n阻塞：{}: {}\n", reason.code, reason.message))
+            .unwrap_or_default(),
+        goal.rounds_started,
+        if goal.armed {
+            "自动"
+        } else {
+            "已停（/goal resume 恢复）"
+        }
+    );
+    text.push_str("\n命令：/goal edit <objective>｜/goal pause｜/goal resume｜/goal clear");
+    text
+}
+
+/// `/goal`：查看或变更会话目标；`GoalChanged` 更新随后会把 `app.goal` 同步到权威值。
+fn goal_command(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
+    let Some(session) = app.session.as_ref() else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    let action = match parse_goal_action(rest) {
+        Ok(action) => action,
+        Err(usage) => {
+            app.set_notice(usage);
+            return;
+        }
+    };
+    let client = connection.client.clone();
+    let session_id = session.id.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        match client
+            .call::<moc_protocol::methods::SessionGoal>(moc_protocol::methods::SessionGoalParams {
+                session_id,
+                action,
+            })
+            .await
+        {
+            Ok(result) => {
+                let _ = events.send(AppEvent::GoalResult {
+                    text: render_goal_note(result.goal.as_ref()),
+                    goal: result.goal,
+                });
+            }
+            Err(error) => {
+                let _ = events.send(AppEvent::Notice(format!("目标操作失败：{error}")));
             }
         }
     });
@@ -6965,8 +7045,8 @@ mod tests {
         );
         // 清单顺带刷新补全表；插件命令与内置命令一起参与前缀匹配。
         app.prompt.insert_str_raw("/demo");
-        let completion = crate::widgets::completion::CompletionState::derive(&app)
-            .expect("插件命令可补全");
+        let completion =
+            crate::widgets::completion::CompletionState::derive(&app).expect("插件命令可补全");
         assert_eq!(completion.candidates[0].value, "/demo");
 
         app.blocks.clear();
@@ -7669,6 +7749,7 @@ mod tests {
                 }],
                 mode: None,
                 agent_message: None,
+                goal_round: None,
             })
             .await
             .unwrap();
@@ -7849,6 +7930,7 @@ mod tests {
                     }],
                     mode: None,
                     agent_message: None,
+                    goal_round: None,
                 })
                 .await
                 .unwrap();
@@ -11738,7 +11820,9 @@ mod workflow_approval_tests {
         apply_workflow_update(
             &mut app,
             "r1".into(),
-            WorkflowEvent::ApprovalRequested { request: approval("a1") },
+            WorkflowEvent::ApprovalRequested {
+                request: approval("a1"),
+            },
         );
         assert_eq!(app.workflow.queued_approvals.len(), 1);
         assert_eq!(app.workflow.queued_approvals[0].request_id, "a1");
@@ -11763,7 +11847,9 @@ mod workflow_approval_tests {
         apply_workflow_update(
             &mut app,
             "r1".into(),
-            WorkflowEvent::ApprovalRequested { request: approval("a1") },
+            WorkflowEvent::ApprovalRequested {
+                request: approval("a1"),
+            },
         );
         assert!(matches!(app.modal, Some(Modal::WorkflowApproval { .. })));
         // 打开中的审批被服务端 resolve → modal 关闭。
@@ -11782,11 +11868,48 @@ mod workflow_approval_tests {
         apply_workflow_update(
             &mut app,
             "r1".into(),
-            WorkflowEvent::ApprovalRequested { request: approval("a2") },
+            WorkflowEvent::ApprovalRequested {
+                request: approval("a2"),
+            },
         );
         app.modal = None;
         let state = take_next_approval(&mut app).expect("队首应可弹出");
         assert_eq!(state.request.request_id, "a2");
         assert!(app.workflow.queued_approvals.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod goal_command_tests {
+    use super::*;
+    use moc_protocol::methods::GoalAction;
+
+    #[test]
+    fn parse_goal_action_covers_all_subcommands() {
+        assert_eq!(parse_goal_action("").unwrap(), GoalAction::Show);
+        assert_eq!(parse_goal_action("  ").unwrap(), GoalAction::Show);
+        assert_eq!(parse_goal_action("pause").unwrap(), GoalAction::Pause);
+        assert_eq!(parse_goal_action("resume").unwrap(), GoalAction::Resume);
+        assert_eq!(parse_goal_action("clear").unwrap(), GoalAction::Unset);
+        assert_eq!(
+            parse_goal_action("edit 换个说法").unwrap(),
+            GoalAction::Edit {
+                objective: "换个说法".into()
+            }
+        );
+        // `edit` 必须跟空白分隔；`editing` 整段当 objective 建目标。
+        assert_eq!(
+            parse_goal_action("editing plans").unwrap(),
+            GoalAction::Create {
+                objective: "editing plans".into()
+            }
+        );
+        assert_eq!(
+            parse_goal_action("把这件事做完").unwrap(),
+            GoalAction::Create {
+                objective: "把这件事做完".into()
+            }
+        );
+        assert!(parse_goal_action("edit").is_err());
     }
 }

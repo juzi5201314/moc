@@ -98,6 +98,7 @@ async function loadSession(sessionId: string, requestedReadOnly: boolean): Promi
     view.beforeEntryId = page.entries[0]?.id;
     view.todos = loaded.todos ?? page.todos ?? [];
     view.plans = loaded.plans ?? page.plans ?? [];
+    view.goal = loaded.goal ?? page.goal ?? null;
   });
   useSessions.getState().upsert(page.session);
   void refreshJobs(sessionId).catch(() => undefined);

@@ -714,6 +714,8 @@ const ASK_MODE_TOOLS: &[&str] = &[
     "run_code",
     "web_search",
     "web_fetch",
+    // 目标是只读可取的会话状态：读它不改写任何东西。
+    "get_goal",
 ];
 
 /// plan 模式的白名单：ask 的全部只读能力外加 `plan`/`exit_plan`。
@@ -732,6 +734,7 @@ const PLAN_MODE_TOOLS: &[&str] = &[
     "run_code",
     "web_search",
     "web_fetch",
+    "get_goal",
 ];
 
 /// 模式对应的内置工具白名单；`None` 表示不收紧（许可 = 引擎面）。
@@ -774,6 +777,10 @@ pub fn allowed_tools(engine: SessionEngine) -> &'static [&'static str] {
             "run_code",
             "web_search",
             "web_fetch",
+            // 持久目标工具面（`get_goal` 另入只读模式白名单）。
+            "get_goal",
+            "create_goal",
+            "update_goal",
             // workflow 工具面（仍受会话激活位过滤；只读模式不放行——全是写操作）。
             "create_workflow",
             "amend_workflow",

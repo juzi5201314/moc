@@ -11,13 +11,14 @@ use moc_protocol::methods::{
     ModelSwitchOverflow, PermissionRequestParams, PermissionResult, PlanAction, PlanStatus,
     PluginInfo, PluginList, PluginListParams, PluginReload, PluginReloadParams, PluginRunCommand,
     PluginRunCommandParams, SessionAutonomy, SessionCancel, SessionCancelParams, SessionCompact,
-    SessionCompactParams, SessionEngine, SessionInfo, SessionList, SessionListParams, SessionLoad,
-    SessionLoadParams, SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission,
-    SessionPlanApprove, SessionPlanApproveParams, SessionPlanMode, SessionPlanModeParams,
-    SessionPrompt, SessionRequestAsk, SessionRequestPermission, SessionRetry, SessionRetryParams,
-    SessionSetAutonomy, SessionSetAutonomyParams, SessionSetEngine, SessionSetEngineParams,
-    SessionSetModel, SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams,
-    SessionUpdate, SessionUpdateMethod, SessionUsage, SessionUsageParams, prompt::PromptMode,
+    SessionCompactParams, SessionEngine, SessionGoal, SessionGoalParams, SessionInfo, SessionList,
+    SessionListParams, SessionLoad, SessionLoadParams, SessionModelOverflowAction, SessionNew,
+    SessionNewParams, SessionPermission, SessionPlanApprove, SessionPlanApproveParams,
+    SessionPlanMode, SessionPlanModeParams, SessionPrompt, SessionRequestAsk,
+    SessionRequestPermission, SessionRetry, SessionRetryParams, SessionSetAutonomy,
+    SessionSetAutonomyParams, SessionSetEngine, SessionSetEngineParams, SessionSetModel,
+    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
+    SessionUpdateMethod, SessionUsage, SessionUsageParams, prompt::PromptMode,
 };
 use moc_protocol::{
     ClientBuilder, ClientHandle, RpcError, RpcErrorCode, Server, ServerOptions, transport,
@@ -601,6 +602,31 @@ async fn run_command(
                 send_prompt(client, &session.id, argument.to_owned(), None).await?;
             }
         }
+        CommandId::Goal => {
+            use moc_protocol::methods::GoalAction;
+            let action = match argument {
+                "" => GoalAction::Show,
+                "clear" => GoalAction::Unset,
+                "pause" => GoalAction::Pause,
+                "resume" => GoalAction::Resume,
+                "edit" => bail!("用法：/goal edit <objective>"),
+                _ => match argument.strip_prefix("edit") {
+                    Some(rest) if rest.starts_with(char::is_whitespace) => GoalAction::Edit {
+                        objective: rest.trim().to_owned(),
+                    },
+                    _ => GoalAction::Create {
+                        objective: argument.to_owned(),
+                    },
+                },
+            };
+            let result = client
+                .call::<SessionGoal>(SessionGoalParams {
+                    session_id: session.id.clone(),
+                    action,
+                })
+                .await?;
+            print!("{}", render_goal(result.goal.as_ref()));
+        }
         CommandId::Ask => {
             if argument.is_empty() {
                 bail!("用法：/ask <问题>");
@@ -877,6 +903,7 @@ async fn send_prompt(
         input: vec![InputPart::Text { text: prompt }],
         mode,
         agent_message: None,
+        goal_round: None,
     });
     tokio::pin!(pending);
     tokio::select! {
@@ -1182,6 +1209,33 @@ fn format_duration(active_ms: u64) -> String {
     } else {
         format!("{:.2} s", active_ms as f64 / 1000.0)
     }
+}
+
+/// `/goal` 回执的渲染文本：目标原文、相位、已跑轮次与续跑状态。
+fn render_goal(goal: Option<&moc_protocol::methods::GoalView>) -> String {
+    let Some(goal) = goal else {
+        return "当前没有目标；/goal <objective> 创建\n".to_owned();
+    };
+    let phase = match goal.phase {
+        moc_protocol::methods::GoalPhase::Active => "进行中",
+        moc_protocol::methods::GoalPhase::Paused => "已暂停",
+        moc_protocol::methods::GoalPhase::Blocked => "已阻塞",
+        moc_protocol::methods::GoalPhase::Complete => "已完成",
+    };
+    let mut text = format!("目标：{}\n状态：{phase}\n", goal.objective);
+    if let Some(reason) = &goal.blocked_reason {
+        text.push_str(&format!("阻塞：{}: {}\n", reason.code, reason.message));
+    }
+    text.push_str(&format!(
+        "轮次：{}\n续跑：{}\n命令：/goal edit <objective> | /goal pause | /goal resume | /goal clear\n",
+        goal.rounds_started,
+        if goal.armed {
+            "自动"
+        } else {
+            "已停（/goal resume 恢复）"
+        }
+    ));
+    text
 }
 
 enum CommandResult {

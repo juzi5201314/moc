@@ -143,8 +143,7 @@ pub fn draw_engine_menu(frame: &mut Frame, app: &mut App) {
     let theme = app.theme;
     let current = app.session.as_ref().map(|session| session.engine);
     // 引擎清单拷出来再画，后面还要对 app.engine_menu 做可变借用写回 area。
-    let (selected, engines, saved_area) =
-        (menu.selected, menu.engines.clone(), menu.area);
+    let (selected, engines, saved_area) = (menu.selected, menu.engines.clone(), menu.area);
     let label_width = engines
         .iter()
         .map(|engine| str_width(crate::app::engine_label(*engine)))
@@ -583,22 +582,20 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
     };
     let fixed_keys =
         |list: &[&str]| labels::keys(&list.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>());
-    let mut sections = vec![
-        HelpSection {
-            title: "会话与通用".to_owned(),
-            rows: vec![
-                (get_key("model"), "选择模型".to_owned()),
-                (get_key("engine"), "切换会话引擎".to_owned()),
-                (get_key("config"), "打开设置".to_owned()),
-                (get_key("agents"), "打开子代理管理".to_owned()),
-                (get_key("resume"), "恢复会话".to_owned()),
-                (get_key("thinking"), "切换思考显示档位".to_owned()),
-                (get_key("thinking_level"), "切换思考等级".to_owned()),
-                (get_key("tools"), "切换工具显示档位".to_owned()),
-                (get_key("help"), "帮助菜单".to_owned()),
-            ],
-        },
-    ];
+    let mut sections = vec![HelpSection {
+        title: "会话与通用".to_owned(),
+        rows: vec![
+            (get_key("model"), "选择模型".to_owned()),
+            (get_key("engine"), "切换会话引擎".to_owned()),
+            (get_key("config"), "打开设置".to_owned()),
+            (get_key("agents"), "打开子代理管理".to_owned()),
+            (get_key("resume"), "恢复会话".to_owned()),
+            (get_key("thinking"), "切换思考显示档位".to_owned()),
+            (get_key("thinking_level"), "切换思考等级".to_owned()),
+            (get_key("tools"), "切换工具显示档位".to_owned()),
+            (get_key("help"), "帮助菜单".to_owned()),
+        ],
+    }];
     // 斜杠命令按注册表分组成节；flag 关闭的命令仍列出并注明，帮助就是给人查的。
     for group in [
         CommandGroup::Session,
@@ -674,8 +671,14 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
         title: "旁路交互 (BTW)".to_owned(),
         rows: vec![
             ("/btw <问题>".into(), "旁路追问(不写历史)".to_owned()),
-            (fixed_keys(&["alt+b", "tab"]), "旁路展开与焦点切换".to_owned()),
-            (fixed_keys(&["esc", "ctrl+c"]), "收起旁路 / 取消生成".to_owned()),
+            (
+                fixed_keys(&["alt+b", "tab"]),
+                "旁路展开与焦点切换".to_owned(),
+            ),
+            (
+                fixed_keys(&["esc", "ctrl+c"]),
+                "收起旁路 / 取消生成".to_owned(),
+            ),
             (fixed_keys(&["c", "x"]), "复制回答 / 清空旁路".to_owned()),
         ],
     });
@@ -1491,11 +1494,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             let (lines, row_hits) = crate::workflow::approval_lines(state, width, theme);
             hits.extend(row_hits);
             let footer = if state.feedback.is_some() {
-                overlay::footer(
-                    &[("enter", "提交拒绝"), ("esc", "取消输入")],
-                    width,
-                    theme,
-                )
+                overlay::footer(&[("enter", "提交拒绝"), ("esc", "取消输入")], width, theme)
             } else {
                 overlay::footer(
                     &[
@@ -4120,6 +4119,7 @@ mod tests {
                     tool: None,
                     bash: None,
                     agent: None,
+                    goal_round: None,
                     reminder: None,
                 },
                 TranscriptEntry {
@@ -4129,6 +4129,7 @@ mod tests {
                     tool: None,
                     bash: None,
                     agent: None,
+                    goal_round: None,
                     reminder: None,
                 },
             ],

@@ -61,6 +61,9 @@ pub mod status {
     pub const SUPERSEDED: &str = "superseded";
     pub const APPROVED: &str = "approved";
     pub const REJECTED: &str = "rejected";
+    pub const ACTIVE: &str = "active";
+    pub const PAUSED: &str = "paused";
+    pub const BLOCKED: &str = "blocked";
 }
 
 /// 耗时：`161ms`、`54.1s`、`1m02s`、`1h05m`。
