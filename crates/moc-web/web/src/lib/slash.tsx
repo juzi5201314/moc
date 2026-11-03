@@ -1,10 +1,11 @@
-// Composer 斜杠命令：内置命令表 + 当前工作区插件注册的命令（同名时内置优先）。
+// Composer 斜杠命令：内置命令元数据来自后端注册表（/commands.json，
+// 存 useConnection.commands），插件命令经 plugin/list 并入（同名时内置优先）。
 // 命令只在整条输入以 `/名字` 开头时生效；不认识的 `/xxx` 按普通提示发送。
 
 import { toast } from "sonner";
 import { AUTONOMY } from "@/lib/autonomy";
 import { rpc } from "@/protocol/client";
-import type { PluginRunCommandResult } from "@/protocol/types";
+import type { CommandMeta, PluginRunCommandResult } from "@/protocol/types";
 import { retrySession, sendPrompt } from "@/store/actions";
 import { useBtw } from "@/store/btw";
 import { toInput, useComposer } from "@/store/composer";
@@ -24,36 +25,32 @@ export type SlashCommand = {
   description: string;
   /** 需要参数时的用法提示；有值时选中只补全命令，不立即执行。 */
   usage?: string;
+  /** 主名之外的触发名；命中别名时仍按主名分派。 */
+  aliases?: string[];
+  /** 分组的机器键（session/mode/context/agents/plugins/ui）。 */
+  group?: string;
+  /** 依赖的特性键；`features[flag] === false` 时不出补全、执行被拒。 */
+  flag?: string;
   /** 草稿会话（core 里还不存在）不可用。 */
   needsSession?: boolean;
+  /** 生成中可执行；false 时运行中给出提示。 */
+  availableDuringTask?: boolean;
   plugin?: string;
 };
 
-export const BUILTIN_COMMANDS: SlashCommand[] = [
-  { name: "new", description: "新建会话" },
-  { name: "plan", description: "进入或退出计划状态，可附带提示", usage: "[提示]" },
-  {
-    name: "autonomy",
-    description: "切换自主程度，无参数时循环",
-    usage: "[default|dont_ask|unattended]",
-  },
-  { name: "ask", description: "只读问答：本条提示不改动文件", usage: "<问题>" },
-  { name: "retry", description: "接着当前上下文重新生成", needsSession: true },
-  { name: "compact", description: "压缩当前上下文", needsSession: true },
-  { name: "model", description: "切换模型与思考强度" },
-  { name: "btw", description: "旁路提问，不进入主对话上下文", usage: "<问题>", needsSession: true },
-  { name: "context", description: "查看上下文占用", needsSession: true },
-  { name: "usage", description: "查看本会话用量", needsSession: true },
-  { name: "settings", description: "打开设置" },
-  { name: "jobs", description: "查看和管理后台任务", needsSession: true },
-  {
-    name: "workflow",
-    description: "激活 workflow 功能，可附带指令",
-    usage: "[指令]",
-    needsSession: true,
-  },
-  { name: "workflows", description: "查看 workflow run 列表", needsSession: true },
-];
+/** 后端 `CommandMeta` → 前端命令项。 */
+export function fromMeta(meta: CommandMeta): SlashCommand {
+  return {
+    name: meta.name,
+    description: meta.description,
+    usage: meta.usage || undefined,
+    aliases: meta.aliases,
+    group: meta.group,
+    flag: meta.flag,
+    needsSession: meta.needsSession,
+    availableDuringTask: meta.availableDuringTask,
+  };
+}
 
 /** 拆出 `/name args`；不是斜杠开头返回 null。 */
 export function parseSlash(text: string): { name: string; args: string } | null {
@@ -61,11 +58,25 @@ export function parseSlash(text: string): { name: string; args: string } | null 
   return match ? { name: match[1], args: (match[2] ?? "").trim() } : null;
 }
 
-/** 补全候选：只在输入还是单个 `/token`（未输入空格）时出现。 */
-export function slashMatches(text: string, commands: SlashCommand[]): SlashCommand[] {
+/** flag 关闭的命令（`features` 未加载时视为开启）。 */
+function flagDisabled(command: SlashCommand, features?: Record<string, boolean>): boolean {
+  return command.flag !== undefined && features?.[command.flag] === false;
+}
+
+/** 补全候选：只在输入还是单个 `/token`（未输入空格）时出现；flag 关闭的不提示。 */
+export function slashMatches(
+  text: string,
+  commands: SlashCommand[],
+  features?: Record<string, boolean>,
+): SlashCommand[] {
   if (!/^\/[\w-]*$/.test(text)) return [];
   const query = text.slice(1).toLowerCase();
-  return commands.filter((command) => command.name.toLowerCase().startsWith(query));
+  return commands.filter(
+    (command) =>
+      !flagDisabled(command, features) &&
+      (command.name.toLowerCase().startsWith(query) ||
+        command.aliases?.some((alias) => alias.toLowerCase().startsWith(query))),
+  );
 }
 
 function errorText(error: unknown): string {
@@ -76,17 +87,32 @@ function errorText(error: unknown): string {
  * 执行一条斜杠命令；返回 false 表示不是已知命令（调用方按普通提示发送）。
  * 草稿会话里需要真实会话的命令给出提示而不是静默失败。
  */
-export function runSlash(sessionId: string, text: string, commands: SlashCommand[]): boolean {
+export function runSlash(
+  sessionId: string,
+  text: string,
+  commands: SlashCommand[],
+  features?: Record<string, boolean>,
+): boolean {
   const parsed = parseSlash(text);
   if (!parsed) return false;
-  const command = commands.find((item) => item.name === parsed.name);
+  const command = commands.find(
+    (item) => item.name === parsed.name || item.aliases?.includes(parsed.name),
+  );
   if (!command) return false;
   const { args } = parsed;
   const view = useTranscript.getState().bySession[sessionId];
   const composer = useComposer.getState();
 
+  if (flagDisabled(command, features)) {
+    toast(`/${command.name} 依赖的特性 ${command.flag} 已禁用`);
+    return true;
+  }
   if (command.needsSession && sessionId === "draft-session") {
     toast(`/${command.name} 需要先发送第一条消息`);
+    return true;
+  }
+  if (command.availableDuringTask === false && view?.running) {
+    toast(`正在运行中，暂时不能执行 /${command.name}`);
     return true;
   }
   if (!command.plugin && command.usage?.startsWith("<") && !args) {
@@ -159,8 +185,7 @@ export function runSlash(sessionId: string, text: string, commands: SlashCommand
       }
       break;
     case "retry":
-      if (view?.running) toast("当前正在生成，结束后再重试");
-      else void retrySession(sessionId);
+      void retrySession(sessionId);
       break;
     case "compact":
       void compactSession(sessionId)

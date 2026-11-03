@@ -52,6 +52,18 @@ impl CommandGroup {
             Self::Ui => "界面",
         }
     }
+
+    /// 跨线传输的机器键（`/commands.json`、日志），与成员名一致的小写形式。
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Mode => "mode",
+            Self::Context => "context",
+            Self::Agents => "agents",
+            Self::Plugins => "plugins",
+            Self::Ui => "ui",
+        }
+    }
 }
 
 /// 参数补全策略（命令名之后的 args 段）。
@@ -70,6 +82,25 @@ pub enum ArgCompletion {
 pub enum DynamicArg {
     /// 沙盒权限模式（按平台能力过滤）。
     SandboxMode,
+}
+
+/// 命令元数据的可序列化视图：发给非 Rust 前端（WebUI）时剥离 `id` 与
+/// `args`（id 是各前端内部分派键，`args` 引用前端自供的动态候选），
+/// `flag` 展开为 `config.get` 特性表里的键名，前端按 `features[flag]` 判开关。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandMeta {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub usage: &'static str,
+    pub description: &'static str,
+    /// [`CommandGroup::key`] 的机器键。
+    pub group: &'static str,
+    pub needs_session: bool,
+    pub available_during_task: bool,
+    pub available_in_side: bool,
+    /// 特性键名（`FeatureSpec::key`）；`None` 表示不受 flag 门控。
+    pub flag: Option<&'static str>,
 }
 
 /// 一条内置斜杠命令的元数据。
@@ -99,6 +130,23 @@ pub struct CommandSpec<I> {
     pub args: ArgCompletion,
     /// 依赖的特性 flag；flag 关闭时命令不出现在补全，执行得到明确提示。
     pub flag: Option<FeatureFlag>,
+}
+
+impl<I> CommandSpec<I> {
+    /// 跨线元数据视图（见 [`CommandMeta`]）。
+    pub fn meta(&self) -> CommandMeta {
+        CommandMeta {
+            name: self.name,
+            aliases: self.aliases,
+            usage: self.usage,
+            description: self.description,
+            group: self.group.key(),
+            needs_session: self.needs_session,
+            available_during_task: self.available_during_task,
+            available_in_side: self.available_in_side,
+            flag: self.flag.map(|flag| flag.spec().key),
+        }
+    }
 }
 
 /// 插件注册的命令项（[`PluginCommandInfo`] + 宿主插件信息）。

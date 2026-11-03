@@ -10,6 +10,7 @@
 mod assets;
 mod bridge;
 mod browser;
+mod commands;
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -105,8 +106,23 @@ fn routes(state: AppState) -> Router {
     ));
     Router::new()
         .route("/ws", ws_route)
+        .route("/commands.json", get(commands_handler))
         .fallback(get(static_handler))
         .with_state(state)
+}
+
+/// 内置斜杠命令元数据（注册表的可序列化视图）：与静态资源一样是公开元数据，
+/// 不需要令牌；不缓存，升级后立刻生效。
+async fn commands_handler() -> Response {
+    let body = serde_json::to_vec(&commands::command_metas()).expect("命令元数据可序列化");
+    (
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// 静态资源：精确命中嵌入表；`/assets/` 下的文件名带内容哈希，可永久缓存。

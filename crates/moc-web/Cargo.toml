@@ -15,6 +15,7 @@ tokio.workspace = true
 tracing.workspace = true
 # 嵌入归档的解压与响应体压缩；与 moc-core 共用同一份 zstd。
 zstd.workspace = true
+serde_json.workspace = true
 
 [build-dependencies]
 serde_json.workspace = true

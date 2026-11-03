@@ -112,6 +112,23 @@ export type ConfigGetResult = {
   cwd: string;
   /** `[models.fusion]` 默认组合的规范 selector；双侧都配置时才有值。 */
   fusion?: { lead: string; sidekick: string };
+  /** 特性开关快照：`特性键 -> 生效状态`（注册表见 core 的 features 表）。 */
+  features?: Record<string, boolean>;
+};
+
+/** `/commands.json` 返回的内置斜杠命令元数据（core 命令注册表的可序列化视图）。 */
+export type CommandMeta = {
+  name: string;
+  aliases: string[];
+  usage: string;
+  description: string;
+  /** 分组的机器键：session/mode/context/agents/plugins/ui。 */
+  group: string;
+  needsSession: boolean;
+  availableDuringTask: boolean;
+  availableInSide: boolean;
+  /** 依赖的特性键；`config.features[flag] === false` 时命令禁用。 */
+  flag?: string;
 };
 
 // ---------- config/manage ----------

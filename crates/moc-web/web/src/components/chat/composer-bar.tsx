@@ -34,7 +34,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { leadSelector, parseSelector } from "@/lib/models";
-import { BUILTIN_COMMANDS, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
+import { fromMeta, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type {
@@ -50,7 +50,7 @@ import {
   toInput,
   useComposer,
 } from "@/store/composer";
-import { selectModels, useConnection } from "@/store/connection";
+import { selectCommands, selectFeatures, selectModels, useConnection } from "@/store/connection";
 import { reacquire } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
 import { useTranscript } from "@/store/transcript";
@@ -180,6 +180,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const pending = useComposer((state) => state.pending[sessionId] ?? EMPTY_PENDING);
   const runningEnter = usePrefs((state) => state.runningEnter);
   const models = useConnection(selectModels);
+  const builtinMetas = useConnection(selectCommands);
+  const features = useConnection(selectFeatures);
 
   const text = draft?.text ?? "";
   const images = draft?.images ?? [];
@@ -199,10 +201,11 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const token = resourceToken(text, cursor);
   const tokenPrefix = token?.prefix ?? "";
   const commands = useMemo(() => {
-    const builtin = new Set(BUILTIN_COMMANDS.map((command) => command.name));
-    return [...BUILTIN_COMMANDS, ...pluginCommands.filter((command) => !builtin.has(command.name))];
-  }, [pluginCommands]);
-  const slashItems = slashMatches(text, commands);
+    const builtinCommands = builtinMetas.map(fromMeta);
+    const builtin = new Set(builtinCommands.map((command) => command.name));
+    return [...builtinCommands, ...pluginCommands.filter((command) => !builtin.has(command.name))];
+  }, [builtinMetas, pluginCommands]);
+  const slashItems = slashMatches(text, commands, features);
   const slashMode = text.startsWith("/");
 
   useEffect(() => {
@@ -320,7 +323,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       const command = slashItems[index];
       if (!command) return;
       if (command.usage) setText(`/${command.name} `, command.name.length + 2);
-      else if (runSlash(sessionId, `/${command.name}`, commands)) setCursor(0);
+      else if (runSlash(sessionId, `/${command.name}`, commands, features)) setCursor(0);
       return;
     }
     const candidate = resourceItems[index];
@@ -388,7 +391,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       void runBash(sessionId, command, exclude);
       return;
     }
-    if (images.length === 0 && runSlash(sessionId, trimmed, commands)) return;
+    if (images.length === 0 && runSlash(sessionId, trimmed, commands, features)) return;
 
     const input = toInput(trimmed, images);
     useComposer.getState().clearDraft(sessionId);

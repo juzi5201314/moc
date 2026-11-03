@@ -24,6 +24,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/ws": { target: "ws://127.0.0.1:7432", ws: true },
+      "/commands.json": "http://127.0.0.1:7432",
     },
   },
   test: {
