@@ -9,7 +9,6 @@ use moc_llm::{
     Role,
 };
 use moc_protocol::methods::InputPart;
-use serde_json::Value;
 
 pub(in crate::service) async fn project_input(
     input: Vec<InputPart>,
@@ -168,7 +167,6 @@ pub(crate) fn build_request(
     config: &crate::ResolvedConfig,
     messages: Vec<Message>,
     tools: Vec<moc_llm::ToolDef>,
-    native_input: Option<Vec<Value>>,
     session_id: &str,
     anchors: CacheAnchors<'_>,
 ) -> ChatRequest {
@@ -179,12 +177,8 @@ pub(crate) fn build_request(
     } else {
         model.echo_reasoning
     };
-    let (messages, image_budget) = crate::compact::images::apply(
-        messages,
-        &tools,
-        native_input.as_deref(),
-        model.max_request_bytes,
-    );
+    let (messages, image_budget) =
+        crate::compact::images::apply(messages, &tools, model.max_request_bytes);
     if image_budget.evicted > 0 {
         tracing::info!(
             body_bytes = image_budget.body_bytes,
@@ -196,7 +190,6 @@ pub(crate) fn build_request(
     let message_count = messages.len();
     ChatRequest {
         messages,
-        native_input,
         tools,
         tool_choice: None,
         max_output_tokens: Some(model.max_output_tokens),

@@ -93,11 +93,10 @@ pub struct SessionState {
     pub ptc_state: BTreeMap<String, Arc<serde_json::Value>>,
     pub ptc_state_bytes: usize,
     pub summary: Option<(String, String)>,
-    /// 当前 checkpoint 的生成模型；原生数据只对这个模型有效。
+    /// 当前 checkpoint 的生成模型。
     pub summary_model: Option<String>,
     /// Grok Build 整体替换历史时附带的运行时状态提醒；其它 checkpoint 为 `None`。
     pub summary_reminder: Option<String>,
-    pub native_input: Option<Vec<serde_json::Value>>,
     pub first_kept_id: Option<String>,
     pub prompt_sequence: u64,
     pub job_sequence: u64,
@@ -112,7 +111,6 @@ pub struct SessionState {
     /// 工具执行耗时之和（毫秒）；手动 bash 与嵌套子调用不计入。
     pub tool_ms: u64,
     pub usage_at: usize,
-    pub server_compaction_disabled: bool,
     /// CLM 实验模式当前的工作上下文；原始 transcript 始终保留。
     pub clm_context: Option<String>,
     /// spawn 时快照的 agent preset 契约；普通会话与普通子代理为 `None`。
@@ -179,12 +177,10 @@ impl SessionState {
             model_usage: BTreeMap::new(),
             tool_ms: 0,
             usage_at: 0,
-            server_compaction_disabled: false,
             summary: None,
             summary_model: None,
             summary_reminder: None,
             first_kept_id: None,
-            native_input: None,
             clm_context: None,
             agent: agent.clone(),
             goal: None,
@@ -267,7 +263,6 @@ impl SessionState {
             Entry::Compaction {
                 method,
                 summary,
-                native,
                 first_kept_id,
                 model,
                 reminder,
@@ -280,27 +275,7 @@ impl SessionState {
                 self.first_kept_id.clone_from(first_kept_id);
                 self.summary_model.clone_from(model);
                 self.summary_reminder.clone_from(reminder);
-                self.native_input = native
-                    .as_ref()
-                    .and_then(|native| native.as_array())
-                    .filter(|items| {
-                        !items.is_empty()
-                            && items.iter().all(|item| {
-                                item.get("type")
-                                    .and_then(serde_json::Value::as_str)
-                                    .is_some()
-                            })
-                    })
-                    .cloned();
-                if method == "remote" && self.native_input.is_none() {
-                    // 无法解码的数据不能作为截断历史的依据。
-                    self.summary = None;
-                    self.first_kept_id = None;
-                    self.summary_model = None;
-                    self.summary_reminder = None;
-                } else {
-                    self.summary = Some((method.clone(), summary.clone()));
-                }
+                self.summary = Some((method.clone(), summary.clone()));
             }
             Entry::ResetBoundary { .. } => {
                 self.ptc_state.clear();
@@ -308,7 +283,6 @@ impl SessionState {
                 self.summary = None;
                 self.summary_model = None;
                 self.summary_reminder = None;
-                self.native_input = None;
                 self.first_kept_id = None;
                 self.clm_context = None;
                 self.usage = Usage::default();
@@ -374,37 +348,15 @@ impl SessionState {
                 self.session.permission = *permission;
             }
             Entry::ModelChange { model, .. } => {
-                // 真实发请求的模型（Fusion 的 lead 侧）没变时，原生数据、checkpoint
-                // 与用量基线都仍然有效——只换 sidekick 不应作废它们。
+                // 真实发请求的模型（Fusion 的 lead 侧）没变时，用量基线仍然有效，
+                // 只换 sidekick 不应重置它。
                 let lead_changed = crate::config::model::request_selector(&self.model)
                     != crate::config::model::request_selector(model);
                 self.model.clone_from(model);
                 self.session.model.clone_from(model);
                 if lead_changed {
-                    // 原生数据只对生成它的模型有效；如果 checkpoint 就是这个模型生成的（比如
-                    // 计划审批先把上下文压到执行模型再切换），必须保留，否则这次压缩会被悄悄作废。
-                    let foreign_checkpoint = self
-                        .summary_model
-                        .as_deref()
-                        .map(crate::config::model::request_selector)
-                        != Some(crate::config::model::request_selector(model));
-                    if foreign_checkpoint {
-                        self.native_input = None;
-                        if self
-                            .summary
-                            .as_ref()
-                            .is_some_and(|(method, _)| method == "remote")
-                        {
-                            // 加密的 checkpoint 不能跨模型使用；这时恢复日志视图，而不是只留一条占位摘要。
-                            self.summary = None;
-                            self.first_kept_id = None;
-                            self.summary_model = None;
-                            self.summary_reminder = None;
-                        }
-                    }
                     self.usage = Usage::default();
                     self.usage_at = 0;
-                    self.server_compaction_disabled = false;
                 }
             }
             Entry::TitleChange { title, .. } => {
@@ -866,8 +818,8 @@ mod tests {
     }
 
     /// Fusion 模型切换的边界：只换 sidekick（或切回同一 lead 的单模型）时
-    /// 真实发请求的模型没变，原生压缩数据、checkpoint 与用量基线都必须保留；
-    /// lead 真变了才作废。
+    /// 真实发请求的模型没变，checkpoint 与用量基线都必须保留；lead 真变了
+    /// 只重置用量基线，文本摘要仍然有效。
     #[test]
     fn fusion_sidekick_switch_preserves_lead_state() {
         fn seeded(model: &str) -> SessionState {
@@ -882,15 +834,13 @@ mod tests {
                 10,
             )])
             .expect("记录链完整");
-            state.native_input = Some(vec![serde_json::json!({"seed": true})]);
-            state.summary = Some(("remote".into(), "摘要".into()));
+            state.summary = Some(("soft".into(), "摘要".into()));
             state.summary_model = Some("p/a".into());
             state.usage = Usage {
                 input_tokens: 7,
                 ..Usage::default()
             };
             state.usage_at = 1;
-            state.server_compaction_disabled = true;
             state
         }
         let switch = |state: &mut SessionState, next: &str| {
@@ -906,23 +856,16 @@ mod tests {
         let mut state = seeded("fusion:p/a+p/b");
         for next in ["fusion:p/a+p/c", "p/a"] {
             switch(&mut state, next);
-            assert!(state.native_input.is_some(), "{next} 不应作废 native_input");
             assert!(state.summary.is_some(), "{next} 不应作废 summary");
             assert_eq!(state.usage.input_tokens, 7, "{next} 不应重置 usage");
             assert_eq!(state.usage_at, 1, "{next} 不应重置 usage_at");
-            assert!(
-                state.server_compaction_disabled,
-                "{next} 不应重置 server_compaction_disabled"
-            );
         }
 
-        // lead 真变了：原生数据、远程 checkpoint 与用量基线全部作废。
+        // lead 真变了：只重置用量基线，文本摘要跨模型仍然有效。
         switch(&mut state, "fusion:p/d+p/c");
-        assert!(state.native_input.is_none());
-        assert!(state.summary.is_none());
+        assert!(state.summary.is_some(), "文本 checkpoint 跨模型保留");
         assert_eq!(state.usage.input_tokens, 0);
         assert_eq!(state.usage_at, 0);
-        assert!(!state.server_compaction_disabled);
     }
 
     /// 目标快照由 GoalChange 回放；续跑计数只认当前目标 id 的轮次，

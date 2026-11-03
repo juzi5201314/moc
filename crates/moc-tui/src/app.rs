@@ -1368,7 +1368,6 @@ impl App {
                 context_window: None,
                 max_output_tokens: None,
                 inputs: Vec::new(),
-                remote_compaction: false,
                 pricing: None,
             });
         }
@@ -1381,7 +1380,6 @@ impl App {
                 context_window: None,
                 max_output_tokens: None,
                 inputs: Vec::new(),
-                remote_compaction: false,
                 pricing: None,
             });
         }
@@ -1398,7 +1396,6 @@ impl App {
             context_window: model.context_window,
             max_output_tokens: model.max_output_tokens,
             inputs: model.inputs.clone(),
-            remote_compaction: model.remote_compaction,
             pricing: model.pricing,
         }));
         entries
@@ -2929,7 +2926,6 @@ mod tests {
                 cache_write: None,
             }),
             inputs: Vec::new(),
-            remote_compaction: false,
             fast_mode: false,
         }];
         app.session = Some(SessionInfo {
@@ -2980,7 +2976,6 @@ mod tests {
                 cache_write: None,
             }),
             inputs: Vec::new(),
-            remote_compaction: false,
             fast_mode: false,
         }];
         let summary =

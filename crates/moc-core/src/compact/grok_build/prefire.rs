@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::ResolvedModel;
-use crate::config::{CompactionMethod, CompactionThreshold, ResolvedConfig, SoftMethod};
+use crate::config::{CompactionMethod, CompactionThreshold, ResolvedConfig};
 use crate::service::{CoreInner, SessionRuntime};
 
 use super::{PromptSkeleton, Sampler, prompt};
@@ -164,11 +164,7 @@ pub(crate) async fn maybe_prefire(
 ) {
     if !config.compaction.enabled
         || !config.compaction.auto
-        || config.compaction.soft_method != SoftMethod::GrokBuild
-        || !config
-            .compaction
-            .method_order
-            .contains(&CompactionMethod::Soft)
+        || config.compaction.method != CompactionMethod::GrokBuild
     {
         return;
     }
@@ -186,7 +182,7 @@ pub(crate) async fn maybe_prefire(
             return;
         }
         (
-            super::effective_messages(&state, model),
+            super::super::replay::model_messages(&state, None, Some(model)),
             state.session.cwd.clone(),
         )
     };
@@ -336,11 +332,8 @@ fn breaks_pairing(messages: &[Message], split: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use moc_llm::{ContentPart, ToolCall};
-    use moc_protocol::methods::{SessionEngine, SessionPermission};
 
     use super::*;
-    use crate::session::entries::{Entry, EntryPayload, SessionOrigin};
-    use crate::session::state::SessionState;
 
     fn big(chars: usize) -> String {
         "a".repeat(chars * 4)
@@ -351,29 +344,6 @@ mod tests {
             role: Role::Assistant,
             content: vec![ContentPart::ToolCall(ToolCall::new(id, "read", "{}"))],
         }
-    }
-
-    fn test_config() -> ResolvedConfig {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(directory.path().join("home")).unwrap();
-        std::fs::write(
-            directory.path().join("home/config.toml"),
-            "[models.roles]\ndefault='p/m'\nexplore='p/m'\nplan='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n",
-        )
-        .unwrap();
-        ResolvedConfig::load(&crate::CoreConfig {
-            home: directory.path().join("home"),
-            cwd: directory.path().to_owned(),
-            overlays: Vec::new(),
-            session_dir: None,
-            client: moc_llm::Client::new(),
-            ptc_worker: None,
-        })
-        .unwrap()
-    }
-
-    fn test_model() -> ResolvedModel {
-        test_config().resolve_model("p/m").unwrap()
     }
 
     #[test]
@@ -431,61 +401,5 @@ mod tests {
         let split = split_conversation_for_two_pass(&messages, 0.5).expect("切点越过工具结果");
         assert_eq!(split, 3, "切点不能落在工具结果上");
         assert_ne!(messages[split].role, Role::Tool);
-    }
-
-    #[test]
-    fn effective_messages_expands_raw_history_after_remote_checkpoint() {
-        let header = Entry::header(
-            "ses_123456789abc".into(),
-            "/tmp".into(),
-            "p/m".into(),
-            SessionEngine::Standard,
-            SessionPermission::Full,
-            SessionOrigin::root(),
-            "标题".into(),
-            1,
-        );
-        let first = Entry::from_payload(
-            EntryPayload::Message {
-                message: Message::user_text("第一句"),
-                tool: None,
-                finish_reason: None,
-                agent: None,
-                goal: None,
-            },
-            header.id().to_owned(),
-            2,
-        );
-        let second = Entry::from_payload(
-            EntryPayload::Message {
-                message: Message::user_text("第二句"),
-                tool: None,
-                finish_reason: None,
-                agent: None,
-                goal: None,
-            },
-            first.id().to_owned(),
-            3,
-        );
-        let compacted = Entry::from_payload(
-            EntryPayload::Compaction {
-                method: "remote".into(),
-                summary: "占位摘要".into(),
-                first_kept_id: None,
-                tokens_before: 10,
-                tokens_after: 5,
-                instructions: None,
-                native: Some(Box::new(serde_json::json!([{ "type": "message" }]))),
-                model: Some("p/m".into()),
-                reminder: None,
-            },
-            second.id().to_owned(),
-            4,
-        );
-        let state = SessionState::from_entries(vec![header, first, second, compacted]).unwrap();
-        assert_eq!(state.native_input.as_ref().map(Vec::len), Some(1));
-        // 原生载荷无法在文本视图里还原早期历史，Grok 必须展开原始消息。
-        let messages = super::super::effective_messages(&state, &test_model());
-        assert_eq!(messages.len(), 2, "{messages:?}");
     }
 }

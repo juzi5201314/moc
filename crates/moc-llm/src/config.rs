@@ -296,8 +296,6 @@ pub struct LlmConfig {
     /// 同一时限共享连接池；未设置时沿用 [`crate::ClientBuilder::connect_timeout`]。
     /// 非流式响应生成与流式首包等待受 `timeout_secs` 约束；模型生成阶段没有本地硬时限。
     pub connect_timeout_secs: Option<f64>,
-    /// Responses 服务端压缩阈值；配置时请求体带 `context_management`。
-    pub server_compaction_threshold: Option<u64>,
     /// 重试策略。
     pub retry: RetryPolicy,
 }
@@ -389,51 +387,10 @@ fn normalize_base_url(raw: &str) -> String {
     }
 }
 
-impl LlmConfig {
-    /// OpenAI Responses 原生压缩端点 URL。
-    pub fn compact_endpoint_url(&self) -> String {
-        let base = match &self.endpoint {
-            EndpointStyle::Default => normalize_base_url(&self.base_url),
-            EndpointStyle::Azure { .. } => self.base_url.trim_end_matches('/').to_owned(),
-        };
-        match &self.endpoint {
-            EndpointStyle::Default => format!("{base}/responses/compact"),
-            EndpointStyle::Azure { api_version } => format!(
-                "{base}/openai/deployments/{}/responses/compact?api-version={api_version}",
-                self.model
-            ),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    #[test]
-    fn compact_endpoint_urls_cover_default_and_azure() {
-        let default = LlmConfig {
-            protocol: Protocol::OpenAiResponses,
-            base_url: "https://api.openai.com/v1/".into(),
-            ..Default::default()
-        };
-        assert_eq!(
-            default.compact_endpoint_url(),
-            "https://api.openai.com/v1/responses/compact"
-        );
-        let azure = LlmConfig {
-            base_url: "https://contoso.openai.azure.com/".into(),
-            model: "gpt-deploy".into(),
-            endpoint: EndpointStyle::Azure {
-                api_version: "2025-04-01".into(),
-            },
-            ..Default::default()
-        };
-        assert_eq!(
-            azure.compact_endpoint_url(),
-            "https://contoso.openai.azure.com/openai/deployments/gpt-deploy/responses/compact?api-version=2025-04-01"
-        );
-    }
     #[test]
     fn endpoint_urls_normalize_v1_and_honor_escape_marker() {
         for (protocol, base_url, expected) in [

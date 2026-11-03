@@ -20,7 +20,7 @@ pub async fn write(
 ) -> Result<Option<String>, CoreError> {
     let start = visible_history_start(state);
     if start >= state.transcript.len() {
-        return Ok(None);
+        return existing_index(paths).await;
     }
     let directory = paths.compaction();
     fs::create_dir_all(&directory).await?;
@@ -29,7 +29,7 @@ pub async fn write(
     let path = directory.join(&filename);
     let (content, count, first_id, last_id) = render_segment(&state.transcript[start..]);
     if count == 0 {
-        return Ok(None);
+        return existing_index(paths).await;
     }
     fs::write(&path, &content).await?;
 
@@ -55,6 +55,12 @@ pub async fn write(
         .await?;
     index.flush().await?;
     Ok(Some("history://compaction/INDEX.md".to_owned()))
+}
+
+async fn existing_index(paths: &SessionPaths) -> Result<Option<String>, CoreError> {
+    Ok(fs::try_exists(paths.compaction().join("INDEX.md"))
+        .await?
+        .then(|| "history://compaction/INDEX.md".to_owned()))
 }
 
 async fn next_segment_number(directory: &Path) -> Result<usize, CoreError> {

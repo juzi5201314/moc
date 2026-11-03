@@ -124,7 +124,6 @@ pub(crate) struct CoreInner {
     /// 每个项目一个插件宿主，键与 `project_configs` 相同。
     pub plugin_hosts: Mutex<HashMap<PathBuf, Arc<moc_plugin::PluginHost>>>,
     pub ptc_host: Mutex<Option<Arc<crate::tools::ptc::PtcHost>>>,
-    pub remote_unavailable: RwLock<std::collections::HashSet<String>>,
     /// 本进程内子代理的运行状态。历史以持久化的 transcript 为准。
     pub agents: Mutex<crate::agents::AgentRegistry>,
     /// 内置 agent preset 注册表；插件 preset 按工作区在 spawn 时并入。
@@ -664,7 +663,6 @@ impl Core {
                 skill_indexes: RwLock::new(HashMap::new()),
                 plugin_hosts: Mutex::new(HashMap::new()),
                 ptc_host: Mutex::new(None),
-                remote_unavailable: RwLock::new(std::collections::HashSet::new()),
                 agents: Mutex::new(crate::agents::AgentRegistry::default()),
                 agent_presets: crate::agents::PresetRegistry::with_builtins(),
                 agent_tasks: Mutex::new(tokio::task::JoinSet::new()),
@@ -1069,7 +1067,6 @@ impl AgentService for Core {
                 .into_iter()
                 .filter_map(|(supported, input)| supported.then_some(input))
                 .collect(),
-                remote_compaction: model.remote_compaction,
                 fast_mode: model.fast_mode,
             })
             .collect::<Vec<_>>();

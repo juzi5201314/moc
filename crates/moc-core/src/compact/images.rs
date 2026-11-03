@@ -5,7 +5,6 @@
 
 use moc_llm::{ContentPart, Message, ToolDef};
 use serde::Serialize;
-use serde_json::Value;
 
 /// 供应商没有单独配置时使用的请求体上限。
 const DEFAULT_MAX_REQUEST_BYTES: usize = 50 * 1024 * 1024;
@@ -34,7 +33,6 @@ pub struct ImageBudgetOutcome {
 pub fn apply(
     mut messages: Vec<Message>,
     tools: &[ToolDef],
-    native_input: Option<&[Value]>,
     configured_max_bytes: Option<u64>,
 ) -> (Vec<Message>, ImageBudgetOutcome) {
     // 配置的上限原样生效：小于触发余量的上限会让图片全部被淘汰（0 已在校验时拒绝）。
@@ -44,7 +42,7 @@ pub fn apply(
         .unwrap_or(DEFAULT_MAX_REQUEST_BYTES);
     let trigger = max_bytes.saturating_sub(TRIGGER_HEADROOM_BYTES);
     let reclaim = max_bytes / 2;
-    let fixed_bytes = serialized_bytes(tools).saturating_add(serialized_bytes(&native_input));
+    let fixed_bytes = serialized_bytes(tools);
     let body_bytes =
         fixed_bytes.saturating_add(messages.iter().map(serialized_bytes).sum::<usize>());
     if body_bytes <= trigger {
@@ -167,7 +165,7 @@ mod tests {
                 detail: None,
             }],
         }];
-        let (messages, outcome) = apply(messages, &[], None, Some(8 * 1024 * 1024));
+        let (messages, outcome) = apply(messages, &[], Some(8 * 1024 * 1024));
         assert_eq!(outcome.evicted, 1);
         assert!(outcome.body_bytes_after < outcome.body_bytes);
         assert!(matches!(messages[0].content[0], ContentPart::Text(_)));
@@ -187,7 +185,7 @@ mod tests {
             }],
         }];
         // 4 MiB 上限低于默认值：必须按配置淘汰，不能悄悄退回 50 MiB。
-        let (messages, outcome) = apply(messages, &[], None, Some(4 * 1024 * 1024));
+        let (messages, outcome) = apply(messages, &[], Some(4 * 1024 * 1024));
         assert_eq!(outcome.evicted, 1);
         assert!(outcome.body_bytes > 4 * 1024 * 1024);
         assert!(outcome.body_bytes_after < outcome.body_bytes);
@@ -208,7 +206,7 @@ mod tests {
                 }],
             })
             .collect();
-        let (messages, outcome) = apply(messages, &[], None, Some(8 * 1024 * 1024));
+        let (messages, outcome) = apply(messages, &[], Some(8 * 1024 * 1024));
         assert!(
             outcome.evicted > 0 && outcome.evicted < 10,
             "够用就停，实际淘汰了 {} 张",
@@ -230,7 +228,7 @@ mod tests {
             .collect();
         let count = messages.len();
         SERIALIZED_CALLS.with(|calls| calls.set(0));
-        let (_, outcome) = apply(messages, &[], None, Some(4 * 1024 * 1024));
+        let (_, outcome) = apply(messages, &[], Some(4 * 1024 * 1024));
         assert_eq!(outcome.evicted, 0);
         assert_eq!(outcome.body_bytes, outcome.body_bytes_after);
         // 额外两次是请求封套（工具定义与原生载荷）；旧实现会跑满全表 O(n²)。

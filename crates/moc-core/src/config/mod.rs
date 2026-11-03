@@ -31,11 +31,9 @@ pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ROLE_NONE, Thi
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
     EditConfig, FeaturesConfig, FindConfig, GrepConfig, HOST_PLUGIN_KEYS, JobConfig, JobOverflow,
-    LimitsConfig,
-    WorkflowConfig,
-    OnDenied, OutputConfig, PluginsConfig, PtcConfig, ReadConfig, RemoteCompactionConfig,
-    RetentionConfig, ShakeConfig, SkillsConfig, SoftMethod, SystemPromptConfig, TodoConfig,
-    ToolsConfig, WebFetchConfig, WebSearchConfig, WorkspaceConfig, WriteConfig, is_plugin_key,
+    LimitsConfig, OnDenied, OutputConfig, PluginsConfig, PtcConfig, ReadConfig, RetentionConfig,
+    ShakeConfig, SkillsConfig, SystemPromptConfig, TodoConfig, ToolsConfig, WebFetchConfig,
+    WebSearchConfig, WorkflowConfig, WorkspaceConfig, WriteConfig, is_plugin_key,
 };
 
 /// 会话文件与保留策略；跨进程锁始终启用。
@@ -1048,7 +1046,6 @@ max_output_tokens = 128000
             vec![ThinkingLevel::High, ThinkingLevel::Max]
         );
         assert!(model.llm.wire.developer_role);
-        assert!(model.remote_compaction);
     }
 
     #[test]
@@ -1346,7 +1343,11 @@ max_output_tokens = 128000
         // 默认全开：自有键走注册表默认，已有段读各自 enabled。
         assert!(config.feature_enabled(FeatureFlag::Ptc));
         assert!(config.feature_enabled(FeatureFlag::Workflow));
-        assert!(config.features.engine_available(moc_protocol::SessionEngine::Ptc));
+        assert!(
+            config
+                .features
+                .engine_available(moc_protocol::SessionEngine::Ptc)
+        );
 
         fs::write(
             &config_path,
@@ -1359,10 +1360,21 @@ max_output_tokens = 128000
         let config =
             ResolvedConfig::load(&core_config(&home, &cwd, vec![])).expect("覆盖配置可解析");
         assert!(!config.feature_enabled(FeatureFlag::Ptc));
-        assert!(!config.features.engine_available(moc_protocol::SessionEngine::Ptc));
-        assert!(config.features.engine_available(moc_protocol::SessionEngine::Standard));
+        assert!(
+            !config
+                .features
+                .engine_available(moc_protocol::SessionEngine::Ptc)
+        );
+        assert!(
+            config
+                .features
+                .engine_available(moc_protocol::SessionEngine::Standard)
+        );
         assert!(!config.feature_enabled(FeatureFlag::Workflow));
-        assert!(config.feature_enabled(FeatureFlag::Clm), "未覆盖的键保持默认");
+        assert!(
+            config.feature_enabled(FeatureFlag::Clm),
+            "未覆盖的键保持默认"
+        );
     }
 
     #[test]
@@ -1384,7 +1396,10 @@ max_output_tokens = 128000
         // 挂在已有配置段上的键在 [features] 里拒绝并指向正确路径。
         fs::write(
             home.join("config.toml"),
-            format!("{}\n[features]\nworkflow=false\n", provider_config("literal")),
+            format!(
+                "{}\n[features]\nworkflow=false\n",
+                provider_config("literal")
+            ),
         )
         .expect("写配置");
         let error = match ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())) {

@@ -201,7 +201,6 @@ pub fn sample_model_entry(selector: &str, label: &str) -> ModelEntry {
         context_window: Some(200_000),
         max_output_tokens: Some(32_000),
         inputs: vec![moc_protocol::methods::ModelInput::Text],
-        remote_compaction: false,
         pricing: None,
     }
 }

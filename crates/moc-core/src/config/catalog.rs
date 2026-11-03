@@ -12,7 +12,7 @@ pub fn provider_template() -> Value {
 
 pub fn model_template() -> Value {
     json!({"context_window":200000,"max_output_tokens":32000,"max_request_bytes":null,"reasoning":false,
-        "thinking_levels":null,"input":["text"],"remote_compaction":null,"pricing":null,"fast_mode":false,
+        "thinking_levels":null,"input":["text"],"pricing":null,"fast_mode":false,
         "compat":{"max_output_tokens_field":"max_tokens","supports_stop":true,
             "supports_prompt_cache_key":true,"reasoning_field":"reasoning_content",
             "reasoning_field_aliases":["reasoning_content","reasoning"],"tool_choice_dialect":"standard",
@@ -143,11 +143,9 @@ fn rank(key: &str) -> usize {
         "threshold" => 2,
         "mid_prompt" => 3,
         "auto_continue" => 4,
-        "method_order" => 5,
-        "soft_method" => 6,
+        "method" => 5,
         "keep_recent_tokens" => 7,
         "protect_recent_tool_tokens" => 8,
-        "remote" => 9,
         "shake" => 10,
         "foreground_after_secs" => 0,
         "monitored_timeout_secs" => 1,
@@ -308,7 +306,10 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         "mode" if path.iter().any(|part| part == "threshold") => {
             &[("percent", "按上下文比例"), ("tokens", "按固定长度")]
         }
-        "soft_method" => &[("moc", "Moc（当前实现）"), ("grok_build", "Grok Build")],
+        "method" if path.first().is_some_and(|part| part == "compaction") => &[
+            ("moc", "Moc（本地修剪+摘要）"),
+            ("grok_build", "Grok Build"),
+        ],
         "default_mode" if path.first().is_some_and(|part| part == "sandbox") => {
             let support = crate::sandbox::detect();
             if support.supports(SessionPermission::Workspace)
@@ -353,8 +354,6 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         FieldKind::Multiline
     } else if matches!(key, "thinking_levels" | "input" | "args" | "allow" | "deny") {
         FieldKind::Strings
-    } else if key == "remote_compaction" {
-        FieldKind::Bool
     } else if matches!(
         key,
         "timeout_secs" | "connect_timeout_secs" | "max_request_bytes"
@@ -555,7 +554,6 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "输入模态",
                 "模型支持接收的内容类型：仅文本 或 文本与图片/多模态。",
             ),
-            "remote_compaction" => ("由服务端压缩", "留空自动判断；仅部分接口支持。"),
             "fast_mode" => (
                 "支持 Fast Mode",
                 "开启后模型选择器显示 Fast Mode 开关；会话打开开关时请求体带 service_tier = \"fast\"。仅部分模型支持，默认关闭。",
@@ -644,13 +642,9 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "模型调用 job wait 单次最多等待的秒数。",
             ),
             "overflow" => ("超出上限时", "直接报错，或等待有空位再继续。"),
-            "method_order" => (
-                "压缩方式顺序",
-                "逐行填写 remote（服务端）、shake（本地修剪）、soft（摘要），按顺序尝试；soft 的摘要实现由「Soft 摘要方式」决定。",
-            ),
-            "soft_method" => (
-                "Soft 摘要方式",
-                "选择 soft 压缩使用的摘要实现；remote 与 shake 不受影响。Grok Build 使用其 9 段摘要与 full-replace 历史，忽略「保留最近对话」和「保留最近工具结果」。",
+            "method" => (
+                "压缩方式",
+                "moc：先 shake 本地修剪，不足再 soft 摘要；grok_build：Grok Build 复刻管线（9 段摘要+整体替换历史，忽略「保留最近对话」「保留最近工具结果」与修剪参数）。",
             ),
             "keep_recent_tokens" => ("保留最近对话", "压缩后保留的最近对话长度（token）。"),
             "protect_recent_tool_tokens" => {
@@ -674,10 +668,6 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "丢弃过期的读取",
                 "同一文件被重新读取后，旧的读取内容不再保留。",
             ),
-            "server_side" => ("请求内压缩", "在请求中交给服务端压缩历史；仅部分模型支持。"),
-            "retained_message_tokens" => {
-                ("服务端压缩保留量", "压缩后仍保留的最近对话长度（token）。")
-            }
             "max_length_continues" => (
                 "中断后继续次数",
                 "回复因长度上限中断后，自动接着生成的次数。",

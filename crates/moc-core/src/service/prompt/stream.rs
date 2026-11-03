@@ -23,8 +23,7 @@ pub(super) async fn forward_event(
         | StreamEvent::ToolCallStart { .. }
         | StreamEvent::ToolCallArgumentsDelta { .. }
         | StreamEvent::ReasoningSignature { .. }
-        | StreamEvent::ReasoningItem { .. }
-        | StreamEvent::CompactionItem { .. } => None,
+        | StreamEvent::ReasoningItem { .. } => None,
     };
     if let Some(delta) = delta {
         update

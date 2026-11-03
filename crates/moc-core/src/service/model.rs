@@ -79,8 +79,7 @@ pub(crate) async fn switch(
         .map_err(|error| CoreError::Protocol(error.to_string()))?;
     // 模型变了，旧模型提前生成的摘要（含 NOTE₁）不能再用。
     inner.runtime(session_id).await.grok_prefire.clear();
-    // 必须先切换再压缩：ModelChange 会让旧模型的原生压缩数据和远程摘要失效，
-    // checkpoint 只能由新模型生成。
+    // 必须先切换再压缩：checkpoint 由新模型生成，避免沿用旧模型的摘要基线。
     let compaction_error = match action {
         SessionModelOverflowAction::Compact if overflow.is_some() => compact::compact(
             inner,

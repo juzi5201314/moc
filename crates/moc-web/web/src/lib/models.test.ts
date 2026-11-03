@@ -30,13 +30,11 @@ describe("sessionCost", () => {
         id: "p/m",
         display_name: "m",
         pricing: { input: 2, output: 10, cache_read: 0.2 },
-        remote_compaction: false,
       },
       {
         id: "p/plain",
         display_name: "plain",
         pricing: { input: 1, output: 4 },
-        remote_compaction: false,
       },
     ];
     const cost = sessionCost(

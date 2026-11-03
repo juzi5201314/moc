@@ -2,6 +2,7 @@
 
 use crate::support;
 
+use crate::support::Harness;
 use moc_core::session::entries::Entry;
 use moc_protocol::methods::{
     SessionCompact, SessionCompactParams, SessionEngine, SessionNew, SessionNewParams,
@@ -10,7 +11,6 @@ use moc_protocol::methods::{
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use crate::support::Harness;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
 /// 旧助手文本：压缩后必须从模型视图消失。
@@ -112,7 +112,7 @@ async fn grok_build_full_replace_and_replay() {
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nsoft_method='grok_build'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=100\n",
+        "[compaction]\nmethod='grok_build'\nauto=false\nkeep_recent_tokens=100\n",
     )
     .await;
     let id = harness.session(SessionEngine::Standard).await;
@@ -147,6 +147,16 @@ async fn grok_build_full_replace_and_replay() {
         "不应再使用 moc 的 8 段提示词"
     );
 
+    // 没有新增消息时再次压缩，模型返回的新摘要仍不含归档链接。
+    // 回读指引必须由提交逻辑重新附加，不能依赖模型照抄。
+    harness
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: id.clone(),
+            instructions: None,
+        })
+        .await
+        .unwrap();
     harness.prompt(&id, "第二轮：继续").await;
     let requests = upstream.received_requests().await.unwrap();
     let replay = requests
@@ -171,8 +181,8 @@ async fn grok_build_full_replace_and_replay() {
         "压缩前的旧消息必须从模型视图消失"
     );
     assert!(
-        !replay_text.contains("<compaction-history>"),
-        "严格 Grok 不写历史指针"
+        replay_text.contains("<compaction-history>"),
+        "Grok 摘要必须附历史回读指引"
     );
     assert!(
         !replay_text.contains("<compaction-runtime>"),
@@ -190,19 +200,22 @@ async fn grok_build_full_replace_and_replay() {
     let mut names = Vec::new();
     file_names(&harness.root.path().join("sessions"), &mut names);
     assert!(
-        !names
-            .iter()
-            .any(|name| name == "INDEX.md" || name.starts_with("segment-")),
-        "严格 Grok 模式不写压缩归档：{names:?}"
+        names.iter().any(|name| name == "INDEX.md"),
+        "缺少归档索引：{names:?}"
     );
+    let store = moc_core::session::store::SessionStore::new(harness.root.path().join("sessions"));
+    let paths = store.find(&id).await.unwrap().unwrap();
+    assert!(!paths.compaction().join("segment-0001.md").exists());
+    let archive = std::fs::read_to_string(paths.compaction().join("segment-0000.md")).unwrap();
+    assert!(
+        archive.contains(OLD_ANSWER),
+        "归档必须保留已从模型视图移除的原文"
+    );
+    harness.close().await;
 }
 
 #[tokio::test]
 async fn grok_build_retries_degenerate_summary() {
-    // 集成测试不等待真实的 3 秒退避。
-    // SAFETY: 本用例串行执行且先于压缩请求设置变量；集成测试二进制内的其他用例
-    // 不读取该变量，唯一的并发读者是自己发起的压缩任务。
-    unsafe { std::env::set_var("GROK_COMPACT_RETRY_MS", "1") };
     let upstream = MockServer::builder().start().await;
     let requests = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&requests);
@@ -227,7 +240,7 @@ async fn grok_build_retries_degenerate_summary() {
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nsoft_method='grok_build'\nmethod_order=['soft']\nauto=false\n",
+        "[compaction]\nmethod='grok_build'\nauto=false\n",
     )
     .await;
     let id = harness.session(SessionEngine::Standard).await;
@@ -246,9 +259,7 @@ async fn grok_build_retries_degenerate_summary() {
         2,
         "退化输出必须触发一次重试"
     );
-    // SAFETY: 压缩请求已经结束，本用例不再有并发读者；清除变量避免影响同进程的
-    // 其他用例。
-    unsafe { std::env::remove_var("GROK_COMPACT_RETRY_MS") };
+    harness.close().await;
 }
 
 #[tokio::test]
@@ -281,7 +292,7 @@ async fn grok_build_ladder_shrinks_after_context_length() {
         &upstream.uri(),
         "openai_chat",
         "[providers.test.models.small]\ncontext_window=130000\nmax_output_tokens=4096\n\
-         [compaction]\nsoft_method='grok_build'\nmethod_order=['soft']\nauto=false\n",
+         [compaction]\nmethod='grok_build'\nauto=false\n",
     )
     .await;
     let id = harness
@@ -358,7 +369,7 @@ async fn grok_build_prefire_feeds_note1_into_second_pass() {
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nsoft_method='grok_build'\nmethod_order=['soft']\n\
+        "[compaction]\nmethod='grok_build'\n\
          threshold={mode='tokens',value=60000}\n",
     )
     .await;
@@ -417,9 +428,153 @@ async fn grok_build_prefire_feeds_note1_into_second_pass() {
 }
 
 #[tokio::test]
+async fn grok_build_failure_classes_share_three_attempts() {
+    // 即使供应商允许十次重试，压缩仍按实际 HTTP 请求共享三次预算。
+    for (statuses, succeeds, expected) in [
+        (vec![503, 200], true, 2),
+        (vec![401], false, 1),
+        (vec![400, 503, 503, 200], false, 3),
+        (vec![503, 503, 503, 200], false, 3),
+    ] {
+        let upstream = MockServer::builder().start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&calls);
+        let summary = grok_summary("RETRY-SUMMARY");
+        Mock::given(method("POST"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                if body["stream"] == true {
+                    return ResponseTemplate::new(200)
+                        .set_body_raw(support::text_stream(OLD_ANSWER), "text/event-stream");
+                }
+                let attempt = seen.fetch_add(1, Ordering::SeqCst);
+                let status = statuses[attempt.min(statuses.len() - 1)];
+                match status {
+                    200 => ResponseTemplate::new(200).set_body_json(support::complete(&summary)),
+                    400 => ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                        "error": {"message":"maximum context length exceeded", "code":"context_length_exceeded"}
+                    })),
+                    401 => ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                        "error": {"message":"invalid API key"}
+                    })),
+                    _ => ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                        "error": {"message":"temporarily unavailable"}
+                    })),
+                }
+            })
+            .mount(&upstream).await;
+        let harness = Harness::with_roles(
+            &upstream.uri(),
+            "openai_chat",
+            "retrying/gpt-test:off",
+            "retrying/gpt-test:off",
+            &format!(
+                "[compaction]\nmethod='grok_build'\nauto=false\n\
+                 [providers.retrying]\napi='openai_chat'\nbase_url='{}/v1'\nretry={{max_attempts=10}}\n\
+                 [providers.retrying.models.gpt-test]\ncontext_window=1000000\nmax_output_tokens=4096\n",
+                upstream.uri()
+            ),
+        )
+        .await;
+        let id = harness.session(SessionEngine::Standard).await;
+        harness.prompt(&id, "保留当前任务").await;
+        let result = harness
+            .client
+            .call::<SessionCompact>(SessionCompactParams {
+                session_id: id.clone(),
+                instructions: None,
+            })
+            .await;
+        assert_eq!(result.is_ok(), succeeds, "结果：{result:?}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            expected,
+            "换档与 transient 共用三次采样预算"
+        );
+        let entries = support::transcript_entries(&harness, &id).await;
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, Entry::Compaction { .. }))
+                .count(),
+            usize::from(succeeds),
+            "失败不能提交 checkpoint"
+        );
+        harness.close().await;
+    }
+}
+
+#[tokio::test]
+async fn grok_build_preserves_prunable_input_and_reads_archive() {
+    let upstream = MockServer::builder().start().await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat",
+        "[compaction]\nmethod='grok_build'\nauto=false\nprotect_recent_tool_tokens=0\n\
+         [compaction.shake]\nkeep_last_prompts=0\nsoft_trim_chars=100\nhead_chars=10\ntail_chars=10\n").await;
+    let file = harness.root.path().join("work/long.txt");
+    let original = format!("{}\n{}", support::PRUNE_MARKER, "完整工具内容".repeat(800));
+    std::fs::write(&file, &original).unwrap();
+    support::mount_read_round(&upstream, &file, &grok_summary("NO-SHAKE")).await;
+    let id = harness.session(SessionEngine::Standard).await;
+    harness.prompt(&id, "读取长文件").await;
+    let before = support::tool_result_texts(&harness.load(&id).await);
+    let compacted = harness
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: id.clone(),
+            instructions: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(compacted.method, "grok_build");
+    assert_eq!(
+        support::tool_result_texts(&harness.load(&id).await),
+        before,
+        "Grok 不得经过会改写 transcript 的 shake"
+    );
+    let requests = upstream.received_requests().await.unwrap();
+    let body = requests
+        .iter()
+        .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap())
+        .find(|body| body["stream"] != true)
+        .unwrap();
+    assert!(
+        messages_text(&body).contains(support::PRUNE_MARKER),
+        "摘要输入保留未裁剪证据"
+    );
+    assert!(!messages_text(&body).contains("[tool output pruned]"));
+
+    upstream.reset().await;
+    let rounds = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&rounds);
+    Mock::given(method("POST"))
+        .respond_with(move |_: &wiremock::Request| {
+            let response = if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                support::tool_stream(vec![(
+                    "archive_read",
+                    "read",
+                    serde_json::json!({"path":"history://compaction/segment-0000.md","limit":1000}),
+                )])
+            } else {
+                support::text_stream("已回读归档")
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    harness.prompt(&id, "回读归档中的完整证据").await;
+    let requests = upstream.received_requests().await.unwrap();
+    let replay: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+    assert!(
+        messages_text(&replay).contains(support::PRUNE_MARKER),
+        "read 工具必须能回读归档原文"
+    );
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn moc_soft_default_unchanged() {
     let upstream = MockServer::builder().start().await;
-    let summary = grok_summary("GROK-SUMMARY-MARKER");
+    let summary = support::soft_checkpoint("第一轮");
     Mock::given(method("POST"))
         .respond_with(move |request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
@@ -432,12 +587,7 @@ async fn moc_soft_default_unchanged() {
         })
         .mount(&upstream)
         .await;
-    let harness = Harness::new(
-        &upstream.uri(),
-        "openai_chat",
-        "[compaction]\nmethod_order=['soft']\nauto=false\n",
-    )
-    .await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nauto=false\n").await;
     let id = harness.session(SessionEngine::Standard).await;
     harness.prompt(&id, "第一轮").await;
     let compacted = harness

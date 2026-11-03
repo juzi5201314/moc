@@ -25,7 +25,7 @@ impl Project {
         let cwd = root.path().join("work");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&cwd).unwrap();
-        std::fs::write(home.join("config.toml"), format!("[models.roles]\ndefault='p/gpt-test:off'\nexplore='p/gpt-test:off'\nplan='p/gpt-test:off'\n[providers.p]\napi='openai_chat'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=1}}\n[providers.p.models.gpt-test]\ncontext_window=1000000\n[context_files]\nenabled=false\n[workspace]\nwatch=false\n[compaction]\nmethod_order=['soft']\n{extra}"))
+        std::fs::write(home.join("config.toml"), format!("[models.roles]\ndefault='p/gpt-test:off'\nexplore='p/gpt-test:off'\nplan='p/gpt-test:off'\n[providers.p]\napi='openai_chat'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=1}}\n[providers.p.models.gpt-test]\ncontext_window=1000000\n[context_files]\nenabled=false\n[workspace]\nwatch=false\n[compaction]\nmethod='moc'\n{extra}"))
             .unwrap();
         Self { root, home, cwd }
     }
@@ -159,7 +159,7 @@ async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
     let output = project
         .run(
             &[],
-            "/mode invalid\n/plan 设计接口\n/approve new\n/mode ask\n/ask\n/compact\n/usage\n/sessions\n/quit\n",
+            "/mode invalid\n/plan 设计接口\n/approve new\n/mode ask\n/ask\n/compact 保留已批准计划\n/usage\n/sessions\n/quit\n",
         )
         .await;
     assert!(

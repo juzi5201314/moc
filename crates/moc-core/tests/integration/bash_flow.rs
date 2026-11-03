@@ -2,11 +2,11 @@
 
 use crate::support;
 
+use crate::support::Harness;
 use moc_protocol::{BashCommand, BashParams, SessionBash, methods::*};
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::sync::Arc;
-use crate::support::Harness;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
 async fn bash(harness: &Harness, id: &str, input: &str) -> moc_protocol::BashResult {
@@ -39,7 +39,7 @@ async fn manual_bash_context_survives_resume_and_compaction_without_private_outp
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nmethod_order=['soft']\nkeep_recent_tokens=1\n",
+        "[compaction]\nmethod='moc'\nkeep_recent_tokens=1\n",
     )
     .await;
     let id = harness.session_plan(SessionEngine::Standard).await;

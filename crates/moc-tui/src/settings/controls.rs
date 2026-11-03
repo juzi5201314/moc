@@ -175,14 +175,6 @@ pub fn control(field: &ConfigField) -> Control {
             ordered: false,
             empty: Empty::Reject("至少保留一种输入模态"),
         }),
-        "remote_compaction" if model => Control::Select(vec![
-            Pick {
-                label: "自动判断".into(),
-                action: PickAction::Remove,
-            },
-            Pick::set(json!(true), "开启"),
-            Pick::set(json!(false), "关闭"),
-        ]),
         "pricing" if model => Control::Record(RecordSpec {
             keys: pairs(&[
                 ("input", "输入"),
@@ -246,18 +238,6 @@ pub fn control(field: &ConfigField) -> Control {
             Pick::set(json!("stdio"), "stdio（本地程序）"),
             Pick::set(json!("http"), "http（远程服务）"),
         ]),
-        "method_order" if path.first().is_some_and(|part| part == "compaction") => {
-            Control::List(ListSpec {
-                presets: pairs(&[
-                    ("remote", "服务端压缩"),
-                    ("shake", "本地修剪"),
-                    ("soft", "摘要"),
-                ]),
-                custom: None,
-                ordered: true,
-                empty: Empty::Array,
-            })
-        }
         _ if path.len() == 3 && path[0] == "tui" && path[1] == "keybindings" => {
             Control::List(ListSpec {
                 presets: Vec::new(),

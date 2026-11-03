@@ -8,7 +8,7 @@ use moc_protocol::methods::{
     SessionEngine, SessionPermission, SessionUpdateMethod,
 };
 use moc_protocol::{ClientBuilder, ClientHandle, Server, ServerConnection, transport};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
@@ -326,17 +326,15 @@ async fn budget_drops_whole_oldest_turns_and_never_compacts_main_context() {
         Message::assistant_text(&last.answer),
     ]);
     model.context_window = fixed + last_tokens;
-    let (messages, used) = fit_history(base.clone(), None, &history, "新问题", &model).unwrap();
+    let (messages, used) = fit_history(base.clone(), &history, "新问题", &model).unwrap();
     assert_eq!(used, 1);
     assert_eq!(
         messages.iter().map(Message::text).collect::<Vec<_>>(),
         ["主上下文", "问题 19", "回答 19", "新问题"]
     );
-    let native = [json!({"type":"compaction","encrypted_content":"x".repeat(800)})];
-    assert!(fit_history(base.clone(), Some(&native), &[], "新问题", &model).is_err());
     model.context_window = fixed - 1;
     assert!(
-        fit_history(base, None, &history, "新问题", &model)
+        fit_history(base, &history, "新问题", &model)
             .unwrap_err()
             .message
             .contains("不会压缩主会话")
@@ -376,70 +374,6 @@ async fn clm_snapshot_uses_live_context_instead_of_raw_transcript() {
     assert!(text.contains("当前 CLM 工作视图"));
     assert!(!text.contains("已由 CLM 替换的旧历史"));
     assert!(!text.contains("maintain it with `clm_context`"));
-    assert_eq!(h.unchanged_snapshot().await, before);
-    h.close().await;
-}
-
-#[tokio::test]
-async fn responses_preserve_native_checkpoint_and_textualize_native_tools() {
-    let upstream = MockServer::builder().start().await;
-    let delta = |index, text| {
-        format!(
-            "event: response.output_text.delta\ndata: {}\n\n",
-            json!({
-                "type":"response.output_text.delta", "output_index":index, "delta":text
-            })
-        )
-    };
-    // 到达顺序与内容块顺序不同：最终结果必须使用累加器，不能重拼通知文本。
-    let stream = format!(
-        "{}{}{}event: response.completed\ndata: {}\n\n",
-        delta(0, "原生"),
-        delta(1, "回答"),
-        delta(0, "旁路"),
-        json!({
-            "type":"response.completed", "response":{
-                "id":"r", "model":"model", "status":"completed",
-                "output":[{"type":"message","id":"m","role":"assistant","content":[{"type":"output_text","text":"原生旁路回答"}]}],
-                "usage":{"input_tokens":9,"output_tokens":2,"total_tokens":11}
-            }
-        })
-    );
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(stream, "text/event-stream"))
-        .expect(1)
-        .mount(&upstream)
-        .await;
-    let h = Harness::new(&upstream.uri(), "openai_responses", "").await;
-    h.append(Message::user_text("仍可见的主尾部")).await;
-    let native = json!({"type":"compaction","encrypted_content":"opaque-checkpoint"});
-    {
-        let mut state = h.record.state.lock().await;
-        state.summary = Some(("remote".into(), "不能替代原生数据的摘要".into()));
-        state.native_input = Some(vec![
-            native.clone(),
-            json!({"type":"function_call","call_id":"old","name":"read","arguments":"{}"}),
-            json!({"type":"function_call_output","call_id":"old","output":"原生工具证据"}),
-        ]);
-    }
-    let before = h.unchanged_snapshot().await;
-    let result = h
-        .client
-        .call::<SessionBtw>(h.params("解释已知证据"))
-        .await
-        .unwrap();
-    assert_eq!(result.text, "原生旁路回答");
-    let requests = upstream.received_requests().await.unwrap();
-    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-    let input = body["input"].as_array().unwrap();
-    assert_eq!(input[0], native);
-    assert!(
-        input
-            .iter()
-            .all(|item| item["type"] != "function_call" && item["type"] != "function_call_output")
-    );
-    assert!(body["input"].to_string().contains("原生工具证据"));
-    assert!(!body["input"].to_string().contains("不能替代原生数据的摘要"));
     assert_eq!(h.unchanged_snapshot().await, before);
     h.close().await;
 }

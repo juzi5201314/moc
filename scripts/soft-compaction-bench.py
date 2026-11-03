@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """soft 压缩的可复现对比基准。
 
-同一份真实会话（固定剧本 + 真实模型 + 真实工具）分别用不同的 soft 摘要实现压缩，
+同一份真实会话（固定剧本 + 真实模型 + 真实工具）分别用 moc 与 grok_build 的摘要步骤压缩，
+每次 `/compact` 附带相同指令，让 moc 直接进入 soft 摘要；不改变 shake 保护参数。
 然后测量「压缩后还记得多少」与「是否像没压缩过」：
 
   - 事实保真：18 个预埋事实在最终 checkpoint 里的命中数；
@@ -772,7 +773,7 @@ def run_method(
     overlay.write_text(
         overlay_template.replace("{method}", name), encoding="utf-8"
     )
-    script = "/compact\n" * generations + "\n".join(PROBES) + "\n/quit\n"
+    script = "/compact 保留当前任务、用户约束和未完成事项。\n" * generations + "\n".join(PROBES) + "\n/quit\n"
     output = run_repl(
         binary,
         home,
@@ -1002,7 +1003,7 @@ def run_long_round(
 ) -> None:
     # REPL 的 stdin 也喂给 ask 工具：模型一旦提问，控制行会被当成回答吃掉。
     script = (work_turn + "（直接执行，不要向我提问。）\n") if work_turn else ""
-    script += "/compact\n" + long_probe(round_index) + "\n/quit\n"
+    script += "/compact 保留当前任务、用户约束和未完成事项。\n" + long_probe(round_index) + "\n/quit\n"
     run_repl(binary, home, work, sessions, overlay, script, timeout, log_path, resume=session_id)
 
 
@@ -1491,7 +1492,7 @@ def run_import_method(
     shutil.copytree(imported_dir, sessions)
     overlay = root / f"overlay-{name}.toml"
     overlay.write_text(overlay_template.replace("{method}", name), encoding="utf-8")
-    script = "/compact\n" * generations + "\n".join(IMPORT_PROBES) + "\n/quit\n"
+    script = "/compact 保留当前任务、用户约束和未完成事项。\n" * generations + "\n".join(IMPORT_PROBES) + "\n/quit\n"
     output = run_repl(
         binary,
         home,
@@ -1616,7 +1617,7 @@ def render_table(results: list[dict]) -> str:
 
 
 def build_overlay(selector: str, keep_recent: int, max_output: int) -> str:
-    """生成基准覆盖层：关掉无关子系统，固定压缩策略，并按需收紧输出预留。"""
+    """生成基准覆盖模板；写入每组配置前用该组方法名替换 `{method}`。"""
     provider, _, model = selector.partition("/")
     model = model.split(":")[0]
     text = (
@@ -1629,8 +1630,7 @@ def build_overlay(selector: str, keep_recent: int, max_output: int) -> str:
         "[compaction]\n"
         "auto = false\n"
         "auto_continue = false\n"
-        'method_order = ["soft"]\n'
-        'soft_method = "{method}"\n'
+        'method = "{method}"\n'
         f"keep_recent_tokens = {keep_recent}\n"
         f"protect_recent_tool_tokens = {keep_recent}\n"
     )

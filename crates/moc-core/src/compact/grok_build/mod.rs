@@ -1,7 +1,7 @@
-//! Grok Build 的 soft 压缩：9 段摘要、整体替换历史，以及在触发阈值之前先摘要前缀（预火）。
+//! Grok Build 压缩管线：9 段摘要、整体替换历史，以及在触发阈值之前先摘要前缀（预火）。
 //!
-//! 与 moc 自带的 soft 实现（[`super::soft`]）区别在压缩后的上下文形式：
-//! `remote`/`shake` 不受影响，只有走到 `soft` 且配置选择 `grok_build` 时才用这里。
+//! 与 moc 管线（[`super::soft`] + [`super::shake`]）的区别是不做本地修剪、
+//! 压缩后只留「最后用户查询 + 摘要载体 + 运行时提醒」。
 
 pub(crate) mod fit;
 pub(crate) mod prefire;
@@ -104,7 +104,6 @@ impl<'a> Sampler<'a> {
             self.config,
             request_messages,
             tools.to_vec(),
-            None,
             self.session_id,
             CacheAnchors {
                 instruction_static: static_prefix,
@@ -113,11 +112,14 @@ impl<'a> Sampler<'a> {
             },
         );
         let _permit = self.inner.provider_permit(self.model, cancel).await?;
+        // 摘要层统一负责换档和重试，避免供应商重试与三次预算相乘。
+        let mut llm = self.model.llm.clone();
+        llm.retry.max_attempts = 1;
         let request_started = Instant::now();
         let response = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(CoreError::Cancelled),
-            result = self.inner.client.complete(&self.model.llm, &request) => match result {
+            result = self.inner.client.complete(&llm, &request) => match result {
                 Ok(response) => response,
                 Err(error) => {
                     if let moc_llm::LlmError::Guard(violation) = &error
@@ -175,7 +177,7 @@ pub(crate) async fn compact(
         budget,
     } = input;
     let cancel = ctx.cancel();
-    let messages = effective_messages(state, model);
+    let messages = super::replay::model_messages(state, None, Some(model));
     if messages.is_empty() && state.summary.is_none() {
         return Err(CoreError::ContextOverflow(
             "no history is available to summarize".into(),
@@ -202,6 +204,7 @@ pub(crate) async fn compact(
             "Grok Build compaction: system prompt and tools exceed the context window".into(),
         ));
     }
+    let mut attempts = 0u32;
     if let Some((note1, prefix_len)) = inner
         .runtime(&state.session.id)
         .await
@@ -212,6 +215,7 @@ pub(crate) async fn compact(
         let mut pass2 = Vec::with_capacity(messages.len().saturating_sub(prefix_len) + 1);
         pass2.push(Message::user_text(carrier_from_raw(&note1)));
         pass2.extend_from_slice(&messages[prefix_len..]);
+        attempts += 1;
         match sampler.sample(&cancel, &pass2, &prompt).await {
             Ok(raw) if !prompt::is_degenerate_summary(&raw) => {
                 return finish(
@@ -228,6 +232,9 @@ pub(crate) async fn compact(
                 chars = raw.chars().count(),
                 "Grok Build 预火摘要输出退化，回退到单遍压缩"
             ),
+            Err(error) if matches!(classify_failure(&error), SampleFailure::Deterministic) => {
+                return Err(error);
+            }
             Err(error) => tracing::debug!(
                 session_id = %state.session.id,
                 %error,
@@ -236,67 +243,124 @@ pub(crate) async fn compact(
         }
     }
     let mut stage = fit::initial_stage(system, &messages, tool_tokens, model.context_window);
+    // 预火第二遍、换档和退化重试共享本次压缩的三次采样预算。
     loop {
+        attempts += 1;
         let candidate =
             fit::prepare_stage(stage, messages.clone(), model.context_window, tool_tokens);
-        let mut attempt = 0u32;
-        loop {
-            attempt += 1;
-            match sampler.sample(&cancel, &candidate, &prompt).await {
-                Ok(raw) if !prompt::is_degenerate_summary(&raw) => {
-                    return finish(
-                        &sampler,
-                        state,
-                        instructions,
-                        prompt::clean_summary(&raw),
-                        budget,
-                    )
-                    .await;
+        match sampler.sample(&cancel, &candidate, &prompt).await {
+            Ok(raw) if !prompt::is_degenerate_summary(&raw) => {
+                return finish(
+                    &sampler,
+                    state,
+                    instructions,
+                    prompt::clean_summary(&raw),
+                    budget,
+                )
+                .await;
+            }
+            Ok(raw) => {
+                tracing::warn!(
+                    session_id = %state.session.id,
+                    chars = raw.chars().count(),
+                    attempts,
+                    "Grok Build 摘要输出持续退化"
+                );
+                if attempts >= MAX_ATTEMPTS {
+                    return Err(CoreError::ContextOverflow(
+                        "Grok Build compaction: the summary model kept returning degenerate output"
+                            .into(),
+                    ));
                 }
-                Ok(raw) => {
-                    tracing::warn!(
-                        session_id = %state.session.id,
-                        chars = raw.chars().count(),
-                        attempt,
-                        "Grok Build 摘要输出持续退化"
-                    );
-                    if attempt >= MAX_ATTEMPTS {
-                        return Err(CoreError::ContextOverflow(
-                            "Grok Build compaction: the summary model kept returning degenerate output"
-                                .into(),
-                        ));
+            }
+            Err(error) => match classify_failure(&error) {
+                SampleFailure::Deterministic => return Err(error),
+                SampleFailure::Overflow => {
+                    if attempts >= MAX_ATTEMPTS {
+                        return Err(error);
                     }
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => return Err(CoreError::Cancelled),
-                        _ = tokio::time::sleep(retry_delay()) => {}
-                    }
-                }
-                // 上游判超窗是唯一值得换一档输入重试的失败。
-                Err(error) if is_context_length(&error) => {
                     tracing::warn!(
                         session_id = %state.session.id,
                         stage = ?stage,
                         %error,
                         "Grok Build 摘要输入超窗"
                     );
-                    break;
+                    match stage.next() {
+                        Some(next) => {
+                            stage = next;
+                            continue;
+                        }
+                        None => {
+                            return Err(CoreError::ContextOverflow(
+                                "Grok Build compaction: every input stage exceeded the context window"
+                                    .into(),
+                            ));
+                        }
+                    }
                 }
-                Err(error) => return Err(error),
-            }
+                SampleFailure::Transient => {
+                    tracing::warn!(
+                        session_id = %state.session.id,
+                        attempts,
+                        %error,
+                        "Grok Build 摘要请求失败，退避重试"
+                    );
+                    if attempts >= MAX_ATTEMPTS {
+                        return Err(error);
+                    }
+                }
+            },
         }
-        match stage.next() {
-            Some(next) => stage = next,
-            None => {
-                return Err(CoreError::ContextOverflow(
-                    "Grok Build compaction: every input stage exceeded the context window".into(),
-                ));
-            }
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(CoreError::Cancelled),
+            _ = tokio::time::sleep(retry_delay()) => {}
         }
     }
 }
 
-/// 提交 checkpoint：full-replace 历史 + 运行时提醒，不写历史归档。
+/// 摘要请求失败的分级：同一份输入重试是否有意义。
+#[derive(Debug, PartialEq, Eq)]
+enum SampleFailure {
+    /// 载荷或凭据问题：同一输入必然同样失败，立即上报。
+    Deterministic,
+    /// 输入超窗：换到更小的输入档再试。
+    Overflow,
+    /// 传输层或可重试的上游错误：退避后重试同一档。
+    Transient,
+}
+
+fn classify_failure(error: &CoreError) -> SampleFailure {
+    let CoreError::Llm(llm) = error else {
+        return SampleFailure::Deterministic;
+    };
+    classify_llm_failure(llm)
+}
+
+fn classify_llm_failure(llm: &moc_llm::LlmError) -> SampleFailure {
+    use moc_llm::ApiErrorKind;
+    if let Some(kind) = llm.api_error().map(|api| api.kind) {
+        return match kind {
+            ApiErrorKind::ContextLength | ApiErrorKind::RequestTooLarge => SampleFailure::Overflow,
+            ApiErrorKind::RateLimit
+            | ApiErrorKind::Overloaded
+            | ApiErrorKind::ServerError
+            | ApiErrorKind::Timeout
+            | ApiErrorKind::Unknown => SampleFailure::Transient,
+            _ => SampleFailure::Deterministic,
+        };
+    }
+    // 包装错误仍按根因分类；编码与守卫失败不可重放。
+    match llm {
+        moc_llm::LlmError::RetriesExhausted { last, .. } => classify_llm_failure(last),
+        moc_llm::LlmError::Transport(_)
+        | moc_llm::LlmError::Decode { .. }
+        | moc_llm::LlmError::Stream(_) => SampleFailure::Transient,
+        _ => SampleFailure::Deterministic,
+    }
+}
+
+/// 提交 checkpoint：full-replace 历史 + 运行时提醒；写历史归档指引但不重复运行状态。
 async fn finish(
     sampler: &Sampler<'_>,
     state: &SessionState,
@@ -328,38 +392,10 @@ async fn finish(
             tokens_after,
             full: true,
             instructions: instructions.map(str::to_owned),
-            native: None,
-            archive: HistoryArchive::None,
+            archive: HistoryArchive::WriteWithoutRuntime,
         },
     )
     .await
-}
-
-/// 摘要模型的输入视图。
-///
-/// 普通情况下与回放完全一致；只有此前用过 `remote` 原生压缩时，回放视图只剩不透明
-/// 载荷与保留尾部，而 Grok 需要原始文本才能重写全文，因此展开 `ResetBoundary` 之后的
-/// 原始消息。
-pub(crate) fn effective_messages(state: &SessionState, model: &ResolvedModel) -> Vec<Message> {
-    if state.native_input.is_none() {
-        return super::replay::model_messages(state, None, Some(model));
-    }
-    let start = match state
-        .entries
-        .iter()
-        .rposition(|entry| matches!(entry, Entry::ResetBoundary { .. }))
-    {
-        Some(index) => state.entries[..=index]
-            .iter()
-            .filter(|entry| matches!(entry, Entry::Message { .. }))
-            .count(),
-        None => 0,
-    };
-    state.transcript[start.min(state.transcript.len())..]
-        .iter()
-        .filter_map(|entry| entry.context_message())
-        .map(|message| super::replay::repair_tool_history(message, Some(model)))
-        .collect()
 }
 
 /// full-replace 历史里承载摘要的消息正文。
@@ -408,16 +444,6 @@ fn last_user_message_before(state: &SessionState, boundary: usize) -> Option<Mes
         })
 }
 
-/// 上游把请求判为超窗时的分类；它是唯一值得换一档输入的失败。
-fn is_context_length(error: &CoreError) -> bool {
-    match error {
-        CoreError::Llm(error) => error
-            .api_error()
-            .is_some_and(|api| api.kind == moc_llm::ApiErrorKind::ContextLength),
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use moc_llm::Message;
@@ -464,7 +490,6 @@ mod tests {
                 tokens_before: 1,
                 tokens_after: 1,
                 instructions: None,
-                native: None,
                 model: Some("p/m".into()),
                 reminder: None,
             },
@@ -510,19 +535,32 @@ mod tests {
     }
 
     #[test]
-    fn context_length_classification_only_matches_api_signal() {
-        assert!(!is_context_length(&CoreError::Cancelled));
-        assert!(!is_context_length(&CoreError::ContextOverflow(
-            "本地判定".into()
-        )));
-        let api = moc_llm::ApiError::new(
-            Some(400),
-            moc_llm::ApiErrorKind::ContextLength,
-            "too long",
-            "{}",
-        );
-        assert!(is_context_length(&CoreError::Llm(moc_llm::LlmError::Api(
-            api
-        ))));
+    fn failure_classification_preserves_root_cause() {
+        use moc_llm::{ApiError, ApiErrorKind, LlmError};
+        for (kind, expected) in [
+            (ApiErrorKind::ContextLength, SampleFailure::Overflow),
+            (ApiErrorKind::RequestTooLarge, SampleFailure::Overflow),
+            (ApiErrorKind::Auth, SampleFailure::Deterministic),
+            (ApiErrorKind::InvalidRequest, SampleFailure::Deterministic),
+            (ApiErrorKind::RateLimit, SampleFailure::Transient),
+            (ApiErrorKind::ServerError, SampleFailure::Transient),
+        ] {
+            let error = LlmError::Api(ApiError::new(None, kind, "测试错误", "{}"));
+            assert_eq!(classify_failure(&CoreError::Llm(error.clone())), expected);
+            assert_eq!(
+                classify_failure(&CoreError::Llm(LlmError::RetriesExhausted {
+                    attempts: 1,
+                    last: Box::new(error),
+                })),
+                expected,
+            );
+        }
+        for error in [
+            CoreError::Cancelled,
+            CoreError::ContextOverflow("本地判定".into()),
+            CoreError::Llm(LlmError::Encode("不可编码".into())),
+        ] {
+            assert_eq!(classify_failure(&error), SampleFailure::Deterministic);
+        }
     }
 }

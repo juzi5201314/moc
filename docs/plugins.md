@@ -188,7 +188,7 @@ export default {
 - `beforePrompt` / `afterPrompt`：消息已落库、请求已组装，改写在 `messageReceived` 处完成；提示结果在 `afterPrompt` 时已经定型。
   `/retry` 继续上下文时没有新消息：`beforePrompt` 照常触发（`text` 为空串、`images` 为 `0`、`source` 仍为 `user`），`messageReceived` 不会触发；它剪掉的失败回合只影响会话记录，插件看到的是剪完后的上下文。
 - `beforeModelCall` / `afterModelCall`：请求的组装、token 预算与缓存断点归 core；每轮动态文本用 `prompt(ctx)`（系统提示片段）表达。响应是流式发出的，事后无法改写。
-- `beforeCompaction` / `afterCompaction`：压缩策略由阈值与 `compaction.method_order` 决定；注入 `instructions` 会隐式把压缩切到 soft 路径，语义变化太大。
+- `beforeCompaction` / `afterCompaction`：压缩策略由阈值与 `compaction.method` 决定；注入 `instructions` 会让 moc 跳过 shake、直接生成摘要，语义变化太大。
 - `sessionEnd`：删除是用户的明确意图，插件不应否决。
 - `permissionResolved` / `workspaceChanged` / `planDecided` / `agentFinished` / `jobFinished` / `userCommand`：动作已经提交到 transcript 或前端，再改会导致两处不一致。
 

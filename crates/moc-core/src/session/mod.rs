@@ -921,7 +921,6 @@ impl SessionTable {
             let mut current = record.state.lock().await;
             state.notices = std::mem::take(&mut current.notices);
             state.job_sequence = current.job_sequence;
-            state.server_compaction_disabled = current.server_compaction_disabled;
             *current = state;
             Ok(())
         })
@@ -1098,7 +1097,6 @@ impl SessionTable {
             let mut current = record.state.lock().await;
             fresh.notices = std::mem::take(&mut current.notices);
             fresh.job_sequence = current.job_sequence;
-            fresh.server_compaction_disabled = current.server_compaction_disabled;
             *current = fresh;
         }
         *record.lease.lock() = Some(lease);

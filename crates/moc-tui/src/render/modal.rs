@@ -2517,9 +2517,6 @@ fn model_meta_lines(
             rows.push(("cache".to_owned(), format!("{}/M", cache.join(" / "))));
         }
     }
-    if entry.remote_compaction {
-        rows.push(("compact".to_owned(), "on".to_owned()));
-    }
     if !entry.levels.is_empty() {
         let mut wrapped: Vec<String> = Vec::with_capacity(2);
         let mut current = String::new();
@@ -3095,7 +3092,6 @@ mod tests {
                     moc_protocol::methods::ModelInput::Text,
                     moc_protocol::methods::ModelInput::Image,
                 ],
-                remote_compaction: false,
                 pricing: Some(moc_protocol::methods::ModelPricing {
                     input: 0.15,
                     output: 0.6,
@@ -3169,7 +3165,6 @@ mod tests {
                     context_window: Some(500_000),
                     max_output_tokens: Some(64_000),
                     inputs: vec![moc_protocol::methods::ModelInput::Text],
-                    remote_compaction: true,
                     pricing: None,
                 },
                 crate::modal::ModelEntry {
@@ -3180,7 +3175,6 @@ mod tests {
                     context_window: Some(128_000),
                     max_output_tokens: None,
                     inputs: Vec::new(),
-                    remote_compaction: false,
                     pricing: None,
                 },
             ],
@@ -3274,7 +3268,6 @@ mod tests {
                 moc_protocol::methods::ModelInput::Text,
                 moc_protocol::methods::ModelInput::Image,
             ],
-            remote_compaction: true,
             pricing: Some(moc_protocol::methods::ModelPricing {
                 input: 0.15,
                 output: 0.6,
@@ -3299,7 +3292,6 @@ mod tests {
             "│ input    text · image",
             "│ price    $0.15 → $0.6/M",
             "│ cache    $0.015/M",
-            "│ compact  on",
             "│ levels   off · low",
         ] {
             assert!(
@@ -3324,7 +3316,6 @@ mod tests {
             context_window: Some(128_000),
             max_output_tokens: None,
             inputs: Vec::new(),
-            remote_compaction: false,
             pricing: None,
             levels: Vec::new(),
             ..entry.clone()
@@ -3345,7 +3336,6 @@ mod tests {
             context_window: None,
             max_output_tokens: None,
             inputs: Vec::new(),
-            remote_compaction: false,
             pricing: None,
         };
         let inherit_card: Vec<String> = super::model_meta_lines(theme, Some(&inherit), 30)

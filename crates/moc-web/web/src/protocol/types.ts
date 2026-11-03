@@ -99,7 +99,6 @@ export type ModelInfo = {
   max_output_tokens?: number;
   pricing?: ModelPricing;
   inputs?: ModelInput[];
-  remote_compaction: boolean;
   /** 模型配置了 `fast_mode = true`；只有这类模型显示 Fast Mode 开关。 */
   fast_mode?: boolean;
 };

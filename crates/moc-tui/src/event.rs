@@ -7807,7 +7807,7 @@ mod tests {
             .await;
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("config.toml"), format!(
-            "[models.roles]\ndefault='test/model:off'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\ncontext_window=100000\n[providers.test.models.tiny]\ncontext_window=1000\nmax_output_tokens=4096\n[compaction]\nmethod_order=['soft']\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+            "[models.roles]\ndefault='test/model:off'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\ncontext_window=100000\n[providers.test.models.tiny]\ncontext_window=1000\nmax_output_tokens=4096\n[compaction]\nmethod='moc'\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
             upstream.uri(),
         )).unwrap();
         let core = Core::new(CoreConfig {
@@ -7988,7 +7988,7 @@ mod tests {
                 .await;
             let root = tempfile::tempdir().unwrap();
             std::fs::write(root.path().join("config.toml"), format!(
-                "[models.roles]\ndefault='test/model:off'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\ncontext_window=100000\n[providers.test.models.tiny]\ncontext_window=1000\nmax_output_tokens=4096\n[compaction]\nauto=false\nmethod_order=['soft']\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+                "[models.roles]\ndefault='test/model:off'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\ncontext_window=100000\n[providers.test.models.tiny]\ncontext_window=1000\nmax_output_tokens=4096\n[compaction]\nauto=false\nmethod='moc'\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
                 upstream.uri(),
             )).unwrap();
             let core = Core::new(CoreConfig {
@@ -8194,7 +8194,7 @@ mod tests {
     #[tokio::test]
     async fn manual_compaction_queues_messages_until_settled() {
         let mut h = SlowCompactionHarness::new().await;
-        execute_command(&mut h.app, &h.connection, "/compact".into());
+        execute_command(&mut h.app, &h.connection, "/compact 保留当前任务".into());
         assert!(
             h.app.inflight_session_ops.contains(&h.session),
             "手动压缩在飞时应标记会话忙"
@@ -8732,7 +8732,6 @@ mod tests {
             context_window: None,
             max_output_tokens: None,
             inputs: Vec::new(),
-            remote_compaction: false,
             pricing: None,
         };
         app.modal = Some(Modal::Model {
@@ -8789,7 +8788,6 @@ mod tests {
             context_window: None,
             max_output_tokens: None,
             inputs: Vec::new(),
-            remote_compaction: false,
             pricing: None,
         };
         app.modal = Some(Modal::Model {

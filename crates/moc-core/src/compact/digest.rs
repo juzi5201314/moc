@@ -34,7 +34,7 @@ pub(crate) struct TodoLines {
     pub cancelled: usize,
 }
 
-/// 本次会话成功写入过的文件；与 `remote::checkpoint_summary` 用同一个「成功」判断。
+/// 本次会话成功写入过的文件。
 pub(crate) fn edited_files(state: &SessionState) -> Vec<String> {
     let completed: HashSet<&str> = state
         .transcript

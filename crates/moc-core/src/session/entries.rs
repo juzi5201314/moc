@@ -142,8 +142,10 @@ pub enum Entry {
         tokens_before: u64,
         tokens_after: u64,
         instructions: Option<String>,
+        /// 仅用于读取旧会话的原生载荷；不参与回放，新 checkpoint 不写此字段。
+        #[serde(default, skip_serializing)]
         native: Option<Box<serde_json::Value>>,
-        /// 生成该 checkpoint 的模型；旧记录没有这个字段。原生数据只对这个模型有效。
+        /// 生成该 checkpoint 的模型；旧记录没有这个字段。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         /// Grok Build 整体替换历史时附带的运行时状态提醒；其它压缩方法为 `None`。
@@ -321,7 +323,6 @@ pub enum EntryPayload {
         tokens_before: u64,
         tokens_after: u64,
         instructions: Option<String>,
-        native: Option<Box<serde_json::Value>>,
         /// 生成该 checkpoint 的模型；沿用上一份 checkpoint 时保留原来的来源。
         model: Option<String>,
         /// Grok Build 压缩时快照的运行时状态提醒；其它方法为 `None`。
@@ -620,7 +621,6 @@ impl Entry {
                 tokens_before,
                 tokens_after,
                 instructions,
-                native,
                 model,
                 reminder,
             } => Self::Compaction {
@@ -633,7 +633,8 @@ impl Entry {
                 tokens_before,
                 tokens_after,
                 instructions,
-                native,
+                // 旧记录里可能有 remote 压缩的 `native` 载荷；新写入一律为 None。
+                native: None,
                 model,
                 reminder,
             },

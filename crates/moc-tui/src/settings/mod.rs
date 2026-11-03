@@ -731,7 +731,6 @@ impl SettingsPanel {
             Some("compaction") if path.len() >= 3 => {
                 let title = match second {
                     Some("shake") => "本地修剪",
-                    Some("remote") => "服务端压缩",
                     _ => return chain,
                 };
                 let method = path[1].clone();

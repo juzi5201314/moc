@@ -417,8 +417,6 @@ pub(crate) async fn run_prompt_with_lock(
 struct TurnInputs {
     messages: Vec<Message>,
     context_tokens: u64,
-    native_input: Option<Vec<Value>>,
-    server_compaction_disabled: bool,
 }
 
 /// 在调用方持有的会话状态锁内生成 [`TurnInputs`]；持锁期间没有 await。
@@ -433,8 +431,6 @@ fn turn_inputs(
     TurnInputs {
         messages,
         context_tokens,
-        native_input: state.native_input.clone(),
-        server_compaction_disabled: state.server_compaction_disabled,
     }
 }
 
@@ -853,10 +849,10 @@ async fn run_prompt_locked(
             final_reason = FinishReason::Cancelled;
             break 'turns;
         }
-        let (calls, server_compacted): (Vec<moc_llm::ToolCall>, bool) = match replay_calls.take() {
+        let calls: Vec<moc_llm::ToolCall> = match replay_calls.take() {
             // `/retry` 剪掉的批次整批都没跑：直接重放这批调用，不花模型请求，也不注入新的
             // 尾部提醒；`is_first_turn` 留给紧接着那次真实请求。
-            Some(calls) => (calls, false),
+            Some(calls) => calls,
             None => {
                 // 本地提醒只在首轮注入；同一提示内因 continue 进入的轮次不算首轮。
                 let first_turn = std::mem::take(&mut is_first_turn);
@@ -1029,7 +1025,7 @@ async fn run_prompt_locked(
                     turn_inputs(&state, &system.messages, &model, &tools_available)
                 };
                 let context_tokens = inputs.context_tokens;
-                // 提前摘要只改变 soft 压缩的输入来源，不改变 remote/shake 的顺序；触发条件在函数内部判断。
+                // 预火只改变 grok_build 压缩的输入来源；触发条件在函数内部判断。
                 compact::grok_build::prefire::maybe_prefire(
                     &inner,
                     &params.session_id,
@@ -1094,7 +1090,6 @@ async fn run_prompt_locked(
                     &project_config,
                     std::mem::take(&mut inputs.messages),
                     tools_available.clone(),
-                    inputs.native_input.clone(),
                     &params.session_id,
                     CacheAnchors {
                         instruction_static: &system.static_prefix,
@@ -1114,18 +1109,6 @@ async fn run_prompt_locked(
                 let mut attempt = 0u32;
                 let (mut stream, request_permit, request_started) = loop {
                     attempt += 1;
-                    let mut llm_config = model.llm.clone();
-                    if project_config.compaction.enabled
-                        && project_config.compaction.auto
-                        && project_config.compaction.remote.enabled
-                        && project_config.compaction.remote.server_side
-                        && model.remote_compaction
-                        && !inputs.server_compaction_disabled
-                        && model.llm.protocol == moc_llm::Protocol::OpenAiResponses
-                    {
-                        llm_config.server_compaction_threshold =
-                            Some(compact::threshold(&project_config, model.context_window));
-                    }
                     let mut permit = match inner.provider_permit(&model, &cancel).await {
                         Ok(permit) => Some(permit),
                         Err(crate::CoreError::Cancelled) => {
@@ -1152,7 +1135,7 @@ async fn run_prompt_locked(
                     .await;
                     let streamed = tokio::select! {
                         _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'turns; }
-                        result = inner.client.stream(&llm_config, &request) => result,
+                        result = inner.client.stream(&model.llm, &request) => result,
                     };
                     // 错误恢复可能再次请求同一个供应商，必须先归还失败请求占用的并发名额。
                     if streamed.is_err() {
@@ -1188,15 +1171,6 @@ async fn run_prompt_locked(
                             )
                             .await;
                             break 'turns;
-                        }
-                        Err(error)
-                            if llm_config.server_compaction_threshold.is_some()
-                                && error.api_error().is_some_and(|api| api.status == Some(400))
-                                && error.to_string().contains("context_management") =>
-                        {
-                            record.state.lock().await.server_compaction_disabled = true;
-                            inputs.server_compaction_disabled = true;
-                            tracing::warn!(session_id = %params.session_id, "上游不支持 context_management，本会话关闭服务端压缩");
                         }
                         Err(error)
                             if overflow_attempts < 2
@@ -1259,7 +1233,6 @@ async fn run_prompt_locked(
                                 &project_config,
                                 std::mem::take(&mut inputs.messages),
                                 tools_available.clone(),
-                                inputs.native_input.clone(),
                                 &params.session_id,
                                 CacheAnchors {
                                     instruction_static: &system.static_prefix,
@@ -1512,54 +1485,6 @@ async fn run_prompt_locked(
                     state.usage_at = state.transcript.len();
                 }
 
-                let server_compacted = response.compaction.is_some();
-                if let Some(item) = response.compaction {
-                    let compact_state = record.state.lock().await.clone();
-                    let (first_kept_id, retained_tokens) = compact::remote::retained_boundary(
-                        &compact_state,
-                        project_config.compaction.remote.retained_message_tokens as u64,
-                    );
-                    let native = Value::Array(vec![*item]);
-                    let native_tokens = serde_json::to_string(&native)
-                        .map_or(0, |serialized| compact::estimate_tokens(&serialized));
-                    let tokens_after = compact::messages_tokens(&system.messages)
-                        .saturating_add(compact::tools_tokens(&tools_available))
-                        .saturating_add(retained_tokens)
-                        .saturating_add(native_tokens);
-                    let tokens_before = response.usage.input_tokens;
-                    compact::record_compaction(
-                        &inner,
-                        &params.session_id,
-                        compact::Checkpoint {
-                            method: "remote".to_owned(),
-                            model: Some(model.selector.clone()),
-                            summary: compact::remote::checkpoint_summary(&compact_state),
-                            reminder: None,
-                            first_kept_id,
-                            tokens_before,
-                            tokens_after,
-                            full: true,
-                            instructions: None,
-                            native: Some(Box::new(native)),
-                            archive: compact::HistoryArchive::Write,
-                        },
-                    )
-                    .await
-                    .map_err(to_rpc)?;
-                    update
-                        .emit(
-                            params.session_id.clone(),
-                            SessionUpdate::ContextCompacted {
-                                method: "remote".to_owned(),
-                                tokens_before,
-                                tokens_after,
-                                full: true,
-                            },
-                        )
-                        .await
-                        .map_err(protocol_to_rpc)?;
-                }
-
                 let calls: Vec<_> = response.message.tool_calls().cloned().collect();
                 if calls.is_empty() || interrupted {
                     if interrupted {
@@ -1581,7 +1506,6 @@ async fn run_prompt_locked(
                         }
                     } else if final_reason == FinishReason::Length
                         && length_continues < project_config.limits.max_length_continues
-                        && (!server_compacted || project_config.compaction.auto_continue)
                     {
                         length_continues += 1;
                         inner
@@ -1637,7 +1561,7 @@ async fn run_prompt_locked(
                     }
                     break 'turns;
                 }
-                (calls, server_compacted)
+                calls
             }
         };
         let tool_ctx = ToolCtx {
@@ -1720,10 +1644,6 @@ async fn run_prompt_locked(
             } else {
                 FinishReason::Cancelled
             };
-            break;
-        }
-        if server_compacted && !project_config.compaction.auto_continue {
-            final_reason = FinishReason::Other("compacted".into());
             break;
         }
     }

@@ -829,7 +829,7 @@ async fn subagent_compaction_reuses_the_subagent_system_prefix() {
         "openai_chat",
         "test/gpt-test:off",
         "test/gpt-test:off",
-        "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
+        "[compaction]\nmethod='moc'\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
     let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
@@ -841,7 +841,7 @@ async fn subagent_compaction_reuses_the_subagent_system_prefix() {
         .client
         .call::<SessionCompact>(SessionCompactParams {
             session_id: child_id.clone(),
-            instructions: None,
+            instructions: Some("保留子代理任务状态".into()),
         })
         .await
         .expect("子代理会话必须能压缩");

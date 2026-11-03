@@ -182,7 +182,7 @@ async fn overflow_summarizes_the_old_prefix_and_retries_with_smaller_input() {
     let h = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nmethod_order=['soft']\nkeep_recent_tokens=100\nthreshold={mode='tokens',value=900000}",
+        "[compaction]\nmethod='moc'\nkeep_recent_tokens=100\nthreshold={mode='tokens',value=900000}",
     )
     .await;
     let id = h.session(SessionEngine::Standard).await;
@@ -371,12 +371,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
         })
         .mount(&upstream)
         .await;
-    let h = Harness::new(
-        &upstream.uri(),
-        "openai_chat",
-        "[compaction]\nmethod_order=['soft']",
-    )
-    .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nmethod='moc'").await;
     for action in [
         PlanAction::Execute,
         PlanAction::ExecuteCompacted,
@@ -680,110 +675,7 @@ fn responses_stream(text: &str) -> String {
 }
 
 #[tokio::test]
-async fn remote_compaction_replays_native_items_and_retained_messages_once() {
-    let upstream = MockServer::builder().start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/responses"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(responses_stream("远程回复"), "text/event-stream"),
-        )
-        .mount(&upstream)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/responses/compact"))
-        .respond_with(|request: &wiremock::Request| {
-            let body: Value = serde_json::from_slice(&request.body).unwrap();
-            let mut output =
-                vec![json!({"type":"compaction","id":"cmp_test","encrypted_content":"opaque"})];
-            output.extend(
-                body["input"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|item| item["role"] != "system")
-                    .cloned(),
-            );
-            ResponseTemplate::new(200).set_body_json(json!({"output":output}))
-        })
-        .mount(&upstream)
-        .await;
-    let h = Harness::new(
-        &upstream.uri(),
-        "openai_responses",
-        "[compaction]\nmethod_order=['remote']\nthreshold={mode='tokens',value=900000}",
-    )
-    .await;
-    let id = h.session(SessionEngine::Standard).await;
-    h.prompt(&id, "历史消息只出现一次").await;
-    let compacted = h
-        .client
-        .call::<SessionCompact>(SessionCompactParams {
-            session_id: id.clone(),
-            instructions: None,
-        })
-        .await
-        .unwrap();
-    assert_eq!(compacted.method, "remote");
-    h.client
-        .call::<SessionUnload>(SessionUnloadParams {
-            session_id: id.clone(),
-        })
-        .await
-        .unwrap();
-    h.prompt(&id, "恢复并继续").await;
-    let requests = upstream.received_requests().await.unwrap();
-    let replay: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
-    assert_eq!(replay["input"][0]["encrypted_content"], "opaque");
-    assert_eq!(
-        replay["input"]
-            .to_string()
-            .matches("历史消息只出现一次")
-            .count(),
-        1
-    );
-    assert_eq!(replay["input"].to_string().matches("远程回复").count(), 1);
-    assert!(replay["input"].to_string().contains("恢复并继续"));
-    h.close().await;
-}
-
-#[tokio::test]
-async fn unsupported_server_compaction_is_disabled_for_the_session() {
-    let upstream = MockServer::builder().start().await;
-    Mock::given(method("POST")).and(path("/v1/responses")).respond_with(|request: &wiremock::Request| {
-        let body: Value = serde_json::from_slice(&request.body).unwrap();
-        if body.get("context_management").is_some() {
-            ResponseTemplate::new(400).set_body_json(json!({"error":{"message":"unknown parameter context_management","type":"invalid_request_error"}}))
-        } else { ResponseTemplate::new(200).set_body_raw(responses_stream("兼容成功"), "text/event-stream") }
-    }).mount(&upstream).await;
-    let h = Harness::new(
-        &upstream.uri(),
-        "openai_responses",
-        "[compaction]\nthreshold={mode='tokens',value=900000}",
-    )
-    .await;
-    let id = h.session(SessionEngine::Standard).await;
-    assert_eq!(h.prompt(&id, "第一次").await.message.text(), "兼容成功");
-    h.prompt(&id, "第二次").await;
-    let bodies: Vec<Value> = upstream
-        .received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .map(|request| serde_json::from_slice(&request.body).unwrap())
-        .collect();
-    assert_eq!(bodies.len(), 3);
-    assert!(bodies[0].get("context_management").is_some());
-    assert!(
-        bodies[1..]
-            .iter()
-            .all(|body| body.get("context_management").is_none())
-    );
-    h.close().await;
-}
-
-#[tokio::test]
-async fn disabled_auto_threshold_skips_automatic_and_server_side_compaction() {
+async fn disabled_auto_threshold_keeps_manual_compaction_available() {
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
@@ -791,7 +683,7 @@ async fn disabled_auto_threshold_skips_automatic_and_server_side_compaction() {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
             assert!(
                 body.get("context_management").is_none(),
-                "auto=false 不得注入服务端压缩阈值"
+                "请求不得携带已移除的服务端压缩参数"
             );
             if body["stream"] == true {
                 ResponseTemplate::new(200).set_body_raw(responses_stream("自动已关闭"), "text/event-stream")
@@ -800,7 +692,7 @@ async fn disabled_auto_threshold_skips_automatic_and_server_side_compaction() {
                     "id": "resp_c",
                     "model": "gpt-test",
                     "status": "completed",
-                    "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "checkpoint"}]}],
+                    "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": support::soft_checkpoint("checkpoint")}]}],
                     "usage": {"input_tokens": 10, "output_tokens": 2},
                 }))
             }
@@ -811,7 +703,7 @@ async fn disabled_auto_threshold_skips_automatic_and_server_side_compaction() {
     let h = Harness::new(
         &upstream.uri(),
         "openai_responses",
-        "[compaction]\nmethod_order=['soft']\nthreshold={mode='tokens',value=1}\nauto=false",
+        "[compaction]\nmethod='moc'\nthreshold={mode='tokens',value=1}\nauto=false",
     )
     .await;
     let id = h.session(SessionEngine::Standard).await;
@@ -856,7 +748,7 @@ async fn shake_shrinks_repeated_reads_and_keeps_tool_history_replayable() {
         })
         .mount(&upstream)
         .await;
-    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nmethod_order=['shake']\nprotect_recent_tool_tokens=0\nthreshold={mode='tokens',value=900000}\n[compaction.shake]\nkeep_last_prompts=0\nsoft_trim_chars=64").await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nmethod='moc'\nprotect_recent_tool_tokens=0\nthreshold={mode='tokens',value=900000}\n[compaction.shake]\nkeep_last_prompts=0\nsoft_trim_chars=64").await;
     std::fs::write(
         h.root.path().join("work/large.txt"),
         format!("{}\n", "内容".repeat(250)).repeat(10),
@@ -1076,7 +968,7 @@ async fn disabled_auto_continue_finishes_after_compaction_without_a_stream_reque
     let h = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nmethod_order=['soft']\nthreshold={mode='tokens',value=1}\nauto_continue=false",
+        "[compaction]\nmethod='moc'\nthreshold={mode='tokens',value=1}\nauto_continue=false",
     )
     .await;
     let id = h.session(SessionEngine::Standard).await;
@@ -1133,7 +1025,7 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
     let h = Harness::new(
         &url,
         "openai_chat",
-        "[compaction]\nmethod_order=['soft']\nthreshold={mode='tokens',value=1}",
+        "[compaction]\nmethod='moc'\nthreshold={mode='tokens',value=1}",
     )
     .await;
     let id = h.session(SessionEngine::Standard).await;
@@ -1203,12 +1095,7 @@ async fn failed_manual_compaction_preserves_upstream_error_and_history() {
         })
         .mount(&upstream)
         .await;
-    let h = Harness::new(
-        &upstream.uri(),
-        "openai_chat",
-        "[compaction]\nmethod_order=['soft']",
-    )
-    .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nmethod='moc'").await;
     let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, "保留这个用户请求").await;
     let before = h.load(&id).await;
@@ -1251,7 +1138,7 @@ async fn failed_manual_compaction_preserves_upstream_error_and_history() {
 }
 
 /// 建立一个含可剪枝 `read` 工具结果的会话；`extra` 追加压缩配置。
-async fn prunable_session(extra: &str, summary: &str) -> (Harness, String) {
+async fn prunable_session(extra: &str, summary: &str) -> (Harness, String, MockServer) {
     let workspace = tempfile::tempdir().expect("临时目录");
     let long_file = workspace.path().join("long.txt");
     let content = format!("{}\n{}", support::PRUNE_MARKER, "长输出".repeat(800));
@@ -1269,16 +1156,16 @@ async fn prunable_session(extra: &str, summary: &str) -> (Harness, String) {
             .any(|text| text.contains(support::PRUNE_MARKER)),
         "会话必须先落下可剪枝的工具结果"
     );
-    (h, id)
+    (h, id, upstream)
 }
 
-const SHAKE_ONLY: &str = "[compaction]\nmethod_order=['shake']\nthreshold={mode='tokens',value=900000}\n\
+const PRUNABLE_MOC: &str = "[compaction]\nmethod='moc'\nthreshold={mode='tokens',value=900000}\n\
     protect_recent_tool_tokens=0\n[compaction.shake]\nsoft_trim_chars=100\nhead_chars=10\ntail_chars=10\n\
     keep_last_prompts=0\n";
 
 #[tokio::test]
 async fn shake_archives_the_full_pre_compaction_history() {
-    let (h, id) = prunable_session(SHAKE_ONLY, "压缩摘要").await;
+    let (h, id, _upstream) = prunable_session(PRUNABLE_MOC, "压缩摘要").await;
     let compacted = h
         .client
         .call::<SessionCompact>(SessionCompactParams {
@@ -1342,7 +1229,7 @@ async fn shake_without_headroom_rolls_into_soft_and_reports_one_terminal_event()
     let h = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nauto=false\nmethod_order=['shake','soft']\n\
+        "[compaction]\nauto=false\nmethod='moc'\n\
          threshold={mode='tokens',value=1}\nprotect_recent_tool_tokens=0\n\
          [compaction.shake]\nkeep_last_prompts=0\nsoft_trim_chars=100\nhead_chars=10\ntail_chars=10",
     )
@@ -1392,135 +1279,56 @@ async fn shake_without_headroom_rolls_into_soft_and_reports_one_terminal_event()
     h.close().await;
 }
 
-/// 响应协议下的「工具调用 → 收尾」流。
-fn responses_tool_stream(call_id: &str, name: &str, arguments: &Value) -> String {
-    let arguments = arguments.to_string();
-    format!(
-        "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: {}\n\n",
-        json!({"type":"response.created","response":{"id":"resp_tool","model":"gpt-test"}}),
-        json!({"type":"response.output_item.added","output_index":0,
-               "item":{"type":"function_call","id":"fc_read","call_id":call_id,"name":name}}),
-        json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":arguments}),
-        json!({"type":"response.completed","response":{"id":"resp_tool","status":"completed",
-               "output":[{"type":"function_call","call_id":call_id}],
-               "usage":{"input_tokens":5,"output_tokens":1}}})
-    )
-}
-
-/// shake 复用远端 checkpoint 时必须保留 `remote` 方法名，否则换模型不会清理原生载荷。
-#[tokio::test]
-async fn shake_keeps_the_reused_remote_checkpoint_provenance() {
-    let workspace = tempfile::tempdir().expect("临时目录");
-    let long_file = workspace.path().join("long.txt");
-    std::fs::write(
-        &long_file,
-        format!("{}\n{}", support::PRUNE_MARKER, "长输出".repeat(800)),
-    )
-    .expect("写长文件");
-    let upstream = MockServer::builder().start().await;
-    let read_path = long_file.to_string_lossy().into_owned();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&calls);
-    Mock::given(method("POST"))
-        .and(path("/v1/responses"))
-        .respond_with(move |_: &wiremock::Request| {
-            let response = if counter.fetch_add(1, Ordering::SeqCst) == 0 {
-                responses_tool_stream("read_long", "read", &json!({"path": read_path.clone()}))
-            } else {
-                responses_stream("已读取")
-            };
-            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
-        })
-        .mount(&upstream)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/responses/compact"))
-        .respond_with(|request: &wiremock::Request| {
-            let body: Value = serde_json::from_slice(&request.body).unwrap();
-            let mut output =
-                vec![json!({"type":"compaction","id":"cmp_remote","encrypted_content":"opaque"})];
-            output.extend(
-                body["input"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|item| item["role"] != "system")
-                    .cloned(),
-            );
-            ResponseTemplate::new(200).set_body_json(json!({"output":output}))
-        })
-        .mount(&upstream)
-        .await;
-    let h = Harness::new(
-        &upstream.uri(),
-        "openai_responses",
-        "[compaction]\nmethod_order=['remote','shake']\nthreshold={mode='tokens',value=900000}\n\
-         protect_recent_tool_tokens=0\n[compaction.shake]\nsoft_trim_chars=100\nhead_chars=10\n\
-         tail_chars=10\nkeep_last_prompts=0\n",
-    )
-    .await;
-    let id = h.session(SessionEngine::Standard).await;
-    h.prompt(&id, "读取长文件").await;
-    let remote = h
-        .client
-        .call::<SessionCompact>(SessionCompactParams {
-            session_id: id.clone(),
-            instructions: None,
-        })
-        .await
-        .expect("远端压缩");
-    assert_eq!(remote.method, "remote");
-
-    // 远端端点随后失败：压缩链落到 shake，并复用远端 checkpoint 的摘要与原生载荷。
-    upstream.reset().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/responses/compact"))
-        .respond_with(
-            ResponseTemplate::new(500).set_body_json(json!({"error":{"message":"远端压缩不可用"}})),
-        )
-        .mount(&upstream)
-        .await;
-    let shaken = h
-        .client
-        .call::<SessionCompact>(SessionCompactParams {
-            session_id: id.clone(),
-            instructions: None,
-        })
-        .await
-        .expect("shake 接管压缩");
-    assert_eq!(
-        shaken.method, "remote",
-        "复用远端载荷的 checkpoint 不得改写成 shake"
-    );
-    let entries = support::transcript_entries(&h, &id).await;
-    let methods: Vec<String> = entries
-        .iter()
-        .filter_map(|entry| match entry {
-            moc_core::session::entries::Entry::Compaction { method, .. } => Some(method.clone()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(methods, ["remote", "remote"]);
-    let texts = support::tool_result_texts(&h.load(&id).await);
-    assert!(
-        texts
-            .iter()
-            .any(|text| text.contains("[tool output pruned]")),
-        "shake 必须真的剪枝：{texts:?}"
-    );
-    h.close().await;
-}
-
 #[tokio::test]
 async fn compaction_failure_keeps_entries_appended_by_the_failed_method() {
-    let (h, id) = prunable_session(
-        "[compaction]\nmethod_order=['soft','shake']\nthreshold={mode='tokens',value=900000}\n\
+    let (h, id, _upstream) = prunable_session(
+        "[compaction]\nmethod='moc'\nthreshold={mode='tokens',value=900000}\n\
          protect_recent_tool_tokens=0\n[compaction.shake]\nsoft_trim_chars=100\nhead_chars=10\n\
          tail_chars=10\nkeep_last_prompts=0\n",
         "",
     )
     .await;
-    // soft 以空摘要失败，但已经把本次调用计入 usage；随后的 shake 整表 rewrite 不得丢掉它。
+    // 首次退化输出会记录用量，随后修复请求被上游拒绝，压缩不提交 checkpoint。
+    _upstream.reset().await;
+    let attempts = AtomicUsize::new(0);
+    Mock::given(method("POST"))
+        .respond_with(move |_: &wiremock::Request| {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(200).set_body_json(complete(""))
+            } else {
+                ResponseTemplate::new(401).set_body_json(json!({
+                    "error": {"message": "summary repair denied"}
+                }))
+            }
+        })
+        .mount(&_upstream)
+        .await;
+    // 下一次普通压缩走本地裁剪；整表 rewrite 不能丢掉失败摘要记录的用量。
+    let before = h
+        .client
+        .call::<SessionUsage>(SessionUsageParams {
+            session_id: id.clone(),
+        })
+        .await
+        .unwrap();
+    h.client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: id.clone(),
+            instructions: Some("保留任务状态".into()),
+        })
+        .await
+        .expect_err("摘要修复被拒绝必须失败");
+    let failed = h
+        .client
+        .call::<SessionUsage>(SessionUsageParams {
+            session_id: id.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        failed.total.calls > before.total.calls,
+        "失败摘要也必须计量"
+    );
     let compacted = h
         .client
         .call::<SessionCompact>(SessionCompactParams {
@@ -1537,11 +1345,10 @@ async fn compaction_failure_keeps_entries_appended_by_the_failed_method() {
         })
         .await
         .expect("会话用量");
-    // soft 的空摘要失败发生在记录用量之后：整表 rewrite 不得丢掉期间追加的用量 entry。
-    assert!(
-        usage.total.calls >= 2,
-        "整表 rewrite 不得减少已落盘的用量 entry：{}",
-        usage.total.calls
+    // 首次退化摘要已记录用量，修复请求失败后整表 rewrite 不得丢掉这条 entry。
+    assert_eq!(
+        usage.total.calls, failed.total.calls,
+        "本地裁剪不新增模型调用，也不能丢掉失败摘要用量"
     );
     let disk = support::transcript_entries(&h, &id)
         .await

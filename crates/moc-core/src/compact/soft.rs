@@ -126,7 +126,6 @@ impl SummaryRequest<'_> {
             self.config,
             messages,
             self.tools.to_vec(),
-            None,
             &self.state.session.id,
             crate::service::prompt::request::CacheAnchors {
                 instruction_static: self.static_prefix,
@@ -229,9 +228,6 @@ pub(crate) async fn compact(
     // 它优先于任何旧的 Approved 计划。
     let plan = plan.or_else(|| digest::approved_plan(state));
     let session_digest = digest::prompt_digest(state);
-    // 上一版 checkpoint 在 `native_input` 为空时由 `synthetic_messages` 注入成
-    // `<compaction-summary>` 消息；只有原生压缩载荷不在消息视图里，才需要提示词补一份。
-    let previous_in_view = state.native_input.is_none();
     // 被否决的方案和计划步号决定「压缩后还能不能接着做」：它们不属于锚点
     // （方案名不是路径或数字，步号不是标识符），必须单独抽出来逐字校验。
     let decisions = digest::decisions(&history[..start], previous_summary);
@@ -246,7 +242,6 @@ pub(crate) async fn compact(
         session_digest.as_deref(),
         must_preserve.as_deref(),
         None,
-        previous_in_view,
     );
     // 摘要请求复用主循环的消息前缀（system + 注入消息）：从第一条消息起就与主循环
     // 逐条相同，prompt cache 才有机会命中；预算只再装被这次压缩丢弃的历史。
@@ -291,7 +286,6 @@ pub(crate) async fn compact(
             session_digest.as_deref(),
             must_preserve.as_deref(),
             repair.as_ref(),
-            previous_in_view,
         );
         let mut messages = selected_history.clone();
         messages.push(Message::user_text(prompt));
@@ -377,7 +371,6 @@ pub(crate) async fn compact(
             tokens_after,
             full: true,
             instructions: instructions.map(str::to_owned),
-            native: None,
             archive: super::HistoryArchive::Write,
         },
     )
@@ -483,7 +476,6 @@ fn summary_prompt(
     session_digest: Option<&str>,
     must_preserve: Option<&str>,
     repair: Option<&Repair>,
-    previous_in_view: bool,
 ) -> String {
     let sections = sections_block();
     let mut prompt =
@@ -493,13 +485,6 @@ fn summary_prompt(
     prompt.push_str(SUMMARY_CONTRACT);
     prompt.push_str("</checkpoint-contract>\n\n");
     prompt.push_str(&sections);
-    // 旧 checkpoint 已经在消息前缀里（`<compaction-summary>`）时不再重复一遍：
-    // 重复会占预算，也让模型看到两份不一致的副本。
-    if !previous_in_view && let Some((_, summary)) = &state.summary {
-        prompt.push_str("<previous-summary>\n");
-        prompt.push_str(summary);
-        prompt.push_str("\n</previous-summary>\n\n");
-    }
     if let Some(digest) = session_digest {
         prompt.push_str(digest);
         prompt.push_str("\n\n");

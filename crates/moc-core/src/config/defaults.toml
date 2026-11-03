@@ -140,8 +140,8 @@ overflow = "error"
 
 [compaction]
 enabled = true
-method_order = ["remote", "shake", "soft"]
-soft_method = "moc"
+# moc：shake 本地修剪兜底 soft 摘要；grok_build：Grok Build 复刻管线
+method = "moc"
 threshold = { mode = "percent", value = 85 }
 keep_recent_tokens = 20000
 protect_recent_tool_tokens = 20000
@@ -156,11 +156,6 @@ tail_chars = 1500
 hard_clear_prompts = 10
 keep_last_prompts = 3
 supersede_reads = true
-
-[compaction.remote]
-enabled = true
-server_side = true
-retained_message_tokens = 64000
 
 
 [system_prompt]

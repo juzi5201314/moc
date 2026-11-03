@@ -5,12 +5,12 @@ use crate::support;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::support::Harness;
 use moc_protocol::methods::{
     PlanAction, PlanStatus, SessionCompact, SessionCompactParams, SessionEngine,
     SessionPlanApprove, SessionPlanApproveParams,
 };
 use serde_json::Value;
-use crate::support::Harness;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
 const SECTIONS: [&str; 10] = [
@@ -138,7 +138,7 @@ async fn anchor_gaps_are_fed_back_and_repaired() {
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
+        "[compaction]\nmethod='moc'\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
@@ -153,7 +153,7 @@ async fn anchor_gaps_are_fed_back_and_repaired() {
         .client
         .call::<SessionCompact>(SessionCompactParams {
             session_id: session.clone(),
-            instructions: None,
+            instructions: Some("保留任务目标、约束与关键事实".into()),
         })
         .await
         .expect("锚点缺口必须通过重试修好，而不是让压缩失败");
@@ -195,7 +195,7 @@ async fn unusable_summaries_fall_back_to_a_deterministic_checkpoint() {
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
+        "[compaction]\nmethod='moc'\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
@@ -210,7 +210,7 @@ async fn unusable_summaries_fall_back_to_a_deterministic_checkpoint() {
         .client
         .call::<SessionCompact>(SessionCompactParams {
             session_id: session.clone(),
-            instructions: None,
+            instructions: Some("保留任务目标、约束与关键事实".into()),
         })
         .await
         .expect("模型一直不合格时也必须产出可用 checkpoint");
@@ -260,7 +260,7 @@ async fn fallback_preserves_the_previous_checkpoint_across_generations() {
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
+        "[compaction]\nmethod='moc'\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
@@ -274,7 +274,7 @@ async fn fallback_preserves_the_previous_checkpoint_across_generations() {
         .client
         .call::<SessionCompact>(SessionCompactParams {
             session_id: session.clone(),
-            instructions: None,
+            instructions: Some("保留任务目标、约束与关键事实".into()),
         })
         .await
         .expect("第一次压缩成功");
@@ -284,7 +284,7 @@ async fn fallback_preserves_the_previous_checkpoint_across_generations() {
         .client
         .call::<SessionCompact>(SessionCompactParams {
             session_id: session.clone(),
-            instructions: None,
+            instructions: Some("保留任务目标、约束与关键事实".into()),
         })
         .await
         .expect("第二次压缩即使模型退化也必须成功");
@@ -331,7 +331,7 @@ async fn rejected_options_and_plan_steps_are_repaired_not_dropped() {
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
+        "[compaction]\nmethod='moc'\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
@@ -347,7 +347,7 @@ async fn rejected_options_and_plan_steps_are_repaired_not_dropped() {
         .client
         .call::<SessionCompact>(SessionCompactParams {
             session_id: session.clone(),
-            instructions: None,
+            instructions: Some("保留任务目标、约束与关键事实".into()),
         })
         .await
         .expect("丢掉被否决方案时必须重试修好，而不是接受");
@@ -406,7 +406,7 @@ async fn the_previous_checkpoint_reaches_the_summarizer_as_injected_context() {
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
+        "[compaction]\nmethod='moc'\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
@@ -420,7 +420,7 @@ async fn the_previous_checkpoint_reaches_the_summarizer_as_injected_context() {
         .client
         .call::<SessionCompact>(SessionCompactParams {
             session_id: session.clone(),
-            instructions: None,
+            instructions: Some("保留任务目标、约束与关键事实".into()),
         })
         .await
         .expect("第一次压缩成功");
@@ -430,7 +430,7 @@ async fn the_previous_checkpoint_reaches_the_summarizer_as_injected_context() {
         .client
         .call::<SessionCompact>(SessionCompactParams {
             session_id: session.clone(),
-            instructions: None,
+            instructions: Some("保留任务目标、约束与关键事实".into()),
         })
         .await
         .expect("第二次压缩成功");
@@ -483,7 +483,7 @@ async fn execute_compacted_requires_the_pending_plan_steps() {
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
+        "[compaction]\nmethod='moc'\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
     let session = harness.session_plan(SessionEngine::Standard).await;

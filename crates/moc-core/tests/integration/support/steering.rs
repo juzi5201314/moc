@@ -306,7 +306,7 @@ async fn context_overflow_inside_sse_compacts_and_continues() {
         };
         ResponseTemplate::new(200).set_body_raw(response,"text/event-stream")
     }).mount(&upstream).await;
-    let harness=Harness::new(&upstream.uri(),"openai_chat","[compaction]\nmethod_order=['soft']\nkeep_recent_tokens=100\nthreshold={mode='tokens',value=900000}").await;
+    let harness=Harness::new(&upstream.uri(),"openai_chat","[compaction]\nmethod='moc'\nkeep_recent_tokens=100\nthreshold={mode='tokens',value=900000}").await;
     let id = harness.session(SessionEngine::Standard).await;
     harness.prompt(&id, &"保留历史任务要求。".repeat(300)).await;
     assert_eq!(

@@ -93,9 +93,6 @@ pub struct ModelInfo {
     /// 模型接受的输入模态；空表示未声明（按纯文本处理）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<ModelInput>,
-    /// Responses 原生服务端压缩是否启用。
-    #[serde(default)]
-    pub remote_compaction: bool,
     /// 是否支持 Fast Mode（模型配置 `fast_mode = true`）；前端只在支持时展示开关。
     #[serde(default)]
     pub fast_mode: bool,
@@ -156,7 +153,6 @@ mod tests {
                     cache_write: None,
                 }),
                 inputs: vec![ModelInput::Text, ModelInput::Image],
-                remote_compaction: true,
                 fast_mode: true,
             }],
             default_model: Some("deepseek-flash".into()),
@@ -176,7 +172,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&result).expect("可序列化"),
             json!({
-                "models": [{ "id": "deepseek-flash", "display_name": "DeepSeek Flash", "context_window": 128000, "pricing": { "input": 0.27, "output": 1.1, "cache_read": 0.07 }, "inputs": ["text", "image"], "remote_compaction": true, "fast_mode": true }],
+                "models": [{ "id": "deepseek-flash", "display_name": "DeepSeek Flash", "context_window": 128000, "pricing": { "input": 0.27, "output": 1.1, "cache_read": 0.07 }, "inputs": ["text", "image"], "fast_mode": true }],
                 "default_model": "deepseek-flash",
                 "agents": [{ "id": "build", "display_name": "Build" }],
                 "default_agent": "build",

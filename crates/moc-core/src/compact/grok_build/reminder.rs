@@ -38,7 +38,7 @@ pub(crate) async fn render(inner: &CoreInner, state: &SessionState) -> Option<St
     ))
 }
 
-/// 本次会话成功写入过的文件；与 `remote::checkpoint_summary` 用同一个「成功」判断。
+/// 本次会话成功写入过的文件。
 fn edited_files(state: &SessionState) -> Option<String> {
     let files = super::super::digest::edited_files(state);
     if files.is_empty() {

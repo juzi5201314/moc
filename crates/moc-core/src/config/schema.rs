@@ -699,25 +699,18 @@ impl Default for TodoConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompactionMethod {
-    Remote,
-    Shake,
-    Soft,
-}
-
-/// soft 压缩使用的摘要实现。
+/// 上下文压缩的实现。
 ///
-/// 只切换走到 `soft` 之后的行为；`remote` 与压缩前的 `shake` 顺序、参数与
-/// 默认值不受影响，因此它不参与 [`CompactionConfig::method_order`]。
+/// `moc` 是「本地修剪兜底摘要」管线：先 `shake` 裁剪旧工具结果，腾不出空间再用
+/// `soft` 保留尾部 + 8 段摘要。`grok_build` 复刻 Grok Build：9 段摘要 +
+/// full-replace 历史 + 阈值前预火两遍，不做本地修剪。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum SoftMethod {
-    /// moc 自有的保留尾部 + 8 段摘要实现。
+pub enum CompactionMethod {
+    /// moc 自有管线：shake → soft。
     #[default]
     Moc,
-    /// Grok Build 的 9 段摘要 + full-replace 历史实现。
+    /// Grok Build 复刻管线。
     GrokBuild,
 }
 
@@ -726,10 +719,8 @@ pub enum SoftMethod {
 pub struct CompactionConfig {
     /// 总开关；关闭后手动与自动压缩一并禁用。
     pub enabled: bool,
-    /// 压缩方法尝试顺序。
-    pub method_order: Vec<CompactionMethod>,
-    /// `soft` 方法的摘要实现。
-    pub soft_method: SoftMethod,
+    /// 压缩实现：`moc` 先本地修剪再摘要；`grok_build` 直接走 Grok Build 管线。
+    pub method: CompactionMethod,
     pub threshold: CompactionThreshold,
     pub keep_recent_tokens: u32,
     pub protect_recent_tool_tokens: u32,
@@ -738,19 +729,13 @@ pub struct CompactionConfig {
     pub auto: bool,
     pub auto_continue: bool,
     pub shake: ShakeConfig,
-    pub remote: RemoteCompactionConfig,
 }
 
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            method_order: vec![
-                CompactionMethod::Remote,
-                CompactionMethod::Shake,
-                CompactionMethod::Soft,
-            ],
-            soft_method: SoftMethod::default(),
+            method: CompactionMethod::default(),
             threshold: CompactionThreshold::default(),
             keep_recent_tokens: 20_000,
             protect_recent_tool_tokens: 20_000,
@@ -758,7 +743,6 @@ impl Default for CompactionConfig {
             auto: true,
             auto_continue: true,
             shake: ShakeConfig::default(),
-            remote: RemoteCompactionConfig::default(),
         }
     }
 }
@@ -910,24 +894,6 @@ impl Default for ShakeConfig {
             hard_clear_prompts: 10,
             keep_last_prompts: 3,
             supersede_reads: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct RemoteCompactionConfig {
-    pub enabled: bool,
-    pub server_side: bool,
-    pub retained_message_tokens: u32,
-}
-
-impl Default for RemoteCompactionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            server_side: true,
-            retained_message_tokens: 64_000,
         }
     }
 }

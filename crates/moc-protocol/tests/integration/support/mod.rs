@@ -184,7 +184,6 @@ impl ScriptedService {
                             max_output_tokens: Some(8_192),
                             pricing: None,
                             inputs: vec![ModelInput::Text],
-                            remote_compaction: false,
                             fast_mode: false,
                         },
                         ModelInfo {
@@ -195,7 +194,6 @@ impl ScriptedService {
                             max_output_tokens: None,
                             pricing: None,
                             inputs: vec![ModelInput::Text, ModelInput::Image],
-                            remote_compaction: false,
                             fast_mode: false,
                         },
                     ],
@@ -553,7 +551,6 @@ impl AgentService for ScriptedService {
                 max_output_tokens: None,
                 pricing: None,
                 inputs: Vec::new(),
-                remote_compaction: false,
                 fast_mode: false,
             });
         }

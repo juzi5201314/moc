@@ -63,7 +63,6 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]
     }
     if let Some((method, summary)) = &state.summary
         && !summary.is_empty()
-        && state.native_input.is_none()
     {
         messages.push(Message::user_text(format!(
             "<compaction-summary method=\"{method}\">\n{summary}\n</compaction-summary>"
@@ -236,7 +235,6 @@ mod tests {
                 tokens_before: 100,
                 tokens_after: 50,
                 instructions: None,
-                native: None,
                 model: Some("p/model".into()),
                 reminder: None,
             },
@@ -296,187 +294,77 @@ mod tests {
     }
 
     #[test]
-    fn model_changes_and_invalid_native_payload_restore_uncompacted_history() {
+    fn legacy_native_checkpoint_replays_summary_and_tail_across_model_changes() {
         for native in [
             serde_json::json!([{"type":"compaction","encrypted_content":"opaque"}]),
             serde_json::json!("malformed"),
         ] {
-            let invalid = !native.is_array();
-            let header = Entry::header(
-                "ses_123456789abc".into(),
-                "/tmp".into(),
-                "p/old".into(),
-                SessionEngine::Standard,
-                SessionPermission::Full,
-                SessionOrigin::root(),
-                "title".into(),
-                1,
-            );
-            let mut state = SessionState::new(header).unwrap();
-            for payload in [
-                EntryPayload::Message {
-                    message: Message::user_text("已清除的历史"),
-                    tool: None,
-                    finish_reason: None,
-                    agent: None,
-                    goal: None,
-                },
-                EntryPayload::ResetBoundary {},
-                EntryPayload::Message {
-                    message: Message::user_text("必须保留的用户纠正"),
-                    tool: None,
-                    finish_reason: None,
-                    agent: None,
-                    goal: None,
-                },
-                EntryPayload::Compaction {
-                    method: "remote".into(),
-                    summary: "原生载荷占位".into(),
-                    first_kept_id: None,
-                    tokens_before: 100,
-                    tokens_after: 10,
-                    instructions: None,
-                    native: Some(Box::new(native)),
-                    // 旧记录没有生成它的模型：换模型时必须稳妥地作废。
-                    model: None,
-                    reminder: None,
-                },
-            ] {
-                state.apply_entry(Entry::from_payload(payload, state.last_entry_id.clone(), 2));
-            }
-            if invalid {
-                assert_eq!(
-                    model_messages(&state, None, None)
-                        .iter()
-                        .map(Message::text)
-                        .collect::<Vec<_>>(),
-                    ["必须保留的用户纠正"]
+            for checkpoint_model in [Some("p/new"), Some("p/old"), None] {
+                let header = Entry::header(
+                    "ses_123456789abc".into(),
+                    "/tmp".into(),
+                    "p/old".into(),
+                    SessionEngine::Standard,
+                    SessionPermission::Full,
+                    SessionOrigin::root(),
+                    "title".into(),
+                    1,
                 );
+                let mut state = SessionState::new(header).unwrap();
+                for text in ["已由摘要覆盖的历史", "压缩后保留的尾部"] {
+                    state.apply_entry(Entry::from_payload(
+                        EntryPayload::Message {
+                            message: Message::user_text(text),
+                            tool: None,
+                            finish_reason: None,
+                            agent: None,
+                            goal: None,
+                        },
+                        state.last_entry_id.clone(),
+                        2,
+                    ));
+                }
+                let tail_id = state.last_entry_id.clone();
+                let mut legacy = serde_json::json!({
+                    "type": "compaction",
+                    "id": "entry_legacy0001",
+                    "parent_id": tail_id,
+                    "at_ms": 3,
+                    "method": "remote",
+                    "summary": "旧记录的文本摘要",
+                    "first_kept_id": tail_id,
+                    "tokens_before": 100,
+                    "tokens_after": 10,
+                    "instructions": null,
+                    "native": native,
+                });
+                if let Some(model) = checkpoint_model {
+                    legacy["model"] = serde_json::json!(model);
+                }
+                let entry: Entry = serde_json::from_value(legacy).expect("旧记录仍可解析");
+                let serialized = serde_json::to_value(&entry).expect("旧记录可重新序列化");
+                assert!(serialized.get("native").is_none(), "不再写回旧载荷");
+                state.apply_entry(entry);
+                assert_eq!(state.summary_model.as_deref(), checkpoint_model);
+                assert_eq!(state.first_kept_id.as_deref(), Some(tail_id.as_str()));
+                let before = model_messages(&state, None, None);
+                assert_eq!(before.len(), 2);
+                assert!(before[0].text().contains("旧记录的文本摘要"));
+                assert_eq!(before[1].text(), "压缩后保留的尾部");
+                let replayed = serde_json::to_string(&before).unwrap();
+                assert!(!replayed.contains("opaque"));
+                assert!(!replayed.contains("malformed"));
+                assert!(!replayed.contains("已由摘要覆盖的历史"));
+                state.apply_entry(Entry::from_payload(
+                    EntryPayload::ModelChange {
+                        model: "p/new".into(),
+                    },
+                    state.last_entry_id.clone(),
+                    4,
+                ));
+                assert_eq!(model_messages(&state, None, None), before);
             }
-            state.apply_entry(Entry::from_payload(
-                EntryPayload::ModelChange {
-                    model: "p/new".into(),
-                },
-                state.last_entry_id.clone(),
-                3,
-            ));
-            let view = model_messages(&state, None, None);
-            assert_eq!(
-                view.iter().map(Message::text).collect::<Vec<_>>(),
-                ["必须保留的用户纠正"]
-            );
-            assert!(state.native_input.is_none());
         }
-    }
-
-    #[test]
-    fn model_change_keeps_a_checkpoint_produced_for_the_target_model() {
-        for (checkpoint_model, retained) in
-            [(Some("p/new"), true), (Some("p/old"), false), (None, false)]
-        {
-            let header = Entry::header(
-                "ses_123456789abc".into(),
-                "/tmp".into(),
-                "p/old".into(),
-                SessionEngine::Standard,
-                SessionPermission::Full,
-                SessionOrigin::root(),
-                "title".into(),
-                1,
-            );
-            let mut state = SessionState::new(header).unwrap();
-            let tail = Entry::from_payload(
-                EntryPayload::Message {
-                    message: Message::user_text("压缩后保留的尾部"),
-                    tool: None,
-                    finish_reason: None,
-                    agent: None,
-                    goal: None,
-                },
-                state.last_entry_id.clone(),
-                2,
-            );
-            let tail_id = tail.id().to_owned();
-            state.apply_entry(tail);
-            state.apply_entry(Entry::from_payload(
-                EntryPayload::Compaction {
-                    method: "remote".into(),
-                    summary: "原生载荷占位".into(),
-                    first_kept_id: Some(tail_id.clone()),
-                    tokens_before: 100,
-                    tokens_after: 10,
-                    instructions: None,
-                    native: Some(Box::new(serde_json::json!([
-                        {"type": "compaction", "encrypted_content": "opaque"}
-                    ]))),
-                    model: checkpoint_model.map(str::to_owned),
-                    reminder: None,
-                },
-                state.last_entry_id.clone(),
-                3,
-            ));
-            state.apply_entry(Entry::from_payload(
-                EntryPayload::ModelChange {
-                    model: "p/new".into(),
-                },
-                state.last_entry_id.clone(),
-                4,
-            ));
-            assert_eq!(
-                state.native_input.is_some(),
-                retained,
-                "checkpoint 产出模型 {checkpoint_model:?} 的原生载荷保留判定"
-            );
-            assert_eq!(state.summary.is_some(), retained);
-            assert_eq!(state.first_kept_id.is_some(), retained);
-        }
-    }
-
-    #[test]
-    fn legacy_compaction_entries_without_a_model_keep_the_old_invalidation() {
-        // 旧 JSONL 的 Compaction 记录没有 model 字段：必须仍可解析且清理语义与旧版一致。
-        let header = Entry::header(
-            "ses_123456789abc".into(),
-            "/tmp".into(),
-            "p/old".into(),
-            SessionEngine::Standard,
-            SessionPermission::Full,
-            SessionOrigin::root(),
-            "title".into(),
-            1,
-        );
-        let legacy = serde_json::json!({
-            "type": "compaction",
-            "id": "entry_legacy0001",
-            "parent_id": header.id(),
-            "at_ms": 2,
-            "method": "remote",
-            "summary": "原生载荷占位",
-            "first_kept_id": null,
-            "tokens_before": 100,
-            "tokens_after": 10,
-            "instructions": null,
-            "native": [{"type": "compaction", "encrypted_content": "opaque"}],
-        });
-        let entry: Entry = serde_json::from_value(legacy).expect("旧记录可解析");
-        let mut state = SessionState::from_entries(vec![header, entry.clone()]).unwrap();
-        assert!(state.summary.is_some());
-        assert!(state.native_input.is_some());
-        assert!(state.summary_model.is_none());
-        // 缺省产出模型不写入新记录，新旧 JSONL 形状保持一致。
-        let round_trip = serde_json::to_value(&entry).expect("序列化");
-        assert!(round_trip.get("model").is_none(), "{round_trip}");
-        // 换模型时保守作废：与旧版行为等价。
-        state.apply_entry(Entry::from_payload(
-            EntryPayload::ModelChange {
-                model: "p/new".into(),
-            },
-            state.last_entry_id.clone(),
-            3,
-        ));
-        assert!(state.native_input.is_none());
-        assert!(state.summary.is_none());
-        assert!(state.first_kept_id.is_none());
     }
 
     #[test]
@@ -521,7 +409,6 @@ mod tests {
                 tokens_before: 100,
                 tokens_after: 40,
                 instructions: None,
-                native: None,
                 model: Some("p/m".into()),
                 reminder: Some(
                     "<system-reminder>\n## TODO List\n- [pending] todo-1-1: 接线\n</system-reminder>"

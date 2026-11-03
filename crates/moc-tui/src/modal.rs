@@ -46,8 +46,6 @@ pub struct ModelEntry {
     pub max_output_tokens: Option<u32>,
     /// 接受的输入模态；伪值为空。
     pub inputs: Vec<moc_protocol::methods::ModelInput>,
-    /// Responses 原生服务端压缩是否启用。
-    pub remote_compaction: bool,
     /// 每百万 token 定价；未配置为 `None`。
     pub pricing: Option<moc_protocol::methods::ModelPricing>,
 }
@@ -1549,7 +1547,6 @@ mod tests {
             context_window: Some(1000),
             max_output_tokens: Some(512),
             inputs: vec![moc_protocol::methods::ModelInput::Text],
-            remote_compaction: false,
             pricing: None,
         };
         assert_eq!(model.selector_with(Some("high")), "p/m:high");
@@ -1563,7 +1560,6 @@ mod tests {
             context_window: None,
             max_output_tokens: None,
             inputs: Vec::new(),
-            remote_compaction: false,
             pricing: None,
         };
         assert_eq!(
@@ -1585,7 +1581,6 @@ mod tests {
                 context_window: None,
                 max_output_tokens: None,
                 inputs: Vec::new(),
-                remote_compaction: false,
                 pricing: None,
             },
             ModelEntry {
@@ -1596,7 +1591,6 @@ mod tests {
                 context_window: None,
                 max_output_tokens: None,
                 inputs: Vec::new(),
-                remote_compaction: false,
                 pricing: None,
             },
         ];

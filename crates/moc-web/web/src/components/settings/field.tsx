@@ -266,7 +266,6 @@ const GROUP_TITLES: Record<string, string> = {
   session: "会话存储",
   tools: "通用",
   "compaction.threshold": "触发条件",
-  "compaction.remote": "服务端压缩",
   "compaction.shake": "旧结果修剪",
   limits: "请求与循环",
   "tools.bash": "Bash",

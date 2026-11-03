@@ -209,8 +209,6 @@ pub(super) struct ModelDocument {
     pub thinking_levels: Option<Vec<ThinkingLevel>>,
     pub input: Vec<ModelInput>,
     pub compat: ModelCompat,
-    /// Responses 原生远程压缩；未配置时按协议与模型名自动判断。
-    pub remote_compaction: Option<bool>,
     /// 每百万 token 定价（美元）；未配置时前端隐藏费用段。
     pub pricing: Option<moc_protocol::ModelPricing>,
     /// 是否支持 Fast Mode；开启后前端显示开关，会话打开开关时请求带 `service_tier = "fast"`。
@@ -226,7 +224,6 @@ impl Default for ModelDocument {
             thinking_levels: None,
             input: vec![ModelInput::Text],
             compat: ModelCompat::default(),
-            remote_compaction: None,
             pricing: None,
             fast_mode: false,
         }
@@ -408,8 +405,6 @@ pub struct ResolvedModel {
     pub thinking_level: ThinkingLevel,
     /// 模型允许选择的 thinking level；`off` 始终可用于显式关闭推理。
     pub thinking_levels: Vec<ThinkingLevel>,
-    /// 是否启用 Responses 原生远程压缩。
-    pub remote_compaction: bool,
     /// 每百万 token 定价（美元）；`None` 表示未配置。
     pub pricing: Option<moc_protocol::ModelPricing>,
     /// 模型配置了 `fast_mode = true`，即上游接受 `service_tier = "fast"`。
@@ -523,12 +518,6 @@ impl ResolvedProvider {
                     "providers.{id}.models.{model_id}.thinking_levels 必须包含至少一个非 off 等级"
                 )));
             }
-            if model.remote_compaction == Some(true) && api.protocol() != Protocol::OpenAiResponses
-            {
-                return Err(CoreError::Config(format!(
-                    "providers.{id}.models.{model_id}.remote_compaction 仅支持 openai_responses"
-                )));
-            }
             for name in &model.compat.instruction_system {
                 if crate::system_prompt::canonical_piece_name(name).is_none() {
                     return Err(CoreError::Config(format!(
@@ -583,13 +572,6 @@ impl ResolvedProvider {
                 .or_insert_with(|| serde_json::json!("24h"));
         }
         let thinking_levels = effective_thinking_levels(model);
-        let remote_compaction = model.remote_compaction.unwrap_or(
-            self.api.protocol() == Protocol::OpenAiResponses
-                && model_id
-                    .rsplit('/')
-                    .next()
-                    .is_some_and(|id| id.starts_with("gpt-")),
-        );
         let llm = LlmConfig {
             protocol: self.api.protocol(),
             base_url: self.base_url.clone(),
@@ -611,7 +593,6 @@ impl ResolvedProvider {
             extra_body,
             timeout_secs: self.timeout_secs,
             connect_timeout_secs: self.connect_timeout_secs,
-            server_compaction_threshold: None,
             retry: self.retry.clone(),
         };
         let id = format!("{provider_id}/{model_id}");
@@ -631,7 +612,6 @@ impl ResolvedProvider {
             max_output_tokens: model.max_output_tokens,
             thinking_level: level,
             thinking_levels,
-            remote_compaction,
             pricing: model.pricing,
             fast_mode: model.fast_mode,
             llm,

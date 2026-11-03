@@ -3,14 +3,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use moc_llm::{ContentPart, FinishReason, Message, Role, StreamEvent, Usage};
-use moc_protocol::methods::{BtwExchange, BtwParams, BtwResult, BtwUpdate, MAX_BTW_HISTORY_TURNS};
-use moc_protocol::{RequestContext, RpcError, RpcErrorCode};
-use serde_json::Value;
-
 use super::prompt::request::{CacheAnchors, build_request};
 use super::{CoreInner, invalid_params, protocol_to_rpc, to_rpc};
 use crate::compact::{self, replay::model_messages};
+use moc_llm::{ContentPart, FinishReason, Message, Role, StreamEvent, Usage};
+use moc_protocol::methods::{BtwExchange, BtwParams, BtwResult, BtwUpdate, MAX_BTW_HISTORY_TURNS};
+use moc_protocol::{RequestContext, RpcError, RpcErrorCode};
 
 pub(crate) async fn run(
     inner: Arc<CoreInner>,
@@ -31,14 +29,13 @@ pub(crate) async fn run(
         .await
         .map_err(to_rpc)?;
     // 不抢主提示锁、不申请写租约；锁内只复制当前模型视图，不复制整份日志或等待 I/O。
-    let (cwd, selector, fast_mode, messages, mut native_input) = {
+    let (cwd, selector, fast_mode, messages) = {
         let state = record.state.lock().await;
         (
             PathBuf::from(&state.session.cwd),
             state.model.clone(),
             state.session.fast_mode,
             model_messages(&state, None, None),
-            state.native_input.clone(),
         )
     };
     let config = inner.project_config(&cwd).map_err(to_rpc)?;
@@ -58,23 +55,16 @@ pub(crate) async fn run(
     base.extend(messages.into_iter().map(|message| {
         compact::replay::repair_tool_history(textualize_tools(message), Some(&model))
     }));
-    textualize_native_tools(&mut native_input);
     base.push(Message::user_text(
         "The main-session reference ends here. The following messages form a separate side conversation.",
     ));
-    let (messages, history_turns_used) = fit_history(
-        base,
-        native_input.as_deref(),
-        &params.history,
-        &params.question,
-        &model,
-    )?;
+    let (messages, history_turns_used) =
+        fit_history(base, &params.history, &params.question, &model)?;
     let mut request = build_request(
         &model,
         &config,
         messages,
         Vec::new(),
-        native_input,
         &params.session_id,
         CacheAnchors {
             instruction_static: &system.static_prefix,
@@ -97,7 +87,6 @@ pub(crate) async fn run(
     ] {
         llm.extra_body.remove(key);
     }
-    llm.server_compaction_threshold = None;
     let cancel = ctx.cancel();
     let mut result = BtwResult {
         session_id: params.session_id.clone(),
@@ -233,38 +222,16 @@ fn textualize_tools(mut message: Message) -> Message {
     message
 }
 
-/// 保留原生压缩载荷，只把可见工具 item 转成普通消息；不丢失加密 checkpoint。
-fn textualize_native_tools(input: &mut Option<Vec<Value>>) {
-    for item in input.iter_mut().flatten() {
-        let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
-        if kind.ends_with("_call") || kind.ends_with("_call_output") {
-            *item = serde_json::json!({
-                "type": "message",
-                "role": "user",
-                "content": [{
-                    "type": "input_text",
-                    "text": format!("<historical-tool-record>\n{item}\n</historical-tool-record>")
-                }]
-            });
-        }
-    }
-}
-
 /// 历史最多 20 轮，线性估算一次，再按完整问答从旧到新淘汰；主上下文始终不动。
 fn fit_history(
     mut base: Vec<Message>,
-    native_input: Option<&[Value]>,
     history: &[BtwExchange],
     question: &str,
     model: &crate::ResolvedModel,
 ) -> Result<(Vec<Message>, usize), RpcError> {
     debug_assert!(history.len() <= MAX_BTW_HISTORY_TURNS);
     let question = Message::user_text(question);
-    let native_tokens = native_input.map_or(0, |items| {
-        compact::estimate_tokens(&serde_json::to_string(items).expect("原生上下文是 JSON"))
-    });
     let fixed = compact::messages_tokens(&base)
-        .saturating_add(native_tokens)
         .saturating_add(compact::message_tokens(&question))
         .saturating_add(u64::from(model.max_output_tokens));
     if fixed > model.context_window {

@@ -29,22 +29,17 @@ pub(crate) async fn compact(
     let archive_uri = super::archive::write(&record.paths, state).await?;
     inner.sessions.rewrite(&state.session.id, entries).await?;
     let snapshot = record.state.lock().await.clone();
-    let tokens_after = fixed_tokens
-        .saturating_add(super::native_input_tokens(&snapshot))
-        .saturating_add(messages_tokens(&super::replay::model_messages(
-            &snapshot,
-            None,
-            Some(model),
-        )));
+    let tokens_after = fixed_tokens.saturating_add(messages_tokens(
+        &super::replay::model_messages(&snapshot, None, Some(model)),
+    ));
     let first_kept = state.first_kept_id.clone().or_else(|| {
         state
             .transcript
             .get(super::replay::visible_history_start(state))
             .map(|entry| entry.id.clone())
     });
-    // 沿用上一份 checkpoint 的 summary/native 时，必须保留它原本的方法名和生成它的模型：
-    // `ModelChange` 靠 `remote` 和生成模型让不再匹配的原生数据失效，写成 `shake` 或
-    // 当前模型都会让这条清理失效。
+    // 沿用上一份 checkpoint 的 summary 时，必须保留它原本的方法名和生成它的模型：
+    // `grok_build` 摘要写成 `shake` 会让回放丢掉「查询+载体+提醒」的整体替换形状。
     let (method, model) = match state.summary.as_ref() {
         Some((method, _)) => (method.clone(), state.summary_model.clone()),
         None => ("shake".to_owned(), None),
@@ -67,10 +62,6 @@ pub(crate) async fn compact(
             tokens_after,
             full: false,
             instructions: None,
-            native: state
-                .native_input
-                .clone()
-                .map(|items| Box::new(serde_json::Value::Array(items))),
             archive: super::HistoryArchive::Precomputed(archive_uri),
         },
     )

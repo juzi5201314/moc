@@ -52,7 +52,7 @@ deny_write_paths = []
 `base_url` 会自动补齐 `/v1`；末尾加 `#` 可跳过该处理。`api` 也支持 `openai_responses` 和 `anthropic_messages`。启用推理后，未配置 `thinking_levels` 时默认可选 `low`、`medium`、`high`、`xhigh`、`max`；列表第一项为默认等级，`off` 始终可用。也可写入自定义等级（小写字母、数字和 `-_.`，最长 32 个字符），请求时原样发送，或经 `compat.thinking.effort_map` 改写。Anthropic 使用 adaptive thinking 与 `output_config.effort`，不会发送旧式 `budget_tokens`。
 
 `[defaults.models]` 的键支持 glob 匹配，匹配结果按模式具体度合并，具体模型字段优先。例如 `"*-reasoner"` 会匹配 `provider/example-reasoner`；以上名称仅演示配置结构，不代表内置模型。模型的 `max_output_tokens` 是模型自身上限，不再受跨模型的全局输出上限截断。
-支持 `input = ["image"]` 的模型会接收所有图片输入形式。输入文本中的独立 `@path/to/image.png`、`@~/image.png` 标记会由 core 读取本地文件并转成 Base64；不再需要配置 `compat.image_url`。Responses 协议中，模型 ID 末段以 `gpt-` 开头时默认启用远程压缩，可用模型字段 `remote_compaction = false` 关闭。
+支持 `input = ["image"]` 的模型会接收所有图片输入形式。输入文本中的独立 `@path/to/image.png`、`@~/image.png` 标记会由 core 读取本地文件并转成 Base64；不再需要配置 `compat.image_url`。
 模型字段 `fast_mode = true` 声明该模型接受 `service_tier = "fast"`（默认 `false`）。只有这类模型在模型选择器里显示 Fast Mode 开关；开关是会话级状态（`session/set_fast_mode`，写入会话 JSONL），默认关闭，新会话沿用上一个会话的选择。开关打开且当前模型支持时，主请求、压缩与 `/btw` 请求体都带 `service_tier = "fast"`；切到不支持的模型时开关保留但不生效。
 
 完整工具、上下文与模型兼容配置见 `src/config/defaults.toml`、`src/config/schema.rs` 和 `src/config/model.rs`。不要把供应商密钥提交到仓库。
@@ -140,11 +140,17 @@ PTC Host 入口已编译进 `moc`，首次 `run_code` 时将当前 `moc` 作为�
 
 ### 上下文压缩与解释
 
+`compaction.method` 单选压缩实现，默认 `"moc"`：先用 shake 裁剪旧工具结果，腾出的空间不足时再用 soft 生成摘要并保留最近对话。选择 `"grok_build"` 时直接进入 Grok Build 摘要流程：阈值前后台摘要历史前缀，触发压缩时结合该摘要和新增尾部生成 9 段摘要，再整体替换历史，只保留最后真实用户查询、摘要与运行时提醒。Grok Build 不执行 shake，也不使用 `keep_recent_tokens`、`protect_recent_tool_tokens` 或 shake 参数。两种实现都归档压缩前的历史，并在摘要中加入 `history://compaction/INDEX.md` 回读指引；Grok Build 的运行状态由独立提醒携带。
+
+手动 `/compact <指令>` 会直接进入所选实现的摘要步骤；不带指令时按该实现的默认流程执行。自动压缩及上下文溢出恢复也使用同一 `method`。
+
+旧压缩配置不兼容：删除 `compaction.method_order`、`compaction.soft_method`、整个 `[compaction.remote]` 表和模型字段 `remote_compaction`，改用 `[compaction]` 下的 `method = "moc"` 或 `method = "grok_build"`。这些旧键会触发未知字段错误，不自动迁移。旧会话记录中的 `native` 字段只接受解析并忽略；原生载荷不再回放，旧 remote checkpoint 仅按其文本摘要与保留尾部读取。
+
 `compaction.threshold` 表示开始压缩的触发阈值，默认 `{ mode = "percent", value = 85 }`；固定 token 可写为 `{ mode = "tokens", value = 120000 }`。百分比只乘上下文窗口，不扣除模型 `max_output_tokens`。自动压缩完成还必须进入触发阈值的 80% recovery band；例如 200k 窗口的 170k 触发线要求压缩后不高于 136k，避免在临界线附近反复压缩。上下文溢出恢复只要求压缩后重新放入可用窗口，再继续请求。
 
 上下文计量优先使用最近一次上游完整 input/output usage 作为精确锚点，仅对锚点后的新消息本地估算；同时以当前完整会话、系统提示和工具定义的本地估算作为安全下限。图片按固定视觉 token 估算，不把 Base64 当作文本。压缩改变历史后会清除旧锚点并重新估算。上下文详情按 `system`、`project`、`skills`、`tools`、`messages` 等固定分块展示占用分解；供应商 usage 可用时，内部触发使用 provider 锚点与本地估算的较大值。
 
-`session/set_model` 在切换前按目标模型窗口与它在当前压缩配置下的触发线检查上下文：装得下就直接切换，装不下则按参数 `overflow` 处理——`switch` 直接切换并把缺口回报给前端，`compact` 先切换再由新模型压缩上下文，`ask` 不切换、只回报缺口让前端询问用户。压缩必须发生在切换之后：`ModelChange` 会作废旧模型的原生载荷与远程摘要，checkpoint 只能由新模型产出。压缩失败不回退切换，失败原因随结果返回。
+`session/set_model` 在切换前按目标模型窗口与它在当前压缩配置下的触发线检查上下文：装得下就直接切换，装不下则按参数 `overflow` 处理——`switch` 直接切换并把缺口回报给前端，`compact` 先切换再由新模型压缩上下文，`ask` 不切换、只回报缺口让前端询问用户。压缩在切换后由新模型执行，已有文本摘要仍可跨模型使用。压缩失败不回退切换，失败原因随结果返回。
 
 ### CLM 实验引擎
 
@@ -186,7 +192,7 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。覆盖超过读写容量上限（`tools.output.max_file_bytes`，默认 100 MiB）的旧文件时不产出 diff、也不记录撤销，工具结果里会说明。撤销栈每个文件最多保留 8 份、全会话合计 64 MiB，超限淘汰最旧记录，被淘汰的快照不能恢复。
 - 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。
 - 会话使用追加式 JSONL，逐条 flush；`session/new` 只登记内存，首次写入 entry 时才创建 transcript 文件，因此从未产生对话内容的空会话不会落盘、也不会出现在 `session/list` 中。压缩与历史重写使用临时文件加 rename。它不是每条记录都 fsync 的事务数据库。
-- 压缩依次尝试 remote、shake、soft；原生载荷只用于兼容模型，换模型或载荷失效时恢复日志视图。`auto_continue=false` 会在提示内压缩完成后停止继续请求模型。
+- `compaction.method` 选择 moc（shake 不足再 soft）或 Grok Build（直接摘要并整体替换历史）；两者都提供历史归档回读指引。`auto_continue=false` 会在提示内压缩完成后停止继续请求模型。
 
 ### 循环保护
 

@@ -1,11 +1,13 @@
-//! 上下文压缩：token 估算与预算、按配置依次尝试压缩方法、提交 checkpoint。
+//! 上下文压缩：token 估算与预算、按 `compaction.method` 选择压缩管线、提交 checkpoint。
+//!
+//! `moc` 管线先 `shake` 本地修剪、腾不出空间再 `soft` 摘要；`grok_build` 复刻
+//! Grok Build，整体替换历史，不做本地修剪。
 
 pub mod archive;
 mod digest;
 pub mod grok_build;
 mod guard;
 pub mod images;
-pub mod remote;
 pub mod replay;
 pub mod shake;
 pub mod soft;
@@ -14,7 +16,7 @@ use moc_llm::{ContentPart, Message, ToolDef};
 use moc_protocol::RequestContext;
 use moc_protocol::methods::{CompactResult, SessionUpdate};
 
-use crate::config::{CompactionMethod, ResolvedConfig, SoftMethod};
+use crate::config::{CompactionMethod, ResolvedConfig};
 use crate::error::CoreError;
 use crate::service::CoreInner;
 use crate::session::entries::EntryPayload;
@@ -96,15 +98,6 @@ pub fn tools_tokens(tools: &[ToolDef]) -> u64 {
     estimate_tokens(&text)
 }
 
-/// 估算 Responses 原生压缩数据在本地回放视图里占用的 token。
-fn native_input_tokens(state: &crate::session::state::SessionState) -> u64 {
-    state
-        .native_input
-        .as_ref()
-        .and_then(|items| serde_json::to_string(items).ok())
-        .map_or(0, |serialized| estimate_tokens(&serialized))
-}
-
 /// 某个模型下的上下文基准：指令消息、工具定义，以及与提示执行时算法一致的完整估算。
 pub(crate) struct ModelContext {
     /// 该模型的指令消息（压缩摘要请求也复用它）。
@@ -113,8 +106,6 @@ pub(crate) struct ModelContext {
     pub static_prefix: Vec<usize>,
     /// 该模型可用的工具定义。
     pub tools: Vec<ToolDef>,
-    /// 回放给模型的历史消息，不含系统提示。
-    pub messages: Vec<Message>,
     /// 系统提示和工具定义本身的 token 数（不含 transcript 和附加内容）。
     pub fixed_tokens: u64,
     /// 完整的上下文估算，算法与提示执行时一致。
@@ -180,7 +171,6 @@ pub(crate) async fn model_context(
         system,
         static_prefix: prompt.static_prefix,
         tools,
-        messages,
         fixed_tokens,
         tokens,
     })
@@ -193,9 +183,7 @@ pub(crate) fn context_tokens(
     messages: &[Message],
     tools: &[ToolDef],
 ) -> u64 {
-    let stored_estimate = messages_tokens(messages)
-        .saturating_add(tools_tokens(tools))
-        .saturating_add(native_input_tokens(state));
+    let stored_estimate = messages_tokens(messages).saturating_add(tools_tokens(tools));
     if state.usage.input_tokens == 0 || state.usage_at == 0 {
         return stored_estimate;
     }
@@ -294,7 +282,7 @@ pub(crate) async fn compact(
     let model = config
         .resolve_model(model_selector.unwrap_or(&state.model))?
         .with_fast_mode(state.session.fast_mode);
-    let mut measured = model_context(inner, ctx, &state, &config, &model).await?;
+    let measured = model_context(inner, ctx, &state, &config, &model).await?;
     let budget = CompactionBudget {
         tokens_before: measured.tokens,
         fixed_tokens: measured.fixed_tokens,
@@ -333,10 +321,10 @@ pub(crate) async fn compact(
     // 只有真正要等上游模型的压缩才让前端开始计时；纯本地裁剪瞬时可成。
     let mut started = false;
     let outcome: Result<CompactReport, CoreError> = async {
-        if instructions.is_some() {
+        if instructions.is_some() || config.compaction.method == CompactionMethod::GrokBuild {
             emit_compaction_started(ctx, session_id).await?;
             started = true;
-            let result = run_soft(SoftInput {
+            let result = summarize(SoftInput {
                 inner,
                 ctx,
                 state: &state,
@@ -356,38 +344,22 @@ pub(crate) async fn compact(
             });
         }
 
-        let mut failures = Vec::with_capacity(config.compaction.method_order.len());
+        // moc 固定先本地修剪，空间不足时再生成摘要。
+        let steps = [PipelineStep::Shake, PipelineStep::Summarize];
+        let mut failures = Vec::with_capacity(steps.len());
         let mut last_result = None;
-        for method in &config.compaction.method_order {
-            // 只有真正要等上游模型的方法才值得让前端开始计时：不支持原生压缩的
-            // remote 会立刻失败，shake 是本地裁剪，都不该先闪一条“压缩中”。
-            let waits_for_model = match method {
-                CompactionMethod::Remote => remote::available(inner, &config, &model),
-                CompactionMethod::Soft => true,
-                CompactionMethod::Shake => false,
-            };
+        for step in steps {
+            // 只有真正要等上游模型的步骤才值得让前端开始计时：shake 是本地
+            // 裁剪，不该先闪一条“压缩中”。
+            let waits_for_model = matches!(step, PipelineStep::Summarize);
             if waits_for_model && !started {
                 emit_compaction_started(ctx, session_id).await?;
                 started = true;
             }
-            let result = match method {
-                CompactionMethod::Remote => {
-                    remote::compact(
-                        inner,
-                        ctx,
-                        &state,
-                        &config,
-                        &model,
-                        &measured.messages,
-                        budget,
-                    )
-                    .await
-                }
-                CompactionMethod::Shake => {
-                    shake::compact(inner, &state, &config, &model, budget).await
-                }
-                CompactionMethod::Soft => {
-                    run_soft(SoftInput {
+            let result = match step {
+                PipelineStep::Shake => shake::compact(inner, &state, &config, &model, budget).await,
+                PipelineStep::Summarize => {
+                    summarize(SoftInput {
                         inner,
                         ctx,
                         state: &state,
@@ -409,24 +381,22 @@ pub(crate) async fn compact(
                         created_headroom: result.tokens_after <= required_tokens,
                         result,
                     };
-                    if report.created_headroom || *method == CompactionMethod::Soft {
+                    if report.created_headroom || matches!(step, PipelineStep::Summarize) {
                         return Ok(report);
                     }
                     last_result = Some(report);
                     state = record.state.lock().await.clone();
-                    measured.messages = replay::model_messages(&state, None, Some(&model));
                 }
                 Err(error @ (CoreError::Protocol(_) | CoreError::Cancelled)) => {
                     return Err(error);
                 }
                 Err(error @ CoreError::Llm(moc_llm::LlmError::Guard(_))) => return Err(error),
                 Err(error) => {
-                    tracing::warn!(session_id, method = ?method, %error, "压缩方法失败，改用下一个方法");
-                    failures.push(format!("{method:?}: {error}"));
-                    // 失败的方法可能已经改写了 transcript（shake 会整体重写）或写入了 usage：
-                    // 后面的方法必须基于当前状态，否则会用旧快照覆盖这期间追加的 entry。
+                    tracing::warn!(session_id, step = ?step, %error, "压缩步骤失败，改用下一步");
+                    failures.push(format!("{step:?}: {error}"));
+                    // 失败的步骤可能已经改写了 transcript（shake 会整体重写）或写入了 usage：
+                    // 后面的步骤必须基于当前状态，否则会用旧快照覆盖这期间追加的 entry。
                     state = record.state.lock().await.clone();
-                    measured.messages = replay::model_messages(&state, None, Some(&model));
                 }
             }
         }
@@ -532,8 +502,17 @@ pub(crate) struct SoftInput<'a> {
     pub budget: CompactionBudget,
 }
 
-/// 按 `compaction.soft_method` 选择 soft 实现；`remote` 和 `shake` 不走这里。
-async fn run_soft(input: SoftInput<'_>) -> Result<CompactResult, CoreError> {
+/// 压缩管线的组成步骤：摘要步是唯一需要等上游模型的步骤。
+#[derive(Debug, Clone, Copy)]
+enum PipelineStep {
+    /// moc 管线的本地修剪。
+    Shake,
+    /// 按 `compaction.method` 分发到对应摘要实现。
+    Summarize,
+}
+
+/// 按 `compaction.method` 分发摘要实现。
+async fn summarize(input: SoftInput<'_>) -> Result<CompactResult, CoreError> {
     let SoftInput {
         inner,
         ctx,
@@ -547,8 +526,8 @@ async fn run_soft(input: SoftInput<'_>) -> Result<CompactResult, CoreError> {
         plan,
         budget,
     } = input;
-    match config.compaction.soft_method {
-        SoftMethod::Moc => {
+    match config.compaction.method {
+        CompactionMethod::Moc => {
             soft::compact(soft::SoftContext {
                 inner,
                 ctx,
@@ -564,7 +543,7 @@ async fn run_soft(input: SoftInput<'_>) -> Result<CompactResult, CoreError> {
             })
             .await
         }
-        SoftMethod::GrokBuild => {
+        CompactionMethod::GrokBuild => {
             grok_build::compact(grok_build::GrokBuildContext {
                 inner,
                 ctx,
@@ -584,18 +563,20 @@ async fn run_soft(input: SoftInput<'_>) -> Result<CompactResult, CoreError> {
 
 /// checkpoint 的历史归档方式。
 pub(crate) enum HistoryArchive {
-    /// 记录 checkpoint 时按当前状态写出压缩前的历史。
+    /// 记录 checkpoint 时按当前状态写出压缩前的历史，并把运行状态（todos/jobs）
+    /// 一并追加进摘要。
     Write,
+    /// 与 `Write` 一样归档并追加历史指引，但不追加运行状态块：Grok Build 的
+    /// 运行时状态由它自己的 system-reminder 覆盖。
+    WriteWithoutRuntime,
     /// 调用方已在改写 transcript 前完成归档，直接用它的结果。
     Precomputed(Option<String>),
-    /// 不归档：Grok Build 整体替换历史，不带指向旧历史的链接。
-    None,
 }
 
 pub(crate) struct Checkpoint {
-    /// 生成 checkpoint 的方法；沿用上一份 summary/native 时必须保留它原本的方法名。
+    /// 生成 checkpoint 的方法；沿用摘要时保留它，以维持对应的回放形状。
     pub method: String,
-    /// 生成 checkpoint 的模型；决定换模型后原生压缩数据是否仍然有效。
+    /// 生成 checkpoint 的模型；沿用摘要时保留原来的来源。
     pub model: Option<String>,
     pub summary: String,
     /// Grok Build 整体替换历史时附带的运行时状态提醒；其它方法为 `None`。
@@ -606,7 +587,6 @@ pub(crate) struct Checkpoint {
     /// 本次压缩是否重新生成了摘要；`false` 表示只裁剪历史（`shake`）。
     pub full: bool,
     pub instructions: Option<String>,
-    pub native: Option<Box<serde_json::Value>>,
     pub archive: HistoryArchive,
 }
 
@@ -625,7 +605,6 @@ pub(crate) async fn record_compaction(
         tokens_after,
         full,
         instructions,
-        native,
         archive,
     } = checkpoint;
     append_runtime_checkpoint(inner, session_id, &mut summary, archive).await?;
@@ -642,7 +621,6 @@ pub(crate) async fn record_compaction(
                 tokens_before,
                 tokens_after,
                 instructions,
-                native,
                 model,
                 reminder,
             },
@@ -667,14 +645,15 @@ async fn append_runtime_checkpoint(
 ) -> Result<(), CoreError> {
     let record = inner.sessions.get(session_id).await?;
     let state = record.state.lock().await.clone();
+    let write_runtime = !matches!(archive, HistoryArchive::WriteWithoutRuntime);
     let archive_uri = match archive {
-        // Grok Build 整体替换历史：不带旧历史链接，也不追加运行时快照。
-        HistoryArchive::None => return Ok(()),
-        HistoryArchive::Write => archive::write(&record.paths, &state).await?,
+        HistoryArchive::Write | HistoryArchive::WriteWithoutRuntime => {
+            archive::write(&record.paths, &state).await?
+        }
         HistoryArchive::Precomputed(uri) => uri,
     };
     let jobs = inner.runtime(session_id).await.jobs.background();
-    if archive_uri.is_none() && state.todos.is_empty() && jobs.is_empty() {
+    if archive_uri.is_none() && (!write_runtime || (state.todos.is_empty() && jobs.is_empty())) {
         return Ok(());
     }
     if let Some(uri) = archive_uri {
@@ -682,7 +661,7 @@ async fn append_runtime_checkpoint(
         summary.push_str(&uri);
         summary.push_str("; read this index when exact details are needed.</compaction-history>");
     }
-    let has_runtime_state = !state.todos.is_empty() || !jobs.is_empty();
+    let has_runtime_state = write_runtime && (!state.todos.is_empty() || !jobs.is_empty());
     if has_runtime_state {
         summary.push_str("\n\n<compaction-runtime>\n");
         if !state.todos.is_empty() {

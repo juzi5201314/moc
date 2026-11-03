@@ -90,7 +90,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
              [providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [providers.test.models.ds]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n[workspace]\nwatch=false\n\
-             [context_files]\nenabled=false\n[compaction]\nmethod_order=['soft']\n",
+             [context_files]\nenabled=false\n[compaction]\nmethod='moc'\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -247,7 +247,7 @@ async fn model_switch_asks_before_compacting_when_the_target_window_is_too_small
         "test/glm:off",
         "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
          [providers.test.models.ds]\ncontext_window=200000\nmax_output_tokens=4096\n\
-         [compaction]\nthreshold={mode=\"tokens\",value=1}\nmethod_order=['soft']\n",
+         [compaction]\nthreshold={mode=\"tokens\",value=1}\nmethod='moc'\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
@@ -327,7 +327,7 @@ async fn model_switch_compact_switches_first_and_compacts_with_the_target_model(
         "test/glm:off",
         "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
          [providers.test.models.small]\ncontext_window=2000\nmax_output_tokens=4096\n\
-         [compaction]\nauto=false\nmethod_order=['soft']\n",
+         [compaction]\nauto=false\nmethod='moc'\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
@@ -442,8 +442,8 @@ async fn model_switch_keeps_the_switch_when_compaction_fails() {
             if body["stream"] == true {
                 ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
             } else {
-                ResponseTemplate::new(200)
-                    .set_body_json(complete(&support::soft_checkpoint("checkpoint")))
+                ResponseTemplate::new(401)
+                    .set_body_json(serde_json::json!({"error":{"message":"summary denied"}}))
             }
         })
         .mount(&upstream)
@@ -456,7 +456,7 @@ async fn model_switch_keeps_the_switch_when_compaction_fails() {
         "test/glm:off",
         "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
          [providers.test.models.small]\ncontext_window=2000\nmax_output_tokens=4096\n\
-         [compaction]\nmethod_order=['shake']\n",
+         [compaction]\nmethod='moc'\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
@@ -476,8 +476,8 @@ async fn model_switch_keeps_the_switch_when_compaction_fails() {
         "压缩失败不回退切换"
     );
     assert!(switched.overflow.is_some());
-    let error = switched.compaction_error.expect("无工具输出可供修剪");
-    assert!(error.contains("Shake"), "{error}");
+    let error = switched.compaction_error.expect("无可剪结果且摘要失败");
+    assert!(!error.is_empty(), "压缩失败必须附原因");
 
     let updates = harness.updates.lock().clone();
     assert!(
@@ -522,7 +522,7 @@ async fn model_switch_action_switch_reports_overflow_after_switching() {
         "test/glm:off",
         "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
          [providers.test.models.small]\ncontext_window=2000\nmax_output_tokens=4096\n\
-         [compaction]\nmethod_order=['shake']\n",
+         [compaction]\nmethod='moc'\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
@@ -2161,7 +2161,7 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
         "test/planner:off",
         "[providers.test.models.planner]\ncontext_window=100000\nmax_output_tokens=4096\n\
          [providers.test.models.executor]\ncontext_window=200000\nmax_output_tokens=4096\n\
-         [compaction]\nmethod_order=['soft']\nauto=false\n",
+         [compaction]\nmethod='moc'\nauto=false\n",
     )
     .await;
     for action in [PlanAction::Execute, PlanAction::ExecuteCompacted] {
