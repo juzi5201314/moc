@@ -72,12 +72,22 @@ static KITTY_USED: AtomicBool = AtomicBool::new(false);
 /// 探测预算：终端应答应在 1~10ms 内到齐，250ms 只是为了防止哑终端拖住启动。
 const PROBE_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// 探测终端图形能力。非 unix 平台直接返回 `None`（没有安全读 fd 的途径）。
-pub fn probe() -> Option<GraphicsSupport> {
+/// 终端能力探测结果：图形协议 + DEC 2026 同步输出。
+#[derive(Debug, Clone, Copy)]
+pub struct Probe {
+    /// 图形协议与单元格像素；`None` = 本终端不出图表入口。
+    pub graphics: Option<GraphicsSupport>,
+    /// 终端是否支持 DEC 2026 同步输出。
+    pub sync_output: bool,
+}
+
+/// 探测终端能力：一次 fd-0 往返问清图形协议、单元格像素与同步输出。
+///
+/// DEC 2026 用 DECRQM（`CSI ? 2026 $ p`）探测；tmux<3.7 与 tmux-CC 不透传、
+/// ConPTY 不应答，这些场景默认降级为关闭，`MOC_SYNC_OUTPUT=0|1` 可强制。
+/// 非 unix 平台没有安全读 fd 的途径，应答读不到则按不支持处理。
+pub fn probe() -> Probe {
     let forced = std::env::var("MOC_CHART_GRAPHICS").ok();
-    if forced.as_deref() == Some("none") {
-        return None;
-    }
     let forced_proto = match forced.as_deref() {
         Some("kitty") => Some(GraphicsProto::Kitty),
         Some("sixel") => Some(GraphicsProto::Sixel),
@@ -87,32 +97,61 @@ pub fn probe() -> Option<GraphicsSupport> {
     let manual_cell = std::env::var("MOC_CHART_CELL")
         .ok()
         .and_then(|spec| parse_cell(&spec));
-    // tmux 会吞掉终端应答且需要 passthrough 才能转发图像：没有显式覆盖就不启用。
-    if forced_proto.is_none() && std::env::var_os("TMUX").is_some() {
-        tracing::info!("检测到 tmux，跳过图形能力探测");
-        return None;
-    }
-    let replies = if forced_proto.is_some() && manual_cell.is_some() {
-        Replies::default()
-    } else {
-        query_terminal()
+    let under_tmux = std::env::var_os("TMUX").is_some();
+    let sync_forced = match std::env::var("MOC_SYNC_OUTPUT").ok().as_deref() {
+        Some("1") | Some("on") | Some("true") => Some(true),
+        Some("0") | Some("off") | Some("false") => Some(false),
+        _ => None,
     };
-    let proto = forced_proto.or_else(|| {
-        if replies.kitty {
-            Some(GraphicsProto::Kitty)
-        } else if replies.sixel {
-            Some(GraphicsProto::Sixel)
-        } else if std::env::var("TERM_PROGRAM").as_deref() == Ok("iTerm.app")
-            || std::env::var("LC_TERMINAL").as_deref() == Ok("iTerm2")
-        {
-            Some(GraphicsProto::Iterm2)
-        } else {
-            None
-        }
-    })?;
-    let cell = manual_cell.or_else(|| cell_from_replies(&replies))?;
-    tracing::info!(?proto, cell_w = cell.w, cell_h = cell.h, "图形能力探测完成");
-    Some(GraphicsSupport { proto, cell })
+    // tmux 会吞掉终端应答且需要 passthrough 才能转发图像：没有显式覆盖就不启用。
+    let graphics_blocked =
+        forced.as_deref() == Some("none") || (under_tmux && forced_proto.is_none());
+    if under_tmux && forced_proto.is_none() && forced.as_deref() != Some("none") {
+        tracing::info!("检测到 tmux，跳过图形能力探测");
+    }
+    let graphics_needs_query =
+        !graphics_blocked && !(forced_proto.is_some() && manual_cell.is_some());
+    let sync_needs_query = sync_forced.is_none() && !under_tmux;
+    let replies = if graphics_needs_query || sync_needs_query {
+        query_terminal()
+    } else {
+        Replies::default()
+    };
+    let graphics = if graphics_blocked {
+        None
+    } else {
+        forced_proto
+            .or_else(|| proto_from(&replies))
+            .and_then(|proto| {
+                manual_cell
+                    .or_else(|| cell_from_replies(&replies))
+                    .map(|cell| {
+                        tracing::info!(?proto, cell_w = cell.w, cell_h = cell.h, "图形能力探测完成");
+                        GraphicsSupport { proto, cell }
+                    })
+            })
+    };
+    Probe {
+        graphics,
+        // tmux 下无论应答如何都按降级处理：应答来自 tmux 转发与否不可控。
+        sync_output: sync_forced.unwrap_or(!under_tmux && replies.sync_output),
+    }
+}
+
+/// 由应答与厂商环境变量选图形协议：kitty 应答优先，其次 DA1 sixel 位，
+/// 最后退回 iTerm2 环境变量启发（它没有应答式探测）。
+fn proto_from(replies: &Replies) -> Option<GraphicsProto> {
+    if replies.kitty {
+        Some(GraphicsProto::Kitty)
+    } else if replies.sixel {
+        Some(GraphicsProto::Sixel)
+    } else if std::env::var("TERM_PROGRAM").as_deref() == Ok("iTerm.app")
+        || std::env::var("LC_TERMINAL").as_deref() == Ok("iTerm2")
+    {
+        Some(GraphicsProto::Iterm2)
+    } else {
+        None
+    }
 }
 
 /// 单元格尺寸的合法范围（像素）。
@@ -153,6 +192,8 @@ struct Replies {
     sixel: bool,
     /// 是否已收到 DA1：收到就说明「协议能力已问清」，不必再等其余应答。
     da1: bool,
+    /// DECRQM 应答里 2026 的状态：Ps ∈ 1..=4 表示终端认识该模式（0 = 不认识）。
+    sync_output: bool,
 }
 
 /// 由应答算单元格尺寸：优先 `CSI 16 t`，否则窗口像素 ÷ 终端格数。
@@ -177,8 +218,13 @@ fn query_terminal() -> Replies {
     use std::io::Write as _;
 
     let mut stdout = std::io::stdout();
-    // CSI 16 t（单元格像素）、CSI 14 t（窗口像素）、kitty 图形查询、DA1
-    let _ = stdout.write_all(b"\x1b[16t\x1b[14t\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c");
+    // CSI 16 t（单元格像素）、CSI 14 t（窗口像素）、kitty 图形查询、
+    // DECRQM `? 2026 $ p`（同步输出）、DA1。
+    // DECRQM 排在 DA1 之前：终端按序应答，`da1` 早退条件命中时 2026 的
+    // 应答已经到齐，不需要为它再等一轮。
+    let _ = stdout.write_all(
+        b"\x1b[16t\x1b[14t\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[?2026$p\x1b[c",
+    );
     let _ = stdout.flush();
     let mut bytes = Vec::new();
     let deadline = std::time::Instant::now() + PROBE_BUDGET;
@@ -278,6 +324,8 @@ fn parse_replies(bytes: &[u8]) -> Replies {
 fn apply_csi(params: &[u8], final_byte: u8, replies: &mut Replies) {
     let text = std::str::from_utf8(params).unwrap_or_default();
     let text = text.strip_prefix('?').unwrap_or(text);
+    // DECRPM 应答带 `$` 中间字节（`? 模式 ; 状态 $ y`），剥掉再按参数拆。
+    let text = text.strip_suffix('$').unwrap_or(text);
     let values: Vec<u32> = text
         .split(';')
         .filter(|field| !field.is_empty())
@@ -300,6 +348,12 @@ fn apply_csi(params: &[u8], final_byte: u8, replies: &mut Replies) {
         b'c' => {
             replies.da1 = true;
             replies.sixel = values.contains(&4);
+        }
+        // DECRPM：只认 2026；Ps ∈ 1..=4 均表示终端认识同步输出模式。
+        b'y' => {
+            if let [2026, ps] = values.as_slice() {
+                replies.sync_output = (1..=4).contains(ps);
+            }
         }
         _ => {}
     }
@@ -527,6 +581,23 @@ mod tests {
         assert!(!replies.sixel, "无 sixel 位");
         assert!(!replies.kitty);
         assert_eq!(replies.cell, None, "截断的应答不参与判定");
+    }
+
+    /// DECRPM 应答 `? 2026 ; Ps $ y`：Ps ∈ 1..=4 即支持同步输出（0 = 不认识）。
+    #[test]
+    fn parses_sync_output_report() {
+        for ps in [1u8, 2, 3, 4] {
+            let reply = format!("\x1b[?2026;{ps}$y");
+            assert!(
+                parse_replies(reply.as_bytes()).sync_output,
+                "Ps={ps} 应判为支持"
+            );
+        }
+        assert!(
+            !parse_replies(b"\x1b[?2026;0$y").sync_output,
+            "Ps=0 是「不认识该模式」"
+        );
+        assert!(!parse_replies(b"").sync_output);
     }
 
     #[test]

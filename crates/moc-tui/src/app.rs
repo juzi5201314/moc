@@ -275,6 +275,11 @@ pub struct App {
     pub paint_lines: Vec<(u16, String)>,
     /// 终端图形能力（启动探测一次）；`None` = 本终端不出图表入口。
     pub graphics: Option<crate::render::graphics::GraphicsSupport>,
+    /// DEC 2026 同步输出是否启用（启动探测；`TerminalGuard::draw` 消费，
+    /// `/doctor` 展示同一份）。
+    pub sync_output: bool,
+    /// kitty 键盘消歧义协商结果（`/doctor` 展示用）。
+    pub keyboard_enhanced: bool,
     /// 内联图片的解码 / 编码缓存（工具结果、markdown 图片、SVG 代码块共用）。
     pub images: crate::render::image::ImageStore,
     /// 本帧要贴的位图槽位（`ScrollbackView::paint` 填充，帧后由
@@ -553,6 +558,8 @@ impl App {
             mouse_hits: Vec::new(),
             paint_lines: Vec::new(),
             graphics: None,
+            sync_output: false,
+            keyboard_enhanced: false,
             images,
             image_slots: Vec::new(),
             chart_hits: Vec::new(),

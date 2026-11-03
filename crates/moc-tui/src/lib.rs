@@ -14,6 +14,7 @@ pub mod app;
 pub mod btw;
 pub mod clipboard;
 pub mod config;
+pub mod doctor;
 pub mod event;
 pub mod history;
 pub mod input;

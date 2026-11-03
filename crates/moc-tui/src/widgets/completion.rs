@@ -106,6 +106,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "查看当前会话模型用量",
     },
     SlashCommand {
+        name: "/doctor",
+        description: "终端能力诊断：探测结果与修复建议",
+    },
+    SlashCommand {
         name: "/quit",
         description: "退出 moc",
     },

@@ -1072,6 +1072,36 @@ fn spinner_frame(app: &App) -> &'static str {
     SPINNER_FRAMES[index]
 }
 
+/// 窗口标题（OSC 0）：状态图标 + 项目名。
+///
+/// 等待人工（提问/授权卡片）时给「需人工」提示；运行中复用状态栏
+/// 同一个 spinner；空闲只剩 `moc — 项目名`，没有会话时退化为 `moc`。
+pub fn terminal_title(app: &App) -> String {
+    let cwd = app
+        .session
+        .as_ref()
+        .map_or(app.startup_cwd.as_str(), |session| session.cwd.as_str());
+    let project = std::path::Path::new(cwd)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty());
+    let base = match project {
+        Some(project) => format!("moc — {project}"),
+        None => "moc".to_owned(),
+    };
+    if app
+        .modal
+        .as_ref()
+        .is_some_and(|modal| matches!(modal, Modal::Permission { .. } | Modal::Ask { .. }))
+    {
+        format!("● {base} · 需人工")
+    } else if app.prompt_running {
+        format!("{} {base}", spinner_frame(app))
+    } else {
+        base
+    }
+}
+
 /// 内置渲染：左侧运行状态，右侧会话累计 token 统计（与 `/usage` 同源）。
 fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     let theme = app.theme;
@@ -1212,6 +1242,59 @@ fn format_context_percent(percent: f64) -> String {
 mod tests {
     use super::*;
     use crate::theme::Theme;
+
+    /// 窗口标题的状态选择：空闲留项目名，运行中上 spinner，等待人工置顶提示。
+    #[test]
+    fn terminal_title_reflects_app_state() {
+        use moc_protocol::methods::SessionInfo;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.session = Some(SessionInfo {
+            id: "ses_test".into(),
+            title: "测试会话".into(),
+            model: "test/model".into(),
+            permission: moc_protocol::SessionPermission::Full,
+            engine: moc_protocol::SessionEngine::Standard,
+            autonomy: moc_protocol::SessionAutonomy::Default,
+            plan_active: false,
+            fast_mode: false,
+            engine_locked: false,
+            parent_session_id: None,
+            forked_from: None,
+            agent_preset: None,
+            delegation_depth: 0,
+            cwd: "/home/user/myproject".into(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            lock: None,
+        });
+        assert_eq!(terminal_title(&app), "moc — myproject");
+
+        app.prompt_running = true;
+        app.prompt_started_at = Some(std::time::Instant::now());
+        let running = terminal_title(&app);
+        assert!(running.ends_with("moc — myproject"), "{running}");
+        assert!(running.starts_with(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']), "{running}");
+
+        app.modal = Some(Modal::Permission {
+            params: moc_protocol::methods::PermissionRequestParams {
+                session_id: "ses_test".into(),
+                prompt_id: "prm_001".into(),
+                request_id: "req_001".into(),
+                tool_call_id: "call_001".into(),
+                tool_name: "bash".into(),
+                title: "执行命令".into(),
+                body: None,
+                diff: None,
+                options: vec![],
+            },
+            selected: 0,
+            scroll_offset: 0,
+            reply: None,
+        });
+        assert!(terminal_title(&app).contains("需人工"));
+    }
 
     /// 拖拽换算：轨道顶端对应历史顶端，轨道末端对应跟随尾部；抓取点保持。
     #[test]

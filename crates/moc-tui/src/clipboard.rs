@@ -167,6 +167,24 @@ pub async fn copy_text_to_clipboard(text: &str) -> anyhow::Result<()> {
     anyhow::bail!("未找到 powershell.exe / wl-copy / xclip / pbcopy，无法访问系统剪贴板")
 }
 
+/// 文本复制会走到的本地通道（与 [`copy_text_to_clipboard`] 同序判定；
+/// OSC52 由终端层永远并写，不算在内）。`/doctor` 报告用。
+pub fn local_channel() -> Option<&'static str> {
+    if is_wsl() && which("powershell.exe") {
+        return Some("powershell.exe");
+    }
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() && which("wl-copy") {
+        return Some("wl-copy");
+    }
+    if std::env::var_os("DISPLAY").is_some() && which("xclip") {
+        return Some("xclip");
+    }
+    if which("pbcopy") {
+        return Some("pbcopy");
+    }
+    None
+}
+
 /// 通过终端写系统剪贴板的 OSC52 序列：SSH、容器或没装 wl-clipboard 时
 /// 唯一可用的通道。由 TUI 在绘制线程写出（`\x1b]52;c;<base64>\x1b\\`）。
 pub fn osc52_sequence(text: &str) -> String {

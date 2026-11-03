@@ -595,6 +595,7 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
                 (get_key("help"), "帮助菜单"),
                 ("/confirm-plan".into(), "重新审阅待确认的计划"),
                 ("/plugins [reload]".into(), "查看/重载已加载插件"),
+                ("/doctor".into(), "终端能力诊断"),
                 ("/close".into(), "卸载会话并释放写租约"),
             ],
         },

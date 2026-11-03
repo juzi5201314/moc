@@ -73,8 +73,13 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
 
     let mut app = App::new(theme, events.clone());
     app.sandbox_modes = connection.sandbox_modes.clone();
-    // 图形能力只探测一次：必须早于输入线程启动（探测要直接读 fd 0 的应答）
-    app.graphics = crate::render::graphics::probe();
+    // 终端能力（图形协议 + DEC 2026 同步输出）只探测一次：必须早于
+    // 输入线程启动（探测要直接读 fd 0 的应答）
+    let caps = crate::render::graphics::probe();
+    app.graphics = caps.graphics;
+    app.sync_output = caps.sync_output;
+    app.keyboard_enhanced = guard.keyboard_enhanced();
+    guard.set_sync_output(caps.sync_output);
     app.thinking_detail = preferences.thinking_detail;
     app.tool_detail = preferences.tool_detail;
     if let Some(level) = opts.detail {
@@ -800,6 +805,10 @@ async fn event_loop(
 ) -> anyhow::Result<()> {
     const FRAME_BUDGET: std::time::Duration = std::time::Duration::from_millis(16);
     const ACTIVITY_TICK: std::time::Duration = std::time::Duration::from_millis(120);
+    // 全量重绘逃生门：终端声称支持 2026 但实际撕裂时，用 `MOC_FULL_REPAINT=1`
+    // 强制每帧清屏重画（代价是整屏写入与位图重传，仅作排障手段）。
+    let full_repaint = std::env::var("MOC_FULL_REPAINT")
+        .is_ok_and(|value| !value.is_empty() && value != "0");
     let mut view = render::ScrollbackView::new();
     let mut next_frame = tokio::time::Instant::now();
     let mut next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
@@ -814,7 +823,7 @@ async fn event_loop(
         if dirty && now >= next_frame {
             // sixel / iTerm2 的旧图只能靠覆盖像素擦除：先清屏并重置 back buffer，
             // 再让 ratatui 完整重画一帧；剩余图表由 emit 整批重放。
-            if app.image_repaint {
+            if app.image_repaint || full_repaint {
                 app.image_repaint = false;
                 app.image_resume = true;
                 guard.reset_screen()?;
@@ -822,14 +831,13 @@ async fn event_loop(
                 // 否则贴上去的是一张终端已经没有的图。
                 app.images.forget_all_transmissions();
             }
-            let draw_result = guard
-                .terminal_mut()
-                .draw(|frame| render::draw(frame, app, &mut view));
+            let draw_result = guard.draw(|frame| render::draw(frame, app, &mut view));
             next_frame = tokio::time::Instant::now() + FRAME_BUDGET;
             dirty = false;
             draw_result?;
             // 位图只能画在帧之后：先让 ratatui 把文本与底色写完，再按格坐标贴图
             crate::render::graphics::emit(app, &mut std::io::stdout())?;
+            guard.set_title(&render::terminal_title(app));
             // emit 在帧后才发现“上一张图消失了”：立刻再排一帧清屏。
             if app.image_repaint {
                 dirty = true;
@@ -6074,6 +6082,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
             }
             refresh_usage(app, connection, true);
         }
+        "/doctor" => app.push_note(crate::doctor::report(app), false),
         "/help" => app.modal = Some(Modal::Help { scroll: 0 }),
         "/context" => open_context_content(app, connection),
         "/quit" => app.should_quit = true,
