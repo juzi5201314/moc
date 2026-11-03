@@ -53,10 +53,8 @@ moc 的动态 workflow 让模型把一个多阶段协作过程写成一段 TypeS
 | --- | --- | --- |
 | `enabled` | `true` | 总开关；false 时激活报明确错误 |
 | `max_concurrency_ceiling` | `16` | 在飞 ask 上限天花板 |
-| `world_run_timeout_ms` | `300000` | world.run 单次超时上限 |
+| `world_run_timeout_ms` | `300000` | world.run 默认超时，opts.timeoutMs 覆盖 |
 | `file_read_bytes` | `1048576` | files.read 单文件上限 |
-| `artifact_bytes` | `65536` | artifact 单条 spec 上限 |
-| `report_item_bytes` | `16384` | 单条 report 上限 |
 | `log_bytes` | `8192` | 单条 log 上限 |
 | `ask_max_repairs` | `3` | ask 结构化交付修复重试上限 |
 

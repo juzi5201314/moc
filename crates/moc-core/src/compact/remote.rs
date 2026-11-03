@@ -49,7 +49,7 @@ pub(crate) async fn compact(
     let mut full_messages = Vec::with_capacity(messages.len() + 2);
     let skills = inner.session_skills(
         std::path::Path::new(&state.session.cwd),
-        state.workflow_activated && !state.session.is_subagent(),
+        crate::workflow::workflows_active(state, &config.workflow),
     )?;
     let summary = inner.mcp_summary(config).await?;
     let tool_declarations = inner
@@ -57,7 +57,7 @@ pub(crate) async fn compact(
             state.engine,
             config,
             inner.ask_available(ctx.connection_id(), state.session.autonomy),
-            state.workflow_activated && !state.session.is_subagent(),
+            crate::workflow::workflows_active(state, &config.workflow),
         )
         .await?;
     let context_files = inner
@@ -95,7 +95,7 @@ pub(crate) async fn compact(
             state.engine,
             inner.ask_available(ctx.connection_id(), state.session.autonomy),
             config,
-            crate::tools::ToolScope::for_session(state, config.agents.max_depth),
+            crate::tools::ToolScope::for_session(state, config),
             &plugins,
         ),
         native_input: None,

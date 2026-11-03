@@ -68,7 +68,8 @@ fn ask_record(site: &str, ordinal: u32, seq: u32, instructions: &str, actor: &st
         ordinal,
         input_hash: ask_hash(seq, instructions),
         settle,
-        outcome: json!({"status": "completed", "result": result}),
+        // 与 driver 交付形态一致：journal 记全量（value + usage + user_turns）。
+        outcome: json!({"status": "completed", "result": {"value": result, "usage": null, "user_turns": seq}}),
         extra,
     }
 }
@@ -224,10 +225,11 @@ fn amend_import_matching_rules() {
         _ => None,
     }).expect("q3 应 dispatch");
     match dispatch {
-        ActorContext::SeedFrom { run_id, child_session_id, imported_asks } => {
+        ActorContext::SeedFrom { run_id, child_session_id, user_turns } => {
             assert_eq!(run_id, "prev-run");
             assert_eq!(child_session_id, "sess-rev");
-            assert_eq!(*imported_asks, 2);
+            // 截断点 = 最后一条已导入 ask 的 user_turns（ask_record 里 = seq 2）。
+            assert_eq!(*user_turns, 2);
         }
         other => panic!("expected SeedFrom, got {other:?}"),
     }
@@ -251,6 +253,8 @@ fn actor_context_existing_after_session_record() {
     let mut e = engine(RunMode::Fresh, vec![]);
     e.handle_step(step(vec![actor_event("a")], vec![ask_req(1, "ask#1", 1, "q")], ScriptState::Running));
     e.actor_session_created("actor#1", 0, "sess-9");
+    // 同 actor FIFO：先 settle 掉在飞 ask，第二个才会派发。
+    e.settle(1, DriverOutcome::Completed(json!({"value": "v"})));
     let actions = e.handle_step(step(vec![], vec![ask_req(2, "ask#2", 2, "q2")], ScriptState::Running));
     let ctx = actions.iter().find_map(|a| match a {
         EngineAction::Dispatch(DriverRequest::Ask { context, .. }) => Some(context.clone()),
@@ -373,4 +377,265 @@ fn journal_file_roundtrip() {
     let j2 = FileJournal::open(dir.path()).unwrap();
     assert_eq!(j2.prior().len(), 1);
     assert_eq!(j2.prior()[0].site_id, "w#1");
+}
+
+// —— A1：ask 交付给 guest 的只有 value（journal 记全量）——
+
+#[test]
+fn ask_complete_delivers_only_value() {
+    let mut e = engine(RunMode::Fresh, vec![]);
+    e.handle_step(step(
+        vec![actor_event("rev")],
+        vec![ask_req(1, "ask#1", 1, "q")],
+        ScriptState::Running,
+    ));
+    let actions = e.settle(
+        1,
+        DriverOutcome::Completed(json!({
+            "value": "v1",
+            "usage": {"spent_tokens": 0},
+            "user_turns": 2,
+        })),
+    );
+    let outcome = actions
+        .iter()
+        .find_map(|a| match a {
+            EngineAction::Complete { outcome, .. } => Some(outcome),
+            _ => None,
+        })
+        .expect("complete");
+    assert!(
+        matches!(outcome, DriverOutcome::Completed(v) if *v == json!("v1")),
+        "guest 只应拿到 value，实际 {outcome:?}"
+    );
+}
+
+#[test]
+fn resume_replay_delivers_only_value() {
+    let persona_key = input_hash(&json!({"system": "s"}));
+    let prior = vec![
+        actor_record("actor#1", 0, "rev", "sess-1"),
+        ask_record("ask#1", 0, 1, "q", "rev", &persona_key, "sess-1", 1, json!("r1")),
+    ];
+    let mut e = engine(RunMode::Resume, prior);
+    let actions = e.handle_step(step(
+        vec![actor_event("rev")],
+        vec![ask_req(1, "ask#1", 1, "q")],
+        ScriptState::Running,
+    ));
+    let outcome = actions
+        .iter()
+        .find_map(|a| match a {
+            EngineAction::Complete { outcome, .. } => Some(outcome),
+            _ => None,
+        })
+        .expect("replay hit");
+    assert!(
+        matches!(outcome, DriverOutcome::Completed(v) if *v == json!("r1")),
+        "重放命中回执只应含 value，实际 {outcome:?}"
+    );
+}
+
+#[test]
+fn amend_import_delivers_only_value() {
+    let persona_key = input_hash(&json!({"system": "s"}));
+    let prior = vec![
+        actor_record("actor#1", 0, "rev", "sess-1"),
+        ask_record("ask#1", 0, 1, "q", "rev", &persona_key, "sess-1", 1, json!("r1")),
+    ];
+    let mut e = engine(RunMode::Amend, prior);
+    let actions = e.handle_step(step(
+        vec![actor_event("rev")],
+        vec![ask_req(1, "ask#1", 1, "q")],
+        ScriptState::Running,
+    ));
+    let outcome = actions
+        .iter()
+        .find_map(|a| match a {
+            EngineAction::Complete { outcome, .. } => Some(outcome),
+            _ => None,
+        })
+        .expect("import hit");
+    assert!(
+        matches!(outcome, DriverOutcome::Completed(v) if *v == json!("r1")),
+        "导入命中回执只应含 value，实际 {outcome:?}"
+    );
+}
+
+// —— A2/A3：同 actor FIFO + finish 清理 ——
+
+#[test]
+fn same_actor_asks_are_fifo() {
+    let mut e = engine(RunMode::Fresh, vec![]);
+    let actions = e.handle_step(step(
+        vec![actor_event("rev")],
+        vec![ask_req(1, "ask#1", 1, "q1"), ask_req(2, "ask#2", 1, "q2")],
+        ScriptState::Running,
+    ));
+    assert_eq!(
+        actions.iter().filter(|a| matches!(a, EngineAction::Dispatch(_))).count(),
+        1,
+        "同 actor 并发 ask 只应先 dispatch 一个"
+    );
+    let actions = e.settle(1, DriverOutcome::Completed(json!({"value": "v"})));
+    assert_eq!(
+        actions.iter().filter(|a| matches!(a, EngineAction::Dispatch(_))).count(),
+        1,
+        "settle 后应派发等位的第二个 ask"
+    );
+}
+
+#[test]
+fn finish_drops_pending_asks() {
+    let mut e = engine(RunMode::Fresh, vec![]);
+    e.handle_step(step(
+        vec![actor_event("rev")],
+        vec![ask_req(1, "ask#1", 1, "q")],
+        ScriptState::Running,
+    ));
+    let mut actions = Vec::new();
+    e.finish(TerminalStatus::Completed, Some(json!("done")), None, None, &mut actions);
+    assert!(
+        actions.iter().any(|a| matches!(
+            a,
+            EngineAction::Complete {
+                outcome: DriverOutcome::Failed { code, .. },
+                ..
+            } if code == "CANCELLED"
+        )),
+        "finish 应取消在飞 ask"
+    );
+    // 迟到的 settle：pending 已摘除，不得二次回执或追加 journal。
+    let late = e.settle(1, DriverOutcome::Completed(json!({"value": "x"})));
+    assert!(late.is_empty(), "迟到 settle 不应产生 action");
+}
+
+// —— A4/A5：artifact 声明与 report 校验 ——
+
+fn declare_event(id: &str, member: &str, spec: Value) -> EngineEvent {
+    EngineEvent::DeclareArtifact {
+        site_id: "artifact.table#1".into(),
+        member: member.into(),
+        spec: json!([id, spec]),
+    }
+}
+
+#[test]
+fn declare_artifact_registers_and_dedups() {
+    let mut e = engine(RunMode::Fresh, vec![]);
+    let spec = json!({"columns": [{"field": "k", "label": "K"}], "key": "k"});
+    let actions = e.handle_step(step(
+        vec![declare_event("t1", "table", spec.clone())],
+        vec![],
+        ScriptState::Running,
+    ));
+    let declared = actions.iter().find_map(|a| match a {
+        EngineAction::Session(SessionEvent::DeclareArtifact { artifact_id, spec, .. }) => {
+            Some((artifact_id.clone(), spec.clone()))
+        }
+        _ => None,
+    });
+    let (id, emitted) = declared.expect("declare 应发 SessionEvent");
+    assert_eq!(id, Some("t1".into()));
+    assert_eq!(emitted, spec, "spec 只应是对象部分");
+    // 相同重声明：no-op，不再发事件。
+    let actions = e.handle_step(step(
+        vec![declare_event("t1", "table", spec)],
+        vec![],
+        ScriptState::Running,
+    ));
+    assert!(actions.is_empty(), "相同重声明应 no-op");
+    // 不同 spec 重声明：整 run errored。
+    let mut e = engine(RunMode::Fresh, vec![]);
+    e.handle_step(step(vec![declare_event("t1", "table", json!({"key": "k"}))], vec![], ScriptState::Running));
+    let actions = e.handle_step(step(
+        vec![declare_event("t1", "table", json!({"key": "other"}))],
+        vec![],
+        ScriptState::Running,
+    ));
+    assert!(
+        actions.iter().any(|a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)),
+        "不同 spec 重声明应 errored"
+    );
+}
+
+#[test]
+fn report_requires_declared_preset() {
+    let mut e = engine(RunMode::Fresh, vec![]);
+    let actions = e.handle_step(step(
+        vec![EngineEvent::Report {
+            site_id: "s".into(),
+            item: json!({"k": 1}),
+            artifact_id: Some("nope".into()),
+        }],
+        vec![],
+        ScriptState::Running,
+    ));
+    assert!(
+        actions.iter().any(|a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)),
+        "report 到未声明 id 应 errored"
+    );
+}
+
+#[test]
+fn report_item_cap_errors_run() {
+    let mut e = engine(RunMode::Fresh, vec![]);
+    let big = "x".repeat(facade::REPORT_MAX_ITEM_BYTES + 1);
+    let actions = e.handle_step(step(
+        vec![EngineEvent::Report {
+            site_id: "s".into(),
+            item: json!(big),
+            artifact_id: None,
+        }],
+        vec![],
+        ScriptState::Running,
+    ));
+    assert!(
+        actions.iter().any(|a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)),
+        "单条 report 超 1 MiB 应 errored"
+    );
+}
+
+#[test]
+fn resume_replay_registers_artifact_member() {
+    // prior：artifact.markdown("notes") 已发布并落 journal。
+    let spec = json!(["notes", "body", null]);
+    let prior = vec![JournalRecord {
+        kind: RecordKind::Artifact,
+        site_id: "artifact.markdown#1".into(),
+        ordinal: 0,
+        input_hash: input_hash(&json!({"member": "markdown", "spec": spec})),
+        settle: 0,
+        outcome: json!({"status": "completed", "result": {"id": "notes", "version": 1}}),
+        extra: Map::new(),
+    }];
+    let mut e = engine(RunMode::Resume, prior);
+    let actions = e.handle_step(step(
+        vec![],
+        vec![EngineRequest::PublishArtifact {
+            request_id: 1,
+            site_id: "artifact.markdown#1".into(),
+            member: "markdown".into(),
+            spec,
+        }],
+        ScriptState::Running,
+    ));
+    // 重放命中（且 id/member 已登记）。
+    assert!(
+        actions.iter().any(|a| matches!(
+            a,
+            EngineAction::Complete { outcome: DriverOutcome::Completed(_), .. }
+        )),
+        "publish 应重放命中"
+    );
+    // 同 id 再声明 preset → member 冲突 → 整 run errored。
+    let actions = e.handle_step(step(
+        vec![declare_event("notes", "table", json!({"key": "k"}))],
+        vec![],
+        ScriptState::Running,
+    ));
+    assert!(
+        actions.iter().any(|a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)),
+        "重放登记的 member 冲突应 errored"
+    );
 }

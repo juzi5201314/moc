@@ -223,7 +223,7 @@
 
   const __wf = {
     agent,
-    model: (siteId, id) => Object.freeze({ model_id: String(id) }),
+    model: (siteId, id) => Object.freeze({ model_id: String(id), ref_id: siteId }),
     phase: (siteId, name) => emit({ event: 'phase_entered', site_id: siteId, name: String(name) }),
     log: (siteId, message) => emit({ event: 'log', site_id: siteId, message: String(message) }),
     report: (siteId, item, artifactId) => emit({ event: 'report', site_id: siteId, item, artifact_id: artifactId ?? null }),

@@ -437,10 +437,10 @@ pub fn moc_test_bin() -> Option<std::path::PathBuf> {
         if let Some(p) = std::env::var_os("MOC_TEST_BIN").map(std::path::PathBuf::from) {
             return Some(p);
         }
-        if let Some(p) = option_env!("CARGO_BIN_EXE_moc").map(std::path::PathBuf::from) {
-            if p.exists() {
-                return Some(p);
-            }
+        if let Some(p) = option_env!("CARGO_BIN_EXE_moc").map(std::path::PathBuf::from)
+            && p.exists()
+        {
+            return Some(p);
         }
         // 工作区根 = crates/moc-core 的上两级；尊重 CARGO_TARGET_DIR。
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

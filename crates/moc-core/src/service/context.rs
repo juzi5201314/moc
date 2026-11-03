@@ -294,7 +294,7 @@ async fn snapshot(
         inner
             .session_skills(
                 &cwd,
-                state.workflow_activated && !state.session.is_subagent(),
+                crate::workflow::workflows_active(&state, &config.workflow),
             )
             .map_err(to_rpc)?
     };
@@ -318,7 +318,7 @@ async fn snapshot(
         let state = record.state.lock().await;
         (
             state.session.autonomy,
-            state.workflow_activated && !state.session.is_subagent(),
+            crate::workflow::workflows_active(&state, &config.workflow),
         )
     };
     let tool_declarations = inner
@@ -347,7 +347,7 @@ async fn snapshot(
         state.engine,
         inner.ask_available(ctx.connection_id(), state.session.autonomy),
         &config,
-        crate::tools::ToolScope::for_session(&state, config.agents.max_depth),
+        crate::tools::ToolScope::for_session(&state, &config),
         &plugin_tools,
     );
     let (injected, transcript) = messages(&state, &model);

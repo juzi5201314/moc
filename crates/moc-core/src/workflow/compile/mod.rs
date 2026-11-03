@@ -8,6 +8,9 @@ mod analyze;
 mod lower;
 mod schema;
 
+// artifact id 校验：编译期分析与运行期（driver/service）共用。
+pub(crate) use analyze::valid_artifact_id;
+
 use serde::Serialize;
 use serde_json::Value;
 use std::fmt;

@@ -39,8 +39,20 @@ fn skill_gate(ctx: &ToolCtx) -> Result<(), ToolError> {
     }
 }
 
+/// 全局开关门禁：`[workflow] enabled = false` 时一切 workflow 操作拒绝。
+fn require_workflow_enabled(config: &crate::config::WorkflowConfig) -> Result<(), ToolError> {
+    if !config.enabled {
+        return Err(ToolError::new(
+            "E_WORKFLOW_DISABLED",
+            "workflows are disabled ([workflow] enabled = false)",
+        ));
+    }
+    Ok(())
+}
+
 /// 激活 gate：会话未激活 → 明确错误（正常路径下工具根本不可见，这里是防线）。
 async fn activated(ctx: &ToolCtx) -> Result<Arc<super::WorkflowManager>, ToolError> {
+    require_workflow_enabled(&ctx.config.workflow)?;
     let active = ctx.state.lock().await.workflow_activated;
     if !active {
         return Err(ToolError::new(
@@ -164,7 +176,7 @@ impl AmendWorkflowTool {
         let manager = activated(ctx).await?;
         let run_id = args.get("run_id").and_then(|v| v.as_str()).map(str::to_string)
             .ok_or_else(|| ToolError::new("E_ARGS", "amend_workflow requires `run_id`"))?;
-        let prior_dir = manager.run_dir(&run_id);
+        let prior_dir = manager.run_dir(&run_id).map_err(tool_err)?;
         let source = match (args.get("script").and_then(|v| v.as_str()), args.get("path").and_then(|v| v.as_str())) {
             (Some(script), _) => script.to_string(),
             (None, Some(path)) => read_script(ctx, path)?,
@@ -262,7 +274,7 @@ impl FillHoleTool {
                     .collect();
                 if !new_commands.is_empty() {
                     let approval = moc_protocol::WorkflowApproval {
-                        request_id: format!("hole-{}", crate::session::store::now_ms()),
+                        request_id: manager.alloc_request_id("hole", run_id),
                         run_id: run_id.to_string(),
                         script: body.to_string(),
                         plan: serde_json::to_value(&c.plan).unwrap_or_default(),
@@ -298,12 +310,19 @@ impl SaveWorkflowTool {
         activated(ctx).await?;
         let name = args.get("name").and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("E_ARGS", "save_workflow requires `name`"))?;
+        if !valid_saved_name(name) {
+            return Err(ToolError::new(
+                "E_ARGS",
+                "workflow name must match [A-Za-z0-9_.-]{1,64} and not start with '.'",
+            ));
+        }
         let description = args.get("description").and_then(|v| v.as_str()).unwrap_or_default();
         let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("project");
         let source = match (args.get("run_id").and_then(|v| v.as_str()), args.get("path").and_then(|v| v.as_str())) {
             (Some(run_id), _) => {
                 let manager = activated(ctx).await?;
-                std::fs::read_to_string(manager.run_dir(run_id).join("script.ts"))
+                let dir = manager.run_dir(run_id).map_err(tool_err)?;
+                std::fs::read_to_string(dir.join("script.ts"))
                     .map_err(|e| ToolError::new("E_IO", format!("draft unreadable: {e}")))?
             }
             (None, Some(path)) => read_script(ctx, path)?,
@@ -358,7 +377,8 @@ impl WorkflowStatusTool {
             let meta = manager.meta(run_id).map_err(tool_err)?;
             let handle = manager.running(run_id);
             let view = handle.as_ref().map(|h| h.view.lock());
-            let snapshot = super::snapshot_of(&meta, view.as_deref(), &manager.run_dir(run_id));
+            let dir = manager.run_dir(run_id).map_err(tool_err)?;
+            let snapshot = super::snapshot_of(&meta, view.as_deref(), &dir);
             wf_outcome(serde_json::to_value(snapshot).unwrap_or_default())
         } else {
             wf_outcome(json!({"runs": serde_json::to_value(manager.list()).unwrap_or_default()}))
@@ -467,7 +487,7 @@ async fn eval_loop(
         for req in step.requests {
             let outcome = match &req.operation {
                 WorkflowOperation::WorldRead { kind, arguments } => {
-                    let op = format!("{kind:?}").to_lowercase();
+                    let op = super::driver::serde_op_name(kind);
                     super::driver::world_read_impl(&cwd, cap, &op, &Value::Array(arguments.clone()))
                         .await
                 }
@@ -476,7 +496,9 @@ async fn eval_loop(
                         &policy,
                         command,
                         args,
-                        options.timeout_ms.unwrap_or(300_000),
+                        options
+                            .timeout_ms
+                            .unwrap_or(ctx.config.workflow.world_run_timeout_ms),
                         &options.output.clone().unwrap_or(Value::Null),
                     )
                     .await
@@ -490,7 +512,10 @@ async fn eval_loop(
                     message: "eval snippets cannot open holes".into(),
                 },
                 WorkflowOperation::PublishArtifact { .. } => {
-                    crate::workflow::engine::DriverOutcome::Completed(json!({"artifact_id": "eval"}))
+                    crate::workflow::engine::DriverOutcome::Failed {
+                        code: "E_EVAL".into(),
+                        message: "eval snippets cannot publish artifacts".into(),
+                    }
                 }
             };
             let result = match outcome {
@@ -551,23 +576,44 @@ async fn launch_flow(
         .get("max_concurrency")
         .and_then(|v| v.as_u64())
         .map_or(0, |n| (n as usize).clamp(1, cfg.max_concurrency_ceiling));
-    // 审批默认：字面量模型否则当前会话模型。
+    let subagent_model = args.get("subagent_model").and_then(|v| v.as_str()).map(str::to_string);
+    // 审批默认：Literal → 该模型；Routed → 首 ref 的 model_id；Inherit →
+    // subagent_model 参数否则会话模型。model_ref_map 预填 plan.model_refs。
     let mut role_models = std::collections::BTreeMap::new();
     for role in &compiled.plan.roles {
         let default = match &role.model_source {
             crate::workflow::compile::ModelSource::Literal { model } => model.clone(),
-            _ => session_model.clone(),
+            crate::workflow::compile::ModelSource::Routed { refs } => refs
+                .first()
+                .and_then(|r| {
+                    compiled
+                        .plan
+                        .model_refs
+                        .iter()
+                        .find(|m| &m.ref_id == r)
+                })
+                .map(|m| m.model_id.clone())
+                .unwrap_or_else(|| session_model.clone()),
+            crate::workflow::compile::ModelSource::Inherit => {
+                subagent_model.clone().unwrap_or_else(|| session_model.clone())
+            }
         };
         role_models.insert(role.role_id.clone(), default);
     }
+    let model_ref_map: std::collections::BTreeMap<String, String> = compiled
+        .plan
+        .model_refs
+        .iter()
+        .map(|m| (m.ref_id.clone(), m.model_id.clone()))
+        .collect();
     let approval = moc_protocol::WorkflowApproval {
-        request_id: format!("wf-{}", crate::session::store::now_ms()),
+        request_id: manager.alloc_request_id("wf", &run_id),
         run_id: run_id.clone(),
         script: source.clone(),
         plan: serde_json::to_value(&compiled.plan).unwrap_or_default(),
         defaults: moc_protocol::WorkflowApprovalDefaults {
             role_models,
-            model_ref_map: Default::default(),
+            model_ref_map,
         },
         args: args.get("args").cloned().unwrap_or(Value::Null),
         max_concurrency,
@@ -578,16 +624,29 @@ async fn launch_flow(
         },
         new_commands: None,
     };
+    let defaults = approval.defaults.clone();
     let rx = manager.request_approval(approval, &ctx.request.updates());
     let decision = rx
         .await
         .map_err(|_| ToolError::new("E_CANCELLED", "approval channel closed"))?;
+    // 决策落地：TUI 回传完整 defaults、Web 只回传改动项——服务端统一只保留
+    // 与 defaults 不同的条目（未改动的 role 不能被钉死，否则 persona.model /
+    // subagent_model / ref 重映射全部失效）；"inherit" 视为无覆盖。
     let (role_models, model_ref_map) = match decision {
         moc_protocol::WorkflowDecision::Approve { role_models, model_ref_map } => (
-            role_models.unwrap_or_default().into_iter().collect(),
-            model_ref_map.unwrap_or_default().into_iter().collect(),
+            role_models
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(k, v)| v != "inherit" && defaults.role_models.get(k) != Some(v))
+                .collect(),
+            model_ref_map
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(k, v)| v != "inherit" && defaults.model_ref_map.get(k) != Some(v))
+                .collect(),
         ),
         moc_protocol::WorkflowDecision::Reject { feedback } => {
+            manager.drop_pending_role_models(&run_id);
             return Err(ToolError::new("E_REJECTED", feedback.unwrap_or_else(|| "workflow rejected".into())));
         }
     };
@@ -631,7 +690,7 @@ async fn launch_flow(
         .map_err(tool_err)?;
     wf_outcome(json!({
         "run_id": run_id,
-        "draft": manager.run_dir(&run_id).join("script.ts").display().to_string(),
+        "draft": manager.run_dir(&run_id).map_err(tool_err)?.join("script.ts").display().to_string(),
         "status": "running",
         "note": "edit the draft and resubmit with `path` to revise",
     }))
@@ -642,21 +701,7 @@ async fn resume_run(
     manager: &Arc<super::WorkflowManager>,
     run_id: &str,
 ) -> Result<ToolOutcome, ToolError> {
-    let dir = manager.run_dir(run_id);
-    let meta = super::read_run_meta(&dir).map_err(tool_err)?;
-    if meta.status == "running" {
-        return Err(ToolError::new("E_STATE", format!("run {run_id} already running")));
-    }
-    if meta.status == "errored" {
-        return Err(ToolError::new("E_STATE", format!("run {run_id} is errored and cannot be resumed")));
-    }
-    let source = std::fs::read_to_string(dir.join("script.ts"))
-        .map_err(|e| ToolError::new("E_IO", format!("draft unreadable: {e}")))?;
-    let compiled = crate::workflow::compile::compile(&source, &crate::workflow::compile::CompileOptions::default())
-        .map_err(|d| ToolError::new("E_WORKFLOW_COMPILE", format!("script no longer compiles: {}", d.iter().map(|x| x.message.clone()).collect::<Vec<_>>().join("; "))))?;
-    let mut meta = meta;
-    meta.status = "running".into();
-    meta.mode = "resume".into();
+    let (meta, compiled) = manager.prepare_resume(run_id).map_err(tool_err)?;
     let policy = ctx.sandbox_policy();
     let cancel = ctx.core.shutdown.child_token();
     manager
@@ -671,8 +716,25 @@ fn read_script(ctx: &ToolCtx, path: &str) -> Result<String, ToolError> {
     std::fs::read_to_string(&path).map_err(|e| ToolError::new("E_IO", format!("script unreadable: {e}")))
 }
 
+/// saved workflow 名校验：`[A-Za-z0-9_.-]{1,64}` 且不以 '.' 开头
+///（name 直接拼 `{name}.ts`，不校验可写出目录外）。
+fn valid_saved_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+}
+
 /// 读取 saved workflow（project → global），并校验/填 args 默认值。
 fn load_saved(ctx: &ToolCtx, name: &str) -> Result<String, ToolError> {
+    if !valid_saved_name(name) {
+        return Err(ToolError::new(
+            "E_ARGS",
+            "workflow name must match [A-Za-z0-9_.-]{1,64} and not start with '.'",
+        ));
+    }
     for dir in [
         ctx.cwd.join(".moc").join("workflows"),
         ctx.config.home.join("workflows"),
@@ -789,4 +851,50 @@ mod tests {
         assert!(meta.skill_file().exists(), "materialized SKILL.md must exist");
         assert!(meta.base_dir.join("patterns.md").exists());
     }
+
+    /// [workflow] enabled=false：谓词关闭（ToolScope/for_session 链路）、
+    /// activated() 门禁报 E_WORKFLOW_DISABLED。
+    #[test]
+    fn disabled_config_blocks_activated_session() {
+        let header = crate::session::entries::Entry::header(
+            "s1".into(),
+            "/tmp".into(),
+            "m".into(),
+            moc_protocol::SessionEngine::Standard,
+            moc_protocol::SessionPermission::Full,
+            crate::session::entries::SessionOrigin {
+                parent_session_id: None,
+                forked_from: None,
+                delegation_depth: None,
+                agent: None,
+            },
+            "t".into(),
+            0,
+        );
+        let mut state = crate::session::state::SessionState::new(header).unwrap();
+        state.workflow_activated = true;
+        // 谓词：激活会话 + enabled=false → false；enabled → true。
+        let mut cfg = crate::config::WorkflowConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(!crate::workflow::workflows_active(&state, &cfg));
+        cfg.enabled = true;
+        assert!(crate::workflow::workflows_active(&state, &cfg));
+        // activated() 门禁错误码。
+        cfg.enabled = false;
+        let err = require_workflow_enabled(&cfg).unwrap_err();
+        assert_eq!(err.code, "E_WORKFLOW_DISABLED");
+    }
+
+    #[test]
+    fn saved_name_charset() {
+        assert!(valid_saved_name("plan-a.b_2"));
+        assert!(!valid_saved_name("../x"));
+        assert!(!valid_saved_name(".hidden"));
+        assert!(!valid_saved_name("a/b"));
+        assert!(!valid_saved_name(""));
+        assert!(!valid_saved_name(&"n".repeat(65)));
+    }
 }
+

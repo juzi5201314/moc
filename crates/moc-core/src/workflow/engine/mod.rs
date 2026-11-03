@@ -26,6 +26,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use crate::workflow::facade;
+
 // —— 输入类型（host 适配层把 wire 映射到这里）——
 
 /// 一次 guest step。
@@ -188,8 +190,9 @@ pub enum ActorContext {
     Fresh,
     /// 沿用该 actor 在本 run 已有的子会话（resume 后从 journal 恢复，或本 run 首个 ask 已建）。
     Existing { child_session_id: String },
-    /// amend：用前驱同名 actor 子会话的 transcript 截到第 `imported_asks` 个 ask 结束处 fork。
-    SeedFrom { run_id: String, child_session_id: String, imported_asks: u32 },
+    /// amend：用前驱同名 actor 子会话的 transcript 截到第 `user_turns` 个 user 消息之前 fork
+    ///（取最后一条已导入 ask 记录的 `result.user_turns`，含 schema 修复重试轮）。
+    SeedFrom { run_id: String, child_session_id: String, user_turns: u32 },
 }
 
 /// 派发请求（与 EngineRequest 同形，已带 ordinal）。
@@ -427,6 +430,19 @@ pub struct Engine {
     in_flight: HashMap<(String, u32), u64>,
     queued_asks: VecDeque<u64>,
     in_flight_asks: usize,
+    /// 同 actor FIFO（facade：busy 的 actor 上后来的 ask 排队等位）：
+    /// "busy" = 该 actor 有一个 ask 在飞或在全局 queued_asks 中。
+    busy_actors: HashSet<(String, u32)>,
+    /// (actor_site_id, actor_ordinal) → 等位的 ask request_id（FIFO）。
+    actor_queues: HashMap<(String, u32), VecDeque<u64>>,
+    /// artifact id → member（DeclareArtifact 事件与 PublishArtifact 请求共同登记；
+    /// 同一 id 换 member 违规）。
+    artifact_members: HashMap<String, String>,
+    /// preset 声明 spec（相同重声明 no-op、不同 errored）。
+    artifact_specs: HashMap<String, Value>,
+    /// report 计数与累计序列化字节（facade 上限校验）。
+    report_count: usize,
+    report_bytes: u64,
     terminal: Option<Terminal>,
     pub usage: Usage,
     pub mismatches: Vec<HashMismatch>,
@@ -486,6 +502,12 @@ impl Engine {
             in_flight: HashMap::new(),
             queued_asks: VecDeque::new(),
             in_flight_asks: 0,
+            busy_actors: HashSet::new(),
+            actor_queues: HashMap::new(),
+            artifact_members: HashMap::new(),
+            artifact_specs: HashMap::new(),
+            report_count: 0,
+            report_bytes: 0,
             terminal: None,
             usage: Usage::default(),
             mismatches: Vec::new(),
@@ -657,15 +679,102 @@ impl Engine {
                 actions.push(EngineAction::Session(SessionEvent::Log { level, message }));
             }
             EngineEvent::Report { item, artifact_id, .. } => {
+                // artifact_id 必须指向已执行的 preset 声明；未声明或指向
+                // file/markdown → 整 run 失败（facade：tag naming nothing fails）。
+                if let Some(id) = &artifact_id
+                    && !self
+                        .artifact_members
+                        .get(id)
+                        .is_some_and(|m| is_preset_member(m))
+                {
+                    self.errored(
+                        "ReportTarget",
+                        format!("report artifact_id \"{id}\" is not a declared preset artifact"),
+                        actions,
+                    );
+                    return;
+                }
+                // caps fail the whole run（facade）：条目数 / 单条 / 累计。
+                self.report_count += 1;
+                if self.report_count > facade::REPORT_MAX_ITEMS {
+                    self.errored(
+                        "ReportLimit",
+                        format!("run exceeds {} report items", facade::REPORT_MAX_ITEMS),
+                        actions,
+                    );
+                    return;
+                }
+                let bytes = serde_json::to_vec(&item).map(|v| v.len() as u64).unwrap_or(u64::MAX);
+                if bytes > facade::REPORT_MAX_ITEM_BYTES as u64 {
+                    self.errored(
+                        "ReportLimit",
+                        format!("report item exceeds {} bytes serialized", facade::REPORT_MAX_ITEM_BYTES),
+                        actions,
+                    );
+                    return;
+                }
+                self.report_bytes += bytes;
+                if self.report_bytes > facade::REPORT_MAX_TOTAL_BYTES {
+                    self.errored(
+                        "ReportLimit",
+                        format!("run exceeds {} bytes of reports", facade::REPORT_MAX_TOTAL_BYTES),
+                        actions,
+                    );
+                    return;
+                }
                 actions.push(EngineAction::Session(SessionEvent::Report { item, artifact_id }));
             }
             EngineEvent::DeclareArtifact { member, spec, .. } => {
-                let artifact_id = spec.get("id").and_then(|v| v.as_str()).map(String::from);
-                actions.push(EngineAction::Session(SessionEvent::DeclareArtifact {
-                    member,
-                    spec,
-                    artifact_id,
-                }));
+                // wire 形：[id, specObj]；preset 声明同步落引擎校验。
+                let artifact_id = spec.get(0).and_then(|v| v.as_str()).map(String::from);
+                let spec_obj = spec.get(1).cloned();
+                match (artifact_id, spec_obj) {
+                    (Some(id), Some(spec_obj)) if spec_obj.is_object() => {
+                        match self.artifact_members.get(&id) {
+                            Some(prev) if *prev == member => {
+                                // 相同重声明 no-op；不同 spec 或不同 member → errored。
+                                if self.artifact_specs.get(&id) != Some(&spec_obj) {
+                                    self.errored(
+                                        "ArtifactRedeclared",
+                                        format!("artifact \"{id}\" redeclared with a different spec"),
+                                        actions,
+                                    );
+                                }
+                            }
+                            Some(prev) => {
+                                self.errored(
+                                    "ArtifactMemberConflict",
+                                    format!("artifact \"{id}\" is used with both `{prev}` and `{member}`"),
+                                    actions,
+                                );
+                            }
+                            None => {
+                                if self.artifact_members.len() >= facade::ARTIFACT_MAX_IDS {
+                                    self.errored(
+                                        "ArtifactLimit",
+                                        format!("run exceeds {} artifact ids", facade::ARTIFACT_MAX_IDS),
+                                        actions,
+                                    );
+                                } else {
+                                    self.artifact_members.insert(id.clone(), member.clone());
+                                    self.artifact_specs.insert(id.clone(), spec_obj.clone());
+                                    actions.push(EngineAction::Session(SessionEvent::DeclareArtifact {
+                                        member,
+                                        spec: spec_obj,
+                                        artifact_id: Some(id),
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        self.errored(
+                            "ArtifactSpec",
+                            "artifact declaration must carry an id and a spec object",
+                            actions,
+                        );
+                    }
+                }
             }
             EngineEvent::HoleOpened { site_id, name, prompt, schema } => {
                 // 与同次 HoleResolve 请求共享序号：事件侧 peek，请求侧消耗。
@@ -691,6 +800,65 @@ impl Engine {
         let ordinal = self.ordinal_of(&site_id);
         let kind = request.kind();
         let hash = self.request_hash(&request);
+
+        // —— artifact 发布侧运行期门禁（facade：content 类 catchable reject）——
+        // 位于重放/导入查找之前：重放命中的 publish 同样登记 id/member，
+        // 否则 resume 后 32-id 上限与 member 冲突判定失真。
+        if let EngineRequest::PublishArtifact { member, spec, .. } = &request {
+            match spec.get(0).and_then(|v| v.as_str()).map(String::from) {
+                Some(id) => match self.artifact_members.get(&id) {
+                    Some(prev) if *prev == *member => {}
+                    Some(prev) => {
+                        if is_preset_member(prev) {
+                            // 与已声明 preset 冲突 → 拒绝本次发布（可捕获）。
+                            actions.push(EngineAction::Complete {
+                                request_id,
+                                outcome: DriverOutcome::Failed {
+                                    code: "E_ARTIFACT".into(),
+                                    message: format!(
+                                        "artifact id \"{id}\" is already declared as `{prev}`"
+                                    ),
+                                },
+                            });
+                        } else {
+                            // 同一 id 换 member（file↔markdown）→ 整 run 失败。
+                            self.errored(
+                                "ArtifactMemberConflict",
+                                format!("artifact \"{id}\" is used with both `{prev}` and `{member}`"),
+                                actions,
+                            );
+                        }
+                        return;
+                    }
+                    None => {
+                        if self.artifact_members.len() >= facade::ARTIFACT_MAX_IDS {
+                            actions.push(EngineAction::Complete {
+                                request_id,
+                                outcome: DriverOutcome::Failed {
+                                    code: "E_ARTIFACT".into(),
+                                    message: format!(
+                                        "run exceeds {} artifact ids",
+                                        facade::ARTIFACT_MAX_IDS
+                                    ),
+                                },
+                            });
+                            return;
+                        }
+                        self.artifact_members.insert(id, member.clone());
+                    }
+                },
+                None => {
+                    actions.push(EngineAction::Complete {
+                        request_id,
+                        outcome: DriverOutcome::Failed {
+                            code: "E_ARTIFACT".into(),
+                            message: format!("artifact.{member} 缺 id"),
+                        },
+                    });
+                    return;
+                }
+            }
+        }
 
         // —— ask 的 amend 导入路径（仅 Amend 模式）——
         if self.config.mode == RunMode::Amend
@@ -738,7 +906,7 @@ impl Engine {
                     self.account(&outcome_json);
                     actions.push(EngineAction::Complete {
                         request_id,
-                        outcome: outcome_of(&outcome_json),
+                        outcome: guest_outcome(kind, outcome_of(&outcome_json)),
                     });
                     return;
                 }
@@ -763,7 +931,7 @@ impl Engine {
         if let Some(record) = record {
             if record.input_hash == hash {
                 self.consumed.insert(record.key());
-                let outcome = outcome_of(&record.outcome);
+                let outcome = guest_outcome(kind, outcome_of(&record.outcome));
                 self.account(&record.outcome);
                 actions.push(EngineAction::Complete { request_id, outcome });
                 return;
@@ -824,7 +992,32 @@ impl Engine {
                 return;
             }
         };
-        let queued = matches!(pending_req, PendingReq::Ask { .. })
+        let actor_key = match &pending_req {
+            PendingReq::Ask { actor_site_id, actor_ordinal, .. } => {
+                Some((actor_site_id.clone(), *actor_ordinal))
+            }
+            _ => None,
+        };
+        // 同 actor FIFO：actor 忙（有 ask 在飞或在全局队列）→ 进 actor 队列等位。
+        if let Some(key) = &actor_key {
+            if self.busy_actors.contains(key) {
+                self.pending.insert(
+                    request_id,
+                    Pending {
+                        site_id: site_id.clone(),
+                        ordinal,
+                        kind,
+                        input_hash: hash,
+                        request: pending_req,
+                        queued: true,
+                    },
+                );
+                self.actor_queues.entry(key.clone()).or_default().push_back(request_id);
+                return;
+            }
+            self.busy_actors.insert(key.clone());
+        }
+        let queued = actor_key.is_some()
             && self.config.max_concurrency > 0
             && self.in_flight_asks >= self.config.max_concurrency;
         self.pending.insert(
@@ -839,6 +1032,20 @@ impl Engine {
             },
         );
         if queued {
+            self.queued_asks.push_back(request_id);
+        } else {
+            self.dispatch(request_id, actions);
+        }
+    }
+
+    /// 一个 ask 走全局派发逻辑：并发满则进全局队列（actor 保持 busy），否则立即派发。
+    fn offer_ask(&mut self, request_id: u64, actions: &mut Vec<EngineAction>) {
+        let full = self.config.max_concurrency > 0
+            && self.in_flight_asks >= self.config.max_concurrency;
+        if let Some(p) = self.pending.get_mut(&request_id) {
+            p.queued = full;
+        }
+        if full {
             self.queued_asks.push_back(request_id);
         } else {
             self.dispatch(request_id, actions);
@@ -861,10 +1068,19 @@ impl Engine {
                         .and_then(|a| a.name.as_ref().zip(a.import.as_ref()))
                         .and_then(|(name, import)| {
                             let session = self.prior_actor_sessions_by_name.get(name)?.clone();
+                            // 截断点 = 最后一条已导入 ask 的 user_turns（driver 交付时
+                            // 记入 outcome.result；缺省 0 表示不导入任何 user 回合）。
+                            let user_turns = import
+                                .consumed
+                                .checked_sub(1)
+                                .and_then(|last| import.entries.get(last))
+                                .and_then(|e| e.outcome.pointer("/result/user_turns"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as u32;
                             Some(ActorContext::SeedFrom {
                                 run_id: self.config.resumed_from.clone().unwrap_or_default(),
                                 child_session_id: session,
-                                imported_asks: import.consumed as u32,
+                                user_turns,
                             })
                         })
                         .unwrap_or(ActorContext::Fresh)
@@ -1009,7 +1225,26 @@ impl Engine {
             }
             _ => {}
         }
-        actions.push(EngineAction::Complete { request_id, outcome });
+        actions.push(EngineAction::Complete {
+            request_id,
+            outcome: guest_outcome(pending.kind, outcome),
+        });
+        // 同 actor FIFO：释放 actor；其队列有下一个 → 走同样的全局逻辑（保持 busy）。
+        if let PendingReq::Ask { actor_site_id, actor_ordinal, .. } = &pending.request {
+            let actor_key = (actor_site_id.clone(), *actor_ordinal);
+            match self.actor_queues.get_mut(&actor_key).and_then(|q| q.pop_front()) {
+                Some(next) => {
+                    if self.actor_queues.get(&actor_key).is_some_and(|q| q.is_empty()) {
+                        self.actor_queues.remove(&actor_key);
+                    }
+                    self.offer_ask(next, &mut actions);
+                }
+                None => {
+                    self.actor_queues.remove(&actor_key);
+                    self.busy_actors.remove(&actor_key);
+                }
+            }
+        }
         // 释放额度后派发排队的 ask（FIFO）。
         while let Some(next) = self.queued_asks.pop_front() {
             let slot_free = self.config.max_concurrency == 0
@@ -1106,7 +1341,12 @@ impl Engine {
                 });
             }
             self.in_flight.remove(&(site_id, ordinal));
+            // 从 pending 摘除：迟到的 settle 不得二次回执或追加 journal。
+            self.pending.remove(&request_id);
         }
+        self.queued_asks.clear();
+        self.actor_queues.clear();
+        self.busy_actors.clear();
         // run 记录
         let record = JournalRecord {
             kind: RecordKind::Run,
@@ -1159,6 +1399,22 @@ impl Engine {
             self.usage.spent_tokens += u.get("spent_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
         }
     }
+}
+
+/// guest 交付形态：journal 原样记录全量（usage/user_turns 供记账与 amend 播种），
+/// 回给 worker 的只是 facade 承诺的值（ask<T> 解析为 T）。
+fn guest_outcome(kind: RecordKind, outcome: DriverOutcome) -> DriverOutcome {
+    match (kind, &outcome) {
+        (RecordKind::Ask, DriverOutcome::Completed(v)) => {
+            DriverOutcome::Completed(v.get("value").cloned().unwrap_or(Value::Null))
+        }
+        _ => outcome,
+    }
+}
+
+/// preset 声明 member（report 的 artifact_id 只能指向这些）。
+fn is_preset_member(member: &str) -> bool {
+    matches!(member, "chart" | "table" | "metrics" | "board")
 }
 
 fn outcome_of(value: &Value) -> DriverOutcome {

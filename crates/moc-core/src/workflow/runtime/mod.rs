@@ -155,6 +155,9 @@ pub(crate) struct RunHandle {
     pub meta: Mutex<RunMeta>,
     pub view: Mutex<RunView>,
     pub engine: Mutex<Engine>,
+    /// artifact 发布串行化：版本号分配 → 写文件 → push 条目必须原子，
+    /// 否则同 id 并发 publish 算出同一版本互相覆盖。
+    pub publish_lock: Mutex<()>,
     pub cancel: CancellationToken,
     /// 工作区 cwd（world/files/git 基准）。
     pub cwd: PathBuf,
@@ -191,8 +194,14 @@ impl WorkflowManager {
         manager
     }
 
-    pub fn run_dir(&self, run_id: &str) -> PathBuf {
-        self.paths.workflows().join(run_id)
+    /// run 目录；run_id 来自外部输入（工具/RPC 参数），校验字符集防路径穿越。
+    pub fn run_dir(&self, run_id: &str) -> Result<PathBuf, CoreError> {
+        if !valid_run_id(run_id) {
+            return Err(CoreError::Session(format!(
+                "invalid workflow run_id \"{run_id}\" (must match [A-Za-z0-9_-]{{1,64}})"
+            )));
+        }
+        Ok(self.paths.workflows().join(run_id))
     }
 
     /// 分配 run_id（`run_<ms>_<seq>`，按目录唯一）。
@@ -200,6 +209,13 @@ impl WorkflowManager {
         let mut seq = self.seq.lock();
         *seq += 1;
         format!("run_{}_{:03}", crate::session::store::now_ms(), *seq)
+    }
+
+    /// 审批 request_id：seq 计数器分配（毫秒戳会碰撞）。
+    pub fn alloc_request_id(&self, prefix: &str, run_id: &str) -> String {
+        let mut seq = self.seq.lock();
+        *seq += 1;
+        format!("{prefix}-{run_id}-{:03}", *seq)
     }
 
     /// 待决审批：注册并发出 `approval_requested` 事件。
@@ -276,7 +292,14 @@ impl WorkflowManager {
         source: &str,
     ) -> Result<CompiledWorkflow, Vec<Diagnostic>> {
         let compiled = compile(source, &crate::workflow::compile::CompileOptions::default())?;
-        let dir = self.run_dir(run_id);
+        let dir = self.run_dir(run_id).map_err(|e| {
+            vec![Diagnostic {
+                code: "E_IO",
+                message: e.to_string(),
+                line: 0,
+                col: 0,
+            }]
+        })?;
         std::fs::create_dir_all(&dir).map_err(|e| {
             vec![Diagnostic {
                 code: "E_IO",
@@ -309,7 +332,7 @@ impl WorkflowManager {
         cancel_parent: CancellationToken,
     ) -> Result<Arc<RunHandle>, CoreError> {
         let run_id = meta.run_id.clone();
-        let dir = self.run_dir(&run_id);
+        let dir = self.run_dir(&run_id)?;
         std::fs::create_dir_all(dir.join("artifacts"))
             .map_err(|e| CoreError::Session(format!("run 目录创建失败：{e}")))?;
         // approve→launch 窗口内经 set_role_model 记下的覆盖合并进 meta
@@ -361,6 +384,7 @@ impl WorkflowManager {
                 actor_first_sent: std::collections::HashSet::new(),
             }),
             engine: Mutex::new(engine),
+            publish_lock: Mutex::new(()),
             cancel: cancel_parent.child_token(),
             cwd,
             request,
@@ -405,8 +429,9 @@ impl WorkflowManager {
         if let Some(handle) = self.runs.lock().get(run_id) {
             return Ok(handle.meta.lock().clone());
         }
-        let mut meta = read_run_meta(&self.run_dir(run_id))?;
-        mark_interrupted(&self.run_dir(run_id), &mut meta, self.birth_ms);
+        let dir = self.run_dir(run_id)?;
+        let mut meta = read_run_meta(&dir)?;
+        mark_interrupted(&dir, &mut meta, self.birth_ms);
         Ok(meta)
     }
 
@@ -418,7 +443,9 @@ impl WorkflowManager {
                 if let Some(handle) = held.get(&meta.run_id) {
                     workflow_summary(&handle.meta.lock())
                 } else {
-                    mark_interrupted(&self.run_dir(&meta.run_id), &mut meta, self.birth_ms);
+                    if let Ok(dir) = self.run_dir(&meta.run_id) {
+                        mark_interrupted(&dir, &mut meta, self.birth_ms);
+                    }
                     workflow_summary(&meta)
                 }
             })
@@ -434,7 +461,12 @@ impl WorkflowManager {
         handle.cancel.cancel();
         let _ = handle.to_worker.send(WorkflowHostMessage::Cancel { code: "E_STOPPED".into() });
         self.apply_actions(&handle, actions).await;
-        Ok(workflow_summary(&handle.meta.lock()))
+        // 终态落盘在 run_loop 异步完成；summary 先按已记录的终态投影。
+        let mut meta = handle.meta.lock().clone();
+        if let Some(terminal) = handle.view.lock().terminal.clone() {
+            apply_terminal(&mut meta, &terminal);
+        }
+        Ok(workflow_summary(&meta))
     }
 
     /// `workflow_set_role_model`：run 中生效（写 meta + journal 之外的覆盖表）。
@@ -457,24 +489,92 @@ impl WorkflowManager {
             let _ = std::fs::write(dir.join("run.json"), serde_json::to_vec_pretty(&meta).unwrap_or_default());
             return Ok(());
         }
-        let dir = self.run_dir(run_id);
+        let dir = self.run_dir(run_id)?;
         if let Ok(mut meta) = read_run_meta(&dir) {
             if model == "inherit" {
                 meta.role_models.remove(role_id);
             } else {
                 meta.role_models.insert(role_id.to_string(), model.to_string());
             }
+            let running = meta.status == "running";
             std::fs::write(dir.join("run.json"), serde_json::to_vec_pretty(&meta).unwrap_or_default())
                 .map_err(|e| CoreError::Session(format!("run.json 写入失败：{e}")))?;
+            // run.json 已写盘但 status 仍 running：launch 的写盘→注册窗口，
+            // 覆盖要进 pending，注册后二次应用到 handle.meta。
+            if running {
+                self.pending_role_models
+                    .lock()
+                    .entry(run_id.to_string())
+                    .or_default()
+                    .insert(role_id.to_string(), model.to_string());
+            }
+            return Ok(());
         }
-        // 注册表未挂的窗口一律进 pending：launch 落盘前合并进 meta，
-        // 已写盘但未注册时由 launch 注册后二次应用覆盖到 handle.meta。
-        self.pending_role_models
-            .lock()
-            .entry(run_id.to_string())
-            .or_default()
-            .insert(role_id.to_string(), model.to_string());
-        Ok(())
+        // approve→launch 窗口：run.json 还没写但草稿已在 → 记 pending，
+        // launch 落盘前合并进 meta。
+        if dir.is_dir() && dir.join("script.ts").exists() {
+            self.pending_role_models
+                .lock()
+                .entry(run_id.to_string())
+                .or_default()
+                .insert(role_id.to_string(), model.to_string());
+            return Ok(());
+        }
+        Err(CoreError::Session(format!(
+            "workflow run {run_id} 不存在"
+        )))
+    }
+
+    /// 丢弃 run 的待合并 role 覆盖（launch 审批被 Reject 后不留孤儿条目）。
+    pub fn drop_pending_role_models(&self, run_id: &str) {
+        self.pending_role_models.lock().remove(run_id);
+    }
+
+    /// resume 准备：只允许 stopped run；读草稿编译；改过的草稿不得引入
+    /// 审批命令集之外的 world.run（否则绕过命令集审批）。
+    pub fn prepare_resume(&self, run_id: &str) -> Result<(RunMeta, CompiledWorkflow), CoreError> {
+        let dir = self.run_dir(run_id)?;
+        let mut meta = read_run_meta(&dir)?;
+        if meta.status != "stopped" {
+            return Err(CoreError::Session(format!(
+                "run {run_id} is {} and cannot be resumed (only stopped runs resume)",
+                meta.status
+            )));
+        }
+        let source = std::fs::read_to_string(dir.join("script.ts"))
+            .map_err(|e| CoreError::Session(format!("draft unreadable: {e}")))?;
+        let compiled = crate::workflow::compile::compile(
+            &source,
+            &crate::workflow::compile::CompileOptions::default(),
+        )
+        .map_err(|diags| {
+            CoreError::Session(format!(
+                "script no longer compiles: {}",
+                diags
+                    .iter()
+                    .map(|d| d.message.clone())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ))
+        })?;
+        let approved: std::collections::BTreeSet<&String> = meta.commands.iter().collect();
+        let new_commands: Vec<String> = compiled
+            .plan
+            .commands
+            .iter()
+            .map(|c| &c.command)
+            .filter(|c| !approved.contains(*c))
+            .cloned()
+            .collect();
+        if !new_commands.is_empty() {
+            return Err(CoreError::Session(format!(
+                "draft introduces unapproved world.run commands [{}]; use amend_workflow",
+                new_commands.join(", ")
+            )));
+        }
+        meta.status = "running".into();
+        meta.mode = "resume".into();
+        Ok((meta, compiled))
     }
 
     /// 填充 hole：`fill_workflow_hole` → 引擎 fill_hole → worker 回执。
@@ -667,16 +767,26 @@ impl WorkflowManager {
                     events.push(EngineEvent::Phase { site_id, name });
                 }
                 WEvent::Log { site_id, message } => {
+                    // 单条 log 上限按字符边界截断（[workflow].log_bytes）。
+                    let cap = self.inner.config.read().workflow.log_bytes;
+                    let message = if message.len() > cap {
+                        let mut end = cap;
+                        while !message.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        message[..end].to_string()
+                    } else {
+                        message
+                    };
                     events.push(EngineEvent::Log { site_id, level: "info".into(), message });
                 }
                 WEvent::Report { site_id, item, artifact_id } => {
                     events.push(EngineEvent::Report { site_id, item, artifact_id });
                 }
                 WEvent::DeclareArtifact { site_id, member, arguments } => {
-                    let member = format!("{:?}", member).to_lowercase();
                     events.push(EngineEvent::DeclareArtifact {
                         site_id,
-                        member,
+                        member: driver::serde_op_name(&member),
                         spec: Value::Array(arguments),
                     });
                 }
@@ -704,7 +814,7 @@ impl WorkflowManager {
                     requests.push(EngineRequest::WorldRead {
                         request_id: id,
                         site_id,
-                        op: format!("{kind:?}").to_lowercase(),
+                        op: driver::serde_op_name(&kind),
                         args: Value::Array(arguments),
                     });
                 }
@@ -714,7 +824,9 @@ impl WorkflowManager {
                         site_id,
                         command,
                         args,
-                        timeout_ms: options.timeout_ms.unwrap_or(300_000),
+                        timeout_ms: options
+                            .timeout_ms
+                            .unwrap_or_else(|| self.inner.config.read().workflow.world_run_timeout_ms),
                         output: options.output.unwrap_or(Value::Null),
                     });
                 }
@@ -722,7 +834,7 @@ impl WorkflowManager {
                     requests.push(EngineRequest::PublishArtifact {
                         request_id: id,
                         site_id,
-                        member: format!("{member:?}").to_lowercase(),
+                        member: driver::serde_op_name(&member),
                         spec: Value::Array(arguments),
                     });
                 }
@@ -809,22 +921,12 @@ impl WorkflowManager {
 
     /// ask 派发：对应 role 的在飞计数 + 解析模型写入 view（供面板与快照）。
     fn record_dispatch(&self, handle: &Arc<RunHandle>, request: &DriverRequest) {
-        let DriverRequest::Ask { actor_site_id, actor_ordinal, .. } = request else {
+        let DriverRequest::Ask { actor_site_id, actor_ordinal, persona, .. } = request else {
             return;
         };
         let model = {
             let meta = handle.meta.lock();
-            let key = if *actor_ordinal == 0 {
-                actor_site_id.clone()
-            } else {
-                format!("{actor_site_id}#{actor_ordinal}")
-            };
-            meta.role_models
-                .get(&key)
-                .or_else(|| meta.role_models.get(actor_site_id))
-                .cloned()
-                .or_else(|| meta.subagent_model.clone())
-                .or_else(|| meta.session_model.clone())
+            driver::resolve_actor_model(&meta, actor_site_id, *actor_ordinal, persona)
         };
         let mut view = handle.view.lock();
         if let Some(role) = view
@@ -834,13 +936,37 @@ impl WorkflowManager {
         {
             role.asks_in_flight += 1;
             if role.model.is_none() {
-                role.model = model;
+                role.model = Some(model);
             }
         }
     }
 
-    /// ask/请求结算：role 完成计数与 token 记账，发 Usage + NodeUpdated 更新。
+    /// ask/请求结算：role 完成计数与 token 记账，发 Usage + NodeUpdated 更新；
+    /// artifact 发布成功补发 Artifact 事件（与 preset 声明同形）。
     fn record_settle(&self, handle: &Arc<RunHandle>, request: &DriverRequest, outcome: &DriverOutcome) {
+        if let DriverRequest::PublishArtifact { .. } = request
+            && let DriverOutcome::Completed(v) = outcome
+        {
+            let (id, version) = (
+                v.get("id").and_then(|x| x.as_str()),
+                v.get("version").and_then(|x| x.as_u64()),
+            );
+            let entry = handle
+                .meta
+                .lock()
+                .artifacts
+                .iter()
+                .rev()
+                .find(|a| {
+                    a.get("artifact_id").and_then(|x| x.as_str()) == id
+                        && a.get("version").and_then(|x| x.as_u64()) == version
+                })
+                .cloned();
+            if let Some(artifact) = entry {
+                self.emit(handle, WorkflowEvent::Artifact { artifact });
+            }
+            return;
+        }
         let (is_ask, tokens) = match (request, outcome) {
             (DriverRequest::Ask { .. }, DriverOutcome::Completed(v)) => {
                 (true, v.get("usage").and_then(|u| u.get("spent_tokens")).and_then(|t| t.as_u64()).unwrap_or(0))
@@ -947,7 +1073,7 @@ impl WorkflowManager {
                     "spec": spec,
                 }));
                 Some(WorkflowEvent::Artifact {
-                    artifact: json!({"member": member, "spec": spec}),
+                    artifact: json!({"member": member, "artifact_id": artifact_id, "spec": spec}),
                 })
             }
             SessionEvent::HoleOpened { site_id, ordinal, name, prompt, schema } => {
@@ -989,30 +1115,7 @@ impl WorkflowManager {
             return;
         };
         let mut meta = handle.meta.lock();
-        meta.finished_at_ms = Some(crate::session::store::now_ms());
-        match terminal.status {
-            TerminalStatus::Completed => {
-                meta.status = "completed".into();
-                meta.result = terminal.result.clone();
-            }
-            TerminalStatus::Errored => {
-                meta.status = "errored".into();
-                meta.error = terminal.error_message.clone().or(terminal.error_code.clone());
-            }
-            TerminalStatus::Stopped { reason } => {
-                meta.status = "stopped".into();
-                meta.stop_reason = Some(match reason {
-                    crate::workflow::engine::StopReason::User => "user",
-                    crate::workflow::engine::StopReason::Interrupted => "interrupted",
-                    crate::workflow::engine::StopReason::Provider => "provider",
-                }.into());
-                // 崩溃类 stopped 也带诊断：worker 秒退的原因（stderr）在
-                // error_message 里，不写进 meta.error 就无从排查。
-                if terminal.error_message.is_some() {
-                    meta.error = terminal.error_message.clone();
-                }
-            }
-        }
+        apply_terminal(&mut meta, &terminal);
         let (status, notice_body) = match &meta.status {
             s if s == "completed" => (
                 WorkflowRunStatus::Completed,
@@ -1091,6 +1194,44 @@ impl WorkflowManager {
         drop(view);
         self.persist_terminal(handle);
         self.runs.lock().remove(&handle.id);
+    }
+}
+
+/// run_id 字符集：`[A-Za-z0-9_-]{1,64}`（run_id 直接拼目录名）。
+fn valid_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id.len() <= 64
+        && run_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// 终态 → meta 字段投影（status/stop_reason/result/error/finished_at_ms）；
+/// persist_terminal 落盘与 stop() 的即时 summary 共用。
+fn apply_terminal(meta: &mut RunMeta, terminal: &Terminal) {
+    meta.finished_at_ms = Some(crate::session::store::now_ms());
+    match terminal.status {
+        TerminalStatus::Completed => {
+            meta.status = "completed".into();
+            meta.result = terminal.result.clone();
+        }
+        TerminalStatus::Errored => {
+            meta.status = "errored".into();
+            meta.error = terminal.error_message.clone().or(terminal.error_code.clone());
+        }
+        TerminalStatus::Stopped { reason } => {
+            meta.status = "stopped".into();
+            meta.stop_reason = Some(match reason {
+                crate::workflow::engine::StopReason::User => "user",
+                crate::workflow::engine::StopReason::Interrupted => "interrupted",
+                crate::workflow::engine::StopReason::Provider => "provider",
+            }.into());
+            // 崩溃类 stopped 也带诊断：worker 秒退的原因（stderr）在
+            // error_message 里，不写进 meta.error 就无从排查。
+            if terminal.error_message.is_some() {
+                meta.error = terminal.error_message.clone();
+            }
+        }
     }
 }
 
@@ -1187,5 +1328,21 @@ pub(crate) fn snapshot_of(meta: &RunMeta, view: Option<&RunView>, dir: &Path) ->
         holes: meta.holes.clone(),
         usage: view.map(|v| v.usage.clone()).unwrap_or_else(|| meta.usage.clone()),
         script_path: dir.join("script.ts").exists().then(|| dir.join("script.ts").display().to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_id_charset_rejects_traversal() {
+        assert!(valid_run_id("run_1735_001"));
+        assert!(valid_run_id("a-b_C1"));
+        assert!(!valid_run_id("../x"));
+        assert!(!valid_run_id("a/b"));
+        assert!(!valid_run_id("a.b"));
+        assert!(!valid_run_id(""));
+        assert!(!valid_run_id(&"x".repeat(65)));
     }
 }

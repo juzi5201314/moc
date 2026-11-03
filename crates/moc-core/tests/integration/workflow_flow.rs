@@ -60,6 +60,11 @@ fn session_sidecar(root: &std::path::Path, session: &str) -> Option<std::path::P
 }
 
 async fn mount_router(upstream: &MockServer, captured: Captures) {
+    mount_router_script(upstream, captured, SCRIPT).await
+}
+
+/// 与 mount_router 同序，只换 create_workflow 载荷里的脚本。
+async fn mount_router_script(upstream: &MockServer, captured: Captures, script: &'static str) {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let seen: Arc<Mutex<std::collections::HashSet<String>>> = Default::default();
     Mock::given(method("POST"))
@@ -114,7 +119,7 @@ async fn mount_router(upstream: &MockServer, captured: Captures) {
                     support::tool_stream(vec![(
                         "call_create",
                         "create_workflow",
-                        json!({"script": SCRIPT}),
+                        json!({"script": script}),
                     )]),
                     "text/event-stream",
                 ),
@@ -130,7 +135,7 @@ async fn mount_router(upstream: &MockServer, captured: Captures) {
                     support::tool_stream(vec![(
                         "call_create2",
                         "create_workflow",
-                        json!({"script": SCRIPT}),
+                        json!({"script": script}),
                     )]),
                     "text/event-stream",
                 ),
@@ -300,6 +305,12 @@ async fn workflow_end_to_end_with_model_override() {
     )
     .unwrap();
     assert_eq!(run_json["status"], "completed");
+    // A1：脚本返回值的 outline 是 ask<T> 解析出的 T（字符串），不是包裹对象。
+    assert!(
+        run_json["result"]["outline"].is_string(),
+        "ask 交付给 guest 的应只有 value：{}",
+        run_json["result"]
+    );
     assert!(run_dir.join("journal.jsonl").exists(), "journal 落盘");
 
     harness.close().await;
@@ -679,6 +690,15 @@ async fn approve(harness: &Harness, session: &str, request: &WorkflowApproval) {
         .expect("approve 成功");
 }
 
+/// 把 run.json 的 status 改写为 stopped（模拟在飞期被停止后的持久态；
+/// journal 与 script 不动）。
+fn mark_run_stopped(run_dir: &std::path::Path) {
+    let path = run_dir.join("run.json");
+    let mut meta: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    meta["status"] = json!("stopped");
+    std::fs::write(&path, serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+}
+
 /// journal.jsonl 里指定 kind 的记录数。
 fn journal_count(run_dir: &std::path::Path, kind: &str) -> usize {
     std::fs::read_to_string(run_dir.join("journal.jsonl"))
@@ -924,6 +944,10 @@ async fn resume_replays_completed_ask_without_requests() {
     let asks_before = journal_count(&run_dir, "ask");
     let requests_before = captured.lock().len();
 
+    // resume 只接受 stopped run：把落盘状态改写成 stopped（等价于
+    // ask 完成后在飞期被停止的持久态）。
+    mark_run_stopped(&run_dir);
+
     harness
         .client
         .call::<SessionWorkflowResume>(SessionWorkflowRunParams {
@@ -968,6 +992,7 @@ async fn resume_tampered_script_errors_hash_mismatch() {
     let script = std::fs::read_to_string(&script_path).expect("script.ts 存在");
     assert!(script.contains("step one"));
     std::fs::write(&script_path, script.replace("step one", "step CHANGED")).unwrap();
+    mark_run_stopped(&run_dir_of(&harness, &session, &run_id));
 
     harness
         .client
@@ -1421,7 +1446,7 @@ async fn hole_fill_with_new_command_approval() {
                         json!({
                             "run_id": run_id.to_string(),
                             "hole": "missing",
-                            "body": "const files = await world.run(\"ls\", [\".\"]); return \"filled-\" + files.exit_code;"
+                            "body": "const files = await world.run(\"ls\", [\".\"]); return \"filled-\" + files.exitCode;"
                         }),
                     )]),
                     "text/event-stream",
@@ -1536,5 +1561,114 @@ async fn hole_fill_with_new_command_approval() {
     let _ = run_id;
     assert!(hole_opened, "hole 应打开");
     assert!(hole_fill_seen, "新 world.run 命令应触发 hole_fill 审批");
+    harness.close().await;
+}
+
+/// world.read（files/git）+ artifact（markdown/table）+ report 端到端。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workflow_world_reads_and_artifacts() {
+    if !require_moc_bin() {
+        return;
+    }
+    const SCRIPT_WA: &str = r#"
+const names = await files.glob("fixtures/*.txt");
+const head = await files.read("fixtures/a.txt");
+let git_status = null;
+try { git_status = await git.status(); } catch { git_status = "no-git"; }
+await artifact.markdown("notes", "notes-body\n");
+artifact.table("rows", { columns: [{ field: "k", label: "K" }], key: "k" });
+report({ k: "x" }, "rows");
+return { names, head, git: git_status };
+"#;
+    let upstream = MockServer::builder().start().await;
+    let captured: Captures = Default::default();
+    mount_router_script(&upstream, Arc::clone(&captured), SCRIPT_WA).await;
+    let harness = Harness::with_ask_support(&upstream.uri(), "openai_chat", "").await;
+    let session = harness.session(SessionEngine::Standard).await;
+    // 工作区 fixture + 可选 git 仓库（无 git 环境时脚本侧 catch）。
+    let work = harness.root.path().join("work");
+    std::fs::create_dir_all(work.join("fixtures")).unwrap();
+    std::fs::write(work.join("fixtures/a.txt"), "alpha\n").unwrap();
+    std::fs::write(work.join("fixtures/b.txt"), "beta\n").unwrap();
+    let has_git = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if has_git {
+        let out = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&work)
+            .output()
+            .expect("git init");
+        assert!(out.status.success(), "git init: {out:?}");
+    }
+
+    harness
+        .client
+        .call::<SessionWorkflowActivate>(SessionWorkflowActivateParams {
+            session_id: session.clone(),
+        })
+        .await
+        .expect("激活成功");
+    let mut events = harness.events.subscribe();
+    let prompt_session = session.clone();
+    let prompt_task = {
+        let client = harness.client.clone();
+        tokio::spawn(async move {
+            client
+                .call::<SessionPrompt>(PromptParams {
+                    session_id: prompt_session,
+                    input: vec![InputPart::Text { text: "go".into() }],
+                    mode: None,
+                    agent_message: None,
+                })
+                .await
+                .expect("prompt 成功")
+        })
+    };
+    // 审批（无命令集、无 actor——常规 approve）。
+    for _ in 0..64 {
+        let (_run_id, event) = next_wf_event(&mut events).await;
+        if let WorkflowEvent::ApprovalRequested { request } = event {
+            approve(&harness, &session, &request).await;
+            break;
+        }
+    }
+    let (run_id, status) = wait_terminal(&mut events).await;
+    assert_eq!(status, WorkflowRunStatus::Completed, "run 应 completed");
+    prompt_task.await.expect("prompt 完成");
+
+    let run_dir = run_dir_of(&harness, &session, &run_id);
+    let run_json: Value =
+        serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
+    // files.glob：相对路径 + 排序；files.read：内容。
+    assert_eq!(run_json["result"]["names"], json!(["fixtures/a.txt", "fixtures/b.txt"]));
+    assert_eq!(run_json["result"]["head"], "alpha\n");
+    if has_git {
+        // git.status：初始化仓库下 fixtures 两文件 untracked。
+        let st = &run_json["result"]["git"];
+        assert!(st["branch"].is_string(), "branch 字段：{st}");
+        assert!(st["untracked"].is_array(), "{st}");
+    } else {
+        assert_eq!(run_json["result"]["git"], "no-git");
+    }
+    // artifacts 条目形状：publish（file/version）+ preset 声明（spec）。
+    let artifacts = run_json["artifacts"].as_array().expect("artifacts 数组");
+    let md = artifacts
+        .iter()
+        .find(|a| a["artifact_id"] == "notes")
+        .expect("markdown 条目");
+    assert_eq!(md["member"], "markdown");
+    assert_eq!(md["version"], 1);
+    assert!(md["file"].is_string(), "{md}");
+    let table = artifacts
+        .iter()
+        .find(|a| a["artifact_id"] == "rows")
+        .expect("table 声明");
+    assert_eq!(table["member"], "table");
+    assert_eq!(table["spec"]["key"], "k");
+    // markdown 版本文件落盘（v<N>_ 前缀，service 按此解析）。
+    assert!(run_dir.join("artifacts/notes/v1_content.md").exists());
     harness.close().await;
 }

@@ -507,8 +507,7 @@ async fn run_prompt_locked(
                     &inner,
                     message,
                     &state_snapshot.session.cwd,
-                    state_snapshot.workflow_activated
-                        && !state_snapshot.session.is_subagent(),
+                    crate::workflow::workflows_active(&state_snapshot, &inner.project_config(std::path::Path::new(&state_snapshot.session.cwd)).map_err(to_rpc)?.workflow),
                 )
                 .await?
             } else {
@@ -682,14 +681,14 @@ async fn run_prompt_locked(
                 &mcp_snapshot,
                 Arc::clone(&mcp),
                 plugin_tools.clone(),
-                state_snapshot.workflow_activated && !state_snapshot.session.is_subagent(),
+                crate::workflow::workflows_active(&state_snapshot, &project_config.workflow),
             )
             .map_err(|error| to_rpc(crate::CoreError::Tool(error.to_string())))?,
     );
     let skills = inner
         .session_skills(
             std::path::Path::new(&state_snapshot.session.cwd),
-            state_snapshot.workflow_activated && !state_snapshot.session.is_subagent(),
+            crate::workflow::workflows_active(&state_snapshot, &project_config.workflow),
         )
         .map_err(to_rpc)?;
     // 会话身份只看会话头。系统提示、工具可见性和代理列表都必须以它为准，
@@ -700,7 +699,7 @@ async fn run_prompt_locked(
         engine,
         ask_supported,
         &project_config,
-        crate::tools::ToolScope::for_session(&state_snapshot, project_config.agents.max_depth),
+        crate::tools::ToolScope::for_session(&state_snapshot, &project_config),
         &plugin_tools,
     );
     let mut last_message = Message::default();
@@ -721,7 +720,7 @@ async fn run_prompt_locked(
         &catalog,
         engine,
         ask_supported,
-        state_snapshot.workflow_activated && !state_snapshot.session.is_subagent(),
+        crate::workflow::workflows_active(&state_snapshot, &project_config.workflow),
         &project_config,
     )
     .unwrap_or_default();

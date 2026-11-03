@@ -1153,12 +1153,11 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
-        let (cwd, workflows_active) = {
+        let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
+        let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
+        let workflows_active = {
             let state = record.state.lock().await;
-            (
-                PathBuf::from(&state.session.cwd),
-                state.workflow_activated && !state.session.is_subagent(),
-            )
+            crate::workflow::workflows_active(&state, &config.workflow)
         };
         let skills = self.inner.session_skills(&cwd, workflows_active).map_err(to_rpc)?;
         let context = crate::resources::ResourceContext {
@@ -2088,6 +2087,11 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
+        self.inner
+            .sessions
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
+            .await
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
         let manager = workflow_manager(&self.inner, &record).await;
         manager
             .resolve_approval(&params.request_id, params.decision, &ctx.updates())
@@ -2132,7 +2136,7 @@ impl AgentService for Core {
         Ok(crate::workflow::runtime::snapshot_of(
             &meta,
             view.as_deref(),
-            &manager.run_dir(&params.run_id),
+            &manager.run_dir(&params.run_id).map_err(to_rpc)?,
         ))
     }
 
@@ -2173,46 +2177,20 @@ impl AgentService for Core {
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
         let manager = workflow_manager(&self.inner, &record).await;
-        // resume 走与工具相同的路径：读草稿 → 编译 → mode=resume 重启 worker。
-        let dir = manager.run_dir(&params.run_id);
-        let mut meta = crate::workflow::runtime::read_run_meta(&dir).map_err(to_rpc)?;
-        if meta.status == "running" {
-            return Err(to_rpc(CoreError::Session(format!(
-                "workflow run {} is already running",
-                params.run_id
-            ))));
-        }
-        if meta.status == "errored" {
-            return Err(to_rpc(CoreError::Session(format!(
-                "workflow run {} is errored and cannot be resumed",
-                params.run_id
-            ))));
-        }
-        let source = std::fs::read_to_string(dir.join("script.ts")).map_err(|e| {
-            to_rpc(CoreError::Session(format!("draft unreadable: {e}")))
-        })?;
-        let compiled = crate::workflow::compile::compile(
-            &source,
-            &crate::workflow::compile::CompileOptions::default(),
-        )
-        .map_err(|diags| {
-            to_rpc(CoreError::Session(format!(
-                "script no longer compiles: {}",
-                diags
-                    .iter()
-                    .map(|d| d.message.clone())
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )))
-        })?;
-        meta.status = "running".into();
-        meta.mode = "resume".into();
+        // resume 与 activate 同一 enabled 门禁。
         let cwd = record.state.lock().await.session.cwd.clone();
-        let cwd_path = std::path::PathBuf::from(&cwd);
         let config = self
             .inner
-            .project_config(&cwd_path)
+            .project_config(std::path::Path::new(&cwd))
             .map_err(to_rpc)?;
+        if !config.workflow.enabled {
+            return Err(to_rpc(CoreError::Config(
+                "workflow is disabled ([workflow] enabled = false)".into(),
+            )));
+        }
+        // resume 与工具走同一条 prepare_resume：stopped-only + 命令集一致性校验。
+        let (meta, compiled) = manager.prepare_resume(&params.run_id).map_err(to_rpc)?;
+        let cwd_path = std::path::PathBuf::from(&cwd);
         let policy = {
             let state = record.state.lock().await;
             let runtime = self.inner.runtime(&params.session_id).await;
@@ -2280,8 +2258,16 @@ impl AgentService for Core {
             .await
             .map_err(to_rpc)?;
         let manager = workflow_manager(&self.inner, &record).await;
+        // artifact_id 参与拼路径：与编译期同一字符集校验，run_id 走 run_dir 校验。
+        if !crate::workflow::compile::valid_artifact_id(&params.artifact_id) {
+            return Err(to_rpc(CoreError::Session(format!(
+                "invalid artifact id \"{}\"",
+                params.artifact_id
+            ))));
+        }
         let dir = manager
             .run_dir(&params.run_id)
+            .map_err(to_rpc)?
             .join("artifacts")
             .join(&params.artifact_id);
         let mut versions: Vec<(u32, std::path::PathBuf)> = std::fs::read_dir(&dir)

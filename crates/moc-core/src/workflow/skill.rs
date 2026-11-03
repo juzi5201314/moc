@@ -161,10 +161,10 @@ return plan;
 phase("test");
 const out = await world.run("cargo", ["test"], { output: { tail: 40 } });
 const t = agent("fixer", { system: "Fix tests." });
-if (out.exit_code !== 0) {
+if (out.exitCode !== 0) {
   await t.ask(`Fix these failures: ${out.stdout}`);
 }
-return out.exit_code;
+return out.exitCode;
 ```
 
 ## 6. files + git reads

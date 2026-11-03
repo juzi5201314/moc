@@ -332,9 +332,12 @@ impl ToolScope {
     }
 
     /// 按会话状态构造：`delegation_depth` 决定代理控制面，preset 快照提供策略。
-    pub fn for_session(state: &crate::session::state::SessionState, max_depth: u32) -> Self {
+    pub fn for_session(
+        state: &crate::session::state::SessionState,
+        config: &crate::config::ResolvedConfig,
+    ) -> Self {
         Self {
-            control_agents: state.session.delegation_depth < max_depth,
+            control_agents: state.session.delegation_depth < config.agents.max_depth,
             subagent: state.session.is_subagent(),
             fusion: !state.session.is_subagent()
                 && crate::config::model::is_fusion_selector(&state.model),
@@ -342,7 +345,7 @@ impl ToolScope {
                 .agent
                 .as_ref()
                 .and_then(|meta| meta.tool_policy.clone()),
-            workflows: state.workflow_activated && !state.session.is_subagent(),
+            workflows: crate::workflow::workflows_active(state, &config.workflow),
         }
     }
 }

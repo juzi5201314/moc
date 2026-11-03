@@ -38,14 +38,10 @@ pub struct WorkflowConfig {
     pub enabled: bool,
     /// 在飞 ask 上限的天花板（create_workflow.max_concurrency 钳到 [1, 该值]）。
     pub max_concurrency_ceiling: usize,
-    /// world.run 单次超时上限（毫秒）。
+    /// world.run 默认超时（毫秒，opts.timeoutMs 覆盖）。
     pub world_run_timeout_ms: u64,
     /// files.read 单文件上限。
     pub file_read_bytes: usize,
-    /// artifact 单条 spec 上限。
-    pub artifact_bytes: usize,
-    /// 单条 report 上限。
-    pub report_item_bytes: usize,
     /// 单条 log 上限。
     pub log_bytes: usize,
     /// schema 修复重试上限（ask 结构化交付不合规时）。
@@ -59,8 +55,6 @@ impl Default for WorkflowConfig {
             max_concurrency_ceiling: 16,
             world_run_timeout_ms: 300_000,
             file_read_bytes: 1 << 20,
-            artifact_bytes: 64 * 1024,
-            report_item_bytes: 16 * 1024,
             log_bytes: 8 * 1024,
             ask_max_repairs: 3,
         }
