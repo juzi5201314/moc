@@ -4,6 +4,7 @@
 //! 参考；模型连续给出不合格 checkpoint 时用它兜底，保证一次压缩不会把上下文丢成一句话。
 
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use moc_llm::{ContentPart, Message, Role};
@@ -243,6 +244,123 @@ fn decision_sources<'a>(history: &'a [Message], previous: Option<&'a str>) -> Ve
         }
     }
     out
+}
+
+/// 一次 ask 问答：用户亲手给出的决定。
+///
+/// ask 的答复很短，却是用户意图的直接载体：摘要漏掉它，继任模型只能按猜测行事，
+/// 甚至把已经问过的问题再问一遍。单独抽出来交给校验强制保留。
+pub(crate) struct AskAnswer {
+    /// 问题原文（截断、单行化后）。
+    pub question: String,
+    /// 用户的答案原文（截断、单行化后）。
+    pub answer: String,
+}
+
+/// 参与保留的问答条数上限；超出时优先保留最近的。
+const MAX_ASK_PAIRS: usize = 12;
+/// must-preserve 要求模型把用户决定记成 `- asked: … → …`；下次压缩按同一标记回收。
+const ASKED_MARKER: &str = "asked:";
+
+/// 从被丢弃的历史里抽取 ask 问答对；`previous` 里已沉淀的旧决定按标记回收。
+pub(crate) fn ask_answers(history: &[Message], previous: Option<&str>) -> Vec<AskAnswer> {
+    let mut out: Vec<AskAnswer> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    if let Some(previous) = previous {
+        for line in previous.lines() {
+            let line = line
+                .trim()
+                .trim_start_matches(|c| c == '-' || c == '*' || c == ' ');
+            if !line
+                .get(..ASKED_MARKER.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(ASKED_MARKER))
+            {
+                continue;
+            }
+            if let Some((question, answer)) = line[ASKED_MARKER.len()..].split_once('→') {
+                push_answer(&mut out, &mut seen, question, answer);
+            }
+        }
+    }
+    // ask 调用与结果按调用 id 配对：参数里是题目，结果里是答案。
+    let mut questions: HashMap<&str, Vec<(String, String)>> = HashMap::new();
+    for call in history.iter().flat_map(Message::tool_calls) {
+        if call.name != "ask" {
+            continue;
+        }
+        let Ok(arguments) = call.arguments_json() else {
+            continue;
+        };
+        let pairs: Vec<(String, String)> = arguments
+            .get("questions")
+            .and_then(Value::as_array)
+            .map(|questions| {
+                questions
+                    .iter()
+                    .filter_map(|question| {
+                        Some((
+                            question.get("id")?.as_str()?.to_owned(),
+                            question.get("question")?.as_str()?.to_owned(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        questions.insert(call.id.as_str(), pairs);
+    }
+    for result in history.iter().flat_map(Message::tool_results) {
+        if result.is_error {
+            continue;
+        }
+        let Some(asks) = questions.get(result.tool_call_id.as_str()) else {
+            continue;
+        };
+        if asks.len() == 1 {
+            push_answer(&mut out, &mut seen, &asks[0].1, &result.content);
+            continue;
+        }
+        // 多题结果一行一个 `题号: 答案`（见 tools/ask.rs 的输出格式）。
+        for line in result.content.lines() {
+            for (id, question) in asks {
+                if let Some(answer) = line.strip_prefix(&format!("{id}: ")) {
+                    push_answer(&mut out, &mut seen, question, answer);
+                }
+            }
+        }
+    }
+    if out.len() > MAX_ASK_PAIRS {
+        out.drain(..out.len() - MAX_ASK_PAIRS);
+    }
+    out
+}
+
+/// 规范化一条问答并去重入库；不是用户亲手作答的内容直接丢弃。
+fn push_answer(out: &mut Vec<AskAnswer>, seen: &mut HashSet<String>, question: &str, answer: &str) {
+    let question = single_line(question);
+    let answer = single_line(answer);
+    if question.is_empty() || !is_user_answer(&answer) {
+        return;
+    }
+    if !seen.insert(format!("{question}\u{1f}{answer}")) {
+        return;
+    }
+    out.push(AskAnswer {
+        question: truncate(&question, MAX_DECISION_CHARS),
+        answer: truncate(&answer, MAX_DECISION_CHARS),
+    });
+}
+
+/// 折行会破坏 `- asked: … → …` 的行格式，空白统一压成单空格。
+fn single_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 自动代答和未作答的结果不是用户的决定；这些串与 `tools/ask.rs` 的输出一致。
+fn is_user_answer(answer: &str) -> bool {
+    !answer.is_empty()
+        && answer != "The user did not answer."
+        && !answer.contains("not involved")
+        && !answer.contains("unavailable")
 }
 
 /// 决策行里的名字：优先含大写的词（Redis、LRU），其次是小写标识符（lru）。
@@ -1038,5 +1156,65 @@ mod tests {
             !anchors.contains(&"rejected"),
             "识别词本身不该变成必保留事实：{anchors:?}"
         );
+    }
+
+    fn ask_call(id: &str, questions: serde_json::Value) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentPart::ToolCall(ToolCall::new(
+                id,
+                "ask",
+                serde_json::json!({ "questions": questions }).to_string(),
+            ))],
+        }
+    }
+
+    #[test]
+    fn ask_answers_pair_questions_with_user_replies() {
+        let call = ask_call(
+            "c1",
+            serde_json::json!([
+                {"id":"db","question":"用哪种存储？","options":[{"label":"PostgreSQL"},{"label":"SQLite"}]},
+                {"id":"cache","question":"要不要缓存？","options":[{"label":"要"},{"label":"不要"}]}
+            ]),
+        );
+        let result = Message::tool_result(
+            "c1",
+            "User answers:\ndb: PostgreSQL\ncache: The user did not answer.",
+            false,
+        );
+        let answers = ask_answers(&[call, result], None);
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].question, "用哪种存储？");
+        assert_eq!(answers[0].answer, "PostgreSQL");
+    }
+
+    #[test]
+    fn ask_answers_skip_uninvolved_and_missing_replies() {
+        let questions = serde_json::json!([{"id":"q","question":"选哪个？","options":[{"label":"A"},{"label":"B"}]}]);
+        let auto = Message::tool_result(
+            "c1",
+            "B (auto-selected recommended option; the user was not involved)",
+            false,
+        );
+        assert!(ask_answers(&[ask_call("c1", questions.clone()), auto], None).is_empty());
+        let missing = Message::tool_result("c2", "The user did not answer.", false);
+        assert!(ask_answers(&[ask_call("c2", questions.clone()), missing], None).is_empty());
+        let real = Message::tool_result("c3", "B", false);
+        let answers = ask_answers(&[ask_call("c3", questions), real], None);
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].answer, "B");
+    }
+
+    #[test]
+    fn ask_answers_recover_pairs_from_the_previous_checkpoint() {
+        // must-preserve 让模型把用户决定记成 `- asked: … → …`；下一代按同一标记回收。
+        let previous = "## Decisions and Rejected Options\n\
+                        - asked: 用哪种存储？ → PostgreSQL\n\
+                        - rejected: lru — 淘汰顺序不可接受\n";
+        let answers = ask_answers(&[], Some(previous));
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].question, "用哪种存储？");
+        assert_eq!(answers[0].answer, "PostgreSQL");
     }
 }

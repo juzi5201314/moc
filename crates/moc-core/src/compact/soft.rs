@@ -33,6 +33,7 @@ The successor agent sees ONLY this checkpoint plus the most recent turn: anythin
 - Preserve every file path, command, error string, identifier, number and signature verbatim; quote user constraints and corrections verbatim.
 - Keep each decision together with the reason it was made, and mark rejected alternatives as rejected.
 - Every rejected alternative goes into `## Decisions and Rejected Options` as `- rejected: <option> — <reason>`; never drop one, never propose it again without new evidence.
+- User decisions made via the ask tool belong in `## Decisions and Rejected Options` as `- asked: <question> → <answer>`; keep every one.
 - If the conversation has a numbered plan, or an `<active-plan>` block, restate it in `## Plan Status` with every step marked done / current / pending, and name the current step number.
 - A `<compaction-summary>` block in the conversation is the prior checkpoint: merge it — keep every still-relevant fact, drop only what later turns completed or contradicted, and never restart from scratch.
 - If a `<previous-summary>` block is present, merge it the same way.
@@ -235,8 +236,9 @@ pub(crate) async fn compact(
     // （方案名不是路径或数字，步号不是标识符），必须单独抽出来逐字校验。
     let decisions = digest::decisions(&history[..start], previous_summary);
     let plan_steps = digest::plan_steps(&history[..start], previous_summary, plan);
-    let required = required_facts(&decisions, &plan_steps);
-    let must_preserve = must_preserve_block(&decisions, &plan_steps);
+    let ask_answers = digest::ask_answers(&history[..start], previous_summary);
+    let required = required_facts(&decisions, &plan_steps, &ask_answers);
+    let must_preserve = must_preserve_block(&decisions, &plan_steps, &ask_answers);
     let base_prompt = summary_prompt(
         state,
         instructions,
@@ -540,21 +542,34 @@ fn summary_prompt(
     prompt
 }
 
-/// 必保留短语：计划步号在前（决定「做到第几步了」），后面是被否决方案的名字。
-fn required_facts(decisions: &[digest::Decision], plan_steps: &[String]) -> Vec<String> {
+/// 必保留短语：计划步号在前（决定「做到第几步了」），然后是用户的 ask 答案和被否决方案的名字。
+fn required_facts(
+    decisions: &[digest::Decision],
+    plan_steps: &[String],
+    ask_answers: &[digest::AskAnswer],
+) -> Vec<String> {
     /// 校验结果和提示词都不能无限长：超过这个条数后只保留先出现的。
     const MAX_REQUIRED_FACTS: usize = 32;
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    for phrase in plan_steps.iter().chain(
-        decisions
-            .iter()
-            .flat_map(|decision| decision.anchors.iter()),
-    ) {
+    for phrase in plan_steps
+        .iter()
+        .map(String::as_str)
+        .chain(
+            ask_answers
+                .iter()
+                .filter_map(|pair| enforceable_answer(&pair.answer)),
+        )
+        .chain(
+            decisions
+                .iter()
+                .flat_map(|decision| decision.anchors.iter().map(String::as_str)),
+        )
+    {
         if !seen.insert(phrase.to_lowercase()) {
             continue;
         }
-        out.push(phrase.clone());
+        out.push(phrase.to_owned());
         if out.len() >= MAX_REQUIRED_FACTS {
             break;
         }
@@ -562,9 +577,18 @@ fn required_facts(decisions: &[digest::Decision], plan_steps: &[String]) -> Vec<
     out
 }
 
+/// 太短的答案没法逐字校验：单字符在任何文本里都能撞上，只能靠提示词保留。
+fn enforceable_answer(answer: &str) -> Option<&str> {
+    (answer.chars().count() >= 2).then_some(answer)
+}
+
 /// 提示词里的 `<must-preserve>`：一份模型可以直接照抄的清单。
-fn must_preserve_block(decisions: &[digest::Decision], plan_steps: &[String]) -> Option<String> {
-    if decisions.is_empty() && plan_steps.is_empty() {
+fn must_preserve_block(
+    decisions: &[digest::Decision],
+    plan_steps: &[String],
+    ask_answers: &[digest::AskAnswer],
+) -> Option<String> {
+    if decisions.is_empty() && plan_steps.is_empty() && ask_answers.is_empty() {
         return None;
     }
     let mut out = String::from("<must-preserve>\n");
@@ -585,6 +609,19 @@ fn must_preserve_block(decisions: &[digest::Decision], plan_steps: &[String]) ->
         for decision in decisions {
             out.push_str("- ");
             out.push_str(&decision.clause);
+            out.push('\n');
+        }
+    }
+    // 行格式与 digest::ask_answers 的回收标记一致：下一代压缩靠 `asked:` 找回这些决定。
+    if !ask_answers.is_empty() {
+        out.push_str(
+            "User decisions already made (record each in `## Decisions and Rejected Options` exactly as shown):\n",
+        );
+        for pair in ask_answers {
+            out.push_str("- asked: ");
+            out.push_str(&pair.question);
+            out.push_str(" → ");
+            out.push_str(&pair.answer);
             out.push('\n');
         }
     }

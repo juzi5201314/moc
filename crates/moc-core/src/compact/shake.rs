@@ -78,19 +78,31 @@ pub(crate) async fn compact(
 }
 
 fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> bool {
-    let reads: HashMap<String, String> = entries
+    // read 的路径用于判重；ask 的答复是用户亲手做的决定，短小但丢了无法回查，永不裁剪。
+    let mut reads: HashMap<String, String> = HashMap::new();
+    let mut asks: HashSet<String> = HashSet::new();
+    for call in entries
         .iter()
         .filter_map(|entry| match entry {
             Entry::Message { message, .. } => Some(message),
             _ => None,
         })
         .flat_map(|message| message.tool_calls())
-        .filter(|call| call.name == "read")
-        .filter_map(|call| {
-            let args: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
-            Some((call.id.clone(), args.get("path")?.as_str()?.to_owned()))
-        })
-        .collect();
+    {
+        match call.name.as_str() {
+            "read" => {
+                if let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                    && let Some(path) = args.get("path").and_then(|path| path.as_str())
+                {
+                    reads.insert(call.id.clone(), path.to_owned());
+                }
+            }
+            "ask" => {
+                asks.insert(call.id.clone());
+            }
+            _ => {}
+        }
+    }
     let mut seen_reads = HashSet::new();
     let mut prompts_ago = 0usize;
     let mut protected_tokens = 0u64;
@@ -118,6 +130,9 @@ fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> boo
             let ContentPart::ToolResult(result) = part else {
                 continue;
             };
+            if asks.contains(&result.tool_call_id) {
+                continue;
+            }
             let superseded = reads
                 .get(&result.tool_call_id)
                 .is_some_and(|path| !seen_reads.insert(path.clone()));
@@ -187,6 +202,62 @@ fn trim_text(text: &str, head: usize, tail: usize, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::entries::EntryPayload;
+    use moc_llm::{Message, ToolCall};
+
+    fn entry(message: Message, parent: &str) -> Entry {
+        Entry::from_payload(
+            EntryPayload::Message {
+                message,
+                tool: None,
+                finish_reason: None,
+                agent: None,
+            },
+            parent.to_owned(),
+            2,
+        )
+    }
+
+    #[test]
+    fn prune_never_clears_ask_answers() {
+        let mut config = crate::config::CompactionConfig::default();
+        config.shake.hard_clear_prompts = 1;
+        config.shake.keep_last_prompts = 0;
+        config.protect_recent_tool_tokens = 0;
+        let assistant = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentPart::ToolCall(ToolCall::new(
+                    "ask1",
+                    "ask",
+                    r#"{"questions":[{"id":"db","question":"用哪种存储？","options":[{"label":"PostgreSQL"},{"label":"SQLite"}]}]}"#,
+                )),
+                ContentPart::ToolCall(ToolCall::new("b1", "bash", r#"{"command":"ls"}"#)),
+            ],
+        };
+        let mut entries = vec![
+            entry(assistant, "root"),
+            entry(Message::tool_result("ask1", "PostgreSQL", false), "e1"),
+            entry(Message::tool_result("b1", "a.rs\nb.rs", false), "e2"),
+            entry(Message::user_text("下一步"), "e3"),
+            entry(Message::user_text("继续"), "e4"),
+        ];
+        assert!(prune(&mut entries, &config));
+        let outputs: Vec<&str> = entries
+            .iter()
+            .flat_map(|entry| match entry {
+                Entry::Message { message, .. } => message
+                    .tool_results()
+                    .map(|result| result.content.as_str())
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        // 越过 hard_clear 后普通工具输出被清，ask 答复原样保留。
+        assert!(outputs.contains(&"PostgreSQL"), "{outputs:?}");
+        assert!(outputs.contains(&"[tool output pruned]"), "{outputs:?}");
+    }
+
     #[test]
     fn trimming_preserves_unicode_edges_and_original_log() {
         let text = format!("{}{}", "前".repeat(30), "尾".repeat(30));
