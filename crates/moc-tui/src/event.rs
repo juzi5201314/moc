@@ -26,7 +26,7 @@ use moc_protocol::{
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::app::{App, ChartHit, CtrlCPending, Focus, ScrollbackDrag};
+use crate::app::{App, ChartHit, CtrlCPending, Focus, LegendMenu, ScrollbackDrag};
 use crate::commands::CommandId;
 use crate::input::{InputEvent, InputThread};
 use crate::modal::{
@@ -1410,6 +1410,16 @@ fn handle_mouse_with_connection(
                     click_model_level(app, index);
                 }
             }
+            MouseEventKind::Moved => {
+                if let Some((index, _)) = app
+                    .modal_item_hits
+                    .iter()
+                    .find(|(_, area)| area.contains(position.into()))
+                    .copied()
+                {
+                    hover_modal_item(app, index);
+                }
+            }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
                 match app.modal {
@@ -1439,7 +1449,7 @@ fn handle_mouse_with_connection(
     if crate::btw::handle_mouse(app, mouse) {
         return;
     }
-    if handle_engine_menu_mouse(app, connection, &mouse) {
+    if handle_legend_menu_mouse(app, connection, &mouse) {
         return;
     }
     // 补全菜单等浮层提示条上的键位。
@@ -1499,17 +1509,7 @@ fn handle_mouse_with_connection(
             return;
         }
         if app.modal.is_none() && app.permission_tag_area.contains(position.into()) {
-            if let Some(session) = app.session.as_ref() {
-                let modes = &app.sandbox_modes;
-                if !modes.is_empty() {
-                    let cur_idx = modes
-                        .iter()
-                        .position(|m| *m == session.permission)
-                        .unwrap_or(0);
-                    let next_mode = modes[(cur_idx + 1) % modes.len()];
-                    set_permission(app, connection, next_mode.as_str());
-                }
-            }
+            app.open_permission_menu();
             return;
         }
         // workflow 胶囊：最小化审批优先重开，其次弹出排队审批，否则打开 run 列表。
@@ -1639,6 +1639,32 @@ fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize
     };
     if confirm {
         handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+    }
+}
+
+/// 鼠标悬浮移到通用模态的第 `index` 项：与 ↑↓/Tab 换行同语义，只改高亮不确认。
+fn hover_modal_item(app: &mut App, index: usize) {
+    match app.modal.as_mut() {
+        Some(Modal::Model { picker, level, .. }) => {
+            if picker.selected != index {
+                // 与 ↑↓ 换行同语义：手动等级只属于原来高亮的模型。
+                picker.selected = index;
+                level.clear_manual();
+            }
+        }
+        Some(
+            Modal::Sessions { picker, .. }
+            | Modal::Subagents { picker, .. }
+            | Modal::WorkflowRuns { picker, .. },
+        ) => {
+            picker.selected = index;
+        }
+        Some(Modal::Permission { selected, .. }) => *selected = index,
+        Some(Modal::Fusion { focus, .. }) => *focus = index,
+        Some(Modal::SwitchModel { option, .. }) => *option = index,
+        Some(Modal::WorkflowApproval { state }) => state.focus = index,
+        Some(Modal::WorkflowRun { state }) => state.focus = index,
+        _ => {}
     }
 }
 
@@ -2088,40 +2114,153 @@ fn handle_ask_mouse(
     }
 }
 
-/// 就地模式菜单的鼠标处理：命中条目即切换模式，点到菜单外（含再点一次图例）关闭。
+/// 图例菜单对一个输入事件的处置：是否消费、是否带选中值应用。
+enum LegendAction<T> {
+    /// 事件照常处理：无菜单，或菜单因普通键关闭（键位不丢）。
+    Passthrough,
+    /// 事件已被菜单吃掉。
+    Consumed,
+    /// 确认选中项：应用并关闭。
+    Apply(T),
+}
+
+/// 图例菜单的键盘语义：`↑↓` 换高亮、`Enter` 应用、`Esc` 关闭、其他键关菜单后照常处理。
+fn legend_menu_key<T: Copy>(
+    menu: &mut Option<LegendMenu<T>>,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) -> LegendAction<T> {
+    let Some(state) = menu.as_ref() else {
+        return LegendAction::Passthrough;
+    };
+    let count = state.items.len();
+    let selected = state.selected.min(count - 1);
+    match (code, modifiers) {
+        (KeyCode::Esc, _) => {
+            *menu = None;
+            LegendAction::Consumed
+        }
+        (KeyCode::Up, _) => {
+            if let Some(state) = menu.as_mut() {
+                state.selected = (selected + count - 1) % count;
+            }
+            LegendAction::Consumed
+        }
+        (KeyCode::Down, _) => {
+            if let Some(state) = menu.as_mut() {
+                state.selected = (selected + 1) % count;
+            }
+            LegendAction::Consumed
+        }
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            let item = state.items.get(selected).copied();
+            *menu = None;
+            match item {
+                Some(item) => LegendAction::Apply(item),
+                None => LegendAction::Consumed,
+            }
+        }
+        _ => {
+            *menu = None;
+            LegendAction::Passthrough
+        }
+    }
+}
+
+/// 图例菜单的鼠标语义：悬停换高亮、点条目应用、点菜单外（含再点一次图例）关闭。
+fn legend_menu_mouse<T: Copy>(
+    menu: &mut Option<LegendMenu<T>>,
+    mouse: &crossterm::event::MouseEvent,
+) -> LegendAction<T> {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let Some(state) = menu.as_mut() else {
+        return LegendAction::Passthrough;
+    };
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            let item = state
+                .entry_at(mouse.column, mouse.row)
+                .and_then(|index| state.items.get(index).copied());
+            *menu = None;
+            match item {
+                Some(item) => LegendAction::Apply(item),
+                None => LegendAction::Consumed,
+            }
+        }
+        MouseEventKind::Moved => {
+            if let Some(index) = state.entry_at(mouse.column, mouse.row) {
+                state.selected = index;
+            }
+            LegendAction::Consumed
+        }
+        _ => LegendAction::Passthrough,
+    }
+}
+
+/// 就地图例菜单（引擎 / 权限）的键盘处理。
+///
+/// 与斜杠补全菜单同一套约定：只认方向键与确认键，其他按键先关掉菜单再照常处理，
+/// 菜单不会吞掉正常输入与快捷键。
+fn handle_legend_menu_key(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) -> bool {
+    if app.engine_menu.is_some() {
+        return match legend_menu_key(&mut app.engine_menu, modifiers, code) {
+            LegendAction::Passthrough => false,
+            LegendAction::Consumed => true,
+            LegendAction::Apply(engine) => {
+                set_engine(app, connection, engine);
+                true
+            }
+        };
+    }
+    if app.permission_menu.is_some() {
+        return match legend_menu_key(&mut app.permission_menu, modifiers, code) {
+            LegendAction::Passthrough => false,
+            LegendAction::Consumed => true,
+            LegendAction::Apply(mode) => {
+                apply_permission(app, connection, mode, false);
+                true
+            }
+        };
+    }
+    false
+}
+
+/// 就地图例菜单（引擎 / 权限）的鼠标处理：命中条目即应用，点到菜单外关闭。
 /// 返回 `true` 表示事件已被菜单消费，不再落到队列、滚动区或输入框。
-fn handle_engine_menu_mouse(
+fn handle_legend_menu_mouse(
     app: &mut App,
     connection: &EmbeddedConnection,
     mouse: &crossterm::event::MouseEvent,
 ) -> bool {
-    use crossterm::event::{MouseButton, MouseEventKind};
-    if app.engine_menu.is_none() || app.modal.is_some() {
+    if app.modal.is_some() {
         return false;
     }
-    match mouse.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
-            let entry = app
-                .engine_menu
-                .as_ref()
-                .and_then(|menu| menu.entry_at(mouse.column, mouse.row))
-                .and_then(|index| app.engine_menu.as_ref()?.engines.get(index).copied());
-            app.engine_menu = None;
-            if let Some(engine) = entry {
+    if app.engine_menu.is_some() {
+        return match legend_menu_mouse(&mut app.engine_menu, mouse) {
+            LegendAction::Passthrough => false,
+            LegendAction::Consumed => true,
+            LegendAction::Apply(engine) => {
                 set_engine(app, connection, engine);
+                true
             }
-            true
-        }
-        MouseEventKind::Moved => {
-            if let Some(menu) = app.engine_menu.as_mut()
-                && let Some(index) = menu.entry_at(mouse.column, mouse.row)
-            {
-                menu.selected = index;
-            }
-            true
-        }
-        _ => false,
+        };
     }
+    if app.permission_menu.is_some() {
+        return match legend_menu_mouse(&mut app.permission_menu, mouse) {
+            LegendAction::Passthrough => false,
+            LegendAction::Consumed => true,
+            LegendAction::Apply(mode) => {
+                apply_permission(app, connection, mode, false);
+                true
+            }
+        };
+    }
+    false
 }
 
 /// 斜杠与资源补全菜单的鼠标处理：命中条目即选中并确认，点到外部关闭菜单。
@@ -2438,7 +2577,7 @@ fn handle_key(
     if crate::btw::handle_key(app, modifiers, code) {
         return;
     }
-    if handle_engine_menu_key(app, connection, modifiers, code) {
+    if handle_legend_menu_key(app, connection, modifiers, code) {
         return;
     }
     if matches!(code, KeyCode::Esc) && app.completion.is_some() {
@@ -6522,7 +6661,23 @@ fn set_permission(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
             return;
         }
     };
+    apply_permission(app, connection, permission, clear_grants);
+}
+
+/// 请求 core 切换权限模式；`/permission` 与图例菜单共用。平台不支持或没有会话时只提示。
+fn apply_permission(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    permission: SessionPermission,
+    clear_grants: bool,
+) {
     if !app.sandbox_modes.contains(&permission) {
+        let available = app
+            .sandbox_modes
+            .iter()
+            .map(|mode| mode.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         app.set_notice(format!(
             "当前平台不支持 {}；可用模式：{available}",
             permission.as_str()
@@ -6554,56 +6709,6 @@ fn set_permission(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
             }
         }
     });
-}
-
-/// 就地模式菜单的键盘处理：`↑↓` 选择、`Enter` 应用、`Esc` 关闭。
-///
-/// 与斜杠补全菜单同一套约定：只认方向键与确认键，其他按键先关掉菜单再照常处理，
-/// 菜单不会吞掉正常输入与快捷键。
-fn handle_engine_menu_key(
-    app: &mut App,
-    connection: &EmbeddedConnection,
-    modifiers: KeyModifiers,
-    code: KeyCode,
-) -> bool {
-    let Some(menu) = app.engine_menu.as_ref() else {
-        return false;
-    };
-    let count = menu.engines.len();
-    let selected = menu.selected.min(count - 1);
-    match (code, modifiers) {
-        (KeyCode::Esc, _) => {
-            app.engine_menu = None;
-            true
-        }
-        (KeyCode::Up, _) => {
-            if let Some(menu) = app.engine_menu.as_mut() {
-                menu.selected = (selected + count - 1) % count;
-            }
-            true
-        }
-        (KeyCode::Down, _) => {
-            if let Some(menu) = app.engine_menu.as_mut() {
-                menu.selected = (selected + 1) % count;
-            }
-            true
-        }
-        (KeyCode::Enter, KeyModifiers::NONE) => {
-            let engine = app
-                .engine_menu
-                .as_ref()
-                .and_then(|menu| menu.engines.get(selected).copied());
-            app.engine_menu = None;
-            if let Some(engine) = engine {
-                set_engine(app, connection, engine);
-            }
-            true
-        }
-        _ => {
-            app.engine_menu = None;
-            false
-        }
-    }
 }
 
 /// 按当前模型声明的思考等级循环切换。
@@ -8666,6 +8771,55 @@ mod tests {
         // 再点已选中的行：确认，按点选的等级发起切换。
         handle_mouse_with_connection(&mut app, &connection, left_click(row_b.x + 3, row_b.y));
         assert_eq!(picker(&app), (1, true, Some("low".into())));
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 模型选择器：悬浮候选行即换高亮（与 ↑↓ 同语义：清掉手动等级、不确认）；
+    /// 悬浮在条目外不改选择。
+    #[tokio::test]
+    async fn model_picker_mouse_hover_highlights_row() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let entry = |selector: &str| crate::modal::ModelEntry {
+            selector: selector.into(),
+            label: selector.into(),
+            display_name: String::new(),
+            levels: vec!["off".into(), "low".into(), "high".into()],
+            context_window: None,
+            max_output_tokens: None,
+            inputs: Vec::new(),
+            remote_compaction: false,
+            pricing: None,
+        };
+        app.modal = Some(Modal::Model {
+            entries: vec![entry("test/a"), entry("test/b")],
+            current: "test/a".into(),
+            picker: crate::modal::PickerState::default(),
+            level: crate::modal::LevelState {
+                manual: Some("low".into()),
+            },
+            target: crate::modal::ModelTarget::Session,
+        });
+        let picker = |app: &App| match app.modal.as_ref() {
+            Some(Modal::Model { picker, level, .. }) => {
+                (picker.selected, picker.loading, level.manual.clone())
+            }
+            _ => panic!("模型选择器应保持打开"),
+        };
+        let _ = draw_frame(&mut app, 100, 30);
+        let (_, row_b) = app.modal_item_hits[1];
+        let hover = |column: u16, row: u16| {
+            mouse_event(crossterm::event::MouseEventKind::Moved, column, row)
+        };
+
+        // 悬浮到未选中的行：只换高亮，手动等级作废，不发起切换。
+        handle_mouse_with_connection(&mut app, &connection, hover(row_b.x + 3, row_b.y));
+        assert_eq!(picker(&app), (1, false, None));
+
+        // 悬浮在条目外（非行命中区）：选择不动。
+        handle_mouse_with_connection(&mut app, &connection, hover(0, 0));
+        assert_eq!(picker(&app), (1, false, None));
 
         connection.shutdown().await;
         core.shutdown().await;

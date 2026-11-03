@@ -220,9 +220,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     }
     if app.modal.is_none() {
         modal::draw_engine_menu(frame, app);
+        modal::draw_permission_menu(frame, app);
     } else {
         // 模态是阻塞层：不再保留就地菜单，避免两层浮层叠加。
         app.engine_menu = None;
+        app.permission_menu = None;
     }
     if app.modal.is_some() {
         modal::draw_modal(frame, app);

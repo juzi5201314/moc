@@ -221,7 +221,7 @@ fn test_f2_05_engine_menu_uses_rounded_borders() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.engine_menu = Some(moc_tui::app::EngineMenu {
         selected: 0,
-        engines: moc_tui::app::ENGINES.to_vec(),
+        items: moc_tui::app::ENGINES.to_vec(),
         area: Rect::default(),
     });
     app.engine_area = Rect::new(70, 20, 10, 1);

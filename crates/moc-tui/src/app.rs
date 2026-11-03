@@ -191,7 +191,7 @@ pub struct App {
     pub engine_area: Rect,
     /// 输入框下边框模型名区域（鼠标点击打开模型选择）。
     pub model_tag_area: Rect,
-    /// 输入框下边框权限区域（鼠标点击切换权限）。
+    /// 输入框下边框权限区域（鼠标点击就地弹出权限菜单）。
     pub permission_tag_area: Rect,
     /// 模态选项行命中矩形（Permission、Model、Sessions 等）。
     pub modal_item_hits: Vec<(usize, Rect)>,
@@ -234,6 +234,8 @@ pub struct App {
     pub ask_strip_area: Rect,
     /// 就地引擎菜单；`None` = 关闭。
     pub engine_menu: Option<EngineMenu>,
+    /// 就地权限菜单；`None` = 关闭。与引擎菜单同类互斥。
+    pub permission_menu: Option<PermissionMenu>,
     /// 当前这条用户消息的临时模式覆盖（`/ask` 注入）；整条消息回复完毕才清空。
     ///
     /// 只影响图例与状态栏的展示，会话引擎与 plan 叠加态仍以 `session` 为准。
@@ -542,6 +544,7 @@ impl App {
             ask_detail_area: Rect::default(),
             ask_strip_area: Rect::default(),
             engine_menu: None,
+            permission_menu: None,
             transient_mode: None,
             context_usage: None,
             scroll_offset: 0,
@@ -1414,13 +1417,37 @@ impl App {
         }
 
         self.completion = None;
+        self.permission_menu = None;
         let engines: Vec<SessionEngine> = self.engines().collect();
         let current = self.session.as_ref().map(|session| session.engine);
         self.engine_menu = Some(EngineMenu {
             selected: current
                 .and_then(|engine| engines.iter().position(|candidate| *candidate == engine))
                 .unwrap_or(0),
-            engines,
+            items: engines,
+            area: Rect::default(),
+        });
+    }
+
+    /// 打开就地权限菜单：高亮当前权限模式，候选来自平台探测下发的 `sandbox_modes`。
+    pub fn open_permission_menu(&mut self) {
+        let Some(permission) = self.session.as_ref().map(|session| session.permission) else {
+            self.set_notice("当前没有活动会话");
+            return;
+        };
+        if self.sandbox_modes.is_empty() {
+            self.set_notice("当前平台没有可切换的权限模式");
+            return;
+        }
+        self.completion = None;
+        self.engine_menu = None;
+        let modes = self.sandbox_modes.clone();
+        self.permission_menu = Some(PermissionMenu {
+            selected: modes
+                .iter()
+                .position(|mode| *mode == permission)
+                .unwrap_or(0),
+            items: modes,
             area: Rect::default(),
         });
     }
@@ -2259,24 +2286,65 @@ pub fn ordered_selection(
     }
 }
 
-/// 点击图例引擎名后就地弹出的菜单。
-pub struct EngineMenu {
-    /// 键盘 / 悬停高亮的条目下标（`engines` 顺序）。
+/// 状态图例就地菜单条目的展示契约：标签 + 侧边提示框里的一句说明。
+pub trait LegendItem {
+    /// 菜单里显示的名字（与图例用词一致）。
+    fn label(&self) -> &'static str;
+    /// 侧边提示框对高亮项的一句话说明。
+    fn description(&self) -> &'static str;
+}
+
+impl LegendItem for SessionEngine {
+    fn label(&self) -> &'static str {
+        engine_label(*self)
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            SessionEngine::Standard => "默认引擎：模型直接调用工具",
+            SessionEngine::Ptc => "模型只调用 run_code，全部工具经代码沙盒触达",
+            SessionEngine::ClmExperimental => "模型自主维护实时上下文（实验）",
+        }
+    }
+}
+
+impl LegendItem for SessionPermission {
+    fn label(&self) -> &'static str {
+        self.as_str()
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            SessionPermission::Full => "宿主全部可读写，无沙盒边界",
+            SessionPermission::Workspace => "工作区可写，宿主其余路径只读",
+            SessionPermission::WorkspaceOnly => "仅工作区与临时目录可见，隔离最强",
+        }
+    }
+}
+
+/// 点击状态图例后就地弹出的选择菜单（引擎、权限共用）。
+pub struct LegendMenu<T> {
+    /// 键盘 / 悬停高亮的条目下标（`items` 顺序）。
     pub selected: usize,
-    /// 可选项：按特性 flag 过滤后的引擎清单（打开菜单时的快照）。
-    pub engines: Vec<SessionEngine>,
+    /// 可选项快照：打开菜单时按特性 flag / 平台能力过滤后的清单。
+    pub items: Vec<T>,
     /// 上一帧绘制的菜单区域；鼠标命中使用。
     pub area: Rect,
 }
 
-impl EngineMenu {
-    /// 命中的条目下标；点在边框和菜单外返回 `None`。
+/// 引擎图例菜单。
+pub type EngineMenu = LegendMenu<SessionEngine>;
+/// 权限图例菜单。
+pub type PermissionMenu = LegendMenu<SessionPermission>;
+
+impl<T> LegendMenu<T> {
+    /// 命中的条目下标；点在边框、说明行和菜单外返回 `None`。
     pub fn entry_at(&self, column: u16, row: u16) -> Option<usize> {
         if !self.area.contains((column, row).into()) {
             return None;
         }
         let index = usize::from(row.checked_sub(self.area.y.saturating_add(1))?);
-        (index < self.engines.len()).then_some(index)
+        (index < self.items.len()).then_some(index)
     }
 }
 
@@ -2455,7 +2523,7 @@ mod tests {
     fn engine_menu_hit_testing_skips_borders() {
         let menu = EngineMenu {
             selected: 1,
-            engines: ENGINES.to_vec(),
+            items: ENGINES.to_vec(),
             area: Rect::new(10, 5, 24, 6),
         };
         assert_eq!(menu.entry_at(11, 5), None, "上边框不是条目");
@@ -2476,6 +2544,47 @@ mod tests {
         app.open_engine_menu();
         assert!(app.engine_menu.is_none());
         assert_eq!(app.notice.as_deref(), Some("当前没有活动会话"));
+    }
+
+    /// 权限菜单：无会话只提示；打开时按平台快照给出候选并高亮当前模式。
+    #[test]
+    fn permission_menu_highlights_current_mode() {
+        use moc_protocol::{SessionInfo, SessionPermission};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+        app.open_permission_menu();
+        assert!(app.permission_menu.is_none());
+        assert_eq!(app.notice.as_deref(), Some("当前没有活动会话"));
+
+        app.session = Some(SessionInfo {
+            id: "ses_perm".into(),
+            title: "测试".into(),
+            model: "test/model".into(),
+            permission: SessionPermission::Workspace,
+            engine: SessionEngine::Standard,
+            autonomy: moc_protocol::SessionAutonomy::Default,
+            plan_active: false,
+            fast_mode: false,
+            engine_locked: false,
+            parent_session_id: None,
+            forked_from: None,
+            agent_preset: None,
+            delegation_depth: 0,
+            cwd: "/tmp".into(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            lock: None,
+        });
+        app.sandbox_modes = vec![
+            SessionPermission::Full,
+            SessionPermission::Workspace,
+            SessionPermission::WorkspaceOnly,
+        ];
+        app.open_permission_menu();
+        let menu = app.permission_menu.as_ref().expect("权限菜单应打开");
+        assert_eq!(menu.items, app.sandbox_modes);
+        assert_eq!(menu.selected, 1, "默认高亮当前权限模式");
     }
 
     /// HUD 交互：悬停展开、点击固定、取消固定后的抑制区、移出再进入重开。

@@ -137,27 +137,55 @@ pub fn draw_completion_menu(
 
 /// 就地引擎菜单：右缘对齐图例里的引擎名，整体贴在它上方（右键菜单那种小浮层）。
 pub fn draw_engine_menu(frame: &mut Frame, app: &mut App) {
-    let Some(menu) = app.engine_menu.as_ref() else {
+    let theme = app.theme;
+    let anchor = app.engine_area;
+    let current = app.session.as_ref().map(|session| session.engine);
+    let Some(menu) = app.engine_menu.as_mut() else {
         return;
     };
+    draw_legend_menu(frame, theme, menu, anchor, current);
+}
+
+/// 就地权限菜单：与引擎菜单同一浮层，锚定权限图例。
+pub fn draw_permission_menu(frame: &mut Frame, app: &mut App) {
     let theme = app.theme;
-    let current = app.session.as_ref().map(|session| session.engine);
-    // 引擎清单拷出来再画，后面还要对 app.engine_menu 做可变借用写回 area。
-    let (selected, engines, saved_area) = (menu.selected, menu.engines.clone(), menu.area);
-    let label_width = engines
+    let anchor = app.permission_tag_area;
+    let current = app.session.as_ref().map(|session| session.permission);
+    let Some(menu) = app.permission_menu.as_mut() else {
+        return;
+    };
+    draw_legend_menu(frame, theme, menu, anchor, current);
+}
+
+/// 图例菜单通用画法：窄标签列；高亮项的一句说明画成菜单侧边的独立小提示框，
+/// 随方向键与悬停更新；当前生效项沿用图例里的强调色，与菜单高亮（反色）互相独立。
+fn draw_legend_menu<T: crate::app::LegendItem + PartialEq>(
+    frame: &mut Frame,
+    theme: &Theme,
+    menu: &mut crate::app::LegendMenu<T>,
+    anchor: Rect,
+    current: Option<T>,
+) {
+    let label_width = menu
+        .items
         .iter()
-        .map(|engine| str_width(crate::app::engine_label(*engine)))
+        .map(|item| str_width(item.label()))
         .max()
         .unwrap_or(0);
+    let selected = menu.selected.min(menu.items.len().saturating_sub(1));
+    let description = menu
+        .items
+        .get(selected)
+        .map_or("", crate::app::LegendItem::description);
     let frame_area = frame.area();
-    let width = u16::try_from(2 + label_width + 2 + 2)
+    // 正文宽 = ❯ + 标签；外宽再加两侧内边距与边框。
+    let width = u16::try_from(label_width + 6)
         .unwrap_or(u16::MAX)
         .min(frame_area.width);
-    let height = u16::try_from(engines.len() + 2).unwrap_or(u16::MAX);
-    let area = if !saved_area.is_empty() {
-        saved_area
+    let height = u16::try_from(menu.items.len() + 2).unwrap_or(u16::MAX);
+    let area = if !menu.area.is_empty() {
+        menu.area
     } else {
-        let anchor = app.engine_area;
         let x = (anchor.x.saturating_add(anchor.width))
             .saturating_sub(width)
             .min(frame_area.width.saturating_sub(width))
@@ -169,13 +197,13 @@ pub fn draw_engine_menu(frame: &mut Frame, app: &mut App) {
             height,
         }
     };
-    if let Some(menu_mut) = app.engine_menu.as_mut() {
-        menu_mut.area = area;
-    }
-    let lines: Vec<Line<'static>> = engines
+    menu.area = area;
+    let inner = overlay::content_width(area.width);
+    let lines: Vec<Line<'static>> = menu
+        .items
         .iter()
         .enumerate()
-        .map(|(index, engine)| {
+        .map(|(index, item)| {
             let highlighted = index == selected;
             let base = if highlighted {
                 Style::new()
@@ -185,18 +213,14 @@ pub fn draw_engine_menu(frame: &mut Frame, app: &mut App) {
             } else {
                 Style::new().fg(theme.text_primary)
             };
-            // 当前引擎沿用图例里的强调色，与菜单高亮（反色）互相独立。
-            let label_style = if Some(*engine) == current {
+            let label_style = if current.as_ref() == Some(item) {
                 base.fg(theme.accent_model)
             } else {
                 base
             };
             Line::from(vec![
                 Span::styled(if highlighted { "❯ " } else { "  " }, base),
-                Span::styled(
-                    fit(crate::app::engine_label(*engine), label_width),
-                    label_style,
-                ),
+                Span::styled(fit(item.label(), inner.saturating_sub(2)), label_style),
             ])
         })
         .collect();
@@ -206,9 +230,49 @@ pub fn draw_engine_menu(frame: &mut Frame, app: &mut App) {
         Style::new().bg(theme.bg_base).fg(theme.text_primary),
     );
     frame.render_widget(Paragraph::new(lines).block(overlay::panel(theme)), area);
-    if let Some(menu) = app.engine_menu.as_mut() {
-        menu.area = area;
+    draw_legend_tip(frame, theme, area, selected, description);
+}
+
+/// 高亮项的一句说明：贴菜单侧边的小提示框，文本行与高亮条目行垂直对齐。
+/// 图例菜单锚在右缘，优先放菜单左侧；左、右都放不下才放弃。
+fn draw_legend_tip(
+    frame: &mut Frame,
+    theme: &Theme,
+    menu_area: Rect,
+    selected: usize,
+    description: &str,
+) {
+    if description.is_empty() {
+        return;
     }
+    let frame_area = frame.area();
+    let tip_w = u16::try_from(str_width(description) + 4).unwrap_or(u16::MAX);
+    let item_y = menu_area.y + 1 + u16::try_from(selected).unwrap_or(0);
+    let y = item_y.saturating_sub(1).max(frame_area.y);
+    let x = if let Some(x) = menu_area.x.checked_sub(tip_w + 1) {
+        x
+    } else if menu_area.right() + 1 + tip_w <= frame_area.right() {
+        menu_area.right() + 1
+    } else {
+        return;
+    };
+    let area = Rect::new(x, y, tip_w.min(frame_area.right().saturating_sub(x)), 3);
+    if area.width < 4 {
+        return;
+    }
+    overlay::paint_opaque(
+        frame.buffer_mut(),
+        area,
+        Style::new().bg(theme.bg_base).fg(theme.text_primary),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            fit(description, overlay::content_width(area.width)),
+            Style::new().fg(theme.text_secondary),
+        )))
+        .block(overlay::panel(theme)),
+        area,
+    );
 }
 
 /// 通用模态的正文产物：正文行（已按正文宽度折好/截好、不超过可见行数）、
@@ -4280,7 +4344,7 @@ mod tests {
         let mut app = App::new(Theme::global(), events);
         app.engine_menu = Some(EngineMenu {
             selected: 0,
-            engines: crate::app::ENGINES.to_vec(),
+            items: crate::app::ENGINES.to_vec(),
             area: Rect::default(),
         });
         app.engine_area = Rect::new(50, 20, 10, 1);
@@ -4303,6 +4367,15 @@ mod tests {
         for y in menu_area.y..menu_area.y + menu_area.height {
             for x in menu_area.x..menu_area.x + menu_area.width {
                 let cell = buffer.cell((x, y)).expect("单元格存在");
+                // 宽字符的尾格：渲染时被引导格盖住，diff 不冲刷，backend 里留着
+                // 初始 EMPTY（Reset）；上屏时显示的是引导格的右半，不算穿透。
+                if x > menu_area.x
+                    && crate::render::str_width(
+                        buffer.cell((x - 1, y)).expect("单元格存在").symbol(),
+                    ) > 1
+                {
+                    continue;
+                }
                 assert_ne!(
                     cell.bg,
                     Color::Reset,
