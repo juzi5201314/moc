@@ -6,6 +6,7 @@ authors = ["soeur@soeur.dev@gmail.com"]
 default-run = "moc"
 
 [dependencies]
+moc-acp = { path = "../moc-acp" }
 moc-core = { path = "../moc-core" }
 moc-protocol = { path = "../moc-protocol" }
 moc-ptc-worker = { path = "../moc-ptc-worker" }

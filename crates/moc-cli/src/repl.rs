@@ -45,7 +45,10 @@ fn input_reader() -> Input {
     Arc::new(AsyncMutex::new(receiver))
 }
 
-pub async fn run(args: CliArgs, web: bool) -> anyhow::Result<()> {
+pub async fn run(args: CliArgs, frontend: crate::Frontend) -> anyhow::Result<()> {
+    if frontend == crate::Frontend::Acp {
+        validate_acp_args(&args)?;
+    }
     let config = make_core_config(&args)?;
     if args.models {
         for model in resolve_models(&config)? {
@@ -61,7 +64,7 @@ pub async fn run(args: CliArgs, web: bool) -> anyhow::Result<()> {
     // TerminalGuard Drop 恢复终端、连接 Drop 触发收尾），再统一执行 core.shutdown()，
     // 保证 raw mode 与 MCP 子进程都不因信号退出而丢失。
     let result = tokio::select! {
-        result = run_frontend(Arc::clone(&core), args, web) => result,
+        result = run_frontend(Arc::clone(&core), args, frontend) => result,
         signal = termination_signal() => {
             eprintln!("收到 {signal}，正在退出");
             Ok(())
@@ -71,9 +74,61 @@ pub async fn run(args: CliArgs, web: bool) -> anyhow::Result<()> {
     result
 }
 
-/// 跑选定的前端：`moc web`、TUI（默认）或行式 REPL / print。
-async fn run_frontend(core: Arc<Core>, args: CliArgs, web: bool) -> anyhow::Result<()> {
-    if web {
+/// `moc acp` 下没有意义的 CLI 参数：会话与提示都由 ACP 客户端驱动。
+fn validate_acp_args(args: &CliArgs) -> anyhow::Result<()> {
+    let mut bad = Vec::new();
+    if args.prompt.is_some() {
+        bad.push("提示词");
+    }
+    if args.resume.is_some() {
+        bad.push("--resume");
+    }
+    if args.continue_session {
+        bad.push("--continue");
+    }
+    if args.list {
+        bad.push("--list");
+    }
+    if args.models {
+        bad.push("--models");
+    }
+    if args.print {
+        bad.push("--print");
+    }
+    if args.repl {
+        bad.push("--repl");
+    }
+    if args.detail.is_some() {
+        bad.push("--detail");
+    }
+    if args.hide_thinking {
+        bad.push("--hide-thinking");
+    }
+    if args.port.is_some() || args.token.is_some() || args.no_open {
+        bad.push("web 选项");
+    }
+    anyhow::ensure!(bad.is_empty(), "moc acp 不支持这些参数：{}", bad.join("、"));
+    Ok(())
+}
+
+/// 跑选定的前端：`moc web`、`moc acp`、TUI（默认）或行式 REPL / print。
+async fn run_frontend(
+    core: Arc<Core>,
+    args: CliArgs,
+    frontend: crate::Frontend,
+) -> anyhow::Result<()> {
+    if frontend == crate::Frontend::Acp {
+        return moc_acp::serve(
+            core,
+            moc_acp::AcpOptions {
+                model: args.model.clone(),
+                engine: args.engine.into(),
+                plan: args.plan,
+            },
+        )
+        .await;
+    }
+    if frontend == crate::Frontend::Web {
         let token = args
             .token
             .clone()

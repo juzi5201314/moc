@@ -12,13 +12,21 @@ pub mod update;
 
 pub use args::CliArgs;
 
-pub async fn run(config: CliArgs, web: bool) -> anyhow::Result<()> {
-    // TUI 有 moc-tui 自己的文件日志；行式前端（REPL / print / --list）此前没有订阅者，
-    // 内核的 warn/error（例如 MCP 配置解析失败）会直接消失。
-    if web || !repl::use_tui(&config) {
+/// 前端形态：`moc`（默认 TUI / REPL / print）、`moc web`、`moc acp`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Frontend {
+    Default,
+    Web,
+    Acp,
+}
+
+pub async fn run(config: CliArgs, frontend: Frontend) -> anyhow::Result<()> {
+    // TUI 有 moc-tui 自己的文件日志；行式前端（REPL / print / --list / ACP）需要
+    // stderr 订阅者，否则内核的 warn/error（例如 MCP 配置解析失败）会直接消失。
+    if frontend != Frontend::Default || !repl::use_tui(&config) {
         init_logging();
     }
-    repl::run(config, web).await
+    repl::run(config, frontend).await
 }
 
 /// 给行式前端装 stderr 订阅者；已经装过（库被其它前端嵌入）就沿用。

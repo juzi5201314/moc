@@ -26,14 +26,19 @@ fn main() -> anyhow::Result<()> {
             .build()?
             .block_on(moc_cli::update::run(version));
     }
-    // 其余参数保持平铺；`moc web` 只剥掉位置上的子命令名。
-    let web = argv.get(1).is_some_and(|arg| arg == "web");
-    if web {
+    // 其余参数保持平铺；`moc web` / `moc acp` 只剥掉位置上的子命令名。
+    let frontend = match argv.get(1).map(String::as_str) {
+        Some("web") => Some(moc_cli::Frontend::Web),
+        Some("acp") => Some(moc_cli::Frontend::Acp),
+        _ => None,
+    };
+    if frontend.is_some() {
         argv.remove(1);
     }
+    let frontend = frontend.unwrap_or(moc_cli::Frontend::Default);
     // worker 只需要同步 stdio，CLI 路径才创建 Tokio 运行时。
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(moc_cli::run(moc_cli::CliArgs::parse_from(argv), web))
+        .block_on(moc_cli::run(moc_cli::CliArgs::parse_from(argv), frontend))
 }

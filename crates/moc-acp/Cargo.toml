@@ -1,0 +1,21 @@
+[package]
+name = "moc-acp"
+version = "0.1.0"
+edition = "2024"
+authors = ["soeur@soeur.dev@gmail.com"]
+
+[dependencies]
+moc-core = { path = "../moc-core" }
+moc-protocol = { path = "../moc-protocol" }
+agent-client-protocol = { version = "=3.6.0", features = ["stdio"] }
+anyhow.workspace = true
+# 会话列表里的 updated_at 要 RFC 3339 文本；只用时间戳转换，不需要时钟。
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
