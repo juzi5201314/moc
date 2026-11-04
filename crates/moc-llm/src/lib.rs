@@ -64,6 +64,7 @@ pub mod stream;
 pub mod types;
 
 pub use client::{Client, ClientBuilder};
+pub use codec::{RequestInspection, RequestSource, inspect_request};
 pub use config::{
     Auth, CacheConfig, CacheTtl, EndpointStyle, InstructionBlock, LlmConfig, MaxTokensField,
     Protocol, ResponseFormatDialect, ThinkingWire, ToolChoiceDialect, WireConfig,

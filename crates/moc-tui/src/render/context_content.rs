@@ -1,9 +1,5 @@
-//! 上下文正文窗：分块着色标题、折叠正文与可拖拽滚动条。
-//!
-//! 分块表由 core 给（`session/context_content`），这里只负责排版：每块一行标题
-//! （色标 + 折叠标记 + 短名 + token），正文按列宽预折行；超过
-//! [`CONTEXT_COLLAPSED_LINES`] 的块默认折叠成「还有 N 行」提示，点击标题或正文
-//! 任意一行都能展开。
+//! 当前上下文窗口：按需目录树、原文分页与可拖拽滚动条。
+//! 折叠节点只绘制标题，正文在展开加载后按页缓存折行。
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -12,9 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::App;
-use crate::modal::{
-    CONTEXT_COLLAPSED_LINES, ContextContentState, ContextLayout, ContextScrollbar, Modal,
-};
+use crate::modal::{ContextContentState, ContextLayout, ContextScrollbar, Modal};
 use crate::render::labels::KeyHit;
 use crate::render::overlay;
 use crate::render::wrap::{str_width, wrap_text};
@@ -24,8 +18,6 @@ use crate::theme::Theme;
 const CONTEXT_MAX_WIDTH: u16 = 120;
 /// 正文窗最大高度（行）。
 const CONTEXT_MAX_HEIGHT: u16 = 40;
-/// 正文列相对色标的缩进（格）。
-const CONTEXT_INDENT: usize = 2;
 /// 标题行里 token 列与名字之间的最少间隔（格）。
 const CONTEXT_TITLE_GAP: usize = 2;
 
@@ -61,7 +53,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     // 卡片内区（边框与左右内边距之内）：总览行、空行、正文、空行、提示条。
     let panel = overlay::panel(theme).title(overlay::title_span(
-        "上下文内容",
+        "当前上下文",
         usize::from(area.width.saturating_sub(4)),
         theme,
     ));
@@ -83,12 +75,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         .as_ref()
         .is_none_or(|layout| layout.width != content_width)
     {
-        state.layout = Some(build_layout(
-            state.sections(),
-            &state.expanded,
-            content_width,
-            theme,
-        ));
+        state.layout = Some(build_layout(state, content_width, theme));
     }
     state.viewport = usize::from(body.height);
     // 上面保证缓存存在：分块或列宽变化时刚重建，其余情况沿用上一帧。
@@ -193,7 +180,7 @@ fn draw_overview(frame: &mut Frame, inner: Rect, state: &ContextContentState, th
                 Style::new().fg(theme.gray),
             ),
             Span::styled(
-                format!(" · {} 个分块", content.sections.len()),
+                format!(" · 估算 · {} · {}", content.model, content.protocol),
                 Style::new().fg(theme.gray),
             ),
         ])),
@@ -214,7 +201,8 @@ fn draw_footer(
     } else if state.content.is_some() {
         overlay::footer(
             &[
-                ("e/c", "全部展开/收起"),
+                ("p/n/m", "上页/下页/目录"),
+                ("r/c", "刷新/收起"),
                 ("", "点击分块展开/收起"),
                 ("tab", "切换"),
                 ("↑↓/pgup/pgdn", "滚动"),
@@ -267,57 +255,99 @@ fn thumb_height(viewport: usize, total: usize) -> u16 {
 }
 
 /// 分块列表 → 渲染行；每块一行标题、若干正文行、可选提示行，块间空一行。
-fn build_layout(
-    sections: &[moc_protocol::methods::ContextContentSection],
-    expanded: &[bool],
-    width: usize,
-    theme: &Theme,
-) -> ContextLayout {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut spans = Vec::with_capacity(sections.len());
-    for (index, section) in sections.iter().enumerate() {
+fn build_layout(state: &mut ContextContentState, width: usize, theme: &Theme) -> ContextLayout {
+    let mut lines = Vec::new();
+    let mut spans = Vec::with_capacity(state.count());
+    for index in 0..state.count() {
+        let section = state.sections()[index].clone();
         let start = lines.len();
-        let body = wrap_body(&section.text, width.saturating_sub(CONTEXT_INDENT));
-        let foldable = body.len() > CONTEXT_COLLAPSED_LINES;
-        let folded = foldable && !expanded.get(index).copied().unwrap_or(false);
+        let indent = state.depths[index] * 2;
+        let mut title = section.clone();
+        title.name = format!(
+            "{}{}{}",
+            "  ".repeat(state.depths[index]),
+            section
+                .role
+                .as_ref()
+                .map(|r| format!("{r} · "))
+                .unwrap_or_default(),
+            section.name
+        );
+        if let Some(source) = &section.source {
+            title.name.push_str(" · ");
+            title
+                .name
+                .push_str(source.split(" · ").next().unwrap_or(source));
+        }
         lines.push(title_line(
             index,
-            section,
+            &title,
             width,
-            foldable.then_some(folded),
+            Some(!state.expanded[index]),
             theme,
         ));
-        let shown = if folded {
-            CONTEXT_COLLAPSED_LINES
-        } else {
-            body.len()
-        };
-        for text in body.iter().take(shown) {
-            lines.push(indented_line(text, CONTEXT_INDENT, theme.text_secondary));
+        if state.expanded[index] {
+            if let Some(error) = state.node_errors.get(&section.id) {
+                lines.push(indented_line(
+                    &format!("{error} · n 重试"),
+                    indent + 2,
+                    theme.accent_error,
+                ));
+            } else if let Some(page) = state.pages.get(&section.id) {
+                if let Some(text) = &page.text {
+                    let body_width = width.saturating_sub(indent + 2).max(1);
+                    let cached = state
+                        .body_cache
+                        .entry(section.id.clone())
+                        .or_insert_with(|| (body_width, wrap_body(text, body_width)));
+                    if cached.0 != body_width {
+                        *cached = (body_width, wrap_body(text, body_width));
+                    }
+                    if let Some([start, end]) = section.text_range {
+                        lines.push(indented_line(
+                            &format!("{} · 原文字节 {start}–{end}", section.path),
+                            indent + 2,
+                            theme.gray,
+                        ));
+                    }
+                    if let Some(source) = &section.source {
+                        lines.push(indented_line(source, indent + 2, theme.gray));
+                    }
+                    for source in &page.sources {
+                        lines.push(indented_line(
+                            &format!("{} · 字节 {}–{}", source.source, source.start, source.end),
+                            indent + 2,
+                            theme.gray,
+                        ));
+                    }
+                    for text in &cached.1 {
+                        lines.push(indented_line(text, indent + 2, theme.text_secondary));
+                    }
+                }
+                if page.next_cursor.is_some()
+                    || state
+                        .previous
+                        .get(&section.id)
+                        .is_some_and(|pages| !pages.is_empty())
+                {
+                    lines.push(indented_line(
+                        "p 上一页 · n 下一页（每页完整保留原文）",
+                        indent + 2,
+                        theme.accent_running,
+                    ));
+                }
+            } else {
+                lines.push(indented_line("正在读取…", indent + 2, theme.gray));
+            }
         }
-        if folded {
-            let rest = body.len() - shown;
-            lines.push(indented_line(
-                &format!("… 还有 {rest} 行 · 点击展开"),
-                CONTEXT_INDENT,
-                theme.gray_dim,
-            ));
-        } else if foldable {
-            lines.push(indented_line("… 点击收起", CONTEXT_INDENT, theme.gray_dim));
-        }
-        if section.truncated_bytes > 0 {
-            lines.push(indented_line(
-                &format!(
-                    "… 正文超过单块上限，已截断 {} 字节",
-                    section.truncated_bytes
-                ),
-                CONTEXT_INDENT,
-                theme.accent_warning,
-            ));
-        }
-        // 块间空行：折叠状态下分块边界才看得清。
-        lines.push(Line::default());
         spans.push(start..lines.len());
+    }
+    if state
+        .content
+        .as_ref()
+        .is_some_and(|c| c.next_cursor.is_some())
+    {
+        lines.push(indented_line("m 继续读取消息目录", 0, theme.accent_running));
     }
     ContextLayout {
         width,
@@ -341,8 +371,12 @@ fn title_line(
         Some(true) => "▸ ",
         Some(false) => "▾ ",
     };
-    let name = format!("{marker}{}", section.name);
     let tokens = crate::render::format_tokens(section.tokens);
+    let name = crate::render::wrap::truncate(
+        &format!("{marker}{}", section.name),
+        width.saturating_sub(1 + CONTEXT_TITLE_GAP + str_width(&tokens)),
+    )
+    .into_owned();
     let head = 1 + str_width(&name);
     let pad = width.saturating_sub(head + CONTEXT_TITLE_GAP + str_width(&tokens));
     let style = Style::new()
@@ -383,10 +417,11 @@ mod tests {
 
     fn section(name: &str, text: &str) -> ContextContentSection {
         ContextContentSection {
+            id: name.into(),
             name: name.into(),
-            text: text.into(),
+            bytes: text.len() as u64,
             tokens: 42,
-            truncated_bytes: 0,
+            ..Default::default()
         }
     }
 
@@ -405,6 +440,7 @@ mod tests {
             context_window: 500_000,
             total_tokens: 12_345,
             sections,
+            ..Default::default()
         });
         app.modal = Some(Modal::ContextContent { state });
         app
@@ -465,15 +501,21 @@ mod tests {
         let flat = compact(&text);
         assert!(flat.contains("intro") && flat.contains("toolpolicy"));
         assert!(flat.contains("▸toolpolicy"), "长块折叠时带折叠标记");
-        assert!(flat.contains("正文行6"), "折叠块保留前 6 行");
-        assert!(!flat.contains("正文行7"), "第 7 行要折起来");
-        assert!(flat.contains("还有14行·点击展开"));
+        assert!(!flat.contains("正文行"), "折叠块不渲染正文");
+        assert!(!flat.contains("很短的一段"), "短块也完全折叠");
         assert!(flat.contains("12.35k/500k"), "总览行沿用占用口径");
 
         let Some(Modal::ContextContent { state }) = app.modal.as_mut() else {
             panic!("正文窗应保持打开");
         };
+        assert!(state.body_cache.is_empty(), "折叠目录不折行正文");
         state.toggle(1);
+        assert_eq!(state.loads, vec![("tool policy".into(), None)]);
+        state.apply_page(moc_protocol::methods::ContextReadResult {
+            node_id: "tool policy".into(),
+            text: Some(long.join("\n")),
+            ..Default::default()
+        });
         // 展开后整块高过视口：先重排（缓存作废），再滚到底看尾部。
         let flat = compact(&draw_text(&mut app, 100, 30));
         assert!(flat.contains("▾toolpolicy"), "展开后标记翻转");
@@ -484,7 +526,7 @@ mod tests {
         state.scroll_to_edge(true);
         let flat = compact(&draw_text(&mut app, 100, 30));
         assert!(flat.contains("正文行20"), "滚到底能读到末行");
-        assert!(flat.contains("…点击收起"));
+        assert!(flat.contains("正文行20"), "整页末尾未截断");
     }
 
     /// 正文溢出时右缘出现滑块，拖拽列始终占位。
@@ -496,6 +538,11 @@ mod tests {
             panic!("正文窗应保持打开");
         };
         state.set_all_expanded(true);
+        state.apply_page(moc_protocol::methods::ContextReadResult {
+            node_id: "messages".into(),
+            text: Some(long.join("\n")),
+            ..Default::default()
+        });
         let _ = draw_text(&mut app, 100, 30);
         let Some(Modal::ContextContent { state }) = app.modal.as_mut() else {
             panic!("正文窗应保持打开");

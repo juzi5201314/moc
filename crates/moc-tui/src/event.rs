@@ -29,9 +29,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::app::{App, ChartHit, CtrlCPending, Focus, LegendMenu, ScrollbackDrag};
 use crate::commands::CommandId;
 use crate::input::{InputEvent, InputThread};
-use crate::modal::{
-    CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal, PlanPane, SessionScope,
-};
+use crate::modal::{ContextContentState, ContextDrag, Modal, PlanPane, SessionScope};
 use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_embedded};
 use crate::render;
 use crate::render::wrap::str_width;
@@ -624,30 +622,62 @@ fn open_context_content(app: &mut App, connection: &EmbeddedConnection) {
         app.set_notice("当前没有活动会话");
         return;
     };
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let request = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     app.modal = Some(Modal::ContextContent {
-        state: ContextContentState::default(),
+        state: ContextContentState {
+            request,
+            session_id: session_id.clone(),
+            ..Default::default()
+        },
     });
     let client = connection.client.clone();
     let events = app.events.clone();
     tokio::spawn(async move {
         let result = client
             .call::<SessionContextContent>(SessionContextContentParams {
-                session_id,
-                max_section_bytes: Some(CONTEXT_SECTION_BYTES),
+                session_id: session_id.clone(),
+                ..Default::default()
             })
             .await
             .map_err(anyhow::Error::from);
-        let _ = events.send(AppEvent::ContextContent(result));
+        let _ = events.send(AppEvent::ContextContent {
+            request,
+            session_id,
+            result,
+        });
     });
 }
 
 /// 上下文正文回执：只落进仍然开着的正文窗（用户可能已经关掉或换了模态）。
 fn apply_context_content(
     app: &mut App,
+    request: u64,
     result: anyhow::Result<moc_protocol::methods::ContextContentResult>,
 ) {
     if let Some(Modal::ContextContent { state }) = app.modal.as_mut() {
+        if state.request != request {
+            return;
+        }
         match result {
+            Ok(mut content)
+                if state
+                    .content
+                    .as_ref()
+                    .is_some_and(|old| old.view_id == content.view_id) =>
+            {
+                state
+                    .expanded
+                    .extend(std::iter::repeat_n(false, content.sections.len()));
+                state
+                    .depths
+                    .extend(std::iter::repeat_n(0, content.sections.len()));
+                let old = state.content.as_mut().unwrap();
+                old.sections.append(&mut content.sections);
+                old.next_cursor = content.next_cursor;
+                state.pending.remove("");
+                state.layout = None;
+            }
             Ok(content) => state.set_content(content),
             Err(error) => state.set_error(error.to_string()),
         }
@@ -1008,8 +1038,20 @@ async fn event_loop(
                             *current = Some(usage);
                         }
                     }
-                    Some(AppEvent::ContextContent(result)) => {
-                        apply_context_content(app, result);
+                    Some(AppEvent::ContextContent { request, session_id, result }) => {
+                        if !matches!(&app.modal, Some(Modal::ContextContent{state}) if state.request==request) {
+                            if let Ok(content)=result {
+                                let client=connection.client.clone();
+                                tokio::spawn(async move {let _=client.call::<moc_protocol::methods::SessionContextClose>(moc_protocol::methods::SessionContextCloseParams{session_id,view_id:content.view_id}).await;});
+                            }
+                        } else {apply_context_content(app, request, result);}
+                    }
+                    Some(AppEvent::ContextRead { request, view_id, node_id, result }) => {
+                        if let Some(Modal::ContextContent { state })=app.modal.as_mut()
+                            && state.request==request && state.content.as_ref().is_some_and(|c|c.view_id==view_id) {
+                            state.pending.remove(&node_id);
+                            match result { Ok(page)=>state.apply_page(page), Err(error)=>{state.node_errors.insert(node_id,error.to_string());state.layout=None;} }
+                        }
                     }
                     Some(AppEvent::Sessions(sessions)) => {
                         app.modal = Some(Modal::Sessions {
@@ -1235,6 +1277,13 @@ async fn event_loop(
 
 /// 终端事件分派（键盘、鼠标、粘贴与窗口变化）。
 fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: Event) {
+    let previous_context = match &app.modal {
+        Some(Modal::ContextContent { state }) => state
+            .content
+            .as_ref()
+            .map(|c| (state.request, state.session_id.clone(), c.view_id.clone())),
+        _ => None,
+    };
     if app.settings.is_some() && app.modal.is_none() {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -1297,6 +1346,90 @@ fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: 
             app.todo_hud.on_focus_lost();
         }
         _ => {}
+    }
+    flush_context_loads(app, connection);
+    if let Some((request, session_id, view_id)) = previous_context
+        && !matches!(&app.modal,Some(Modal::ContextContent{state}) if state.request==request)
+    {
+        let client = connection.client.clone();
+        tokio::spawn(async move {
+            let _ = client
+                .call::<moc_protocol::methods::SessionContextClose>(
+                    moc_protocol::methods::SessionContextCloseParams {
+                        session_id,
+                        view_id,
+                    },
+                )
+                .await;
+        });
+    }
+}
+
+fn flush_context_loads(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(Modal::ContextContent { state }) = app.modal.as_mut() else {
+        return;
+    };
+    if state.refresh {
+        open_context_content(app, connection);
+        return;
+    }
+    let Some(content) = &state.content else {
+        return;
+    };
+    let view_id = content.view_id.clone();
+    let request = state.request;
+    let session_id = state.session_id.clone();
+    if std::mem::take(&mut state.root_more)
+        && content.next_cursor.is_some()
+        && state.pending.insert(String::new())
+    {
+        let cursor = content.next_cursor;
+        let view_id = view_id.clone();
+        let session_id = session_id.clone();
+        let client = connection.client.clone();
+        let events = app.events.clone();
+        tokio::spawn(async move {
+            let result = client
+                .call::<SessionContextContent>(SessionContextContentParams {
+                    session_id: session_id.clone(),
+                    view_id: Some(view_id),
+                    cursor,
+                    limit: None,
+                })
+                .await
+                .map_err(anyhow::Error::from);
+            let _ = events.send(AppEvent::ContextContent {
+                request,
+                session_id,
+                result,
+            });
+        });
+    }
+    for (node_id, cursor) in std::mem::take(&mut state.loads) {
+        let client = connection.client.clone();
+        let events = app.events.clone();
+        let view_id = view_id.clone();
+        let session_id = session_id.clone();
+        tokio::spawn(async move {
+            let result = client
+                .call::<moc_protocol::methods::SessionContextRead>(
+                    moc_protocol::methods::SessionContextReadParams {
+                        session_id,
+                        view_id: view_id.clone(),
+                        node_id: node_id.clone(),
+                        cursor,
+                        limit: None,
+                    },
+                )
+                .await
+                .map_err(anyhow::Error::from);
+            let _ = events.send(AppEvent::ContextRead {
+                request,
+                view_id,
+                node_id,
+                result,
+            });
+        });
     }
 }
 fn current_token_range(prompt: &crate::widgets::prompt::PromptState) -> Range<usize> {
@@ -4357,6 +4490,10 @@ fn handle_modal_key(
                     state.toggle(index);
                 }
             }
+            (KeyCode::Char('p'), KeyModifiers::NONE) => state.previous_page(),
+            (KeyCode::Char('n'), KeyModifiers::NONE) => state.next_page(),
+            (KeyCode::Char('m'), KeyModifiers::NONE) => state.root_more = true,
+            (KeyCode::Char('r'), KeyModifiers::NONE) => state.refresh = true,
             (KeyCode::Char('e'), KeyModifiers::NONE) => state.set_all_expanded(true),
             (KeyCode::Char('c'), KeyModifiers::NONE) => state.set_all_expanded(false),
             (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => close = true,
@@ -7198,17 +7335,23 @@ mod tests {
             .await
             .expect("正文分块应在超时前返回")
             .expect("事件队列未关闭");
-        let AppEvent::ContextContent(result) = event else {
+        let AppEvent::ContextContent {
+            request,
+            session_id,
+            result,
+        } = event
+        else {
             panic!("应收到上下文正文事件");
         };
+        assert_eq!(app.session.as_ref().unwrap().id, session_id);
         let content = result.expect("读取上下文正文");
         assert!(content.total_tokens > 0);
         assert!(
             content
                 .sections
                 .iter()
-                .any(|section| section.name == "intro"),
-            "系统提示片段必须在分块里"
+                .any(|section| section.role.as_deref() == Some("system")),
+            "实际 system 消息必须在目录里"
         );
         assert!(
             content.sections.iter().all(|section| !matches!(
@@ -7218,7 +7361,7 @@ mod tests {
             "空会话不该有消息分块"
         );
 
-        apply_context_content(&mut app, Ok(content));
+        apply_context_content(&mut app, request, Ok(content));
         let Some(Modal::ContextContent { state }) = app.modal.as_ref() else {
             panic!("正文窗应保持打开");
         };
@@ -7229,10 +7372,12 @@ mod tests {
         app.modal = None;
         apply_context_content(
             &mut app,
+            request,
             Ok(ContextContentResult {
                 context_window: 1,
                 total_tokens: 1,
                 sections: Vec::new(),
+                ..Default::default()
             }),
         );
         assert!(app.modal.is_none());
@@ -7253,12 +7398,13 @@ mod tests {
             total_tokens: 1_000,
             sections: (0..3)
                 .map(|index| ContextContentSection {
+                    id: index.to_string(),
                     name: format!("block{index}"),
-                    text: "正文".into(),
                     tokens: 10,
-                    truncated_bytes: 0,
+                    ..Default::default()
                 })
                 .collect(),
+            ..Default::default()
         });
         state.viewport = 10;
         state.layout = Some(ContextLayout {

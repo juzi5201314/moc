@@ -324,45 +324,105 @@ pub struct ContextUsageResult {
     pub sections: Vec<ContextUsageSection>,
 }
 
-/// `session/context_content` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// 打开当前上下文；指定 view_id 时只读取已冻结视图的后续目录页。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionContextContentParams {
-    /// 目标会话。
     pub session_id: String,
-    /// 单个分块正文的字节上限；超出按字符边界截断，被丢弃的字节数记入
-    /// [`ContextContentSection::truncated_bytes`]。`None` 表示不截断。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_section_bytes: Option<u32>,
+    #[serde(default)]
+    pub view_id: Option<String>,
+    #[serde(default)]
+    pub cursor: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
-/// 上下文正文的一个分块。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// 实际编码请求中的节点；目录不携带正文。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextContentSection {
-    /// 分块短名（1-3 个英文单词），直接显示在正文窗的标题行。
+    pub id: String,
+    pub path: String,
+    /// 可视化来源子块在 path 指向的原文中的 UTF-8 字节范围；不是新增的线上字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_range: Option<[u64; 2]>,
     pub name: String,
-    /// 分块正文；截断时以 `…` 收尾。
-    pub text: String,
-    /// 该分块单独估算的 token；消息与工具数组的固定开销不摊到分块上，
-    /// 合计口径见 [`ContextContentResult::total_tokens`]。
+    pub kind: String,
+    pub role: Option<String>,
+    pub source: Option<String>,
+    pub bytes: u64,
     pub tokens: u64,
-    /// 被截断丢弃的字节数；`0` 表示正文完整。
-    #[serde(default)]
-    pub truncated_bytes: u64,
+    pub children: u64,
 }
 
-/// 当前上下文里的真实正文，顺序即送入模型的顺序。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextContentResult {
-    /// 模型上下文窗口上限。
+    pub view_id: String,
     pub context_window: u64,
-    /// 与 `session/context` 同口径的合计估算 token。
     pub total_tokens: u64,
-    /// 系统提示片段、工具 schema、注入消息与转写消息。
+    pub model: String,
+    pub protocol: String,
     pub sections: Vec<ContextContentSection>,
+    pub next_cursor: Option<u64>,
+    /// 编码器拒绝尚不完整的当前状态时给出原因，不补造消息。
+    pub error: Option<String>,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionContextReadParams {
+    pub session_id: String,
+    pub view_id: String,
+    pub node_id: String,
+    #[serde(default)]
+    pub cursor: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextSource {
+    pub source: String,
+    /// 完整叶子字符串中的 UTF-8 字节范围，不是当前页相对范围。
+    pub start: u64,
+    pub end: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextReadResult {
+    pub view_id: String,
+    pub node_id: String,
+    pub children: Vec<ContextContentSection>,
+    pub text: Option<String>,
+    pub next_cursor: Option<u64>,
+    pub sources: Vec<ContextSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionContextCloseParams {
+    pub session_id: String,
+    pub view_id: String,
+}
+
+pub struct SessionContextRead;
+impl Method for SessionContextRead {
+    const NAME: &'static str = "session/context_read";
+    type Params = SessionContextReadParams;
+    type Result = ContextReadResult;
+}
+impl ClientRequest for SessionContextRead {}
+
+pub struct SessionContextClose;
+impl Method for SessionContextClose {
+    const NAME: &'static str = "session/context_close";
+    type Params = SessionContextCloseParams;
+    type Result = super::Empty;
+}
+impl ClientRequest for SessionContextClose {}
 
 /// `session/new` 的参数。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -497,6 +497,24 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: SessionContextContentParams,
     ) -> impl Future<Output = Result<ContextContentResult, RpcError>> + Send;
+    /// 按需读取冻结上下文节点，文本按 UTF-8 字节分页。
+    fn session_context_read(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::methods::SessionContextReadParams,
+    ) -> impl Future<Output = Result<crate::methods::ContextReadResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 释放只存在于内存的上下文视图。
+    fn session_context_close(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::methods::SessionContextCloseParams,
+    ) -> impl Future<Output = Result<crate::methods::Empty, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
     /// 返回当前会话各模型的累计调用、token、缓存、思考与激活时间。
     fn session_usage(
         &self,
@@ -651,6 +669,11 @@ pub struct UpdateSink {
 }
 
 impl UpdateSink {
+    /// 等待连接关闭，供连接级临时资源回收使用。
+    pub async fn closed(&self) {
+        self.traffic.closed().cancelled().await;
+    }
+
     /// 推送一条 `session/update` 通知。
     pub async fn emit(
         &self,

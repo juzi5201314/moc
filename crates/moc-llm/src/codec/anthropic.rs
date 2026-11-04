@@ -34,12 +34,24 @@ pub(crate) fn encode(
     req: &ChatRequest,
     stream: bool,
 ) -> Result<EncodedRequest, LlmError> {
+    encode_inspected(cfg, req, stream, None)
+}
+
+pub(super) fn encode_inspected(
+    cfg: &LlmConfig,
+    req: &ChatRequest,
+    stream: bool,
+    sources: Option<&mut Vec<super::RequestSource>>,
+) -> Result<EncodedRequest, LlmError> {
     let max_tokens = req
         .max_output_tokens
         .ok_or_else(|| LlmError::Encode("Anthropic 协议的 max_output_tokens 是必填项".into()))?;
     let plan = echo::plan(cfg, req);
     let mut normalized = normalize(cfg, req, plan)?;
     let cache = apply_cache(req, &mut normalized)?;
+    if let Some(sources) = sources {
+        inspection_sources(req, &normalized, sources);
+    }
 
     let mut body = cfg.extra_body.clone();
     body.insert("model".into(), Value::String(cfg.model.clone()));
@@ -279,6 +291,66 @@ impl Normalized {
             .insert("cache_control".into(), cache_control.clone());
         self.system_override = Some(Value::Array(blocks));
         Ok(())
+    }
+}
+
+/// 从缓存坐标复用原消息到线上内容块的映射；检查时才分配路径。
+fn inspection_sources(
+    req: &ChatRequest,
+    normalized: &Normalized,
+    sources: &mut Vec<super::RequestSource>,
+) {
+    for (index, message) in req.messages.iter().enumerate() {
+        let Some(placement) = normalized.placements[index] else {
+            continue;
+        };
+        match placement {
+            Placement::System { first_block, .. } => {
+                let mut offset = normalized.system_parts[..first_block]
+                    .iter()
+                    .map(|text| text.len() + 2)
+                    .sum::<usize>();
+                for (part, content) in message.content.iter().enumerate() {
+                    let ContentPart::Text(text) = content else {
+                        continue;
+                    };
+                    let (pointer, range) = if normalized.system_override.is_some() {
+                        (
+                            format!("/system/{}/text", first_block + part),
+                            0..text.len(),
+                        )
+                    } else {
+                        ("/system".to_owned(), offset..offset + text.len())
+                    };
+                    super::inspection::source(sources, index, part, pointer, Some(range));
+                    offset += text.len() + 2;
+                }
+            }
+            Placement::Block {
+                message: wire,
+                first_block,
+                ..
+            } => {
+                // Assistant 可能过滤思考块，整条标记来源即可；用户/工具/提醒逐块一一映射。
+                if message.role == Role::Assistant {
+                    super::inspection::source(sources, index, 0, format!("/messages/{wire}"), None);
+                    continue;
+                }
+                for (part, content) in message.content.iter().enumerate() {
+                    let pointer = format!("/messages/{wire}/content/{}", first_block + part);
+                    match content {
+                        ContentPart::Text(text) => super::inspection::source(
+                            sources,
+                            index,
+                            part,
+                            format!("{pointer}/text"),
+                            Some(0..text.len()),
+                        ),
+                        _ => super::inspection::source(sources, index, part, pointer, None),
+                    }
+                }
+            }
+        }
     }
 }
 

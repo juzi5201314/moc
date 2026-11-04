@@ -854,13 +854,6 @@ impl RewindState {
     }
 }
 
-/// 上下文正文窗：分块折叠后的可见行数，超出的部分折叠成「点击展开」提示行。
-pub const CONTEXT_COLLAPSED_LINES: usize = 6;
-
-/// 上下文正文窗：单个分块的正文上限（字节）。超长工具结果不至于把整窗拉成
-/// 几十兆，缺口在分块末尾标出来。
-pub const CONTEXT_SECTION_BYTES: u32 = 256 * 1024;
-
 /// 正文窗的渲染缓存：与分块列表、展开状态和列宽同源。
 #[derive(Debug)]
 pub struct ContextLayout {
@@ -943,14 +936,34 @@ pub struct ContextContentState {
     pub scrollbar: ContextScrollbar,
     /// 滚动条拖拽状态；`Some` 时鼠标横向移动都被它吃掉。
     pub drag: Option<ContextDrag>,
+    pub request: u64,
+    pub session_id: String,
+    pub pages: std::collections::HashMap<String, moc_protocol::methods::ContextReadResult>,
+    pub pending: std::collections::HashSet<String>,
+    pub node_errors: std::collections::HashMap<String, String>,
+    pub loads: Vec<(String, Option<u64>)>,
+    pub root_more: bool,
+    pub refresh: bool,
+    pub depths: Vec<usize>,
+    pub body_cache: std::collections::HashMap<String, (usize, Vec<String>)>,
+    pub cursors: std::collections::HashMap<String, u64>,
+    pub previous: std::collections::HashMap<String, Vec<u64>>,
 }
 
 impl ContextContentState {
     /// 装载结果：全部折叠、焦点清空、视口回到顶部。
     pub fn set_content(&mut self, content: ContextContentResult) {
         self.expanded = vec![false; content.sections.len()];
+        self.depths = vec![0; content.sections.len()];
+        self.error = content.error.clone();
         self.content = Some(content);
-        self.error = None;
+        self.pages.clear();
+        self.pending.clear();
+        self.node_errors.clear();
+        self.loads.clear();
+        self.body_cache.clear();
+        self.cursors.clear();
+        self.previous.clear();
         self.focus = None;
         self.scroll = 0;
         self.layout = None;
@@ -977,16 +990,129 @@ impl ContextContentState {
 
     /// 切换第 `index` 块的展开状态。
     pub fn toggle(&mut self, index: usize) {
-        let Some(flag) = self.expanded.get_mut(index) else {
+        let Some(section) = self.sections().get(index) else {
             return;
         };
-        *flag = !*flag;
+        let id = section.id.clone();
+        if self.expanded[index] {
+            let depth = self.depths[index];
+            let end = (index + 1..self.count())
+                .find(|i| self.depths[*i] <= depth)
+                .unwrap_or(self.count());
+            self.content
+                .as_mut()
+                .unwrap()
+                .sections
+                .drain(index + 1..end);
+            self.expanded.drain(index + 1..end);
+            self.depths.drain(index + 1..end);
+            self.expanded[index] = false;
+        } else {
+            self.expanded[index] = true;
+            if let Some(page) = self.pages.get(&id).cloned() {
+                self.insert_children(index, &page.children);
+            } else {
+                self.queue(id, None);
+            }
+        }
+        self.focus = self
+            .focus
+            .map(|focus| focus.min(self.count().saturating_sub(1)));
         self.layout = None;
     }
 
-    /// 全部展开或全部收起。
+    fn insert_children(&mut self, index: usize, children: &[ContextContentSection]) {
+        let depth = self.depths[index] + 1;
+        self.content
+            .as_mut()
+            .unwrap()
+            .sections
+            .splice(index + 1..index + 1, children.iter().cloned());
+        self.expanded.splice(
+            index + 1..index + 1,
+            std::iter::repeat_n(false, children.len()),
+        );
+        self.depths.splice(
+            index + 1..index + 1,
+            std::iter::repeat_n(depth, children.len()),
+        );
+    }
+
+    fn queue(&mut self, id: String, cursor: Option<u64>) {
+        if self.pending.insert(id.clone()) {
+            self.node_errors.remove(&id);
+            self.loads.push((id, cursor));
+        }
+    }
+
+    pub fn next_page(&mut self) {
+        if let Some(index) = self.focus {
+            let id = self.sections()[index].id.clone();
+            let cursor = self.pages.get(&id).and_then(|page| page.next_cursor);
+            if self.pending.contains(&id) {
+                return;
+            }
+            if self.node_errors.contains_key(&id) {
+                self.queue(id.clone(), self.cursors.get(&id).copied());
+            } else if let Some(cursor) = cursor {
+                let current = self.cursors.get(&id).copied().unwrap_or(0);
+                self.previous.entry(id.clone()).or_default().push(current);
+                self.cursors.insert(id.clone(), cursor);
+                self.queue(id, Some(cursor));
+            }
+        } else {
+            self.root_more = true;
+        }
+    }
+
+    pub fn previous_page(&mut self) {
+        let Some(index) = self.focus else { return };
+        let id = self.sections()[index].id.clone();
+        if self.pending.contains(&id) {
+            return;
+        }
+        if let Some(cursor) = self.previous.get_mut(&id).and_then(Vec::pop) {
+            self.cursors.insert(id.clone(), cursor);
+            self.queue(id, Some(cursor));
+        }
+    }
+
+    pub fn apply_page(&mut self, result: moc_protocol::methods::ContextReadResult) {
+        self.pending.remove(&result.node_id);
+        self.body_cache.remove(&result.node_id);
+        if let Some(index) = self
+            .sections()
+            .iter()
+            .position(|node| node.id == result.node_id)
+        {
+            if self.expanded[index] {
+                let end = (index + 1..self.count())
+                    .find(|i| self.depths[*i] <= self.depths[index])
+                    .unwrap_or(self.count());
+                self.content
+                    .as_mut()
+                    .unwrap()
+                    .sections
+                    .drain(index + 1..end);
+                self.expanded.drain(index + 1..end);
+                self.depths.drain(index + 1..end);
+                self.insert_children(index, &result.children);
+            }
+        }
+        self.pages.insert(result.node_id.clone(), result);
+        self.focus = self
+            .focus
+            .map(|focus| focus.min(self.count().saturating_sub(1)));
+        self.layout = None;
+    }
+
+    /// 收起不会读取正文；展开仅作用于已加载目录。
     pub fn set_all_expanded(&mut self, expanded: bool) {
-        self.expanded.fill(expanded);
+        for index in (0..self.count()).rev() {
+            if self.expanded[index] != expanded {
+                self.toggle(index);
+            }
+        }
         self.layout = None;
     }
 
@@ -1862,12 +1988,13 @@ mod tests {
             sections: ["intro", "tool policy", "read"]
                 .into_iter()
                 .map(|name| ContextContentSection {
+                    id: name.into(),
                     name: name.into(),
-                    text: "正文".into(),
                     tokens: 10,
-                    truncated_bytes: 0,
+                    ..Default::default()
                 })
                 .collect(),
+            ..Default::default()
         });
         assert_eq!(state.count(), 3);
         assert_eq!(state.expanded, vec![false; 3]);

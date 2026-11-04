@@ -991,6 +991,24 @@ impl<S: AgentService> ServerDispatch<S> {
                     .await?;
                 value_from(result)
             }
+            <crate::methods::SessionContextRead as Method>::NAME => {
+                let params = params_from_value::<crate::methods::SessionContextRead>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .session_context_read(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <crate::methods::SessionContextClose as Method>::NAME => {
+                let params = params_from_value::<crate::methods::SessionContextClose>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .session_context_close(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
             <SessionUsage as Method>::NAME => {
                 let params = params_from_value::<SessionUsage>(params)?;
                 let result = self

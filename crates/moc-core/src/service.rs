@@ -113,6 +113,7 @@ pub(crate) struct CoreInner {
     pub config_epoch: tokio::sync::RwLock<()>,
     pub provider_gates: RwLock<HashMap<String, Arc<crate::concurrency::Gate>>>,
     pub client: Client,
+    pub context_views: parking_lot::Mutex<context::Views>,
     pub sessions: Arc<SessionTable>,
     pub tools: ToolRegistry,
     pub capabilities: RwLock<HashMap<u64, ClientCapabilities>>,
@@ -654,6 +655,7 @@ impl Core {
                 config_epoch: tokio::sync::RwLock::new(()),
                 provider_gates: RwLock::new(HashMap::new()),
                 client: config.client,
+                context_views: parking_lot::Mutex::new(context::Views::default()),
                 sessions,
                 tools: ToolRegistry::new(),
                 capabilities: RwLock::new(HashMap::new()),
@@ -1701,6 +1703,10 @@ impl AgentService for Core {
         self.inner
             .sessions
             .unload_locked(&params.session_id, &record);
+        self.inner
+            .context_views
+            .lock()
+            .remove_session(&params.session_id);
         self.inner.runtimes.lock().await.remove(&params.session_id);
         Ok(Empty {})
     }
@@ -1777,6 +1783,10 @@ impl AgentService for Core {
             .delete_locked(&params.session_id, &record)
             .await
             .map_err(to_rpc)?;
+        self.inner
+            .context_views
+            .lock()
+            .remove_session(&params.session_id);
         self.inner.runtimes.lock().await.remove(&params.session_id);
         Ok(Empty {})
     }
@@ -2475,6 +2485,20 @@ impl AgentService for Core {
         params: SessionContextContentParams,
     ) -> Result<ContextContentResult, RpcError> {
         context::content(&self.inner, ctx, params).await
+    }
+    async fn session_context_read(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::methods::SessionContextReadParams,
+    ) -> Result<moc_protocol::methods::ContextReadResult, RpcError> {
+        context::read(&self.inner, ctx, params).await
+    }
+    async fn session_context_close(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::methods::SessionContextCloseParams,
+    ) -> Result<Empty, RpcError> {
+        context::close(&self.inner, ctx, params).await
     }
     async fn session_usage(
         &self,

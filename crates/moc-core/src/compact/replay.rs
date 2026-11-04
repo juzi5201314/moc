@@ -216,24 +216,62 @@ pub fn model_messages(
     system: Option<&[Message]>,
     model: Option<&crate::ResolvedModel>,
 ) -> Vec<Message> {
+    model_messages_traced(state, system, model, None)
+}
+
+/// 检查窗口按构造来源标记消息；发送路径传 None，不额外分配标记。
+pub(crate) fn model_messages_traced(
+    state: &SessionState,
+    system: Option<&[Message]>,
+    model: Option<&crate::ResolvedModel>,
+    mut sources: Option<&mut Vec<String>>,
+) -> Vec<Message> {
     let mut messages = Vec::with_capacity(2);
     if let Some(system) = system {
         messages.extend_from_slice(system);
+        if let Some(sources) = sources.as_deref_mut() {
+            sources.extend(system.iter().map(|_| "系统提示".to_owned()));
+        }
     }
     if state.engine == moc_protocol::methods::SessionEngine::ClmExperimental
         && let Some(context) = &state.clm_context
     {
         messages.push(crate::clm::message(context));
+        if let Some(sources) = sources.as_deref_mut() {
+            sources.push("CLM 上下文".into());
+        }
         return messages;
     }
-    messages.extend(synthetic_messages(state, None));
+    let synthetic = synthetic_messages(state, None);
+    if let Some(sources) = sources.as_deref_mut() {
+        sources.extend(synthetic.iter().map(|_| "会话状态生成".to_owned()));
+    }
+    messages.extend(synthetic);
     let start = visible_history_start(state);
-    messages.extend(
-        state.transcript[start..]
-            .iter()
-            .filter_map(|entry| entry.context_message())
-            .map(|message| repair_tool_history(message, model)),
-    );
+    for entry in &state.transcript[start..] {
+        let Some(message) = entry.context_message() else {
+            continue;
+        };
+        if let Some(sources) = sources.as_deref_mut() {
+            let source = if entry.agent.is_some() {
+                "代理消息"
+            } else if entry.bash.is_some() {
+                "手动命令"
+            } else if entry.goal_round.is_some() {
+                "目标续跑"
+            } else {
+                match message.role {
+                    Role::Custom => "运行时注入",
+                    Role::User => "用户输入",
+                    Role::Assistant => "模型输出",
+                    Role::Tool => "工具结果",
+                    Role::System | Role::Developer => "指令",
+                }
+            };
+            sources.push(format!("{source} · {}", entry.id));
+        }
+        messages.push(repair_tool_history(message, model));
+    }
     messages
 }
 

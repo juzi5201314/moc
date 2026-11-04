@@ -18,9 +18,11 @@ use self::sse::SseEvent;
 pub(crate) mod anthropic;
 pub(crate) mod chat;
 pub(crate) mod echo;
+mod inspection;
 pub(crate) mod openai;
 pub(crate) mod responses;
 pub(crate) mod sse;
+pub use inspection::{RequestInspection, RequestSource, inspect_request};
 
 /// 编码后的 HTTP 请求。
 #[derive(Debug)]

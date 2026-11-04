@@ -89,7 +89,12 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
         </IconButton>
       </div>
 
-      <div className={cn("min-h-0 flex-1", tab === "btw" ? "flex flex-col" : "overflow-y-auto")}>
+      <div
+        className={cn(
+          "min-h-0 flex-1",
+          tab === "btw" || tab === "context" ? "flex flex-col" : "overflow-y-auto",
+        )}
+      >
         {tab === "changes" && <ChangesTab sessionId={sessionId} />}
         {tab === "plan" && <PlanTab sessionId={sessionId} />}
         {tab === "todo" && <TodoTab sessionId={sessionId} />}

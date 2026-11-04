@@ -487,10 +487,35 @@ export type ContextUsageResult = {
   sections: { name: string; tokens: number }[];
 };
 
+export type ContextNode = {
+  id: string;
+  path: string;
+  text_range?: [number, number];
+  name: string;
+  kind: string;
+  role: string | null;
+  source: string | null;
+  bytes: number;
+  tokens: number;
+  children: number;
+};
 export type ContextContentResult = {
+  view_id: string;
   context_window: number;
   total_tokens: number;
-  sections: { name: string; text: string; tokens: number; truncated_bytes: number }[];
+  model: string;
+  protocol: string;
+  sections: ContextNode[];
+  next_cursor: number | null;
+  error: string | null;
+};
+export type ContextReadResult = {
+  view_id: string;
+  node_id: string;
+  children: ContextNode[];
+  text: string | null;
+  next_cursor: number | null;
+  sources: { source: string; start: number; end: number }[];
 };
 
 export type ModelUsageSummary = {

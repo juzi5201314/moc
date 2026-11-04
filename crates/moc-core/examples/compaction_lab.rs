@@ -203,20 +203,65 @@ async fn snapshot(
     stage: &str,
 ) -> Result<ContextUsageResult> {
     let usage = context(client, session_id).await?;
-    let content = client
+    let mut content = client
         .call::<SessionContextContent>(SessionContextContentParams {
             session_id: session_id.into(),
-            max_section_bytes: None,
+            ..Default::default()
         })
         .await?;
     ensure!(
-        content
-            .sections
-            .iter()
-            .all(|section| section.truncated_bytes == 0),
-        "上下文正文发生截断，拒绝继续实验"
+        content.error.is_none(),
+        "当前上下文不可编码: {:?}",
+        content.error
     );
-    save(output.join(format!("{stage}-context.json")), &content)?;
+    while let Some(cursor) = content.next_cursor {
+        let mut page = client
+            .call::<SessionContextContent>(SessionContextContentParams {
+                session_id: session_id.into(),
+                view_id: Some(content.view_id.clone()),
+                cursor: Some(cursor),
+                limit: None,
+            })
+            .await?;
+        content.sections.append(&mut page.sections);
+        content.next_cursor = page.next_cursor;
+    }
+    let mut nodes = content.sections.clone();
+    let mut pages = Vec::new();
+    while let Some(node) = nodes.pop() {
+        let mut cursor = None;
+        loop {
+            let page = client
+                .call::<moc_protocol::methods::SessionContextRead>(
+                    moc_protocol::methods::SessionContextReadParams {
+                        session_id: session_id.into(),
+                        view_id: content.view_id.clone(),
+                        node_id: node.id.clone(),
+                        cursor,
+                        limit: None,
+                    },
+                )
+                .await?;
+            nodes.extend(page.children.clone());
+            cursor = page.next_cursor;
+            pages.push(page);
+            if cursor.is_none() {
+                break;
+            }
+        }
+    }
+    save(
+        output.join(format!("{stage}-context.json")),
+        &serde_json::json!({"view":content,"pages":pages}),
+    )?;
+    client
+        .call::<moc_protocol::methods::SessionContextClose>(
+            moc_protocol::methods::SessionContextCloseParams {
+                session_id: session_id.into(),
+                view_id: content.view_id,
+            },
+        )
+        .await?;
     save(output.join(format!("{stage}-usage.json")), &usage)?;
     fs::copy(
         &paths.transcript,

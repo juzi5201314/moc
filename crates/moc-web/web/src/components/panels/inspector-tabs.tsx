@@ -2,7 +2,6 @@
 
 import {
   ArrowUpIcon,
-  ChevronRightIcon,
   Loader2Icon,
   PlusIcon,
   RefreshCwIcon,
@@ -16,14 +15,13 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { IconButton } from "@/components/common/icon-button";
 import { Button } from "@/components/ui/button";
 import { formatDuration, relativeTime } from "@/lib/format";
-import { compactTokens, modelName } from "@/lib/models";
+import { modelName } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type {
   AgentInfo,
   AgentListResult,
   AgentStatus,
-  ContextContentResult,
   ModelUsageSummary,
   SessionUsageResult,
 } from "@/protocol/types";
@@ -266,108 +264,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
   );
 }
 
-// ---------- 上下文 ----------
-
-const SECTION_COLORS = [
-  "bg-chart-1",
-  "bg-chart-2",
-  "bg-chart-3",
-  "bg-chart-4",
-  "bg-chart-5",
-  "bg-chart-6",
-];
-
-export function ContextTab({ sessionId }: { sessionId: string }) {
-  const isDraft = sessionId === "draft-session";
-  const seq = useTranscript((state) => state.bySession[sessionId]?.running);
-  const { data, error, loading, reload } = useFetch(`${sessionId}:${String(seq)}`, () =>
-    isDraft
-      ? Promise.resolve(null)
-      : rpc.call<ContextContentResult>("session/context_content", {
-          session_id: sessionId,
-          max_section_bytes: 64_000,
-        }),
-  );
-  const [open, setOpen] = useState<string | null>(null);
-
-  if (isDraft) return <PanelEmpty title="发送第一条消息后可查看上下文" />;
-  if (error) return <PanelError message={error} onRetry={reload} />;
-  if (!data) return <PanelEmpty title="正在读取上下文…" />;
-
-  const window = data.context_window || 1;
-  const percent = Math.min(100, (data.total_tokens / window) * 100);
-
-  return (
-    <div className="flex flex-col">
-      <SectionBar title="模型上下文">
-        <RefreshButton loading={loading} onClick={reload} />
-      </SectionBar>
-      <div className="space-y-2.5 px-4 pb-4">
-        <div className="flex items-baseline justify-between">
-          <span className="text-2xl font-semibold tabular-nums tracking-tight">
-            {percent.toFixed(1)}%
-          </span>
-          <span className="font-mono text-xs text-text-tertiary">
-            {compactTokens(data.total_tokens) || "0"} / {compactTokens(data.context_window)}
-          </span>
-        </div>
-        <div className="flex h-2 overflow-hidden rounded-full bg-muted">
-          {data.sections.map((section, index) => (
-            <div
-              key={section.name}
-              className={SECTION_COLORS[index % SECTION_COLORS.length]}
-              style={{ width: `${(section.tokens / window) * 100}%` }}
-              title={`${section.name} · ${section.tokens.toLocaleString()} tokens`}
-            />
-          ))}
-        </div>
-      </div>
-      <ul className="border-t border-border-subtle">
-        {data.sections.map((section, index) => {
-          const expanded = open === section.name;
-          return (
-            <li key={section.name} className="border-b border-border-subtle">
-              <button
-                type="button"
-                onClick={() => setOpen(expanded ? null : section.name)}
-                className="flex h-10 w-full items-center gap-2.5 px-4 text-left text-ui hover:bg-surface-hover"
-              >
-                <span
-                  className={cn(
-                    "size-2 shrink-0 rounded-sm",
-                    SECTION_COLORS[index % SECTION_COLORS.length],
-                  )}
-                />
-                <span className="min-w-0 flex-1 truncate text-foreground">{section.name}</span>
-                <span className="shrink-0 font-mono text-xs tabular-nums text-text-tertiary">
-                  {section.tokens.toLocaleString()}
-                </span>
-                <ChevronRightIcon
-                  className={cn(
-                    "size-3.5 shrink-0 text-text-tertiary transition-transform",
-                    expanded && "rotate-90",
-                  )}
-                />
-              </button>
-              {expanded && (
-                <div className="px-4 pb-3">
-                  <pre className="max-h-96 overflow-auto rounded-lg bg-code p-3 font-mono text-xs leading-[18px] break-words whitespace-pre-wrap text-foreground/90">
-                    {section.text || "（空）"}
-                  </pre>
-                  {section.truncated_bytes > 0 && (
-                    <p className="mt-1.5 text-2xs text-text-tertiary">
-                      已截断 {section.truncated_bytes.toLocaleString()} 字节
-                    </p>
-                  )}
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
+export { ContextTab } from "./context-tab";
 
 // ---------- 用量 ----------
 

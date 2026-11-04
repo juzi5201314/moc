@@ -35,6 +35,15 @@ pub(crate) fn encode(
     req: &ChatRequest,
     stream: bool,
 ) -> Result<EncodedRequest, LlmError> {
+    encode_inspected(cfg, req, stream, None)
+}
+
+pub(super) fn encode_inspected(
+    cfg: &LlmConfig,
+    req: &ChatRequest,
+    stream: bool,
+    sources: Option<&mut Vec<super::RequestSource>>,
+) -> Result<EncodedRequest, LlmError> {
     let plan = echo::plan(cfg, req);
     let breakpoints = cache_breakpoints(req, req.messages.len())?;
 
@@ -42,7 +51,7 @@ pub(crate) fn encode(
     body.insert("model".into(), Value::String(cfg.model.clone()));
     body.insert(
         "messages".into(),
-        Value::Array(encode_messages(cfg, req, plan, &breakpoints)?),
+        Value::Array(encode_messages(cfg, req, plan, &breakpoints, sources)?),
     );
     if !req.tools.is_empty() {
         body.insert(
@@ -147,9 +156,11 @@ fn encode_messages(
     req: &ChatRequest,
     plan: ReasoningEchoPlan,
     breakpoints: &BTreeSet<usize>,
+    mut sources: Option<&mut Vec<super::RequestSource>>,
 ) -> Result<Vec<Value>, LlmError> {
     let mut out = Vec::with_capacity(req.messages.len());
     for (index, message) in req.messages.iter().enumerate() {
+        let first = out.len();
         let breakpoint = breakpoints.contains(&index);
         match message.role {
             Role::System | Role::Developer => {
@@ -160,6 +171,16 @@ fn encode_messages(
             Role::Assistant => out.push(encode_assistant(cfg, plan, message, breakpoint)?),
             // tool 消息携带的图片无法进入 tool 角色，编码为紧随其后的 user 消息。
             Role::Tool => out.extend(encode_tool_result(cfg, message, breakpoint)?),
+        }
+        if let Some(sources) = sources.as_deref_mut() {
+            super::inspection::openai_sources(
+                sources,
+                index,
+                message,
+                &out[first..],
+                first,
+                "messages",
+            );
         }
     }
     Ok(out)

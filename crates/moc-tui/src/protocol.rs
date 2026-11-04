@@ -114,7 +114,17 @@ pub enum AppEvent {
     /// 上下文估算完成。
     ContextUsage(ContextUsageResult),
     /// 上下文正文读取完成。
-    ContextContent(anyhow::Result<moc_protocol::methods::ContextContentResult>),
+    ContextContent {
+        request: u64,
+        session_id: String,
+        result: anyhow::Result<moc_protocol::methods::ContextContentResult>,
+    },
+    ContextRead {
+        request: u64,
+        view_id: String,
+        node_id: String,
+        result: anyhow::Result<moc_protocol::methods::ContextReadResult>,
+    },
     Sessions(Vec<moc_protocol::SessionInfo>),
     /// 历史展示页；`prepend=true` 时插入当前转写之前。
     HistoryPageLoaded {

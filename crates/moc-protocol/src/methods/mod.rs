@@ -119,22 +119,23 @@ pub use resources::{
     ResourceCandidate, ResourceComplete, ResourceCompleteParams, ResourceCompleteResult,
 };
 pub use session::{
-    CompactResult, ContextContentResult, ContextContentSection, ContextUsageResult,
-    ContextUsageSection, GoalAction, GoalBlockReason, GoalPhase, GoalRoundMeta, GoalView,
-    ModelSwitchOverflow, ModelUsageSummary, ReminderItem, ReminderStamp, SessionAutonomy,
-    SessionCompact, SessionCompactParams, SessionContext, SessionContextContent,
-    SessionContextContentParams, SessionContextParams, SessionDelete, SessionDeleteParams,
-    SessionEngine, SessionGoal, SessionGoalParams, SessionGoalResult, SessionInfo, SessionList,
-    SessionListParams, SessionListResult, SessionLoad, SessionLoadPage, SessionLoadPageParams,
-    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionLockInfo,
-    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission, SessionReask,
-    SessionReaskParams, SessionRedo, SessionRedoParams, SessionRename, SessionRenameParams,
-    SessionRewind, SessionRewindParams, SessionSetAutonomy, SessionSetAutonomyParams,
-    SessionSetEngine, SessionSetEngineParams, SessionSetFastMode, SessionSetFastModeParams,
-    SessionSetModel, SessionSetModelParams, SessionSetModelResult, SessionSetPermission,
-    SessionSetPermissionParams, SessionUnload, SessionUnloadParams, SessionUnlock,
-    SessionUnlockParams, SessionUsage, SessionUsageParams, SessionUsageResult, ToolExecution,
-    ToolStatus, TranscriptChildCall, TranscriptEntry, UsageSource,
+    CompactResult, ContextContentResult, ContextContentSection, ContextReadResult, ContextSource,
+    ContextUsageResult, ContextUsageSection, GoalAction, GoalBlockReason, GoalPhase, GoalRoundMeta,
+    GoalView, ModelSwitchOverflow, ModelUsageSummary, ReminderItem, ReminderStamp, SessionAutonomy,
+    SessionCompact, SessionCompactParams, SessionContext, SessionContextClose,
+    SessionContextCloseParams, SessionContextContent, SessionContextContentParams,
+    SessionContextParams, SessionContextRead, SessionContextReadParams, SessionDelete,
+    SessionDeleteParams, SessionEngine, SessionGoal, SessionGoalParams, SessionGoalResult,
+    SessionInfo, SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadPage,
+    SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
+    SessionLockInfo, SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission,
+    SessionReask, SessionReaskParams, SessionRedo, SessionRedoParams, SessionRename,
+    SessionRenameParams, SessionRewind, SessionRewindParams, SessionSetAutonomy,
+    SessionSetAutonomyParams, SessionSetEngine, SessionSetEngineParams, SessionSetFastMode,
+    SessionSetFastModeParams, SessionSetModel, SessionSetModelParams, SessionSetModelResult,
+    SessionSetPermission, SessionSetPermissionParams, SessionUnload, SessionUnloadParams,
+    SessionUnlock, SessionUnlockParams, SessionUsage, SessionUsageParams, SessionUsageResult,
+    ToolExecution, ToolStatus, TranscriptChildCall, TranscriptEntry, UsageSource,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{
@@ -216,6 +217,11 @@ mod tests {
                 <SessionContextContent as Method>::NAME,
                 "session/context_content",
             ),
+            (<SessionContextRead as Method>::NAME, "session/context_read"),
+            (
+                <SessionContextClose as Method>::NAME,
+                "session/context_close",
+            ),
             (<SessionUsage as Method>::NAME, "session/usage"),
             (<SessionPrompt as Method>::NAME, "session/prompt"),
             (<SessionRetry as Method>::NAME, "session/retry"),
@@ -294,6 +300,8 @@ mod tests {
         client::<AgentWait>();
         client::<SessionCompact>();
         client::<SessionContextContent>();
+        client::<SessionContextRead>();
+        client::<SessionContextClose>();
         server_request::<SessionRequestAsk>();
         server_notification::<SessionUpdateMethod>();
         server_notification::<BtwUpdateMethod>();
