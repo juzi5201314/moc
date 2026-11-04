@@ -153,23 +153,48 @@ pub(crate) fn todo_lines(state: &SessionState) -> TodoLines {
 /// 被否决的方案（`否决了用 lru crate 的 LRU 缓存`、表格里的 `… 迁到 Redis | 否决`）
 /// 既不是路径也不是数字，普通锚点永远抓不到。压缩丢掉它，之后的会话就会把它重新
 /// 提出来。这里单独抽出来，交给校验强制保留。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DecisionSource {
+    User,
+    Assistant,
+    Checkpoint,
+}
+
+impl DecisionSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant decision",
+            Self::Checkpoint => "previous checkpoint",
+        }
+    }
+}
+
 pub(crate) struct Decision {
     /// 决策原文片段（截断后），写进提示词让模型照抄。
     pub clause: String,
-    /// 决策里的名字或标识符；checkpoint 必须包含（忽略大小写）。
+    /// 决策里的名字或标识符；只有用户原话的锚点参与硬校验。
     pub anchors: Vec<String>,
+    pub source: DecisionSource,
 }
 
-/// 识别被否决方案的词：出现在正文或工具结果里都算。
-///
-/// 英文词来自 checkpoint 契约要求的 `- rejected: <option> — <reason>` 格式，
-/// 这样上一版 checkpoint 里的否决项在下一代仍会被要求保留。
+/// 识别用户原话中的否决词；资料工具结果不参与此扫描。
+/// 上一版 checkpoint 只识别 Decisions 节里的显式决策行，避免引用污染持续继承。
 const REJECTION_MARKERS: [&str; 5] = ["否决", "不采用", "放弃", "rejected", "not adopted"];
-/// 识别硬约束的词：只认用户和助手的原话。
-///
-/// 工具结果里出现这些词大多来自代码注释（`// 禁止在这里分配`）；当成约束会把每份代码
-/// 都变成必须保留的决策，反而把 checkpoint 撑爆。
-const CONSTRAINT_MARKERS: [&str; 5] = ["禁止", "不要碰", "绝对不能", "上限", "不能再"];
+/// 只用于用户原话；工具资料里的同名词不会进入决策候选。
+const CONSTRAINT_MARKERS: [&str; 11] = [
+    "禁止",
+    "不要",
+    "绝对不能",
+    "上限",
+    "不能再",
+    "必须",
+    "改用",
+    "改为",
+    "must ",
+    "do not ",
+    "instead",
+];
 /// 决策原文片段的最大字符数。
 const MAX_DECISION_CHARS: usize = 160;
 /// 一条决策最多抽取的名字个数。
@@ -186,38 +211,56 @@ const DECISION_STOP_WORDS: [&str; 14] = [
 ///
 /// `previous` 是上一版 checkpoint：第二次压缩之后，原始请求已不在可见历史里，
 /// 被否决的方案只存在于那一版 checkpoint，必须继续参与抽取，否则第三代就会丢。
-/// 工具结果只扫「否决」这一类行，不扫整篇内容，所以不会像锚点那样被文件正文稀释。
+/// 旧 checkpoint 的显式决定作为低优先级证据保留；资料和代码里的同名词不提升为决定。
 pub(crate) fn decisions(history: &[Message], previous: Option<&str>) -> Vec<Decision> {
     let mut out: Vec<Decision> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    for (text, from_tool) in decision_sources(history, previous) {
+    for (text, source) in decision_sources(history, previous) {
+        let mut fenced = false;
+        let mut decision_section = source != DecisionSource::Checkpoint;
         for line in text.lines() {
             let line = line.trim();
-            // 段落标题（`## Decisions and Rejected Options`）本身不是决策。
-            if line.is_empty() || line.starts_with('#') {
+            if line.starts_with("```") || line.starts_with("~~~") {
+                fenced = !fenced;
                 continue;
             }
-            let lower = line.to_lowercase();
-            let rejected = REJECTION_MARKERS.iter().any(|mark| lower.contains(mark));
-            let constrained =
-                !from_tool && CONSTRAINT_MARKERS.iter().any(|mark| lower.contains(mark));
-            if !rejected && !constrained {
+            if fenced || line.starts_with('>') {
                 continue;
             }
-            let anchors = decision_anchors(line);
-            let key = if anchors.is_empty() {
-                format!("text:{}", truncate(line, MAX_DECISION_CHARS))
-            } else {
-                format!("anchors:{}", anchors.join("|").to_lowercase())
-            };
-            if !seen.insert(key) {
+            if let Some(title) = line.strip_prefix("## ") {
+                if source == DecisionSource::Checkpoint {
+                    decision_section = title
+                        .trim()
+                        .eq_ignore_ascii_case("Decisions and Rejected Options");
+                }
+                continue;
+            }
+            if !decision_section || line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let clause = line.trim_start_matches(['-', '*', ' ']);
+            let lower = clause.to_lowercase();
+            let explicit = lower.starts_with("rejected:")
+                || lower.starts_with("decision:")
+                || ["否决", "我们否决", "决定", "已决定", "不采用"]
+                    .iter()
+                    .any(|prefix| clause.starts_with(prefix));
+            let user_constraint = source == DecisionSource::User
+                && (REJECTION_MARKERS.iter().any(|mark| lower.contains(mark))
+                    || CONSTRAINT_MARKERS.iter().any(|mark| lower.contains(mark)));
+            if !explicit && !user_constraint {
+                continue;
+            }
+            let clause = truncate(clause, MAX_DECISION_CHARS);
+            if !seen.insert(clause.to_lowercase()) {
                 continue;
             }
             out.push(Decision {
-                clause: truncate(line, MAX_DECISION_CHARS),
-                anchors,
+                anchors: decision_anchors(&clause),
+                clause,
+                source,
             });
-            if out.len() >= MAX_DECISIONS {
+            if out.len() == MAX_DECISIONS {
                 return out;
             }
         }
@@ -225,23 +268,30 @@ pub(crate) fn decisions(history: &[Message], previous: Option<&str>) -> Vec<Deci
     out
 }
 
-/// 参与决策抽取的全部文本：上一版 checkpoint 在前，然后是历史消息。
-fn decision_sources<'a>(history: &'a [Message], previous: Option<&'a str>) -> Vec<(&'a str, bool)> {
-    let mut out: Vec<(&str, bool)> = Vec::new();
-    if let Some(previous) = previous {
-        out.push((previous, false));
-    }
-    for message in history {
-        if is_injected_context(message) {
-            continue;
-        }
-        for part in &message.content {
-            match part {
-                ContentPart::Text(text) => out.push((text.as_str(), false)),
-                ContentPart::ToolResult(result) => out.push((result.content.as_str(), true)),
-                _ => {}
+/// 用户原话优先于助手结论，二者各按新到旧；历史摘要最后补充，不能抢占新决定的预算。
+fn decision_sources<'a>(
+    history: &'a [Message],
+    previous: Option<&'a str>,
+) -> Vec<(&'a str, DecisionSource)> {
+    let mut out = Vec::new();
+    for (role, source) in [
+        (Role::User, DecisionSource::User),
+        (Role::Assistant, DecisionSource::Assistant),
+    ] {
+        for message in history
+            .iter()
+            .rev()
+            .filter(|message| message.role == role && !is_injected_context(message))
+        {
+            for part in &message.content {
+                if let ContentPart::Text(text) = part {
+                    out.push((text.as_str(), source));
+                }
             }
         }
+    }
+    if let Some(previous) = previous {
+        out.push((previous, DecisionSource::Checkpoint));
     }
     out
 }
@@ -251,10 +301,14 @@ fn decision_sources<'a>(history: &'a [Message], previous: Option<&'a str>) -> Ve
 /// ask 的答复很短，却是用户意图的直接载体：摘要漏掉它，继任模型只能按猜测行事，
 /// 甚至把已经问过的问题再问一遍。单独抽出来交给校验强制保留。
 pub(crate) struct AskAnswer {
+    /// 完整题目只作内部去重键；不能用展示截断后的相同前缀认定为同一题。
+    question_key: String,
     /// 问题原文（截断、单行化后）。
     pub question: String,
     /// 用户的答案原文（截断、单行化后）。
     pub answer: String,
+    /// 该答案之后没有新的真实用户指令；旧摘要或更早答案只作为待核对证据。
+    pub enforceable: bool,
 }
 
 /// 参与保留的问答条数上限；超出时优先保留最近的。
@@ -265,7 +319,6 @@ const ASKED_MARKER: &str = "asked:";
 /// 从被丢弃的历史里抽取 ask 问答对；`previous` 里已沉淀的旧决定按标记回收。
 pub(crate) fn ask_answers(history: &[Message], previous: Option<&str>) -> Vec<AskAnswer> {
     let mut out: Vec<AskAnswer> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
     if let Some(previous) = previous {
         for line in previous.lines() {
             let line = line
@@ -278,7 +331,7 @@ pub(crate) fn ask_answers(history: &[Message], previous: Option<&str>) -> Vec<As
                 continue;
             }
             if let Some((question, answer)) = line[ASKED_MARKER.len()..].split_once('→') {
-                push_answer(&mut out, &mut seen, question, answer);
+                push_answer(&mut out, question, answer, false);
             }
         }
     }
@@ -308,45 +361,55 @@ pub(crate) fn ask_answers(history: &[Message], previous: Option<&str>) -> Vec<As
             .unwrap_or_default();
         questions.insert(call.id.as_str(), pairs);
     }
-    for result in history.iter().flat_map(Message::tool_results) {
-        if result.is_error {
-            continue;
-        }
-        let Some(asks) = questions.get(result.tool_call_id.as_str()) else {
-            continue;
-        };
-        if asks.len() == 1 {
-            push_answer(&mut out, &mut seen, &asks[0].1, &result.content);
-            continue;
-        }
-        // 多题结果一行一个 `题号: 答案`（见 tools/ask.rs 的输出格式）。
-        for line in result.content.lines() {
-            for (id, question) in asks {
-                if let Some(answer) = line.strip_prefix(&format!("{id}: ")) {
-                    push_answer(&mut out, &mut seen, question, answer);
+    let latest_user = history
+        .iter()
+        .rposition(|message| message.role == Role::User && !is_injected_context(message));
+    for (index, message) in history.iter().enumerate() {
+        for result in message.tool_results() {
+            if result.is_error {
+                continue;
+            }
+            let Some(asks) = questions.get(result.tool_call_id.as_str()) else {
+                continue;
+            };
+            let enforceable = latest_user.is_none_or(|user| index > user);
+            if asks.len() == 1 {
+                push_answer(&mut out, &asks[0].1, &result.content, enforceable);
+                continue;
+            }
+            // 多题结果一行一个 `题号: 答案`（见 tools/ask.rs 的输出格式）。
+            for line in result.content.lines() {
+                for (id, question) in asks {
+                    if let Some(answer) = line.strip_prefix(&format!("{id}: ")) {
+                        push_answer(&mut out, question, answer, enforceable);
+                    }
                 }
             }
         }
-    }
-    if out.len() > MAX_ASK_PAIRS {
-        out.drain(..out.len() - MAX_ASK_PAIRS);
     }
     out
 }
 
 /// 规范化一条问答并去重入库；不是用户亲手作答的内容直接丢弃。
-fn push_answer(out: &mut Vec<AskAnswer>, seen: &mut HashSet<String>, question: &str, answer: &str) {
+fn push_answer(out: &mut Vec<AskAnswer>, question: &str, answer: &str, enforceable: bool) {
     let question = single_line(question);
     let answer = single_line(answer);
     if question.is_empty() || !is_user_answer(&answer) {
         return;
     }
-    if !seen.insert(format!("{question}\u{1f}{answer}")) {
-        return;
+    // 冷路径最多十二项，线性替换保持时间顺序，无需第二份哈希索引。
+    debug_assert!(out.len() <= MAX_ASK_PAIRS);
+    if let Some(index) = out.iter().position(|pair| pair.question_key == question) {
+        out.remove(index);
+    }
+    if out.len() == MAX_ASK_PAIRS {
+        out.remove(0);
     }
     out.push(AskAnswer {
         question: truncate(&question, MAX_DECISION_CHARS),
+        question_key: question,
         answer: truncate(&answer, MAX_DECISION_CHARS),
+        enforceable,
     });
 }
 
@@ -1085,16 +1148,73 @@ mod tests {
     }
 
     #[test]
+    fn decisions_do_not_promote_reference_material_or_status_updates() {
+        let history = vec![
+            Message::tool_result(
+                "page",
+                "| Rejected proposal | Social | Anywhere | Affects mood |",
+                false,
+            ),
+            Message::assistant_text("预分配 A* 已实现，它禁止从两侧水障斜切。"),
+            Message::user_text("禁止在 legacy.rs 引入 Redis"),
+        ];
+        let found = decisions(&history, None);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].clause.contains("legacy.rs"));
+    }
+
+    #[test]
+    fn new_user_decision_precedes_a_full_old_checkpoint() {
+        let previous = format!(
+            "## Decisions and Rejected Options\n{}",
+            (0..12)
+                .map(|i| format!("- rejected: OldOption{i} — 原因\n"))
+                .collect::<String>()
+        );
+        let history = vec![Message::user_text("禁止把 XML mod 物品写死")];
+        let found = decisions(&history, Some(&previous));
+        assert!(found[0].clause.contains("XML mod"));
+    }
+
+    #[test]
+    fn distinct_long_questions_are_not_merged_by_their_display_prefix() {
+        let common = "共同背景".repeat(60);
+        let mut answers = Vec::new();
+        push_answer(&mut answers, &format!("{common}数据库？"), "SQLite", true);
+        push_answer(&mut answers, &format!("{common}缓存？"), "Redis", true);
+        assert_eq!(answers.len(), 2);
+        assert_eq!(answers[0].answer, "SQLite");
+        assert_eq!(answers[1].answer, "Redis");
+    }
+
+    #[test]
+    fn same_question_keeps_only_the_latest_user_answer() {
+        let previous = "## Decisions and Rejected Options\n- asked: 用哪种存储？ → Redis\n";
+        let history = vec![
+            ask_call(
+                "q",
+                serde_json::json!([{"id":"db","question":"用哪种存储？"}]),
+            ),
+            Message::tool_result("q", "SQLite", false),
+        ];
+        let found = ask_answers(&history, Some(previous));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].answer, "SQLite");
+        assert!(found[0].enforceable);
+        let mut corrected = history;
+        corrected.push(Message::user_text("撤回，改用 PostgreSQL"));
+        assert!(!ask_answers(&corrected, Some(previous))[0].enforceable);
+    }
+
+    #[test]
     fn decisions_capture_rejected_options_and_constraints() {
         let history = vec![
             Message::user_text(
                 "我们否决了用 lru crate 的 LRU 缓存来管理窗口，pinned 会违反淘汰顺序。",
             ),
             Message::assistant_text("已经记下这次评审结论。"),
-            Message::tool_result(
-                "call_1",
+            Message::user_text(
                 "| 把窗口状态迁到 Redis，多进程共享 | 否决 | 跨进程一致性与 RTT 都不可接受 |",
-                false,
             ),
         ];
         let decisions = decisions(&history, None);

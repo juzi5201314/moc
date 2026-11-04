@@ -8,7 +8,8 @@ use crate::session::state::SessionState;
 
 /// 本地注入消息的固定前缀与对应的分块短名：压缩摘要、活动计划、todo 快照、
 /// Grok Build 的续接前言。运行时提醒不在此列——它有自己的 [`moc_llm::Role::Custom`]。
-const INJECTED_PREFIXES: [(&str, &str); 4] = [
+const INJECTED_PREFIXES: [(&str, &str); 5] = [
+    ("<compaction-user-request>", "latest user request"),
     ("<compaction-summary", "compaction summary"),
     ("<active-plan", "active plan"),
     ("<active-todos", "active todos"),
@@ -68,6 +69,25 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]
             "<compaction-summary method=\"{method}\">\n{summary}\n</compaction-summary>"
         )));
     }
+    if state
+        .summary
+        .as_ref()
+        .is_some_and(|(method, _)| method == "soft")
+    {
+        let compact_end = state
+            .entries
+            .iter()
+            .rposition(|entry| matches!(entry, Entry::Compaction { .. }))
+            .map_or(0, |index| {
+                state.entries[..=index]
+                    .iter()
+                    .filter(|entry| matches!(entry, Entry::Message { .. }))
+                    .count()
+            });
+        if let Some(request) = pinned_user_request(state, start, compact_end) {
+            messages.push(request);
+        }
+    }
     if let Some(plan) = state
         .plans
         .iter()
@@ -101,6 +121,91 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]
         )));
     }
     messages
+}
+
+/// 从当前重置边界之后取真实用户消息；不把压缩摘要、计划注入或手动命令当成用户要求。
+pub(super) fn latest_user_request(state: &SessionState, end: usize) -> Option<(usize, &Message)> {
+    let reset_start = state
+        .entries
+        .iter()
+        .rposition(|entry| matches!(entry, Entry::ResetBoundary { .. }))
+        .map_or(0, |index| {
+            state.entries[..=index]
+                .iter()
+                .filter(|entry| matches!(entry, Entry::Message { .. }))
+                .count()
+        });
+    state.transcript[..end]
+        .iter()
+        .enumerate()
+        .rev()
+        .take_while(|(index, _)| *index >= reset_start)
+        .find(|(_, entry)| {
+            entry.in_context()
+                && entry.bash.is_none()
+                && entry.message.role == Role::User
+                && !is_injected_context(&entry.message)
+        })
+        .map(|(index, entry)| (index, &entry.message))
+}
+
+/// 只在用户消息已移出保留尾部时注入一次；长请求的省略必须在摘录中明确标记。
+pub(super) fn pinned_user_request(
+    state: &SessionState,
+    start: usize,
+    end: usize,
+) -> Option<Message> {
+    let (index, request) = latest_user_request(state, end)?;
+    if index >= start {
+        return None;
+    }
+    Some(user_request_excerpt(request))
+}
+
+/// 短请求完整保留内容块；长粘贴只留首尾意图和归档指针，不能把数十万 token 重新塞回摘要后。
+pub(super) fn user_request_excerpt(request: &Message) -> Message {
+    const MAX_REQUEST_TOKENS: u64 = 4096;
+    let prefix = "<compaction-user-request>\nLatest actual user request at this checkpoint, quoted verbatim unless marked as an excerpt; later user messages supersede it.\n";
+    let suffix = "\n</compaction-user-request>";
+    let overhead = super::message_tokens(&Message::user_text(format!("{prefix}{suffix}")));
+    let mut message = Message::user_text(prefix);
+    if super::message_tokens(request).saturating_add(overhead) <= MAX_REQUEST_TOKENS {
+        message.content.extend(request.content.clone());
+    } else {
+        let note = "\n[Long request excerpt; omitted content/attachments remain in history://transcript.]\n";
+        let budget = MAX_REQUEST_TOKENS.saturating_sub(overhead + super::estimate_tokens(note) + 2);
+        let text = request.text();
+        let excerpt = if super::estimate_tokens(&text) <= budget {
+            format!("{text}{note}")
+        } else {
+            let head_budget = budget * 3 / 4;
+            let head = super::prefix_within_tokens(&text, head_budget);
+            let tail = suffix_within_tokens(&text, budget - head_budget);
+            format!("{head}{note}{tail}")
+        };
+        message.content.push(moc_llm::ContentPart::Text(excerpt));
+    }
+    message
+        .content
+        .push(moc_llm::ContentPart::Text(suffix.into()));
+    debug_assert!(super::message_tokens(&message) <= MAX_REQUEST_TOKENS);
+    message
+}
+
+fn suffix_within_tokens(text: &str, budget: u64) -> &str {
+    let mut ascii = 0u64;
+    let mut non_ascii = 0u64;
+    for (index, character) in text.char_indices().rev() {
+        if character.is_ascii() {
+            ascii += 1;
+        } else {
+            non_ascii += 1;
+        }
+        if ascii / 4 + non_ascii > budget {
+            return &text[index + character.len_utf8()..];
+        }
+    }
+    text
 }
 
 /// 由追加式日志重建模型消息；只有真正要请求模型时才复制 transcript 消息。
@@ -202,6 +307,101 @@ mod tests {
     use super::*;
     use crate::session::entries::{EntryPayload, SessionOrigin};
     use crate::session::state::SessionState;
+
+    #[test]
+    fn pinned_long_user_request_is_bounded_and_keeps_both_ends() {
+        let message = Message::user_text(format!(
+            "开头约束{}最后纠正：必须支持 XML mod",
+            "中间资料".repeat(20_000)
+        ));
+        let quoted = user_request_excerpt(&message);
+        assert!(super::super::message_tokens(&quoted) <= 4096);
+        assert!(quoted.text().contains("开头约束"));
+        assert!(quoted.text().contains("必须支持 XML mod"));
+        assert!(quoted.text().contains("history://transcript"));
+    }
+
+    #[test]
+    fn soft_checkpoint_pins_latest_user_across_recompaction_but_not_reset() {
+        let header = Entry::header(
+            "ses_pin_user".into(),
+            "/tmp".into(),
+            "p/m".into(),
+            SessionEngine::Standard,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            "test".into(),
+            0,
+        );
+        let mut state = SessionState::new(header).unwrap();
+        let user = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::user_text("物品不要写死，改为 XML mod"),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+                goal: None,
+            },
+            state.last_entry_id.clone(),
+            1,
+        );
+        state.apply_entry(user);
+        for time in [2, 3] {
+            let checkpoint = Entry::from_payload(
+                EntryPayload::Compaction {
+                    method: "soft".into(),
+                    summary: "旧计划已更新".into(),
+                    first_kept_id: None,
+                    tokens_before: 1000,
+                    tokens_after: 20,
+                    instructions: None,
+                    model: Some("p/m".into()),
+                    reminder: None,
+                },
+                state.last_entry_id.clone(),
+                time,
+            );
+            state.apply_entry(checkpoint);
+            let messages = model_messages(&state, None, None);
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter(|message| message.text().contains("物品不要写死"))
+                    .count(),
+                1
+            );
+            assert!(
+                messages
+                    .iter()
+                    .all(|message| injected_name(message).is_some()),
+                "上下文预览也必须能识别计数"
+            );
+        }
+        state.apply_entry(Entry::from_payload(
+            EntryPayload::ResetBoundary,
+            state.last_entry_id.clone(),
+            4,
+        ));
+        state.apply_entry(Entry::from_payload(
+            EntryPayload::Compaction {
+                method: "soft".into(),
+                summary: "新任务".into(),
+                first_kept_id: None,
+                tokens_before: 10,
+                tokens_after: 5,
+                instructions: None,
+                model: None,
+                reminder: None,
+            },
+            state.last_entry_id.clone(),
+            5,
+        ));
+        assert!(
+            !model_messages(&state, None, None)
+                .iter()
+                .any(|message| message.text().contains("XML mod"))
+        );
+    }
 
     #[test]
     fn latest_compaction_renders_summary_and_only_retained_messages() {

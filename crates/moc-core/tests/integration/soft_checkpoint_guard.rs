@@ -112,6 +112,97 @@ async fn prompt_and_text(
 }
 
 #[tokio::test]
+async fn long_turn_compacts_tool_groups_but_preserves_latest_user_request() {
+    let upstream = MockServer::builder().start().await;
+    let streams = Arc::new(AtomicUsize::new(0));
+    let count = streams.clone();
+    Mock::given(method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body["stream"] != true {
+                return ResponseTemplate::new(200).set_body_json(support::complete(
+                    &valid_summary("XML mod large.txt recent.txt 新迁移未验证"),
+                ));
+            }
+            let response = match count.fetch_add(1, Ordering::SeqCst) {
+                0 => support::tool_stream(vec![(
+                    "old",
+                    "read",
+                    serde_json::json!({"path":"large.txt"}),
+                )]),
+                1 => support::tool_stream(vec![(
+                    "recent",
+                    "read",
+                    serde_json::json!({"path":"recent.txt"}),
+                )]),
+                _ => support::text_stream("新迁移未验证"),
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nmethod='moc'\nauto=false\nkeep_recent_tokens=200\n",
+    )
+    .await;
+    std::fs::write(
+        harness.root.path().join("work/large.txt"),
+        "old-payload-only ".repeat(1000),
+    )
+    .unwrap();
+    std::fs::write(
+        harness.root.path().join("work/recent.txt"),
+        "recent-result-only",
+    )
+    .unwrap();
+    let session = harness.session(SessionEngine::Standard).await;
+    let instruction = "物品不要写死，必须支持 XML mod";
+    harness.prompt(&session, instruction).await;
+    for _ in 0..2 {
+        harness
+            .client
+            .call::<SessionCompact>(SessionCompactParams {
+                session_id: session.clone(),
+                instructions: None,
+            })
+            .await
+            .unwrap();
+    }
+    // 重新加载也从日志推导用户原文，不依赖本轮内存里的临时字段。
+    harness
+        .client
+        .call::<moc_protocol::methods::SessionUnload>(moc_protocol::methods::SessionUnloadParams {
+            session_id: session.clone(),
+        })
+        .await
+        .unwrap();
+    harness.load(&session).await;
+    let context = prompt_and_text(&harness, &session, "汇报当前进度", &upstream).await;
+    assert_eq!(context.matches(instruction).count(), 1);
+    assert!(context.contains("compaction-user-request"));
+    assert!(!context.contains("old-payload-only"));
+    let requests = upstream.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+    let mut calls = std::collections::HashSet::new();
+    for message in body["messages"].as_array().unwrap() {
+        if let Some(items) = message["tool_calls"].as_array() {
+            for call in items {
+                calls.insert(call["id"].as_str().unwrap());
+            }
+        }
+        if let Some(id) = message["tool_call_id"].as_str() {
+            assert!(calls.contains(id), "保留结果必须有工具请求所有者：{id}");
+        }
+    }
+    let summaries = summary_requests(&upstream).await;
+    assert!(messages_text(&summaries[0]).contains("<latest-user-request>"));
+    assert!(messages_text(&summaries[0]).contains(instruction));
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn anchor_gaps_are_fed_back_and_repaired() {
     let upstream = MockServer::builder().start().await;
     let attempts = Arc::new(AtomicUsize::new(0));

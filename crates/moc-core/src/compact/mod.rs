@@ -11,6 +11,7 @@ pub mod images;
 pub mod replay;
 pub mod shake;
 pub mod soft;
+mod tail;
 
 use moc_llm::{ContentPart, Message, ToolDef};
 use moc_protocol::RequestContext;

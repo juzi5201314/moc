@@ -222,18 +222,14 @@ pub(crate) fn missing_sections(text: &str, sections: &[&str]) -> Vec<String> {
 
 /// 从会话正文里抽取「压缩后必须逐字保留」的锚点：路径、标识符、数字。
 ///
-/// 只扫描用户和助手的文本以及工具调用参数：工具结果里是整份文件内容，算进覆盖率
-/// 会让任何摘要都不合格。`previous` 是上一版 checkpoint，它的锚点排在最前，保证多次
-/// 压缩时优先保住已经沉淀下来的事实。
+/// 用户/助手正文保留语义锚点，工具参数只保留文件定位。
+/// 前版摘要只补充 Current Work/Next Step 的标识符，不把旧数值或否决选项强制带到下一代。
 pub(crate) fn salient_anchors<'a>(
     messages: impl Iterator<Item = &'a Message>,
     previous: Option<&str>,
 ) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut anchors = Vec::new();
-    if let Some(previous) = previous {
-        scan(previous, &mut anchors, &mut seen);
-    }
     for message in messages {
         if !matches!(message.role, Role::User | Role::Assistant)
             || super::replay::is_injected_context(message)
@@ -243,13 +239,75 @@ pub(crate) fn salient_anchors<'a>(
         for part in &message.content {
             match part {
                 ContentPart::Text(text) => scan(text, &mut anchors, &mut seen),
-                ContentPart::ToolCall(call) => scan(&call.arguments, &mut anchors, &mut seen),
+                ContentPart::ToolCall(call) => scan_tool_locations(call, &mut anchors, &mut seen),
                 _ => {}
+            }
+        }
+    }
+    // 前版是可修订状态，不把旧数值和否决方案硬锁到新一代。只补充当前工作定位符。
+    if let Some(previous) = previous {
+        let mut current_work = false;
+        for line in previous.lines() {
+            if let Some(title) = line.trim().strip_prefix("## ") {
+                current_work = matches!(title.trim(), "Current Work" | "Next Step");
+            } else if current_work {
+                scan_filtered(line, &mut anchors, &mut seen, false);
             }
         }
     }
     sample_even(&mut anchors);
     anchors
+}
+
+/// 工具正文已在原始历史中供摘要模型阅读，校验只约束文件定位，不约束补丁语法与源码字面量。
+fn scan_tool_locations(
+    call: &moc_llm::ToolCall,
+    anchors: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) {
+    if !matches!(
+        call.name.as_str(),
+        "read" | "grep" | "find" | "edit" | "write"
+    ) {
+        return;
+    }
+    let Ok(arguments) = call.arguments_json() else {
+        return;
+    };
+    for key in ["path", "file_path"] {
+        if let Some(path) = arguments.get(key).and_then(serde_json::Value::as_str) {
+            scan_location(path, anchors, seen);
+        }
+    }
+    // 导入的旧编辑协议用 [path#hash] 标记文件；只读头部，不扫描 SWAP/INS 和补丁内容。
+    if call.name == "edit"
+        && let Some(input) = arguments.get("input").and_then(serde_json::Value::as_str)
+    {
+        for line in input.lines() {
+            if let Some(header) = line
+                .strip_prefix('[')
+                .and_then(|line| line.strip_suffix(']'))
+                && let Some((path, _)) = header.split_once('#')
+            {
+                scan_location(path, anchors, seen);
+            }
+        }
+    }
+}
+
+fn scan_location(path: &str, anchors: &mut Vec<String>, seen: &mut HashSet<String>) {
+    let path = match path.rsplit_once(':') {
+        Some((path, range))
+            if !range.is_empty()
+                && range
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'-') =>
+        {
+            path
+        }
+        _ => path,
+    };
+    scan(path, anchors, seen);
 }
 
 /// 锚点过多时按等距抽样：超长会话里开头、中段和结尾都要有代表，
@@ -326,6 +384,10 @@ fn is_token_byte(byte: u8) -> bool {
 
 /// 扫描文本收集锚点，按出现顺序去重。
 fn scan(text: &str, anchors: &mut Vec<String>, seen: &mut HashSet<String>) {
+    scan_filtered(text, anchors, seen, true);
+}
+
+fn scan_filtered(text: &str, anchors: &mut Vec<String>, seen: &mut HashSet<String>, numbers: bool) {
     let bytes = text.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
@@ -338,7 +400,7 @@ fn scan(text: &str, anchors: &mut Vec<String>, seen: &mut HashSet<String>) {
             index += 1;
         }
         let token = text[start..index].trim_matches(['.', ',', ';', ':', '+', '%']);
-        if !classify(token) {
+        if (!numbers && !token.bytes().any(|byte| byte.is_ascii_alphabetic())) || !classify(token) {
             continue;
         }
         if seen.insert(token.to_owned()) {
@@ -452,6 +514,44 @@ mod tests {
         assert!(anchors.contains(&"3.2".to_owned()));
         assert!(!anchors.iter().any(|anchor| anchor == "window"));
         assert!(!anchors.iter().any(|anchor| anchor == "110jy"));
+    }
+
+    #[test]
+    fn tool_payloads_do_not_turn_patch_syntax_into_facts() {
+        let message = Message { role: Role::Assistant, content: vec![
+            ContentPart::ToolCall(moc_llm::ToolCall::new("edit", "edit", serde_json::json!({
+                "path":"src/view.ts", "old_string":"const daylight = 0.22;", "new_string":"const daylight = 0.78;",
+                "input":"[src/legacy.ts#ABCD]\nSWAP 103=147:\n+const pixelRatio = 0.22;"
+            }).to_string())),
+            ContentPart::ToolCall(moc_llm::ToolCall::new("read", "read", r#"{"path":"src/app.ts:135-200","offset":135,"limit":200}"#)),
+        ] };
+        let anchors = salient_anchors(std::iter::once(&message), None);
+        assert!(anchors.iter().any(|value| value == "src/view.ts"));
+        assert!(anchors.iter().any(|value| value == "src/app.ts"));
+        for noise in [
+            "nSWAP",
+            "103",
+            "147",
+            "135",
+            "200",
+            "0.22",
+            "0.78",
+            "pixelRatio",
+        ] {
+            assert!(
+                !anchors.iter().any(|value| value == noise),
+                "不该强制保留 {noise}: {anchors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn previous_checkpoint_values_do_not_override_a_new_correction() {
+        let previous = "## Decisions and Rejected Options\n- 禁止 XML mod\n## Current Work\n修改 src/app.ts 的 TTL_MS=30_000";
+        let message = Message::user_text("现在 TTL_MS 改成 45_000，允许 XML mod");
+        let anchors = salient_anchors(std::iter::once(&message), Some(previous));
+        assert!(anchors.iter().any(|value| value == "45_000"));
+        assert!(!anchors.iter().any(|value| value == "30_000"));
     }
 
     #[test]
