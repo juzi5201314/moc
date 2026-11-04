@@ -515,14 +515,39 @@ impl Default for BashConfig {
             max_timeout_secs: 3600,
             max_output_bytes: 16 * 1024 * 1024,
             persistent_log_bytes: 16 * 1024 * 1024,
+            // 与 defaults.toml 中的 deny_patterns 保持一致：动词本身不拦，拦“作用于整个
+            // 文件环境（/、~、$HOME、顶层系统目录及其一级子项）”的组合与必然毁灭性的命令；
+            // 命中后向用户申请确认而非直接拒绝。
             deny_patterns: vec![
-                r"(?i)rm\s+-rf\s+/(\s|$)".into(),
+                // 递归删除作用于整个文件环境；rm 标志可前可后。
+                r#"(?i)\brm\b[^;&|]*?(?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*|-[a-z]*r[a-z]*\s+-[a-z]*f[a-z]*|-[a-z]*f[a-z]*\s+-[a-z]*r[a-z]*|--recursive[^;&|]*--force|--force[^;&|]*--recursive)[^;&|]*?(?:^|[\s;&|"'{(=,:])(?:/{1,2}(?:\.{0,2}|\*)?/?\*?|~[-\w]*/?\*?|\$\{?HOME\}?/?\*?|/(?:etc|usr|var|bin|sbin|lib(?:32|64)?|boot|root|home|opt|srv|sys|proc|dev|mnt|media|run)(?:/[-\w.]+)?/?\*?|/tmp/?\*?)(?:[\s;&|"'{)`]|$)"#.into(),
+                r#"(?i)\brm\b[^;&|]*?(?:^|[\s;&|"'{(=,:])(?:/{1,2}(?:\.{0,2}|\*)?/?\*?|~[-\w]*/?\*?|\$\{?HOME\}?/?\*?|/(?:etc|usr|var|bin|sbin|lib(?:32|64)?|boot|root|home|opt|srv|sys|proc|dev|mnt|media|run)(?:/[-\w.]+)?/?\*?|/tmp/?\*?)(?:[\s;&|"'{)`]|$)[^;&|]*?(?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*|-[a-z]*r[a-z]*\s+-[a-z]*f[a-z]*|-[a-z]*f[a-z]*\s+-[a-z]*r[a-z]*|--recursive[^;&|]*--force|--force[^;&|]*--recursive)"#.into(),
+                // find 对整个环境 -delete / -exec rm / 管道进 xargs rm。
+                r#"(?i)\bfind\b[^;&|]*?(?:^|[\s;&|"'{(=,:])(?:/{1,2}(?:\.{0,2}|\*)?/?\*?|~[-\w]*/?\*?|\$\{?HOME\}?/?\*?|/(?:etc|usr|var|bin|sbin|lib(?:32|64)?|boot|root|home|opt|srv|sys|proc|dev|mnt|media|run)(?:/[-\w.]+)?/?\*?|/tmp/?\*?)(?:[\s;&|"'{)`]|$)[^;&|]*(?:-delete\b|-exec(?:dir)?[^;&|]*\brm\b)"#.into(),
+                r#"(?i)\bfind\b[^;&|]*?(?:^|[\s;&|"'{(=,:])(?:/{1,2}(?:\.{0,2}|\*)?/?\*?|~[-\w]*/?\*?|\$\{?HOME\}?/?\*?|/(?:etc|usr|var|bin|sbin|lib(?:32|64)?|boot|root|home|opt|srv|sys|proc|dev|mnt|media|run)(?:/[-\w.]+)?/?\*?|/tmp/?\*?)(?:[\s;&|"'{)`]|$)[^;&]*\|\s*xargs[^;&|]*\brm\b"#.into(),
+                // chmod/chown/chgrp 递归作用于整个环境。
+                r#"(?i)\b(?:chmod|chown|chgrp)\s+[^;&|]*-[a-z]*r[a-z]*\s[^;&|]*?(?:^|[\s;&|"'{(=,:])(?:/{1,2}(?:\.{0,2}|\*)?/?\*?|~[-\w]*/?\*?|\$\{?HOME\}?/?\*?|/(?:etc|usr|var|bin|sbin|lib(?:32|64)?|boot|root|home|opt|srv|sys|proc|dev|mnt|media|run)(?:/[-\w.]+)?/?\*?|/tmp/?\*?)(?:[\s;&|"'{)`]|$)"#.into(),
+                // fork 炸弹。
                 r":\(\)\s*\{\s*:\|\s*:\s*&\s*\};:".into(),
-                r"(?i)mkfs\.".into(),
-                r"(?i)dd\s+.*of=/dev/".into(),
-                r"(?i)\b(shutdown|reboot|format|diskpart|del|erase|rd|rmdir|stop-computer|restart-computer)\b".into(),
-                r"(?i)\b(remove-item|clear-disk|initialize-disk|remove-partition)\b".into(),
-                r">\s*/etc/passwd".into(),
+                // 格式化或覆写块设备与分区表。
+                r#"(?i)\b(?:mkfs(?:\.[\w-]+)?|mke2fs|mkdosfs|mkntfs|mkexfatfs|mkudffs|mkhfs|mkswap)\b"#.into(),
+                r"(?i)\bdd\s+.*of=/dev/(?:sd|hd|vd|xvd|nvme|mmcblk|loop|dm-|disk)".into(),
+                r"(?i)(?:>\s*|\btee\b[^;&|]*?)/dev/(?:sd|hd|vd|xvd|nvme|mmcblk|loop|dm-|disk)".into(),
+                r"(?i)\b(?:cp|mv|install|rsync)\s+\S+\s+[^;&|]*/dev/(?:sd|hd|vd|xvd|nvme|mmcblk|loop|dm-|disk)".into(),
+                r"(?i)\btar\s+[^;&|]*-[a-z]*c[a-z]*f[a-z]*\s*/dev/(?:sd|hd|vd|xvd|nvme|mmcblk|loop|dm-|disk)".into(),
+                r"(?i)\bshred\b[^;&|]*/dev/(?:sd|hd|vd|xvd|nvme|mmcblk|loop|dm-|disk)".into(),
+                r"(?i)\bwipefs\b[^;&|]*(?:-a\b|--all\b)".into(),
+                r"(?i)\b(?:fdisk|sfdisk)\s+/dev/|\bparted\s+(?:-\S+\s+)*/dev/\S+\s+(?:mklabel|mkpart|rm|move|resize|rescue|set)\b|\bsgdisk\b[^;&|]*(?:-Z\b|--zap-all\b)".into(),
+                // 覆写关键系统账户/引导文件。
+                r"(?i)(?:>\s*|\btee\b[^;&|]*?)/etc/(?:passwd|shadow|sudoers|gshadow|fstab)\b".into(),
+                // 命令位置的关机/格式化/Windows 危险动词；分隔符锚定避免误伤 clang-format 等命令名。
+                r#"(?i)(?:^|[;&|`'"]\s*)(?:(?:sudo|doas|pkexec|run0|busybox)\s+)?(?:shutdown|reboot|halt|poweroff|format|diskpart|del|erase|rd|rmdir|stop-computer|restart-computer|remove-item|clear-disk|initialize-disk|remove-partition)\b"#.into(),
+                r"(?i)\bsystemctl\s+[^;&|]*\b(?:halt|poweroff|reboot|kexec|soft-reboot)\b".into(),
+                // 销毁存储卷、系统账户、防火墙规则、swap、cron。
+                r"(?i)\b(?:lvremove|vgremove|pvremove|userdel|groupdel|deluser|delgroup)\b|\bcryptsetup\s+(?:luksFormat|luksErase|erase|reencrypt)\b|\bzpool\s+(?:destroy|labelclear)\b|\bzfs\s+destroy\b[^;&|]*-[a-z]*r[a-z]*".into(),
+                r"(?i)\bip6?tables\b[^;&|]*-F\b|\bnft\s+flush\b|\bswapoff\s+[^;&|]*-a\b|\bcrontab\s+-[a-z]*r".into(),
+                // 向全部进程发信号。
+                r#"\b(?:kill|skill)\b[^;&|]*\s-1\s*(?:[;&|]|$)|\bpkill\s+[^;&|]*-f\s*['"]?\.['"]?\s*(?:[;&|]|$)"#.into(),
             ],
             limits: crate::limits::BashLimitsConfig::default(),
         }

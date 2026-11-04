@@ -108,6 +108,8 @@ pub(crate) struct SandboxGrants {
     pub read_paths: Vec<PathBuf>,
     pub write_paths: Vec<PathBuf>,
     pub commands: Vec<CommandGrant>,
+    /// 用户批准过的危险命令全文（精确匹配）；只豁免危险规则，不提升沙盒模式。
+    pub dangerous: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +125,7 @@ impl SandboxGrants {
         self.read_paths.clear();
         self.write_paths.clear();
         self.commands.clear();
+        self.dangerous.clear();
     }
 
     /// 记录一条路径授权；写入按真实落点保存。
@@ -157,6 +160,20 @@ impl SandboxGrants {
             prefix,
             mode,
         });
+    }
+
+    /// 记录一条危险命令豁免；按完整命令文本精确匹配，不给前缀授权。
+    pub fn grant_dangerous(&mut self, command: &str) {
+        let command = command.trim_start();
+        if !self.dangerous.iter().any(|text| text == command) {
+            self.dangerous.push(command.to_owned());
+        }
+    }
+
+    /// 该命令是否已被用户豁免危险规则确认。
+    pub fn dangerous_allowed(&self, command: &str) -> bool {
+        let command = command.trim_start();
+        self.dangerous.iter().any(|text| text == command)
     }
 
     /// 返回覆盖该命令的最宽会话授权。

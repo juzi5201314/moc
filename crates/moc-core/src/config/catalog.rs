@@ -563,8 +563,8 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "JSON：input/output 必填，cache_read/cache_write 可选，单位美元。",
             ),
             "deny_patterns" => (
-                "禁止执行的命令",
-                "逐行填写正则表达式，匹配到的命令始终拒绝执行，与沙盒模式无关。",
+                "危险命令规则",
+                "逐行填写正则表达式，命中的命令须向用户申请确认后才能执行，与沙盒模式无关。",
             ),
             "head_bytes" => (
                 "超长输出保留开头",

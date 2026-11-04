@@ -552,16 +552,29 @@ async fn execute_tool(
             diff: None,
         });
     }
-    // bash 执行前先过静态规则，并把命令里没加引号的内部 URI 换成 urlfs 目录里的路径：
+    // bash 执行前先过危险规则，并把命令里没加引号的内部 URI 换成 urlfs 目录里的路径：
+    // 危险规则命中改为向用户申请确认（用户看到的是模型写的原命令），
     // 沙盒判定和审批提示看到的都是真实路径，URI 交给 shell 也不会悄悄失效。
     let mut history_view = false;
     if name == "bash"
         && let Some(command) = args.get("command").and_then(Value::as_str)
     {
-        if let Err(error) =
-            crate::tools::bash::reject_denied(&config.tools.bash.deny_patterns, command)
-        {
-            return Ok(error.into_outcome());
+        match crate::tools::bash::denied_rule(&config.tools.bash.deny_patterns, command) {
+            Err(error) => return Ok(error.into_outcome()),
+            Ok(Some(rule)) if !ctx.sandbox_grants.read().dangerous_allowed(command) => {
+                match confirm_dangerous(
+                    ctx,
+                    &call.id,
+                    command,
+                    &config.tools.bash.deny_patterns[rule],
+                )
+                .await?
+                {
+                    Authorization::Allowed(_) => {}
+                    denied => return Ok(denied_outcome(denied)),
+                }
+            }
+            Ok(_) => {}
         }
         match crate::tools::bash::urlfs::prepare(&ctx.paths, &ctx.skills, command) {
             Ok(Some(prepared)) => {
@@ -573,43 +586,8 @@ async fn execute_tool(
         }
     }
     let execution = match authorize(ctx, &call.id, name, &args).await? {
-        Authorization::Denied => {
-            return Ok(ToolOutcome {
-                content: "[E_PERMISSION_DENIED] The user denied this operation".into(),
-                is_error: true,
-                structured_content: None,
-                error_code: Some("E_PERMISSION_DENIED".into()),
-                images: Vec::new(),
-                control: ToolControl::Continue,
-                status: Some(ToolStatus::Denied),
-                diff: None,
-            });
-        }
-        Authorization::SandboxDenied(message) => {
-            return Ok(ToolOutcome {
-                content: format!("[E_SANDBOX_DENIED] {message}").into(),
-                is_error: true,
-                structured_content: None,
-                error_code: Some("E_SANDBOX_DENIED".into()),
-                images: Vec::new(),
-                control: ToolControl::Continue,
-                status: Some(ToolStatus::Denied),
-                diff: None,
-            });
-        }
-        Authorization::Unavailable => {
-            return Ok(ToolOutcome {
-                content: "[E_PERMISSION_UNAVAILABLE] This frontend cannot show permission prompts; approve from an interactive frontend or switch the session permission".into(),
-                is_error: true,
-                structured_content: None,
-                error_code: Some("E_PERMISSION_UNAVAILABLE".into()),
-                images: Vec::new(),
-                control: ToolControl::Continue,
-                status: Some(ToolStatus::Denied),
-                diff: None,
-            });
-        }
         Authorization::Allowed(execution) => execution,
+        denied => return Ok(denied_outcome(denied)),
     };
     if ctx.cancel.is_cancelled() {
         return Ok(cancelled_outcome());
@@ -729,6 +707,75 @@ enum Authorization {
     SandboxDenied(String),
     /// 前端不支持权限询问，拿不到一次性授权。
     Unavailable,
+}
+
+/// 授权被拒时的统一工具结果；调用方保证只传入非 `Allowed` 结果。
+fn denied_outcome(authorization: Authorization) -> ToolOutcome {
+    let (code, message) = match authorization {
+        Authorization::Denied => (
+            "E_PERMISSION_DENIED",
+            "The user denied this operation".to_owned(),
+        ),
+        Authorization::SandboxDenied(message) => ("E_SANDBOX_DENIED", message),
+        Authorization::Unavailable => (
+            "E_PERMISSION_UNAVAILABLE",
+            "This frontend cannot show permission prompts; approve from an interactive frontend or switch the session permission".to_owned(),
+        ),
+        Authorization::Allowed(_) => unreachable!("denied_outcome 不处理允许结果"),
+    };
+    ToolOutcome {
+        content: format!("[{code}] {message}").into(),
+        is_error: true,
+        structured_content: None,
+        error_code: Some(code.into()),
+        images: Vec::new(),
+        control: ToolControl::Continue,
+        status: Some(ToolStatus::Denied),
+        diff: None,
+    }
+}
+
+/// 危险规则命中后向用户申请确认；`allow_once` 只放本次，`allow_session` 按完整命令
+/// 文本记入会话豁免。批准后命令继续走常规沙盒授权，危险确认不提升权限模式。
+async fn confirm_dangerous(
+    ctx: &ToolCtx,
+    tool_call_id: &str,
+    command: &str,
+    pattern: &str,
+) -> Result<Authorization, CoreError> {
+    if ctx.config.sandbox.on_denied == crate::config::OnDenied::Deny {
+        return Ok(Authorization::SandboxDenied(
+            "sandbox.on_denied=deny；命令命中危险规则".into(),
+        ));
+    }
+    let body = format!(
+        "命令：\n{command}\n\n命中危险命令规则：\n{pattern}\n\n批准后命令仍按当前权限模式执行。",
+    );
+    match ask_permission(
+        ctx,
+        tool_call_id,
+        "bash",
+        format!(
+            "命令命中危险规则：{}",
+            command.lines().next().unwrap_or(command)
+        ),
+        Some(body),
+        None,
+        moc_protocol::methods::command_options(None),
+    )
+    .await?
+    {
+        PermissionAnswer::Unavailable => Ok(Authorization::Unavailable),
+        PermissionAnswer::Dismissed => Ok(Authorization::Denied),
+        PermissionAnswer::Selected(option) if option == "allow_once" => {
+            Ok(Authorization::Allowed(AllowedExecution::current(ctx)))
+        }
+        PermissionAnswer::Selected(option) if option == "allow_session" => {
+            ctx.sandbox_grants.write().grant_dangerous(command);
+            Ok(Authorization::Allowed(AllowedExecution::current(ctx)))
+        }
+        PermissionAnswer::Selected(_) => Ok(Authorization::Denied),
+    }
 }
 
 struct AllowedExecution {

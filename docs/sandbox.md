@@ -23,7 +23,16 @@ CPU 与内存上限是另一套独立机制，不随沙盒模式变化，见 [li
 3. 用户显式配置的 `extra_read_paths` / `extra_write_paths` 与会话授权。
 
 `deny_read_paths` / `deny_write_paths` 优先于所有允许规则；`full` 不执行路径与网络边界，
-但 `[tools.bash].deny_patterns` 仍然生效。
+但 `[tools.bash].deny_patterns` 仍然生效。默认规则覆盖两类：作用于整个文件环境的组合
+（对 `/`、`~`、`$HOME`、顶层系统目录及其一级子项的递归 `rm`、`find -delete`、
+`chmod -R` / `chown -R` 等）与必然毁灭性的命令（mkfs、写块设备、分区、覆写 `/etc`
+关键文件、关机、kill 全部进程等）；同一动词作用于普通路径不拦。匹配是 shell 感知的：
+引号内的纯数据（`grep "rm -rf /"`）不算命中，但存在执行型动词（`bash -c`、`eval`、
+`ssh`、解释器、管道进 shell 等）时引号内容按代码处理。
+
+危险规则命中不是硬拒绝，而是向用户申请确认：允许一次、本会话始终允许该命令（按完整
+命令文本精确匹配，不提供前缀豁免）或拒绝；批准后命令仍按当前权限模式走沙盒管线。
+`sandbox.on_denied="deny"` 或前端不支持权限询问时维持拒绝。
 
 ## 配置
 

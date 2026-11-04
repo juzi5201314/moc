@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
-use grep_matcher::Matcher;
 use moc_llm::ToolDef;
 use moc_protocol::methods::{JobLifecycle, JobOrigin};
 use serde::Deserialize;
@@ -14,6 +13,8 @@ use serde_json::Value;
 use super::job::ForegroundEnd;
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
 
+mod deny;
+pub(crate) use deny::denied_rule;
 mod group;
 pub(crate) use super::job_log::JobLog;
 pub(crate) use group::ProcessGroup;
@@ -462,24 +463,6 @@ fn exit_outcome(
     outcome
 }
 
-pub(crate) fn reject_denied(patterns: &[String], command: &str) -> Result<(), ToolError> {
-    for pattern in patterns {
-        let matcher = grep_regex::RegexMatcher::new(pattern).map_err(|error| {
-            ToolError::new(
-                "E_CONFIG",
-                format!("dangerous-command rule is invalid: {error}"),
-            )
-        })?;
-        if matcher.is_match(command.as_bytes()).unwrap_or(false) {
-            return Err(ToolError::new(
-                "E_BASH_DENIED",
-                "command matches a blocked execution rule",
-            ));
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn resolve_cwd(base: &Path, requested: Option<&str>) -> Result<PathBuf, ToolError> {
     let cwd = requested
         .map(Path::new)
@@ -604,23 +587,6 @@ mod tests {
         assert!(validate_description(&args).is_err());
         let args: BashArgs = serde_json::from_value(serde_json::json!({"command":"ls"})).unwrap();
         assert!(validate_description(&args).is_err());
-    }
-
-    #[test]
-    fn dangerous_patterns_preempt_all_execution_modes() {
-        let patterns = vec![r"rm\s+-rf\s+/(\s|$)".into()];
-        assert!(reject_denied(&patterns, "rm -rf /").is_err());
-        assert!(reject_denied(&patterns, "printf safe").is_ok());
-    }
-
-    #[test]
-    fn default_deny_patterns_are_valid_and_block_forkbombs() {
-        let patterns = crate::config::BashConfig::default().deny_patterns;
-        assert!(reject_denied(&patterns, ":(){ :|:& };:").is_err());
-        assert!(reject_denied(&patterns, "SHUTDOWN /S").is_err());
-        assert!(reject_denied(&patterns, "FORMAT C:").is_err());
-        assert!(reject_denied(&patterns, "Remove-Item C:\\data -Recurse").is_err());
-        assert!(reject_denied(&patterns, "printf safe").is_ok());
     }
 
     #[test]
