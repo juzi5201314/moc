@@ -87,6 +87,8 @@ cargo test          # 运行测试
 cargo build         # 调试构建
 ```
 
+上下文压缩的优先级、保留边界与诊断日志见 [压缩规则](docs/compaction.md)。真实模型与语料的多轮测试、请求录制和离线重放见 [实验使用说明](docs/compaction-lab.md)。
+
 ## Workspace 结构
 
 - `crates/moc-core` — Agent 内核：会话、提示调度、工具执行、循环保护
