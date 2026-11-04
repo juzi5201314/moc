@@ -32,7 +32,7 @@ pub(super) fn retained_start(history: &[Message], budget: u64) -> usize {
         start = index;
         retained = retained.saturating_add(cost);
     }
-    if start == 0 && pending.is_empty() {
+    if start == 0 && retained <= budget && pending.is_empty() {
         // 整段都能保留时手动压缩仍应生成摘要，而不是把全部正文和重复摘要叠加。
         history.len()
     } else {
@@ -78,6 +78,16 @@ mod tests {
         ];
         assert_eq!(retained_start(&history, 10), 1);
         assert_eq!(retained_start(&history, 0), history.len(), "零预算是纯摘要");
+    }
+
+    #[test]
+    fn only_atomic_group_is_retained_when_it_exceeds_the_budget() {
+        let history = vec![
+            call("a"),
+            Message::tool_result("a", "x".repeat(1000), false),
+        ];
+        assert_eq!(retained_start(&history, 10), 0);
+        assert_eq!(retained_start(&history, 1000), history.len());
     }
 
     #[test]

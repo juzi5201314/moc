@@ -313,6 +313,11 @@ async fn model_switch_compact_switches_first_and_compacts_with_the_target_model(
                 ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
             } else {
                 assert_eq!(model, "small", "压缩必须由切换后的模型执行");
+                let output_tokens = body["max_tokens"].as_u64().expect("摘要输出上限");
+                assert!(
+                    moc_core::compact::estimate_tokens(&body.to_string()) + output_tokens <= 32000,
+                    "摘要请求连同输出预算必须放得下目标窗口"
+                );
                 ResponseTemplate::new(200)
                     .set_body_json(complete(&support::soft_checkpoint("checkpoint")))
             }
@@ -326,12 +331,12 @@ async fn model_switch_compact_switches_first_and_compacts_with_the_target_model(
         "test/glm:off",
         "test/glm:off",
         "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
-         [providers.test.models.small]\ncontext_window=2000\nmax_output_tokens=4096\n\
+         [providers.test.models.small]\ncontext_window=32000\nmax_output_tokens=4096\n\
          [compaction]\nauto=false\nmethod='moc'\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
-    harness.prompt(&session, &"上下文填充".repeat(2000)).await;
+    harness.prompt(&session, &"上下文填充".repeat(8000)).await;
 
     let switched = harness
         .client
@@ -344,10 +349,14 @@ async fn model_switch_compact_switches_first_and_compacts_with_the_target_model(
         .expect("切换并压缩");
     assert!(
         switched.overflow.is_some(),
-        "2000 窗口装不下万级 token 历史"
+        "32000 窗口装不下四万 token 历史"
     );
     assert_eq!(switched.session.model, "test/small:off");
-    assert!(switched.compaction_error.is_none());
+    assert!(
+        switched.compaction_error.is_none(),
+        "{:?}",
+        switched.compaction_error
+    );
 
     let updates = harness.updates.lock().clone();
     assert!(
@@ -367,6 +376,66 @@ async fn model_switch_compact_switches_first_and_compacts_with_the_target_model(
 
     harness.prompt(&session, "继续").await;
     assert_eq!(harness.load(&session).await.session.model, "test/small:off");
+    harness.close().await;
+}
+
+/// 系统前缀都放不下时不发送摘要请求；已确认的模型切换保留，历史不得丢失。
+#[tokio::test]
+async fn model_switch_compact_rejects_impossible_windows_without_sending_summary() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(body["stream"], true, "不应向上游发送必然超窗的摘要请求");
+            ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
+        })
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let harness = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/glm:off",
+        "test/glm:off",
+        "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
+         [providers.test.models.tiny]\ncontext_window=1000\nmax_output_tokens=4096\n\
+         [providers.test.models.small]\ncontext_window=2000\nmax_output_tokens=4096\n\
+         [compaction]\nauto=false\nmethod='moc'\n",
+    )
+    .await;
+    let session = harness.session(SessionEngine::Standard).await;
+    harness.prompt(&session, "保留原始用户要求").await;
+    let before = harness.load(&session).await.entries;
+    for selector in ["test/tiny:off", "test/small:off"] {
+        let switched = harness
+            .client
+            .call::<SessionSetModel>(SessionSetModelParams {
+                session_id: session.clone(),
+                selector: selector.into(),
+                overflow: SessionModelOverflowAction::Compact,
+            })
+            .await
+            .unwrap();
+        assert_eq!(switched.session.model, selector);
+        assert!(switched.overflow.is_some());
+        let error = switched.compaction_error.expect("窗口不足应明确报错");
+        assert!(error.contains("input budget"), "{error}");
+        assert_eq!(harness.load(&session).await.entries, before);
+    }
+    let updates = harness.updates.lock().clone();
+    assert_eq!(
+        updates
+            .iter()
+            .filter(|update| matches!(update, SessionUpdate::ContextCompactionFailed { .. }))
+            .count(),
+        2
+    );
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ContextCompacted { .. }))
+    );
     harness.close().await;
 }
 
@@ -455,12 +524,12 @@ async fn model_switch_keeps_the_switch_when_compaction_fails() {
         "test/glm:off",
         "test/glm:off",
         "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
-         [providers.test.models.small]\ncontext_window=2000\nmax_output_tokens=4096\n\
+         [providers.test.models.small]\ncontext_window=32000\nmax_output_tokens=4096\n\
          [compaction]\nmethod='moc'\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
-    harness.prompt(&session, &"上下文填充".repeat(2000)).await;
+    harness.prompt(&session, &"上下文填充".repeat(8000)).await;
 
     let switched = harness
         .client
@@ -477,7 +546,10 @@ async fn model_switch_keeps_the_switch_when_compaction_fails() {
     );
     assert!(switched.overflow.is_some());
     let error = switched.compaction_error.expect("无可剪结果且摘要失败");
-    assert!(!error.is_empty(), "压缩失败必须附原因");
+    assert!(
+        error.contains("summary denied"),
+        "应抵达上游拒绝路径：{error}"
+    );
 
     let updates = harness.updates.lock().clone();
     assert!(
@@ -521,12 +593,12 @@ async fn model_switch_action_switch_reports_overflow_after_switching() {
         "test/glm:off",
         "test/glm:off",
         "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
-         [providers.test.models.small]\ncontext_window=2000\nmax_output_tokens=4096\n\
+         [providers.test.models.small]\ncontext_window=32000\nmax_output_tokens=4096\n\
          [compaction]\nmethod='moc'\n",
     )
     .await;
     let session = harness.session(SessionEngine::Standard).await;
-    harness.prompt(&session, &"上下文填充".repeat(2000)).await;
+    harness.prompt(&session, &"上下文填充".repeat(8000)).await;
 
     let switched = harness
         .client

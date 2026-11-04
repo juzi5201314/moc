@@ -239,12 +239,13 @@ async fn repl_model_switch_confirms_before_compacting() {
         .await;
     let project = Project::with_extra(
         &upstream.uri(),
-        "[providers.p.models.small]\ncontext_window=1000\nmax_output_tokens=4096\n",
+        "[providers.p.models.small]\ncontext_window=32000\nmax_output_tokens=4096\n",
     );
+    let history = "上下文填充".repeat(8000);
     let output = project
         .run(
             &["--repl"],
-            "你好\n/model p/small\nn\n/model p/small\ny\n/quit\n",
+            &format!("{history}\n/model p/small\nn\n/model p/small\ny\n/quit\n"),
         )
         .await;
     assert!(

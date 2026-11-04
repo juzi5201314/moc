@@ -144,7 +144,7 @@ PTC Host 入口已编译进 `moc`，首次 `run_code` 时将当前 `moc` 作为�
 
 手动 `/compact <指令>` 会直接进入所选实现的摘要步骤；不带指令时按该实现的默认流程执行。自动压缩及上下文溢出恢复也使用同一 `method`。
 
-旧压缩配置不兼容：删除 `compaction.method_order`、`compaction.soft_method`、整个 `[compaction.remote]` 表和模型字段 `remote_compaction`，改用 `[compaction]` 下的 `method = "moc"` 或 `method = "grok_build"`。这些旧键会触发未知字段错误，不自动迁移。旧会话记录中的 `native` 字段只接受解析并忽略；原生载荷不再回放，旧 remote checkpoint 仅按其文本摘要与保留尾部读取。
+旧压缩配置不兼容：删除 `compaction.method_order`、`compaction.soft_method`、整个 `[compaction.remote]` 表和模型字段 `remote_compaction`，改用 `[compaction]` 下的 `method = "moc"` 或 `method = "grok_build"`。这些旧键会触发未知字段错误，不自动迁移。旧会话记录中的 `native` 字段只接受解析并忽略；原生载荷不再回放。旧 remote checkpoint 的文本仅是文件操作占位说明，不能替代原生摘要，因此加载时作废其截断边界，从最近一次 reset 后恢复原始历史，再按当前压缩配置处理。
 
 `compaction.threshold` 表示开始压缩的触发阈值，默认 `{ mode = "percent", value = 85 }`；固定 token 可写为 `{ mode = "tokens", value = 120000 }`。百分比只乘上下文窗口，不扣除模型 `max_output_tokens`。自动压缩完成还必须进入触发阈值的 80% recovery band；例如 200k 窗口的 170k 触发线要求压缩后不高于 136k，避免在临界线附近反复压缩。上下文溢出恢复只要求压缩后重新放入可用窗口，再继续请求。
 

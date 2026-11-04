@@ -272,10 +272,19 @@ impl SessionState {
                 self.usage_at = 0;
                 // 压缩重写了可见历史，旧提醒可能已经被摘要取代；清表让下一次请求补全量。
                 self.reminder_digests.clear();
-                self.first_kept_id.clone_from(first_kept_id);
-                self.summary_model.clone_from(model);
-                self.summary_reminder.clone_from(reminder);
-                self.summary = Some((method.clone(), summary.clone()));
+                if method == "remote" {
+                    // 旧 remote 文本只记录文件操作，真正的摘要在已移除的加密载荷里。
+                    // 作废它的截断边界，从最近 reset 重放原始历史，交给现有压缩管线处理。
+                    self.first_kept_id = None;
+                    self.summary_model = None;
+                    self.summary_reminder = None;
+                    self.summary = None;
+                } else {
+                    self.first_kept_id.clone_from(first_kept_id);
+                    self.summary_model.clone_from(model);
+                    self.summary_reminder.clone_from(reminder);
+                    self.summary = Some((method.clone(), summary.clone()));
+                }
             }
             Entry::ResetBoundary { .. } => {
                 self.ptc_state.clear();

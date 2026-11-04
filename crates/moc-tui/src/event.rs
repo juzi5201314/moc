@@ -7807,7 +7807,7 @@ mod tests {
             .await;
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("config.toml"), format!(
-            "[models.roles]\ndefault='test/model:off'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\ncontext_window=100000\n[providers.test.models.tiny]\ncontext_window=1000\nmax_output_tokens=4096\n[compaction]\nmethod='moc'\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+            "[models.roles]\ndefault='test/model:off'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\ncontext_window=100000\n[providers.test.models.tiny]\ncontext_window=32000\nmax_output_tokens=4096\n[compaction]\nmethod='moc'\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
             upstream.uri(),
         )).unwrap();
         let core = Core::new(CoreConfig {
@@ -7844,13 +7844,13 @@ mod tests {
             .await
             .unwrap()
             .models;
-        // 压缩需要可摘要的历史：先跑一轮普通提示。
+        // 历史超过目标窗口，但系统前缀和摘要请求仍能放下。
         connection
             .client
             .call::<SessionPrompt>(PromptParams {
                 session_id: id,
                 input: vec![InputPart::Text {
-                    text: "你好".into(),
+                    text: "上下文填充".repeat(8000),
                 }],
                 mode: None,
                 agent_message: None,
@@ -7885,7 +7885,7 @@ mod tests {
         let AppEvent::ModelSwitchConfirm { overflow, .. } = &event else {
             unreachable!("循环只返回确认事件");
         };
-        assert_eq!(overflow.context_window, 1000);
+        assert_eq!(overflow.context_window, 32000);
         crate::interaction::handle_event(&mut app, &connection, event);
         assert!(
             matches!(app.modal, Some(Modal::SwitchModel { option: 0, .. })),
