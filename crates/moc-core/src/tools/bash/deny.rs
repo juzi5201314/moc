@@ -1,12 +1,12 @@
 //! 危险命令规则的匹配层：正则命中只是“候选”，还要区分引号内字面量与可执行上下文。
 //!
 //! 判定规则：
-//! - 匹配段完整落在字面量区间（'..'、".."、$'..'、$".."、${..}、# 行注释）内，
-//!   且命令行里没有执行型动词：是数据，不拦——`grep "rm -rf /"` 放行。
-//! - 匹配段有任何一部分在字面量外：是真代码，拦——`rm -rf "/var"` 的 `rm` 在
-//!   引号外，引号里的只是路径参数。
-//! - 命令行存在执行型动词（sh/bash/eval/ssh/python 等），或命令无法解析时：
-//!   引号内容可能经 -c、eval、管道或 stdin 被执行，一律拦——`bash -c "rm -rf /"`。
+//! - 匹配段完整落在数据参数（'..'、".."、$'..'、$".."、${..}、# 行注释）内，
+//!   且所在代码上下文没有执行型动词：是数据，不拦——`grep "rm -rf /"` 放行。
+//! - 命令名即使加引号也不是数据；匹配段有任何一部分在字面量外也按代码处理，
+//!   如 `rm -rf "/var"`，引号里的只是路径参数。
+//! - 每层命令/进程替换单独检查；存在执行型动词（sh/bash/eval/ssh/python 等），
+//!   或代码无法解析时，引号内容可能被执行，仍需确认——`bash -c "rm -rf /"`。
 //!
 //! 本模块只回答“命中了哪条规则”；命中后是申请还是拒绝由调用方决定。
 
@@ -114,7 +114,6 @@ const WRAPPER_VERBS: &[&str] = &[
 
 /// 返回命中规则的序号；引号内字面量且无可执行上下文时不算命中。
 pub(crate) fn denied_rule(patterns: &[String], command: &str) -> Result<Option<usize>, ToolError> {
-    let eval = has_eval_invocation(command);
     let literals = literal_spans(command);
     for (index, pattern) in patterns.iter().enumerate() {
         let matcher = grep_regex::RegexMatcher::new(pattern).map_err(|error| {
@@ -130,7 +129,7 @@ pub(crate) fn denied_rule(patterns: &[String], command: &str) -> Result<Option<u
             let quoted = literals.iter().any(|(start, end)| {
                 matched.start() >= start.saturating_sub(1) && matched.end() <= end + 1
             });
-            if !quoted || eval {
+            if !quoted {
                 return Ok(Some(index));
             }
             offset = matched.end().max(matched.start() + 1);
@@ -141,10 +140,7 @@ pub(crate) fn denied_rule(patterns: &[String], command: &str) -> Result<Option<u
 
 /// 命令行是否存在执行型动词：命令名是解释器/求值器，或经 sudo/env 等包装后
 /// 转发到执行型动词。复合命令与动态命令名看不见动词，按可执行处理。
-fn has_eval_invocation(command: &str) -> bool {
-    let Some(scan) = syntax::scan(command) else {
-        return true;
-    };
+fn has_eval_invocation(scan: &syntax::Scan) -> bool {
     scan.commands
         .iter()
         .any(|command| match command.argv.first() {
@@ -183,8 +179,8 @@ fn verb_name(word: &str) -> String {
     name
 }
 
-/// 收集字面量区间（字节偏移，左闭右开）：'..'、".."、$'..'、$".."、${..} 的内容
-/// 与 # 行注释都算数据；$( ) 与反引号命令替换内部仍是代码，递归按代码上下文处理。
+/// 收集可豁免的字面量区间（字节偏移，左闭右开）；命令名与执行器上下文不豁免。
+/// $( )、反引号与进程替换内部递归按代码处理，不把动态参数一律视作执行器。
 fn literal_spans(command: &str) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     scan_code(command.as_bytes(), 0, command.len(), None, &mut spans);
@@ -200,6 +196,8 @@ fn scan_code(
     term: Option<u8>,
     spans: &mut Vec<(usize, usize)>,
 ) -> usize {
+    let start = index;
+    let first_span = spans.len();
     let mut depth = 0usize;
     while index < end {
         match bytes[index] {
@@ -234,13 +232,16 @@ fn scan_code(
                 index = close + 1;
             }
             b'$' => index = scan_dollar(bytes, index, end, spans),
+            b'<' | b'>' if bytes.get(index + 1) == Some(&b'(') => {
+                index = scan_code(bytes, index + 2, end, Some(b')'), spans) + 1;
+            }
             b'{' if term == Some(b'}') => {
                 depth += 1;
                 index += 1;
             }
             b'}' if term == Some(b'}') => {
                 if depth == 0 {
-                    return index;
+                    break;
                 }
                 depth -= 1;
                 index += 1;
@@ -251,7 +252,7 @@ fn scan_code(
             }
             b')' if term == Some(b')') => {
                 if depth == 0 {
-                    return index;
+                    break;
                 }
                 depth -= 1;
                 index += 1;
@@ -259,7 +260,23 @@ fn scan_code(
             _ => index += 1,
         }
     }
-    index.min(end)
+    let end = index.min(end);
+    // 范围端点来自 ASCII shell 定界符，始终落在 UTF-8 边界。
+    let code = std::str::from_utf8(&bytes[start..end]).expect("代码区间是有效 UTF-8");
+    match syntax::scan(code) {
+        Some(scan) if !has_eval_invocation(&scan) => {
+            spans.retain(|&(left, right)| {
+                !scan.commands.iter().any(|command| {
+                    command.name_span.is_some_and(|(name_start, name_end)| {
+                        left < start + name_end && right > start + name_start
+                    })
+                })
+            });
+        }
+        // 只取消本层代码的字面量豁免，不影响外层参数中的普通文本。
+        _ => spans.truncate(first_span),
+    }
+    end
 }
 
 /// 引用/展开上下文扫描（" 与 ${ 共用）：内容整体是字面量，但 $( )、` `、${ }
@@ -470,6 +487,36 @@ mod tests {
             "cat <<EOF\nrm -rf /\nEOF",
         ] {
             assert!(denied(&patterns, command), "应拦截: {command}");
+        }
+    }
+
+    #[test]
+    fn command_context_distinguishes_execution_from_data() {
+        let patterns = defaults();
+        for command in [
+            "\"reboot\"",
+            "'mkfs.ext4' /dev/sda1",
+            " reboot",
+            "printf ok\nreboot",
+            "echo \"$(bash -c 'rm -rf / --no-preserve-root')\"",
+            "cat <(sh -c 'mkfs.ext4 /dev/sda1')",
+            "echo `bash -c 'rm -rf / --no-preserve-root'`",
+        ] {
+            assert!(denied(&patterns, command), "应确认: {command}");
+        }
+        for command in [
+            "grep 'mkfs.ext4' README.md",
+            "printf '%s' 'reboot'",
+            "echo \"$(printf '%s' 'rm -rf /')\"",
+            "cat <(printf '%s' 'mkfs.ext4')",
+            "printf '%s' '$(bash -c \"rm -rf /\")'",
+            "echo 中文; grep 'mkfs.ext4' README.md",
+            "echo 'mkfs.ext4' \"$(sh -c 'printf ok')\"",
+            "grep 'rm -rf /' \"$file\"",
+            "printf '%s' '说明\nreboot'",
+            "clang-format -i main.c",
+        ] {
+            assert!(!denied(&patterns, command), "不应确认: {command}");
         }
     }
 

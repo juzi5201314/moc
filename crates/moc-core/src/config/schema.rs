@@ -541,7 +541,7 @@ impl Default for BashConfig {
                 // 覆写关键系统账户/引导文件。
                 r"(?i)(?:>\s*|\btee\b[^;&|]*?)/etc/(?:passwd|shadow|sudoers|gshadow|fstab)\b".into(),
                 // 命令位置的关机/格式化/Windows 危险动词；分隔符锚定避免误伤 clang-format 等命令名。
-                r#"(?i)(?:^|[;&|`'"]\s*)(?:(?:sudo|doas|pkexec|run0|busybox)\s+)?(?:shutdown|reboot|halt|poweroff|format|diskpart|del|erase|rd|rmdir|stop-computer|restart-computer|remove-item|clear-disk|initialize-disk|remove-partition)\b"#.into(),
+                r#"(?i)(?:^|[;&|`'"\n])\s*(?:(?:sudo|doas|pkexec|run0|busybox)\s+)?(?:shutdown|reboot|halt|poweroff|format|diskpart|del|erase|rd|rmdir|stop-computer|restart-computer|remove-item|clear-disk|initialize-disk|remove-partition)\b"#.into(),
                 r"(?i)\bsystemctl\s+[^;&|]*\b(?:halt|poweroff|reboot|kexec|soft-reboot)\b".into(),
                 // 销毁存储卷、系统账户、防火墙规则、swap、cron。
                 r"(?i)\b(?:lvremove|vgremove|pvremove|userdel|groupdel|deluser|delgroup)\b|\bcryptsetup\s+(?:luksFormat|luksErase|erase|reencrypt)\b|\bzpool\s+(?:destroy|labelclear)\b|\bzfs\s+destroy\b[^;&|]*-[a-z]*r[a-z]*".into(),

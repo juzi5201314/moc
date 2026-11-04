@@ -15,6 +15,8 @@ use brush_parser::{Parser, ParserOptions};
 pub(crate) struct ParsedCommand {
     /// 命令名与参数；已去引号，但未做变量/命令替换展开。
     pub(crate) argv: Vec<String>,
+    /// 命令名在源码中的字节范围，包含引号；危险规则不能把该位置当数据豁免。
+    pub(crate) name_span: Option<(usize, usize)>,
     /// 含重定向、复合命令、函数、进程替换、动态词或 `time`：不能直接进沙盒。
     pub(crate) unsafe_syntax: bool,
     /// 以 `&` 结尾。
@@ -53,6 +55,7 @@ pub(crate) fn scan(command: &str) -> Option<Scan> {
                 for command in &pipeline.seq {
                     let mut parsed = ParsedCommand {
                         argv: Vec::new(),
+                        name_span: None,
                         unsafe_syntax: pipeline.bang || pipeline.timed.is_some(),
                         asynchronous,
                     };
@@ -105,6 +108,12 @@ fn collect_simple(
         parsed.unsafe_syntax = true;
         return;
     };
+    parsed.name_span = name.loc.as_ref().and_then(|location| {
+        Some((
+            offsets.byte(location.start.index)?,
+            offsets.byte(location.end.index)?,
+        ))
+    });
     let Some(value) = static_value(name, options) else {
         parsed.unsafe_syntax = true;
         return;
@@ -235,6 +244,14 @@ mod tests {
         let scan = scan("echo 'a b' \"c\" $HOME").expect("解析");
         assert_eq!(scan.commands[0].argv, vec!["echo", "a b", "c"]);
         assert!(scan.commands[0].unsafe_syntax);
+    }
+
+    #[test]
+    fn command_name_spans_include_quotes_and_use_byte_offsets() {
+        let source = "echo 中文; 'mkfs.ext4' /dev/sda1";
+        let scan = scan(source).expect("解析");
+        let (start, end) = scan.commands[1].name_span.expect("命令名范围");
+        assert_eq!(&source[start..end], "'mkfs.ext4'");
     }
 
     #[test]
