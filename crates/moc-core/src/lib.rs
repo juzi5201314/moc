@@ -15,6 +15,7 @@ pub(crate) mod goal;
 pub mod hashline;
 pub mod ids;
 pub mod limits;
+pub mod memory;
 mod paths;
 pub mod resources;
 pub mod sandbox;

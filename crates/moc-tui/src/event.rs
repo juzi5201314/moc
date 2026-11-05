@@ -939,6 +939,7 @@ async fn event_loop(
     let mut next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
     let mut next_marquee_tick = tokio::time::Instant::now() + render::todo_hud::MARQUEE_TICK;
     let mut dirty = true;
+    let mut memory = moc_core::memory::IdleReclaim::new(std::time::Instant::now());
     loop {
         crate::btw::flush_cancel(app, connection);
         if app.should_quit {
@@ -963,6 +964,7 @@ async fn event_loop(
             // 位图只能画在帧之后：先让 ratatui 把文本与底色写完，再按格坐标贴图
             crate::render::graphics::emit(app, &mut std::io::stdout())?;
             guard.set_title(&render::terminal_title(app));
+            memory.activity(std::time::Instant::now());
             // emit 在帧后才发现“上一张图消失了”：立刻再排一帧清屏。
             if app.image_repaint {
                 dirty = true;
@@ -978,8 +980,16 @@ async fn event_loop(
         let notice_deadline = app.notice_deadline().map(tokio::time::Instant::from_std);
         let warning_deadline = app.warning_deadline().map(tokio::time::Instant::from_std);
         let marquee_tick_enabled = app.todo_hud.marquee_active;
+        let memory_deadline = if !dirty && !activity_tick_enabled && !marquee_tick_enabled {
+            memory.deadline().map(tokio::time::Instant::from_std)
+        } else {
+            None
+        };
         tokio::select! {
             biased;
+            _ = tokio::time::sleep_until(memory_deadline.unwrap_or_else(tokio::time::Instant::now)), if memory_deadline.is_some() => {
+                memory.reclaim(std::time::Instant::now());
+            }
             _ = tokio::time::sleep_until(next_frame), if need_frame_wait => {}
             _ = tokio::time::sleep_until(notice_deadline.unwrap_or_else(tokio::time::Instant::now)), if notice_deadline.is_some() => dirty = true,
             _ = tokio::time::sleep_until(warning_deadline.unwrap_or_else(tokio::time::Instant::now)), if warning_deadline.is_some() => dirty = true,
