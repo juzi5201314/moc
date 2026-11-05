@@ -13,9 +13,10 @@ import {
   RotateCcwIcon,
   Undo2Icon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useStickToBottomContext } from "use-stick-to-bottom";
+import { useShallow } from "zustand/react/shallow";
 import {
   Conversation,
   ConversationContent,
@@ -33,7 +34,6 @@ import { modelName } from "@/lib/models";
 import { type Block, finishLabel } from "@/lib/transcript-model";
 import {
   formatDuration,
-  groupTurns,
   type Segment,
   summarizeActivity,
   type Turn,
@@ -46,6 +46,7 @@ import { useComposer } from "@/store/composer";
 import { useLayout } from "@/store/layout";
 import { loadOlder, redo, rewind } from "@/store/lifecycle";
 import { useTranscript } from "@/store/transcript";
+import { useTurn, useTurnIds } from "@/store/turns";
 
 const EMPTY_PERMISSIONS: PermissionRequestParams[] = [];
 const EMPTY_ASKS: AskParams[] = [];
@@ -109,27 +110,41 @@ function copy(text: string, message: string) {
 }
 
 export function ChatThread({ sessionId }: { sessionId: string }) {
-  const view = useTranscript((state) => state.bySession[sessionId]);
+  const view = useTranscript(
+    useShallow((state) => {
+      const view = state.bySession[sessionId];
+      return view
+        ? {
+            readOnly: view.readOnly,
+            running: view.running,
+            hasMore: view.hasMore,
+            loadingOlder: view.loadingOlder,
+            mismatch: view.mismatch,
+            liveStartedAt: view.live?.startedAt,
+          }
+        : undefined;
+    }),
+  );
   const permissions = useTranscript((state) => state.permissions[sessionId]) ?? EMPTY_PERMISSIONS;
   const asks = useTranscript((state) => state.asks[sessionId]) ?? EMPTY_ASKS;
-  const blocks = view?.blocks;
-  const turns = useMemo(() => groupTurns(blocks ?? []), [blocks]);
+  const turnIds = useTurnIds(sessionId);
+  const context: TurnContext = useMemo(
+    () => ({ sessionId, readOnly: Boolean(view?.readOnly), running: Boolean(view?.running) }),
+    [sessionId, view?.readOnly, view?.running],
+  );
   if (!view) return null;
-
-  const context: TurnContext = { sessionId, readOnly: view.readOnly, running: view.running };
 
   return (
     <div className="moc-chat-pane relative flex min-h-0 flex-1 overflow-hidden">
       <Conversation className="flex-1">
         <ConversationContent className="moc-chat-column gap-10 px-0 pt-10 pb-16">
           {view.hasMore && <LoadOlder sessionId={sessionId} loading={view.loadingOlder} />}
-          {turns.map((turn, index) => (
+          {turnIds.map((turnId, index) => (
             <TurnView
-              key={turn.id}
-              turn={turn}
-              last={index === turns.length - 1}
-              live={view.running && index === turns.length - 1}
-              liveStartedAt={view.live?.startedAt}
+              key={turnId}
+              turnId={turnId}
+              last={index === turnIds.length - 1}
+              liveStartedAt={index === turnIds.length - 1 ? view.liveStartedAt : undefined}
               context={context}
             />
           ))}
@@ -204,21 +219,25 @@ function LoadOlder({ sessionId, loading }: { sessionId: string; loading: boolean
   );
 }
 
-function TurnView({
-  turn,
+const TurnView = memo(function TurnView({
+  turnId,
   last,
-  live,
   liveStartedAt,
   context,
 }: {
-  turn: Turn;
+  turnId: string;
   last: boolean;
-  live: boolean;
   liveStartedAt?: number;
   context: TurnContext;
 }) {
+  const turn = useTurn(context.sessionId, turnId);
+  if (!turn) return null;
+  const live = last && context.running;
   return (
-    <section className="group/turn flex flex-col gap-3">
+    <section
+      className="group/turn flex flex-col gap-3"
+      style={{ contentVisibility: live ? "visible" : "auto", containIntrinsicSize: "auto 200px" }}
+    >
       {turn.user && <UserMessage block={turn.user} context={context} />}
       {(turn.segments.length > 0 || live) && (
         <AssistantTurn
@@ -231,9 +250,15 @@ function TurnView({
       )}
     </section>
   );
-}
+});
 
-function ImageThumbs({ images, className }: { images: ImageSource[]; className?: string }) {
+const ImageThumbs = memo(function ImageThumbs({
+  images,
+  className,
+}: {
+  images: ImageSource[];
+  className?: string;
+}) {
   const [preview, setPreview] = useState<string | null>(null);
   if (images.length === 0) return null;
   return (
@@ -247,7 +272,13 @@ function ImageThumbs({ images, className }: { images: ImageSource[]; className?:
             onClick={() => setPreview(imageSrc(image))}
             className="overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-border-subtle transition-opacity hover:opacity-90"
           >
-            <img src={imageSrc(image)} alt="图片附件" className="h-24 max-w-[200px] object-cover" />
+            <img
+              src={imageSrc(image)}
+              alt="图片附件"
+              loading="lazy"
+              decoding="async"
+              className="h-24 max-w-[200px] object-cover"
+            />
           </button>
         ))}
       </div>
@@ -265,7 +296,7 @@ function ImageThumbs({ images, className }: { images: ImageSource[]; className?:
       </Dialog>
     </>
   );
-}
+});
 
 function UserMessage({
   block,
@@ -363,10 +394,8 @@ function AssistantTurn({
       index !== finalIndex && (segment.kind === "activity" || segment.kind === "text"),
   ).length;
   const durationMs = turnDurationMs(turn);
-  const finalText = segments
-    .filter((segment): segment is Extract<Segment, { kind: "text" }> => segment.kind === "text")
-    .map((segment) => segment.block.text)
-    .join("\n\n");
+  // 两个空文本块拼接后也有分隔换行，保持原复制入口的显示条件。
+  const hasCopyText = turn.texts.length > 1 || turn.texts.some((block) => block.text.length > 0);
   const finalBlock =
     finalIndex >= 0
       ? (segments[finalIndex] as Extract<Segment, { kind: "text" }>).block
@@ -476,15 +505,19 @@ function AssistantTurn({
         </div>
       )}
 
-      {!live && (finalText || turn.footer || canRetry) && (
+      {!live && (hasCopyText || turn.footer || canRetry) && (
         <div
           className={cn(
             "flex items-center gap-0.5 transition-opacity",
             last ? "opacity-100" : "opacity-0 group-hover/turn:opacity-100 hover:opacity-100",
           )}
         >
-          {finalText && (
-            <IconButton label="复制回复" size="xs" onClick={() => copy(finalText, "已复制回复")}>
+          {hasCopyText && (
+            <IconButton
+              label="复制回复"
+              size="xs"
+              onClick={() => copy(turn.texts.map((block) => block.text).join("\n\n"), "已复制回复")}
+            >
               <CopyIcon />
             </IconButton>
           )}

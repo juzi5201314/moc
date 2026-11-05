@@ -49,7 +49,7 @@ pub(crate) fn cursor_next(text: &str, cursor: usize) -> usize {
 #[derive(Debug, Clone)]
 struct PasteChip {
     id: u32,
-    content: String,
+    content: std::sync::Arc<str>,
 }
 
 /// 图片 chip（剪贴板读到的图像）。
@@ -69,14 +69,14 @@ pub struct PromptState {
     pub cursor: usize,
     pastes: Vec<PasteChip>,
     pub images: Vec<ImageChip>,
-    histories: Vec<String>,
+    histories: Vec<crate::history::HistoryText>,
     /// 当前浏览的历史位置；`None` = 编辑最新输入。
     history_cursor: Option<usize>,
     /// 浏览历史时暂存的编辑中草稿。
     stash: String,
     next_chip_id: u32,
     /// 最近一次粘贴的内容（再粘展开用）。
-    last_paste: Option<String>,
+    last_paste: Option<std::sync::Arc<str>>,
 }
 
 impl PromptState {
@@ -187,7 +187,7 @@ impl PromptState {
             let id = self.chip_id();
             self.pastes.push(PasteChip {
                 id,
-                content: normalized,
+                content: normalized.into(),
             });
             let placeholder = format!("[paste#{id}]");
             self.insert_str_raw(&placeholder);
@@ -480,8 +480,12 @@ impl PromptState {
             Some(index) if index + 1 < self.histories.len() => index + 1,
             Some(_) => return false,
         };
+        let text = match self.histories[next].read() {
+            Ok(text) => text,
+            Err(error) => { tracing::warn!(%error, "读取输入历史失败"); return false; }
+        };
         self.history_cursor = Some(next);
-        self.text = self.histories[next].clone();
+        self.text = text;
         self.cursor = self.text.len();
         true
     }
@@ -495,7 +499,10 @@ impl PromptState {
             self.text = self.stash.clone();
             None
         } else {
-            self.text = self.histories[index - 1].clone();
+            self.text = match self.histories[index - 1].read() {
+                Ok(text) => text,
+                Err(error) => { tracing::warn!(%error, "读取输入历史失败"); return false; }
+            };
             Some(index - 1)
         };
         self.cursor = self.text.len();
@@ -522,16 +529,28 @@ impl PromptState {
     ///
     /// 返回是否真的新增了一条（空输入与连续重复返回 `false`）。
     fn record_history(&mut self, text: &str) -> bool {
-        if text.trim().is_empty() || self.histories.first().map(String::as_str) == Some(text) {
+        if text.trim().is_empty() || self.histories.first().is_some_and(|entry| entry.matches(text)) {
             return false;
         }
-        self.histories.insert(0, text.to_owned());
+        self.histories.insert(0, text.to_owned().into());
         self.histories.truncate(HISTORY_MAX);
         true
     }
 
     /// 用持久化历史重建内存历史（最新在前）；切换展示范围或会话后调用。
     pub fn seed_history(&mut self, entries: Vec<String>) {
+        self.seed_history_handles(entries.into_iter().map(Into::into).collect());
+    }
+
+    pub(crate) fn bind_history(&mut self, text: &str, entry: crate::history::HistoryText) {
+        if let Some(recent) = self.histories.first_mut()
+            && recent.matches(text)
+        {
+            *recent = entry;
+        }
+    }
+
+    pub(crate) fn seed_history_handles(&mut self, entries: Vec<crate::history::HistoryText>) {
         self.histories = entries;
         self.histories.truncate(HISTORY_MAX);
         self.break_history_browse();

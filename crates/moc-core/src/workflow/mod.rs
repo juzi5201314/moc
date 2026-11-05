@@ -12,5 +12,13 @@ pub(crate) fn workflows_active(
     state: &crate::session::state::SessionState,
     config: &crate::config::WorkflowConfig,
 ) -> bool {
-    config.enabled && state.workflow_activated && !state.session.is_subagent()
+    enabled_for(state.workflow_activated, state.session.is_subagent(), config)
+}
+
+pub(crate) fn enabled_for(
+    activated: bool,
+    subagent: bool,
+    config: &crate::config::WorkflowConfig,
+) -> bool {
+    config.enabled && activated && !subagent
 }

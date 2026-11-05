@@ -197,7 +197,7 @@ mod tests {
             &mut state,
             Message {
                 role: moc_llm::Role::Assistant,
-                content: vec![
+                content: moc_llm::message_content![
                     ContentPart::ToolCall(ToolCall::new("c1", "write", r#"{"path":"b.rs"}"#)),
                     ContentPart::ToolCall(ToolCall::new("c2", "edit", r#"{"path":"a.rs"}"#)),
                     ContentPart::ToolCall(ToolCall::new("c3", "edit", r#"{"path":"c.rs"}"#)),
@@ -302,12 +302,12 @@ mod tests {
                 previous_plan_id: None,
                 annotations: Vec::new(),
             },
-        ];
+        ].into();
         assert_eq!(
             active_plan(&state).as_deref(),
             Some("## Active Plan\n# 新计划")
         );
-        state.plans[1].status = PlanStatus::Rejected;
+        std::sync::Arc::make_mut(&mut state.plans)[1].status = PlanStatus::Rejected;
         assert_eq!(active_plan(&state), None);
     }
 }

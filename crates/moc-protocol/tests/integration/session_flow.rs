@@ -534,6 +534,7 @@ async fn session_lock_blocks_writes_but_allows_reads() {
     // 读操作放行，锁投影可见
     let loaded = handle
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: "ses_1".to_owned(),
             max_entries: None,
             read_only: false,
@@ -617,6 +618,7 @@ async fn load_honors_max_entries() {
 
     let full = handle
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: "ses_1".to_owned(),
             max_entries: None,
             read_only: false,
@@ -632,6 +634,7 @@ async fn load_honors_max_entries() {
 
     let tail = handle
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: "ses_1".to_owned(),
             max_entries: Some(2),
             read_only: false,
@@ -654,6 +657,7 @@ async fn load_honors_max_entries() {
 
     let missing = handle
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: "ses_不存在".to_owned(),
             max_entries: None,
             read_only: false,

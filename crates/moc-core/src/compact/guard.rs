@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn tool_payloads_do_not_turn_patch_syntax_into_facts() {
-        let message = Message { role: Role::Assistant, content: vec![
+        let message = Message { role: Role::Assistant, content: moc_llm::message_content![
             ContentPart::ToolCall(moc_llm::ToolCall::new("edit", "edit", serde_json::json!({
                 "path":"src/view.ts", "old_string":"const daylight = 0.22;", "new_string":"const daylight = 0.78;",
                 "input":"[src/legacy.ts#ABCD]\nSWAP 103=147:\n+const pixelRatio = 0.22;"

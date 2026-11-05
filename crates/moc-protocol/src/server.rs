@@ -728,6 +728,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .await?;
                 value_from(result)
             }
+            <crate::methods::SessionHistory as Method>::NAME => {
+                let params = params_from_value::<crate::methods::SessionHistory>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .session_history(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
             <SessionLoadPage as Method>::NAME => {
                 let params = params_from_value::<SessionLoadPage>(params)?;
                 let result = self

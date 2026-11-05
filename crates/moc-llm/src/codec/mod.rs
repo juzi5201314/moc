@@ -26,13 +26,21 @@ pub use inspection::{RequestInspection, RequestSource, inspect_request};
 
 /// 编码后的 HTTP 请求。
 #[derive(Debug)]
-pub(crate) struct EncodedRequest {
+pub(crate) struct EncodedRequest<B = Vec<u8>> {
     /// 完整 URL（含查询串）。
     pub url: String,
     /// 请求头，已含 `content-type` 与鉴权头。
     pub headers: Vec<(String, String)>,
     /// 请求体；重试时直接克隆字节，不做二次序列化。
-    pub body: Vec<u8>,
+    pub body: B,
+}
+
+impl EncodedRequest<Value> {
+    fn into_wire(self, protocol: &str) -> Result<EncodedRequest, LlmError> {
+        let body = serde_json::to_vec(&self.body)
+            .map_err(|error| LlmError::Encode(format!("{protocol} 请求体序列化失败: {error}")))?;
+        Ok(EncodedRequest { url: self.url, headers: self.headers, body })
+    }
 }
 
 /// 请求头集合。
@@ -447,7 +455,7 @@ mod tests {
             assistant_with_calls(&[("call_1", "get_weather")]),
             Message {
                 role: Role::Tool,
-                content: vec![ContentPart::Text("不是结果".into())],
+                content: crate::message_content![ContentPart::Text("不是结果".into())],
             },
         ];
         let err = validate_tool_history(&messages).unwrap_err();
@@ -458,7 +466,7 @@ mod tests {
     fn reasoning_only_assistant_message_is_allowed() {
         let messages = vec![Message {
             role: Role::Assistant,
-            content: vec![ContentPart::Reasoning(ReasoningBlock::text("只有思考"))],
+            content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::text("只有思考"))],
         }];
         assert!(validate_tool_history(&messages).is_ok());
     }

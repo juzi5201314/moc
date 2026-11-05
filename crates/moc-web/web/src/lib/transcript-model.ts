@@ -114,6 +114,9 @@ export type LiveTurn = {
   /** 当前一轮生成的思考块与正文块 id；首个增量到达时才创建。 */
   reasoningId?: string;
   textId?: string;
+  /** 活动块的位置提示；历史前插/回退后用 id 校验并重新定位。 */
+  reasoningIndex?: number;
+  textIndex?: number;
   /** 当前 generation 创建的块；重试回退时只清理这一段。 */
   generationBlockIds: string[];
   usage?: Usage;
@@ -471,10 +474,24 @@ function pushPromptStatus(
   if (view.rewindable?.promptId === promptId) view.rewindable.blockIds.push(id);
 }
 
+function liveBlock(view: SessionView, kind: "text" | "reasoning"): Block | undefined {
+  const live = view.live;
+  if (!live) return;
+  const id = kind === "text" ? live.textId : live.reasoningId;
+  if (!id) return;
+  const key = kind === "text" ? "textIndex" : "reasoningIndex";
+  let index = live[key];
+  if (index === undefined || view.blocks[index]?.id !== id) {
+    index = view.blocks.findLastIndex((block) => block.id === id);
+    live[key] = index;
+  }
+  return view.blocks[index];
+}
+
 function closeReasoning(view: SessionView, now: number) {
   const live = view.live;
   if (!live?.reasoningId) return;
-  const block = view.blocks.find((item) => item.id === live.reasoningId);
+  const block = liveBlock(view, "reasoning");
   if (
     block?.kind === "reasoning" &&
     block.startedAt !== undefined &&
@@ -574,31 +591,29 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       if (delta.type === "usage") {
         live.usage = delta.usage;
         // 只回填本次响应自己的思考块：没有思考块的响应（上游可能报 0）不动上一块。
-        const reasoning = live.reasoningId
-          ? view.blocks.find((item) => item.id === live.reasoningId)
-          : undefined;
+        const reasoning = liveBlock(view, "reasoning");
         if (reasoning?.kind === "reasoning" && delta.usage.reasoning_tokens) {
           reasoning.tokens = delta.usage.reasoning_tokens;
         }
       } else if (delta.type === "reasoning") {
-        let block = live.reasoningId
-          ? view.blocks.find((item) => item.id === live.reasoningId)
-          : undefined;
+        let block = liveBlock(view, "reasoning");
         if (block?.kind !== "reasoning") {
           const id = nextId(view);
           view.blocks.push({ kind: "reasoning", id, text: "", startedAt: now });
           live.reasoningId = id;
+          live.reasoningIndex = view.blocks.length - 1;
           trackLiveBlock(view, id);
           block = view.blocks.at(-1);
         }
         if (block?.kind === "reasoning") block.text += delta.delta;
       } else if (delta.type === "text") {
         closeReasoning(view, now);
-        let block = live.textId ? view.blocks.find((item) => item.id === live.textId) : undefined;
+        let block = live.textId ? liveBlock(view, "text") : undefined;
         if (block?.kind !== "text") {
           const id = nextId(view);
           view.blocks.push({ kind: "text", id, text: "" });
           live.textId = id;
+          live.textIndex = view.blocks.length - 1;
           trackLiveBlock(view, id);
           block = view.blocks.at(-1);
         }
@@ -706,18 +721,14 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       const text = messageText(update.message);
       const reasoning = update.message.content.map(reasoningText).join("");
       if (live) {
-        const textBlock = live.textId
-          ? view.blocks.find((item) => item.id === live.textId)
-          : undefined;
+        const textBlock = liveBlock(view, "text");
         if (textBlock?.kind === "text") textBlock.text = text;
         else if (text) {
           const id = nextId(view);
           view.blocks.push({ kind: "text", id, text });
           live.generationBlockIds.push(id);
         }
-        const reasoningBlock = live.reasoningId
-          ? view.blocks.find((item) => item.id === live.reasoningId)
-          : undefined;
+        const reasoningBlock = liveBlock(view, "reasoning");
         if (reasoningBlock?.kind === "reasoning" && reasoning) reasoningBlock.text = reasoning;
         else if (reasoning) {
           const id = nextId(view);

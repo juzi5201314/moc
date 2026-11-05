@@ -265,6 +265,7 @@ async fn unsteer_removes_pending_steering_before_boundary() {
     let loaded = harness
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: id.clone(),
             max_entries: None,
             read_only: false,

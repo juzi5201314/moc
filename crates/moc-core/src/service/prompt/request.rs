@@ -36,7 +36,7 @@ pub(in crate::service) async fn project_input(
     }
     Ok(Message {
         role: Role::User,
-        content,
+        content: content.into(),
     })
 }
 async fn normalize_image_source(

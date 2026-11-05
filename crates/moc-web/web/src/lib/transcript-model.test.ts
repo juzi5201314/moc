@@ -168,6 +168,23 @@ describe("entriesToBlocks", () => {
 });
 
 describe("applyUpdate", () => {
+  it("加载更早历史后增量仍追加到原活动块", () => {
+    const view = createView(INFO);
+    const delta = (text: string): SessionUpdate => ({
+      type: "assistant_delta",
+      prompt_id: "p",
+      delta: { type: "text", delta: text },
+    });
+    applyUpdate(view, delta("开始"), 1);
+    const id = view.live?.textId;
+    view.blocks.unshift({ kind: "text", id: "older", text: "旧历史" });
+    applyUpdate(view, delta("继续"), 2);
+    expect(view.blocks).toMatchObject([
+      { id: "older", text: "旧历史" },
+      { id, text: "开始继续" },
+    ]);
+  });
+
   it("手动 !命令的 tool_finished 回填 bash 块，不产生重复行", () => {
     const view = createView(INFO);
     applyUpdate(view, {

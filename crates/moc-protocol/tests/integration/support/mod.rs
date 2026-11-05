@@ -286,7 +286,7 @@ fn transcript(session_id: &str) -> Vec<TranscriptEntry> {
                 } else {
                     Role::Assistant
                 },
-                content: vec![ContentPart::Text(format!("第 {index} 条"))],
+                content: moc_llm::message_content![ContentPart::Text(format!("第 {index} 条"))],
             },
             tool: (index == 4).then(|| ToolExecution {
                 tool_call_id: "call_1".to_owned(),
@@ -450,7 +450,7 @@ impl ScriptedService {
 
         let message = Message {
             role: Role::Assistant,
-            content: vec![
+            content: moc_llm::message_content![
                 ContentPart::Text("好的".to_owned()),
                 ContentPart::Reasoning(ReasoningBlock::text("先看 README")),
                 ContentPart::ToolCall(ToolCall::new(
@@ -947,7 +947,7 @@ impl AgentService for ScriptedService {
                     prompt_id,
                     message: Message {
                         role: Role::Assistant,
-                        content: vec![ContentPart::Text("已取消".to_owned())],
+                        content: moc_llm::message_content![ContentPart::Text("已取消".to_owned())],
                     },
                     finish_reason: FinishReason::Cancelled,
                     usage: Usage::default(),

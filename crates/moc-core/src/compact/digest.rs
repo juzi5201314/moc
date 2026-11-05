@@ -1283,7 +1283,7 @@ mod tests {
     fn ask_call(id: &str, questions: serde_json::Value) -> Message {
         Message {
             role: Role::Assistant,
-            content: vec![ContentPart::ToolCall(ToolCall::new(
+            content: moc_llm::message_content![ContentPart::ToolCall(ToolCall::new(
                 id,
                 "ask",
                 serde_json::json!({ "questions": questions }).to_string(),

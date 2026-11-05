@@ -180,6 +180,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
         .expect("unload session");
     let resumed = client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session.id.clone(),
             max_entries: None,
             read_only: false,
@@ -729,6 +730,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
     assert_eq!(result.message.text(), "Hello from core.");
     let loaded = client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session.id.clone(),
             max_entries: None,
             read_only: false,
@@ -941,6 +943,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
     );
     let parent = client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session.id.clone(),
             max_entries: None,
             read_only: false,
@@ -987,6 +990,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
 
     let child = client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: approved.session_id.clone(),
             max_entries: None,
             read_only: false,
@@ -1202,6 +1206,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
     );
     let loaded = client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session.id,
             max_entries: None,
             read_only: false,
@@ -1372,6 +1377,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
     assert_eq!(result.message.text(), "I will stop.");
     let loaded = client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session.id,
             max_entries: None,
             read_only: false,
@@ -1577,6 +1583,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
 
     let loaded = client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session.id,
             max_entries: None,
             read_only: false,
@@ -1757,6 +1764,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
     );
     let loaded = client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session.id,
             max_entries: None,
             read_only: false,

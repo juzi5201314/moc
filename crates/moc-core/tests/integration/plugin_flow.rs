@@ -37,6 +37,7 @@ async fn load(harness: &Harness, session: &str) -> Vec<String> {
     let loaded = harness
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session.into(),
             max_entries: None,
             read_only: false,
@@ -758,6 +759,7 @@ async fn message_received_rewrites_user_input_before_persisting() {
     let loaded = harness
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session.clone(),
             max_entries: None,
             read_only: false,
@@ -809,6 +811,7 @@ async fn session_start_injects_messages_into_the_transcript() {
     let loaded = harness
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session,
             max_entries: None,
             read_only: false,

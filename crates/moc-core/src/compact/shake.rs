@@ -17,7 +17,7 @@ pub(crate) async fn compact(
         tokens_before,
         fixed_tokens,
     } = budget;
-    let mut entries = state.entries.clone();
+    let mut entries = state.entries.as_ref().clone();
     if !prune(&mut entries, &config.compaction) {
         return Err(CoreError::ContextOverflow(
             "local pruning found no reclaimable tool output".into(),
@@ -218,7 +218,7 @@ mod tests {
         config.protect_recent_tool_tokens = 0;
         let assistant = Message {
             role: Role::Assistant,
-            content: vec![
+            content: moc_llm::message_content![
                 ContentPart::ToolCall(ToolCall::new(
                     "ask1",
                     "ask",

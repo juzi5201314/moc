@@ -24,6 +24,7 @@ struct Snapshot {
     tools: Vec<moc_llm::ToolDef>,
     messages: Vec<Message>,
     sources: Vec<String>,
+    history_tokens: u64,
 }
 impl Snapshot {
     fn usage(&self) -> ContextUsageResult {
@@ -39,7 +40,7 @@ impl Snapshot {
         let skills = piece_tokens("skills");
         let directory = piece_tokens("tools");
         let tools = compact::tools_tokens(&self.tools);
-        let history = compact::messages_tokens(&self.messages[self.system.messages.len()..]);
+        let history = self.history_tokens;
         ContextUsageResult {
             context_window: self.model.context_window,
             total_tokens: system_tokens.saturating_add(tools).saturating_add(history),
@@ -86,6 +87,16 @@ pub(crate) async fn content(
         );
     }
     let snapshot = snapshot(inner, &ctx, &params.session_id).await?;
+    let session_id = params.session_id.clone();
+    let view = tokio::task::spawn_blocking(move || build_view(snapshot, &session_id))
+        .await
+        .map_err(|error| RpcError::new(moc_protocol::RpcErrorCode::InternalError.code(), error.to_string()))??;
+    let result = view.page(params.cursor, params.limit)?;
+    view::install(inner, &ctx, &params.session_id, view).await?;
+    Ok(result)
+}
+
+fn build_view(snapshot: Snapshot, session_id: &str) -> Result<view::View, RpcError> {
     let usage = snapshot.usage();
     // compose 按角色分组；来源也按同一规则排列，不能沿原 pieces 顺序错配。
     let mut instruction_sources = Vec::new();
@@ -105,7 +116,7 @@ pub(crate) async fn content(
         &snapshot.config,
         snapshot.messages,
         snapshot.tools,
-        &params.session_id,
+        session_id,
         super::prompt::request::CacheAnchors {
             instruction_static: &snapshot.system.static_prefix,
             trailing_reminders: 0,
@@ -122,7 +133,7 @@ pub(crate) async fn content(
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    let view = view::View::new(
+    let mut view = view::View::new(
         usage,
         snapshot.model.selector,
         protocol,
@@ -130,9 +141,10 @@ pub(crate) async fn content(
         &snapshot.sources,
         &instruction_sources,
     );
-    let result = view.page(params.cursor, params.limit)?;
-    view::install(inner, &ctx, &params.session_id, view);
-    Ok(result)
+    view.bound_text(view::TEXT_CACHE_BYTES).map_err(|error| RpcError::new(
+        moc_protocol::RpcErrorCode::InternalError.code(), format!("保存上下文快照失败：{error}")
+    ))?;
+    Ok(view)
 }
 
 /// 异步资源准备在会话锁外，冻结消息只在锁内读取，不消费通知或刷新提醒。
@@ -219,7 +231,9 @@ async fn snapshot(
         Some(&model),
         Some(&mut sources),
     );
+    let history_tokens = compact::cached_messages_tokens(&state, &messages[system.messages.len()..]);
     Ok(Snapshot {
+        history_tokens,
         model,
         config,
         pieces,

@@ -49,15 +49,120 @@ const AGENT_MESSAGE_PREVIEW_ROWS: usize = 3;
 pub struct ScrollbackView {
     width: u16,
     cache: Vec<CachedEntry>,
-    /// 每帧重算的块内容代次（批次成员取同批最大值），与 `App::blocks` 对齐。
+    /// 每帧重算的块内容代次（批次成员共享输入序列的版本），与 `App::blocks` 对齐。
     generations: Vec<u64>,
+    batches: BatchIndex,
+    deferred: bool,
+    background_layout: bool,
+    pending_layout: Option<PendingLayout>,
+    live_layout_block: Option<usize>,
+}
+
+struct PendingLayout {
+    index: usize,
+    key: (u64, u64),
+    epoch: u64,
+    width: u16,
+    result: tokio::sync::oneshot::Receiver<Result<LayoutResult, tokio::task::JoinError>>,
+}
+
+struct LayoutResult {
+    rendered: EntryLines,
+    cost: std::time::Duration,
+}
+
+#[derive(Default)]
+struct BatchIndex {
+    /// 块下标和批次编号均为密集索引；非批次块没有编号。
+    by_block: Vec<Option<usize>>,
+    groups: Vec<BatchGroup>,
+}
+
+#[derive(Default)]
+struct BatchGroup {
+    members: Vec<usize>,
+    /// 与 members 同序的上次布局输入；索引密集、有序比较，不使用可能碰撞的摘要。
+    previous: Vec<(usize, u64, u64)>,
+    generation: u64,
+}
+
+impl BatchIndex {
+    fn sync(&mut self, blocks: &[Entry], generations: &mut Vec<u64>) {
+        let mut ids = std::collections::HashMap::new();
+        let mut count = 0;
+        self.by_block.clear();
+        generations.clear();
+        for group in &mut self.groups {
+            group.members.clear();
+        }
+        for (index, entry) in blocks.iter().enumerate() {
+            generations.push(entry.generation);
+            let group = tool_batch_key(entry).map(|key| {
+                *ids.entry(key).or_insert_with(|| {
+                    let id = count;
+                    count += 1;
+                    if self.groups.len() == id {
+                        self.groups.push(BatchGroup::default());
+                    }
+                    id
+                })
+            });
+            self.by_block.push(group);
+            if let Some(group) = group {
+                let group = &mut self.groups[group];
+                group.members.push(index);
+            }
+        }
+        self.groups.truncate(count);
+        for group in &mut self.groups {
+            let inputs = || {
+                group
+                    .members
+                    .iter()
+                    .map(|&index| (index, blocks[index].generation, blocks[index].layout_epoch))
+            };
+            if group.previous.iter().copied().ne(inputs()) {
+                group.generation = crate::transcript::next_layout_epoch();
+                group.previous.clear();
+                group.previous.extend(inputs());
+            }
+            debug_assert_eq!(group.previous.len(), group.members.len());
+            for &index in &group.members {
+                generations[index] = group.generation;
+            }
+        }
+    }
+
+    fn tools<'a>(&self, index: usize, app: &'a App) -> Option<Vec<&'a ToolCallBlock>> {
+        let group = &self.groups[self.by_block[index]?];
+        debug_assert!(!group.members.is_empty());
+        if group.members[0] != index {
+            return Some(Vec::new());
+        }
+        Some(
+            group
+                .members
+                .iter()
+                .map(|&member| {
+                    debug_assert!(member < app.blocks.len());
+                    let Block::Tool(tool) = &app.blocks[member].block else {
+                        unreachable!("批次索引只保存工具块");
+                    };
+                    tool.as_ref()
+                })
+                .collect(),
+        )
+    }
 }
 
 struct CachedEntry {
     key: (u64, u64),
+    layout_epoch: u64,
     height: usize,
     lines: Vec<Line<'static>>,
     rendered: bool,
+    rendered_at: std::time::Instant,
+    render_cost: std::time::Duration,
     /// 表格入口与图表占位（行号是块内局部行）。
     tables: Vec<LocalTable>,
     /// 通用图片落位（行号是块内局部行）。
@@ -112,29 +217,171 @@ impl ScrollbackView {
         Self::default()
     }
 
+    pub(crate) fn background() -> Self {
+        Self {
+            background_layout: true,
+            ..Self::default()
+        }
+    }
+
+    fn collect_layout(&mut self, app: &App) {
+        use tokio::sync::oneshot::error::TryRecvError;
+        let Some(pending) = &mut self.pending_layout else {
+            return;
+        };
+        let result = match pending.result.try_recv() {
+            Ok(result) => result.expect("后台 markdown 布局失败"),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Closed) => panic!("后台布局未发送结果"),
+        };
+        let pending = self.pending_layout.take().expect("已取得布局结果");
+        let Some(entry) = app.blocks.get(pending.index) else {
+            return;
+        };
+        if pending.width != self.width
+            || pending.key.1 != app.view_gen
+            || pending.epoch != entry.layout_epoch
+            || !app.prompt_running
+            || entry.elapsed_ms.is_some()
+            || !matches!(entry.block, Block::Assistant { .. })
+        {
+            return;
+        }
+        let Some(cached) = self.cache.get_mut(pending.index) else {
+            return;
+        };
+        if cached.key.0 >= pending.key.0 || entry.generation < pending.key.0 {
+            return;
+        }
+        // 同一追加族可显示已完成的中间帧；不能等流停止才第一次显示结果。
+        *cached = CachedEntry {
+            key: pending.key,
+            layout_epoch: pending.epoch,
+            height: result.rendered.lines.len(),
+            lines: result.rendered.lines,
+            tables: result.rendered.tables,
+            images: result.rendered.images,
+            rendered: true,
+            rendered_at: std::time::Instant::now(),
+            render_cost: result.cost,
+        };
+    }
+
+    fn start_layout(&mut self, app: &App, index: usize, key: (u64, u64)) {
+        debug_assert!(self.pending_layout.is_none(), "每个视图至多一份布局快照");
+        let entry = &app.blocks[index];
+        let Block::Assistant { text } = &entry.block else {
+            unreachable!("只调度助手正文");
+        };
+        let text = text.clone();
+        let charts = entry.charts.clone();
+        let graphics = app.graphics;
+        let images = app.images.clone();
+        let cwd = std::path::PathBuf::from(&app.startup_cwd);
+        let theme = app.theme;
+        let width = self.width;
+        let epoch = entry.layout_epoch;
+        let events = app.events.clone();
+        let (send, result) = tokio::sync::oneshot::channel();
+        let job = tokio::task::spawn_blocking(move || {
+            let started = std::time::Instant::now();
+            let rendered = assistant_layout(
+                &text,
+                usize::from(width),
+                theme,
+                RenderViews {
+                    charts: &charts,
+                    graphics,
+                    streaming: true,
+                    images: Some(&images),
+                    cwd: Some(&cwd),
+                    spawn_images: true,
+                },
+                None,
+            );
+            LayoutResult {
+                rendered,
+                cost: started.elapsed(),
+            }
+        });
+        tokio::spawn(async move {
+            let _ = send.send(job.await);
+            let _ = events.send(crate::protocol::AppEvent::LayoutReady);
+        });
+        self.pending_layout = Some(PendingLayout {
+            index,
+            key,
+            epoch,
+            width,
+            result,
+        });
+    }
+
     /// 让缓存与 `app.blocks` 对齐（懒块只留估算高度），高度累计由 [`RowWindow`] 负责。
     pub fn sync(&mut self, app: &App, width: u16) {
         const EAGER_BLOCKS: usize = 64;
+        self.deferred = false;
         if self.width != width {
             self.width = width;
             self.cache.clear();
         }
+        self.collect_layout(app);
+        self.live_layout_block = self.background_layout.then(|| app.blocks.len().checked_sub(1))
+            .flatten().filter(|&index| app.prompt_running && app.blocks[index].elapsed_ms.is_none()
+                && matches!(&app.blocks[index].block, Block::Assistant { text } if text.len() > 64 * 1024));
         let eager_start = app.blocks.len().saturating_sub(EAGER_BLOCKS);
-        fill_block_generations(&app.blocks, &mut self.generations);
+        self.batches.sync(&app.blocks, &mut self.generations);
         for (index, entry) in app.blocks.iter().enumerate() {
             let key = (
                 self.generations.get(index).copied().unwrap_or(0),
                 app.view_gen,
             );
-            if self
-                .cache
-                .get(index)
-                .is_some_and(|cached| cached.key == key)
-            {
+            if self.cache.get(index).is_some_and(|cached| {
+                cached.key == key && cached.layout_epoch == entry.layout_epoch
+            }) {
                 continue;
             }
+            if self.live_layout_block == Some(index)
+                && self.cache.get(index).is_some_and(|cached| {
+                    cached.rendered
+                        && cached.key.1 == key.1
+                        && cached.layout_epoch == entry.layout_epoch
+                })
+            {
+                if self.pending_layout.is_none() {
+                    let cached = &self.cache[index];
+                    let wait = (cached.render_cost * 4).clamp(
+                        std::time::Duration::from_millis(16),
+                        std::time::Duration::from_millis(250),
+                    );
+                    if cached.rendered_at.elapsed() >= wait {
+                        self.start_layout(app, index, key);
+                    } else {
+                        self.deferred = true;
+                    }
+                }
+                continue;
+            }
+            if app.prompt_running
+                && entry.elapsed_ms.is_none()
+                && matches!(&entry.block, Block::Assistant { text } if text.len() > 64 * 1024)
+                && self.cache.get(index).is_some_and(|cached| {
+                    cached.rendered
+                        && cached.key.1 == key.1
+                        && cached.layout_epoch == entry.layout_epoch
+                        && cached.rendered_at.elapsed()
+                            < (cached.render_cost * 4).clamp(
+                                std::time::Duration::from_millis(16),
+                                std::time::Duration::from_millis(250),
+                            )
+                })
+            {
+                self.deferred = true;
+                continue;
+            }
+            let render_started = std::time::Instant::now();
             let (lines, tables, images, height, rendered) = if index >= eager_start {
-                let rendered = render_entry(index, entry, app, width);
+                let rendered = render_entry_with(index, entry, app, width, true, &self.batches);
                 let height = rendered.lines.len();
                 (
                     rendered.lines,
@@ -148,15 +395,18 @@ impl ScrollbackView {
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
-                    estimate_entry_height_at(app, index, width),
+                    estimate_entry_height_indexed(app, index, width, &self.batches),
                     false,
                 )
             };
             let cached = CachedEntry {
                 key,
+                layout_epoch: entry.layout_epoch,
                 height,
                 lines,
                 rendered,
+                rendered_at: std::time::Instant::now(),
+                render_cost: render_started.elapsed(),
                 tables,
                 images,
             };
@@ -169,16 +419,20 @@ impl ScrollbackView {
         self.cache.truncate(app.blocks.len());
     }
 
+    pub fn has_deferred_render(&self) -> bool {
+        self.deferred
+    }
+
     /// 在绘制后释放完全离开视口的行，只保留高度与缓存键。
     pub fn trim_outside(&mut self, skip_rows: usize, viewport: usize) {
         let end = skip_rows.saturating_add(viewport);
         let mut offset = 0usize;
-        for cached in &mut self.cache {
+        for (index, cached) in self.cache.iter_mut().enumerate() {
             let next = offset.saturating_add(cached.height);
-            if next <= skip_rows || offset >= end {
-                cached.lines.clear();
-                cached.tables.clear();
-                cached.images.clear();
+            if Some(index) != self.live_layout_block && (next <= skip_rows || offset >= end) {
+                cached.lines = Vec::new();
+                cached.tables = Vec::new();
+                cached.images = Vec::new();
                 cached.rendered = false;
             }
             offset = next;
@@ -205,7 +459,17 @@ impl ScrollbackView {
             for (index, cached) in self.cache.iter_mut().enumerate() {
                 let next = offset.saturating_add(cached.height);
                 if !cached.rendered && offset < end && next > window.skip_rows {
-                    let rendered = render_entry(index, &app.blocks[index], app, self.width);
+                    let started = std::time::Instant::now();
+                    let rendered = render_entry_with(
+                        index,
+                        &app.blocks[index],
+                        app,
+                        self.width,
+                        true,
+                        &self.batches,
+                    );
+                    cached.render_cost = started.elapsed();
+                    cached.rendered_at = std::time::Instant::now();
                     cached.height = rendered.lines.len();
                     cached.lines = rendered.lines;
                     cached.tables = rendered.tables;
@@ -418,32 +682,12 @@ fn placement_id(entry: usize, domain: u8, ordinal: usize) -> u32 {
     low | 1
 }
 
-/// 计算块内容代次：批次成员的代次归并到同批最大值。
+/// 计算块内容代次：批次成员共享同一输入序列的布局版本。
 ///
-/// 逐块现算要对每个批次成员全表扫描一次（O(块数²)/帧）；这里一遍建表、一遍回填，
-/// 结果与逐块计算一致，`generations` 复用调用方的缓冲避免每帧分配。
+/// 一遍建表、一遍回填，任何成员改变都使全批失效；不再逐块全表扫描。
+#[cfg(test)]
 fn fill_block_generations(blocks: &[Entry], generations: &mut Vec<u64>) {
-    use std::collections::HashMap;
-
-    generations.clear();
-    generations.extend(blocks.iter().map(|entry| entry.generation));
-    let mut batch_max: HashMap<(&str, &str), u64> = HashMap::new();
-    for entry in blocks {
-        let Some((batch_id, name)) = tool_batch_key(entry) else {
-            continue;
-        };
-        let slot = batch_max
-            .entry((batch_id, name))
-            .or_insert(entry.generation);
-        *slot = (*slot).max(entry.generation);
-    }
-    for (index, entry) in blocks.iter().enumerate() {
-        if let Some((batch_id, name)) = tool_batch_key(entry)
-            && let Some(generation) = batch_max.get(&(batch_id, name))
-        {
-            generations[index] = *generation;
-        }
-    }
+    BatchIndex::default().sync(blocks, generations);
 }
 
 fn tool_batch_key(entry: &Entry) -> Option<(&str, &str)> {
@@ -455,7 +699,19 @@ fn tool_batch_key(entry: &Entry) -> Option<(&str, &str)> {
     }
 }
 
+#[cfg(test)]
 fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
+    let mut batches = BatchIndex::default();
+    batches.sync(&app.blocks, &mut Vec::new());
+    estimate_entry_height_indexed(app, index, width, &batches)
+}
+
+fn estimate_entry_height_indexed(
+    app: &App,
+    index: usize,
+    width: u16,
+    batches: &BatchIndex,
+) -> usize {
     let Some(entry) = app.blocks.get(index) else {
         return 0;
     };
@@ -465,25 +721,17 @@ fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
     if let Block::Assistant { text } = &entry.block
         && (may_contain_table(text) || may_contain_image(text) || may_contain_mermaid(text))
     {
-        return render_entry_estimate(index, entry, app, width).lines.len();
+        return render_entry_with(index, entry, app, width, false, batches)
+            .lines
+            .len();
     }
     let level = entry.level(app.block_level(&entry.block));
-    let Some((batch_id, name)) = tool_batch_key(entry) else {
+    let Some(tools) = batches.tools(index, app) else {
         return estimate_entry_height(entry, app, level, width);
     };
-    if batch_group_start(app, index, batch_id, name) != index {
+    if tools.is_empty() {
         return 0;
     }
-    let tools: Vec<&ToolCallBlock> = app
-        .blocks
-        .iter()
-        .filter_map(|candidate| match &candidate.block {
-            Block::Tool(tool) if is_same_batch_tool(candidate, batch_id, name) => {
-                Some(tool.as_ref())
-            }
-            _ => None,
-        })
-        .collect();
     estimate_tool_batch_height(app, &tools, level, usize::from(width))
 }
 
@@ -508,19 +756,6 @@ fn estimate_tool_batch_height(
         rows += tool_body_rows(tool, &args, app, batch_body_width(width), level, in_title);
     }
     rows
-}
-
-fn is_same_batch_tool(entry: &Entry, batch_id: &str, name: &str) -> bool {
-    tool_batch_key(entry).is_some_and(|(candidate_batch, candidate_name)| {
-        candidate_batch == batch_id && candidate_name == name
-    })
-}
-
-fn batch_group_start(app: &App, index: usize, batch_id: &str, name: &str) -> usize {
-    app.blocks[..=index]
-        .iter()
-        .position(|entry| is_same_batch_tool(entry, batch_id, name))
-        .expect("当前工具必须存在于批次中")
 }
 
 /// 懒块的估算高度：与各渲染分支同结构（标题行 + 内容行 + 尾注 + 尾随留白）。
@@ -728,40 +963,30 @@ fn tool_is_error(tool: &ToolCallBlock) -> bool {
 /// 单块渲染。折叠状态由全局开关与块类型共同决定。
 ///
 /// 留白规则只有一条：每个块自带一行尾随留白，从不加前导留白。
+#[cfg(test)]
 fn render_entry(index: usize, entry: &Entry, app: &App, width: u16) -> EntryLines {
-    render_entry_with(index, entry, app, width, true)
+    let mut batches = BatchIndex::default();
+    batches.sync(&app.blocks, &mut Vec::new());
+    render_entry_with(index, entry, app, width, true, &batches)
 }
 
-/// 估高路径的渲染：图片只查缓存，绝不触发解码（否则懒块会连锁解码整个历史）。
-fn render_entry_estimate(index: usize, entry: &Entry, app: &App, width: u16) -> EntryLines {
-    render_entry_with(index, entry, app, width, false)
-}
-
+/// `spawn_images = false` 用于估高：只查缓存，绝不触发视口外图片解码。
 fn render_entry_with(
     index: usize,
     entry: &Entry,
     app: &App,
     width: u16,
     spawn_images: bool,
+    batches: &BatchIndex,
 ) -> EntryLines {
     // 估高路径统一按「至少 8 列」计算宽度；渲染必须用同一口径，否则超窄
     // 终端下图片版式（可容纳列数 → 行数）在两侧会算出不同的块高。
     let width = width.max(8);
     let level = entry.level(app.block_level(&entry.block));
-    if let Some((batch_id, name)) = tool_batch_key(entry) {
-        if batch_group_start(app, index, batch_id, name) != index {
+    if let Some(tools) = batches.tools(index, app) {
+        if tools.is_empty() {
             return EntryLines::plain(Vec::new());
         }
-        let tools: Vec<_> = app
-            .blocks
-            .iter()
-            .filter_map(|candidate| match &candidate.block {
-                Block::Tool(tool) if is_same_batch_tool(candidate, batch_id, name) => {
-                    Some(tool.as_ref())
-                }
-                _ => None,
-            })
-            .collect();
         return render_tool_batch(app, &tools, usize::from(width), level, spawn_images);
     }
     render_entry_single(entry, app, usize::from(width), level, spawn_images)
@@ -996,26 +1221,36 @@ fn assistant_message(
     spawn_images: bool,
 ) -> EntryLines {
     let theme = app.theme;
-    let rendered = render_markdown_with(
+    assistant_layout(
         text,
-        prose_width(width).max(8),
+        width,
         theme,
         RenderViews {
             charts: &entry.charts,
             graphics: app.graphics,
-            // 提示还没收尾时，末尾表格的入口等最终 token 落地再出现
             streaming: app.prompt_running && entry.elapsed_ms.is_none(),
             images: Some(&app.images),
             cwd: Some(std::path::Path::new(&app.startup_cwd)),
             spawn_images,
         },
-    );
+        prompt_footer(entry, width, theme),
+    )
+}
+
+fn assistant_layout(
+    text: &str,
+    width: usize,
+    theme: &Theme,
+    views: RenderViews<'_>,
+    footer: Option<Line<'static>>,
+) -> EntryLines {
+    let rendered = render_markdown_with(text, prose_width(width).max(8), theme, views);
     let mut lines: Vec<Line<'static>> = rendered
         .lines
         .into_iter()
         .map(|line| hang(line, PROSE_INDENT, usize::MAX))
         .collect();
-    if let Some(footer) = prompt_footer(entry, width, theme) {
+    if let Some(footer) = footer {
         lines.push(footer);
     }
     lines.push(Line::from(String::new()));
@@ -2806,6 +3041,115 @@ mod tests {
             .count();
         assert_eq!(clock_rows, 1, "时间戳应恰好出现一次");
     }
+    #[tokio::test]
+    async fn background_layout_coalesces_without_losing_final_or_reusing_old_blocks() {
+        use crate::protocol::AppEvent;
+        use crate::render::graphics::{CellPixels, GraphicsProto, GraphicsSupport};
+        async fn ready(events: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if matches!(
+                        events.recv().await.expect("布局事件通道"),
+                        AppEvent::LayoutReady
+                    ) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("轻量布局应及时完成");
+        }
+        fn allow_render(view: &mut ScrollbackView) {
+            view.cache[0].rendered_at =
+                std::time::Instant::now() - std::time::Duration::from_secs(1);
+        }
+        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.prompt_running = true;
+        app.blocks.push(Entry::new(Block::Assistant {
+            text: "Alpha [late] **正文** and `code`.\n\n".repeat(2200),
+        }));
+        let mut view = ScrollbackView::background();
+        app.graphics = Some(GraphicsSupport {
+            proto: GraphicsProto::Kitty,
+            cell: CellPixels { w: 8, h: 18 },
+        });
+        view.sync(&app, 80);
+        app.blocks[0].push_text("\n\n| 项 | 值 |\n|---|---|\n| A | 1 |\n| B | 2 |\n");
+        let first = app.blocks[0].clone();
+        allow_render(&mut view);
+        view.sync(&app, 80);
+        assert!(view.pending_layout.is_some());
+        assert!(!view.has_deferred_render(), "等待后台结果不忙画空帧");
+        // 后加的引用定义会改变前文的渲染，不能用盲目的文本尾部拼接替代原 parser。
+        app.blocks[0].push_text("\n[late]: https://example.com\n\n新的末尾");
+        ready(&mut receiver).await;
+        view.sync(&app, 80);
+        assert_eq!(
+            view.cache[0].key.0, first.generation,
+            "追加期间仍能发布完成的中间帧"
+        );
+        let Block::Assistant { text } = &first.block else {
+            unreachable!()
+        };
+        assert_eq!(
+            view.cache[0].lines,
+            assistant_message(text, &first, &app, 80, true).lines
+        );
+        allow_render(&mut view);
+        view.sync(&app, 80);
+        ready(&mut receiver).await;
+        view.sync(&app, 80);
+        let expected = render_entry(0, &app.blocks[0], &app, 80);
+        assert_eq!(view.cache[0].key.0, app.blocks[0].generation);
+        assert_eq!(view.cache[0].lines, expected.lines);
+        assert_eq!(
+            format!("{:?}", view.cache[0].tables),
+            format!("{:?}", expected.tables)
+        );
+        assert!(
+            view.cache[0].tables[0].button.is_some(),
+            "表格落定后的交互入口不能丢失"
+        );
+
+        app.blocks[0].push_text("最终尾部");
+        allow_render(&mut view);
+        view.sync(&app, 80);
+        assert!(view.pending_layout.is_some());
+        app.blocks[0].stamp_prompt(1_700_000_000_000, 2000);
+        app.prompt_running = false;
+        view.sync(&app, 80);
+        let final_key = view.cache[0].key;
+        assert_eq!(
+            view.cache[0].lines,
+            render_entry(0, &app.blocks[0], &app, 80).lines
+        );
+        assert!(!view.has_deferred_render());
+        ready(&mut receiver).await;
+        view.sync(&app, 80);
+        assert_eq!(view.cache[0].key, final_key, "迟到流式结果不能覆盖终态");
+
+        app.prompt_running = true;
+        app.blocks[0].elapsed_ms = None;
+        app.blocks[0].touch();
+        view.sync(&app, 80);
+        app.blocks[0].push_text("旧会话排队内容");
+        allow_render(&mut view);
+        view.sync(&app, 80);
+        assert!(view.pending_layout.is_some());
+        app.blocks = vec![Entry::new(Block::Assistant {
+            text: "新的会话".into(),
+        })];
+        view.sync(&app, 80);
+        ready(&mut receiver).await;
+        view.sync(&app, 80);
+        assert_eq!(
+            view.cache[0].lines,
+            render_entry(0, &app.blocks[0], &app, 80).lines
+        );
+        assert!(view.pending_layout.is_none());
+    }
+
     #[test]
     fn groups_same_name_tools_from_one_batch() {
         let (events, _) = tokio::sync::mpsc::unbounded_channel();
@@ -2833,6 +3177,18 @@ mod tests {
         assert!(text.contains("read (2)"));
         assert!(text.contains("a.rs"));
         assert!(text.contains("b.rs"));
+        for _ in 0..8 {
+            app.blocks[0].touch();
+        }
+        let mut view = ScrollbackView::new();
+        view.sync(&app, 80);
+        let before = view.cache[0].key;
+        app.blocks[1].touch();
+        view.sync(&app, 80);
+        assert_ne!(
+            view.cache[0].key, before,
+            "较低版本成员变化也必须使整批失效"
+        );
         assert_eq!(render_entry(1, &app.blocks[1], &app, 80).lines.len(), 0);
     }
 
@@ -2907,10 +3263,45 @@ mod tests {
                 assert!(cached.rendered, "视口覆盖的块必须已渲染");
                 assert_eq!(cached.lines.len(), cached.height, "渲染高度必须等于行数");
                 covered += 1;
+            } else {
+                assert_eq!(
+                    cached.lines.capacity(),
+                    0,
+                    "离屏缓存不得保留整条消息的行数组"
+                );
+                assert_eq!(cached.tables.capacity(), 0);
+                assert_eq!(cached.images.capacity(), 0);
             }
             offset = next;
         }
         assert!(covered > 0, "视口应落在至少一个块上");
+
+        app.blocks = vec![Entry::new(Block::Assistant {
+            text: "x".repeat(65537),
+        })];
+        app.prompt_running = true;
+        let mut streaming = ScrollbackView::new();
+        streaming.sync(&app, 80);
+        let old_key = streaming.cache[0].key;
+        streaming.cache[0].render_cost = std::time::Duration::from_millis(100);
+        streaming.cache[0].rendered_at =
+            std::time::Instant::now() + std::time::Duration::from_secs(60);
+        app.blocks[0].push_text("最后一段");
+        streaming.sync(&app, 80);
+        assert!(streaming.has_deferred_render());
+        assert_eq!(streaming.cache[0].key, old_key);
+        app.prompt_running = false;
+        streaming.sync(&app, 80);
+        assert!(!streaming.has_deferred_render(), "终态不得延迟");
+        assert_eq!(streaming.cache[0].key.0, app.blocks[0].generation);
+        assert!(
+            streaming.cache[0]
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<String>()
+                .contains("最后一段")
+        );
     }
 
     /// 含表格的正文：估算高度必须等于真实渲染高度，切换成图表后依然成立。
@@ -3127,10 +3518,8 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), rendered(&app, 0));
     }
 
-    /// 小2：批次代次一遍算清——每个成员都取同批最大代次，非批次块保留自身代次。
-    ///
-    /// 逐块现算时每个批次成员都要全表扫描一次（O(块数²)/帧）；归并结果必须与它一致，
-    /// 否则批次里任一成员变化都可能漏掉刷新。
+    /// 批次代次一遍算清：所有成员共用布局代次，非批次块保留自身代次。
+    /// 精确成员序列比较避免漏刷新，整帧工作量仍为 O(块数)。
     #[test]
     fn batch_members_share_one_generation_scan() {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -3152,7 +3541,7 @@ mod tests {
             });
         }
         app.push_note("独立块".into(), false);
-        // 只有第二个成员继续变化：同批成员的代次都应是这一批的最大值。
+        // 只有第二个成员继续变化：全批仍须使用同一个失效标记。
         app.tool_entry_mut("call_b").expect("批次成员").touch();
         let latest = app.blocks[1].generation;
         assert!(latest > app.blocks[0].generation, "成员各自推进");
@@ -3162,8 +3551,8 @@ mod tests {
         assert_eq!(generations.len(), app.blocks.len());
         assert_eq!(
             &generations[..3],
-            &[latest, latest, latest],
-            "同批成员共用最大代次"
+            &[generations[0], generations[0], generations[0]],
+            "同批成员共用布局代次"
         );
         assert_eq!(
             generations[3], app.blocks[3].generation,
@@ -3173,8 +3562,11 @@ mod tests {
         // 缓存 key 用的就是这份代次
         let mut view = ScrollbackView::new();
         view.sync(&app, 80);
-        assert_eq!(view.cache[0].key, (latest, app.view_gen));
-        assert_eq!(view.cache[1].key.0, latest);
+        let key = view.cache[0].key;
+        assert_eq!(key, (view.generations[0], app.view_gen));
+        assert_eq!(view.cache[1].key.0, key.0);
+        view.sync(&app, 80);
+        assert_eq!(view.cache[0].key, key, "无成员变化时布局代次稳定");
     }
 
     /// 工具正文的简略预算：6 行内容 + 一行省略提示；完整档不截断。
@@ -4513,6 +4905,7 @@ mod tests {
         narrow.width = 100;
         narrow.cache = vec![CachedEntry {
             key: (0, 0),
+            layout_epoch: 0,
             height: 3,
             lines: vec![
                 Line::from("标题"),
@@ -4520,6 +4913,8 @@ mod tests {
                 Line::from(" ".repeat(40)),
             ],
             rendered: true,
+            rendered_at: std::time::Instant::now(),
+            render_cost: std::time::Duration::ZERO,
             tables: Vec::new(),
             images: vec![ImagePlacement {
                 row: 1,

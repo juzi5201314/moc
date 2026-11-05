@@ -51,10 +51,17 @@ pub fn now_ms() -> u64 {
     u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX)
 }
 
+pub(crate) fn next_layout_epoch() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// 转写条目：块 + 内容版本（渲染缓存 key 的一部分）。
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub generation: u64,
+    /// 新条目或非追加修改会换代；用于拒绝跨块、跨视图状态的后台布局。
+    pub(crate) layout_epoch: u64,
     pub block: Block,
     /// 单块档位覆盖；`None` 表示跟随所在层的全局档位。
     pub level_override: Option<DetailLevel>,
@@ -75,6 +82,7 @@ impl Entry {
     pub fn new(block: Block) -> Self {
         Self {
             generation: 0,
+            layout_epoch: next_layout_epoch(),
             block,
             level_override: None,
             at_ms: None,
@@ -113,6 +121,15 @@ impl Entry {
     /// 内容变化时统一走这里，保证缓存失效。
     pub(crate) fn touch(&mut self) {
         self.generation += 1;
+        self.layout_epoch = next_layout_epoch();
+    }
+
+    pub(crate) fn text_appended(&mut self) {
+        if !self.charts.is_empty() {
+            self.layout_epoch = next_layout_epoch();
+        }
+        self.charts.clear();
+        self.generation += 1;
     }
 
     /// 提示收尾：把结束时刻与耗时回填到助手块（`Worked for` 尾注 + 回复时间）。
@@ -145,13 +162,13 @@ impl Entry {
             DetailLevel::Full => (collapsed != axis).then_some(collapsed),
             _ => Some(DetailLevel::Full),
         };
-        self.generation += 1;
+        self.touch();
     }
 
     /// 丢弃单块覆盖，让该块重新跟随所在层的全局档位。
     pub fn clear_level_override(&mut self) {
         if self.level_override.take().is_some() {
-            self.generation += 1;
+            self.touch();
         }
     }
 
@@ -164,8 +181,7 @@ impl Entry {
             Block::Assistant { text } | Block::Thinking { text, .. } => text.push_str(delta),
             _ => return,
         }
-        self.charts.clear();
-        self.touch();
+        self.text_appended();
     }
 
     /// 工具执行结束：回填终态。

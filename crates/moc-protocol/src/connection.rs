@@ -553,6 +553,25 @@ struct WriteBuffers {
     max_frame_bytes: usize,
 }
 
+struct JsonBuffer<'a> {
+    bytes: &'a mut Vec<u8>,
+    limit: usize,
+    len: usize,
+}
+
+impl std::io::Write for JsonBuffer<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.len = self.len.saturating_add(bytes.len());
+        if self.len <= self.limit {
+            self.bytes.extend_from_slice(bytes);
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl WriteBuffers {
     fn new(framing: Framing, max_frame_bytes: usize) -> Self {
         Self {
@@ -567,17 +586,23 @@ impl WriteBuffers {
     fn encode(&mut self, message: RpcMessage) -> Result<(), EncodeFailure> {
         self.body.clear();
         self.frame.clear();
-        let body = &mut self.body;
-        serde_json::to_writer(&mut *body, &message)
+        let mut body = JsonBuffer {
+            bytes: &mut self.body,
+            limit: self.max_frame_bytes,
+            len: 0,
+        };
+        serde_json::to_writer(&mut body, &message)
             .map_err(|error| EncodeFailure::Serialize(error.to_string()))?;
-        if self
-            .encoder
-            .encode(body, self.max_frame_bytes, &mut self.frame)
+        let len = body.len;
+        if len <= self.max_frame_bytes
+            && self
+                .encoder
+                .encode(&self.body, self.max_frame_bytes, &mut self.frame)
         {
             return Ok(());
         }
         Err(EncodeFailure::TooLarge {
-            len: self.body.len(),
+            len,
             max: self.max_frame_bytes,
         })
     }

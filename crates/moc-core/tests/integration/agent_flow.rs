@@ -174,6 +174,7 @@ async fn spawn_wait_returns_yield_report() {
     let child = harness
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: child_id,
             max_entries: None,
             read_only: false,
@@ -266,6 +267,7 @@ async fn missing_yield_reminds_three_times_then_falls_back() {
     let child = harness
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: child_id,
             max_entries: None,
             read_only: false,
@@ -417,6 +419,7 @@ async fn message_routes_running_as_injected_and_idle_as_woken() {
     let child = harness
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: child_id.clone(),
             max_entries: None,
             read_only: false,
@@ -730,8 +733,10 @@ async fn rewind_stays_in_place_and_keeps_plain_session_shape() {
     let rewound = harness
         .client
         .call::<SessionRewind>(SessionRewindParams {
+            omit_auxiliary: false,
             session_id: source.clone(),
             entry_id: target.id.clone(),
+            max_entries: None,
         })
         .await
         .expect("回退成功")
@@ -967,6 +972,7 @@ async fn explore_preset_denies_plan_and_control_but_keeps_the_rest() {
     let info = harness
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: child_id,
             max_entries: None,
             read_only: false,
@@ -1158,6 +1164,7 @@ async fn structured_yield_validates_result_and_surfaces_it_in_wait() {
     let child = harness
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: child_id,
             max_entries: None,
             read_only: false,
@@ -1387,8 +1394,10 @@ async fn rewinding_past_a_spawn_orphans_stops_and_hides_the_child() {
     harness
         .client
         .call::<SessionRewind>(SessionRewindParams {
+            omit_auxiliary: false,
             session_id: parent_id.clone(),
             entry_id: user_entry_id,
+            max_entries: None,
         })
         .await
         .expect("回退成功");
@@ -1441,8 +1450,10 @@ async fn rewinding_past_a_spawn_orphans_stops_and_hides_the_child() {
     harness
         .client
         .call::<SessionRedo>(SessionRedoParams {
+            omit_auxiliary: false,
             session_id: parent_id.clone(),
             entry_id: tip_entry_id,
+            max_entries: None,
         })
         .await
         .expect("前滚成功");

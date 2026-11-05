@@ -39,7 +39,7 @@ pub(super) async fn steer(
     params: SteerParams,
 ) -> Result<SteerResult, CoreError> {
     let record = inner.sessions.get(&params.session_id).await?;
-    let snapshot = record.state.lock().await.clone();
+    let snapshot = record.state.lock().await.metadata();
     let config = inner.project_config(Path::new(&snapshot.session.cwd))?;
     let model = config.resolve_model(&snapshot.model)?;
     let message = super::prompt::request::project_input(

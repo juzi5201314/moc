@@ -49,6 +49,12 @@ pub struct SessionRewindParams {
     pub session_id: String,
     /// 目标 transcript 消息 ID；用户消息本身不保留，会恢复到输入框。
     pub entry_id: String,
+    /// 返回的历史条数；`Some(0)` 用于随后按页重载的界面，省略保持完整返回。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entries: Option<u32>,
+    /// 省略 todo、计划、子工具和目标正文；界面随后通过 `session/history` 获取完整状态。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub omit_auxiliary: bool,
 }
 
 /// `session/redo`：把最近一次回退截掉的历史原样接回。
@@ -63,6 +69,12 @@ pub struct SessionRedoParams {
     pub session_id: String,
     /// 前滚目标条目 ID（含该条目）；只接受最近一次回退截掉的尾部里的条目。
     pub entry_id: String,
+    /// 返回的历史条数；`Some(0)` 只取元信息，省略保持完整返回。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entries: Option<u32>,
+    /// 省略 todo、计划、子工具和目标正文；界面随后通过 `session/history` 获取完整状态。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub omit_auxiliary: bool,
 }
 
 /// `session/reask`：把某个已收场的 `ask` 调用截回未回答状态并原样重放，
@@ -79,6 +91,12 @@ pub struct SessionReaskParams {
     pub session_id: String,
     /// 要重新作答的 `ask` 工具调用 ID。
     pub tool_call_id: String,
+    /// 返回的历史条数；`Some(0)` 只取元信息，省略保持完整返回。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entries: Option<u32>,
+    /// 省略 todo、计划、子工具和目标正文；界面随后通过 `session/history` 获取完整状态。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub omit_auxiliary: bool,
 }
 
 /// `session/unload`：释放会话的常驻资源（不删除会话、不影响列表）。
@@ -552,8 +570,12 @@ pub struct SessionLoadParams {
     /// 目标会话。
     pub session_id: String,
     /// 最多返回多少条 transcript 条目（从最新往前数）；`None` 表示全部。
+    /// `Some(0)` 只取会话元信息、todo 和计划，不带消息及子工具结果。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_entries: Option<u32>,
+    /// 省略 todo、计划、子工具和目标正文；界面随后通过 `session/history` 获取完整状态。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub omit_auxiliary: bool,
     /// 只读打开：不取跨进程写租约，写操作会被 core 拒绝。
     ///
     /// 另一个 core 进程持有写租约时，只有只读打开能成功。
@@ -563,6 +585,25 @@ pub struct SessionLoadParams {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// 前滚候选列表的独立分页；正文保持完整，超预算的单条候选独占一页。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RedoPageParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_entry_id: Option<String>,
+    pub max_entries: u32,
+}
+
+/// 计划版本按创建顺序分页；游标是当前计划列表的排他上界，追加版本不移动旧下标。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanPageParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<u32>,
+    /// 0 表示本次不读取计划；非零值受 core 的条数和序列化字节预算限制。
+    pub max_entries: u32,
 }
 
 /// `session/load_page` 的参数。
@@ -578,6 +619,15 @@ pub struct SessionLoadPageParams {
     /// 单条消息展示投影的字节预算；不影响 transcript 原文。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_message_bytes: Option<u32>,
+    /// 保留完整正文、图片和关联子工具结果，忽略单条投影预算；页预算按父调用组计量。
+    /// 单个超大条目独占一页；需要跨帧读取时使用 `session/history`。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub full_messages: bool,
+    /// 显式指定时前滚候选受分页预算限制；省略保持旧返回形状。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redo_page: Option<RedoPageParams>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_page: Option<PlanPageParams>,
 }
 
 /// `session/load_page` 的结果。
@@ -598,6 +648,13 @@ pub struct SessionLoadPageResult {
     /// 最近一次回退截掉、仍可前滚接回的 transcript 条目；栈顶以外的更早回退不提供。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redo_entries: Vec<TranscriptEntry>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub redo_has_more: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redo_tip_entry_id: Option<String>,
+    /// 还有更早计划时，下一次请求使用的排他上界。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plans_before: Option<u32>,
     /// 当前会话目标；无目标或旧 core 为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<GoalView>,
@@ -1188,15 +1245,47 @@ mod tests {
         let params = SessionLoadParams {
             session_id: "ses_1".into(),
             max_entries: None,
+            omit_auxiliary: false,
             read_only: false,
         };
         assert_eq!(
             serde_json::to_value(&params).expect("可序列化"),
             serde_json::json!({ "session_id": "ses_1" })
         );
+        assert_eq!(
+            serde_json::from_value::<SessionLoadParams>(
+                serde_json::json!({ "session_id": "ses_1" })
+            )
+            .unwrap(),
+            params,
+        );
+        let light = SessionLoadParams {
+            omit_auxiliary: true,
+            max_entries: Some(0),
+            ..params.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(light).unwrap(),
+            serde_json::json!({
+                "session_id": "ses_1", "max_entries": 0, "omit_auxiliary": true
+            })
+        );
+        let old_page: SessionLoadPageParams = serde_json::from_value(serde_json::json!({
+            "session_id": "ses_1", "max_entries": 64
+        }))
+        .unwrap();
+        assert!(old_page.plan_page.is_none());
+        assert!(!old_page.full_messages);
+        assert_eq!(
+            serde_json::to_value(old_page).unwrap(),
+            serde_json::json!({
+                "session_id": "ses_1", "max_entries": 64
+            })
+        );
         let readonly = SessionLoadParams {
             session_id: "ses_1".into(),
             max_entries: None,
+            omit_auxiliary: false,
             read_only: true,
         };
         assert_eq!(

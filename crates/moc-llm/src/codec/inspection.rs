@@ -38,9 +38,7 @@ pub fn inspect_request(
             super::anthropic::encode_inspected(cfg, req, stream, Some(&mut sources))
         }
     }?;
-    let body = serde_json::from_slice(&encoded.body)
-        .map_err(|error| LlmError::Encode(error.to_string()))?;
-    Ok(RequestInspection { body, sources })
+    Ok(RequestInspection { body: encoded.body, sources })
 }
 
 pub(super) fn source(

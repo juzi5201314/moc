@@ -15,19 +15,20 @@ use moc_protocol::{
     PluginListParams, PluginReload, PluginReloadParams, PluginRunCommand, PluginRunCommandParams,
     ResourceComplete, ResourceCompleteParams, Role, SessionCompact, SessionCompactParams,
     SessionContext, SessionContextContent, SessionContextContentParams, SessionEngine, SessionInfo,
-    SessionList, SessionListParams, SessionLoad, SessionLoadPage, SessionLoadPageParams,
-    SessionLoadParams, SessionLoadResult, SessionModelOverflowAction, SessionNew, SessionNewParams,
-    SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff,
-    SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanMode, SessionPlanModeParams,
-    SessionPlanRevise, SessionPlanReviseParams, SessionReask, SessionReaskParams, SessionRedo,
-    SessionRedoParams, SessionRewind, SessionRewindParams, SessionSetEngine,
-    SessionSetEngineParams, SessionSetModel, SessionSetModelParams, SessionSetPermission,
-    SessionSetPermissionParams, SessionUpdate, SessionUsage, SessionUsageParams, UpstreamField,
+    SessionList, SessionListParams, SessionLoad, SessionLoadPageParams, SessionLoadParams,
+    SessionLoadResult, SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission,
+    SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff, SessionPlanDiffParams,
+    SessionPlanDiffResult, SessionPlanMode, SessionPlanModeParams, SessionPlanRevise,
+    SessionPlanReviseParams, SessionReask, SessionReaskParams, SessionRedo, SessionRedoParams,
+    SessionRewind, SessionRewindParams, SessionSetEngine, SessionSetEngineParams, SessionSetModel,
+    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
+    SessionUsage, SessionUsageParams, UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::app::{App, ChartHit, CtrlCPending, Focus, LegendMenu, ScrollbackDrag};
 use crate::commands::CommandId;
+use crate::history_page::HistoryClient as _;
 use crate::input::{InputEvent, InputThread};
 use crate::modal::{ContextContentState, ContextDrag, Modal, PlanPane, SessionScope};
 use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_embedded};
@@ -207,11 +208,14 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
                     }
                 };
                 let loaded = client
-                    .call::<SessionLoadPage>(SessionLoadPageParams {
+                    .history_page(SessionLoadPageParams {
+                        full_messages: true,
+                        plan_page: Some(Default::default()),
                         session_id,
                         before_entry_id: None,
                         max_entries: 64,
                         max_message_bytes: Some(64 * 1024),
+                        redo_page: Some(Default::default()),
                     })
                     .await?;
                 let before_entry_id = loaded.entries.first().map(|entry| entry.id.clone());
@@ -239,6 +243,81 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
         Ok(None) => {}
         Err(error) => app.set_error_notice(format!("会话启动失败：{error}")),
     }
+}
+
+/// 显示会话只取一页正文；租约请求不携带可能超帧的消息。
+async fn load_display_session(
+    client: &ClientHandle,
+    session_id: String,
+    read_only: bool,
+) -> Result<SessionLoadResult, moc_protocol::RpcCallError> {
+    client
+        .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: true,
+            session_id: session_id.clone(),
+            max_entries: Some(0),
+            read_only,
+        })
+        .await?;
+    load_display_page(client, session_id).await
+}
+
+async fn load_display_page(
+    client: &ClientHandle,
+    session_id: String,
+) -> Result<SessionLoadResult, moc_protocol::RpcCallError> {
+    use moc_protocol::methods::session::PlanPageParams;
+    let mut page = client
+        .history_page(SessionLoadPageParams {
+            full_messages: true,
+            plan_page: Some(PlanPageParams {
+                before: None,
+                max_entries: 32,
+            }),
+            session_id: session_id.clone(),
+            before_entry_id: None,
+            max_entries: 64,
+            max_message_bytes: Some(64 * 1024),
+            redo_page: Some(Default::default()),
+        })
+        .await?;
+    let mut before = page.plans_before;
+    let mut plan_pages = vec![std::mem::take(&mut page.plans)];
+    while let Some(cursor) = before {
+        let older = client
+            .history_page(SessionLoadPageParams {
+                full_messages: true,
+                session_id: session_id.clone(),
+                before_entry_id: None,
+                max_entries: 0,
+                max_message_bytes: None,
+                redo_page: Some(Default::default()),
+                plan_page: Some(PlanPageParams {
+                    before: Some(cursor),
+                    max_entries: 32,
+                }),
+            })
+            .await?;
+        before = older.plans_before;
+        plan_pages.push(older.plans);
+    }
+    Ok(SessionLoadResult {
+        session: page.session,
+        entries: page.entries,
+        truncated: page.has_more,
+        todos: page.todos,
+        plans: plan_pages.into_iter().rev().flatten().collect(),
+        child_calls: page.child_calls,
+        goal: page.goal,
+    })
+}
+
+async fn load_mutation_page(
+    client: &ClientHandle,
+    result: Result<SessionLoadResult, moc_protocol::RpcCallError>,
+) -> anyhow::Result<SessionLoadResult> {
+    let loaded = result?;
+    Ok(load_display_page(client, loaded.session.id).await?)
 }
 
 async fn load_context(client: &ClientHandle, app: &mut App) {
@@ -487,11 +566,14 @@ fn load_focus(app: &mut App, connection: &EmbeddedConnection, session_id: String
     let events = app.events.clone();
     tokio::spawn(async move {
         let result = client
-            .call::<SessionLoadPage>(SessionLoadPageParams {
+            .history_page(SessionLoadPageParams {
+                full_messages: true,
+                plan_page: Some(Default::default()),
                 session_id,
                 before_entry_id: None,
                 max_entries: 128,
                 max_message_bytes: Some(64 * 1024),
+                redo_page: Some(Default::default()),
             })
             .await
             .map_err(anyhow::Error::from);
@@ -734,6 +816,10 @@ fn apply_rewound(
             &loaded.child_calls,
         ),
     );
+    app.set_history_cursor(
+        loaded.truncated,
+        loaded.entries.first().map(|entry| entry.id.clone()),
+    );
     app.todos = loaded.todos;
     app.goal = loaded.goal;
     app.prompt.clear();
@@ -783,6 +869,10 @@ fn apply_reasked(
             &loaded.entries,
             &loaded.child_calls,
         ),
+    );
+    app.set_history_cursor(
+        loaded.truncated,
+        loaded.entries.first().map(|entry| entry.id.clone()),
     );
     app.todos = loaded.todos;
     app.goal = loaded.goal;
@@ -844,7 +934,7 @@ async fn event_loop(
     // 强制每帧清屏重画（代价是整屏写入与位图重传，仅作排障手段）。
     let full_repaint =
         std::env::var("MOC_FULL_REPAINT").is_ok_and(|value| !value.is_empty() && value != "0");
-    let mut view = render::ScrollbackView::new();
+    let mut view = render::ScrollbackView::background();
     let mut next_frame = tokio::time::Instant::now();
     let mut next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
     let mut next_marquee_tick = tokio::time::Instant::now() + render::todo_hud::MARQUEE_TICK;
@@ -868,7 +958,7 @@ async fn event_loop(
             }
             let draw_result = guard.draw(|frame| render::draw(frame, app, &mut view));
             next_frame = tokio::time::Instant::now() + FRAME_BUDGET;
-            dirty = false;
+            dirty = view.has_deferred_render();
             draw_result?;
             // 位图只能画在帧之后：先让 ratatui 把文本与底色写完，再按格坐标贴图
             crate::render::graphics::emit(app, &mut std::io::stdout())?;
@@ -1101,7 +1191,7 @@ async fn event_loop(
                     }
                     // 编码完成不改变布局（占位行已经按版式留好了），
                     // 下一次 emit 就能取到载荷；事件本身已经把 dirty 置上了。
-                    Some(AppEvent::ImageEncoded { .. }) => {}
+                    Some(AppEvent::ImageEncoded { .. } | AppEvent::LayoutReady) => {}
                     Some(AppEvent::PickerError(error)) => {
                         let shown = app
                             .modal
@@ -2631,11 +2721,14 @@ fn request_history_page(app: &mut App, connection: &EmbeddedConnection) {
     let events = app.events.clone();
     tokio::spawn(async move {
         let result = client
-            .call::<SessionLoadPage>(SessionLoadPageParams {
+            .history_page(SessionLoadPageParams {
+                full_messages: true,
+                plan_page: Some(Default::default()),
                 session_id,
                 before_entry_id: Some(before_entry_id),
                 max_entries: 64,
                 max_message_bytes: Some(64 * 1024),
+                redo_page: Some(Default::default()),
             })
             .await
             .map_err(anyhow::Error::from);
@@ -3043,6 +3136,59 @@ fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
     }
     crate::queue::submit(app, connection, false);
 }
+async fn load_rewind_pages(
+    client: &ClientHandle,
+    session_id: String,
+) -> anyhow::Result<moc_protocol::SessionLoadPageResult> {
+    use moc_protocol::methods::session::RedoPageParams;
+    let mut result = client
+        .history_page(SessionLoadPageParams {
+            full_messages: true,
+            plan_page: Some(Default::default()),
+            session_id: session_id.clone(),
+            before_entry_id: None,
+            max_entries: 128,
+            max_message_bytes: Some(64 * 1024),
+            redo_page: Some(RedoPageParams::default()),
+        })
+        .await?;
+    let mut pages = Vec::new();
+    let mut has_more = result.redo_has_more;
+    let mut before = None;
+    while has_more {
+        let page = client
+            .history_page(SessionLoadPageParams {
+                full_messages: true,
+                plan_page: Some(Default::default()),
+                session_id: session_id.clone(),
+                before_entry_id: None,
+                max_entries: 0,
+                max_message_bytes: Some(64 * 1024),
+                redo_page: Some(RedoPageParams {
+                    before_entry_id: before,
+                    max_entries: 128,
+                }),
+            })
+            .await?;
+        has_more = page.redo_has_more;
+        before = if has_more {
+            Some(
+                page.redo_entries
+                    .first()
+                    .context("前滚分页未返回可继续的游标")?
+                    .id
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        pages.push(page.redo_entries);
+    }
+    result.redo_entries = pages.into_iter().rev().flatten().collect();
+    result.redo_has_more = false;
+    Ok(result)
+}
+
 /// 空输入框双击 Esc：加载当前会话的 transcript 回退选择器。
 fn open_rewind(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
@@ -3053,15 +3199,7 @@ fn open_rewind(app: &mut App, connection: &EmbeddedConnection) {
     let client = connection.client.clone();
     let events = app.events.clone();
     tokio::spawn(async move {
-        let result = client
-            .call::<SessionLoadPage>(SessionLoadPageParams {
-                session_id,
-                before_entry_id: None,
-                max_entries: 128,
-                max_message_bytes: Some(64 * 1024),
-            })
-            .await
-            .map_err(anyhow::Error::from);
+        let result = load_rewind_pages(&client, session_id).await;
         let _ = events.send(AppEvent::RewindLoaded(result));
     });
 }
@@ -3918,19 +4056,23 @@ fn handle_modal_key(
                             let result = if is_redo {
                                 client
                                     .call::<SessionRedo>(SessionRedoParams {
+                                        omit_auxiliary: true,
                                         session_id,
                                         entry_id: selected.id.clone(),
+                                        max_entries: Some(0),
                                     })
                                     .await
                             } else {
                                 client
                                     .call::<SessionRewind>(SessionRewindParams {
+                                        omit_auxiliary: true,
                                         session_id,
                                         entry_id: selected.id.clone(),
+                                        max_entries: Some(0),
                                     })
                                     .await
-                            }
-                            .map_err(anyhow::Error::from);
+                            };
+                            let result = load_mutation_page(&client, result).await;
                             let _ = events.send(AppEvent::Rewound {
                                 selected,
                                 is_redo,
@@ -3987,11 +4129,13 @@ fn handle_modal_key(
                             tokio::spawn(async move {
                                 let result = client
                                     .call::<SessionReask>(SessionReaskParams {
+                                        omit_auxiliary: true,
                                         session_id,
                                         tool_call_id,
+                                        max_entries: Some(0),
                                     })
-                                    .await
-                                    .map_err(anyhow::Error::from);
+                                    .await;
+                                let result = load_mutation_page(&client, result).await;
                                 let _ = events.send(AppEvent::Reasked {
                                     result: Box::new(result),
                                 });
@@ -4019,19 +4163,23 @@ fn handle_modal_key(
                                 let result = if is_redo {
                                     client
                                         .call::<SessionRedo>(SessionRedoParams {
+                                            omit_auxiliary: true,
                                             session_id,
                                             entry_id: selected.id.clone(),
+                                            max_entries: Some(0),
                                         })
                                         .await
                                 } else {
                                     client
                                         .call::<SessionRewind>(SessionRewindParams {
+                                            omit_auxiliary: true,
                                             session_id,
                                             entry_id: selected.id.clone(),
+                                            max_entries: Some(0),
                                         })
                                         .await
-                                }
-                                .map_err(anyhow::Error::from);
+                                };
+                                let result = load_mutation_page(&client, result).await;
                                 let _ = events.send(AppEvent::Rewound {
                                     selected,
                                     is_redo,
@@ -4394,13 +4542,7 @@ fn handle_modal_key(
                     let session_id = session.id.clone();
                     let events = events.clone();
                     tokio::spawn(async move {
-                        let first = client
-                            .call::<SessionLoad>(SessionLoadParams {
-                                session_id: session_id.clone(),
-                                max_entries: Some(64),
-                                read_only: false,
-                            })
-                            .await;
+                        let first = load_display_session(&client, session_id.clone(), false).await;
                         // 被另一个 core 进程持有写租约时降级为只读打开，让用户至少能看历史。
                         let (loaded, read_only) = match first {
                             Ok(loaded) => (Ok(loaded), false),
@@ -4408,13 +4550,7 @@ fn handle_modal_key(
                                 if error.code()
                                     == Some(moc_protocol::RpcErrorCode::SessionLocked.code()) =>
                             {
-                                let retry = client
-                                    .call::<SessionLoad>(SessionLoadParams {
-                                        session_id,
-                                        max_entries: Some(64),
-                                        read_only: true,
-                                    })
-                                    .await;
+                                let retry = load_display_session(&client, session_id, true).await;
                                 (retry, true)
                             }
                             Err(error) => (Err(error), false),
@@ -5117,29 +5253,51 @@ fn confirm_plan(app: &mut App, connection: &EmbeddedConnection) {
     let client = connection.client.clone();
     let events = app.events.clone();
     tokio::spawn(async move {
-        let result = async {
-            let loaded = client
-                .call::<SessionLoad>(SessionLoadParams {
-                    session_id,
-                    max_entries: None,
-                    read_only: false,
-                })
-                .await?;
-            anyhow::ensure!(loaded.session.plan_active, "会话已离开计划状态");
-            let plan = loaded
-                .plans
-                .into_iter()
-                .rev()
-                .find(|plan| plan.status == moc_protocol::methods::PlanStatus::Submitted)
-                .ok_or_else(|| anyhow::anyhow!("当前会话没有已写入的待审计划"))?;
-            anyhow::ensure!(
-                !plan.markdown.trim().is_empty()
-                    && plan.path == format!("local://{}.md", plan.plan_id),
-                "待审计划的正文或实体 URI 无效"
-            );
-            Ok(plan)
-        }
-        .await;
+        let result =
+            async {
+                let loaded = client
+                    .call::<SessionLoad>(SessionLoadParams {
+                        omit_auxiliary: true,
+                        session_id: session_id.clone(),
+                        max_entries: Some(0),
+                        read_only: false,
+                    })
+                    .await?;
+                anyhow::ensure!(loaded.session.plan_active, "会话已离开计划状态");
+                let mut before = None;
+                let plan =
+                    loop {
+                        let page = client
+                            .history_page(SessionLoadPageParams {
+                                full_messages: true,
+                                session_id: session_id.clone(),
+                                before_entry_id: None,
+                                max_entries: 0,
+                                max_message_bytes: None,
+                                redo_page: Some(Default::default()),
+                                plan_page: Some(moc_protocol::methods::session::PlanPageParams {
+                                    before,
+                                    max_entries: 32,
+                                }),
+                            })
+                            .await?;
+                        anyhow::ensure!(page.session.plan_active, "会话已离开计划状态");
+                        if let Some(plan) = page.plans.into_iter().rev().find(|plan| {
+                            plan.status == moc_protocol::methods::PlanStatus::Submitted
+                        }) {
+                            break plan;
+                        }
+                        before = page.plans_before;
+                        anyhow::ensure!(before.is_some(), "当前会话没有已写入的待审计划");
+                    };
+                anyhow::ensure!(
+                    !plan.markdown.trim().is_empty()
+                        && plan.path == format!("local://{}.md", plan.plan_id),
+                    "待审计划的正文或实体 URI 无效"
+                );
+                Ok(plan)
+            }
+            .await;
         let _ = events.send(AppEvent::PlanReview(result));
     });
 }
@@ -5260,12 +5418,7 @@ pub(crate) fn apply_plan_approval(
                 let client = connection.client.clone();
                 let events = app.events.clone();
                 tokio::spawn(async move {
-                    let loaded = client
-                        .call::<SessionLoad>(SessionLoadParams {
-                            session_id: result.session_id,
-                            max_entries: None,
-                            read_only: false,
-                        })
+                    let loaded = load_display_session(&client, result.session_id, false)
                         .await
                         .map_err(anyhow::Error::from);
                     let _ = events.send(AppEvent::PlanExecutionLoaded {
@@ -7571,6 +7724,7 @@ mod tests {
         let loaded = connection
             .client
             .call::<SessionLoad>(SessionLoadParams {
+                omit_auxiliary: false,
                 session_id: id,
                 max_entries: None,
                 read_only: false,
@@ -7899,6 +8053,7 @@ mod tests {
         let loaded = connection
             .client
             .call::<SessionLoad>(SessionLoadParams {
+                omit_auxiliary: false,
                 session_id: id,
                 max_entries: None,
                 read_only: false,
@@ -8233,6 +8388,7 @@ mod tests {
                 .connection
                 .client
                 .call::<SessionLoad>(SessionLoadParams {
+                    omit_auxiliary: false,
                     session_id: self.session.clone(),
                     max_entries: None,
                     read_only: false,
@@ -9160,6 +9316,7 @@ mod tests {
                 let session = connection
                     .client
                     .call::<SessionLoad>(SessionLoadParams {
+                        omit_auxiliary: false,
                         session_id: session_id.clone(),
                         max_entries: None,
                         read_only: false,
@@ -9260,6 +9417,7 @@ mod tests {
                     let session = connection
                         .client
                         .call::<SessionLoad>(SessionLoadParams {
+                            omit_auxiliary: false,
                             session_id: session_id.to_owned(),
                             max_entries: None,
                             read_only: false,
@@ -9872,7 +10030,7 @@ mod tests {
                 prompt_id: "prompt_old".into(),
                 message: Message {
                     role: Role::Assistant,
-                    content: vec![ContentPart::Text("旧回复".into())],
+                    content: moc_protocol::message_content![ContentPart::Text("旧回复".into())],
                 },
                 finish_reason: FinishReason::Stop,
                 usage: Usage::default(),
@@ -11468,11 +11626,14 @@ mod tests {
     ) -> anyhow::Result<moc_protocol::methods::SessionLoadPageResult> {
         connection
             .client
-            .call::<SessionLoadPage>(SessionLoadPageParams {
+            .history_page(SessionLoadPageParams {
+                full_messages: true,
+                plan_page: Some(Default::default()),
                 session_id: session_id.to_owned(),
                 before_entry_id: None,
                 max_entries: 128,
                 max_message_bytes: Some(64 * 1024),
+                redo_page: Some(Default::default()),
             })
             .await
             .map_err(anyhow::Error::from)

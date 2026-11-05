@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ErrorCode, RpcError } from "./errors";
+import { loadHistoryPage } from "./history";
 import { RpcClient, type SocketLike } from "./rpc";
 
 class FakeSocket implements SocketLike {
@@ -55,6 +56,72 @@ async function connected() {
 }
 
 describe("RpcClient", () => {
+  it("历史块按 UTF-8 字节接续，完整还原并在成功或失败后释放", async () => {
+    const call = vi.fn<RpcClient["call"]>();
+    const client = { call: call as RpcClient["call"] };
+    const page = { session_id: "s", max_entries: 1 };
+    const expected = {
+      entries: [{ text: '中文🙂\\"\n完整结果' }],
+      plans: [{ markdown: "# 计划" }],
+    };
+    call.mockResolvedValueOnce({ type: "page", page: expected });
+    expect(await loadHistoryPage(client, page)).toEqual(expected);
+    expect(call).toHaveBeenCalledTimes(1);
+    const json = JSON.stringify(expected);
+    const split = json.indexOf("🙂") + 2;
+    const head = json.slice(0, split);
+    const bytes = new TextEncoder().encode(head).byteLength;
+    const firstChunk = {
+      type: "chunk",
+      transfer_id: "t",
+      offset: 0,
+      data: head,
+      next_offset: bytes,
+    };
+    call.mockClear();
+    call
+      .mockResolvedValueOnce(firstChunk)
+      .mockResolvedValueOnce({
+        type: "chunk",
+        transfer_id: "t",
+        offset: bytes,
+        data: json.slice(split),
+        next_offset: null,
+      })
+      .mockResolvedValueOnce({ type: "closed" });
+    expect(await loadHistoryPage(client, page)).toEqual(expected);
+    expect(call.mock.calls[1]).toEqual([
+      "session/history",
+      { action: "read", transfer_id: "t", offset: bytes },
+    ]);
+    expect(call.mock.calls[2]).toEqual(["session/history", { action: "close", transfer_id: "t" }]);
+    for (const failure of ["错位", "断线"]) {
+      call.mockClear();
+      call.mockResolvedValueOnce(firstChunk);
+      if (failure === "错位") call.mockResolvedValueOnce(firstChunk);
+      else call.mockRejectedValueOnce(new Error("断线"));
+      call.mockResolvedValueOnce({ type: "closed" });
+      await expect(loadHistoryPage(client, page)).rejects.toThrow(
+        failure === "错位" ? "不连续" : "断线",
+      );
+      expect(call.mock.calls.at(-1)).toEqual([
+        "session/history",
+        { action: "close", transfer_id: "t" },
+      ]);
+    }
+    const pending = Promise.withResolvers<unknown>();
+    const controller = new AbortController();
+    call.mockClear();
+    call.mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ type: "closed" });
+    const cancelled = loadHistoryPage(client, page, controller.signal);
+    controller.abort();
+    pending.resolve(firstChunk);
+    await expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+    expect(call.mock.calls).toEqual([
+      ["session/history", { action: "open", page }],
+      ["session/history", { action: "close", transfer_id: "t" }],
+    ]);
+  });
   it("assigns increasing ids and pairs responses", async () => {
     const { socket, client } = await connected();
     const first = client.call<string>("a/one");

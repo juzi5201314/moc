@@ -1,11 +1,12 @@
 // 会话生命周期：打开（写租约 → 只读降级）、分页、关闭、新建、删除、重命名、回退、重连。
 //
-// 只有 `session/load` 会取跨进程写租约，所以打开时先 load（max_entries=1，顺带拿
-// todos / plans），再用 `session/load_page` 取展示用的转写。
+// 只有 `session/load` 会取跨进程写租约，所以打开时先 load（max_entries=0，省略辅助状态），
+// 再通过可分块的历史读取取得展示转写、todo、目标与计划版本。
 
 import { attachEntryIds, entriesToBlocks } from "@/lib/transcript-model";
 import { clientListeners, rpc } from "@/protocol/client";
 import { ErrorCode, RpcError } from "@/protocol/errors";
+import { type HistoryPageParams, loadHistoryPage } from "@/protocol/history";
 import type {
   CompactResult,
   ContextUsageResult,
@@ -13,7 +14,6 @@ import type {
   SessionAutonomy,
   SessionEngine,
   SessionInfo,
-  SessionLoadPageResult,
   SessionLoadResult,
   SessionPermission,
   SessionSetModelResult,
@@ -25,13 +25,15 @@ import { type DraftSession, useSessions } from "./sessions";
 import { useTabs } from "./tabs";
 import { refreshJobs, useTranscript } from "./transcript";
 import { requestComposerFocus } from "./ui";
+import { cancelViewReads, startViewReads, viewReadSignal } from "./view-reads";
 
 const PAGE_SIZE = 80;
 const MAX_MESSAGE_BYTES = 65536;
 const CLOSE_WAIT_MS = 5000;
 
 /** 已在加载中的会话：防止重复点击并发两次 load。 */
-const opening = new Map<string, Promise<void>>();
+const opening = new Map<string, { signal: AbortSignal; task: Promise<void> }>();
+const closing = new Map<string, Promise<void>>();
 
 /** `readOnly`：强制只读打开（子代理会话不抢父进程的写租约）。 */
 export type OpenOptions = { activate?: boolean; readOnly?: boolean };
@@ -44,75 +46,150 @@ export function openSession(sessionId: string, options: OpenOptions = {}): Promi
     useTabs.getState().close("draft-session");
   }
   useTabs.getState().add(sessionId, options.activate ?? true);
+  const pendingClose = closing.get(sessionId);
+  if (pendingClose) {
+    return pendingClose.then(() => {
+      if (useTabs.getState().open.includes(sessionId)) return openSession(sessionId, options);
+    });
+  }
   if (useTranscript.getState().bySession[sessionId]) return Promise.resolve();
   const existing = opening.get(sessionId);
-  if (existing) return existing;
-  const task = loadSession(sessionId, options.readOnly ?? false).finally(() =>
+  if (existing) {
+    if (!existing.signal.aborted) return existing.task;
+    return existing.task
+      .catch(() => undefined)
+      .then(() => {
+        if (useTabs.getState().open.includes(sessionId)) return openSession(sessionId, options);
+      });
+  }
+  const signal = startViewReads(sessionId);
+  const task = loadSession(sessionId, options.readOnly ?? false, signal).finally(() =>
     opening.delete(sessionId),
   );
-  opening.set(sessionId, task);
+  opening.set(sessionId, { signal, task });
   return task;
 }
 
-async function loadSession(sessionId: string, requestedReadOnly: boolean): Promise<void> {
-  const known = useSessions.getState().list.find((item) => item.id === sessionId);
-  // 子代理会话只读查看，不抢父进程的写租约。
-  const forceReadOnly = requestedReadOnly || Boolean(known?.parent_session_id);
-  let loaded: SessionLoadResult;
-  let readOnly = forceReadOnly;
+async function loadSession(
+  sessionId: string,
+  requestedReadOnly: boolean,
+  signal: AbortSignal,
+): Promise<void> {
+  let leased = false;
+  let committed = false;
   try {
-    loaded = await rpc.call<SessionLoadResult>("session/load", {
-      session_id: sessionId,
-      max_entries: 1,
-      read_only: forceReadOnly,
-    });
-  } catch (error) {
-    if (!(error instanceof RpcError) || error.code !== ErrorCode.SessionLocked) {
-      if (error instanceof RpcError && error.code === ErrorCode.SessionNotFound) {
-        useTabs.getState().close(sessionId);
+    signal.throwIfAborted();
+    const known = useSessions.getState().list.find((item) => item.id === sessionId);
+    // 子代理会话只读查看，不抢父进程的写租约。
+    const forceReadOnly = requestedReadOnly || Boolean(known?.parent_session_id);
+    let loaded: SessionLoadResult;
+    let readOnly = forceReadOnly;
+    try {
+      loaded = await rpc.call<SessionLoadResult>("session/load", {
+        session_id: sessionId,
+        max_entries: 0,
+        omit_auxiliary: true,
+        read_only: forceReadOnly,
+      });
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!(error instanceof RpcError) || error.code !== ErrorCode.SessionLocked) {
+        if (error instanceof RpcError && error.code === ErrorCode.SessionNotFound) {
+          useTabs.getState().close(sessionId);
+        }
+        throw error;
       }
-      throw error;
+      readOnly = true;
+      loaded = await rpc.call<SessionLoadResult>("session/load", {
+        session_id: sessionId,
+        max_entries: 0,
+        omit_auxiliary: true,
+        read_only: true,
+      });
     }
-    readOnly = true;
-    loaded = await rpc.call<SessionLoadResult>("session/load", {
-      session_id: sessionId,
-      max_entries: 1,
-      read_only: true,
+
+    leased = !readOnly;
+    signal.throwIfAborted();
+    const page = await loadHistoryPage(
+      rpc,
+      {
+        session_id: sessionId,
+        max_entries: PAGE_SIZE,
+        max_message_bytes: MAX_MESSAGE_BYTES,
+        redo_page: { max_entries: 0 },
+        plan_page: { max_entries: 32 },
+      },
+      signal,
+    );
+    const planPages = [page.plans ?? []];
+    let plansBefore = page.plans_before;
+    while (plansBefore !== undefined) {
+      const older = await loadHistoryPage(
+        rpc,
+        {
+          session_id: sessionId,
+          max_entries: 0,
+          redo_page: { max_entries: 0 },
+          plan_page: { before: plansBefore, max_entries: 32 },
+        },
+        signal,
+      );
+      planPages.push(older.plans ?? []);
+      plansBefore = older.plans_before;
+    }
+
+    signal.throwIfAborted();
+    const store = useTranscript.getState();
+    store.ensureView(page.session);
+    store.mutate(sessionId, (view) => {
+      view.info = page.session;
+      view.readOnly = readOnly;
+      view.holder = readOnly ? (loaded.session.lock ?? null) : null;
+      view.blocks = entriesToBlocks(page.entries, page.child_calls ?? [], "p0-");
+      view.hasMore = page.has_more;
+      view.beforeEntryId = page.entries[0]?.id;
+      view.todos = page.todos ?? [];
+      view.plans = planPages.reverse().flat();
+      view.goal = page.goal ?? null;
     });
+    useSessions.getState().upsert(page.session);
+    committed = true;
+    void refreshJobs(sessionId).catch(() => undefined);
+    void refreshSideData(sessionId);
+  } catch (error) {
+    if (!signal.aborted) throw error;
+  } finally {
+    if (!committed) {
+      if (leased)
+        await rpc.call("session/unload", { session_id: sessionId }).catch(() => undefined);
+      if (viewReadSignal(sessionId) === signal) cancelViewReads(sessionId);
+    }
   }
+}
 
-  const page = await rpc.call<SessionLoadPageResult>("session/load_page", {
-    session_id: sessionId,
-    max_entries: PAGE_SIZE,
-    max_message_bytes: MAX_MESSAGE_BYTES,
-  });
-
-  const store = useTranscript.getState();
-  store.ensureView(page.session);
-  store.mutate(sessionId, (view) => {
-    view.info = page.session;
-    view.readOnly = readOnly;
-    view.holder = readOnly ? (loaded.session.lock ?? null) : null;
-    view.blocks = entriesToBlocks(page.entries, page.child_calls ?? [], "p0-");
-    view.hasMore = page.has_more;
-    view.beforeEntryId = page.entries[0]?.id;
-    view.todos = loaded.todos ?? page.todos ?? [];
-    view.plans = loaded.plans ?? page.plans ?? [];
-    view.goal = loaded.goal ?? page.goal ?? null;
-  });
-  useSessions.getState().upsert(page.session);
-  void refreshJobs(sessionId).catch(() => undefined);
-  void refreshSideData(sessionId);
+/** 只更新发起读取的那一代视图；已关闭视图不再发起网络请求。 */
+async function readViewPage(params: HistoryPageParams) {
+  const signal = viewReadSignal(params.session_id);
+  if (!signal) return;
+  try {
+    const page = await loadHistoryPage(rpc, params, signal);
+    return { page, signal };
+  } catch (error) {
+    if (!signal.aborted) throw error;
+  }
 }
 
 /** 上下文占用与插件故障提示；读不到只影响对应的小部件。 */
 export async function refreshSideData(sessionId: string): Promise<void> {
-  const store = useTranscript.getState();
+  const signal = viewReadSignal(sessionId);
+  if (!signal) return;
+  const mutate = useTranscript.getState().mutate;
   const [context, plugins] = await Promise.allSettled([
     rpc.call<ContextUsageResult>("session/context", { session_id: sessionId }),
     rpc.call<PluginListResult>("plugin/list", { session_id: sessionId }),
   ]);
-  store.mutate(sessionId, (view) => {
+  if (signal.aborted) return;
+  mutate(sessionId, (view) => {
     if (context.status === "fulfilled") view.context = context.value;
     if (plugins.status === "fulfilled") {
       const failed = plugins.value.plugins.find((plugin) => plugin.error);
@@ -125,20 +202,26 @@ export async function refreshSideData(sessionId: string): Promise<void> {
 
 /** 转写滚到顶时往前翻一页。 */
 export async function loadOlder(sessionId: string): Promise<void> {
-  const view = useTranscript.getState().bySession[sessionId];
-  if (!view?.hasMore || view.loadingOlder || !view.beforeEntryId) return;
-  const store = useTranscript.getState();
-  store.mutate(sessionId, (draft) => {
+  const { hasMore, loadingOlder, beforeEntryId } =
+    useTranscript.getState().bySession[sessionId] ?? {};
+  const signal = viewReadSignal(sessionId);
+  if (!signal || !hasMore || loadingOlder || !beforeEntryId) return;
+  const mutate = useTranscript.getState().mutate;
+  mutate(sessionId, (draft) => {
     draft.loadingOlder = true;
   });
   try {
-    const page = await rpc.call<SessionLoadPageResult>("session/load_page", {
+    const result = await readViewPage({
       session_id: sessionId,
-      before_entry_id: view.beforeEntryId,
+      before_entry_id: beforeEntryId,
       max_entries: PAGE_SIZE,
       max_message_bytes: MAX_MESSAGE_BYTES,
+      redo_page: { max_entries: 0 },
+      plan_page: { max_entries: 0 },
     });
-    store.mutate(sessionId, (draft) => {
+    if (!result || signal.aborted) return;
+    const { page } = result;
+    mutate(sessionId, (draft) => {
       const prefix = `p${page.entries[0]?.id ?? draft.seq}-`;
       draft.blocks = [
         ...entriesToBlocks(page.entries, page.child_calls ?? [], prefix),
@@ -148,29 +231,39 @@ export async function loadOlder(sessionId: string): Promise<void> {
       draft.beforeEntryId = page.entries[0]?.id;
     });
   } finally {
-    store.mutate(sessionId, (draft) => {
-      draft.loadingOlder = false;
-    });
+    if (!signal.aborted)
+      mutate(sessionId, (draft) => {
+        draft.loadingOlder = false;
+      });
   }
 }
 
 /** 提示结束后用最新一页补上直播用户块的 entry id（回退依赖它）。 */
 export async function syncEntryIds(sessionId: string): Promise<void> {
-  const page = await rpc.call<SessionLoadPageResult>("session/load_page", {
+  const result = await readViewPage({
     session_id: sessionId,
     max_entries: 20,
     max_message_bytes: 1024,
+    redo_page: { max_entries: 0 },
+    plan_page: { max_entries: 0 },
   });
-  useTranscript.getState().mutate(sessionId, (view) => attachEntryIds(view.blocks, page.entries));
+  if (!result || result.signal.aborted) return;
+  useTranscript
+    .getState()
+    .mutate(sessionId, (view) => attachEntryIds(view.blocks, result.page.entries));
 }
 
 /** 子代理会话：状态变化时重拉最新一页（只读）。 */
 export async function reloadReadOnly(sessionId: string): Promise<void> {
-  const page = await rpc.call<SessionLoadPageResult>("session/load_page", {
+  const result = await readViewPage({
     session_id: sessionId,
     max_entries: PAGE_SIZE,
     max_message_bytes: MAX_MESSAGE_BYTES,
+    redo_page: { max_entries: 0 },
+    plan_page: { max_entries: 0 },
   });
+  if (!result || result.signal.aborted) return;
+  const { page } = result;
   useTranscript.getState().mutate(sessionId, (view) => {
     view.info = page.session;
     view.blocks = entriesToBlocks(page.entries, page.child_calls ?? [], "p0-");
@@ -186,6 +279,7 @@ export async function reacquire(sessionId: string): Promise<void> {
 }
 
 function waitForIdle(sessionId: string): Promise<void> {
+  if (!useTranscript.getState().bySession[sessionId]?.running) return Promise.resolve();
   const { promise, resolve } = Promise.withResolvers<void>();
   const timer = window.setTimeout(done, CLOSE_WAIT_MS);
   const unsubscribe = useTranscript.subscribe((state) => {
@@ -204,22 +298,32 @@ function waitForIdle(sessionId: string): Promise<void> {
  * 运行中的会话由调用方先确认；这里负责 cancel → 等收尾 → unload。
  * 只读会话不持有租约，直接移除。
  */
-export async function closeSession(sessionId: string): Promise<void> {
+export function closeSession(sessionId: string): Promise<void> {
+  useTabs.getState().close(sessionId);
+  cancelViewReads(sessionId);
+  const pending = closing.get(sessionId);
+  if (pending) return pending;
+  const task = finishClose(sessionId).finally(() => closing.delete(sessionId));
+  closing.set(sessionId, task);
+  return task;
+}
+
+async function finishClose(sessionId: string): Promise<void> {
+  const loading = opening.get(sessionId);
+  if (loading) await loading.task.catch(() => undefined);
   if (sessionId === "draft-session") {
     useSessions.getState().setDraftSession(null);
-    useTabs.getState().close(sessionId);
     useTranscript.getState().drop(sessionId);
     return;
   }
-  const view = useTranscript.getState().bySession[sessionId];
-  if (view && !view.readOnly) {
-    if (view.running) {
+  const { readOnly, running } = useTranscript.getState().bySession[sessionId] ?? {};
+  if (readOnly === false) {
+    if (running) {
       await rpc.call("session/cancel", { session_id: sessionId }).catch(() => undefined);
       await waitForIdle(sessionId);
     }
     await rpc.call("session/unload", { session_id: sessionId }).catch(() => undefined);
   }
-  useTabs.getState().close(sessionId);
   useTranscript.getState().drop(sessionId);
 }
 
@@ -440,18 +544,22 @@ export async function rewind(
   const result = await rpc.call<SessionLoadResult>("session/rewind", {
     session_id: sessionId,
     entry_id: entryId,
+    max_entries: 0,
+    omit_auxiliary: true,
   });
   await reopenWith(sessionId, result);
   if (restoreText !== undefined) {
     useComposer.getState().restore(sessionId, { text: restoreText, images: [] });
   }
   // 回退结果不带可前滚的尾部，只有 load_page 返回；取一条就够拿到栈顶 id。
-  const page = await rpc.call<SessionLoadPageResult>("session/load_page", {
+  const page = await loadHistoryPage(rpc, {
     session_id: sessionId,
-    max_entries: 1,
+    max_entries: 0,
     max_message_bytes: 1024,
+    redo_page: { max_entries: 0 },
+    plan_page: { max_entries: 0 },
   });
-  return page.redo_entries?.at(-1)?.id;
+  return page.redo_tip_entry_id;
 }
 
 /** 前滚：把最近一次回退截掉的尾部接回到 `entryId`（含该条目）。 */
@@ -459,12 +567,15 @@ export async function redo(sessionId: string, entryId: string): Promise<void> {
   const result = await rpc.call<SessionLoadResult>("session/redo", {
     session_id: sessionId,
     entry_id: entryId,
+    max_entries: 0,
+    omit_auxiliary: true,
   });
   await reopenWith(sessionId, result);
 }
 
 /** 原地截断类操作（rewind/reask）共用：用返回的 load 结果重开转写视图。 */
 export async function reopenWith(sessionId: string, result: SessionLoadResult): Promise<void> {
+  if (!useTabs.getState().open.includes(sessionId)) return;
   useTranscript.getState().drop(sessionId);
   useSessions.getState().upsert(result.session);
   await openSession(sessionId);
@@ -488,6 +599,7 @@ clientListeners.ready.add(() => {
     for (const id of views) useTranscript.getState().drop(id);
     const { open, active } = useTabs.getState();
     for (const id of open) {
+      if (!useTabs.getState().open.includes(id)) continue;
       await openSession(id, { activate: id === active }).catch(() => undefined);
     }
   })();

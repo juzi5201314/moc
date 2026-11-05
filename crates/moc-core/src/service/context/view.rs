@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 const TTL: Duration = Duration::from_secs(300);
 const PAGE: usize = 128;
 const TEXT_PAGE: usize = 64 * 1024;
+pub(super) const TEXT_CACHE_BYTES: usize = 8 * 1024 * 1024;
 
 struct TextSlice {
     text: Arc<str>,
@@ -35,6 +36,7 @@ impl From<String> for TextSlice {
 struct Node {
     meta: ContextContentSection,
     text: Option<TextSlice>,
+    spilled: Option<(u64, usize)>,
     children: Vec<usize>,
     sources: Vec<ContextSource>,
 }
@@ -47,6 +49,8 @@ pub(super) struct View {
     error: Option<String>,
     nodes: Vec<Node>,
     roots: Vec<usize>,
+    spool: Option<parking_lot::Mutex<std::fs::File>>,
+    memory_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 impl View {
     pub(super) fn new(
@@ -66,6 +70,8 @@ impl View {
             error: None,
             nodes: Vec::new(),
             roots: Vec::new(),
+            spool: None,
+            memory_permit: None,
         };
         match inspection {
             Err(error) => view.error = Some(format!("当前上下文尚未形成可发送请求：{error}")),
@@ -176,6 +182,7 @@ impl View {
                 ..Default::default()
             },
             text: None,
+            spilled: None,
             children: Vec::new(),
             sources,
         });
@@ -316,6 +323,7 @@ impl View {
                 text: Arc::clone(text),
                 range,
             }),
+            spilled: None,
             children: Vec::new(),
             sources: source.into_iter().collect(),
         });
@@ -360,6 +368,34 @@ impl View {
             error: self.error.clone(),
         })
     }
+    fn text_bytes(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter_map(|node| node.text.as_ref())
+            .fold(0usize, |bytes, text| bytes.saturating_add(text.range.len()))
+    }
+
+    /// 在后台构建完成后执行；大视图的字符串不常驻内存，节点与来源仍完整保留。
+    pub(super) fn bound_text(&mut self, limit: usize) -> std::io::Result<()> {
+        use std::io::Write;
+        if self.text_bytes() <= limit {
+            return Ok(());
+        }
+        let mut file = tempfile::tempfile()?;
+        let mut offset = 0u64;
+        for node in &mut self.nodes {
+            if let Some(text) = node.text.take() {
+                let text = text.as_str();
+                file.write_all(text.as_bytes())?;
+                node.spilled = Some((offset, text.len()));
+                offset += text.len() as u64;
+            }
+        }
+        self.spool = Some(parking_lot::Mutex::new(file));
+        self.memory_permit = None;
+        Ok(())
+    }
+
     fn read(&self, params: &SessionContextReadParams) -> Result<ContextReadResult, RpcError> {
         let index = params
             .node_id
@@ -371,32 +407,54 @@ impl View {
             node_id: params.node_id.clone(),
             ..Default::default()
         };
-        if let Some(text) = &node.text {
-            let text = text.as_str();
+        if node.text.is_some() || node.spilled.is_some() {
             let start = params.cursor.unwrap_or(0) as usize;
-            if start > text.len() || !text.is_char_boundary(start) {
-                return Err(invalid("正文游标必须位于 UTF-8 字符边界"));
-            }
-            let mut end = start
-                .saturating_add(
-                    params
-                        .limit
-                        .unwrap_or(TEXT_PAGE as u32)
-                        .clamp(4, TEXT_PAGE as u32) as usize,
-                )
-                .min(text.len());
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            result.text = Some(text[start..end].to_owned());
-            result.next_cursor = (end < text.len()).then_some(end as u64);
+            let limit = params
+                .limit
+                .unwrap_or(TEXT_PAGE as u32)
+                .clamp(4, TEXT_PAGE as u32) as usize;
+            let (text, len) = if let Some(text) = &node.text {
+                let text = text.as_str();
+                if start > text.len() || !text.is_char_boundary(start) {
+                    return Err(invalid("正文游标必须位于 UTF-8 字符边界"));
+                }
+                let mut end = start.saturating_add(limit).min(text.len());
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                (text[start..end].to_owned(), text.len())
+            } else {
+                use std::io::{Read, Seek, SeekFrom};
+                let (offset, len) = node.spilled.expect("正文已写入快照");
+                if start > len {
+                    return Err(invalid("正文游标必须位于 UTF-8 字符边界"));
+                }
+                let mut bytes = vec![0; limit.min(len - start)];
+                let mut file = self.spool.as_ref().expect("正文快照文件").lock();
+                file.seek(SeekFrom::Start(offset + start as u64))
+                    .map_err(io_error)?;
+                file.read_exact(&mut bytes).map_err(io_error)?;
+                if bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
+                    return Err(invalid("正文游标必须位于 UTF-8 字符边界"));
+                }
+                if let Err(error) = std::str::from_utf8(&bytes) {
+                    if error.error_len().is_some() {
+                        return Err(io_error(error));
+                    }
+                    bytes.truncate(error.valid_up_to());
+                }
+                (String::from_utf8(bytes).map_err(io_error)?, len)
+            };
+            let end = start + text.len();
+            result.text = Some(text);
+            result.next_cursor = (end < len).then_some(end as u64);
             result.sources = node
                 .sources
                 .iter()
                 .filter(|source| source.start < end as u64 && source.end > start as u64)
                 .cloned()
                 .map(|mut source| {
-                    source.end = source.end.min(text.len() as u64);
+                    source.end = source.end.min(len as u64);
                     source
                 })
                 .collect();
@@ -410,14 +468,29 @@ impl View {
 fn escape(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
 }
+fn io_error(error: impl std::fmt::Display) -> RpcError {
+    RpcError::new(
+        RpcErrorCode::InternalError.code(),
+        format!("读取上下文快照失败：{error}"),
+    )
+}
 fn invalid(message: &str) -> RpcError {
     RpcError::new(RpcErrorCode::InvalidParams.code(), message)
 }
 
-#[derive(Default)]
 pub(crate) struct Views {
     entries: HashMap<(u64, String), View>,
     connections: HashSet<u64>,
+    text_budget: Arc<tokio::sync::Semaphore>,
+}
+impl Default for Views {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            connections: HashSet::new(),
+            text_budget: Arc::new(tokio::sync::Semaphore::new(TEXT_CACHE_BYTES)),
+        }
+    }
 }
 impl Views {
     fn get(&mut self, connection: u64, session: &str, id: &str) -> Result<&mut View, RpcError> {
@@ -444,7 +517,29 @@ impl Views {
         self.entries.retain(|(_, id), _| id != session);
     }
 }
-pub(super) fn install(inner: &Arc<CoreInner>, ctx: &RequestContext, session: &str, view: View) {
+pub(super) async fn install(
+    inner: &Arc<CoreInner>,
+    ctx: &RequestContext,
+    session: &str,
+    mut view: View,
+) -> Result<(), RpcError> {
+    let budget = Arc::clone(&inner.context_views.lock().text_budget);
+    let bytes = view.text_bytes();
+    debug_assert!(bytes <= TEXT_CACHE_BYTES, "单视图正文已在后台收窄");
+    if bytes > 0 {
+        match budget.try_acquire_many_owned(bytes as u32) {
+            Ok(permit) => view.memory_permit = Some(permit),
+            Err(_) => {
+                view = tokio::task::spawn_blocking(move || {
+                    view.bound_text(0)?;
+                    Ok::<_, std::io::Error>(view)
+                })
+                .await
+                .map_err(io_error)?
+                .map_err(io_error)?;
+            }
+        }
+    }
     let connection = ctx.connection_id();
     let fresh = {
         let mut views = inner.context_views.lock();
@@ -452,7 +547,7 @@ pub(super) fn install(inner: &Arc<CoreInner>, ctx: &RequestContext, session: &st
         views.connections.insert(connection)
     };
     if !fresh {
-        return;
+        return Ok(());
     }
     let weak = Arc::downgrade(inner);
     let updates = ctx.updates();
@@ -475,17 +570,23 @@ pub(super) fn install(inner: &Arc<CoreInner>, ctx: &RequestContext, session: &st
             views.connections.remove(&connection);
         }
     });
+    Ok(())
 }
 pub(crate) async fn read(
     inner: &Arc<CoreInner>,
     ctx: RequestContext,
     params: SessionContextReadParams,
 ) -> Result<ContextReadResult, RpcError> {
-    inner
-        .context_views
-        .lock()
-        .get(ctx.connection_id(), &params.session_id, &params.view_id)?
-        .read(&params)
+    let inner = Arc::clone(inner);
+    tokio::task::spawn_blocking(move || {
+        inner
+            .context_views
+            .lock()
+            .get(ctx.connection_id(), &params.session_id, &params.view_id)?
+            .read(&params)
+    })
+    .await
+    .map_err(io_error)?
 }
 pub(crate) async fn close(
     inner: &Arc<CoreInner>,

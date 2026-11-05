@@ -593,7 +593,7 @@ mod tests {
                     prompt_id: "prompt_1".into(),
                     message: Message {
                         role: Role::Assistant,
-                        content: vec![ContentPart::Text("好的".into())],
+                        content: moc_llm::message_content![ContentPart::Text("好的".into())],
                     },
                     finish_reason: FinishReason::Stop,
                     usage: usage(),

@@ -225,7 +225,7 @@ mod tests {
         let req = ChatRequest {
             messages: vec![Message {
                 role: crate::types::Role::Assistant,
-                content: vec![
+                content: crate::message_content![
                     crate::types::ContentPart::Reasoning(text_block()),
                     crate::types::ContentPart::Text("正文".into()),
                 ],

@@ -252,6 +252,7 @@ impl Harness {
     pub async fn load(&self, id: &str) -> SessionLoadResult {
         self.client
             .call::<SessionLoad>(SessionLoadParams {
+                omit_auxiliary: false,
                 session_id: id.into(),
                 max_entries: None,
                 read_only: false,

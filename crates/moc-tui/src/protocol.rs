@@ -32,6 +32,8 @@ pub enum UiUpdate {
 
 /// UI 事件队列承载的消息。
 pub enum AppEvent {
+    /// 长消息后台布局完成，唤醒下一帧读取其结果。
+    LayoutReady,
     BtwReturned {
         session_id: String,
         request_id: u64,

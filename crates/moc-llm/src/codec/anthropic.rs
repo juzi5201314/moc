@@ -34,7 +34,7 @@ pub(crate) fn encode(
     req: &ChatRequest,
     stream: bool,
 ) -> Result<EncodedRequest, LlmError> {
-    encode_inspected(cfg, req, stream, None)
+    encode_inspected(cfg, req, stream, None)?.into_wire("Anthropic")
 }
 
 pub(super) fn encode_inspected(
@@ -42,7 +42,7 @@ pub(super) fn encode_inspected(
     req: &ChatRequest,
     stream: bool,
     sources: Option<&mut Vec<super::RequestSource>>,
-) -> Result<EncodedRequest, LlmError> {
+) -> Result<EncodedRequest<Value>, LlmError> {
     let max_tokens = req
         .max_output_tokens
         .ok_or_else(|| LlmError::Encode("Anthropic 协议的 max_output_tokens 是必填项".into()))?;
@@ -106,12 +106,10 @@ pub(super) fn encode_inspected(
         headers.set_default("anthropic-beta", EXTENDED_TTL_BETA);
     }
 
-    let body = serde_json::to_vec(&Value::Object(body))
-        .map_err(|err| LlmError::Encode(format!("Anthropic 请求体序列化失败: {err}")))?;
     Ok(EncodedRequest {
         url: cfg.endpoint_url(),
         headers: headers.into_vec(),
-        body,
+        body: Value::Object(body),
     })
 }
 
@@ -767,7 +765,7 @@ pub(crate) fn decode_response(
         reasoning_effort: super::reported_effort(value),
         message: Message {
             role: Role::Assistant,
-            content,
+            content: content.into(),
         },
         finish_reason: value
             .get("stop_reason")
@@ -1170,7 +1168,7 @@ mod tests {
                 Message::system("系统提示"),
                 Message {
                     role: Role::User,
-                    content: vec![
+                    content: crate::message_content![
                         ContentPart::Text("看图".into()),
                         ContentPart::Image {
                             source: ImageSource::Base64 {
@@ -1302,7 +1300,7 @@ mod tests {
         let req = ChatRequest {
             messages: vec![Message {
                 role: Role::Assistant,
-                content: vec![ContentPart::ToolCall(ToolCall::new(
+                content: crate::message_content![ContentPart::ToolCall(ToolCall::new(
                     "call_1",
                     "get_weather",
                     r#"{"city":"北京","days":2}"#,
@@ -1325,7 +1323,7 @@ mod tests {
         let broken = ChatRequest {
             messages: vec![Message {
                 role: Role::Assistant,
-                content: vec![ContentPart::ToolCall(ToolCall::new(
+                content: crate::message_content![ContentPart::ToolCall(ToolCall::new(
                     "call_1",
                     "get_weather",
                     "{",
@@ -1340,7 +1338,7 @@ mod tests {
         let not_object = ChatRequest {
             messages: vec![Message {
                 role: Role::Assistant,
-                content: vec![ContentPart::ToolCall(ToolCall::new(
+                content: crate::message_content![ContentPart::ToolCall(ToolCall::new(
                     "call_1",
                     "get_weather",
                     "[1,2]",
@@ -1358,7 +1356,7 @@ mod tests {
         let req = ChatRequest {
             messages: vec![Message {
                 role: Role::User,
-                content: vec![
+                content: crate::message_content![
                     ContentPart::Image {
                         source: ImageSource::Base64 {
                             media_type: "image/jpeg".into(),
@@ -1453,7 +1451,7 @@ mod tests {
     fn static_system_block_takes_its_own_cache_breakpoint() {
         let system = Message {
             role: Role::System,
-            content: vec![
+            content: crate::message_content![
                 ContentPart::Text("模板".into()),
                 ContentPart::Text("项目".into()),
             ],
@@ -1521,7 +1519,7 @@ mod tests {
             messages: vec![
                 Message {
                     role: Role::User,
-                    content: vec![
+                    content: crate::message_content![
                         ContentPart::Text("工具政策".into()),
                         ContentPart::Text("仓库规则".into()),
                     ],
@@ -1566,14 +1564,14 @@ mod tests {
             messages: vec![
                 Message {
                     role: Role::System,
-                    content: vec![
+                    content: crate::message_content![
                         ContentPart::Text("身份".into()),
                         ContentPart::Text("环境".into()),
                     ],
                 },
                 Message {
                     role: Role::User,
-                    content: vec![
+                    content: crate::message_content![
                         ContentPart::Text("工具政策".into()),
                         ContentPart::Text("仓库规则".into()),
                     ],
@@ -1814,7 +1812,7 @@ mod tests {
         let req = ChatRequest {
             messages: vec![Message {
                 role: Role::Assistant,
-                content: vec![
+                content: crate::message_content![
                     ContentPart::Reasoning(ReasoningBlock::Text {
                         text: "先想一想".into(),
                         signature: Some("sig-1".into()),
@@ -1858,7 +1856,7 @@ mod tests {
         let req = ChatRequest {
             messages: vec![Message {
                 role: Role::Assistant,
-                content: vec![
+                content: crate::message_content![
                     ContentPart::Reasoning(ReasoningBlock::text("无签名的思考")),
                     ContentPart::Text("正文".into()),
                 ],
@@ -1880,7 +1878,7 @@ mod tests {
                 Message::user_text("问题"),
                 Message {
                     role: Role::Assistant,
-                    content: vec![ContentPart::Reasoning(ReasoningBlock::text("只有思考"))],
+                    content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::text("只有思考"))],
                 },
                 Message::user_text("继续"),
             ],
@@ -1906,7 +1904,7 @@ mod tests {
         let req = ChatRequest {
             messages: vec![Message {
                 role: Role::Assistant,
-                content: vec![ContentPart::Reasoning(ReasoningBlock::Item(Box::new(
+                content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::Item(Box::new(
                     json!({"type": "reasoning", "id": "rs_1"}),
                 )))],
             }],
@@ -2271,7 +2269,7 @@ mod tests {
                 assistant_with_tools(&[("call_1", "get_weather")]),
                 Message {
                     role: Role::Tool,
-                    content: vec![ContentPart::ToolResult(ToolResult {
+                    content: crate::message_content![ContentPart::ToolResult(ToolResult {
                         tool_call_id: "call_1".into(),
                         content: "工具炸了".into(),
                         is_error: true,

@@ -198,7 +198,7 @@ impl Accumulator {
             reasoning_effort: self.effort.clone(),
             message: Message {
                 role: Role::Assistant,
-                content: self.content(protocol, interrupted),
+                content: self.content(protocol, interrupted).into(),
             },
             finish_reason: if interrupted {
                 FinishReason::Interrupted

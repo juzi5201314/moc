@@ -35,7 +35,7 @@ pub(crate) fn encode(
     req: &ChatRequest,
     stream: bool,
 ) -> Result<EncodedRequest, LlmError> {
-    encode_inspected(cfg, req, stream, None)
+    encode_inspected(cfg, req, stream, None)?.into_wire("Chat")
 }
 
 pub(super) fn encode_inspected(
@@ -43,7 +43,7 @@ pub(super) fn encode_inspected(
     req: &ChatRequest,
     stream: bool,
     sources: Option<&mut Vec<super::RequestSource>>,
-) -> Result<EncodedRequest, LlmError> {
+) -> Result<EncodedRequest<Value>, LlmError> {
     let plan = echo::plan(cfg, req);
     let breakpoints = cache_breakpoints(req, req.messages.len())?;
 
@@ -114,12 +114,10 @@ pub(super) fn encode_inspected(
         body.insert("stream_options".into(), json!({"include_usage": true}));
     }
 
-    let body = serde_json::to_vec(&Value::Object(body))
-        .map_err(|err| LlmError::Encode(format!("Chat 请求体序列化失败: {err}")))?;
     Ok(EncodedRequest {
         url: cfg.endpoint_url(),
         headers: common_headers(cfg, req).into_vec(),
-        body,
+        body: Value::Object(body),
     })
 }
 
@@ -527,7 +525,7 @@ pub(crate) fn decode_response(
         reasoning_effort: super::reported_effort(value),
         message: Message {
             role: Role::Assistant,
-            content,
+            content: content.into(),
         },
         finish_reason,
         usage: value.get("usage").map_or_default(openai::decode_usage),
@@ -917,7 +915,7 @@ mod tests {
         let mut request = ChatRequest {
             messages: vec![Message {
                 role: Role::Assistant,
-                content: vec![
+                content: crate::message_content![
                     ContentPart::Text(String::new()),
                     ContentPart::Reasoning(ReasoningBlock::text("")),
                 ],
@@ -952,7 +950,7 @@ mod tests {
                 Message::developer("开发者提示"),
                 Message {
                     role: Role::Assistant,
-                    content: vec![
+                    content: crate::message_content![
                         ContentPart::Reasoning(ReasoningBlock::text("上一轮思路")),
                         ContentPart::Text("调用工具".into()),
                         ContentPart::ToolCall(ToolCall::new(
@@ -1163,7 +1161,7 @@ mod tests {
         let req = ChatRequest {
             messages: vec![Message {
                 role: Role::User,
-                content: vec![
+                content: crate::message_content![
                     ContentPart::Text("看图".into()),
                     ContentPart::Image {
                         source: ImageSource::Url("https://example.com/a.png".into()),
@@ -1347,7 +1345,7 @@ mod tests {
                 Message::user_text("并行查"),
                 Message {
                     role: Role::Assistant,
-                    content: vec![
+                    content: crate::message_content![
                         ContentPart::ToolCall(ToolCall::new(
                             "call_1",
                             "get_weather",
@@ -1726,7 +1724,7 @@ mod tests {
             messages: vec![
                 Message {
                     role: Role::Assistant,
-                    content: vec![ContentPart::ToolCall(ToolCall::new("call_1", "noop", "{}"))],
+                    content: crate::message_content![ContentPart::ToolCall(ToolCall::new("call_1", "noop", "{}"))],
                 },
                 Message::tool_result("call_1", "", false),
             ],
@@ -1742,7 +1740,7 @@ mod tests {
             messages: vec![
                 Message {
                     role: Role::Assistant,
-                    content: vec![ContentPart::ToolCall(ToolCall::new(
+                    content: crate::message_content![ContentPart::ToolCall(ToolCall::new(
                         "call_1",
                         "screenshot",
                         "{}",

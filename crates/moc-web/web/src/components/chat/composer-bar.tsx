@@ -105,11 +105,10 @@ function resourceToken(
   text: string,
   cursor: number,
 ): { prefix: string; start: number; end: number } | null {
-  const before = text.slice(0, cursor);
-  const start =
-    Math.max(before.lastIndexOf(" "), before.lastIndexOf("\n"), before.lastIndexOf("\t")) + 1;
-  const tail = text.slice(cursor).search(/\s/);
-  const end = tail < 0 ? text.length : cursor + tail;
+  let start = Math.min(cursor, text.length);
+  while (start > 0 && !" \n\t".includes(text[start - 1])) start--;
+  let end = Math.min(cursor, text.length);
+  while (end < text.length && !/\s/.test(text[end])) end++;
   const prefix = text.slice(start, cursor);
   const isUri = prefix === "//" || prefix.endsWith(":/") || prefix.includes("://");
   return isUri ? { prefix, start, end } : null;
@@ -174,7 +173,12 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   });
   const [pluginCommands, setPluginCommands] = useState<SlashCommand[]>([]);
 
-  const view = useTranscript((state) => state.bySession[sessionId]);
+  const info = useTranscript((state) => state.bySession[sessionId]?.info);
+  const running = useTranscript((state) => Boolean(state.bySession[sessionId]?.running));
+  const readOnly = useTranscript((state) => Boolean(state.bySession[sessionId]?.readOnly));
+  const phases = useTranscript((state) => state.bySession[sessionId]?.todos);
+  const context = useTranscript((state) => state.bySession[sessionId]?.context);
+  const holder = useTranscript((state) => state.bySession[sessionId]?.holder);
   const focusCount = useUi((state) => state.focusComposer);
   const draft = useComposer((state) => state.drafts[sessionId]);
   const pending = useComposer((state) => state.pending[sessionId] ?? EMPTY_PENDING);
@@ -186,19 +190,16 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const text = draft?.text ?? "";
   const images = draft?.images ?? [];
   const isDraft = sessionId === "draft-session";
-  const running = Boolean(view?.running);
-  const readOnly = Boolean(view?.readOnly);
   const bashMode = text.startsWith("!");
-  const model = parseSelector(leadSelector(view?.info.model ?? ""), models).model;
+  const model = parseSelector(leadSelector(info?.model ?? ""), models).model;
   // 模型没声明 inputs 时不拦，交给 core 校验。
   const acceptsImages = !model?.inputs || model.inputs.includes("image");
 
-  const todos = useMemo(() => (view?.todos ?? []).flatMap((phase) => phase.items), [view?.todos]);
-  const context = view?.context;
+  const todos = useMemo(() => (phases ?? []).flatMap((phase) => phase.items), [phases]);
 
   // ---------- 补全 ----------
 
-  const token = resourceToken(text, cursor);
+  const token = useMemo(() => resourceToken(text, cursor), [text, cursor]);
   const tokenPrefix = token?.prefix ?? "";
   const commands = useMemo(() => {
     const builtinCommands = builtinMetas.map(fromMeta);
@@ -500,7 +501,6 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   // ---------- 渲染 ----------
 
   if (readOnly) {
-    const holder = view?.holder;
     return (
       <ComposerDock inline={inline}>
         <div className="flex min-h-14 items-center gap-3 rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground ring-1 ring-inset ring-border-subtle">
@@ -510,7 +510,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
             {holder ? `：会话正由 ${holder.frontend}（pid ${holder.pid}）写入` : ""}
             ，可以查看但不能发送。
           </span>
-          {!view?.info.parent_session_id && (
+          {!info?.parent_session_id && (
             <Button
               size="sm"
               variant="outline"

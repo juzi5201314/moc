@@ -48,7 +48,7 @@ mod tests {
     fn call(id: &str) -> Message {
         Message {
             role: Role::Assistant,
-            content: vec![ContentPart::ToolCall(ToolCall::new(
+            content: moc_llm::message_content![ContentPart::ToolCall(ToolCall::new(
                 id,
                 "read",
                 r#"{"path":"a.rs"}"#,

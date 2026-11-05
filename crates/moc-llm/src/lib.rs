@@ -57,6 +57,7 @@
 pub mod client;
 pub mod codec;
 pub mod config;
+mod content;
 pub mod error;
 pub mod guard;
 pub mod retry;
@@ -75,6 +76,6 @@ pub use retry::RetryPolicy;
 pub use stream::ChatStream;
 pub use types::{
     ChatRequest, ChatResponse, ContentPart, Effort, FinishReason, ImageDetail, ImageSource,
-    Message, ReasoningBlock, ReasoningConfig, ReasoningEcho, ReasoningSummary, RequestOptions,
+    Message, MessageContent, ReasoningBlock, ReasoningConfig, ReasoningEcho, ReasoningSummary, RequestOptions,
     ResponseFormat, Role, StreamEvent, ToolCall, ToolChoice, ToolDef, ToolResult, Usage,
 };

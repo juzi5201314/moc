@@ -1,7 +1,7 @@
 "use client";
 
 import { cjk } from "@streamdown/cjk";
-import { createCodePlugin } from "@streamdown/code";
+import { code as codePlugin } from "@streamdown/code";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import type { UIMessage } from "ai";
@@ -274,7 +274,7 @@ export const MessageBranchPage = ({ className, ...props }: MessageBranchPageProp
 // 模型常用 `$…$` 写行内公式；代码高亮用 GitHub 同款浅/深主题，深色由 `.dark` 祖先切换。
 export const streamdownPlugins = {
   cjk,
-  code: createCodePlugin({ themes: ["github-light", "github-dark"] }),
+  code: codePlugin,
   math: createMathPlugin({ singleDollarTextMath: true }),
   mermaid,
 };

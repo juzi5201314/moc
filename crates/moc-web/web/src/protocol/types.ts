@@ -455,6 +455,9 @@ export type SessionLoadPageResult = {
   content_truncated?: boolean;
   // 最近一次回退截掉、仍可前滚接回的条目（core 进程内存态，重启即失效）。
   redo_entries?: TranscriptEntry[];
+  redo_has_more?: boolean;
+  redo_tip_entry_id?: string;
+  plans_before?: number;
   goal?: GoalView;
 };
 

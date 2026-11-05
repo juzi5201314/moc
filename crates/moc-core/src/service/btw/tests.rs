@@ -194,7 +194,7 @@ async fn readonly_snapshot_works_while_main_lock_is_held_and_never_loads_hosts()
     h.append(Message::user_text("主任务记录")).await;
     h.append(Message {
         role: Role::Assistant,
-        content: vec![ContentPart::ToolCall(moc_llm::ToolCall {
+        content: moc_llm::message_content![ContentPart::ToolCall(moc_llm::ToolCall {
             id: "pending".into(),
             name: "write".into(),
             arguments: "{\"path\":\"never.txt\"}".into(),
@@ -203,7 +203,7 @@ async fn readonly_snapshot_works_while_main_lock_is_held_and_never_loads_hosts()
     .await;
     h.append(Message {
         role: Role::Tool,
-        content: vec![ContentPart::ToolResult(moc_llm::ToolResult {
+        content: moc_llm::message_content![ContentPart::ToolResult(moc_llm::ToolResult {
             tool_call_id: "older".into(),
             content: "已有工具证据".into(),
             is_error: false,

@@ -169,62 +169,76 @@ function openingFence(line: string): Fence | null {
   return { char: marker[0], len: marker.length, info };
 }
 
-function findClose(lines: string[], from: number, fence: Fence): number | null {
+function findClose(
+  markdown: string,
+  from: number,
+  fence: Fence,
+): { start: number; end: number } | null {
   const pattern = new RegExp(`^ {0,3}\\${fence.char}{${fence.len},}[ \\t]*$`);
-  for (let index = from; index < lines.length; index++) {
-    if (pattern.test(lines[index])) return index;
+  for (let start = from; start <= markdown.length; ) {
+    const newline = markdown.indexOf("\n", start);
+    const end = newline < 0 ? markdown.length : newline;
+    if (pattern.test(markdown.slice(start, end))) return { start, end };
+    start = end + 1;
   }
   return null;
 }
 
 /** 顶层闭合的 svg 围栏换成一行图；引号、列表和未闭合围栏不动。 */
 export function liftSvgFences(markdown: string, tokens: FigureTokens): string {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  // 只有这些标签可能被提升或清理；普通正文与不含图形标签的围栏保持原文。
+  if (!/<(?:svg\b|\/?(?:image|use)\b)/i.test(normalized)) return normalized;
   const out: string[] = [];
-  const prose: string[] = [];
-  const flush = () => {
-    if (prose.length === 0) return;
-    out.push(...sanitizeRawSvgRegions(prose.join("\n"), tokens).split("\n"));
-    prose.length = 0;
-  };
-
-  let index = 0;
-  while (index < lines.length) {
-    const fence = openingFence(lines[index]);
+  let proseStart = 0;
+  let start = 0;
+  while (start <= normalized.length) {
+    const newline = normalized.indexOf("\n", start);
+    const end = newline < 0 ? normalized.length : newline;
+    const fence = openingFence(normalized.slice(start, end));
     if (!fence) {
-      prose.push(lines[index]);
-      index++;
+      start = end + 1;
       continue;
     }
-    flush();
-    const close = findClose(lines, index + 1, fence);
-    if (close == null) {
-      out.push(...lines.slice(index));
+    // 各段不含边界换行，最后一次 join 按原有行序补回，空行也保留。
+    if (proseStart < start) {
+      out.push(sanitizeRawSvgRegions(normalized.slice(proseStart, start - 1), tokens));
+    }
+    const close = findClose(normalized, end + 1, fence);
+    if (close === null) {
+      out.push(normalized.slice(start));
       return out.join("\n");
     }
-    if (fence.info.toLowerCase() === "svg") {
-      const svg = sanitizeSvg(lines.slice(index + 1, close).join("\n"), tokens);
-      if (svg) out.push(svg);
-      else out.push(...lines.slice(index, close + 1));
-    } else {
-      out.push(...lines.slice(index, close + 1));
-    }
-    index = close + 1;
+    const svg =
+      fence.info.toLowerCase() === "svg"
+        ? sanitizeSvg(normalized.slice(end + 1, close.start - 1), tokens)
+        : null;
+    out.push(svg ?? normalized.slice(start, close.end));
+    start = close.end + 1;
+    proseStart = start;
   }
-  flush();
+  if (proseStart <= normalized.length) {
+    out.push(sanitizeRawSvgRegions(normalized.slice(proseStart), tokens));
+  }
   return out.join("\n");
 }
 
 function sanitizeRawSvgRegions(text: string, tokens: FigureTokens): string {
-  const pattern = /<svg\b[\s\S]*?<\/svg>/g;
+  const openings = /<svg\b/g;
   let last = 0;
   let out = "";
-  for (const match of text.matchAll(pattern)) {
-    const start = match.index ?? 0;
+  for (let match = openings.exec(text); match; match = openings.exec(text)) {
+    const start = match.index;
+    const close = text.indexOf("</svg>", openings.lastIndex);
+    // 第一个起点之后没有闭合标签时，后面的起点同样不能闭合，无需重复扫尾。
+    if (close < 0) break;
+    const end = close + "</svg>".length;
+    const source = text.slice(start, end);
     out += stripBareSvgRefs(text.slice(last, start));
     // 缩进代码、引用和列表里的图保持源码。其余原始 svg 先消毒，解析失败就整段丢掉。
-    out += keepSvgSource(text, start) ? match[0] : (sanitizeSvg(match[0], tokens) ?? "");
-    last = start + match[0].length;
+    out += keepSvgSource(text, start) ? source : (sanitizeSvg(source, tokens) ?? "");
+    last = end;
+    openings.lastIndex = end;
   }
   return out + stripBareSvgRefs(text.slice(last));
 }

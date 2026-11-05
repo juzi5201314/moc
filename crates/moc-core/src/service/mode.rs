@@ -125,7 +125,7 @@ pub async fn plan_mode(
             .await = Some(snapshot);
     }
     emit_plan_change(&ctx, &params.session_id, params.active, switched.clone()).await?;
-    let state = record.state.lock().await.clone();
+    let state = record.state.lock().await.metadata();
     super::emit_session_config_changed(
         inner,
         &state,
@@ -272,13 +272,14 @@ pub async fn approve_plan(
         .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
         .await
         .map_err(to_rpc)?;
-    let state = record.state.lock().await.clone();
-    let plan = state
-        .plans
-        .iter()
-        .find(|plan| plan.plan_id == params.plan_id)
-        .cloned()
-        .ok_or_else(|| RpcError::of(RpcErrorCode::InvalidParams))?;
+    let (state, plan) = {
+        let state = record.state.lock().await;
+        let plan = state.plans.iter()
+            .find(|plan| plan.plan_id == params.plan_id)
+            .cloned()
+            .ok_or_else(|| RpcError::of(RpcErrorCode::InvalidParams))?;
+        (state.metadata(), plan)
+    };
     if plan.status != PlanStatus::Submitted {
         return Err(RpcError::new(
             RpcErrorCode::InvalidParams.code(),
@@ -374,7 +375,7 @@ pub async fn approve_plan(
                         &fork.id,
                         moc_llm::Message {
                             role,
-                            content: vec![moc_llm::ContentPart::Text(message.text)],
+                            content: vec![moc_llm::ContentPart::Text(message.text)].into(),
                         },
                         None,
                         None,
@@ -481,13 +482,14 @@ pub async fn revise_plan(
         .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
         .await
         .map_err(to_rpc)?;
-    let state = record.state.lock().await.clone();
-    let plan = state
-        .plans
-        .iter()
-        .find(|plan| plan.plan_id == params.plan_id)
-        .cloned()
-        .ok_or_else(|| RpcError::of(RpcErrorCode::InvalidParams))?;
+    let (state, plan) = {
+        let state = record.state.lock().await;
+        let plan = state.plans.iter()
+            .find(|plan| plan.plan_id == params.plan_id)
+            .cloned()
+            .ok_or_else(|| RpcError::of(RpcErrorCode::InvalidParams))?;
+        (state.metadata(), plan)
+    };
     if plan.status != PlanStatus::Submitted {
         return Err(RpcError::new(
             RpcErrorCode::InvalidParams.code(),

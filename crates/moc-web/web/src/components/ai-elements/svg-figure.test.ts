@@ -53,6 +53,44 @@ describe("svg 围栏", () => {
     expect(liftSvgFences(html, tokens)).toBe(html);
     const quoted = "> ```svg\n> <svg></svg>\n> ```\n";
     expect(liftSvgFences(quoted, tokens)).toBe(quoted);
+    const manyLines = "一行\n".repeat(140_000);
+    expect(liftSvgFences(manyLines, tokens)).toBe(manyLines);
+    const raw = `<use href="#x"/>\n${manyLines}`;
+    expect(liftSvgFences(raw, tokens)).toBe(`\n${manyLines}`);
+    for (const ending of ["", "```\n"]) {
+      const code = `\`\`\`html\n${raw}${ending}`;
+      expect(liftSvgFences(code, tokens)).toBe(code);
+    }
+    expect(liftSvgFences("普通\r\n文本\r\n", tokens)).toBe("普通\n文本\n");
+    expect(liftSvgFences('<IMAGE href="x"/>尾部<USE href="#x"/>', tokens)).toBe("尾部");
+    for (const code of [
+      "```html\n<svg></svg>\n```",
+      "~~~SVG\n~~~",
+      "```svg\ninvalid <svg\n```",
+      "```html\n<use/>\n",
+    ]) {
+      for (const prefix of ["", "\n", "前文\n\n"]) {
+        for (const suffix of ["", "\n", "\n\n尾文"]) {
+          const source = prefix + code + suffix;
+          expect(liftSvgFences(source.replace(/\n/g, "\r\n"), tokens)).toBe(source);
+        }
+      }
+    }
+    const partial = "<svg>\n".repeat(4000);
+    expect(liftSvgFences(partial, tokens)).toBe(partial);
+    const rawFigure = '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>';
+    const safe = sanitizeSvg(rawFigure, tokens);
+    expect(liftSvgFences(`${rawFigure}\n中间\n${rawFigure}\n${partial}`, tokens)).toBe(
+      `${safe}\n中间\n${safe}\n${partial}`,
+    );
+    expect(liftSvgFences(`> ${rawFigure}\n\n    ${rawFigure}`, tokens)).toBe(
+      `> ${rawFigure}\n\n    ${rawFigure}`,
+    );
+    const figure = svg('<rect fill="var(--fg)"/>').trimEnd();
+    const lifted = liftSvgFences(figure, tokens);
+    expect(liftSvgFences(`前文\n\n${figure}\n\n尾文\n`, tokens)).toBe(
+      `前文\n\n${lifted}\n\n尾文\n`,
+    );
   });
 
   it("读不到 CSS 变量时用主题回退色", () => {

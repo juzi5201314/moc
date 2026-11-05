@@ -86,6 +86,10 @@ impl SessionFile {
         &self.path
     }
 
+    pub(super) fn revision(&self) -> crate::hashline::SnapshotId {
+        *self.revision.read()
+    }
+
     /// 在目标路径创建 transcript 文件，并把 header 写成第一行。
     ///
     /// 供延迟写盘使用：目录按需创建，header 先写临时文件再 rename 发布，崩溃不会留下
@@ -348,10 +352,26 @@ impl SessionFile {
     }
 }
 
+type Listings = HashMap<
+    PathBuf,
+    (
+        crate::hashline::SnapshotId,
+        Option<moc_protocol::SessionInfo>,
+    ),
+>;
+const LISTING_CACHE: &str = ".session-list-v1.json";
+const LISTING_CACHE_BYTES: u64 = 16 * 1024 * 1024;
+
 /// 会话文件的发现、创建、读取和删除。
 pub struct SessionStore {
     root: PathBuf,
     index: RwLock<HashMap<String, SessionPaths>>,
+    /// 元信息缓存只在日志版本完全相同时复用；跨进程修改仍以磁盘为准。
+    listings: RwLock<Listings>,
+    listing_loaded: std::sync::atomic::AtomicBool,
+    listing_dirty: std::sync::atomic::AtomicBool,
+    /// 多个前端同时刷新时只允许一次冷扫描。
+    listing_gate: tokio::sync::Mutex<()>,
 }
 
 impl SessionStore {
@@ -359,6 +379,10 @@ impl SessionStore {
         Self {
             root: root.into(),
             index: RwLock::new(HashMap::new()),
+            listings: RwLock::new(HashMap::new()),
+            listing_loaded: std::sync::atomic::AtomicBool::new(false),
+            listing_dirty: std::sync::atomic::AtomicBool::new(false),
+            listing_gate: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -581,15 +605,7 @@ impl SessionStore {
         let path = paths.transcript.clone();
         tokio::task::spawn_blocking(move || {
             let mut entries = Vec::new();
-            let mut line_number = 0usize;
-            log::for_each_line(&path, log::Policy::Fail, &mut |line| {
-                line_number += 1;
-                let entry = serde_json::from_slice(line).map_err(|error| {
-                    CoreError::Session(format!(
-                        "解析 {} 第 {line_number} 行失败: {error}",
-                        path.display()
-                    ))
-                })?;
+            read_entries_sync(&path, &mut |entry| {
                 entries.push(entry);
                 Ok(())
             })?;
@@ -599,14 +615,98 @@ impl SessionStore {
         .map_err(|error| CoreError::Session(error.to_string()))?
     }
 
-    /// 流式读取元信息，跳过消息内容的分配，并按更新时间从新到旧排序。
+    pub async fn read_state(
+        &self,
+        paths: &SessionPaths,
+    ) -> Result<super::state::SessionState, CoreError> {
+        let path = paths.transcript.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut replay = super::archive::Replayer::default();
+            read_entries_sync(&path, &mut |entry| replay.push(entry))?;
+            replay.finish()
+        })
+        .await
+        .map_err(|error| CoreError::Session(error.to_string()))?
+    }
+
+    pub(super) fn cache_listing(
+        &self,
+        path: &Path,
+        revision: crate::hashline::SnapshotId,
+        info: Option<moc_protocol::SessionInfo>,
+    ) {
+        let mut listings = self.listings.write();
+        if listings
+            .get(path)
+            .is_some_and(|(stored_revision, stored_info)| {
+                *stored_revision == revision && stored_info == &info
+            })
+        {
+            return;
+        }
+        listings.insert(path.to_owned(), (revision, info));
+        self.listing_dirty
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 只在日志版本变化时扫描元信息，并按更新时间从新到旧排序。
     /// 只有 header、从未产生 entry 的空会话不会出现在列表里。
     pub async fn list(&self) -> Result<Vec<moc_protocol::methods::SessionInfo>, CoreError> {
-        let mut result = Vec::new();
-        for path in self.journals().await? {
-            let Some(mut info) = listed_session(&path).await else {
-                continue;
+        let _listing = self.listing_gate.lock().await;
+        if !self
+            .listing_loaded
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            let path = self.root.join(LISTING_CACHE);
+            let cached = tokio::task::spawn_blocking(move || read_listing_cache(&path))
+                .await
+                .map_err(|error| CoreError::Session(error.to_string()))?;
+            let mut listings = self.listings.write();
+            for (path, info) in cached {
+                listings.entry(path).or_insert(info);
+            }
+        }
+        let paths = self.journals().await?;
+        let existing: std::collections::HashSet<&PathBuf> = paths.iter().collect();
+        {
+            let mut listings = self.listings.write();
+            let before = listings.len();
+            listings.retain(|path, _| existing.contains(path));
+            if listings.len() != before {
+                self.listing_dirty
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let mut result = Vec::with_capacity(paths.len());
+        for path in paths {
+            let revision = match fs::metadata(&path).await {
+                Ok(metadata) => crate::hashline::SnapshotId::from_metadata(&metadata),
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "会话文件无法读取，已从 session/list 跳过");
+                    continue;
+                }
             };
+            let cached = self
+                .listings
+                .read()
+                .get(&path)
+                .filter(|(stored, _)| *stored == revision)
+                .map(|(_, info)| info.clone());
+            let info = match cached {
+                Some(info) => info,
+                None => {
+                    let info = listed_session(&path).await;
+                    // 扫描期间写者可能追加；只缓存前后版本一致的结果，不能把旧投影
+                    // 贴到新版本上，否则最新一条元信息会一直消失。
+                    if fs::metadata(&path).await.is_ok_and(|metadata| {
+                        crate::hashline::SnapshotId::from_metadata(&metadata) == revision
+                    }) {
+                        self.cache_listing(&path, revision, info.clone());
+                    }
+                    info
+                }
+            };
+            let Some(mut info) = info else { continue };
             info.lock = super::lock::read(
                 path.parent()
                     .unwrap_or(&self.root)
@@ -620,6 +720,21 @@ impl SessionStore {
                 },
             );
             result.push(info);
+        }
+        if self
+            .listing_dirty
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            let cached = self.listings.read().clone();
+            let path = self.root.join(LISTING_CACHE);
+            let saved = tokio::task::spawn_blocking(move || write_listing_cache(&path, &cached))
+                .await
+                .map_err(|error| CoreError::Session(error.to_string()))?;
+            if let Err(error) = saved {
+                self.listing_dirty
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                tracing::debug!(%error, "会话列表缓存写回失败，下次仍可从日志重建");
+            }
         }
         result.sort_by(|left, right| {
             right
@@ -650,6 +765,44 @@ impl SessionStore {
     }
 }
 
+/// 这是派生缓存而非日志；不完整、旧版本或损坏的内容都不影响会话恢复。
+fn read_listing_cache(path: &Path) -> Listings {
+    use std::io::Read;
+    let result = (|| -> std::io::Result<Listings> {
+        let file = std::fs::File::open(path)?;
+        let mut bytes = Vec::new();
+        file.take(LISTING_CACHE_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > LISTING_CACHE_BYTES {
+            return Ok(Listings::new());
+        }
+        serde_json::from_slice(&bytes).map_err(std::io::Error::other)
+    })();
+    match result {
+        Ok(cached) => cached,
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(%error, "会话列表缓存无效，将从日志重建");
+            }
+            Listings::new()
+        }
+    }
+}
+
+fn write_listing_cache(path: &Path, cached: &Listings) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut temp = tempfile::NamedTempFile::new_in(path.parent().expect("列表缓存位于会话根目录"))?;
+    {
+        let mut writer = std::io::BufWriter::new(temp.as_file_mut());
+        serde_json::to_writer(&mut writer, cached).map_err(std::io::Error::other)?;
+        writer.flush()?;
+    }
+    // 极端数量的会话仍可使用内存索引，不生成下次无法有界读取的缓存文件。
+    if temp.as_file().metadata()?.len() <= LISTING_CACHE_BYTES {
+        temp.persist(path).map_err(|error| error.error)?;
+    }
+    Ok(())
+}
+
 /// 会话目录的目录名就是会话 ID。子代理按父会话目录归档，所以识别它就等于识别
 /// 代理树的下一层。
 fn is_session_directory(path: &Path) -> bool {
@@ -670,8 +823,24 @@ async fn listed_session(path: &Path) -> Option<moc_protocol::methods::SessionInf
     }
 }
 
-/// 读取 header 和少量元信息；`has_entries` 为 `false` 表示文件只有 header，
-/// 该会话从未产生对话内容（写盘前就被丢弃的空会话）。
+/// 逐条解析日志，保留行号与压缩帧的错误语义。
+fn read_entries_sync(
+    path: &Path,
+    on_entry: &mut dyn FnMut(Entry) -> Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    let mut line_number = 0usize;
+    log::for_each_line(path, log::Policy::Fail, &mut |line| {
+        line_number += 1;
+        let entry = serde_json::from_slice(line).map_err(|error| {
+            CoreError::Session(format!(
+                "解析 {} 第 {line_number} 行失败: {error}",
+                path.display()
+            ))
+        })?;
+        on_entry(entry)
+    })
+}
+
 async fn read_session_info(
     path: &Path,
 ) -> Result<Option<(moc_protocol::methods::SessionInfo, bool)>, CoreError> {
@@ -959,11 +1128,37 @@ mod tests {
         assert_eq!(listed[0].engine, SessionEngine::Standard);
         assert!(listed[0].plan_active);
         assert_eq!(listed[0].updated_at_ms, 1_728_000_000_127);
+        let cached = read_listing_cache(&directory.path().join(LISTING_CACHE));
+        assert_eq!(cached.len(), 1, "缓存已持久化");
+        let restarted = SessionStore::new(directory.path());
+        assert_eq!(
+            restarted.list().await.unwrap(),
+            listed,
+            "重启后复用同版本元信息"
+        );
+        std::fs::write(directory.path().join(LISTING_CACHE), b"{broken").unwrap();
+        let rebuilt = SessionStore::new(directory.path());
+        assert_eq!(
+            rebuilt.list().await.unwrap(),
+            listed,
+            "缓存损坏不影响日志真相"
+        );
 
         let entries = store.read_entries(&paths).await.expect("读取 JSONL");
         assert_eq!(entries.len(), 5);
         assert_eq!(entries[1].parent_id(), Some(entries[0].id()));
         file.rewrite(&entries[..1]).await.expect("原子重写");
+        assert!(
+            restarted.list().await.unwrap().is_empty(),
+            "文件版本变化使缓存失效"
+        );
+        assert!(
+            SessionStore::new(directory.path())
+                .list()
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             store.read_entries(&paths).await.expect("重读 JSONL").len(),
             1

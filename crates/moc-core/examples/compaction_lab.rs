@@ -170,6 +170,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 async fn load(client: &ClientHandle, session_id: &str) -> Result<()> {
     client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: true,
             session_id: session_id.into(),
             max_entries: Some(0),
             read_only: false,
@@ -400,7 +401,7 @@ async fn restrict_probe(spec: &Spec, session_id: &str) -> Result<()> {
     table
         .ensure_write_lease(session_id, &record, "compaction-lab-probe")
         .await?;
-    let mut entries = record.state.lock().await.entries.clone();
+    let mut entries = record.state.lock().await.entries.as_ref().clone();
     let allow: &[&str] = match spec.probe_mode {
         ProbeMode::Direct => &[],
         ProbeMode::Retrieval => &["read", "grep", "find"],

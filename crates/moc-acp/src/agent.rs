@@ -257,6 +257,7 @@ impl<B: Backend> Bridge<B> {
         let session_id = req.session_id.0.to_string();
         let result = self
             .moc_call::<SessionLoad>(SessionLoadParams {
+                omit_auxiliary: false,
                 session_id: session_id.clone(),
                 max_entries: None,
                 read_only: false,
@@ -297,6 +298,7 @@ impl<B: Backend> Bridge<B> {
         let session_id = req.session_id.0.to_string();
         let result = self
             .moc_call::<SessionLoad>(SessionLoadParams {
+                omit_auxiliary: false,
                 session_id: session_id.clone(),
                 max_entries: Some(0),
                 read_only: false,

@@ -140,7 +140,7 @@ async fn deepseek_thinking_mode_with_tools() {
             Message::user_text("查天气"),
             Message {
                 role: moc_llm::Role::Assistant,
-                content: vec![
+                content: moc_llm::message_content![
                     ContentPart::Reasoning(ReasoningBlock::text("上一轮思路")),
                     ContentPart::ToolCall(ToolCall::new("call_1", "get_weather", "{}")),
                 ],
@@ -395,7 +395,7 @@ async fn responses_stateless_continuation() {
             Message::user_text("查天气"),
             Message {
                 role: moc_llm::Role::Assistant,
-                content: vec![
+                content: moc_llm::message_content![
                     ContentPart::Reasoning(ReasoningBlock::Item(Box::new(reasoning_item.clone()))),
                     ContentPart::ToolCall(ToolCall::new("call_1", "get_weather", "{}")),
                 ],
@@ -764,7 +764,7 @@ async fn reasoning_echo_switch_applies_per_protocol() {
         Message::user_text("问题"),
         Message {
             role: moc_llm::Role::Assistant,
-            content: vec![
+            content: moc_llm::message_content![
                 ContentPart::Reasoning(ReasoningBlock::text("历史思维链")),
                 ContentPart::Text("回答".into()),
             ],

@@ -18,6 +18,7 @@ pub mod config;
 pub mod doctor;
 pub mod event;
 pub mod history;
+mod history_page;
 pub mod input;
 pub mod interaction;
 pub mod modal;

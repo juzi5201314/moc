@@ -17,7 +17,7 @@ fn inspection_matches_wire_and_preserves_injection_coordinates() {
             messages: vec![
                 Message {
                     role: Role::System,
-                    content: vec![
+                    content: crate::message_content![
                         ContentPart::Text("默认提示".into()),
                         ContentPart::Text("工具规则".into()),
                     ],
@@ -26,7 +26,7 @@ fn inspection_matches_wire_and_preserves_injection_coordinates() {
                 Message::custom("<system-reminder>真正的运行时提醒</system-reminder>"),
                 Message {
                     role: Role::Assistant,
-                    content: vec![ContentPart::ToolCall(ToolCall {
+                    content: crate::message_content![ContentPart::ToolCall(ToolCall {
                         id: "call1".into(),
                         name: "read".into(),
                         arguments: "{}".into(),
@@ -34,7 +34,7 @@ fn inspection_matches_wire_and_preserves_injection_coordinates() {
                 },
                 Message {
                     role: Role::Tool,
-                    content: vec![ContentPart::ToolResult(ToolResult {
+                    content: crate::message_content![ContentPart::ToolResult(ToolResult {
                         tool_call_id: "call1".into(),
                         content: "结果".into(),
                         is_error: false,
@@ -45,6 +45,13 @@ fn inspection_matches_wire_and_preserves_injection_coordinates() {
             ..Default::default()
         };
         let wire = super::super::encode(&cfg, &request, true).unwrap();
+        let mut archived = request.clone();
+        for message in &mut archived.messages {
+            message.content = crate::MessageContent::from_archive(
+                serde_json::to_vec(&message.content).unwrap().into(),
+            ).unwrap();
+        }
+        assert_eq!(super::super::encode(&cfg, &archived, true).unwrap().body, wire.body);
         let inspection = inspect_request(&cfg, &request, true).unwrap();
         assert_eq!(
             inspection.body,

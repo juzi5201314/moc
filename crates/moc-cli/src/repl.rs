@@ -302,6 +302,7 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
             tokio::spawn(async move {
                 let unattended = client
                     .call::<SessionLoad>(SessionLoadParams {
+                        omit_auxiliary: false,
                         session_id: session_id.clone(),
                         max_entries: Some(0),
                         read_only: true,
@@ -382,6 +383,7 @@ async fn run_repl(
     let mut session = if let Some(id) = args.resume.as_ref().filter(|id| !id.is_empty()) {
         client
             .call::<SessionLoad>(SessionLoadParams {
+                omit_auxiliary: false,
                 session_id: id.clone(),
                 max_entries: None,
                 read_only: false,
@@ -892,6 +894,7 @@ async fn approve_plan(
 ) -> anyhow::Result<()> {
     let load = client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session.id.clone(),
             max_entries: None,
             read_only: false,
@@ -932,6 +935,7 @@ async fn approve_plan(
         .await?;
     let next = client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: approved.session_id,
             max_entries: None,
             read_only: false,

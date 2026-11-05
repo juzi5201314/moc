@@ -334,7 +334,25 @@ pub trait AgentService: Send + Sync + 'static {
         params: SessionListParams,
     ) -> impl Future<Output = Result<SessionListResult, RpcError>> + Send;
 
-    /// 读取一页 transcript；分页结果必须保持单帧有界。
+    /// 冻结一页历史供分块读取；简单服务可以直接返回小页。
+    fn session_history(
+        &self,
+        ctx: RequestContext,
+        params: crate::methods::SessionHistoryParams,
+    ) -> impl Future<Output = Result<crate::methods::SessionHistoryResult, RpcError>> + Send {
+        async move {
+            match params {
+                crate::methods::SessionHistoryParams::Open { page } => {
+                    Ok(crate::methods::SessionHistoryResult::Page {
+                        page: Box::new(self.session_load_page(ctx, page).await?),
+                    })
+                }
+                _ => Err(RpcError::of(crate::RpcErrorCode::NotSupported)),
+            }
+        }
+    }
+
+    /// 读取一页 transcript；大型完整结果使用 `session/history` 分块读取。
     fn session_load_page(
         &self,
         _ctx: RequestContext,

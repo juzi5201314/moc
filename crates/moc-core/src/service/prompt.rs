@@ -45,8 +45,7 @@ pub(crate) async fn wake_for_jobs(
     let Ok(record) = inner.sessions.get(&session_id).await else {
         return;
     };
-    let state = record.state.lock().await.clone();
-    if state.session.parent_session_id.is_some() {
+    if record.state.lock().await.session.parent_session_id.is_some() {
         return;
     }
     let runtime = inner.runtime(&session_id).await;
@@ -335,7 +334,7 @@ pub(crate) async fn run_prompt_with_lock(
         Ok(outcome) => finished.map_or(Ok(outcome), Err),
     };
     // `afterPrompt` 在清理之后触发：失败、取消与循环终止的路径同样能被插件观察到。
-    let plugin_state = record.state.lock().await.clone();
+    let plugin_state = record.state.lock().await.metadata();
     if let Some(host) = crate::service::plugin_events::host_for(
         &inner,
         std::path::Path::new(&plugin_state.session.cwd),
@@ -469,7 +468,7 @@ async fn run_prompt_locked(
     retry: bool,
 ) -> Result<PromptResult, RpcError> {
     let update = ctx.updates();
-    let state_snapshot = record.state.lock().await.clone();
+    let state_snapshot = record.state.lock().await.metadata();
     let project_config = inner
         .project_config(std::path::Path::new(&state_snapshot.session.cwd))
         .map_err(to_rpc)?;
@@ -480,7 +479,7 @@ async fn run_prompt_locked(
     // `/retry` 剪掉的失败回合如果整批工具都没跑，就直接重放这批调用，省掉一次模型请求。
     let mut replay_calls: Option<Vec<moc_llm::ToolCall>> = None;
     let user_message = if retry {
-        if state_snapshot.transcript.is_empty() {
+        if !state_snapshot.has_history {
             return Err(crate::service::invalid_params("当前会话没有可重试的上下文"));
         }
         match trim_failed_tail(&inner, &params.session_id).await? {
@@ -584,8 +583,7 @@ async fn run_prompt_locked(
                     &inner,
                     message,
                     &state_snapshot.session.cwd,
-                    crate::workflow::workflows_active(
-                        &state_snapshot,
+                    state_snapshot.workflows_active(
                         &inner
                             .project_config(std::path::Path::new(&state_snapshot.session.cwd))
                             .map_err(to_rpc)?
@@ -783,14 +781,14 @@ async fn run_prompt_locked(
                 &mcp_snapshot,
                 Arc::clone(&mcp),
                 plugin_tools.clone(),
-                crate::workflow::workflows_active(&state_snapshot, &project_config.workflow),
+                state_snapshot.workflows_active(&project_config.workflow),
             )
             .map_err(|error| to_rpc(crate::CoreError::Tool(error.to_string())))?,
     );
     let skills = inner
         .session_skills(
             std::path::Path::new(&state_snapshot.session.cwd),
-            crate::workflow::workflows_active(&state_snapshot, &project_config.workflow),
+            state_snapshot.workflows_active(&project_config.workflow),
         )
         .map_err(to_rpc)?;
     // 会话身份只看会话头。系统提示、工具可见性和代理列表都必须以它为准，
@@ -801,7 +799,7 @@ async fn run_prompt_locked(
         engine,
         ask_supported,
         &project_config,
-        crate::tools::ToolScope::for_session(&state_snapshot, &project_config),
+        crate::tools::ToolScope::for_metadata(&state_snapshot, &project_config),
         &plugin_tools,
     );
     let mut last_message = Message::default();
@@ -822,7 +820,7 @@ async fn run_prompt_locked(
         &catalog,
         engine,
         ask_supported,
-        crate::workflow::workflows_active(&state_snapshot, &project_config.workflow),
+        state_snapshot.workflows_active(&project_config.workflow),
         &project_config,
     )
     .unwrap_or_default();
@@ -1585,10 +1583,7 @@ async fn run_prompt_locked(
             subagent,
             user_initiated: agent_meta.is_none() && goal_meta.is_none(),
             goal_round: goal_meta.clone(),
-            tool_policy: state_snapshot
-                .agent
-                .as_ref()
-                .and_then(|meta| meta.tool_policy.clone()),
+            tool_policy: state_snapshot.tool_policy.clone(),
             nested: false,
             jobs: Arc::clone(&runtime.jobs),
             mcp: Arc::clone(&mcp),
@@ -1953,7 +1948,7 @@ mod tests {
     fn assistant_call(id: &str) -> Message {
         Message {
             role: Role::Assistant,
-            content: vec![ContentPart::ToolCall(ToolCall {
+            content: moc_llm::message_content![ContentPart::ToolCall(ToolCall {
                 id: id.into(),
                 name: "bash".into(),
                 arguments: "{}".into(),

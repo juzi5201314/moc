@@ -98,7 +98,7 @@ pub(crate) fn rewrite_message_text(message: moc_llm::Message, text: String) -> m
     );
     moc_llm::Message {
         role: message.role,
-        content,
+        content: content.into(),
     }
 }
 

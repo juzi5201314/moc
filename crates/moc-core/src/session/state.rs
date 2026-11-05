@@ -65,14 +65,39 @@ impl ModelUsage {
     }
 }
 
+/// 提示生命周期使用的控制状态；不持有正文、计划正文或工具结果。
+#[derive(Debug, Clone)]
+pub(crate) struct SessionMetadata {
+    pub session: SessionInfo,
+    pub engine: SessionEngine,
+    pub plan_active: bool,
+    pub workflow_activated: bool,
+    pub permission: SessionPermission,
+    pub model: String,
+    pub prompt_sequence: u64,
+    pub has_history: bool,
+    pub tool_policy: Option<crate::agents::ToolPolicy>,
+}
+
+impl SessionMetadata {
+    pub fn workflows_active(&self, config: &crate::config::WorkflowConfig) -> bool {
+        crate::workflow::enabled_for(self.workflow_activated, self.session.is_subagent(), config)
+    }
+}
+
 /// 一个会话的 transcript 和当前状态。
 #[derive(Debug, Clone)]
 pub struct SessionState {
     pub session: SessionInfo,
-    pub entries: Vec<Entry>,
-    pub transcript: Vec<TranscriptEntry>,
+    pub entries: Arc<Vec<Entry>>,
+    pub transcript: Arc<Vec<TranscriptEntry>>,
+    transcript_log_indices: Arc<Vec<usize>>,
+    /// 稀疏消息 ID 到当前投影下标；工具重排和重放同步维护。
+    transcript_positions: Arc<std::collections::HashMap<String, usize>>,
+    /// 旧日志若重复使用 ID，保留原来的末次匹配语义，不依赖唯一键索引。
+    transcript_ids_unique: bool,
     /// 与 transcript 一一对应的 token 估算，免得上下文面板反复扫描正文。
-    pub transcript_token_counts: Vec<u64>,
+    pub transcript_token_counts: Arc<Vec<u64>>,
     pub engine: SessionEngine,
     /// plan 模式：与引擎正交的持久执行模式，回放自 `PlanMode` / `EngineChange` entry。
     pub plan_active: bool,
@@ -88,8 +113,9 @@ pub struct SessionState {
     pub tool_calls_since_todo: u32,
     /// 本次提示已发出的 todo 提醒数。
     pub todo_reminders_sent: u32,
-    pub plans: Vec<PlanInfo>,
-    pub child_calls: Vec<moc_protocol::methods::session::TranscriptChildCall>,
+    pub plans: Arc<Vec<PlanInfo>>,
+    pub child_calls: Arc<Vec<moc_protocol::methods::session::TranscriptChildCall>>,
+    child_calls_by_parent: Arc<std::collections::HashMap<String, Vec<usize>>>,
     pub ptc_state: BTreeMap<String, Arc<serde_json::Value>>,
     pub ptc_state_bytes: usize,
     pub summary: Option<(String, String)>,
@@ -98,6 +124,11 @@ pub struct SessionState {
     /// Grok Build 整体替换历史时附带的运行时状态提醒；其它 checkpoint 为 `None`。
     pub summary_reminder: Option<String>,
     pub first_kept_id: Option<String>,
+    /// 与 transcript 索引同口径的上下文边界；回放/重写时重建。
+    pub(crate) context_start: usize,
+    pub(crate) reset_start: usize,
+    pub(crate) compact_end: usize,
+    pub(crate) has_reset: bool,
     pub prompt_sequence: u64,
     pub job_sequence: u64,
     pub notices: Vec<String>,
@@ -123,6 +154,23 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    pub(crate) fn metadata(&self) -> SessionMetadata {
+        SessionMetadata {
+            session: self.session.clone(),
+            engine: self.engine,
+            plan_active: self.plan_active,
+            workflow_activated: self.workflow_activated,
+            permission: self.permission,
+            model: self.model.clone(),
+            prompt_sequence: self.prompt_sequence,
+            has_history: !self.transcript.is_empty(),
+            tool_policy: self
+                .agent
+                .as_ref()
+                .and_then(|meta| meta.tool_policy.clone()),
+        }
+    }
+
     /// 从刚写入的 header 建立会话状态。
     pub fn new(header: Entry) -> Result<Self, CoreError> {
         Self::from_entries(vec![header])
@@ -154,9 +202,12 @@ impl SessionState {
             .ok_or_else(|| CoreError::Session("header 无法生成 session info".into()))?;
         let mut state = Self {
             session,
-            entries: Vec::with_capacity(entries.len()),
-            transcript: Vec::new(),
-            transcript_token_counts: Vec::new(),
+            entries: Arc::new(Vec::with_capacity(entries.len())),
+            transcript: Arc::new(Vec::new()),
+            transcript_log_indices: Arc::new(Vec::new()),
+            transcript_positions: Arc::new(std::collections::HashMap::new()),
+            transcript_ids_unique: true,
+            transcript_token_counts: Arc::new(Vec::new()),
             engine: engine.engine(),
             plan_active: engine.legacy_enters_plan(),
             workflow_activated: false,
@@ -167,8 +218,9 @@ impl SessionState {
             todos: Vec::new(),
             tool_calls_since_todo: 0,
             todo_reminders_sent: 0,
-            plans: Vec::new(),
-            child_calls: Vec::new(),
+            plans: Arc::new(Vec::new()),
+            child_calls: Arc::new(Vec::new()),
+            child_calls_by_parent: Arc::new(std::collections::HashMap::new()),
             ptc_state: BTreeMap::new(),
             ptc_state_bytes: 0,
             prompt_sequence: 0,
@@ -181,6 +233,10 @@ impl SessionState {
             summary_model: None,
             summary_reminder: None,
             first_kept_id: None,
+            context_start: 0,
+            reset_start: 0,
+            compact_end: 0,
+            has_reset: false,
             clm_context: None,
             agent: agent.clone(),
             goal: None,
@@ -189,17 +245,22 @@ impl SessionState {
             reminder_digests: BTreeMap::new(),
             last_entry_id: first.id().to_owned(),
         };
-        state.entries.push(first.clone());
+        Arc::make_mut(&mut state.entries).push(first.clone());
         for entry in entries.into_iter().skip(1) {
-            if entry.parent_id() != Some(state.last_entry_id.as_str()) {
-                return Err(CoreError::Session(format!(
-                    "entry {} 的 parent_id 与 transcript 链不匹配",
-                    entry.id()
-                )));
-            }
-            state.apply_entry(entry);
+            state.replay_entry(entry)?;
         }
         Ok(state)
+    }
+
+    pub(super) fn replay_entry(&mut self, entry: Entry) -> Result<(), CoreError> {
+        if entry.parent_id() != Some(self.last_entry_id.as_str()) {
+            return Err(CoreError::Session(format!(
+                "entry {} 的 parent_id 与 transcript 链不匹配",
+                entry.id()
+            )));
+        }
+        self.apply_entry(entry);
+        Ok(())
     }
 
     /// 把已写入的 entry 应用到会话状态。
@@ -252,9 +313,16 @@ impl SessionState {
                     let tokens = projected
                         .context_message()
                         .map_or(0, |message| crate::compact::message_tokens(&message));
-                    self.transcript_token_counts.push(tokens);
+                    Arc::make_mut(&mut self.transcript_token_counts).push(tokens);
                     let is_tool = projected.message.role == Role::Tool;
-                    self.transcript.push(projected);
+                    if Arc::make_mut(&mut self.transcript_positions)
+                        .insert(projected.id.clone(), self.transcript.len())
+                        .is_some()
+                    {
+                        self.transcript_ids_unique = false;
+                    }
+                    Arc::make_mut(&mut self.transcript_log_indices).push(self.entries.len());
+                    Arc::make_mut(&mut self.transcript).push(projected);
                     if is_tool {
                         self.order_tool_group();
                     }
@@ -268,6 +336,15 @@ impl SessionState {
                 reminder,
                 ..
             } => {
+                self.compact_end = self.transcript.len();
+                self.context_start = if method == "remote" {
+                    self.reset_start
+                } else {
+                    first_kept_id
+                        .as_ref()
+                        .and_then(|id| self.transcript.iter().position(|entry| &entry.id == id))
+                        .unwrap_or(self.transcript.len())
+                };
                 self.usage = Usage::default();
                 self.usage_at = 0;
                 // 压缩重写了可见历史，旧提醒可能已经被摘要取代；清表让下一次请求补全量。
@@ -287,6 +364,9 @@ impl SessionState {
                 }
             }
             Entry::ResetBoundary { .. } => {
+                self.has_reset = true;
+                self.reset_start = self.transcript.len();
+                self.context_start = self.reset_start;
                 self.ptc_state.clear();
                 self.ptc_state_bytes = 0;
                 self.summary = None;
@@ -403,11 +483,13 @@ impl SessionState {
                     previous_plan_id,
                     annotations,
                 };
-                if let Some(existing) = self.plans.iter_mut().find(|plan| plan.plan_id == *plan_id)
+                if let Some(existing) = Arc::make_mut(&mut self.plans)
+                    .iter_mut()
+                    .find(|plan| plan.plan_id == *plan_id)
                 {
                     *existing = info;
                 } else {
-                    self.plans.push(info);
+                    Arc::make_mut(&mut self.plans).push(info);
                 }
             }
             Entry::PlanFeedback {
@@ -415,12 +497,21 @@ impl SessionState {
                 annotations,
                 ..
             } => {
-                if let Some(plan) = self.plans.iter_mut().find(|plan| plan.plan_id == *plan_id) {
+                if let Some(plan) = Arc::make_mut(&mut self.plans)
+                    .iter_mut()
+                    .find(|plan| plan.plan_id == *plan_id)
+                {
                     plan.annotations.clone_from(annotations);
                     plan.status = PlanStatus::Revised;
                 }
             }
-            Entry::ChildTool { call, .. } => self.child_calls.push(call.clone()),
+            Entry::ChildTool { call, .. } => {
+                Arc::make_mut(&mut self.child_calls_by_parent)
+                    .entry(call.parent_tool_call_id.clone())
+                    .or_default()
+                    .push(self.child_calls.len());
+                Arc::make_mut(&mut self.child_calls).push(call.clone());
+            }
             Entry::PtcState { change, .. } => match change {
                 PtcStateChange::Put { key, value } => {
                     if let Some(old) = self.ptc_state.insert(key.clone(), Arc::new(value.clone())) {
@@ -458,7 +549,7 @@ impl SessionState {
             }
         }
         self.last_entry_id = entry.id().to_owned();
-        self.entries.push(entry);
+        Arc::make_mut(&mut self.entries).push(entry);
     }
 
     /// 把最近这组连续的工具结果按所属 assistant 的调用顺序排列。
@@ -505,11 +596,74 @@ impl SessionState {
             }
             if best != offset {
                 ranks.swap(offset, best);
-                self.transcript.swap(start + offset, start + best);
-                self.transcript_token_counts
-                    .swap(start + offset, start + best);
+                if self.summary.is_some() && self.first_kept_id.is_some() {
+                    if self.context_start == start + offset {
+                        self.context_start = start + best;
+                    } else if self.context_start == start + best {
+                        self.context_start = start + offset;
+                    }
+                }
+                Arc::make_mut(&mut self.transcript).swap(start + offset, start + best);
+                Arc::make_mut(&mut self.transcript_log_indices).swap(start + offset, start + best);
+                if self.transcript_ids_unique {
+                    let positions = Arc::make_mut(&mut self.transcript_positions);
+                    positions.insert(self.transcript[start + offset].id.clone(), start + offset);
+                    positions.insert(self.transcript[start + best].id.clone(), start + best);
+                }
+                Arc::make_mut(&mut self.transcript_token_counts).swap(start + offset, start + best);
             }
         }
+    }
+
+    pub(super) fn replace_content(&mut self, index: usize, content: moc_llm::MessageContent) {
+        let log_index = self.transcript_log_indices[index];
+        debug_assert_eq!(self.transcript[index].id, self.entries[log_index].id());
+        Arc::make_mut(&mut self.transcript)[index].message.content = content.clone();
+        let Entry::Message { message, .. } = &mut Arc::make_mut(&mut self.entries)[log_index]
+        else {
+            unreachable!("消息投影只能指向日志中的消息条目")
+        };
+        message.content = content;
+    }
+
+    /// 查看归档消息后不让其完整解码副本永久驻留；活动上下文继续保持热数据。
+    pub(super) fn cool_content(&mut self, index: usize) {
+        if index < self.context_start
+            && self.transcript[index]
+                .message
+                .content
+                .archive_cache_loaded()
+        {
+            let content = self.transcript[index].message.content.cold_clone();
+            self.replace_content(index, content);
+        }
+    }
+
+    pub(crate) fn child_call_indices(
+        &self,
+        parents: &std::collections::HashSet<&str>,
+        limit: usize,
+    ) -> Vec<usize> {
+        // 每个父调用最多贡献 limit 个候选，再按原位置排序，不扫描其完整结果列表。
+        let mut indices: Vec<_> = parents
+            .iter()
+            .filter_map(|parent| self.child_calls_by_parent.get(*parent))
+            .flat_map(|indices| indices.iter().take(limit).copied())
+            .collect();
+        indices.sort_unstable();
+        indices.truncate(limit);
+        debug_assert!(indices.iter().all(|index| *index < self.child_calls.len()));
+        indices
+    }
+
+    pub(crate) fn transcript_position(&self, id: &str) -> Option<usize> {
+        if !self.transcript_ids_unique {
+            return self.transcript.iter().rposition(|entry| entry.id == id);
+        }
+        let position = self.transcript_positions.get(id).copied()?;
+        debug_assert!(position < self.transcript.len());
+        debug_assert_eq!(self.transcript[position].id, id);
+        Some(position)
     }
 
     /// 当前会话的最新元信息。
@@ -554,7 +708,7 @@ mod tests {
             EntryPayload::Message {
                 message: Message {
                     role: Role::Assistant,
-                    content: vec![
+                    content: moc_llm::message_content![
                         ContentPart::ToolCall(ToolCall {
                             id: "call_a".into(),
                             name: "read".into(),
@@ -599,8 +753,13 @@ mod tests {
             13,
         );
 
-        let state =
-            SessionState::from_entries(vec![header, assistant, second, first]).expect("记录链完整");
+        let state = SessionState::from_entries(vec![
+            header.clone(),
+            assistant.clone(),
+            second.clone(),
+            first.clone(),
+        ])
+        .expect("记录链完整");
 
         let ids: Vec<&str> = state.transcript[1..]
             .iter()
@@ -608,7 +767,62 @@ mod tests {
             .map(|result| result.tool_call_id.as_str())
             .collect();
         assert_eq!(ids, ["call_a", "call_b"]);
+        for (index, entry) in state.transcript.iter().enumerate() {
+            assert_eq!(state.transcript_position(&entry.id), Some(index));
+        }
         assert_eq!(state.transcript.len(), state.transcript_token_counts.len());
+        let kept_id = second.id().to_owned();
+        let mut partial = SessionState::from_entries(vec![header, assistant, second]).unwrap();
+        partial.apply_entry(Entry::from_payload(
+            EntryPayload::Compaction {
+                method: "soft".into(),
+                summary: "摘要".into(),
+                first_kept_id: Some(kept_id.clone()),
+                tokens_before: 1,
+                tokens_after: 1,
+                instructions: None,
+                model: None,
+                reminder: None,
+            },
+            partial.last_entry_id.clone(),
+            14,
+        ));
+        let snapshot = partial.clone();
+        assert!(Arc::ptr_eq(&snapshot.entries, &partial.entries));
+        assert!(Arc::ptr_eq(&snapshot.transcript, &partial.transcript));
+        partial.apply_entry(first);
+        assert_eq!(partial.transcript[partial.context_start].id, kept_id);
+        assert_eq!(snapshot.transcript.len(), 2, "追加不能改变冻结快照");
+        let messages = crate::compact::replay::model_messages(&partial, None, None);
+        assert_eq!(
+            crate::compact::cached_messages_tokens(&partial, &messages),
+            crate::compact::messages_tokens(&messages)
+        );
+        for (index, parent) in ["call_a", "call_b", "call_a"].into_iter().enumerate() {
+            partial.apply_entry(Entry::from_payload(
+                EntryPayload::ChildTool {
+                    call: moc_protocol::TranscriptChildCall {
+                        id: format!("child_{index}"),
+                        parent_tool_call_id: parent.into(),
+                        name: "read".into(),
+                        arguments: "{}".into(),
+                        result: "结果".into(),
+                        status: moc_protocol::ToolStatus::Completed,
+                        duration_ms: None,
+                    },
+                },
+                partial.last_entry_id.clone(),
+                20 + index as u64,
+            ));
+        }
+        assert_eq!(
+            partial.child_call_indices(&std::collections::HashSet::from(["call_a"]), 64),
+            [0, 2]
+        );
+        assert_eq!(
+            partial.child_call_indices(&std::collections::HashSet::from(["call_b", "call_a"]), 2),
+            [0, 1]
+        );
     }
 
     #[test]

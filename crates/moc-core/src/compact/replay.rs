@@ -3,6 +3,7 @@
 use moc_llm::{Message, Role};
 use moc_protocol::methods::PlanStatus;
 
+#[cfg(test)]
 use crate::session::entries::Entry;
 use crate::session::state::SessionState;
 
@@ -75,16 +76,7 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]
         .as_ref()
         .is_some_and(|(method, _)| method == "soft")
     {
-        let compact_end = state
-            .entries
-            .iter()
-            .rposition(|entry| matches!(entry, Entry::Compaction { .. }))
-            .map_or(0, |index| {
-                state.entries[..=index]
-                    .iter()
-                    .filter(|entry| matches!(entry, Entry::Message { .. }))
-                    .count()
-            });
+        let compact_end = state.compact_end;
         if let Some(request) = pinned_user_request(state, start, compact_end) {
             messages.push(request);
         }
@@ -110,10 +102,7 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]
         }
     }
     if !state.todos.is_empty()
-        && state
-            .entries
-            .iter()
-            .any(|entry| matches!(entry, Entry::ResetBoundary { .. }))
+        && state.has_reset
         && state.summary.is_none()
         && let Ok(todos) = serde_json::to_string(&state.todos)
     {
@@ -126,16 +115,7 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]
 
 /// 从当前重置边界之后取真实用户消息；不把压缩摘要、计划注入或手动命令当成用户要求。
 pub(super) fn latest_user_request(state: &SessionState, end: usize) -> Option<(usize, &Message)> {
-    let reset_start = state
-        .entries
-        .iter()
-        .rposition(|entry| matches!(entry, Entry::ResetBoundary { .. }))
-        .map_or(0, |index| {
-            state.entries[..=index]
-                .iter()
-                .filter(|entry| matches!(entry, Entry::Message { .. }))
-                .count()
-        });
+    let reset_start = state.reset_start;
     state.transcript[..end]
         .iter()
         .enumerate()
@@ -277,31 +257,8 @@ pub(crate) fn model_messages_traced(
 
 /// 可见历史的起点：重置边界优先于旧的压缩；没有保留边界说明那次压缩已经覆盖了此前的全部消息。
 pub(crate) fn visible_history_start(state: &SessionState) -> usize {
-    let reset = state
-        .entries
-        .iter()
-        .rposition(|entry| matches!(entry, Entry::ResetBoundary { .. }));
-    let compact = state.summary.as_ref().and_then(|_| {
-        state
-            .entries
-            .iter()
-            .rposition(|entry| matches!(entry, Entry::Compaction { .. }))
-    });
-    let boundary = match (reset, compact) {
-        (Some(reset), Some(compact)) => reset.max(compact),
-        (Some(boundary), None) | (None, Some(boundary)) => boundary,
-        (None, None) => return 0,
-    };
-    if matches!(state.entries[boundary], Entry::Compaction { .. })
-        && let Some(id) = &state.first_kept_id
-        && let Some(index) = state.transcript.iter().position(|entry| &entry.id == id)
-    {
-        return index;
-    }
-    state.entries[..=boundary]
-        .iter()
-        .filter(|entry| matches!(entry, Entry::Message { .. }))
-        .count()
+    debug_assert!(state.context_start <= state.transcript.len());
+    state.context_start
 }
 
 pub(crate) fn repair_tool_history(

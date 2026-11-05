@@ -160,7 +160,7 @@ mod tests {
         };
         let messages = vec![Message {
             role: moc_llm::Role::User,
-            content: vec![ContentPart::Image {
+            content: moc_llm::message_content![ContentPart::Image {
                 source: image,
                 detail: None,
             }],
@@ -179,7 +179,7 @@ mod tests {
         };
         let messages = vec![Message {
             role: moc_llm::Role::User,
-            content: vec![ContentPart::Image {
+            content: moc_llm::message_content![ContentPart::Image {
                 source: image,
                 detail: None,
             }],
@@ -197,7 +197,7 @@ mod tests {
         let messages: Vec<Message> = (0..10)
             .map(|_| Message {
                 role: moc_llm::Role::User,
-                content: vec![ContentPart::Image {
+                content: moc_llm::message_content![ContentPart::Image {
                     source: ImageSource::Base64 {
                         media_type: "image/png".into(),
                         data: "y".repeat(1024 * 1024),

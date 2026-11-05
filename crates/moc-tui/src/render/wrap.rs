@@ -101,11 +101,13 @@ fn break_rows(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     let mut primary: Option<(usize, usize)> = None;
     let mut secondary: Option<(usize, usize)> = None;
     let mut i = 0usize;
+    let mut last_content = None;
     while i < chars.len() {
         let ch = chars[i];
         let w = char_width(ch);
-        // 记录 chars[i] 之前的断点（只认已有实际内容的行）
-        if i > start && chars[start..i].iter().any(|c| *c != ' ') {
+        if i > 0 && chars[i - 1] != ' ' { last_content = Some(i - 1); }
+        // i 单调前进；最后一个非空格的位置足以判断本行是否已有内容。
+        if i > start && last_content.is_some_and(|index| index >= start) {
             if ch == ' ' && chars[i - 1] != ' ' {
                 // 空格串：本行在空格前结束，下一行从空格串之后开始
                 let mut resume = i;
@@ -205,15 +207,16 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
 pub fn wrap_spans(spans: &[Span<'_>], width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let mut chars: Vec<char> = Vec::new();
-    let mut styles: Vec<Style> = Vec::new();
-    let mut flush = |chars: &mut Vec<char>, styles: &mut Vec<Style>| {
+    // 下标是段内字符位置，严格递增；样式只在变化时记录一次。
+    let mut styles: Vec<(usize, Style)> = Vec::new();
+    let mut flush = |chars: &mut Vec<char>, styles: &mut Vec<(usize, Style)>| {
         let rows = if width == 0 {
             vec![(0, chars.len())]
         } else {
             break_rows(chars, width)
         };
         for (start, end) in rows {
-            out.push(styled_row(&chars[start..end], &styles[start..end]));
+            out.push(styled_row(chars, styles, start, end));
         }
         chars.clear();
         styles.clear();
@@ -230,8 +233,10 @@ pub fn wrap_spans(spans: &[Span<'_>], width: usize) -> Vec<Line<'static>> {
             if ch == '\n' {
                 flush(&mut chars, &mut styles);
             } else {
+                if styles.last().is_none_or(|(_, style)| *style != span.style) {
+                    styles.push((chars.len(), span.style));
+                }
                 chars.push(ch);
-                styles.push(span.style);
             }
         }
     }
@@ -240,21 +245,17 @@ pub fn wrap_spans(spans: &[Span<'_>], width: usize) -> Vec<Line<'static>> {
 }
 
 /// 一行字符按样式合并回 span。
-fn styled_row(chars: &[char], styles: &[Style]) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut text = String::new();
-    let mut current: Option<Style> = None;
-    for (ch, style) in chars.iter().zip(styles) {
-        if current != Some(*style) {
-            if let Some(style) = current {
-                spans.push(Span::styled(std::mem::take(&mut text), style));
-            }
-            current = Some(*style);
-        }
-        text.push(*ch);
-    }
-    if let Some(style) = current {
-        spans.push(Span::styled(text, style));
+fn styled_row(chars: &[char], styles: &[(usize, Style)], start: usize, end: usize) -> Line<'static> {
+    let mut spans = Vec::new();
+    if start == end { return Line::from(spans); }
+    debug_assert_eq!(styles.first().map(|(offset, _)| *offset), Some(0));
+    let mut index = styles.partition_point(|(offset, _)| *offset <= start) - 1;
+    let mut cursor = start;
+    while cursor < end {
+        let next = styles.get(index + 1).map_or(end, |(offset, _)| end.min(*offset));
+        spans.push(Span::styled(chars[cursor..next].iter().collect::<String>(), styles[index].1));
+        cursor = next;
+        index += 1;
     }
     Line::from(spans)
 }

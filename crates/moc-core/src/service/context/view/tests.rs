@@ -30,6 +30,10 @@ fn directory_is_bounded_and_text_pages_round_trip_without_mutation() {
     assert_eq!(page.next_cursor, Some(128));
     let encoded = serde_json::to_string(&page).unwrap();
     assert!(!encoded.contains("中文"));
+    result.bound_text(0).unwrap();
+    assert!(result.spool.is_some());
+    assert!(result.nodes.iter().all(|node| node.text.is_none()));
+    assert_eq!(serde_json::to_string(&result.page(None, None).unwrap()).unwrap(), encoded);
     let id = result
         .nodes
         .iter()
@@ -159,12 +163,15 @@ fn role_messages_and_source_children_keep_wire_order() {
 #[test]
 fn views_are_isolated_by_connection_and_session() {
     let mut views = Views::default();
-    let first = view(json!({"messages":[]}));
+    let mut first = view(json!({"messages":[]}));
+    first.memory_permit = Some(Arc::clone(&views.text_budget).try_acquire_many_owned(16).unwrap());
+    assert_eq!(views.text_budget.available_permits(), TEXT_CACHE_BYTES - 16);
     let id = first.id.clone();
     views.entries.insert((1, "s1".into()), first);
     assert!(views.get(2, "s1", &id).is_err());
     assert!(views.get(1, "s2", &id).is_err());
     assert!(views.get(1, "s1", &id).is_ok());
     views.remove_session("s1");
+    assert_eq!(views.text_budget.available_permits(), TEXT_CACHE_BYTES);
     assert!(views.get(1, "s1", &id).is_err());
 }

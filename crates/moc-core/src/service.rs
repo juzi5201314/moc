@@ -114,6 +114,7 @@ pub(crate) struct CoreInner {
     pub provider_gates: RwLock<HashMap<String, Arc<crate::concurrency::Gate>>>,
     pub client: Client,
     pub context_views: parking_lot::Mutex<context::Views>,
+    pub history_transfers: parking_lot::Mutex<history::Transfers>,
     pub sessions: Arc<SessionTable>,
     pub tools: ToolRegistry,
     pub capabilities: RwLock<HashMap<u64, ClientCapabilities>>,
@@ -157,7 +158,7 @@ pub(crate) fn plugin_context(
 /// 会话配置变更事件：引擎 / 自主程度 / 模型 / 权限切换成功后广播给插件。
 pub(crate) async fn emit_session_config_changed(
     inner: &CoreInner,
-    state: &crate::session::state::SessionState,
+    state: &crate::session::state::SessionMetadata,
     field: &str,
     from: &str,
     to: &str,
@@ -656,6 +657,7 @@ impl Core {
                 provider_gates: RwLock::new(HashMap::new()),
                 client: config.client,
                 context_views: parking_lot::Mutex::new(context::Views::default()),
+                history_transfers: parking_lot::Mutex::new(history::Transfers::default()),
                 sessions,
                 tools: ToolRegistry::new(),
                 capabilities: RwLock::new(HashMap::new()),
@@ -1477,7 +1479,7 @@ impl AgentService for Core {
                         &info.id,
                         moc_llm::Message {
                             role,
-                            content: vec![moc_llm::ContentPart::Text(message.text)],
+                            content: vec![moc_llm::ContentPart::Text(message.text)].into(),
                         },
                         None,
                         None,
@@ -1522,7 +1524,11 @@ impl AgentService for Core {
         let mut result = self
             .inner
             .sessions
-            .load(&params.session_id, params.max_entries)
+            .load_projected(
+                &params.session_id,
+                params.max_entries,
+                params.omit_auxiliary,
+            )
             .await
             .map_err(to_rpc)?;
         result.session.permission = self.inner.effective_permission(result.session.permission);
@@ -1530,6 +1536,14 @@ impl AgentService for Core {
             result.goal = goal_with_armed(&self.inner, &params.session_id, &record).await;
         }
         Ok(result)
+    }
+
+    async fn session_history(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::methods::SessionHistoryParams,
+    ) -> Result<moc_protocol::methods::SessionHistoryResult, RpcError> {
+        history::handle(self, ctx, params).await
     }
 
     async fn session_load_page(
@@ -1540,11 +1554,14 @@ impl AgentService for Core {
         let mut result = self
             .inner
             .sessions
-            .load_page(
+            .load_pages(
                 &params.session_id,
                 params.before_entry_id.as_deref(),
                 params.max_entries,
                 params.max_message_bytes,
+                params.redo_page.as_ref(),
+                params.plan_page.as_ref(),
+                params.full_messages,
             )
             .await
             .map_err(to_rpc)?;
@@ -1581,7 +1598,12 @@ impl AgentService for Core {
         let mut loaded = self
             .inner
             .sessions
-            .rewind(&params.session_id, &entry_id)
+            .rewind_with_limit(
+                &params.session_id,
+                &entry_id,
+                params.max_entries,
+                params.omit_auxiliary,
+            )
             .await
             .map_err(to_rpc)?;
         loaded.session.lock = None;
@@ -1626,7 +1648,11 @@ impl AgentService for Core {
         let mut loaded = self
             .inner
             .sessions
-            .load(&params.session_id, None)
+            .load_projected(
+                &params.session_id,
+                params.max_entries,
+                params.omit_auxiliary,
+            )
             .await
             .map_err(to_rpc)?;
         loaded.session.lock = None;
@@ -1658,7 +1684,12 @@ impl AgentService for Core {
         let mut loaded = self
             .inner
             .sessions
-            .redo(&params.session_id, &entry_id)
+            .redo_with_limit(
+                &params.session_id,
+                &entry_id,
+                params.max_entries,
+                params.omit_auxiliary,
+            )
             .await
             .map_err(to_rpc)?;
         loaded.session.lock = None;
@@ -1683,7 +1714,7 @@ impl AgentService for Core {
         // unload_locked 要求调用方持有提示锁：进行中的提示会因运行时状态被移除而 panic 或写入失败，
         // 而且这里会先杀掉提示正在用的后台任务。和其它修改类 RPC 一样，拿不到锁就返回 SESSION_BUSY。
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
-        let state = record.state.lock().await.clone();
+        let state = record.state.lock().await.metadata();
         if let Some(host) =
             plugin_events::host_for(&self.inner, std::path::Path::new(&state.session.cwd)).await
         {
@@ -1761,7 +1792,7 @@ impl AgentService for Core {
             .ensure_write_lease(&params.session_id, &record, "moc-core")
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
-        let state = record.state.lock().await.clone();
+        let state = record.state.lock().await.metadata();
         if let Some(host) =
             plugin_events::host_for(&self.inner, std::path::Path::new(&state.session.cwd)).await
         {
@@ -1877,7 +1908,7 @@ impl AgentService for Core {
             )
             .await
             .map_err(protocol_to_rpc)?;
-        let state = record.state.lock().await.clone();
+        let state = record.state.lock().await.metadata();
         emit_session_config_changed(
             &self.inner,
             &state,
@@ -1935,7 +1966,7 @@ impl AgentService for Core {
         info.lock = None;
         info.permission = self.inner.effective_permission(info.permission);
         mode::emit_engine_change(&ctx, &params.session_id, info.engine, None).await?;
-        let state = record.state.lock().await.clone();
+        let state = record.state.lock().await.metadata();
         emit_session_config_changed(
             &self.inner,
             &state,
@@ -1979,7 +2010,7 @@ impl AgentService for Core {
         info.lock = None;
         info.permission = self.inner.effective_permission(info.permission);
         mode::emit_autonomy_change(&ctx, &params.session_id, info.autonomy).await?;
-        let state = record.state.lock().await.clone();
+        let state = record.state.lock().await.metadata();
         emit_session_config_changed(
             &self.inner,
             &state,
@@ -2089,7 +2120,7 @@ impl AgentService for Core {
         let mut session = outcome.session;
         session.lock = None;
         session.permission = self.inner.effective_permission(session.permission);
-        let state = record.state.lock().await.clone();
+        let state = record.state.lock().await.metadata();
         emit_session_config_changed(&self.inner, &state, "model", &model_before, &session.model)
             .await;
         Ok(SessionSetModelResult {
@@ -2118,7 +2149,7 @@ impl AgentService for Core {
             .get(&result.session_id)
             .await
             .map_err(to_rpc)?;
-        let state = record.state.lock().await.clone();
+        let state = record.state.lock().await.metadata();
         if let Some(host) =
             plugin_events::host_for(&self.inner, std::path::Path::new(&state.session.cwd)).await
         {
@@ -2781,8 +2812,10 @@ mod compression_tests {
                     .unwrap();
                 let rewind = client
                     .call::<SessionRewind>(SessionRewindParams {
+                        omit_auxiliary: false,
                         session_id: info.id.clone(),
                         entry_id: entry.id().to_owned(),
+                        max_entries: None,
                     })
                     .await
                     .unwrap();
@@ -2878,6 +2911,7 @@ mod compression_tests {
 mod bash;
 mod btw;
 mod context;
+mod history;
 mod management;
 pub(crate) mod mode;
 pub(crate) mod model;

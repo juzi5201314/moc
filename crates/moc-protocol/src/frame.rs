@@ -41,6 +41,9 @@ pub struct FrameDecoder {
     buf: Vec<u8>,
     /// 读游标：未消费数据的起点。
     pos: usize,
+    /// NDJSON 已检查过的前缀；恒满足 pos <= scan <= buf.len()。
+    /// 半帧只扫描新增字节，避免大报文分片到达时反复扫描全文。
+    scan: usize,
     /// `Content-Length` 下已经解析出头部的报文体长度。
     ///
     /// 头部一旦解析完成就推进 `pos` 到报文体起点，因此这里只记长度，不记下标，
@@ -56,6 +59,7 @@ impl FrameDecoder {
             max_frame_bytes,
             buf: Vec::new(),
             pos: 0,
+            scan: 0,
             body_len: None,
         }
     }
@@ -70,6 +74,7 @@ impl FrameDecoder {
                 let remaining = self.buf.len() - self.pos;
                 self.buf.truncate(remaining);
             }
+            self.scan = self.scan.saturating_sub(self.pos);
             self.pos = 0;
         }
         self.buf.extend_from_slice(chunk);
@@ -165,7 +170,9 @@ impl FrameDecoder {
 
     fn next_ndjson_frame(&mut self) -> Result<Option<&[u8]>, FrameError> {
         loop {
-            let Some(newline) = find_byte(&self.buf, self.pos, b'\n') else {
+            debug_assert!(self.pos <= self.scan && self.scan <= self.buf.len());
+            let Some(newline) = find_byte(&self.buf, self.scan, b'\n') else {
+                self.scan = self.buf.len();
                 let pending = self.buf.len() - self.pos;
                 if pending > self.max_frame_bytes {
                     return Err(FrameError::TooLarge {
@@ -177,6 +184,7 @@ impl FrameDecoder {
             };
             let start = self.pos;
             self.pos = newline + 1;
+            self.scan = self.pos;
             let end = if newline > start && self.buf[newline - 1] == b'\r' {
                 newline - 1
             } else {

@@ -123,6 +123,7 @@ impl PlanHarness {
         self.connection
             .client
             .call::<SessionLoad>(SessionLoadParams {
+                omit_auxiliary: false,
                 session_id: id,
                 max_entries: None,
                 read_only: false,
@@ -174,6 +175,7 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
         .connection
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: id.clone(),
             max_entries: None,
             read_only: false,
@@ -256,6 +258,7 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
         .connection
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: id.clone(),
             max_entries: None,
             read_only: false,
@@ -263,6 +266,11 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
         .await
         .expect("历史");
     assert_eq!(loaded.entries, before);
+    let paged = load_display_session(&h.connection.client, id.clone(), false)
+        .await
+        .expect("分页恢复计划");
+    assert_eq!(paged.plans, loaded.plans);
+    assert_eq!(paged.entries, loaded.entries);
     assert_eq!(loaded.session.model, original.model);
     handle_modal_key(
         &mut h.app,
@@ -283,6 +291,7 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
         .connection
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: id,
             max_entries: None,
             read_only: false,
@@ -291,6 +300,71 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
         .expect("审批后会话");
     assert_eq!(loaded.session.model, "test/executor:off");
     assert_eq!(loaded.plans[0].status, PlanStatus::Approved);
+    // 单独的历史会话只写本地日志，不把大文本送给模型或终端渲染器。
+    let table = moc_core::session::SessionTable::new(h._root.path().join("sessions"), true);
+    let history = table
+        .create(
+            "/tmp",
+            "test/planner:off",
+            SessionEngine::Standard,
+            SessionPermission::Full,
+            None,
+            moc_core::session::entries::SessionOrigin::root(),
+            false,
+        )
+        .await
+        .expect("历史会话");
+    let text = "文🙂\0".repeat(150_000);
+    table
+        .append_message(
+            &history.id,
+            moc_protocol::Message::user_text(&text),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let phases = vec![moc_protocol::TodoPhase {
+        phase: "执行".into(),
+        items: vec![moc_protocol::TodoItem {
+            task: "完整任务".into(),
+            status: moc_protocol::TodoStatus::Pending,
+            reason: None,
+        }],
+    }];
+    table
+        .append(
+            &history.id,
+            moc_core::session::entries::EntryPayload::Todos {
+                phases: phases.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    table
+        .append(
+            &history.id,
+            moc_core::session::entries::EntryPayload::GoalChange {
+                goal: Some(moc_core::session::entries::GoalSnapshot {
+                    id: "goal-history".into(),
+                    revision: 1,
+                    objective: "完整目标".into(),
+                    phase: moc_protocol::GoalPhase::Active,
+                    blocked_reason: None,
+                    created_at_ms: 1,
+                    updated_at_ms: 1,
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    drop(table);
+    let restored = load_display_session(&h.connection.client, history.id, true)
+        .await
+        .expect("跨块恢复历史");
+    assert_eq!(restored.entries[0].message.text(), text);
+    assert_eq!(restored.todos, phases);
+    assert_eq!(restored.goal.unwrap().objective, "完整目标");
     h.close().await;
 }
 
@@ -384,6 +458,7 @@ async fn plan_review_approval_loads_new_session() {
         .connection
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: child,
             max_entries: None,
             read_only: false,
@@ -398,6 +473,7 @@ async fn plan_review_approval_loads_new_session() {
         .connection
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: parent,
             max_entries: None,
             read_only: false,
@@ -433,6 +509,7 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
         .connection
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id: session.id.clone(),
             max_entries: None,
             read_only: false,
@@ -697,6 +774,7 @@ async fn unattended_autonomy_auto_approves_submitted_plan() {
         .connection
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id,
             max_entries: None,
             read_only: false,
@@ -738,6 +816,7 @@ async fn dont_ask_autonomy_still_opens_plan_review() {
         .connection
         .client
         .call::<SessionLoad>(SessionLoadParams {
+            omit_auxiliary: false,
             session_id,
             max_entries: None,
             read_only: false,

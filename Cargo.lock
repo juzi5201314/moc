@@ -2651,6 +2651,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "memchr",
+ "memmap2",
  "moc-llm",
  "moc-mcp",
  "moc-plugin",

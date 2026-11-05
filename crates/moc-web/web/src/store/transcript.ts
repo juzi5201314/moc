@@ -3,8 +3,9 @@
 // 反向请求（权限、提问）的 resolver 放在模块级 Map，store 里只存可序列化的参数，
 // 避免 immer 草稿里混入函数。
 
-import { produce } from "immer";
+import { enablePatches, produceWithPatches } from "immer";
 import { create } from "zustand";
+import { recordBlockChange } from "@/lib/block-changes";
 import {
   appendLocalStatus,
   appendLocalUser,
@@ -25,6 +26,7 @@ import type {
   SessionUpdateParams,
 } from "@/protocol/types";
 import { usePrefs } from "./prefs";
+import { cancelAllViewReads, cancelViewReads, startViewReads, viewReadSignal } from "./view-reads";
 
 export type Activity = { running: boolean };
 
@@ -43,6 +45,27 @@ export type TranscriptState = {
   interruptAll: () => void;
 };
 
+enablePatches();
+
+function withBlockChanges(recipe: (state: TranscriptState) => void) {
+  return (state: TranscriptState): TranscriptState => {
+    const [next, patches] = produceWithPatches(state, recipe);
+    const changed = new Map<string, number>();
+    for (const { path } of patches) {
+      if (path[0] !== "bySession" || typeof path[1] !== "string") continue;
+      if (path.length > 2 && path[2] !== "blocks") continue;
+      const from = typeof path[3] === "number" ? path[3] : 0;
+      changed.set(path[1], Math.min(changed.get(path[1]) ?? from, from));
+    }
+    for (const [sessionId, from] of changed) {
+      const previous = state.bySession[sessionId]?.blocks;
+      const blocks = next.bySession[sessionId]?.blocks;
+      if (previous && blocks) recordBlockChange(previous, blocks, from);
+    }
+    return next;
+  };
+}
+
 const permissionResolvers = new Map<string, (result: PermissionResult) => void>();
 const askResolvers = new Map<string, (result: AskResult) => void>();
 
@@ -51,48 +74,61 @@ export const useTranscript = create<TranscriptState>()((set) => ({
   activity: {},
   permissions: {},
   asks: {},
-  ensureView: (info) =>
+  ensureView: (info) => {
+    startViewReads(info.id);
     set(
-      produce((state: TranscriptState) => {
+      withBlockChanges((state: TranscriptState) => {
         const existing = state.bySession[info.id];
         if (existing) existing.info = info;
         else state.bySession[info.id] = createView(info);
       }),
-    ),
-  mutate: (sessionId, recipe) =>
+    );
+  },
+  mutate: (sessionId, recipe) => {
+    flushDeltas();
     set(
-      produce((state: TranscriptState) => {
+      withBlockChanges((state: TranscriptState) => {
         const view = state.bySession[sessionId];
         if (view) recipe(view);
       }),
-    ),
-  drop: (sessionId) =>
+    );
+  },
+  drop: (sessionId) => {
+    cancelViewReads(sessionId);
+    flushDeltas();
     set(
-      produce((state: TranscriptState) => {
+      withBlockChanges((state: TranscriptState) => {
         delete state.bySession[sessionId];
       }),
-    ),
-  localUser: (sessionId, text, images) =>
+    );
+  },
+  localUser: (sessionId, text, images) => {
+    flushDeltas();
     set(
-      produce((state: TranscriptState) => {
+      withBlockChanges((state: TranscriptState) => {
         const view = state.bySession[sessionId];
         if (view) appendLocalUser(view, text, images);
       }),
-    ),
-  localStatus: (sessionId, tone, text) =>
+    );
+  },
+  localStatus: (sessionId, tone, text) => {
+    flushDeltas();
     set(
-      produce((state: TranscriptState) => {
+      withBlockChanges((state: TranscriptState) => {
         const view = state.bySession[sessionId];
         if (view) appendLocalStatus(view, tone, text);
       }),
-    ),
+    );
+  },
   interruptAll: () => {
+    cancelAllViewReads();
+    flushDeltas();
     for (const resolve of permissionResolvers.values()) resolve({ option_id: "" });
     permissionResolvers.clear();
     for (const resolve of askResolvers.values()) resolve({ answers: [] });
     askResolvers.clear();
     set(
-      produce((state: TranscriptState) => {
+      withBlockChanges((state: TranscriptState) => {
         for (const view of Object.values(state.bySession)) interruptLive(view);
         state.activity = {};
         state.permissions = {};
@@ -104,10 +140,57 @@ export const useTranscript = create<TranscriptState>()((set) => ({
 
 // ---------- session/update 路由 ----------
 
+type PendingDelta = { params: SessionUpdateParams; at: number };
+const pendingDeltas = new Map<string, PendingDelta>();
+let deltaTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingChars = 0;
+
+/** 只合并相邻同通道增量；工具、结束、回退等控制事件之前必须落地。 */
+function flushDeltas(): void {
+  if (deltaTimer !== undefined) clearTimeout(deltaTimer);
+  deltaTimer = undefined;
+  if (!pendingDeltas.size) return;
+  const pending = [...pendingDeltas.values()];
+  pendingDeltas.clear();
+  pendingChars = 0;
+  useTranscript.setState(
+    withBlockChanges((state: TranscriptState) => {
+      for (const { params, at } of pending) {
+        const view = state.bySession[params.session_id];
+        if (view) applyUpdate(view, params.update, at);
+      }
+    }),
+  );
+}
+
 rpc.on("session/update", (params: SessionUpdateParams) => {
   const { session_id: sessionId, update } = params;
+  if (update.type === "assistant_delta" && update.delta.type !== "usage") {
+    if (!useTranscript.getState().bySession[sessionId]) return;
+    const previous = pendingDeltas.get(sessionId);
+    const prior = previous?.params.update;
+    if (
+      prior?.type === "assistant_delta" &&
+      prior.prompt_id === update.prompt_id &&
+      prior.delta.type === update.delta.type
+    ) {
+      prior.delta.delta += update.delta.delta;
+    } else {
+      // 通道切换决定思考耗时和正文顺序，不得与下一段串接。
+      if (previous) flushDeltas();
+      pendingDeltas.set(sessionId, {
+        params: { ...params, update: { ...update, delta: { ...update.delta } } },
+        at: Date.now(),
+      });
+    }
+    pendingChars += update.delta.delta.length;
+    if (pendingChars >= 64 * 1024) flushDeltas();
+    else if (deltaTimer === undefined) deltaTimer = setTimeout(flushDeltas, 16);
+    return;
+  }
+  flushDeltas();
   useTranscript.setState(
-    produce((state: TranscriptState) => {
+    withBlockChanges((state: TranscriptState) => {
       if (update.type === "prompt_started") state.activity[sessionId] = { running: true };
       if (update.type === "prompt_finished") delete state.activity[sessionId];
       const view = state.bySession[sessionId];
@@ -117,9 +200,12 @@ rpc.on("session/update", (params: SessionUpdateParams) => {
 });
 
 export async function refreshJobs(sessionId: string): Promise<void> {
+  const signal = viewReadSignal(sessionId);
+  if (!signal) return;
   const result = await rpc.call<JobListResult>("job/list", { session_id: sessionId });
+  if (signal.aborted) return;
   useTranscript.setState(
-    produce((state: TranscriptState) => {
+    withBlockChanges((state: TranscriptState) => {
       const view = state.bySession[sessionId];
       if (!view) return;
       view.jobs = Object.fromEntries(result.jobs.map((job) => [job.job_id, job]));
@@ -135,8 +221,9 @@ export async function refreshJobs(sessionId: string): Promise<void> {
           job_id: job.job_id,
           tail_lines: 20,
         });
+        if (signal.aborted) return;
         useTranscript.setState(
-          produce((state: TranscriptState) => {
+          withBlockChanges((state: TranscriptState) => {
             const view = state.bySession[sessionId];
             if (view) {
               applyUpdate(view, {
@@ -172,10 +259,11 @@ function notifyBackground(title: string, body: string): void {
 }
 
 rpc.onRequest("session/request_permission", (params) => {
+  flushDeltas();
   const { promise, resolve } = Promise.withResolvers<PermissionResult>();
   permissionResolvers.set(params.request_id, resolve);
   useTranscript.setState(
-    produce((state: TranscriptState) => {
+    withBlockChanges((state: TranscriptState) => {
       state.permissions[params.session_id] = [
         ...(state.permissions[params.session_id] ?? []),
         params,
@@ -187,10 +275,11 @@ rpc.onRequest("session/request_permission", (params) => {
 });
 
 rpc.onRequest("session/request_ask", (params) => {
+  flushDeltas();
   const { promise, resolve } = Promise.withResolvers<AskResult>();
   askResolvers.set(params.request_id, resolve);
   useTranscript.setState(
-    produce((state: TranscriptState) => {
+    withBlockChanges((state: TranscriptState) => {
       state.asks[params.session_id] = [...(state.asks[params.session_id] ?? []), params];
     }),
   );
@@ -203,7 +292,7 @@ export function resolvePermission(sessionId: string, requestId: string, optionId
   permissionResolvers.get(requestId)?.({ option_id: optionId });
   permissionResolvers.delete(requestId);
   useTranscript.setState(
-    produce((state: TranscriptState) => {
+    withBlockChanges((state: TranscriptState) => {
       const list = state.permissions[sessionId];
       if (list) state.permissions[sessionId] = list.filter((item) => item.request_id !== requestId);
     }),
@@ -215,7 +304,7 @@ export function resolveAsk(sessionId: string, requestId: string, result: AskResu
   askResolvers.get(requestId)?.(result);
   askResolvers.delete(requestId);
   useTranscript.setState(
-    produce((state: TranscriptState) => {
+    withBlockChanges((state: TranscriptState) => {
       const list = state.asks[sessionId];
       if (list) state.asks[sessionId] = list.filter((item) => item.request_id !== requestId);
     }),

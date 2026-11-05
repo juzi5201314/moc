@@ -261,7 +261,7 @@ fn truncate_message(message: Message, budget: u64) -> Message {
     }
     Message {
         role: message.role,
-        content,
+        content: content.into(),
     }
 }
 
@@ -281,7 +281,7 @@ mod tests {
             Message::user_text(text_tokens(100)),
             Message {
                 role: Role::Assistant,
-                content: vec![ContentPart::ToolCall(ToolCall::new(
+                content: moc_llm::message_content![ContentPart::ToolCall(ToolCall::new(
                     "c1",
                     "read",
                     r#"{"path":"a"}"#,
@@ -310,7 +310,7 @@ mod tests {
         let prompt = Message::user_text(text_tokens(50));
         let owner = Message {
             role: Role::Assistant,
-            content: vec![ContentPart::ToolCall(ToolCall::new(
+            content: moc_llm::message_content![ContentPart::ToolCall(ToolCall::new(
                 "c1",
                 "read",
                 r#"{"path":"a"}"#,

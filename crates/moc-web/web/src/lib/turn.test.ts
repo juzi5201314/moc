@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { recordBlockChange } from "@/lib/block-changes";
 import type { Block, ToolBlock } from "@/lib/transcript-model";
 import {
   activitySnippet,
   activityVerb,
+  createTurnGrouper,
   formatDuration,
   groupTurns,
   summarizeActivity,
@@ -34,6 +36,51 @@ const userBlock = (id: string, text = "改一下配色"): Extract<Block, { kind:
 });
 
 describe("groupTurns", () => {
+  it("增量分组在前插、历史修改和回退后保持原始轮次语义", () => {
+    const group = createTurnGrouper();
+    let blocks: Block[] = [
+      userBlock("u1"),
+      { kind: "text", id: "t1", text: "一" },
+      userBlock("u2"),
+    ];
+    const first = group(blocks);
+    blocks = [...blocks, { kind: "text", id: "t2", text: "二" }];
+    expect(group(blocks)).toEqual(groupTurns(blocks));
+    expect(group(blocks)[0]).toBe(first[0]);
+    blocks = blocks.map((block) =>
+      block.id === "t2" ? ({ ...block, text: "二三" } as Block) : block,
+    );
+    expect(group(blocks)).toEqual(groupTurns(blocks));
+    expect(group(blocks)[0]).toBe(first[0]);
+    const before = blocks;
+    const ids = group.ids;
+    let historyReads = 0;
+    blocks = new Proxy(
+      [...before.slice(0, -1), { kind: "text", id: "t2", text: "二三四" } as Block],
+      {
+        get(target, key, receiver) {
+          if (key === "0" || key === "1") historyReads++;
+          return Reflect.get(target, key, receiver);
+        },
+      },
+    );
+    recordBlockChange(before, blocks, 3);
+    const grouped = group(blocks);
+    expect(historyReads).toBe(0);
+    expect(group.ids).toBe(ids);
+    expect(grouped).toEqual(groupTurns(blocks));
+    blocks = [userBlock("u0"), { kind: "text", id: "t0", text: "前文" }, ...blocks];
+    expect(group(blocks)).toEqual(groupTurns(blocks));
+    blocks = blocks.map((block) =>
+      block.id === "t1" ? ({ ...block, text: "历史更新" } as Block) : block,
+    );
+    expect(group(blocks)).toEqual(groupTurns(blocks));
+    for (let end = blocks.length; end >= 0; end--) {
+      const prefix = blocks.slice(0, end);
+      expect(group(prefix)).toEqual(groupTurns(prefix));
+    }
+  });
+
   it("把一轮里的正文、活动与尾部统计分开", () => {
     const turns = groupTurns([
       userBlock("u1"),

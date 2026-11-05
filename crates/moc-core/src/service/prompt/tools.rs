@@ -135,7 +135,7 @@ async fn commit_prepared(
             &ctx.session_id,
             Message {
                 role: Role::Tool,
-                content: vec![ContentPart::ToolResult(result.clone())],
+                content: vec![ContentPart::ToolResult(result.clone())].into(),
             },
             Some(ToolExecution {
                 tool_call_id: call.id.clone(),
@@ -363,7 +363,7 @@ pub(super) async fn execute_tool_batch(
         if tool_ctx.engine == moc_protocol::methods::SessionEngine::ClmExperimental {
             let message = Message {
                 role: Role::Tool,
-                content: vec![ContentPart::ToolResult(tool_result.clone())],
+                content: vec![ContentPart::ToolResult(tool_result.clone())].into(),
             };
             crate::tools::clm::append_message(
                 &inner.sessions,
@@ -1312,10 +1312,10 @@ pub(super) async fn repair_pending_calls(
     let pending = {
         let state = record.state.lock().await;
         let mut pending = Vec::new();
-        for entry in &state.transcript {
-            pending.extend(entry.message.tool_calls().map(|call| call.id.clone()));
-            for result in entry.message.tool_results() {
-                pending.retain(|id| id != &result.tool_call_id);
+        for entry in state.transcript.iter() {
+            pending.extend(entry.message.content.tool_call_ids().map(str::to_owned));
+            for result_id in entry.message.content.tool_result_ids() {
+                pending.retain(|id| id != result_id);
             }
         }
         pending

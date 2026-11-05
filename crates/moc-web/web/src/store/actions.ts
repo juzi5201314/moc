@@ -193,6 +193,8 @@ export async function reanswerAsk(sessionId: string, toolCallId: string): Promis
       const result = await rpc.call<SessionLoadResult>("session/reask", {
         session_id: sessionId,
         tool_call_id: toolCallId,
+        max_entries: 0,
+        omit_auxiliary: true,
       });
       await reopenWith(sessionId, result);
       await rpc.call<PromptResult>("session/retry", { session_id: sessionId });

@@ -41,6 +41,7 @@ pub mod chart;
 pub mod config;
 pub mod diff;
 pub mod fs;
+pub mod history;
 pub mod initialize;
 pub mod job;
 pub mod management;
@@ -83,6 +84,7 @@ pub use fs::{
     FS_LIST_DIR_MAX_ENTRIES, FsCreateDir, FsCreateDirParams, FsCreateDirResult, FsDirEntry,
     FsListDir, FsListDirParams, FsListDirResult,
 };
+pub use history::{SessionHistory, SessionHistoryParams, SessionHistoryResult};
 pub use initialize::{
     ClientCapabilities, ClientInfo, EmptyParams, Initialize, InitializeParams, InitializeResult,
     Ping, PingResult, ServerCapabilities, ServerInfo,
@@ -186,6 +188,7 @@ mod tests {
             (<SessionList as Method>::NAME, "session/list"),
             (<SessionLoadPage as Method>::NAME, "session/load_page"),
             (<SessionLoad as Method>::NAME, "session/load"),
+            (<SessionHistory as Method>::NAME, "session/history"),
             (<SessionRewind as Method>::NAME, "session/rewind"),
             (<SessionRedo as Method>::NAME, "session/redo"),
             (<SessionReask as Method>::NAME, "session/reask"),

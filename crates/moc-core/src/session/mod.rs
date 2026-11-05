@@ -1,5 +1,6 @@
 //! 会话表、追加式 transcript，以及每个会话的提示互斥。
 
+mod archive;
 pub mod entries;
 pub mod lock;
 pub(crate) mod log;
@@ -42,12 +43,56 @@ impl TranscriptEntryId {
     }
 }
 
+/// 栈层在被前滚切分前保持不变；稀疏字符串 ID 用哈希索引定位。
+struct RewindTail {
+    entries: Vec<Entry>,
+    positions: HashMap<String, usize>,
+    message_tip: Option<String>,
+}
+
+impl From<Vec<Entry>> for RewindTail {
+    fn from(entries: Vec<Entry>) -> Self {
+        let mut positions = HashMap::with_capacity(entries.len());
+        let mut message_tip = None;
+        for (index, entry) in entries.iter().enumerate() {
+            positions.entry(entry.id().to_owned()).or_insert(index);
+            if matches!(entry, Entry::Message { .. }) {
+                message_tip = Some(entry.id().to_owned());
+            }
+        }
+        Self {
+            entries,
+            positions,
+            message_tip,
+        }
+    }
+}
+
+impl std::ops::Deref for RewindTail {
+    type Target = [Entry];
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+impl RewindTail {
+    fn position(&self, id: &str) -> Option<usize> {
+        let position = self.positions.get(id).copied()?;
+        debug_assert!(position < self.entries.len());
+        Some(position)
+    }
+}
+
 /// 一份加载中的会话。
 pub struct SessionRecord {
     pub state: Arc<Mutex<SessionState>>,
     pub prompt_lock: Arc<Mutex<()>>,
     append_lock: Mutex<()>,
     active: AtomicBool,
+    /// 曾打开写模式的会话拥有运行态，不能作为只读缓存自动回收。
+    pinned: AtomicBool,
+    accessed: std::sync::atomic::AtomicU64,
+    cache_bytes: usize,
     pub paths: SessionPaths,
     /// 磁盘上还没有 transcript 文件时为 `None`；第一次 append 时才写入磁盘。
     file: Mutex<Option<SessionFile>>,
@@ -62,7 +107,7 @@ pub struct SessionRecord {
     /// 那段。栈顶首条的 `parent_id` 接不上当前 tip 时整条废弃时间线作废（清空）。
     ///
     /// 用同步锁包装：只在取/放栈的短临界区里访问，不跨 `await`。
-    rewind_stash: parking_lot::Mutex<Vec<Vec<Entry>>>,
+    rewind_stash: parking_lot::Mutex<Vec<RewindTail>>,
     /// 被回退孤立的子代理 id：截掉的尾部引用过、但保留前缀不引用的那些。
     /// redo 把引用接回时摘除对应标记；新历史落盘作废 stash 后标记仍保留——
     /// 那条分支已永久死去，名册继续对它们不可见。
@@ -93,6 +138,8 @@ pub struct SessionTable {
     store: SessionStore,
     locking: bool,
     records: RwLock<HashMap<String, Arc<SessionRecord>>>,
+    /// 只合并同一个 ID 的冷加载；弱引用让完成或取消的加载不留下永久锁表。
+    loading: parking_lot::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
 }
 
 impl SessionTable {
@@ -101,6 +148,7 @@ impl SessionTable {
             store: SessionStore::new(root),
             locking,
             records: RwLock::new(HashMap::new()),
+            loading: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -156,6 +204,9 @@ impl SessionTable {
                 prompt_lock: Arc::new(Mutex::new(())),
                 append_lock: Mutex::new(()),
                 active: AtomicBool::new(true),
+                pinned: AtomicBool::new(true),
+                accessed: std::sync::atomic::AtomicU64::new(now_ms()),
+                cache_bytes: 0,
                 file: Mutex::new(None),
                 header,
                 paths,
@@ -171,6 +222,24 @@ impl SessionTable {
     /// 返回已加载会话；磁盘会话按需读入。
     pub async fn get(&self, session_id: &str) -> Result<Arc<SessionRecord>, CoreError> {
         if let Some(record) = self.records.read().get(session_id).cloned() {
+            record.accessed.store(now_ms(), Ordering::Relaxed);
+            return Ok(record);
+        }
+        let gate = {
+            let mut loading = self.loading.lock();
+            loading.retain(|_, gate| gate.strong_count() > 0);
+            let slot = loading.entry(session_id.to_owned()).or_default();
+            if let Some(gate) = slot.upgrade() {
+                gate
+            } else {
+                let gate = Arc::new(Mutex::new(()));
+                *slot = Arc::downgrade(&gate);
+                gate
+            }
+        };
+        let _loading = gate.lock().await;
+        if let Some(record) = self.records.read().get(session_id).cloned() {
+            record.accessed.store(now_ms(), Ordering::Relaxed);
             return Ok(record);
         }
         let paths = self
@@ -179,26 +248,35 @@ impl SessionTable {
             .await?
             .ok_or_else(|| CoreError::Session(format!("SESSION_NOT_FOUND: {session_id}")))?;
         // 只读加载不碰写租约：写者持锁期间读者仍可查看已落盘的完整行。
-        let entries = self.store.read_entries(&paths).await?;
-        let state = SessionState::from_entries(entries)?;
+        // 版本先于重放取样：读入期间有外部追加时，后续租约升级/列表查询必须失效。
+        let file = self.store.open(&paths).await?;
+        let state = self.store.read_state(&paths).await?;
         if state.session.id != session_id {
             return Err(CoreError::Session(format!(
                 "transcript session_id {} 与文件名 {session_id} 不匹配",
                 state.session.id
             )));
         }
-        let file = self.store.open(&paths).await?;
         let header = state
             .entries
             .first()
             .cloned()
             .ok_or_else(|| CoreError::Session("transcript 缺少会话头部".into()))?;
         let orphaned_agents = load_orphans(&paths).await;
+        let (state, cache_bytes) = tokio::task::spawn_blocking(move || {
+            let bytes = state_cache_bytes(&state);
+            (state, bytes)
+        })
+        .await
+        .map_err(|error| CoreError::Session(error.to_string()))?;
         let record = Arc::new(SessionRecord {
             state: Arc::new(Mutex::new(state)),
             prompt_lock: Arc::new(Mutex::new(())),
             append_lock: Mutex::new(()),
             active: AtomicBool::new(true),
+            pinned: AtomicBool::new(false),
+            accessed: std::sync::atomic::AtomicU64::new(now_ms()),
+            cache_bytes,
             file: Mutex::new(Some(file)),
             header,
             paths,
@@ -208,9 +286,39 @@ impl SessionTable {
             orphaned_agents: parking_lot::Mutex::new(orphaned_agents),
         });
         let mut records = self.records.write();
-        Ok(Arc::clone(
-            records.entry(session_id.to_owned()).or_insert(record),
-        ))
+        let record = Arc::clone(records.entry(session_id.to_owned()).or_insert(record));
+        let mut idle: Vec<_> = records
+            .iter()
+            .filter(|(_, record)| !record.pinned.load(Ordering::Acquire))
+            .map(|(id, record)| {
+                (
+                    id.clone(),
+                    record.accessed.load(Ordering::Relaxed),
+                    record.cache_bytes,
+                )
+            })
+            .collect();
+        idle.sort_unstable_by_key(|(_, accessed, _)| *accessed);
+        let mut bytes = idle
+            .iter()
+            .fold(0usize, |sum, (_, _, size)| sum.saturating_add(*size));
+        let mut count = idle.len();
+        for (id, _, size) in idle {
+            if count <= 4 && bytes <= 64 * 1024 * 1024 {
+                break;
+            }
+            // Arc 只由表持有才可移除：在途 RPC、提示锁或工具仍使用时不能产生第二份 record。
+            if records.get(&id).is_some_and(|record| {
+                Arc::strong_count(record) == 1
+                    && Arc::strong_count(&record.state) == 1
+                    && Arc::strong_count(&record.prompt_lock) == 1
+            }) {
+                records.remove(&id);
+                bytes = bytes.saturating_sub(size);
+                count -= 1;
+            }
+        }
+        Ok(record)
     }
 
     /// 该会话当前标记为孤儿的子代理 id。
@@ -229,6 +337,19 @@ impl SessionTable {
 
     /// 磁盘上的日志是跨进程的唯一依据，不能用缓存状态覆盖外部更新。
     pub async fn list(&self) -> Result<Vec<SessionInfo>, CoreError> {
+        let records: Vec<_> = self.records.read().values().cloned().collect();
+        for record in records {
+            // 与 append/rewrite 同一锁顺序，版本和状态必须来自同一次提交。
+            let file = record.file.lock().await;
+            if let Some(file) = file.as_ref() {
+                let state = record.state.lock().await;
+                self.store.cache_listing(
+                    &record.paths.transcript,
+                    file.revision(),
+                    (state.entries.len() > 1).then(|| state.session_info()),
+                );
+            }
+        }
         self.store.list().await
     }
 
@@ -384,23 +505,52 @@ impl SessionTable {
         session_id: &str,
         max_entries: Option<u32>,
     ) -> Result<SessionLoadResult, CoreError> {
+        self.load_projected(session_id, max_entries, false).await
+    }
+
+    pub(crate) async fn load_projected(
+        &self,
+        session_id: &str,
+        max_entries: Option<u32>,
+        omit_auxiliary: bool,
+    ) -> Result<SessionLoadResult, CoreError> {
         let record = self.get(session_id).await?;
-        let state = record.state.lock().await;
+        let mut state = record.state.lock().await;
         let count = state.transcript.len();
         let start = max_entries
             .and_then(|limit| usize::try_from(limit).ok())
             .map_or(0, |limit| count.saturating_sub(limit));
         let entries = state.transcript[start..].to_vec();
+        let cool_end = count.min(state.context_start);
+        for index in start..cool_end {
+            state.cool_content(index);
+        }
         let mut session = state.session_info();
         session.lock = lock::read(record.paths.lock_file(session_id));
         Ok(SessionLoadResult {
             session,
             entries,
             truncated: start > 0,
-            todos: state.todos.clone(),
-            plans: state.plans.clone(),
-            child_calls: state.child_calls.clone(),
-            goal: crate::goal::view(state.goal.as_ref(), state.goal_rounds_started, false),
+            todos: if omit_auxiliary {
+                Vec::new()
+            } else {
+                state.todos.clone()
+            },
+            plans: if omit_auxiliary {
+                Vec::new()
+            } else {
+                state.plans.as_ref().clone()
+            },
+            child_calls: if omit_auxiliary || max_entries == Some(0) {
+                Vec::new()
+            } else {
+                state.child_calls.as_ref().clone()
+            },
+            goal: if omit_auxiliary {
+                None
+            } else {
+                crate::goal::view(state.goal.as_ref(), state.goal_rounds_started, false)
+            },
         })
     }
 
@@ -412,6 +562,32 @@ impl SessionTable {
         max_entries: u32,
         max_message_bytes: Option<u32>,
     ) -> Result<SessionLoadPageResult, CoreError> {
+        self.load_pages(
+            session_id,
+            before_entry_id,
+            max_entries,
+            max_message_bytes,
+            None,
+            None,
+            false,
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "对应同一分页请求的正交投影参数，调用方保持旧借用接口"
+    )]
+    pub(crate) async fn load_pages(
+        &self,
+        session_id: &str,
+        before_entry_id: Option<&str>,
+        max_entries: u32,
+        max_message_bytes: Option<u32>,
+        redo_page: Option<&moc_protocol::methods::session::RedoPageParams>,
+        plan_page: Option<&moc_protocol::methods::session::PlanPageParams>,
+        full_messages: bool,
+    ) -> Result<SessionLoadPageResult, CoreError> {
         const MAX_PAGE_ENTRIES: usize = 128;
         const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
         const DEFAULT_MESSAGE_BYTES: usize = 64 * 1024;
@@ -419,101 +595,187 @@ impl SessionTable {
         const MAX_MESSAGE_BYTES: usize = 256 * 1024;
 
         let record = self.get(session_id).await?;
-        let state = record.state.lock().await;
-        let end = match before_entry_id {
-            Some(id) => state
-                .transcript
-                .iter()
-                .rposition(|entry| entry.id == id)
-                .ok_or_else(|| CoreError::Session(format!("transcript 消息不存在：{id}")))?,
-            None => state.transcript.len(),
-        };
-        let limit = usize::try_from(max_entries)
-            .unwrap_or(MAX_PAGE_ENTRIES)
-            .clamp(1, MAX_PAGE_ENTRIES);
-        let start = end.saturating_sub(limit);
-        let budget = usize::try_from(max_message_bytes.unwrap_or(DEFAULT_MESSAGE_BYTES_U32))
-            .unwrap_or(DEFAULT_MESSAGE_BYTES)
-            .clamp(1024, MAX_MESSAGE_BYTES);
-        let mut entries = Vec::with_capacity(end - start);
-        let mut content_truncated = false;
-        let mut page_bytes = 0usize;
-        for entry in &state.transcript[start..end] {
-            let remaining = MAX_PAGE_BYTES.saturating_sub(page_bytes);
-            if remaining == 0 {
-                break;
+        let before_entry_id = before_entry_id.map(str::to_owned);
+        let redo_page = redo_page.cloned();
+        let plan_page = plan_page.cloned();
+        let session_id = session_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let redo_page = redo_page.as_ref();
+            let plan_page = plan_page.as_ref();
+            let state = record.state.blocking_lock();
+            let end = match before_entry_id.as_deref() {
+                Some(id) => state
+                    .transcript_position(id)
+                    .ok_or_else(|| CoreError::Session(format!("transcript 消息不存在：{id}")))?,
+                None => state.transcript.len(),
+            };
+            let limit = usize::try_from(max_entries)
+                .unwrap_or(MAX_PAGE_ENTRIES)
+                .clamp(usize::from(plan_page.is_none()), MAX_PAGE_ENTRIES);
+            let start = end.saturating_sub(limit);
+            let budget = usize::try_from(max_message_bytes.unwrap_or(DEFAULT_MESSAGE_BYTES_U32))
+                .unwrap_or(DEFAULT_MESSAGE_BYTES)
+                .clamp(1024, MAX_MESSAGE_BYTES);
+            let mut entries = Vec::with_capacity(end - start);
+            let mut content_truncated = false;
+            // 预算计入 JSON 转义和条目元数据；单个超大旧条目保持完整附加信息。
+            let mut full_children = Vec::new();
+            let mut page_bytes = if full_messages { 4usize } else { 2usize };
+            let history_budget = if redo_page.is_some_and(|page| page.max_entries > 0) {
+                MAX_PAGE_BYTES / 2
+            } else {
+                MAX_PAGE_BYTES
+            };
+            for entry in state.transcript[start..end].iter().rev() {
+                let remaining = history_budget.saturating_sub(page_bytes);
+                if remaining == 0 {
+                    break;
+                }
+                let entry_budget = budget.min(remaining);
+                let (message, truncated) = if full_messages {
+                    (entry.message.clone(), false)
+                } else {
+                    project_message(&entry.message, entry_budget)
+                };
+                let projected = TranscriptEntry {
+                    id: entry.id.clone(),
+                    at_ms: entry.at_ms,
+                    message,
+                    tool: entry.tool.clone(),
+                    bash: entry.bash.clone(),
+                    agent: entry.agent.clone(),
+                    goal_round: entry.goal_round.clone(),
+                    reminder: entry.reminder.clone(),
+                };
+                let mut size = serialized_bytes(&projected).saturating_add(1);
+                let children = if full_messages {
+                    let ids = entry.message.content.tool_call_ids().collect();
+                    state.child_call_indices(&ids, usize::MAX)
+                } else {
+                    Vec::new()
+                };
+                for &index in &children {
+                    size = size
+                        .saturating_add(serialized_bytes(&state.child_calls[index]))
+                        .saturating_add(1);
+                }
+                if !entries.is_empty() && size > remaining {
+                    break;
+                }
+                content_truncated |= truncated;
+                page_bytes = page_bytes.saturating_add(size);
+                full_children.extend(children);
+                entries.push(projected);
             }
-            let entry_budget = budget.min(remaining);
-            let (message, truncated) = project_message(&entry.message, entry_budget);
-            content_truncated |= truncated;
-            page_bytes = page_bytes
-                .saturating_add(message_bytes(&message))
-                .saturating_add(entry.id.len())
-                .saturating_add(64);
-            entries.push(TranscriptEntry {
-                id: entry.id.clone(),
-                at_ms: entry.at_ms,
-                message,
-                tool: entry.tool.clone(),
-                bash: entry.bash.clone(),
-                agent: entry.agent.clone(),
-                goal_round: entry.goal_round.clone(),
-                reminder: entry.reminder.clone(),
-            });
-        }
-        let ids: std::collections::HashSet<&str> = entries
-            .iter()
-            .flat_map(|entry| entry.message.tool_calls().map(|call| call.id.as_str()))
-            .collect();
-        let child_budget = budget.min(8 * 1024);
-        let child_calls = state
-            .child_calls
-            .iter()
-            .filter(|call| ids.contains(call.parent_tool_call_id.as_str()))
-            .take(64)
-            .map(|call| TranscriptChildCall {
-                id: truncate_text(&call.id, child_budget).0,
-                parent_tool_call_id: truncate_text(&call.parent_tool_call_id, child_budget).0,
-                name: truncate_text(&call.name, child_budget).0,
-                arguments: truncate_text(&call.arguments, child_budget).0,
-                result: truncate_text(&call.result, child_budget).0,
-                status: call.status,
-                duration_ms: call.duration_ms,
-            })
-            .collect();
-        let has_more = start > 0 || entries.len() < end.saturating_sub(start);
-        // 前滚列表只暴露 transcript 条目；非消息 entry 会随目标一并接回，但不在选择器里占位。
-        let tip = state.entries.last().map(Entry::id);
-        let redo_entries = {
-            let stash = record.rewind_stash.lock();
-            if stash
-                .last()
-                .and_then(|tail| tail.first())
-                .is_some_and(|first| first.parent_id() == tip)
-            {
-                stash
-                    .last()
-                    .expect("栈顶已校验非空")
-                    .iter()
-                    .filter_map(|entry| entry.transcript_entry())
+            entries.reverse();
+            let child_calls = if full_messages {
+                // 一个旧日志可重复引用父调用 ID；输出仍按子调用原顺序去重。
+                full_children.sort_unstable();
+                full_children.dedup();
+                full_children
+                    .into_iter()
+                    .map(|index| state.child_calls[index].clone())
                     .collect()
             } else {
-                Vec::new()
-            }
-        };
-        let mut session = state.session_info();
-        session.lock = lock::read(record.paths.lock_file(session_id));
-        Ok(SessionLoadPageResult {
-            session,
-            entries,
-            has_more,
-            todos: state.todos.clone(),
-            plans: state.plans.clone(),
-            child_calls,
-            content_truncated,
-            redo_entries,
-            goal: crate::goal::view(state.goal.as_ref(), state.goal_rounds_started, false),
+                let ids: std::collections::HashSet<&str> = entries
+                    .iter()
+                    .flat_map(|entry| entry.message.content.tool_call_ids())
+                    .collect();
+                let child_budget = budget.min(8 * 1024);
+                state
+                    .child_call_indices(&ids, 64)
+                    .into_iter()
+                    .map(|index| &state.child_calls[index])
+                    .map(|call| TranscriptChildCall {
+                        id: truncate_text(&call.id, child_budget).0,
+                        parent_tool_call_id: truncate_text(&call.parent_tool_call_id, child_budget)
+                            .0,
+                        name: truncate_text(&call.name, child_budget).0,
+                        arguments: truncate_text(&call.arguments, child_budget).0,
+                        result: truncate_text(&call.result, child_budget).0,
+                        status: call.status,
+                        duration_ms: call.duration_ms,
+                    })
+                    .collect()
+            };
+            let has_more = start > 0 || entries.len() < end.saturating_sub(start);
+            // 前滚列表只暴露 transcript 条目；非消息 entry 会随目标一并接回，但不在选择器里占位。
+            let tip = state.entries.last().map(Entry::id);
+            let mut redo_has_more = false;
+            let mut redo_tip_entry_id = None;
+            let redo_entries = {
+                let stash = record.rewind_stash.lock();
+                match stash
+                    .last()
+                    .filter(|tail| tail.first().is_some_and(|first| first.parent_id() == tip))
+                {
+                    None => Vec::new(),
+                    Some(tail) => match redo_page {
+                        None => tail.iter().filter_map(Entry::transcript_entry).collect(),
+                        Some(page) => {
+                            redo_tip_entry_id = tail.message_tip.clone();
+                            let end = match &page.before_entry_id {
+                                Some(id) => tail.position(id).ok_or_else(|| {
+                                    CoreError::Session(format!("前滚消息不存在：{id}"))
+                                })?,
+                                None => tail.len(),
+                            };
+                            let mut candidates = tail[..end]
+                                .iter()
+                                .rev()
+                                .filter(|entry| matches!(entry, Entry::Message { .. }))
+                                .peekable();
+                            let limit = (page.max_entries as usize).min(MAX_PAGE_ENTRIES);
+                            let mut entries = Vec::with_capacity(limit);
+                            let mut redo_bytes = 2usize;
+                            let redo_budget = MAX_PAGE_BYTES
+                                .saturating_sub(page_bytes)
+                                .max(MAX_PAGE_BYTES / 2);
+                            while entries.len() < limit && redo_bytes < redo_budget {
+                                let Some(entry) = candidates.peek() else {
+                                    break;
+                                };
+                                let bytes = serialized_bytes(*entry);
+                                if !entries.is_empty()
+                                    && bytes > redo_budget.saturating_sub(redo_bytes)
+                                {
+                                    break;
+                                }
+                                // 单条超预算独占候选页，保持既有的完整详情；协议原帧上限仍适用。
+                                let entry = candidates.next().expect("已确认候选存在");
+                                redo_bytes = redo_bytes.saturating_add(bytes).saturating_add(1);
+                                entries.push(entry.transcript_entry().expect("已筛选消息条目"));
+                            }
+                            redo_has_more = candidates.peek().is_some();
+                            entries.reverse();
+                            entries
+                        }
+                    },
+                }
+            };
+            let (plans, plans_before) = match plan_page {
+                None => (state.plans.as_ref().clone(), None),
+                Some(page) => page_plans(&state.plans, page)?,
+            };
+            let mut session = state.session_info();
+            session.lock = lock::read(record.paths.lock_file(&session_id));
+            Ok(SessionLoadPageResult {
+                session,
+                entries,
+                has_more,
+                todos: state.todos.clone(),
+                plans,
+                plans_before,
+                child_calls,
+                content_truncated,
+                redo_entries,
+                redo_has_more,
+                redo_tip_entry_id,
+                goal: crate::goal::view(state.goal.as_ref(), state.goal_rounds_started, false),
+            })
         })
+        .await
+        .map_err(|error| CoreError::Session(error.to_string()))?
     }
     /// 原地回退：把会话历史截回目标消息，不产生新会话。
     ///
@@ -524,6 +786,17 @@ impl SessionTable {
         &self,
         session_id: &str,
         entry_id: &TranscriptEntryId,
+    ) -> Result<SessionLoadResult, CoreError> {
+        self.rewind_with_limit(session_id, entry_id, None, false)
+            .await
+    }
+
+    pub(crate) async fn rewind_with_limit(
+        &self,
+        session_id: &str,
+        entry_id: &TranscriptEntryId,
+        max_entries: Option<u32>,
+        omit_auxiliary: bool,
     ) -> Result<SessionLoadResult, CoreError> {
         let record = self.get(session_id).await?;
         let (kept, tail) = {
@@ -590,7 +863,7 @@ impl SessionTable {
         };
         self.rewrite(session_id, kept).await?;
         if !tail.is_empty() {
-            record.rewind_stash.lock().push(tail);
+            record.rewind_stash.lock().push(tail.into());
         }
         if !new_orphans.is_empty() {
             let ids = {
@@ -600,7 +873,8 @@ impl SessionTable {
             };
             persist_orphans(&record.paths, &ids).await?;
         }
-        self.load(session_id, None).await
+        self.load_projected(session_id, max_entries, omit_auxiliary)
+            .await
     }
 
     /// 向前滚：把最近一次回退截掉的尾部接回，到 `entry_id` 为止（含）。
@@ -611,6 +885,17 @@ impl SessionTable {
         &self,
         session_id: &str,
         entry_id: &TranscriptEntryId,
+    ) -> Result<SessionLoadResult, CoreError> {
+        self.redo_with_limit(session_id, entry_id, None, false)
+            .await
+    }
+
+    pub(crate) async fn redo_with_limit(
+        &self,
+        session_id: &str,
+        entry_id: &TranscriptEntryId,
+        max_entries: Option<u32>,
+        omit_auxiliary: bool,
     ) -> Result<SessionLoadResult, CoreError> {
         let record = self.get(session_id).await?;
         let entries = {
@@ -628,22 +913,19 @@ impl SessionTable {
                 ));
             }
             let tail = stash.last().expect("栈顶已校验非空");
-            let Some(pos) = tail
-                .iter()
-                .position(|entry| entry.id() == entry_id.as_str())
-            else {
+            let Some(pos) = tail.position(entry_id.as_str()) else {
                 return Err(CoreError::Session(format!(
                     "INVALID_PARAMS: 前滚目标不在已回退尾部：{}",
                     entry_id.as_str()
                 )));
             };
-            let mut restored = state.entries.clone();
+            let mut restored = state.entries.as_ref().clone();
             restored.extend_from_slice(&tail[..=pos]);
             let remainder = tail[pos + 1..].to_vec();
             if remainder.is_empty() {
                 stash.pop();
             } else {
-                *stash.last_mut().expect("栈顶已校验非空") = remainder;
+                *stash.last_mut().expect("栈顶已校验非空") = remainder.into();
             }
             restored
         };
@@ -662,7 +944,8 @@ impl SessionTable {
         if let Some(ids) = ids {
             persist_orphans(&record.paths, &ids).await?;
         }
-        self.load(session_id, None).await
+        self.load_projected(session_id, max_entries, omit_auxiliary)
+            .await
     }
 
     /// 重新作答前置：把 `tool_call_id` 标识的 `ask` 调用截回未回答状态。
@@ -763,6 +1046,7 @@ impl SessionTable {
         payload: EntryPayload,
     ) -> Result<Entry, CoreError> {
         let record = self.get(session_id).await?;
+        record.pinned.store(true, Ordering::Release);
         // 写入事务放在独立任务里：即使请求的 future 被丢弃，磁盘和内存的提交也必须完成。
         tokio::spawn(async move {
             let _append = record.append_lock.lock().await;
@@ -788,6 +1072,23 @@ impl SessionTable {
                 .append(&entry, None)
                 .await?;
             record.state.lock().await.apply_entry(entry.clone());
+            if matches!(
+                &entry,
+                Entry::Compaction { .. } | Entry::ResetBoundary { .. }
+            ) {
+                let snapshot = record.state.lock().await.clone();
+                let frozen = tokio::task::spawn_blocking(move || {
+                    archive::prepare(&snapshot, 0..snapshot.context_start)
+                })
+                .await;
+                match frozen {
+                    Ok(Ok(batch)) => batch.apply(&mut *record.state.lock().await),
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, "检查点已提交，正文冻结失败，保留完整内存正文")
+                    }
+                    Err(error) => tracing::warn!(%error, "检查点已提交，正文冻结任务失败"),
+                }
+            }
             // 回退后写入新历史会斩断可前滚的尾部：栈顶接不上新 tip 就整栈作废。
             {
                 let mut stash = record.rewind_stash.lock();
@@ -893,7 +1194,10 @@ impl SessionTable {
     /// 原子替换 transcript，同时重建内存里的状态。
     pub async fn rewrite(&self, session_id: &str, entries: Vec<Entry>) -> Result<(), CoreError> {
         let record = self.get(session_id).await?;
-        let mut state = SessionState::from_entries(entries.clone())?;
+        let replay_entries = entries.clone();
+        let mut state = tokio::task::spawn_blocking(move || archive::replay(replay_entries))
+            .await
+            .map_err(|error| CoreError::Session(error.to_string()))??;
         if state.session.id != session_id {
             return Err(CoreError::Session(
                 "重写 transcript 的会话 ID 不匹配".into(),
@@ -1067,6 +1371,7 @@ impl SessionTable {
         frontend: &str,
     ) -> Result<(), CoreError> {
         if !self.locking {
+            record.pinned.store(true, Ordering::Release);
             return Ok(());
         }
         if record.lease.lock().is_some() {
@@ -1091,14 +1396,14 @@ impl SessionTable {
         if let Some(file) = file_slot.as_ref()
             && file.changed_on_disk().await?
         {
-            let entries = self.store.read_entries(&record.paths).await?;
-            let mut fresh = SessionState::from_entries(entries)?;
+            let mut fresh = self.store.read_state(&record.paths).await?;
             file.reopen().await?;
             let mut current = record.state.lock().await;
             fresh.notices = std::mem::take(&mut current.notices);
             fresh.job_sequence = current.job_sequence;
             *current = fresh;
         }
+        record.pinned.store(true, Ordering::Release);
         *record.lease.lock() = Some(lease);
         Ok(())
     }
@@ -1198,28 +1503,109 @@ fn validate_plugin_state_key(plugin: &str, key: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
-fn message_bytes(message: &Message) -> usize {
+/// 下标只用于当前计划投影，创建顺序稳定，状态更新不移动元素。
+fn page_plans(
+    plans: &[moc_protocol::PlanInfo],
+    page: &moc_protocol::methods::session::PlanPageParams,
+) -> Result<(Vec<moc_protocol::PlanInfo>, Option<u32>), CoreError> {
+    if page.max_entries == 0 {
+        return Ok((Vec::new(), None));
+    }
+    let end = page.before.map_or(plans.len(), |index| index as usize);
+    if end > plans.len() {
+        return Err(CoreError::Session(
+            "INVALID_PARAMS: 计划分页游标已失效".into(),
+        ));
+    }
+    let limit = (page.max_entries as usize).min(32);
+    let mut start = end;
+    let mut bytes = 2usize;
+    while start > 0 && end - start < limit {
+        let size = serialized_bytes(&plans[start - 1]).saturating_add(1);
+        if start < end && bytes.saturating_add(size) > 4 * 1024 * 1024 {
+            break;
+        }
+        // 单版本正文通常至多512KiB；旧日志的超大版本仍完整返回，避免静默丢失批注。
+        bytes = bytes.saturating_add(size);
+        start -= 1;
+    }
+    let before = if start == 0 {
+        None
+    } else {
+        Some(
+            u32::try_from(start)
+                .map_err(|_| CoreError::Session("计划数超过分页游标范围".into()))?,
+        )
+    };
+    Ok((plans[start..end].to_vec(), before))
+}
+
+/// 冷加载后的体积权重：非消息日志可能有计划/PTC/子工具的大正文，投影还会持有副本。
+/// 两倍序列化大小可高估旧版本，目的在于驱逐顺序；它不是分配器或 RSS 的精确统计。
+fn state_cache_bytes(state: &SessionState) -> usize {
+    state.entries.iter().fold(0usize, |total, entry| {
+        let bytes = match entry {
+            Entry::Message {
+                id,
+                parent_id,
+                message,
+                tool,
+                bash,
+                agent,
+                goal,
+                reminder,
+                ..
+            } => {
+                // 正文由日志和 transcript 共享，只计一份；附加字段在两边分别拥有。
+                message_storage_bytes(message).saturating_add(
+                    serialized_bytes(&(id, parent_id, tool, bash, agent, goal, reminder))
+                        .saturating_mul(2),
+                )
+            }
+            Entry::Compaction { native, .. } => serialized_bytes(entry)
+                .saturating_mul(2)
+                // 旧原生载荷在 serde 中 skip_serializing，但读入后仍占内存。
+                .saturating_add(serialized_bytes(native)),
+            _ => serialized_bytes(entry).saturating_mul(2),
+        };
+        total.saturating_add(bytes).saturating_add(1024)
+    })
+}
+
+fn message_storage_bytes(message: &Message) -> usize {
     message
         .content
-        .iter()
-        .map(|part| match part {
-            ContentPart::Text(text) => text.len(),
-            ContentPart::Image { .. } => 32,
-            ContentPart::Reasoning(ReasoningBlock::Text { text, .. }) => text.len(),
-            ContentPart::Reasoning(ReasoningBlock::Redacted { data }) => data.len(),
-            ContentPart::Reasoning(ReasoningBlock::Item(_)) => 64,
-            ContentPart::ToolCall(call) => call.id.len() + call.name.len() + call.arguments.len(),
-            ContentPart::ToolResult(result) => result.tool_call_id.len() + result.content.len(),
-        })
-        .sum::<usize>()
-        .saturating_add(32)
+        .archive_index_bytes()
+        .unwrap_or_else(|| serialized_bytes(&message.content))
+}
+
+fn serialized_bytes(value: &impl serde::Serialize) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value).expect("会话记录可序列化且计数写者不会失败");
+    counter.0
 }
 
 fn project_message(message: &Message, budget: usize) -> (Message, bool) {
+    message
+        .content
+        .with_parts(|parts| project_parts(message.role, parts, budget))
+}
+
+fn project_parts(role: Role, parts: &[ContentPart], budget: usize) -> (Message, bool) {
     let mut remaining = budget;
     let mut truncated = false;
-    let mut content = Vec::with_capacity(message.content.len());
-    for part in &message.content {
+    let mut content = Vec::with_capacity(parts.len());
+    for part in parts {
         let projected = match part {
             ContentPart::Text(text) => {
                 let (text, was_truncated) = truncate_text(text, remaining);
@@ -1273,8 +1659,8 @@ fn project_message(message: &Message, budget: usize) -> (Message, bool) {
     }
     (
         Message {
-            role: message.role,
-            content,
+            role,
+            content: content.into(),
         },
         truncated,
     )
@@ -1286,7 +1672,11 @@ fn truncate_text(text: &str, limit: usize) -> (String, bool) {
     }
     const MARKER: &str = "…[内容已截断]…";
     if limit <= MARKER.len() {
-        return (MARKER.chars().take(limit).collect(), true);
+        let mut end = limit;
+        while !MARKER.is_char_boundary(end) {
+            end -= 1;
+        }
+        return (MARKER[..end].to_owned(), true);
     }
     let available = limit - MARKER.len();
     let mut head = available / 2;
@@ -1374,7 +1764,7 @@ mod tests {
                 EntryPayload::Message {
                     message: Message {
                         role: Role::Tool,
-                        content: vec![ContentPart::ToolResult(ToolResult {
+                        content: moc_llm::message_content![ContentPart::ToolResult(ToolResult {
                             tool_call_id: "call_1".into(),
                             content: content.into(),
                             is_error: false,
@@ -1916,8 +2306,93 @@ mod tests {
             &loaded.entries[0].message.content[0],
             moc_llm::ContentPart::Text(text) if text == "第二条"
         ));
+        let plan = moc_protocol::PlanInfo {
+            plan_id: "plan-budget".into(),
+            title: "预算".into(),
+            path: "plan.md".into(),
+            markdown: "p".repeat(64 * 1024),
+            status: moc_protocol::PlanStatus::Submitted,
+            version: 1,
+            previous_plan_id: None,
+            annotations: Vec::new(),
+        };
+        table
+            .append(&info.id, EntryPayload::plan(&plan, plan.status))
+            .await
+            .unwrap();
+        table
+            .append(
+                &info.id,
+                EntryPayload::ChildTool {
+                    call: moc_protocol::TranscriptChildCall {
+                        id: "child".into(),
+                        parent_tool_call_id: "parent".into(),
+                        name: "read".into(),
+                        arguments: "{}".into(),
+                        result: "r".repeat(64 * 1024),
+                        status: ToolStatus::Completed,
+                        duration_ms: None,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let phases = vec![moc_protocol::TodoPhase {
+            phase: "验收".into(),
+            items: vec![moc_protocol::TodoItem {
+                task: "任务".repeat(16 * 1024),
+                status: moc_protocol::TodoStatus::Pending,
+                reason: None,
+            }],
+        }];
+        table
+            .append(
+                &info.id,
+                EntryPayload::Todos {
+                    phases: phases.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        table
+            .append(
+                &info.id,
+                EntryPayload::GoalChange {
+                    goal: Some(entries::GoalSnapshot {
+                        id: "goal-large".into(),
+                        revision: 1,
+                        objective: "目标".repeat(16 * 1024),
+                        phase: moc_protocol::GoalPhase::Active,
+                        blocked_reason: None,
+                        created_at_ms: 1,
+                        updated_at_ms: 1,
+                    }),
+                },
+            )
+            .await
+            .unwrap();
         table.unload(&info.id).await.expect("卸载");
         let loaded = table.load(&info.id, None).await.expect("从磁盘重载");
+        let metadata = table.load_projected(&info.id, Some(0), true).await.unwrap();
+        assert!(
+            serialized_bytes(&metadata) < 4096,
+            "仅取租约的响应不得夹带大状态正文"
+        );
+        assert!(
+            metadata.todos.is_empty()
+                && metadata.plans.is_empty()
+                && metadata.child_calls.is_empty()
+                && metadata.goal.is_none()
+        );
+        let page = table.load_page(&info.id, None, 0, None).await.unwrap();
+        assert_eq!(page.todos, phases);
+        assert_eq!(page.todos, loaded.todos);
+        assert_eq!(page.goal, loaded.goal);
+        assert_eq!(page.plans, loaded.plans);
+        assert!(
+            table.get(&info.id).await.unwrap().cache_bytes >= 4 * 64 * 1024,
+            "计划/子工具正文及其投影副本必须计入只读缓存预算"
+        );
         assert!(!loaded.truncated);
         assert_eq!(loaded.entries.len(), 3);
         assert_eq!(loaded.session.engine, SessionEngine::Standard);
@@ -2140,7 +2615,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.list().await.unwrap()[0].title, "跨进程新标题");
-        let entries = first_record.state.lock().await.entries.clone();
+        let entries = first_record.state.lock().await.entries.as_ref().clone();
         first.rewrite(&info.id, entries).await.unwrap();
         assert!(first.release_lease(&first_record));
         let second_record = second.get(&info.id).await.unwrap();
@@ -2271,7 +2746,9 @@ mod tests {
                 &info.id,
                 Message {
                     role: Role::Assistant,
-                    content: vec![ContentPart::ToolCall(ToolCall::new("call_1", "read", "{}"))],
+                    content: moc_llm::message_content![ContentPart::ToolCall(ToolCall::new(
+                        "call_1", "read", "{}"
+                    ))],
                 },
                 None,
                 None,
@@ -2356,7 +2833,7 @@ mod tests {
                 &info.id,
                 Message {
                     role: Role::Assistant,
-                    content: vec![ContentPart::ToolCall(ToolCall::new(
+                    content: moc_llm::message_content![ContentPart::ToolCall(ToolCall::new(
                         "call_read",
                         "read",
                         "{}",
@@ -2383,7 +2860,7 @@ mod tests {
                 &info.id,
                 Message {
                     role: Role::Assistant,
-                    content: vec![
+                    content: moc_llm::message_content![
                         ContentPart::ToolCall(ToolCall::new(
                             "call_ask",
                             "ask",
@@ -2480,7 +2957,7 @@ mod tests {
                 &info.id,
                 Message {
                     role: Role::Assistant,
-                    content: vec![
+                    content: moc_llm::message_content![
                         ContentPart::ToolCall(ToolCall::new("call_read", "read", "{}")),
                         ContentPart::ToolCall(ToolCall::new("call_ask", "ask", "{}")),
                     ],
@@ -2576,6 +3053,29 @@ mod tests {
             .await
             .expect("分页");
         assert_eq!(page.redo_entries.len(), 2);
+        assert!(page.redo_tip_entry_id.is_none(), "旧请求不增加结果字段");
+        let mut redo_page = moc_protocol::methods::session::RedoPageParams::default();
+        let metadata = table
+            .load_pages(&info.id, None, 1, Some(1024), Some(&redo_page), None, false)
+            .await
+            .unwrap();
+        assert!(metadata.redo_entries.is_empty());
+        assert_eq!(metadata.redo_tip_entry_id.as_deref(), Some(a3.id()));
+        redo_page.max_entries = 1;
+        let latest = table
+            .load_pages(&info.id, None, 1, Some(1024), Some(&redo_page), None, false)
+            .await
+            .unwrap();
+        assert_eq!(latest.redo_entries[0].id, a3.id());
+        assert!(latest.redo_has_more);
+        redo_page.before_entry_id = Some(a3.id().to_owned());
+        let older = table
+            .load_pages(&info.id, None, 1, Some(1024), Some(&redo_page), None, false)
+            .await
+            .unwrap();
+        assert_eq!(older.redo_entries[0].id, u3.id());
+        assert!(!older.redo_has_more);
+        assert_eq!(older.redo_entries[0].message, page.redo_entries[0].message);
         // 剩余尾部整体接回，条目保持原 id 与顺序。
         let full = table
             .redo(&info.id, &TranscriptEntryId::new(a3.id()))
@@ -2715,14 +3215,364 @@ mod tests {
             )
             .await
             .expect("追加大消息");
+        table
+            .append(
+                &info.id,
+                EntryPayload::Compaction {
+                    method: "soft".into(),
+                    summary: "摘要".into(),
+                    first_kept_id: None,
+                    tokens_before: 50_000,
+                    tokens_after: 10,
+                    instructions: None,
+                    model: None,
+                    reminder: None,
+                },
+            )
+            .await
+            .unwrap();
+        let record = table.get(&info.id).await.unwrap();
+        let frozen = record.state.lock().await.transcript[1]
+            .message
+            .content
+            .clone();
+        assert!(frozen.is_archived(), "失活的大正文应释放堆副本");
+        assert!(!frozen.archive_cache_loaded());
+        let cold_table = SessionTable::new(directory.path().join("sessions"), true);
+        let cold_record = cold_table.get(&info.id).await.unwrap();
+        assert!(
+            cold_record.state.lock().await.transcript[1]
+                .message
+                .content
+                .is_archived()
+        );
         let page = table
             .load_page(&info.id, None, 8, Some(1024))
             .await
             .expect("读取分页");
         assert_eq!(page.entries.len(), 2);
         assert!(page.content_truncated);
+        assert!(
+            !frozen.archive_cache_loaded(),
+            "只读分页不能使共享快照的完整正文驻留"
+        );
         assert!(page.entries[1].message.text().len() <= 1024);
+        assert!(
+            !record.state.lock().await.transcript[1]
+                .message
+                .content
+                .archive_cache_loaded()
+        );
         assert_eq!(page.entries[0].message.text(), "第一条");
         assert!(!page.has_more);
+        let id = TranscriptEntryId::new(&page.entries[1].id);
+        let rewound = table
+            .rewind_with_limit(&info.id, &id, Some(0), false)
+            .await
+            .unwrap();
+        assert!(rewound.entries.is_empty());
+        assert!(rewound.truncated);
+        let selection = moc_protocol::methods::session::RedoPageParams {
+            before_entry_id: None,
+            max_entries: 1,
+        };
+        let future = table
+            .load_pages(&info.id, None, 1, Some(1024), Some(&selection), None, false)
+            .await
+            .unwrap();
+        assert_eq!(future.redo_entries[0].message.text(), "x".repeat(200_000));
+        let restored = table
+            .redo_with_limit(&info.id, &id, Some(0), false)
+            .await
+            .unwrap();
+        assert!(restored.entries.is_empty());
+        assert_eq!(
+            table.load(&info.id, None).await.unwrap().entries[1]
+                .message
+                .text()
+                .len(),
+            200_000
+        );
+        // 控制字符在 JSON 中膨胀为六字节，预算不能只计 markdown.len()。
+        let plans: Vec<_> = (0..40)
+            .map(|index| moc_protocol::PlanInfo {
+                plan_id: format!("plan-{index}"),
+                title: format!("版本 {index}"),
+                path: "plan.md".into(),
+                markdown: "\0".repeat(32 * 1024),
+                status: moc_protocol::PlanStatus::Submitted,
+                version: index + 1,
+                previous_plan_id: None,
+                annotations: Vec::new(),
+            })
+            .collect();
+        table.get(&info.id).await.unwrap().state.lock().await.plans = Arc::new(plans.clone());
+        assert_eq!(table.load(&info.id, Some(0)).await.unwrap().plans, plans);
+        assert!(
+            table
+                .load_projected(&info.id, Some(0), true)
+                .await
+                .unwrap()
+                .plans
+                .is_empty()
+        );
+        let mut request = moc_protocol::methods::session::PlanPageParams {
+            before: None,
+            max_entries: 32,
+        };
+        let no_redo = moc_protocol::methods::session::RedoPageParams::default();
+        let mut pages = Vec::new();
+        loop {
+            let page = table
+                .load_pages(
+                    &info.id,
+                    None,
+                    0,
+                    None,
+                    Some(&no_redo),
+                    Some(&request),
+                    false,
+                )
+                .await
+                .unwrap();
+            assert!(page.entries.is_empty(), "独立计划页不重复读取消息");
+            assert!(!page.plans.is_empty());
+            assert!(page.plans.len() <= 32);
+            assert!(serialized_bytes(&page.plans) <= 4 * 1024 * 1024);
+            pages.push(page.plans);
+            let Some(before) = page.plans_before else {
+                break;
+            };
+            if let Some(previous) = request.before {
+                assert!(before < previous);
+            }
+            request.before = Some(before);
+        }
+        assert!(pages.len() > 1, "字节预算应在条数上限前生效");
+        assert_eq!(pages.into_iter().rev().flatten().collect::<Vec<_>>(), plans);
+        let skip = moc_protocol::methods::session::PlanPageParams::default();
+        let skipped = table
+            .load_pages(
+                &info.id,
+                None,
+                1,
+                Some(1024),
+                Some(&no_redo),
+                Some(&skip),
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(skipped.plans.is_empty());
+        assert_eq!(skipped.plans_before, None);
+        request.before = Some(41);
+        assert!(
+            table
+                .load_pages(
+                    &info.id,
+                    None,
+                    0,
+                    None,
+                    Some(&no_redo),
+                    Some(&request),
+                    false
+                )
+                .await
+                .is_err()
+        );
+        for limit in 0..32 {
+            assert!(
+                truncate_text(&"文".repeat(20), limit).0.len() <= limit,
+                "截断标记也必须服从字节预算：{limit}"
+            );
+        }
+        for _ in 0..8 {
+            table
+                .append_message(
+                    &info.id,
+                    Message::user_text("\0".repeat(256 * 1024)),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let escaped = table
+            .load_pages(
+                &info.id,
+                None,
+                128,
+                Some(256 * 1024),
+                Some(&no_redo),
+                Some(&skip),
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(
+            serialized_bytes(&escaped.entries) <= 8 * 1024 * 1024,
+            "消息页必须按实际JSON大小计费"
+        );
+        assert!(escaped.has_more);
+        let preceding = table
+            .load_pages(
+                &info.id,
+                Some(&escaped.entries[0].id),
+                128,
+                Some(256 * 1024),
+                Some(&no_redo),
+                Some(&skip),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(preceding.entries.len() + escaped.entries.len(), 10);
+        assert!(!preceding.has_more);
+        assert_eq!(preceding.entries[0].message.text(), "第一条");
+        let full = table
+            .load_pages(
+                &info.id,
+                None,
+                128,
+                Some(1024),
+                Some(&no_redo),
+                Some(&skip),
+                true,
+            )
+            .await
+            .unwrap();
+        assert!(!full.content_truncated);
+        assert!(full.has_more, "完整消息仍按页总字节预算分批");
+        assert!(serialized_bytes(&full.entries) <= 8 * 1024 * 1024);
+        assert_eq!(
+            full.entries.last().unwrap().message.text().len(),
+            256 * 1024
+        );
+        let image_message = Message {
+            role: Role::User,
+            content: moc_llm::message_content![
+                ContentPart::Text("正文".repeat(20_000)),
+                ContentPart::Image {
+                    source: moc_llm::ImageSource::Base64 {
+                        media_type: "image/png".into(),
+                        data: "aGVsbG8=".repeat(1024)
+                    },
+                    detail: Some(moc_llm::ImageDetail::High),
+                },
+            ],
+        };
+        table
+            .append_message(&info.id, image_message.clone(), None, None)
+            .await
+            .unwrap();
+        let full = table
+            .load_pages(
+                &info.id,
+                None,
+                1,
+                Some(1024),
+                Some(&no_redo),
+                Some(&skip),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(full.entries[0].message, image_message);
+        assert!(!full.content_truncated);
+        table
+            .append_message(
+                &info.id,
+                Message {
+                    role: Role::Assistant,
+                    content: moc_llm::message_content![ContentPart::ToolCall(ToolCall::new(
+                        "parent-full",
+                        "run_code",
+                        "{}"
+                    ))],
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let mut children = Vec::new();
+        for index in 0..65 {
+            let call = TranscriptChildCall {
+                id: format!("child-{index}"),
+                parent_tool_call_id: "parent-full".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                result: if index == 64 {
+                    "完整子结果".repeat(2048)
+                } else {
+                    index.to_string()
+                },
+                status: ToolStatus::Completed,
+                duration_ms: Some(index),
+            };
+            table
+                .append(&info.id, EntryPayload::ChildTool { call: call.clone() })
+                .await
+                .unwrap();
+            children.push(call);
+        }
+        let full = table
+            .load_pages(
+                &info.id,
+                None,
+                1,
+                Some(1024),
+                Some(&no_redo),
+                Some(&skip),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(full.child_calls, children);
+        assert!(!full.content_truncated);
+        table
+            .append_message(
+                &info.id,
+                Message::user_text("\0".repeat(1536 * 1024)),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let tail = table
+            .append_message(&info.id, Message::user_text("可前滚"), None, None)
+            .await
+            .unwrap();
+        table
+            .rewind_with_limit(&info.id, &TranscriptEntryId::new(tail.id()), Some(0), true)
+            .await
+            .unwrap();
+        let redo = moc_protocol::methods::session::RedoPageParams {
+            before_entry_id: None,
+            max_entries: 1,
+        };
+        let full = table
+            .load_pages(&info.id, None, 1, None, Some(&redo), Some(&skip), true)
+            .await
+            .unwrap();
+        assert!(
+            serialized_bytes(&full.entries) > 8 * 1024 * 1024,
+            "单个完整条目可独占超预算页"
+        );
+        assert_eq!(
+            full.redo_entries[0].id,
+            tail.id(),
+            "历史页超预算不能让前滚分页失去进展"
+        );
+        table.unload(&info.id).await.unwrap();
+        let snapshot = Message {
+            role: Role::User,
+            content: frozen,
+        };
+        assert_eq!(
+            snapshot.text(),
+            "x".repeat(200_000),
+            "重写和卸载不破坏仍被引用的快照"
+        );
     }
 }

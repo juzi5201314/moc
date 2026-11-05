@@ -125,7 +125,7 @@ pub(super) async fn run(
         )
         .await
         .map_err(protocol_to_rpc)?;
-    let state = record.state.lock().await.clone();
+    let state = record.state.lock().await.metadata();
     if let Some(host) =
         crate::service::plugin_events::host_for(&inner, std::path::Path::new(&state.session.cwd))
             .await

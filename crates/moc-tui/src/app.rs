@@ -1604,8 +1604,7 @@ impl App {
         text.push_str(delta);
         // 正文继续增长后表格序号与内容都可能漂移，旧图立刻作废。
         // 旧图的清屏由 graphics::emit 在帧后发现并标记，不在这里猜协议。
-        entry.charts.clear();
-        entry.touch();
+        entry.text_appended();
     }
 
     /// 追加受预算约束的流式文本；用于思考内容，避免单个块吞噬整个会话内存。
@@ -1675,16 +1674,18 @@ impl App {
 
     /// 把一条已提交文本写进持久化历史；内存历史由输入框在提交时维护。
     pub fn record_input_history(&mut self, text: &str) {
+        if text.trim().is_empty() { return; }
         let project = self.history_project();
-        self.history.record(text, &project);
+        let entry = self.history.record_background(text, &project);
+        self.prompt.bind_history(text, entry);
     }
 
     /// 按当前偏好与项目重新填充输入历史；切换范围或会话时调用。
     pub fn refresh_input_history(&mut self) {
         let entries = self
             .history
-            .visible(self.preferences.history_scope, &self.history_project());
-        self.prompt.seed_history(entries);
+            .handles(self.preferences.history_scope, &self.history_project());
+        self.prompt.seed_history_handles(entries);
     }
 
     /// 历史归属的项目目录：有会话时用会话 cwd，否则用启动目录。

@@ -3,9 +3,10 @@
 //! 存储不按项目分文件——所有记录写进同一个文件，每条带提交时的 cwd；
 //! [`HistoryScope`] 只控制展示时是否按项目过滤，切换范围不用重读磁盘。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,19 +37,144 @@ struct Record {
     cwd: Option<String>,
 }
 
-/// 输入历史的内存与磁盘视图；记录时同步更新两者。
+/// 提示框与项目索引共享正文；大粘贴持久化后只保留私有文件句柄。
+#[derive(Clone)]
+pub(crate) struct HistoryText {
+    text: Arc<Mutex<TextStorage>>,
+    fingerprint: u128,
+    len: usize,
+}
+
+enum TextStorage {
+    Memory(Arc<str>),
+    File(std::fs::File),
+}
+
+impl From<String> for HistoryText {
+    fn from(text: String) -> Self {
+        Self {
+            fingerprint: xxhash_rust::xxh3::xxh3_128(text.as_bytes()),
+            len: text.len(),
+            text: Arc::new(Mutex::new(TextStorage::Memory(Arc::from(text)))),
+        }
+    }
+}
+
+impl HistoryText {
+    pub(crate) fn read(&self) -> std::io::Result<String> {
+        match &mut *self.text.lock().unwrap() {
+            TextStorage::Memory(text) => Ok(text.to_string()),
+            TextStorage::File(file) => {
+                file.rewind()?;
+                let mut text = String::with_capacity(self.len);
+                file.read_to_string(&mut text)?;
+                Ok(text)
+            }
+        }
+    }
+
+    pub(crate) fn matches(&self, text: &str) -> bool {
+        if self.len != text.len()
+            || self.fingerprint != xxhash_rust::xxh3::xxh3_128(text.as_bytes())
+        {
+            return false;
+        }
+        match &mut *self.text.lock().unwrap() {
+            TextStorage::Memory(stored) => stored.as_ref() == text,
+            TextStorage::File(file) => {
+                if file.rewind().is_err() {
+                    return false;
+                }
+                let mut buffer = [0; 8192];
+                text.as_bytes().chunks(buffer.len()).all(|chunk| {
+                    let read = &mut buffer[..chunk.len()];
+                    file.read_exact(read).is_ok() && read == chunk
+                })
+            }
+        }
+    }
+
+    fn spill(&self) -> std::io::Result<()> {
+        if self.len <= 64 * 1024 {
+            return Ok(());
+        }
+        let text = match &*self.text.lock().unwrap() {
+            TextStorage::Memory(text) => Arc::clone(text),
+            TextStorage::File(_) => return Ok(()),
+        };
+        let mut file = tempfile::tempfile()?;
+        file.write_all(text.as_bytes())?;
+        // 文件写完才发布；写失败时内存正文仍可召回。
+        *self.text.lock().unwrap() = TextStorage::File(file);
+        Ok(())
+    }
+}
+
+struct WriteTask {
+    text: HistoryText,
+    cwd: String,
+}
+
+enum WriteCommand {
+    Record(WriteTask),
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
+type Queue = std::sync::mpsc::SyncSender<WriteCommand>;
+type Writers = Mutex<HashMap<PathBuf, Vec<std::sync::Weak<Queue>>>>;
+static WRITERS: std::sync::LazyLock<Writers> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn flush_pending(path: &Path) {
+    let queues: Vec<_> = WRITERS
+        .lock()
+        .unwrap()
+        .get_mut(path)
+        .map(|writers| {
+            writers.retain(|writer| writer.strong_count() > 0);
+            writers
+                .iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .collect()
+        })
+        .unwrap_or_default();
+    for queue in queues {
+        let (done, wait) = std::sync::mpsc::channel();
+        if queue.send(WriteCommand::Flush(done)).is_ok() {
+            let _ = wait.recv();
+        }
+    }
+}
+
+struct Writer {
+    sender: Option<Arc<Queue>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// 每种范围最多保留 200 个可召回条目，索引共享正文；完整日志仍按顺序追加。
 #[derive(Default)]
 pub struct InputHistory {
     path: Option<PathBuf>,
-    /// 最新在前。
-    records: Vec<Record>,
+    global: VecDeque<HistoryText>,
+    projects: HashMap<String, VecDeque<HistoryText>>,
+    writer: Option<Writer>,
 }
 
 impl InputHistory {
     /// 读取 `home` 下的历史文件；文件缺失时返回空历史，坏行跳过。
     pub fn load(home: &Path) -> Self {
         let path = home.join(FILE_NAME);
-        let mut records = match read_tail(&path) {
+        flush_pending(&path);
+        let records = match read_tail(&path) {
             Ok(records) => records,
             Err(error) => {
                 if error.kind() != std::io::ErrorKind::NotFound {
@@ -57,53 +183,145 @@ impl InputHistory {
                 Vec::new()
             }
         };
-        records.reverse();
-        Self {
+        let mut history = Self {
             path: Some(path),
-            records,
+            ..Self::default()
+        };
+        for record in records {
+            history.remember(&record.text, record.cwd.as_deref());
         }
+        history
     }
 
-    /// 记一条提交；写盘失败只记日志，不影响发送。
+    fn remember(&mut self, text: &str, cwd: Option<&str>) -> HistoryText {
+        let entry = HistoryText::from(text.to_owned());
+        fn put(index: &mut VecDeque<HistoryText>, entry: &HistoryText, text: &str) {
+            index.retain(|old| old.fingerprint != entry.fingerprint || !old.matches(text));
+            index.push_front(entry.clone());
+            index.truncate(HISTORY_MAX);
+            debug_assert!(index.len() <= HISTORY_MAX);
+        }
+        put(&mut self.global, &entry, text);
+        if let Some(cwd) = cwd {
+            put(
+                self.projects.entry(cwd.to_owned()).or_default(),
+                &entry,
+                text,
+            );
+        }
+        entry
+    }
+
+    /// UI 只更新句柄索引；串行后台写者负责序列化和落盘，退出时排空。
+    pub(crate) fn record_background(&mut self, text: &str, cwd: &str) -> HistoryText {
+        let entry = self.remember(text, Some(cwd));
+        if self.writer.is_none() {
+            let (sender, receiver) = std::sync::mpsc::sync_channel::<WriteCommand>(4);
+            let sender = Arc::new(sender);
+            if let Some(path) = &self.path {
+                let mut writers = WRITERS.lock().unwrap();
+                writers.retain(|_, queues| {
+                    queues.retain(|queue| queue.strong_count() > 0);
+                    !queues.is_empty()
+                });
+                writers
+                    .entry(path.clone())
+                    .or_default()
+                    .push(Arc::downgrade(&sender));
+            }
+            let path = self.path.clone();
+            let thread = std::thread::spawn(move || {
+                for command in receiver {
+                    match command {
+                        WriteCommand::Record(task) => persist(path.as_deref(), &task),
+                        WriteCommand::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            });
+            self.writer = Some(Writer {
+                sender: Some(sender),
+                thread: Some(thread),
+            });
+        }
+        // 队列固定四项：磁盘落后时施加背压，不能无限保留尚未写出的长粘贴。
+        self.writer
+            .as_ref()
+            .unwrap()
+            .sender
+            .as_ref()
+            .unwrap()
+            .send(WriteCommand::Record(WriteTask {
+                text: entry.clone(),
+                cwd: cwd.to_owned(),
+            }))
+            .unwrap();
+        entry
+    }
+
     pub fn record(&mut self, text: &str, cwd: &str) {
+        if let Some(path) = &self.path {
+            flush_pending(path);
+        }
         if text.trim().is_empty() {
             return;
         }
-        let record = Record {
-            text: text.to_owned(),
-            cwd: Some(cwd.to_owned()),
-        };
-        match serde_json::to_vec(&record) {
-            Ok(mut line) => {
-                line.push(b'\n');
-                if let Some(path) = &self.path
-                    && let Err(error) = append(path, &line)
-                {
-                    tracing::warn!(path = %path.display(), %error, "写入输入历史失败");
-                }
-            }
-            Err(error) => tracing::warn!(%error, "序列化输入历史失败"),
-        }
-        self.records.insert(0, record);
+        let entry = self.remember(text, Some(cwd));
+        persist(
+            self.path.as_deref(),
+            &WriteTask {
+                text: entry,
+                cwd: cwd.to_owned(),
+            },
+        );
     }
 
-    /// 当前展示范围下的历史文本：最新在前，按正文去重，最多 [`HISTORY_MAX`] 条。
-    pub fn visible(&self, scope: HistoryScope, project: &str) -> Vec<String> {
-        let mut seen = HashSet::with_capacity(HISTORY_MAX);
-        let mut visible = Vec::with_capacity(HISTORY_MAX);
-        for record in &self.records {
-            if scope == HistoryScope::Project && record.cwd.as_deref() != Some(project) {
-                continue;
-            }
-            if !seen.insert(record.text.as_str()) {
-                continue;
-            }
-            visible.push(record.text.clone());
-            if visible.len() == HISTORY_MAX {
-                break;
-            }
+    pub(crate) fn handles(&self, scope: HistoryScope, project: &str) -> Vec<HistoryText> {
+        match scope {
+            HistoryScope::Global => self.global.iter().cloned().collect(),
+            HistoryScope::Project => self
+                .projects
+                .get(project)
+                .map(|index| index.iter().cloned().collect())
+                .unwrap_or_default(),
         }
-        visible
+    }
+
+    pub fn visible(&self, scope: HistoryScope, project: &str) -> Vec<String> {
+        self.handles(scope, project)
+            .iter()
+            .filter_map(|text| match text.read() {
+                Ok(text) => Some(text),
+                Err(error) => {
+                    tracing::warn!(%error, "读取输入历史失败");
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
+fn persist(path: Option<&Path>, task: &WriteTask) {
+    let result = (|| -> std::io::Result<()> {
+        let text = task.text.read()?;
+        if let Some(path) = path {
+            #[derive(Serialize)]
+            struct BorrowedRecord<'a> {
+                text: &'a str,
+                cwd: &'a str,
+            }
+            let mut line = serde_json::to_vec(&BorrowedRecord {
+                text: &text,
+                cwd: &task.cwd,
+            })?;
+            line.push(b'\n');
+            append(path, &line)?;
+        }
+        task.text.spill()
+    })();
+    if let Err(error) = result {
+        tracing::warn!(%error, "写入输入历史失败");
     }
 }
 
@@ -191,6 +409,20 @@ mod tests {
         assert_eq!(
             later.visible(HistoryScope::Project, "/project/b"),
             vec!["新提示".to_owned(), "继续".to_owned()]
+        );
+        for index in 0..HISTORY_MAX + 1 {
+            reloaded.record_background(&format!("条目 {index}"), "/project/b");
+        }
+        let long = "完整历史正文\n".repeat(8000);
+        let entry = reloaded.record_background(&long, "/project/a");
+        drop(reloaded); // 退出时排空后台写队列，句柄仍能召回完整正文。
+        assert!(matches!(*entry.text.lock().unwrap(), TextStorage::File(_)));
+        assert_eq!(entry.read().unwrap(), long);
+        let later = InputHistory::load(root.path());
+        assert_eq!(later.handles(HistoryScope::Global, "").len(), HISTORY_MAX);
+        assert_eq!(
+            later.visible(HistoryScope::Project, "/project/a"),
+            vec![long, "跑一下测试".into(), "继续".into()]
         );
     }
 

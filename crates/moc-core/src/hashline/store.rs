@@ -9,7 +9,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::hashline::{content_hash, tag_of};
 
 /// 文件元数据及原始内容组成的快照纪元；任一变化都会使 served 记录失效。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotId {
     pub device: u64,
     pub inode: u64,

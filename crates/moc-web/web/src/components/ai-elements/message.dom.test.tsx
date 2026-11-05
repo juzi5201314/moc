@@ -1,5 +1,6 @@
 import { render, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { CodeBlock, highlightCode } from "./code-block";
 import { MessageResponse } from "./message";
 
 class ImmediateIntersectionObserver {
@@ -80,6 +81,34 @@ describe("MessageResponse GitHub 风格渲染", () => {
     expect(container.querySelector('[data-streamdown="table-wrapper"] button')).toBeNull();
     // 无行号 gutter 类
     expect(container.querySelector('[class*="counter(line)"]')).toBeNull();
+    const prefix = `{"pad":"${"a".repeat(110)}","value":"`;
+    const suffix = `","end":"${"z".repeat(110)}"}`;
+    const highlight = (code: string) =>
+      new Promise<NonNullable<ReturnType<typeof highlightCode>>>((resolve) => {
+        const cached = highlightCode(code, "json", resolve);
+        if (cached) resolve(cached);
+      });
+    for (const middle of ["left", "rght"]) {
+      const code = prefix + middle + suffix;
+      const result = await highlight(code);
+      expect(result.tokens.map((row) => row.map((token) => token.content).join("")).join("\n"))
+        .toBe(code);
+    }
+    const source = '{"number": 1}\n\n{"number": 2}';
+    const block = render(<CodeBlock code={source} language="json" showLineNumbers />);
+    await waitFor(() => {
+      const rows = block.container.querySelectorAll("pre > code > span");
+      expect(rows).toHaveLength(3);
+      expect(rows[0].textContent).toBe('{"number": 1}');
+      expect(rows[1].textContent).toBe("\n");
+      expect(rows[2].textContent).toBe('{"number": 2}');
+      expect(block.container.querySelector('[class*="counter(line)"]')).not.toBeNull();
+      expect(rows[0].querySelector('span[style*="color"]')).not.toBeNull();
+    });
+    block.rerender(<CodeBlock code="replacement" language="json" />);
+    expect(block.container.querySelector("code")?.textContent).toBe("replacement");
+    expect(block.container.querySelector('[class*="counter(line)"]')).toBeNull();
+    block.unmount();
   });
 
   it("闭合的 svg 围栏内联成图，坏围栏留在代码块", async () => {

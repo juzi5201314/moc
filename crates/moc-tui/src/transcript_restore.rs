@@ -259,14 +259,14 @@ mod tests {
             entry(
                 Message {
                     role: Role::User,
-                    content: vec![ContentPart::Text("跑 ls".into())],
+                    content: moc_protocol::message_content![ContentPart::Text("跑 ls".into())],
                 },
                 None,
             ),
             entry(
                 Message {
                     role: Role::Assistant,
-                    content: vec![
+                    content: moc_protocol::message_content![
                         ContentPart::Text("执行命令".into()),
                         ContentPart::ToolCall(call),
                     ],
@@ -276,7 +276,7 @@ mod tests {
             entry(
                 Message {
                     role: Role::Tool,
-                    content: vec![ContentPart::ToolResult(ToolResult {
+                    content: moc_protocol::message_content![ContentPart::ToolResult(ToolResult {
                         tool_call_id: "call_1".into(),
                         content: "a.rs".into(),
                         is_error: false,
@@ -311,7 +311,7 @@ mod tests {
         let entries = [entry(
             Message {
                 role: Role::Assistant,
-                content: vec![ContentPart::ToolCall(ToolCall::new(
+                content: moc_protocol::message_content![ContentPart::ToolCall(ToolCall::new(
                     "parent", "run_code", "{}",
                 ))],
             },

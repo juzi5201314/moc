@@ -2,6 +2,7 @@
 // 片段保留原始先后：连续的思考/工具/命令合成一个活动组，中间穿插的正文、
 // 计划卡与告警各自成段；完成后的轮次只露出最后一段正文，其余收进「处理过程」。
 
+import { firstChangedBlock } from "@/lib/block-changes";
 import type { Block } from "@/lib/transcript-model";
 
 type UserBlock = Extract<Block, { kind: "user" }>;
@@ -72,6 +73,58 @@ export function groupTurns(blocks: Block[]): Turn[] {
   }
 
   return turns;
+}
+
+/**
+ * 每个对话视图独立的分组缓存。输入来自不可变 store：块引用相同即内容未变。
+ * 前插、回退、历史工具更新都按首个引用变化的位置失效，旧轮次保持引用和 UI 状态。
+ */
+export type TurnGrouper = ((blocks: Block[]) => Turn[]) & {
+  ids: readonly string[];
+  changedIndex: number;
+};
+
+export function createTurnGrouper(): TurnGrouper {
+  let previous: Block[] = [];
+  let turns: Turn[] = [];
+  const starts: number[] = [];
+  const group: TurnGrouper = Object.assign(
+    (blocks: Block[]): Turn[] => {
+      if (blocks === previous) return turns;
+      let changed = firstChangedBlock(previous, blocks);
+      if (changed === undefined) {
+        changed = 0;
+        const common = Math.min(previous.length, blocks.length);
+        while (changed < common && previous[changed] === blocks[changed]) changed++;
+        if (changed === previous.length && changed === blocks.length) {
+          previous = blocks;
+          return turns;
+        }
+      }
+      let index = Math.max(0, starts.length - 1);
+      while (index > 0 && starts[index] > changed) index--;
+      const begin = starts[index] ?? 0;
+      const tail = groupTurns(blocks.slice(begin));
+      if (
+        index + tail.length !== turns.length ||
+        tail.some((turn, offset) => group.ids[index + offset] !== turn.id)
+      ) {
+        group.ids = [...group.ids.slice(0, index), ...tail.map((turn) => turn.id)];
+      }
+      const next = turns.slice(0, index);
+      for (const turn of tail) next.push(turn);
+      turns = next;
+      starts.length = index;
+      for (let offset = begin; offset < blocks.length; offset++) {
+        if (offset === begin || blocks[offset].kind === "user") starts.push(offset);
+      }
+      group.changedIndex = index;
+      previous = blocks;
+      return turns;
+    },
+    { ids: [] as string[], changedIndex: 0 },
+  );
+  return group;
 }
 
 /**
