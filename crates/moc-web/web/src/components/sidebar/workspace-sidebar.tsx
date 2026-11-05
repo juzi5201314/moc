@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { useShallow } from "zustand/react/shallow";
 import { IconButton, Kbd } from "@/components/common/icon-button";
 import {
   DropdownMenu,
@@ -46,7 +47,7 @@ const ROW = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-ui transiti
 
 /** workflow 入口：待审批优先开审批窗，否则开 run 列表。 */
 function WorkflowNavRow() {
-  const badges = useWorkflow(selectWorkflowBadges);
+  const badges = useWorkflow(useShallow(selectWorkflowBadges));
   const active = useTabs((state) => state.active);
   if (badges.approvals === 0 && badges.runs === 0) return null;
   return (
