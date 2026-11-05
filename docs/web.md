@@ -99,10 +99,10 @@ cargo build --release --bin moc
 `npm exec --package=pnpm@<版本> -- pnpm …` 运行 `package.json` 里 `packageManager` 钉住的 pnpm，
 依赖解析结果与 pnpm 环境一致。两者都没有则构建失败。
 
-嵌入前会把所有产物打成一条记录序列、整体压成单个 zstd 帧（release 19 级，其余 profile 3 级以缩短前端改动后的重编译）：
-跨文件共享匹配窗口，比逐文件压缩小约两成。`*.map` 不进二进制（`vite.config.ts` 也已关闭 sourcemap 生成），
-调试前端用 `pnpm dev`。运行时首次请求解压归档，浏览器在 `Accept-Encoding` 里声明 zstd 时
-响应带 `Content-Encoding: zstd`。
+每个资源在构建期独立压成标准 zstd 帧（release 19 级，其余 profile 3 级），静态索引与帧一起嵌入二进制。
+小文件或压缩无收益的文件保留原字节。相比整包压缩，产物略大，但运行时不再解压并常驻全部资源。
+浏览器在 `Accept-Encoding` 里接受 zstd 时直接发送嵌入帧；不接受时只解压当前文件，响应结束后释放正文。
+`*.map` 不进二进制（`vite.config.ts` 也已关闭 sourcemap 生成），调试前端用 `pnpm dev`。
 
 手动 `pnpm build` 仍输出到 `web/dist`，与 cargo 构建互不影响。
 
