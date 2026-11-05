@@ -206,6 +206,15 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
 /// `width` 还宽时除外）；调用方负责在每行前拼前缀（列表悬挂、引用竖线）。
 pub fn wrap_spans(spans: &[Span<'_>], width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
+    wrap_spans_into(spans, width, |line| out.push(line));
+    out
+}
+
+pub(super) fn wrap_spans_into(
+    spans: &[Span<'_>],
+    width: usize,
+    mut emit: impl FnMut(Line<'static>),
+) {
     let mut chars: Vec<char> = Vec::new();
     // 下标是段内字符位置，严格递增；样式只在变化时记录一次。
     let mut styles: Vec<(usize, Style)> = Vec::new();
@@ -216,7 +225,7 @@ pub fn wrap_spans(spans: &[Span<'_>], width: usize) -> Vec<Line<'static>> {
             break_rows(chars, width)
         };
         for (start, end) in rows {
-            out.push(styled_row(chars, styles, start, end));
+            emit(styled_row(chars, styles, start, end));
         }
         chars.clear();
         styles.clear();
@@ -241,7 +250,6 @@ pub fn wrap_spans(spans: &[Span<'_>], width: usize) -> Vec<Line<'static>> {
         }
     }
     flush(&mut chars, &mut styles);
-    out
 }
 
 /// 一行字符按样式合并回 span。

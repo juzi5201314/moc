@@ -16,6 +16,7 @@ pub mod markdown;
 pub mod mermaid;
 pub mod modal;
 pub mod overlay;
+mod rows;
 pub mod scrollback;
 pub mod subagent;
 pub mod todo_hud;

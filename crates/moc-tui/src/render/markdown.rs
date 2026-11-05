@@ -22,6 +22,7 @@ use super::highlight;
 use super::image::{
     ImageKey, ImagePlacement, ImageSourceSpec, ImageState, ImageStore, layout as image_layout,
 };
+use super::rows::RowBuffer;
 use super::wrap::{line_width, str_width, truncate, wrap_spans, wrap_text};
 use crate::theme::Theme;
 use crate::transcript::TableChartState;
@@ -126,11 +127,34 @@ pub fn render_markdown_with(
     theme: &Theme,
     views: RenderViews<'_>,
 ) -> Rendered {
+    let rendered = render_markdown_pages(source, width, theme, views, false);
+    Rendered {
+        lines: rendered.lines.into_vec(),
+        tables: rendered.tables,
+        raw: rendered.raw,
+        images: rendered.images,
+    }
+}
+
+pub(super) struct PagedRendered {
+    pub lines: RowBuffer,
+    pub tables: Vec<TableSlot>,
+    pub raw: Vec<RawTable>,
+    pub images: Vec<ImagePlacement>,
+}
+
+pub(super) fn render_markdown_pages(
+    source: &str,
+    width: usize,
+    theme: &Theme,
+    views: RenderViews<'_>,
+    paged: bool,
+) -> PagedRendered {
     let mut renderer = MdRenderer {
         theme,
         views,
         width: width.max(1),
-        out: Vec::new(),
+        out: RowBuffer::new(paged),
         inline: Vec::new(),
         bold: 0,
         italic: 0,
@@ -357,7 +381,7 @@ struct MdRenderer<'a> {
     theme: &'a Theme,
     views: RenderViews<'a>,
     width: usize,
-    out: Vec<Line<'static>>,
+    out: RowBuffer,
     inline: Vec<Run>,
     bold: u32,
     italic: u32,
@@ -1041,7 +1065,7 @@ impl<'a> MdRenderer<'a> {
     /// 流式接收期间，末尾表格的入口先不出现——它随时可能被后续 token 顶长，
     /// 提前落定会让用户点到只画了一半的表格。已经切换成图表的入口不受影响
     /// （那是用户主动打开的东西，必须随时能关掉）。
-    fn finish(mut self) -> Rendered {
+    fn finish(mut self) -> PagedRendered {
         self.flush_inline();
         if !self.links.is_empty() {
             self.ensure_block_gap();
@@ -1124,11 +1148,11 @@ impl<'a> MdRenderer<'a> {
         // 不能交给 buffer 静默裁掉。
         debug_assert!(
             self.width < MIN_CONTRACT_WIDTH
-                || self.out.iter().all(|line| line_width(line) <= self.width),
+                || (0..self.out.len()).step_by(128).all(|start| self.out.window(start..(start + 128).min(self.out.len())).iter().all(|line| line_width(line) <= self.width)),
             "markdown 行超出正文宽度 {}",
             self.width
         );
-        Rendered {
+        PagedRendered {
             lines: self.out,
             tables: self.slots,
             raw: self.raw,
@@ -1170,7 +1194,7 @@ impl<'a> MdRenderer<'a> {
             .map(|run| Span::styled(run.text, run.style))
             .collect();
         let hang = " ".repeat(lead_width);
-        for row in wrap_spans(&spans, budget) {
+        super::wrap::wrap_spans_into(&spans, budget, |row| {
             let mut line = Vec::with_capacity(row.spans.len() + 2);
             if self.quote_depth > 0 {
                 line.push(self.quote_span());
@@ -1182,7 +1206,7 @@ impl<'a> MdRenderer<'a> {
             }
             line.extend(row.spans);
             self.out.push(Line::from(line));
-        }
+        });
     }
 
     /// 列表项以代码块 / 表格 / 引用块 / 子列表开头：先把标记单独落成一行，
@@ -1235,7 +1259,7 @@ impl<'a> MdRenderer<'a> {
             return;
         }
         let lang = code_language(&info);
-        let highlighted = highlight::highlight(lang, &code);
+        let mut highlighter = highlight::LineHighlighter::new(lang);
         let indent = self.content_indent();
         // 背景带：引用竖线与列表缩进之后、右侧留 2 列；带内左侧 2 列内边距。
         let band = self
@@ -1256,15 +1280,15 @@ impl<'a> MdRenderer<'a> {
             );
             self.push_code_row(indent, band, pad.clone(), vec![tag]);
         }
-        if highlighted.lines.is_empty() {
+        if code.is_empty() {
             self.push_code_row(indent, band, pad.clone(), Vec::new());
         }
         let mark = Span::styled(
             CODE_CONTINUATION,
             Style::new().fg(self.theme.gray_dim).bg(bg),
         );
-        for code_line in highlighted.lines {
-            let spans: Vec<Span<'static>> = code_line
+        for code_line in syntect::util::LinesWithEndings::from(code.as_str()) {
+            let spans: Vec<Span<'static>> = highlighter.line(code_line)
                 .into_iter()
                 .map(|span| {
                     let fg = span
@@ -1274,14 +1298,15 @@ impl<'a> MdRenderer<'a> {
                     Span::styled(span.text, Style::new().fg(fg).bg(bg))
                 })
                 .collect();
-            for (index, row) in wrap_spans(&spans, body).into_iter().enumerate() {
-                let lead = if index == 0 {
+            let mut first = true;
+            super::wrap::wrap_spans_into(&spans, body, |row| {
+                let lead = if std::mem::take(&mut first) {
                     pad.clone()
                 } else {
                     mark.clone()
                 };
                 self.push_code_row(indent, band, lead, row.spans);
-            }
+            });
         }
         let mut gap = Vec::with_capacity(2);
         if self.quote_depth > 0 {
@@ -1647,6 +1672,27 @@ mod tests {
     fn render(source: &str, width: usize, views: RenderViews<'_>) -> Rendered {
         let theme = Theme::resolved(ColorLevel::TrueColor);
         render_markdown_with(source, width, &theme, views)
+    }
+
+    #[test]
+    fn paged_layout_matches_full_layout_with_global_references_and_tables() {
+        let source = format!("{}\n[ref]: https://example.com\n", "# 标题\n\n正文 **强调** 与 [链接][ref]。\n\n> 引用\n> - 子项\n\n```rust\n/* 连续\n注释 */ let x = 1;\n```\n\n| 月份 | 数量 |\n|---|---|\n| 一月 | 12 |\n| 二月 | 24 |\n\n".repeat(30));
+        let theme = Theme::resolved(ColorLevel::TrueColor);
+        for streaming in [false, true] {
+            let views = || RenderViews {
+                graphics: graphics(),
+                streaming,
+                ..Default::default()
+            };
+            let full = render_markdown_with(&source, 77, &theme, views());
+            let paged = render_markdown_pages(&source, 77, &theme, views(), true);
+            assert_eq!(full.tables, paged.tables);
+            assert_eq!(full.lines.len(), paged.lines.len());
+            for start in (0..full.lines.len()).step_by(63) {
+                let end = (start + 97).min(full.lines.len());
+                assert_eq!(paged.lines.window(start..end), full.lines[start..end]);
+            }
+        }
     }
 
     fn text(lines: &[Line<'static>]) -> Vec<String> {

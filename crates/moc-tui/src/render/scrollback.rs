@@ -160,6 +160,9 @@ struct CachedEntry {
     layout_epoch: u64,
     height: usize,
     lines: Vec<Line<'static>>,
+    paged: Option<super::rows::RowBuffer>,
+    footer: Vec<Line<'static>>,
+    line_start: usize,
     rendered: bool,
     rendered_at: std::time::Instant,
     render_cost: std::time::Duration,
@@ -183,6 +186,8 @@ struct LocalTable {
 /// 任何一处单独变化都会让点击落到错误的位置。
 struct EntryLines {
     lines: Vec<Line<'static>>,
+    paged: Option<super::rows::RowBuffer>,
+    height: usize,
     tables: Vec<LocalTable>,
     images: Vec<ImagePlacement>,
 }
@@ -191,7 +196,9 @@ impl EntryLines {
     /// 无表格、无图片的块：只有行。
     fn plain(lines: Vec<Line<'static>>) -> Self {
         Self {
+            height: lines.len(),
             lines,
+            paged: None,
             tables: Vec::new(),
             images: Vec::new(),
         }
@@ -254,11 +261,19 @@ impl ScrollbackView {
             return;
         }
         // 同一追加族可显示已完成的中间帧；不能等流停止才第一次显示结果。
+        let (lines, footer) = if result.rendered.paged.is_some() {
+            (Vec::new(), result.rendered.lines)
+        } else {
+            (result.rendered.lines, Vec::new())
+        };
         *cached = CachedEntry {
             key: pending.key,
             layout_epoch: pending.epoch,
-            height: result.rendered.lines.len(),
-            lines: result.rendered.lines,
+            height: result.rendered.height,
+            lines,
+            footer,
+            paged: result.rendered.paged,
+            line_start: 0,
             tables: result.rendered.tables,
             images: result.rendered.images,
             rendered: true,
@@ -380,23 +395,15 @@ impl ScrollbackView {
                 continue;
             }
             let render_started = std::time::Instant::now();
-            let (lines, tables, images, height, rendered) = if index >= eager_start {
+            let (lines, footer, paged, tables, images, height, rendered) = if index >= eager_start {
                 let rendered = render_entry_with(index, entry, app, width, true, &self.batches);
-                let height = rendered.lines.len();
-                (
-                    rendered.lines,
-                    rendered.tables,
-                    rendered.images,
-                    height,
-                    true,
-                )
+                let (lines, footer) = if rendered.paged.is_some() { (Vec::new(), rendered.lines) } else { (rendered.lines, Vec::new()) };
+                (lines, footer, rendered.paged, rendered.tables, rendered.images, rendered.height, true)
             } else {
                 (
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    estimate_entry_height_indexed(app, index, width, &self.batches),
-                    false,
+                    Vec::new(), Vec::new(), None,
+                    Vec::new(), Vec::new(),
+                    estimate_entry_height_indexed(app, index, width, &self.batches), false,
                 )
             };
             let cached = CachedEntry {
@@ -404,6 +411,9 @@ impl ScrollbackView {
                 layout_epoch: entry.layout_epoch,
                 height,
                 lines,
+                footer,
+                paged,
+                line_start: 0,
                 rendered,
                 rendered_at: std::time::Instant::now(),
                 render_cost: render_started.elapsed(),
@@ -423,17 +433,33 @@ impl ScrollbackView {
         self.deferred
     }
 
-    /// 在绘制后释放完全离开视口的行，只保留高度与缓存键。
+    /// 释放屏外解码行；压缩排版按 8 MiB 预算保留，超额时淘汰屏外块。
     pub fn trim_outside(&mut self, skip_rows: usize, viewport: usize) {
+        self.trim_with_budget(skip_rows, viewport, 8 * 1024 * 1024);
+    }
+
+    fn trim_with_budget(&mut self, skip_rows: usize, viewport: usize, budget: usize) {
+        let mut bytes: usize = self
+            .cache
+            .iter()
+            .filter_map(|cached| cached.paged.as_ref())
+            .map(super::rows::RowBuffer::stored_bytes)
+            .sum();
         let end = skip_rows.saturating_add(viewport);
         let mut offset = 0usize;
         for (index, cached) in self.cache.iter_mut().enumerate() {
             let next = offset.saturating_add(cached.height);
             if Some(index) != self.live_layout_block && (next <= skip_rows || offset >= end) {
                 cached.lines = Vec::new();
-                cached.tables = Vec::new();
-                cached.images = Vec::new();
-                cached.rendered = false;
+                if bytes > budget && let Some(pages) = cached.paged.take() {
+                    bytes = bytes.saturating_sub(pages.stored_bytes());
+                    cached.footer = Vec::new();
+                }
+                if cached.paged.is_none() {
+                    cached.tables = Vec::new();
+                    cached.images = Vec::new();
+                    cached.rendered = false;
+                }
             }
             offset = next;
         }
@@ -470,8 +496,14 @@ impl ScrollbackView {
                     );
                     cached.render_cost = started.elapsed();
                     cached.rendered_at = std::time::Instant::now();
-                    cached.height = rendered.lines.len();
-                    cached.lines = rendered.lines;
+                    cached.height = rendered.height;
+                    if rendered.paged.is_some() {
+                        cached.footer = rendered.lines;
+                        cached.lines.clear();
+                    } else {
+                        cached.lines = rendered.lines;
+                    }
+                    cached.paged = rendered.paged;
                     cached.tables = rendered.tables;
                     cached.images = rendered.images;
                     cached.rendered = true;
@@ -483,6 +515,30 @@ impl ScrollbackView {
                 break;
             }
             window = self.row_window(viewport, scroll_offset);
+        }
+        let mut offset = 0usize;
+        for cached in &mut self.cache {
+            if let Some(pages) = &cached.paged {
+                let end = window.skip_rows.saturating_add(viewport);
+                if offset < end && offset.saturating_add(cached.height) > window.skip_rows {
+                    let from = window.skip_rows.saturating_sub(offset);
+                    let to = end.saturating_sub(offset).min(cached.height);
+                    if from < cached.line_start || to > cached.line_start + cached.lines.len() {
+                        let start = from.saturating_sub(128);
+                        let end = to.saturating_add(128).min(cached.height);
+                        cached.lines = pages
+                            .window(start.min(pages.len())..end.min(pages.len()))
+                            .into_iter()
+                            .map(|line| hang(line, PROSE_INDENT, usize::MAX))
+                            .collect();
+                        for row in start.max(pages.len())..end {
+                            cached.lines.push(cached.footer[row - pages.len()].clone());
+                        }
+                        cached.line_start = start;
+                    }
+                }
+            }
+            offset = offset.saturating_add(cached.height);
         }
         window
     }
@@ -537,7 +593,7 @@ impl ScrollbackView {
             }
             let has_title = offset == 0;
             let row_start = y;
-            for line in cached.lines.iter().skip(offset) {
+            for line in cached.lines.iter().skip(offset.saturating_sub(cached.line_start)) {
                 if y >= bottom {
                     break;
                 }
@@ -556,7 +612,7 @@ impl ScrollbackView {
                 if let Some(button) = table.button
                     && button.row >= offset
                 {
-                    let row = origin + u16::try_from(button.row - offset).unwrap_or(u16::MAX);
+                    let row = origin.saturating_add(u16::try_from(button.row - offset).unwrap_or(u16::MAX));
                     if row < bottom {
                         if hover == Some((index, table.table)) {
                             buffer.set_style(
@@ -576,7 +632,7 @@ impl ScrollbackView {
                 if let Some(chart) = table.chart
                     && chart.row >= offset
                 {
-                    let row = origin + u16::try_from(chart.row - offset).unwrap_or(u16::MAX);
+                    let row = origin.saturating_add(u16::try_from(chart.row - offset).unwrap_or(u16::MAX));
                     let end = row.saturating_add(chart.rows);
                     if row >= area.y && end <= bottom {
                         let from = chart.row;
@@ -589,7 +645,7 @@ impl ScrollbackView {
                             cols: chart.cols,
                             rows: chart.rows,
                             px: chart.px,
-                            hash: line_hash(&cached.lines[from..to], 0),
+                            hash: line_hash(&cached.lines[from - cached.line_start..to - cached.line_start], 0),
                             placement_id: placement_id(index, 0, table.table),
                         });
                     }
@@ -600,7 +656,7 @@ impl ScrollbackView {
                 if image.row < offset {
                     continue;
                 }
-                let row = origin + u16::try_from(image.row - offset).unwrap_or(u16::MAX);
+                let row = origin.saturating_add(u16::try_from(image.row - offset).unwrap_or(u16::MAX));
                 let end = row.saturating_add(image.rows);
                 if row < area.y || end > bottom {
                     continue;
@@ -611,7 +667,7 @@ impl ScrollbackView {
                 let digest = image.key.digest();
                 let from = image.row;
                 let to = from + usize::from(image.rows);
-                let Some(lines) = cached.lines.get(from..to) else {
+                let Some(lines) = cached.lines.get(from.saturating_sub(cached.line_start)..to.saturating_sub(cached.line_start)) else {
                     continue;
                 };
                 slots.push(ImageSlot {
@@ -721,9 +777,7 @@ fn estimate_entry_height_indexed(
     if let Block::Assistant { text } = &entry.block
         && (may_contain_table(text) || may_contain_image(text) || may_contain_mermaid(text))
     {
-        return render_entry_with(index, entry, app, width, false, batches)
-            .lines
-            .len();
+        return render_entry_with(index, entry, app, width, false, batches).height;
     }
     let level = entry.level(app.block_level(&entry.block));
     let Some(tools) = batches.tools(index, app) else {
@@ -1160,6 +1214,8 @@ fn render_tool_batch(
     lines.push(clip_line(Line::from(stats), width));
     lines.push(Line::default());
     EntryLines {
+        height: lines.len(),
+        paged: None,
         lines,
         tables: Vec::new(),
         images,
@@ -1244,6 +1300,37 @@ fn assistant_layout(
     views: RenderViews<'_>,
     footer: Option<Line<'static>>,
 ) -> EntryLines {
+    if text.len() > 256 * 1024 {
+        let rendered = super::markdown::render_markdown_pages(
+            text,
+            prose_width(width).max(8),
+            theme,
+            views,
+            true,
+        );
+        let height = rendered.lines.len() + usize::from(footer.is_some()) + 1;
+        let mut tail = Vec::new();
+        if let Some(footer) = footer {
+            tail.push(footer);
+        }
+        tail.push(Line::default());
+        // Footer 存在独立的最终页中，避免修改已经插入表格入口的正文坐标。
+        return EntryLines {
+            lines: tail,
+            paged: Some(rendered.lines),
+            height,
+            images: rendered.images,
+            tables: rendered
+                .tables
+                .into_iter()
+                .map(|slot| LocalTable {
+                    table: slot.table,
+                    button: slot.button,
+                    chart: slot.chart,
+                })
+                .collect(),
+        };
+    }
     let rendered = render_markdown_with(text, prose_width(width).max(8), theme, views);
     let mut lines: Vec<Line<'static>> = rendered
         .lines
@@ -1255,6 +1342,8 @@ fn assistant_layout(
     }
     lines.push(Line::from(String::new()));
     EntryLines {
+        height: lines.len(),
+        paged: None,
         lines,
         images: rendered.images,
         tables: rendered
@@ -1735,6 +1824,8 @@ fn render_tool(
         }
     }
     EntryLines {
+        height: lines.len(),
+        paged: None,
         lines,
         tables: Vec::new(),
         images: placements,
@@ -3041,6 +3132,68 @@ mod tests {
             .count();
         assert_eq!(clock_rows, 1, "时间戳应恰好出现一次");
     }
+    #[test]
+    fn paged_message_paints_identically_after_scroll_and_resize() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let text = "中文 mixed paragraph words /path/file，标点。 ".repeat(6000);
+        assert!(text.len() > 256 * 1024);
+        app.push_block(Block::Assistant { text: text.clone() });
+        let mut view = ScrollbackView::new();
+        for width in [41, 83] {
+            let mut full: Vec<_> = render_markdown_with(
+                &text,
+                prose_width(width).max(8),
+                app.theme,
+                RenderViews::default(),
+            )
+            .lines
+            .into_iter()
+            .map(|line| hang(line, PROSE_INDENT, usize::MAX))
+            .collect();
+            full.push(Line::default());
+            view.sync(&app, width as u16);
+            for from in [0, full.len() / 2, full.len().saturating_sub(20), 0] {
+                let window = view.ensure_visible(&app, 20, full.len().saturating_sub(20 + from));
+                assert_eq!(window.skip_rows, from);
+                let rect = Rect::new(0, 0, width as u16, 20);
+                let mut actual = Buffer::empty(rect);
+                let mut expected = Buffer::empty(rect);
+                let (mut hits, mut charts, mut slots, mut lines) =
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                view.paint(
+                    &mut actual,
+                    rect,
+                    window.skip_rows,
+                    true,
+                    app.theme,
+                    None,
+                    PaintSinks {
+                        hits: &mut hits,
+                        charts: &mut charts,
+                        slots: &mut slots,
+                        lines: &mut lines,
+                    },
+                );
+                for (row, line) in full.iter().skip(from).take(20).enumerate() {
+                    expected.set_line(0, row as u16, line, width as u16);
+                }
+                assert_eq!(actual, expected);
+                assert!(view.cache[0].lines.len() <= 276);
+            }
+            view.trim_with_budget(full.len(), 1, 0);
+            assert!(view.cache[0].paged.is_none());
+            assert!(!view.cache[0].rendered);
+            let window = view.ensure_visible(&app, 20, 0);
+            assert_eq!(window.skip_rows, full.len() - 20);
+            let cached = &view.cache[0];
+            assert_eq!(
+                &cached.lines[window.skip_rows - cached.line_start..],
+                &full[window.skip_rows..]
+            );
+        }
+    }
+
     #[tokio::test]
     async fn background_layout_coalesces_without_losing_final_or_reusing_old_blocks() {
         use crate::protocol::AppEvent;
@@ -4907,6 +5060,9 @@ mod tests {
             key: (0, 0),
             layout_epoch: 0,
             height: 3,
+            paged: None,
+            footer: Vec::new(),
+            line_start: 0,
             lines: vec![
                 Line::from("标题"),
                 Line::from(" ".repeat(40)),
@@ -4945,6 +5101,40 @@ mod tests {
             },
         );
         assert!(slots.is_empty(), "占位区超出视口宽度时不登记");
+    }
+
+    #[test]
+    fn distant_graphics_in_large_messages_stay_outside_the_viewport() {
+        let mut view = ScrollbackView::new();
+        view.cache.push(CachedEntry {
+            key: (0, 0),
+            layout_epoch: 0,
+            height: 100_010,
+            lines: vec![Line::from("可见正文")],
+            paged: None,
+            footer: Vec::new(),
+            line_start: 0,
+            rendered: true,
+            rendered_at: std::time::Instant::now(),
+            render_cost: std::time::Duration::ZERO,
+            tables: vec![LocalTable {
+                table: 0,
+                button: Some(ButtonSpan { row: 100_000, x: 0, w: 10 }),
+                chart: Some(ChartPlacement { row: 100_001, cols: 5, rows: 2, px: (40, 36) }),
+            }],
+            images: vec![ImagePlacement {
+                row: 100_004, x: 0, cols: 5, rows: 2, px: (40, 36),
+                key: crate::render::image::ImageKey::from_bytes("image/png", "distant"),
+            }],
+        });
+        let area = Rect::new(0, 5, 80, 10);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 20));
+        let (mut hits, mut charts, mut slots, mut lines) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        view.paint(&mut buffer, area, 0, true, Theme::global(), None,
+            PaintSinks { hits: &mut hits, charts: &mut charts, slots: &mut slots, lines: &mut lines });
+        assert!(charts.is_empty());
+        assert!(slots.is_empty());
+        assert_eq!(lines, [(5, "可见正文".to_owned())]);
     }
 
     #[test]
