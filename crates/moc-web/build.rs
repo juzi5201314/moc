@@ -7,11 +7,9 @@
 //! 包管理器以 `pnpm-lock.yaml` 为唯一锁文件：PATH 上有 pnpm 就直接用；只有 npm 时
 //! 经 `npm exec` 运行 `package.json` 的 `packageManager` 钉住的 pnpm 版本，依赖解析结果不变。
 //!
-//! 单个文件各自独立无助于体积：shiki 的语言定义、mermaid 的 diagram chunk
-//! 之间大量重复，逐文件压缩无法跨文件复用匹配。所以这里把所有资源打成一条
-//! 记录序列，整体压成一个 zstd 帧再交付给 `include_bytes!`；release 用 19 级，体积
-//! 约为逐文件压缩的八成。运行时的解析见 `src/assets.rs`，两处的格式常量
-//! （魔数、字段宽度）必须一致。
+//! 每个资源单独压成标准 zstd 帧，构建期生成静态索引；支持 zstd 的浏览器
+//! 直接读取嵌入帧，不支持的请求只解压当前资源，响应结束后释放。
+//! 相比整包压缩，二进制稍大，但避免约 16MiB 资源正文和压缩缓存常驻。
 //!
 //! sourcemap（`*.map`）不进二进制：它是给开发时的 `pnpm dev` 用的，
 //! 生产前端靠 `vite.config.ts` 关掉生成。
@@ -22,8 +20,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// 归档魔数，与 `src/assets.rs` 的 `MAGIC` 一致。
-const MAGIC: &[u8; 8] = b"MOCWEB\x01\n";
 /// 只影响构建期耗时与嵌入体积：release 用 19 级换最小体积；
 /// 其余 profile 前端一改就要重压，用 3 级（17MB 产物 19 级约 5s，3 级约 0.04s，体积多约四分之一）。
 const RELEASE_LEVEL: i32 = 19;
@@ -82,22 +78,30 @@ fn main() {
     }
     assets.sort();
 
-    let raw = encode(&assets);
     let level = if env::var("PROFILE").as_deref() == Ok("release") {
         RELEASE_LEVEL
     } else {
         DEV_LEVEL
     };
-    let compressed = zstd::bulk::compress(&raw, level).expect("zstd 压缩 web 资源失败");
-    let archive = out_dir.join("web_assets.zst");
-    fs::write(&archive, &compressed).expect("OUT_DIR 可写");
-
-    let path = archive.to_string_lossy().replace('\\', "\\\\");
-    fs::write(
-        out_dir.join("web_assets.rs"),
-        format!("pub static ARCHIVE: &[u8] = include_bytes!(\"{path}\");\n"),
-    )
-    .expect("OUT_DIR 可写");
+    let mut packed = Vec::new();
+    let mut source = String::from("static ASSETS: &[Asset] = &[\n");
+    for (url, body) in assets {
+        let compressed = zstd::bulk::compress(&body, level).expect("zstd 压缩 web 资源失败");
+        let (stored, encoded) = if body.len() >= 1024 && compressed.len() < body.len() {
+            (compressed.as_slice(), true)
+        } else {
+            (body.as_slice(), false)
+        };
+        let offset = packed.len();
+        packed.extend_from_slice(stored);
+        source.push_str(&format!(
+            "Asset {{ path: {url:?}, offset: {offset}, stored_len: {}, raw_len: {}, compressed: {encoded} }},\n",
+            stored.len(), body.len(),
+        ));
+    }
+    source.push_str("] ;\nstatic ARCHIVE: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/web_assets.bin\"));\n");
+    fs::write(out_dir.join("web_assets.bin"), packed).expect("OUT_DIR 可写");
+    fs::write(out_dir.join("web_assets.rs"), source).expect("OUT_DIR 可写");
 }
 
 /// 调用 pnpm 的方式：可执行文件与前置参数。
@@ -167,33 +171,6 @@ fn run(pnpm: &Pnpm, web: &Path, dist: &Path, args: &[&str]) {
         .status()
         .unwrap_or_else(|error| panic!("启动 {} 失败：{error}", pnpm.program));
     assert!(status.success(), "`pnpm {}` 失败：{status}", args.join(" "));
-}
-
-/// 序列化归档：魔数、条目数、每条（路径长度、路径、内容长度、内容）。
-fn encode(assets: &[(String, Vec<u8>)]) -> Vec<u8> {
-    let capacity: usize = assets
-        .iter()
-        .map(|(url, body)| url.len() + body.len() + 6)
-        .sum();
-    let mut raw = Vec::with_capacity(capacity + MAGIC.len() + 4);
-    raw.extend_from_slice(MAGIC);
-    raw.extend_from_slice(
-        &u32::try_from(assets.len())
-            .expect("条目数超 u32")
-            .to_le_bytes(),
-    );
-    for (url, body) in assets {
-        assert!(url.len() <= u16::MAX as usize, "路径过长：{url}");
-        raw.extend_from_slice(&(url.len() as u16).to_le_bytes());
-        raw.extend_from_slice(url.as_bytes());
-        raw.extend_from_slice(
-            &u32::try_from(body.len())
-                .expect("单文件超 4GiB")
-                .to_le_bytes(),
-        );
-        raw.extend_from_slice(body);
-    }
-    raw
 }
 
 fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) {

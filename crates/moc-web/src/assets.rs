@@ -1,122 +1,56 @@
-//! 前端资源：pnpm 构建产物由 `build.rs` 压成单个 zstd 帧嵌进二进制，部署只需要一个可执行文件。
-//!
-//! 首次请求时解压并切分成 `Asset`（约 15MB 常驻），之后按 URL 二分查找；
-//! 浏览器声明支持 `Accept-Encoding: zstd` 时，响应体在进程内只压一次。
+//! 每个资源是独立的预压缩帧，静态索引与数据均由构建脚本生成。
+//! 支持 zstd 的客户端直接引用嵌入字节；普通响应只临时解压当前文件。
+use std::borrow::Cow;
 
-use std::sync::{LazyLock, OnceLock};
-
-/// 归档魔数，与 `build.rs` 的 `MAGIC` 一致。
-const MAGIC: &[u8; 8] = b"MOCWEB\x01\n";
-/// 小于这个长度的响应不压缩：省下的字节抵不过 zstd 帧头的开销。
-const MIN_ENCODABLE: usize = 1024;
-/// 传输层压缩级别：要的是快，体积由构建期的归档压缩拿下。
-const LEVEL: i32 = 3;
+pub struct Asset {
+    path: &'static str,
+    offset: usize,
+    stored_len: usize,
+    raw_len: usize,
+    compressed: bool,
+}
 
 include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 
-/// 一个嵌入的静态文件。
-pub struct Asset {
-    path: Box<str>,
-    mime: &'static str,
-    body: Box<[u8]>,
-    encoded: OnceLock<Box<[u8]>>,
-}
-
 impl Asset {
-    pub fn path(&self) -> &str {
-        &self.path
+    pub fn path(&self) -> &'static str {
+        self.path
     }
 
     pub fn mime(&self) -> &'static str {
-        self.mime
+        mime_for(self.path)
     }
 
-    pub fn body(&self) -> &[u8] {
-        &self.body
+    fn stored(&self) -> &'static [u8] {
+        &ARCHIVE[self.offset..self.offset + self.stored_len]
     }
 
-    /// zstd 压缩后的响应体；内容太小或本就不该压缩时为 `None`。
-    pub fn encoded(&self) -> Option<&[u8]> {
-        if self.body.len() < MIN_ENCODABLE {
-            return None;
+    pub fn body(&self) -> Cow<'static, [u8]> {
+        if self.compressed {
+            Cow::Owned(
+                zstd::bulk::decompress(self.stored(), self.raw_len)
+                    .expect("构建期验证的资源帧可解压"),
+            )
+        } else {
+            Cow::Borrowed(self.stored())
         }
-        Some(self.encoded.get_or_init(|| {
-            zstd::bulk::compress(&self.body, LEVEL)
-                .expect("压缩嵌入的资源不会失败")
-                .into_boxed_slice()
-        }))
+    }
+
+    pub fn encoded(&self) -> Option<&'static [u8]> {
+        self.compressed.then(|| self.stored())
     }
 }
 
-struct Assets {
-    entries: Vec<Asset>,
-}
-
-static ASSETS: LazyLock<Assets> = LazyLock::new(|| Assets::decode(ARCHIVE));
-
-/// 按 URL 路径精确匹配；`/` 映射到 `/index.html`。
 pub fn lookup(path: &str) -> Option<&'static Asset> {
     let path = if path == "/" { "/index.html" } else { path };
-    let assets = &*ASSETS;
-    assets
-        .entries
-        .binary_search_by(|entry| entry.path.as_ref().cmp(path))
+    ASSETS
+        .binary_search_by(|entry| entry.path.cmp(path))
         .ok()
-        .map(|index| &assets.entries[index])
+        .map(|index| &ASSETS[index])
 }
 
-/// SPA 入口；Vite 构建总会产出它。
 pub fn index() -> &'static Asset {
-    lookup("/index.html").expect("前端产物总有 /index.html")
-}
-
-impl Assets {
-    fn decode(archive: &[u8]) -> Self {
-        let raw = zstd::stream::decode_all(archive).expect("嵌入的 web 资源包解压失败");
-        let mut rest = raw.as_slice();
-        assert_eq!(
-            take(&mut rest, MAGIC.len()),
-            MAGIC,
-            "嵌入的 web 资源包魔数不符"
-        );
-        let count = take_u32(&mut rest);
-        let mut entries = Vec::with_capacity(count);
-        for _ in 0..count {
-            let path_len = take_u16(&mut rest);
-            let path =
-                std::str::from_utf8(take(&mut rest, path_len)).expect("嵌入的资源路径不是 UTF-8");
-            let body_len = take_u32(&mut rest);
-            entries.push(Asset {
-                mime: mime_for(path),
-                path: path.into(),
-                body: take(&mut rest, body_len).to_vec().into_boxed_slice(),
-                encoded: OnceLock::new(),
-            });
-        }
-        // 二分查找依赖 build.rs 按 URL 排序写出条目。
-        debug_assert!(
-            entries.windows(2).all(|pair| pair[0].path < pair[1].path),
-            "web 资源包条目未按 URL 排序"
-        );
-        debug_assert!(rest.is_empty(), "web 资源包尾部有多余字节");
-        Self { entries }
-    }
-}
-
-fn take<'a>(rest: &mut &'a [u8], len: usize) -> &'a [u8] {
-    let (head, tail) = rest.split_at_checked(len).expect("嵌入的 web 资源包被截断");
-    *rest = tail;
-    head
-}
-
-fn take_u16(rest: &mut &[u8]) -> usize {
-    u16::from_le_bytes(take(rest, 2).try_into().expect("2 字节")).into()
-}
-
-fn take_u32(rest: &mut &[u8]) -> usize {
-    u32::from_le_bytes(take(rest, 4).try_into().expect("4 字节"))
-        .try_into()
-        .expect("usize 至少 32 位")
+    lookup("/index.html").expect("前端产物总有 index.html")
 }
 
 fn mime_for(path: &str) -> &'static str {
@@ -145,39 +79,30 @@ fn mime_for(path: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn root_and_index_resolve_to_the_same_asset() {
-        let root = lookup("/").expect("/ 映射 index");
-        assert_eq!(root.path(), "/index.html");
+        let root = lookup("/").unwrap();
         assert!(std::ptr::eq(root, index()));
-        assert!(index().mime().starts_with("text/html"));
-        assert!(index().body().starts_with(b"<!doctype html"));
-    }
-
-    #[test]
-    fn unknown_paths_miss() {
+        assert!(root.mime().starts_with("text/html"));
+        assert!(root.body().starts_with(b"<!doctype html"));
         assert!(lookup("/nope").is_none());
     }
 
     #[test]
-    fn sourcemaps_never_reach_the_binary() {
-        assert!(
-            ASSETS
-                .entries
-                .iter()
-                .all(|entry| !entry.path().ends_with(".map"))
-        );
-    }
-
-    #[test]
-    fn encoded_bodies_round_trip() {
-        let asset = ASSETS
-            .entries
-            .iter()
-            .find(|entry| entry.encoded().is_some())
-            .expect("dist 里总有超过 1KiB 的资源");
-        let decoded = zstd::stream::decode_all(asset.encoded().unwrap()).unwrap();
-        assert_eq!(decoded, asset.body());
+    fn all_embedded_resources_match_the_build_output() {
+        assert!(ASSETS.windows(2).all(|pair| pair[0].path < pair[1].path));
+        for asset in ASSETS {
+            assert!(!asset.path.ends_with(".map"));
+            let path = std::path::Path::new(env!("OUT_DIR"))
+                .join("dist")
+                .join(&asset.path[1..]);
+            let original = std::fs::read(path).unwrap();
+            assert_eq!(asset.body().as_ref(), original, "{}", asset.path);
+            if let Some(encoded) = asset.encoded() {
+                assert_eq!(zstd::stream::decode_all(encoded).unwrap(), original);
+                // 压缩响应直接借用静态归档，不分配正文缓存。
+                assert!(std::ptr::eq(encoded.as_ptr(), asset.stored().as_ptr()));
+            }
+        }
     }
 }

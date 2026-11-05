@@ -150,8 +150,8 @@ fn cache_control(path: &str) -> &'static str {
     }
 }
 
-/// 客户端在 `Accept-Encoding` 里声明 zstd 时才发压缩体，压缩结果在
-/// `Asset` 里只生成一次；`Vary` 让中间缓存按编码分开存。
+/// 压缩响应直接引用构建期的独立帧；普通响应只解压当前文件。
+/// `Vary` 让中间缓存按编码分开存。
 fn render(asset: &'static assets::Asset, cache: &'static str, accept_zstd: bool) -> Response {
     let encoded = if accept_zstd { asset.encoded() } else { None };
     let mut headers = HeaderMap::new();
@@ -161,7 +161,14 @@ fn render(asset: &'static assets::Asset, cache: &'static str, accept_zstd: bool)
     if encoded.is_some() {
         headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("zstd"));
     }
-    (headers, encoded.unwrap_or_else(|| asset.body())).into_response()
+    let body = match encoded {
+        Some(bytes) => axum::body::Body::from(bytes),
+        None => match asset.body() {
+            std::borrow::Cow::Borrowed(bytes) => axum::body::Body::from(bytes),
+            std::borrow::Cow::Owned(bytes) => axum::body::Body::from(bytes),
+        },
+    };
+    (headers, body).into_response()
 }
 
 /// `Accept-Encoding` 是可重复头，`zstd;q=0` 表示明确拒绝。
