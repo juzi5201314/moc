@@ -9,10 +9,16 @@ tempfile.workspace = true
 moc-core = { path = "../moc-core" }
 moc-protocol = { path = "../moc-protocol" }
 ratatui = "0.30.2"
+# 分页排版只需 core 类型的序列化，不启用其他终端后端的 serde。
+ratatui-core = { version = "0.1.2", features = ["serde"] }
+zstd.workspace = true
 crossterm = "0.29"
 pulldown-cmark = { version = "0.13", features = ["simd"] }
+# 语法与主题由 two-face 的预编译 dump 提供；只保留当前实际生效的 Oniguruma 后端。
 syntect = { version = "5.3", default-features = false, features = [
-    "default-fancy",
+    "parsing",
+    "dump-load",
+    "regex-onig",
 ] }
 two-face = "0.5"
 unicode-width = "0.2"

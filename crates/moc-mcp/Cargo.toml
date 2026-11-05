@@ -5,7 +5,8 @@ edition = "2024"
 authors = ["soeur@soeur.dev@gmail.com"]
 
 [dependencies]
-rmcp = { version = "3.4.1", features = [
+# 生产只使用客户端；测试服务端在 dev-dependencies 单独启用。
+rmcp = { version = "3.4.1", default-features = false, features = [
     "client",
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
@@ -24,4 +25,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-rmcp = { version = "3.4.1", features = ["server"] }
+rmcp = { version = "3.4.1", default-features = false, features = ["server"] }
