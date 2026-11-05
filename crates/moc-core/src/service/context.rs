@@ -16,6 +16,26 @@ use std::sync::Arc;
 pub(crate) use view::Views;
 pub(crate) use view::{close, read};
 
+pub(crate) async fn tools(
+    inner: &Arc<CoreInner>,
+    ctx: RequestContext,
+    params: moc_protocol::methods::SessionToolsParams,
+) -> Result<Vec<moc_llm::ToolDef>, RpcError> {
+    let record = inner.sessions.get(&params.session_id).await.map_err(to_rpc)?;
+    let state = record.state.lock().await.metadata();
+    let cwd = PathBuf::from(&state.session.cwd);
+    let config = inner.project_config(&cwd).map_err(to_rpc)?;
+    let plugins = inner.project_plugins(&cwd).await.map_err(to_rpc)?;
+    let plugin_tools = crate::service::plugin_tools_of(&plugins);
+    Ok(inner.tools.definitions(
+        state.engine,
+        inner.ask_available(ctx.connection_id(), state.session.autonomy),
+        &config,
+        crate::tools::ToolScope::for_metadata(&state, &config),
+        &plugin_tools,
+    ))
+}
+
 struct Snapshot {
     model: crate::ResolvedModel,
     config: Arc<crate::ResolvedConfig>,

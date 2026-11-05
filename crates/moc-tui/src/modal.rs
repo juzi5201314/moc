@@ -1276,6 +1276,13 @@ pub enum Modal {
     Plan { state: Box<PlanReviewState> },
     /// 快捷键帮助；`scroll` 是正文滚动偏移（渲染时按可见行数收紧）。
     Help { scroll: usize },
+    /// 当前会话实际发送的工具定义；请求序号用于丢弃关闭后的迟到结果。
+    Tools {
+        request: u64,
+        tools: Option<Vec<moc_protocol::ToolDef>>,
+        error: Option<String>,
+        scroll: usize,
+    },
     /// 上下文组成估算详情。
     Context { usage: Option<ContextUsageResult> },
     /// 上下文正文：分块展示真正送进模型的内容。
@@ -1355,6 +1362,10 @@ impl Modal {
             Modal::Fusion { .. } => "Fusion".into(),
             Modal::Plan { state } => format!("计划审批：{}", state.title),
             Modal::Help { .. } => "快捷键帮助".into(),
+            Modal::Tools { tools, .. } => match tools {
+                Some(tools) => format!("可用工具 · {}", tools.len()),
+                None => "可用工具".into(),
+            },
             Modal::Context { .. } => "上下文占用".into(),
             Modal::ContextContent { .. } => "上下文内容".into(),
             Modal::Jobs { .. } => "后台任务".into(),
@@ -1401,7 +1412,10 @@ impl Modal {
                 .count(),
             Modal::Plan { .. } => 4,
             Modal::Fusion { .. } => 3,
-            Modal::Help { .. } | Modal::Context { .. } | Modal::ContextContent { .. } => 0,
+            Modal::Help { .. }
+            | Modal::Tools { .. }
+            | Modal::Context { .. }
+            | Modal::ContextContent { .. } => 0,
             Modal::Jobs { jobs, .. } => jobs.len(),
             Modal::SwitchModel { .. } => 2,
             Modal::WorkflowApproval { state } => state.rows(),
@@ -1463,6 +1477,7 @@ impl Modal {
             Modal::Ask { .. }
             | Modal::Rewind { .. }
             | Modal::Help { .. }
+            | Modal::Tools { .. }
             | Modal::Context { .. }
             | Modal::ContextContent { .. } => {}
             Modal::SwitchModel { option, .. } => {

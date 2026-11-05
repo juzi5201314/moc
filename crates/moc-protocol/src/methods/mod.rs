@@ -135,8 +135,9 @@ pub use session::{
     SessionRenameParams, SessionRewind, SessionRewindParams, SessionSetAutonomy,
     SessionSetAutonomyParams, SessionSetEngine, SessionSetEngineParams, SessionSetFastMode,
     SessionSetFastModeParams, SessionSetModel, SessionSetModelParams, SessionSetModelResult,
-    SessionSetPermission, SessionSetPermissionParams, SessionUnload, SessionUnloadParams,
-    SessionUnlock, SessionUnlockParams, SessionUsage, SessionUsageParams, SessionUsageResult,
+    SessionSetPermission, SessionSetPermissionParams, SessionTools, SessionToolsParams,
+    SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage,
+    SessionUsageParams, SessionUsageResult,
     ToolExecution, ToolStatus, TranscriptChildCall, TranscriptEntry, UsageSource,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};

@@ -687,6 +687,32 @@ fn apply_focus_loaded(
     load_subagents(app, connection);
 }
 
+fn open_tools(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let request = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    app.modal = Some(Modal::Tools {
+        request,
+        tools: None,
+        error: None,
+        scroll: 0,
+    });
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<moc_protocol::methods::SessionTools>(moc_protocol::methods::SessionToolsParams {
+                session_id,
+            })
+            .await
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::Tools { request, result });
+    });
+}
+
 fn open_context(app: &mut App, connection: &EmbeddedConnection) {
     if app.session.is_none() {
         app.set_notice("当前没有活动会话");
@@ -1130,6 +1156,16 @@ async fn event_loop(
                         app.apply_session_usage(request, result);
                         if let Some(note) = note {
                             app.push_note(note, false);
+                        }
+                    }
+                    Some(AppEvent::Tools { request, result }) => {
+                        if let Some(Modal::Tools { request: current, tools, error, .. }) = app.modal.as_mut()
+                            && *current == request
+                        {
+                            match result {
+                                Ok(result) => *tools = Some(result),
+                                Err(failure) => *error = Some(failure.to_string()),
+                            }
                         }
                     }
                     Some(AppEvent::ContextUsage(usage)) => {
@@ -1808,6 +1844,7 @@ fn modal_dismissable(modal: &Modal) -> bool {
     matches!(
         modal,
         Modal::Help { .. }
+            | Modal::Tools { .. }
             | Modal::Context { .. }
             | Modal::ContextContent { .. }
             | Modal::Model { .. }
@@ -2615,7 +2652,7 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 *scroll_offset = scroll_offset.saturating_sub(3);
                 return;
             }
-            if let Some(Modal::Help { scroll }) = app.modal.as_mut() {
+            if let Some(Modal::Help { scroll } | Modal::Tools { scroll, .. }) = app.modal.as_mut() {
                 *scroll = scroll.saturating_sub(3);
                 return;
             }
@@ -2630,7 +2667,7 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 *scroll_offset = scroll_offset.saturating_add(3);
                 return;
             }
-            if let Some(Modal::Help { scroll }) = app.modal.as_mut() {
+            if let Some(Modal::Help { scroll } | Modal::Tools { scroll, .. }) = app.modal.as_mut() {
                 *scroll = scroll.saturating_add(3);
                 return;
             }
@@ -4595,7 +4632,7 @@ fn handle_modal_key(
         }
         // 计划审阅在 `handle_modal_key` 开头整体分派，这里不会走到。
         Modal::Plan { .. } => {}
-        Modal::Help { scroll } => match (code, modifiers) {
+        Modal::Help { scroll } | Modal::Tools { scroll, .. } => match (code, modifiers) {
             (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
                 *scroll = scroll.saturating_sub(1);
             }
@@ -6586,6 +6623,7 @@ fn dispatch_command(app: &mut App, connection: &EmbeddedConnection, id: CommandI
         CommandId::Doctor => app.push_note(crate::doctor::report(app), false),
         CommandId::Help => app.modal = Some(Modal::Help { scroll: 0 }),
         CommandId::Context => open_context_content(app, connection),
+        CommandId::Tools => open_tools(app, connection),
         CommandId::Quit => app.should_quit = true,
         CommandId::Compact => {
             // needs_session 已在分派前检查。

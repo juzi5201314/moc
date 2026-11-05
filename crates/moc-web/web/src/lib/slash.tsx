@@ -254,6 +254,9 @@ export function runSlash(
       useLayout.getState().openInspector("btw");
       if (!useBtw.getState().ask(sessionId, args)) toast("上一个旁路问题还在回答中");
       break;
+    case "tools":
+      useUi.getState().set({ toolsSession: sessionId });
+      break;
     case "context":
       useLayout.getState().openInspector("context");
       break;

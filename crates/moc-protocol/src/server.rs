@@ -982,6 +982,15 @@ impl<S: AgentService> ServerDispatch<S> {
                 value_from(result)
             }
 
+            <crate::methods::SessionTools as Method>::NAME => {
+                let params = params_from_value::<crate::methods::SessionTools>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .session_tools(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
             <SessionContext as Method>::NAME => {
                 let params = params_from_value::<SessionContext>(params)?;
                 let result = self

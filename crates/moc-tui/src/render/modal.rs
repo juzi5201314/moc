@@ -281,6 +281,7 @@ fn draw_legend_tip(
 struct ModalBody {
     lines: Vec<Line<'static>>,
     footer: Option<overlay::Footer>,
+    scroll_max: usize,
     /// (条目下标, 正文行号)。
     hits: Vec<(usize, usize)>,
     /// 思考等级芯片：(levels 下标, 正文行号, 起始列, 列宽)。
@@ -403,6 +404,9 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
             // 编辑器盖在审阅卡片上：只有它的键位可点。
             app.key_hits = draw_plan_editor(frame, app, layout.area, area);
         }
+    }
+    if let Some(Modal::Tools { scroll, .. }) = app.modal.as_mut() {
+        *scroll = (*scroll).min(body.scroll_max);
     }
 }
 
@@ -1108,6 +1112,7 @@ const FUSION_LABEL_WIDTH: usize = 9;
 /// `width` 是卡片正文宽度，`max_lines` 是正文可见行数（提示条另算）：
 /// 返回的每行都不超过 `width` 列、总行数不超过 `max_lines`。
 fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> ModalBody {
+    let mut scroll_max = 0;
     let theme = app.theme;
     let dim = Style::new().fg(theme.gray_dim);
     let mut hits = Vec::new();
@@ -1792,6 +1797,49 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             );
             (lines, footer)
         }
+        Modal::Tools {
+            tools,
+            error,
+            scroll,
+            ..
+        } => {
+            let mut rows = wrapped_lines(
+                "按当前会话状态，下一轮请求将发送以下工具定义。",
+                width,
+                dim,
+            );
+            rows.push(Line::default());
+            if let Some(error) = error {
+                rows.extend(wrapped_lines(&format!("读取失败：{error}"), width, dim));
+            } else if let Some(tools) = tools {
+                if tools.is_empty() {
+                    rows.extend(wrapped_lines("当前请求不发送任何工具。", width, dim));
+                }
+                for tool in tools {
+                    rows.extend(wrapped_lines(
+                        &tool.name,
+                        width,
+                        Style::new()
+                            .fg(theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    if let Some(description) = &tool.description {
+                        rows.extend(wrapped_lines(description, width, dim));
+                    }
+                    rows.push(Line::default());
+                }
+            } else {
+                rows.push(Line::from(Span::styled("正在读取工具…", dim)));
+            }
+            if rows.len() > max_lines.max(1) {
+                scroll_max = rows.len().saturating_sub(max_lines.saturating_sub(1).max(1));
+            }
+            let lines = scroll_window(rows, max_lines, *scroll, width, theme);
+            (
+                lines,
+                overlay::footer(&[("↑↓", "滚动"), ("esc", "关闭")], width, theme),
+            )
+        }
         Modal::Help { scroll } => {
             let rows = help_lines(app, width).0;
             let lines = scroll_window(rows, max_lines, *scroll, width, theme);
@@ -1802,6 +1850,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
     ModalBody {
         lines,
         footer: Some(footer),
+        scroll_max,
         hits,
         level_hits,
     }

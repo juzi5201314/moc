@@ -311,6 +311,21 @@ pub struct SessionUsageResult {
     pub tool_ms: u64,
 }
 
+/// `session/tools`：返回当前会话下一轮请求的工具定义。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionToolsParams {
+    pub session_id: String,
+}
+
+pub struct SessionTools;
+impl Method for SessionTools {
+    const NAME: &'static str = "session/tools";
+    type Params = SessionToolsParams;
+    type Result = Vec<moc_llm::ToolDef>;
+}
+impl ClientRequest for SessionTools {}
+
 /// `session/context` 的参数。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

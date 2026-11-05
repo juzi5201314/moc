@@ -6,6 +6,7 @@ import { SessionHeader } from "@/components/chat/session-header";
 import { WelcomeView } from "@/components/chat/welcome";
 import { CommandPalette } from "@/components/dialogs/command-palette";
 import { JobsDialog } from "@/components/dialogs/jobs-dialog";
+import { ToolsDialog } from "@/components/dialogs/tools-dialog";
 import { WorkspacePicker } from "@/components/dialogs/workspace-picker";
 import { AppFrame } from "@/components/layout/AppFrame";
 import { InspectorPanel } from "@/components/panels/inspector-panel";
@@ -31,6 +32,7 @@ export function App() {
   useGlobalShortcuts();
 
   const jobsSession = useUi((state) => state.jobsSession);
+  const toolsSession = useUi((state) => state.toolsSession);
   const wfApproval = useWorkflow((s) => s.approvals[0] ?? null);
   const wfApprovalOpen = useWorkflow((s) => s.approvalOpen);
 
@@ -92,6 +94,13 @@ export function App() {
           }}
         />
       )}
+      {toolsSession ? (
+        <ToolsDialog
+          key={toolsSession}
+          sessionId={toolsSession}
+          onClose={() => useUi.getState().set({ toolsSession: null })}
+        />
+      ) : null}
       <Toaster />
     </TooltipProvider>
   );

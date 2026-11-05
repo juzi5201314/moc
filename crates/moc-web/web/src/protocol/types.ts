@@ -484,6 +484,13 @@ export type CompactResult = {
   summary_chars: number;
 };
 
+export type ToolDefinition = {
+  name: string;
+  description: string | null;
+  parameters: unknown;
+  strict: boolean | null;
+};
+
 export type ContextUsageResult = {
   context_window: number;
   total_tokens: number;

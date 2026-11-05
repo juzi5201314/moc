@@ -27,6 +27,8 @@ export type UiState = {
   confirmDelete: { id: string; title: string } | null;
   /** 当前打开的后台任务弹窗所属会话。 */
   jobsSession: string | null;
+  /** 当前打开的实际工具列表弹窗所属会话。 */
+  toolsSession: string | null;
   focusComposer: number;
   /** 旁路输入框聚焦请求计数。 */
   focusBtw: number;
@@ -40,6 +42,7 @@ export const useUi = create<UiState>()((set) => ({
   modelPicker: null,
   confirmDelete: null,
   jobsSession: null,
+  toolsSession: null,
   focusComposer: 0,
   focusBtw: 0,
   set: (patch) => set(patch),

@@ -2502,6 +2502,14 @@ impl AgentService for Core {
         Ok(result)
     }
 
+    async fn session_tools(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::methods::SessionToolsParams,
+    ) -> Result<Vec<moc_llm::ToolDef>, RpcError> {
+        context::tools(&self.inner, ctx, params).await
+    }
+
     async fn session_context(
         &self,
         ctx: RequestContext,

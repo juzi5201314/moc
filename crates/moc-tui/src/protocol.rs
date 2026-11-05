@@ -113,6 +113,11 @@ pub enum AppEvent {
         goal: Option<moc_protocol::methods::GoalView>,
         text: String,
     },
+    /// 工具列表读取完成。
+    Tools {
+        request: u64,
+        result: anyhow::Result<Vec<moc_protocol::ToolDef>>,
+    },
     /// 上下文估算完成。
     ContextUsage(ContextUsageResult),
     /// 上下文正文读取完成。

@@ -503,6 +503,15 @@ pub trait AgentService: Send + Sync + 'static {
         params: SessionCompactParams,
     ) -> impl Future<Output = Result<CompactResult, RpcError>> + Send;
 
+    /// 当前会话下一轮请求的工具定义；与提示发送共用工具过滤逻辑。
+    fn session_tools(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::methods::SessionToolsParams,
+    ) -> impl Future<Output = Result<Vec<moc_llm::ToolDef>, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
     /// 估算当前会话上下文，并返回系统提示词、工具提示词与历史明细。
     fn session_context(
         &self,
