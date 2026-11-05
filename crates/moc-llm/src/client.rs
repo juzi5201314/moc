@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -24,18 +24,30 @@ pub struct Client {
 
 #[derive(Debug)]
 struct ClientInner {
-    http: reqwest::Client,
+    http: OnceLock<Result<reqwest::Client, LlmError>>,
     options: ClientBuilder,
     /// 配置可提供任意时限；按完整 Duration 分组，冷路径建池、热路径点查。
     transports: Mutex<HashMap<Duration, reqwest::Client>>,
 }
 
 impl Client {
-    /// 用默认选项构造共享连接池。
+    /// 默认连接池在首次请求时创建；空会话不初始化 HTTP/TLS。
     pub fn new() -> Client {
-        ClientBuilder::new()
-            .build()
-            .expect("默认 HTTP 客户端可构造")
+        Self {
+            inner: Arc::new(ClientInner {
+                http: OnceLock::new(),
+                options: ClientBuilder::new(),
+                transports: Mutex::new(HashMap::new()),
+            }),
+        }
+    }
+
+    fn default_http(&self) -> Result<&reqwest::Client, LlmError> {
+        self.inner
+            .http
+            .get_or_init(|| self.inner.options.build_http())
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     /// 自定义构造器（`user_agent` / 连接池 / 超时）。
@@ -137,12 +149,12 @@ impl Client {
 
     fn post(&self, cfg: &LlmConfig, url: &str) -> Result<reqwest::RequestBuilder, LlmError> {
         let Some(seconds) = cfg.connect_timeout_secs else {
-            return Ok(self.inner.http.post(url));
+            return Ok(self.default_http()?.post(url));
         };
         let timeout = Duration::try_from_secs_f64(seconds)
             .map_err(|error| LlmError::Encode(format!("连接超时配置无效：{error}")))?;
         if self.inner.options.connect_timeout == Some(timeout) {
-            return Ok(self.inner.http.post(url));
+            return Ok(self.default_http()?.post(url));
         }
         let mut transports = self.inner.transports.lock().expect("HTTP 连接池表");
         if let Some(http) = transports.get(&timeout) {
@@ -326,7 +338,7 @@ impl ClientBuilder {
         let http = self.build_http()?;
         Ok(Client {
             inner: Arc::new(ClientInner {
-                http,
+                http: OnceLock::from(Ok(http)),
                 options: self,
                 transports: Mutex::new(HashMap::new()),
             }),
@@ -354,6 +366,37 @@ impl ClientBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_transport_is_lazy_and_shared() {
+        let client = Client::new();
+        let clone = client.clone();
+        assert!(client.inner.http.get().is_none());
+        let config = LlmConfig::default();
+        drop(client.post(&config, "http://127.0.0.1/").unwrap());
+        assert!(client.inner.http.get().is_some());
+        assert!(Arc::ptr_eq(&client.inner, &clone.inner));
+        assert!(clone.inner.http.get().is_some());
+    }
+
+    #[test]
+    fn explicit_builder_still_validates_immediately() {
+        assert!(
+            Client::builder()
+                .user_agent("invalid\nheader")
+                .build()
+                .is_err()
+        );
+        assert!(
+            Client::builder()
+                .build()
+                .unwrap()
+                .inner
+                .http
+                .get()
+                .is_some()
+        );
+    }
 
     #[test]
     fn client_is_send_sync_and_cloneable() {

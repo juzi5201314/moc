@@ -13,15 +13,17 @@ pub struct MessageContent(Arc<Storage>);
 #[derive(Clone)]
 enum Storage {
     Resident(Vec<ContentPart>),
-    // 冷分支含字节句柄、解码槽和两个 ID 列表，装箱保持热分支接近 Vec 的大小。
+    // 冷分支装箱，保持热分支接近 Vec 的大小。
     Archived(Box<Archive>),
 }
 
 struct Archive {
     bytes: Bytes,
-    parsed: OnceLock<Vec<ContentPart>>,
-    call_ids: Vec<String>,
-    result_ids: Vec<String>,
+    // 冷消息通常不解析；把 Vec 缓存移到首次解析时分配。
+    parsed: OnceLock<Box<Vec<ContentPart>>>,
+    // 两类 ID 同生同死且归档后不追加：一个紧凑切片，calls_len 为分界。
+    ids: Box<[String]>,
+    calls_len: usize,
 }
 
 impl Clone for Archive {
@@ -29,8 +31,8 @@ impl Clone for Archive {
         Self {
             bytes: self.bytes.clone(),
             parsed: OnceLock::new(),
-            call_ids: self.call_ids.clone(),
-            result_ids: self.result_ids.clone(),
+            ids: self.ids.clone(),
+            calls_len: self.calls_len,
         }
     }
 }
@@ -46,14 +48,18 @@ impl Storage {
     fn parts(&self) -> &Vec<ContentPart> {
         match self {
             Self::Resident(parts) => parts,
-            Self::Archived(archive) => archive.parsed.get_or_init(|| archive.parse()),
+            Self::Archived(archive) => archive.parsed.get_or_init(|| Box::new(archive.parse())),
         }
     }
 
     fn into_parts(self) -> Vec<ContentPart> {
         match self {
             Self::Resident(parts) => parts,
-            Self::Archived(mut archive) => archive.parsed.take().unwrap_or_else(|| archive.parse()),
+            Self::Archived(mut archive) => archive
+                .parsed
+                .take()
+                .map(|parts| *parts)
+                .unwrap_or_else(|| archive.parse()),
         }
     }
 }
@@ -71,11 +77,14 @@ impl MessageContent {
                 _ => {}
             }
         }
+        let calls_len = call_ids.len();
+        call_ids.extend(result_ids);
+        debug_assert!(calls_len <= call_ids.len());
         Ok(Self(Arc::new(Storage::Archived(Box::new(Archive {
             bytes,
             parsed: OnceLock::new(),
-            call_ids,
-            result_ids,
+            ids: call_ids.into_boxed_slice(),
+            calls_len,
         })))))
     }
 
@@ -113,17 +122,27 @@ impl MessageContent {
         }
     }
 
+    /// 临时编码持有独立解码槽；即使原归档尚冷，也不让临时解析加热所有者。
+    pub(crate) fn detached_archive(&self) -> Self {
+        match self.0.as_ref() {
+            Storage::Archived(archive) => Self(Arc::new(Storage::Archived(archive.clone()))),
+            _ => self.clone(),
+        }
+    }
+
     /// 归档的索引权重，不把可由操作系统回收的映射页算成堆中的正文副本。
     pub fn archive_index_bytes(&self) -> Option<usize> {
         match self.0.as_ref() {
             Storage::Resident(_) => None,
             Storage::Archived(archive) => Some(
-                128 + archive
-                    .call_ids
-                    .iter()
-                    .chain(&archive.result_ids)
-                    .map(|id| id.len() + std::mem::size_of::<String>())
-                    .sum::<usize>(),
+                std::mem::size_of::<Archive>()
+                    + std::mem::size_of::<Storage>()
+                    + 2 * std::mem::size_of::<usize>()
+                    + archive
+                        .ids
+                        .iter()
+                        .map(|id| id.len() + std::mem::size_of::<String>())
+                        .sum::<usize>(),
             ),
         }
     }
@@ -138,7 +157,7 @@ impl MessageContent {
     /// 修补未完成调用只需要 ID，不能为此解码已归档的工具正文。
     pub fn tool_call_ids(&self) -> impl Iterator<Item = &str> {
         let archived = match self.0.as_ref() {
-            Storage::Archived(archive) => Some(archive.call_ids.as_slice()),
+            Storage::Archived(archive) => Some(&archive.ids[..archive.calls_len]),
             Storage::Resident(_) => None,
         };
         archived.into_iter().flatten().map(String::as_str).chain(
@@ -154,7 +173,7 @@ impl MessageContent {
 
     pub fn tool_result_ids(&self) -> impl Iterator<Item = &str> {
         let archived = match self.0.as_ref() {
-            Storage::Archived(archive) => Some(archive.result_ids.as_slice()),
+            Storage::Archived(archive) => Some(&archive.ids[archive.calls_len..]),
             Storage::Resident(_) => None,
         };
         archived.into_iter().flatten().map(String::as_str).chain(
@@ -245,6 +264,35 @@ impl FromIterator<ContentPart> for MessageContent {
         Vec::from_iter(iter).into()
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archived_ids_keep_each_kind_in_order_without_parsing() {
+        let json = serde_json::json!([
+            {"ToolResult": {"tool_call_id": "r1", "content": "result", "is_error": false}},
+            {"ToolCall": {"id": "c1", "name": "read", "arguments": "{}"}},
+            {"Text": "text"},
+            {"ToolCall": {"id": "c2", "name": "read", "arguments": "{}"}},
+            {"ToolResult": {"tool_call_id": "r2", "content": "result", "is_error": false}}
+        ]);
+        let mut content =
+            MessageContent::from_archive(serde_json::to_vec(&json).unwrap().into()).unwrap();
+        assert_eq!(content.tool_call_ids().collect::<Vec<_>>(), ["c1", "c2"]);
+        assert_eq!(content.tool_result_ids().collect::<Vec<_>>(), ["r1", "r2"]);
+        assert!(!content.archive_cache_loaded());
+        assert_eq!(serde_json::to_value(&content).unwrap(), json);
+        let cold = content.clone();
+        assert_eq!(content.len(), 5);
+        assert!(content.archive_cache_loaded());
+        content.push(ContentPart::Text("new".into()));
+        assert_eq!(cold.len(), 5);
+        assert_eq!(content.len(), 6);
+        assert_eq!(serde_json::to_value(&cold).unwrap(), json);
+    }
+}
+
 impl PartialEq<Vec<ContentPart>> for MessageContent {
     fn eq(&self, other: &Vec<ContentPart>) -> bool {
         self.with_parts(|parts| parts == other.as_slice())

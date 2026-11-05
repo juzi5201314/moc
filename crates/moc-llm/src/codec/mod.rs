@@ -26,7 +26,7 @@ pub use inspection::{RequestInspection, RequestSource, inspect_request};
 
 /// 编码后的 HTTP 请求。
 #[derive(Debug)]
-pub(crate) struct EncodedRequest<B = Vec<u8>> {
+pub(crate) struct EncodedRequest<B = bytes::Bytes> {
     /// 完整 URL（含查询串）。
     pub url: String,
     /// 请求头，已含 `content-type` 与鉴权头。
@@ -39,7 +39,11 @@ impl EncodedRequest<Value> {
     fn into_wire(self, protocol: &str) -> Result<EncodedRequest, LlmError> {
         let body = serde_json::to_vec(&self.body)
             .map_err(|error| LlmError::Encode(format!("{protocol} 请求体序列化失败: {error}")))?;
-        Ok(EncodedRequest { url: self.url, headers: self.headers, body })
+        Ok(EncodedRequest {
+            url: self.url,
+            headers: self.headers,
+            body: body.into(),
+        })
     }
 }
 
@@ -308,17 +312,14 @@ pub(crate) fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError
         if message.role != Role::Assistant {
             if message.role == Role::Tool {
                 return Err(stray_result_error(
-                    message
-                        .tool_results()
-                        .next()
-                        .map_or("", |result| result.tool_call_id.as_str()),
+                    message.content.tool_result_ids().next().unwrap_or(""),
                 ));
             }
             index += 1;
             continue;
         }
 
-        let calls: Vec<&ToolCall> = message.tool_calls().collect();
+        let calls: Vec<&str> = message.content.tool_call_ids().collect();
         index += 1;
         if calls.is_empty() {
             continue;
@@ -326,20 +327,24 @@ pub(crate) fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError
 
         let mut matched = 0;
         while index < messages.len() && messages[index].role == Role::Tool {
-            let result = messages[index]
-                .tool_results()
+            let result = messages[index].content
+                .tool_result_ids()
                 .next()
                 .ok_or_else(|| LlmError::Encode("工具结果消息缺少 ToolResult 内容块".into()))?;
             match calls.get(matched) {
-                Some(call) if call.id == result.tool_call_id => matched += 1,
-                _ => return Err(stray_result_error(&result.tool_call_id)),
+                Some(call) if *call == result => matched += 1,
+                _ => return Err(stray_result_error(result)),
             }
             index += 1;
         }
 
         if matched != calls.len() {
-            let names = join_names(&calls);
-            let missing = join_names(&calls[matched..]);
+            let (names, missing) = message.content.with_parts(|parts| {
+                let calls: Vec<_> = parts.iter().filter_map(|part| match part {
+                    crate::ContentPart::ToolCall(call) => Some(call), _ => None,
+                }).collect();
+                (join_names(&calls), join_names(&calls[matched..]))
+            });
             return Err(LlmError::Encode(format!(
                 "assistant 消息中的工具调用 [{names}] 缺少对应的工具结果消息（缺失: {missing}）"
             )));
@@ -469,6 +474,46 @@ mod tests {
             content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::text("只有思考"))],
         }];
         assert!(validate_tool_history(&messages).is_ok());
+    }
+
+    #[test]
+    fn archived_requests_keep_wire_content_and_leave_history_cold() {
+        for protocol in [
+            Protocol::OpenAiChat,
+            Protocol::OpenAiResponses,
+            Protocol::AnthropicMessages,
+        ] {
+            let cfg = LlmConfig {
+                protocol,
+                model: "test".into(),
+                ..Default::default()
+            };
+            let mut req = ChatRequest {
+                max_output_tokens: Some(1024),
+                messages: vec![
+                    Message::user_text("正文".repeat(4096)),
+                    assistant_with_calls(&[("c1", "read")]),
+                    Message::tool_result("c1", "完整结果", false),
+                ],
+                ..Default::default()
+            };
+            let plain = encode(&cfg, &req, false).unwrap();
+            for message in &mut req.messages {
+                message.content = crate::MessageContent::from_archive(
+                    serde_json::to_vec(&message.content).unwrap().into(),
+                )
+                .unwrap();
+            }
+            let archived = encode(&cfg, &req, false).unwrap();
+            assert_eq!(plain.body, archived.body);
+            assert!(
+                req.messages
+                    .iter()
+                    .all(|m| !m.content.archive_cache_loaded())
+            );
+            let retry = archived.body.clone();
+            assert_eq!(retry.as_ptr(), archived.body.as_ptr(), "重试共享已编码请求");
+        }
     }
 
     #[test]

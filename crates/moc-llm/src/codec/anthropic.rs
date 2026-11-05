@@ -299,6 +299,11 @@ fn inspection_sources(
     sources: &mut Vec<super::RequestSource>,
 ) {
     for (index, message) in req.messages.iter().enumerate() {
+        let temporary;
+        let message = if message.content.is_archived() {
+            temporary = Message { role: message.role, content: message.content.detached_archive() };
+            &temporary
+        } else { message };
         let Some(placement) = normalized.placements[index] else {
             continue;
         };
@@ -365,6 +370,11 @@ fn normalize(
     let mut open_user: Option<usize> = None;
 
     for (index, message) in req.messages.iter().enumerate() {
+        let temporary;
+        let message = if message.content.is_archived() {
+            temporary = Message { role: message.role, content: message.content.detached_archive() };
+            &temporary
+        } else { message };
         match message.role {
             Role::System | Role::Developer => {
                 // system 被上提到顶层，不出现在 messages 里，因此不打断

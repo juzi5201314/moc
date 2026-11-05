@@ -158,6 +158,11 @@ fn encode_messages(
 ) -> Result<Vec<Value>, LlmError> {
     let mut out = Vec::with_capacity(req.messages.len());
     for (index, message) in req.messages.iter().enumerate() {
+        let temporary;
+        let message = if message.content.is_archived() {
+            temporary = Message { role: message.role, content: message.content.detached_archive() };
+            &temporary
+        } else { message };
         let first = out.len();
         let breakpoint = breakpoints.contains(&index);
         match message.role {
