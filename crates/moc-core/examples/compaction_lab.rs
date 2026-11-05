@@ -401,7 +401,7 @@ async fn restrict_probe(spec: &Spec, session_id: &str) -> Result<()> {
     table
         .ensure_write_lease(session_id, &record, "compaction-lab-probe")
         .await?;
-    let mut entries = record.state.lock().await.entries.as_ref().clone();
+    let mut entries = record.state.lock().await.log_entries();
     let allow: &[&str] = match spec.probe_mode {
         ProbeMode::Direct => &[],
         ProbeMode::Retrieval => &["read", "grep", "find"],

@@ -323,7 +323,7 @@ impl WorkflowDriver {
                     }
                 };
                 let st = source.state.lock().await;
-                transcript_prefix(&st.entries, *user_turns)
+                transcript_prefix(&st.log_entries(), *user_turns)
             }
             _ => Vec::new(),
         };
@@ -546,9 +546,7 @@ impl WorkflowDriver {
                 state
                     .entries
                     .iter()
-                    .filter(|e| {
-                        matches!(e, Entry::Message { message, .. } if message.role == Role::User)
-                    })
+                    .filter(|e| e.message_entry().is_some_and(|entry| entry.message.role == Role::User))
                     .count() as u32
             }
             Err(_) => 0,

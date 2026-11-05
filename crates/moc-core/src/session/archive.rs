@@ -1,4 +1,4 @@
-//! 把不在模型上下文中的正文冻结到私有只读映射；原日志、消息和协议形状均不改变。
+//! 把旧正文冻结到私有只读映射；是否仍属模型上下文与是否驻留堆相互独立。
 use std::collections::{HashMap, HashSet};
 use std::io::{BufWriter, Write};
 use std::ops::Range;
@@ -11,6 +11,29 @@ use super::state::SessionState;
 use crate::CoreError;
 
 const MIN_ARCHIVE_BYTES: usize = 64 * 1024;
+/// 保留近期显示窗口；更旧正文仍可完整读取，不改变上下文选择。
+pub(super) const HOT_MESSAGES: usize = 128;
+pub(super) const FREEZE_BYTES: usize = 4 * 1024 * 1024;
+const HOT_BYTES: usize = 2 * 1024 * 1024;
+const REPLAY_BATCH: usize = 1024;
+
+pub(super) fn cold_end(state: &SessionState) -> usize {
+    let floor = state
+        .context_start
+        .max(state.transcript.len().saturating_sub(HOT_MESSAGES));
+    let mut bytes = 0usize;
+    let mut end = state.transcript.len();
+    while end > floor {
+        bytes = bytes.saturating_add(super::message_storage_bytes(
+            &state.transcript[end - 1].message,
+        ));
+        if bytes > HOT_BYTES {
+            break;
+        }
+        end -= 1;
+    }
+    end
+}
 
 pub(super) struct Batch {
     changes: Vec<(usize, MessageContent)>,
@@ -21,6 +44,7 @@ impl Batch {
         for (index, content) in self.changes {
             state.replace_content(index, content);
         }
+        state.unfrozen_bytes = 0;
     }
 }
 
@@ -51,7 +75,7 @@ impl<W: Write> Write for Counted<W> {
 
 /// 调用者在后台线程执行；只有整批文件写完、映射与类型校验全部成功后才替换原文。
 pub(super) fn prepare(state: &SessionState, range: Range<usize>) -> Result<Batch, CoreError> {
-    debug_assert!(range.start <= range.end && range.end <= state.context_start);
+    debug_assert!(range.start <= range.end && range.end <= state.transcript.len());
     let mut changes = Vec::new();
     let mut unique = HashSet::new();
     let mut resident = Vec::new();
@@ -155,8 +179,8 @@ impl Replayer {
         );
         if let Some(state) = &mut self.state {
             state.replay_entry(entry)?;
-            if boundary && self.archive_enabled {
-                let end = state.context_start;
+            if self.archive_enabled && (boundary || state.unfrozen_bytes >= FREEZE_BYTES || state.transcript.len().saturating_sub(self.frontier) >= REPLAY_BATCH + HOT_MESSAGES) {
+                let end = cold_end(state);
                 self.frontier = self.frontier.min(end);
                 self.archive_enabled = freeze(state, self.frontier..end);
                 while self.frontier < end {
@@ -178,10 +202,88 @@ impl Replayer {
             .state
             .ok_or_else(|| CoreError::Session("transcript 缺少 header".into()))?;
         if self.archive_enabled {
-            let end = state.context_start;
-            freeze(&mut state, 0..end);
+            let end = cold_end(&state);
+            freeze(&mut state, self.frontier.min(end)..end);
         }
         Ok(state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::entries::{Entry, EntryPayload, SessionOrigin};
+    use super::*;
+    use moc_llm::Message;
+    use moc_protocol::{SessionEngine, SessionPermission};
+
+    #[test]
+    fn uncompressed_history_stays_complete_shared_and_cold() {
+        let header = Entry::header(
+            "ses_cold".into(),
+            "/tmp".into(),
+            "p/m".into(),
+            SessionEngine::Standard,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            "测试".into(),
+            1,
+        );
+        let mut parent = header.id().to_owned();
+        let mut expected = vec![header.clone()];
+        let mut replay = Replayer::default();
+        replay.push(header).unwrap();
+        for index in 0..1200 {
+            let message = Message::user_text(format!("{index}:{}", "正文".repeat(128)));
+            let entry = Entry::from_payload(
+                EntryPayload::Message {
+                    message,
+                    tool: None,
+                    finish_reason: None,
+                    agent: None,
+                    goal: None,
+                },
+                parent,
+                index + 2,
+            );
+            parent = entry.id().to_owned();
+            expected.push(entry.clone());
+            replay.push(entry).unwrap();
+        }
+        let mut state = replay.finish().unwrap();
+        assert_eq!(state.context_start, 0, "冻结不能变更语义上下文");
+        assert!(state.transcript[0].message.content.is_archived());
+        assert!(
+            !state
+                .transcript
+                .last()
+                .unwrap()
+                .message
+                .content
+                .is_archived()
+        );
+        let super::super::stored::StoredEntry::Message { entry, .. } = &state.entries[1] else {
+            panic!("消息记录")
+        };
+        assert!(Arc::ptr_eq(entry, &state.transcript[0]));
+        assert_eq!(
+            serde_json::to_value(state.log_entries()).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        assert!(!state.transcript[0].message.content.archive_cache_loaded());
+        let snapshot = state.clone();
+        state.replace_content(0, Message::user_text("新正文").content);
+        assert!(snapshot.transcript[0].message.text().starts_with("0:"));
+        assert_eq!(
+            state.log_entries()[1]
+                .transcript_entry()
+                .unwrap()
+                .message
+                .text(),
+            "新正文"
+        );
+        assert!(
+            std::mem::size_of::<super::super::stored::StoredEntry>() < std::mem::size_of::<Entry>()
+        );
     }
 }
 

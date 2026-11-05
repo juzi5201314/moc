@@ -436,7 +436,7 @@ pub(crate) async fn spawn(
     // SeedFrom：导入的 transcript 前缀写在 header 之后、插件消息与 task 之前，
     // 让新子会话的前缀历史与前驱 actor 会话逐字一致（真 fork，不写前驱文件）。
     if !spec.seed_entries.is_empty() {
-        let mut combined = record.state.lock().await.entries.as_ref().clone();
+        let mut combined = record.state.lock().await.log_entries();
         combined.extend(spec.seed_entries.iter().cloned());
         inner.sessions.rewrite(&session.id, combined).await?;
     }

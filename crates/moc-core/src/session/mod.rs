@@ -7,6 +7,8 @@ pub(crate) mod log;
 pub mod maintenance;
 pub mod state;
 pub mod store;
+pub mod stored;
+use stored::StoredEntry;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -260,7 +262,7 @@ impl SessionTable {
         let header = state
             .entries
             .first()
-            .cloned()
+            .map(StoredEntry::to_entry)
             .ok_or_else(|| CoreError::Session("transcript 缺少会话头部".into()))?;
         let orphaned_agents = load_orphans(&paths).await;
         let (state, cache_bytes) = tokio::task::spawn_blocking(move || {
@@ -520,8 +522,11 @@ impl SessionTable {
         let start = max_entries
             .and_then(|limit| usize::try_from(limit).ok())
             .map_or(0, |limit| count.saturating_sub(limit));
-        let entries = state.transcript[start..].to_vec();
-        let cool_end = count.min(state.context_start);
+        let entries = state.transcript[start..]
+            .iter()
+            .map(|entry| (**entry).clone())
+            .collect();
+        let cool_end = archive::cold_end(&state);
         for index in start..cool_end {
             state.cool_content(index);
         }
@@ -700,7 +705,7 @@ impl SessionTable {
             };
             let has_more = start > 0 || entries.len() < end.saturating_sub(start);
             // 前滚列表只暴露 transcript 条目；非消息 entry 会随目标一并接回，但不在选择器里占位。
-            let tip = state.entries.last().map(Entry::id);
+            let tip = state.entries.last().map(StoredEntry::id);
             let mut redo_has_more = false;
             let mut redo_tip_entry_id = None;
             let redo_entries = {
@@ -811,12 +816,12 @@ impl SessionTable {
                     entry_id.as_str()
                 )));
             };
-            let Entry::Message {
+            let Some(TranscriptEntry {
                 message,
                 bash,
                 agent,
                 ..
-            } = &state.entries[target]
+            }) = state.entries[target].message_entry()
             else {
                 return Err(CoreError::Session(
                     "INVALID_PARAMS: 回退目标不是 transcript 消息".into(),
@@ -831,7 +836,7 @@ impl SessionTable {
                 let mut call_ids: Vec<&str> =
                     message.tool_calls().map(|call| call.id.as_str()).collect();
                 while !call_ids.is_empty() && end < state.entries.len() {
-                    if let Entry::Message { message: next, .. } = &state.entries[end] {
+                    if let Some(TranscriptEntry { message: next, .. }) = state.entries[end].message_entry() {
                         if next.role != Role::Tool
                             || !next
                                 .tool_results()
@@ -846,7 +851,16 @@ impl SessionTable {
                     end += 1;
                 }
             }
-            (state.entries[..end].to_vec(), state.entries[end..].to_vec())
+            (
+                state.entries[..end]
+                    .iter()
+                    .map(StoredEntry::to_entry)
+                    .collect::<Vec<_>>(),
+                state.entries[end..]
+                    .iter()
+                    .map(StoredEntry::to_entry)
+                    .collect::<Vec<_>>(),
+            )
         };
         // 尾部引用过、前缀不引用的子代理被孤立：标记后不再进名册，运行中的由
         // service 层停杀；redo 接回引用时摘除标记。RPC spawn 的子代理从不进
@@ -900,7 +914,7 @@ impl SessionTable {
         let record = self.get(session_id).await?;
         let entries = {
             let state = record.state.lock().await;
-            let tip = state.entries.last().map(Entry::id);
+            let tip = state.entries.last().map(StoredEntry::id);
             let mut stash = record.rewind_stash.lock();
             let chained = stash
                 .last()
@@ -919,7 +933,7 @@ impl SessionTable {
                     entry_id.as_str()
                 )));
             };
-            let mut restored = state.entries.as_ref().clone();
+            let mut restored = state.log_entries();
             restored.extend_from_slice(&tail[..=pos]);
             let remainder = tail[pos + 1..].to_vec();
             if remainder.is_empty() {
@@ -968,8 +982,8 @@ impl SessionTable {
                 .iter()
                 .position(|entry| {
                     matches!(
-                        entry,
-                        Entry::Message { message, .. }
+                        entry.message_entry(),
+                        Some(TranscriptEntry { message, .. })
                             if message.role == Role::Assistant
                                 && message.tool_calls().any(|call| call.id == tool_call_id)
                     )
@@ -977,7 +991,8 @@ impl SessionTable {
                 .ok_or_else(|| {
                     CoreError::Session(format!("INVALID_PARAMS: 工具调用不存在：{tool_call_id}"))
                 })?;
-            let Entry::Message { message, .. } = &state.entries[pos_call] else {
+            let Some(TranscriptEntry { message, .. }) = state.entries[pos_call].message_entry()
+            else {
                 unreachable!("position 已锁定 assistant 消息");
             };
             let call = message
@@ -995,8 +1010,8 @@ impl SessionTable {
             // 找不到说明这次提问还没收场——卡片仍挂着，没有可「重新」的回答。
             let Some(offset) = state.entries[pos_call + 1..].iter().position(|entry| {
                 matches!(
-                    entry,
-                    Entry::Message { message, .. }
+                    entry.message_entry(),
+                    Some(TranscriptEntry { message, .. })
                         if message.role == Role::Tool
                             && message
                                 .tool_results()
@@ -1010,8 +1025,8 @@ impl SessionTable {
             let end = pos_call + 1 + offset;
             (
                 call,
-                state.entries[..end].to_vec(),
-                state.entries[end..].to_vec(),
+                state.entries[..end].iter().map(StoredEntry::to_entry).collect::<Vec<_>>(),
+                state.entries[end..].iter().map(StoredEntry::to_entry).collect::<Vec<_>>(),
             )
         };
         // 孤儿标记规则与 rewind 相同（见 rewind 注释）。
@@ -1072,13 +1087,18 @@ impl SessionTable {
                 .append(&entry, None)
                 .await?;
             record.state.lock().await.apply_entry(entry.clone());
-            if matches!(
-                &entry,
-                Entry::Compaction { .. } | Entry::ResetBoundary { .. }
-            ) {
+            let freeze_old = {
+                let state = record.state.lock().await;
+                matches!(&entry, Entry::Compaction { .. } | Entry::ResetBoundary { .. })
+                    || (matches!(&entry, Entry::Message { .. })
+                        && (state.unfrozen_bytes >= archive::FREEZE_BYTES
+                            || (state.transcript.len() > archive::HOT_MESSAGES
+                                && state.transcript.len() % 1024 == 0)))
+            };
+            if freeze_old {
                 let snapshot = record.state.lock().await.clone();
                 let frozen = tokio::task::spawn_blocking(move || {
-                    archive::prepare(&snapshot, 0..snapshot.context_start)
+                    archive::prepare(&snapshot, 0..archive::cold_end(&snapshot))
                 })
                 .await;
                 match frozen {
@@ -1545,28 +1565,19 @@ fn page_plans(
 fn state_cache_bytes(state: &SessionState) -> usize {
     state.entries.iter().fold(0usize, |total, entry| {
         let bytes = match entry {
-            Entry::Message {
-                id,
-                parent_id,
-                message,
-                tool,
-                bash,
-                agent,
-                goal,
-                reminder,
-                ..
-            } => {
-                // 正文由日志和 transcript 共享，只计一份；附加字段在两边分别拥有。
-                message_storage_bytes(message).saturating_add(
-                    serialized_bytes(&(id, parent_id, tool, bash, agent, goal, reminder))
-                        .saturating_mul(2),
-                )
+            StoredEntry::Message { entry, parent_id, .. } => {
+                message_storage_bytes(&entry.message).saturating_add(serialized_bytes(&(
+                    &entry.id, parent_id, &entry.tool, &entry.bash, &entry.agent,
+                    &entry.goal_round, &entry.reminder,
+                )))
             }
-            Entry::Compaction { native, .. } => serialized_bytes(entry)
-                .saturating_mul(2)
-                // 旧原生载荷在 serde 中 skip_serializing，但读入后仍占内存。
-                .saturating_add(serialized_bytes(native)),
-            _ => serialized_bytes(entry).saturating_mul(2),
+            StoredEntry::Other(entry) => {
+                let bytes = serialized_bytes(entry).saturating_mul(2);
+                match entry.as_ref() {
+                    Entry::Compaction { native, .. } => bytes.saturating_add(serialized_bytes(native)),
+                    _ => bytes,
+                }
+            }
         };
         total.saturating_add(bytes).saturating_add(1024)
     })
@@ -2615,7 +2626,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.list().await.unwrap()[0].title, "跨进程新标题");
-        let entries = first_record.state.lock().await.entries.as_ref().clone();
+        let entries = first_record.state.lock().await.log_entries();
         first.rewrite(&info.id, entries).await.unwrap();
         assert!(first.release_lease(&first_record));
         let second_record = second.get(&info.id).await.unwrap();
@@ -2930,8 +2941,7 @@ mod tests {
             .state
             .lock()
             .await
-            .entries
-            .clone();
+            .log_entries();
         assert!(!crate::service::prompt::turn_completed(&entries));
     }
 

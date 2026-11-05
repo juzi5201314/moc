@@ -89,8 +89,8 @@ impl SessionMetadata {
 #[derive(Debug, Clone)]
 pub struct SessionState {
     pub session: SessionInfo,
-    pub entries: Arc<Vec<Entry>>,
-    pub transcript: Arc<Vec<TranscriptEntry>>,
+    pub entries: Arc<Vec<super::stored::StoredEntry>>,
+    pub transcript: Arc<Vec<Arc<TranscriptEntry>>>,
     transcript_log_indices: Arc<Vec<usize>>,
     /// 稀疏消息 ID 到当前投影下标；工具重排和重放同步维护。
     transcript_positions: Arc<std::collections::HashMap<String, usize>>,
@@ -98,6 +98,7 @@ pub struct SessionState {
     transcript_ids_unique: bool,
     /// 与 transcript 一一对应的 token 估算，免得上下文面板反复扫描正文。
     pub transcript_token_counts: Arc<Vec<u64>>,
+    pub(super) unfrozen_bytes: usize,
     pub engine: SessionEngine,
     /// plan 模式：与引擎正交的持久执行模式，回放自 `PlanMode` / `EngineChange` entry。
     pub plan_active: bool,
@@ -154,6 +155,14 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    /// 重写、派生或导出日志时才还原持久化记录；正文仍共享不可变存储。
+    pub fn log_entries(&self) -> Vec<Entry> {
+        self.entries
+            .iter()
+            .map(super::stored::StoredEntry::to_entry)
+            .collect()
+    }
+
     pub(crate) fn metadata(&self) -> SessionMetadata {
         SessionMetadata {
             session: self.session.clone(),
@@ -208,6 +217,7 @@ impl SessionState {
             transcript_positions: Arc::new(std::collections::HashMap::new()),
             transcript_ids_unique: true,
             transcript_token_counts: Arc::new(Vec::new()),
+            unfrozen_bytes: 0,
             engine: engine.engine(),
             plan_active: engine.legacy_enters_plan(),
             workflow_activated: false,
@@ -245,7 +255,8 @@ impl SessionState {
             reminder_digests: BTreeMap::new(),
             last_entry_id: first.id().to_owned(),
         };
-        Arc::make_mut(&mut state.entries).push(first.clone());
+        Arc::make_mut(&mut state.entries)
+            .push(super::stored::StoredEntry::new(first.clone(), None));
         for entry in entries.into_iter().skip(1) {
             state.replay_entry(entry)?;
         }
@@ -266,6 +277,7 @@ impl SessionState {
     /// 把已写入的 entry 应用到会话状态。
     pub fn apply_entry(&mut self, entry: Entry) {
         self.session.updated_at_ms = self.session.updated_at_ms.max(entry.at_ms());
+        let projected = entry.transcript_entry().map(Arc::new);
         match &entry {
             Entry::Header { .. } => {}
             Entry::Message {
@@ -309,7 +321,10 @@ impl SessionState {
                 {
                     self.tool_ms = self.tool_ms.saturating_add(duration_ms);
                 }
-                if let Some(projected) = entry.transcript_entry() {
+                if let Some(projected) = projected.as_ref() {
+                    self.unfrozen_bytes = self
+                        .unfrozen_bytes
+                        .saturating_add(crate::session::message_storage_bytes(&projected.message));
                     let tokens = projected
                         .context_message()
                         .map_or(0, |message| crate::compact::message_tokens(&message));
@@ -322,7 +337,7 @@ impl SessionState {
                         self.transcript_ids_unique = false;
                     }
                     Arc::make_mut(&mut self.transcript_log_indices).push(self.entries.len());
-                    Arc::make_mut(&mut self.transcript).push(projected);
+                    Arc::make_mut(&mut self.transcript).push(Arc::clone(projected));
                     if is_tool {
                         self.order_tool_group();
                     }
@@ -549,7 +564,7 @@ impl SessionState {
             }
         }
         self.last_entry_id = entry.id().to_owned();
-        Arc::make_mut(&mut self.entries).push(entry);
+        Arc::make_mut(&mut self.entries).push(super::stored::StoredEntry::new(entry, projected));
     }
 
     /// 把最近这组连续的工具结果按所属 assistant 的调用顺序排列。
@@ -618,21 +633,24 @@ impl SessionState {
     pub(super) fn replace_content(&mut self, index: usize, content: moc_llm::MessageContent) {
         let log_index = self.transcript_log_indices[index];
         debug_assert_eq!(self.transcript[index].id, self.entries[log_index].id());
-        Arc::make_mut(&mut self.transcript)[index].message.content = content.clone();
-        let Entry::Message { message, .. } = &mut Arc::make_mut(&mut self.entries)[log_index]
+        let super::stored::StoredEntry::Message { entry, .. } =
+            &mut Arc::make_mut(&mut self.entries)[log_index]
         else {
             unreachable!("消息投影只能指向日志中的消息条目")
         };
-        message.content = content;
+        let projected = &mut Arc::make_mut(&mut self.transcript)[index];
+        let mut replacement = (**projected).clone();
+        replacement.message.content = content;
+        *projected = Arc::new(replacement);
+        *entry = Arc::clone(projected);
     }
 
-    /// 查看归档消息后不让其完整解码副本永久驻留；活动上下文继续保持热数据。
+    /// 查看归档消息后不让其完整解码副本永久驻留；近期未归档正文保持热数据。
     pub(super) fn cool_content(&mut self, index: usize) {
-        if index < self.context_start
-            && self.transcript[index]
-                .message
-                .content
-                .archive_cache_loaded()
+        if self.transcript[index]
+            .message
+            .content
+            .archive_cache_loaded()
         {
             let content = self.transcript[index].message.content.cold_clone();
             self.replace_content(index, content);

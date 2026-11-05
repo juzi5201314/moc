@@ -17,7 +17,7 @@ pub(crate) async fn compact(
         tokens_before,
         fixed_tokens,
     } = budget;
-    let mut entries = state.entries.as_ref().clone();
+    let mut entries = state.log_entries();
     if !prune(&mut entries, &config.compaction) {
         return Err(CoreError::ContextOverflow(
             "local pruning found no reclaimable tool output".into(),

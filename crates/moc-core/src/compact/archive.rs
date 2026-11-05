@@ -83,7 +83,7 @@ async fn next_segment_number(directory: &Path) -> Result<usize, CoreError> {
 }
 
 fn render_segment(
-    entries: &[moc_protocol::methods::TranscriptEntry],
+    entries: &[std::sync::Arc<moc_protocol::methods::TranscriptEntry>],
 ) -> (String, usize, String, String) {
     let mut content = String::with_capacity(entries.len().saturating_mul(256));
     let mut count = 0;

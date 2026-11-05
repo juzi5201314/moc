@@ -413,7 +413,7 @@ pub(crate) fn last_user_message(state: &SessionState) -> Option<Message> {
     let boundary = state
         .entries
         .iter()
-        .rposition(|entry| matches!(entry, Entry::Compaction { .. }))?;
+        .rposition(|entry| matches!(entry, crate::session::stored::StoredEntry::Other(entry) if matches!(entry.as_ref(), Entry::Compaction { .. })))?;
     last_user_message_before(state, boundary)
 }
 
@@ -426,13 +426,13 @@ fn last_user_message_before(state: &SessionState, boundary: usize) -> Option<Mes
     state.entries[..boundary]
         .iter()
         .rev()
-        .find_map(|entry| match entry {
-            Entry::Message {
+        .find_map(|entry| match entry.message_entry() {
+            Some(moc_protocol::TranscriptEntry {
                 message,
                 bash,
                 agent,
                 ..
-            } if message.role == Role::User
+            }) if message.role == Role::User
                 && bash.is_none()
                 && agent.is_none()
                 && !super::replay::is_injected_context(message)

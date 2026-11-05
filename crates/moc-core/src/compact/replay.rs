@@ -268,13 +268,10 @@ pub(crate) fn repair_tool_history(
     if message.role != Role::Assistant {
         return message;
     }
-    let has_tool_calls = message.tool_calls().next().is_some();
+    let has_tool_calls = message.content.tool_call_ids().next().is_some();
     if has_tool_calls
         && model.is_some_and(|model| model.requires_assistant_content_for_tool_calls)
-        && !message
-            .content
-            .iter()
-            .any(|part| matches!(part, moc_llm::ContentPart::Text(_)))
+        && !message.content.with_parts(|parts| parts.iter().any(|part| matches!(part, moc_llm::ContentPart::Text(_))))
     {
         message
             .content
@@ -283,10 +280,7 @@ pub(crate) fn repair_tool_history(
     if model.is_some_and(|model| {
         model.requires_reasoning_content_for_all_assistant_turns
             || (has_tool_calls && model.requires_reasoning_content_for_tool_calls)
-    }) && !message
-        .content
-        .iter()
-        .any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_)))
+    }) && !message.content.with_parts(|parts| parts.iter().any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_))))
     {
         message.content.insert(
             0,
