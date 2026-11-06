@@ -142,7 +142,15 @@ async fn image_524_reports_exact_body_and_obeys_timeout_retry_policy() {
     assert!(!error.is_retryable()); // 重试预算耗尽后的包装错误不可再次重试。
     let plain = Client::new().stream(&cfg, &request()).await.err().unwrap();
     assert!(plain.api_error().unwrap().is_retryable());
-    assert_eq!(plain.api_error().unwrap().request_diagnostics.unwrap().images, 0);
+    assert_eq!(
+        plain
+            .api_error()
+            .unwrap()
+            .request_diagnostics
+            .unwrap()
+            .images,
+        0
+    );
     assert_eq!(request_count(&server).await, 8);
 }
 
@@ -322,6 +330,43 @@ async fn error_body_and_metadata_are_preserved() {
     assert_eq!(api.request_id.as_deref(), Some("req_42"));
     assert_eq!(api.retry_after, Some(std::time::Duration::from_secs(3)));
     assert!(error.is_retryable());
+}
+
+#[tokio::test]
+async fn gateway_status_display_preserves_metadata_and_raw_response() {
+    for (status, title) in [
+        (407, "代理认证失败"),
+        (431, "请求头过大"),
+        (525, "非标准源站 TLS 握手失败"),
+        (530, "非标准源站解析错误"),
+        (555, "未识别的服务端错误"),
+        (599, "非标准网络超时"),
+    ] {
+        let server = start().await;
+        let html = "<!DOCTYPE html><html><body>gateway failure</body></html>";
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .insert_header("x-request-id", "gateway-request")
+                    .insert_header("cf-ray", "gateway-ray")
+                    .insert_header("retry-after", "3")
+                    .set_body_raw(html, "text/html"),
+            )
+            .mount(&server)
+            .await;
+        let cfg = config(Protocol::OpenAiChat, &server, fast_retry(1));
+        let error = Client::new().complete(&cfg, &request()).await.unwrap_err();
+        let api = error.api_error().unwrap();
+        let display = error.to_string();
+        assert!(display.contains(title), "{status}: {display}");
+        assert!(display.contains("HTML 错误页"));
+        assert!(!display.contains("<html>"));
+        assert!(display.contains("request_id=gateway-request"));
+        assert!(display.contains("cf-ray=gateway-ray"));
+        assert!(display.contains("3 秒（Retry-After）"));
+        assert_eq!(api.raw_body.as_ref(), html);
+        assert_eq!(request_count(&server).await, 1);
+    }
 }
 
 #[tokio::test]

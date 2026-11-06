@@ -6,6 +6,8 @@
 use std::fmt;
 use std::time::Duration;
 
+mod status;
+
 /// 统一错误类型。
 ///
 /// 实现 `Clone` 是因为流式错误需要同时交付给 [`crate::ChatStream::next_event`]
@@ -233,12 +235,13 @@ impl ApiError {
 
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (title, hint) = status::explanation(self.status, self.kind);
         match self.status {
-            Some(status) => write!(f, "HTTP {status} {}", self.kind),
-            None => f.write_str(self.kind.as_str()),
+            Some(status) => write!(f, "HTTP {status} {title} [{}]", self.kind),
+            None => write!(f, "{title} [{}]", self.kind),
         }?;
         if !self.message.is_empty() {
-            write!(f, ": {}", self.message)?;
+            write!(f, "\n上游消息：{}", status::message_preview(&self.message))?;
         }
         if let Some(code) = &self.code {
             write!(f, " (code={code})")?;
@@ -249,18 +252,13 @@ impl fmt::Display for ApiError {
         if let Some(ray) = &self.gateway_id {
             write!(f, " (cf-ray={ray})")?;
         }
+        if let Some(delay) = self.retry_after {
+            write!(f, "\n上游建议等待：{} 秒（Retry-After）", delay.as_secs())?;
+        }
         if let Some(stats) = self.request_diagnostics {
             write!(f, "\n请求诊断：{stats}。")?;
         }
-        match self.status {
-            Some(524) => {
-                f.write_str("\nHTTP 524 表示网关与源站通信超时：可能是等待响应超时，也可能是向源站写入数据超时。不等于已确认请求体超限（超限通常为 413），不能仅凭请求含图片判断原因。请结合请求 ID、网关/源站日志核对上传耗时、处理耗时及超时设置。")?;
-            }
-            Some(413) => f.write_str("\n上游明确拒绝了请求体大小；请按网关上限设置模型 max_request_bytes，并分批处理图片或压缩历史。")?,
-            Some(504) => f.write_str("\n网关等待上游超时；以上体积用于判断图片负载，状态码本身不能证明请求过大。")?,
-            _ => {}
-        }
-        Ok(())
+        write!(f, "\n排查建议：{hint}")
     }
 }
 
@@ -510,13 +508,17 @@ mod tests {
         );
         err.code = Some("insufficient_quota".into());
         err.request_id = Some("req_1".into());
-        assert_eq!(
-            err.to_string(),
-            "HTTP 429 QuotaExceeded: You exceeded your current quota (code=insufficient_quota) (request_id=req_1)"
-        );
+        let display = err.to_string();
+        assert!(display.starts_with("HTTP 429 额度耗尽 [QuotaExceeded]"));
+        assert!(display.contains("You exceeded your current quota"));
+        assert!(display.contains("code=insufficient_quota"));
+        assert!(display.contains("request_id=req_1"));
+        assert!(display.contains("检查供应商账户余额"));
 
         let streamed = ApiError::new(None, ApiErrorKind::Overloaded, "overloaded_error", "");
-        assert_eq!(streamed.to_string(), "Overloaded: overloaded_error");
+        let display = streamed.to_string();
+        assert!(display.starts_with("服务过载 [Overloaded]"));
+        assert!(display.contains("overloaded_error"));
     }
 
     #[test]
