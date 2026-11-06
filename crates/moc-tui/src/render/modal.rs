@@ -3,6 +3,8 @@
 //! 浮层画在滚动区之后（覆盖其内容）；模态居中，宽度按内容取值（帮助为双列快捷键表，
 //! 普通模态上限 96 列，带选项预览的提问放宽到 120 列），高度按内容收缩。全部使用主题槽位。
 
+use std::time::{Duration, Instant};
+
 use moc_protocol::commands::CommandGroup;
 use moc_protocol::methods::{ContextUsageResult, PlanStatus};
 use ratatui::Frame;
@@ -1840,6 +1842,20 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 overlay::footer(&[("↑↓", "滚动"), ("esc", "关闭")], width, theme),
             )
         }
+        Modal::Monitor => {
+            let lines = monitor_lines(width, theme);
+            (
+                lines,
+                overlay::footer(
+                    &[
+                        ("", "10min 窗口 · 1Hz 采样 · 随进程退出清空"),
+                        ("esc", "关闭"),
+                    ],
+                    width,
+                    theme,
+                ),
+            )
+        }
         Modal::Help { scroll } => {
             let rows = help_lines(app, width).0;
             let lines = scroll_window(rows, max_lines, *scroll, width, theme);
@@ -1854,6 +1870,171 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
         hits,
         level_hits,
     }
+}
+
+/// 监控卡布局：label 5 列、当前值右对齐 8 列、统计段 26 列，其余全给折线。
+const MONITOR_LABEL_W: usize = 5;
+const MONITOR_CUR_W: usize = 8;
+const MONITOR_STATS_W: usize = 26;
+/// sparkline 分档字符；0 档是空格，表示「该时间桶内没有样本」。
+const SPARK_CHARS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// `/monitor` 正文：内存/CPU 画瞬时值，磁盘与网络各画读/写、收/发两条速率线。
+fn monitor_lines(width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(theme.gray_dim);
+    let spark_cols = width.saturating_sub(MONITOR_LABEL_W + MONITOR_CUR_W + MONITOR_STATS_W + 3);
+    if spark_cols < 4 {
+        return vec![Line::from(Span::styled("终端太窄", dim))];
+    }
+    let samples = moc_core::procstats::samples();
+    if samples.len() < 2 {
+        return vec![Line::from(Span::styled("正在采样…", dim))];
+    }
+    let now = Instant::now();
+    let window = Duration::from_secs(moc_core::procstats::WINDOW_SECS);
+    let latest = *samples.last().expect("samples 已判非空");
+
+    let row = |label: &str,
+               color: Color,
+               current: String,
+               points: &[(Instant, f64)],
+               stats: String|
+     -> Line<'static> {
+        let label_pad = " ".repeat(MONITOR_LABEL_W.saturating_sub(str_width(label)));
+        let cur_pad = " ".repeat(MONITOR_CUR_W.saturating_sub(str_width(&current)));
+        Line::from(vec![
+            Span::styled(format!("{label}{label_pad}"), dim),
+            Span::styled(
+                format!("{cur_pad}{current}"),
+                Style::new().fg(theme.text_primary),
+            ),
+            Span::styled(
+                format!(" {}", sparkline(points, spark_cols, window, now)),
+                Style::new().fg(color),
+            ),
+            Span::styled(format!(" {stats}"), dim),
+        ])
+    };
+    let summary = |points: &[(Instant, f64)]| {
+        let (sum, peak) = points
+            .iter()
+            .fold((0.0, 0.0f64), |(sum, peak), (_, v)| (sum + v, peak.max(*v)));
+        (sum / points.len().max(1) as f64, peak)
+    };
+    let instant = |field: fn(&moc_core::procstats::Sample) -> f64| -> Vec<(Instant, f64)> {
+        samples.iter().map(|s| (s.at, field(s))).collect()
+    };
+    let rate_line = |label: &str,
+                     color: Color,
+                     field: fn(&moc_core::procstats::Sample) -> u64,
+                     total: u64|
+     -> Line<'static> {
+        let points = moc_core::procstats::rates(&samples, field);
+        let current = points.last().map(|(_, rate)| *rate).unwrap_or(0.0);
+        row(
+            label,
+            color,
+            format!("{}/s", format_bytes(current as u64)),
+            &points,
+            format!("total {}", format_bytes(total)),
+        )
+    };
+
+    let rss = instant(|s| s.rss_bytes as f64);
+    let (avg, peak) = summary(&rss);
+    let mut lines = vec![row(
+        "内存",
+        theme.chart_1,
+        format_bytes(latest.rss_bytes),
+        &rss,
+        format!(
+            "avg {}  peak {}",
+            format_bytes(avg as u64),
+            format_bytes(peak as u64)
+        ),
+    )];
+    let cpu = instant(|s| f64::from(s.cpu_pct));
+    let (avg, peak) = summary(&cpu);
+    lines.push(row(
+        "CPU",
+        theme.chart_2,
+        format!("{:.0}%", latest.cpu_pct),
+        &cpu,
+        format!("avg {avg:.0}%  peak {peak:.0}%"),
+    ));
+    lines.push(Line::default());
+    lines.push(rate_line(
+        "磁盘↓",
+        theme.chart_3,
+        |s| s.disk_read_bytes,
+        latest.disk_read_bytes,
+    ));
+    lines.push(rate_line(
+        "磁盘↑",
+        theme.chart_3,
+        |s| s.disk_write_bytes,
+        latest.disk_write_bytes,
+    ));
+    lines.push(Line::default());
+    lines.push(rate_line(
+        "网络↓",
+        theme.chart_4,
+        |s| s.net_rx_bytes,
+        latest.net_rx_bytes,
+    ));
+    lines.push(rate_line(
+        "网络↑",
+        theme.chart_4,
+        |s| s.net_tx_bytes,
+        latest.net_tx_bytes,
+    ));
+    lines
+}
+
+/// 字节量人类可读：`512B`、`45KB`、`1.2GB`（1024 进制；不足 10 单位带一位小数）。
+fn format_bytes(value: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = value as f64;
+    let mut unit = 0;
+    while v >= 1024.0 && unit + 1 < UNITS.len() {
+        v /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 || v >= 10.0 {
+        format!("{v:.0}{}", UNITS[unit])
+    } else {
+        format!("{v:.1}{}", UNITS[unit])
+    }
+}
+
+/// 折线：按时刻把值投进 `columns` 列的固定窗口桶（每桶取峰值，空桶空格），
+/// 全序列按自身峰值归一到 8 档。points 按时刻升序。
+fn sparkline(points: &[(Instant, f64)], columns: usize, window: Duration, now: Instant) -> String {
+    debug_assert!(columns > 0);
+    let bucket = window.as_secs_f64() / columns as f64;
+    let start = now.checked_sub(window).unwrap_or(now);
+    let mut peaks = vec![0.0f64; columns];
+    let mut filled = vec![false; columns];
+    for &(at, value) in points {
+        let col = (at.saturating_duration_since(start).as_secs_f64() / bucket) as usize;
+        if col < columns {
+            filled[col] = true;
+            peaks[col] = peaks[col].max(value);
+        }
+    }
+    let peak = peaks.iter().copied().fold(0.0, f64::max);
+    let mut out = String::with_capacity(columns * 3);
+    for col in 0..columns {
+        if !filled[col] {
+            out.push(SPARK_CHARS[0]);
+        } else if peak <= 0.0 || peaks[col] <= 0.0 {
+            out.push(SPARK_CHARS[1]);
+        } else {
+            let level = 1 + ((peaks[col] / peak) * 7.0).round().min(7.0) as usize;
+            out.push(SPARK_CHARS[level]);
+        }
+    }
+    out
 }
 
 /// 提问卡片的布局产物：正文行 + 提示条 + 文本坐标的可点击几何，`draw_ask_modal` 换算到屏幕。

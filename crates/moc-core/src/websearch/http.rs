@@ -134,6 +134,7 @@ async fn read_body(
         let Some(chunk) = chunk else {
             break;
         };
+        moc_llm::record_rx(chunk.len() as u64);
         let page_remaining = max_bytes.saturating_sub(bytes.len());
         if page_remaining == 0 {
             truncated = true;

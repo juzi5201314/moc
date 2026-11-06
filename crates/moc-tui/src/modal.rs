@@ -1318,6 +1318,9 @@ pub enum Modal {
     WorkflowRun {
         state: Box<crate::workflow::WorkflowRunState>,
     },
+    /// 进程资源监控（`/monitor`）：数据在渲染时从 `procstats` 环形缓冲现取，
+    /// 模态本身无状态。
+    Monitor,
 }
 /// 回复通道的错误类型别名（协议层 RpcError 的重导出位置）。
 type RpcErrorOf = moc_protocol::RpcError;
@@ -1379,6 +1382,7 @@ impl Modal {
             },
             Modal::WorkflowRuns { .. } => "workflow runs".into(),
             Modal::WorkflowRun { state } => format!("run 面板：{}", state.title),
+            Modal::Monitor => "进程监控".into(),
         }
     }
 
@@ -1433,6 +1437,7 @@ impl Modal {
                 })
                 .count(),
             Modal::WorkflowRun { state } => state.roles.len(),
+            Modal::Monitor => 0,
         }
     }
 
@@ -1479,7 +1484,8 @@ impl Modal {
             | Modal::Help { .. }
             | Modal::Tools { .. }
             | Modal::Context { .. }
-            | Modal::ContextContent { .. } => {}
+            | Modal::ContextContent { .. }
+            | Modal::Monitor => {}
             Modal::SwitchModel { option, .. } => {
                 *option = (*option as i32 + delta).clamp(0, count as i32 - 1) as usize;
             }

@@ -4,4 +4,5 @@
 //! 过滤单个文件的用例：`cargo test -p moc-llm --test integration flows`
 mod errors;
 mod flows;
+mod traffic;
 mod wire_dialects;

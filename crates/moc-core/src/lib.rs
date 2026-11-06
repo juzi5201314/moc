@@ -17,6 +17,7 @@ pub mod ids;
 pub mod limits;
 pub mod memory;
 mod paths;
+pub mod procstats;
 pub mod resources;
 pub mod sandbox;
 pub mod service;

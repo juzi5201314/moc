@@ -1001,7 +1001,9 @@ async fn event_loop(
         }
         // 空闲（无 dirty）时完全 park 在事件上；dirty 但未到预算点才等待
         let need_frame_wait = dirty && tokio::time::Instant::now() < next_frame;
-        let activity_tick_enabled = app.prompt_running || app.compaction_progress.is_some();
+        let activity_tick_enabled = app.prompt_running
+            || app.compaction_progress.is_some()
+            || matches!(app.modal, Some(Modal::Monitor));
         // notice / warning 显示中：安排 TTL 到点重绘，擦除浮层
         let notice_deadline = app.notice_deadline().map(tokio::time::Instant::from_std);
         let warning_deadline = app.warning_deadline().map(tokio::time::Instant::from_std);
@@ -1025,7 +1027,7 @@ async fn event_loop(
             }
             _ = tokio::time::sleep_until(next_activity_tick), if activity_tick_enabled => {
                 next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
-                if app.prompt_running {
+                if app.prompt_running || matches!(app.modal, Some(Modal::Monitor)) {
                     dirty = true;
                 }
                 if app.tick_compaction() {
@@ -1852,6 +1854,7 @@ fn modal_dismissable(modal: &Modal) -> bool {
             | Modal::Subagents { .. }
             | Modal::Fusion { .. }
             | Modal::Rewind { .. }
+            | Modal::Monitor
     )
 }
 
@@ -4647,7 +4650,7 @@ fn handle_modal_key(
             (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => close = true,
             _ => {}
         },
-        Modal::Context { .. } => {
+        Modal::Context { .. } | Modal::Monitor => {
             if matches!(
                 (code, modifiers),
                 (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE)
@@ -6620,6 +6623,7 @@ fn dispatch_command(app: &mut App, connection: &EmbeddedConnection, id: CommandI
             _ => app.set_notice("用法：/plugins [reload]"),
         },
         CommandId::Usage => refresh_usage(app, connection, true),
+        CommandId::Monitor => app.modal = Some(Modal::Monitor),
         CommandId::Doctor => app.push_note(crate::doctor::report(app), false),
         CommandId::Help => app.modal = Some(Modal::Help { scroll: 0 }),
         CommandId::Context => open_context_content(app, connection),

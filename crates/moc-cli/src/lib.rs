@@ -21,6 +21,9 @@ pub enum Frontend {
 }
 
 pub async fn run(config: CliArgs, frontend: Frontend) -> anyhow::Result<()> {
+    // 进程级资源采样（`/monitor` 的数据源）：所有前端形态共用同一个环形缓冲，
+    // worker 子进程走独立入口不经过这里。
+    moc_core::procstats::start();
     // TUI 有 moc-tui 自己的文件日志；行式前端（REPL / print / --list / ACP）需要
     // stderr 订阅者，否则内核的 warn/error（例如 MCP 配置解析失败）会直接消失。
     if frontend != Frontend::Default || !repl::use_tui(&config) {

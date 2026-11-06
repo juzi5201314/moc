@@ -37,6 +37,7 @@ pub enum CommandId {
     Jobs,
     Resume,
     Features,
+    Monitor,
 }
 
 /// 自主程度命令的取值（与 `SessionAutonomy` 的 serde 名一致）。
@@ -432,6 +433,20 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         aliases: &[],
         usage: "",
         description: "终端能力诊断：探测结果与修复建议",
+        group: CommandGroup::Ui,
+        needs_session: false,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Monitor,
+        name: "monitor",
+        aliases: &["top"],
+        usage: "",
+        description: "进程资源监控：内存/CPU/磁盘/网络近 10 分钟折线",
         group: CommandGroup::Ui,
         needs_session: false,
         available_during_task: true,

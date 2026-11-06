@@ -220,7 +220,10 @@ impl Updater {
         response
             .bytes()
             .await
-            .map(|bytes| bytes.to_vec())
+            .map(|bytes| {
+                moc_llm::record_rx(bytes.len() as u64);
+                bytes.to_vec()
+            })
             .with_context(|| format!("读取 {url} 失败"))
     }
 

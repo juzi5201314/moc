@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -15,6 +16,7 @@ use crate::codec::{self, EncodedRequest};
 use crate::config::LlmConfig;
 use crate::error::{ApiError, ApiErrorKind, LlmError};
 use crate::stream::ChatStream;
+use crate::traffic::{record_rx, record_tx};
 use crate::types::{ChatRequest, ChatResponse};
 /// HTTP 客户端。
 #[derive(Debug, Clone)]
@@ -103,7 +105,7 @@ impl Client {
         .await
         .map_err(|_| deadline_error("流式请求在", deadline_secs))??;
         let body: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>> =
-            Box::pin(response.bytes_stream());
+            Box::pin(CountingStream::new(response.bytes_stream()));
         Ok(ChatStream::new(body, cfg, req))
     }
 
@@ -179,6 +181,7 @@ impl Client {
         stream: bool,
     ) -> Result<reqwest::Response, LlmError> {
         let mut builder = self.post(cfg, &encoded.url)?.body(encoded.body.clone());
+        record_tx(encoded.body.len() as u64);
         for (name, value) in &encoded.headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
@@ -252,6 +255,7 @@ async fn error_body(mut response: reqwest::Response) -> Vec<u8> {
         }
         match response.chunk().await {
             Ok(Some(chunk)) => {
+                record_rx(chunk.len() as u64);
                 if chunk.len() > room {
                     body.extend_from_slice(&chunk[..room]);
                     tracing::warn!(limit = MAX_ERROR_BODY_BYTES, "错误响应体超过上限，已截断");
@@ -284,8 +288,37 @@ async fn read_body(response: reqwest::Response) -> Result<Vec<u8>, LlmError> {
     response
         .bytes()
         .await
-        .map(|bytes| bytes.to_vec())
+        .map(|bytes| {
+            record_rx(bytes.len() as u64);
+            bytes.to_vec()
+        })
         .map_err(|error| LlmError::Stream(format!("读取响应体失败: {error}")))
+}
+
+/// `bytes_stream` 的计数包装：每交付一个 chunk 计入进程级 RX 计数器。
+struct CountingStream {
+    inner: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>,
+}
+
+impl CountingStream {
+    fn new(inner: impl Stream<Item = reqwest::Result<Bytes>> + Send + 'static) -> Self {
+        Self {
+            inner: Box::pin(inner),
+        }
+    }
+}
+
+impl Stream for CountingStream {
+    type Item = reqwest::Result<Bytes>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let poll = this.inner.as_mut().poll_next(cx);
+        if let Poll::Ready(Some(Ok(bytes))) = &poll {
+            record_rx(bytes.len() as u64);
+        }
+        poll
+    }
 }
 
 impl Default for Client {
@@ -403,5 +436,46 @@ mod tests {
         // 契约：core 可以对同一个 Client 并发发起任意多个请求。
         fn assert_send_sync<T: Send + Sync + Clone>() {}
         assert_send_sync::<Client>();
+    }
+
+    /// 精确计数：`CountingStream` 只计成功交付的 chunk 字节，错误项不计。
+    #[test]
+    fn counting_stream_accumulates_delivered_bytes() {
+        use crate::traffic::HTTP_RX_BYTES;
+        use std::collections::VecDeque;
+        use std::sync::atomic::Ordering;
+
+        struct Chunks(VecDeque<reqwest::Result<Bytes>>);
+        impl Stream for Chunks {
+            type Item = reqwest::Result<Bytes>;
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Option<Self::Item>> {
+                Poll::Ready(self.0.pop_front())
+            }
+        }
+
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let before = HTTP_RX_BYTES.load(Ordering::Relaxed);
+        let mut stream = CountingStream::new(Chunks(VecDeque::from([
+            Ok(Bytes::from_static(b"abc")),
+            Ok(Bytes::from_static(b"defg")),
+        ])));
+        assert!(matches!(
+            Pin::new(&mut stream).poll_next(&mut cx),
+            Poll::Ready(Some(Ok(_)))
+        ));
+        assert!(matches!(
+            Pin::new(&mut stream).poll_next(&mut cx),
+            Poll::Ready(Some(Ok(_)))
+        ));
+        assert!(matches!(
+            Pin::new(&mut stream).poll_next(&mut cx),
+            Poll::Ready(None)
+        ));
+        // 本测试二进制内没有别的 HTTP 流量，差值可以精确断言。
+        assert_eq!(HTTP_RX_BYTES.load(Ordering::Relaxed) - before, 7);
     }
 }
