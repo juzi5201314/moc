@@ -392,7 +392,9 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       void runBash(sessionId, command, exclude);
       return;
     }
-    if (images.length === 0 && runSlash(sessionId, trimmed, commands, features)) return;
+    // `.` 独占整条输入时是 /retry 的快捷写法：转写成命令，走同一套门控。
+    const dispatch = trimmed === "." ? "/retry" : trimmed;
+    if (images.length === 0 && runSlash(sessionId, dispatch, commands, features)) return;
 
     const input = toInput(trimmed, images);
     useComposer.getState().clearDraft(sessionId);

@@ -3180,6 +3180,15 @@ fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
         execute_command(app, connection, line.trim().to_owned());
         return;
     }
+    // `.` 独占整条输入时是 `/retry` 的快捷写法：走同一分派，忙时门控与提示完全复用。
+    if app.prompt_text().trim() == "." {
+        let (_, history) = app.prompt.take_committed_text();
+        if let Some(text) = history {
+            app.record_input_history(&text);
+        }
+        execute_command(app, connection, "/retry".to_owned());
+        return;
+    }
     if app.prompt.is_empty() {
         return;
     }
@@ -10612,6 +10621,67 @@ mod tests {
             Some("正在运行中，暂时不能执行 /retry")
         );
         assert!(app.inflight_prompts.is_empty(), "被拒的重试不得占通道");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// `.` 独占整条输入时是 `/retry` 的快捷写法：走同一分派，不追加用户块。
+    #[tokio::test]
+    async fn lone_dot_dispatches_retry() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let session_id = app.session.as_ref().unwrap().id.clone();
+        app.prompt.insert_str_raw(".");
+
+        commit_prompt(&mut app, &connection);
+
+        assert!(app.prompt.is_empty(), "`. ` 提交后输入框应清空");
+        assert!(app.prompt_running, "`. ` 应占用提示通道");
+        assert!(app.inflight_prompts.contains(&session_id));
+        assert!(
+            !app.blocks
+                .iter()
+                .any(|entry| matches!(entry.block, crate::transcript::Block::User { .. })),
+            "`. ` 不得追加用户消息"
+        );
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// `.` 只在独占整条输入时触发：后面还有内容按普通消息发送。
+    #[tokio::test]
+    async fn dot_with_more_text_sends_a_normal_prompt() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt.insert_str_raw(".tail");
+
+        commit_prompt(&mut app, &connection);
+
+        assert!(
+            app.blocks
+                .iter()
+                .any(|entry| matches!(entry.block, crate::transcript::Block::User { .. })),
+            "`.tail` 应作为普通消息发出"
+        );
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// `.` 在生成中同样被 `/retry` 的运行中门控拦下。
+    #[tokio::test]
+    async fn lone_dot_is_rejected_while_running() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt_running = true;
+        app.prompt.insert_str_raw(".");
+
+        commit_prompt(&mut app, &connection);
+
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("正在运行中，暂时不能执行 /retry")
+        );
+        assert!(app.inflight_prompts.is_empty(), "被拒的 `. ` 不得占通道");
 
         connection.shutdown().await;
         core.shutdown().await;

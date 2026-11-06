@@ -483,6 +483,13 @@ async fn run_repl(
             }
             continue;
         }
+        // `.` 独占整行时是 `/retry` 的快捷写法。
+        if line.trim() == "." {
+            if let Err(error) = send_retry(client, &session.id).await {
+                eprintln!("请求失败：{error:#}");
+            }
+            continue;
+        }
         if let Some(command) = line.strip_prefix('/') {
             match run_command(client, &registry, &features, command, &mut session, input).await {
                 Ok(CommandResult::Continue) => continue,
