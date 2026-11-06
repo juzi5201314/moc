@@ -91,10 +91,13 @@ pub fn inspect(
     let path = path(&home, cwd, scope);
     let text = contents(&path)?;
     let mut document = parse(&text)?;
+    super::selection::remove_legacy_roles(&mut document);
     super::remove_deprecated_retention_keys(&mut document);
     let (_, mut inherited) = merged(boot, scope, cwd, toml::Value::Table(Default::default()))?;
+    super::selection::remove_legacy_roles(&mut inherited);
     super::remove_deprecated_retention_keys(&mut inherited);
     let (_, mut effective) = merged(boot, scope, cwd, document.clone())?;
+    super::selection::remove_legacy_roles(&mut effective);
     super::remove_deprecated_retention_keys(&mut effective);
     super::apply_model_defaults(&mut effective)?;
     let mut effective =
@@ -137,6 +140,7 @@ pub fn save(
     remove_nulls(&mut document);
     let mut parsed =
         toml::Value::try_from(&document).map_err(|error| CoreError::Config(error.to_string()))?;
+    super::selection::remove_legacy_roles(&mut parsed);
     super::remove_deprecated_retention_keys(&mut parsed);
     let text =
         toml::to_string_pretty(&parsed).map_err(|error| CoreError::Config(error.to_string()))?;
@@ -266,6 +270,7 @@ pub fn patch_plugin(
     if plugins_empty {
         root.remove("plugins");
     }
+    super::selection::remove_legacy_roles(&mut document);
     super::remove_deprecated_retention_keys(&mut document);
     let output = toml::to_string_pretty(&document)
         .map_err(|error| CoreError::Config(format!("配置序列化失败：{error}")))?;

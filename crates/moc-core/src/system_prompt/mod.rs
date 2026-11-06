@@ -559,7 +559,7 @@ mod tests {
         let mut config = resolved_with_compat(&cwd, &home, "instruction_role = \"user\"");
         config.system_prompt.override_text = "Custom identity.".into();
         config.system_prompt.append = "Keep the appendix.".into();
-        let model = config.resolve_role("default").unwrap();
+        let model = config.resolve_model("p/model").unwrap();
         let files = context_files::load_context_files(&cwd, &config.home, &config.context_files);
         let prompt = build_btw(&config, &model, &cwd, &files);
         assert_eq!(prompt.messages.len(), 2);
@@ -594,7 +594,7 @@ mod tests {
         fs::create_dir_all(&cwd).expect("create repo");
         fs::write(cwd.join("AGENTS.md"), "Follow local rule.\n").expect("write rule");
         let config = resolved(&cwd, &home);
-        let model = config.resolve_role("default").expect("resolve model");
+        let model = config.resolve_model("p/model").expect("resolve model");
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
         let prompt = build(
@@ -644,7 +644,7 @@ mod tests {
         let cwd = directory.path().join("repo");
         let home = directory.path().join("home");
         let config = resolved(&cwd, &home);
-        let model = config.resolve_role("default").expect("resolve model");
+        let model = config.resolve_model("p/model").expect("resolve model");
         let prompt = build(
             &config,
             &model,
@@ -689,7 +689,7 @@ mod tests {
         fs::create_dir_all(&cwd).expect("create repo");
         let mut config = resolved(&cwd, &home);
         config.system_prompt.append = "Always answer in Chinese.".to_owned();
-        let model = config.resolve_role("default").expect("resolve model");
+        let model = config.resolve_model("p/model").expect("resolve model");
         let prompt = build(
             &config,
             &model,
@@ -717,7 +717,7 @@ mod tests {
         let cwd = directory.path().join("repo");
         let home = directory.path().join("home");
         let config = resolved(&cwd, &home);
-        let model = config.resolve_role("default").expect("resolve model");
+        let model = config.resolve_model("p/model").expect("resolve model");
         let prompt = build(
             &config,
             &model,
@@ -752,7 +752,7 @@ mod tests {
         fs::create_dir_all(&cwd).expect("create repo");
         fs::write(cwd.join("AGENTS.md"), "Follow local rule.\n").expect("write rule");
         let config = resolved_with_compat(&cwd, &home, "instruction_role = \"user\"");
-        let model = config.resolve_role("default").expect("resolve model");
+        let model = config.resolve_model("p/model").expect("resolve model");
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
         let prompt = build(
@@ -786,7 +786,9 @@ mod tests {
 
         // 与默认配置相比，片段正文相同，只有分组和顺序不同。
         let plain_config = resolved(&cwd, &home);
-        let plain_model = plain_config.resolve_role("default").expect("resolve model");
+        let plain_model = plain_config
+            .resolve_model("p/model")
+            .expect("resolve model");
         let plain = build(
             &plain_config,
             &plain_model,
@@ -841,7 +843,7 @@ mod tests {
         let home = directory.path().join("home");
         fs::create_dir_all(&cwd).expect("create repo");
         let mut config = resolved(&cwd, &home);
-        let model = config.resolve_role("default").expect("resolve model");
+        let model = config.resolve_model("p/model").expect("resolve model");
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
         let prompt = |config: &ResolvedConfig| {
@@ -890,7 +892,7 @@ mod tests {
         )
         .expect("write skill");
         let config = resolved(&cwd, &home);
-        let model = config.resolve_role("default").expect("resolve model");
+        let model = config.resolve_model("p/model").expect("resolve model");
         let skills =
             crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &config.skills);
         let context_files =

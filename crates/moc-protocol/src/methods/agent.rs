@@ -115,7 +115,7 @@ pub struct AgentSpawnParams {
     pub task: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// 仅允许 `inherit`、`default`、`explore`、`plan`；省略等同于 `inherit`。
+    /// 仅允许 `inherit`、`explore`；省略等同于 `inherit`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// 已注册的 agent preset 名；省略为默认子代理。

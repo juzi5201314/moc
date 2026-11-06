@@ -591,7 +591,6 @@ async fn execute_compacted_requires_the_pending_plan_steps() {
             session_id: session.clone(),
             plan_id: plan.plan_id,
             action: PlanAction::ExecuteCompacted,
-            execution_model: None,
             execution_engine: None,
         })
         .await

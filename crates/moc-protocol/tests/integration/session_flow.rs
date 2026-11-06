@@ -105,7 +105,6 @@ async fn new_session_methods_are_dispatched_to_core() {
             session_id: "ses_1".to_owned(),
             plan_id: "plan_12345678".to_owned(),
             action: PlanAction::Execute,
-            execution_model: None,
             execution_engine: None,
         })
         .await

@@ -16,7 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { FUSION_ALIAS, groupByProvider, modelName, parseFusion, parseSelector } from "@/lib/models";
+import { groupByProvider, modelName, parseSelector } from "@/lib/models";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { type DetailLevel, LEVEL_LABEL } from "@/lib/tool-view";
 import { cn } from "@/lib/utils";
@@ -267,13 +267,12 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
   const parsed = parseSelector(selector, models);
   const fallbackText = typeof fallback === "string" && fallback ? fallback : "";
   const levels = parsed.model?.thinking_levels ?? [];
-  // roles.default 与 roles.plan 可以选 `models.fusion` 组合；
-  // 值是 fusion 别名或规范 fusion: 组合时都显示为 Fusion 而不是「未找到」。
-  const fusionSelectable =
-    field.path[1] === "roles" && (field.path[2] === "default" || field.path[2] === "plan");
-  const fusionCurrent =
-    fusionSelectable && (selector === FUSION_ALIAS || parseFusion(selector) !== null);
-  const unknown = selector && !parsed.model && !fusionCurrent;
+  const inherited = selector === "inherit";
+  const unknown = selector && !parsed.model && !inherited;
+
+  let fallbackLabel = "默认";
+  if (fallbackText === "inherit") fallbackLabel = "默认（沿用父会话当前模型）";
+  else if (fallbackText) fallbackLabel = `默认（${modelName(fallbackText)}）`;
 
   const write = (id: string, level?: string) =>
     void writeField(field.path, id ? (level ? `${id}:${level}` : id) : undefined);
@@ -288,18 +287,16 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
     >
       <div className="flex gap-1.5">
         <Select
-          value={selector ? (fusionCurrent ? FUSION_ALIAS : parsed.id) : INHERIT}
+          value={selector ? parsed.id : INHERIT}
           onValueChange={(value) => write(value === INHERIT ? "" : value)}
         >
           <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 rounded-lg text-ui shadow-none">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={INHERIT}>
-              {fallbackText ? `默认（${modelName(fallbackText)}）` : "默认"}
-            </SelectItem>
-            {fusionSelectable && (
-              <SelectItem value={FUSION_ALIAS}>Fusion（models.fusion 组合）</SelectItem>
+            <SelectItem value={INHERIT}>{fallbackLabel}</SelectItem>
+            {field.path[2] === "explore" && (
+              <SelectItem value="inherit">沿用父会话当前模型</SelectItem>
             )}
             {unknown && <SelectItem value={parsed.id}>{parsed.id}（未找到）</SelectItem>}
             {groupByProvider(models).map(([provider, list]) => (

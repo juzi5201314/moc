@@ -30,6 +30,11 @@ pub enum ConfigAction {
         id: String,
         provider: Value,
     },
+    /// 用户在尚未创建会话的模型选择器中主动选择模型。
+    SelectModel {
+        cwd: String,
+        selector: String,
+    },
     Maintenance {
         apply: bool,
     },

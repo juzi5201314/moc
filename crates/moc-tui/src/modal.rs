@@ -29,7 +29,7 @@ pub struct PickerState {
     pub error: Option<String>,
 }
 
-/// 选择器里的一行：真实模型，或模型角色字段的伪值（沿用主模型 / 沿用当前会话模型）。
+/// 选择器里的一行：真实模型，或模型角色字段的伪值（沿用父会话当前模型 / 沿用当前会话模型）。
 #[derive(Debug, Clone)]
 pub struct ModelEntry {
     /// 写回配置或会话的 selector，不含思考等级；伪值就是 `inherit` / `none`。
@@ -182,7 +182,6 @@ pub struct PlanReviewState {
     pub editor: Option<PlanAnnotationEditor>,
     pub selected: usize,
     pub scroll_offset: usize,
-    pub execution_model: String,
     /// 「在新会话执行」的目标引擎；默认沿用当前会话引擎。
     pub execution_engine: moc_protocol::SessionEngine,
     pub submitting: bool,
@@ -200,7 +199,6 @@ pub struct PlanReviewState {
 impl PlanReviewState {
     pub fn new(
         plan: moc_protocol::methods::PlanInfo,
-        execution_model: String,
         execution_engine: moc_protocol::SessionEngine,
     ) -> Self {
         // 有上一版时优先让用户看「改了什么」，没有才看正文。
@@ -222,7 +220,6 @@ impl PlanReviewState {
             editor: None,
             selected: 0,
             scroll_offset: 0,
-            execution_model,
             execution_engine,
             submitting: false,
             error: None,
@@ -385,11 +382,9 @@ fn truncate_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
-/// 同一模型选择器可切换会话模型，也可只选择计划执行模型。
+/// 模型选择器的写入目标。
 pub enum ModelTarget {
     Session,
-    // 装箱收窄枚举：PlanReviewState 比其余变体大 200+ 字节。
-    PlanReview(Box<PlanReviewState>),
     /// `/config` 的模型角色字段：选中后写回该路径的配置值。
     Config {
         path: Vec<String>,
@@ -1701,7 +1696,7 @@ mod tests {
 
         let inherit = ModelEntry {
             selector: "inherit".into(),
-            label: "沿用主模型".into(),
+            label: "沿用父会话当前模型".into(),
             display_name: String::new(),
             levels: Vec::new(),
             context_window: None,
@@ -1722,7 +1717,7 @@ mod tests {
         let entries = vec![
             ModelEntry {
                 selector: "inherit".into(),
-                label: "沿用主模型".into(),
+                label: "沿用父会话当前模型".into(),
                 display_name: String::new(),
                 levels: Vec::new(),
                 context_window: None,
@@ -1750,7 +1745,7 @@ mod tests {
         assert_eq!(found(""), vec!["inherit", "p/model"], "空查询不过滤");
         assert_eq!(found("model"), vec!["p/model"]);
         assert_eq!(found("deepseek"), vec!["p/model"], "展示名参与匹配");
-        assert_eq!(found("主模型"), vec!["inherit"], "伪值按标签匹配");
+        assert_eq!(found("父会话"), vec!["inherit"], "伪值按标签匹配");
     }
 
     /// 预览判定：只认非空预览，且只作用于提问模态的当前问题。

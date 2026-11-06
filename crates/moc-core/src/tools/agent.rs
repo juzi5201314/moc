@@ -114,12 +114,12 @@ impl Tool for SpawnAgentTool {
                         "type":"object","properties":{
                             "task":{"type":"string","minLength":1},
                             "title":{"type":"string"},
-                            "model":{"type":"string","enum":["inherit","default","explore","plan"]},
+                            "model":{"type":"string","enum":["inherit","explore"]},
                             "preset":{"type":"string"},
                             "output_schema":{"type":"object"}
                         },"required":["task"],"additionalProperties":false}},
                     "title": {"type":"string"},
-                    "model":{"type":"string","enum":["inherit","default","explore","plan"]},
+                    "model":{"type":"string","enum":["inherit","explore"]},
                     "preset":{"type":"string"},
                     "context":{"type":"string"},
                     "output_schema":{"type":"object"}
@@ -181,11 +181,11 @@ impl Tool for SpawnAgentTool {
             let mut errors = Vec::new();
             for (index, item) in items.into_iter().enumerate() {
                 if let Some(model) = item.model.as_deref()
-                    && !matches!(model, "inherit" | "default" | "explore" | "plan")
+                    && !matches!(model, "inherit" | "explore")
                 {
                     errors.push(serde_json::json!({
                         "index": index,
-                        "error": "model must be inherit, default, explore, or plan",
+                        "error": "model must be inherit or explore",
                     }));
                     continue;
                 }

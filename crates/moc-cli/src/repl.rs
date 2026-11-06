@@ -286,7 +286,7 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
     let builder = ClientBuilder::new(ClientInfo {
         name: "moc-cli".into(),
         version: env!("CARGO_PKG_VERSION").into(),
-        frontend: "tui".into(),
+        frontend: if args.print { "print" } else { "tui" }.into(),
     })
     .capabilities(ClientCapabilities {
         permission_requests: !args.print,
@@ -316,7 +316,6 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
                             session_id,
                             plan_id,
                             action: PlanAction::ExecuteCompacted,
-                            execution_model: None,
                             execution_engine: None,
                         })
                         .await;
@@ -561,7 +560,7 @@ async fn run_command(
             *session = client
                 .call::<SessionNew>(SessionNewParams {
                     cwd: Some(session.cwd.clone()),
-                    model: Some(session.model.clone()),
+                    model: None,
                     title: None,
                     engine: session.engine,
                     plan_active: false,
@@ -929,7 +928,6 @@ async fn approve_plan(
             session_id: session.id.clone(),
             plan_id: plan.plan_id.clone(),
             action,
-            execution_model: None,
             execution_engine,
         })
         .await?;

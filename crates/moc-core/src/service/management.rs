@@ -300,6 +300,12 @@ pub(super) async fn manage(
                 models = discovery::models(&id, provider) => models.map(ConfigReply::Models),
             }
         }
+        ConfigAction::SelectModel { cwd, selector } => {
+            let config = inner.project_config(Path::new(&cwd))?;
+            let model = config.resolve_model(&selector)?;
+            crate::config::selection::save(&config.home, &model.selector)?;
+            Ok(ConfigReply::Updated(model.selector))
+        }
         ConfigAction::Maintenance { apply } => {
             let cancel = ctx.cancel();
             let _epoch = tokio::select! {

@@ -16,6 +16,7 @@ mod fs_list_flow;
 mod goal_flow;
 mod grok_build_compaction;
 mod loop_guard_flow;
+mod model_selection_flow;
 mod plugin_flow;
 mod plugin_persistence;
 mod prompt_flow;

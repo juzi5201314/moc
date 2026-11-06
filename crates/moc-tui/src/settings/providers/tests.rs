@@ -250,9 +250,9 @@ async fn create_discover_filter_add_and_edit_in_one_page() {
             .get("c/other")
             .is_none()
     );
-    assert_eq!(
-        doc["models"]["roles"]["default"], "new-provider/a/fast",
-        "首次初始化只取首个模型"
+    assert!(
+        doc.pointer("/models/roles/default").is_none(),
+        "导入候选不替用户选择模型"
     );
     assert!(
         panel

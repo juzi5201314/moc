@@ -3,6 +3,7 @@
 // 只有 `session/load` 会取跨进程写租约，所以打开时先 load（max_entries=0，省略辅助状态），
 // 再通过可分块的历史读取取得展示转写、todo、目标与计划版本。
 
+import { toast } from "sonner";
 import { attachEntryIds, entriesToBlocks } from "@/lib/transcript-model";
 import { clientListeners, rpc } from "@/protocol/client";
 import { ErrorCode, RpcError } from "@/protocol/errors";
@@ -375,8 +376,8 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
   const { workspaces } = usePrefs.getState();
   const config = useConnection.getState().config;
   const cwd = targetCwd ?? activeInfo?.cwd ?? workspaces[0] ?? list[0]?.cwd ?? config?.cwd ?? "";
-  // 沿用当前会话的模型与 Fast Mode；没有时留空，交给 core 用 `models.roles.default`。
-  const model = activeInfo?.model;
+  // 新会话采用 core 的最近选择，打开旧会话不会改变它。
+  const model = config?.default_model;
   const fast = activeInfo?.fast_mode ?? false;
 
   const now = Date.now();
@@ -384,7 +385,7 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
     id: "draft-session",
     title: "新会话",
     cwd,
-    model: model ?? config?.default_model ?? "",
+    model: model ?? "",
     engine: "standard",
     autonomy: "default",
     plan_active: false,
@@ -398,11 +399,19 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
 
   useSessions
     .getState()
-    .setDraftSession({ cwd, model, engine: "standard", autonomy: "default", plan: false, fast });
+    .setDraftSession({ cwd, engine: "standard", autonomy: "default", plan: false, fast });
   useTranscript.getState().drop(draftInfo.id);
   useTranscript.getState().ensureView(draftInfo);
   useTabs.getState().add(draftInfo.id);
   requestComposerFocus();
+  if (useConnection.getState().status === "online") {
+    void useConnection
+      .getState()
+      .refreshConfig()
+      .catch((error: unknown) => {
+        toast.error(`读取最近模型失败：${String(error)}`);
+      });
+  }
   return draftInfo;
 }
 
@@ -482,7 +491,15 @@ export async function setSessionModel(
   selector: string,
 ): Promise<SessionSetModelResult | null> {
   if (sessionId === "draft-session") {
-    patchDraft({ model: selector }, { model: selector });
+    const draft = useSessions.getState().draftSession;
+    if (!draft) return null;
+    const reply = await rpc.call<{ kind: "updated"; data: string }>("config/manage", {
+      action: "select_model",
+      cwd: draft.cwd,
+      selector,
+    });
+    patchDraft({ model: reply.data }, { model: reply.data });
+    await useConnection.getState().refreshConfig();
     return null;
   }
   const result = await rpc.call<SessionSetModelResult>("session/set_model", {
@@ -490,6 +507,7 @@ export async function setSessionModel(
     selector,
   });
   applyInfo(result.session);
+  await useConnection.getState().refreshConfig();
   return result;
 }
 
@@ -581,6 +599,16 @@ export async function reopenWith(sessionId: string, result: SessionLoadResult): 
   await openSession(sessionId);
   void useSessions.getState().refresh();
 }
+
+useConnection.subscribe((state, previous) => {
+  if (state.config === previous.config) return;
+  const draft = useSessions.getState().draftSession;
+  if (draft && draft.model === undefined) {
+    useTranscript.getState().mutate("draft-session", (view) => {
+      view.info.model = state.config?.default_model ?? "";
+    });
+  }
+});
 
 // ---------- 连接事件 ----------
 

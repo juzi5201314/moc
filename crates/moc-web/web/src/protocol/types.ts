@@ -105,6 +105,7 @@ export type ModelInfo = {
 
 export type ConfigGetResult = {
   models: ModelInfo[];
+  /** core 保存的最近主动选择，包含思考等级或完整 Fusion 组合。 */
   default_model?: string;
   agents: { id: string; display_name: string; description?: string }[];
   default_agent?: string;
@@ -138,6 +139,7 @@ export type ConfigAction =
   | { action: "read"; scope: ConfigScope; cwd: string }
   | { action: "save"; scope: ConfigScope; cwd: string; document: unknown; revision: string }
   | { action: "models"; id: string; provider: unknown }
+  | { action: "select_model"; cwd: string; selector: string }
   | { action: "maintenance"; apply: boolean };
 
 export type ChoiceOption = {

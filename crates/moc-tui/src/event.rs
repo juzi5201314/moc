@@ -177,8 +177,11 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
         app.models = config.models;
         app.fusion_defaults = config.fusion.clone();
         app.features = config.features;
-        if config.default_model.is_none() && opts.model.is_none() {
-            app.set_notice("首次启动：请添加供应商并选择至少一个模型");
+        if opts.resume.is_none() && config.default_model.is_none() && opts.model.is_none() {
+            app.set_notice("请选择本次使用的模型，之后会自动记住");
+            if !app.models.is_empty() {
+                app.open_model_picker();
+            }
             return Ok(None);
         }
         let loaded = match &opts.resume {
@@ -704,9 +707,9 @@ fn open_tools(app: &mut App, connection: &EmbeddedConnection) {
     let events = app.events.clone();
     tokio::spawn(async move {
         let result = client
-            .call::<moc_protocol::methods::SessionTools>(moc_protocol::methods::SessionToolsParams {
-                session_id,
-            })
+            .call::<moc_protocol::methods::SessionTools>(
+                moc_protocol::methods::SessionToolsParams { session_id },
+            )
             .await
             .map_err(anyhow::Error::from);
         let _ = events.send(AppEvent::Tools { request, result });
@@ -2057,10 +2060,6 @@ fn handle_plan_mouse(
     let height = usize::from(app.plan_body_area.height).max(1);
     let position = (mouse.column, mouse.row).into();
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-        if app.plan_model_area.contains(position) {
-            app.open_plan_model_picker();
-            return;
-        }
         // 动作行（执行 / 压缩后执行 / 新会话执行 / 继续计划）：点中即选中并确认。
         if let Some((index, _)) = app
             .modal_item_hits
@@ -3292,8 +3291,6 @@ enum FusionNav {
         crate::modal::FusionDraft,
         Box<crate::modal::ModelTarget>,
     ),
-    /// 回到计划审阅（Esc 或应用后）：还原 `Modal::Plan`。
-    Plan,
 }
 
 /// `session/set_model` 的异步发起：Session 目标与 Fusion 卡「应用」共用；
@@ -3301,9 +3298,46 @@ enum FusionNav {
 fn request_session_model(
     app: &mut App,
     connection: &EmbeddedConnection,
-    session_id: String,
+    session_id: Option<String>,
     selector: String,
 ) {
+    let Some(session_id) = session_id else {
+        let client = connection.client.clone();
+        let events = app.events.clone();
+        let cwd = app.startup_cwd.clone();
+        let engine = app.startup_engine;
+        let plan_active = app.startup_plan;
+        tokio::spawn(async move {
+            match client
+                .call::<SessionNew>(SessionNewParams {
+                    cwd: Some(cwd),
+                    model: Some(selector),
+                    title: None,
+                    engine,
+                    plan_active,
+                    fast_mode: false,
+                })
+                .await
+            {
+                Ok(session) => {
+                    let _ = events.send(AppEvent::Loaded(
+                        session,
+                        Vec::new(),
+                        false,
+                        None,
+                        Vec::new(),
+                        false,
+                        None,
+                    ));
+                }
+                Err(error) => {
+                    let _ = events.send(AppEvent::Notice(format!("创建会话失败：{error}")));
+                }
+            }
+        });
+        app.modal = None;
+        return;
+    };
     app.inflight_session_ops.insert(session_id.clone());
     let client = connection.client.clone();
     let events = app.events.clone();
@@ -3499,10 +3533,9 @@ fn plan_read_key(
     code: KeyCode,
 ) {
     let session_id = app.session.as_ref().map(|session| session.id.clone());
-    let (plan_id, execution_model, execution_engine, selected, status) = match app.modal.as_ref() {
+    let (plan_id, execution_engine, selected, status) = match app.modal.as_ref() {
         Some(Modal::Plan { state }) => (
             state.plan_id.clone(),
-            state.execution_model.clone(),
             state.execution_engine,
             state.selected,
             state.status,
@@ -3580,7 +3613,6 @@ fn plan_read_key(
                         session_id,
                         plan_id,
                         action,
-                        execution_model: Some(execution_model),
                         execution_engine: Some(execution_engine),
                     })
                     .await
@@ -3657,10 +3689,6 @@ fn handle_modal_key(
         if state.submitting {
             return;
         }
-        if (code, modifiers) == (KeyCode::Char('p'), KeyModifiers::CONTROL) {
-            app.open_plan_model_picker();
-            return;
-        }
         // 计划审阅有自己的编辑/选区语义，整体交给 `plan_modal_key`。
         plan_modal_key(app, connection, modifiers, code);
         return;
@@ -3669,7 +3697,6 @@ fn handle_modal_key(
     let events = app.events.clone();
     let mut close = false;
     let mut focus_target: Option<String> = None;
-    let mut return_plan_review = false;
     // 模型角色字段选定的值：延迟到模态借用结束后写回配置。
     let mut config_pick: Option<(Vec<String>, String, String)> = None;
     // Fusion 卡的跳转（打开/槽位回填/返回计划审阅/打开槽位选择器）延迟到
@@ -3682,7 +3709,7 @@ fn handle_modal_key(
         Box<crate::modal::ModelTarget>,
     )> = None;
     // `session/set_model` 的发起也延后：模态借用期拿不走 `&mut App`。
-    let mut session_apply: Option<(String, String)> = None;
+    let mut session_apply: Option<(Option<String>, String)> = None;
     // workflow：模型选择后还原的 modal、审批决策、待打开 run 面板/选择器。
     let mut workflow_back: Option<crate::workflow::WorkflowRoleBack> = None;
     let mut workflow_decision: Option<(String, moc_protocol::methods::WorkflowDecision)> = None;
@@ -4318,20 +4345,12 @@ fn handle_modal_key(
                     // Fusion 特殊项打开组合配置卡而不是直接应用；
                     // 配置卡的 Enter/Esc 都在 `Modal::Fusion` 分支里处理。
                     if entry.selector == crate::modal::FUSION_ENTRY_SELECTOR
-                        && matches!(
-                            target,
-                            crate::modal::ModelTarget::Session
-                                | crate::modal::ModelTarget::PlanReview(_)
-                        )
+                        && matches!(target, crate::modal::ModelTarget::Session)
                     {
                         fusion_nav = Some(FusionNav::Open);
                     } else {
                         let selector = entry.selector_with(level.resolve(&entry.levels).as_deref());
                         match target {
-                            crate::modal::ModelTarget::PlanReview(state) => {
-                                state.execution_model = selector;
-                                return_plan_review = true;
-                            }
                             crate::modal::ModelTarget::Config { path, label } => {
                                 config_pick = Some((path.clone(), label.clone(), selector));
                             }
@@ -4367,13 +4386,9 @@ fn handle_modal_key(
                                 }
                             }
                             crate::modal::ModelTarget::Session => {
-                                let Some(session_id) = session_id.clone() else {
-                                    picker.error = Some("当前没有活动会话".into());
-                                    return;
-                                };
                                 picker.loading = true;
                                 picker.error = None;
-                                session_apply = Some((session_id, selector));
+                                session_apply = Some((session_id.clone(), selector));
                             }
                         }
                     }
@@ -4392,8 +4407,6 @@ fn handle_modal_key(
                             std::mem::take(draft),
                             std::mem::replace(origin, Box::new(crate::modal::ModelTarget::Session)),
                         ));
-                    } else if matches!(target, crate::modal::ModelTarget::PlanReview(_)) {
-                        return_plan_review = true;
                     } else if matches!(target, crate::modal::ModelTarget::WorkflowRole { .. }) {
                         // 取消选择：原样放回回程票，不写覆盖。
                         let owned = std::mem::replace(target, crate::modal::ModelTarget::Session);
@@ -4456,18 +4469,10 @@ fn handle_modal_key(
                             let selector =
                                 crate::modal::fusion_selector(&draft.lead, &draft.sidekick);
                             match &mut **origin {
-                                crate::modal::ModelTarget::PlanReview(state) => {
-                                    state.execution_model = selector;
-                                    fusion_nav = Some(FusionNav::Plan);
-                                }
                                 crate::modal::ModelTarget::Session => {
-                                    let Some(session_id) = session_id.clone() else {
-                                        *error = Some("当前没有活动会话".into());
-                                        return;
-                                    };
                                     *loading = true;
                                     *error = None;
-                                    session_apply = Some((session_id, selector));
+                                    session_apply = Some((session_id.clone(), selector));
                                 }
                                 _ => {}
                             }
@@ -4475,13 +4480,7 @@ fn handle_modal_key(
                     }
                 }
             }
-            (KeyCode::Esc, _) => {
-                if matches!(&**origin, crate::modal::ModelTarget::PlanReview(_)) {
-                    fusion_nav = Some(FusionNav::Plan);
-                } else {
-                    close = true;
-                }
-            }
+            (KeyCode::Esc, _) => close = true,
             _ => {}
         },
 
@@ -5166,13 +5165,6 @@ fn handle_modal_key(
                     error: None,
                 });
             }
-            FusionNav::Plan => {
-                if let Some(Modal::Fusion { origin, .. }) = app.modal.take()
-                    && let crate::modal::ModelTarget::PlanReview(state) = *origin
-                {
-                    app.modal = Some(Modal::Plan { state });
-                }
-            }
         }
     }
 
@@ -5184,15 +5176,7 @@ fn handle_modal_key(
         return;
     }
 
-    if return_plan_review {
-        if let Some(Modal::Model {
-            target: crate::modal::ModelTarget::PlanReview(state),
-            ..
-        }) = app.modal.take()
-        {
-            app.modal = Some(Modal::Plan { state });
-        }
-    } else if close {
+    if close {
         // 最小化的 workflow 审批：状态移进状态栏胶囊（点击重开），不算已决。
         if let Some(Modal::WorkflowApproval { state }) = app.modal.take()
             && state.parked
@@ -5357,11 +5341,7 @@ fn open_plan_review(app: &mut App, plan: moc_protocol::methods::PlanInfo) {
         return;
     };
     app.modal = Some(Modal::Plan {
-        state: Box::new(crate::modal::PlanReviewState::new(
-            plan,
-            session.model.clone(),
-            session.engine,
-        )),
+        state: Box::new(crate::modal::PlanReviewState::new(plan, session.engine)),
     });
 }
 
@@ -5705,8 +5685,7 @@ fn apply_update_and_refresh(
     {
         let client = connection.client.clone();
         let events = app.events.clone();
-        let (session_id, model, engine) =
-            (session.id.clone(), session.model.clone(), session.engine);
+        let (session_id, engine) = (session.id.clone(), session.engine);
         app.set_notice("unattended：已自动批准计划（压缩并执行）");
         tokio::spawn(async move {
             let result = client
@@ -5714,7 +5693,6 @@ fn apply_update_and_refresh(
                     session_id,
                     plan_id,
                     action: moc_protocol::methods::PlanAction::ExecuteCompacted,
-                    execution_model: Some(model),
                     execution_engine: Some(engine),
                 })
                 .await
@@ -6576,23 +6554,16 @@ fn dispatch_command(app: &mut App, connection: &EmbeddedConnection, id: CommandI
         CommandId::New => {
             let client = connection.client.clone();
             let events = app.events.clone();
-            let (cwd, model, engine, fast_mode) = app
+            let (cwd, engine, fast_mode) = app
                 .session
                 .as_ref()
-                .map(|session| {
-                    (
-                        Some(session.cwd.clone()),
-                        Some(session.model.clone()),
-                        session.engine,
-                        session.fast_mode,
-                    )
-                })
-                .unwrap_or((None, None, SessionEngine::Standard, false));
+                .map(|session| (Some(session.cwd.clone()), session.engine, session.fast_mode))
+                .unwrap_or((None, SessionEngine::Standard, false));
             tokio::spawn(async move {
                 match client
                     .call::<SessionNew>(SessionNewParams {
                         cwd,
-                        model,
+                        model: None,
                         title: None,
                         engine,
                         plan_active: false,
@@ -10241,7 +10212,10 @@ mod tests {
         app.prompt.insert_str_raw("别丢了我");
         crate::queue::submit(&mut app, &connection, false);
         assert_eq!(app.prompt.text, "别丢了我", "被拒绝的草稿要回到输入框");
-        assert_eq!(app.notice.as_deref(), Some("请先在 /config 配置一个主模型"));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("请先用 /model 选择模型；没有候选时到 /config 添加供应商")
+        );
         connection.shutdown().await;
         core.shutdown().await;
     }
@@ -11822,6 +11796,82 @@ mod tests {
 mod config_picker_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn startup_selects_then_remembers_model_and_resume_ignores_missing_preference() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("config.toml"), "[providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n[providers.p.models.m]\n[workspace]\nwatch=false\n[plugins]\nenabled=false\n").unwrap();
+        let core = Core::new(moc_core::CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            session_dir: Some(root.path().join("sessions")),
+            ..Default::default()
+        })
+        .unwrap();
+        let (events, mut receiver) = unbounded_channel();
+        let connection = connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let mut app = App::new(Theme::global(), events.clone());
+        app.startup_plan = true;
+        bootstrap(
+            &connection.client,
+            &mut app,
+            &TuiOptions {
+                plan: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(app.session.is_none());
+        let Some(Modal::Model {
+            entries, picker, ..
+        }) = app.modal.as_mut()
+        else {
+            panic!("没有记忆时应打开模型选择器");
+        };
+        picker.selected = entries
+            .iter()
+            .position(|entry| entry.selector.starts_with("p/m"))
+            .unwrap();
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        let info = loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(3), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if let AppEvent::Loaded(info, ..) = event {
+                break info;
+            }
+        };
+        assert_eq!(info.model, "p/m:off");
+        assert!(info.plan_active);
+        let mut next = App::new(Theme::global(), events.clone());
+        bootstrap(&connection.client, &mut next, &TuiOptions::default()).await;
+        assert_eq!(next.session.as_ref().unwrap().model, info.model);
+        moc_core::config::selection::save(root.path(), "p/deleted:off").unwrap();
+        connection
+            .client
+            .call::<moc_protocol::SessionUnload>(moc_protocol::SessionUnloadParams {
+                session_id: info.id.clone(),
+            })
+            .await
+            .unwrap();
+        let mut restored = App::new(Theme::global(), events);
+        bootstrap(
+            &connection.client,
+            &mut restored,
+            &TuiOptions {
+                resume: Some(Some(info.id.clone())),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(restored.session.as_ref().unwrap().id, info.id);
+        assert_eq!(restored.session.as_ref().unwrap().model, "p/m:off");
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
     /// `/config` 的模型角色字段与 `Ctrl+P` 共用选择器：候选取自 core（带思考等级），
     /// 选中后写回该字段的配置值，不切换会话模型。
 
@@ -11861,11 +11911,11 @@ mod config_picker_tests {
             .unwrap()
             .models;
 
-        // 面板只放主模型字段：行由文档重建，选中该行后按 Enter。
+        // 面板只放探索模型字段：行由文档重建，选中该行后按 Enter。
         let role = vec![
             "models".to_owned(),
             "roles".to_owned(),
-            "default".to_owned(),
+            "explore".to_owned(),
         ];
         app.settings = Some(SettingsPanel {
             id: 1,
@@ -11877,7 +11927,7 @@ mod config_picker_tests {
                 document: json!({}),
                 effective: json!({}),
                 inherited: json!({
-                    "models": {"roles": {"default": "test/big:low"}},
+                    "models": {"roles": {"explore": "test/big:low"}},
                     "providers": {"test": {"models": {"big": {}, "small": {}}}},
                 }),
                 defaults: json!({}),
@@ -11918,7 +11968,7 @@ mod config_picker_tests {
                 .position(|row| {
                     matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == role)
                 })
-                .expect("主模型行");
+                .expect("探索模型行");
             panel.selected = index;
         }
 
@@ -11931,7 +11981,7 @@ mod config_picker_tests {
                     ..
                 }) if *path == role
             ),
-            "主模型字段按 Enter 打开共用选择器"
+            "探索模型字段按 Enter 打开共用选择器"
         );
         let choice = |app: &App| {
             app.modal
@@ -11988,7 +12038,7 @@ mod config_picker_tests {
         let document = &panel.data.as_ref().expect("设置文档").document;
         assert_eq!(
             document
-                .pointer("/models/roles/default")
+                .pointer("/models/roles/explore")
                 .and_then(Value::as_str),
             Some("test/big:max"),
             "选中的 selector 写回配置"
@@ -11997,11 +12047,10 @@ mod config_picker_tests {
         core.shutdown().await;
     }
 
-    /// 计划执行模型可选 Fusion 组合：特殊项 → 配置卡 → 两侧槽位选择器 → 应用。
+    /// 会话模型选择器的 Fusion 组合复用两侧槽位选择器。
     #[tokio::test]
-    async fn plan_review_fusion_pair_flows_through_slot_pickers() {
+    async fn session_fusion_pair_flows_through_slot_pickers() {
         use moc_core::{Core, CoreConfig};
-        use moc_protocol::methods::{PlanInfo, PlanStatus};
 
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -12030,24 +12079,11 @@ mod config_picker_tests {
             .unwrap()
             .models;
 
-        let plan = PlanInfo {
-            plan_id: "p".into(),
-            title: "计划".into(),
-            path: "p".into(),
-            markdown: "m".into(),
-            status: PlanStatus::Submitted,
-            version: 1,
-            previous_plan_id: None,
-            annotations: Vec::new(),
-        };
-        app.modal = Some(Modal::Plan {
-            state: Box::new(crate::modal::PlanReviewState::new(
-                plan,
-                "test/big:low".into(),
-                moc_protocol::SessionEngine::Standard,
-            )),
-        });
-        app.open_plan_model_picker();
+        app.open_model_picker_for(
+            "test/big:low".into(),
+            &[],
+            crate::modal::ModelTarget::Session,
+        );
 
         // Fusion 特殊项排在候选首位；Enter 进入组合配置卡。
         let Some(Modal::Model {
@@ -12097,15 +12133,12 @@ mod config_picker_tests {
         assert_eq!(draft.sidekick, "test/small:medium");
         assert_eq!(*focus, 2);
 
-        // 应用：回到计划审阅，execution_model 是规范 Fusion selector。
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        let Some(Modal::Plan { state }) = app.modal.as_ref() else {
-            panic!("应用后应回到计划审阅");
-        };
         assert_eq!(
-            state.execution_model,
+            crate::modal::fusion_selector(&draft.lead, &draft.sidekick),
             "fusion:test/big:low+test/small:medium"
         );
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        assert!(app.modal.is_none());
         connection.shutdown().await;
         core.shutdown().await;
     }

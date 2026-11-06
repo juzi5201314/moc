@@ -67,10 +67,8 @@ pub(super) struct ModelCatalog {
     pub fusion: FusionDefaults,
 }
 
-/// 角色选择器：沿用主模型。
+/// 探索子代理选择器：沿用父会话当前模型。
 pub const ROLE_INHERIT: &str = "inherit";
-/// 计划模型选择器：进入计划模式时不切换模型，沿用会话当前模型。
-pub const ROLE_NONE: &str = "none";
 
 /// Fusion 选择器别名：展开为 `[models.fusion]` 里配置的 lead/sidekick 组合。
 pub const FUSION_ALIAS: &str = "fusion";
@@ -120,17 +118,13 @@ pub struct FusionModels {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelRoles {
-    pub default: String,
     pub explore: String,
-    pub plan: String,
 }
 
 impl Default for ModelRoles {
     fn default() -> Self {
         Self {
-            default: String::new(),
             explore: "inherit".into(),
-            plan: "inherit".into(),
         }
     }
 }
@@ -861,33 +855,10 @@ pub(super) fn validate_models(
             })?;
         }
     }
-    let roles = &catalog.roles;
-    // 首次启动允许空目录进入设置页；真正创建会话时必须解析出主模型。
-    if roles.default.is_empty()
-        && providers
-            .values()
-            .all(|provider| provider.models.is_empty())
-    {
-        return Ok(());
-    }
-    for (role, selector, allows_none) in [
-        ("主模型", roles.default.as_str(), false),
-        ("探索子代理模型", roles.explore.as_str(), false),
-        ("计划模型", roles.plan.as_str(), true),
-    ] {
-        if selector == ROLE_NONE {
-            if allows_none {
-                continue;
-            }
-            return Err(CoreError::Config(format!("{role}不能设置为 none")));
-        }
-        let selector = if selector == ROLE_INHERIT && role != "主模型" {
-            roles.default.as_str()
-        } else {
-            selector
-        };
-        resolve_selector(providers, &catalog.fusion, selector)
-            .map_err(|error| CoreError::Config(format!("{role}无法解析：{}", error.detail())))?;
+    if catalog.roles.explore != ROLE_INHERIT {
+        resolve_selector(providers, &catalog.fusion, &catalog.roles.explore).map_err(|error| {
+            CoreError::Config(format!("探索子代理模型无法解析：{}", error.detail()))
+        })?;
     }
     Ok(())
 }

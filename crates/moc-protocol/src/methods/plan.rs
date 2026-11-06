@@ -8,10 +8,8 @@ use crate::method::{ClientRequest, Method};
 
 /// `session/plan_mode`：进入或退出 plan 模式。
 ///
-/// plan 是叠加在会话引擎上的持久模式：进入时会话模型切到
-/// `models.roles.plan` 指定的模型（该角色为 `none` 时沿用当前模型），退出时
-/// 恢复进入前的模型；模型切换经 [`super::update::SessionUpdate::ModelChanged`]
-/// 推送，plan 状态本身经 [`super::update::SessionUpdate::PlanModeChanged`] 推送。
+/// plan 是叠加在会话引擎上的持久模式；进出模式不改变模型。
+/// plan 状态经 [`super::update::SessionUpdate::PlanModeChanged`] 推送。
 /// 可在任意引擎、会话任意阶段进出，不影响原生工具表。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionPlanMode;
@@ -36,8 +34,7 @@ pub struct SessionPlanModeParams {
 
 /// `session/plan_approve`：批准或拒绝已提交计划。
 ///
-/// 批准后原地执行退出 plan 模式并使用指定执行模型；新会话执行也使用该模型。
-/// execution_model 缺省时使用审批发生时的当前会话模型。
+/// 批准后原地执行退出 plan 模式并保持当前模型；新会话执行继承当前模型。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionPlanApprove;
 
@@ -56,9 +53,6 @@ pub struct SessionPlanApproveParams {
     pub session_id: String,
     pub plan_id: String,
     pub action: PlanAction,
-    /// 缺省时使用审批发生时的会话模型；完整 selector 可保留推理强度。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution_model: Option<String>,
     /// `execute_new_session` 的目标会话引擎；缺省沿用源会话引擎。
     /// 其他动作下忽略。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,40 +259,27 @@ mod tests {
             session_id: "ses_1".into(),
             plan_id: "plan_1".into(),
             action: PlanAction::Execute,
-            execution_model: None,
             execution_engine: None,
         };
         assert_eq!(
             serde_json::to_value(params).expect("缺省执行模型可序列化"),
             serde_json::json!({"session_id": "ses_1", "plan_id": "plan_1", "action": "execute"})
         );
-        assert_eq!(
-            serde_json::from_value::<SessionPlanApproveParams>(serde_json::json!({
-                "session_id": "ses_1", "plan_id": "plan_1", "action": "execute"
-            }))
-            .expect("缺省执行模型可反序列化")
-            .execution_model,
-            None
-        );
-        assert_eq!(
+        assert!(
             serde_json::from_value::<SessionPlanApproveParams>(serde_json::json!({
                 "session_id": "ses_1", "plan_id": "plan_1", "action": "execute", "execution_model": "vendor/model:high"
-            }))
-            .expect("指定执行模型可反序列化")
-            .execution_model
-            .as_deref(),
-            Some("vendor/model:high")
+            })).is_err(),
+            "审批协议不再接受模型切换参数"
         );
         assert_eq!(
             serde_json::to_value(SessionPlanApproveParams {
                 session_id: "ses_1".into(),
                 plan_id: "plan_1".into(),
                 action: PlanAction::ExecuteNewSession,
-                execution_model: Some("vendor/model:high".into()),
                 execution_engine: Some(SessionEngine::Ptc),
             })
             .expect("执行模型与引擎可序列化"),
-            serde_json::json!({"session_id": "ses_1", "plan_id": "plan_1", "action": "execute_new_session", "execution_model": "vendor/model:high", "execution_engine": "ptc"})
+            serde_json::json!({"session_id": "ses_1", "plan_id": "plan_1", "action": "execute_new_session", "execution_engine": "ptc"})
         );
         assert_eq!(
             serde_json::to_value(result).expect("结果可序列化"),

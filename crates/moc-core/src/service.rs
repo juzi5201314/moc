@@ -1090,11 +1090,10 @@ impl AgentService for Core {
         };
         Ok(ConfigGetResult {
             models,
-            default_model: if config.roles.default.is_empty() {
-                None
-            } else {
-                Some(config.resolve_role("default").map_err(to_rpc)?.selector)
-            },
+            default_model: config
+                .last_model()
+                .map_err(to_rpc)?
+                .map(|model| model.selector),
             agents: vec![AgentProfile {
                 id: "moc".into(),
                 display_name: "moc".into(),
@@ -1384,8 +1383,11 @@ impl AgentService for Core {
                 flag.spec().key,
             )));
         }
-        let selector = params.model.as_deref().unwrap_or("default");
-        let model = config.resolve_model(selector).map_err(|error| {
+        let model = match params.model.as_deref() {
+            Some(selector) => config.resolve_model(selector),
+            None => config.require_last_model(),
+        }
+        .map_err(|error| {
             let selectors: Vec<String> = config
                 .available_models()
                 .into_iter()
@@ -1424,8 +1426,6 @@ impl AgentService for Core {
             .ensure_write_lease(&info.id, &record, &ctx.client().frontend)
             .await
             .map_err(|error| write_lease_error(self, &info.id, &record, error))?;
-        // 以 plan 叠加态创建会话：header 记下会话本来的模型，随后立即切到计划模型，
-        // 退出叠加态时再切回。
         if params.plan_active {
             info = self
                 .inner
@@ -1433,19 +1433,6 @@ impl AgentService for Core {
                 .set_plan_active(&info.id, true)
                 .await
                 .map_err(to_rpc)?;
-            if let Some(plan_model) = config
-                .resolve_plan_mode_model()
-                .map_err(to_rpc)?
-                .map(|model| model.selector)
-                .filter(|plan_model| *plan_model != model.selector)
-            {
-                info = self
-                    .inner
-                    .sessions
-                    .set_model(&info.id, plan_model)
-                    .await
-                    .map_err(to_rpc)?;
-            }
         }
         if params.fast_mode {
             info = self
@@ -1487,6 +1474,11 @@ impl AgentService for Core {
                     .await
                     .map_err(to_rpc)?;
             }
+        }
+        if params.model.is_some()
+            && matches!(ctx.client().frontend.as_str(), "tui" | "webui" | "acp")
+        {
+            crate::config::selection::save(&config.home, &model.selector).map_err(to_rpc)?;
         }
         Ok(info)
     }
@@ -1965,7 +1957,7 @@ impl AgentService for Core {
             .map_err(to_rpc)?;
         info.lock = None;
         info.permission = self.inner.effective_permission(info.permission);
-        mode::emit_engine_change(&ctx, &params.session_id, info.engine, None).await?;
+        mode::emit_engine_change(&ctx, &params.session_id, info.engine).await?;
         let state = record.state.lock().await.metadata();
         emit_session_config_changed(
             &self.inner,
@@ -2123,6 +2115,12 @@ impl AgentService for Core {
         let state = record.state.lock().await.metadata();
         emit_session_config_changed(&self.inner, &state, "model", &model_before, &session.model)
             .await;
+        if session.model == model.selector
+            && !session.is_subagent()
+            && matches!(ctx.client().frontend.as_str(), "tui" | "webui" | "acp")
+        {
+            crate::config::selection::save(&config.home, &model.selector).map_err(to_rpc)?;
+        }
         Ok(SessionSetModelResult {
             session,
             overflow: outcome.overflow,
@@ -2861,7 +2859,6 @@ mod compression_tests {
                         session_id: info.id.clone(),
                         plan_id: "plan_test".into(),
                         action: PlanAction::ExecuteNewSession,
-                        execution_model: None,
                         execution_engine: None,
                     })
                     .await

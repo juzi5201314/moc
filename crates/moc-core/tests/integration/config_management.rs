@@ -22,10 +22,10 @@ fn workspace() -> (tempfile::TempDir, CoreConfig) {
 }
 
 #[test]
-fn first_configuration_requires_a_primary_and_inherits_other_roles() {
+fn first_configuration_keeps_model_selection_separate_from_roles() {
     let (_root, boot) = workspace();
     let empty = ResolvedConfig::load(&boot).unwrap();
-    assert!(empty.resolve_role("default").is_err());
+    assert!(empty.require_last_model().is_err());
     let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();
     let document = json!({"models":{"roles":{"default":"p/demo:high"}},
         "providers":{"p":{"api":"openai_chat","base_url":"http://127.0.0.1:1", "models":{"demo":{"reasoning":true,"max_output_tokens":190000,"context_window":200000}}}}});
@@ -37,12 +37,19 @@ fn first_configuration_requires_a_primary_and_inherits_other_roles() {
         &view.revision,
     )
     .unwrap();
-    for role in ["default", "explore", "plan"] {
-        assert_eq!(resolved.resolve_role(role).unwrap().selector, "p/demo:high");
-    }
+    assert_eq!(resolved.roles.explore, "inherit");
+    assert!(resolved.last_model().unwrap().is_none());
+    assert_eq!(
+        resolved.resolve_model("p/demo:high").unwrap().selector,
+        "p/demo:high"
+    );
     assert_eq!(moc_core::compact::threshold(&resolved, 200000), 170000);
     assert_eq!(
-        resolved.resolve_role("default").unwrap().llm.timeout_secs,
+        resolved
+            .resolve_model("p/demo:high")
+            .unwrap()
+            .llm
+            .timeout_secs,
         None
     );
     let saved: toml::Value =

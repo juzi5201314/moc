@@ -106,9 +106,6 @@ pub struct SessionState {
     pub workflow_activated: bool,
     pub permission: SessionPermission,
     pub model: String,
-    /// plan 模式临时覆盖前的会话模型，退出 plan 时恢复。它随 transcript 重放，
-    /// 会话恢复后依然有效；只有处于 plan 时才有意义。
-    plan_base_model: Option<String>,
     pub todos: Vec<TodoPhase>,
     /// 自上次 todo 变更以来的工具调用数，供停滞提醒计数。
     pub tool_calls_since_todo: u32,
@@ -224,7 +221,6 @@ impl SessionState {
             permission: *permission,
             model: model.clone(),
             // 以 plan 创建（旧持久模式或会话恢复）时，header 记录的就是会话自身模型。
-            plan_base_model: engine.legacy_enters_plan().then(|| model.clone()),
             todos: Vec::new(),
             tool_calls_since_todo: 0,
             todo_reminders_sent: 0,
@@ -407,10 +403,6 @@ impl SessionState {
                 let next = engine.engine();
                 let plan = plan_active.unwrap_or_else(|| engine.legacy_enters_plan());
                 let engine_changed = self.engine != next;
-                if plan && !self.plan_active {
-                    // plan 模式只临时覆盖模型：记住进入前的会话模型，退出时恢复。
-                    self.plan_base_model = Some(self.model.clone());
-                }
                 self.engine = next;
                 self.session.engine = next;
                 self.plan_active = plan;
@@ -426,9 +418,6 @@ impl SessionState {
                 self.session.fast_mode = *enabled;
             }
             Entry::PlanMode { active, .. } => {
-                if *active && !self.plan_active {
-                    self.plan_base_model = Some(self.model.clone());
-                }
                 self.plan_active = *active;
                 self.session.plan_active = *active;
             }
@@ -687,15 +676,6 @@ impl SessionState {
     /// 当前会话的最新元信息。
     pub fn session_info(&self) -> SessionInfo {
         self.session.clone()
-    }
-
-    /// 退出 plan 模式时要恢复的会话模型。
-    ///
-    /// plan 期间该值来自进入时的记录；不在 plan 时返回当前模型，供统一的恢复路径使用。
-    pub fn exit_plan_model(&self) -> &str {
-        self.plan_base_model
-            .as_deref()
-            .unwrap_or(self.model.as_str())
     }
 }
 

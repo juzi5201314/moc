@@ -973,7 +973,6 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             session_id: session.id,
             plan_id: plan.plan_id.clone(),
             action: PlanAction::ExecuteNewSession,
-            execution_model: None,
             execution_engine: None,
         })
         .await
@@ -1903,9 +1902,9 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
     drop(server);
 }
 
-/// 进入计划模式切到 `plan` 角色模型，退出（含会话恢复后）恢复进入前的会话模型。
+/// 即使旧配置指定计划模型，进出计划与恢复会话都保持当前模型。
 #[tokio::test]
-async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
+async fn plan_mode_keeps_model_across_creation_transitions_and_reload() {
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
@@ -1958,10 +1957,10 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
         .await
         .expect("enter plan mode");
     assert!(planned.plan_active);
-    assert_eq!(planned.model, "test/ds:off", "进入计划模式要切到计划模型");
+    assert_eq!(planned.model, "test/glm:off", "进入计划模式不改变模型");
     harness.prompt(&session.id, "plan").await;
 
-    // 卸载再恢复：plan 叠加态与计划模型都从 transcript 复原。
+    // 卸载再恢复：计划状态与会话模型分别从 transcript 复原。
     harness
         .client
         .call::<SessionUnload>(SessionUnloadParams {
@@ -1971,7 +1970,24 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
         .expect("unload session");
     let resumed = harness.load(&session.id).await;
     assert!(resumed.session.plan_active);
-    assert_eq!(resumed.session.model, "test/ds:off");
+    assert_eq!(resumed.session.model, "test/glm:off");
+    assert!(
+        !harness
+            .updates
+            .lock()
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ModelChanged { .. }))
+    );
+    harness
+        .client
+        .call::<moc_protocol::SessionSetModel>(moc_protocol::SessionSetModelParams {
+            session_id: session.id.clone(),
+            selector: "test/ds:off".into(),
+            overflow: moc_protocol::SessionModelOverflowAction::Switch,
+        })
+        .await
+        .unwrap();
+    harness.updates.lock().clear();
 
     let exited = harness
         .client
@@ -1982,12 +1998,12 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
         .await
         .expect("leave plan mode");
     assert_eq!(
-        exited.model, "test/glm:off",
-        "退出计划模式要恢复进入前的模型"
+        exited.model, "test/ds:off",
+        "退出计划模式保持计划期间主动选择的模型"
     );
     harness.prompt(&session.id, "implement").await;
 
-    // 以 plan 叠加态直接创建：立即使用计划模型，退出后回到创建时指定的模型。
+    // 直接以计划模式创建也保持创建时模型，退出不会触发切换。
     let created = harness
         .client
         .call::<SessionNew>(SessionNewParams {
@@ -2000,7 +2016,7 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
         })
         .await
         .expect("create plan session");
-    assert_eq!(created.model, "test/ds:off");
+    assert_eq!(created.model, "test/glm:off");
     let exited = harness
         .client
         .call::<SessionPlanMode>(SessionPlanModeParams {
@@ -2012,14 +2028,12 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
     assert_eq!(exited.model, "test/glm:off");
 
     let updates = harness.updates.lock().clone();
-    for model in ["test/ds:off", "test/glm:off"] {
-        assert!(
-            updates.contains(&SessionUpdate::ModelChanged {
-                model: model.into()
-            }),
-            "缺少 {model} 的模型变化通知：{updates:?}"
-        );
-    }
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ModelChanged { .. })),
+        "模式切换不得产生模型变化：{updates:?}"
+    );
     let models: Vec<String> = upstream
         .received_requests()
         .await
@@ -2033,7 +2047,7 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
                 .to_owned()
         })
         .collect();
-    assert_eq!(models, ["glm", "ds", "glm"]);
+    assert_eq!(models, ["glm", "glm", "ds"]);
     harness.close().await;
 }
 
@@ -2154,7 +2168,7 @@ async fn plan_approval_defaults_to_current_session_model() {
         })
         .await
         .expect("create plan session");
-    assert_eq!(session.model, "test/ds:off");
+    assert_eq!(session.model, "test/glm:off");
     harness.prompt(&session.id, "Design the change").await;
 
     let loaded = harness.load(&session.id).await;
@@ -2169,7 +2183,6 @@ async fn plan_approval_defaults_to_current_session_model() {
             session_id: session.id.clone(),
             plan_id: plan.plan_id.clone(),
             action: PlanAction::Execute,
-            execution_model: None,
             execution_engine: None,
         })
         .await
@@ -2181,7 +2194,7 @@ async fn plan_approval_defaults_to_current_session_model() {
     );
     let reloaded = harness.load(&session.id).await;
     assert_eq!(reloaded.session.engine, SessionEngine::Standard);
-    assert_eq!(reloaded.session.model, "test/ds:off");
+    assert_eq!(reloaded.session.model, "test/glm:off");
     harness
         .prompt(&session.id, "Execute the approved plan.")
         .await;
@@ -2198,12 +2211,12 @@ async fn plan_approval_defaults_to_current_session_model() {
                 .to_owned()
         })
         .collect();
-    assert_eq!(models, ["ds", "ds"]);
+    assert_eq!(models, ["glm", "glm"]);
     harness.close().await;
 }
 
 #[tokio::test]
-async fn plan_approval_uses_selected_execution_model_for_compaction_and_execution() {
+async fn plan_approval_keeps_current_model_for_compaction_and_execution() {
     use serde_json::json;
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
@@ -2237,8 +2250,8 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
     let h = Harness::with_roles(
         &upstream.uri(),
         "openai_chat",
-        "test/gpt-test:off",
         "test/planner:off",
+        "test/gpt-test:off",
         "[providers.test.models.planner]\ncontext_window=100000\nmax_output_tokens=4096\n\
          [providers.test.models.executor]\ncontext_window=200000\nmax_output_tokens=4096\n\
          [compaction]\nmethod='moc'\nauto=false\n",
@@ -2250,12 +2263,10 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
         let plan = h.load(&id).await.plans.pop().expect("已写计划");
         let invalid = h
             .client
-            .call::<SessionPlanApprove>(SessionPlanApproveParams {
+            .call::<moc_protocol::SessionSetModel>(moc_protocol::SessionSetModelParams {
                 session_id: id.clone(),
-                plan_id: plan.plan_id.clone(),
-                action,
-                execution_model: Some("test/missing:off".into()),
-                execution_engine: None,
+                selector: "test/missing:off".into(),
+                overflow: moc_protocol::SessionModelOverflowAction::Switch,
             })
             .await;
         assert!(invalid.is_err());
@@ -2263,6 +2274,14 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
         assert_eq!(unchanged.plans[0].status, PlanStatus::Submitted);
         assert!(unchanged.session.plan_active);
         assert_eq!(unchanged.session.model, "test/planner:off");
+        h.client
+            .call::<moc_protocol::SessionSetModel>(moc_protocol::SessionSetModelParams {
+                session_id: id.clone(),
+                selector: "test/executor:off".into(),
+                overflow: moc_protocol::SessionModelOverflowAction::Switch,
+            })
+            .await
+            .unwrap();
         h.updates.lock().clear();
         let approved = h
             .client
@@ -2270,7 +2289,6 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
                 session_id: id.clone(),
                 plan_id: plan.plan_id,
                 action,
-                execution_model: Some("test/executor:off".into()),
                 execution_engine: None,
             })
             .await
@@ -2289,7 +2307,7 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
                 _ => None,
             })
             .collect();
-        assert_eq!(changes, ["plan:false", "model:test/executor:off"]);
+        assert_eq!(changes, ["plan:false"]);
         h.client
             .call::<SessionUnload>(SessionUnloadParams {
                 session_id: id.clone(),
@@ -2318,14 +2336,14 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
 }
 
 #[tokio::test]
-async fn plan_new_session_uses_selected_execution_model() {
+async fn plan_new_session_inherits_current_model() {
     use serde_json::json;
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(|request: &wiremock::Request| {
             let body: serde_json::Value = serde_json::from_slice(&request.body).expect("请求 JSON");
-            let response = if body["model"] == "executor" {
-                assert!(body.to_string().contains("<active-plan"));
+            assert_eq!(body["model"], "planner");
+            let response = if body.to_string().contains("<active-plan") {
                 text_stream("子会话执行")
             } else {
                 support::tool_stream(vec![
@@ -2344,8 +2362,8 @@ async fn plan_new_session_uses_selected_execution_model() {
     let h = Harness::with_roles(
         &upstream.uri(),
         "openai_chat",
-        "test/gpt-test:off",
         "test/planner:off",
+        "test/gpt-test:off",
         "[providers.test.models.planner]\ncontext_window=100000\nmax_output_tokens=4096\n\
          [providers.test.models.executor]\ncontext_window=200000\nmax_output_tokens=4096\n",
     )
@@ -2359,7 +2377,6 @@ async fn plan_new_session_uses_selected_execution_model() {
             session_id: id.clone(),
             plan_id: plan.plan_id.clone(),
             action: PlanAction::ExecuteNewSession,
-            execution_model: Some("test/executor:off".into()),
             execution_engine: None,
         })
         .await
@@ -2367,7 +2384,7 @@ async fn plan_new_session_uses_selected_execution_model() {
     assert_ne!(approved.session_id, id);
     let child = h.load(&approved.session_id).await;
     assert_eq!(child.session.engine, SessionEngine::Standard);
-    assert_eq!(child.session.model, "test/executor:off");
+    assert_eq!(child.session.model, "test/planner:off");
     assert_eq!(child.plans[0].status, PlanStatus::Approved);
     assert_eq!(child.plans[0].path, format!("local://{}.md", plan.plan_id));
     assert!(child.entries[0].message.text().contains("<active-plan"));

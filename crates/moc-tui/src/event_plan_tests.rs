@@ -42,7 +42,7 @@ impl PlanHarness {
                 }));
             }
             let delta = if body.to_string().contains("<active-plan") {
-                assert_eq!(body["model"], "executor");
+                assert_eq!(body["model"], "planner");
                 serde_json::json!({"role":"assistant", "content":"执行完成"})
             } else {
                 serde_json::json!({"role":"assistant", "tool_calls":[
@@ -166,7 +166,7 @@ impl PlanHarness {
 }
 
 #[tokio::test]
-async fn plan_review_model_picker_changes_execution_model_without_switching_session() {
+async fn plan_review_preserves_model_and_loaded_history() {
     let mut h = PlanHarness::new().await;
     let plan = h.write_and_review().await;
     let original = h.app.session.as_ref().expect("会话").clone();
@@ -188,67 +188,15 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
         state.scroll_offset = 1;
         state.error = Some("保留错误状态".into());
     }
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).expect("测试终端");
-    let mut view = render::ScrollbackView::new();
-    terminal
-        .draw(|frame| render::draw(frame, &mut h.app, &mut view))
-        .expect("绘制审阅");
-    let area = h.app.plan_model_area;
-    assert!(area.width > 0);
-    let rendered = (area.x..area.right())
-        .map(|x| {
-            terminal
-                .backend()
-                .buffer()
-                .cell((x, area.y))
-                .expect("模型文字单元格")
-                .symbol()
-        })
-        .collect::<String>();
-    assert_eq!(rendered, crate::app::model_selector_label(&original.model));
-    handle_mouse_with_connection(
+    handle_modal_key(
         &mut h.app,
         &h.connection,
-        crossterm::event::MouseEvent {
-            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
-            column: area.x,
-            row: area.y,
-            modifiers: KeyModifiers::NONE,
-        },
+        KeyModifiers::CONTROL,
+        KeyCode::Char('p'),
     );
-    assert!(matches!(
-        h.app.modal,
-        Some(Modal::Model {
-            target: crate::modal::ModelTarget::PlanReview(_),
-            ..
-        })
-    ));
-    handle_mouse_with_connection(
-        &mut h.app,
-        &h.connection,
-        crossterm::event::MouseEvent {
-            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
-            column: area.x,
-            row: area.y,
-            modifiers: KeyModifiers::NONE,
-        },
-    );
-    assert!(matches!(
-        h.app.modal,
-        Some(Modal::Model {
-            target: crate::modal::ModelTarget::PlanReview(_),
-            ..
-        })
-    ));
-    for ch in "executor".chars() {
-        h.key(KeyCode::Char(ch));
-    }
-    h.key(KeyCode::Enter);
     let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
-        panic!("恢复审阅窗口")
+        panic!("模型快捷键不得切走审阅窗口")
     };
-    assert_eq!(state.execution_model, "test/executor:off");
     assert_eq!(state.selected, 2);
     assert_eq!(state.scroll_offset, 1);
     assert_eq!(state.error.as_deref(), Some("保留错误状态"));
@@ -272,16 +220,7 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
     assert_eq!(paged.plans, loaded.plans);
     assert_eq!(paged.entries, loaded.entries);
     assert_eq!(loaded.session.model, original.model);
-    handle_modal_key(
-        &mut h.app,
-        &h.connection,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('p'),
-    );
-    h.key(KeyCode::Esc);
-    assert!(
-        matches!(&h.app.modal, Some(Modal::Plan { state }) if state.execution_model == "test/executor:off" && state.scroll_offset == 1)
-    );
+    assert!(matches!(&h.app.modal, Some(Modal::Plan { state }) if state.scroll_offset == 1));
     if let Some(Modal::Plan { state }) = h.app.modal.as_mut() {
         state.selected = 0;
     }
@@ -298,7 +237,7 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
         })
         .await
         .expect("审批后会话");
-    assert_eq!(loaded.session.model, "test/executor:off");
+    assert_eq!(loaded.session.model, original.model);
     assert_eq!(loaded.plans[0].status, PlanStatus::Approved);
     // 单独的历史会话只写本地日志，不把大文本送给模型或终端渲染器。
     let table = moc_core::session::SessionTable::new(h._root.path().join("sessions"), true);
@@ -401,16 +340,6 @@ async fn plan_review_approval_loads_new_session() {
     h.write_and_review().await;
     let parent = h.app.session.as_ref().expect("会话").id.clone();
     if let Some(Modal::Plan { state }) = h.app.modal.as_mut() {
-        state.execution_model = "test/missing:off".into();
-    }
-    h.key(KeyCode::Enter);
-    h.approval().await;
-    assert!(
-        matches!(&h.app.modal, Some(Modal::Plan { state }) if !state.submitting && state.error.is_some() && state.execution_model == "test/missing:off")
-    );
-    assert!(h.app.session.as_ref().expect("会话").plan_active);
-    if let Some(Modal::Plan { state }) = h.app.modal.as_mut() {
-        state.execution_model = "test/executor:off".into();
         state.selected = 2;
     }
     h.key(KeyCode::Enter);
@@ -434,7 +363,7 @@ async fn plan_review_approval_loads_new_session() {
     assert_ne!(child, parent);
     assert_eq!(
         h.app.session.as_ref().expect("执行会话").model,
-        "test/executor:off"
+        "test/planner:off"
     );
     assert_eq!(
         h.app.session.as_ref().expect("执行会话").engine,
@@ -546,7 +475,7 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
     assert_eq!(state.plan_id, plan.plan_id);
     assert_eq!(state.path, plan.path);
     assert_eq!(state.markdown, plan.markdown);
-    assert_eq!(state.execution_model, session.model);
+    assert_eq!(h.app.session.as_ref().unwrap().model, session.model);
     assert_eq!(h.app.prompt.text, "尚未提交的输入");
     assert!(!h.app.prompt_running);
     h.key(KeyCode::Esc);

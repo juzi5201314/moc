@@ -32,7 +32,7 @@ pub struct ConfigGetParams {}
 pub struct ConfigGetResult {
     /// 可用模型。
     pub models: Vec<ModelInfo>,
-    /// 默认模型 ID。
+    /// 最近主动选择且在当前配置可用的完整模型 selector；供新会话使用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
     /// 可用 agent。

@@ -9,12 +9,10 @@ import {
   Loader2Icon,
   PlusIcon,
   SearchIcon,
-  StarIcon,
   Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { IconButton } from "@/components/common/icon-button";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -37,7 +35,7 @@ import type {
   SettingsDocument,
 } from "@/protocol/types";
 import { FieldList } from "./field";
-import { useSettings, writeField, writeSettings } from "./settings-store";
+import { useSettings, writeSettings } from "./settings-store";
 
 type Json = Record<string, unknown>;
 
@@ -305,8 +303,6 @@ function ProviderDetail({
   const provider = getPath(doc.effective, ["providers", id]);
   const models =
     isObject(provider) && isObject(provider.models) ? Object.keys(provider.models) : [];
-  const defaultRole = getPath(doc.effective, ["models", "roles", "default"]);
-  const defaultModel = typeof defaultRole === "string" ? defaultRole.split(":")[0] : "";
 
   const connection = doc.fields.filter(
     (field) => field.path[0] === "providers" && field.path[1] === id && field.path[2] !== "models",
@@ -409,7 +405,6 @@ function ProviderDetail({
             providerId={id}
             candidates={discovered.models}
             existing={new Set(models)}
-            hasDefault={Boolean(defaultModel)}
             onClose={() => setDiscovered({ busy: false, models: null, error: null })}
           />
         )}
@@ -421,13 +416,7 @@ function ProviderDetail({
             </p>
           )}
           {models.map((modelId) => (
-            <ModelRow
-              key={modelId}
-              providerId={id}
-              modelId={modelId}
-              doc={doc}
-              isDefault={defaultModel === `${id}/${modelId}`}
-            />
+            <ModelRow key={modelId} providerId={id} modelId={modelId} doc={doc} />
           ))}
           <ManualAdd providerId={id} existing={models} />
         </div>
@@ -440,12 +429,10 @@ function ModelRow({
   providerId,
   modelId,
   doc,
-  isDefault,
 }: {
   providerId: string;
   modelId: string;
   doc: SettingsDocument;
-  isDefault: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const path = ["providers", providerId, "models", modelId];
@@ -479,7 +466,6 @@ function ModelRow({
             )}
           />
           <span className="min-w-0 truncate font-mono text-xs text-foreground">{modelId}</span>
-          {isDefault && <Badge variant="brand">主模型</Badge>}
           <span className="ml-auto flex shrink-0 items-center gap-2 text-text-tertiary">
             {image && <ImageIcon className="size-3.5" aria-label="支持图片" />}
             {context && (
@@ -488,17 +474,6 @@ function ModelRow({
           </span>
         </button>
         <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/model:opacity-100 focus-within:opacity-100">
-          {!isDefault && (
-            <IconButton
-              label="设为主模型"
-              size="xs"
-              onClick={() =>
-                void writeField(["models", "roles", "default"], `${providerId}/${modelId}`)
-              }
-            >
-              <StarIcon />
-            </IconButton>
-          )}
           {explicit && (
             <IconButton
               label="移除模型"
@@ -552,13 +527,11 @@ function DiscoveryPanel({
   providerId,
   candidates,
   existing,
-  hasDefault,
   onClose,
 }: {
   providerId: string;
   candidates: CatalogModel[];
   existing: Set<string>;
-  hasDefault: boolean;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -585,9 +558,6 @@ function DiscoveryPanel({
     const ok = await writeSettings((doc) => {
       let next = doc;
       for (const id of ids) next = setPath(next, ["providers", providerId, "models", id], {});
-      // 还没有主模型时顺手把第一个设为主模型，新装即可用。
-      if (!hasDefault)
-        next = setPath(next, ["models", "roles", "default"], `${providerId}/${ids[0]}`);
       return next;
     }, `已添加 ${ids.length} 个模型`);
     setBusy(false);

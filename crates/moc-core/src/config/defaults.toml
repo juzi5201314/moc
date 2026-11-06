@@ -10,9 +10,7 @@ clm = true
 ptc = true
 
 [models.roles]
-default = ""
 explore = "inherit"
-plan = "inherit"
 
 # Fusion 组合：lead 负责规划与对话，sidekick 负责执行；两侧都为空表示未配置，
 # 此时选择器 `fusion` 会报错。格式同为 供应商/模型[:等级]。

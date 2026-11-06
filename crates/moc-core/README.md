@@ -10,9 +10,7 @@
 
 ```toml
 [models.roles]
-default = "provider/model"
 explore = "inherit"
-plan = "inherit"
 
 [providers.provider]
 api = "openai_chat"
@@ -47,7 +45,9 @@ deny_write_paths = []
 
 ```
 
-`[models.roles]` 的 `explore` 与 `plan` 默认 `inherit`（沿用主模型）。切换到计划模式时，会话模型应用 `plan` 指定的模型；`plan = "none"` 表示不切换。手动切出计划模式恢复进入前的模型；批准计划执行则使用 `session/plan_approve.execution_model` 指定的模型，字段缺省时使用审批发生时的当前会话模型。模式与模型变化均记入 transcript，卸载重载后保持一致。
+`[models.roles]` 仅保留 `explore`，默认 `inherit` 表示沿用父会话当前模型。用户主动选择的完整模型 selector（含思考等级、Fusion 组合）由 core 保存到 `~/.moc/model-selection.toml`，Web、TUI 和交互式 CLI 共用。新会话使用最近选择，恢复会话使用其自身模型；子代理、后台任务与 `--print --model` 不更新这份记忆。首次使用或记住的模型已不可用时，需要主动选择，非交互调用传入 `--model`。
+
+计划模式的进入、退出和批准执行均不改变模型。计划期间手动切换的模型会继续保留。旧全局 `models.roles.default` 只在尚无模型记忆时迁移一次；旧 `default`、`plan` 配置读取时移除，保存设置时清除，项目配置不再覆盖日常模型选择。
 
 `base_url` 会自动补齐 `/v1`；末尾加 `#` 可跳过该处理。`api` 也支持 `openai_responses` 和 `anthropic_messages`。启用推理后，未配置 `thinking_levels` 时默认可选 `low`、`medium`、`high`、`xhigh`、`max`；列表第一项为默认等级，`off` 始终可用。也可写入自定义等级（小写字母、数字和 `-_.`，最长 32 个字符），请求时原样发送，或经 `compat.thinking.effort_map` 改写。Anthropic 使用 adaptive thinking 与 `output_config.effort`，不会发送旧式 `budget_tokens`。
 
@@ -89,7 +89,7 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 ### 子代理
 
-模型可通过 `spawn_agent` 创建独立上下文的直接子代理，并用 `list_agents`、`message_agent`、`stop_agent`、`wait_agent` 管理。`model` 仅接受 `inherit`、`default`、`explore`、`plan`；`inherit` 使用父会话当前模型，角色从 `[models.roles]` 解析。子代理从任务文本开始，不复制父 transcript；任务原文同时写入其系统提示的 `<subagent>` 块（权威顺序高于通用仓库规则），可通信的父／兄弟名册则以尾部提醒注入、不进系统前缀。父子共享工作目录、工具、MCP 与继承的会话权限；子代理不继承父会话的沙盒路径/命令授权，需要时重新向用户申请。子代理不可创建、停止或等待其它子代理。
+模型可通过 `spawn_agent` 创建独立上下文的直接子代理，并用 `list_agents`、`message_agent`、`stop_agent`、`wait_agent` 管理。`model` 仅接受 `inherit`、`explore`；`inherit` 使用父会话当前模型，`explore` 使用 `[models.roles].explore`，配置为 `inherit` 时同样继承父会话。子代理从任务文本开始，不复制父 transcript；任务原文同时写入其系统提示的 `<subagent>` 块（权威顺序高于通用仓库规则），可通信的父／兄弟名册则以尾部提醒注入、不进系统前缀。父子共享工作目录、工具、MCP 与继承的会话权限；子代理不继承父会话的沙盒路径/命令授权，需要时重新向用户申请。子代理不可创建、停止或等待其它子代理。
 
 `message_agent` 是唯一的通信入口，`target` 接受代理 ID、`"parent"`（仅子代理）或 `"all"`（顶层是全部运行中的直接子代理，子代理是全部运行中的兄弟）；运行中的目标在下一次安全边界收到消息，空闲目标被唤醒新回合，工具为每个目标返回 `injected`／`woken`／`failed` 回执。`wait_agent` 支持批量：省略 `agent_ids` 即等待全部运行中的直接子代理，任一个进入终态、或消息到达、或窗口（默认 180 秒）到期即返回快照，运行期间以 `tool_progress` 推送进度行。
 
@@ -187,8 +187,8 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - 非 full 模式下一律先跑 OS 沙盒：`workspace` 以只读方式挂载宿主根，工作区、会话 scratch、`[sandbox].extra_write_paths` 可写，`$HOME` 在 Linux 上是会话级 copy-on-write 层；`workspace-only` 只挂载运行时只读系统路径、工作区、scratch 与合成 HOME，宿主 HOME 不存在。`[sandbox].network=false` 时 Linux 使用独立网络命名空间，macOS 拒绝网络。没有白名单旁路：命令失败后由模型带 `sandbox_permissions` + `justification` 申请更宽模式，用户可允许一次、本会话始终允许该命令/该前缀或拒绝；路径越界同理，可授权单次或本会话路径。授权只存在内存，切换模式或 `/permission clear` 即清空。`read` / `find` / `grep` 与 `write` / `edit` 共用同一套路径策略，执行阶段还会复校验一次。
 - `workspace` 仍可读宿主文件（除 `[sandbox].deny_read_paths`），不是保密边界；`workspace-only` 才隐藏宿主 HOME。MCP、`web_fetch`、`web_search` 与 PTC worker 在 core 进程执行，不受 OS 沙盒约束。
 - ask/plan 不注册 edit/write；bash 仍受当前会话 permission 控制。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
-- 计划模式进入时应用 `models.roles.plan`（`none` 时沿用当前模型），手动退出时恢复进入前的模型；审批退出改用选定执行模型。`session/new` 直接以计划模式创建会话同样应用计划角色模型。
-- `plan` 保存/修订会话计划文件与 Draft entry（`markdown` 全量写草稿、`edits` 锚点增量修订，对已评审版可播种新草稿）；`exit_plan({})` 提交工作草稿触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作使用同一执行模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式或模型。新会话执行将计划标记为 Approved，源会话仍保持计划模式，新会话以选定模型开始 Normal 执行（独立会话，只在会话头记出身，不建立父子链接）。CLI 的 `/approve execute|compact|new|reject` 继续可用，未指定模型时沿用当前会话模型。
+- 计划模式进入、退出、批准均不修改模型，也不保存或恢复旧模型。`session/new` 的 `plan_active` 只决定模式。
+- `plan` 保存/修订会话计划文件与 Draft entry（`markdown` 全量写草稿、`edits` 锚点增量修订，对已评审版可播种新草稿）；`exit_plan({})` 提交工作草稿触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作均沿用当前会话模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式。新会话执行将计划标记为 Approved，源会话仍保持计划模式，新会话继承当前模型开始 Normal 执行（独立会话，只在会话头记出身，不建立父子链接）。CLI 的 `/approve execute|compact|new|reject` 继续可用。
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。覆盖超过读写容量上限（`tools.output.max_file_bytes`，默认 100 MiB）的旧文件时不产出 diff、也不记录撤销，工具结果里会说明。撤销栈每个文件最多保留 8 份、全会话合计 64 MiB，超限淘汰最旧记录，被淘汰的快照不能恢复。
 - 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。
 - 会话使用追加式 JSONL，逐条 flush；`session/new` 只登记内存，首次写入 entry 时才创建 transcript 文件，因此从未产生对话内容的空会话不会落盘、也不会出现在 `session/list` 中。压缩与历史重写使用临时文件加 rename。它不是每条记录都 fsync 的事务数据库。

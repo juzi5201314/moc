@@ -73,7 +73,6 @@ impl<B: Backend> Bridge<B> {
                         session_id,
                         plan_id,
                         action: PlanAction::ExecuteCompacted,
-                        execution_model: None,
                         execution_engine: None,
                     })
                     .await;

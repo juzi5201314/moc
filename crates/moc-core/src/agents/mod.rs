@@ -166,14 +166,13 @@ fn resolve_model(
 ) -> Result<String, CoreError> {
     let selector = match requested.unwrap_or("inherit") {
         "inherit" => parent_model,
-        role @ ("default" | "explore" | "plan") => {
-            // 子代理永远拿到真实模型：Fusion 会话继承 lead 的 selector，
-            // 不会把组合形式传下去。
-            return Ok(config.resolve_role(role)?.actual_selector().to_owned());
-        }
+        "explore" => match config.roles.explore.as_str() {
+            "inherit" => parent_model,
+            selector => selector,
+        },
         other => {
             return Err(CoreError::Config(format!(
-                "INVALID_PARAMS: 子代理 model 只能是 inherit、default、explore、plan，收到 {other}"
+                "INVALID_PARAMS: 子代理 model 只能是 inherit、explore，收到 {other}"
             )));
         }
     };
@@ -272,7 +271,7 @@ pub(crate) async fn child_cancel(inner: &CoreInner, parent_id: &str) -> Cancella
 /// spawn 的模型指定方式。
 #[derive(Debug)]
 pub(crate) enum SpawnModel {
-    /// 常规委托面：inherit/default/explore/plan，`None` 等同 inherit。
+    /// 常规委托面：inherit/explore，`None` 等同 inherit。
     Role(Option<String>),
     /// 已规范化的 selector，仅限内部路径（`sidekick` 工具）使用；
     /// 解析后取 `actual_selector`，Fusion 组合不会落到子代理头上。
@@ -1737,6 +1736,41 @@ pub(crate) fn status_word(status: AgentStatus) -> &'static str {
 mod tests {
     use super::*;
     use moc_protocol::methods::AgentStatus;
+
+    #[test]
+    fn explore_model_inherits_parent_and_never_updates_last_selection() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("config.toml"), "[providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n[providers.p.models.a]\n[providers.p.models.b]\n").unwrap();
+        let mut config = crate::ResolvedConfig::load(&crate::CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        crate::config::selection::save(root.path(), "p/a:off").unwrap();
+        assert_eq!(
+            resolve_model(&config, "p/b:off", Some("explore")).unwrap(),
+            "p/b:off"
+        );
+        assert_eq!(
+            resolve_model(&config, "fusion:p/b:off+p/a:off", None).unwrap(),
+            "p/b:off"
+        );
+        config.roles.explore = "p/a:off".into();
+        assert_eq!(
+            resolve_model(&config, "p/b:off", Some("explore")).unwrap(),
+            "p/a:off"
+        );
+        for removed in ["default", "plan"] {
+            assert!(resolve_model(&config, "p/b:off", Some(removed)).is_err());
+        }
+        assert_eq!(
+            crate::config::selection::load(root.path())
+                .unwrap()
+                .as_deref(),
+            Some("p/a:off")
+        );
+    }
 
     /// 与 `spawn` 登记的运行态一致，只保留等待语义需要的字段。
     fn running_agent(notify: Arc<Notify>) -> AgentRuntime {

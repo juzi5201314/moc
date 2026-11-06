@@ -39,7 +39,7 @@ shell 选择：Unix 上只接受 bash/zsh（fish/nushell 等回退 bash）；Win
 2. 首次运行会提示配置模型。按 `Ctrl+G`（或输入 `/config`）进入设置：
    - 添加供应商（如 OpenAI），填入 API 地址与密钥
    - 按 `F` 获取模型列表，勾选需要的模型
-   - 指定主模型
+   - 返回模型选择器选择本次使用的模型，之后 Web 和 TUI 都会记住它
 
 3. 在底部输入框输入需求，按 `Enter` 发送。TUI 中按 `Ctrl+H` 查看完整快捷键帮助。
 
@@ -80,6 +80,7 @@ moc --resume <id>             # 恢复历史会话
 
 - 全局配置：`~/.moc/config.toml`
 - 项目覆盖：工作目录下 `.moc/config.toml`
+- 模型选择：`~/.moc/model-selection.toml`（Web、TUI 共用最近主动选择；恢复会话保持自身模型）
 - TUI 偏好：`~/.moc/tui.toml`（仅界面，不发送给模型）
 
 ## 开发

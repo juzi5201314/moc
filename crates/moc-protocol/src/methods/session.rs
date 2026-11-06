@@ -20,8 +20,7 @@ use crate::method::{ClientRequest, Method};
 
 /// `session/new`：新建会话。
 ///
-/// 以计划模式创建时会立即应用 `models.roles.plan` 模型（该角色配置为 `none` 时沿用
-/// 指定模型），退出计划模式再恢复创建时指定的模型。
+/// 模型省略时使用最近主动选择的模型；计划模式不影响模型选择。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionNew;
 

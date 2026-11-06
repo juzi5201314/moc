@@ -209,7 +209,6 @@ pub struct App {
     /// 聚焦子代理时头部「Esc 返回」的命中区。
     pub header_back_area: Rect,
     /// 计划审阅中的执行模型文本命中区。
-    pub plan_model_area: Rect,
     /// 计划批注视图的正文区域（鼠标行选择换算用）。
     pub plan_body_area: Rect,
     /// 计划批注视图可见源码行号（屏幕行 → 0-based 源码行）。
@@ -483,7 +482,7 @@ impl App {
     /// 取当前会话 ID；没有会话时提示先去配置模型。
     pub fn require_session(&mut self) -> Option<String> {
         let Some(session) = self.session.as_ref() else {
-            self.set_notice("请先在 /config 配置一个主模型");
+            self.set_notice("请先用 /model 选择模型；没有候选时到 /config 添加供应商");
             return None;
         };
         Some(session.id.clone())
@@ -532,7 +531,6 @@ impl App {
             legend_tip_area: Rect::default(),
             workflow_capsule_area: Rect::default(),
             header_back_area: Rect::default(),
-            plan_model_area: Rect::default(),
             plan_body_area: Rect::default(),
             plan_row_map: Vec::new(),
             rewind_timeline_area: Rect::default(),
@@ -1258,30 +1256,9 @@ impl App {
         self.open_model_picker_for(current, &[], crate::modal::ModelTarget::Session);
     }
 
-    /// 选择计划执行模型，不修改当前会话模型。
-    pub fn open_plan_model_picker(&mut self) {
-        let state = match self.modal.take() {
-            Some(Modal::Plan { state }) => state,
-            modal => {
-                self.modal = modal;
-                return;
-            }
-        };
-        if state.submitting || self.models.is_empty() {
-            self.modal = Some(Modal::Plan { state });
-            return;
-        }
-        self.plan_model_area = Rect::default();
-        self.open_model_picker_for(
-            state.execution_model.clone(),
-            &[],
-            crate::modal::ModelTarget::PlanReview(state),
-        );
-    }
-
     /// 打开 `/config` 的模型角色选择器：与 `Ctrl+P` 共用候选、搜索与思考等级。
     ///
-    /// `specials` 是角色伪值（沿用主模型 / 沿用当前会话模型），排在模型前面；
+    /// `specials` 是探索模型的继承选项，排在模型前面；
     /// 调用方必须已经确认 `models` 非空，否则这个字段应当退回文本编辑。
     pub fn open_config_model_picker(
         &mut self,
@@ -1307,12 +1284,8 @@ impl App {
             self.set_notice("没有可用的模型，请先在设置中添加");
             return;
         }
-        // Fusion 组合只对「切换会话模型」和「计划执行模型」两个目标提供：
-        // /config 的角色字段和 Fusion 槽位选择器都不列这个特殊项。
-        let fusion_entry = matches!(
-            target,
-            crate::modal::ModelTarget::Session | crate::modal::ModelTarget::PlanReview(_)
-        );
+        // 配置字段和 Fusion 槽位不列组合入口。
+        let fusion_entry = matches!(target, crate::modal::ModelTarget::Session);
         let entries = Self::picker_entries(&self.models, specials, fusion_entry);
 
         // 当前值本身是规范 Fusion selector 时不能 rsplit：末尾的等级分隔符在
@@ -1515,7 +1488,6 @@ impl App {
         self.session = Some(info);
         self.blocks = blocks;
         self.context_usage = None;
-        self.plan_model_area = Rect::default();
         self.plan_body_area = Rect::default();
         self.plan_row_map.clear();
         if clm_active {
@@ -1674,7 +1646,9 @@ impl App {
 
     /// 把一条已提交文本写进持久化历史；内存历史由输入框在提交时维护。
     pub fn record_input_history(&mut self, text: &str) {
-        if text.trim().is_empty() { return; }
+        if text.trim().is_empty() {
+            return;
+        }
         let project = self.history_project();
         let entry = self.history.record_background(text, &project);
         self.prompt.bind_history(text, entry);

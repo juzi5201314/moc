@@ -64,8 +64,7 @@ impl From<PromptMode> for Mode {
 
 /// `session/plan_mode`：进入或退出 plan 模式。
 ///
-/// 进入时按 `models.roles.plan` 覆盖会话模型并建立工作区基线，退出时恢复进入前
-/// 的模型；原生工具表不受影响，plan 工具由模式放行。
+/// 切换计划模式并在进入时建立工作区基线；模式变化不改变会话模型。
 pub async fn plan_mode(
     inner: &CoreInner,
     ctx: RequestContext,
@@ -82,35 +81,19 @@ pub async fn plan_mode(
         .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
         .await
         .map_err(to_rpc)?;
-    let (cwd, was_active, model_before) = {
+    let (cwd, was_active) = {
         let state = record.state.lock().await;
         (
             std::path::PathBuf::from(state.session.cwd.clone()),
             state.plan_active,
-            state.model.clone(),
         )
     };
     let config = inner.project_config(&cwd).map_err(to_rpc)?;
-    // 进入前先解析计划模型，避免解析失败时叠加态已切换而模型没切换。
-    let plan_model = if params.active && !was_active {
-        config
-            .resolve_plan_mode_model()
-            .map_err(to_rpc)?
-            .map(|model| model.selector)
-    } else {
-        None
-    };
     let mut info = inner
         .sessions
         .set_plan_active(&params.session_id, params.active)
         .await
         .map_err(to_rpc)?;
-    let switched = sync_plan_model(inner, &params.session_id, params.active, plan_model)
-        .await
-        .map_err(to_rpc)?;
-    if switched.is_some() {
-        info = record.state.lock().await.session_info();
-    }
     info.lock = None;
     info.permission = inner.effective_permission(info.permission);
     if params.active && !was_active && config.workspace.watch {
@@ -124,7 +107,7 @@ pub async fn plan_mode(
             .lock()
             .await = Some(snapshot);
     }
-    emit_plan_change(&ctx, &params.session_id, params.active, switched.clone()).await?;
+    emit_plan_change(&ctx, &params.session_id, params.active).await?;
     let state = record.state.lock().await.metadata();
     super::emit_session_config_changed(
         inner,
@@ -134,46 +117,14 @@ pub async fn plan_mode(
         if params.active { "on" } else { "off" },
     )
     .await;
-    if let Some(model) = &switched {
-        super::emit_session_config_changed(inner, &state, "model", &model_before, model).await;
-    }
     Ok(info)
 }
 
-/// plan 模式变化时同步会话模型：进入时切到 `plan` 角色模型，退出时恢复进入前的模型。
-///
-/// `plan_model` 是进入前解析好的目标模型选择器；`plan = "none"` 表示不切换，此时传
-/// `None`。`active` 是切换后的模式。返回切换后的选择器，模型没变时返回 `None`，
-/// 调用方据此决定是否推送 [`SessionUpdate::ModelChanged`]。
-pub async fn sync_plan_model(
-    inner: &CoreInner,
-    session_id: &str,
-    active: bool,
-    plan_model: Option<String>,
-) -> Result<Option<String>, CoreError> {
-    let record = inner.sessions.get(session_id).await?;
-    let target = {
-        let state = record.state.lock().await;
-        let target = if active {
-            plan_model
-        } else {
-            Some(state.exit_plan_model().to_owned())
-        };
-        target.filter(|target| *target != state.model)
-    };
-    let Some(target) = target else {
-        return Ok(None);
-    };
-    inner.sessions.set_model(session_id, target.clone()).await?;
-    Ok(Some(target))
-}
-
-/// 推送引擎变化；模型随之变化时，先推引擎再推模型。
+/// 推送引擎变化；引擎与模型独立。
 pub async fn emit_engine_change(
     ctx: &RequestContext,
     session_id: &str,
     engine: SessionEngine,
-    model: Option<String>,
 ) -> Result<(), RpcError> {
     ctx.updates()
         .emit(
@@ -181,14 +132,7 @@ pub async fn emit_engine_change(
             SessionUpdate::EngineChanged { engine },
         )
         .await
-        .map_err(protocol_to_rpc)?;
-    if let Some(model) = model {
-        ctx.updates()
-            .emit(session_id.to_owned(), SessionUpdate::ModelChanged { model })
-            .await
-            .map_err(protocol_to_rpc)?;
-    }
-    Ok(())
+        .map_err(protocol_to_rpc)
 }
 
 /// 推送自主程度变化。
@@ -206,12 +150,11 @@ pub async fn emit_autonomy_change(
         .map_err(protocol_to_rpc)
 }
 
-/// 推送 plan 模式变化；模型随之变化时，先推状态再推模型。
+/// 推送计划模式变化。
 pub async fn emit_plan_change(
     ctx: &RequestContext,
     session_id: &str,
     active: bool,
-    model: Option<String>,
 ) -> Result<(), RpcError> {
     ctx.updates()
         .emit(
@@ -219,14 +162,7 @@ pub async fn emit_plan_change(
             SessionUpdate::PlanModeChanged { active },
         )
         .await
-        .map_err(protocol_to_rpc)?;
-    if let Some(model) = model {
-        ctx.updates()
-            .emit(session_id.to_owned(), SessionUpdate::ModelChanged { model })
-            .await
-            .map_err(protocol_to_rpc)?;
-    }
-    Ok(())
+        .map_err(protocol_to_rpc)
 }
 
 /// 写入计划状态并推送最新投影；前端按 `plan_id` 覆盖本地视图，不再自己推断迁移。
@@ -274,7 +210,9 @@ pub async fn approve_plan(
         .map_err(to_rpc)?;
     let (state, plan) = {
         let state = record.state.lock().await;
-        let plan = state.plans.iter()
+        let plan = state
+            .plans
+            .iter()
             .find(|plan| plan.plan_id == params.plan_id)
             .cloned()
             .ok_or_else(|| RpcError::of(RpcErrorCode::InvalidParams))?;
@@ -289,8 +227,7 @@ pub async fn approve_plan(
     let config = inner
         .project_config(std::path::Path::new(&state.session.cwd))
         .map_err(to_rpc)?;
-    let requested_model = params.execution_model.as_deref().unwrap_or(&state.model);
-    let execution_model = config.resolve_model(requested_model).map_err(to_rpc)?;
+    let execution_model = config.resolve_model(&state.model).map_err(to_rpc)?;
 
     if params.action == PlanAction::ExecuteCompacted {
         compact::manual(
@@ -427,17 +364,7 @@ pub async fn approve_plan(
         .set_plan_active(&params.session_id, false)
         .await
         .map_err(to_rpc)?;
-    let current_model = record.state.lock().await.model.clone();
-    let model =
-        (current_model != execution_model.selector).then(|| execution_model.selector.clone());
-    if model.is_some() {
-        inner
-            .sessions
-            .set_model(&params.session_id, execution_model.selector.clone())
-            .await
-            .map_err(to_rpc)?;
-    }
-    emit_plan_change(&ctx, &params.session_id, false, model).await?;
+    emit_plan_change(&ctx, &params.session_id, false).await?;
     Ok(SessionPlanApproveResult {
         session_id: params.session_id,
         engine: state.engine,
@@ -484,7 +411,9 @@ pub async fn revise_plan(
         .map_err(to_rpc)?;
     let (state, plan) = {
         let state = record.state.lock().await;
-        let plan = state.plans.iter()
+        let plan = state
+            .plans
+            .iter()
             .find(|plan| plan.plan_id == params.plan_id)
             .cloned()
             .ok_or_else(|| RpcError::of(RpcErrorCode::InvalidParams))?;

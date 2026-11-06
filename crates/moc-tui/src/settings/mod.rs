@@ -816,7 +816,7 @@ impl SettingsPanel {
             _ => String::new(),
         }
     }
-    /// 模型行的摘要：上下文长度、回复上限、思考与主模型标记。
+    /// 模型行的摘要：上下文长度、回复上限与思考能力。
     fn model_summary(&self, provider: &str, model: &str) -> String {
         let Some(value) = self
             .effective
@@ -840,16 +840,6 @@ impl SettingsPanel {
             .unwrap_or(false)
         {
             parts.push("支持思考".into());
-        }
-        let primary = self
-            .effective
-            .get("models")
-            .and_then(|models| models.get("roles"))
-            .and_then(|roles| roles.get("default"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if primary.split(':').next() == Some(&format!("{provider}/{model}")) {
-            parts.push("主模型".into());
         }
         parts.join(" · ")
     }
@@ -1124,7 +1114,7 @@ impl SettingsPanel {
             _ => self.error = Some("请到“供应商与模型”或“MCP”页添加条目".into()),
         }
     }
-    /// 登记模型；沿用首次配置时的默认初始化，不提供切换主模型操作。
+    /// 登记可选模型；会话模型由用户在模型选择器中选择。
     fn insert_model(&mut self, provider: &str, id: &str) -> anyhow::Result<()> {
         anyhow::ensure!(!id.trim().is_empty(), "模型 ID 不能为空");
         let path = vec![
@@ -1135,18 +1125,6 @@ impl SettingsPanel {
         ];
         anyhow::ensure!(self.value(&path).is_none(), "模型 {provider}/{id} 已存在");
         self.set_value(&path, json!({}));
-        let primary = self
-            .data
-            .as_ref()
-            .and_then(|data| data.effective.pointer("/models/roles/default"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if primary.is_empty() {
-            self.set_value(
-                &["models".into(), "roles".into(), "default".into()],
-                json!(format!("{provider}/{id}")),
-            );
-        }
         Ok(())
     }
 }
@@ -1155,27 +1133,20 @@ impl SettingsPanel {
 /// 其余路径返回 `None`。`models.fusion.*` 没有角色伪值，只用于识别字段类型。
 fn model_role(path: &[String]) -> Option<&str> {
     match path {
-        [root, roles, role] if root == "models" && (roles == "roles" || roles == "fusion") => {
+        [root, roles, role]
+            if root == "models"
+                && ((roles == "roles" && role == "explore") || roles == "fusion") =>
+        {
             Some(role)
         }
         _ => None,
     }
 }
 
-/// 角色字段在模型选择器里的伪值：explore 可沿用主模型，plan 还可沿用当前
-/// 会话模型；default 与 plan 都能选 `models.fusion` 组合。
+/// 探索子代理可继承父会话当前模型。
 fn role_specials(role: &str) -> &'static [(&'static str, &'static str)] {
-    const INHERIT: [(&str, &str); 1] = [("inherit", "沿用主模型")];
-    const FUSION: [(&str, &str); 1] = [("fusion", "Fusion（models.fusion 组合）")];
-    const PLAN: [(&str, &str); 3] = [
-        ("inherit", "沿用主模型"),
-        ("none", "沿用当前会话模型"),
-        ("fusion", "Fusion（models.fusion 组合）"),
-    ];
     match role {
-        "explore" => &INHERIT,
-        "default" => &FUSION,
-        "plan" => &PLAN,
+        "explore" => &[("inherit", "沿用父会话当前模型")],
         _ => &[],
     }
 }
@@ -1930,37 +1901,26 @@ mod tests {
         assert_eq!(value, Some(json!({"input": 2.5, "output": 10.0})));
     }
 
-    /// 模型角色字段的路径判定与伪值：主模型没有伪值，explore 只能沿用主模型，plan 两个都有。
+    /// 设置只保留探索模型和 Fusion 两侧的模型选择入口。
     #[test]
     fn model_role_fields_carry_their_own_specials() {
-        let path = |segments: [&str; 3]| {
-            segments
-                .iter()
-                .map(|part| (*part).to_owned())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(model_role(&path(["models", "roles", "plan"])), Some("plan"));
+        let path = |segments: [&str; 3]| segments.map(str::to_owned).to_vec();
+        assert_eq!(model_role(&path(["models", "roles", "plan"])), None);
+        assert_eq!(model_role(&path(["models", "roles", "default"])), None);
         assert_eq!(
-            model_role(&path(["models", "roles", "default"])),
-            Some("default")
+            model_role(&path(["models", "roles", "explore"])),
+            Some("explore")
         );
         assert_eq!(
-            model_role(&path(["providers", "test", "models"])),
-            None,
-            "只有模型角色字段走共用选择器"
+            model_role(&path(["models", "fusion", "lead"])),
+            Some("lead")
         );
+        assert_eq!(model_role(&path(["providers", "test", "models"])), None);
+        assert!(role_specials("default").is_empty());
+        assert!(role_specials("plan").is_empty());
         assert_eq!(
-            role_specials("default"),
-            [("fusion", "Fusion（models.fusion 组合）")]
-        );
-        assert_eq!(role_specials("explore"), [("inherit", "沿用主模型")]);
-        assert_eq!(
-            role_specials("plan"),
-            [
-                ("inherit", "沿用主模型"),
-                ("none", "沿用当前会话模型"),
-                ("fusion", "Fusion（models.fusion 组合）")
-            ]
+            role_specials("explore"),
+            [("inherit", "沿用父会话当前模型")]
         );
     }
 

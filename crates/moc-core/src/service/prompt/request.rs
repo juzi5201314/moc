@@ -385,7 +385,7 @@ mod tests {
             .expect("载入配置")
             .for_project(&cwd)
             .expect("解析项目");
-        let model = config.resolve_role("default").expect("解析模型");
+        let model = config.resolve_model("p/model").expect("解析模型");
         // 7 条消息，其中最后 1 条是本轮的尾部提醒：断点必须退回第 5 条。
         let options = cache_options(
             &model,
@@ -434,7 +434,7 @@ mod tests {
             .expect("载入配置")
             .for_project(&cwd)
             .expect("解析项目");
-        let model = config.resolve_role("default").expect("解析模型");
+        let model = config.resolve_model("p/model").expect("解析模型");
         let options = cache_options(
             &model,
             9,

@@ -114,10 +114,7 @@ fn rank(key: &str) -> usize {
         "reasoning" => 3,
         "thinking_levels" => 4,
         "input" => 5,
-        // 模型角色：主模型 → 探索子代理 → 计划
-        "default" => 0,
-        "explore" => 1,
-        "plan" => 2,
+        "explore" => 0,
         // Fusion 组合：主导 → 执行
         "lead" => 0,
         "sidekick" => 1,
@@ -381,17 +378,9 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
 
 fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
     match path {
-        "models.roles.default" => (
-            "主模型",
-            "日常对话使用的模型，格式为 供应商/模型[:等级]，或 fusion（取 models.fusion 组合）；省略等级时用模型的最高等级。",
-        ),
         "models.roles.explore" => (
             "探索子代理模型",
-            "供 agent/spawn 的 explore 角色使用；inherit 表示沿用主模型，省略等级时用模型的最高等级。",
-        ),
-        "models.roles.plan" => (
-            "计划模型",
-            "制定计划时使用的模型；none 表示沿用当前会话模型，inherit 表示沿用主模型，fusion 取 models.fusion 组合，省略等级时用模型的最高等级。",
+            "供探索子代理使用；inherit 表示沿用父会话当前模型，省略等级时用模型的默认等级。",
         ),
         "models.fusion.lead" => (
             "Fusion 主导模型",

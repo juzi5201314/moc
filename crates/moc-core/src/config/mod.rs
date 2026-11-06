@@ -25,9 +25,10 @@ pub mod discovery;
 pub mod editor;
 pub mod model;
 mod schema;
+pub mod selection;
 pub mod web;
 
-pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ROLE_NONE, ThinkingLevel};
+pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ThinkingLevel};
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
     EditConfig, FeaturesConfig, FindConfig, GrepConfig, HOST_PLUGIN_KEYS, JobConfig, JobOverflow,
@@ -127,17 +128,30 @@ impl ResolvedConfig {
         let mut base_raw: Value = toml::from_str(include_str!("defaults.toml"))
             .map_err(|error| CoreError::Config(format!("内置默认配置无效: {error}")))?;
         merge_optional_file(&mut base_raw, &home.join("config.toml"))?;
+        let legacy_model = base_raw
+            .get("models")
+            .and_then(|models| models.get("roles"))
+            .and_then(|roles| roles.get("default"))
+            .and_then(Value::as_str)
+            .filter(|selector| !selector.is_empty())
+            .map(str::to_owned);
         let mut raw = base_raw.clone();
         for overlay in &config.overlays {
             merge_required_file(&mut raw, overlay)?;
         }
-        Self::from_merged(
+        let resolved = Self::from_merged(
             raw,
             base_raw,
             home,
             expand_home_path(&config.cwd),
             config.overlays.clone(),
-        )
+        )?;
+        if let Some(selector) = legacy_model
+            && let Ok(model) = resolved.resolve_model(&selector)
+        {
+            selection::migrate(&resolved.home, &model.selector)?;
+        }
+        Ok(resolved)
     }
 
     /// 以项目配置覆盖全局配置，再按原顺序合并 CLI 覆盖层。
@@ -160,46 +174,22 @@ impl ResolvedConfig {
         )
     }
 
-    /// 按 provider/model[:level] 或模型角色解析可调用模型。
+    /// 按 provider/model[:level] 或 Fusion selector 解析可调用模型。
     pub fn resolve_model(&self, selector: &str) -> Result<ResolvedModel, CoreError> {
-        let selector = match selector {
-            "default" => self.roles.default.as_str(),
-            "explore" => self.roles.explore.as_str(),
-            "plan" => self.roles.plan.as_str(),
-            other => other,
-        };
-        let selector = if selector == ROLE_INHERIT {
-            self.roles.default.as_str()
-        } else {
-            selector
-        };
-        if selector == ROLE_NONE {
-            return Err(CoreError::Config(
-                "none 只用于计划模型，表示进入计划模式时不切换模型".into(),
-            ));
-        }
-        if selector.is_empty() {
-            return Err(CoreError::Config(
-                "尚未配置主模型，请打开 /config 添加供应商并选择至少一个模型".into(),
-            ));
-        }
         resolve_selector(&self.providers, &self.fusion, selector)
     }
 
-    /// 进入计划模式时应用的模型；`plan = "none"` 表示沿用会话当前模型。
-    pub fn resolve_plan_mode_model(&self) -> Result<Option<ResolvedModel>, CoreError> {
-        if self.roles.plan == ROLE_NONE {
-            return Ok(None);
-        }
-        self.resolve_model("plan").map(Some)
+    /// 每次从共享文件读取，保证不同前端进程能看到最新选择。
+    pub fn last_model(&self) -> Result<Option<ResolvedModel>, CoreError> {
+        Ok(selection::load(&self.home)?.and_then(|selector| self.resolve_model(&selector).ok()))
     }
 
-    /// 返回模型角色对应的已解析模型。
-    ///
-    /// 计划模型可以配置为 `none`（进入计划模式不切换模型），此时返回配置错误；
-    /// 需要区分这种情况时改用 [`Self::resolve_plan_mode_model`]。
-    pub fn resolve_role(&self, role: &str) -> Result<ResolvedModel, CoreError> {
-        self.resolve_model(role)
+    pub fn require_last_model(&self) -> Result<ResolvedModel, CoreError> {
+        self.last_model()?.ok_or_else(|| {
+            CoreError::Config(
+                "请先选择模型；上次选择为空或已不可用，非交互调用请传入 --model".into(),
+            )
+        })
     }
 
     /// 列出 provider 配置中的全部模型，顺序按 provider 与模型 ID 稳定排序。
@@ -219,6 +209,7 @@ impl ResolvedConfig {
         cwd: PathBuf,
         overlays: Vec<PathBuf>,
     ) -> Result<Self, CoreError> {
+        selection::remove_legacy_roles(&mut raw);
         remove_deprecated_retention_keys(&mut raw);
         apply_model_defaults(&mut raw)?;
         let document: ConfigDocument = raw
@@ -792,18 +783,12 @@ mod tests {
         assert_eq!(config.tools.read.max_bytes, 8192);
         assert_eq!(
             config
-                .resolve_role("default")
+                .require_last_model()
                 .expect("default 模型")
                 .thinking_level,
             ThinkingLevel::High
         );
-        assert_eq!(
-            config
-                .resolve_role("plan")
-                .expect("plan 模型")
-                .thinking_level,
-            ThinkingLevel::Max
-        );
+        assert!(config.resolve_model("plan").is_err());
     }
 
     #[test]
@@ -824,7 +809,7 @@ mod tests {
             fs::write(home.join("config.toml"), provider_config(secret)).expect("写配置");
             let config = ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new()))
                 .expect("密钥可解析");
-            let model = config.resolve_role("default").expect("模型可解析");
+            let model = config.require_last_model().expect("模型可解析");
             assert_eq!(model.llm.auth, moc_llm::Auth::Bearer(expected.clone()));
             assert!(!format!("{:?}", model.llm.auth).contains(&expected));
         }
@@ -925,7 +910,7 @@ mod tests {
         assert_eq!(fusion.sidekick, "p/model2:off");
         assert_eq!(model.actual_selector(), "p/model:high");
         // 普通模型 actual_selector 即自身。
-        let plain = config.resolve_role("default").expect("普通模型");
+        let plain = config.require_last_model().expect("普通模型");
         assert!(plain.fusion.is_none());
         assert_eq!(plain.actual_selector(), "p/model:high");
         // 别名展开 [models.fusion]，等级按模型默认补全。
@@ -945,7 +930,7 @@ mod tests {
         );
         assert!(
             config
-                .resolve_role("default")
+                .require_last_model()
                 .expect("default=fusion 可解析")
                 .fusion
                 .is_some()
@@ -1036,7 +1021,7 @@ max_output_tokens = 128000
 
         let config = ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new()))
             .expect("通配模型默认值可解析");
-        let model = config.resolve_role("default").expect("解析模型");
+        let model = config.require_last_model().expect("解析模型");
         assert_eq!(model.context_window, 500_000);
         assert_eq!(model.max_output_tokens, 128_000);
         assert!(model.capabilities.reasoning);
@@ -1062,7 +1047,7 @@ max_output_tokens = 128000
             .expect("默认思考等级可解析");
         assert_eq!(
             config
-                .resolve_role("default")
+                .require_last_model()
                 .expect("解析模型")
                 .thinking_levels,
             vec![
@@ -1092,36 +1077,40 @@ max_output_tokens = 128000
     }
 
     #[test]
-    fn plan_role_accepts_none_and_other_roles_reject_it() {
+    fn legacy_roles_migrate_without_restoring_plan_model_behavior() {
         let dir = tempfile::tempdir().expect("临时目录");
         let home = dir.path().join("home");
-        fs::create_dir_all(&home).expect("创建 home");
-        let provider = "[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n";
+        fs::create_dir_all(&home).unwrap();
+        let provider = "[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n[providers.p.models.other]\n";
         fs::write(
             home.join("config.toml"),
-            format!("[models.roles]\ndefault='p/m'\nplan='none'\n{provider}"),
+            format!("[models.roles]\ndefault='p/m'\nplan='p/missing'\n{provider}"),
         )
-        .expect("写配置");
-        let config = ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new()))
-            .expect("计划模型可以是 none");
-        assert!(
-            config
-                .resolve_plan_mode_model()
-                .expect("解析计划模型")
-                .is_none()
-        );
+        .unwrap();
+        let boot = core_config(&home, dir.path(), Vec::new());
+        let config = ResolvedConfig::load(&boot).unwrap();
+        assert_eq!(config.require_last_model().unwrap().selector, "p/m:off");
+        assert!(config.resolve_model("default").is_err());
         assert!(config.resolve_model("plan").is_err());
-        for roles in ["default='none'", "default='p/m'\nexplore='none'"] {
-            fs::write(
-                home.join("config.toml"),
-                format!("[models.roles]\n{roles}\n{provider}"),
-            )
-            .expect("写配置");
-            assert!(
-                ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).is_err(),
-                "{roles} 不能是 none"
-            );
-        }
+        selection::save(&home, "p/other:off").unwrap();
+        let reloaded = ResolvedConfig::load(&boot).unwrap();
+        assert_eq!(
+            reloaded.require_last_model().unwrap().selector,
+            "p/other:off"
+        );
+        let view = editor::inspect(&boot, moc_protocol::ConfigScope::Global, dir.path()).unwrap();
+        assert!(view.document.pointer("/models/roles/default").is_none());
+        assert!(view.effective.pointer("/models/roles/plan").is_none());
+        fs::write(home.join("config.toml"), "[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n").unwrap();
+        let removed = ResolvedConfig::load(&boot).unwrap();
+        assert!(removed.last_model().unwrap().is_none());
+        assert!(removed.require_last_model().is_err());
+        fs::write(
+            home.join("config.toml"),
+            format!("[models.roles]\nexplore='none'\n{provider}"),
+        )
+        .unwrap();
+        assert!(ResolvedConfig::load(&boot).is_err());
     }
 
     #[test]

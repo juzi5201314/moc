@@ -54,6 +54,9 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         }
                     }
                 });
+            } else if app.session.is_none() && !app.models.is_empty() && !app.saving_config() {
+                app.settings = None;
+                app.open_model_picker();
             }
         }
         AppEvent::PlanApproval(result) => {

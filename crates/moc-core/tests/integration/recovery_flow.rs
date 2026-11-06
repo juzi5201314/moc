@@ -386,7 +386,6 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
                 session_id: id.clone(),
                 plan_id: plan.plan_id,
                 action,
-                execution_model: None,
                 execution_engine: None,
             })
             .await
@@ -437,7 +436,6 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
             session_id: id.clone(),
             plan_id: before.plans[0].plan_id.clone(),
             action: PlanAction::ExecuteCompacted,
-            execution_model: None,
             execution_engine: None,
         })
         .await;

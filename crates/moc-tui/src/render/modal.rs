@@ -292,7 +292,6 @@ struct ModalBody {
 
 /// 居中模态卡片。
 pub fn draw_modal(frame: &mut Frame, app: &mut App) {
-    app.plan_model_area = Rect::default();
     app.modal_item_hits.clear();
     app.modal_level_hits.clear();
     app.modal_card_area = Rect::default();
@@ -382,15 +381,6 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     app.modal_card_area = layout.area;
     app.key_hits = layout.keys;
     if let Modal::Plan { state } = modal {
-        let prefix_width =
-            u16::try_from(str_width(PLAN_MODEL_PREFIX)).expect("固定标签宽度可表示为 u16");
-        let model_width = u16::try_from(str_width(&crate::app::model_selector_label(
-            &state.execution_model,
-        )))
-        .unwrap_or(u16::MAX)
-        .min(layout.body.width.saturating_sub(prefix_width));
-        app.plan_model_area =
-            Rect::new(layout.body.x + prefix_width, layout.body.y, model_width, 1);
         if state.pane == PlanPane::Annotate {
             // 批注视图是一行源码对一行屏幕行，鼠标拖选直接按行换算。
             let window = plan_source_window(state, rows);
@@ -2853,8 +2843,8 @@ fn join_columns(
 
 // ---------- 计划审阅：阅读 / 批注视图 ----------
 
-/// 计划审阅卡片顶部的固定行数：执行模型、标题/版本、路径。
-pub(crate) const PLAN_HEADER_ROWS: usize = 3;
+/// 计划审阅卡片顶部的固定行数：标题/版本、路径。
+pub(crate) const PLAN_HEADER_ROWS: usize = 2;
 
 /// 待审阅计划的动作列表；「在新会话执行」带上所选目标引擎。
 fn plan_action_label(state: &PlanReviewState, index: usize) -> String {
@@ -2927,9 +2917,6 @@ pub(crate) fn plan_source_window(state: &PlanReviewState, max_lines: usize) -> V
     (offset..(offset + rows).min(total)).collect()
 }
 
-/// 计划卡片首行的标签；`draw_modal` 按它的宽度换算执行模型的点击区。
-const PLAN_MODEL_PREFIX: &str = "执行模型：";
-
 /// 计划审阅卡片的正文行与提示条。
 fn plan_lines(
     state: &PlanReviewState,
@@ -2939,19 +2926,7 @@ fn plan_lines(
     hits: &mut Vec<(usize, usize)>,
 ) -> (Vec<Line<'static>>, overlay::Footer) {
     let mut lines = Vec::with_capacity(max_lines);
-    lines.push(Line::from(vec![
-        Span::styled(PLAN_MODEL_PREFIX, Style::new().fg(theme.text_secondary)),
-        Span::styled(
-            truncate(
-                crate::app::model_selector_label(&state.execution_model),
-                width.saturating_sub(str_width(PLAN_MODEL_PREFIX)),
-            )
-            .into_owned(),
-            Style::new()
-                .fg(theme.accent_model)
-                .add_modifier(Modifier::UNDERLINED),
-        ),
-    ]));
+
     // 状态先占位、标题吃剩下的宽度：标题再长也不会把这一行挤成两行。
     let (status_label, status_color) = plan_status_label(theme, state.status);
     let status = format!("{}{status_label}", labels::SEP);
@@ -3049,7 +3024,6 @@ fn plan_lines(
             if submitted {
                 items.push(("m", "换引擎"));
             }
-            items.push(("ctrl+p", "选模型"));
             items.push(("a", "批注"));
             if state.previous_plan_id.is_some() {
                 items.push((
@@ -3560,7 +3534,7 @@ mod tests {
         // 角色伪值没有任何元数据：留一行说明，不画空框。
         let inherit = crate::modal::ModelEntry {
             selector: "inherit".into(),
-            label: "沿用主模型".into(),
+            label: "沿用父会话当前模型".into(),
             display_name: String::new(),
             levels: Vec::new(),
             context_window: None,
@@ -3573,7 +3547,10 @@ mod tests {
             .map(line_text)
             .collect();
         assert_eq!(inherit_card.len(), 3, "{inherit_card:?}");
-        assert!(inherit_card[1].contains("沿用主模型"), "{inherit_card:?}");
+        assert!(
+            inherit_card[1].contains("沿用父会话当前模型"),
+            "{inherit_card:?}"
+        );
         assert!(inherit_card[1].starts_with("│ "), "{inherit_card:?}");
 
         assert!(super::model_meta_lines(theme, None, 30).is_empty());
