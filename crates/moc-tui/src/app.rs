@@ -976,7 +976,7 @@ impl App {
             .iter()
             .filter(|entry| {
                 if let Block::Tool(tool) = &entry.block {
-                    tool.running && tool.job_id.is_some()
+                    tool.job_id.is_some()
                 } else {
                     false
                 }

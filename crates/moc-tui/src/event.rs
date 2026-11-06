@@ -5983,19 +5983,13 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::ContextCompactionFailed { message } => {
             app.finish_compaction(format!("上下文压缩失败：{message}"), true);
         }
-        SessionUpdate::JobStarted { job } => {
-            // 前台 bash 任务会同时发送 JobStarted 和 ToolStarted
-            // 后台任务（explicit 或 auto_background）只发 JobStarted
-            // 我们通过 tool_call_id 找到对应的 ToolCallBlock 并设置 job_id
-            if let Some(entry) = app.tool_entry_mut(&job.tool_call_id)
-                && let Block::Tool(tool) = &mut entry.block
-            {
-                tool.job_id = Some(job.job_id.clone());
-            }
-        }
-        SessionUpdate::JobUpdated { job } => {
-            // 更新 job 状态，目前主要用于前台任务的实时信息
-            if let Some(entry) = app.tool_entry_mut(&job.tool_call_id)
+        SessionUpdate::JobStarted { job } | SessionUpdate::JobUpdated { job } => {
+            // 前台 bash 任务会同时发送 JobStarted 和 ToolStarted；
+            // 后台任务（explicit、自动或手动转后台）只发任务更新。
+            // job_id 只在任务确为后台来源时挂上：前台命令不挂「后台」徽标，
+            // 转后台时 origin 已在 core 侧改写，这里直接按当前值判断。
+            if job.origin.is_background()
+                && let Some(entry) = app.tool_entry_mut(&job.tool_call_id)
                 && let Block::Tool(tool) = &mut entry.block
             {
                 tool.job_id = Some(job.job_id.clone());
@@ -6016,10 +6010,20 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             }
         }
         SessionUpdate::JobFinished { job } => {
-            let code = job
-                .exit_code
-                .map_or_else(String::new, |code| format!("（退出码 {code}）"));
-            app.push_note(format!("后台任务结束：{}{code}", job.command), false);
+            // 任务脱离「后台运行中」：摘除徽标。只有后台任务结束才推便签——
+            // 前台命令的结果已经随工具卡片落地，再提示就是把前台误报成后台。
+            if let Some(entry) = app.tool_entry_mut(&job.tool_call_id)
+                && let Block::Tool(tool) = &mut entry.block
+            {
+                tool.job_id = None;
+                entry.touch();
+            }
+            if job.origin.is_background() {
+                let code = job
+                    .exit_code
+                    .map_or_else(String::new, |code| format!("（退出码 {code}）"));
+                app.push_note(format!("后台任务结束：{}{code}", job.command), false);
+            }
         }
         SessionUpdate::WorkspaceChanged { .. } => {
             if let Some(session) = app.session.as_ref() {
@@ -7238,6 +7242,83 @@ mod tests {
     fn app() -> App {
         let (events, _receiver) = unbounded_channel::<AppEvent>();
         App::new(Theme::global(), events)
+    }
+
+    /// 前台 bash 也登记为 job：其开始/结束更新不得挂「后台」徽标或推「后台任务结束」
+    /// 便签——结果已随工具卡片落地。转后台后 origin 改写，徽标挂上、结束才提示。
+    #[test]
+    fn foreground_job_updates_do_not_masquerade_as_background() {
+        use crate::transcript::Block;
+        use moc_protocol::methods::{JobInfo, JobLifecycle, JobOrigin, JobStatus};
+
+        let job = |origin: JobOrigin, status: JobStatus, exit_code: Option<i32>| JobInfo {
+            job_id: "job_1".into(),
+            command: "cargo build".into(),
+            description: None,
+            tool_call_id: "call_1".into(),
+            status,
+            exit_code,
+            lifecycle: JobLifecycle::Monitored,
+            origin,
+            stalled: false,
+            output_elided: false,
+            started_at_ms: 0,
+            duration_ms: Some(1_600),
+            log_uri: "artifact://jobs/job_1.log".into(),
+        };
+        let tool_job_id = |app: &App| match &app.blocks[0].block {
+            Block::Tool(tool) => tool.job_id.clone(),
+            other => panic!("首个块应为工具块：{other:?}"),
+        };
+
+        let mut app = app();
+        apply_update(
+            &mut app,
+            SessionUpdate::ToolStarted {
+                prompt_id: "prompt_1".into(),
+                tool_call_id: "call_1".into(),
+                name: "bash".into(),
+                parent_tool_call_id: None,
+                arguments: "{}".into(),
+            },
+        );
+
+        // 前台来源：不挂徽标，结束也不推便签。
+        apply_update(
+            &mut app,
+            SessionUpdate::JobStarted {
+                job: job(JobOrigin::Foreground, JobStatus::Running, None),
+            },
+        );
+        assert_eq!(tool_job_id(&app), None);
+        apply_update(
+            &mut app,
+            SessionUpdate::JobFinished {
+                job: job(JobOrigin::Foreground, JobStatus::Exited, Some(0)),
+            },
+        );
+        assert_eq!(app.blocks.len(), 1, "前台任务结束不得追加便签");
+
+        // 自动转后台：徽标挂上；结束推便签并摘除徽标。
+        apply_update(
+            &mut app,
+            SessionUpdate::JobUpdated {
+                job: job(JobOrigin::AutoBackground, JobStatus::Running, None),
+            },
+        );
+        assert_eq!(tool_job_id(&app), Some("job_1".into()));
+        apply_update(
+            &mut app,
+            SessionUpdate::JobFinished {
+                job: job(JobOrigin::AutoBackground, JobStatus::Exited, Some(0)),
+            },
+        );
+        assert_eq!(tool_job_id(&app), None, "任务结束后摘除徽标");
+        let Some(Block::Note { text, error }) = app.blocks.last().map(|entry| &entry.block) else {
+            panic!("后台任务结束应追加便签");
+        };
+        assert!(!*error);
+        assert_eq!(text, "后台任务结束：cargo build（退出码 0）");
     }
 
     /// `/usage` 输出会话统计与对齐表格：列宽一致、数字右对齐、token 走 k/m/b 单位，

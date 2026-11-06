@@ -242,6 +242,36 @@ describe("applyUpdate", () => {
     expect(bash.kind === "bash" && bash.liveOutput).toBe("Compiling moc");
     expect(bash.kind === "bash" && bash.durationMs).toBe(2_500);
     expect(view.jobs.job_1).toEqual(finished);
+    // 前台任务结束不推「后台任务结束」状态条——结果已随工具卡片落地。
+    expect(view.blocks.some((block) => block.kind === "status")).toBe(false);
+  });
+
+  it("后台任务结束推状态条", () => {
+    const view = createView(INFO);
+    const job: JobInfo = {
+      job_id: "job_1",
+      command: "cargo build",
+      tool_call_id: "bash_1",
+      status: "running",
+      lifecycle: "monitored",
+      origin: "auto_background",
+      stalled: false,
+      output_elided: false,
+      started_at_ms: 1_000,
+      log_uri: "artifact://jobs/job_1.log",
+    };
+    applyUpdate(view, {
+      type: "bash_started",
+      tool_call_id: "bash_1",
+      command: { command: "cargo build", exclude_from_context: false },
+    });
+    applyUpdate(view, { type: "job_started", job }, 1_000);
+    applyUpdate(view, {
+      type: "job_finished",
+      job: { ...job, status: "exited", exit_code: 0, duration_ms: 2_500 },
+    });
+    const status = view.blocks.find((block) => block.kind === "status");
+    expect(status?.kind === "status" && status.text).toBe("后台任务结束：cargo build（退出码 0）");
   });
 
   it("流式两段生成，最后一段以 message 为准", () => {

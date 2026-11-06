@@ -1771,10 +1771,8 @@ fn render_tool(
             Style::new().fg(theme.text_secondary),
         ));
     }
-    // 后台任务标记
-    if let Some(job_id) = &tool.job_id
-        && tool.running
-    {
+    // 后台任务标记（job_id 只在任务于后台存活期间挂着）
+    if let Some(job_id) = &tool.job_id {
         title.push(Span::styled(
             format!(" · 后台 {job_id}"),
             Style::new().fg(theme.gray_dim),

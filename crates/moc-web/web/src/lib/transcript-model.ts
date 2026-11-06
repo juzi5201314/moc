@@ -868,11 +868,14 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       }
       const bash = findBash(view, job.tool_call_id);
       if (bash) bash.durationMs = job.duration_ms;
-      pushStatus(
-        view,
-        job.exit_code === 0 ? "info" : "warn",
-        `后台任务结束：${job.command}（退出码 ${job.exit_code ?? "未知"}）`,
-      );
+      // 前台命令的结果已随工具卡片落地，只有后台任务结束才推状态条。
+      if (job.origin !== "foreground") {
+        pushStatus(
+          view,
+          job.exit_code === 0 ? "info" : "warn",
+          `后台任务结束：${job.command}（退出码 ${job.exit_code ?? "未知"}）`,
+        );
+      }
       break;
     }
     case "workspace_changed":
