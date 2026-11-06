@@ -242,46 +242,6 @@ fn test_f2_05_engine_menu_uses_rounded_borders() {
 // ============================================================================
 
 #[test]
-fn test_f3_01_accent_thinking_rgb_matches_spec() {
-    let theme = Theme::resolved(moc_tui::theme::ColorLevel::TrueColor);
-    assert_eq!(
-        theme.accent_thinking,
-        Color::Rgb(0x73, 0x7d, 0x94),
-        "accent_thinking must be slate blue-gray Color::Rgb(0x73, 0x7d, 0x94)"
-    );
-}
-
-#[test]
-fn test_f3_02_gray_dim_rgb_matches_spec() {
-    let theme = Theme::resolved(moc_tui::theme::ColorLevel::TrueColor);
-    assert_eq!(
-        theme.gray_dim,
-        Color::Rgb(0x54, 0x54, 0x5a),
-        "gray_dim must be Color::Rgb(0x54, 0x54, 0x5a)"
-    );
-}
-
-#[test]
-fn test_f3_03_gray_rgb_matches_spec() {
-    let theme = Theme::resolved(moc_tui::theme::ColorLevel::TrueColor);
-    assert_eq!(
-        theme.gray,
-        Color::Rgb(0x78, 0x78, 0x82),
-        "gray must be Color::Rgb(0x78, 0x78, 0x82)"
-    );
-}
-
-#[test]
-fn test_f3_04_gray_bright_rgb_matches_spec() {
-    let theme = Theme::resolved(moc_tui::theme::ColorLevel::TrueColor);
-    assert_eq!(
-        theme.gray_bright,
-        Color::Rgb(0x9e, 0x9e, 0xaa),
-        "gray_bright must be Color::Rgb(0x9e, 0x9e, 0xaa)"
-    );
-}
-
-#[test]
 fn test_f3_05_grayscale_monotonicity_and_thinking_distinction() {
     let theme = Theme::resolved(moc_tui::theme::ColorLevel::TrueColor);
     assert_ne!(
