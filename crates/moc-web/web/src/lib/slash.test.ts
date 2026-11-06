@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CommandMeta } from "@/protocol/types";
-import { fromMeta, parseSlash, slashMatches } from "./slash";
+import { fromMeta, parseSlash, runSlash, slashMatches } from "./slash";
 
 function meta(partial: Partial<CommandMeta> & { name: string }): CommandMeta {
   return {
@@ -39,6 +39,20 @@ describe("slash 注册表语义", () => {
   it("usage 空串映射为 undefined", () => {
     expect(fromMeta(meta({ name: "x", usage: "<问题>" })).usage).toBe("<问题>");
     expect(fromMeta(meta({ name: "x" })).usage).toBeUndefined();
+  });
+
+  it("绝对路径和未注册命令作为普通消息发送", () => {
+    const commands = [fromMeta(meta({ name: "goal" }))];
+    for (const text of [
+      "/tmp/a.txt",
+      "/tmp",
+      "/goal/file.txt",
+      "/tmp/my file.txt 请检查",
+      "/unknown-command",
+    ]) {
+      expect(slashMatches(text, commands)).toEqual([]);
+      expect(runSlash("test", text, commands)).toBe(false);
+    }
   });
 
   it("parseSlash 拆分名字与参数", () => {

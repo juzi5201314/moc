@@ -2701,7 +2701,7 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
             {
                 app.focus = Focus::Prompt;
                 if let Some(cursor) = crate::render::prompt_cursor_from_point(
-                    &app.prompt.text,
+                    app,
                     area,
                     position.0,
                     position.1,
@@ -3184,8 +3184,13 @@ fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
     if crate::btw::submit(app, connection) {
         return;
     }
-    let first_line = app.prompt_text().lines().next().unwrap_or_default();
-    if first_line.starts_with('/') {
+    let name = app
+        .prompt_text()
+        .split_whitespace()
+        .next()
+        .unwrap_or_default();
+    // 只有已注册的命令才分流；绝对路径和其他斜杠文本按普通消息发送。
+    if app.prompt_text().starts_with('/') && app.commands.resolve(name).is_some() {
         if app.prompt.has_attached_images() {
             app.set_notice("斜杠命令不支持图片，请移除图片后执行");
             return;
@@ -6475,7 +6480,9 @@ enum ResolvedCommand {
 }
 
 fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String) {
-    let (name, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
+    let (name, rest) = line
+        .split_once(char::is_whitespace)
+        .unwrap_or((line.as_str(), ""));
     let resolved = match app.commands.resolve(name) {
         Some(CommandRef::Builtin(spec)) => ResolvedCommand::Builtin(spec),
         Some(CommandRef::Plugin(command)) => ResolvedCommand::Plugin(command.clone()),
@@ -10254,6 +10261,40 @@ mod tests {
             app.notice.as_deref(),
             Some("请先用 /model 选择模型；没有候选时到 /config 添加供应商")
         );
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn slash_paths_submit_as_normal_messages() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt_running = true;
+        let session = app.session.as_ref().unwrap().id.clone();
+        for text in [
+            "/tmp/a.txt",
+            "/tmp",
+            "/goal/file.txt",
+            "/tmp/my file.txt 请检查",
+            "/unknown-command",
+        ] {
+            for paste in [false, true] {
+                if paste {
+                    app.prompt.insert_text(text);
+                } else {
+                    for ch in text.chars() {
+                        app.prompt.insert_char(ch);
+                    }
+                }
+                commit_prompt(&mut app, &connection);
+                assert_eq!(app.steers[&session].back().unwrap().draft.text, text);
+                assert!(app.prompt.is_empty(), "提交后清空输入框");
+                assert!(
+                    app.notice
+                        .as_deref()
+                        .is_none_or(|text| !text.starts_with("未知命令"))
+                );
+            }
+        }
         connection.shutdown().await;
         core.shutdown().await;
     }

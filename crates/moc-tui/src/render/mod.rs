@@ -73,18 +73,42 @@ fn inset(area: Rect, margin: u16) -> Rect {
     }
 }
 
+/// 输入框按显示列硬折行，保留空白和原始字节偏移；额外留一格显示行尾光标。
+fn prompt_rows(text: &str, width: u16) -> Vec<(usize, &str)> {
+    let width = usize::from(width)
+        .saturating_sub(2 + PROMPT_PAD + PROMPT_MARKER + 1)
+        .max(1);
+    let mut rows = Vec::new();
+    let mut start = 0;
+    let mut column = 0;
+    for (offset, ch) in text.char_indices() {
+        if ch == '\n' {
+            rows.push((start, &text[start..offset]));
+            start = offset + 1;
+            column = 0;
+            continue;
+        }
+        let cells = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if column > 0 && column + cells > width {
+            rows.push((start, &text[start..offset]));
+            start = offset;
+            column = 0;
+        }
+        column += cells;
+    }
+    rows.push((start, &text[start..]));
+    rows
+}
+
+fn prompt_cursor_row(rows: &[(usize, &str)], cursor: usize) -> usize {
+    rows.partition_point(|(start, _)| *start <= cursor)
+        .saturating_sub(1)
+}
+
 /// 输入框正文行数：按当前输入换行所需行数（1 行起，上限 [`PROMPT_MAX_ROWS`]）。
 fn prompt_content_rows(app: &App, width: u16) -> usize {
-    let text_width = usize::from(width)
-        .saturating_sub(usize::from(PROMPT_BORDER_ROWS) + PROMPT_PAD + PROMPT_MARKER)
-        .max(4);
-    let text = app.prompt_text();
-    if text.is_empty() {
-        return 1;
-    }
-    text.split('\n')
-        .map(|line| wrap::wrap_text(line, text_width).len())
-        .sum::<usize>()
+    prompt_rows(app.prompt_text(), width)
+        .len()
         .clamp(1, PROMPT_MAX_ROWS)
 }
 
@@ -443,29 +467,11 @@ fn prompt_scroll_offset(visual_row: usize, total_rows: usize, visible_rows: usiz
 
 /// 输入框光标的屏幕坐标（贴图后把光标送回这里）。
 pub(crate) fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
-    let text_width = usize::from(area.width)
-        .saturating_sub(2 + PROMPT_PAD + PROMPT_MARKER)
-        .max(4);
-    let before = &app.prompt.text[..app.prompt.cursor];
-    let mut visual_row = 0usize;
-    let mut current = "";
-    for line in before.split('\n') {
-        current = line;
-        visual_row += wrap::wrap_text(line, text_width).len();
-    }
-    visual_row = visual_row.saturating_sub(1);
-    let current_rows = wrap::wrap_text(current, text_width);
-    let column = current_rows
-        .last()
-        .map_or(0, |row| str_width(row))
-        .min(text_width);
-    let total_rows = app
-        .prompt
-        .text
-        .split('\n')
-        .map(|line| wrap::wrap_text(line, text_width).len())
-        .sum::<usize>()
-        .max(1);
+    let rows = prompt_rows(app.prompt_text(), area.width);
+    let visual_row = prompt_cursor_row(&rows, app.prompt.cursor);
+    let (offset, text) = rows[visual_row];
+    let column = str_width(&text[..app.prompt.cursor - offset]);
+    let total_rows = rows.len();
     let visible_rows = usize::from(area.height.saturating_sub(2)).max(1);
     let start = prompt_scroll_offset(visual_row, total_rows, visible_rows);
     let row = visual_row.saturating_sub(start).min(visible_rows - 1);
@@ -483,7 +489,7 @@ pub(crate) fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
 }
 
 pub(crate) fn prompt_cursor_from_point(
-    text: &str,
+    app: &App,
     area: Rect,
     col: u16,
     row: u16,
@@ -491,10 +497,7 @@ pub(crate) fn prompt_cursor_from_point(
     if area.width < 6 || area.height < 3 {
         return None;
     }
-    let inner_width = usize::from(area.width.saturating_sub(2));
-    let text_width = inner_width
-        .saturating_sub(PROMPT_PAD + PROMPT_MARKER)
-        .max(4);
+    let text = app.prompt_text();
     let top = area.y + 1;
     let visible_rows = usize::from(area.height.saturating_sub(2)).max(1);
     if row < top || row >= top + visible_rows as u16 {
@@ -502,26 +505,11 @@ pub(crate) fn prompt_cursor_from_point(
     }
     let left = area.x + 1 + PROMPT_PAD as u16 + PROMPT_MARKER as u16;
     let target_col = usize::from(col.saturating_sub(left));
-
-    let mut visual_rows: Vec<(usize, usize, String)> = Vec::new();
-    let mut offset = 0;
-    for line in text.split('\n') {
-        let wrapped = wrap::wrap_text(line, text_width);
-        let mut line_offset = offset;
-        for sub in wrapped {
-            let len = sub.len();
-            visual_rows.push((line_offset, line_offset + len, sub));
-            line_offset += len;
-            if line_offset < text.len() && text.as_bytes()[line_offset] == b' ' {
-                line_offset += 1;
-            }
-        }
-        offset += line.len() + 1;
-    }
-    let total_rows = visual_rows.len().max(1);
-    let start = total_rows.saturating_sub(visible_rows);
+    let visual_rows = prompt_rows(text, area.width);
+    let visual_row = prompt_cursor_row(&visual_rows, app.prompt.cursor);
+    let start = prompt_scroll_offset(visual_row, visual_rows.len(), visible_rows);
     let clicked_visual_row = start + usize::from(row - top);
-    if let Some((start_offset, _, sub_text)) = visual_rows.get(clicked_visual_row) {
+    if let Some((start_offset, sub_text)) = visual_rows.get(clicked_visual_row) {
         let mut accumulated_width = 0;
         let mut char_offset = 0;
         for ch in sub_text.chars() {
@@ -682,10 +670,7 @@ fn cell_width(text: &str) -> u16 {
 fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let theme = app.theme;
     let text = app.prompt_text();
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let text_width = inner_width
-        .saturating_sub(PROMPT_PAD + PROMPT_MARKER)
-        .max(4);
+    let rows = prompt_rows(text, area.width);
     let marker = || {
         Span::styled(
             "❯ ".to_owned(),
@@ -697,11 +682,10 @@ fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     if text.is_empty() {
         return vec![Line::from(vec![Span::raw(" "), marker()])];
     }
-    let lines: Vec<Line<'static>> = text
-        .split('\n')
-        .flat_map(|line| wrap::wrap_text(line, text_width))
+    let lines: Vec<Line<'static>> = rows
+        .iter()
         .enumerate()
-        .map(|(index, row)| {
+        .map(|(index, (_, row))| {
             let mut spans: Vec<Span<'static>> = Vec::with_capacity(4);
             spans.push(Span::styled(
                 " ".to_owned(),
@@ -712,7 +696,7 @@ fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
             } else {
                 Span::styled(" ".repeat(PROMPT_MARKER), Style::new())
             });
-            let mut rest = row.as_str();
+            let mut rest = *row;
             while let Some(index) = rest.find("[paste#").or_else(|| rest.find("[image#")) {
                 if index > 0 {
                     spans.push(Span::styled(
@@ -739,12 +723,7 @@ fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         })
         .collect();
     let visible = usize::from(area.height.saturating_sub(2)).max(1);
-    let before = &app.prompt.text[..app.prompt.cursor.min(app.prompt.text.len())];
-    let mut visual_row = 0usize;
-    for line in before.split('\n') {
-        visual_row += wrap::wrap_text(line, text_width).len();
-    }
-    visual_row = visual_row.saturating_sub(1);
+    let visual_row = prompt_cursor_row(&rows, app.prompt.cursor);
     let start = prompt_scroll_offset(visual_row, lines.len().max(1), visible);
     lines.into_iter().skip(start).take(visible).collect()
 }
@@ -1244,6 +1223,48 @@ fn format_context_percent(percent: f64) -> String {
 mod tests {
     use super::*;
     use crate::theme::Theme;
+
+    #[test]
+    fn prompt_preserves_spaces_after_deleting_arguments() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        let area = Rect::new(2, 3, 30, 3);
+        app.prompt.insert_text("/goal  xyz");
+        for _ in 0..3 {
+            app.prompt.backspace();
+        }
+        assert_eq!(app.prompt.text, "/goal  ");
+        assert_eq!(prompt_lines(&app, area)[0].to_string(), " ❯ /goal  ");
+        assert_eq!(prompt_cursor_position(&app, area), (13, 4));
+        assert_eq!(prompt_cursor_from_point(&app, area, 13, 4), Some(7));
+        app.prompt.insert_char('x');
+        assert_eq!(prompt_cursor_position(&app, area), (14, 4));
+    }
+
+    #[test]
+    fn prompt_wrap_keeps_spaces_and_cursor_mapping() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        let area = Rect::new(0, 0, 14, 5);
+        // 正文宽度 8 格；涵盖宽字符、连续空格、硬换行与滚动。
+        app.prompt.insert_text("中文ab    cd\n123456789");
+        assert_eq!(prompt_content_rows(&app, area.width), 4);
+        for cursor in app
+            .prompt
+            .text
+            .char_indices()
+            .map(|(index, _)| index)
+            .chain(std::iter::once(app.prompt.text.len()))
+            .collect::<Vec<_>>()
+        {
+            app.prompt.cursor = cursor;
+            let (x, y) = prompt_cursor_position(&app, area);
+            assert_eq!(prompt_cursor_from_point(&app, area, x, y), Some(cursor));
+        }
+        app.prompt.cursor = "中文ab  ".len();
+        assert_eq!(prompt_cursor_position(&app, area), (4, 1));
+        assert_eq!(prompt_lines(&app, area)[0].to_string(), "     cd");
+    }
 
     /// 窗口标题的状态选择：空闲留项目名，运行中上 spinner，等待人工置顶提示。
     #[test]
