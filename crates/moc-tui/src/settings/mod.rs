@@ -3,7 +3,10 @@
 mod controls;
 mod editors;
 mod forms;
+mod providers;
 mod render;
+
+use providers::{ProviderAction, Providers};
 
 use crate::{
     app::{App, ConfigWrite},
@@ -25,8 +28,8 @@ pub use render::draw;
 
 /// 选项卡名称；字段归属由 core 的字段目录给出。
 pub const TABS: &[&str] = &[
-    "模型",
-    "供应商",
+    "模型角色",
+    "供应商与模型",
     "指令",
     "技能",
     "工具",
@@ -68,6 +71,7 @@ pub struct SettingsPanel {
     pub hits: Vec<(ratatui::layout::Rect, Hit)>,
     pub pending: Option<tokio::task::AbortHandle>,
     pub view: View,
+    pub providers: Providers,
     /// 本次进程内的改动历史；只留在内存里，不落盘。
     pub history: History,
     /// 撤回／重做的提示语，写入完成后仍然保留。
@@ -84,7 +88,7 @@ pub enum Job {
     /// 写入配置文件并让核心立即生效。
     Save,
     /// 获取供应商的模型候选。
-    Models,
+    Models(u64),
     /// 存储维护的预览或执行结果。
     Maintenance,
     /// 确认卡片批准的一次性写入。
@@ -176,6 +180,7 @@ pub enum RowKind {
     Group(Group),
     /// 指向 [`SettingsPanel::fields`] 的下标。
     Field(usize),
+    Action(ProviderAction),
 }
 /// 可折叠分组：供应商、模型、模型角色与按用途划分的设置组。
 pub struct Group {
@@ -200,23 +205,14 @@ pub struct EditState {
 
 pub enum View {
     Fields,
-    Models {
-        provider: String,
-        rows: Vec<CatalogModel>,
-        checked: BTreeSet<String>,
-        selected: usize,
-    },
     Maintenance(MaintenanceReport),
-    Confirm {
-        text: String,
-        action: ConfirmAction,
-    },
+    Confirm { text: String, action: ConfirmAction },
 }
 pub enum EditTarget {
     Field(Vec<String>),
     /// 选中 Azure 端点后填写 `api_version`；路径指向 `providers.<p>.endpoint`。
     Azure(Vec<String>),
-    Provider,
+    ModelFilter,
     Model(String),
     Mcp,
     ModelDefaults,
@@ -231,8 +227,11 @@ pub enum Hit {
     Tab(usize),
     /// 字段树行。
     Row(usize),
-    /// 模型候选列表行。
-    Check(usize),
+    /// 供应商列表（末行是新建入口）。
+    Provider(usize),
+    /// 新建供应商表单控件。
+    ProviderInput(usize),
+    ProviderAction(ProviderAction),
     /// 工具栏按钮：等价于按下某个按键。
     Key(KeyCode, KeyModifiers),
     /// 提示条/弹窗 footer 上的键位：等价于按下该键，编辑态下同样生效
@@ -287,6 +286,7 @@ pub fn open(app: &mut App, connection: &EmbeddedConnection) {
         hits: Vec::new(),
         pending: None,
         view: View::Fields,
+        providers: Providers::default(),
         history: History::default(),
         outcome: None,
         restore: None,
@@ -473,6 +473,10 @@ impl SettingsPanel {
             return;
         }
         self.scope = scope;
+        self.providers = Providers {
+            generation: self.providers.generation,
+            ..Default::default()
+        };
         self.data = None;
         self.collapsed.clear();
         self.expanded.clear();
@@ -520,11 +524,7 @@ impl SettingsPanel {
                     }
                 }
             }
-            Ok(ConfigReply::Models(rows)) => {
-                if let View::Models { rows: current, .. } = &mut self.view {
-                    *current = rows;
-                }
-            }
+            Ok(ConfigReply::Models(_)) => {}
             Ok(ConfigReply::Maintenance(report)) => self.view = View::Maintenance(report),
             Ok(ConfigReply::Updated(message)) => {
                 self.view = View::Fields;
@@ -588,6 +588,13 @@ impl SettingsPanel {
         self.rebuild_rows();
     }
     fn rebuild_rows(&mut self) {
+        if self.provider_page() {
+            self.sync_provider();
+            self.rows = self.provider_rows();
+            self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+            self.offset = self.offset.min(self.rows.len().saturating_sub(1));
+            return;
+        }
         let filter = self.filter.to_lowercase();
         let searching = !filter.is_empty();
         let mut rows = Vec::new();
@@ -638,6 +645,11 @@ impl SettingsPanel {
     }
     fn matches_tab(&self, field: &ConfigField) -> bool {
         let tab = TABS[self.tab];
+        if self.tab == 0 {
+            return field.tab == "模型"
+                && field.path.first().is_some_and(|root| root != "providers")
+                && (!field.advanced || self.advanced);
+        }
         // 插件字段由插件声明，设置页应始终可见，不能被核心“高级”开关隐藏。
         if tab == "插件" {
             return field.tab == tab;
@@ -886,13 +898,13 @@ impl SettingsPanel {
     pub fn field(&self) -> Option<&ConfigField> {
         match self.row()? {
             RowKind::Field(index) => self.fields.get(*index),
-            RowKind::Group(_) => None,
+            RowKind::Group(_) | RowKind::Action(_) => None,
         }
     }
     pub fn group(&self) -> Option<&Group> {
         match self.row()? {
             RowKind::Group(group) => Some(group),
-            RowKind::Field(_) => None,
+            RowKind::Field(_) | RowKind::Action(_) => None,
         }
     }
     pub fn value(&self, path: &[String]) -> Option<&Value> {
@@ -968,6 +980,7 @@ impl SettingsPanel {
             let matched = match &row.kind {
                 RowKind::Field(field) => self.fields[*field].path == path,
                 RowKind::Group(group) => group.path.as_deref() == Some(path),
+                RowKind::Action(_) => false,
             };
             if matched {
                 self.selected = index;
@@ -983,7 +996,7 @@ impl SettingsPanel {
                     .get(self.selected)
                     .and_then(|row| match &row.kind {
                         RowKind::Group(group) => Some((group.key.clone(), row.depth)),
-                        RowKind::Field(_) => None,
+                        RowKind::Field(_) | RowKind::Action(_) => None,
                     })
             {
                 self.toggle_group(&key, depth);
@@ -1004,7 +1017,7 @@ impl SettingsPanel {
             // 共用的可搜索模型选择器：只列已配置的模型，可同时挑思考等级。
             Control::Model(specials) => {
                 if app.models.is_empty() {
-                    self.error = Some("还没有已配置的模型；请先在“供应商”页添加模型".into());
+                    self.error = Some("还没有已配置的模型；请先在“供应商与模型”页添加模型".into());
                 } else {
                     app.open_config_model_picker(
                         field.path,
@@ -1100,87 +1113,18 @@ impl SettingsPanel {
             &current,
         );
     }
-    /// 当前上下文对应的供应商：选中的分组或其字段，退化为第一个供应商。
-    fn provider(&self) -> Option<String> {
-        if let Some(RowKind::Group(group)) = self.row()
-            && let Some(name) = group.path.as_ref().and_then(|path| path.get(1))
-            && group
-                .path
-                .as_ref()
-                .is_some_and(|path| path.first().is_some_and(|part| part == "providers"))
-        {
-            return Some(name.clone());
-        }
-        if let Some(path) = self.field().map(|field| &field.path)
-            && path.first().is_some_and(|part| part == "providers")
-        {
-            return path.get(1).cloned();
-        }
-        self.effective
-            .get("providers")?
-            .as_object()?
-            .keys()
-            .next()
-            .cloned()
-    }
     fn add(&mut self) {
         match TABS[self.tab] {
-            "供应商" => self.begin_named(
-                EditTarget::Provider,
-                "添加供应商",
-                "填写供应商标识，例如 local",
-                "",
-            ),
-            "模型" => {
-                if let Some(provider) = self.provider() {
-                    self.begin_named(
-                        EditTarget::Model(provider.clone()),
-                        &format!("为 {provider} 添加模型"),
-                        "填写模型 ID，例如 gpt-4o",
-                        "",
-                    );
-                } else {
-                    self.error = Some("请先在“供应商”页添加供应商".into());
-                }
-            }
             "MCP" => self.begin_named(
                 EditTarget::Mcp,
                 "添加 MCP 服务",
                 "填写服务标识，例如 filesystem",
                 "",
             ),
-            _ => {
-                self.error = Some("“供应商”“模型”“MCP”页可以添加条目".into());
-            }
+            _ => self.error = Some("请到“供应商与模型”或“MCP”页添加条目".into()),
         }
     }
-    fn fetch(
-        &mut self,
-        connection: &EmbeddedConnection,
-        events: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
-    ) {
-        let Some(provider) = self.provider() else {
-            self.error = Some("请先在“供应商”页填写服务地址与密钥".into());
-            return;
-        };
-        let value = self.effective["providers"][&provider].clone();
-        self.view = View::Models {
-            provider: provider.clone(),
-            rows: Vec::new(),
-            checked: BTreeSet::new(),
-            selected: 0,
-        };
-        self.request(
-            connection,
-            events,
-            ConfigAction::Models {
-                id: provider,
-                provider: value,
-            },
-            Job::Models,
-        );
-    }
-    /// 在配置里登记一个模型；主模型为空时顺带设为它。
+    /// 登记模型；沿用首次配置时的默认初始化，不提供切换主模型操作。
     fn insert_model(&mut self, provider: &str, id: &str) -> anyhow::Result<()> {
         anyhow::ensure!(!id.trim().is_empty(), "模型 ID 不能为空");
         let path = vec![
@@ -1192,8 +1136,9 @@ impl SettingsPanel {
         anyhow::ensure!(self.value(&path).is_none(), "模型 {provider}/{id} 已存在");
         self.set_value(&path, json!({}));
         let primary = self
-            .effective
-            .pointer("/models/roles/default")
+            .data
+            .as_ref()
+            .and_then(|data| data.effective.pointer("/models/roles/default"))
             .and_then(Value::as_str)
             .unwrap_or_default();
         if primary.is_empty() {
@@ -1300,12 +1245,17 @@ pub fn response(
         finish_save(app, connection, result);
         return;
     }
-    let Some(mut panel) = app.settings.take().filter(|panel| panel.id == id) else {
+    if !app.settings.as_ref().is_some_and(|panel| panel.id == id) {
         return;
-    };
-    panel.pending = None;
-    panel.busy = false;
-    panel.handle_response(app, connection, result);
+    }
+    let mut panel = app.settings.take().expect("回执属于当前设置页");
+    if let Job::Models(generation) = job {
+        panel.models_response(generation, result);
+    } else {
+        panel.pending = None;
+        panel.busy = false;
+        panel.handle_response(app, connection, result);
+    }
     app.settings = Some(panel);
 }
 
@@ -1339,6 +1289,9 @@ pub fn finish_save(
                     panel.message = None;
                     panel.outcome = None;
                     panel.error = Some(text);
+                    if let Some(draft) = &mut panel.providers.draft {
+                        draft.pending = None;
+                    }
                 }
                 None => app.set_error_notice(format!("配置保存失败：{text}")),
             }
@@ -1364,22 +1317,27 @@ fn adopt(app: &mut App, connection: &EmbeddedConnection, data: SettingsDocument,
     let Some(panel) = app.settings.as_mut() else {
         return;
     };
-    let document = if keep_local {
-        panel.data.as_ref().map(|current| current.document.clone())
+    let local = if keep_local {
+        panel
+            .data
+            .as_ref()
+            .map(|current| (current.document.clone(), current.effective.clone()))
     } else {
         None
     };
     panel.data = Some(data);
-    if let Some(document) = document
+    if let Some((document, effective)) = local
         && let Some(current) = &mut panel.data
     {
         current.document = document;
+        current.effective = effective;
     }
     panel.error = None;
     panel.rebuild();
     if keep_local {
         return;
     }
+    panel.provider_saved(connection, &app.events);
     panel.message = Some(
         panel
             .outcome
@@ -1440,16 +1398,56 @@ pub fn apply_model_role(
 }
 
 pub fn paste(app: &mut App, text: &str) {
-    if let Some(panel) = &mut app.settings
-        && let Some(edit) = &mut panel.edit
-    {
-        edit.editor.paste(text);
+    if let Some(panel) = &mut app.settings {
+        if let Some(edit) = &mut panel.edit {
+            edit.editor.paste(text);
+        } else if panel.provider_page()
+            && let Some(draft) = &mut panel.providers.draft
+            && draft.pending.is_none()
+            && let Some(input) = draft.input()
+        {
+            input.input.insert_str_raw(text);
+        }
     }
 }
 pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) {
     let Some(panel) = &mut app.settings else {
         return;
     };
+    if panel.provider_page()
+        && panel.edit.is_none()
+        && matches!(
+            event.kind,
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+        )
+    {
+        let down = event.kind == MouseEventKind::ScrollDown;
+        let point = (event.column, event.row).into();
+        let sidebar = panel
+            .hits
+            .iter()
+            .any(|(area, hit)| area.contains(point) && matches!(hit, Hit::Provider(_)));
+        if let Some(draft) = &mut panel.providers.draft {
+            if draft.pending.is_none() {
+                draft.focus = if down {
+                    (draft.focus + 1).min(5)
+                } else {
+                    draft.focus.saturating_sub(1)
+                };
+            }
+            return;
+        }
+        if sidebar {
+            let last = panel.provider_ids().len();
+            panel.providers.sidebar = true;
+            panel.providers.cursor = if down {
+                (panel.providers.cursor + 3).min(last)
+            } else {
+                panel.providers.cursor.saturating_sub(3)
+            };
+            return;
+        }
+    }
     match event.kind {
         MouseEventKind::ScrollDown => {
             if let Some(edit) = &mut panel.edit {
@@ -1462,9 +1460,6 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
                         .selected
                         .saturating_add(3)
                         .min(panel.rows.len().saturating_sub(1));
-                }
-                View::Models { rows, selected, .. } => {
-                    *selected = (*selected + 3).min(rows.len().saturating_sub(1));
                 }
                 View::Maintenance(report) => {
                     let total = report.removed.len();
@@ -1483,9 +1478,6 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
                 View::Fields => {
                     panel.selected = panel.selected.saturating_sub(3);
                 }
-                View::Models { selected, .. } => {
-                    *selected = selected.saturating_sub(3);
-                }
                 View::Maintenance(_) => {
                     panel.offset = panel.offset.saturating_sub(3);
                 }
@@ -1502,6 +1494,24 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
         .iter()
         .find(|(area, _)| area.contains(clicked))
         .map(|(_, hit)| hit.clone());
+    if panel.edit.as_ref().is_some_and(|edit| !edit.popup)
+        && match &hit {
+            Some(Hit::Row(index)) => *index != panel.selected,
+            Some(Hit::Provider(_) | Hit::Tab(_) | Hit::ProviderAction(_)) => true,
+            Some(Hit::Key(code, _)) => *code != KeyCode::Esc,
+            _ => false,
+        }
+    {
+        handle_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+        if app
+            .settings
+            .as_ref()
+            .is_some_and(|panel| panel.edit.is_none())
+        {
+            mouse(app, connection, event);
+        }
+        return;
+    }
     if panel.edit.is_some() {
         match hit {
             Some(Hit::Item(index)) => {
@@ -1527,21 +1537,34 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
     match hit {
         Hit::Tab(index) => panel.select_tab(index),
         Hit::Row(index) => {
-            if panel.selected == index {
+            let action = panel
+                .rows
+                .get(index)
+                .is_some_and(|row| matches!(row.kind, RowKind::Action(_)));
+            panel.providers.sidebar = false;
+            if panel.selected == index || action {
+                panel.selected = index;
                 handle_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
             } else {
                 panel.selected = index;
             }
         }
-        Hit::Check(index) => {
-            if let View::Models { selected, .. } = &mut panel.view {
-                *selected = index;
+        Hit::Provider(index) => {
+            panel.choose_provider(index);
+            panel.providers.sidebar = false;
+        }
+        Hit::ProviderInput(index) => {
+            if let Some(draft) = &mut panel.providers.draft {
+                draft.focus = index;
+                if index == 1 || index >= 4 {
+                    handle_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+                }
             }
-            if matches!(panel.view, View::Models { .. }) {
-                // 与 Space 同一条勾选路径：已添加的模型保持不可勾选，否则会攒出
-                // 一条不含任何新增的空改动，并提示「已添加 0 个模型」。
-                handle_key(app, connection, KeyModifiers::NONE, KeyCode::Char(' '));
-            }
+        }
+        Hit::ProviderAction(action) => {
+            let mut panel = app.settings.take().expect("设置页存在");
+            panel.provider_action(action, app, connection);
+            app.settings = Some(panel);
         }
         Hit::Key(code, modifiers) | Hit::Hint(code, modifiers) => {
             handle_key(app, connection, modifiers, code)
@@ -1681,22 +1704,46 @@ mod tests {
             error: None,
             message: None,
             busy: false,
-            hits: vec![(Rect::new(10, 5, 20, 1), Hit::Check(0))],
+            hits: vec![(Rect::new(10, 5, 20, 1), Hit::Row(0))],
             pending: None,
-            view: View::Models {
-                provider: "p".into(),
-                rows: vec![CatalogModel {
-                    id: "m1".into(),
-                    name: "m1".into(),
-                }],
-                checked: BTreeSet::new(),
-                selected: 0,
+            view: View::Fields,
+            providers: Providers {
+                selected: Some("p".into()),
+                discovery: Some(providers::Discovery {
+                    generation: 1,
+                    rows: vec![CatalogModel {
+                        id: "m1".into(),
+                        name: "m1".into(),
+                    }],
+                    checked: BTreeSet::new(),
+                    query: String::new(),
+                    error: None,
+                    pending: None,
+                }),
+                ..Default::default()
             },
             history: History::default(),
             outcome: None,
             restore: None,
         });
 
+        let panel = app.settings.as_mut().expect("设置页");
+        panel.tab = providers::TAB;
+        panel.data = Some(SettingsDocument {
+            path: String::new(),
+            revision: String::new(),
+            document: panel.effective.clone(),
+            effective: panel.effective.clone(),
+            inherited: json!({}),
+            defaults: json!({}),
+            fields: Vec::new(),
+            provider_template: json!({}),
+            model_template: json!({}),
+        });
+        panel.rows = vec![Row {
+            depth: 0,
+            kind: RowKind::Action(ProviderAction::Candidate(0)),
+        }];
         mouse(
             &mut app,
             &connection,
@@ -1709,12 +1756,16 @@ mod tests {
         );
 
         let panel = app.settings.as_ref().expect("面板仍在");
-        match &panel.view {
-            View::Models { checked, .. } => {
-                assert!(checked.is_empty(), "已添加的模型不得进入勾选集合");
-            }
-            _ => unreachable!("仍在模型候选视图"),
-        }
+        assert!(
+            panel
+                .providers
+                .discovery
+                .as_ref()
+                .expect("页内候选仍在")
+                .checked
+                .is_empty(),
+            "已添加的模型不得进入勾选集合"
+        );
         assert!(panel.message.is_none(), "不得产生任何提示");
 
         connection.shutdown().await;
@@ -1970,6 +2021,7 @@ mod tests {
             hits: Vec::new(),
             pending: None,
             view: View::Fields,
+            providers: Providers::default(),
             history: History::default(),
             outcome: None,
             restore: None,
@@ -2040,6 +2092,7 @@ mod tests {
             hits: Vec::new(),
             pending: None,
             view: View::Fields,
+            providers: Providers::default(),
             history: History::default(),
             outcome: None,
             restore: None,

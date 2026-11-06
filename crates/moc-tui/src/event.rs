@@ -11900,6 +11900,7 @@ mod config_picker_tests {
             hits: Vec::new(),
             pending: None,
             view: View::Fields,
+            providers: Default::default(),
             history: History::default(),
             outcome: None,
             restore: None,

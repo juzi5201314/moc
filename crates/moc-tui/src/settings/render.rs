@@ -113,6 +113,22 @@ type Button = (&'static str, &'static str, KeyCode, KeyModifiers);
 fn toolbar(panel: &SettingsPanel) -> Vec<Button> {
     const NONE: KeyModifiers = KeyModifiers::NONE;
     const CTRL: KeyModifiers = KeyModifiers::CONTROL;
+    if panel.provider_page() && matches!(panel.view, View::Fields) {
+        if panel.providers.draft.is_some() {
+            return vec![
+                ("添加并获取", "ctrl+s", KeyCode::Char('s'), CTRL),
+                ("取消", "esc", KeyCode::Esc, NONE),
+            ];
+        }
+        return vec![
+            ("新建", "n", KeyCode::Char('n'), NONE),
+            ("获取模型", "f", KeyCode::Char('f'), NONE),
+            ("手动添加", "a", KeyCode::Char('a'), NONE),
+            ("高级参数", "f4", KeyCode::F(4), NONE),
+            ("范围", "f2", KeyCode::F(2), NONE),
+            ("删除供应商", "ctrl+x", KeyCode::Char('x'), CTRL),
+        ];
+    }
     match &panel.view {
         View::Fields => {
             let mut buttons = vec![
@@ -130,26 +146,14 @@ fn toolbar(panel: &SettingsPanel) -> Vec<Button> {
                 ("折叠全部", "c", KeyCode::Char('c'), NONE),
             ]);
             match TABS[panel.tab] {
-                "供应商" | "模型" => {
-                    buttons.extend([
-                        ("添加", "a", KeyCode::Char('a'), NONE),
-                        ("获取模型", "f", KeyCode::Char('f'), NONE),
-                    ]);
-                    if TABS[panel.tab] == "模型" {
-                        buttons.push(("默认规则", "ctrl+d", KeyCode::Char('d'), CTRL));
-                    }
-                }
+                "模型角色" => buttons.push(("默认规则", "ctrl+d", KeyCode::Char('d'), CTRL)),
                 "MCP" => buttons.push(("添加服务", "a", KeyCode::Char('a'), NONE)),
                 "会话" => buttons.push(("维护预览", "m", KeyCode::Char('m'), NONE)),
                 _ => {}
             }
             buttons
         }
-        View::Models { .. } => vec![
-            ("添加勾选", "enter", KeyCode::Enter, NONE),
-            ("全选/全消", "a", KeyCode::Char('a'), NONE),
-            ("返回", "esc", KeyCode::Esc, NONE),
-        ],
+
         View::Maintenance(report) => {
             let mut buttons = Vec::new();
             if !report.applied {
@@ -241,7 +245,26 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
         };
         (format!(" {key}{tab} "), style, Hit::Tab(index))
     });
-    let tabs_end = flow(frame, area, area.y + 2, tabs, &mut hits);
+    let compact = panel.provider_page() && (area.width < 72 || area.height < 24);
+    let gap = if compact { 1 } else { 2 };
+    let tabs_end = if compact {
+        let previous = current.checked_sub(1).unwrap_or(TABS.len() - 1);
+        let next = (current + 1) % TABS.len();
+        let style = Style::new().fg(theme.accent_model);
+        flow(
+            frame,
+            area,
+            area.y + gap,
+            [
+                (" ‹ ".into(), style, Hit::Tab(previous)),
+                (TABS[current].into(), style, Hit::Tab(current)),
+                (" › ".into(), style, Hit::Tab(next)),
+            ],
+            &mut hits,
+        )
+    } else {
+        flow(frame, area, area.y + gap, tabs, &mut hits)
+    };
     let advanced = panel.advanced;
     let buttons = toolbar(panel)
         .into_iter()
@@ -258,14 +281,20 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
             let text = format!(" {} ", labels::hints(&[(key, action)], usize::MAX));
             (text, style, Hit::Key(code, modifiers))
         });
-    let toolbar_end = flow(frame, area, tabs_end + 2, buttons, &mut hits);
+    let toolbar_end = flow(frame, area, tabs_end + gap, buttons, &mut hits);
     // 自下而上：消息行、提示行、空行、说明槽（固定高、内容贴底）、空行、正文。
     let bottom = area.bottom();
     let message_y = bottom - 1;
     let hint_y = bottom - 2;
-    let desc_rows: u16 = if area.height >= 24 { 3 } else { 2 };
+    let desc_rows: u16 = if compact {
+        1
+    } else if area.height >= 24 {
+        3
+    } else {
+        2
+    };
     let desc_area = Rect::new(area.x, hint_y - 1 - desc_rows, area.width, desc_rows);
-    let body_y = toolbar_end + 2;
+    let body_y = toolbar_end + gap;
     let body = Rect::new(
         area.x,
         body_y,
@@ -273,8 +302,10 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
         desc_area.y.saturating_sub(1).saturating_sub(body_y),
     );
     let footer = match &panel.view {
+        View::Fields if panel.provider_page() => {
+            draw_providers(frame, panel, theme, body, &mut hits)
+        }
         View::Fields => draw_fields(frame, panel, theme, body, &mut hits),
-        View::Models { .. } => draw_models(frame, panel, theme, body, &mut hits),
         View::Maintenance(_) => draw_maintenance(frame, panel, theme, body),
         View::Confirm { text, .. } => {
             let lines = prose(
@@ -389,6 +420,7 @@ fn label_column(panel: &SettingsPanel, width: usize) -> usize {
         .map(|row| {
             let text = match &row.kind {
                 RowKind::Group(group) => str_width(&group.title),
+                RowKind::Action(_) => 0,
                 RowKind::Field(index) => {
                     let field = &panel.fields[*index];
                     let badge = if panel.filter.is_empty() {
@@ -493,6 +525,55 @@ fn draw_fields(
             " ".repeat(usize::from(row.depth) * 2)
         );
         match &row.kind {
+            RowKind::Action(action) => {
+                let inline = panel
+                    .edit
+                    .as_ref()
+                    .filter(|edit| !edit.popup)
+                    .and_then(|edit| {
+                        let matches = matches!(
+                            (&edit.target, action),
+                            (EditTarget::Model(_), ProviderAction::Manual)
+                                | (EditTarget::ModelFilter, ProviderAction::Search)
+                        );
+                        if matches && let Editor::Text(editor) = &edit.editor {
+                            Some(editor)
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(editor) = inline {
+                    let prompt = if *action == ProviderAction::Manual {
+                        "模型 ID："
+                    } else {
+                        "搜索："
+                    };
+                    let prefix = format!("{lead}{prompt}");
+                    let start = cells(str_width(&prefix)).min(row_area.width);
+                    label(frame, row_area, &prefix, style);
+                    let input_area = Rect::new(
+                        row_area.x + start,
+                        y,
+                        row_area.width.saturating_sub(start),
+                        1,
+                    );
+                    let (text, column) = edit_line(editor, usize::from(input_area.width));
+                    label(frame, input_area, &text, style.fg(theme.accent_running));
+                    if input_area.width > 0 {
+                        frame.set_cursor_position((
+                            input_area.x + cells(column).min(input_area.width - 1),
+                            y,
+                        ));
+                    }
+                } else {
+                    label(
+                        frame,
+                        row_area,
+                        &format!("{lead}{}", panel.provider_action_text(action)),
+                        style.fg(theme.accent_model),
+                    );
+                }
+            }
             RowKind::Group(group) => {
                 let marker = if panel.is_expanded(&group.key, usize::from(row.depth)) {
                     "▾"
@@ -593,7 +674,12 @@ fn draw_fields(
         Some((hits, Hit::Row)),
     );
     if let Some(edit) = panel.edit.as_ref().filter(|edit| !edit.popup) {
-        let mut items = vec![("", "留空恢复默认")];
+        let note = match &edit.target {
+            EditTarget::Model(_) => "模型 ID 原样保存，可包含 /",
+            EditTarget::ModelFilter => "实时过滤，已有勾选会保留",
+            _ => "留空恢复默认",
+        };
+        let mut items = vec![("", note), ("tab", "下一项")];
         items.extend(edit.editor.hints());
         return Footer {
             hint: hints(&items),
@@ -602,6 +688,16 @@ fn draw_fields(
     }
     // 提示条从左丢项：最可省的写在前面，Esc 恒在末尾。
     match panel.row() {
+        Some(RowKind::Action(_)) => Footer {
+            description: "模型操作只作用于当前供应商；新增模型后可直接展开编辑参数。".into(),
+            source: None,
+            hint: hints(&[
+                ("tab", "切换焦点"),
+                ("↑↓", "移动"),
+                ("enter/space", "操作"),
+                ("esc", "返回"),
+            ]),
+        },
         Some(RowKind::Group(group)) => {
             let mut items = vec![
                 ("1-9/[]", "切页"),
@@ -670,28 +766,181 @@ fn group_description(group: &Group) -> String {
     }
 }
 
-/// 模型候选勾选列表。
-fn draw_models(
+/// 供应商列表和详情共用一个页面，窄终端用可切换的单栏布局。
+fn draw_providers(
     frame: &mut Frame,
     panel: &mut SettingsPanel,
     theme: &Theme,
     body: Rect,
     hits: &mut Vec<(Rect, Hit)>,
 ) -> Footer {
-    let View::Models {
-        provider,
-        rows,
-        checked,
-        selected,
-    } = &mut panel.view
-    else {
-        return Footer::default();
+    if panel.data.is_none() {
+        return draw_fields(frame, panel, theme, body, hits);
+    }
+    let ids = panel.provider_ids();
+    let wide = body.width >= 72;
+    let sidebar = if wide {
+        Rect { width: 22, ..body }
+    } else {
+        body
     };
-    let width = usize::from(body.width);
+    if wide || panel.providers.sidebar {
+        let height = usize::from(sidebar.height);
+        let cursor = panel.providers.cursor;
+        if cursor < panel.providers.offset {
+            panel.providers.offset = cursor;
+        }
+        if cursor >= panel.providers.offset + height {
+            panel.providers.offset = cursor.saturating_sub(height.saturating_sub(1));
+        }
+        for index in (panel.providers.offset..=ids.len()).take(height) {
+            let text = match ids.get(index) {
+                Some(id) => {
+                    let count = panel.effective["providers"][id]["models"]
+                        .as_object()
+                        .map_or(0, serde_json::Map::len);
+                    format!("{id} · {count}")
+                }
+                None => "+ 添加供应商".into(),
+            };
+            let selected = if panel.providers.sidebar {
+                index == cursor
+            } else {
+                ids.get(index) == panel.providers.selected.as_ref()
+                    && panel.providers.draft.is_none()
+            };
+            let style = if selected {
+                Style::new().bg(theme.bg_visual).fg(theme.accent_model)
+            } else {
+                Style::new().fg(theme.text_secondary)
+            };
+            let area = Rect::new(
+                sidebar.x,
+                sidebar.y + cells(index - panel.providers.offset),
+                sidebar.width,
+                1,
+            );
+            label(
+                frame,
+                area,
+                &format!("{} {text}", if selected { "❯" } else { " " }),
+                style,
+            );
+            hits.push((area, Hit::Provider(index)));
+        }
+    }
+    if !wide && panel.providers.sidebar {
+        return Footer {
+            description: "选择供应商后进入连接和模型配置；零模型供应商也可以直接添加。".into(),
+            source: None,
+            hint: labels::hint_layout(
+                &[("↑↓", "选择"), ("enter/tab", "打开"), ("esc", "返回")],
+                usize::from(body.width),
+            ),
+        };
+    }
+    let detail = if wide {
+        Rect::new(body.x + 24, body.y, body.width - 24, body.height)
+    } else {
+        body
+    };
+    if panel.providers.draft.is_some() {
+        return draw_provider_draft(frame, panel, theme, detail, hits);
+    }
+    let Some(id) = panel.providers.selected.as_ref() else {
+        let area = Rect {
+            height: 1,
+            ..detail
+        };
+        label(
+            frame,
+            area,
+            "+ 添加供应商：填写连接参数后获取或手动添加模型",
+            Style::new().fg(theme.accent_model),
+        );
+        hits.push((area, Hit::ProviderAction(ProviderAction::New)));
+        return Footer {
+            description: "按 N 新建供应商。".into(),
+            ..Footer::default()
+        };
+    };
+    label(
+        frame,
+        Rect {
+            height: 1,
+            ..detail
+        },
+        &format!("{id} · 连接与模型"),
+        Style::new()
+            .fg(theme.text_primary)
+            .add_modifier(Modifier::BOLD),
+    );
+    let mut content = Rect::new(
+        detail.x,
+        detail.y + 2,
+        detail.width,
+        detail.height.saturating_sub(2),
+    );
+    let status = panel.providers.discovery.as_ref().and_then(|discovery| {
+        if let Some(error) = &discovery.error {
+            Some((
+                format!("获取失败：{error}；可重试或手动添加"),
+                theme.accent_error,
+            ))
+        } else if discovery.pending.is_some() {
+            Some((
+                "正在获取模型，连接参数仍可编辑…".into(),
+                theme.accent_running,
+            ))
+        } else if discovery.rows.is_empty() {
+            Some(("供应商未返回模型，可手动添加模型 ID。".into(), theme.gray))
+        } else if panel.visible_candidates().is_empty() {
+            Some(("没有匹配模型，请修改搜索内容。".into(), theme.gray))
+        } else {
+            None
+        }
+    });
+    if let Some((text, color)) = status {
+        label(
+            frame,
+            Rect {
+                height: 1,
+                ..content
+            },
+            &text,
+            Style::new().fg(color),
+        );
+        content.y += 1;
+        content.height = content.height.saturating_sub(1);
+    }
+    let mut footer = draw_fields(frame, panel, theme, content, hits);
+    if panel.edit.is_none() {
+        footer.hint = labels::hint_layout(
+            &[
+                ("[]", "切页"),
+                ("tab", "供应商/详情"),
+                ("↑↓", "移动"),
+                ("enter/space", "编辑/勾选"),
+                ("esc", "返回"),
+            ],
+            usize::from(body.width),
+        );
+    }
+    footer
+}
+
+fn draw_provider_draft(
+    frame: &mut Frame,
+    panel: &mut SettingsPanel,
+    theme: &Theme,
+    body: Rect,
+    hits: &mut Vec<(Rect, Hit)>,
+) -> Footer {
+    let draft = panel.providers.draft.as_mut().expect("新建表单");
     label(
         frame,
         Rect { height: 1, ..body },
-        &format!("{provider} 的可用模型{SEP}已选 {} 个", checked.len()),
+        "添加供应商",
         Style::new()
             .fg(theme.text_primary)
             .add_modifier(Modifier::BOLD),
@@ -702,66 +951,74 @@ fn draw_models(
         body.width,
         body.height.saturating_sub(2),
     );
-    if rows.is_empty() {
-        let (text, color) = if panel.busy {
-            ("正在获取模型列表…", theme.accent_running)
-        } else {
-            ("没有返回可用的模型；可返回后手动添加。", theme.gray)
-        };
-        let style = Style::new().fg(color);
-        label(frame, Rect { height: 1, ..list }, text, style);
-    }
     let height = usize::from(list.height);
-    if *selected < panel.offset {
-        panel.offset = *selected;
+    if draft.focus < draft.offset {
+        draft.offset = draft.focus;
     }
-    if *selected >= panel.offset.saturating_add(height) {
-        panel.offset = selected.saturating_sub(height.saturating_sub(1));
+    if draft.focus >= draft.offset + height {
+        draft.offset = draft.focus.saturating_sub(height.saturating_sub(1));
     }
-    let added = panel
-        .effective
-        .get("providers")
-        .and_then(|providers| providers.get(provider.as_str()))
-        .and_then(|provider| provider.get("models"));
-    for (index, row) in rows.iter().enumerate().skip(panel.offset).take(height) {
-        // 状态列等宽（最宽的「已添加」+ 1 格），ID 落在同一列。
-        let (status, color) = if added.and_then(|models| models.get(&row.id)).is_some() {
-            ("已添加 ", theme.gray)
-        } else if checked.contains(&row.id) {
-            ("✓      ", theme.accent_success)
+    for index in (draft.offset..6).take(height) {
+        let area = Rect::new(list.x, list.y + cells(index - draft.offset), list.width, 1);
+        let selected = draft.focus == index;
+        let style = if selected {
+            Style::new().bg(theme.bg_visual).fg(theme.text_primary)
         } else {
-            ("       ", theme.gray)
+            Style::new().fg(theme.text_secondary)
         };
-        let mut spans = vec![
-            Span::styled(status, Style::new().fg(color)),
-            Span::raw(row.id.clone()),
-        ];
-        if row.name != row.id {
-            spans.push(Span::styled(
-                format!("{SEP}{}", row.name),
-                Style::new().fg(theme.gray),
-            ));
+        let title = [
+            "标识",
+            "API 格式",
+            "服务地址",
+            "API 密钥",
+            "添加并获取模型",
+            "仅添加供应商",
+        ][index];
+        label(
+            frame,
+            area,
+            &format!("{} {title}", if selected { "❯" } else { " " }),
+            style,
+        );
+        let start = 14.min(area.width);
+        let input_area = Rect::new(area.x + start, area.y, area.width.saturating_sub(start), 1);
+        if index == 1 {
+            label(frame, input_area, providers::APIS[draft.api].1, style);
+        } else if let Some(input) = match index {
+            0 => Some(&draft.id),
+            2 => Some(&draft.url),
+            3 => Some(&draft.key),
+            _ => None,
+        } {
+            let (text, column) = edit_line(input, usize::from(input_area.width));
+            label(frame, input_area, &text, style);
+            if selected && input_area.width > 0 && draft.pending.is_none() {
+                frame.set_cursor_position((
+                    input_area.x + cells(column).min(input_area.width - 1),
+                    area.y,
+                ));
+            }
         }
-        let area = Rect::new(list.x, list.y + cells(index - panel.offset), list.width, 1);
-        let line = option_row(index == *selected, spans, width, theme);
-        frame
-            .buffer_mut()
-            .set_line(area.x, area.y, &line, area.width);
-        hits.push((area, Hit::Check(index)));
+        hits.push((area, Hit::ProviderInput(index)));
     }
-    scrollbar(
-        frame,
-        list,
-        panel.offset,
-        rows.len(),
-        theme,
-        Some((hits, Hit::Check)),
-    );
-    // 添加、全选与返回都在工具栏上，提示条只补工具栏没有的操作。
     Footer {
-        description: "勾选需要的模型后按 Enter 添加；也可以返回后手动填写模型 ID。".into(),
+        description: if draft.pending.is_some() {
+            "正在保存供应商…"
+        } else {
+            "地址示例：https://api.example.com/v1；本地服务无需密钥时可留空。"
+        }
+        .into(),
         source: None,
-        hint: labels::hint_layout(&[("↑↓/jk", "移动"), ("space", "勾选")], width),
+        hint: labels::hint_layout(
+            &[
+                ("tab/↑↓", "切换字段"),
+                ("←→", "切换协议"),
+                ("f6", "显示密钥"),
+                ("ctrl+s", "添加并获取"),
+                ("esc", "取消"),
+            ],
+            usize::from(body.width),
+        ),
     }
 }
 
@@ -1438,6 +1695,7 @@ mod tests {
             hits: Vec::new(),
             pending: None,
             view: View::Fields,
+            providers: Providers::default(),
             history: Default::default(),
             outcome: None,
             restore: None,
@@ -1525,6 +1783,7 @@ mod tests {
             hits: Vec::new(),
             pending: None,
             view: View::Fields,
+            providers: Providers::default(),
             history: Default::default(),
             outcome: None,
             restore: None,
@@ -1585,7 +1844,7 @@ mod tests {
     /// 不可删除的分组也要按自己的分组路径给说明，不能统统落到模型角色那句。
     #[test]
     fn group_description_follows_grouping_path() {
-        let mut panel = loaded("模型", models_config(), Vec::new());
+        let mut panel = loaded("模型角色", models_config(), Vec::new());
         select_group(&mut panel, "models/fusion");
         let rows = screen(&mut panel, 120, 40);
         assert!(
@@ -1602,7 +1861,7 @@ mod tests {
     /// 工具栏放不下时换行，按钮一个都不能丢。
     #[test]
     fn toolbar_wraps_instead_of_dropping_buttons() {
-        let mut panel = loaded("模型", models_config(), Vec::new());
+        let mut panel = loaded("模型角色", models_config(), Vec::new());
         screen(&mut panel, 80, 30);
         let keys: Vec<(KeyCode, KeyModifiers)> = panel
             .hits
@@ -1614,8 +1873,6 @@ mod tests {
             .collect();
         for expected in [
             (KeyCode::Char('c'), KeyModifiers::NONE),
-            (KeyCode::Char('a'), KeyModifiers::NONE),
-            (KeyCode::Char('f'), KeyModifiers::NONE),
             (KeyCode::Char('d'), KeyModifiers::CONTROL),
         ] {
             assert!(
@@ -1623,12 +1880,22 @@ mod tests {
                 "工具栏丢了 {expected:?}：{keys:?}"
             );
         }
+        panel.select_tab(providers::TAB);
+        screen(&mut panel, 80, 30);
+        for expected in ['n', 'a', 'f'] {
+            assert!(
+                panel.hits.iter().any(|(_, hit)| matches!(hit,
+                    Hit::Key(KeyCode::Char(key), KeyModifiers::NONE) if *key == expected
+                )),
+                "统一页面丢了 {expected} 操作"
+            );
+        }
     }
 
     /// 底部提示条的单键项可点：命中区落在画出来的那段文字上，且是编辑态也生效的 `Hint`。
     #[test]
     fn hint_bar_keys_are_clickable_where_drawn() {
-        let mut panel = loaded("模型", models_config(), Vec::new());
+        let mut panel = loaded("模型角色", models_config(), Vec::new());
         select_group(&mut panel, "models/roles");
         let rows = screen(&mut panel, 120, 40);
         let (y, x) = locate(&rows, "Esc 返回").expect("提示条有 Esc 返回");
@@ -1657,7 +1924,7 @@ mod tests {
             advanced: false,
         };
         let document = json!({"zz": {"long": "x".repeat(200)}});
-        let mut panel = loaded("模型", document, vec![field]);
+        let mut panel = loaded("模型角色", document, vec![field]);
         panel.select_path(&path);
         let rows = screen(&mut panel, 80, 30);
         let (y, _) = locate(&rows, "超长取值").expect("字段行可见");
@@ -1675,12 +1942,12 @@ mod tests {
     #[test]
     fn model_candidates_align_ids() {
         let mut panel = loaded(
-            "供应商",
+            "供应商与模型",
             json!({"providers": {"p": {"models": {"a1": {}}}}}),
             Vec::new(),
         );
-        panel.view = View::Models {
-            provider: "p".into(),
+        panel.providers.discovery = Some(providers::Discovery {
+            generation: 1,
             rows: ["a1", "b2", "c3"]
                 .into_iter()
                 .map(|id| moc_protocol::CatalogModel {
@@ -1689,9 +1956,13 @@ mod tests {
                 })
                 .collect(),
             checked: BTreeSet::from(["b2".to_owned()]),
-            selected: 0,
-        };
-        let rows = screen(&mut panel, 80, 30);
+            query: String::new(),
+            error: None,
+            pending: None,
+        });
+        panel.rebuild_rows();
+        panel.select_action(ProviderAction::Candidate(0));
+        let rows = screen(&mut panel, 100, 40);
         let column = |id| locate(&rows, id).expect("候选行可见").1;
         assert_eq!(column("a1"), column("b2"));
         assert_eq!(column("b2"), column("c3"));
@@ -1710,10 +1981,52 @@ mod tests {
         assert!(locate(&rows, "本地程序：npx").is_some());
     }
 
+    #[test]
+    fn provider_workspace_and_draft_fit_narrow_terminals() {
+        let mut panel = loaded(
+            "供应商与模型",
+            json!({"providers": {"empty": {"models": {}}}}),
+            Vec::new(),
+        );
+        for (width, height) in [(120, 40), (80, 24), (60, 24), (40, 20)] {
+            let rows = screen(&mut panel, width, height);
+            assert!(
+                locate(&rows, "empty").is_some(),
+                "当前供应商必须可见：{width}x{height}"
+            );
+            assert!(
+                panel
+                    .hits
+                    .iter()
+                    .any(|(area, hit)| area.y < height - 3 && matches!(hit, Hit::Row(_))),
+                "详情必须留有操作空间"
+            );
+            panel.new_provider();
+            panel.providers.draft.as_mut().unwrap().key.input =
+                PromptState::from_text("secret-must-stay-hidden".into());
+            let rows = screen(&mut panel, width, height);
+            assert!(
+                !rows
+                    .iter()
+                    .any(|(text, _)| text.contains("secret-must-stay-hidden"))
+            );
+            for index in 0..6 {
+                panel.providers.draft.as_mut().unwrap().focus = index;
+                screen(&mut panel, width, height);
+                assert!(
+                    panel.hits.iter().any(|(area, hit)| area.y < height - 3
+                        && matches!(hit, Hit::ProviderInput(i) if *i == index)),
+                    "表单控件 {index} 在 {width}x{height} 必须可见"
+                );
+            }
+            panel.providers.draft = None;
+        }
+    }
+
     /// 字段树的滚动条与主界面同一字形，贴终端右缘。
     #[test]
     fn field_scrollbar_matches_main_screen() {
-        let mut panel = loaded("模型", models_config(), Vec::new());
+        let mut panel = loaded("模型角色", models_config(), Vec::new());
         let rows = screen(&mut panel, 80, 16);
         assert!(
             rows.iter().any(|(text, _)| text.ends_with('▐')),

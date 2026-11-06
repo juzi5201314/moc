@@ -76,12 +76,30 @@ pub(super) fn key(
     code: KeyCode,
 ) -> bool {
     if panel.edit.is_some() {
+        if matches!(code, KeyCode::Tab | KeyCode::BackTab)
+            && panel.edit.as_ref().is_some_and(|edit| !edit.popup)
+        {
+            edit_key(panel, app, connection, KeyModifiers::NONE, KeyCode::Enter);
+            if panel.edit.is_none() {
+                if code == KeyCode::BackTab || mods.contains(KeyModifiers::SHIFT) {
+                    panel.selected = panel.selected.saturating_sub(1);
+                } else {
+                    panel.selected = (panel.selected + 1).min(panel.rows.len().saturating_sub(1));
+                }
+            }
+            return false;
+        }
         return edit_key(panel, app, connection, mods, code);
+    }
+    if matches!(panel.view, View::Fields)
+        && panel.provider_page()
+        && providers::key(panel, app, connection, mods, code)
+    {
+        return false;
     }
     match &panel.view {
         View::Fields => fields_key(panel, app, connection, mods, code),
         View::Confirm { .. } => confirm_key(panel, app, connection, code),
-        View::Models { .. } => models_key(panel, app, connection, code),
         View::Maintenance(_) => maintenance_key(panel, code),
     }
 }
@@ -99,6 +117,14 @@ fn edit_key(
     };
     let result = match edit.editor.key(mods, code) {
         Outcome::Stay => {
+            if matches!(edit.target, EditTarget::ModelFilter)
+                && let Editor::Text(editor) = &edit.editor
+                && let Some(discovery) = &mut panel.providers.discovery
+            {
+                discovery.query = editor.input.text.clone();
+                panel.rebuild_rows();
+                panel.select_action(ProviderAction::Search);
+            }
             panel.edit = Some(edit);
             return false;
         }
@@ -273,7 +299,6 @@ fn fields_key(
         KeyCode::Left | KeyCode::Char('h') => collapse(panel, false),
         KeyCode::Right | KeyCode::Char('l') => collapse(panel, true),
         KeyCode::Char('a') => panel.add(),
-        KeyCode::Char('f') => panel.fetch(connection, &app.events),
         KeyCode::Char('d') if mods == KeyModifiers::CONTROL => panel.begin_named(
             EditTarget::ModelDefaults,
             "添加模型默认设置",
@@ -326,6 +351,7 @@ fn collapse(panel: &mut SettingsPanel, expand: bool) {
                 panel.selected = parent_idx;
             }
         }
+        RowKind::Action(_) => {}
         RowKind::Field(_) => {
             if !expand {
                 let field_depth = row.depth;
@@ -423,128 +449,6 @@ fn confirm_key(
     false
 }
 
-fn models_key(
-    panel: &mut SettingsPanel,
-    app: &mut App,
-    connection: &EmbeddedConnection,
-    code: KeyCode,
-) -> bool {
-    let View::Models {
-        provider,
-        rows,
-        mut checked,
-        mut selected,
-    } = std::mem::replace(&mut panel.view, View::Fields)
-    else {
-        return false;
-    };
-    if code == KeyCode::Esc {
-        return false;
-    }
-    let last = rows.len().saturating_sub(1);
-    match code {
-        KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-        KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(last),
-        KeyCode::PageUp => selected = selected.saturating_sub(10),
-        KeyCode::PageDown => selected = (selected + 10).min(last),
-        KeyCode::Home | KeyCode::Char('g') => selected = 0,
-        KeyCode::End | KeyCode::Char('G') => selected = last,
-        KeyCode::Char(' ') => {
-            if let Some(row) = rows.get(selected) {
-                let path = vec![
-                    "providers".into(),
-                    provider.clone(),
-                    "models".into(),
-                    row.id.clone(),
-                ];
-                if panel.value(&path).is_none() && !checked.remove(&row.id) {
-                    checked.insert(row.id.clone());
-                }
-            }
-        }
-        KeyCode::Char('a' | 'A') => {
-            let all_checked = rows
-                .iter()
-                .filter(|r| {
-                    panel
-                        .value(&[
-                            "providers".into(),
-                            provider.clone(),
-                            "models".into(),
-                            r.id.clone(),
-                        ])
-                        .is_none()
-                })
-                .all(|r| checked.contains(&r.id));
-            if all_checked {
-                checked.clear();
-            } else {
-                for r in &rows {
-                    if panel
-                        .value(&[
-                            "providers".into(),
-                            provider.clone(),
-                            "models".into(),
-                            r.id.clone(),
-                        ])
-                        .is_none()
-                    {
-                        checked.insert(r.id.clone());
-                    }
-                }
-            }
-        }
-        KeyCode::Enter if !panel.busy => {
-            if checked.is_empty() {
-                panel.error = Some("请先用 Space 勾选要添加的模型".into());
-            } else {
-                let added: Vec<String> = checked
-                    .iter()
-                    .filter(|id| {
-                        panel
-                            .value(&[
-                                "providers".into(),
-                                provider.clone(),
-                                "models".into(),
-                                (*id).clone(),
-                            ])
-                            .is_none()
-                    })
-                    .cloned()
-                    .collect();
-                let label = if added.len() == 1 {
-                    format!("添加模型 {}", added[0])
-                } else {
-                    format!("添加 {} 个模型", added.len())
-                };
-                let target = provider.clone();
-                if let Err(error) = panel.commit(&label, app, connection, |panel| {
-                    for id in &added {
-                        panel.insert_model(&target, id)?;
-                    }
-                    Ok(Store::Core)
-                }) {
-                    panel.error = Some(error.to_string());
-                }
-                panel.message = Some(format!("已添加 {} 个模型，可继续调整设置", added.len()));
-                panel.select_tab(0);
-                if let Some(id) = added.first() {
-                    panel.select_path(&["providers".into(), provider, "models".into(), id.clone()]);
-                }
-                return false;
-            }
-        }
-        _ => {}
-    }
-    panel.view = View::Models {
-        provider,
-        rows,
-        checked,
-        selected,
-    };
-    false
-}
-
 fn maintenance_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
     let View::Maintenance(report) = std::mem::replace(&mut panel.view, View::Fields) else {
         return false;
@@ -618,64 +522,21 @@ fn apply_edit(
                 Ok(Store::Core)
             })?;
         }
-        EditTarget::Provider => {
-            let name = text.trim().to_owned();
-            anyhow::ensure!(
-                !name.is_empty() && !name.contains(['/', '\n']),
-                "供应商标识不能为空，也不能包含斜线或换行"
-            );
-            anyhow::ensure!(
-                panel
-                    .effective
-                    .get("providers")
-                    .and_then(|providers| providers.get(&name))
-                    .is_none(),
-                "供应商 {name} 已存在"
-            );
-            let path = vec!["providers".into(), name];
-            let target = path.clone();
-            panel.commit(label, app, connection, |panel| {
-                panel.set_value(
-                    &target,
-                    json!({"api":"openai_chat","base_url":"","api_key":"","models":{}}),
-                );
-                Ok(Store::Core)
-            })?;
-            panel.select_path(&path);
-            panel.message = Some("已添加供应商，请填写服务地址与密钥".into());
+        EditTarget::ModelFilter => {
+            if let Some(discovery) = &mut panel.providers.discovery {
+                discovery.query = text.into();
+            }
+            panel.rebuild_rows();
+            panel.select_action(ProviderAction::Search);
         }
         EditTarget::Model(provider) => {
-            let mut provider = provider.clone();
-            let mut id = text.trim().to_owned();
+            let id = text.trim();
             anyhow::ensure!(!id.is_empty(), "模型 ID 不能为空");
-            if let Some((p, m)) = id.split_once('/') {
-                let p = p.trim();
-                let m = m.trim();
-                if !p.is_empty()
-                    && !m.is_empty()
-                    && panel
-                        .effective
-                        .get("providers")
-                        .and_then(|providers| providers.get(p))
-                        .is_some()
-                {
-                    provider = p.to_string();
-                    id = m.to_string();
-                }
-            }
-            let path = vec![
-                "providers".into(),
-                provider.clone(),
-                "models".into(),
-                id.clone(),
-            ];
-            let target = provider.clone();
-            let _ = panel.commit(label, app, connection, |panel| {
-                panel.insert_model(&target, &id)?;
+            panel.commit(label, app, connection, |panel| {
+                panel.insert_model(provider, id)?;
                 Ok(Store::Core)
-            });
-            panel.select_tab(0);
-            panel.select_path(&path);
+            })?;
+            panel.open_model(provider, id);
         }
         EditTarget::Mcp => {
             let name = text.trim().to_owned();
