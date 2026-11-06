@@ -15,6 +15,9 @@ futures-core.workspace = true
 bytes.workspace = true
 tracing.workspace = true
 xxhash-rust.workspace = true
+base64.workspace = true
+sha2.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [dev-dependencies]
 wiremock.workspace = true

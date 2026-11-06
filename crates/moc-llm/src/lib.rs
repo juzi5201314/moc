@@ -60,6 +60,7 @@ pub mod config;
 mod content;
 pub mod error;
 pub mod guard;
+mod images;
 pub mod retry;
 pub mod stream;
 pub mod traffic;
@@ -73,6 +74,7 @@ pub use config::{
 };
 pub use error::{ApiError, ApiErrorKind, LlmError, TransportError, TransportKind};
 pub use guard::{LoopChannel, LoopViolation, StreamGuardConfig};
+pub use images::RequestDiagnostics;
 pub use retry::RetryPolicy;
 pub use stream::ChatStream;
 pub use traffic::{HTTP_RX_BYTES, HTTP_TX_BYTES, record_rx, record_tx};

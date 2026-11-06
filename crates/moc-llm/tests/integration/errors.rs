@@ -88,6 +88,76 @@ fn request() -> ChatRequest {
 }
 
 #[tokio::test]
+async fn image_524_reports_exact_body_and_obeys_timeout_retry_policy() {
+    use base64::Engine as _;
+    use moc_llm::{ContentPart, ImageSource, Role};
+    let server = start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(524)
+                .insert_header("cf-ray", "ray-test")
+                .set_body_json(
+                    json!({"error":{"message":"status 524", "code":"internal_server_error"}}),
+                ),
+        )
+        .mount(&server)
+        .await;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(64, 64)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let source = ImageSource::Base64 {
+        media_type: "image/png".into(),
+        data: base64::engine::general_purpose::STANDARD.encode(png.into_inner()),
+    };
+    let req = ChatRequest {
+        messages: vec![Message {
+            role: Role::User,
+            content: vec![ContentPart::Image {
+                source,
+                detail: None,
+            }]
+            .into(),
+        }],
+        ..Default::default()
+    };
+    let cfg = config(Protocol::OpenAiChat, &server, fast_retry(4));
+    let error = Client::new().stream(&cfg, &req).await.err().unwrap();
+    let api = error.api_error().unwrap();
+    assert_eq!(api.kind, ApiErrorKind::Timeout);
+    assert_eq!(api.gateway_id.as_deref(), Some("ray-test"));
+    let stats = api.request_diagnostics.unwrap();
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 4);
+    assert!(api.is_retryable());
+    assert_eq!(stats.body_bytes, requests[0].body.len());
+    assert_eq!(stats.images, 1);
+    assert_eq!(stats.history_images, 0);
+    let text = error.to_string();
+    assert!(text.contains("不等于已确认请求体超限"));
+    assert!(text.contains("写入数据超时"));
+    assert!(!text.contains("已停止原样自动重试"));
+    assert!(text.contains("图片 1 张"));
+    assert!(text.contains("ray-test"));
+    assert!(!error.is_retryable()); // 重试预算耗尽后的包装错误不可再次重试。
+    let plain = Client::new().stream(&cfg, &request()).await.err().unwrap();
+    assert!(plain.api_error().unwrap().is_retryable());
+    assert_eq!(plain.api_error().unwrap().request_diagnostics.unwrap().images, 0);
+    assert_eq!(request_count(&server).await, 8);
+}
+
+#[tokio::test]
+async fn request_budget_rejection_never_reaches_the_gateway() {
+    let server = start().await;
+    let mut req = request();
+    req.options.max_request_bytes = Some(1);
+    let cfg = config(Protocol::OpenAiChat, &server, fast_retry(4));
+    let error = Client::new().complete(&cfg, &req).await.unwrap_err();
+    assert!(error.to_string().contains("请求体超限，未发送"));
+    assert_eq!(request_count(&server).await, 0);
+}
+
+#[tokio::test]
 async fn no_retry_on_400() {
     let server = start().await;
     mount(

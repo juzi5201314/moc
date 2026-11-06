@@ -529,7 +529,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "max_output_tokens" => ("回复长度上限", "模型单次回复的最大长度。"),
             "max_request_bytes" => (
                 "请求体字节上限",
-                "图片请求超过该字节数时按旧到新淘汰图片；留空使用 50 MiB 默认值。",
+                "最终 HTTP 请求体的硬上限；图片先统一压缩并共享剩余额度，无法保留细节时明确报错，不静默删图。留空使用 50 MiB，图片 Base64 合计另限 8 MiB。",
             ),
             "reasoning" => (
                 "支持思考推理",

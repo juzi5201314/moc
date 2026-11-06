@@ -70,6 +70,27 @@ impl LlmError {
         }
     }
 
+    pub(crate) fn with_request_diagnostics(
+        mut self,
+        diagnostics: crate::RequestDiagnostics,
+    ) -> Self {
+        match &mut self {
+            Self::Api(error) => {
+                error.request_diagnostics.get_or_insert(diagnostics);
+            }
+            Self::Transport(error) => {
+                error
+                    .message
+                    .push_str(&format!("\n请求诊断：{diagnostics}。"));
+            }
+            Self::RetriesExhausted { last, .. } => {
+                **last = last.as_ref().clone().with_request_diagnostics(diagnostics);
+            }
+            _ => {}
+        }
+        self
+    }
+
     /// 展开重试包装后的上游错误。
     pub fn api_error(&self) -> Option<&ApiError> {
         match self {
@@ -177,6 +198,10 @@ pub struct ApiError {
     pub retry_after: Option<Duration>,
     /// 原始错误响应体。
     pub raw_body: Box<str>,
+    /// 失败请求的实测体积与图片数量；不包含请求内容。
+    pub request_diagnostics: Option<crate::RequestDiagnostics>,
+    /// Cloudflare 返回的 cf-ray；与供应商 request_id 分开保留。
+    pub gateway_id: Option<String>,
 }
 
 impl ApiError {
@@ -195,6 +220,8 @@ impl ApiError {
             request_id: None,
             retry_after: None,
             raw_body: raw_body.into(),
+            request_diagnostics: None,
+            gateway_id: None,
         }
     }
 
@@ -218,6 +245,20 @@ impl fmt::Display for ApiError {
         }
         if let Some(request_id) = &self.request_id {
             write!(f, " (request_id={request_id})")?;
+        }
+        if let Some(ray) = &self.gateway_id {
+            write!(f, " (cf-ray={ray})")?;
+        }
+        if let Some(stats) = self.request_diagnostics {
+            write!(f, "\n请求诊断：{stats}。")?;
+        }
+        match self.status {
+            Some(524) => {
+                f.write_str("\nHTTP 524 表示网关与源站通信超时：可能是等待响应超时，也可能是向源站写入数据超时。不等于已确认请求体超限（超限通常为 413），不能仅凭请求含图片判断原因。请结合请求 ID、网关/源站日志核对上传耗时、处理耗时及超时设置。")?;
+            }
+            Some(413) => f.write_str("\n上游明确拒绝了请求体大小；请按网关上限设置模型 max_request_bytes，并分批处理图片或压缩历史。")?,
+            Some(504) => f.write_str("\n网关等待上游超时；以上体积用于判断图片负载，状态码本身不能证明请求过大。")?,
+            _ => {}
         }
         Ok(())
     }
@@ -254,7 +295,7 @@ pub enum ApiErrorKind {
     Overloaded,
     /// 上游服务错误（500/502/503）。
     ServerError,
-    /// 上游超时（504）。
+    /// 上游超时（504 / Cloudflare 524）。
     Timeout,
     /// 其余状态码。
     Unknown,
@@ -275,7 +316,7 @@ impl ApiErrorKind {
             429 => ApiErrorKind::RateLimit,
             500 => ApiErrorKind::ServerError,
             502 | 503 => ApiErrorKind::ServerError,
-            504 => ApiErrorKind::Timeout,
+            504 | 524 => ApiErrorKind::Timeout,
             529 => ApiErrorKind::Overloaded,
             _ => ApiErrorKind::Unknown,
         }
@@ -383,6 +424,7 @@ mod tests {
             (502, ApiErrorKind::ServerError),
             (503, ApiErrorKind::ServerError),
             (504, ApiErrorKind::Timeout),
+            (524, ApiErrorKind::Timeout),
             (529, ApiErrorKind::Overloaded),
             (418, ApiErrorKind::Unknown),
         ];

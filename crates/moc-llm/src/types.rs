@@ -692,6 +692,9 @@ pub struct RequestOptions {
     /// 连接与重试时限（秒）：流式请求约束到响应头到达为止，非流式请求约束整个
     /// 请求；模型生成阶段不受此限制，只由调用方按需发耗时警告。
     pub connect_deadline_secs: u64,
+    /// 最终 HTTP 请求体字节上限；留空使用 50 MiB，图片另有累计预算。
+    #[serde(default)]
+    pub max_request_bytes: Option<u64>,
     /// 覆盖 [`crate::LlmConfig::headers`] 中的同名请求头。
     pub headers: BTreeMap<String, String>,
 }
@@ -706,6 +709,7 @@ impl Default for RequestOptions {
             capture_raw: false,
             stream_guard: crate::StreamGuardConfig::default(),
             connect_deadline_secs: 900,
+            max_request_bytes: None,
             headers: BTreeMap::new(),
         }
     }

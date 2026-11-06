@@ -108,7 +108,8 @@ pub(crate) async fn content(
     }
     let snapshot = snapshot(inner, &ctx, &params.session_id).await?;
     let session_id = params.session_id.clone();
-    let view = tokio::task::spawn_blocking(move || build_view(snapshot, &session_id))
+    let client = inner.client.clone();
+    let view = tokio::task::spawn_blocking(move || build_view(snapshot, &session_id, &client))
         .await
         .map_err(|error| RpcError::new(moc_protocol::RpcErrorCode::InternalError.code(), error.to_string()))??;
     let result = view.page(params.cursor, params.limit)?;
@@ -116,7 +117,7 @@ pub(crate) async fn content(
     Ok(result)
 }
 
-fn build_view(snapshot: Snapshot, session_id: &str) -> Result<view::View, RpcError> {
+fn build_view(snapshot: Snapshot, session_id: &str, client: &moc_llm::Client) -> Result<view::View, RpcError> {
     let usage = snapshot.usage();
     // compose 按角色分组；来源也按同一规则排列，不能沿原 pieces 顺序错配。
     let mut instruction_sources = Vec::new();
@@ -142,7 +143,7 @@ fn build_view(snapshot: Snapshot, session_id: &str) -> Result<view::View, RpcErr
             trailing_reminders: 0,
         },
     );
-    let inspection = moc_llm::inspect_request(&snapshot.model.llm, &request, true);
+    let inspection = client.inspect_request(&snapshot.model.llm, &request, true);
     let protocol = serde_json::to_value(snapshot.model.llm.protocol)
         .map_err(|e| {
             RpcError::new(

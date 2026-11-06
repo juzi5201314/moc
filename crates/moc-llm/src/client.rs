@@ -30,6 +30,8 @@ struct ClientInner {
     options: ClientBuilder,
     /// 配置可提供任意时限；按完整 Duration 分组，冷路径建池、热路径点查。
     transports: Mutex<HashMap<Duration, reqwest::Client>>,
+    images: crate::images::ImageCache,
+    image_workers: Arc<tokio::sync::Semaphore>,
 }
 
 impl Client {
@@ -40,6 +42,8 @@ impl Client {
                 http: OnceLock::new(),
                 options: ClientBuilder::new(),
                 transports: Mutex::new(HashMap::new()),
+                images: crate::images::ImageCache::default(),
+                image_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             }),
         }
     }
@@ -66,18 +70,23 @@ impl Client {
         cfg: &LlmConfig,
         req: &ChatRequest,
     ) -> Result<ChatResponse, LlmError> {
-        let encoded = codec::encode(cfg, req, false)?;
+        let prepared = self.prepare(cfg, req, false).await?;
+        let encoded = &prepared.encoded;
         let started = Instant::now();
         let guard = req.options.stream_guard;
         let deadline_secs = req.options.connect_deadline_secs;
         let body = tokio::time::timeout(Duration::from_secs(deadline_secs), async {
             let response = self
-                .with_retry(cfg, || self.execute(cfg, &encoded, false))
+                .with_retry(cfg, || {
+                    self.execute(cfg, encoded, false, prepared.diagnostics)
+                })
                 .await?;
             read_body(response).await
         })
         .await
-        .map_err(|_| deadline_error("非流式请求在", deadline_secs))??;
+        .map_err(|_| deadline_error("非流式请求在", deadline_secs))
+        .and_then(|result| result)
+        .map_err(|error| diagnose(error, prepared.diagnostics, started))?;
         tracing::debug!(
             status = 200,
             elapsed_ms = started.elapsed().as_millis() as u64,
@@ -95,18 +104,57 @@ impl Client {
     /// 因为中途重放会产生重复计费与重复工具调用，恢复策略必须由调用方基于自身
     /// 历史决定。
     pub async fn stream(&self, cfg: &LlmConfig, req: &ChatRequest) -> Result<ChatStream, LlmError> {
-        let encoded = codec::encode(cfg, req, true)?;
+        let prepared = self.prepare(cfg, req, true).await?;
+        let encoded = &prepared.encoded;
+        let started = Instant::now();
         let deadline_secs = req.options.connect_deadline_secs;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(deadline_secs);
         let response = tokio::time::timeout_at(
             deadline,
-            self.with_retry(cfg, || self.execute(cfg, &encoded, true)),
+            self.with_retry(cfg, || {
+                self.execute(cfg, encoded, true, prepared.diagnostics)
+            }),
         )
         .await
-        .map_err(|_| deadline_error("流式请求在", deadline_secs))??;
+        .map_err(|_| deadline_error("流式请求在", deadline_secs))
+        .and_then(|result| result)
+        .map_err(|error| diagnose(error, prepared.diagnostics, started))?;
         let body: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>> =
             Box::pin(CountingStream::new(response.bytes_stream()));
         Ok(ChatStream::new(body, cfg, req))
+    }
+
+    /// 查看将实际发送的请求；调用方应在阻塞线程中执行图片处理。
+    pub fn inspect_request(
+        &self,
+        cfg: &LlmConfig,
+        req: &ChatRequest,
+        stream: bool,
+    ) -> Result<crate::RequestInspection, LlmError> {
+        let prepared = crate::images::prepare(&self.inner.images, cfg, req, stream)?;
+        codec::inspect_request(cfg, &prepared.request, stream)
+    }
+
+    async fn prepare(
+        &self,
+        cfg: &LlmConfig,
+        req: &ChatRequest,
+        stream: bool,
+    ) -> Result<crate::images::PreparedRequest, LlmError> {
+        let permit = Arc::clone(&self.inner.image_workers)
+            .acquire_owned()
+            .await
+            .map_err(|error| LlmError::Encode(error.to_string()))?;
+        let inner = Arc::clone(&self.inner);
+        let cfg = cfg.clone();
+        let req = req.clone();
+        tokio::task::spawn_blocking(move || {
+            // 取消网络等待后也由实际压缩任务持有名额，避免遗留后台任务突破并发限制。
+            let _permit = permit;
+            crate::images::prepare(&inner.images, &cfg, &req, stream)
+        })
+        .await
+        .map_err(|error| LlmError::Encode(format!("图片请求准备失败：{error}")))?
     }
 
     /// 重试循环：`send` 只在「请求未被上游完整处理」时被重复调用。
@@ -179,7 +227,9 @@ impl Client {
         cfg: &LlmConfig,
         encoded: &EncodedRequest,
         stream: bool,
+        mut diagnostics: crate::RequestDiagnostics,
     ) -> Result<reqwest::Response, LlmError> {
+        let started = Instant::now();
         let mut builder = self.post(cfg, &encoded.url)?.body(encoded.body.clone());
         record_tx(encoded.body.len() as u64);
         for (name, value) in &encoded.headers {
@@ -198,6 +248,9 @@ impl Client {
             body_bytes = encoded.body.len(),
             "发送请求"
         );
+        if diagnostics.images > 0 {
+            tracing::info!(diagnostics = %diagnostics, "图片请求已预处理");
+        }
         let response = match cfg.timeout_secs.filter(|_| stream) {
             Some(secs) => {
                 // 流式首包等待与后续读取同属空闲时限，不使用连接建立时限。
@@ -223,16 +276,27 @@ impl Client {
                 body_bytes = body.len(),
                 "上游返回错误状态"
             );
-            return Err(LlmError::Api(codec::decode_error(
-                cfg,
-                status.as_u16(),
-                &headers,
-                &body,
-            )));
+            diagnostics.elapsed_ms = started.elapsed().as_millis() as u64;
+            let mut error = codec::decode_error(cfg, status.as_u16(), &headers, &body);
+            error.request_diagnostics = Some(diagnostics);
+            error.gateway_id = headers
+                .get("cf-ray")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            return Err(LlmError::Api(error));
         }
         tracing::debug!(status = status.as_u16(), "收到响应头");
         Ok(response)
     }
+}
+
+fn diagnose(
+    error: LlmError,
+    mut diagnostics: crate::RequestDiagnostics,
+    started: Instant,
+) -> LlmError {
+    diagnostics.elapsed_ms = started.elapsed().as_millis() as u64;
+    error.with_request_diagnostics(diagnostics)
 }
 
 /// 非 2xx 响应体的读取上限。
@@ -374,6 +438,8 @@ impl ClientBuilder {
                 http: OnceLock::from(Ok(http)),
                 options: self,
                 transports: Mutex::new(HashMap::new()),
+                images: crate::images::ImageCache::default(),
+                image_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             }),
         })
     }

@@ -177,16 +177,6 @@ pub(crate) fn build_request(
     } else {
         model.echo_reasoning
     };
-    let (messages, image_budget) =
-        crate::compact::images::apply(messages, &tools, model.max_request_bytes);
-    if image_budget.evicted > 0 {
-        tracing::info!(
-            body_bytes = image_budget.body_bytes,
-            body_bytes_after = image_budget.body_bytes_after,
-            evicted = image_budget.evicted,
-            "为满足请求体字节上限，已从请求中移除部分图片"
-        );
-    }
     let message_count = messages.len();
     ChatRequest {
         messages,
@@ -210,6 +200,7 @@ pub(crate) fn build_request(
             cache: cache_options(model, message_count, anchors, session_id),
             stream_guard: config.limits.stream_guard(),
             connect_deadline_secs: config.limits.connect_deadline_secs,
+            max_request_bytes: model.max_request_bytes,
             ..RequestOptions::default()
         },
     }
