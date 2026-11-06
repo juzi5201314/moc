@@ -3,6 +3,8 @@
 //! 浮层画在滚动区之后（覆盖其内容）；模态居中，宽度按内容取值（帮助为双列快捷键表，
 //! 普通模态上限 96 列，带选项预览的提问放宽到 120 列），高度按内容收缩。全部使用主题槽位。
 
+mod model_picker;
+
 use std::time::{Duration, Instant};
 
 use moc_protocol::commands::CommandGroup;
@@ -299,6 +301,10 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     app.key_hits.clear();
     let area = frame.area();
     if area.width < 20 || area.height < 6 {
+        return;
+    }
+    if matches!(app.modal, Some(Modal::Model { .. } | Modal::Fusion { .. })) {
+        model_picker::draw(frame, app);
         return;
     }
     let theme = app.theme;
@@ -1173,208 +1179,11 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             let layout = ask_layout(theme, modal, width, max_lines);
             (layout.lines, layout.footer)
         }
-        Modal::Model {
-            entries,
-            current,
-            picker,
-            level,
-            ..
-        } => {
-            let filtered = crate::modal::filtered_entries(entries, &picker.query);
-            let highlighted = filtered.get(picker.selected).map(|(_, entry)| *entry);
-            let resolved = highlighted.and_then(|entry| level.resolve(&entry.levels));
-            let has_levels = highlighted.is_some_and(|entry| !entry.levels.is_empty());
-            // 行预算优先让给候选列表：够高时在搜索与等级条、等级条与列表之间各留一行。
-            let gaps = max_lines >= 7;
-            let mut lines = Vec::with_capacity(max_lines.clamp(4, 32));
-            lines.push(Line::from(vec![
-                Span::styled("当前：", dim),
-                Span::styled(
-                    truncate(
-                        crate::app::model_selector_label(current),
-                        width.saturating_sub(str_width("当前：")),
-                    )
-                    .into_owned(),
-                    Style::new().fg(theme.text_secondary),
-                ),
-            ]));
-            lines.push(search_line(&picker.query, width, theme));
-            let fusion_highlighted = highlighted
-                .is_some_and(|entry| entry.selector == crate::modal::FUSION_ENTRY_SELECTOR);
-            if gaps {
-                lines.push(Line::from(String::new()));
-            }
-            if fusion_highlighted {
-                // Fusion 特殊项没有等级条：改显组合配置卡的初始草稿。
-                let draft = crate::app::initial_fusion_draft(app, current);
-                for (label, value) in [("Lead", &draft.lead), ("Sidekick", &draft.sidekick)] {
-                    let (shown, color) = if value.is_empty() {
-                        ("未选择".to_owned(), theme.gray)
-                    } else {
-                        (
-                            crate::app::model_selector_label(value),
-                            theme.text_secondary,
-                        )
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(fit(label, FUSION_LABEL_WIDTH), dim),
-                        Span::styled(
-                            truncate(&shown, width.saturating_sub(FUSION_LABEL_WIDTH)).into_owned(),
-                            Style::new().fg(color),
-                        ),
-                    ]));
-                }
-            } else {
-                let (rows, chips) = level_lines(theme, highlighted, resolved.as_deref(), width);
-                // 芯片在等级条的第二行；整行被裁到正文宽度，越界的芯片本就不会画出来。
-                let chip_row = lines.len() + 1;
-                level_hits.extend(
-                    chips
-                        .into_iter()
-                        .map(|(index, start, chip_width)| (index, chip_row, start, chip_width)),
-                );
-                lines.extend(rows.into_iter().map(|line| clip_line(line, width)));
-            }
-            if gaps {
-                lines.push(Line::from(String::new()));
-            }
-            if picker.loading {
-                lines.push(Line::from(Span::styled(
-                    "正在切换模型…",
-                    Style::new().fg(theme.accent_running),
-                )));
-            } else if let Some(error) = &picker.error {
-                lines.extend(wrapped_lines(
-                    &format!("错误：{error}"),
-                    width,
-                    Style::new().fg(theme.accent_error),
-                ));
-            }
-            // 状态行先落位再算列表窗口：否则错误/加载行会把末尾候选挤出卡片。
-            let visible = max_lines.saturating_sub(lines.len()).max(1);
-            let offset = window_offset(picker.offset, picker.selected, visible, filtered.len());
-            // 规格卡片挤在候选列表右侧：正文够宽、且整张卡塞得进可见行数时才出现，
-            // 否则列表独占整行，把上下文窗口压成行尾的紧凑数字。
-            let card_width = if width >= META_MIN_CONTENT {
-                (width / 3).clamp(META_MIN, META_MAX)
-            } else {
-                0
-            };
-            let card = if fusion_highlighted {
-                Vec::new()
-            } else {
-                model_meta_lines(theme, highlighted, card_width)
-            };
-            let show_card = !card.is_empty() && card.len() <= visible;
-            let list_width = if show_card {
-                width - card_width - CARD_GAP
-            } else {
-                width
-            };
-            let mut rows: Vec<Line<'static>> = Vec::with_capacity(visible);
-            if filtered.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "没有匹配的模型",
-                    Style::new().fg(theme.gray),
-                )));
-            } else {
-                for (index, (_, entry)) in filtered.iter().skip(offset).take(visible).enumerate() {
-                    let actual = offset + index;
-                    let selected = actual == picker.selected;
-                    let marker = if selected { "❯ " } else { "  " };
-                    let style = if selected {
-                        Style::new()
-                            .fg(theme.accent_user)
-                            .bg(theme.bg_visual)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::new().fg(theme.text_primary)
-                    };
-                    // 卡片缺席时把上下文窗口留成行尾数字，至少不丢掉这一项。
-                    let suffix = if show_card {
-                        String::new()
-                    } else {
-                        entry
-                            .context_window
-                            .map(|window| format!("  {}", crate::render::format_tokens(window)))
-                            .unwrap_or_default()
-                    };
-                    let label = truncate(
-                        &entry.label,
-                        list_width
-                            .saturating_sub(str_width(marker) + str_width(&suffix))
-                            .max(1),
-                    )
-                    .into_owned();
-                    let mut spans = Vec::with_capacity(8);
-                    spans.push(Span::styled(marker, style));
-                    if let Some((provider, model_name)) = label.split_once('/') {
-                        let provider_style = if selected {
-                            Style::new().fg(theme.text_secondary).bg(theme.bg_visual)
-                        } else {
-                            Style::new().fg(theme.text_secondary)
-                        };
-                        spans.push(Span::styled(format!("{provider}/"), provider_style));
-                        spans.push(Span::styled(model_name.to_owned(), style));
-                    } else {
-                        spans.push(Span::styled(label.clone(), style));
-                    }
-                    if !suffix.is_empty() {
-                        spans.push(Span::styled(
-                            suffix.clone(),
-                            if selected {
-                                Style::new().fg(theme.accent_model).bg(theme.bg_visual)
-                            } else {
-                                Style::new().fg(theme.accent_model)
-                            },
-                        ));
-                    }
-                    // 补齐到列表列宽：选中底色因此是一条规整的横带，不会半路截断。
-                    let used = str_width(marker) + str_width(&label) + str_width(&suffix);
-                    if used < list_width {
-                        spans.push(Span::styled(" ".repeat(list_width - used), style));
-                    }
-                    rows.push(Line::from(spans));
-                }
-            }
-            // 候选比卡片短时补齐空行，卡片照样画满整张，右边缘才对得齐。
-            let block = rows.len().max(if show_card { card.len() } else { 0 });
-            for index in 0..block {
-                if index < rows.len() {
-                    hits.push((offset + index, lines.len()));
-                }
-                let mut spans = rows
-                    .get(index)
-                    .map(|row| row.spans.clone())
-                    .unwrap_or_else(|| vec![Span::raw(" ".repeat(list_width))]);
-                if show_card && let Some(card_line) = card.get(index) {
-                    spans.push(Span::raw(" ".repeat(CARD_GAP)));
-                    spans.extend(card_line.spans.iter().cloned());
-                }
-                lines.push(Line::from(spans));
-            }
-            // 提示条放不下时从左丢项：搜索提示最先让位，Enter/Esc 恒在。
-            let items: &[(&str, &str)] = if picker.error.is_some() {
-                &[("enter", "重试"), ("esc", "关闭")]
-            } else if fusion_highlighted {
-                &[("enter", "配置 Fusion 组合"), ("esc", "关闭")]
-            } else if has_levels {
-                &[
-                    ("", "输入搜索"),
-                    ("↑↓", "移动"),
-                    ("tab", "切换等级"),
-                    ("enter", "确认"),
-                    ("esc", "关闭"),
-                ]
-            } else {
-                &[
-                    ("", "输入搜索"),
-                    ("↑↓", "移动"),
-                    ("enter", "确认"),
-                    ("esc", "关闭"),
-                ]
-            };
-            (lines, overlay::footer(items, width, theme))
+        Modal::Model { .. } => {
+            let body = model_picker::body(app, modal, width, max_lines);
+            hits.extend(body.hits);
+            level_hits.extend(body.level_hits);
+            (body.lines, body.footer.unwrap_or_default())
         }
         Modal::Fusion {
             draft,
@@ -1795,11 +1604,8 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             scroll,
             ..
         } => {
-            let mut rows = wrapped_lines(
-                "按当前会话状态，下一轮请求将发送以下工具定义。",
-                width,
-                dim,
-            );
+            let mut rows =
+                wrapped_lines("按当前会话状态，下一轮请求将发送以下工具定义。", width, dim);
             rows.push(Line::default());
             if let Some(error) = error {
                 rows.extend(wrapped_lines(&format!("读取失败：{error}"), width, dim));
@@ -1824,7 +1630,9 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 rows.push(Line::from(Span::styled("正在读取工具…", dim)));
             }
             if rows.len() > max_lines.max(1) {
-                scroll_max = rows.len().saturating_sub(max_lines.saturating_sub(1).max(1));
+                scroll_max = rows
+                    .len()
+                    .saturating_sub(max_lines.saturating_sub(1).max(1));
             }
             let lines = scroll_window(rows, max_lines, *scroll, width, theme);
             (
@@ -2627,7 +2435,21 @@ fn level_lines(
     let mut used = str_width("╰ [");
     let mut shown = 0usize;
     let mut chips = Vec::with_capacity(levels.len());
-    for (index, level) in levels.iter().enumerate() {
+    // 保证当前等级落在可见窗口内，不因前面的低档位占满宽度而消失。
+    let selected = resolved
+        .and_then(|value| levels.iter().position(|level| level == value))
+        .unwrap_or(0);
+    let mut first = 0;
+    while first < selected
+        && 4 + levels[first..=selected]
+            .iter()
+            .map(|level| str_width(level) + 3)
+            .sum::<usize>()
+            > width
+    {
+        first += 1;
+    }
+    for (index, level) in levels.iter().enumerate().skip(first) {
         let chip = format!(" {level} ");
         let separator = usize::from(shown > 0);
         if used + str_width(&chip) + separator + 1 > width {
@@ -3310,16 +3132,16 @@ mod tests {
         };
 
         let lines = modal_lines(&app, &modal, 80, 20);
-        let level_label = lines
-            .iter()
-            .find(|line| line_text(line).starts_with("╭ 思考等级"))
-            .expect("思考等级标签行");
-        assert_eq!(line_text(level_label), "╭ 思考等级");
         let level_line = lines
             .iter()
-            .find(|line| line_text(line).starts_with("╰ ["))
+            .find(|line| line_text(line).contains("╰ ["))
             .expect("思考等级条");
-        assert_eq!(line_text(level_line), "╰ [ off │ high ]");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line_text(line).contains("╭ 思考等级"))
+        );
+        assert!(line_text(level_line).contains("╰ [ off │ high ]"));
         let chip = |name: &str| {
             level_line
                 .spans
@@ -3343,14 +3165,15 @@ mod tests {
             .find(|line| line_text(line).starts_with("❯ "))
             .expect("模型行");
         let text = line_text(row);
-        // 列表列只留模型名；上下文改由右侧卡片展示，行里不再堆字数。
-        assert!(text.starts_with("❯ p/model"), "{text}");
-        assert!(!text.contains("Ctx"), "{text}");
-        assert!(text.ends_with('╮'), "选中行右侧应当接上卡片顶边：{text}");
-        assert_eq!(row.spans[1].content.as_ref(), "p/");
-        assert_eq!(row.spans[1].style.fg, Some(theme.text_secondary));
-        assert_eq!(row.spans[2].content.as_ref(), "model");
-        assert_eq!(row.spans[2].style.fg, Some(theme.accent_user));
+        assert!(text.starts_with("❯ Model"), "{text}");
+        assert!(text.contains('✓'), "{text}");
+        let provider = row
+            .spans
+            .iter()
+            .find(|span| span.content.contains("p ✓"))
+            .expect("供应商次要列");
+        assert_eq!(provider.style.fg, Some(theme.text_secondary));
+        assert!(lines.iter().any(|line| line_text(line).contains("500k")));
     }
 
     /// 模型选择器在任何高度都要保住页脚与至少一条候选：留白随行预算递减，
@@ -3386,13 +3209,14 @@ mod tests {
             picker: PickerState::default(),
             level: crate::modal::LevelState {
                 manual: Some("high".into()),
+                ..Default::default()
             },
             target: crate::modal::ModelTarget::Session,
         });
         let modal = app.modal.as_ref().expect("模型选择器");
 
-        // (正文宽度, 正文行预算, 内部留白)：提示条在卡片底部另算，不占正文预算。
-        for (width, budget, gaps) in [(76usize, 18usize, true), (56, 8, true), (36, 6, false)] {
+        // 提示条在正文预算之外；包括极短窗口的紧凑等级行。
+        for (width, budget) in [(76usize, 18usize), (56, 8), (36, 6), (24, 4)] {
             let body = modal_body(&app, modal, width, budget);
             let texts: Vec<String> = body.lines.iter().map(line_text).collect();
             assert!(
@@ -3406,51 +3230,27 @@ mod tests {
                     "{text:?} 超过 {width} 列"
                 );
             }
-            let search = texts
-                .iter()
-                .position(|text| text.starts_with("搜索："))
-                .expect("缺少搜索行");
-            let label = texts
-                .iter()
-                .position(|text| text.contains("思考等级"))
-                .expect("缺少等级条标签行");
-            assert_eq!(label, search + 1 + usize::from(gaps), "{texts:?}");
-            assert_eq!(texts[label + 2].is_empty(), gaps, "{texts:?}");
-            // 圆角与方括号：标签行 `╭ 思考等级`，芯片行 `╰ [ … ]` 首尾成对。
-            assert_eq!(texts[label], "╭ 思考等级", "{texts:?}");
-            assert!(texts[label + 1].starts_with("╰ ["), "{texts:?}");
-            assert!(texts[label + 1].ends_with(']'), "{texts:?}");
-            // 行首标记只属于候选列表，等级条不再抢 `❯`。
-            assert!(texts.iter().any(|text| text.starts_with("❯ ")), "{texts:?}");
-            // 正文够宽就并排卡片，否则上下文压成行尾数字。
-            let row = texts
-                .iter()
-                .find(|text| text.starts_with("❯ "))
-                .expect("模型行");
-            if width >= 74 {
-                assert!(row.ends_with('╮'), "{row}");
-                assert!(
-                    texts
-                        .iter()
-                        .any(|text| text.contains("context") && text.contains("500k")),
-                    "{texts:?}"
-                );
-            } else {
-                assert!(row.contains("500k") && !row.contains("context"), "{row}");
+            assert!(texts[0].starts_with("搜索："), "搜索置顶：{texts:?}");
+            assert!(
+                texts.iter().any(|text| text.contains("high")),
+                "当前等级始终可见：{texts:?}"
+            );
+            assert!(
+                texts.iter().any(|text| text.starts_with("❯ Model")),
+                "{texts:?}"
+            );
+            if budget >= 6 {
+                assert!(texts.iter().any(|text| text.contains("500k")), "{texts:?}");
+                let label = texts
+                    .iter()
+                    .position(|text| text.contains("思考等级"))
+                    .expect("等级标签");
+                assert!(texts[label + 1].contains("╰ ["), "{texts:?}");
             }
-            // 提示条：宽度不够时从左丢项，Enter/Esc 恒在。
             assert!(
                 footer.contains("Enter 确认") && footer.contains("Esc 关闭"),
                 "{footer:?}"
             );
-            if width == 76 {
-                assert!(footer.contains("输入搜索") && footer.contains("Tab 切换等级"));
-            } else {
-                assert!(
-                    !footer.contains("输入搜索"),
-                    "窄宽度应先丢掉搜索提示：{footer:?}"
-                );
-            }
         }
     }
 

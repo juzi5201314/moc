@@ -36,7 +36,7 @@ pub struct ModelEntry {
     pub selector: String,
     /// 展示名：模型是 `供应商/模型`，伪值是中文标签。
     pub label: String,
-    /// 搜索别名（模型的展示名），不参与展示；伪值为空。
+    /// 模型展示名，同时参与搜索；伪值为空。
     pub display_name: String,
     /// 该模型允许选择的思考等级；伪值没有等级，这里是空列表。
     pub levels: Vec<String>,
@@ -51,6 +51,25 @@ pub struct ModelEntry {
 }
 
 impl ModelEntry {
+    /// 优先展示配置的名称；未配置时去掉供应商前缀。
+    pub fn name(&self) -> &str {
+        if self.selector == FUSION_ENTRY_SELECTOR {
+            "Fusion 组合…"
+        } else if self.display_name.is_empty() {
+            self.label
+                .split_once('/')
+                .map_or(&self.label, |(_, name)| name)
+        } else {
+            &self.display_name
+        }
+    }
+
+    pub fn provider(&self) -> &str {
+        self.selector
+            .split_once('/')
+            .map_or("", |(provider, _)| provider)
+    }
+
     /// 选中后写回的 selector；伪值原样返回。
     pub fn selector_with(&self, level: Option<&str>) -> String {
         match level.filter(|_| !self.levels.is_empty()) {
@@ -71,18 +90,23 @@ fn level_rank(level: &str) -> usize {
         .map_or(0, |index| index + 1)
 }
 
-/// 思考等级条的键盘状态：手动选中的等级。
-///
-/// `manual` 为空表示用高亮模型支持的最高等级；高亮换行时清空，回到「一律用最高等级」。
+/// 思考等级条的键盘状态；本次打开期间按 selector 保留手动选择。
 #[derive(Debug, Clone, Default)]
 pub struct LevelState {
     pub manual: Option<String>,
+    pub remembered: std::collections::HashMap<String, String>,
 }
 
 impl LevelState {
-    /// 高亮换行：等级回到该模型的最高等级。
-    pub fn clear_manual(&mut self) {
-        self.manual = None;
+    /// 离开前保存手动等级，回来时恢复；未调整的模型仍使用原默认策略。
+    pub fn change_entry(&mut self, before: Option<&ModelEntry>, after: Option<&ModelEntry>) {
+        if before.map(|entry| &entry.selector) == after.map(|entry| &entry.selector) {
+            return;
+        }
+        if let (Some(entry), Some(level)) = (before, self.manual.take()) {
+            self.remembered.insert(entry.selector.clone(), level);
+        }
+        self.manual = after.and_then(|entry| self.remembered.get(&entry.selector).cloned());
     }
 
     /// 当前生效的等级：手动值仍在候选内就用它，否则用候选里最高的等级。
@@ -1563,15 +1587,48 @@ pub fn filtered_entries<'a>(
     query: &str,
 ) -> Vec<(usize, &'a ModelEntry)> {
     let query = query.to_lowercase();
-    entries
+    let terms: Vec<&str> = query.split_whitespace().collect();
+    let mut matches: Vec<_> = entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| {
-            query.is_empty()
-                || entry.label.to_lowercase().contains(&query)
-                || entry.display_name.to_lowercase().contains(&query)
+        .filter_map(|(index, entry)| {
+            let fields = [
+                entry.selector.to_lowercase(),
+                entry.label.to_lowercase(),
+                entry.display_name.to_lowercase(),
+            ];
+            let score = terms.iter().try_fold(0usize, |total, term| {
+                fields
+                    .iter()
+                    .filter_map(|field| model_match_score(field, term))
+                    .min()
+                    .map(|score| total + score)
+            })?;
+            Some((score, index, entry))
         })
+        .collect();
+    matches.sort_by_key(|(score, index, _)| (*score, *index));
+    matches
+        .into_iter()
+        .map(|(_, index, entry)| (index, entry))
         .collect()
+}
+
+/// 精确、前缀、子串、子序列依次降权；空搜索保留最近使用/供应商顺序。
+fn model_match_score(text: &str, term: &str) -> Option<usize> {
+    if text == term {
+        return Some(0);
+    }
+    if text.starts_with(term) {
+        return Some(1);
+    }
+    if text.contains(term) {
+        return Some(2);
+    }
+    let mut chars = text.chars();
+    term.chars()
+        .all(|ch| chars.by_ref().any(|candidate| candidate == ch))
+        .then_some(3)
 }
 
 pub fn filtered_sessions<'a>(
@@ -1673,8 +1730,8 @@ mod tests {
         state.move_level(&[], true);
         assert_eq!(state.manual.as_deref(), Some("low"), "空候选不动手动值");
 
-        // 高亮换行清掉手动值，回到「用最高等级」。
-        state.clear_manual();
+        // 尚未调整的模型仍取最高档，不改变默认策略。
+        state.manual = None;
         assert_eq!(state.resolve(&narrow).as_deref(), Some("low"));
     }
 
@@ -1746,6 +1803,19 @@ mod tests {
         assert_eq!(found("model"), vec!["p/model"]);
         assert_eq!(found("deepseek"), vec!["p/model"], "展示名参与匹配");
         assert_eq!(found("父会话"), vec!["inherit"], "伪值按标签匹配");
+        assert_eq!(found("p FLSH"), vec!["p/model"], "多词跨供应商与展示名匹配");
+        assert!(found("deepseek missing").is_empty(), "每个词都必须匹配");
+        let mut ranked = vec![entries[1].clone(); 3];
+        ranked[0].display_name = "Distant Space".into();
+        ranked[1].display_name = "DS Flash".into();
+        ranked[2].display_name = "ds".into();
+        assert_eq!(
+            filtered_entries(&ranked, "ds")
+                .iter()
+                .map(|(i, _)| *i)
+                .collect::<Vec<_>>(),
+            [2, 1, 0]
+        );
     }
 
     /// 预览判定：只认非空预览，且只作用于提问模态的当前问题。

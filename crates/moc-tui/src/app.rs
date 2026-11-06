@@ -141,6 +141,7 @@ pub struct App {
     pub sandbox_modes: Vec<SessionPermission>,
     /// 可选模型集合（`config/get` 拉取，/model 菜单与 statusline 用）。
     pub models: Vec<ModelInfo>,
+    pub recent_models: crate::model_history::RecentModels,
     /// `config/get` 下发的 `[models.fusion]` 默认组合；双侧都配置时才有值。
     pub fusion_defaults: Option<moc_protocol::methods::FusionPair>,
     /// 转写条目（用户消息、回复、工具调用、todo……）。
@@ -179,6 +180,8 @@ pub struct App {
     pub completion_prefix: Option<String>,
     /// 打开的模态；键盘优先路由给它。
     pub modal: Option<Modal>,
+    /// Fusion 配置返回时恢复同一次模型选择的搜索与等级草稿。
+    pub model_picker_back: Option<Box<Modal>>,
     /// 当前焦点。
     pub focus: Focus,
     /// 旁路问答只驻留内存，独立于主转写、输入历史及用量。
@@ -498,6 +501,7 @@ impl App {
             read_only: false,
             sandbox_modes: vec![SessionPermission::Full],
             models: Vec::new(),
+            recent_models: crate::model_history::RecentModels::default(),
             blocks: Vec::new(),
             generation_start: None,
             history_has_more: false,
@@ -517,6 +521,7 @@ impl App {
             prompt_revision: 0,
             completion_prefix: None,
             modal: None,
+            model_picker_back: None,
             focus: Focus::Prompt,
             btw: crate::btw::BtwState::default(),
             prompt_area: Rect::default(),
@@ -1280,13 +1285,29 @@ impl App {
         specials: &[(&str, &str)],
         target: crate::modal::ModelTarget,
     ) {
+        if !matches!(target, crate::modal::ModelTarget::FusionSlot { .. }) {
+            self.model_picker_back = None;
+        }
         if self.models.is_empty() {
             self.set_notice("没有可用的模型，请先在设置中添加");
             return;
         }
         // 配置字段和 Fusion 槽位不列组合入口。
         let fusion_entry = matches!(target, crate::modal::ModelTarget::Session);
-        let entries = Self::picker_entries(&self.models, specials, fusion_entry);
+        let mut entries = Self::picker_entries(&self.models, specials, fusion_entry);
+        let models_start = specials.len() + usize::from(fusion_entry);
+        entries[models_start..].sort_by(|a, b| {
+            let rank = |entry: &crate::modal::ModelEntry| {
+                self.recent_models
+                    .rank(&entry.selector)
+                    .unwrap_or(usize::MAX)
+            };
+            rank(a)
+                .cmp(&rank(b))
+                .then_with(|| a.provider().cmp(b.provider()))
+                .then_with(|| a.name().cmp(b.name()))
+                .then_with(|| a.selector.cmp(&b.selector))
+        });
 
         // 当前值本身是规范 Fusion selector 时不能 rsplit：末尾的等级分隔符在
         // sidekick 侧，整体应高亮 Fusion 特殊项而不是某个模型。
@@ -1455,6 +1476,13 @@ impl App {
         });
     }
 
+    /// 记录已生效模型，保存失败时显示反馈。
+    pub fn remember_model(&mut self, selector: &str) {
+        if let Err(error) = self.recent_models.record(selector) {
+            self.set_error_notice(format!("模型已生效，但最近使用记录保存失败：{error}"));
+        }
+    }
+
     /// 用加载的会话替换当前会话与转写。
     ///
     /// 前端同时只呈现一个会话：上一个会话的提示计时、取消标记、临时模式、用量与
@@ -1462,6 +1490,7 @@ impl App {
     /// 会话范围的在飞记账（`inflight_prompts`/`inflight_session_ops`/`interrupt_pending`）
     /// 按会话保留：切回仍在运行的会话时，「运行中」的判定与排队派发才正确。
     pub fn switch_session(&mut self, info: SessionInfo, blocks: Vec<Entry>) {
+        self.remember_model(&info.model);
         if let Some(previous) = &self.session
             && previous.id != info.id
         {

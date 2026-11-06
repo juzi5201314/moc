@@ -89,6 +89,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     app.statusline_template = preferences.statusline.clone();
     app.keymap = crate::config::KeyMap::compile(&preferences)?;
     app.preferences = preferences;
+    app.recent_models = crate::model_history::RecentModels::load(&core.config_home())?;
     app.load_input_history(&core.config_home());
     app.tui_store = Some(tui_store);
     app.startup_engine = opts.engine;
@@ -1880,12 +1881,20 @@ fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize
             *option = index;
             true
         }
-        Some(Modal::Model { picker, level, .. }) => {
+        Some(Modal::Model {
+            entries,
+            picker,
+            level,
+            ..
+        }) => {
             let again = picker.selected == index;
             if !again {
-                // 与 ↑↓ 换行同语义：手动等级只属于原来高亮的模型。
+                let filtered = crate::modal::filtered_entries(entries, &picker.query);
+                level.change_entry(
+                    filtered.get(picker.selected).map(|(_, entry)| *entry),
+                    filtered.get(index).map(|(_, entry)| *entry),
+                );
                 picker.selected = index;
-                level.clear_manual();
             }
             again
         }
@@ -1921,11 +1930,19 @@ fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize
 /// 鼠标悬浮移到通用模态的第 `index` 项：与 ↑↓/Tab 换行同语义，只改高亮不确认。
 fn hover_modal_item(app: &mut App, index: usize) {
     match app.modal.as_mut() {
-        Some(Modal::Model { picker, level, .. }) => {
+        Some(Modal::Model {
+            entries,
+            picker,
+            level,
+            ..
+        }) => {
             if picker.selected != index {
-                // 与 ↑↓ 换行同语义：手动等级只属于原来高亮的模型。
+                let filtered = crate::modal::filtered_entries(entries, &picker.query);
+                level.change_entry(
+                    filtered.get(picker.selected).map(|(_, entry)| *entry),
+                    filtered.get(index).map(|(_, entry)| *entry),
+                );
                 picker.selected = index;
-                level.clear_manual();
             }
         }
         Some(
@@ -3286,6 +3303,7 @@ const HELP_PAGE: usize = 8;
 
 /// Fusion 相关的模态跳转：全部延迟到模态借用结束后统一执行。
 enum FusionNav {
+    Models,
     /// 模型选择器里的 Fusion 特殊项 → 打开组合配置卡。
     Open,
     /// 槽位选择器已选定 → 带草稿回配置卡并把焦点推进到下一行。
@@ -4428,10 +4446,10 @@ fn handle_modal_key(
                 }
                 _ => {}
             }
-            // 高亮条目变了（换行或过滤结果变化）就丢弃手动等级，回到该模型的最高等级。
-            if highlighted(picker) != before {
-                level.clear_manual();
-            }
+            level.change_entry(
+                before.and_then(|index| entries.get(index)),
+                highlighted(picker).and_then(|index| entries.get(index)),
+            );
         }
 
         Modal::Fusion {
@@ -4489,7 +4507,7 @@ fn handle_modal_key(
                     }
                 }
             }
-            (KeyCode::Esc, _) => close = true,
+            (KeyCode::Esc, _) => fusion_nav = Some(FusionNav::Models),
             _ => {}
         },
 
@@ -5141,16 +5159,17 @@ fn handle_modal_key(
     }
     if let Some(nav) = fusion_nav {
         match nav {
+            FusionNav::Models => {
+                app.modal = app.model_picker_back.take().map(|modal| *modal);
+            }
             FusionNav::Open => {
-                if let Some(Modal::Model {
-                    target, current, ..
-                }) = app.modal.take()
-                {
-                    let draft = crate::app::initial_fusion_draft(app, &current);
+                if let Some(Modal::Model { current, .. }) = app.modal.as_ref() {
+                    let draft = crate::app::initial_fusion_draft(app, current);
+                    app.model_picker_back = app.modal.take().map(Box::new);
                     app.modal = Some(Modal::Fusion {
                         draft,
                         focus: 0,
-                        origin: Box::new(target),
+                        origin: Box::new(crate::modal::ModelTarget::Session),
                         loading: false,
                         error: None,
                     });
@@ -5186,6 +5205,7 @@ fn handle_modal_key(
     }
 
     if close {
+        app.model_picker_back = None;
         // 最小化的 workflow 审批：状态移进状态栏胶囊（点击重开），不算已决。
         if let Some(Modal::WorkflowApproval { state }) = app.modal.take()
             && state.parked
@@ -5914,6 +5934,7 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             }
         }
         SessionUpdate::ModelChanged { model } => {
+            app.remember_model(&model);
             if let Some(session) = app.session.as_mut() {
                 session.model = model;
             }
@@ -9054,7 +9075,7 @@ mod tests {
     }
 
     /// 模型选择器：点思考等级芯片就地切档；候选行先选中、再点才确认——
-    /// 换行时手动等级作废（与 ↑↓ 同语义），确认带上点选的等级。
+    /// 换行时恢复目标模型的等级（与 ↑↓ 同语义），确认带上点选的等级。
     #[tokio::test]
     async fn model_picker_mouse_selects_row_then_level_then_confirms() {
         let (core, connection, mut app) = setup_test_app().await;
@@ -9094,7 +9115,7 @@ mod tests {
         // 点芯片：只切档，不确认。
         handle_mouse_with_connection(&mut app, &connection, left_click(low.x, low.y));
         assert_eq!(picker(&app), (0, false, Some("low".into())));
-        // 点未选中的行：只选中，手动等级随换行作废。
+        // 点未选中的行：只选中，未调整的模型使用默认等级。
         handle_mouse_with_connection(&mut app, &connection, left_click(row_b.x + 3, row_b.y));
         assert_eq!(picker(&app), (1, false, None));
 
@@ -9109,7 +9130,7 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// 模型选择器：悬浮候选行即换高亮（与 ↑↓ 同语义：清掉手动等级、不确认）；
+    /// 模型选择器：悬浮候选行即换高亮并恢复各自等级，不确认；
     /// 悬浮在条目外不改选择。
     #[tokio::test]
     async fn model_picker_mouse_hover_highlights_row() {
@@ -9130,6 +9151,7 @@ mod tests {
             picker: crate::modal::PickerState::default(),
             level: crate::modal::LevelState {
                 manual: Some("low".into()),
+                ..Default::default()
             },
             target: crate::modal::ModelTarget::Session,
         });
@@ -9145,13 +9167,20 @@ mod tests {
             mouse_event(crossterm::event::MouseEventKind::Moved, column, row)
         };
 
-        // 悬浮到未选中的行：只换高亮，手动等级作废，不发起切换。
+        // 悬浮到未选中的行：只换高亮，使用该模型的默认等级，不发起切换。
         handle_mouse_with_connection(&mut app, &connection, hover(row_b.x + 3, row_b.y));
         assert_eq!(picker(&app), (1, false, None));
 
         // 悬浮在条目外（非行命中区）：选择不动。
         handle_mouse_with_connection(&mut app, &connection, hover(0, 0));
         assert_eq!(picker(&app), (1, false, None));
+        let (_, row_a) = app.modal_item_hits[0];
+        handle_mouse_with_connection(&mut app, &connection, hover(row_a.x + 1, row_a.y));
+        assert_eq!(
+            picker(&app),
+            (0, false, Some("low".into())),
+            "回到原模型恢复手动等级"
+        );
 
         connection.shutdown().await;
         core.shutdown().await;
@@ -12090,17 +12119,18 @@ mod config_picker_tests {
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
         assert_eq!(choice(&app), "test/small:medium");
 
-        // 回到 big 时手动值已清空，用它的最高等级；Tab 与方向键等价地在候选等级上循环。
+        // 回到 big 恢复原 low；Tab 与方向键仍可循环，最终写回 max。
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Up);
-        assert_eq!(choice(&app), "test/big:max");
+        assert_eq!(choice(&app), "test/big:low");
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
-        assert_eq!(choice(&app), "test/big:off", "Tab 从最高档循环到最低档");
+        assert_eq!(choice(&app), "test/big:max", "Tab 从恢复的档位继续切换");
         handle_modal_key(&mut app, &connection, KeyModifiers::SHIFT, KeyCode::BackTab);
-        assert_eq!(choice(&app), "test/big:max", "Shift+Tab 反向切档");
+        assert_eq!(choice(&app), "test/big:low", "Shift+Tab 反向切档");
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
-        assert_eq!(choice(&app), "test/big:off", "→ 直接切档，不需要先聚焦");
+        assert_eq!(choice(&app), "test/big:max", "→ 直接切档，不需要先聚焦");
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
-        assert_eq!(choice(&app), "test/big:max", "← 切回上一档");
+        assert_eq!(choice(&app), "test/big:low", "← 切回上一档");
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
 
         assert!(app.modal.is_none(), "确认后关闭选择器");
@@ -12206,6 +12236,11 @@ mod config_picker_tests {
         assert_eq!(
             crate::modal::fusion_selector(&draft.lead, &draft.sidekick),
             "fusion:test/big:low+test/small:medium"
+        );
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        assert!(
+            matches!(app.modal, Some(Modal::Model { .. })),
+            "Esc 返回原模型选择器"
         );
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
         assert!(app.modal.is_none());

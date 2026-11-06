@@ -22,6 +22,7 @@ mod history_page;
 pub mod input;
 pub mod interaction;
 pub mod modal;
+pub mod model_history;
 pub mod protocol;
 pub mod queue;
 pub mod render;

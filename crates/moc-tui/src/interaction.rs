@@ -273,6 +273,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         )
                     ) {
                         app.modal = None;
+                        app.model_picker_back = None;
                     }
                     if let Some(error) = compaction_error {
                         app.push_note(format!("上下文压缩失败：{error}"), true);
