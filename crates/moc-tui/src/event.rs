@@ -1703,6 +1703,7 @@ fn handle_mouse_with_connection(
                         Modal::Model { .. }
                         | Modal::Sessions { .. }
                         | Modal::Subagents { .. }
+                        | Modal::Jobs { .. }
                         | Modal::Fusion { .. }
                         | Modal::SwitchModel { .. },
                     ) => handle_modal_key(
@@ -1856,6 +1857,7 @@ fn modal_dismissable(modal: &Modal) -> bool {
             | Modal::Model { .. }
             | Modal::Sessions { .. }
             | Modal::Subagents { .. }
+            | Modal::Jobs { .. }
             | Modal::Fusion { .. }
             | Modal::Rewind { .. }
             | Modal::Monitor
@@ -1868,6 +1870,7 @@ fn modal_dismissable(modal: &Modal) -> bool {
 /// 子代理）先选中、再点已选中的一项才确认——模型的思考等级跟随高亮行，一次点击
 /// 就确认的话根本没机会先挑等级。
 fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize) {
+    let mut job_kill: Option<String> = None;
     let confirm = match app.modal.as_mut() {
         Some(Modal::Permission { selected, .. }) => {
             *selected = index;
@@ -1920,8 +1923,38 @@ fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize
             state.focus = index;
             again
         }
+        // /jobs：点行选中；点已选中行与连按两次 x 同义——第二次点击本身就是确认。
+        Some(Modal::Jobs {
+            jobs,
+            selected,
+            pending_kill,
+        }) => {
+            let again = *selected == index;
+            *selected = index;
+            *pending_kill = None;
+            if again {
+                job_kill = jobs.get(index).map(|job| job.job_id.clone());
+            }
+            false
+        }
         _ => false,
     };
+    if let Some(job_id) = job_kill {
+        if let Some(session_id) = app.session.as_ref().map(|s| s.id.clone()) {
+            let client = connection.client.clone();
+            tokio::spawn(async move {
+                let _ = client
+                    .call::<moc_protocol::methods::JobKill>(moc_protocol::methods::JobTarget {
+                        session_id,
+                        job_id,
+                    })
+                    .await;
+            });
+        }
+        // 与键盘路径一致：杀任务后关闭弹窗。
+        app.modal = None;
+        return;
+    }
     if confirm {
         handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
     }
@@ -1957,6 +1990,17 @@ fn hover_modal_item(app: &mut App, index: usize) {
         Some(Modal::SwitchModel { option, .. }) => *option = index,
         Some(Modal::WorkflowApproval { state }) => state.focus = index,
         Some(Modal::WorkflowRun { state }) => state.focus = index,
+        // 悬停换行会撤掉待确认标记，与键盘其他键的语义一致。
+        Some(Modal::Jobs {
+            selected,
+            pending_kill,
+            ..
+        }) => {
+            if *selected != index {
+                *pending_kill = None;
+            }
+            *selected = index;
+        }
         _ => {}
     }
 }
@@ -11379,6 +11423,96 @@ mod tests {
             .expect("授权结果");
         assert_eq!(result.option_id, "opt_1");
         assert!(app.modal.is_none(), "确认后模态关闭");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// /jobs 弹窗鼠标交互：点行选中、点已选行杀任务并关闭、悬停移动高亮、
+    /// 滚轮移动选中、点卡片外关闭。
+    #[tokio::test]
+    async fn jobs_modal_mouse_selects_and_kills() {
+        use moc_protocol::methods::{JobInfo, JobLifecycle, JobOrigin, JobStatus};
+
+        let (core, connection, mut app) = setup_test_app().await;
+        let job = |id: &str| JobInfo {
+            job_id: id.into(),
+            command: "sleep 100".into(),
+            description: None,
+            tool_call_id: format!("call_{id}"),
+            status: JobStatus::Running,
+            exit_code: None,
+            lifecycle: JobLifecycle::Monitored,
+            origin: JobOrigin::Explicit,
+            stalled: false,
+            output_elided: false,
+            started_at_ms: 0,
+            duration_ms: None,
+            log_uri: "artifact://jobs/x.log".into(),
+        };
+        app.modal = Some(Modal::Jobs {
+            jobs: vec![job("job_1"), job("job_2")],
+            selected: 0,
+            pending_kill: None,
+        });
+        app.modal_item_hits = vec![
+            (0, ratatui::layout::Rect::new(10, 5, 40, 1)),
+            (1, ratatui::layout::Rect::new(10, 6, 40, 1)),
+        ];
+
+        // 点未选中行：只改高亮，不动作。
+        handle_mouse_with_connection(&mut app, &connection, left_click(12, 6));
+        match app.modal.as_ref() {
+            Some(Modal::Jobs { selected, .. }) => assert_eq!(*selected, 1),
+            _ => unreachable!("模态应保留"),
+        }
+
+        // 再点已选中的同一行：杀任务并关闭弹窗（第二次点击即确认）。
+        handle_mouse_with_connection(&mut app, &connection, left_click(12, 6));
+        assert!(app.modal.is_none(), "点击已选行杀任务后应关闭");
+
+        // 待确认标记在悬停换行时撤掉。
+        app.modal = Some(Modal::Jobs {
+            jobs: vec![job("job_1"), job("job_2")],
+            selected: 0,
+            pending_kill: Some(0),
+        });
+        app.modal_item_hits = vec![
+            (0, ratatui::layout::Rect::new(10, 5, 40, 1)),
+            (1, ratatui::layout::Rect::new(10, 6, 40, 1)),
+        ];
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse_event(MouseEventKind::Moved, 12, 6),
+        );
+        match app.modal.as_ref() {
+            Some(Modal::Jobs {
+                selected,
+                pending_kill,
+                ..
+            }) => {
+                assert_eq!(*selected, 1);
+                assert_eq!(*pending_kill, None, "悬停换行应撤掉待确认");
+            }
+            _ => unreachable!("模态应保留"),
+        }
+
+        // 滚轮与 ↓ 同义：已在末行时截断不越界。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse_event(MouseEventKind::ScrollDown, 12, 6),
+        );
+        match app.modal.as_ref() {
+            Some(Modal::Jobs { selected, .. }) => assert_eq!(*selected, 1),
+            _ => unreachable!("模态应保留"),
+        }
+
+        // 点卡片外区域：与 Esc 同义关闭。
+        app.modal_card_area = ratatui::layout::Rect::new(10, 4, 42, 6);
+        handle_mouse_with_connection(&mut app, &connection, left_click(1, 1));
+        assert!(app.modal.is_none(), "点卡片外应关闭弹窗");
 
         connection.shutdown().await;
         core.shutdown().await;

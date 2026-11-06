@@ -1321,30 +1321,28 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                     Style::new().fg(theme.gray_dim),
                 )));
             } else {
-                for (index, job) in jobs.iter().enumerate() {
-                    hits.push((index, lines.len()));
-                    let is_selected = index == *selected;
+                // 任务多时按选中项开窗口，保证高亮行可见。
+                let offset = window_offset(0, *selected, max_lines, jobs.len());
+                for (index, job) in jobs.iter().skip(offset).take(max_lines).enumerate() {
+                    let actual = offset + index;
+                    hits.push((actual, lines.len()));
+                    let is_selected = actual == *selected;
 
                     // 状态图标
                     let icon = match job.status {
-                        moc_protocol::methods::JobStatus::Running => "▸",
-                        moc_protocol::methods::JobStatus::Killing => "⏹",
-                        moc_protocol::methods::JobStatus::Exited => "◆",
-                        moc_protocol::methods::JobStatus::Killed => "✘",
+                        moc_protocol::methods::JobStatus::Running => "⚙",
+                        moc_protocol::methods::JobStatus::Killing => "⚡",
+                        moc_protocol::methods::JobStatus::Exited => "✓",
+                        moc_protocol::methods::JobStatus::Killed => "✗",
                         moc_protocol::methods::JobStatus::TimedOut => "⏱",
                     };
 
-                    // 命令（截断）
-                    let cmd_budget = width.saturating_sub(25);
-                    let cmd = if job.command.len() > cmd_budget {
-                        format!("{}…", &job.command[..cmd_budget.saturating_sub(1)])
-                    } else {
-                        job.command.clone()
-                    };
+                    // 命令（截断；按显示宽度，宽字符不切开）
+                    let cmd = truncate(&job.command, width.saturating_sub(25));
 
                     let job_id = &job.job_id;
-                    let text = if *pending_kill == Some(index) {
-                        format!("{icon} {job_id} {cmd} [按 x 确认杀掉]")
+                    let text = if *pending_kill == Some(actual) {
+                        format!("{icon} {job_id} {cmd} [按 x 或点击确认杀掉]")
                     } else {
                         format!("{icon} {job_id} {cmd}")
                     };
@@ -1354,7 +1352,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             }
 
             let footer = overlay::footer(
-                &[("↑↓", "选择"), ("x x", "杀任务"), ("esc", "关闭")],
+                &[("↑↓", "选择"), ("x x/点击已选", "杀任务"), ("esc", "关闭")],
                 width,
                 theme,
             );
