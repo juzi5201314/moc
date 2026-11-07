@@ -14,6 +14,7 @@ import {
   interruptLive,
   type SessionView,
 } from "@/lib/transcript-model";
+import { invalidateGitBranch } from "@/lib/use-git-branch";
 import { clientListeners, rpc } from "@/protocol/client";
 import type {
   AskParams,
@@ -165,6 +166,10 @@ function flushDeltas(): void {
 
 rpc.on("session/update", (params: SessionUpdateParams) => {
   const { session_id: sessionId, update } = params;
+  // 工作区文件变化或 bash 任务结束都可能意味着 HEAD 被换掉，让分支缓存失效。
+  if (update.type === "workspace_changed" || update.type === "job_finished") {
+    invalidateGitBranch(useTranscript.getState().bySession[sessionId]?.info.cwd);
+  }
   if (update.type === "assistant_delta" && update.delta.type !== "usage") {
     if (!useTranscript.getState().bySession[sessionId]) return;
     const previous = pendingDeltas.get(sessionId);
