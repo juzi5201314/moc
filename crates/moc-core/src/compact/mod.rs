@@ -70,15 +70,26 @@ pub fn messages_tokens(messages: &[Message]) -> u64 {
 
 /// 指针只在这次借用期间作为共享正文的身份，缓存不跨快照或进程保存。
 /// bash/代理消息有包装文本，不能用原消息内容的身份匹配其计数。
-pub(crate) fn cached_messages_tokens(state: &crate::session::state::SessionState, messages: &[Message]) -> u64 {
+pub(crate) fn cached_messages_tokens(
+    state: &crate::session::state::SessionState,
+    messages: &[Message],
+) -> u64 {
     let start = replay::visible_history_start(state);
-    let counts: std::collections::HashMap<_, _> = state.transcript[start..].iter()
+    let counts: std::collections::HashMap<_, _> = state.transcript[start..]
+        .iter()
         .zip(&state.transcript_token_counts[start..])
         .filter(|(entry, _)| entry.bash.is_none() && entry.agent.is_none())
         .map(|(entry, tokens)| (entry.message.content.storage_id(), *tokens))
         .collect();
-    messages.iter().map(|message| counts.get(&message.content.storage_id()).copied()
-        .unwrap_or_else(|| message_tokens(message))).sum()
+    messages
+        .iter()
+        .map(|message| {
+            counts
+                .get(&message.content.storage_id())
+                .copied()
+                .unwrap_or_else(|| message_tokens(message))
+        })
+        .sum()
 }
 
 /// 每条消息固定额外计入的 token 数，与内容无关。
@@ -199,7 +210,8 @@ pub(crate) fn context_tokens(
     messages: &[Message],
     tools: &[ToolDef],
 ) -> u64 {
-    let stored_estimate = cached_messages_tokens(state, messages).saturating_add(tools_tokens(tools));
+    let stored_estimate =
+        cached_messages_tokens(state, messages).saturating_add(tools_tokens(tools));
     if state.usage.input_tokens == 0 || state.usage_at == 0 {
         return stored_estimate;
     }

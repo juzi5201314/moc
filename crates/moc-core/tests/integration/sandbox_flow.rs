@@ -1,7 +1,7 @@
+use crate::support::Harness;
 use moc_core::sandbox::{SandboxRunner, SandboxSupport};
 use moc_protocol::SessionPermission;
 use moc_protocol::methods::{SessionEngine, SessionSetPermission, SessionSetPermissionParams};
-use crate::support::Harness;
 
 fn all_modes() -> SandboxSupport {
     SandboxSupport {

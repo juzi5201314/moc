@@ -49,9 +49,13 @@ fn inspection_matches_wire_and_preserves_injection_coordinates() {
         for message in &mut archived.messages {
             message.content = crate::MessageContent::from_archive(
                 serde_json::to_vec(&message.content).unwrap().into(),
-            ).unwrap();
+            )
+            .unwrap();
         }
-        assert_eq!(super::super::encode(&cfg, &archived, true).unwrap().body, wire.body);
+        assert_eq!(
+            super::super::encode(&cfg, &archived, true).unwrap().body,
+            wire.body
+        );
         let inspection = inspect_request(&cfg, &request, true).unwrap();
         assert_eq!(
             inspection.body,

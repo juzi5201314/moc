@@ -33,7 +33,10 @@ fn directory_is_bounded_and_text_pages_round_trip_without_mutation() {
     result.bound_text(0).unwrap();
     assert!(result.spool.is_some());
     assert!(result.nodes.iter().all(|node| node.text.is_none()));
-    assert_eq!(serde_json::to_string(&result.page(None, None).unwrap()).unwrap(), encoded);
+    assert_eq!(
+        serde_json::to_string(&result.page(None, None).unwrap()).unwrap(),
+        encoded
+    );
     let id = result
         .nodes
         .iter()
@@ -164,7 +167,11 @@ fn role_messages_and_source_children_keep_wire_order() {
 fn views_are_isolated_by_connection_and_session() {
     let mut views = Views::default();
     let mut first = view(json!({"messages":[]}));
-    first.memory_permit = Some(Arc::clone(&views.text_budget).try_acquire_many_owned(16).unwrap());
+    first.memory_permit = Some(
+        Arc::clone(&views.text_budget)
+            .try_acquire_many_owned(16)
+            .unwrap(),
+    );
     assert_eq!(views.text_budget.available_permits(), TEXT_CACHE_BYTES - 16);
     let id = first.id.clone();
     views.entries.insert((1, "s1".into()), first);

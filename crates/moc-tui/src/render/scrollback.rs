@@ -397,13 +397,29 @@ impl ScrollbackView {
             let render_started = std::time::Instant::now();
             let (lines, footer, paged, tables, images, height, rendered) = if index >= eager_start {
                 let rendered = render_entry_with(index, entry, app, width, true, &self.batches);
-                let (lines, footer) = if rendered.paged.is_some() { (Vec::new(), rendered.lines) } else { (rendered.lines, Vec::new()) };
-                (lines, footer, rendered.paged, rendered.tables, rendered.images, rendered.height, true)
+                let (lines, footer) = if rendered.paged.is_some() {
+                    (Vec::new(), rendered.lines)
+                } else {
+                    (rendered.lines, Vec::new())
+                };
+                (
+                    lines,
+                    footer,
+                    rendered.paged,
+                    rendered.tables,
+                    rendered.images,
+                    rendered.height,
+                    true,
+                )
             } else {
                 (
-                    Vec::new(), Vec::new(), None,
-                    Vec::new(), Vec::new(),
-                    estimate_entry_height_indexed(app, index, width, &self.batches), false,
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    estimate_entry_height_indexed(app, index, width, &self.batches),
+                    false,
                 )
             };
             let cached = CachedEntry {
@@ -451,7 +467,9 @@ impl ScrollbackView {
             let next = offset.saturating_add(cached.height);
             if Some(index) != self.live_layout_block && (next <= skip_rows || offset >= end) {
                 cached.lines = Vec::new();
-                if bytes > budget && let Some(pages) = cached.paged.take() {
+                if bytes > budget
+                    && let Some(pages) = cached.paged.take()
+                {
                     bytes = bytes.saturating_sub(pages.stored_bytes());
                     cached.footer = Vec::new();
                 }
@@ -593,7 +611,11 @@ impl ScrollbackView {
             }
             let has_title = offset == 0;
             let row_start = y;
-            for line in cached.lines.iter().skip(offset.saturating_sub(cached.line_start)) {
+            for line in cached
+                .lines
+                .iter()
+                .skip(offset.saturating_sub(cached.line_start))
+            {
                 if y >= bottom {
                     break;
                 }
@@ -612,7 +634,8 @@ impl ScrollbackView {
                 if let Some(button) = table.button
                     && button.row >= offset
                 {
-                    let row = origin.saturating_add(u16::try_from(button.row - offset).unwrap_or(u16::MAX));
+                    let row = origin
+                        .saturating_add(u16::try_from(button.row - offset).unwrap_or(u16::MAX));
                     if row < bottom {
                         if hover == Some((index, table.table)) {
                             buffer.set_style(
@@ -632,7 +655,8 @@ impl ScrollbackView {
                 if let Some(chart) = table.chart
                     && chart.row >= offset
                 {
-                    let row = origin.saturating_add(u16::try_from(chart.row - offset).unwrap_or(u16::MAX));
+                    let row = origin
+                        .saturating_add(u16::try_from(chart.row - offset).unwrap_or(u16::MAX));
                     let end = row.saturating_add(chart.rows);
                     if row >= area.y && end <= bottom {
                         let from = chart.row;
@@ -645,7 +669,10 @@ impl ScrollbackView {
                             cols: chart.cols,
                             rows: chart.rows,
                             px: chart.px,
-                            hash: line_hash(&cached.lines[from - cached.line_start..to - cached.line_start], 0),
+                            hash: line_hash(
+                                &cached.lines[from - cached.line_start..to - cached.line_start],
+                                0,
+                            ),
                             placement_id: placement_id(index, 0, table.table),
                         });
                     }
@@ -656,7 +683,8 @@ impl ScrollbackView {
                 if image.row < offset {
                     continue;
                 }
-                let row = origin.saturating_add(u16::try_from(image.row - offset).unwrap_or(u16::MAX));
+                let row =
+                    origin.saturating_add(u16::try_from(image.row - offset).unwrap_or(u16::MAX));
                 let end = row.saturating_add(image.rows);
                 if row < area.y || end > bottom {
                     continue;
@@ -667,7 +695,9 @@ impl ScrollbackView {
                 let digest = image.key.digest();
                 let from = image.row;
                 let to = from + usize::from(image.rows);
-                let Some(lines) = cached.lines.get(from.saturating_sub(cached.line_start)..to.saturating_sub(cached.line_start)) else {
+                let Some(lines) = cached.lines.get(
+                    from.saturating_sub(cached.line_start)..to.saturating_sub(cached.line_start),
+                ) else {
                     continue;
                 };
                 slots.push(ImageSlot {
@@ -5121,19 +5151,45 @@ mod tests {
             render_cost: std::time::Duration::ZERO,
             tables: vec![LocalTable {
                 table: 0,
-                button: Some(ButtonSpan { row: 100_000, x: 0, w: 10 }),
-                chart: Some(ChartPlacement { row: 100_001, cols: 5, rows: 2, px: (40, 36) }),
+                button: Some(ButtonSpan {
+                    row: 100_000,
+                    x: 0,
+                    w: 10,
+                }),
+                chart: Some(ChartPlacement {
+                    row: 100_001,
+                    cols: 5,
+                    rows: 2,
+                    px: (40, 36),
+                }),
             }],
             images: vec![ImagePlacement {
-                row: 100_004, x: 0, cols: 5, rows: 2, px: (40, 36),
+                row: 100_004,
+                x: 0,
+                cols: 5,
+                rows: 2,
+                px: (40, 36),
                 key: crate::render::image::ImageKey::from_bytes("image/png", "distant"),
             }],
         });
         let area = Rect::new(0, 5, 80, 10);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 20));
-        let (mut hits, mut charts, mut slots, mut lines) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        view.paint(&mut buffer, area, 0, true, Theme::global(), None,
-            PaintSinks { hits: &mut hits, charts: &mut charts, slots: &mut slots, lines: &mut lines });
+        let (mut hits, mut charts, mut slots, mut lines) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        view.paint(
+            &mut buffer,
+            area,
+            0,
+            true,
+            Theme::global(),
+            None,
+            PaintSinks {
+                hits: &mut hits,
+                charts: &mut charts,
+                slots: &mut slots,
+                lines: &mut lines,
+            },
+        );
         assert!(charts.is_empty());
         assert!(slots.is_empty());
         assert_eq!(lines, [(5, "可见正文".to_owned())]);

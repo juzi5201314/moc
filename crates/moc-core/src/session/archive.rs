@@ -179,7 +179,12 @@ impl Replayer {
         );
         if let Some(state) = &mut self.state {
             state.replay_entry(entry)?;
-            if self.archive_enabled && (boundary || state.unfrozen_bytes >= FREEZE_BYTES || state.transcript.len().saturating_sub(self.frontier) >= REPLAY_BATCH + HOT_MESSAGES) {
+            if self.archive_enabled
+                && (boundary
+                    || state.unfrozen_bytes >= FREEZE_BYTES
+                    || state.transcript.len().saturating_sub(self.frontier)
+                        >= REPLAY_BATCH + HOT_MESSAGES)
+            {
                 let end = cold_end(state);
                 self.frontier = self.frontier.min(end);
                 self.archive_enabled = freeze(state, self.frontier..end);

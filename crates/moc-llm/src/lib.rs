@@ -80,6 +80,7 @@ pub use stream::ChatStream;
 pub use traffic::{HTTP_RX_BYTES, HTTP_TX_BYTES, record_rx, record_tx};
 pub use types::{
     ChatRequest, ChatResponse, ContentPart, Effort, FinishReason, ImageDetail, ImageSource,
-    Message, MessageContent, ReasoningBlock, ReasoningConfig, ReasoningEcho, ReasoningSummary, RequestOptions,
-    ResponseFormat, Role, StreamEvent, ToolCall, ToolChoice, ToolDef, ToolResult, Usage,
+    Message, MessageContent, ReasoningBlock, ReasoningConfig, ReasoningEcho, ReasoningSummary,
+    RequestOptions, ResponseFormat, Role, StreamEvent, ToolCall, ToolChoice, ToolDef, ToolResult,
+    Usage,
 };

@@ -105,7 +105,9 @@ fn break_rows(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     while i < chars.len() {
         let ch = chars[i];
         let w = char_width(ch);
-        if i > 0 && chars[i - 1] != ' ' { last_content = Some(i - 1); }
+        if i > 0 && chars[i - 1] != ' ' {
+            last_content = Some(i - 1);
+        }
         // i 单调前进；最后一个非空格的位置足以判断本行是否已有内容。
         if i > start && last_content.is_some_and(|index| index >= start) {
             if ch == ' ' && chars[i - 1] != ' ' {
@@ -253,15 +255,27 @@ pub(super) fn wrap_spans_into(
 }
 
 /// 一行字符按样式合并回 span。
-fn styled_row(chars: &[char], styles: &[(usize, Style)], start: usize, end: usize) -> Line<'static> {
+fn styled_row(
+    chars: &[char],
+    styles: &[(usize, Style)],
+    start: usize,
+    end: usize,
+) -> Line<'static> {
     let mut spans = Vec::new();
-    if start == end { return Line::from(spans); }
+    if start == end {
+        return Line::from(spans);
+    }
     debug_assert_eq!(styles.first().map(|(offset, _)| *offset), Some(0));
     let mut index = styles.partition_point(|(offset, _)| *offset <= start) - 1;
     let mut cursor = start;
     while cursor < end {
-        let next = styles.get(index + 1).map_or(end, |(offset, _)| end.min(*offset));
-        spans.push(Span::styled(chars[cursor..next].iter().collect::<String>(), styles[index].1));
+        let next = styles
+            .get(index + 1)
+            .map_or(end, |(offset, _)| end.min(*offset));
+        spans.push(Span::styled(
+            chars[cursor..next].iter().collect::<String>(),
+            styles[index].1,
+        ));
         cursor = next;
         index += 1;
     }

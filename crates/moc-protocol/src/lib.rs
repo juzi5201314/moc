@@ -379,8 +379,8 @@ pub use service::{AgentService, RequestContext, Requester, UpdateSink};
 pub use methods::*;
 
 pub use moc_llm::{
-    ContentPart, FinishReason, ImageDetail, ImageSource, Message, MessageContent, ReasoningBlock, Role, ToolCall,
-    ToolDef, ToolResult, Usage, message_content,
+    ContentPart, FinishReason, ImageDetail, ImageSource, Message, MessageContent, ReasoningBlock,
+    Role, ToolCall, ToolDef, ToolResult, Usage, message_content,
 };
 
 /// 线上协议版本；major 相同即兼容，minor 差异忽略。

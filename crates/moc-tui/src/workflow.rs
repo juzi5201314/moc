@@ -57,7 +57,13 @@ impl WorkflowApprovalState {
 
     /// 可选行总数 = roles + model_refs。
     pub fn rows(&self) -> usize {
-        self.role_rows() + self.request.defaults.model_ref_map.len().max(plan_model_refs(&self.request.plan).len())
+        self.role_rows()
+            + self
+                .request
+                .defaults
+                .model_ref_map
+                .len()
+                .max(plan_model_refs(&self.request.plan).len())
     }
 
     /// 当前焦点行指向的 role_id 或 model_ref id。
@@ -99,7 +105,11 @@ impl WorkflowApprovalState {
     fn role_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = plan_roles(&self.request.plan)
             .iter()
-            .filter_map(|r| r.get("role_id").and_then(|v| v.as_str()).map(str::to_string))
+            .filter_map(|r| {
+                r.get("role_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
             .collect();
         if ids.is_empty() {
             ids = self.request.defaults.role_models.keys().cloned().collect();
@@ -113,7 +123,13 @@ impl WorkflowApprovalState {
             .filter_map(|r| r.get("ref_id").and_then(|v| v.as_str()).map(str::to_string))
             .collect();
         if ids.is_empty() {
-            ids = self.request.defaults.model_ref_map.keys().cloned().collect();
+            ids = self
+                .request
+                .defaults
+                .model_ref_map
+                .keys()
+                .cloned()
+                .collect();
         }
         ids
     }
@@ -258,7 +274,7 @@ pub fn phase_layers(plan: &Value) -> Vec<Vec<String>> {
         }
     }
     // phase 级 data 边聚合。
-    
+
     let mut edges: Vec<(String, String)> = Vec::new();
     for edge in plan
         .get("edges")
@@ -272,10 +288,9 @@ pub fn phase_layers(plan: &Value) -> Vec<Vec<String>> {
         ) else {
             continue;
         };
-        let (Some(from_phase), Some(to_phase)) = (
-            site_phase.get(from).cloned(),
-            site_phase.get(to).cloned(),
-        ) else {
+        let (Some(from_phase), Some(to_phase)) =
+            (site_phase.get(from).cloned(), site_phase.get(to).cloned())
+        else {
             continue;
         };
         if from_phase != to_phase {
@@ -401,7 +416,10 @@ fn graph_lines(
     for (level, ids) in layers.iter().enumerate() {
         let mut spans = Vec::new();
         for (index_i, id) in ids.iter().enumerate() {
-            let (name, kind) = index.get(id).cloned().unwrap_or((id.clone(), "phase".into()));
+            let (name, kind) = index
+                .get(id)
+                .cloned()
+                .unwrap_or((id.clone(), "phase".into()));
             let (status, _) = status_of(id);
             let marker = if kind == "hole" { "?" } else { "•" };
             let text = format!(" {marker} {name} ");
@@ -415,7 +433,10 @@ fn graph_lines(
         // 窄宽退化：每层一列（多行）。
         if line_width > width && ids.len() > 1 {
             for id in ids {
-                let (name, kind) = index.get(id).cloned().unwrap_or((id.clone(), "phase".into()));
+                let (name, kind) = index
+                    .get(id)
+                    .cloned()
+                    .unwrap_or((id.clone(), "phase".into()));
                 let (status, _) = status_of(id);
                 let marker = if kind == "hole" { "?" } else { "•" };
                 lines.push(Line::from(Span::styled(
@@ -427,7 +448,10 @@ fn graph_lines(
             lines.push(Line::from(spans));
         }
         if level + 1 < layers.len() {
-            lines.push(Line::from(Span::styled("  ↓", Style::new().fg(theme.gray_dim))));
+            lines.push(Line::from(Span::styled(
+                "  ↓",
+                Style::new().fg(theme.gray_dim),
+            )));
         }
     }
     lines
@@ -443,7 +467,12 @@ pub fn approval_lines(
     let mut lines = Vec::new();
     let mut hits: Vec<(usize, usize)> = Vec::new();
     lines.push(Line::from(Span::styled("编排", dim)));
-    lines.extend(graph_lines(&state.request.plan, &|_| ("pending".into(), String::new()), width, theme));
+    lines.extend(graph_lines(
+        &state.request.plan,
+        &|_| ("pending".into(), String::new()),
+        width,
+        theme,
+    ));
     lines.push(Line::from(String::new()));
 
     // role 行：role_id + fan-out + 当前选定模型。
@@ -473,7 +502,10 @@ pub fn approval_lines(
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        let fan = role.get("fan_out").and_then(|v| v.as_bool()).unwrap_or(false);
+        let fan = role
+            .get("fan_out")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let model = state
             .role_models
             .get(&role_id)
@@ -528,7 +560,11 @@ pub fn approval_lines(
             .and_then(|c| c.as_array())
             .map(|list| {
                 list.iter()
-                    .filter_map(|c| c.get("command").and_then(|v| v.as_str()).map(str::to_string))
+                    .filter_map(|c| {
+                        c.get("command")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    })
                     .collect()
             })
             .unwrap_or_default(),
@@ -544,12 +580,20 @@ pub fn approval_lines(
             Style::new().fg(theme.accent_warning),
         )));
     }
-    if matches!(state.request.kind, moc_protocol::methods::WorkflowApprovalKind::Amend) {
-        lines.push(Line::from(Span::styled("  （amend：增量修改既有 run）", dim)));
+    if matches!(
+        state.request.kind,
+        moc_protocol::methods::WorkflowApprovalKind::Amend
+    ) {
+        lines.push(Line::from(Span::styled(
+            "  （amend：增量修改既有 run）",
+            dim,
+        )));
     }
     // 脚本全文（syntect 高亮）：hole_fill 时显示的是待审体而非原脚本，跳过。
-    if !matches!(state.request.kind, moc_protocol::methods::WorkflowApprovalKind::HoleFill)
-        && !state.request.script.is_empty()
+    if !matches!(
+        state.request.kind,
+        moc_protocol::methods::WorkflowApprovalKind::HoleFill
+    ) && !state.request.script.is_empty()
     {
         lines.push(Line::from(String::new()));
         lines.push(Line::from(Span::styled("脚本", dim)));
@@ -564,7 +608,10 @@ pub fn approval_lines(
             for part in highlighted {
                 spans.push(Span::styled(
                     part.text.clone(),
-                    Style::new().fg(part.fg.map(crate::render::highlight::rgb_to_color).unwrap_or(theme.text_secondary)),
+                    Style::new().fg(part
+                        .fg
+                        .map(crate::render::highlight::rgb_to_color)
+                        .unwrap_or(theme.text_secondary)),
                 ));
             }
             lines.push(Line::from(spans));
@@ -653,7 +700,10 @@ pub fn run_lines(
         for report in &state.reports {
             let text = serde_json::to_string(report).unwrap_or_default();
             lines.push(Line::from(Span::styled(
-                format!("  {}", crate::render::wrap::truncate(&text, width.saturating_sub(2))),
+                format!(
+                    "  {}",
+                    crate::render::wrap::truncate(&text, width.saturating_sub(2))
+                ),
                 Style::new().fg(theme.text_secondary),
             )));
         }
@@ -819,7 +869,12 @@ fn artifact_lines(
             )));
         }
         "chart" => {
-            out.extend(chart_artifact_lines(&spec, &items, width.saturating_sub(6), theme));
+            out.extend(chart_artifact_lines(
+                &spec,
+                &items,
+                width.saturating_sub(6),
+                theme,
+            ));
         }
         "table" => {
             let columns = spec
@@ -876,7 +931,11 @@ fn artifact_lines(
                     .iter()
                     .rev()
                     .find_map(|item| field_get(item, path))
-                    .map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))
+                    .map(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| v.to_string())
+                    })
                     .unwrap_or_else(|| "—".into());
                 out.push(Line::from(Span::styled(
                     format!("    {} = {}", field_label(field), value),
@@ -911,10 +970,8 @@ fn artifact_lines(
                 }
                 cards.insert(k, item);
             }
-            let mut cols: Vec<(String, Vec<String>)> = columns
-                .iter()
-                .map(|c| (c.clone(), Vec::new()))
-                .collect();
+            let mut cols: Vec<(String, Vec<String>)> =
+                columns.iter().map(|c| (c.clone(), Vec::new())).collect();
             cols.push(("other".into(), Vec::new()));
             for k in &order {
                 let item = cards[k];
@@ -938,7 +995,10 @@ fn artifact_lines(
         }
         _ => {
             out.push(Line::from(Span::styled(
-                format!("    {}", crate::render::wrap::truncate(spec.to_string(), width.saturating_sub(4))),
+                format!(
+                    "    {}",
+                    crate::render::wrap::truncate(spec.to_string(), width.saturating_sub(4))
+                ),
                 dim,
             )));
         }
@@ -1033,7 +1093,10 @@ fn chart_artifact_lines(
                 .find_map(|item| field_get(item, baseline).and_then(|v| v.as_f64()))
         })
     {
-        out.push(Line::from(Span::styled(format!("    ── baseline {v:.2}"), dim)));
+        out.push(Line::from(Span::styled(
+            format!("    ── baseline {v:.2}"),
+            dim,
+        )));
     }
     out
 }
@@ -1111,7 +1174,9 @@ mod tests {
         assert_eq!(layers[0].len(), 2);
     }
 
-    fn approval(kind: moc_protocol::methods::WorkflowApprovalKind) -> Box<moc_protocol::methods::WorkflowApproval> {
+    fn approval(
+        kind: moc_protocol::methods::WorkflowApprovalKind,
+    ) -> Box<moc_protocol::methods::WorkflowApproval> {
         Box::new(moc_protocol::methods::WorkflowApproval {
             request_id: "req-1".into(),
             run_id: "run-1".into(),
@@ -1127,8 +1192,12 @@ mod tests {
                 "commands": [{"command":"cargo test"}]
             }),
             defaults: moc_protocol::methods::WorkflowApprovalDefaults {
-                role_models: [("actor#1".to_string(), "gpt-x".to_string())].into_iter().collect(),
-                model_ref_map: [("model#1".to_string(), "gpt-y".to_string())].into_iter().collect(),
+                role_models: [("actor#1".to_string(), "gpt-x".to_string())]
+                    .into_iter()
+                    .collect(),
+                model_ref_map: [("model#1".to_string(), "gpt-y".to_string())]
+                    .into_iter()
+                    .collect(),
             },
             args: json!(null),
             max_concurrency: 4,
@@ -1139,14 +1208,19 @@ mod tests {
 
     #[test]
     fn approval_lines_have_role_rows_and_hits() {
-        let state = WorkflowApprovalState::new(approval(moc_protocol::methods::WorkflowApprovalKind::Launch));
+        let state = WorkflowApprovalState::new(approval(
+            moc_protocol::methods::WorkflowApprovalKind::Launch,
+        ));
         let (lines, hits) = approval_lines(&state, 60, crate::theme::Theme::global());
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert!(text.iter().any(|l| l.contains("planner")));
         assert!(text.iter().any(|l| l.contains("×N")), "fan-out 标记");
         assert!(text.iter().any(|l| l.contains("model(model#1)")));
         assert!(text.iter().any(|l| l.contains("cargo test")));
-        assert!(text.iter().any(|l| l.contains("phase(\"plan\")")), "脚本全文");
+        assert!(
+            text.iter().any(|l| l.contains("phase(\"plan\")")),
+            "脚本全文"
+        );
         // 2 roles + 1 model_ref = 3 个命中行，行号指向实际行。
         assert_eq!(hits.len(), 3);
         for (row, line_idx) in &hits {
@@ -1154,13 +1228,18 @@ mod tests {
             assert!(*row <= 2);
         }
         // hole_fill：只列新增命令、不渲脚本。
-        let mut hole = WorkflowApprovalState::new(approval(moc_protocol::methods::WorkflowApprovalKind::HoleFill));
+        let mut hole = WorkflowApprovalState::new(approval(
+            moc_protocol::methods::WorkflowApprovalKind::HoleFill,
+        ));
         hole.request.new_commands = Some(vec!["ls".into()]);
         let (lines, _) = approval_lines(&hole, 60, crate::theme::Theme::global());
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert!(text.iter().any(|l| l.contains("新增命令")));
         assert!(text.iter().any(|l| l.contains("ls")));
-        assert!(!text.iter().any(|l| l.contains("phase(\"plan\")")), "hole_fill 不渲脚本");
+        assert!(
+            !text.iter().any(|l| l.contains("phase(\"plan\")")),
+            "hole_fill 不渲脚本"
+        );
     }
 
     fn run_state() -> WorkflowRunState {
@@ -1213,10 +1292,17 @@ mod tests {
             .collect();
         assert_eq!(rows.len(), 2, "key 去重后两行");
         assert!(text.iter().any(|l| l.contains("2.0") && l.contains("wip")));
-        assert!(text.iter().any(|l| l.trim_start().starts_with("b  ") && l.contains("3.0")), "b 行存在");
+        assert!(
+            text.iter()
+                .any(|l| l.trim_start().starts_with("b  ") && l.contains("3.0")),
+            "b 行存在"
+        );
         // role 行命中 + 用量行。
         assert_eq!(hits.len(), 1);
-        assert!(text.iter().any(|l| l.contains("[2/3 asks") && l.contains("42 tok")));
+        assert!(
+            text.iter()
+                .any(|l| l.contains("[2/3 asks") && l.contains("42 tok"))
+        );
         assert!(text.iter().any(|l| l.contains("42 tokens")));
     }
 
@@ -1241,7 +1327,10 @@ mod tests {
         let (lines, _) = run_lines(&state, 60, crate::theme::Theme::global());
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         // metrics：最新值 v=2.0。
-        assert!(text.iter().any(|l| l.contains("speed") && l.contains("2.0")));
+        assert!(
+            text.iter()
+                .any(|l| l.contains("speed") && l.contains("2.0"))
+        );
         // board：a 最后 status=done → done 列；b 在 wip。
         assert!(text.iter().any(|l| l.contains("done ×1")));
         assert!(text.iter().any(|l| l.contains("wip ×1")));
@@ -1275,7 +1364,9 @@ mod tests {
     #[test]
     fn pick_writes_override_back_to_approval() {
         let back = Box::new(WorkflowRoleBack::Approval(Box::new(
-            WorkflowApprovalState::new(approval(moc_protocol::methods::WorkflowApprovalKind::Launch)),
+            WorkflowApprovalState::new(approval(
+                moc_protocol::methods::WorkflowApprovalKind::Launch,
+            )),
         )));
         let (back, action) = apply_workflow_pick(
             back,

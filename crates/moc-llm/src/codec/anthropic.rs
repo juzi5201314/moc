@@ -301,9 +301,14 @@ fn inspection_sources(
     for (index, message) in req.messages.iter().enumerate() {
         let temporary;
         let message = if message.content.is_archived() {
-            temporary = Message { role: message.role, content: message.content.detached_archive() };
+            temporary = Message {
+                role: message.role,
+                content: message.content.detached_archive(),
+            };
             &temporary
-        } else { message };
+        } else {
+            message
+        };
         let Some(placement) = normalized.placements[index] else {
             continue;
         };
@@ -372,9 +377,14 @@ fn normalize(
     for (index, message) in req.messages.iter().enumerate() {
         let temporary;
         let message = if message.content.is_archived() {
-            temporary = Message { role: message.role, content: message.content.detached_archive() };
+            temporary = Message {
+                role: message.role,
+                content: message.content.detached_archive(),
+            };
             &temporary
-        } else { message };
+        } else {
+            message
+        };
         match message.role {
             Role::System | Role::Developer => {
                 // system 被上提到顶层，不出现在 messages 里，因此不打断
@@ -1888,7 +1898,9 @@ mod tests {
                 Message::user_text("问题"),
                 Message {
                     role: Role::Assistant,
-                    content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::text("只有思考"))],
+                    content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::text(
+                        "只有思考"
+                    ))],
                 },
                 Message::user_text("继续"),
             ],
@@ -1914,9 +1926,9 @@ mod tests {
         let req = ChatRequest {
             messages: vec![Message {
                 role: Role::Assistant,
-                content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::Item(Box::new(
-                    json!({"type": "reasoning", "id": "rs_1"}),
-                )))],
+                content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::Item(
+                    Box::new(json!({"type": "reasoning", "id": "rs_1"}),)
+                ))],
             }],
             max_output_tokens: Some(1024),
             ..Default::default()

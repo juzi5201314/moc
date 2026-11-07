@@ -7,8 +7,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use serde_json::json;
 use crate::support::Harness;
+use serde_json::json;
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
     matchers::{method, path},

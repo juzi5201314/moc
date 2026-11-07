@@ -46,7 +46,10 @@ pub(super) async fn run(
     let skills = {
         let state = record.state.lock().await;
         inner
-            .session_skills(&cwd, crate::workflow::workflows_active(&state, &config.workflow))
+            .session_skills(
+                &cwd,
+                crate::workflow::workflows_active(&state, &config.workflow),
+            )
             .map_err(to_rpc)?
     };
     let outcome = crate::tools::bash::run_manual(

@@ -86,7 +86,10 @@ pub fn report(app: &App) -> String {
         .map(|mode| mode.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    lines.push(format!("沙盒：{}", if modes.is_empty() { "—" } else { &modes }));
+    lines.push(format!(
+        "沙盒：{}",
+        if modes.is_empty() { "—" } else { &modes }
+    ));
 
     lines.join("\n")
 }
@@ -109,7 +112,16 @@ mod tests {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let app = App::new(crate::theme::Theme::global(), events);
         let text = report(&app);
-        for section in ["环境", "色彩", "键盘", "同步输出", "图形", "剪贴板", "通知", "沙盒"] {
+        for section in [
+            "环境",
+            "色彩",
+            "键盘",
+            "同步输出",
+            "图形",
+            "剪贴板",
+            "通知",
+            "沙盒",
+        ] {
             assert!(text.contains(section), "缺少分区「{section}」：{text}");
         }
     }

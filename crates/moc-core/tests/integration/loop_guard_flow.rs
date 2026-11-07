@@ -1,3 +1,4 @@
+use crate::support::{Harness, text_stream, tool_stream};
 use moc_llm::FinishReason;
 use moc_protocol::methods::SessionUpdate;
 use moc_protocol::{Role, SessionEngine};
@@ -6,7 +7,6 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use crate::support::{Harness, text_stream, tool_stream};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},

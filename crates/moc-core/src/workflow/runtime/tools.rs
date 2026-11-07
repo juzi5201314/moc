@@ -24,7 +24,6 @@ pub const WORKFLOW_TOOLS: &[&str] = &[
     "eval_workflow_snippet",
 ];
 
-
 /// skill gate：提交脚本的工具要求模型可见历史里有成功的 workflow-authoring 加载。
 /// 豁免：create{saved}、无 script/path 的 amend、resume/stop/status/list/fill/save。
 fn skill_gate(ctx: &ToolCtx) -> Result<(), ToolError> {
@@ -34,7 +33,9 @@ fn skill_gate(ctx: &ToolCtx) -> Result<(), ToolError> {
     } else {
         Err(ToolError::new(
             "E_WORKFLOW_SKILL",
-            format!("load the `{SKILL}` skill first (tool `skill` or `skills` command), then retry"),
+            format!(
+                "load the `{SKILL}` skill first (tool `skill` or `skills` command), then retry"
+            ),
         ))
     }
 }
@@ -78,10 +79,18 @@ macro_rules! wf_tool {
     ($name:ident, $tool_name:literal, $desc:expr, $schema:literal, $run:ident) => {
         pub struct $name;
         impl Tool for $name {
-            fn name(&self) -> &str { $tool_name }
-            fn description(&self) -> &str { $desc }
-            fn tier(&self) -> Tier { Tier::Write }
-            fn parallel_safe(&self) -> bool { false }
+            fn name(&self) -> &str {
+                $tool_name
+            }
+            fn description(&self) -> &str {
+                $desc
+            }
+            fn tier(&self) -> Tier {
+                Tier::Write
+            }
+            fn parallel_safe(&self) -> bool {
+                false
+            }
             fn def(&self) -> ToolDef {
                 ToolDef::new($tool_name, serde_json::from_str($schema).unwrap())
             }
@@ -97,10 +106,14 @@ macro_rules! wf_tool {
     };
 }
 
-wf_tool!(CreateWorkflowTool, "create_workflow", concat!(
-    "Launch a multi-actor dynamic workflow from a TypeScript script (or a saved one).",
-    " Call only when the user asks for a workflow; otherwise use spawn_agent or do it yourself.",
-    " Load the workflow-authoring skill before authoring scripts."),
+wf_tool!(
+    CreateWorkflowTool,
+    "create_workflow",
+    concat!(
+        "Launch a multi-actor dynamic workflow from a TypeScript script (or a saved one).",
+        " Call only when the user asks for a workflow; otherwise use spawn_agent or do it yourself.",
+        " Load the workflow-authoring skill before authoring scripts."
+    ),
     r#"{"type":"object","properties":{
         "script":{"type":"string","description":"Inline TypeScript workflow source"},
         "saved":{"type":"string","description":"Name of a saved workflow"},
@@ -109,48 +122,83 @@ wf_tool!(CreateWorkflowTool, "create_workflow", concat!(
         "max_concurrency":{"type":"integer","description":"In-flight ask cap (1..ceiling)"},
         "subagent_model":{"type":"string","description":"Default model for actors without a persona model"}},
         "additionalProperties":false}"#,
-    run_create);
+    run_create
+);
 
-wf_tool!(AmendWorkflowTool, "amend_workflow", concat!(
-    "Amend a workflow: new run that inherits named actors' matching asks from a previous run.",
-    " Call only when the user asks to amend a workflow."),
+wf_tool!(
+    AmendWorkflowTool,
+    "amend_workflow",
+    concat!(
+        "Amend a workflow: new run that inherits named actors' matching asks from a previous run.",
+        " Call only when the user asks to amend a workflow."
+    ),
     r#"{"type":"object","properties":{
         "run_id":{"type":"string","description":"Predecessor run to amend from"},
         "script":{"type":"string","description":"Amended TypeScript source (omit to reuse predecessor's draft)"},
         "path":{"type":"string"},
         "subagent_model":{"type":"string"}},
         "required":["run_id"],"additionalProperties":false}"#,
-    run_amend);
+    run_amend
+);
 
-wf_tool!(ResumeWorkflowTool, "resume_workflow_run", "Resume a stopped workflow run; journal hits replay with zero cost.", 
+wf_tool!(
+    ResumeWorkflowTool,
+    "resume_workflow_run",
+    "Resume a stopped workflow run; journal hits replay with zero cost.",
     r#"{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"],"additionalProperties":false}"#,
-    run_resume);
+    run_resume
+);
 
-wf_tool!(StopWorkflowTool, "stop_workflow_run", "Stop a running workflow (terminal stopped(user); resumable).",
+wf_tool!(
+    StopWorkflowTool,
+    "stop_workflow_run",
+    "Stop a running workflow (terminal stopped(user); resumable).",
     r#"{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"],"additionalProperties":false}"#,
-    run_stop);
+    run_stop
+);
 
-wf_tool!(FillHoleTool, "fill_workflow_hole", "Fill an open hole in a running workflow with a TypeScript function body.",
+wf_tool!(
+    FillHoleTool,
+    "fill_workflow_hole",
+    "Fill an open hole in a running workflow with a TypeScript function body.",
     r#"{"type":"object","properties":{"run_id":{"type":"string"},"hole":{"type":"string"},"body":{"type":"string"}},"required":["run_id","hole","body"],"additionalProperties":false}"#,
-    run_fill);
+    run_fill
+);
 
-wf_tool!(SaveWorkflowTool, "save_workflow", "Save a workflow script (from a run or a path) for reuse.",
+wf_tool!(
+    SaveWorkflowTool,
+    "save_workflow",
+    "Save a workflow script (from a run or a path) for reuse.",
     r#"{"type":"object","properties":{"name":{"type":"string"},"run_id":{"type":"string"},"path":{"type":"string"},"description":{"type":"string"},"args":{"type":"array","items":{"type":"object"}},"scope":{"type":"string","enum":["project","global"]}},"required":["name","description"],"additionalProperties":false}"#,
-    run_save);
+    run_save
+);
 
-wf_tool!(ListSavedTool, "list_saved_workflows", "List saved workflows (project and global scope).",
+wf_tool!(
+    ListSavedTool,
+    "list_saved_workflows",
+    "List saved workflows (project and global scope).",
     r#"{"type":"object","properties":{},"additionalProperties":false}"#,
-    run_list_saved);
+    run_list_saved
+);
 
-wf_tool!(WorkflowStatusTool, "workflow_status", "Show workflow run status (all runs or one).",
+wf_tool!(
+    WorkflowStatusTool,
+    "workflow_status",
+    "Show workflow run status (all runs or one).",
     r#"{"type":"object","properties":{"run_id":{"type":"string"}},"additionalProperties":false}"#,
-    run_status);
+    run_status
+);
 
-wf_tool!(EvalSnippetTool, "eval_workflow_snippet", concat!(
-    "Evaluate a deterministic workflow snippet synchronously (no agents: args/run/log/files/git/world.run/channel/future only).",
-    " Use to probe before authoring a full workflow."),
+wf_tool!(
+    EvalSnippetTool,
+    "eval_workflow_snippet",
+    concat!(
+        "Evaluate a deterministic workflow snippet synchronously (no agents: args/run/log/files/git/world.run/channel/future only).",
+        " Use to probe before authoring a full workflow."
+    ),
     r#"{"type":"object","properties":{"code":{"type":"string"},"path":{"type":"string"},"timeout_secs":{"type":"integer","description":"Default 60, max 600"}},"additionalProperties":false}"#,
-    run_eval);
+    run_eval
+);
 
 // —— 实现 ——
 
@@ -158,11 +206,20 @@ impl CreateWorkflowTool {
     async fn run_create(&self, ctx: &ToolCtx, args: Value) -> Result<ToolOutcome, ToolError> {
         let manager = activated(ctx).await?;
         // skill gate：saved 豁免（脚本已定稿），其余提交脚本的路径都要过。
-        let source = match (args.get("saved").and_then(|v| v.as_str()), args.get("script").and_then(|v| v.as_str()), args.get("path").and_then(|v| v.as_str())) {
+        let source = match (
+            args.get("saved").and_then(|v| v.as_str()),
+            args.get("script").and_then(|v| v.as_str()),
+            args.get("path").and_then(|v| v.as_str()),
+        ) {
             (Some(saved), _, _) => load_saved(ctx, saved)?,
             (None, Some(script), _) => script.to_string(),
             (None, None, Some(path)) => read_script(ctx, path)?,
-            _ => return Err(ToolError::new("E_ARGS", "create_workflow requires `script`, `saved` or `path`")),
+            _ => {
+                return Err(ToolError::new(
+                    "E_ARGS",
+                    "create_workflow requires `script`, `saved` or `path`",
+                ));
+            }
         };
         if args.get("saved").is_none() {
             skill_gate(ctx)?;
@@ -174,15 +231,22 @@ impl CreateWorkflowTool {
 impl AmendWorkflowTool {
     async fn run_amend(&self, ctx: &ToolCtx, args: Value) -> Result<ToolOutcome, ToolError> {
         let manager = activated(ctx).await?;
-        let run_id = args.get("run_id").and_then(|v| v.as_str()).map(str::to_string)
+        let run_id = args
+            .get("run_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
             .ok_or_else(|| ToolError::new("E_ARGS", "amend_workflow requires `run_id`"))?;
         let prior_dir = manager.run_dir(&run_id).map_err(tool_err)?;
-        let source = match (args.get("script").and_then(|v| v.as_str()), args.get("path").and_then(|v| v.as_str())) {
+        let source = match (
+            args.get("script").and_then(|v| v.as_str()),
+            args.get("path").and_then(|v| v.as_str()),
+        ) {
             (Some(script), _) => script.to_string(),
             (None, Some(path)) => read_script(ctx, path)?,
             // 无 script/path：复用前驱草稿（豁免 skill gate——脚本已定稿）。
-            (None, None) => std::fs::read_to_string(prior_dir.join("script.ts"))
-                .map_err(|e| ToolError::new("E_ARGS", format!("predecessor draft unreadable: {e}")))?,
+            (None, None) => std::fs::read_to_string(prior_dir.join("script.ts")).map_err(|e| {
+                ToolError::new("E_ARGS", format!("predecessor draft unreadable: {e}"))
+            })?,
         };
         if args.get("script").is_some() || args.get("path").is_some() {
             skill_gate(ctx)?;
@@ -194,7 +258,9 @@ impl AmendWorkflowTool {
 impl ResumeWorkflowTool {
     async fn run_resume(&self, ctx: &ToolCtx, args: Value) -> Result<ToolOutcome, ToolError> {
         let manager = activated(ctx).await?;
-        let run_id = args.get("run_id").and_then(|v| v.as_str())
+        let run_id = args
+            .get("run_id")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("E_ARGS", "resume_workflow_run requires `run_id`"))?;
         resume_run(ctx, &manager, run_id).await
     }
@@ -203,7 +269,9 @@ impl ResumeWorkflowTool {
 impl StopWorkflowTool {
     async fn run_stop(&self, ctx: &ToolCtx, args: Value) -> Result<ToolOutcome, ToolError> {
         let manager = activated(ctx).await?;
-        let run_id = args.get("run_id").and_then(|v| v.as_str())
+        let run_id = args
+            .get("run_id")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("E_ARGS", "stop_workflow_run requires `run_id`"))?;
         let summary = manager.stop(run_id).await.map_err(tool_err)?;
         wf_outcome(serde_json::to_value(summary).unwrap_or_default())
@@ -213,10 +281,18 @@ impl StopWorkflowTool {
 impl FillHoleTool {
     async fn run_fill(&self, ctx: &ToolCtx, args: Value) -> Result<ToolOutcome, ToolError> {
         let manager = activated(ctx).await?;
-        let run_id = args.get("run_id").and_then(|v| v.as_str())
+        let run_id = args
+            .get("run_id")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("E_ARGS", "fill_workflow_hole requires `run_id`"))?;
-        let hole = args.get("hole").and_then(|v| v.as_str()).unwrap_or_default();
-        let body = args.get("body").and_then(|v| v.as_str()).unwrap_or_default();
+        let hole = args
+            .get("hole")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let body = args
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         // hole 体跑在 hole 所在 phase 的上下文里：用该 phase 前缀编译（site_id
         // 带 `hole@<名>/` 前缀避免与脚本内站点冲突），交付降级后源码——裸
         // `world.run` 没有 site_id，guest eval 时无法寻址 facade。
@@ -224,11 +300,7 @@ impl FillHoleTool {
             .meta(run_id)
             .ok()
             .and_then(|m| {
-                let site_id = m
-                    .holes
-                    .iter()
-                    .find(|h| h["name"].as_str() == Some(hole))?
-                    ["site_id"]
+                let site_id = m.holes.iter().find(|h| h["name"].as_str() == Some(hole))?["site_id"]
                     .as_str()?
                     .to_string();
                 m.plan
@@ -237,7 +309,9 @@ impl FillHoleTool {
                     .and_then(|sites| {
                         sites.iter().find_map(|s| {
                             (s.get("site_id").and_then(|v| v.as_str()) == Some(site_id.as_str()))
-                                .then(|| s.get("phase").and_then(|v| v.as_str()).map(str::to_string))
+                                .then(|| {
+                                    s.get("phase").and_then(|v| v.as_str()).map(str::to_string)
+                                })
                                 .flatten()
                         })
                     })
@@ -258,12 +332,23 @@ impl FillHoleTool {
         match compiled {
             Err(diags) => Err(ToolError::new(
                 "E_WORKFLOW_COMPILE",
-                format!("hole body has diagnostics: {}", diags.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")),
+                format!(
+                    "hole body has diagnostics: {}",
+                    diags
+                        .iter()
+                        .map(|d| d.message.clone())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
             )),
             Ok(c) => {
                 // 引入未批准的 world.run 命令 → hole_fill 审批（只列新增命令）。
-                let known: std::collections::BTreeSet<String> =
-                    manager.meta(run_id).map(|m| m.commands).unwrap_or_default().into_iter().collect();
+                let known: std::collections::BTreeSet<String> = manager
+                    .meta(run_id)
+                    .map(|m| m.commands)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
                 let new_commands: Vec<String> = c
                     .plan
                     .commands
@@ -288,17 +373,25 @@ impl FillHoleTool {
                         new_commands: Some(new_commands),
                     };
                     let rx = manager.request_approval(approval, &ctx.request.updates());
-                    let decision = rx.await.map_err(|_| ToolError::new("E_CANCELLED", "approval channel closed"))?;
+                    let decision = rx
+                        .await
+                        .map_err(|_| ToolError::new("E_CANCELLED", "approval channel closed"))?;
                     match decision {
                         moc_protocol::WorkflowDecision::Approve { .. } => {}
                         moc_protocol::WorkflowDecision::Reject { feedback } => {
-                            return Err(ToolError::new("E_REJECTED", feedback.unwrap_or_else(|| "hole fill rejected".into())));
+                            return Err(ToolError::new(
+                                "E_REJECTED",
+                                feedback.unwrap_or_else(|| "hole fill rejected".into()),
+                            ));
                         }
                     }
                 }
                 // 交付降级体（guest evalFill 经 eval 运行）：包成函数表达式。
                 let filled = format!("(async()=>{{\n{}\n}})", c.lowered);
-                manager.fill_hole(run_id, hole, filled).await.map_err(tool_err)?;
+                manager
+                    .fill_hole(run_id, hole, filled)
+                    .await
+                    .map_err(tool_err)?;
                 wf_outcome(json!({"filled": hole}))
             }
         }
@@ -308,7 +401,9 @@ impl FillHoleTool {
 impl SaveWorkflowTool {
     async fn run_save(&self, ctx: &ToolCtx, args: Value) -> Result<ToolOutcome, ToolError> {
         activated(ctx).await?;
-        let name = args.get("name").and_then(|v| v.as_str())
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("E_ARGS", "save_workflow requires `name`"))?;
         if !valid_saved_name(name) {
             return Err(ToolError::new(
@@ -316,9 +411,18 @@ impl SaveWorkflowTool {
                 "workflow name must match [A-Za-z0-9_.-]{1,64} and not start with '.'",
             ));
         }
-        let description = args.get("description").and_then(|v| v.as_str()).unwrap_or_default();
-        let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("project");
-        let source = match (args.get("run_id").and_then(|v| v.as_str()), args.get("path").and_then(|v| v.as_str())) {
+        let description = args
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let scope = args
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .unwrap_or("project");
+        let source = match (
+            args.get("run_id").and_then(|v| v.as_str()),
+            args.get("path").and_then(|v| v.as_str()),
+        ) {
             (Some(run_id), _) => {
                 let manager = activated(ctx).await?;
                 let dir = manager.run_dir(run_id).map_err(tool_err)?;
@@ -326,7 +430,12 @@ impl SaveWorkflowTool {
                     .map_err(|e| ToolError::new("E_IO", format!("draft unreadable: {e}")))?
             }
             (None, Some(path)) => read_script(ctx, path)?,
-            _ => return Err(ToolError::new("E_ARGS", "save_workflow requires `run_id` or `path`")),
+            _ => {
+                return Err(ToolError::new(
+                    "E_ARGS",
+                    "save_workflow requires `run_id` or `path`",
+                ));
+            }
         };
         let dir = match scope {
             "global" => ctx.config.home.join("workflows"),
@@ -336,9 +445,14 @@ impl SaveWorkflowTool {
         std::fs::write(dir.join(format!("{name}.ts")), &source)
             .map_err(|e| ToolError::new("E_IO", e.to_string()))?;
         let meta = json!({"name": name, "description": description, "args": args.get("args").cloned().unwrap_or(json!([]))});
-        std::fs::write(dir.join(format!("{name}.json")), serde_json::to_vec_pretty(&meta).unwrap_or_default())
-            .map_err(|e| ToolError::new("E_IO", e.to_string()))?;
-        wf_outcome(json!({"saved": name, "scope": scope, "path": dir.join(format!("{name}.ts")).display().to_string()}))
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            serde_json::to_vec_pretty(&meta).unwrap_or_default(),
+        )
+        .map_err(|e| ToolError::new("E_IO", e.to_string()))?;
+        wf_outcome(
+            json!({"saved": name, "scope": scope, "path": dir.join(format!("{name}.ts")).display().to_string()}),
+        )
     }
 }
 
@@ -390,14 +504,40 @@ impl EvalSnippetTool {
     async fn run_eval(&self, ctx: &ToolCtx, args: Value) -> Result<ToolOutcome, ToolError> {
         activated(ctx).await?;
         skill_gate(ctx)?;
-        let code = match (args.get("code").and_then(|v| v.as_str()), args.get("path").and_then(|v| v.as_str())) {
+        let code = match (
+            args.get("code").and_then(|v| v.as_str()),
+            args.get("path").and_then(|v| v.as_str()),
+        ) {
             (Some(code), _) => code.to_string(),
             (None, Some(path)) => read_script(ctx, path)?,
-            _ => return Err(ToolError::new("E_ARGS", "eval_workflow_snippet requires `code` or `path`")),
+            _ => {
+                return Err(ToolError::new(
+                    "E_ARGS",
+                    "eval_workflow_snippet requires `code` or `path`",
+                ));
+            }
         };
-        let timeout_secs = args.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(60).min(600);
-        let compiled = crate::workflow::compile::compile(&code, &crate::workflow::compile::CompileOptions::default())
-            .map_err(|d| ToolError::new("E_WORKFLOW_COMPILE", format!("snippet diagnostics: {}", d.iter().map(|x| x.message.clone()).collect::<Vec<_>>().join("; "))))?;
+        let timeout_secs = args
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(60)
+            .min(600);
+        let compiled = crate::workflow::compile::compile(
+            &code,
+            &crate::workflow::compile::CompileOptions::default(),
+        )
+        .map_err(|d| {
+            ToolError::new(
+                "E_WORKFLOW_COMPILE",
+                format!(
+                    "snippet diagnostics: {}",
+                    d.iter()
+                        .map(|x| x.message.clone())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+            )
+        })?;
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             eval_loop(compiled, ctx),
@@ -406,7 +546,10 @@ impl EvalSnippetTool {
         match outcome {
             Ok(Ok(v)) => wf_outcome(v),
             Ok(Err(e)) => Err(e),
-            Err(_) => Err(ToolError::new("E_TIMEOUT", format!("snippet exceeded {timeout_secs}s"))),
+            Err(_) => Err(ToolError::new(
+                "E_TIMEOUT",
+                format!("snippet exceeded {timeout_secs}s"),
+            )),
         }
     }
 }
@@ -419,7 +562,7 @@ async fn eval_loop(
 ) -> Result<Value, ToolError> {
     use moc_ptc_protocol::wire::{
         GuestState, HostCompletion, WorkflowGuestMessage, WorkflowHostMessage, WorkflowOperation,
-        WorkflowStartRequest, WorkflowRunInfo as WireRunInfo,
+        WorkflowRunInfo as WireRunInfo, WorkflowStartRequest,
     };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -433,8 +576,14 @@ async fn eval_loop(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| ToolError::new("E_HOST", format!("worker 启动失败：{e}")))?;
-    let mut stdin = child.stdin.take().ok_or_else(|| ToolError::new("E_HOST", "stdin"))?;
-    let stdout = child.stdout.take().ok_or_else(|| ToolError::new("E_HOST", "stdout"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ToolError::new("E_HOST", "stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ToolError::new("E_HOST", "stdout"))?;
     let ptc = ctx.config.tools.ptc.clone();
     async fn send(m: &WorkflowHostMessage, stdin: &mut tokio::process::ChildStdin) -> bool {
         let mut f = serde_json::to_vec(m).unwrap_or_default();
@@ -455,7 +604,10 @@ async fn eval_loop(
         request: WorkflowStartRequest {
             code: compiled.lowered.clone(),
             args: Value::Null,
-            run: WireRunInfo { id: "eval".into(), resumed_from: None },
+            run: WireRunInfo {
+                id: "eval".into(),
+                resumed_from: None,
+            },
             memory_limit_bytes: cfg.0,
             max_output_bytes: cfg.1,
             max_message_bytes: cfg.2,
@@ -474,7 +626,8 @@ async fn eval_loop(
             .await
             .map_err(|e| ToolError::new("E_HOST", e.to_string()))?
             .ok_or_else(|| ToolError::new("E_HOST", "worker 提前退出"))?;
-        let Ok(WorkflowGuestMessage::Step { step }) = serde_json::from_str::<WorkflowGuestMessage>(&line)
+        let Ok(WorkflowGuestMessage::Step { step }) =
+            serde_json::from_str::<WorkflowGuestMessage>(&line)
         else {
             continue;
         };
@@ -491,7 +644,11 @@ async fn eval_loop(
                     super::driver::world_read_impl(&cwd, cap, &op, &Value::Array(arguments.clone()))
                         .await
                 }
-                WorkflowOperation::WorldRun { command, args, options } => {
+                WorkflowOperation::WorldRun {
+                    command,
+                    args,
+                    options,
+                } => {
                     super::driver::world_run_impl(
                         &policy,
                         command,
@@ -521,7 +678,11 @@ async fn eval_loop(
             let result = match outcome {
                 crate::workflow::engine::DriverOutcome::Completed(v) => Ok(v),
                 crate::workflow::engine::DriverOutcome::Failed { code, message } => {
-                    Err(moc_ptc_protocol::wire::ScriptError { code, message, result: None })
+                    Err(moc_ptc_protocol::wire::ScriptError {
+                        code,
+                        message,
+                        result: None,
+                    })
                 }
             };
             completions.push(HostCompletion { id: req.id, result });
@@ -533,13 +694,15 @@ async fn eval_loop(
             }
         }
         match step.state {
-            GuestState::Done { value } => break Ok(json!({"status": "done", "value": value, "logs": logs})),
+            GuestState::Done { value } => {
+                break Ok(json!({"status": "done", "value": value, "logs": logs}));
+            }
             GuestState::Failed { error } => {
                 break Err(ToolError::new(
                     "E_SNIPPET",
                     format!("{}: {}", error.code, error.message),
                 )
-                .with_hint(logs.join("\n")))
+                .with_hint(logs.join("\n")));
             }
             GuestState::Pending => {}
         }
@@ -566,7 +729,14 @@ async fn launch_flow(
         Err(diags) => {
             return Err(ToolError::new(
                 "E_WORKFLOW_COMPILE",
-                format!("script diagnostics:\n{}", diags.iter().map(|d| format!("L{}:C{} {} {}", d.line, d.col, d.code, d.message)).collect::<Vec<_>>().join("\n")),
+                format!(
+                    "script diagnostics:\n{}",
+                    diags
+                        .iter()
+                        .map(|d| format!("L{}:C{} {} {}", d.line, d.col, d.code, d.message))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
             ));
         }
     };
@@ -576,7 +746,10 @@ async fn launch_flow(
         .get("max_concurrency")
         .and_then(|v| v.as_u64())
         .map_or(0, |n| (n as usize).clamp(1, cfg.max_concurrency_ceiling));
-    let subagent_model = args.get("subagent_model").and_then(|v| v.as_str()).map(str::to_string);
+    let subagent_model = args
+        .get("subagent_model")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     // 审批默认：Literal → 该模型；Routed → 首 ref 的 model_id；Inherit →
     // subagent_model 参数否则会话模型。model_ref_map 预填 plan.model_refs。
     let mut role_models = std::collections::BTreeMap::new();
@@ -585,18 +758,12 @@ async fn launch_flow(
             crate::workflow::compile::ModelSource::Literal { model } => model.clone(),
             crate::workflow::compile::ModelSource::Routed { refs } => refs
                 .first()
-                .and_then(|r| {
-                    compiled
-                        .plan
-                        .model_refs
-                        .iter()
-                        .find(|m| &m.ref_id == r)
-                })
+                .and_then(|r| compiled.plan.model_refs.iter().find(|m| &m.ref_id == r))
                 .map(|m| m.model_id.clone())
                 .unwrap_or_else(|| session_model.clone()),
-            crate::workflow::compile::ModelSource::Inherit => {
-                subagent_model.clone().unwrap_or_else(|| session_model.clone())
-            }
+            crate::workflow::compile::ModelSource::Inherit => subagent_model
+                .clone()
+                .unwrap_or_else(|| session_model.clone()),
         };
         role_models.insert(role.role_id.clone(), default);
     }
@@ -633,7 +800,10 @@ async fn launch_flow(
     // 与 defaults 不同的条目（未改动的 role 不能被钉死，否则 persona.model /
     // subagent_model / ref 重映射全部失效）；"inherit" 视为无覆盖。
     let (role_models, model_ref_map) = match decision {
-        moc_protocol::WorkflowDecision::Approve { role_models, model_ref_map } => (
+        moc_protocol::WorkflowDecision::Approve {
+            role_models,
+            model_ref_map,
+        } => (
             role_models
                 .unwrap_or_default()
                 .into_iter()
@@ -647,7 +817,10 @@ async fn launch_flow(
         ),
         moc_protocol::WorkflowDecision::Reject { feedback } => {
             manager.drop_pending_role_models(&run_id);
-            return Err(ToolError::new("E_REJECTED", feedback.unwrap_or_else(|| "workflow rejected".into())));
+            return Err(ToolError::new(
+                "E_REJECTED",
+                feedback.unwrap_or_else(|| "workflow rejected".into()),
+            ));
         }
     };
     let state = ctx.state.lock().await;
@@ -658,10 +831,18 @@ async fn launch_flow(
         title: state.session.title.clone(),
         plan: serde_json::to_value(&compiled.plan).unwrap_or_default(),
         args: args.get("args").cloned().unwrap_or(Value::Null),
-        commands: compiled.plan.commands.iter().map(|c| c.command.clone()).collect(),
+        commands: compiled
+            .plan
+            .commands
+            .iter()
+            .map(|c| c.command.clone())
+            .collect(),
         role_models,
         model_ref_map,
-        subagent_model: args.get("subagent_model").and_then(|v| v.as_str()).map(str::to_string),
+        subagent_model: args
+            .get("subagent_model")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         session_model: Some(session_model),
         resumed_from: resumed_from.clone(),
         mode: mode.into(),
@@ -705,7 +886,15 @@ async fn resume_run(
     let policy = ctx.sandbox_policy();
     let cancel = ctx.core.shutdown.child_token();
     manager
-        .launch(meta, compiled, ctx.request.clone(), ctx.cwd.clone(), policy, ctx.request.updates(), cancel)
+        .launch(
+            meta,
+            compiled,
+            ctx.request.clone(),
+            ctx.cwd.clone(),
+            policy,
+            ctx.request.updates(),
+            cancel,
+        )
         .await
         .map_err(tool_err)?;
     wf_outcome(json!({"run_id": run_id, "status": "running", "resumed": true}))
@@ -713,7 +902,8 @@ async fn resume_run(
 
 fn read_script(ctx: &ToolCtx, path: &str) -> Result<String, ToolError> {
     let path = crate::tools::resolve_tool_path(&ctx.cwd, path)?;
-    std::fs::read_to_string(&path).map_err(|e| ToolError::new("E_IO", format!("script unreadable: {e}")))
+    std::fs::read_to_string(&path)
+        .map_err(|e| ToolError::new("E_IO", format!("script unreadable: {e}")))
 }
 
 /// saved workflow 名校验：`[A-Za-z0-9_.-]{1,64}` 且不以 '.' 开头
@@ -745,7 +935,10 @@ fn load_saved(ctx: &ToolCtx, name: &str) -> Result<String, ToolError> {
                 .map_err(|e| ToolError::new("E_IO", e.to_string()));
         }
     }
-    Err(ToolError::new("E_NOT_FOUND", format!("saved workflow `{name}` not found")))
+    Err(ToolError::new(
+        "E_NOT_FOUND",
+        format!("saved workflow `{name}` not found"),
+    ))
 }
 
 fn tool_err(e: CoreError) -> ToolError {
@@ -803,7 +996,10 @@ mod tests {
             .map(|d| d.name.clone())
             .collect();
         for tool in WORKFLOW_TOOLS {
-            assert!(active_names.iter().any(|n| n == tool), "missing {tool} when active");
+            assert!(
+                active_names.iter().any(|n| n == tool),
+                "missing {tool} when active"
+            );
         }
         // 子代理永不给 workflow 工具（即使会话已激活）。
         let sub_scope = crate::tools::ToolScope {
@@ -811,7 +1007,13 @@ mod tests {
             ..crate::tools::ToolScope::top()
         };
         let sub: Vec<String> = registry
-            .definitions(moc_protocol::SessionEngine::Standard, false, &config, sub_scope, &[])
+            .definitions(
+                moc_protocol::SessionEngine::Standard,
+                false,
+                &config,
+                sub_scope,
+                &[],
+            )
             .iter()
             .map(|d| d.name.clone())
             .collect();
@@ -847,8 +1049,13 @@ mod tests {
         assert!(index.get(crate::workflow::skill::SKILL_NAME).is_none());
         let home = tempfile::tempdir().unwrap();
         crate::workflow::skill::inject(&mut index, home.path());
-        let meta = index.get(crate::workflow::skill::SKILL_NAME).expect("injected");
-        assert!(meta.skill_file().exists(), "materialized SKILL.md must exist");
+        let meta = index
+            .get(crate::workflow::skill::SKILL_NAME)
+            .expect("injected");
+        assert!(
+            meta.skill_file().exists(),
+            "materialized SKILL.md must exist"
+        );
         assert!(meta.base_dir.join("patterns.md").exists());
     }
 
@@ -897,4 +1104,3 @@ mod tests {
         assert!(!valid_saved_name(&"n".repeat(65)));
     }
 }
-

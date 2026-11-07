@@ -3,9 +3,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::support::{Harness, text_stream, tool_stream};
 use moc_protocol::methods::*;
 use serde_json::{Value, json};
-use crate::support::{Harness, text_stream, tool_stream};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},

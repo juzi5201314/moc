@@ -152,10 +152,16 @@ pub struct WorkflowRunInfo {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkflowHostMessage {
-    Start { request: WorkflowStartRequest },
+    Start {
+        request: WorkflowStartRequest,
+    },
     /// 回应请求的幂等粒度是单个 request id；一批里可以只补一部分。
-    Complete { completions: Vec<HostCompletion> },
-    Cancel { code: String },
+    Complete {
+        completions: Vec<HostCompletion>,
+    },
+    Cancel {
+        code: String,
+    },
     Shutdown,
 }
 
@@ -189,15 +195,32 @@ pub struct WorkflowHostRequest {
 pub enum WorkflowOperation {
     /// `Agent.ask<T>(instructions)`；actor 是 create_actor 事件里的 guest 本地 id，
     /// actor_seq 是该 actor 上第 n 次 ask（guest 侧单调计数，保证 FIFO 对齐）。
-    Ask { actor: u32, actor_seq: u32, instructions: String },
+    Ask {
+        actor: u32,
+        actor_seq: u32,
+        instructions: String,
+    },
     /// `files.*` / `git.*` 只读调用。
-    WorldRead { kind: WorldReadKind, arguments: Vec<Value> },
+    WorldRead {
+        kind: WorldReadKind,
+        arguments: Vec<Value>,
+    },
     /// `world.run(cmd, args, opts)`；cmd 编译期已强制为字面量。
-    WorldRun { command: String, args: Vec<String>, options: WorkflowWorldRunOptions },
+    WorldRun {
+        command: String,
+        args: Vec<String>,
+        options: WorkflowWorldRunOptions,
+    },
     /// `artifact.file` / `artifact.markdown`：有返回值（ArtifactRef）的发布。
-    PublishArtifact { member: PublishArtifactMember, arguments: Vec<Value> },
+    PublishArtifact {
+        member: PublishArtifactMember,
+        arguments: Vec<Value>,
+    },
     /// `hole(name, prompt?)` 无预置体：挂起等 fill_workflow_hole 交付编译好的体。
-    Hole { name: String, prompt: Option<String> },
+    Hole {
+        name: String,
+        prompt: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,15 +256,28 @@ pub struct WorkflowWorldRunOptions {
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkflowEvent {
     /// `agent(...)`：guest 同步分配 local_id，宿主建 local_id → actor 映射。
-    CreateActor { local_id: u32, site_id: String, name: Option<String>, persona: Value },
+    CreateActor {
+        local_id: u32,
+        site_id: String,
+        name: Option<String>,
+        persona: Value,
+    },
     /// `phase(name)` 标记到达；同名 phase 合并为一个节点。
     PhaseEntered { site_id: String, name: String },
     /// `log(msg)`。
     Log { site_id: String, message: String },
     /// `report(item, artifactId?)`。
-    Report { site_id: String, item: Value, artifact_id: Option<String> },
+    Report {
+        site_id: String,
+        item: Value,
+        artifact_id: Option<String>,
+    },
     /// `artifact.{chart,table,metrics,board}`：预置类声明（同步 void）。
-    DeclareArtifact { site_id: String, member: DeclareArtifactMember, arguments: Vec<Value> },
+    DeclareArtifact {
+        site_id: String,
+        member: DeclareArtifactMember,
+        arguments: Vec<Value>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,7 +2,7 @@
 
 use super::schema;
 use super::{
-    CompiledWorkflow, CompileOptions, Diagnostic, EdgeKind, ModelRef, ModelSource, PhaseKind,
+    CompileOptions, CompiledWorkflow, Diagnostic, EdgeKind, ModelRef, ModelSource, PhaseKind,
     PhaseNode, PlanEdge, Role, Site, SiteKind, WorkflowPlan, line_col,
 };
 use crate::workflow::facade;
@@ -48,21 +48,91 @@ const ARTIFACT_MEMBERS: &[&str] = &["file", "markdown", "chart", "table", "metri
 
 /// ES2022 内建全局；其余未解析引用一律 FORBIDDEN_GLOBAL。
 const ES2022_GLOBALS: &[&str] = &[
-    "AggregateError", "Array", "ArrayBuffer", "Atomics", "BigInt", "BigInt64Array",
-    "BigUint64Array", "Boolean", "DataView", "Date", "decodeURI", "decodeURIComponent",
-    "encodeURI", "encodeURIComponent", "Error", "escape", "eval", "EvalError",
-    "FinalizationRegistry", "Float32Array", "Float64Array", "Function", "globalThis",
-    "Infinity", "Int16Array", "Int32Array", "Int8Array", "Intl", "isFinite", "isNaN",
-    "JSON", "Map", "Math", "NaN", "Number", "Object", "parseFloat", "parseInt", "Promise",
-    "Proxy", "RangeError", "ReferenceError", "Reflect", "RegExp", "Set",
-    "SharedArrayBuffer", "String", "Symbol", "SyntaxError", "TypeError", "Uint16Array",
-    "Uint32Array", "Uint8Array", "Uint8ClampedArray", "undefined", "unescape", "URIError",
-    "WeakMap", "WeakRef", "WeakSet",
+    "AggregateError",
+    "Array",
+    "ArrayBuffer",
+    "Atomics",
+    "BigInt",
+    "BigInt64Array",
+    "BigUint64Array",
+    "Boolean",
+    "DataView",
+    "Date",
+    "decodeURI",
+    "decodeURIComponent",
+    "encodeURI",
+    "encodeURIComponent",
+    "Error",
+    "escape",
+    "eval",
+    "EvalError",
+    "FinalizationRegistry",
+    "Float32Array",
+    "Float64Array",
+    "Function",
+    "globalThis",
+    "Infinity",
+    "Int16Array",
+    "Int32Array",
+    "Int8Array",
+    "Intl",
+    "isFinite",
+    "isNaN",
+    "JSON",
+    "Map",
+    "Math",
+    "NaN",
+    "Number",
+    "Object",
+    "parseFloat",
+    "parseInt",
+    "Promise",
+    "Proxy",
+    "RangeError",
+    "ReferenceError",
+    "Reflect",
+    "RegExp",
+    "Set",
+    "SharedArrayBuffer",
+    "String",
+    "Symbol",
+    "SyntaxError",
+    "TypeError",
+    "Uint16Array",
+    "Uint32Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "undefined",
+    "unescape",
+    "URIError",
+    "WeakMap",
+    "WeakRef",
+    "WeakSet",
     // 常用 TS 工具类型名，出现在类型位时 fallback 兜底。
-    "Partial", "Required", "Readonly", "Pick", "Omit", "Record", "Exclude", "Extract",
-    "Awaited", "ReturnType", "Parameters", "NonNullable", "Uppercase", "Lowercase",
-    "Capitalize", "Uncapitalize", "InstanceType", "ConstructorParameters", "Iterable",
-    "Iterator", "IterableIterator", "AsyncIterable", "AsyncIterator", "PromiseLike",
+    "Partial",
+    "Required",
+    "Readonly",
+    "Pick",
+    "Omit",
+    "Record",
+    "Exclude",
+    "Extract",
+    "Awaited",
+    "ReturnType",
+    "Parameters",
+    "NonNullable",
+    "Uppercase",
+    "Lowercase",
+    "Capitalize",
+    "Uncapitalize",
+    "InstanceType",
+    "ConstructorParameters",
+    "Iterable",
+    "Iterator",
+    "IterableIterator",
+    "AsyncIterable",
+    "AsyncIterator",
+    "PromiseLike",
 ];
 /// 这些全局的特定成员禁止访问（编译期诊断 + worker 运行时双重禁止）。
 const BANNED_MEMBERS: &[(&str, &str)] = &[("Date", "now"), ("Math", "random")];
@@ -102,7 +172,11 @@ pub(super) fn compile_inner(
         .map(|error| {
             let (line, col) = line_col(
                 source,
-                error.labels.as_ref().and_then(|l| l.first()).map_or(0, |l| l.offset()) as u32,
+                error
+                    .labels
+                    .as_ref()
+                    .and_then(|l| l.first())
+                    .map_or(0, |l| l.offset()) as u32,
             );
             Diagnostic {
                 code: super::SYNTAX_ERROR,
@@ -223,7 +297,12 @@ struct Walker<'a> {
 }
 
 /// (调用点, 调用点相位, 调用方函数, 调用点是否在循环内)。
-type FnCall<'a> = (&'a CallExpression<'a>, Option<String>, Option<SymbolId>, bool);
+type FnCall<'a> = (
+    &'a CallExpression<'a>,
+    Option<String>,
+    Option<SymbolId>,
+    bool,
+);
 
 #[derive(Clone, Copy)]
 pub(super) enum TypeDecl<'a> {
@@ -252,7 +331,12 @@ impl<'a> Walker<'a> {
     fn next_site_id(&mut self, kind: SiteKind) -> String {
         let n = self.counters.entry(kind.prefix()).or_default();
         *n += 1;
-        format!("{}{}#{}", self.options.site_prefix.as_deref().unwrap_or(""), kind.prefix(), n)
+        format!(
+            "{}{}#{}",
+            self.options.site_prefix.as_deref().unwrap_or(""),
+            kind.prefix(),
+            n
+        )
     }
 
     fn symbol_of(&self, ident: &IdentifierReference<'a>) -> Option<SymbolId> {
@@ -289,10 +373,18 @@ impl<'a> Walker<'a> {
         let name = args.first().and_then(|a| literal_string(a));
         match &name {
             Some(n) if n.is_empty() => {
-                self.diag(super::NON_LITERAL_NAME, "phase name must be a non-empty literal", args[0].span());
+                self.diag(
+                    super::NON_LITERAL_NAME,
+                    "phase name must be a non-empty literal",
+                    args[0].span(),
+                );
             }
             Some(n) if n.chars().count() > facade::NAME_MAX_LEN => {
-                self.diag(super::NON_LITERAL_NAME, format!("phase name exceeds {} characters", facade::NAME_MAX_LEN), args[0].span());
+                self.diag(
+                    super::NON_LITERAL_NAME,
+                    format!("phase name exceeds {} characters", facade::NAME_MAX_LEN),
+                    args[0].span(),
+                );
             }
             Some(n) => {
                 if let Some(first) = self.hole_names.get(n) {
@@ -312,7 +404,11 @@ impl<'a> Walker<'a> {
                     });
                 }
             }
-            None => self.diag(super::NON_LITERAL_NAME, "phase name must be a non-empty literal", args.first().map_or(call.span, |a| a.span())),
+            None => self.diag(
+                super::NON_LITERAL_NAME,
+                "phase name must be a non-empty literal",
+                args.first().map_or(call.span, |a| a.span()),
+            ),
         }
         let id = self.add_site(SiteKind::Phase, call, name, None, None);
         self.insert_at(self.open_paren(call), &id);
@@ -327,7 +423,11 @@ impl<'a> Walker<'a> {
             Statement::BlockStatement(block) => self.walk_block(block),
             Statement::VariableDeclaration(decl) => {
                 if decl.declare {
-                    self.diag(super::FORBIDDEN_SYNTAX, "workflow scripts cannot use import/export/declare", decl.span);
+                    self.diag(
+                        super::FORBIDDEN_SYNTAX,
+                        "workflow scripts cannot use import/export/declare",
+                        decl.span,
+                    );
                     return;
                 }
                 for d in &decl.declarations {
@@ -336,7 +436,11 @@ impl<'a> Walker<'a> {
             }
             Statement::FunctionDeclaration(func) => {
                 if func.r#type == FunctionType::TSDeclareFunction || func.declare {
-                    self.diag(super::FORBIDDEN_SYNTAX, "workflow scripts cannot use import/export/declare", func.span);
+                    self.diag(
+                        super::FORBIDDEN_SYNTAX,
+                        "workflow scripts cannot use import/export/declare",
+                        func.span,
+                    );
                     return;
                 }
                 self.register_fn(func);
@@ -429,7 +533,11 @@ impl<'a> Walker<'a> {
             Statement::LabeledStatement(s) => self.walk_stmt(&s.body),
             Statement::ClassDeclaration(c) => {
                 if c.declare {
-                    self.diag(super::FORBIDDEN_SYNTAX, "workflow scripts cannot use import/export/declare", c.span);
+                    self.diag(
+                        super::FORBIDDEN_SYNTAX,
+                        "workflow scripts cannot use import/export/declare",
+                        c.span,
+                    );
                     return;
                 }
                 self.walk_class(c);
@@ -442,28 +550,50 @@ impl<'a> Walker<'a> {
             | Statement::TSImportEqualsDeclaration(_)
             | Statement::TSExportAssignment(_)
             | Statement::TSNamespaceExportDeclaration(_) => {
-                self.diag(super::FORBIDDEN_SYNTAX, "workflow scripts cannot use import/export/declare", stmt.span());
+                self.diag(
+                    super::FORBIDDEN_SYNTAX,
+                    "workflow scripts cannot use import/export/declare",
+                    stmt.span(),
+                );
             }
             Statement::WithStatement(_) => {
-                self.diag(super::FORBIDDEN_SYNTAX, "with statements are not allowed in workflow scripts", stmt.span());
+                self.diag(
+                    super::FORBIDDEN_SYNTAX,
+                    "with statements are not allowed in workflow scripts",
+                    stmt.span(),
+                );
             }
             Statement::TSTypeAliasDeclaration(d) => {
                 self.blank.push(d.span);
-                self.type_decls.insert(d.id.name.to_string(), TypeDecl::Alias(d));
+                self.type_decls
+                    .insert(d.id.name.to_string(), TypeDecl::Alias(d));
             }
             Statement::TSInterfaceDeclaration(d) => {
                 self.blank.push(d.span);
-                self.type_decls.insert(d.id.name.to_string(), TypeDecl::Interface(d));
+                self.type_decls
+                    .insert(d.id.name.to_string(), TypeDecl::Interface(d));
             }
             Statement::TSEnumDeclaration(d) => {
                 if d.declare {
-                    self.diag(super::FORBIDDEN_SYNTAX, "workflow scripts cannot use import/export/declare", d.span);
+                    self.diag(
+                        super::FORBIDDEN_SYNTAX,
+                        "workflow scripts cannot use import/export/declare",
+                        d.span,
+                    );
                 } else {
-                    self.diag(super::TS_UNSUPPORTED, "enum is not erasable TypeScript; use literal union types instead", d.span);
+                    self.diag(
+                        super::TS_UNSUPPORTED,
+                        "enum is not erasable TypeScript; use literal union types instead",
+                        d.span,
+                    );
                 }
             }
             Statement::TSModuleDeclaration(d) => {
-                self.diag(super::TS_UNSUPPORTED, "namespace/module declarations are not erasable TypeScript", d.span);
+                self.diag(
+                    super::TS_UNSUPPORTED,
+                    "namespace/module declarations are not erasable TypeScript",
+                    d.span,
+                );
             }
             _ => {}
         }
@@ -548,10 +678,18 @@ impl<'a> Walker<'a> {
         let owner = func.id.as_ref().and_then(|i| i.symbol_id.get());
         for (index, param) in func.params.items.iter().enumerate() {
             if param.accessibility.is_some() || param.readonly || param.r#override {
-                self.diag(super::TS_UNSUPPORTED, "parameter properties are not erasable TypeScript", param.span);
+                self.diag(
+                    super::TS_UNSUPPORTED,
+                    "parameter properties are not erasable TypeScript",
+                    param.span,
+                );
             }
             if !param.decorators.is_empty() {
-                self.diag(super::TS_UNSUPPORTED, "decorators are not erasable TypeScript", param.span);
+                self.diag(
+                    super::TS_UNSUPPORTED,
+                    "decorators are not erasable TypeScript",
+                    param.span,
+                );
             }
             if param.pattern.optional {
                 // `a?: T` → `a`；? 在 pattern 文本末尾与 `:` 之间。
@@ -611,7 +749,11 @@ impl<'a> Walker<'a> {
 
     fn walk_class(&mut self, class: &'a Class<'a>) {
         for d in &class.decorators {
-            self.diag(super::TS_UNSUPPORTED, "decorators are not erasable TypeScript", d.span);
+            self.diag(
+                super::TS_UNSUPPORTED,
+                "decorators are not erasable TypeScript",
+                d.span,
+            );
         }
         if let Some(t) = &class.type_parameters {
             self.blank.push(t.span);
@@ -647,7 +789,14 @@ impl<'a> Walker<'a> {
     /// `private readonly`/`abstract` 等修饰区整体空白化（保留 static——它是真实 JS）。
     fn blank_modifiers(&mut self, member: Span, key: Span) {
         const MODIFIERS: &[&str] = &[
-            "public", "private", "protected", "readonly", "abstract", "override", "declare", "accessor",
+            "public",
+            "private",
+            "protected",
+            "readonly",
+            "abstract",
+            "override",
+            "declare",
+            "accessor",
         ];
         let text = &self.source[member.start as usize..key.start as usize];
         let bytes = text.as_bytes();
@@ -660,7 +809,10 @@ impl<'a> Walker<'a> {
                 }
                 let word = &text[start..i];
                 if MODIFIERS.contains(&word) && word != "static" {
-                    self.blank.push(Span::new(member.start + start as u32, member.start + i as u32));
+                    self.blank.push(Span::new(
+                        member.start + start as u32,
+                        member.start + i as u32,
+                    ));
                 }
             } else {
                 i += 1;
@@ -670,7 +822,11 @@ impl<'a> Walker<'a> {
 
     fn walk_method(&mut self, m: &'a MethodDefinition<'a>) {
         for d in &m.decorators {
-            self.diag(super::TS_UNSUPPORTED, "decorators are not erasable TypeScript", d.span);
+            self.diag(
+                super::TS_UNSUPPORTED,
+                "decorators are not erasable TypeScript",
+                d.span,
+            );
         }
         if m.r#type == MethodDefinitionType::TSAbstractMethodDefinition {
             self.blank.push(m.span);
@@ -688,7 +844,11 @@ impl<'a> Walker<'a> {
 
     fn walk_property(&mut self, p: &'a PropertyDefinition<'a>) {
         for d in &p.decorators {
-            self.diag(super::TS_UNSUPPORTED, "decorators are not erasable TypeScript", d.span);
+            self.diag(
+                super::TS_UNSUPPORTED,
+                "decorators are not erasable TypeScript",
+                d.span,
+            );
         }
         if p.r#type == PropertyDefinitionType::TSAbstractPropertyDefinition {
             self.blank.push(p.span);
@@ -702,7 +862,11 @@ impl<'a> Walker<'a> {
             self.blank_char_after(p.key.span().end, b'!');
         }
         if p.declare {
-            self.diag(super::FORBIDDEN_SYNTAX, "workflow scripts cannot use import/export/declare", p.span);
+            self.diag(
+                super::FORBIDDEN_SYNTAX,
+                "workflow scripts cannot use import/export/declare",
+                p.span,
+            );
         }
         if let Some(t) = &p.type_annotation {
             self.blank.push(t.span);
@@ -773,7 +937,9 @@ impl<'a> Walker<'a> {
             Expression::ParenthesizedExpression(p) => self.walk_expr(&p.expression),
             Expression::AwaitExpression(a) => self.walk_expr(&a.argument),
             Expression::Identifier(ident) => self.ident(ident),
-            Expression::StaticMemberExpression(m) => self.member(&m.object, &m.property, m.span, true),
+            Expression::StaticMemberExpression(m) => {
+                self.member(&m.object, &m.property, m.span, true)
+            }
             Expression::ComputedMemberExpression(m) => {
                 self.member_object_only(&m.object, m.span);
                 self.walk_expr(&m.expression);
@@ -845,7 +1011,11 @@ impl<'a> Walker<'a> {
                     && self.is_global(callee)
                     && n.arguments.is_empty()
                 {
-                    self.diag(super::FORBIDDEN_GLOBAL, "new Date() without arguments is non-deterministic", n.span);
+                    self.diag(
+                        super::FORBIDDEN_GLOBAL,
+                        "new Date() without arguments is non-deterministic",
+                        n.span,
+                    );
                 }
                 if let Some(t) = &n.type_arguments {
                     self.blank.push(t.span);
@@ -867,7 +1037,11 @@ impl<'a> Walker<'a> {
             Expression::ClassExpression(c) => self.walk_class(c),
             Expression::ChainExpression(c) => self.walk_chain(&c.expression),
             Expression::ImportExpression(i) => {
-                self.diag(super::FORBIDDEN_SYNTAX, "workflow scripts cannot use import/export/declare", i.span);
+                self.diag(
+                    super::FORBIDDEN_SYNTAX,
+                    "workflow scripts cannot use import/export/declare",
+                    i.span,
+                );
             }
             Expression::YieldExpression(y) => {
                 if let Some(a) = &y.argument {
@@ -876,23 +1050,28 @@ impl<'a> Walker<'a> {
             }
             Expression::TSAsExpression(e) => {
                 self.walk_expr(&e.expression);
-                self.blank.push(Span::new(e.expression.span().end, e.span.end));
+                self.blank
+                    .push(Span::new(e.expression.span().end, e.span.end));
             }
             Expression::TSSatisfiesExpression(e) => {
                 self.walk_expr(&e.expression);
-                self.blank.push(Span::new(e.expression.span().end, e.span.end));
+                self.blank
+                    .push(Span::new(e.expression.span().end, e.span.end));
             }
             Expression::TSTypeAssertion(e) => {
-                self.blank.push(Span::new(e.span.start, e.expression.span().start));
+                self.blank
+                    .push(Span::new(e.span.start, e.expression.span().start));
                 self.walk_expr(&e.expression);
             }
             Expression::TSNonNullExpression(e) => {
                 self.walk_expr(&e.expression);
-                self.blank.push(Span::new(e.expression.span().end, e.span.end));
+                self.blank
+                    .push(Span::new(e.expression.span().end, e.span.end));
             }
             Expression::TSInstantiationExpression(e) => {
                 self.walk_expr(&e.expression);
-                self.blank.push(Span::new(e.expression.span().end, e.span.end));
+                self.blank
+                    .push(Span::new(e.expression.span().end, e.span.end));
             }
             _ => {}
         }
@@ -901,10 +1080,18 @@ impl<'a> Walker<'a> {
     fn register_params_farrow(&mut self, f: &'a ArrowFunctionExpression<'a>) {
         for param in f.params.items.iter() {
             if param.accessibility.is_some() || param.readonly || param.r#override {
-                self.diag(super::TS_UNSUPPORTED, "parameter properties are not erasable TypeScript", param.span);
+                self.diag(
+                    super::TS_UNSUPPORTED,
+                    "parameter properties are not erasable TypeScript",
+                    param.span,
+                );
             }
             if !param.decorators.is_empty() {
-                self.diag(super::TS_UNSUPPORTED, "decorators are not erasable TypeScript", param.span);
+                self.diag(
+                    super::TS_UNSUPPORTED,
+                    "decorators are not erasable TypeScript",
+                    param.span,
+                );
             }
             if param.pattern.optional {
                 self.blank_char_after(param.pattern.span().end, b'?');
@@ -927,18 +1114,22 @@ impl<'a> Walker<'a> {
             SimpleAssignmentTarget::AssignmentTargetIdentifier(_) => {}
             SimpleAssignmentTarget::TSAsExpression(e) => {
                 self.walk_expr(&e.expression);
-                self.blank.push(Span::new(e.expression.span().end, e.span.end));
+                self.blank
+                    .push(Span::new(e.expression.span().end, e.span.end));
             }
             SimpleAssignmentTarget::TSSatisfiesExpression(e) => {
                 self.walk_expr(&e.expression);
-                self.blank.push(Span::new(e.expression.span().end, e.span.end));
+                self.blank
+                    .push(Span::new(e.expression.span().end, e.span.end));
             }
             SimpleAssignmentTarget::TSNonNullExpression(e) => {
                 self.walk_expr(&e.expression);
-                self.blank.push(Span::new(e.expression.span().end, e.span.end));
+                self.blank
+                    .push(Span::new(e.expression.span().end, e.span.end));
             }
             SimpleAssignmentTarget::TSTypeAssertion(e) => {
-                self.blank.push(Span::new(e.span.start, e.expression.span().start));
+                self.blank
+                    .push(Span::new(e.span.start, e.expression.span().start));
                 self.walk_expr(&e.expression);
             }
             SimpleAssignmentTarget::ComputedMemberExpression(m) => {
@@ -1009,7 +1200,11 @@ impl<'a> Walker<'a> {
                 ident.span,
             );
         } else if name == "__wf" {
-            self.diag(super::FORBIDDEN_GLOBAL, "`__wf` is reserved for the workflow runtime", ident.span);
+            self.diag(
+                super::FORBIDDEN_GLOBAL,
+                "`__wf` is reserved for the workflow runtime",
+                ident.span,
+            );
         }
     }
 
@@ -1028,7 +1223,10 @@ impl<'a> Walker<'a> {
             if BANNED_MEMBERS.contains(&(base_name, property.name.as_str())) {
                 self.diag(
                     super::FORBIDDEN_GLOBAL,
-                    format!("`{base_name}.{}` is a non-deterministic source disabled in workflows", property.name),
+                    format!(
+                        "`{base_name}.{}` is a non-deterministic source disabled in workflows",
+                        property.name
+                    ),
                     span,
                 );
                 return;
@@ -1036,7 +1234,9 @@ impl<'a> Walker<'a> {
             if OBJECTS.contains(&base_name) {
                 self.diag(
                     super::INDIRECT_FACADE,
-                    format!("`{base_name}` is a workflow facade object and may only be invoked directly"),
+                    format!(
+                        "`{base_name}` is a workflow facade object and may only be invoked directly"
+                    ),
                     base.span,
                 );
                 return;
@@ -1054,7 +1254,10 @@ impl<'a> Walker<'a> {
         {
             self.diag(
                 super::INDIRECT_FACADE,
-                format!("`{}` is a workflow facade object and may only be invoked directly", base.name),
+                format!(
+                    "`{}` is a workflow facade object and may only be invoked directly",
+                    base.name
+                ),
                 base.span,
             );
             return;
@@ -1067,15 +1270,11 @@ impl<'a> Walker<'a> {
 fn literal_string<'a>(expr: &'a Expression<'a>) -> Option<String> {
     match expr {
         Expression::StringLiteral(s) => Some(s.value.to_string()),
-        Expression::TemplateLiteral(t)
-            if t.expressions.is_empty() && t.quasis.len() == 1 =>
-        {
+        Expression::TemplateLiteral(t) if t.expressions.is_empty() && t.quasis.len() == 1 => {
             Some(t.quasis[0].value.cooked.as_ref()?.to_string())
         }
         Expression::ParenthesizedExpression(p) => literal_string(&p.expression),
-        Expression::BinaryExpression(b)
-            if b.operator == BinaryOperator::Addition =>
-        {
+        Expression::BinaryExpression(b) if b.operator == BinaryOperator::Addition => {
             Some(literal_string(&b.left)? + &literal_string(&b.right)?)
         }
         _ => None,
@@ -1122,7 +1321,14 @@ impl<'a> Walker<'a> {
         call.arguments.iter().map(|a| a.to_expression()).collect()
     }
 
-    fn add_site(&mut self, kind: SiteKind, call: &'a CallExpression<'a>, label: Option<String>, receiver: Option<&'a Expression<'a>>, type_arg: Option<&'a TSType<'a>>) -> String {
+    fn add_site(
+        &mut self,
+        kind: SiteKind,
+        call: &'a CallExpression<'a>,
+        label: Option<String>,
+        receiver: Option<&'a Expression<'a>>,
+        type_arg: Option<&'a TSType<'a>>,
+    ) -> String {
         let id = self.next_site_id(kind);
         self.sites.push(SiteRec {
             id: id.clone(),
@@ -1137,7 +1343,10 @@ impl<'a> Walker<'a> {
             in_fn: self.fn_stack.last().copied(),
         });
         if let Some(phase) = &self.phase {
-            self.phase_sites.entry(phase.clone()).or_default().push(id.clone());
+            self.phase_sites
+                .entry(phase.clone())
+                .or_default()
+                .push(id.clone());
         }
         id
     }
@@ -1179,7 +1388,12 @@ impl<'a> Walker<'a> {
     }
 
     /// 顶层 facade 可调用名的直接调用。
-    fn global_call(&mut self, call: &'a CallExpression<'a>, name: &'a str, args: &[&'a Expression<'a>]) {
+    fn global_call(
+        &mut self,
+        call: &'a CallExpression<'a>,
+        name: &'a str,
+        args: &[&'a Expression<'a>],
+    ) {
         let open = self.open_paren(call);
         if let Expression::Identifier(callee) = &call.callee {
             self.rewrite_callee(callee);
@@ -1189,7 +1403,11 @@ impl<'a> Walker<'a> {
             "model" => self.model_call(call, args, open),
             "phase" => {
                 // 到达这里说明 phase() 不在独立语句位（marker 已在 stmt 层拦下）。
-                self.diag(super::INDIRECT_FACADE, "`phase(name)` must be a standalone statement", call.span);
+                self.diag(
+                    super::INDIRECT_FACADE,
+                    "`phase(name)` must be a standalone statement",
+                    call.span,
+                );
                 self.walk_exprs(args);
             }
             "log" => {
@@ -1224,7 +1442,8 @@ impl<'a> Walker<'a> {
 
     fn insert_at(&mut self, open: Option<u32>, site_id: &str) {
         if let Some(open) = open {
-            self.inserts.push((open + 1, "site", format!("\"{site_id}\", ")));
+            self.inserts
+                .push((open + 1, "site", format!("\"{site_id}\", ")));
         }
     }
 
@@ -1249,14 +1468,21 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn agent_call(&mut self, call: &'a CallExpression<'a>, args: &[&'a Expression<'a>], open: Option<u32>) {
+    fn agent_call(
+        &mut self,
+        call: &'a CallExpression<'a>,
+        args: &[&'a Expression<'a>],
+        open: Option<u32>,
+    ) {
         let name_arg = args.first().copied();
         let persona = args.get(1).copied();
         let literal_name = name_arg.and_then(|a| literal_string(a));
         let id = self.add_site(
             SiteKind::Actor,
             call,
-            literal_name.clone().or_else(|| name_arg.and_then(|a| name_pattern_of(a))),
+            literal_name
+                .clone()
+                .or_else(|| name_arg.and_then(|a| name_pattern_of(a))),
             None,
             None,
         );
@@ -1268,7 +1494,11 @@ impl<'a> Walker<'a> {
             if fan_out {
                 self.diag(super::FANOUT_LITERAL_NAME, format!("literal agent name \"{name}\" inside a fan-out position collides on every iteration"), args[0].span());
             } else if let Some(first) = self.literal_agents.get(name) {
-                self.diag(super::DUP_AGENT_NAME, format!("duplicate agent name \"{name}\" (first declared at {first})"), args[0].span());
+                self.diag(
+                    super::DUP_AGENT_NAME,
+                    format!("duplicate agent name \"{name}\" (first declared at {first})"),
+                    args[0].span(),
+                );
             } else {
                 self.literal_agents.insert(name.clone(), id.clone());
             }
@@ -1290,7 +1520,12 @@ impl<'a> Walker<'a> {
         self.walk_exprs(args);
     }
 
-    fn persona_of(&mut self, persona: Option<&'a Expression<'a>>, name: Option<&'a Expression<'a>>, args: &[&'a Expression<'a>]) -> (ModelSource, Option<String>, Option<Span>) {
+    fn persona_of(
+        &mut self,
+        persona: Option<&'a Expression<'a>>,
+        name: Option<&'a Expression<'a>>,
+        args: &[&'a Expression<'a>],
+    ) -> (ModelSource, Option<String>, Option<Span>) {
         let mut excerpt = None;
         let mut model_source = ModelSource::Inherit;
         let mut routed_span = None;
@@ -1323,10 +1558,16 @@ impl<'a> Walker<'a> {
             match model {
                 Expression::StringLiteral(s) => {
                     if s.value.is_empty() {
-                        self.diag(super::NON_LITERAL_MODEL, "persona.model must be a non-empty literal or model()", model.span());
+                        self.diag(
+                            super::NON_LITERAL_MODEL,
+                            "persona.model must be a non-empty literal or model()",
+                            model.span(),
+                        );
                     } else {
                         self.check_model(&s.value, model.span());
-                        model_source = ModelSource::Literal { model: s.value.to_string() };
+                        model_source = ModelSource::Literal {
+                            model: s.value.to_string(),
+                        };
                     }
                 }
                 // model(...) 或绑到 model() 的标识符 → 路由到 ModelRef；
@@ -1336,7 +1577,11 @@ impl<'a> Walker<'a> {
                     routed_span = self.model_ref_span(model);
                 }
                 _ => {
-                    self.diag(super::NON_LITERAL_MODEL, "persona.model must be a literal, a model() ModelRef, or a literal union", model.span());
+                    self.diag(
+                        super::NON_LITERAL_MODEL,
+                        "persona.model must be a literal, a model() ModelRef, or a literal union",
+                        model.span(),
+                    );
                 }
             }
         }
@@ -1362,7 +1607,8 @@ impl<'a> Walker<'a> {
             },
             _ => None,
         }?;
-        if matches!(&call.callee, Expression::Identifier(c) if c.name == "model" && self.is_global(c)) {
+        if matches!(&call.callee, Expression::Identifier(c) if c.name == "model" && self.is_global(c))
+        {
             Some(call.span)
         } else {
             None
@@ -1373,32 +1619,67 @@ impl<'a> Walker<'a> {
         if let Some(exists) = self.options.model_exists
             && !exists(id)
         {
-            self.diag(super::UNKNOWN_MODEL, format!("model \"{id}\" is not in the moc model catalog"), span);
+            self.diag(
+                super::UNKNOWN_MODEL,
+                format!("model \"{id}\" is not in the moc model catalog"),
+                span,
+            );
         }
     }
 
-    fn model_call(&mut self, call: &'a CallExpression<'a>, args: &[&'a Expression<'a>], open: Option<u32>) {
-        let id = self.add_site(SiteKind::Model, call, args.first().and_then(|a| literal_string(a)), None, None);
+    fn model_call(
+        &mut self,
+        call: &'a CallExpression<'a>,
+        args: &[&'a Expression<'a>],
+        open: Option<u32>,
+    ) {
+        let id = self.add_site(
+            SiteKind::Model,
+            call,
+            args.first().and_then(|a| literal_string(a)),
+            None,
+            None,
+        );
         self.insert_at(open, &id);
         match args.first().and_then(|a| literal_string(a)) {
             Some(model) if !model.is_empty() => {
                 self.check_model(&model, args[0].span());
-                self.model_refs.push(ModelRef { ref_id: id, model_id: model });
+                self.model_refs.push(ModelRef {
+                    ref_id: id,
+                    model_id: model,
+                });
             }
-            _ => self.diag(super::NON_LITERAL_MODEL, "model() requires a non-empty literal id", args.first().map_or(call.span, |a| a.span())),
+            _ => self.diag(
+                super::NON_LITERAL_MODEL,
+                "model() requires a non-empty literal id",
+                args.first().map_or(call.span, |a| a.span()),
+            ),
         }
         self.walk_exprs(args);
     }
 
-    fn hole_call(&mut self, call: &'a CallExpression<'a>, args: &[&'a Expression<'a>], open: Option<u32>) {
+    fn hole_call(
+        &mut self,
+        call: &'a CallExpression<'a>,
+        args: &[&'a Expression<'a>],
+        open: Option<u32>,
+    ) {
         // hole 名必须非空字面量 ≤128。
         let name = args.first().and_then(|a| literal_string(a));
         match &name {
             Some(n) if n.is_empty() => {
-                self.diag(super::NON_LITERAL_NAME, "hole name must be a non-empty literal", args[0].span());
+                self.diag(
+                    super::NON_LITERAL_NAME,
+                    "hole name must be a non-empty literal",
+                    args[0].span(),
+                );
             }
             Some(n) if n.chars().count() > facade::NAME_MAX_LEN => {
-                self.diag(super::NON_LITERAL_NAME, format!("hole name exceeds {} characters", facade::NAME_MAX_LEN), args[0].span());
+                self.diag(
+                    super::NON_LITERAL_NAME,
+                    format!("hole name exceeds {} characters", facade::NAME_MAX_LEN),
+                    args[0].span(),
+                );
             }
             Some(n) => {
                 if let Some(first) = self.hole_names.get(n) {
@@ -1410,44 +1691,57 @@ impl<'a> Walker<'a> {
                 self.phase_sites.entry(format!("hole:{n}")).or_default();
             }
             None => {
-                self.diag(super::NON_LITERAL_NAME, "hole name must be a non-empty literal", args.first().map_or(call.span, |a| a.span()));
+                self.diag(
+                    super::NON_LITERAL_NAME,
+                    "hole name must be a non-empty literal",
+                    args.first().map_or(call.span, |a| a.span()),
+                );
             }
         }
-        let type_arg = call
-            .type_arguments
-            .as_ref()
-            .and_then(|t| t.params.first());
+        let type_arg = call.type_arguments.as_ref().and_then(|t| t.params.first());
         let id = self.add_site(SiteKind::Hole, call, name.clone(), None, type_arg);
         self.insert_at(open, &id);
         // 注入 evaluate 实参：(__src)=>eval(__src)，在 prompt 位之后、body 之前。
-        let body_arg = args
-            .last()
-            .filter(|a| matches!(a, Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)));
+        let body_arg = args.last().filter(|a| {
+            matches!(
+                a,
+                Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
+            )
+        });
         if let Some(body) = body_arg {
             if args.len() == 2 {
-                self.inserts.push((body.span().start, "hole", "undefined, (__src)=>eval(__src), ".into()));
+                self.inserts.push((
+                    body.span().start,
+                    "hole",
+                    "undefined, (__src)=>eval(__src), ".into(),
+                ));
             } else {
-                self.inserts.push((body.span().start, "hole", "(__src)=>eval(__src), ".into()));
+                self.inserts
+                    .push((body.span().start, "hole", "(__src)=>eval(__src), ".into()));
             }
         } else {
             let close = call.span.end - 1;
             if args.len() >= 2 {
-                self.inserts.push((close, "hole", ", (__src)=>eval(__src)".into()));
+                self.inserts
+                    .push((close, "hole", ", (__src)=>eval(__src)".into()));
             } else {
-                self.inserts.push((close, "hole", ", undefined, (__src)=>eval(__src)".into()));
+                self.inserts
+                    .push((close, "hole", ", undefined, (__src)=>eval(__src)".into()));
             }
         }
         self.walk_exprs(args);
     }
 
-    fn member_call(&mut self, call: &'a CallExpression<'a>, m: &'a StaticMemberExpression<'a>, args: &[&'a Expression<'a>]) {
+    fn member_call(
+        &mut self,
+        call: &'a CallExpression<'a>,
+        m: &'a StaticMemberExpression<'a>,
+        args: &[&'a Expression<'a>],
+    ) {
         let member = m.property.name.as_str();
         // `x.ask(...)`：receiver 可解析到 agent() 产出 → ask 站点。
         if member == "ask" {
-            let type_arg = call
-                .type_arguments
-                .as_ref()
-                .and_then(|t| t.params.first());
+            let type_arg = call.type_arguments.as_ref().and_then(|t| t.params.first());
             if self.resolves_to_agent(&m.object) {
                 let label = receiver_label(&m.object);
                 let id = self.add_site(SiteKind::Ask, call, label, Some(&m.object), type_arg);
@@ -1472,14 +1766,26 @@ impl<'a> Walker<'a> {
                     return;
                 }
                 "files" if FILES_MEMBERS.contains(&member) => {
-                    let id = self.add_site(SiteKind::WorldRead, call, Some(format!("files.{member}")), None, None);
+                    let id = self.add_site(
+                        SiteKind::WorldRead,
+                        call,
+                        Some(format!("files.{member}")),
+                        None,
+                        None,
+                    );
                     self.insert_at(self.open_paren(call), &id);
                     self.rewrite_member_base(base);
                     self.walk_exprs(args);
                     return;
                 }
                 "git" if GIT_MEMBERS.contains(&member) => {
-                    let id = self.add_site(SiteKind::WorldRead, call, Some(format!("git.{member}")), None, None);
+                    let id = self.add_site(
+                        SiteKind::WorldRead,
+                        call,
+                        Some(format!("git.{member}")),
+                        None,
+                        None,
+                    );
                     self.insert_at(self.open_paren(call), &id);
                     self.rewrite_member_base(base);
                     self.walk_exprs(args);
@@ -1490,7 +1796,11 @@ impl<'a> Walker<'a> {
                     return;
                 }
                 "world" | "files" | "git" | "artifact" => {
-                    self.diag(super::INDIRECT_FACADE, format!("`{base_name}.{member}` is not a workflow facade member"), m.span);
+                    self.diag(
+                        super::INDIRECT_FACADE,
+                        format!("`{base_name}.{member}` is not a workflow facade member"),
+                        m.span,
+                    );
                     return;
                 }
                 _ => {}
@@ -1507,13 +1817,22 @@ impl<'a> Walker<'a> {
         self.walk_exprs(args);
     }
 
-    fn computed_member_call(&mut self, call: &'a CallExpression<'a>, m: &'a ComputedMemberExpression<'a>, args: &[&'a Expression<'a>]) {
+    fn computed_member_call(
+        &mut self,
+        call: &'a CallExpression<'a>,
+        m: &'a ComputedMemberExpression<'a>,
+        args: &[&'a Expression<'a>],
+    ) {
         // files["read"](…) 等 computed 访问不属直接调用形态 → INDIRECT_FACADE。
         if let Expression::Identifier(base) = &m.object
             && self.is_global(base)
             && OBJECTS.contains(&base.name.as_str())
         {
-            self.diag(super::INDIRECT_FACADE, format!("`{}` member calls must use direct dot syntax", base.name), m.span);
+            self.diag(
+                super::INDIRECT_FACADE,
+                format!("`{}` member calls must use direct dot syntax", base.name),
+                m.span,
+            );
             return;
         }
         self.walk_expr(&call.callee);
@@ -1538,12 +1857,22 @@ impl<'a> Walker<'a> {
             Some(cmd) if !cmd.is_empty() => {
                 self.commands.entry(cmd).or_default().push(id);
             }
-            _ => self.diag(super::NON_LITERAL_COMMAND, "world.run's first argument must be a compile-time string literal", args.first().map_or(call.span, |a| a.span())),
+            _ => self.diag(
+                super::NON_LITERAL_COMMAND,
+                "world.run's first argument must be a compile-time string literal",
+                args.first().map_or(call.span, |a| a.span()),
+            ),
         }
         self.walk_exprs(args);
     }
 
-    fn artifact_call(&mut self, call: &'a CallExpression<'a>, member: &'a str, args: &[&'a Expression<'a>], base: &'a IdentifierReference<'a>) {
+    fn artifact_call(
+        &mut self,
+        call: &'a CallExpression<'a>,
+        member: &'a str,
+        args: &[&'a Expression<'a>],
+        base: &'a IdentifierReference<'a>,
+    ) {
         static MEMBER: &[(&str, &str)] = &[
             ("file", "file"),
             ("markdown", "markdown"),
@@ -1554,7 +1883,11 @@ impl<'a> Walker<'a> {
         ];
         let content = matches!(member, "file" | "markdown");
         let id = self.add_site(
-            if content { SiteKind::ArtifactPublish } else { SiteKind::ArtifactDecl },
+            if content {
+                SiteKind::ArtifactPublish
+            } else {
+                SiteKind::ArtifactDecl
+            },
             call,
             args.first().and_then(|a| literal_string(a)),
             None,
@@ -1566,7 +1899,11 @@ impl<'a> Walker<'a> {
         match args.first().and_then(|a| literal_string(a)) {
             Some(id_str) => {
                 if !valid_artifact_id(&id_str) {
-                    self.diag(super::ARTIFACT_ID, format!("artifact id \"{id_str}\" must match [A-Za-z0-9_.-]{{1,64}}"), args[0].span());
+                    self.diag(
+                        super::ARTIFACT_ID,
+                        format!("artifact id \"{id_str}\" must match [A-Za-z0-9_.-]{{1,64}}"),
+                        args[0].span(),
+                    );
                 } else {
                     let member_name = MEMBER.iter().find(|(m, _)| *m == member).unwrap().1;
                     if let Some(prev) = self.artifact_members.get(&id_str) {
@@ -1578,10 +1915,20 @@ impl<'a> Walker<'a> {
                     }
                 }
                 if !content && !self.is_top_level() {
-                    self.diag(super::ARTIFACT_ID, format!("preset artifact `{member}` declarations must be top-level statements"), call.span);
+                    self.diag(
+                        super::ARTIFACT_ID,
+                        format!(
+                            "preset artifact `{member}` declarations must be top-level statements"
+                        ),
+                        call.span,
+                    );
                 }
             }
-            None => self.diag(super::ARTIFACT_ID, "artifact id must be a compile-time literal", args.first().map_or(call.span, |a| a.span())),
+            None => self.diag(
+                super::ARTIFACT_ID,
+                "artifact id must be a compile-time literal",
+                args.first().map_or(call.span, |a| a.span()),
+            ),
         }
         self.walk_exprs(args);
     }
@@ -1593,7 +1940,8 @@ impl<'a> Walker<'a> {
 
     /// 顶层 facade 调用名 → `__wf.<name>(...)`。
     fn rewrite_callee(&mut self, callee: &'a IdentifierReference<'a>) {
-        self.inserts.push((callee.span.start, "base", "__wf.".into()));
+        self.inserts
+            .push((callee.span.start, "base", "__wf.".into()));
     }
 
     /// `x?.y()` 链：callee 或 member。
@@ -1602,7 +1950,8 @@ impl<'a> Walker<'a> {
             ChainElement::CallExpression(call) => self.call(call),
             ChainElement::TSNonNullExpression(e) => {
                 self.walk_expr(&e.expression);
-                self.blank.push(Span::new(e.expression.span().end, e.span.end));
+                self.blank
+                    .push(Span::new(e.expression.span().end, e.span.end));
             }
             other => {
                 if let Some(m) = other.as_member_expression() {
@@ -1650,7 +1999,9 @@ fn receiver_label(expr: &Expression<'_>) -> Option<String> {
 pub(crate) fn valid_artifact_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
 }
 
 fn prop_key_name(key: &PropertyKey<'_>) -> Option<String> {
@@ -1745,7 +2096,10 @@ impl<'a> Walker<'a> {
                 }
                 if calls.iter().any(|(call, _, caller, in_loop)| {
                     *in_loop
-                        || self.loop_bodies.iter().any(|b| b.contains_inclusive(call.span))
+                        || self
+                            .loop_bodies
+                            .iter()
+                            .any(|b| b.contains_inclusive(call.span))
                         || caller.is_some_and(|c| set.contains(&c))
                 }) {
                     set.insert(*callee);
@@ -1760,7 +2114,11 @@ impl<'a> Walker<'a> {
     }
 
     /// ask receiver 表达式 → 产出它的 agent() 站点 id。
-    fn agent_site_of(&self, site_by_start: &HashMap<u32, usize>, expr: &'a Expression<'a>) -> Option<String> {
+    fn agent_site_of(
+        &self,
+        site_by_start: &HashMap<u32, usize>,
+        expr: &'a Expression<'a>,
+    ) -> Option<String> {
         let call: &CallExpression = match expr {
             Expression::CallExpression(c) => c,
             Expression::ParenthesizedExpression(p) => match &p.expression {
@@ -1774,22 +2132,39 @@ impl<'a> Walker<'a> {
                     _ => return None,
                 }
             }
-            Expression::AwaitExpression(a) => return self.agent_site_of(site_by_start, &a.argument),
-            Expression::TSAsExpression(e) => return self.agent_site_of(site_by_start, &e.expression),
-            Expression::TSSatisfiesExpression(e) => return self.agent_site_of(site_by_start, &e.expression),
-            Expression::TSTypeAssertion(e) => return self.agent_site_of(site_by_start, &e.expression),
-            Expression::TSNonNullExpression(e) => return self.agent_site_of(site_by_start, &e.expression),
+            Expression::AwaitExpression(a) => {
+                return self.agent_site_of(site_by_start, &a.argument);
+            }
+            Expression::TSAsExpression(e) => {
+                return self.agent_site_of(site_by_start, &e.expression);
+            }
+            Expression::TSSatisfiesExpression(e) => {
+                return self.agent_site_of(site_by_start, &e.expression);
+            }
+            Expression::TSTypeAssertion(e) => {
+                return self.agent_site_of(site_by_start, &e.expression);
+            }
+            Expression::TSNonNullExpression(e) => {
+                return self.agent_site_of(site_by_start, &e.expression);
+            }
             _ => return None,
         };
-        if !matches!(&call.callee, Expression::Identifier(i) if i.name == "agent" && self.is_global(i)) {
+        if !matches!(&call.callee, Expression::Identifier(i) if i.name == "agent" && self.is_global(i))
+        {
             return None;
         }
-        site_by_start.get(&call.span.start).map(|i| self.sites[*i].id.clone())
+        site_by_start
+            .get(&call.span.start)
+            .map(|i| self.sites[*i].id.clone())
     }
 
     fn finish_plan(mut self, source: &str) -> Result<CompiledWorkflow, Vec<Diagnostic>> {
-        let site_by_start: HashMap<u32, usize> =
-            self.sites.iter().enumerate().map(|(i, s)| (s.span.start, i)).collect();
+        let site_by_start: HashMap<u32, usize> = self
+            .sites
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.span.start, i))
+            .collect();
         let fn_phases = self.fn_phases();
         let fanout = self.fanout_fns();
 
@@ -1813,14 +2188,15 @@ impl<'a> Walker<'a> {
                     }
                 });
             }
-            if site.fan_out
-                || site.in_fn.is_some_and(|f| fanout.contains(&f))
-            {
+            if site.fan_out || site.in_fn.is_some_and(|f| fanout.contains(&f)) {
                 site.fan_out = true;
             }
             site.phase = phases.first().cloned();
             for p in &phases {
-                self.phase_sites.entry(p.clone()).or_default().push(site.id.clone());
+                self.phase_sites
+                    .entry(p.clone())
+                    .or_default()
+                    .push(site.id.clone());
             }
         }
         if !self.diagnostics.is_empty() {
@@ -1833,7 +2209,10 @@ impl<'a> Walker<'a> {
             if site.kind == SiteKind::Actor
                 && site.fan_out
                 && let Some(lit) = &site.label
-                && !self.loop_bodies.iter().any(|b| b.contains_inclusive(site.span))
+                && !self
+                    .loop_bodies
+                    .iter()
+                    .any(|b| b.contains_inclusive(site.span))
                 && self.literal_agents.contains_key(lit)
             {
                 let (line, col) = line_col(source, site.span.start);
@@ -1860,7 +2239,10 @@ impl<'a> Walker<'a> {
                 && let Some(recv) = site.receiver
                 && let Some(agent_id) = self.agent_site_of(&site_by_start, recv)
             {
-                self.ask_sites_by_agent.entry(agent_id).or_default().push(site.id.clone());
+                self.ask_sites_by_agent
+                    .entry(agent_id)
+                    .or_default()
+                    .push(site.id.clone());
             }
         }
         for role in &mut self.roles {
@@ -1871,8 +2253,9 @@ impl<'a> Walker<'a> {
         // persona.model 的 model() 路由：span → site_id。
         for (role_idx, span) in &self.role_model_spans {
             if let Some(site_idx) = site_by_start.get(&span.start) {
-                self.roles[*role_idx].model_source =
-                    ModelSource::Routed { refs: vec![self.sites[*site_idx].id.clone()] };
+                self.roles[*role_idx].model_source = ModelSource::Routed {
+                    refs: vec![self.sites[*site_idx].id.clone()],
+                };
             }
         }
 
@@ -1936,7 +2319,11 @@ impl<'a> Walker<'a> {
         for site in &self.sites {
             if !matches!(
                 site.kind,
-                SiteKind::Ask | SiteKind::WorldRun | SiteKind::WorldRead | SiteKind::ArtifactPublish | SiteKind::Hole
+                SiteKind::Ask
+                    | SiteKind::WorldRun
+                    | SiteKind::WorldRead
+                    | SiteKind::ArtifactPublish
+                    | SiteKind::Hole
             ) {
                 dep_out.push((BTreeSet::new(), false));
                 continue;
@@ -1963,8 +2350,14 @@ impl<'a> Walker<'a> {
                 }
                 for from_phase in site_phases.get(&dep).cloned().unwrap_or_default() {
                     for to_phase in &to_phases {
-                        if from_phase != *to_phase && seen.insert((from_phase.clone(), to_phase.clone(), EdgeKind::Data)) {
-                            edges.push(PlanEdge { from: from_phase.clone(), to: to_phase.clone(), kind: EdgeKind::Data });
+                        if from_phase != *to_phase
+                            && seen.insert((from_phase.clone(), to_phase.clone(), EdgeKind::Data))
+                        {
+                            edges.push(PlanEdge {
+                                from: from_phase.clone(),
+                                to: to_phase.clone(),
+                                kind: EdgeKind::Data,
+                            });
                         }
                     }
                 }
@@ -1973,10 +2366,15 @@ impl<'a> Walker<'a> {
                 for to_phase in &to_phases {
                     let my_first = phase_first_site.get(to_phase).copied().unwrap_or(0);
                     for (name, first) in &phase_first_site {
-                        if name != to_phase && *first < my_first
+                        if name != to_phase
+                            && *first < my_first
                             && seen.insert((name.clone(), to_phase.clone(), EdgeKind::Order))
                         {
-                            edges.push(PlanEdge { from: name.clone(), to: to_phase.clone(), kind: EdgeKind::Order });
+                            edges.push(PlanEdge {
+                                from: name.clone(),
+                                to: to_phase.clone(),
+                                kind: EdgeKind::Order,
+                            });
                         }
                     }
                 }
@@ -2057,7 +2455,8 @@ impl<'a> Walker<'a> {
                 .collect(),
             schemas,
         };
-        let lowered = super::lower::lower(source, &self.blank, &self.inserts, &self.user_owns_args_run);
+        let lowered =
+            super::lower::lower(source, &self.blank, &self.inserts, &self.user_owns_args_run);
         Ok(CompiledWorkflow { lowered, plan })
     }
 }
@@ -2077,7 +2476,9 @@ type Deps = (BTreeSet<String>, bool);
 
 impl<'w, 'a> Trace<'w, 'a> {
     fn site_at_span(&self, span: Span) -> Option<String> {
-        self.site_by_start.get(&span.start).map(|i| self.w.sites[*i].id.clone())
+        self.site_by_start
+            .get(&span.start)
+            .map(|i| self.w.sites[*i].id.clone())
     }
 
     fn expr(&mut self, expr: &'a Expression<'a>) -> Deps {
@@ -2167,11 +2568,14 @@ impl<'w, 'a> Trace<'w, 'a> {
             Expression::AssignmentExpression(a) => self.expr(&a.right),
             Expression::SequenceExpression(s) => self.all(s.expressions.iter()),
             Expression::UpdateExpression(_) => (BTreeSet::new(), false),
-            Expression::YieldExpression(y) => y.argument.as_ref().map_or((BTreeSet::new(), false), |a| self.expr(a)),
+            Expression::YieldExpression(y) => y
+                .argument
+                .as_ref()
+                .map_or((BTreeSet::new(), false), |a| self.expr(a)),
             // 函数字面量：被调用时经内联分析处理，本身不携带依赖。
-            Expression::FunctionExpression(_) | Expression::ArrowFunctionExpression(_) | Expression::ClassExpression(_) => {
-                (BTreeSet::new(), false)
-            }
+            Expression::FunctionExpression(_)
+            | Expression::ArrowFunctionExpression(_)
+            | Expression::ClassExpression(_) => (BTreeSet::new(), false),
             _ => (BTreeSet::new(), false),
         }
     }
@@ -2193,7 +2597,12 @@ impl<'w, 'a> Trace<'w, 'a> {
         (d1.union(&d2).cloned().collect(), o1 || o2)
     }
 
-    fn all3(&mut self, a: &'a Expression<'a>, b: &'a Expression<'a>, c: &'a Expression<'a>) -> Deps {
+    fn all3(
+        &mut self,
+        a: &'a Expression<'a>,
+        b: &'a Expression<'a>,
+        c: &'a Expression<'a>,
+    ) -> Deps {
         let (d1, o1) = self.expr(a);
         let (d2, o2) = self.all2(b, c);
         (d1.union(&d2).cloned().collect(), o1 || o2)
@@ -2224,8 +2633,8 @@ impl<'w, 'a> Trace<'w, 'a> {
         if let Some(iter) = self.w.iter_source.get(&sym).copied() {
             let (mut deps, mut opaque) = self.expr(iter);
             if let Some(ch_sym) = self.iter_sym_of(iter)
-            && let Some(sends) = self.w.channel_sends.get(&ch_sym)
-        {
+                && let Some(sends) = self.w.channel_sends.get(&ch_sym)
+            {
                 for send in sends.clone() {
                     for a in &send.arguments {
                         let (d, o) = self.expr(a.to_expression());
@@ -2316,12 +2725,19 @@ impl<'w, 'a> Trace<'w, 'a> {
         (deps, true)
     }
 
-    fn inline_fn(&mut self, func: &'a Function<'a>, call: &'a CallExpression<'a>, sym: SymbolId) -> Deps {
+    fn inline_fn(
+        &mut self,
+        func: &'a Function<'a>,
+        call: &'a CallExpression<'a>,
+        sym: SymbolId,
+    ) -> Deps {
         if !self.visiting.insert(sym) {
             return (BTreeSet::new(), false);
         }
         let out = (|| {
-            let Some(body) = &func.body else { return (BTreeSet::new(), true) };
+            let Some(body) = &func.body else {
+                return (BTreeSet::new(), true);
+            };
             // 形参 → 实参替换关系
             let mut sub: Vec<(SymbolId, &'a Expression<'a>)> = Vec::new();
             for (index, param) in func.params.items.iter().enumerate() {
@@ -2351,7 +2767,11 @@ impl<'w, 'a> Trace<'w, 'a> {
         out
     }
 
-    fn inline_arrow(&mut self, f: &'a ArrowFunctionExpression<'a>, call: &'a CallExpression<'a>) -> Deps {
+    fn inline_arrow(
+        &mut self,
+        f: &'a ArrowFunctionExpression<'a>,
+        call: &'a CallExpression<'a>,
+    ) -> Deps {
         let mut sub: Vec<(SymbolId, &'a Expression<'a>)> = Vec::new();
         for (index, param) in f.params.items.iter().enumerate() {
             if let Some(arg) = call.arguments.get(index) {

@@ -12,7 +12,11 @@ pub(crate) fn workflows_active(
     state: &crate::session::state::SessionState,
     config: &crate::config::WorkflowConfig,
 ) -> bool {
-    enabled_for(state.workflow_activated, state.session.is_subagent(), config)
+    enabled_for(
+        state.workflow_activated,
+        state.session.is_subagent(),
+        config,
+    )
 }
 
 pub(crate) fn enabled_for(

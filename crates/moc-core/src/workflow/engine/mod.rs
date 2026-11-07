@@ -42,8 +42,13 @@ pub struct Step {
 pub enum ScriptState {
     Running,
     /// 脚本返回，携带返回值。
-    Done { value: Value },
-    Failed { code: String, message: String },
+    Done {
+        value: Value,
+    },
+    Failed {
+        code: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -124,10 +129,7 @@ pub enum EngineRequest {
         spec: Value,
     },
     /// hole 无内联 body，等宿主填充。
-    HoleResolve {
-        request_id: u64,
-        site_id: String,
-    },
+    HoleResolve { request_id: u64, site_id: String },
     CancelAsk {
         request_id: u64,
         site_id: String,
@@ -174,7 +176,10 @@ impl EngineRequest {
 #[derive(Debug)]
 pub enum EngineAction {
     /// 立即回执 worker（重放命中 / 本地判定）。
-    Complete { request_id: u64, outcome: DriverOutcome },
+    Complete {
+        request_id: u64,
+        outcome: DriverOutcome,
+    },
     /// 派发外部动作（由 driver 执行副作用）。
     Dispatch(DriverRequest),
     /// 会话侧事件（运行时转为 `SessionUpdate::Workflow` 推给前端）。
@@ -192,7 +197,11 @@ pub enum ActorContext {
     Existing { child_session_id: String },
     /// amend：用前驱同名 actor 子会话的 transcript 截到第 `user_turns` 个 user 消息之前 fork
     ///（取最后一条已导入 ask 记录的 `result.user_turns`，含 schema 修复重试轮）。
-    SeedFrom { run_id: String, child_session_id: String, user_turns: u32 },
+    SeedFrom {
+        run_id: String,
+        child_session_id: String,
+        user_turns: u32,
+    },
 }
 
 /// 派发请求（与 EngineRequest 同形，已带 ordinal）。
@@ -247,10 +256,18 @@ pub enum DriverRequest {
 impl DriverRequest {
     pub fn key(&self) -> Option<(String, u32)> {
         match self {
-            Self::Ask { site_id, ordinal, .. }
-            | Self::WorldRead { site_id, ordinal, .. }
-            | Self::WorldRun { site_id, ordinal, .. }
-            | Self::PublishArtifact { site_id, ordinal, .. } => Some((site_id.clone(), *ordinal)),
+            Self::Ask {
+                site_id, ordinal, ..
+            }
+            | Self::WorldRead {
+                site_id, ordinal, ..
+            }
+            | Self::WorldRun {
+                site_id, ordinal, ..
+            }
+            | Self::PublishArtifact {
+                site_id, ordinal, ..
+            } => Some((site_id.clone(), *ordinal)),
             Self::CancelAsk { .. } => None,
         }
     }
@@ -277,14 +294,40 @@ impl DriverOutcome {
 /// 会话侧事件（供 UI 与审批使用）。
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
-    ActorCreated { site_id: String, ordinal: u32, name: Option<String> },
-    Phase { name: String },
-    Log { level: String, message: String },
-    Report { item: Value, artifact_id: Option<String> },
-    DeclareArtifact { member: String, spec: Value, artifact_id: Option<String> },
-    HoleOpened { site_id: String, ordinal: u32, name: String, prompt: String, schema: Option<Value> },
-    HoleCancelled { name: String },
-    ActorDiverged { name: String },
+    ActorCreated {
+        site_id: String,
+        ordinal: u32,
+        name: Option<String>,
+    },
+    Phase {
+        name: String,
+    },
+    Log {
+        level: String,
+        message: String,
+    },
+    Report {
+        item: Value,
+        artifact_id: Option<String>,
+    },
+    DeclareArtifact {
+        member: String,
+        spec: Value,
+        artifact_id: Option<String>,
+    },
+    HoleOpened {
+        site_id: String,
+        ordinal: u32,
+        name: String,
+        prompt: String,
+        schema: Option<Value>,
+    },
+    HoleCancelled {
+        name: String,
+    },
+    ActorDiverged {
+        name: String,
+    },
 }
 
 /// run 终态（先到者胜）。
@@ -303,7 +346,9 @@ pub enum TerminalStatus {
     Completed,
     /// 脚本抛错、契约违反或不可恢复（含 InputHashMismatch/ChannelDeadlock/...）。
     Errored,
-    Stopped { reason: StopReason },
+    Stopped {
+        reason: StopReason,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -389,9 +434,20 @@ enum PendingReq {
         instructions: String,
         schema: Option<Value>,
     },
-    WorldRead { op: String, args: Value },
-    WorldRun { command: String, args: Vec<String>, timeout_ms: u64, output: Value },
-    PublishArtifact { member: String, spec: Value },
+    WorldRead {
+        op: String,
+        args: Value,
+    },
+    WorldRun {
+        command: String,
+        args: Vec<String>,
+        timeout_ms: u64,
+        output: Value,
+    },
+    PublishArtifact {
+        member: String,
+        spec: Value,
+    },
     HoleResolve,
 }
 
@@ -468,18 +524,24 @@ impl Engine {
             match r.kind {
                 RecordKind::Ask => {
                     if let Some(name) = r.extra.get("actor_name").and_then(|v| v.as_str()) {
-                        prior_actor_asks.entry(name.to_string()).or_default().push(r.clone());
+                        prior_actor_asks
+                            .entry(name.to_string())
+                            .or_default()
+                            .push(r.clone());
                     }
                 }
                 RecordKind::Actor => {
-                    if let Some(session) = r.extra.get("child_session_id").and_then(|v| v.as_str()) {
+                    if let Some(session) = r.extra.get("child_session_id").and_then(|v| v.as_str())
+                    {
                         // Resume：前驱会话即本会话，直接沿用（Existing）。
                         // Amend：前驱会话仅作为 SeedFrom 的播种源，不能直接续。
                         if config.mode == RunMode::Resume {
-                            actor_sessions.insert((r.site_id.clone(), r.ordinal), session.to_string());
+                            actor_sessions
+                                .insert((r.site_id.clone(), r.ordinal), session.to_string());
                         }
                         if let Some(name) = r.extra.get("actor_name").and_then(|v| v.as_str()) {
-                            prior_actor_sessions_by_name.insert(name.to_string(), session.to_string());
+                            prior_actor_sessions_by_name
+                                .insert(name.to_string(), session.to_string());
                         }
                     }
                 }
@@ -488,7 +550,10 @@ impl Engine {
         }
         for entries in prior_actor_asks.values_mut() {
             entries.sort_by_key(|r| {
-                r.extra.get("actor_seq").and_then(|v| v.as_u64()).unwrap_or(0)
+                r.extra
+                    .get("actor_seq")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
             });
         }
         Self {
@@ -532,7 +597,8 @@ impl Engine {
         if self.actor_sessions.contains_key(&key) {
             return;
         }
-        self.actor_sessions.insert(key, child_session_id.to_string());
+        self.actor_sessions
+            .insert(key, child_session_id.to_string());
         let actor = self.actors.get(&(actor_site_id.to_string(), actor_ordinal));
         let mut extra = Map::new();
         extra.insert("child_session_id".into(), json!(child_session_id));
@@ -585,10 +651,22 @@ impl Engine {
         }
         match step.state {
             ScriptState::Done { value } => {
-                self.finish(TerminalStatus::Completed, Some(value), None, None, &mut actions);
+                self.finish(
+                    TerminalStatus::Completed,
+                    Some(value),
+                    None,
+                    None,
+                    &mut actions,
+                );
             }
             ScriptState::Failed { code, message } => {
-                self.finish(TerminalStatus::Errored, None, Some(code), Some(message), &mut actions);
+                self.finish(
+                    TerminalStatus::Errored,
+                    None,
+                    Some(code),
+                    Some(message),
+                    &mut actions,
+                );
             }
             ScriptState::Running => {
                 // 停滞 = 不可恢复：整个 run errored，附带 channel 名与等待数。
@@ -629,7 +707,11 @@ impl Engine {
 
     fn handle_event(&mut self, event: EngineEvent, actions: &mut Vec<EngineAction>) {
         match event {
-            EngineEvent::CreateActor { site_id, name, persona } => {
+            EngineEvent::CreateActor {
+                site_id,
+                name,
+                persona,
+            } => {
                 let ordinal = self.ordinal_of(&site_id);
                 // 运行期重名（模板/变量名）：整个 run errored。字面量重名编译期已拦。
                 if let Some(n) = &name
@@ -655,7 +737,8 @@ impl Engine {
                     None
                 };
                 if let Some(n) = &name {
-                    self.actor_names.insert(n.clone(), (site_id.clone(), ordinal));
+                    self.actor_names
+                        .insert(n.clone(), (site_id.clone(), ordinal));
                 }
                 self.actors.insert(
                     (site_id.clone(), ordinal),
@@ -678,7 +761,9 @@ impl Engine {
             EngineEvent::Log { level, message, .. } => {
                 actions.push(EngineAction::Session(SessionEvent::Log { level, message }));
             }
-            EngineEvent::Report { item, artifact_id, .. } => {
+            EngineEvent::Report {
+                item, artifact_id, ..
+            } => {
                 // artifact_id 必须指向已执行的 preset 声明；未声明或指向
                 // file/markdown → 整 run 失败（facade：tag naming nothing fails）。
                 if let Some(id) = &artifact_id
@@ -704,11 +789,16 @@ impl Engine {
                     );
                     return;
                 }
-                let bytes = serde_json::to_vec(&item).map(|v| v.len() as u64).unwrap_or(u64::MAX);
+                let bytes = serde_json::to_vec(&item)
+                    .map(|v| v.len() as u64)
+                    .unwrap_or(u64::MAX);
                 if bytes > facade::REPORT_MAX_ITEM_BYTES as u64 {
                     self.errored(
                         "ReportLimit",
-                        format!("report item exceeds {} bytes serialized", facade::REPORT_MAX_ITEM_BYTES),
+                        format!(
+                            "report item exceeds {} bytes serialized",
+                            facade::REPORT_MAX_ITEM_BYTES
+                        ),
                         actions,
                     );
                     return;
@@ -717,12 +807,18 @@ impl Engine {
                 if self.report_bytes > facade::REPORT_MAX_TOTAL_BYTES {
                     self.errored(
                         "ReportLimit",
-                        format!("run exceeds {} bytes of reports", facade::REPORT_MAX_TOTAL_BYTES),
+                        format!(
+                            "run exceeds {} bytes of reports",
+                            facade::REPORT_MAX_TOTAL_BYTES
+                        ),
                         actions,
                     );
                     return;
                 }
-                actions.push(EngineAction::Session(SessionEvent::Report { item, artifact_id }));
+                actions.push(EngineAction::Session(SessionEvent::Report {
+                    item,
+                    artifact_id,
+                }));
             }
             EngineEvent::DeclareArtifact { member, spec, .. } => {
                 // wire 形：[id, specObj]；preset 声明同步落引擎校验。
@@ -736,7 +832,9 @@ impl Engine {
                                 if self.artifact_specs.get(&id) != Some(&spec_obj) {
                                     self.errored(
                                         "ArtifactRedeclared",
-                                        format!("artifact \"{id}\" redeclared with a different spec"),
+                                        format!(
+                                            "artifact \"{id}\" redeclared with a different spec"
+                                        ),
                                         actions,
                                     );
                                 }
@@ -752,17 +850,22 @@ impl Engine {
                                 if self.artifact_members.len() >= facade::ARTIFACT_MAX_IDS {
                                     self.errored(
                                         "ArtifactLimit",
-                                        format!("run exceeds {} artifact ids", facade::ARTIFACT_MAX_IDS),
+                                        format!(
+                                            "run exceeds {} artifact ids",
+                                            facade::ARTIFACT_MAX_IDS
+                                        ),
                                         actions,
                                     );
                                 } else {
                                     self.artifact_members.insert(id.clone(), member.clone());
                                     self.artifact_specs.insert(id.clone(), spec_obj.clone());
-                                    actions.push(EngineAction::Session(SessionEvent::DeclareArtifact {
-                                        member,
-                                        spec: spec_obj,
-                                        artifact_id: Some(id),
-                                    }));
+                                    actions.push(EngineAction::Session(
+                                        SessionEvent::DeclareArtifact {
+                                            member,
+                                            spec: spec_obj,
+                                            artifact_id: Some(id),
+                                        },
+                                    ));
                                 }
                             }
                         }
@@ -776,10 +879,16 @@ impl Engine {
                     }
                 }
             }
-            EngineEvent::HoleOpened { site_id, name, prompt, schema } => {
+            EngineEvent::HoleOpened {
+                site_id,
+                name,
+                prompt,
+                schema,
+            } => {
                 // 与同次 HoleResolve 请求共享序号：事件侧 peek，请求侧消耗。
                 let ordinal = self.peek_ordinal(&site_id);
-                self.open_holes.insert((site_id.clone(), ordinal), name.clone());
+                self.open_holes
+                    .insert((site_id.clone(), ordinal), name.clone());
                 actions.push(EngineAction::Session(SessionEvent::HoleOpened {
                     site_id,
                     ordinal,
@@ -806,47 +915,49 @@ impl Engine {
         // 否则 resume 后 32-id 上限与 member 冲突判定失真。
         if let EngineRequest::PublishArtifact { member, spec, .. } = &request {
             match spec.get(0).and_then(|v| v.as_str()).map(String::from) {
-                Some(id) => match self.artifact_members.get(&id) {
-                    Some(prev) if *prev == *member => {}
-                    Some(prev) => {
-                        if is_preset_member(prev) {
-                            // 与已声明 preset 冲突 → 拒绝本次发布（可捕获）。
-                            actions.push(EngineAction::Complete {
-                                request_id,
-                                outcome: DriverOutcome::Failed {
-                                    code: "E_ARTIFACT".into(),
-                                    message: format!(
-                                        "artifact id \"{id}\" is already declared as `{prev}`"
-                                    ),
-                                },
-                            });
-                        } else {
-                            // 同一 id 换 member（file↔markdown）→ 整 run 失败。
-                            self.errored(
+                Some(id) => {
+                    match self.artifact_members.get(&id) {
+                        Some(prev) if *prev == *member => {}
+                        Some(prev) => {
+                            if is_preset_member(prev) {
+                                // 与已声明 preset 冲突 → 拒绝本次发布（可捕获）。
+                                actions.push(EngineAction::Complete {
+                                    request_id,
+                                    outcome: DriverOutcome::Failed {
+                                        code: "E_ARTIFACT".into(),
+                                        message: format!(
+                                            "artifact id \"{id}\" is already declared as `{prev}`"
+                                        ),
+                                    },
+                                });
+                            } else {
+                                // 同一 id 换 member（file↔markdown）→ 整 run 失败。
+                                self.errored(
                                 "ArtifactMemberConflict",
                                 format!("artifact \"{id}\" is used with both `{prev}` and `{member}`"),
                                 actions,
                             );
-                        }
-                        return;
-                    }
-                    None => {
-                        if self.artifact_members.len() >= facade::ARTIFACT_MAX_IDS {
-                            actions.push(EngineAction::Complete {
-                                request_id,
-                                outcome: DriverOutcome::Failed {
-                                    code: "E_ARTIFACT".into(),
-                                    message: format!(
-                                        "run exceeds {} artifact ids",
-                                        facade::ARTIFACT_MAX_IDS
-                                    ),
-                                },
-                            });
+                            }
                             return;
                         }
-                        self.artifact_members.insert(id, member.clone());
+                        None => {
+                            if self.artifact_members.len() >= facade::ARTIFACT_MAX_IDS {
+                                actions.push(EngineAction::Complete {
+                                    request_id,
+                                    outcome: DriverOutcome::Failed {
+                                        code: "E_ARTIFACT".into(),
+                                        message: format!(
+                                            "run exceeds {} artifact ids",
+                                            facade::ARTIFACT_MAX_IDS
+                                        ),
+                                    },
+                                });
+                                return;
+                            }
+                            self.artifact_members.insert(id, member.clone());
+                        }
                     }
-                },
+                }
                 None => {
                     actions.push(EngineAction::Complete {
                         request_id,
@@ -883,10 +994,7 @@ impl Engine {
                 }
                 Some(match import.entries.get(import.consumed) {
                     Some(entry)
-                        if entry
-                            .extra
-                            .get("actor_seq")
-                            .and_then(|v| v.as_u64())
+                        if entry.extra.get("actor_seq").and_then(|v| v.as_u64())
                             == Some(*actor_seq as u64)
                             && entry.extra.get("persona_key").and_then(|v| v.as_str())
                                 == Some(actor.persona_key.as_str())
@@ -933,7 +1041,10 @@ impl Engine {
                 self.consumed.insert(record.key());
                 let outcome = guest_outcome(kind, outcome_of(&record.outcome));
                 self.account(&record.outcome);
-                actions.push(EngineAction::Complete { request_id, outcome });
+                actions.push(EngineAction::Complete {
+                    request_id,
+                    outcome,
+                });
                 return;
             }
             // resume 的哈希不一致说明脚本或输入不可重放 → 整个 run errored，不得重执行。
@@ -956,29 +1067,47 @@ impl Engine {
 
         // —— miss → dispatch（ask 受并发上限钳制）——
         let pending_req = match &request {
-            EngineRequest::Ask { actor_site_id, actor_ordinal, actor_seq, instructions, schema, .. } => {
-                PendingReq::Ask {
-                    actor_site_id: actor_site_id.clone(),
-                    actor_ordinal: *actor_ordinal,
-                    actor_seq: *actor_seq,
-                    instructions: instructions.clone(),
-                    schema: schema.clone(),
-                }
-            }
-            EngineRequest::WorldRead { op, args, .. } => {
-                PendingReq::WorldRead { op: op.clone(), args: args.clone() }
-            }
-            EngineRequest::WorldRun { command, args, timeout_ms, output, .. } => PendingReq::WorldRun {
+            EngineRequest::Ask {
+                actor_site_id,
+                actor_ordinal,
+                actor_seq,
+                instructions,
+                schema,
+                ..
+            } => PendingReq::Ask {
+                actor_site_id: actor_site_id.clone(),
+                actor_ordinal: *actor_ordinal,
+                actor_seq: *actor_seq,
+                instructions: instructions.clone(),
+                schema: schema.clone(),
+            },
+            EngineRequest::WorldRead { op, args, .. } => PendingReq::WorldRead {
+                op: op.clone(),
+                args: args.clone(),
+            },
+            EngineRequest::WorldRun {
+                command,
+                args,
+                timeout_ms,
+                output,
+                ..
+            } => PendingReq::WorldRun {
                 command: command.clone(),
                 args: args.clone(),
                 timeout_ms: *timeout_ms,
                 output: output.clone(),
             },
-            EngineRequest::PublishArtifact { member, spec, .. } => {
-                PendingReq::PublishArtifact { member: member.clone(), spec: spec.clone() }
-            }
+            EngineRequest::PublishArtifact { member, spec, .. } => PendingReq::PublishArtifact {
+                member: member.clone(),
+                spec: spec.clone(),
+            },
             EngineRequest::HoleResolve { .. } => PendingReq::HoleResolve,
-            EngineRequest::CancelAsk { actor_site_id, actor_ordinal, actor_seq, .. } => {
+            EngineRequest::CancelAsk {
+                actor_site_id,
+                actor_ordinal,
+                actor_seq,
+                ..
+            } => {
                 // CancelAsk 不做 journal 重放，直接派发并回执。
                 actions.push(EngineAction::Dispatch(DriverRequest::CancelAsk {
                     actor_site_id: actor_site_id.clone(),
@@ -993,9 +1122,11 @@ impl Engine {
             }
         };
         let actor_key = match &pending_req {
-            PendingReq::Ask { actor_site_id, actor_ordinal, .. } => {
-                Some((actor_site_id.clone(), *actor_ordinal))
-            }
+            PendingReq::Ask {
+                actor_site_id,
+                actor_ordinal,
+                ..
+            } => Some((actor_site_id.clone(), *actor_ordinal)),
             _ => None,
         };
         // 同 actor FIFO：actor 忙（有 ask 在飞或在全局队列）→ 进 actor 队列等位。
@@ -1012,7 +1143,10 @@ impl Engine {
                         queued: true,
                     },
                 );
-                self.actor_queues.entry(key.clone()).or_default().push_back(request_id);
+                self.actor_queues
+                    .entry(key.clone())
+                    .or_default()
+                    .push_back(request_id);
                 return;
             }
             self.busy_actors.insert(key.clone());
@@ -1040,8 +1174,8 @@ impl Engine {
 
     /// 一个 ask 走全局派发逻辑：并发满则进全局队列（actor 保持 busy），否则立即派发。
     fn offer_ask(&mut self, request_id: u64, actions: &mut Vec<EngineAction>) {
-        let full = self.config.max_concurrency > 0
-            && self.in_flight_asks >= self.config.max_concurrency;
+        let full =
+            self.config.max_concurrency > 0 && self.in_flight_asks >= self.config.max_concurrency;
         if let Some(p) = self.pending.get_mut(&request_id) {
             p.queued = full;
         }
@@ -1054,13 +1188,23 @@ impl Engine {
 
     /// 派发一个 pending 请求（ask 计数在飞额度）。
     fn dispatch(&mut self, request_id: u64, actions: &mut Vec<EngineAction>) {
-        let Some(p) = self.pending.get(&request_id) else { return };
+        let Some(p) = self.pending.get(&request_id) else {
+            return;
+        };
         let (site_id, ordinal) = (p.site_id.clone(), p.ordinal);
         let drv = match &p.request {
-            PendingReq::Ask { actor_site_id, actor_ordinal, actor_seq, instructions, schema } => {
+            PendingReq::Ask {
+                actor_site_id,
+                actor_ordinal,
+                actor_seq,
+                instructions,
+                schema,
+            } => {
                 let actor_key = (actor_site_id.clone(), *actor_ordinal);
                 let context = if let Some(session) = self.actor_sessions.get(&actor_key) {
-                    ActorContext::Existing { child_session_id: session.clone() }
+                    ActorContext::Existing {
+                        child_session_id: session.clone(),
+                    }
                 } else {
                     // amend：具名 actor 已导入过 ask → 用前驱子会话 transcript 播种。
                     self.actors
@@ -1109,7 +1253,12 @@ impl Engine {
                 op: op.clone(),
                 args: args.clone(),
             },
-            PendingReq::WorldRun { command, args, timeout_ms, output } => DriverRequest::WorldRun {
+            PendingReq::WorldRun {
+                command,
+                args,
+                timeout_ms,
+                output,
+            } => DriverRequest::WorldRun {
                 request_id,
                 site_id,
                 ordinal,
@@ -1139,7 +1288,14 @@ impl Engine {
     /// 请求输入哈希：种类 + 决定输出的参数字段（不含 request_id/site_id）。
     fn request_hash(&self, request: &EngineRequest) -> String {
         match request {
-            EngineRequest::Ask { instructions, schema, actor_seq, actor_site_id, actor_ordinal, .. } => {
+            EngineRequest::Ask {
+                instructions,
+                schema,
+                actor_seq,
+                actor_site_id,
+                actor_ordinal,
+                ..
+            } => {
                 // spec：ask 哈希 = 指令 + persona（schema/seq 亦决定交付形态）。
                 let persona_key = self
                     .actors
@@ -1152,8 +1308,16 @@ impl Engine {
                     "persona_key": persona_key,
                 }))
             }
-            EngineRequest::WorldRead { op, args, .. } => input_hash(&json!({"op": op, "args": args})),
-            EngineRequest::WorldRun { command, args, timeout_ms, output, .. } => input_hash(&json!({
+            EngineRequest::WorldRead { op, args, .. } => {
+                input_hash(&json!({"op": op, "args": args}))
+            }
+            EngineRequest::WorldRun {
+                command,
+                args,
+                timeout_ms,
+                output,
+                ..
+            } => input_hash(&json!({
                 "cmd": command, "args": args, "timeout_ms": timeout_ms, "output": output,
             })),
             EngineRequest::PublishArtifact { member, spec, .. } => {
@@ -1174,11 +1338,17 @@ impl Engine {
         if matches!(pending.request, PendingReq::Ask { .. }) && self.in_flight_asks > 0 {
             self.in_flight_asks -= 1;
         }
-        self.in_flight.remove(&(pending.site_id.clone(), pending.ordinal));
+        self.in_flight
+            .remove(&(pending.site_id.clone(), pending.ordinal));
         // 写 journal（ask 记录带 actor 身份供 amend 匹配）。
         let mut extra = Map::new();
-        if let PendingReq::Ask { actor_site_id, actor_ordinal, actor_seq, instructions, schema } =
-            &pending.request
+        if let PendingReq::Ask {
+            actor_site_id,
+            actor_ordinal,
+            actor_seq,
+            instructions,
+            schema,
+        } = &pending.request
         {
             extra.insert("actor_site_id".into(), json!(actor_site_id));
             extra.insert("actor_ordinal".into(), json!(actor_ordinal));
@@ -1230,11 +1400,24 @@ impl Engine {
             outcome: guest_outcome(pending.kind, outcome),
         });
         // 同 actor FIFO：释放 actor；其队列有下一个 → 走同样的全局逻辑（保持 busy）。
-        if let PendingReq::Ask { actor_site_id, actor_ordinal, .. } = &pending.request {
+        if let PendingReq::Ask {
+            actor_site_id,
+            actor_ordinal,
+            ..
+        } = &pending.request
+        {
             let actor_key = (actor_site_id.clone(), *actor_ordinal);
-            match self.actor_queues.get_mut(&actor_key).and_then(|q| q.pop_front()) {
+            match self
+                .actor_queues
+                .get_mut(&actor_key)
+                .and_then(|q| q.pop_front())
+            {
                 Some(next) => {
-                    if self.actor_queues.get(&actor_key).is_some_and(|q| q.is_empty()) {
+                    if self
+                        .actor_queues
+                        .get(&actor_key)
+                        .is_some_and(|q| q.is_empty())
+                    {
                         self.actor_queues.remove(&actor_key);
                     }
                     self.offer_ask(next, &mut actions);
@@ -1265,7 +1448,8 @@ impl Engine {
     pub fn fill_hole(&mut self, site_id: &str, ordinal: u32, code: String) -> Vec<EngineAction> {
         let mut actions = Vec::new();
         let Some(request_id) = self.pending.iter().find_map(|(id, p)| {
-            (p.site_id == site_id && p.ordinal == ordinal
+            (p.site_id == site_id
+                && p.ordinal == ordinal
                 && matches!(p.request, PendingReq::HoleResolve))
             .then_some(*id)
         }) else {
@@ -1325,7 +1509,12 @@ impl Engine {
             .collect();
         for (request_id, site_id, ordinal) in in_flight {
             if let Some(p) = self.pending.get(&request_id)
-                && let PendingReq::Ask { actor_site_id, actor_ordinal, actor_seq, .. } = &p.request
+                && let PendingReq::Ask {
+                    actor_site_id,
+                    actor_ordinal,
+                    actor_seq,
+                    ..
+                } = &p.request
             {
                 actions.push(EngineAction::Dispatch(DriverRequest::CancelAsk {
                     actor_site_id: actor_site_id.clone(),
@@ -1385,7 +1574,9 @@ impl Engine {
     pub fn cancel(&mut self, code: impl Into<String>) -> Vec<EngineAction> {
         let mut actions = Vec::new();
         self.finish(
-            TerminalStatus::Stopped { reason: StopReason::User },
+            TerminalStatus::Stopped {
+                reason: StopReason::User,
+            },
             None,
             Some(code.into()),
             Some("run cancelled".into()),
@@ -1420,7 +1611,11 @@ fn is_preset_member(member: &str) -> bool {
 fn outcome_of(value: &Value) -> DriverOutcome {
     match value.get("status").and_then(|s| s.as_str()) {
         Some("failed") => DriverOutcome::Failed {
-            code: value.get("code").and_then(|c| c.as_str()).unwrap_or("FAILED").into(),
+            code: value
+                .get("code")
+                .and_then(|c| c.as_str())
+                .unwrap_or("FAILED")
+                .into(),
             message: value
                 .get("message")
                 .and_then(|m| m.as_str())

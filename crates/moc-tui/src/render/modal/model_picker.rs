@@ -52,9 +52,7 @@ fn popup_rect(screen: Rect, anchor: Rect, natural_rows: usize) -> Rect {
     let above = anchor.y.saturating_sub(screen.y).min(screen.height);
     let below = screen.bottom().saturating_sub(anchor.bottom());
     // 卡片高度按内容收缩：正文自然行数 + 两行边框 + 一行提示条，上限 18。
-    let wanted = u16::try_from(natural_rows + 3)
-        .unwrap_or(u16::MAX)
-        .min(18);
+    let wanted = u16::try_from(natural_rows + 3).unwrap_or(u16::MAX).min(18);
     let up = above >= wanted || above >= below;
     let height = wanted.min(if up { above } else { below });
     Rect::new(
@@ -664,8 +662,7 @@ fn control_line(
             } else {
                 &fusion.sidekick
             };
-            let value =
-                crate::modal::side_level(entries, side).unwrap_or_else(|| "—".to_owned());
+            let value = crate::modal::side_level(entries, side).unwrap_or_else(|| "—".to_owned());
             ("  思考".to_owned(), value, theme.accent_model)
         }
         DetailRow::Apply => {
@@ -674,7 +671,11 @@ fn control_line(
                 && crate::modal::fusion_selector(&fusion.lead, &fusion.sidekick) == *current;
             (
                 "应用".to_owned(),
-                if applied { "✓".to_owned() } else { String::new() },
+                if applied {
+                    "✓".to_owned()
+                } else {
+                    String::new()
+                },
                 theme.accent_success,
             )
         }
@@ -689,7 +690,11 @@ fn control_line(
         Line::from(vec![
             Span::styled(
                 "› ",
-                active_style(if active { theme.accent_user } else { theme.gray_dim }),
+                active_style(if active {
+                    theme.accent_user
+                } else {
+                    theme.gray_dim
+                }),
             ),
             Span::styled(label, active_style(theme.text_secondary)),
             Span::styled(" ".repeat(gap), Style::new()),

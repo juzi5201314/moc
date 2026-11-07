@@ -139,7 +139,11 @@ impl FileJournal {
             Vec::new()
         };
         let file = OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self { file, prior, dir: run_dir.to_path_buf() })
+        Ok(Self {
+            file,
+            prior,
+            dir: run_dir.to_path_buf(),
+        })
     }
 }
 

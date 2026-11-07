@@ -55,7 +55,9 @@ fn arg_candidates(app: &App, name: &str, args: &str) -> Option<Vec<CompletionCan
     let spec = app.commands.builtin(name)?;
     let values: Vec<String> = match &spec.args {
         ArgCompletion::None => return None,
-        ArgCompletion::Choices(choices) => choices.iter().map(|choice| (*choice).to_owned()).collect(),
+        ArgCompletion::Choices(choices) => {
+            choices.iter().map(|choice| (*choice).to_owned()).collect()
+        }
         ArgCompletion::Dynamic(kind) => dynamic_args(app, *kind),
     };
     Some(
@@ -268,7 +270,10 @@ mod tests {
         assert_eq!(state.candidates.len(), 1);
         assert_eq!(state.candidates[0].value, "unattended");
         assert!(!state.candidates[0].append_space);
-        assert_eq!(state.replace_range, "/autonomy ".len().."/autonomy un".len());
+        assert_eq!(
+            state.replace_range,
+            "/autonomy ".len().."/autonomy un".len()
+        );
 
         // 完整参数（再跟空格）与无参数命令都没有候选。
         assert!(CompletionState::derive(&app("/autonomy default x")).is_none());

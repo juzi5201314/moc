@@ -137,8 +137,8 @@ pub use session::{
     SessionSetFastModeParams, SessionSetModel, SessionSetModelParams, SessionSetModelResult,
     SessionSetPermission, SessionSetPermissionParams, SessionTools, SessionToolsParams,
     SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage,
-    SessionUsageParams, SessionUsageResult,
-    ToolExecution, ToolStatus, TranscriptChildCall, TranscriptEntry, UsageSource,
+    SessionUsageParams, SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall,
+    TranscriptEntry, UsageSource,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{

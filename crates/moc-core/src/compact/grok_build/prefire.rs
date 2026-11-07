@@ -342,7 +342,9 @@ mod tests {
     fn assistant_call(id: &str) -> Message {
         Message {
             role: Role::Assistant,
-            content: moc_llm::message_content![ContentPart::ToolCall(ToolCall::new(id, "read", "{}"))],
+            content: moc_llm::message_content![ContentPart::ToolCall(ToolCall::new(
+                id, "read", "{}"
+            ))],
         }
     }
 

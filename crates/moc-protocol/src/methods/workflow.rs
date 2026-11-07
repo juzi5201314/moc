@@ -364,7 +364,9 @@ pub struct WorkflowApprovalDefaults {
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum WorkflowEvent {
     /// 审批请求发出（前端弹审批窗）。
-    ApprovalRequested { request: Box<WorkflowApproval> },
+    ApprovalRequested {
+        request: Box<WorkflowApproval>,
+    },
     /// 审批已解决（批准后 run 启动 / 拒绝后工具返回反馈）。
     ApprovalResolved {
         request_id: String,
@@ -373,21 +375,30 @@ pub enum WorkflowEvent {
         feedback: Option<String>,
     },
     /// run 状态变化（含终态）。
-    RunStatus { status: WorkflowRunStatus },
-    PhaseEntered { phase: String },
+    RunStatus {
+        status: WorkflowRunStatus,
+    },
+    PhaseEntered {
+        phase: String,
+    },
     /// role/ask/world 实例状态更新（phase 与 role 的运行态）。
     NodeUpdated {
         phases: Vec<WorkflowPhaseState>,
         roles: Vec<WorkflowRoleState>,
     },
-    Log { level: String, message: String },
+    Log {
+        level: String,
+        message: String,
+    },
     Report {
         item: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         artifact_id: Option<String>,
     },
     /// artifact 声明/发布。
-    Artifact { artifact: Value },
+    Artifact {
+        artifact: Value,
+    },
     HoleOpened {
         site_id: String,
         ordinal: u32,
@@ -396,8 +407,12 @@ pub enum WorkflowEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         schema: Option<Value>,
     },
-    HoleFilled { name: String },
-    Usage { usage: Value },
+    HoleFilled {
+        name: String,
+    },
+    Usage {
+        usage: Value,
+    },
 }
 
 #[cfg(test)]
@@ -433,7 +448,9 @@ mod tests {
         assert_eq!(v["decision"]["action"], "approve");
         let back: SessionWorkflowApproveParams = serde_json::from_value(v).unwrap();
         assert_eq!(back, params);
-        let reject = WorkflowDecision::Reject { feedback: Some("no".into()) };
+        let reject = WorkflowDecision::Reject {
+            feedback: Some("no".into()),
+        };
         let v = serde_json::to_value(reject).unwrap();
         assert_eq!(v["action"], "reject");
     }

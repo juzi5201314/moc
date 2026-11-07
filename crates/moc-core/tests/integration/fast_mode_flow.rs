@@ -1,12 +1,12 @@
 //! Fast Mode：`session/set_fast_mode` 的广播与持久化，以及请求体 `service_tier` 只在
 //! 模型配置 `fast_mode = true` 且会话开关打开时出现。
 
+use crate::support::{Harness, text_stream};
 use moc_protocol::methods::{
     SessionEngine, SessionModelOverflowAction, SessionSetFastMode, SessionSetFastModeParams,
     SessionSetModel, SessionSetModelParams, SessionUpdate,
 };
 use serde_json::Value;
-use crate::support::{Harness, text_stream};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},

@@ -13,12 +13,20 @@ fn config(mode: RunMode) -> EngineConfig {
 }
 
 fn engine(mode: RunMode, prior: Vec<JournalRecord>) -> Engine {
-    let journal = MemoryJournal { written: Vec::new(), prior };
+    let journal = MemoryJournal {
+        written: Vec::new(),
+        prior,
+    };
     Engine::new(Box::new(journal), config(mode))
 }
 
 fn step(events: Vec<EngineEvent>, requests: Vec<EngineRequest>, state: ScriptState) -> Step {
-    Step { events, requests, state, stall: None }
+    Step {
+        events,
+        requests,
+        state,
+        stall: None,
+    }
 }
 
 fn ask_req(id: u64, site: &str, seq: u32, instructions: &str) -> EngineRequest {
@@ -53,7 +61,17 @@ fn ask_hash(seq: u32, instructions: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ask_record(site: &str, ordinal: u32, seq: u32, instructions: &str, actor: &str, persona_key: &str, session: &str, settle: u32, result: Value) -> JournalRecord {
+fn ask_record(
+    site: &str,
+    ordinal: u32,
+    seq: u32,
+    instructions: &str,
+    actor: &str,
+    persona_key: &str,
+    session: &str,
+    settle: u32,
+    result: Value,
+) -> JournalRecord {
     let mut extra = Map::new();
     extra.insert("actor_site_id".into(), json!("actor#1"));
     extra.insert("actor_ordinal".into(), json!(0));
@@ -77,7 +95,10 @@ fn ask_record(site: &str, ordinal: u32, seq: u32, instructions: &str, actor: &st
 fn actor_record(site: &str, ordinal: u32, name: &str, session: &str) -> JournalRecord {
     let mut extra = Map::new();
     extra.insert("actor_name".into(), json!(name));
-    extra.insert("persona_key".into(), json!(input_hash(&json!({"system": "s"}))));
+    extra.insert(
+        "persona_key".into(),
+        json!(input_hash(&json!({"system": "s"}))),
+    );
     extra.insert("child_session_id".into(), json!(session));
     JournalRecord {
         kind: RecordKind::Actor,
@@ -93,8 +114,17 @@ fn actor_record(site: &str, ordinal: u32, name: &str, session: &str) -> JournalR
 #[test]
 fn done_carries_script_value() {
     let mut e = engine(RunMode::Fresh, vec![]);
-    let actions = e.handle_step(step(vec![], vec![], ScriptState::Done { value: json!({"ok": 1}) }));
-    match actions.iter().find(|a| matches!(a, EngineAction::Finalized(_))) {
+    let actions = e.handle_step(step(
+        vec![],
+        vec![],
+        ScriptState::Done {
+            value: json!({"ok": 1}),
+        },
+    ));
+    match actions
+        .iter()
+        .find(|a| matches!(a, EngineAction::Finalized(_)))
+    {
         Some(EngineAction::Finalized(t)) => {
             assert_eq!(t.status, TerminalStatus::Completed);
             assert_eq!(t.result, Some(json!({"ok": 1})));
@@ -109,14 +139,29 @@ fn resume_replays_world_and_ask_zero_token() {
         kind: RecordKind::World,
         site_id: "world-run#1".into(),
         ordinal: 0,
-        input_hash: input_hash(&json!({"cmd": "ls", "args": ["-la"], "timeout_ms": 300_000u64, "output": Value::Null})),
+        input_hash: input_hash(
+            &json!({"cmd": "ls", "args": ["-la"], "timeout_ms": 300_000u64, "output": Value::Null}),
+        ),
         settle: 0,
         outcome: json!({"status": "completed", "result": {"stdout": "ok"}}),
         extra: Map::new(),
     };
     let persona_key = input_hash(&json!({"system": "s"}));
-    let prior = vec![actor_record("actor#1", 0, "a", "sess-1"), world,
-        ask_record("ask#1", 0, 1, "q", "a", &persona_key, "sess-1", 1, json!("r"))];
+    let prior = vec![
+        actor_record("actor#1", 0, "a", "sess-1"),
+        world,
+        ask_record(
+            "ask#1",
+            0,
+            1,
+            "q",
+            "a",
+            &persona_key,
+            "sess-1",
+            1,
+            json!("r"),
+        ),
+    ];
     let mut e = engine(RunMode::Resume, prior);
     let actions = e.handle_step(step(
         vec![actor_event("a")],
@@ -142,7 +187,12 @@ fn resume_replays_world_and_ask_zero_token() {
         .collect();
     assert!(completes.contains(&1), "ask 应被重放命中");
     assert!(completes.contains(&2), "world 应被重放命中");
-    assert!(!actions.iter().any(|a| matches!(a, EngineAction::Dispatch(_))), "零 token：不得 dispatch");
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::Dispatch(_))),
+        "零 token：不得 dispatch"
+    );
     assert_eq!(e.usage.world_calls, 0);
 }
 
@@ -171,13 +221,21 @@ fn resume_hash_mismatch_errors_run() {
         ScriptState::Running,
     ));
     assert_eq!(e.mismatches.len(), 1);
-    let terminal = actions.iter().find_map(|a| match a {
-        EngineAction::Finalized(t) => Some(t),
-        _ => None,
-    }).expect("mismatch must finalize");
+    let terminal = actions
+        .iter()
+        .find_map(|a| match a {
+            EngineAction::Finalized(t) => Some(t),
+            _ => None,
+        })
+        .expect("mismatch must finalize");
     assert_eq!(terminal.status, TerminalStatus::Errored);
     assert_eq!(terminal.error_code.as_deref(), Some("InputHashMismatch"));
-    assert!(!actions.iter().any(|a| matches!(a, EngineAction::Dispatch(_))), "不得重新执行");
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::Dispatch(_))),
+        "不得重新执行"
+    );
 }
 
 #[test]
@@ -203,9 +261,39 @@ fn amend_import_matching_rules() {
     let persona_key = input_hash(&json!({"system": "s"}));
     let prior = vec![
         actor_record("actor#1", 0, "rev", "sess-rev"),
-        ask_record("ask#1", 0, 1, "q1", "rev", &persona_key, "sess-rev", 1, json!("r1")),
-        ask_record("ask#1", 1, 2, "q2", "rev", &persona_key, "sess-rev", 2, json!("r2")),
-        ask_record("ask#9", 0, 1, "q1", "other", &persona_key, "sess-x", 3, json!("x")),
+        ask_record(
+            "ask#1",
+            0,
+            1,
+            "q1",
+            "rev",
+            &persona_key,
+            "sess-rev",
+            1,
+            json!("r1"),
+        ),
+        ask_record(
+            "ask#1",
+            1,
+            2,
+            "q2",
+            "rev",
+            &persona_key,
+            "sess-rev",
+            2,
+            json!("r2"),
+        ),
+        ask_record(
+            "ask#9",
+            0,
+            1,
+            "q1",
+            "other",
+            &persona_key,
+            "sess-x",
+            3,
+            json!("x"),
+        ),
     ];
     let mut e = engine(RunMode::Amend, prior);
     let actions = e.handle_step(step(
@@ -217,15 +305,25 @@ fn amend_import_matching_rules() {
         ],
         ScriptState::Running,
     ));
-    let completes: Vec<_> = actions.iter().filter(|a| matches!(a, EngineAction::Complete { .. })).collect();
+    let completes: Vec<_> = actions
+        .iter()
+        .filter(|a| matches!(a, EngineAction::Complete { .. }))
+        .collect();
     assert_eq!(completes.len(), 2, "q1/q2 应被导入");
     // 第三个 ask 派发，且 context 是 SeedFrom（前驱会话 + 已导入 2 个）。
-    let dispatch = actions.iter().find_map(|a| match a {
-        EngineAction::Dispatch(DriverRequest::Ask { context, .. }) => Some(context),
-        _ => None,
-    }).expect("q3 应 dispatch");
+    let dispatch = actions
+        .iter()
+        .find_map(|a| match a {
+            EngineAction::Dispatch(DriverRequest::Ask { context, .. }) => Some(context),
+            _ => None,
+        })
+        .expect("q3 应 dispatch");
     match dispatch {
-        ActorContext::SeedFrom { run_id, child_session_id, user_turns } => {
+        ActorContext::SeedFrom {
+            run_id,
+            child_session_id,
+            user_turns,
+        } => {
             assert_eq!(run_id, "prev-run");
             assert_eq!(child_session_id, "sess-rev");
             // 截断点 = 最后一条已导入 ask 的 user_turns（ask_record 里 = seq 2）。
@@ -234,56 +332,146 @@ fn amend_import_matching_rules() {
         other => panic!("expected SeedFrom, got {other:?}"),
     }
     // 分叉：persona 不同 → ActorDiverged（非 errored）+ dispatch Fresh。
-    let prior2 = vec![ask_record("ask#1", 0, 1, "q1", "rev", "OTHER", "sess-rev", 0, json!("r1"))];
+    let prior2 = vec![ask_record(
+        "ask#1",
+        0,
+        1,
+        "q1",
+        "rev",
+        "OTHER",
+        "sess-rev",
+        0,
+        json!("r1"),
+    )];
     let mut e2 = engine(RunMode::Amend, prior2);
-    let actions = e2.handle_step(step(vec![actor_event("rev")], vec![ask_req(1, "ask#1", 1, "q1")], ScriptState::Running));
+    let actions = e2.handle_step(step(
+        vec![actor_event("rev")],
+        vec![ask_req(1, "ask#1", 1, "q1")],
+        ScriptState::Running,
+    ));
     assert!(actions.iter().any(|a| matches!(a, EngineAction::Session(SessionEvent::ActorDiverged { name }) if name == "rev")));
-    assert!(!actions.iter().any(|a| matches!(a, EngineAction::Finalized(_))));
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::Finalized(_)))
+    );
     // 指令逐字不同 → 不导入。
-    let mut e3 = engine(RunMode::Amend, vec![
-        ask_record("ask#1", 0, 1, "DIFFERENT", "rev", &persona_key, "sess-rev", 0, json!("r1")),
-    ]);
-    let actions = e3.handle_step(step(vec![actor_event("rev")], vec![ask_req(1, "ask#1", 1, "q1")], ScriptState::Running));
-    assert!(!actions.iter().any(|a| matches!(a, EngineAction::Complete { request_id: 1, .. })));
-    assert!(actions.iter().any(|a| matches!(a, EngineAction::Dispatch(_))));
+    let mut e3 = engine(
+        RunMode::Amend,
+        vec![ask_record(
+            "ask#1",
+            0,
+            1,
+            "DIFFERENT",
+            "rev",
+            &persona_key,
+            "sess-rev",
+            0,
+            json!("r1"),
+        )],
+    );
+    let actions = e3.handle_step(step(
+        vec![actor_event("rev")],
+        vec![ask_req(1, "ask#1", 1, "q1")],
+        ScriptState::Running,
+    ));
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::Complete { request_id: 1, .. }))
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::Dispatch(_)))
+    );
 }
 
 #[test]
 fn actor_context_existing_after_session_record() {
     let mut e = engine(RunMode::Fresh, vec![]);
-    e.handle_step(step(vec![actor_event("a")], vec![ask_req(1, "ask#1", 1, "q")], ScriptState::Running));
+    e.handle_step(step(
+        vec![actor_event("a")],
+        vec![ask_req(1, "ask#1", 1, "q")],
+        ScriptState::Running,
+    ));
     e.actor_session_created("actor#1", 0, "sess-9");
     // 同 actor FIFO：先 settle 掉在飞 ask，第二个才会派发。
     e.settle(1, DriverOutcome::Completed(json!({"value": "v"})));
-    let actions = e.handle_step(step(vec![], vec![ask_req(2, "ask#2", 2, "q2")], ScriptState::Running));
-    let ctx = actions.iter().find_map(|a| match a {
-        EngineAction::Dispatch(DriverRequest::Ask { context, .. }) => Some(context.clone()),
-        _ => None,
-    }).expect("second ask must dispatch");
-    assert_eq!(ctx, ActorContext::Existing { child_session_id: "sess-9".into() });
+    let actions = e.handle_step(step(
+        vec![],
+        vec![ask_req(2, "ask#2", 2, "q2")],
+        ScriptState::Running,
+    ));
+    let ctx = actions
+        .iter()
+        .find_map(|a| match a {
+            EngineAction::Dispatch(DriverRequest::Ask { context, .. }) => Some(context.clone()),
+            _ => None,
+        })
+        .expect("second ask must dispatch");
+    assert_eq!(
+        ctx,
+        ActorContext::Existing {
+            child_session_id: "sess-9".into()
+        }
+    );
     // resume：prior actor 记录 → Existing。
-    let mut e2 = engine(RunMode::Resume, vec![actor_record("actor#1", 0, "a", "sess-1")]);
-    let actions = e2.handle_step(step(vec![actor_event("a")], vec![ask_req(1, "ask#9", 1, "new q")], ScriptState::Running));
-    let ctx = actions.iter().find_map(|a| match a {
-        EngineAction::Dispatch(DriverRequest::Ask { context, .. }) => Some(context.clone()),
-        _ => None,
-    }).expect("new ask dispatches");
-    assert_eq!(ctx, ActorContext::Existing { child_session_id: "sess-1".into() });
+    let mut e2 = engine(
+        RunMode::Resume,
+        vec![actor_record("actor#1", 0, "a", "sess-1")],
+    );
+    let actions = e2.handle_step(step(
+        vec![actor_event("a")],
+        vec![ask_req(1, "ask#9", 1, "new q")],
+        ScriptState::Running,
+    ));
+    let ctx = actions
+        .iter()
+        .find_map(|a| match a {
+            EngineAction::Dispatch(DriverRequest::Ask { context, .. }) => Some(context.clone()),
+            _ => None,
+        })
+        .expect("new ask dispatches");
+    assert_eq!(
+        ctx,
+        ActorContext::Existing {
+            child_session_id: "sess-1".into()
+        }
+    );
 }
 
 #[test]
 fn terminal_first_writer_wins() {
     let mut e = engine(RunMode::Fresh, vec![]);
     let mut actions = Vec::new();
-    e.finish(TerminalStatus::Completed, Some(json!("done")), None, None, &mut actions);
-    e.finish(TerminalStatus::Errored, None, Some("E".into()), Some("late".into()), &mut actions);
-    let terms: Vec<_> = actions.iter().filter_map(|a| match a {
-        EngineAction::Finalized(t) => Some(t),
-        _ => None,
-    }).collect();
+    e.finish(
+        TerminalStatus::Completed,
+        Some(json!("done")),
+        None,
+        None,
+        &mut actions,
+    );
+    e.finish(
+        TerminalStatus::Errored,
+        None,
+        Some("E".into()),
+        Some("late".into()),
+        &mut actions,
+    );
+    let terms: Vec<_> = actions
+        .iter()
+        .filter_map(|a| match a {
+            EngineAction::Finalized(t) => Some(t),
+            _ => None,
+        })
+        .collect();
     assert_eq!(terms.len(), 1);
     assert_eq!(terms[0].status, TerminalStatus::Completed);
-    assert!(e.handle_step(step(vec![], vec![], ScriptState::Running)).is_empty());
+    assert!(
+        e.handle_step(step(vec![], vec![], ScriptState::Running))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -292,15 +480,22 @@ fn runtime_duplicate_actor_name_errors() {
     let actions = e.handle_step(step(
         vec![
             actor_event("x"),
-            EngineEvent::CreateActor { site_id: "actor#2".into(), name: Some("x".into()), persona: json!({}) },
+            EngineEvent::CreateActor {
+                site_id: "actor#2".into(),
+                name: Some("x".into()),
+                persona: json!({}),
+            },
         ],
         vec![],
         ScriptState::Running,
     ));
-    let terminal = actions.iter().find_map(|a| match a {
-        EngineAction::Finalized(t) => Some(t),
-        _ => None,
-    }).expect("dup name must finalize");
+    let terminal = actions
+        .iter()
+        .find_map(|a| match a {
+            EngineAction::Finalized(t) => Some(t),
+            _ => None,
+        })
+        .expect("dup name must finalize");
     assert_eq!(terminal.error_code.as_deref(), Some("DuplicateActorName"));
 }
 
@@ -312,25 +507,51 @@ fn finish_cancels_in_flight_asks() {
         vec![ask_req(1, "ask#1", 1, "q")],
         ScriptState::Running,
     ));
-    assert!(actions.iter().any(|a| matches!(a, EngineAction::Dispatch(DriverRequest::Ask { .. }))));
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::Dispatch(DriverRequest::Ask { .. })))
+    );
     let mut actions = Vec::new();
-    e.finish(TerminalStatus::Completed, Some(json!("done")), None, None, &mut actions);
-    assert!(actions.iter().any(|a| matches!(a, EngineAction::Dispatch(DriverRequest::CancelAsk { .. }))));
-    assert!(actions.iter().any(|a| matches!(a, EngineAction::Complete { request_id: 1, .. })));
+    e.finish(
+        TerminalStatus::Completed,
+        Some(json!("done")),
+        None,
+        None,
+        &mut actions,
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::Dispatch(DriverRequest::CancelAsk { .. })))
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::Complete { request_id: 1, .. }))
+    );
 }
 
 #[test]
 fn concurrency_cap_queues_asks() {
     let mut e = Engine::new(
         Box::new(MemoryJournal::default()),
-        EngineConfig { max_concurrency: 1, label: "t".into(), mode: RunMode::Fresh, resumed_from: None },
+        EngineConfig {
+            max_concurrency: 1,
+            label: "t".into(),
+            mode: RunMode::Fresh,
+            resumed_from: None,
+        },
     );
     let actions = e.handle_step(step(
         vec![actor_event("a")],
         vec![ask_req(1, "ask#1", 1, "q1"), ask_req(2, "ask#1", 2, "q2")],
         ScriptState::Running,
     ));
-    let dispatches = actions.iter().filter(|a| matches!(a, EngineAction::Dispatch(DriverRequest::Ask { .. }))).count();
+    let dispatches = actions
+        .iter()
+        .filter(|a| matches!(a, EngineAction::Dispatch(DriverRequest::Ask { .. })))
+        .count();
     assert_eq!(dispatches, 1);
     let actions = e.settle(1, DriverOutcome::Completed(json!("r")));
     assert!(actions.iter().any(|a| matches!(a, EngineAction::Dispatch(DriverRequest::Ask { site_id, ordinal: 1, .. }) if site_id == "ask#1")));
@@ -340,12 +561,17 @@ fn concurrency_cap_queues_asks() {
 fn stall_and_deadlock_error_run() {
     let mut e = engine(RunMode::Fresh, vec![]);
     let mut s = step(vec![], vec![], ScriptState::Running);
-    s.stall = Some(StallInfo { waiting: vec!["ch-1".into()] });
+    s.stall = Some(StallInfo {
+        waiting: vec!["ch-1".into()],
+    });
     let actions = e.handle_step(s);
-    let t = actions.iter().find_map(|a| match a {
-        EngineAction::Finalized(t) => Some(t),
-        _ => None,
-    }).expect("deadlock must finalize");
+    let t = actions
+        .iter()
+        .find_map(|a| match a {
+            EngineAction::Finalized(t) => Some(t),
+            _ => None,
+        })
+        .expect("deadlock must finalize");
     assert_eq!(t.error_code.as_deref(), Some("ChannelDeadlock"));
     assert!(t.error_message.as_ref().unwrap().contains("ch-1"));
 
@@ -353,10 +579,13 @@ fn stall_and_deadlock_error_run() {
     let mut s = step(vec![], vec![], ScriptState::Running);
     s.stall = Some(StallInfo { waiting: vec![] });
     let actions = e.handle_step(s);
-    let t = actions.iter().find_map(|a| match a {
-        EngineAction::Finalized(t) => Some(t),
-        _ => None,
-    }).expect("stall must finalize");
+    let t = actions
+        .iter()
+        .find_map(|a| match a {
+            EngineAction::Finalized(t) => Some(t),
+            _ => None,
+        })
+        .expect("stall must finalize");
     assert_eq!(t.error_code.as_deref(), Some("ScriptStalled"));
 }
 
@@ -415,7 +644,17 @@ fn resume_replay_delivers_only_value() {
     let persona_key = input_hash(&json!({"system": "s"}));
     let prior = vec![
         actor_record("actor#1", 0, "rev", "sess-1"),
-        ask_record("ask#1", 0, 1, "q", "rev", &persona_key, "sess-1", 1, json!("r1")),
+        ask_record(
+            "ask#1",
+            0,
+            1,
+            "q",
+            "rev",
+            &persona_key,
+            "sess-1",
+            1,
+            json!("r1"),
+        ),
     ];
     let mut e = engine(RunMode::Resume, prior);
     let actions = e.handle_step(step(
@@ -441,7 +680,17 @@ fn amend_import_delivers_only_value() {
     let persona_key = input_hash(&json!({"system": "s"}));
     let prior = vec![
         actor_record("actor#1", 0, "rev", "sess-1"),
-        ask_record("ask#1", 0, 1, "q", "rev", &persona_key, "sess-1", 1, json!("r1")),
+        ask_record(
+            "ask#1",
+            0,
+            1,
+            "q",
+            "rev",
+            &persona_key,
+            "sess-1",
+            1,
+            json!("r1"),
+        ),
     ];
     let mut e = engine(RunMode::Amend, prior);
     let actions = e.handle_step(step(
@@ -473,13 +722,19 @@ fn same_actor_asks_are_fifo() {
         ScriptState::Running,
     ));
     assert_eq!(
-        actions.iter().filter(|a| matches!(a, EngineAction::Dispatch(_))).count(),
+        actions
+            .iter()
+            .filter(|a| matches!(a, EngineAction::Dispatch(_)))
+            .count(),
         1,
         "同 actor 并发 ask 只应先 dispatch 一个"
     );
     let actions = e.settle(1, DriverOutcome::Completed(json!({"value": "v"})));
     assert_eq!(
-        actions.iter().filter(|a| matches!(a, EngineAction::Dispatch(_))).count(),
+        actions
+            .iter()
+            .filter(|a| matches!(a, EngineAction::Dispatch(_)))
+            .count(),
         1,
         "settle 后应派发等位的第二个 ask"
     );
@@ -494,7 +749,13 @@ fn finish_drops_pending_asks() {
         ScriptState::Running,
     ));
     let mut actions = Vec::new();
-    e.finish(TerminalStatus::Completed, Some(json!("done")), None, None, &mut actions);
+    e.finish(
+        TerminalStatus::Completed,
+        Some(json!("done")),
+        None,
+        None,
+        &mut actions,
+    );
     assert!(
         actions.iter().any(|a| matches!(
             a,
@@ -530,9 +791,9 @@ fn declare_artifact_registers_and_dedups() {
         ScriptState::Running,
     ));
     let declared = actions.iter().find_map(|a| match a {
-        EngineAction::Session(SessionEvent::DeclareArtifact { artifact_id, spec, .. }) => {
-            Some((artifact_id.clone(), spec.clone()))
-        }
+        EngineAction::Session(SessionEvent::DeclareArtifact {
+            artifact_id, spec, ..
+        }) => Some((artifact_id.clone(), spec.clone())),
         _ => None,
     });
     let (id, emitted) = declared.expect("declare 应发 SessionEvent");
@@ -547,14 +808,20 @@ fn declare_artifact_registers_and_dedups() {
     assert!(actions.is_empty(), "相同重声明应 no-op");
     // 不同 spec 重声明：整 run errored。
     let mut e = engine(RunMode::Fresh, vec![]);
-    e.handle_step(step(vec![declare_event("t1", "table", json!({"key": "k"}))], vec![], ScriptState::Running));
+    e.handle_step(step(
+        vec![declare_event("t1", "table", json!({"key": "k"}))],
+        vec![],
+        ScriptState::Running,
+    ));
     let actions = e.handle_step(step(
         vec![declare_event("t1", "table", json!({"key": "other"}))],
         vec![],
         ScriptState::Running,
     ));
     assert!(
-        actions.iter().any(|a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)),
+        actions.iter().any(
+            |a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)
+        ),
         "不同 spec 重声明应 errored"
     );
 }
@@ -572,7 +839,9 @@ fn report_requires_declared_preset() {
         ScriptState::Running,
     ));
     assert!(
-        actions.iter().any(|a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)),
+        actions.iter().any(
+            |a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)
+        ),
         "report 到未声明 id 应 errored"
     );
 }
@@ -591,7 +860,9 @@ fn report_item_cap_errors_run() {
         ScriptState::Running,
     ));
     assert!(
-        actions.iter().any(|a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)),
+        actions.iter().any(
+            |a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)
+        ),
         "单条 report 超 1 MiB 应 errored"
     );
 }
@@ -624,7 +895,10 @@ fn resume_replay_registers_artifact_member() {
     assert!(
         actions.iter().any(|a| matches!(
             a,
-            EngineAction::Complete { outcome: DriverOutcome::Completed(_), .. }
+            EngineAction::Complete {
+                outcome: DriverOutcome::Completed(_),
+                ..
+            }
         )),
         "publish 应重放命中"
     );
@@ -635,7 +909,9 @@ fn resume_replay_registers_artifact_member() {
         ScriptState::Running,
     ));
     assert!(
-        actions.iter().any(|a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)),
+        actions.iter().any(
+            |a| matches!(a, EngineAction::Finalized(t) if t.status == TerminalStatus::Errored)
+        ),
         "重放登记的 member 冲突应 errored"
     );
 }

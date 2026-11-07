@@ -327,7 +327,8 @@ pub(crate) fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError
 
         let mut matched = 0;
         while index < messages.len() && messages[index].role == Role::Tool {
-            let result = messages[index].content
+            let result = messages[index]
+                .content
                 .tool_result_ids()
                 .next()
                 .ok_or_else(|| LlmError::Encode("工具结果消息缺少 ToolResult 内容块".into()))?;
@@ -340,9 +341,13 @@ pub(crate) fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError
 
         if matched != calls.len() {
             let (names, missing) = message.content.with_parts(|parts| {
-                let calls: Vec<_> = parts.iter().filter_map(|part| match part {
-                    crate::ContentPart::ToolCall(call) => Some(call), _ => None,
-                }).collect();
+                let calls: Vec<_> = parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        crate::ContentPart::ToolCall(call) => Some(call),
+                        _ => None,
+                    })
+                    .collect();
                 (join_names(&calls), join_names(&calls[matched..]))
             });
             return Err(LlmError::Encode(format!(
@@ -471,7 +476,9 @@ mod tests {
     fn reasoning_only_assistant_message_is_allowed() {
         let messages = vec![Message {
             role: Role::Assistant,
-            content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::text("只有思考"))],
+            content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::text(
+                "只有思考"
+            ))],
         }];
         assert!(validate_tool_history(&messages).is_ok());
     }

@@ -1,11 +1,11 @@
 //! 插件持久化的协议级验收：配置来源、会话隔离、恢复和错误禁用。
 
+use crate::support::Harness;
 use moc_protocol::methods::{
     ConfigAction, ConfigManage, ConfigReply, ConfigScope, PluginList, PluginListParams,
     PluginRunCommand, PluginRunCommandParams, SessionEngine, SessionUnload, SessionUnloadParams,
 };
 use serde_json::json;
-use crate::support::Harness;
 
 fn install(harness: &Harness, name: &str, global: bool, body: &str) {
     let root = if global {

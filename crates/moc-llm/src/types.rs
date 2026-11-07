@@ -161,7 +161,8 @@ impl Message {
                 content: content.into(),
                 is_error,
                 images,
-            })].into(),
+            })]
+            .into(),
         }
     }
 
@@ -186,7 +187,9 @@ impl Message {
         self.content.with_parts(|parts| {
             let mut out = String::new();
             for part in parts {
-                if let ContentPart::Text(text) = part { out.push_str(text); }
+                if let ContentPart::Text(text) = part {
+                    out.push_str(text);
+                }
             }
             out
         })
@@ -202,7 +205,9 @@ impl Message {
             let mut first = true;
             for part in parts {
                 if let ContentPart::Text(text) = part {
-                    if !first { out.push_str("\n\n"); }
+                    if !first {
+                        out.push_str("\n\n");
+                    }
                     out.push_str(text);
                     first = false;
                 }
@@ -930,11 +935,16 @@ mod tests {
         assert_eq!(message.text(), "前半后半");
         assert_eq!(message.tool_calls().count(), 1);
         let mut copy = message.clone();
-        assert_eq!(message.content.as_ptr(), copy.content.as_ptr(), "只读克隆共享正文");
+        assert_eq!(
+            message.content.as_ptr(),
+            copy.content.as_ptr(),
+            "只读克隆共享正文"
+        );
         copy.content.push(ContentPart::Text("新尾部".into()));
         assert_eq!(message.text(), "前半后半", "修改克隆不能影响原历史");
         assert_eq!(copy.text(), "前半后半新尾部");
-        let restored: Message = serde_json::from_value(serde_json::to_value(&message).unwrap()).unwrap();
+        let restored: Message =
+            serde_json::from_value(serde_json::to_value(&message).unwrap()).unwrap();
         assert_eq!(restored, message, "磁盘与协议 JSON 形式保持兼容");
         let encoded = serde_json::to_vec(&message.content).unwrap();
         let content = MessageContent::from_archive(encoded.into()).unwrap();
@@ -942,20 +952,33 @@ mod tests {
         assert_eq!(content.tool_call_ids().collect::<Vec<_>>(), ["call_1"]);
         assert_eq!(content.tool_result_ids().count(), 0);
         assert!(!content.archive_cache_loaded(), "读取工具 ID 不还原正文");
-        assert_eq!(serde_json::to_value(&content).unwrap(), serde_json::to_value(&message.content).unwrap());
+        assert_eq!(
+            serde_json::to_value(&content).unwrap(),
+            serde_json::to_value(&message.content).unwrap()
+        );
         assert!(!content.archive_cache_loaded(), "序列化不永久加热旧正文");
-        let mut archived = Message { role: message.role, content };
+        let mut archived = Message {
+            role: message.role,
+            content,
+        };
         assert_eq!(archived.text(), message.text());
-        assert!(!archived.content.archive_cache_loaded(), "派生文本不保留解码副本");
+        assert!(
+            !archived.content.archive_cache_loaded(),
+            "派生文本不保留解码副本"
+        );
         assert_eq!(archived.content.len(), 4);
         assert!(archived.content.archive_cache_loaded());
         let cold = archived.content.cold_clone();
         assert!(!cold.archive_cache_loaded());
-        archived.content.push(ContentPart::Text("归档后修改".into()));
+        archived
+            .content
+            .push(ContentPart::Text("归档后修改".into()));
         assert!(!archived.content.is_archived());
         assert_eq!(cold, message.content);
         assert_eq!(archived.text(), "前半后半归档后修改");
-        assert!(MessageContent::from_archive(bytes::Bytes::from_static(b"[{\"Text\":42}]")).is_err());
+        assert!(
+            MessageContent::from_archive(bytes::Bytes::from_static(b"[{\"Text\":42}]")).is_err()
+        );
     }
 
     #[test]

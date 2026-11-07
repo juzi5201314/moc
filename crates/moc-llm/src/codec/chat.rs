@@ -160,9 +160,14 @@ fn encode_messages(
     for (index, message) in req.messages.iter().enumerate() {
         let temporary;
         let message = if message.content.is_archived() {
-            temporary = Message { role: message.role, content: message.content.detached_archive() };
+            temporary = Message {
+                role: message.role,
+                content: message.content.detached_archive(),
+            };
             &temporary
-        } else { message };
+        } else {
+            message
+        };
         let first = out.len();
         let breakpoint = breakpoints.contains(&index);
         match message.role {
@@ -1729,7 +1734,9 @@ mod tests {
             messages: vec![
                 Message {
                     role: Role::Assistant,
-                    content: crate::message_content![ContentPart::ToolCall(ToolCall::new("call_1", "noop", "{}"))],
+                    content: crate::message_content![ContentPart::ToolCall(ToolCall::new(
+                        "call_1", "noop", "{}"
+                    ))],
                 },
                 Message::tool_result("call_1", "", false),
             ],

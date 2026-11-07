@@ -1,12 +1,12 @@
 //! 插件系统的端到端验收：工具、钩子拒绝与参数改写、提示词注入、`plugin/list`。
 
+use crate::support::{Harness, text_stream, tool_result_texts, tool_stream};
 use moc_protocol::methods::{
     ConfigAction, ConfigManage, ConfigReply, ConfigScope, PluginInfo, PluginList, PluginListParams,
     PluginReload, PluginReloadParams, PluginRunCommand, PluginRunCommandParams, SessionEngine,
     SessionLoad, SessionLoadParams, SessionUpdate,
 };
 use serde_json::{Value, json};
-use crate::support::{Harness, text_stream, tool_result_texts, tool_stream};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

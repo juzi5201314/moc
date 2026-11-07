@@ -244,9 +244,14 @@ fn encode_input(
     for (index, message) in req.messages.iter().enumerate() {
         let temporary;
         let message = if message.content.is_archived() {
-            temporary = Message { role: message.role, content: message.content.detached_archive() };
+            temporary = Message {
+                role: message.role,
+                content: message.content.detached_archive(),
+            };
             &temporary
-        } else { message };
+        } else {
+            message
+        };
         let first = items.len();
         let breakpoint = breakpoints.contains(&index);
         match message.role {
@@ -975,9 +980,9 @@ mod tests {
         let req = ChatRequest {
             messages: vec![Message {
                 role: Role::Assistant,
-                content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::Item(Box::new(
-                    item.clone(),
-                )))],
+                content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::Item(
+                    Box::new(item.clone(),)
+                ))],
             }],
             ..Default::default()
         };
@@ -1251,7 +1256,9 @@ mod tests {
         let text_block = ChatRequest {
             messages: vec![Message {
                 role: Role::Assistant,
-                content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::text("思考"))],
+                content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::text(
+                    "思考"
+                ))],
             }],
             ..Default::default()
         };
@@ -1261,9 +1268,11 @@ mod tests {
         let redacted = ChatRequest {
             messages: vec![Message {
                 role: Role::Assistant,
-                content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::Redacted {
-                    data: "opaque".into(),
-                })],
+                content: crate::message_content![ContentPart::Reasoning(
+                    ReasoningBlock::Redacted {
+                        data: "opaque".into(),
+                    }
+                )],
             }],
             ..Default::default()
         };

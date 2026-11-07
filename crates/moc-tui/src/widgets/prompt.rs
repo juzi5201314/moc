@@ -499,7 +499,10 @@ impl PromptState {
         let entry = self.histories[next].clone();
         let text = match entry.read() {
             Ok(text) => text,
-            Err(error) => { tracing::warn!(%error, "读取输入历史失败"); return false; }
+            Err(error) => {
+                tracing::warn!(%error, "读取输入历史失败");
+                return false;
+            }
         };
         self.history_cursor = Some(next);
         self.text = self.adopt_history(text, entry.fingerprint());
@@ -607,7 +610,12 @@ impl PromptState {
     ///
     /// 返回是否真的新增了一条（空输入与连续重复返回 `false`）。
     fn record_history(&mut self, text: &str) -> bool {
-        if text.trim().is_empty() || self.histories.first().is_some_and(|entry| entry.matches(text)) {
+        if text.trim().is_empty()
+            || self
+                .histories
+                .first()
+                .is_some_and(|entry| entry.matches(text))
+        {
             return false;
         }
         self.histories.insert(0, text.to_owned().into());

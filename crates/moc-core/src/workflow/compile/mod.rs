@@ -26,7 +26,11 @@ pub struct Diagnostic {
 
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "L{}:C{} [{}] {}", self.line, self.col, self.code, self.message)
+        write!(
+            f,
+            "L{}:C{} [{}] {}",
+            self.line, self.col, self.code, self.message
+        )
     }
 }
 

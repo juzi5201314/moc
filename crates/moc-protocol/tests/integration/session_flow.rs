@@ -6,6 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use crate::support::{
+    PromptMode, ScriptedService, UpdateLog, client_info, local_client, permission_handler,
+    prompt_params, update_handler, wait_until,
+};
 use moc_protocol::methods::{
     AskAnswer, AskResult, ClientCapabilities, ConfigGet, ConfigGetParams, PlanAction,
     ServerCapabilities, SessionCancel, SessionCancelParams, SessionCompact, SessionCompactParams,
@@ -18,10 +22,6 @@ use moc_protocol::methods::{
 };
 use moc_protocol::{
     ClientBuilder, FinishReason, PROTOCOL_VERSION, ProtocolError, RpcCallError, RpcErrorCode,
-};
-use crate::support::{
-    PromptMode, ScriptedService, UpdateLog, client_info, local_client, permission_handler,
-    prompt_params, update_handler, wait_until,
 };
 use tokio::sync::Notify;
 

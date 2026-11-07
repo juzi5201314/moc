@@ -302,7 +302,8 @@ mod tests {
                 previous_plan_id: None,
                 annotations: Vec::new(),
             },
-        ].into();
+        ]
+        .into();
         assert_eq!(
             active_plan(&state).as_deref(),
             Some("## Active Plan\n# 新计划")

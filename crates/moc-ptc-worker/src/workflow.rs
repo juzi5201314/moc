@@ -94,29 +94,24 @@ pub fn run_workflow<R: BufRead + Send + 'static, W: Write>(
                     let thread_control = control.clone();
                     let thread_events = events.clone();
                     let receiver = receiver.take().unwrap();
-                    execution = Some(
-                        thread::Builder::new()
-                            .name("moc-wf-run".into())
-                            .spawn(move || {
-                                let limit = request.max_message_bytes;
-                                let result =
-                                    execute(&request, &receiver, &thread_control, |step| {
-                                        thread_events.send(Event::Step(step))?;
-                                        Ok(())
-                                    });
-                                let mut step =
-                                    result.unwrap_or_else(|error| failed("E_JS", error.to_string()));
-                                if let Some(reason) = thread_control.reason() {
-                                    step = failed(&reason, "workflow run 已中断");
-                                }
-                                if serde_json::to_vec(&step)
-                                    .map_or(true, |bytes| bytes.len() > limit)
-                                {
-                                    step = failed("E_OUTPUT_LIMIT", "workflow run 输出超限");
-                                }
-                                let _ = thread_events.send(Event::Step(step));
-                            })?,
-                    );
+                    execution = Some(thread::Builder::new().name("moc-wf-run".into()).spawn(
+                        move || {
+                            let limit = request.max_message_bytes;
+                            let result = execute(&request, &receiver, &thread_control, |step| {
+                                thread_events.send(Event::Step(step))?;
+                                Ok(())
+                            });
+                            let mut step =
+                                result.unwrap_or_else(|error| failed("E_JS", error.to_string()));
+                            if let Some(reason) = thread_control.reason() {
+                                step = failed(&reason, "workflow run 已中断");
+                            }
+                            if serde_json::to_vec(&step).map_or(true, |bytes| bytes.len() > limit) {
+                                step = failed("E_OUTPUT_LIMIT", "workflow run 输出超限");
+                            }
+                            let _ = thread_events.send(Event::Step(step));
+                        },
+                    )?);
                 }
                 Event::Input(WorkflowHostMessage::Complete { completions }) => {
                     if execution.is_some() {
@@ -374,7 +369,10 @@ mod tests {
             request: WorkflowStartRequest {
                 code: code.into(),
                 args: json!({}),
-                run: WorkflowRunInfo { id: "test-run".into(), resumed_from: None },
+                run: WorkflowRunInfo {
+                    id: "test-run".into(),
+                    resumed_from: None,
+                },
                 memory_limit_bytes: 64 * 1024 * 1024,
                 max_output_bytes: 1 << 20,
                 max_message_bytes: 1 << 20,
@@ -385,7 +383,13 @@ mod tests {
         let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>();
         let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>();
         let worker = thread::spawn(move || {
-            run_workflow(ChanReader { rx: in_rx, buf: VecDeque::new() }, ChanWriter(out_tx))
+            run_workflow(
+                ChanReader {
+                    rx: in_rx,
+                    buf: VecDeque::new(),
+                },
+                ChanWriter(out_tx),
+            )
         });
         let mut frame = serde_json::to_vec(&start).unwrap();
         frame.push(b'\n');
@@ -427,7 +431,12 @@ mod tests {
 
     #[test]
     fn deterministic_prelude_bans_nondeterminism() {
-        for code in ["Date.now()", "Math.random()", "performance.now()", "new Date()"] {
+        for code in [
+            "Date.now()",
+            "Math.random()",
+            "performance.now()",
+            "new Date()",
+        ] {
             let steps = drive(code);
             match &terminal(&steps).state {
                 GuestState::Failed { error } => assert!(
@@ -453,7 +462,10 @@ mod tests {
             other => panic!("expected done, got {other:?}"),
         }
         let events: Vec<_> = steps.iter().flat_map(|s| s.events.iter()).collect();
-        assert!(events.len() >= 2, "expected log+actor events, got {events:?}");
+        assert!(
+            events.len() >= 2,
+            "expected log+actor events, got {events:?}"
+        );
     }
 
     #[test]

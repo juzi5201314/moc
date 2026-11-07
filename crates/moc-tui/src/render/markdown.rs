@@ -1148,7 +1148,11 @@ impl<'a> MdRenderer<'a> {
         // 不能交给 buffer 静默裁掉。
         debug_assert!(
             self.width < MIN_CONTRACT_WIDTH
-                || (0..self.out.len()).step_by(128).all(|start| self.out.window(start..(start + 128).min(self.out.len())).iter().all(|line| line_width(line) <= self.width)),
+                || (0..self.out.len()).step_by(128).all(|start| self
+                    .out
+                    .window(start..(start + 128).min(self.out.len()))
+                    .iter()
+                    .all(|line| line_width(line) <= self.width)),
             "markdown 行超出正文宽度 {}",
             self.width
         );
@@ -1288,7 +1292,8 @@ impl<'a> MdRenderer<'a> {
             Style::new().fg(self.theme.gray_dim).bg(bg),
         );
         for code_line in syntect::util::LinesWithEndings::from(code.as_str()) {
-            let spans: Vec<Span<'static>> = highlighter.line(code_line)
+            let spans: Vec<Span<'static>> = highlighter
+                .line(code_line)
                 .into_iter()
                 .map(|span| {
                     let fg = span

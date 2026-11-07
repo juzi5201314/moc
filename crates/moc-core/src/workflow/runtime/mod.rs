@@ -15,13 +15,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use moc_ptc_protocol::wire::{
-    HostCompletion, WorkflowGuestMessage, WorkflowHostMessage, WorkflowStartRequest,
-    WorkflowRunInfo as WireRunInfo,
-};
 use moc_protocol::{
     UpdateSink, WorkflowEvent, WorkflowPhaseState, WorkflowRoleState, WorkflowRunStatus,
     WorkflowRunSummary, WorkflowStopReason,
+};
+use moc_ptc_protocol::wire::{
+    HostCompletion, WorkflowGuestMessage, WorkflowHostMessage, WorkflowRunInfo as WireRunInfo,
+    WorkflowStartRequest,
 };
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -36,9 +36,8 @@ use crate::service::CoreInner;
 use crate::session::store::SessionPaths;
 use crate::workflow::compile::{CompiledWorkflow, Diagnostic, compile};
 use crate::workflow::engine::{
-    DriverOutcome, DriverRequest, Engine, EngineAction, EngineConfig, EngineEvent,
-    EngineRequest, FileJournal, RunMode, ScriptState, SessionEvent, Step, Terminal,
-    TerminalStatus,
+    DriverOutcome, DriverRequest, Engine, EngineAction, EngineConfig, EngineEvent, EngineRequest,
+    FileJournal, RunMode, ScriptState, SessionEvent, Step, Terminal, TerminalStatus,
 };
 
 /// workflow worker 启动命令：`--ptc-worker` 换成 `--workflow-worker`，程序与
@@ -188,7 +187,10 @@ impl WorkflowManager {
                 meta.status = "stopped".into();
                 meta.stop_reason = Some("interrupted".into());
                 let dir = manager.paths.workflows().join(&meta.run_id);
-                let _ = std::fs::write(dir.join("run.json"), serde_json::to_vec_pretty(&meta).unwrap_or_default());
+                let _ = std::fs::write(
+                    dir.join("run.json"),
+                    serde_json::to_vec_pretty(&meta).unwrap_or_default(),
+                );
             }
         }
         manager
@@ -349,8 +351,11 @@ impl WorkflowManager {
         }
         // run.json 先行落盘（approve→set_role_model 窗口内磁盘必须可读）；
         // 本进程 run 的 created_at_ms ≥ birth_ms，interrupted 降级不会误杀。
-        std::fs::write(dir.join("run.json"), serde_json::to_vec_pretty(&meta).unwrap_or_default())
-            .map_err(|e| CoreError::Session(format!("run.json 写入失败：{e}")))?;
+        std::fs::write(
+            dir.join("run.json"),
+            serde_json::to_vec_pretty(&meta).unwrap_or_default(),
+        )
+        .map_err(|e| CoreError::Session(format!("run.json 写入失败：{e}")))?;
         let mode = match meta.mode.as_str() {
             "resume" => RunMode::Resume,
             "amend" => RunMode::Amend,
@@ -359,12 +364,7 @@ impl WorkflowManager {
         let journal = FileJournal::open(&dir)
             .map_err(|e| CoreError::Session(format!("journal 打开失败：{e}")))?;
         let config = EngineConfig {
-            max_concurrency: self
-                .inner
-                .config
-                .read()
-                .workflow
-                .max_concurrency_ceiling,
+            max_concurrency: self.inner.config.read().workflow.max_concurrency_ceiling,
             label: meta.title.clone(),
             mode,
             resumed_from: meta.resumed_from.clone(),
@@ -407,10 +407,7 @@ impl WorkflowManager {
         let manager = Arc::clone(self);
         let handle2 = Arc::clone(&handle);
         tokio::spawn(async move {
-            if let Err(error) = manager
-                .run_loop(&handle2, compiled, rx, sink)
-                .await
-            {
+            if let Err(error) = manager.run_loop(&handle2, compiled, rx, sink).await {
                 manager.fail_run(&handle2, &format!("{error}"));
             }
         });
@@ -455,11 +452,15 @@ impl WorkflowManager {
     /// 停止 run：引擎终态 + worker cancel + 进程回收。
     pub async fn stop(self: &Arc<Self>, run_id: &str) -> Result<WorkflowRunSummary, CoreError> {
         let Some(handle) = self.runs.lock().get(run_id).cloned() else {
-            return Err(CoreError::Session(format!("workflow run {run_id} 不在运行中")));
+            return Err(CoreError::Session(format!(
+                "workflow run {run_id} 不在运行中"
+            )));
         };
         let actions = handle.engine.lock().cancel("E_STOPPED");
         handle.cancel.cancel();
-        let _ = handle.to_worker.send(WorkflowHostMessage::Cancel { code: "E_STOPPED".into() });
+        let _ = handle.to_worker.send(WorkflowHostMessage::Cancel {
+            code: "E_STOPPED".into(),
+        });
         self.apply_actions(&handle, actions).await;
         // 终态落盘在 run_loop 异步完成；summary 先按已记录的终态投影。
         let mut meta = handle.meta.lock().clone();
@@ -481,12 +482,16 @@ impl WorkflowManager {
             if model == "inherit" {
                 meta.role_models.remove(role_id);
             } else {
-                meta.role_models.insert(role_id.to_string(), model.to_string());
+                meta.role_models
+                    .insert(role_id.to_string(), model.to_string());
             }
             let dir = handle.dir.clone();
             drop(meta);
             let meta = handle.meta.lock().clone();
-            let _ = std::fs::write(dir.join("run.json"), serde_json::to_vec_pretty(&meta).unwrap_or_default());
+            let _ = std::fs::write(
+                dir.join("run.json"),
+                serde_json::to_vec_pretty(&meta).unwrap_or_default(),
+            );
             return Ok(());
         }
         let dir = self.run_dir(run_id)?;
@@ -494,11 +499,15 @@ impl WorkflowManager {
             if model == "inherit" {
                 meta.role_models.remove(role_id);
             } else {
-                meta.role_models.insert(role_id.to_string(), model.to_string());
+                meta.role_models
+                    .insert(role_id.to_string(), model.to_string());
             }
             let running = meta.status == "running";
-            std::fs::write(dir.join("run.json"), serde_json::to_vec_pretty(&meta).unwrap_or_default())
-                .map_err(|e| CoreError::Session(format!("run.json 写入失败：{e}")))?;
+            std::fs::write(
+                dir.join("run.json"),
+                serde_json::to_vec_pretty(&meta).unwrap_or_default(),
+            )
+            .map_err(|e| CoreError::Session(format!("run.json 写入失败：{e}")))?;
             // run.json 已写盘但 status 仍 running：launch 的写盘→注册窗口，
             // 覆盖要进 pending，注册后二次应用到 handle.meta。
             if running {
@@ -520,9 +529,7 @@ impl WorkflowManager {
                 .insert(role_id.to_string(), model.to_string());
             return Ok(());
         }
-        Err(CoreError::Session(format!(
-            "workflow run {run_id} 不存在"
-        )))
+        Err(CoreError::Session(format!("workflow run {run_id} 不存在")))
     }
 
     /// 丢弃 run 的待合并 role 覆盖（launch 审批被 Reject 后不留孤儿条目）。
@@ -585,7 +592,9 @@ impl WorkflowManager {
         code: String,
     ) -> Result<(), CoreError> {
         let Some(handle) = self.runs.lock().get(run_id).cloned() else {
-            return Err(CoreError::Session(format!("workflow run {run_id} 不在运行中")));
+            return Err(CoreError::Session(format!(
+                "workflow run {run_id} 不在运行中"
+            )));
         };
         // 引擎按 hole 名找待决 HoleResolve。
         let actions = {
@@ -628,8 +637,14 @@ impl WorkflowManager {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| CoreError::Session(format!("workflow worker 启动失败：{e}")))?;
-        let mut stdin = child.stdin.take().ok_or_else(|| CoreError::Session("worker stdin".into()))?;
-        let stdout = child.stdout.take().ok_or_else(|| CoreError::Session("worker stdout".into()))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| CoreError::Session("worker stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| CoreError::Session("worker stdout".into()))?;
         // stderr 收集进 fail_run 诊断（worker 秒退时无事件可看）。
         let stderr_buf = Arc::new(Mutex::new(Vec::<String>::new()));
         if let Some(stderr) = child.stderr.take() {
@@ -671,7 +686,10 @@ impl WorkflowManager {
                 request: WorkflowStartRequest {
                     code: compiled.lowered.clone(),
                     args: meta.args.clone(),
-                    run: WireRunInfo { id: handle.id.clone(), resumed_from: meta.resumed_from.clone() },
+                    run: WireRunInfo {
+                        id: handle.id.clone(),
+                        resumed_from: meta.resumed_from.clone(),
+                    },
                     memory_limit_bytes: cfg.memory_limit_bytes,
                     max_output_bytes: cfg.max_output_bytes,
                     max_message_bytes: cfg.max_result_bytes,
@@ -707,7 +725,13 @@ impl WorkflowManager {
                 }
             };
             let WorkflowGuestMessage::Step { step } = message;
-            let guest = self.map_step(&handle.id, step, &meta_plan, &mut local_actors, &mut actor_ordinals);
+            let guest = self.map_step(
+                &handle.id,
+                step,
+                &meta_plan,
+                &mut local_actors,
+                &mut actor_ordinals,
+            );
             let actions = handle.engine.lock().handle_step(guest);
             self.apply_actions(handle, actions).await;
             if handle.view.lock().terminal.is_some() {
@@ -758,10 +782,19 @@ impl WorkflowManager {
         let mut requests = Vec::new();
         for event in step.events {
             match event {
-                WEvent::CreateActor { local_id, site_id, name, persona } => {
+                WEvent::CreateActor {
+                    local_id,
+                    site_id,
+                    name,
+                    persona,
+                } => {
                     let ordinal = *actor_ordinals.get(&site_id).unwrap_or(&0);
                     local_actors.insert(local_id, (site_id.clone(), ordinal));
-                    events.push(EngineEvent::CreateActor { site_id, name, persona });
+                    events.push(EngineEvent::CreateActor {
+                        site_id,
+                        name,
+                        persona,
+                    });
                 }
                 WEvent::PhaseEntered { site_id, name } => {
                     events.push(EngineEvent::Phase { site_id, name });
@@ -778,12 +811,28 @@ impl WorkflowManager {
                     } else {
                         message
                     };
-                    events.push(EngineEvent::Log { site_id, level: "info".into(), message });
+                    events.push(EngineEvent::Log {
+                        site_id,
+                        level: "info".into(),
+                        message,
+                    });
                 }
-                WEvent::Report { site_id, item, artifact_id } => {
-                    events.push(EngineEvent::Report { site_id, item, artifact_id });
+                WEvent::Report {
+                    site_id,
+                    item,
+                    artifact_id,
+                } => {
+                    events.push(EngineEvent::Report {
+                        site_id,
+                        item,
+                        artifact_id,
+                    });
                 }
-                WEvent::DeclareArtifact { site_id, member, arguments } => {
+                WEvent::DeclareArtifact {
+                    site_id,
+                    member,
+                    arguments,
+                } => {
                     events.push(EngineEvent::DeclareArtifact {
                         site_id,
                         member: driver::serde_op_name(&member),
@@ -796,7 +845,11 @@ impl WorkflowManager {
             let site_id = request.site_id;
             let id = request.id as u64;
             match request.operation {
-                WorkflowOperation::Ask { actor, actor_seq, instructions } => {
+                WorkflowOperation::Ask {
+                    actor,
+                    actor_seq,
+                    instructions,
+                } => {
                     let (actor_site_id, actor_ordinal) =
                         local_actors.get(&actor).cloned().unwrap_or_default();
                     let schema = schema_of(&site_id);
@@ -818,15 +871,19 @@ impl WorkflowManager {
                         args: Value::Array(arguments),
                     });
                 }
-                WorkflowOperation::WorldRun { command, args, options } => {
+                WorkflowOperation::WorldRun {
+                    command,
+                    args,
+                    options,
+                } => {
                     requests.push(EngineRequest::WorldRun {
                         request_id: id,
                         site_id,
                         command,
                         args,
-                        timeout_ms: options
-                            .timeout_ms
-                            .unwrap_or_else(|| self.inner.config.read().workflow.world_run_timeout_ms),
+                        timeout_ms: options.timeout_ms.unwrap_or_else(|| {
+                            self.inner.config.read().workflow.world_run_timeout_ms
+                        }),
                         output: options.output.unwrap_or(Value::Null),
                     });
                 }
@@ -846,7 +903,10 @@ impl WorkflowManager {
                         prompt: prompt.unwrap_or_default(),
                         schema,
                     });
-                    requests.push(EngineRequest::HoleResolve { request_id: id, site_id });
+                    requests.push(EngineRequest::HoleResolve {
+                        request_id: id,
+                        site_id,
+                    });
                 }
             }
         }
@@ -858,26 +918,37 @@ impl WorkflowManager {
                 message: error.message,
             },
         };
-        Step { events, requests, state, stall: None }
+        Step {
+            events,
+            requests,
+            state,
+            stall: None,
+        }
     }
 
     /// 执行引擎动作；Dispatch 走 driver（异步 settle 后回流 Complete）。
     async fn apply_actions(self: &Arc<Self>, handle: &Arc<RunHandle>, actions: Vec<EngineAction>) {
         for action in actions {
             match action {
-                EngineAction::Complete { request_id, outcome } => {
+                EngineAction::Complete {
+                    request_id,
+                    outcome,
+                } => {
                     let result = match &outcome {
                         DriverOutcome::Completed(v) => Ok(v.clone()),
-                        DriverOutcome::Failed { code, message } => Err(
-                            moc_ptc_protocol::wire::ScriptError {
+                        DriverOutcome::Failed { code, message } => {
+                            Err(moc_ptc_protocol::wire::ScriptError {
                                 code: code.clone(),
                                 message: message.clone(),
                                 result: None,
-                            },
-                        ),
+                            })
+                        }
                     };
                     let _ = handle.to_worker.send(WorkflowHostMessage::Complete {
-                        completions: vec![HostCompletion { id: request_id as u32, result }],
+                        completions: vec![HostCompletion {
+                            id: request_id as u32,
+                            result,
+                        }],
                     });
                 }
                 EngineAction::Dispatch(request) => {
@@ -914,14 +985,23 @@ impl WorkflowManager {
         let run_id = handle.id.clone();
         tokio::spawn(async move {
             let _ = sink
-                .emit(session_id, moc_protocol::SessionUpdate::Workflow { run_id, event })
+                .emit(
+                    session_id,
+                    moc_protocol::SessionUpdate::Workflow { run_id, event },
+                )
                 .await;
         });
     }
 
     /// ask 派发：对应 role 的在飞计数 + 解析模型写入 view（供面板与快照）。
     fn record_dispatch(&self, handle: &Arc<RunHandle>, request: &DriverRequest) {
-        let DriverRequest::Ask { actor_site_id, actor_ordinal, persona, .. } = request else {
+        let DriverRequest::Ask {
+            actor_site_id,
+            actor_ordinal,
+            persona,
+            ..
+        } = request
+        else {
             return;
         };
         let model = {
@@ -929,11 +1009,9 @@ impl WorkflowManager {
             driver::resolve_actor_model(&meta, actor_site_id, *actor_ordinal, persona)
         };
         let mut view = handle.view.lock();
-        if let Some(role) = view
-            .roles
-            .iter_mut()
-            .find(|r| r.role_id == *actor_site_id || r.role_id == format!("{actor_site_id}#{actor_ordinal}"))
-        {
+        if let Some(role) = view.roles.iter_mut().find(|r| {
+            r.role_id == *actor_site_id || r.role_id == format!("{actor_site_id}#{actor_ordinal}")
+        }) {
             role.asks_in_flight += 1;
             if role.model.is_none() {
                 role.model = Some(model);
@@ -943,7 +1021,12 @@ impl WorkflowManager {
 
     /// ask/请求结算：role 完成计数与 token 记账，发 Usage + NodeUpdated 更新；
     /// artifact 发布成功补发 Artifact 事件（与 preset 声明同形）。
-    fn record_settle(&self, handle: &Arc<RunHandle>, request: &DriverRequest, outcome: &DriverOutcome) {
+    fn record_settle(
+        &self,
+        handle: &Arc<RunHandle>,
+        request: &DriverRequest,
+        outcome: &DriverOutcome,
+    ) {
         if let DriverRequest::PublishArtifact { .. } = request
             && let DriverOutcome::Completed(v) = outcome
         {
@@ -968,25 +1051,33 @@ impl WorkflowManager {
             return;
         }
         let (is_ask, tokens) = match (request, outcome) {
-            (DriverRequest::Ask { .. }, DriverOutcome::Completed(v)) => {
-                (true, v.get("usage").and_then(|u| u.get("spent_tokens")).and_then(|t| t.as_u64()).unwrap_or(0))
-            }
+            (DriverRequest::Ask { .. }, DriverOutcome::Completed(v)) => (
+                true,
+                v.get("usage")
+                    .and_then(|u| u.get("spent_tokens"))
+                    .and_then(|t| t.as_u64())
+                    .unwrap_or(0),
+            ),
             (DriverRequest::Ask { .. }, _) => (true, 0),
             _ => (false, 0),
         };
         if !is_ask {
             return;
         }
-        let DriverRequest::Ask { actor_site_id, actor_ordinal, .. } = request else {
+        let DriverRequest::Ask {
+            actor_site_id,
+            actor_ordinal,
+            ..
+        } = request
+        else {
             unreachable!()
         };
         let usage = {
             let mut view = handle.view.lock();
-            if let Some(role) = view
-                .roles
-                .iter_mut()
-                .find(|r| r.role_id == *actor_site_id || r.role_id == format!("{actor_site_id}#{actor_ordinal}"))
-            {
+            if let Some(role) = view.roles.iter_mut().find(|r| {
+                r.role_id == *actor_site_id
+                    || r.role_id == format!("{actor_site_id}#{actor_ordinal}")
+            }) {
                 role.asks_in_flight = role.asks_in_flight.saturating_sub(1);
                 role.asks_done += 1;
                 role.spent_tokens += tokens;
@@ -1006,7 +1097,10 @@ impl WorkflowManager {
         };
         self.emit(
             handle,
-            WorkflowEvent::NodeUpdated { phases: updates.0, roles: updates.1 },
+            WorkflowEvent::NodeUpdated {
+                phases: updates.0,
+                roles: updates.1,
+            },
         );
         self.emit(handle, WorkflowEvent::Usage { usage });
     }
@@ -1015,7 +1109,11 @@ impl WorkflowManager {
     fn on_session_event(&self, handle: &Arc<RunHandle>, event: SessionEvent) {
         let run_id = handle.id.clone();
         let update = match event {
-            SessionEvent::ActorCreated { site_id, ordinal, name } => {
+            SessionEvent::ActorCreated {
+                site_id,
+                ordinal,
+                name,
+            } => {
                 let mut view = handle.view.lock();
                 // fan-out 时同名 actor 的 ordinal>0 实例以 `site#ord` 区分记账。
                 let role_id = if ordinal == 0 {
@@ -1056,16 +1154,22 @@ impl WorkflowManager {
             SessionEvent::Report { item, artifact_id } => {
                 // 存 {item, artifact_id}：table/metrics/board/chart 的数据源靠
                 // artifact_id 把 report 项路由到声明的 artifact。
-                handle.meta.lock().reports.push(
-                    if let Some(artifact_id) = &artifact_id {
+                handle
+                    .meta
+                    .lock()
+                    .reports
+                    .push(if let Some(artifact_id) = &artifact_id {
                         json!({"item": item, "artifact_id": artifact_id})
                     } else {
                         json!({"item": item})
-                    },
-                );
+                    });
                 Some(WorkflowEvent::Report { item, artifact_id })
             }
-            SessionEvent::DeclareArtifact { member, spec, artifact_id } => {
+            SessionEvent::DeclareArtifact {
+                member,
+                spec,
+                artifact_id,
+            } => {
                 let mut meta = handle.meta.lock();
                 meta.artifacts.push(json!({
                     "member": member,
@@ -1076,7 +1180,13 @@ impl WorkflowManager {
                     artifact: json!({"member": member, "artifact_id": artifact_id, "spec": spec}),
                 })
             }
-            SessionEvent::HoleOpened { site_id, ordinal, name, prompt, schema } => {
+            SessionEvent::HoleOpened {
+                site_id,
+                ordinal,
+                name,
+                prompt,
+                schema,
+            } => {
                 handle.meta.lock().holes.push(json!({
                     "site_id": site_id,
                     "ordinal": ordinal,
@@ -1084,10 +1194,20 @@ impl WorkflowManager {
                     "prompt": prompt,
                     "schema": schema,
                 }));
-                Some(WorkflowEvent::HoleOpened { site_id, ordinal, name, prompt, schema })
+                Some(WorkflowEvent::HoleOpened {
+                    site_id,
+                    ordinal,
+                    name,
+                    prompt,
+                    schema,
+                })
             }
             SessionEvent::HoleCancelled { name } => {
-                handle.meta.lock().holes.retain(|h| h["name"].as_str() != Some(name.as_str()));
+                handle
+                    .meta
+                    .lock()
+                    .holes
+                    .retain(|h| h["name"].as_str() != Some(name.as_str()));
                 Some(WorkflowEvent::HoleFilled { name })
             }
             SessionEvent::ActorDiverged { name } => Some(WorkflowEvent::Log {
@@ -1185,7 +1305,9 @@ impl WorkflowManager {
         let mut view = handle.view.lock();
         if view.terminal.is_none() {
             view.terminal = Some(Terminal {
-                status: TerminalStatus::Stopped { reason: crate::workflow::engine::StopReason::Interrupted },
+                status: TerminalStatus::Stopped {
+                    reason: crate::workflow::engine::StopReason::Interrupted,
+                },
                 result: None,
                 error_code: Some("E_HOST".into()),
                 error_message: Some(message.to_string()),
@@ -1217,15 +1339,21 @@ fn apply_terminal(meta: &mut RunMeta, terminal: &Terminal) {
         }
         TerminalStatus::Errored => {
             meta.status = "errored".into();
-            meta.error = terminal.error_message.clone().or(terminal.error_code.clone());
+            meta.error = terminal
+                .error_message
+                .clone()
+                .or(terminal.error_code.clone());
         }
         TerminalStatus::Stopped { reason } => {
             meta.status = "stopped".into();
-            meta.stop_reason = Some(match reason {
-                crate::workflow::engine::StopReason::User => "user",
-                crate::workflow::engine::StopReason::Interrupted => "interrupted",
-                crate::workflow::engine::StopReason::Provider => "provider",
-            }.into());
+            meta.stop_reason = Some(
+                match reason {
+                    crate::workflow::engine::StopReason::User => "user",
+                    crate::workflow::engine::StopReason::Interrupted => "interrupted",
+                    crate::workflow::engine::StopReason::Provider => "provider",
+                }
+                .into(),
+            );
             // 崩溃类 stopped 也带诊断：worker 秒退的原因（stderr）在
             // error_message 里，不写进 meta.error 就无从排查。
             if terminal.error_message.is_some() {
@@ -1295,8 +1423,7 @@ pub(crate) fn list_run_metas(dir: &Path) -> Vec<RunMeta> {
 pub(crate) fn read_run_meta(dir: &Path) -> Result<RunMeta, CoreError> {
     let data = std::fs::read(dir.join("run.json"))
         .map_err(|e| CoreError::Session(format!("run.json 读取失败：{e}")))?;
-    serde_json::from_slice(&data)
-        .map_err(|e| CoreError::Session(format!("run.json 解析失败：{e}")))
+    serde_json::from_slice(&data).map_err(|e| CoreError::Session(format!("run.json 解析失败：{e}")))
 }
 
 /// running 且无执行者的 run 就地降级为 stopped(interrupted) 并回写 run.json。
@@ -1316,18 +1443,31 @@ fn mark_interrupted(dir: &Path, meta: &mut RunMeta, birth_ms: u64) {
 }
 
 /// `session/workflow_run` 的完整快照。
-pub(crate) fn snapshot_of(meta: &RunMeta, view: Option<&RunView>, dir: &Path) -> moc_protocol::WorkflowRunSnapshot {
+pub(crate) fn snapshot_of(
+    meta: &RunMeta,
+    view: Option<&RunView>,
+    dir: &Path,
+) -> moc_protocol::WorkflowRunSnapshot {
     moc_protocol::WorkflowRunSnapshot {
         summary: workflow_summary(meta),
         plan: (meta.plan != Value::Null).then(|| meta.plan.clone()),
-        phases: view.map(|v| v.phases.clone()).unwrap_or_else(|| meta.phases.clone()),
-        roles: view.map(|v| v.roles.clone()).unwrap_or_else(|| meta.roles.clone()),
+        phases: view
+            .map(|v| v.phases.clone())
+            .unwrap_or_else(|| meta.phases.clone()),
+        roles: view
+            .map(|v| v.roles.clone())
+            .unwrap_or_else(|| meta.roles.clone()),
         commands: meta.commands.clone(),
         reports: meta.reports.clone(),
         artifacts: meta.artifacts.clone(),
         holes: meta.holes.clone(),
-        usage: view.map(|v| v.usage.clone()).unwrap_or_else(|| meta.usage.clone()),
-        script_path: dir.join("script.ts").exists().then(|| dir.join("script.ts").display().to_string()),
+        usage: view
+            .map(|v| v.usage.clone())
+            .unwrap_or_else(|| meta.usage.clone()),
+        script_path: dir
+            .join("script.ts")
+            .exists()
+            .then(|| dir.join("script.ts").display().to_string()),
     }
 }
 

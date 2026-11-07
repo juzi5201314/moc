@@ -862,7 +862,9 @@ impl SessionTable {
                 let mut call_ids: Vec<&str> =
                     message.tool_calls().map(|call| call.id.as_str()).collect();
                 while !call_ids.is_empty() && end < state.entries.len() {
-                    if let Some(TranscriptEntry { message: next, .. }) = state.entries[end].message_entry() {
+                    if let Some(TranscriptEntry { message: next, .. }) =
+                        state.entries[end].message_entry()
+                    {
                         if next.role != Role::Tool
                             || !next
                                 .tool_results()
@@ -1051,8 +1053,14 @@ impl SessionTable {
             let end = pos_call + 1 + offset;
             (
                 call,
-                state.entries[..end].iter().map(StoredEntry::to_entry).collect::<Vec<_>>(),
-                state.entries[end..].iter().map(StoredEntry::to_entry).collect::<Vec<_>>(),
+                state.entries[..end]
+                    .iter()
+                    .map(StoredEntry::to_entry)
+                    .collect::<Vec<_>>(),
+                state.entries[end..]
+                    .iter()
+                    .map(StoredEntry::to_entry)
+                    .collect::<Vec<_>>(),
             )
         };
         // 孤儿标记规则与 rewind 相同（见 rewind 注释）。
@@ -1117,11 +1125,13 @@ impl SessionTable {
             record.state.lock().await.apply_entry(entry.clone());
             let freeze_old = {
                 let state = record.state.lock().await;
-                matches!(&entry, Entry::Compaction { .. } | Entry::ResetBoundary { .. })
-                    || (matches!(&entry, Entry::Message { .. })
-                        && (state.unfrozen_bytes >= archive::FREEZE_BYTES
-                            || (state.transcript.len() > archive::HOT_MESSAGES
-                                && state.transcript.len() % 1024 == 0)))
+                matches!(
+                    &entry,
+                    Entry::Compaction { .. } | Entry::ResetBoundary { .. }
+                ) || (matches!(&entry, Entry::Message { .. })
+                    && (state.unfrozen_bytes >= archive::FREEZE_BYTES
+                        || (state.transcript.len() > archive::HOT_MESSAGES
+                            && state.transcript.len() % 1024 == 0)))
             };
             if freeze_old {
                 let snapshot = record.state.lock().await.clone();
@@ -1598,16 +1608,23 @@ fn page_plans(
 fn state_cache_bytes(state: &SessionState) -> usize {
     state.entries.iter().fold(0usize, |total, entry| {
         let bytes = match entry {
-            StoredEntry::Message { entry, parent_id, .. } => {
-                message_storage_bytes(&entry.message).saturating_add(serialized_bytes(&(
-                    &entry.id, parent_id, &entry.tool, &entry.bash, &entry.agent,
-                    &entry.goal_round, &entry.reminder,
-                )))
-            }
+            StoredEntry::Message {
+                entry, parent_id, ..
+            } => message_storage_bytes(&entry.message).saturating_add(serialized_bytes(&(
+                &entry.id,
+                parent_id,
+                &entry.tool,
+                &entry.bash,
+                &entry.agent,
+                &entry.goal_round,
+                &entry.reminder,
+            ))),
             StoredEntry::Other(entry) => {
                 let bytes = serialized_bytes(entry).saturating_mul(2);
                 match entry.as_ref() {
-                    Entry::Compaction { native, .. } => bytes.saturating_add(serialized_bytes(native)),
+                    Entry::Compaction { native, .. } => {
+                        bytes.saturating_add(serialized_bytes(native))
+                    }
                     _ => bytes,
                 }
             }
@@ -2205,7 +2222,11 @@ mod tests {
         drop(record);
         // 未落盘会话的 read_entries 能看到内存缓冲的整条链。
         assert_eq!(
-            table.read_entries(&info.id).await.expect("读 entries").len(),
+            table
+                .read_entries(&info.id)
+                .await
+                .expect("读 entries")
+                .len(),
             4,
             "header + 3 条簿记"
         );

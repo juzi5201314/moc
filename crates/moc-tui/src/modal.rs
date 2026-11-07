@@ -1981,7 +1981,11 @@ mod tests {
             pricing: None,
             fast_mode: false,
         };
-        assert_eq!(entry("p/m").name(), "m", "display_name 等于 selector 去前缀");
+        assert_eq!(
+            entry("p/m").name(),
+            "m",
+            "display_name 等于 selector 去前缀"
+        );
         assert_eq!(entry("").name(), "m", "display_name 为空去前缀");
         assert_eq!(entry("DeepSeek Flash").name(), "DeepSeek Flash");
     }

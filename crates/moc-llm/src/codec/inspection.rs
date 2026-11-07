@@ -38,7 +38,10 @@ pub fn inspect_request(
             super::anthropic::encode_inspected(cfg, req, stream, Some(&mut sources))
         }
     }?;
-    Ok(RequestInspection { body: encoded.body, sources })
+    Ok(RequestInspection {
+        body: encoded.body,
+        sources,
+    })
 }
 
 pub(super) fn source(

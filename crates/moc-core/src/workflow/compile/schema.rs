@@ -50,7 +50,9 @@ fn decl_schema(
     name: &str,
 ) -> Result<Value, String> {
     if !visiting.insert(name.to_string()) {
-        return Err(format!("recursive type reference through `{name}` is not representable"));
+        return Err(format!(
+            "recursive type reference through `{name}` is not representable"
+        ));
     }
     let schema = match decl {
         TypeDecl::Interface(d) => interface_schema(d, decls, source, defs, visiting)?,
@@ -84,7 +86,15 @@ fn interface_schema(
             ));
         }
     }
-    object_schema(members.iter().copied(), decls, source, defs, visiting, Some(decl.span), decl.id.name.as_str())
+    object_schema(
+        members.iter().copied(),
+        decls,
+        source,
+        defs,
+        visiting,
+        Some(decl.span),
+        decl.id.name.as_str(),
+    )
 }
 
 fn collect_interface_members<'a, 'b>(
@@ -112,15 +122,22 @@ fn object_schema<'a>(
         match sig {
             TSSignature::TSPropertySignature(p) => {
                 let Some(name) = property_name(&p.key) else {
-                    return Err(format!("computed property keys in `{decl_name}` are not representable"));
+                    return Err(format!(
+                        "computed property keys in `{decl_name}` are not representable"
+                    ));
                 };
                 if p.computed {
-                    return Err(format!("computed property `{name}` in `{decl_name}` is not representable"));
+                    return Err(format!(
+                        "computed property `{name}` in `{decl_name}` is not representable"
+                    ));
                 }
                 let Some(annotation) = &p.type_annotation else {
-                    return Err(format!("property `{name}` in `{decl_name}` has no type annotation"));
+                    return Err(format!(
+                        "property `{name}` in `{decl_name}` has no type annotation"
+                    ));
                 };
-                let mut prop = type_schema(&annotation.type_annotation, decls, source, defs, visiting)?;
+                let mut prop =
+                    type_schema(&annotation.type_annotation, decls, source, defs, visiting)?;
                 if let Some(doc) = jsdoc_text(p.span, source)
                     && let Value::Object(obj) = &mut prop
                 {
@@ -132,10 +149,15 @@ fn object_schema<'a>(
                 }
             }
             TSSignature::TSIndexSignature(_) => {
-                return Err(format!("index signatures in `{decl_name}` are not representable"));
+                return Err(format!(
+                    "index signatures in `{decl_name}` are not representable"
+                ));
             }
             TSSignature::TSMethodSignature(m) => {
-                return Err(format!("method `{}` in `{decl_name}` is not representable", property_name(&m.key).unwrap_or_default()));
+                return Err(format!(
+                    "method `{}` in `{decl_name}` is not representable",
+                    property_name(&m.key).unwrap_or_default()
+                ));
             }
             _ => {}
         }
@@ -190,14 +212,26 @@ fn type_schema(
                     TSTupleElement::TSOptionalType(_) | TSTupleElement::TSRestType(_) => {
                         return Err("tuple rest/optional elements are not representable".into());
                     }
-                    other => items.push(type_schema(other.to_ts_type(), decls, source, defs, visiting)?),
+                    other => items.push(type_schema(
+                        other.to_ts_type(),
+                        decls,
+                        source,
+                        defs,
+                        visiting,
+                    )?),
                 }
             }
             Ok(json!({"type": "array", "prefixItems": items, "items": false}))
         }
-        TSType::TSTypeLiteral(l) => {
-            object_schema(l.members.iter(), decls, source, defs, visiting, Some(l.span), "type literal")
-        }
+        TSType::TSTypeLiteral(l) => object_schema(
+            l.members.iter(),
+            decls,
+            source,
+            defs,
+            visiting,
+            Some(l.span),
+            "type literal",
+        ),
         TSType::TSUnionType(u) => union_schema(&u.types, decls, source, defs, visiting),
         TSType::TSTypeReference(r) => {
             let name = match &r.type_name {
@@ -211,7 +245,9 @@ fn type_schema(
                         .as_ref()
                         .and_then(|t| t.params.first())
                         .ok_or("Array<T> requires one type argument")?;
-                    return Ok(json!({"type": "array", "items": type_schema(arg, decls, source, defs, visiting)?}));
+                    return Ok(
+                        json!({"type": "array", "items": type_schema(arg, decls, source, defs, visiting)?}),
+                    );
                 }
                 "Promise" => {
                     let arg = r
@@ -221,27 +257,38 @@ fn type_schema(
                         .ok_or("Promise<T> requires one type argument")?;
                     return type_schema(arg, decls, source, defs, visiting);
                 }
-                "Map" | "Set" | "Date" | "RegExp" | "Record" | "Partial" | "Required" | "Readonly"
-                | "Pick" | "Omit" | "Exclude" | "Extract" | "NonNullable" => {
-                    return Err(format!("`{name}` is not representable as a JSON schema; declare a plain interface instead"));
+                "Map" | "Set" | "Date" | "RegExp" | "Record" | "Partial" | "Required"
+                | "Readonly" | "Pick" | "Omit" | "Exclude" | "Extract" | "NonNullable" => {
+                    return Err(format!(
+                        "`{name}` is not representable as a JSON schema; declare a plain interface instead"
+                    ));
                 }
                 _ => {}
             }
             if decls.contains_key(name) {
                 Ok(json!({"$ref": format!("#/$defs/{name}")}))
             } else {
-                Err(format!("type `{name}` is not a script-declared interface or type alias"))
+                Err(format!(
+                    "type `{name}` is not a script-declared interface or type alias"
+                ))
             }
         }
-        TSType::TSParenthesizedType(p) => type_schema(&p.type_annotation, decls, source, defs, visiting),
-        TSType::TSIntersectionType(_) => Err("intersection types are not representable; declare a merged interface".into()),
+        TSType::TSParenthesizedType(p) => {
+            type_schema(&p.type_annotation, decls, source, defs, visiting)
+        }
+        TSType::TSIntersectionType(_) => {
+            Err("intersection types are not representable; declare a merged interface".into())
+        }
         TSType::JSDocNullableType(n) => Ok(json!({
             "anyOf": [
                 type_schema(&n.type_annotation, decls, source, defs, visiting)?,
                 {"type": "null"},
             ],
         })),
-        _ => Err(format!("type `{}` is not representable as a JSON schema", ts_type_name(ty))),
+        _ => Err(format!(
+            "type `{}` is not representable as a JSON schema",
+            ts_type_name(ty)
+        )),
     }
 }
 

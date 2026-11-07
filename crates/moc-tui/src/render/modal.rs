@@ -749,7 +749,10 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
         for (key, description) in &section.rows {
             let mut parts = crate::render::wrap::wrap_text(description, desc_w).into_iter();
             let mut spans = vec![Span::styled(" ".repeat(HELP_INDENT), Style::new())];
-            spans.push(Span::styled(key.clone(), Style::new().fg(theme.accent_user)));
+            spans.push(Span::styled(
+                key.clone(),
+                Style::new().fg(theme.accent_user),
+            ));
             if str_width(key) <= key_width {
                 // 键位装进列宽：首段描述与键位同行。
                 spans.push(Span::styled(
@@ -787,7 +790,11 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
 
 /// 一组快捷键的自然宽度：最长键位与最长描述（格）。
 fn measure_section(rows: &[(String, String)]) -> (usize, usize) {
-    let key = rows.iter().map(|(key, _)| str_width(key)).max().unwrap_or(0);
+    let key = rows
+        .iter()
+        .map(|(key, _)| str_width(key))
+        .max()
+        .unwrap_or(0);
     let description = rows
         .iter()
         .map(|(_, description)| str_width(description))
@@ -1122,7 +1129,8 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             let options_rows = params.options.len() + 1;
             let max_content_rows = max_lines.saturating_sub(options_rows).max(1);
             scroll_max = scroll_window_max(all_content.len(), max_content_rows);
-            let mut lines = scroll_window(all_content, max_content_rows, *scroll_offset, width, theme);
+            let mut lines =
+                scroll_window(all_content, max_content_rows, *scroll_offset, width, theme);
             if lines.is_empty() {
                 lines.push(Line::from(String::new()));
             }
@@ -4012,9 +4020,7 @@ mod tests {
 
         let (events, _rx) = unbounded_channel();
         let mut app = App::new(Theme::global(), events);
-        app.modal = Some(Modal::Help {
-            scroll: usize::MAX,
-        });
+        app.modal = Some(Modal::Help { scroll: usize::MAX });
         // 矮终端：帮助正文（约 20 行）超过正文可见行数才会出现滚动。
         let mut terminal = Terminal::new(TestBackend::new(100, 14)).expect("构造测试终端");
         terminal
@@ -4078,7 +4084,9 @@ mod tests {
             (0..30u16)
                 .map(|y| {
                     (0..100u16)
-                        .filter_map(|x| terminal.backend().buffer().cell((x, y)).map(|c| c.symbol()))
+                        .filter_map(|x| {
+                            terminal.backend().buffer().cell((x, y)).map(|c| c.symbol())
+                        })
                         .collect::<String>()
                 })
                 .collect()
@@ -4086,7 +4094,10 @@ mod tests {
         terminal
             .draw(|frame| super::draw_modal(frame, &mut app))
             .expect("绘制成功");
-        let Some(Modal::Permission { scroll_offset: max, .. }) = app.modal else {
+        let Some(Modal::Permission {
+            scroll_offset: max, ..
+        }) = app.modal
+        else {
             unreachable!()
         };
         assert!((1..1000).contains(&max), "写回应把偏移收紧到底部：{max}");

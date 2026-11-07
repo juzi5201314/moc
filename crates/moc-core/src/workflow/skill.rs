@@ -8,8 +8,7 @@ use crate::workflow::facade::FACADE_DTS;
 pub const SKILL_NAME: &str = "workflow-authoring";
 
 /// skill frontmatter 描述（`<skills>` 目录里的单行说明）。
-pub const SKILL_DESCRIPTION: &str =
-    "Author and run multi-actor TypeScript workflows (agents, phases, asks, world.run gates, artifacts, holes, resume/amend)";
+pub const SKILL_DESCRIPTION: &str = "Author and run multi-actor TypeScript workflows (agents, phases, asks, world.run gates, artifacts, holes, resume/amend)";
 
 /// SKILL.md 正文（模型可见，英文）。
 pub fn skill_body() -> String {
@@ -278,7 +277,10 @@ mod tests {
                 ),
             }
         }
-        assert!(count >= 10, "patterns.md must carry ≥10 patterns, got {count}");
+        assert!(
+            count >= 10,
+            "patterns.md must carry ≥10 patterns, got {count}"
+        );
     }
 
     /// skill 正文含 verbatim FACADE_DTS 与工具字段说明、诊断码表（规格 §7）。
@@ -289,8 +291,16 @@ mod tests {
         for tool in super::super::runtime::WORKFLOW_TOOLS {
             assert!(body.contains(tool), "skill body must document `{tool}`");
         }
-        for code in ["E_FORBIDDEN_SYNTAX", "E_PHASE_EMPTY", "E_SCHEMA", "E_FACADE"] {
-            assert!(body.contains(code), "skill body must list diagnostic `{code}`");
+        for code in [
+            "E_FORBIDDEN_SYNTAX",
+            "E_PHASE_EMPTY",
+            "E_SCHEMA",
+            "E_FACADE",
+        ] {
+            assert!(
+                body.contains(code),
+                "skill body must list diagnostic `{code}`"
+            );
         }
     }
 }

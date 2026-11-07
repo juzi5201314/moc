@@ -316,7 +316,10 @@ mod tests {
     #[test]
     fn every_flag_has_a_spec_in_order() {
         for (index, spec) in FEATURES.iter().enumerate() {
-            assert_eq!(spec.flag as usize, index, "FEATURES 必须与 FeatureFlag 同序");
+            assert_eq!(
+                spec.flag as usize, index,
+                "FEATURES 必须与 FeatureFlag 同序"
+            );
             assert_eq!(spec.flag.spec().key, spec.key);
         }
         assert_eq!(FEATURES.len(), FeatureFlag::ALL.len());

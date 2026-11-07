@@ -126,7 +126,12 @@ pub fn probe() -> Probe {
                 manual_cell
                     .or_else(|| cell_from_replies(&replies))
                     .map(|cell| {
-                        tracing::info!(?proto, cell_w = cell.w, cell_h = cell.h, "图形能力探测完成");
+                        tracing::info!(
+                            ?proto,
+                            cell_w = cell.w,
+                            cell_h = cell.h,
+                            "图形能力探测完成"
+                        );
                         GraphicsSupport { proto, cell }
                     })
             })
@@ -222,9 +227,8 @@ fn query_terminal() -> Replies {
     // DECRQM `? 2026 $ p`（同步输出）、DA1。
     // DECRQM 排在 DA1 之前：终端按序应答，`da1` 早退条件命中时 2026 的
     // 应答已经到齐，不需要为它再等一轮。
-    let _ = stdout.write_all(
-        b"\x1b[16t\x1b[14t\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[?2026$p\x1b[c",
-    );
+    let _ = stdout
+        .write_all(b"\x1b[16t\x1b[14t\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[?2026$p\x1b[c");
     let _ = stdout.flush();
     let mut bytes = Vec::new();
     let deadline = std::time::Instant::now() + PROBE_BUDGET;

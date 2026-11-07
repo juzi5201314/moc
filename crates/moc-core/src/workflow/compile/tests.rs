@@ -78,7 +78,12 @@ fn forbidden_globals() {
 fn ts_unsupported() {
     assert!(codes(&compile_err("enum E { A }")).contains(&TS_UNSUPPORTED));
     assert!(codes(&compile_err("namespace N {}")).contains(&TS_UNSUPPORTED));
-    assert!(codes(&compile_err("class C { constructor(private x: number) {} }")).contains(&TS_UNSUPPORTED));
+    assert!(
+        codes(&compile_err(
+            "class C { constructor(private x: number) {} }"
+        ))
+        .contains(&TS_UNSUPPORTED)
+    );
     // declare enum 是 declare → FORBIDDEN_SYNTAX
     assert!(codes(&compile_err("declare enum E { A }")).contains(&FORBIDDEN_SYNTAX));
 }
@@ -97,9 +102,13 @@ fn dup_agent_name() {
 
 #[test]
 fn fanout_literal_name() {
-    let d = compile_err(&format!("phase(\"w\"); for (let i = 0; i < 2; i++) agent(\"x\"); {ASK}"));
+    let d = compile_err(&format!(
+        "phase(\"w\"); for (let i = 0; i < 2; i++) agent(\"x\"); {ASK}"
+    ));
     assert!(codes(&d).contains(&FANOUT_LITERAL_NAME));
-    compile_ok(&format!("phase(\"w\"); for (let i = 0; i < 2; i++) agent(`w-${{i}}`); {ASK}"));
+    compile_ok(&format!(
+        "phase(\"w\"); for (let i = 0; i < 2; i++) agent(`w-${{i}}`); {ASK}"
+    ));
     // 经函数传播的 fan-out。
     let d = compile_err(&format!(
         "phase(\"w\"); function mk() {{ agent(\"x\"); }} for (let i = 0; i < 2; i++) mk(); {ASK}"
@@ -116,11 +125,17 @@ fn non_literal_command() {
 
 #[test]
 fn non_literal_model() {
-    let d = compile_err(&format!("phase(\"w\"); const m = \"m\"; agent(\"a\", {{model: m}}); {ASK}"));
+    let d = compile_err(&format!(
+        "phase(\"w\"); const m = \"m\"; agent(\"a\", {{model: m}}); {ASK}"
+    ));
     assert!(codes(&d).contains(&NON_LITERAL_MODEL));
-    compile_ok(&format!("phase(\"w\"); agent(\"a\", {{model: \"gpt-4\"}}); {ASK}"));
+    compile_ok(&format!(
+        "phase(\"w\"); agent(\"a\", {{model: \"gpt-4\"}}); {ASK}"
+    ));
     // model() 产出的 ModelRef（直接或变量绑定）合法。
-    let c = compile_ok(&format!("phase(\"w\"); const r = model(\"m1\"); agent(\"a\", {{model: r}}); {ASK}"));
+    let c = compile_ok(&format!(
+        "phase(\"w\"); const r = model(\"m1\"); agent(\"a\", {{model: r}}); {ASK}"
+    ));
     match &c.plan.roles[0].model_source {
         ModelSource::Routed { refs } => assert_eq!(refs, &["model#1"]),
         other => panic!("expected routed model_source, got {other:?}"),
@@ -146,7 +161,9 @@ fn phase_empty() {
 
 #[test]
 fn hole_name_dup() {
-    let d = compile_err(&format!("phase(\"w\"); hole<null>(\"h\"); hole<null>(\"h\"); {ASK}"));
+    let d = compile_err(&format!(
+        "phase(\"w\"); hole<null>(\"h\"); hole<null>(\"h\"); {ASK}"
+    ));
     assert!(codes(&d).contains(&HOLE_NAME_DUP));
 }
 
@@ -159,20 +176,29 @@ fn indirect_facade() {
         "phase(\"w\"); files[\"read\"](\"x\");",
     ] {
         let d = compile_err(src);
-        assert!(codes(&d).contains(&INDIRECT_FACADE), "expected INDIRECT_FACADE for {src}");
+        assert!(
+            codes(&d).contains(&INDIRECT_FACADE),
+            "expected INDIRECT_FACADE for {src}"
+        );
     }
     // phase 必须是独立语句。
     let d = compile_err("const p = phase(\"w\");");
     assert!(codes(&d).contains(&INDIRECT_FACADE));
     // agent() 直接调用 + 变量别名均合法。
-    compile_ok(&format!("phase(\"w\"); const mk = () => agent(); const a2 = mk(); await a2.ask(\"x\"); {ASK}"));
+    compile_ok(&format!(
+        "phase(\"w\"); const mk = () => agent(); const a2 = mk(); await a2.ask(\"x\"); {ASK}"
+    ));
 }
 
 #[test]
 fn artifact_id_checks() {
-    let d = compile_err(&format!("phase(\"w\"); await artifact.file(\"bad id!\", \"x.txt\"); {ASK}"));
+    let d = compile_err(&format!(
+        "phase(\"w\"); await artifact.file(\"bad id!\", \"x.txt\"); {ASK}"
+    ));
     assert!(codes(&d).contains(&ARTIFACT_ID));
-    compile_ok(&format!("phase(\"w\"); await artifact.file(\"ok-id\", \"x.txt\"); {ASK}"));
+    compile_ok(&format!(
+        "phase(\"w\"); await artifact.file(\"ok-id\", \"x.txt\"); {ASK}"
+    ));
     // 同 id 不同成员。
     let d = compile_err(&format!(
         "phase(\"w\"); await artifact.file(\"dup\", \"x\"); artifact.chart(\"dup\", {{x:{{field:\"a\"}},y:{{field:\"b\"}}}}); {ASK}"
@@ -195,12 +221,20 @@ const a = agent();
 const f = await a.ask<Finding>("find");
 "#,
     );
-    let (_, schema) = c.plan.schemas.iter().find(|(id, _)| id.starts_with("ask")).unwrap();
+    let (_, schema) = c
+        .plan
+        .schemas
+        .iter()
+        .find(|(id, _)| id.starts_with("ask"))
+        .unwrap();
     let f = &schema["$defs"]["Finding"];
     assert_eq!(f["type"], "object");
     assert_eq!(f["properties"]["path"]["type"], "string");
     assert_eq!(f["properties"]["path"]["description"], "文件路径");
-    assert_eq!(f["properties"]["kind"]["enum"], serde_json::json!(["bug", "nit", 1]));
+    assert_eq!(
+        f["properties"]["kind"]["enum"],
+        serde_json::json!(["bug", "nit", 1])
+    );
     assert_eq!(f["required"], serde_json::json!(["path", "kind"]));
 }
 
@@ -242,14 +276,21 @@ const b = agent("b");
 const r2 = await b.ask(`q2 ${r1}`);
 "#,
     );
-    assert!(c2.plan.edges.iter().any(|e| e.from == "one" && e.to == "two"));
+    assert!(
+        c2.plan
+            .edges
+            .iter()
+            .any(|e| e.from == "one" && e.to == "two")
+    );
     // actor receiver 也构成数据边（actor 站点的 phase → ask 的 phase）。
     assert!(c2.plan.roles.iter().any(|r| r.ask_sites.len() == 1));
 }
 
 #[test]
 fn roles_ask_sites() {
-    let c = compile_ok("phase(\"w\"); const a = agent(\"x\"); await a.ask(\"one\"); await a.ask(\"two\");");
+    let c = compile_ok(
+        "phase(\"w\"); const a = agent(\"x\"); await a.ask(\"one\"); await a.ask(\"two\");",
+    );
     let role = &c.plan.roles[0];
     assert_eq!(role.role_id, "actor#1");
     assert_eq!(role.name_pattern.as_deref(), Some("x"));
@@ -287,7 +328,15 @@ function f(p?: number) { return p ?? 0; }
 f();
 "#,
     );
-    for tok in [" as ", "satisfies", "<number>", "p?:", "!", "interface", "type X"] {
+    for tok in [
+        " as ",
+        "satisfies",
+        "<number>",
+        "p?:",
+        "!",
+        "interface",
+        "type X",
+    ] {
         assert!(!c.lowered.contains(tok), "lowered still contains {tok:?}");
     }
     // 类型标注/断言位置被空白化但源码行数不变。

@@ -45,7 +45,14 @@ pub(crate) async fn wake_for_jobs(
     let Ok(record) = inner.sessions.get(&session_id).await else {
         return;
     };
-    if record.state.lock().await.session.parent_session_id.is_some() {
+    if record
+        .state
+        .lock()
+        .await
+        .session
+        .parent_session_id
+        .is_some()
+    {
         return;
     }
     let runtime = inner.runtime(&session_id).await;

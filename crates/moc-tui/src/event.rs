@@ -1665,8 +1665,7 @@ fn handle_mouse_with_connection(
             // 已彻底关闭：把这次点击当作无模态时的普通点击重新派发。
             handle_mouse_with_connection(app, connection, mouse);
             return;
-        } else if left_down && outside && app.modal.as_ref().is_some_and(modal_dismissable)
-        {
+        } else if left_down && outside && app.modal.as_ref().is_some_and(modal_dismissable) {
             handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Esc);
             return;
         }
@@ -2881,12 +2880,9 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 && position.1 < area.y.saturating_add(area.height)
             {
                 app.focus = Focus::Prompt;
-                if let Some(cursor) = crate::render::prompt_cursor_from_point(
-                    app,
-                    area,
-                    position.0,
-                    position.1,
-                ) {
+                if let Some(cursor) =
+                    crate::render::prompt_cursor_from_point(app, area, position.0, position.1)
+                {
                     app.prompt.cursor = cursor;
                 }
             }
@@ -9418,24 +9414,22 @@ mod tests {
             pricing: None,
             fast_mode: false,
         };
-        let open_modal = || {
-            Modal::Model {
-                entries: vec![entry("test/a"), entry("test/b")],
-                current: "test/a".into(),
-                picker: crate::modal::PickerState::default(),
-                level: crate::modal::LevelState::default(),
-                detail: crate::modal::DetailState {
-                    focus: Some(crate::modal::DetailRow::Level),
-                    menu: Some(crate::modal::MenuState {
-                        row: crate::modal::DetailRow::Level,
-                        selected: 0,
-                        offset: 0,
-                        query: String::new(),
-                    }),
-                    ..Default::default()
-                },
-                target: crate::modal::ModelTarget::Session,
-            }
+        let open_modal = || Modal::Model {
+            entries: vec![entry("test/a"), entry("test/b")],
+            current: "test/a".into(),
+            picker: crate::modal::PickerState::default(),
+            level: crate::modal::LevelState::default(),
+            detail: crate::modal::DetailState {
+                focus: Some(crate::modal::DetailRow::Level),
+                menu: Some(crate::modal::MenuState {
+                    row: crate::modal::DetailRow::Level,
+                    selected: 0,
+                    offset: 0,
+                    query: String::new(),
+                }),
+                ..Default::default()
+            },
+            target: crate::modal::ModelTarget::Session,
         };
         // a) 详情焦点+下拉打开时，点浮层之外一次：选择器直接关闭。
         app.modal = Some(open_modal());
@@ -9497,8 +9491,7 @@ mod tests {
         let _ = draw_frame(&mut app, 60, 24);
         let detail_area = app.modal_detail_area;
         assert!(
-            !detail_area.is_empty()
-                && !detail_area.intersection(app.modal_card_area).is_empty(),
+            !detail_area.is_empty() && !detail_area.intersection(app.modal_card_area).is_empty(),
             "窄屏下详情卡应覆盖列表卡"
         );
         // 详情卡内容首行是模型名（非控制行）：移上去什么都不发生。
@@ -9506,11 +9499,7 @@ mod tests {
         handle_mouse_with_connection(
             &mut app,
             &connection,
-            mouse_event(
-                crossterm::event::MouseEventKind::Moved,
-                point.0,
-                point.1,
-            ),
+            mouse_event(crossterm::event::MouseEventKind::Moved, point.0, point.1),
         );
         let Some(Modal::Model { picker, detail, .. }) = app.modal.as_ref() else {
             panic!("模型选择器应保持打开");

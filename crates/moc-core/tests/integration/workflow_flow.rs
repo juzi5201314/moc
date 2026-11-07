@@ -139,8 +139,10 @@ async fn mount_router_script(upstream: &MockServer, captured: Captures, script: 
                     )]),
                     "text/event-stream",
                 ),
-                _ => ResponseTemplate::new(200)
-                    .set_body_raw(support::text_stream("workflow launched"), "text/event-stream"),
+                _ => ResponseTemplate::new(200).set_body_raw(
+                    support::text_stream("workflow launched"),
+                    "text/event-stream",
+                ),
             }
         })
         .mount(upstream)
@@ -281,10 +283,12 @@ async fn workflow_end_to_end_with_model_override() {
     let used_alt = bodies
         .iter()
         .any(|b| b.get("model").and_then(|m| m.as_str()) == Some("gpt-alt"));
-    let used_test = bodies
-        .iter()
-        .any(|b| b.get("model").and_then(|m| m.as_str()) == Some("gpt-test")
-            && b.get("messages").map(|m| m.to_string().contains("check it")).unwrap_or(false));
+    let used_test = bodies.iter().any(|b| {
+        b.get("model").and_then(|m| m.as_str()) == Some("gpt-test")
+            && b.get("messages")
+                .map(|m| m.to_string().contains("check it"))
+                .unwrap_or(false)
+    });
     assert!(used_alt, "覆盖的 role 应用 gpt-alt：{bodies:?}");
     assert!(used_test, "未覆盖的 role 继承会话模型 gpt-test");
 
@@ -301,10 +305,9 @@ async fn workflow_end_to_end_with_model_override() {
     let sidecar = session_sidecar(harness.root.path().join("sessions").as_path(), &session)
         .expect("session sidecar 存在");
     let run_dir = sidecar.join("workflows").join(&run_id);
-    let run_json: Value = serde_json::from_slice(
-        &std::fs::read(run_dir.join("run.json")).expect("run.json 已写"),
-    )
-    .unwrap();
+    let run_json: Value =
+        serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).expect("run.json 已写"))
+            .unwrap();
     assert_eq!(run_json["status"], "completed");
     // A1：脚本返回值的 outline 是 ask<T> 解析出的 T（字符串），不是包裹对象。
     assert!(
@@ -398,10 +401,7 @@ async fn workflow_reject_returns_feedback() {
     // 拒绝反馈应出现在会话 transcript 的工具结果里。
     let loaded = harness.load(&session).await;
     let dump = serde_json::to_string(&loaded).unwrap_or_default();
-    assert!(
-        dump.contains("needs a smaller scope"),
-        "拒绝反馈应回给模型"
-    );
+    assert!(dump.contains("needs a smaller scope"), "拒绝反馈应回给模型");
     harness.close().await;
 }
 
@@ -414,10 +414,10 @@ async fn workflow_activate_requires_ask_capability() {
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(
-            support::text_stream("hi"),
-            "text/event-stream",
-        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(support::text_stream("hi"), "text/event-stream"),
+        )
         .mount(&upstream)
         .await;
     let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
@@ -448,10 +448,8 @@ async fn zero_leak_first_request_byte_identical() {
             .respond_with(move |request: &Request| {
                 let body: Value = serde_json::from_slice(&request.body).expect("JSON");
                 cap.lock().push(body);
-                ResponseTemplate::new(200).set_body_raw(
-                    support::text_stream("hi"),
-                    "text/event-stream",
-                )
+                ResponseTemplate::new(200)
+                    .set_body_raw(support::text_stream("hi"), "text/event-stream")
             })
             .mount(&upstream)
             .await;
@@ -479,7 +477,9 @@ async fn zero_leak_first_request_byte_identical() {
         if let Some(obj) = body.as_object_mut() {
             obj.remove("prompt_cache_key");
         }
-        serde_json::to_string(&body).unwrap().replace(root, "<ROOT>")
+        serde_json::to_string(&body)
+            .unwrap()
+            .replace(root, "<ROOT>")
     };
     let enabled_norm = normalize(&enabled, &enabled_root);
     let disabled_norm = normalize(&disabled, &disabled_root);
@@ -577,7 +577,11 @@ async fn subagent_requests_carry_no_workflow_tools() {
                 .unwrap_or(false)
         })
         .collect();
-    assert!(!child.is_empty(), "应有子会话请求：共 {} 个请求", bodies.len());
+    assert!(
+        !child.is_empty(),
+        "应有子会话请求：共 {} 个请求",
+        bodies.len()
+    );
     for body in child {
         let dump = serde_json::to_string(body).unwrap();
         for tool in WORKFLOW_TOOLS {
@@ -596,10 +600,10 @@ async fn interrupted_run_marked_on_load() {
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(
-            support::text_stream("hi"),
-            "text/event-stream",
-        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(support::text_stream("hi"), "text/event-stream"),
+        )
         .mount(&upstream)
         .await;
     let harness = Harness::with_ask_support(&upstream.uri(), "openai_chat", "").await;
@@ -645,7 +649,9 @@ async fn interrupted_run_marked_on_load() {
         .unwrap_or_else(|| panic!("ghost run 可见，实际列表：{:?}", result.runs));
     assert_eq!(
         ghost.status,
-        WorkflowRunStatus::Stopped { reason: WorkflowStopReason::Interrupted }
+        WorkflowRunStatus::Stopped {
+            reason: WorkflowStopReason::Interrupted
+        }
     );
     harness.close().await;
 }
@@ -670,7 +676,10 @@ async fn wait_terminal(
     for _ in 0..512 {
         let (run_id, event) = next_wf_event(events).await;
         if let WorkflowEvent::RunStatus { status } = &event
-            && !matches!(status, WorkflowRunStatus::Running | WorkflowRunStatus::Pending)
+            && !matches!(
+                status,
+                WorkflowRunStatus::Running | WorkflowRunStatus::Pending
+            )
         {
             return (run_id, *status);
         }
@@ -787,7 +796,10 @@ async fn actor_persona_full_text_and_isolated() {
                 .map(|t| t.to_string().contains("\"yield\""))
                 .unwrap_or(false);
             if is_subagent {
-                let text = body.get("messages").map(|m| m.to_string()).unwrap_or_default();
+                let text = body
+                    .get("messages")
+                    .map(|m| m.to_string())
+                    .unwrap_or_default();
                 let report = if text.contains("outline it") {
                     "PLAN"
                 } else {
@@ -854,15 +866,15 @@ async fn actor_persona_full_text_and_isolated() {
         );
     }
     assert!(
-        children
-            .iter()
-            .any(|c| serde_json::to_string(c).unwrap().contains(full_planner.trim_end())),
+        children.iter().any(|c| serde_json::to_string(c)
+            .unwrap()
+            .contains(full_planner.trim_end())),
         "planner 会话应含完整 persona（>200 字证明非 excerpt）"
     );
     assert!(
-        children
-            .iter()
-            .any(|c| serde_json::to_string(c).unwrap().contains(full_reviewer.trim_end())),
+        children.iter().any(|c| serde_json::to_string(c)
+            .unwrap()
+            .contains(full_reviewer.trim_end())),
         "reviewer 会话应含完整 persona"
     );
     harness.close().await;
@@ -896,9 +908,11 @@ async fn mount_single_ask_router(upstream: &MockServer, captured: Captures, scri
                     .to_string();
                 if seen.lock().insert(key) {
                     return ResponseTemplate::new(200).set_body_raw(
-                        support::tool_stream_with_usage(
-                            vec![("call_yield", "yield", json!({"report": "A1"}))],
-                        ),
+                        support::tool_stream_with_usage(vec![(
+                            "call_yield",
+                            "yield",
+                            json!({"report": "A1"}),
+                        )]),
                         "text/event-stream",
                     );
                 }
@@ -963,7 +977,11 @@ async fn resume_replays_completed_ask_without_requests() {
         .expect("resume 成功");
     let mut events = harness.events.subscribe();
     let (_id, status2) = wait_terminal(&mut events).await;
-    assert_eq!(status2, WorkflowRunStatus::Completed, "resume 应再达 completed");
+    assert_eq!(
+        status2,
+        WorkflowRunStatus::Completed,
+        "resume 应再达 completed"
+    );
 
     assert_eq!(
         captured.lock().len(),
@@ -1195,7 +1213,11 @@ async fn amend_imports_then_seeds_from_divergence() {
     // 等 amend 审批并批准。
     let mut amend_run = None;
     for iter in 0..128 {
-        let recv = tokio::time::timeout(std::time::Duration::from_secs(5), next_wf_event(&mut events)).await;
+        let recv = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            next_wf_event(&mut events),
+        )
+        .await;
         let Ok((_rid, event)) = recv else {
             let loaded = harness.load(&session).await;
             let t = serde_json::to_string(&loaded).unwrap_or_default();
@@ -1217,14 +1239,24 @@ async fn amend_imports_then_seeds_from_divergence() {
     assert_ne!(run2, run_id, "amend 产生新 run_id");
     let mut status2 = None;
     for iter in 0..256 {
-        let recv = tokio::time::timeout(std::time::Duration::from_secs(5), next_wf_event(&mut events)).await;
+        let recv = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            next_wf_event(&mut events),
+        )
+        .await;
         let Ok((_rid2, ev)) = recv else {
-            let j = std::fs::read_to_string(run_dir_of(&harness, &session, &run2).join("journal.jsonl")).unwrap_or_default();
+            let j = std::fs::read_to_string(
+                run_dir_of(&harness, &session, &run2).join("journal.jsonl"),
+            )
+            .unwrap_or_default();
             eprintln!("STALL-B@{iter} journal2={}", &j[..j.len().min(3000)]);
             panic!("run2 未达终态");
         };
         if let WorkflowEvent::RunStatus { status } = &ev
-            && !matches!(status, WorkflowRunStatus::Running | WorkflowRunStatus::Pending)
+            && !matches!(
+                status,
+                WorkflowRunStatus::Running | WorkflowRunStatus::Pending
+            )
         {
             status2 = Some(*status);
             break;
@@ -1241,7 +1273,11 @@ async fn amend_imports_then_seeds_from_divergence() {
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .find(|v| v.get("kind").and_then(|k| k.as_str()) == Some("actor"))
-        .and_then(|v| v.get("child_session_id").and_then(|s| s.as_str()).map(String::from))
+        .and_then(|v| {
+            v.get("child_session_id")
+                .and_then(|s| s.as_str())
+                .map(String::from)
+        })
         .unwrap_or_default();
     let bodies = captured.lock().clone();
     // 零请求导入的直接证据：任何请求的最新 user 指令都不是 "step one"
@@ -1252,8 +1288,7 @@ async fn amend_imports_then_seeds_from_divergence() {
             b.get("tools")
                 .map(|t| t.to_string().contains("\"yield\""))
                 .unwrap_or(false)
-                && b
-                    .get("messages")
+                && b.get("messages")
                     .and_then(|m| m.as_array())
                     .and_then(|msgs| {
                         msgs.iter()
@@ -1297,9 +1332,11 @@ async fn amend_imports_then_seeds_from_divergence() {
         })
         .expect("amend actor 记录含新 child_session_id");
     assert_ne!(new_child_id, child_id, "amend 必须 fork 新子会话");
-    let new_child_dir =
-        session_sidecar(harness.root.path().join("sessions").as_path(), &new_child_id)
-            .expect("新子会话 sidecar");
+    let new_child_dir = session_sidecar(
+        harness.root.path().join("sessions").as_path(),
+        &new_child_id,
+    )
+    .expect("新子会话 sidecar");
     let new_transcript = new_child_dir
         .parent()
         .unwrap()
@@ -1382,19 +1419,21 @@ async fn set_role_model_reroutes_later_asks() {
                 .get("roles")
                 .and_then(|r| r.as_array())
                 .and_then(|roles| roles.last().cloned())
-                .and_then(|r| r.get("role_id").and_then(|v| v.as_str()).map(str::to_string))
+                .and_then(|r| {
+                    r.get("role_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
                 .expect("plan 有第二个 role");
             approve(&harness, &session, &request).await;
             harness
                 .client
-                .call::<SessionWorkflowSetRoleModel>(
-                    SessionWorkflowSetRoleModelParams {
-                        session_id: session.clone(),
-                        run_id: request.run_id.clone(),
-                        role_id,
-                        model: "test/gpt-alt".into(),
-                    },
-                )
+                .call::<SessionWorkflowSetRoleModel>(SessionWorkflowSetRoleModelParams {
+                    session_id: session.clone(),
+                    run_id: request.run_id.clone(),
+                    role_id,
+                    model: "test/gpt-alt".into(),
+                })
                 .await
                 .expect("set_role_model 成功");
             break;
@@ -1551,7 +1590,7 @@ async fn hole_fill_with_new_command_approval() {
                                 }],
                                 mode: None,
                                 agent_message: None,
-                    goal_round: None,
+                                goal_round: None,
                             })
                             .await
                             .expect("fill prompt 成功");
@@ -1559,7 +1598,10 @@ async fn hole_fill_with_new_command_approval() {
                 }
             }
             WorkflowEvent::RunStatus { status }
-                if !matches!(status, WorkflowRunStatus::Running | WorkflowRunStatus::Pending) =>
+                if !matches!(
+                    status,
+                    WorkflowRunStatus::Running | WorkflowRunStatus::Pending
+                ) =>
             {
                 assert_eq!(status, WorkflowRunStatus::Completed);
                 break;
@@ -1653,7 +1695,10 @@ return { names, head, git: git_status };
     let run_json: Value =
         serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
     // files.glob：相对路径 + 排序；files.read：内容。
-    assert_eq!(run_json["result"]["names"], json!(["fixtures/a.txt", "fixtures/b.txt"]));
+    assert_eq!(
+        run_json["result"]["names"],
+        json!(["fixtures/a.txt", "fixtures/b.txt"])
+    );
     assert_eq!(run_json["result"]["head"], "alpha\n");
     if has_git {
         // git.status：初始化仓库下 fixtures 两文件 untracked。

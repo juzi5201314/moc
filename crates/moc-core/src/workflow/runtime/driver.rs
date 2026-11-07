@@ -16,8 +16,8 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use crate::agents::SpawnModel;
-use crate::session::entries::Entry;
 use crate::service::CoreInner;
+use crate::session::entries::Entry;
 use crate::workflow::engine::{ActorContext, DriverOutcome, DriverRequest};
 use crate::workflow::facade;
 use moc_llm::Role;
@@ -148,9 +148,11 @@ impl WorkflowDriver {
             DriverRequest::PublishArtifact { member, spec, .. } => {
                 self.publish_artifact(member, spec).await
             }
-            DriverRequest::CancelAsk { actor_site_id, actor_ordinal, .. } => {
-                self.cancel_ask(actor_site_id, *actor_ordinal).await
-            }
+            DriverRequest::CancelAsk {
+                actor_site_id,
+                actor_ordinal,
+                ..
+            } => self.cancel_ask(actor_site_id, *actor_ordinal).await,
         }
     }
 
@@ -169,20 +171,17 @@ impl WorkflowDriver {
             unreachable!()
         };
         let actor_key = (actor_site_id.clone(), *actor_ordinal);
-        let existing = self
-            .run
-            .view
-            .lock()
-            .actor_sessions
-            .get(&actor_key)
-            .cloned();
+        let existing = self.run.view.lock().actor_sessions.get(&actor_key).cloned();
         let model = {
             let meta = self.run.meta.lock();
             resolve_actor_model(&meta, actor_site_id, *actor_ordinal, persona)
         };
         let child_id = match existing {
             Some(id) => id,
-            None => match self.spawn_actor(context, instructions, schema, &model, persona).await {
+            None => match self
+                .spawn_actor(context, instructions, schema, &model, persona)
+                .await
+            {
                 Ok(id) => {
                     self.run.engine.lock().actor_session_created(
                         actor_site_id,
@@ -217,7 +216,11 @@ impl WorkflowDriver {
             .and_then(|config| config.resolve_model(&model).ok())
             .and_then(|m| m.pricing);
         let usage_before = self.child_usage(&child_id).await;
-        let mut text = if first { None } else { Some(instructions.clone()) };
+        let mut text = if first {
+            None
+        } else {
+            Some(instructions.clone())
+        };
         for attempt in 0..=max_repairs {
             let send_text = text
                 .take()
@@ -265,7 +268,11 @@ impl WorkflowDriver {
                 .clone()
                 .filter(|v| !v.is_null())
                 .or_else(|| entry.message.as_ref().map(|m| Value::String(m.text())));
-            let usage = usage_diff(&self.child_usage(&child_id).await, &usage_before, pricing.as_ref());
+            let usage = usage_diff(
+                &self.child_usage(&child_id).await,
+                &usage_before,
+                pricing.as_ref(),
+            );
             // 交付统计子会话 transcript 的 User 消息数（SeedFrom 截断点；
             // schema 修复重试也占 user 位）。
             let user_turns = self.child_user_turns(&child_id).await;
@@ -312,14 +319,18 @@ impl WorkflowDriver {
         // SeedFrom：前驱 actor 子会话 transcript 截到第 user_turns 个 user 消息之前，
         // 逐字 fork 进新子会话（不碰前驱文件——那是前驱 run 的审计记录）。
         let seed_entries = match context {
-            ActorContext::SeedFrom { child_session_id, user_turns, .. } => {
+            ActorContext::SeedFrom {
+                child_session_id,
+                user_turns,
+                ..
+            } => {
                 let source = match self.inner.sessions.get(child_session_id).await {
                     Ok(record) => record,
                     Err(e) => {
                         return Err(DriverOutcome::Failed {
                             code: "E_ACTOR".into(),
                             message: format!("SeedFrom 源子会话不可读：{e}"),
-                        })
+                        });
                     }
                 };
                 let st = source.state.lock().await;
@@ -367,7 +378,14 @@ impl WorkflowDriver {
 
     /// `world.run`：固定 argv 经 sandbox wrap 直跑（不经 shell）；命令集审批时已授权。
     async fn world_run(&self, request: &DriverRequest) -> DriverOutcome {
-        let DriverRequest::WorldRun { command, args, timeout_ms, output, .. } = request else {
+        let DriverRequest::WorldRun {
+            command,
+            args,
+            timeout_ms,
+            output,
+            ..
+        } = request
+        else {
             unreachable!()
         };
         let policy = self.run.policy.lock().clone();
@@ -411,8 +429,12 @@ impl WorkflowDriver {
         let opt_str = |key: &str| opts.get(key).and_then(|v| v.as_str()).map(String::from);
         let title = opt_str("title");
         let description = opt_str("description");
-        if title.as_deref().is_some_and(|t| t.chars().count() > facade::ARTIFACT_MAX_TITLE_LEN)
-            || description.as_deref().is_some_and(|d| d.chars().count() > facade::ARTIFACT_MAX_DESCRIPTION_LEN)
+        if title
+            .as_deref()
+            .is_some_and(|t| t.chars().count() > facade::ARTIFACT_MAX_TITLE_LEN)
+            || description
+                .as_deref()
+                .is_some_and(|d| d.chars().count() > facade::ARTIFACT_MAX_DESCRIPTION_LEN)
         {
             return DriverOutcome::Failed {
                 code: "E_ARTIFACT".into(),
@@ -430,7 +452,10 @@ impl WorkflowDriver {
             let was_primary = prior
                 .iter()
                 .any(|a| a.get("primary").and_then(|v| v.as_bool()).unwrap_or(false));
-            let requested = opts.get("primary").and_then(|v| v.as_bool()).unwrap_or(false);
+            let requested = opts
+                .get("primary")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if requested
                 && !was_primary
                 && meta.artifacts.iter().any(|a| {
@@ -443,12 +468,18 @@ impl WorkflowDriver {
                     message: "another artifact is already primary in this run".into(),
                 };
             }
-            (was_primary || requested, prior.iter().filter(|a| a.get("version").is_some()).count() as u32 + 1)
+            (
+                was_primary || requested,
+                prior.iter().filter(|a| a.get("version").is_some()).count() as u32 + 1,
+            )
         };
         if version as usize > facade::ARTIFACT_MAX_VERSIONS {
             return DriverOutcome::Failed {
                 code: "E_ARTIFACT".into(),
-                message: format!("artifact \"{id}\" exceeds {} versions", facade::ARTIFACT_MAX_VERSIONS),
+                message: format!(
+                    "artifact \"{id}\" exceeds {} versions",
+                    facade::ARTIFACT_MAX_VERSIONS
+                ),
             };
         }
         let dir = self.run.dir.join("artifacts").join(&id);
@@ -487,10 +518,13 @@ impl WorkflowDriver {
                 if let Err(e) = std::fs::create_dir_all(&dir)
                     .and_then(|_| std::fs::copy(&source, dir.join(&stored)).map(|_| ()))
                 {
-                    return DriverOutcome::Failed { code: "E_ARTIFACT".into(), message: e.to_string() };
+                    return DriverOutcome::Failed {
+                        code: "E_ARTIFACT".into(),
+                        message: e.to_string(),
+                    };
                 }
-                let content_type = opt_str("contentType")
-                    .unwrap_or_else(|| content_type_of(&source).to_string());
+                let content_type =
+                    opt_str("contentType").unwrap_or_else(|| content_type_of(&source).to_string());
                 (stored, Some(content_type))
             }
             _ => {
@@ -503,16 +537,25 @@ impl WorkflowDriver {
                 if content.len() > facade::ARTIFACT_MAX_MARKDOWN_BYTES {
                     return DriverOutcome::Failed {
                         code: "E_ARTIFACT".into(),
-                        message: format!("markdown exceeds {} bytes", facade::ARTIFACT_MAX_MARKDOWN_BYTES),
+                        message: format!(
+                            "markdown exceeds {} bytes",
+                            facade::ARTIFACT_MAX_MARKDOWN_BYTES
+                        ),
                     };
                 }
                 let stored = format!("v{version}_content.md");
                 if let Err(e) = std::fs::create_dir_all(&dir)
                     .and_then(|_| std::fs::write(dir.join(&stored), content))
                 {
-                    return DriverOutcome::Failed { code: "E_ARTIFACT".into(), message: e.to_string() };
+                    return DriverOutcome::Failed {
+                        code: "E_ARTIFACT".into(),
+                        message: e.to_string(),
+                    };
                 }
-                (stored, opt_str("contentType").or_else(|| Some("text/markdown".into())))
+                (
+                    stored,
+                    opt_str("contentType").or_else(|| Some("text/markdown".into())),
+                )
             }
         };
         let mut meta = self.run.meta.lock();
@@ -546,7 +589,10 @@ impl WorkflowDriver {
                 state
                     .entries
                     .iter()
-                    .filter(|e| e.message_entry().is_some_and(|entry| entry.message.role == Role::User))
+                    .filter(|e| {
+                        e.message_entry()
+                            .is_some_and(|entry| entry.message.role == Role::User)
+                    })
                     .count() as u32
             }
             Err(_) => 0,
@@ -589,15 +635,14 @@ pub(crate) async fn world_run_impl(
     timeout_ms: u64,
     output: &Value,
 ) -> DriverOutcome {
-    let wrapped = match crate::sandbox::wrap_command_argv(
-        command,
-        args,
-        &policy.workspace,
-        policy,
-    ) {
+    let wrapped = match crate::sandbox::wrap_command_argv(command, args, &policy.workspace, policy)
+    {
         Ok(w) => w,
         Err(e) => {
-            return DriverOutcome::Failed { code: "E_SANDBOX".into(), message: e.to_string() };
+            return DriverOutcome::Failed {
+                code: "E_SANDBOX".into(),
+                message: e.to_string(),
+            };
         }
     };
     run_capped(
@@ -652,15 +697,17 @@ async fn run_capped(
         tokio::spawn(async move { capture_stream(stream, mode, cap).await })
     };
     let mut out_task = read_stream(
-        child.stdout.take().map(|s| {
-            Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>
-        }),
+        child
+            .stdout
+            .take()
+            .map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
         mode,
     );
     let mut err_task = read_stream(
-        child.stderr.take().map(|s| {
-            Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>
-        }),
+        child
+            .stderr
+            .take()
+            .map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
         mode,
     );
     let mut status = None;
@@ -678,29 +725,25 @@ async fn run_capped(
             }
             // 任一流超限 → 立即 kill：管道写端不会阻塞，其余读取收尾；
             // 退出状态仍由 wait 臂补取（kill 不保证已回收）。
-            let overflowed = matches!(out_res, Some(Ok(Err(_))))
-                || matches!(err_res, Some(Ok(Err(_))));
+            let overflowed =
+                matches!(out_res, Some(Ok(Err(_)))) || matches!(err_res, Some(Ok(Err(_))));
             if overflowed && status.is_none() {
                 let _ = child.start_kill();
             }
         }
         (status, out_res, err_res)
     };
-    let (status, out_res, err_res) = match tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        collect,
-    )
-    .await
-    {
-        Ok(t) => t,
-        Err(_) => {
-            let _ = child.start_kill();
-            return DriverOutcome::Failed {
-                code: "E_WORLD_TIMEOUT".into(),
-                message: format!("world.run 超过 {timeout_ms}ms"),
-            };
-        }
-    };
+    let (status, out_res, err_res) =
+        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), collect).await {
+            Ok(t) => t,
+            Err(_) => {
+                let _ = child.start_kill();
+                return DriverOutcome::Failed {
+                    code: "E_WORLD_TIMEOUT".into(),
+                    message: format!("world.run 超过 {timeout_ms}ms"),
+                };
+            }
+        };
     let status = match status {
         Some(Ok(s)) => s,
         Some(Err(e)) => {
@@ -739,7 +782,10 @@ pub(crate) async fn world_read_impl(
             let pattern = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
             match glob_files(cwd, pattern) {
                 Ok(paths) => DriverOutcome::Completed(json!(paths)),
-                Err(e) => DriverOutcome::Failed { code: "E_WORLD".into(), message: e },
+                Err(e) => DriverOutcome::Failed {
+                    code: "E_WORLD".into(),
+                    message: e,
+                },
             }
         }
         "files_read" => {
@@ -752,10 +798,16 @@ pub(crate) async fn world_read_impl(
         "files_grep" => {
             // 第二参数是路径 glob 过滤（"*.ts"、"src/**"），不是路径。
             let pattern = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
-            let glob = args.get(1).and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+            let glob = args
+                .get(1)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty());
             match grep_files(cwd, pattern, glob) {
                 Ok(matches) => DriverOutcome::Completed(json!(matches)),
-                Err(e) => DriverOutcome::Failed { code: "E_WORLD".into(), message: e },
+                Err(e) => DriverOutcome::Failed {
+                    code: "E_WORLD".into(),
+                    message: e,
+                },
             }
         }
         "git_changed_files" | "git_diff" | "git_status" | "git_log" => {
@@ -769,16 +821,16 @@ pub(crate) async fn world_read_impl(
 }
 
 fn fail_world(message: String) -> DriverOutcome {
-    DriverOutcome::Failed { code: "E_WORLD".into(), message }
+    DriverOutcome::Failed {
+        code: "E_WORLD".into(),
+        message,
+    }
 }
 
 /// 工作区路径围栏：一律工作区相对；逃逸/绝对路径出界 → Failed。
-fn workspace_file(
-    cwd: &std::path::Path,
-    value: &str,
-) -> Result<std::path::PathBuf, DriverOutcome> {
-    let resolved = crate::tools::resolve_tool_path(cwd, value)
-        .map_err(|e| fail_world(e.to_string()))?;
+fn workspace_file(cwd: &std::path::Path, value: &str) -> Result<std::path::PathBuf, DriverOutcome> {
+    let resolved =
+        crate::tools::resolve_tool_path(cwd, value).map_err(|e| fail_world(e.to_string()))?;
     if crate::tools::workspace_escape(cwd, &resolved).is_some() {
         return Err(fail_world(format!("{value} is outside the workspace")));
     }
@@ -791,10 +843,7 @@ fn valid_base(base: &str) -> bool {
 }
 
 /// 执行 git（固定 argv，不经 shell）；非零退出 → Failed（catchable）。
-async fn git_stdout(
-    cwd: &std::path::Path,
-    argv: &[&str],
-) -> Result<String, DriverOutcome> {
+async fn git_stdout(cwd: &std::path::Path, argv: &[&str]) -> Result<String, DriverOutcome> {
     let out = tokio::process::Command::new("git")
         .args(argv)
         .current_dir(cwd)
@@ -830,16 +879,30 @@ async fn git_impl(cwd: &std::path::Path, op: &str, args: &Value) -> DriverOutcom
         "git_changed_files" => {
             let mut files: Vec<String> = Vec::new();
             match base {
-                Some(b) => match git_stdout(cwd, &["diff", "--name-only", "--relative", b, "--", "."]).await {
-                    Ok(out) => files.extend(out.lines().map(str::to_string)),
-                    Err(o) => return o,
-                },
-                None => {
-                    match git_stdout(cwd, &["diff", "--name-only", "--relative", "HEAD", "--", "."]).await {
+                Some(b) => {
+                    match git_stdout(cwd, &["diff", "--name-only", "--relative", b, "--", "."])
+                        .await
+                    {
                         Ok(out) => files.extend(out.lines().map(str::to_string)),
                         Err(o) => return o,
                     }
-                    match git_stdout(cwd, &["ls-files", "--others", "--exclude-standard", "--", "."]).await {
+                }
+                None => {
+                    match git_stdout(
+                        cwd,
+                        &["diff", "--name-only", "--relative", "HEAD", "--", "."],
+                    )
+                    .await
+                    {
+                        Ok(out) => files.extend(out.lines().map(str::to_string)),
+                        Err(o) => return o,
+                    }
+                    match git_stdout(
+                        cwd,
+                        &["ls-files", "--others", "--exclude-standard", "--", "."],
+                    )
+                    .await
+                    {
                         Ok(out) => files.extend(out.lines().map(str::to_string)),
                         Err(o) => return o,
                     }
@@ -855,9 +918,18 @@ async fn git_impl(cwd: &std::path::Path, op: &str, args: &Value) -> DriverOutcom
                 Ok(r) => r,
                 Err(e) => return fail_world(e.to_string()),
             };
-            let mut argv = vec!["diff", "--no-ext-diff", "--relative", base.unwrap_or("HEAD")];
+            let mut argv = vec![
+                "diff",
+                "--no-ext-diff",
+                "--relative",
+                base.unwrap_or("HEAD"),
+            ];
             let mut rel = None;
-            if let Some(p) = args.get(1).and_then(|a| a.as_str()).filter(|s| !s.is_empty()) {
+            if let Some(p) = args
+                .get(1)
+                .and_then(|a| a.as_str())
+                .filter(|s| !s.is_empty())
+            {
                 match workspace_file(cwd, p) {
                     Ok(resolved) => {
                         rel = Some(
@@ -884,7 +956,8 @@ async fn git_impl(cwd: &std::path::Path, op: &str, args: &Value) -> DriverOutcom
             }
         }
         "git_status" => {
-            let status = match git_stdout(cwd, &["status", "--porcelain=v1", "-b", "--", "."]).await {
+            let status = match git_stdout(cwd, &["status", "--porcelain=v1", "-b", "--", "."]).await
+            {
                 Ok(s) => s,
                 Err(o) => return o,
             };
@@ -895,11 +968,24 @@ async fn git_impl(cwd: &std::path::Path, op: &str, args: &Value) -> DriverOutcom
             DriverOutcome::Completed(parse_porcelain(&status, &prefix))
         }
         "git_log" => {
-            let n = args.get(0).and_then(|a| a.as_u64()).unwrap_or(facade::GIT_LOG_DEFAULT as u64);
+            let n = args
+                .get(0)
+                .and_then(|a| a.as_u64())
+                .unwrap_or(facade::GIT_LOG_DEFAULT as u64);
             if n > facade::GIT_LOG_MAX as u64 {
                 return fail_world(format!("git log count exceeds {}", facade::GIT_LOG_MAX));
             }
-            match git_stdout(cwd, &["log", "-n", &n.to_string(), "--format=%H%x1f%s%x1f%an%x1f%aI"]).await {
+            match git_stdout(
+                cwd,
+                &[
+                    "log",
+                    "-n",
+                    &n.to_string(),
+                    "--format=%H%x1f%s%x1f%an%x1f%aI",
+                ],
+            )
+            .await
+            {
                 Ok(out) => {
                     let commits: Vec<Value> = out
                         .lines()
@@ -947,7 +1033,10 @@ fn parse_porcelain(text: &str, prefix: &str) -> Value {
         let raw = &line[3..];
         // rename "a -> b" 取 b；路径去工作区前缀，不在工作区内的跳过。
         let path = raw.rsplit(" -> ").next().unwrap_or(raw).trim_matches('"');
-        let Some(path) = path.strip_prefix(prefix).or(prefix.is_empty().then_some(path)) else {
+        let Some(path) = path
+            .strip_prefix(prefix)
+            .or(prefix.is_empty().then_some(path))
+        else {
             continue;
         };
         let path = path.trim_matches('"').to_string();
@@ -976,7 +1065,9 @@ fn parse_porcelain(text: &str, prefix: &str) -> Value {
 }
 
 fn schema_ok(schema: &Value, value: &Value) -> bool {
-    jsonschema::validator_for(schema).map(|v| v.is_valid(value)).unwrap_or(false)
+    jsonschema::validator_for(schema)
+        .map(|v| v.is_valid(value))
+        .unwrap_or(false)
 }
 
 /// 会话累计用量差分：引擎按 `spent_tokens` 记账，分项与费用进 run 快照。
@@ -1092,7 +1183,10 @@ fn glob_files(cwd: &std::path::Path, pattern: &str) -> Result<Vec<String>, Strin
         }
     }
     if out.len() > facade::FILES_GLOB_MAX {
-        return Err(format!("files.glob matched more than {} files", facade::FILES_GLOB_MAX));
+        return Err(format!(
+            "files.glob matched more than {} files",
+            facade::FILES_GLOB_MAX
+        ));
     }
     out.sort();
     Ok(out)
@@ -1110,7 +1204,11 @@ fn read_capped(path: &std::path::Path, cap: usize) -> Result<String, String> {
 }
 
 /// files.grep：遍历工作区，glob 过滤相对路径；匹配/字节超限拒绝。
-fn grep_files(cwd: &std::path::Path, pattern: &str, glob: Option<&str>) -> Result<Vec<Value>, String> {
+fn grep_files(
+    cwd: &std::path::Path,
+    pattern: &str,
+    glob: Option<&str>,
+) -> Result<Vec<Value>, String> {
     use grep_matcher::Matcher;
     let re = grep_regex::RegexMatcher::new(pattern).map_err(|e| e.to_string())?;
     let filter = glob
@@ -1235,10 +1333,7 @@ mod tests {
             let op = serde_op_name(&kind);
             let outcome = world_read_impl(dir.path(), 1024, &op, &json!([])).await;
             if let DriverOutcome::Failed { message, .. } = &outcome {
-                assert!(
-                    !message.contains("unknown world.read op"),
-                    "{op} 未被识别"
-                );
+                assert!(!message.contains("unknown world.read op"), "{op} 未被识别");
             }
         }
         assert_eq!(serde_op_name(&WorldReadKind::FilesGlob), "files_glob");
@@ -1310,9 +1405,10 @@ mod tests {
             .unwrap();
         child.stdin.take().unwrap().write_all(&data).await.unwrap();
         let buf = capture_stream(
-            child.stdout.take().map(|s| {
-                Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>
-            }),
+            child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
             OutputMode::Tail(64),
             usize::MAX,
         )
@@ -1321,10 +1417,18 @@ mod tests {
         assert_eq!(buf.len(), 64);
         assert_eq!(buf.as_slice(), &data[data.len() - 64..]);
         // discard：无管道 → 空。
-        let buf = capture_stream(None, OutputMode::Discard, usize::MAX).await.unwrap();
+        let buf = capture_stream(None, OutputMode::Discard, usize::MAX)
+            .await
+            .unwrap();
         assert!(buf.is_empty());
-        assert!(matches!(OutputMode::of(&json!({"tail": 7})), OutputMode::Tail(7)));
-        assert!(matches!(OutputMode::of(&json!("discard")), OutputMode::Discard));
+        assert!(matches!(
+            OutputMode::of(&json!({"tail": 7})),
+            OutputMode::Tail(7)
+        ));
+        assert!(matches!(
+            OutputMode::of(&json!("discard")),
+            OutputMode::Discard
+        ));
         assert!(matches!(OutputMode::of(&Value::Null), OutputMode::Full));
     }
 
@@ -1411,44 +1515,42 @@ mod tests {
 
     #[test]
     fn resolve_actor_model_ordering() {
-        let meta = |role_models: &[(&str, &str)], ref_map: &[(&str, &str)]| {
-            super::super::RunMeta {
-                run_id: "r".into(),
-                status: "running".into(),
-                mode: "launch".into(),
-                title: String::new(),
-                created_at_ms: 0,
-                finished_at_ms: None,
-                resumed_from: None,
-                args: Value::Null,
-                commands: vec![],
-                role_models: role_models
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect(),
-                model_ref_map: ref_map
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect(),
-                subagent_model: Some("sub-m".into()),
-                session_model: Some("sess-m".into()),
-                result: None,
-                error: None,
-                stop_reason: None,
-                reports: vec![],
-                artifacts: vec![],
-                holes: vec![],
-                roles: vec![],
-                phases: vec![],
-                usage: Value::Null,
-                plan: json!({
-                    "roles": [
-                        {"role_id": "routed", "model_source": {"kind": "routed", "refs": ["model#0"]}},
-                        {"role_id": "lit", "model_source": {"kind": "literal", "model": "lit-m"}},
-                    ],
-                    "model_refs": [{"ref_id": "model#0", "model_id": "ref-m"}],
-                }),
-            }
+        let meta = |role_models: &[(&str, &str)], ref_map: &[(&str, &str)]| super::super::RunMeta {
+            run_id: "r".into(),
+            status: "running".into(),
+            mode: "launch".into(),
+            title: String::new(),
+            created_at_ms: 0,
+            finished_at_ms: None,
+            resumed_from: None,
+            args: Value::Null,
+            commands: vec![],
+            role_models: role_models
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            model_ref_map: ref_map
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            subagent_model: Some("sub-m".into()),
+            session_model: Some("sess-m".into()),
+            result: None,
+            error: None,
+            stop_reason: None,
+            reports: vec![],
+            artifacts: vec![],
+            holes: vec![],
+            roles: vec![],
+            phases: vec![],
+            usage: Value::Null,
+            plan: json!({
+                "roles": [
+                    {"role_id": "routed", "model_source": {"kind": "routed", "refs": ["model#0"]}},
+                    {"role_id": "lit", "model_source": {"kind": "literal", "model": "lit-m"}},
+                ],
+                "model_refs": [{"ref_id": "model#0", "model_id": "ref-m"}],
+            }),
         };
         // site#ord > site > persona.literal > plan > subagent > session。
         let m = meta(&[("a#2", "ord-m"), ("a", "site-m")], &[]);
@@ -1462,7 +1564,12 @@ mod tests {
         // persona.model ref → model_ref_map 重映射。
         let m2 = meta(&[], &[("ref-x", "mapped-m")]);
         assert_eq!(
-            resolve_actor_model(&m2, "b", 0, &json!({"model": {"model_id": "raw-m", "ref_id": "ref-x"}})),
+            resolve_actor_model(
+                &m2,
+                "b",
+                0,
+                &json!({"model": {"model_id": "raw-m", "ref_id": "ref-x"}})
+            ),
             "mapped-m"
         );
         // plan routed → model_ref_map；未映射 → plan.model_refs。

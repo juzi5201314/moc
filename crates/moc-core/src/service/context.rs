@@ -21,7 +21,11 @@ pub(crate) async fn tools(
     ctx: RequestContext,
     params: moc_protocol::methods::SessionToolsParams,
 ) -> Result<Vec<moc_llm::ToolDef>, RpcError> {
-    let record = inner.sessions.get(&params.session_id).await.map_err(to_rpc)?;
+    let record = inner
+        .sessions
+        .get(&params.session_id)
+        .await
+        .map_err(to_rpc)?;
     let state = record.state.lock().await.metadata();
     let cwd = PathBuf::from(&state.session.cwd);
     let config = inner.project_config(&cwd).map_err(to_rpc)?;
@@ -111,13 +115,22 @@ pub(crate) async fn content(
     let client = inner.client.clone();
     let view = tokio::task::spawn_blocking(move || build_view(snapshot, &session_id, &client))
         .await
-        .map_err(|error| RpcError::new(moc_protocol::RpcErrorCode::InternalError.code(), error.to_string()))??;
+        .map_err(|error| {
+            RpcError::new(
+                moc_protocol::RpcErrorCode::InternalError.code(),
+                error.to_string(),
+            )
+        })??;
     let result = view.page(params.cursor, params.limit)?;
     view::install(inner, &ctx, &params.session_id, view).await?;
     Ok(result)
 }
 
-fn build_view(snapshot: Snapshot, session_id: &str, client: &moc_llm::Client) -> Result<view::View, RpcError> {
+fn build_view(
+    snapshot: Snapshot,
+    session_id: &str,
+    client: &moc_llm::Client,
+) -> Result<view::View, RpcError> {
     let usage = snapshot.usage();
     // compose 按角色分组；来源也按同一规则排列，不能沿原 pieces 顺序错配。
     let mut instruction_sources = Vec::new();
@@ -162,9 +175,12 @@ fn build_view(snapshot: Snapshot, session_id: &str, client: &moc_llm::Client) ->
         &snapshot.sources,
         &instruction_sources,
     );
-    view.bound_text(view::TEXT_CACHE_BYTES).map_err(|error| RpcError::new(
-        moc_protocol::RpcErrorCode::InternalError.code(), format!("保存上下文快照失败：{error}")
-    ))?;
+    view.bound_text(view::TEXT_CACHE_BYTES).map_err(|error| {
+        RpcError::new(
+            moc_protocol::RpcErrorCode::InternalError.code(),
+            format!("保存上下文快照失败：{error}"),
+        )
+    })?;
     Ok(view)
 }
 
@@ -252,7 +268,8 @@ async fn snapshot(
         Some(&model),
         Some(&mut sources),
     );
-    let history_tokens = compact::cached_messages_tokens(&state, &messages[system.messages.len()..]);
+    let history_tokens =
+        compact::cached_messages_tokens(&state, &messages[system.messages.len()..]);
     Ok(Snapshot {
         history_tokens,
         model,
