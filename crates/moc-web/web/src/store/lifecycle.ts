@@ -474,6 +474,7 @@ export async function setSessionAutonomy(
 export async function setSessionPermission(
   sessionId: string,
   permission: SessionPermission,
+  clearGrants = false,
 ): Promise<void> {
   if (sessionId === "draft-session") {
     patchDraft({ permission }, { permission });
@@ -483,7 +484,7 @@ export async function setSessionPermission(
     await rpc.call<SessionInfo>("session/set_permission", {
       session_id: sessionId,
       permission,
-      clear_grants: false,
+      clear_grants: clearGrants,
     }),
   );
 }

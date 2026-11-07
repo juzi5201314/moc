@@ -624,6 +624,11 @@ impl Core {
         self.inner.sandbox_support.clone()
     }
 
+    /// 特性开关有效状态（`[features]` 覆盖合成后）。
+    pub fn features(&self) -> moc_protocol::features::FeatureStates {
+        self.inner.config().features
+    }
+
     /// 加载配置、校验供应商，并创建会话存储目录。
     pub fn new(config: CoreConfig) -> anyhow::Result<Arc<Self>> {
         Self::new_with_sandbox_support(config, crate::sandbox::detect())

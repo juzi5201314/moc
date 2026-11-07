@@ -29,6 +29,12 @@ export type UiState = {
   jobsSession: string | null;
   /** 当前打开的实际工具列表弹窗所属会话。 */
   toolsSession: string | null;
+  /** 特性开关一览（/features）。 */
+  features: boolean;
+  /** 环境诊断（/doctor）。 */
+  doctor: boolean;
+  /** 进程资源监控（/monitor）。 */
+  monitor: boolean;
   focusComposer: number;
   /** 旁路输入框聚焦请求计数。 */
   focusBtw: number;
@@ -43,6 +49,9 @@ export const useUi = create<UiState>()((set) => ({
   confirmDelete: null,
   jobsSession: null,
   toolsSession: null,
+  features: false,
+  doctor: false,
+  monitor: false,
   focusComposer: 0,
   focusBtw: 0,
   set: (patch) => set(patch),

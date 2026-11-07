@@ -5,7 +5,10 @@ import { ComposerBar } from "@/components/chat/composer-bar";
 import { SessionHeader } from "@/components/chat/session-header";
 import { WelcomeView } from "@/components/chat/welcome";
 import { CommandPalette } from "@/components/dialogs/command-palette";
+import { DoctorDialog } from "@/components/dialogs/doctor-dialog";
+import { FeaturesDialog } from "@/components/dialogs/features-dialog";
 import { JobsDialog } from "@/components/dialogs/jobs-dialog";
+import { MonitorDialog } from "@/components/dialogs/monitor-dialog";
 import { ToolsDialog } from "@/components/dialogs/tools-dialog";
 import { WorkspacePicker } from "@/components/dialogs/workspace-picker";
 import { AppFrame } from "@/components/layout/AppFrame";
@@ -33,6 +36,9 @@ export function App() {
 
   const jobsSession = useUi((state) => state.jobsSession);
   const toolsSession = useUi((state) => state.toolsSession);
+  const featuresOpen = useUi((state) => state.features);
+  const doctorOpen = useUi((state) => state.doctor);
+  const monitorOpen = useUi((state) => state.monitor);
   const wfApproval = useWorkflow((s) => s.approvals[0] ?? null);
   const wfApprovalOpen = useWorkflow((s) => s.approvalOpen);
 
@@ -101,6 +107,9 @@ export function App() {
           onClose={() => useUi.getState().set({ toolsSession: null })}
         />
       ) : null}
+      {featuresOpen && <FeaturesDialog />}
+      {doctorOpen && <DoctorDialog />}
+      {monitorOpen && <MonitorDialog />}
       <Toaster />
     </TooltipProvider>
   );

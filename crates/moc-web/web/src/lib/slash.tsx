@@ -4,26 +4,38 @@
 
 import { toast } from "sonner";
 import { AUTONOMY } from "@/lib/autonomy";
+import { applySessionEngine, cycleSessionEngine } from "@/lib/shortcuts";
 import { rpc } from "@/protocol/client";
 import type {
   CommandMeta,
   GoalAction,
   PluginRunCommandResult,
   SessionGoalResult,
+  SessionPermission,
 } from "@/protocol/types";
 import { retrySession, sendPrompt } from "@/store/actions";
 import { useBtw } from "@/store/btw";
 import { toInput, useComposer } from "@/store/composer";
 import { useLayout } from "@/store/layout";
 import {
+  closeSession,
   compactSession,
   createQuickSession,
   setSessionAutonomy,
+  setSessionPermission,
   togglePlanMode,
 } from "@/store/lifecycle";
+import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { openSettings, useUi } from "@/store/ui";
 import { useWorkflow, workflowActivate, workflowRuns } from "@/store/workflow";
+
+const PERMISSION_LABEL: Record<SessionPermission, string> = {
+  full: "完全访问",
+  workspace: "工作区可写",
+  workspace_only: "仅限工作区",
+};
+const PERMISSION_MODES: SessionPermission[] = ["full", "workspace", "workspace_only"];
 
 export type SlashCommand = {
   name: string;
@@ -152,6 +164,15 @@ export function runSlash(
     case "new":
       createQuickSession(view?.info.cwd);
       break;
+    case "resume":
+      useUi.getState().set({ palette: true });
+      break;
+    case "close":
+      // 与标签关闭同一套：运行中先 cancel 等收尾，再 unload 放租约、关标签。
+      void closeSession(sessionId).catch((error) =>
+        toast.error(`关闭会话失败：${errorText(error)}`),
+      );
+      break;
     case "plan": {
       const active = args ? true : !view?.info.plan_active;
       void togglePlanMode(sessionId, active)
@@ -162,6 +183,13 @@ export function runSlash(
         .catch((error) => toast.error(`切换计划状态失败：${errorText(error)}`));
       break;
     }
+    case "confirm-plan":
+      if (!view?.info.plan_active) {
+        toast("只有计划状态可以重新审阅计划");
+        break;
+      }
+      useLayout.getState().openInspector("plan");
+      break;
     case "autonomy": {
       const index = AUTONOMY.findIndex((item) => item.id === view?.info.autonomy);
       const next = args
@@ -174,6 +202,38 @@ export function runSlash(
       void setSessionAutonomy(sessionId, next.id)
         .then(() => toast(`自主程度：${next.label}`, { description: next.description }))
         .catch((error) => toast.error(`切换自主程度失败：${errorText(error)}`));
+      break;
+    }
+    case "permission": {
+      const rest = args.trim().toLowerCase();
+      if (rest === "") {
+        const current =
+          sessionId === "draft-session"
+            ? useSessions.getState().draftSession?.permission
+            : view?.info.permission;
+        toast(`当前权限：${current ? PERMISSION_LABEL[current] : "core 默认"}`, {
+          description: `用法：/permission ${command.usage}`,
+        });
+        break;
+      }
+      if (rest === "clear") {
+        if (sessionId === "draft-session" || !view?.info.permission) {
+          toast("新会话还没有沙盒授权");
+          break;
+        }
+        void setSessionPermission(sessionId, view.info.permission, true)
+          .then(() => toast("已清空本会话沙盒授权"))
+          .catch((error) => toast.error(`清空授权失败：${errorText(error)}`));
+        break;
+      }
+      const mode = rest === "workspace-only" ? "workspace_only" : rest;
+      if (!PERMISSION_MODES.includes(mode as SessionPermission)) {
+        toast(`用法：/permission ${command.usage}`);
+        break;
+      }
+      void setSessionPermission(sessionId, mode as SessionPermission)
+        .then(() => toast(`权限：${PERMISSION_LABEL[mode as SessionPermission]}`))
+        .catch((error) => toast.error(`切换权限失败：${errorText(error)}`));
       break;
     }
     case "ask":
@@ -203,6 +263,12 @@ export function runSlash(
       break;
     case "model":
       useUi.getState().set({ modelPicker: sessionId });
+      break;
+    case "engine":
+      cycleSessionEngine(sessionId);
+      break;
+    case "clm-experimental":
+      applySessionEngine(sessionId, "clm_experimental");
       break;
     case "goal": {
       // 与 cli/tui 同一套解析：空=查看，edit <objective> 改原文，其余整段当新目标建。
@@ -280,11 +346,43 @@ export function runSlash(
         .catch((error) => toast.error(`获取 run 列表失败：${errorText(error)}`));
       break;
     }
+    case "agents":
+      useLayout.getState().openInspector("agents");
+      break;
     case "jobs":
       useUi.getState().set({ jobsSession: sessionId });
       break;
+    case "plugins": {
+      const rest = args.trim();
+      if (rest === "reload") {
+        // 草稿会话在 core 里不存在：传空 id，core 按自身工作目录发现插件。
+        void rpc
+          .call("plugin/reload", {
+            session_id: sessionId === "draft-session" ? "" : sessionId,
+          })
+          .then(() => toast.success("插件已重新加载"))
+          .catch((error) => toast.error(`重载插件失败：${errorText(error)}`));
+      } else if (rest === "") {
+        openSettings("plugins");
+      } else {
+        toast(`用法：/plugins ${command.usage}`);
+      }
+      break;
+    }
     case "settings":
       openSettings();
+      break;
+    case "features":
+      useUi.getState().set({ features: true });
+      break;
+    case "help":
+      openSettings("shortcuts");
+      break;
+    case "doctor":
+      useUi.getState().set({ doctor: true });
+      break;
+    case "monitor":
+      useUi.getState().set({ monitor: true });
       break;
   }
   return true;

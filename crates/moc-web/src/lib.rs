@@ -7,6 +7,7 @@
 //! 传输格式是 NDJSON（一行一个 JSON-RPC 报文），与 TUI 内嵌连接一致。前端由
 //! pnpm 构建（`crates/moc-web/web`），产物经 `build.rs` 嵌入二进制，部署仍只需一个可执行文件。
 
+mod api;
 mod assets;
 mod bridge;
 mod browser;
@@ -57,6 +58,7 @@ pub async fn run(core: Arc<Core>, options: WebOptions) -> anyhow::Result<()> {
 
     let server = Server::with_options((*core).clone(), bridge::options());
     let state = AppState {
+        core,
         token: Arc::new(options.token.clone()),
         server,
     };
@@ -89,6 +91,8 @@ async fn listen(port: u16, fallback: bool) -> std::io::Result<(TcpListener, bool
 
 #[derive(Clone)]
 struct AppState {
+    /// 进程内端点（`api` 模块）直读 core 数据：procstats、沙盒能力、特性开关。
+    pub(crate) core: Arc<Core>,
     token: Arc<String>,
     server: Arc<Server<Core>>,
 }
@@ -100,13 +104,14 @@ impl AppState {
 }
 
 fn routes(state: AppState) -> Router {
-    let ws_route = get(ws_handler).route_layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        require_token,
-    ));
+    let authed = axum::middleware::from_fn_with_state(state.clone(), require_token);
     Router::new()
-        .route("/ws", ws_route)
+        .route("/ws", get(ws_handler).route_layer(authed.clone()))
         .route("/commands.json", get(commands_handler))
+        // 进程内部数据统一走令牌保护；/commands.json 是公开元数据（见 handler 注释）。
+        .route("/features.json", get(api::features).route_layer(authed.clone()))
+        .route("/doctor.json", get(api::doctor).route_layer(authed.clone()))
+        .route("/procstats.json", get(api::procstats).route_layer(authed))
         .fallback(get(static_handler))
         .layer(axum::middleware::from_fn(security_headers))
         .with_state(state)

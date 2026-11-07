@@ -82,6 +82,8 @@ export type InitializeResult = {
   tips?: string[];
 };
 
+export type PingResult = { server_time_ms: number };
+
 export type ModelInput = "text" | "image";
 
 export type ModelPricing = {

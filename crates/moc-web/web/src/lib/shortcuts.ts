@@ -8,6 +8,7 @@ import { useEffect } from "react";
 import { toast } from "sonner";
 import { LEVEL_LABEL, NEXT_LEVEL } from "@/lib/tool-view";
 import type { SessionEngine } from "@/protocol/types";
+import { useConnection } from "@/store/connection";
 import { useLayout } from "@/store/layout";
 import { createQuickSession, setSessionEngine, togglePlanMode } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
@@ -37,6 +38,11 @@ const ENGINE_LABEL: Record<SessionEngine, string> = {
   ptc: "PTC",
   clm_experimental: "CLM（实验）",
 };
+// 引擎与特性 flag 的对应（与 core 的 flag_for_engine 同一张事实）。
+const ENGINE_FLAG: Partial<Record<SessionEngine, string>> = {
+  ptc: "ptc",
+  clm_experimental: "clm",
+};
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -48,18 +54,32 @@ function activeView() {
   return active && view && !view.readOnly ? { id: active, view } : null;
 }
 
-function cycleEngine(): void {
-  const target = activeView();
-  if (!target) return;
-  if (target.view.info.engine_locked) {
+/** 切换会话引擎；引擎已锁定时只提示。`/clm-experimental` 与循环切换共用。 */
+export function applySessionEngine(sessionId: string, engine: SessionEngine): void {
+  const view = useTranscript.getState().bySession[sessionId];
+  if (view?.info.engine_locked) {
     toast("会话引擎已锁定；换引擎请新建会话");
     return;
   }
-  const index = ENGINE_CYCLE.indexOf(target.view.info.engine);
-  const next = ENGINE_CYCLE[(index + 1) % ENGINE_CYCLE.length];
-  setSessionEngine(target.id, next)
-    .then(() => toast(`引擎：${ENGINE_LABEL[next]}`))
+  void setSessionEngine(sessionId, engine)
+    .then(() => toast(`引擎：${ENGINE_LABEL[engine]}`))
     .catch((error) => toast.error(`切换失败：${errorText(error)}`));
+}
+
+/** 循环到下一个特性可用的引擎；flag 关闭的引擎跳过（与 TUI `/engine` 一致）。 */
+export function cycleSessionEngine(sessionId: string): void {
+  const features = useConnection.getState().config?.features;
+  const allowed = ENGINE_CYCLE.filter(
+    (engine) => !ENGINE_FLAG[engine] || features?.[ENGINE_FLAG[engine]] !== false,
+  );
+  const engine = useTranscript.getState().bySession[sessionId]?.info.engine;
+  const index = allowed.indexOf(engine ?? "standard");
+  applySessionEngine(sessionId, allowed[(index + 1) % allowed.length] ?? "standard");
+}
+
+function cycleEngine(): void {
+  const target = activeView();
+  if (target) cycleSessionEngine(target.id);
 }
 
 export function cyclePlan(): void {
