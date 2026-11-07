@@ -157,6 +157,7 @@ fn test_combo_08_model_picker_with_subagents_running() {
         current: "gpt-4o".into(),
         picker: PickerState::default(),
         level: LevelState::default(),
+        detail: Default::default(),
         target: moc_tui::modal::ModelTarget::Session,
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();

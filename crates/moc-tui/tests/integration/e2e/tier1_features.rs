@@ -51,6 +51,7 @@ fn test_f1_02_model_picker_background_has_solid_panel_fill() {
         current: "provider/gpt-4o".into(),
         picker: PickerState::default(),
         level: LevelState::default(),
+        detail: Default::default(),
         target: moc_tui::modal::ModelTarget::Session,
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
@@ -1240,6 +1241,7 @@ fn test_f14_04_modal_model_candidates_record_item_hit_targets() {
         current: "p/m1".into(),
         picker: PickerState::default(),
         level: LevelState::default(),
+        detail: Default::default(),
         target: moc_tui::modal::ModelTarget::Session,
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();

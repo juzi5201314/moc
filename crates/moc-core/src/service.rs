@@ -1049,8 +1049,10 @@ impl AgentService for Core {
             .available_models()
             .into_iter()
             .map(|model| ModelInfo {
+                // 目录里的展示名就是模型 id；`ResolvedModel.display_name` 是
+                // 带默认等级的运行时名字（`id @level`），不属于目录。
+                display_name: model.id.clone(),
                 id: model.id,
-                display_name: model.display_name,
                 thinking_levels: Some(
                     std::iter::once("off".to_owned())
                         .chain(

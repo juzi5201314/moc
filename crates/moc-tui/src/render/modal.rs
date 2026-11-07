@@ -288,22 +288,23 @@ struct ModalBody {
     scroll_max: usize,
     /// (条目下标, 正文行号)。
     hits: Vec<(usize, usize)>,
-    /// 思考等级芯片：(levels 下标, 正文行号, 起始列, 列宽)。
-    level_hits: Vec<(usize, usize, u16, u16)>,
 }
 
 /// 居中模态卡片。
 pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     app.modal_item_hits.clear();
-    app.modal_level_hits.clear();
+    app.modal_detail_hits.clear();
+    app.modal_menu_hits.clear();
     app.modal_card_area = Rect::default();
+    app.modal_detail_area = Rect::default();
+    app.modal_menu_area = Rect::default();
     // 模态是阻塞层：底下界面登记的键位一律作废，只留模态自己的。
     app.key_hits.clear();
     let area = frame.area();
     if area.width < 20 || area.height < 6 {
         return;
     }
-    if matches!(app.modal, Some(Modal::Model { .. } | Modal::Fusion { .. })) {
+    if matches!(app.modal, Some(Modal::Model { .. })) {
         model_picker::draw(frame, app);
         return;
     }
@@ -371,16 +372,6 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
                     layout.area.width.saturating_sub(2),
                     1,
                 ),
-            ))
-        })
-        .collect();
-    app.modal_level_hits = body
-        .level_hits
-        .into_iter()
-        .filter_map(|(index, row, start, width)| {
-            Some((
-                index,
-                Rect::new(layout.body.x.saturating_add(start), row_y(row)?, width, 1),
             ))
         })
         .collect();
@@ -1102,9 +1093,6 @@ fn wrapped_lines(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Fusion 卡片标签列宽（列）：最长的 `Sidekick` 加 1 格间距。
-const FUSION_LABEL_WIDTH: usize = 9;
-
 /// 通用模态的正文与提示条（按类型分派）。
 ///
 /// `width` 是卡片正文宽度，`max_lines` 是正文可见行数（提示条另算）：
@@ -1114,7 +1102,6 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
     let theme = app.theme;
     let dim = Style::new().fg(theme.gray_dim);
     let mut hits = Vec::new();
-    let mut level_hits = Vec::new();
     let (mut lines, footer) = match modal {
         Modal::Permission {
             params,
@@ -1182,76 +1169,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
         Modal::Model { .. } => {
             let body = model_picker::body(app, modal, width, max_lines);
             hits.extend(body.hits);
-            level_hits.extend(body.level_hits);
             (body.lines, body.footer.unwrap_or_default())
-        }
-        Modal::Fusion {
-            draft,
-            focus,
-            loading,
-            error,
-            ..
-        } => {
-            let mut lines = wrapped_lines(
-                "前沿模型负责规划、调查与评审，高性价比模型执行实现与验证",
-                width,
-                Style::new().fg(theme.text_secondary),
-            );
-            lines.push(Line::from(String::new()));
-            for (index, label, value) in [
-                (0usize, "Lead", &draft.lead),
-                (1, "Sidekick", &draft.sidekick),
-                (2, "应用", &String::new()),
-            ] {
-                hits.push((index, lines.len()));
-                let selected = index == *focus;
-                let marker = if selected { "❯ " } else { "  " };
-                let style = if selected {
-                    Style::new()
-                        .fg(theme.accent_user)
-                        .bg(theme.bg_visual)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(theme.text_primary)
-                };
-                let shown = match (index, value.is_empty()) {
-                    (2, _) => String::new(),
-                    (_, true) => "未选择".to_owned(),
-                    (_, false) => crate::app::model_selector_label(value),
-                };
-                let value_style = if selected {
-                    style
-                } else if value.is_empty() {
-                    Style::new().fg(theme.gray)
-                } else {
-                    Style::new().fg(theme.text_secondary)
-                };
-                let text = format!("{}{shown}", fit(label, FUSION_LABEL_WIDTH));
-                lines.push(Line::from(vec![
-                    Span::styled(marker, style),
-                    Span::styled(fit(&text, width.saturating_sub(2)), value_style),
-                ]));
-            }
-            if *loading {
-                lines.push(Line::from(String::new()));
-                lines.push(Line::from(Span::styled(
-                    "正在切换模型…",
-                    Style::new().fg(theme.accent_running),
-                )));
-            } else if let Some(error) = error {
-                lines.push(Line::from(String::new()));
-                lines.extend(wrapped_lines(
-                    &format!("错误：{error}"),
-                    width,
-                    Style::new().fg(theme.accent_error),
-                ));
-            }
-            let footer = overlay::footer(
-                &[("↑↓", "移动"), ("enter", "选择"), ("esc", "返回")],
-                width,
-                theme,
-            );
-            (lines, footer)
         }
         Modal::SwitchModel {
             selector,
@@ -1664,7 +1582,6 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
         footer: Some(footer),
         scroll_max,
         hits,
-        level_hits,
     }
 }
 
@@ -2379,257 +2296,6 @@ fn ask_confirm_layout(
     }
 }
 
-/// 思考等级条：`╭`／`╰` 两个圆角把标签与等级挂在同一条左轨上，等级用方括号裹成一段分段控件，
-/// 固定占两行，切换条目时列表不跳动。
-///
-/// 标签行只负责命名，重心落在芯片行：选中项反白成强调色，其余降一档灰，`│` 分隔线再暗一档，
-/// 眼睛先读等级、后读分隔。条目没有可选等级（角色伪值）时照旧占两行、显示占位。
-/// 另返回芯片行上每个可见芯片的 `(levels 下标, 起始列, 列宽)`，鼠标点芯片即切档。
-fn level_lines(
-    theme: &Theme,
-    entry: Option<&crate::modal::ModelEntry>,
-    resolved: Option<&str>,
-    width: usize,
-) -> ([Line<'static>; 2], Vec<(usize, u16, u16)>) {
-    let corner_style = Style::new().fg(theme.border_active);
-    let label = Line::from(vec![
-        Span::styled("╭ ".to_owned(), corner_style),
-        Span::styled(
-            "思考等级".to_owned(),
-            Style::new()
-                .fg(theme.text_primary)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    let levels = entry.map_or(&[][..], |entry| entry.levels.as_slice());
-    if levels.is_empty() {
-        return (
-            [
-                label,
-                Line::from(vec![
-                    Span::styled("╰ ".to_owned(), corner_style),
-                    Span::styled(
-                        if entry.is_some() {
-                            "— 不适用"
-                        } else {
-                            "—"
-                        }
-                        .to_owned(),
-                        Style::new().fg(theme.gray_dim),
-                    ),
-                ]),
-            ],
-            Vec::new(),
-        );
-    }
-    let bracket_style = Style::new().fg(theme.text_secondary);
-    let separator_style = Style::new().fg(theme.gray_dim);
-    // 芯片两侧各留 1 格底色，选中块因此在文字两侧等宽；分隔线插在两块之间，相邻等级相距 3 格。
-    // 宽度预算先扣掉收尾的 `]`：宁可少显示几档，也不让右括号被挤掉。
-    let mut spans = vec![
-        Span::styled("╰ ".to_owned(), corner_style),
-        Span::styled("[".to_owned(), bracket_style),
-    ];
-    let mut used = str_width("╰ [");
-    let mut shown = 0usize;
-    let mut chips = Vec::with_capacity(levels.len());
-    // 保证当前等级落在可见窗口内，不因前面的低档位占满宽度而消失。
-    let selected = resolved
-        .and_then(|value| levels.iter().position(|level| level == value))
-        .unwrap_or(0);
-    let mut first = 0;
-    while first < selected
-        && 4 + levels[first..=selected]
-            .iter()
-            .map(|level| str_width(level) + 3)
-            .sum::<usize>()
-            > width
-    {
-        first += 1;
-    }
-    for (index, level) in levels.iter().enumerate().skip(first) {
-        let chip = format!(" {level} ");
-        let separator = usize::from(shown > 0);
-        if used + str_width(&chip) + separator + 1 > width {
-            break;
-        }
-        if shown > 0 {
-            spans.push(Span::styled("│".to_owned(), separator_style));
-        }
-        if let (Ok(start), Ok(chip_width)) = (
-            u16::try_from(used + separator),
-            u16::try_from(str_width(&chip)),
-        ) {
-            chips.push((index, start, chip_width));
-        }
-        used += str_width(&chip) + separator;
-        spans.push(Span::styled(
-            chip,
-            if resolved == Some(level.as_str()) {
-                Style::new()
-                    .fg(theme.bg_dark)
-                    .bg(theme.accent_model)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(theme.gray)
-            },
-        ));
-        shown += 1;
-    }
-    // 一格芯片都放不下就别留空括号，换成占位符，窄终端上不会出现不闭合的 `[`。
-    if shown == 0 {
-        spans.truncate(1);
-        spans.push(Span::styled(
-            "—".to_owned(),
-            Style::new().fg(theme.gray_dim),
-        ));
-    } else {
-        spans.push(Span::styled("]".to_owned(), bracket_style));
-    }
-    ([label, Line::from(spans)], chips)
-}
-
-/// 规格卡片出现的正文宽度下限：再窄就把整行让给候选列表，不再分栏。
-const META_MIN_CONTENT: usize = 74;
-/// 卡片外框宽度的上下限，以及两列之间的空隙。
-const META_MIN: usize = 29;
-const META_MAX: usize = 31;
-const CARD_GAP: usize = 2;
-
-/// 选中模型的规格卡片：只画真实生效的项，没值的整行（连同字段名）都不出现。
-///
-/// 字段名一律英文短标签、值靠左对齐；等级列表按值列宽度折行，续行只缩进。
-fn model_meta_lines(
-    theme: &Theme,
-    entry: Option<&crate::modal::ModelEntry>,
-    width: usize,
-) -> Vec<Line<'static>> {
-    let Some(entry) = entry else {
-        return Vec::new();
-    };
-    if width < META_MIN {
-        return Vec::new();
-    }
-    let inner = width - 2;
-    // 行内布局：边框 + 1 空格 + 字段名 + 2 空格 + 值 + 1 空格 + 边框。
-    let label_width = 7;
-    let value_width = inner.saturating_sub(label_width + 4);
-    if value_width < 8 {
-        return Vec::new();
-    }
-    let mut rows: Vec<(String, String)> = Vec::with_capacity(8);
-    if let Some(window) = entry.context_window {
-        rows.push(("context".to_owned(), crate::render::format_tokens(window)));
-    }
-    if let Some(tokens) = entry.max_output_tokens {
-        rows.push((
-            "output".to_owned(),
-            crate::render::format_tokens(u64::from(tokens)),
-        ));
-    }
-    if !entry.inputs.is_empty() {
-        let inputs: Vec<&str> = entry
-            .inputs
-            .iter()
-            .map(|input| match input {
-                moc_protocol::methods::ModelInput::Text => "text",
-                moc_protocol::methods::ModelInput::Image => "image",
-            })
-            .collect();
-        rows.push(("input".to_owned(), inputs.join(" · ")));
-    }
-    if let Some(pricing) = &entry.pricing {
-        rows.push((
-            "price".to_owned(),
-            format!(
-                "{} → {}/M",
-                meta_price(pricing.input),
-                meta_price(pricing.output)
-            ),
-        ));
-        // 缓存读写各自选填，只把配置了的那一项画出来。
-        let cache: Vec<String> = [pricing.cache_read, pricing.cache_write]
-            .into_iter()
-            .flatten()
-            .map(meta_price)
-            .collect();
-        if !cache.is_empty() {
-            rows.push(("cache".to_owned(), format!("{}/M", cache.join(" / "))));
-        }
-    }
-    if !entry.levels.is_empty() {
-        let mut wrapped: Vec<String> = Vec::with_capacity(2);
-        let mut current = String::new();
-        for level in &entry.levels {
-            let candidate = if current.is_empty() {
-                level.clone()
-            } else {
-                format!("{current} · {level}")
-            };
-            if str_width(&candidate) <= value_width {
-                current = candidate;
-                continue;
-            }
-            if !current.is_empty() {
-                wrapped.push(std::mem::take(&mut current));
-            }
-            current.clone_from(level);
-        }
-        if !current.is_empty() {
-            wrapped.push(current);
-        }
-        for (index, value) in wrapped.into_iter().enumerate() {
-            let label = if index == 0 {
-                "levels".to_owned()
-            } else {
-                String::new()
-            };
-            rows.push((label, value));
-        }
-    }
-    let border_style = Style::new().fg(theme.border_active);
-    let rule = "─".repeat(inner);
-    let mut lines = Vec::with_capacity(rows.len() + 2);
-    lines.push(Line::from(Span::styled(format!("╭{rule}╮"), border_style)));
-    if rows.is_empty() {
-        // 角色伪值没有任何可选元数据：给一行说明，不留一只空框。
-        let text = fit(
-            &format!(
-                " {}",
-                truncate(entry.label.as_str(), inner.saturating_sub(2))
-            ),
-            inner,
-        );
-        lines.push(Line::from(vec![
-            Span::styled("│", border_style),
-            Span::styled(text, Style::new().fg(theme.gray_dim)),
-            Span::styled("│", border_style),
-        ]));
-    }
-    for (label, value) in rows {
-        lines.push(Line::from(vec![
-            Span::styled("│", border_style),
-            Span::raw(" "),
-            Span::styled(fit(&label, label_width), Style::new().fg(theme.gray_dim)),
-            Span::raw("  "),
-            Span::styled(
-                fit(&value, value_width),
-                Style::new().fg(theme.text_primary),
-            ),
-            Span::raw(" "),
-            Span::styled("│", border_style),
-        ]));
-    }
-    lines.push(Line::from(Span::styled(format!("╰{rule}╯"), border_style)));
-    lines
-}
-
-/// 每百万 token 的单价：最多三位小数，去掉尾随零，`$1`、`$0.075`、`$1.25`。
-fn meta_price(value: f64) -> String {
-    let text = format!("{value:.3}");
-    format!("${}", text.trim_end_matches('0').trim_end_matches('.'))
-}
-
 /// 并排拼接左右两栏：左栏补齐到 `left_width` 列后接竖线分隔，再接右栏。
 fn join_columns(
     left: Vec<Line<'static>>,
@@ -3122,42 +2788,17 @@ mod tests {
                     cache_read: Some(0.015),
                     cache_write: None,
                 }),
+                fast_mode: false,
             }],
             current: "p/model:high".into(),
             picker: PickerState::default(),
             level: crate::modal::LevelState::default(),
+            detail: Default::default(),
             target: crate::modal::ModelTarget::Session,
         };
 
+        // 列表卡：选中行、供应商次要色与当前模型 ✓。
         let lines = modal_lines(&app, &modal, 80, 20);
-        let level_line = lines
-            .iter()
-            .find(|line| line_text(line).contains("╰ ["))
-            .expect("思考等级条");
-        assert!(
-            lines
-                .iter()
-                .any(|line| line_text(line).contains("╭ 思考等级"))
-        );
-        assert!(line_text(level_line).contains("╰ [ off │ high ]"));
-        let chip = |name: &str| {
-            level_line
-                .spans
-                .iter()
-                .find(|span| span.content.trim() == name)
-                .unwrap_or_else(|| panic!("{name} 出现在等级条"))
-        };
-        assert_eq!(chip("high").content.as_ref(), " high ");
-        assert_eq!(chip("high").style.bg, Some(theme.accent_model));
-        assert_eq!(chip("high").style.fg, Some(theme.bg_dark));
-        assert_eq!(chip("off").content.as_ref(), " off ");
-        assert_eq!(chip("off").style.bg, None);
-        let separator = level_line
-            .spans
-            .iter()
-            .find(|span| span.content.as_ref() == "│")
-            .expect("等级分隔线");
-        assert_eq!(separator.style.fg, Some(theme.gray_dim));
         let row = lines
             .iter()
             .find(|line| line_text(line).starts_with("❯ "))
@@ -3171,11 +2812,21 @@ mod tests {
             .find(|span| span.content.contains("p ✓"))
             .expect("供应商次要列");
         assert_eq!(provider.style.fg, Some(theme.text_secondary));
-        assert!(lines.iter().any(|line| line_text(line).contains("500k")));
+
+        // 详情卡：规格行带上下文窗口，思考等级控制行带当前值。
+        let (detail, hits) = super::model_picker::detail_lines(&app, &modal, 30);
+        let texts: Vec<String> = detail.iter().map(line_text).collect();
+        assert!(texts.iter().any(|text| text.contains("500k")), "{texts:?}");
+        let level_row = hits
+            .iter()
+            .find(|(row, _)| *row == crate::modal::DetailRow::Level)
+            .map(|(_, line)| *line)
+            .expect("思考等级控制行");
+        assert!(texts[level_row].contains("high"), "{texts:?}");
     }
 
     /// 模型选择器在任何高度都要保住页脚与至少一条候选：留白随行预算递减，
-    /// 等级条两行始终相邻，页脚永远单行收尾，且每行都不超过正文宽度。
+    /// 页脚永远单行收尾，且每行都不超过正文宽度。
     #[test]
     fn model_picker_fits_short_terminals() {
         let (events, _receiver) = unbounded_channel();
@@ -3191,6 +2842,7 @@ mod tests {
                     max_output_tokens: Some(64_000),
                     inputs: vec![moc_protocol::methods::ModelInput::Text],
                     pricing: None,
+                    fast_mode: false,
                 },
                 crate::modal::ModelEntry {
                     selector: "p/other".into(),
@@ -3201,6 +2853,7 @@ mod tests {
                     max_output_tokens: None,
                     inputs: Vec::new(),
                     pricing: None,
+                    fast_mode: false,
                 },
             ],
             current: "p/model:high".into(),
@@ -3209,11 +2862,12 @@ mod tests {
                 manual: Some("high".into()),
                 ..Default::default()
             },
+            detail: Default::default(),
             target: crate::modal::ModelTarget::Session,
         });
         let modal = app.modal.as_ref().expect("模型选择器");
 
-        // 提示条在正文预算之外；包括极短窗口的紧凑等级行。
+        // 提示条在正文预算之外；包括极短窗口的紧凑行。
         for (width, budget) in [(76usize, 18usize), (56, 8), (36, 6), (24, 4)] {
             let body = modal_body(&app, modal, width, budget);
             let texts: Vec<String> = body.lines.iter().map(line_text).collect();
@@ -3230,132 +2884,14 @@ mod tests {
             }
             assert!(texts[0].starts_with("搜索："), "搜索置顶：{texts:?}");
             assert!(
-                texts.iter().any(|text| text.contains("high")),
-                "当前等级始终可见：{texts:?}"
-            );
-            assert!(
                 texts.iter().any(|text| text.starts_with("❯ Model")),
                 "{texts:?}"
             );
-            if budget >= 6 {
-                assert!(texts.iter().any(|text| text.contains("500k")), "{texts:?}");
-                let label = texts
-                    .iter()
-                    .position(|text| text.contains("思考等级"))
-                    .expect("等级标签");
-                assert!(texts[label + 1].contains("╰ ["), "{texts:?}");
-            }
             assert!(
                 footer.contains("Enter 确认") && footer.contains("Esc 关闭"),
                 "{footer:?}"
             );
         }
-    }
-
-    /// 规格卡片只画真实生效的项：没值就整行消失，伪条目只留一行说明。
-    #[test]
-    fn model_meta_card_lists_only_effective_fields() {
-        let theme = Theme::global();
-        let entry = crate::modal::ModelEntry {
-            selector: "p/model".into(),
-            label: "p/model".into(),
-            display_name: "Model".into(),
-            levels: crate::modal::DEFAULT_LEVELS
-                .iter()
-                .map(|level| (*level).to_owned())
-                .collect(),
-            context_window: Some(500_000),
-            max_output_tokens: Some(64_000),
-            inputs: vec![
-                moc_protocol::methods::ModelInput::Text,
-                moc_protocol::methods::ModelInput::Image,
-            ],
-            pricing: Some(moc_protocol::methods::ModelPricing {
-                input: 0.15,
-                output: 0.6,
-                cache_read: Some(0.015),
-                cache_write: None,
-            }),
-        };
-        let card: Vec<String> = super::model_meta_lines(theme, Some(&entry), 30)
-            .iter()
-            .map(line_text)
-            .collect();
-        let rule = "─".repeat(28);
-        assert_eq!(card[0], format!("╭{rule}╮"));
-        assert_eq!(card.last().expect("卡片底边"), &format!("╰{rule}╯"));
-        // 每行都恰好占满卡片宽度，右边缘才对得齐。
-        for text in &card {
-            assert_eq!(line_width(text), 30, "{text:?}");
-        }
-        for expected in [
-            "│ context  500k",
-            "│ output   64k",
-            "│ input    text · image",
-            "│ price    $0.15 → $0.6/M",
-            "│ cache    $0.015/M",
-            "│ levels   off · low",
-        ] {
-            assert!(
-                card.iter().any(|text| text.starts_with(expected)),
-                "缺少 {expected:?}：{card:?}"
-            );
-        }
-        // 等级列表按值列折行，续行只缩进、不重复字段名。
-        assert!(
-            card.iter()
-                .any(|text| text.starts_with("│          medium · high")),
-            "{card:?}"
-        );
-        assert!(
-            card.iter()
-                .any(|text| text.starts_with("│          xhigh · max")),
-            "{card:?}"
-        );
-
-        // 只配了上下文窗口的模型：其余字段连字段名都不出现。
-        let bare = crate::modal::ModelEntry {
-            context_window: Some(128_000),
-            max_output_tokens: None,
-            inputs: Vec::new(),
-            pricing: None,
-            levels: Vec::new(),
-            ..entry.clone()
-        };
-        let bare_card: Vec<String> = super::model_meta_lines(theme, Some(&bare), 30)
-            .iter()
-            .map(line_text)
-            .collect();
-        assert_eq!(bare_card.len(), 3, "只剩一项时卡片只占三行：{bare_card:?}");
-        assert!(bare_card[1].starts_with("│ context"), "{bare_card:?}");
-
-        // 角色伪值没有任何元数据：留一行说明，不画空框。
-        let inherit = crate::modal::ModelEntry {
-            selector: "inherit".into(),
-            label: "沿用父会话当前模型".into(),
-            display_name: String::new(),
-            levels: Vec::new(),
-            context_window: None,
-            max_output_tokens: None,
-            inputs: Vec::new(),
-            pricing: None,
-        };
-        let inherit_card: Vec<String> = super::model_meta_lines(theme, Some(&inherit), 30)
-            .iter()
-            .map(line_text)
-            .collect();
-        assert_eq!(inherit_card.len(), 3, "{inherit_card:?}");
-        assert!(
-            inherit_card[1].contains("沿用父会话当前模型"),
-            "{inherit_card:?}"
-        );
-        assert!(inherit_card[1].starts_with("│ "), "{inherit_card:?}");
-
-        assert!(super::model_meta_lines(theme, None, 30).is_empty());
-        assert!(
-            super::model_meta_lines(theme, Some(&entry), 20).is_empty(),
-            "窄于下限的卡片位直接不画"
-        );
     }
 
     /// 恢复会话列表：默认只看当前目录且行尾不带目录；分叉来源始终标注，

@@ -48,14 +48,16 @@ pub struct ModelEntry {
     pub inputs: Vec<moc_protocol::methods::ModelInput>,
     /// 每百万 token 定价；未配置为 `None`。
     pub pricing: Option<moc_protocol::methods::ModelPricing>,
+    /// 模型声明支持 Fast Mode（`fast_mode = true`）；伪值与 Fusion 特殊项为 `false`。
+    pub fast_mode: bool,
 }
 
 impl ModelEntry {
-    /// 优先展示配置的名称；未配置时去掉供应商前缀。
+    /// 优先展示配置的名称；未配置或等于 selector 时去掉供应商前缀。
     pub fn name(&self) -> &str {
         if self.selector == FUSION_ENTRY_SELECTOR {
-            "Fusion 组合…"
-        } else if self.display_name.is_empty() {
+            "Fusion"
+        } else if self.display_name.is_empty() || self.display_name == self.selector {
             self.label
                 .split_once('/')
                 .map_or(&self.label, |(_, name)| name)
@@ -90,6 +92,11 @@ fn level_rank(level: &str) -> usize {
         .map_or(0, |index| index + 1)
 }
 
+/// 候选里没有手动指定时的默认等级：`level_rank` 最高者。
+pub fn default_level(levels: &[String]) -> Option<String> {
+    levels.iter().max_by_key(|level| level_rank(level)).cloned()
+}
+
 /// 思考等级条的键盘状态；本次打开期间按 selector 保留手动选择。
 #[derive(Debug, Clone, Default)]
 pub struct LevelState {
@@ -116,24 +123,7 @@ impl LevelState {
         {
             return Some(manual.clone());
         }
-        levels.iter().max_by_key(|level| level_rank(level)).cloned()
-    }
-
-    /// 在候选等级上循环切档；候选为空时不动。
-    pub fn move_level(&mut self, levels: &[String], forward: bool) {
-        if levels.is_empty() {
-            return;
-        }
-        let current = self
-            .resolve(levels)
-            .and_then(|level| levels.iter().position(|candidate| *candidate == level))
-            .unwrap_or(0);
-        let next = if forward {
-            (current + 1) % levels.len()
-        } else {
-            current.checked_sub(1).unwrap_or(levels.len() - 1)
-        };
-        self.manual = Some(levels[next].clone());
+        default_level(levels)
     }
 }
 
@@ -415,15 +405,6 @@ pub enum ModelTarget {
         /// 字段标签，用作改动提示的前缀。
         label: String,
     },
-    /// Fusion 组合里的单侧槽位：从 `Modal::Fusion` 打开的普通选择器，
-    /// 选中后回到 Fusion 配置卡并填入该侧。
-    FusionSlot {
-        slot: FusionSlot,
-        /// 暂存的草稿：返回 Fusion 卡时原样带回。
-        draft: FusionDraft,
-        /// 最终应用 `fusion:lead+sidekick` 的目标。
-        origin: Box<ModelTarget>,
-    },
     /// workflow role 的模型选择：来源不同回写不同——审批窗写覆盖表，
     /// run 面板调用 `session/workflow_set_role_model`。
     WorkflowRole {
@@ -434,14 +415,7 @@ pub enum ModelTarget {
     },
 }
 
-/// `Modal::Fusion` 的一侧槽位。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FusionSlot {
-    Lead,
-    Sidekick,
-}
-
-/// `Modal::Fusion` 的编辑草稿：两侧各存一份带等级的 selector。
+/// Fusion 组合在详情卡内的编辑草稿：两侧各存一份带等级的 selector。
 #[derive(Debug, Clone, Default)]
 pub struct FusionDraft {
     pub lead: String,
@@ -461,6 +435,236 @@ pub fn fusion_selector(lead: &str, sidekick: &str) -> String {
     format!("fusion:{lead}+{sidekick}")
 }
 
+/// 详情卡的控制行（渲染顺序即定义顺序）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailRow {
+    Level,
+    Fast,
+    Lead,
+    LeadLevel,
+    Sidekick,
+    SidekickLevel,
+    Apply,
+}
+
+/// 详情卡的交互状态。
+#[derive(Debug, Clone, Default)]
+pub struct DetailState {
+    /// `None` 时焦点在候选列表；`Some` 时焦点在详情卡这一行。
+    pub focus: Option<DetailRow>,
+    /// Fusion 组合草稿（两侧都是带等级的 selector，只有 Session 目标会用到）。
+    pub fusion: FusionDraft,
+    /// 展开的下拉；`row` 是它挂靠的详情行。
+    pub menu: Option<MenuState>,
+    /// 选择器内联切换中的目标 selector；回执落地后写回 `current` 且不关闭选择器。
+    pub pending: Option<String>,
+}
+
+/// 详情行上展开的下拉状态。
+#[derive(Debug, Clone)]
+pub struct MenuState {
+    pub row: DetailRow,
+    pub selected: usize,
+    pub offset: usize,
+    /// 模型下拉的过滤字符串；等级下拉不使用。
+    pub query: String,
+}
+
+/// 下拉一次最多可见的候选行数。
+pub const MENU_PAGE: usize = 8;
+
+impl MenuState {
+    /// 在候选间移动（夹紧不循环），并维持 `MENU_PAGE` 可见窗。
+    pub fn move_selection(&mut self, delta: i32, count: usize) {
+        move_index(
+            &mut self.selected,
+            &mut self.offset,
+            delta,
+            count,
+            MENU_PAGE,
+        );
+    }
+
+    /// 把 `selected` 收进 `MENU_PAGE` 可见窗。
+    pub fn keep_visible(&mut self, count: usize) {
+        keep_index_visible(&mut self.selected, &mut self.offset, MENU_PAGE, count);
+    }
+}
+
+/// 带等级 selector 拆成（模型 id, 等级）；没有 `:` 后缀时等级为 `None`。
+fn split_selector(selector: &str) -> (&str, Option<&str>) {
+    selector
+        .rsplit_once(':')
+        .map_or((selector, None), |(id, level)| (id, Some(level)))
+}
+
+/// Fusion 草稿一侧 selector 对应的候选条目（去掉 `:level` 后按 selector 查）。
+pub fn side_entry<'a>(entries: &'a [ModelEntry], selector: &str) -> Option<&'a ModelEntry> {
+    let (id, _) = split_selector(selector);
+    entries.iter().find(|entry| entry.selector == id)
+}
+
+/// Fusion 草稿一侧的生效等级：显式等级仍在该模型 levels 内就用它，
+/// 否则取 `default_level`；侧边模型或 levels 缺失时为 `None`。
+pub fn side_level(entries: &[ModelEntry], selector: &str) -> Option<String> {
+    let (_, level) = split_selector(selector);
+    let levels = side_entry(entries, selector)?.levels.as_slice();
+    level
+        .filter(|level| levels.iter().any(|candidate| candidate == level))
+        .map(str::to_owned)
+        .or_else(|| default_level(levels))
+}
+
+/// 换侧边模型：旧等级仍在新模型 levels 内就保留，否则取默认等级；
+/// 新模型没有 levels 时写裸 id。
+pub fn fusion_side_pick(current: &str, entry: &ModelEntry) -> String {
+    let (_, level) = split_selector(current);
+    let level = level
+        .filter(|level| entry.levels.iter().any(|candidate| candidate == level))
+        .map(str::to_owned)
+        .or_else(|| default_level(&entry.levels));
+    entry.selector_with(level.as_deref())
+}
+
+/// 改侧边等级：只替换 `:level` 部分。
+pub fn fusion_side_level(current: &str, level: &str) -> String {
+    let (id, _) = split_selector(current);
+    format!("{id}:{level}")
+}
+
+/// 详情卡控制行列表：普通模型给思考等级与 Fast Mode，Fusion 特殊项给两侧
+/// 槽位配置与应用行，角色伪值没有任何控制行。
+pub fn detail_rows(
+    entry: Option<&ModelEntry>,
+    entries: &[ModelEntry],
+    target: &ModelTarget,
+    fusion: &FusionDraft,
+) -> Vec<DetailRow> {
+    let Some(entry) = entry else {
+        return Vec::new();
+    };
+    let session = matches!(target, ModelTarget::Session);
+    if entry.selector == FUSION_ENTRY_SELECTOR {
+        let lead = side_entry(entries, &fusion.lead);
+        let sidekick = side_entry(entries, &fusion.sidekick);
+        let mut rows = vec![DetailRow::Lead];
+        if lead.is_some_and(|entry| !entry.levels.is_empty()) {
+            rows.push(DetailRow::LeadLevel);
+        }
+        rows.push(DetailRow::Sidekick);
+        if sidekick.is_some_and(|entry| !entry.levels.is_empty()) {
+            rows.push(DetailRow::SidekickLevel);
+        }
+        if session && lead.is_some_and(|entry| entry.fast_mode) {
+            rows.push(DetailRow::Fast);
+        }
+        rows.push(DetailRow::Apply);
+        return rows;
+    }
+    if entry.provider().is_empty() {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    if !entry.levels.is_empty() {
+        rows.push(DetailRow::Level);
+    }
+    if session && entry.fast_mode {
+        rows.push(DetailRow::Fast);
+    }
+    rows
+}
+
+/// 详情行下拉的内容：等级行给该侧模型的全部档位与当前值下标，
+/// 模型行给过滤后的候选（与列表同一套模糊匹配，去掉 Fusion 项与伪值）。
+pub enum MenuItems<'a> {
+    Levels {
+        levels: &'a [String],
+        current: Option<usize>,
+    },
+    Models {
+        entries: Vec<(usize, &'a ModelEntry)>,
+        current: Option<usize>,
+    },
+}
+
+impl MenuItems<'_> {
+    pub fn len(&self) -> usize {
+        match self {
+            MenuItems::Levels { levels, .. } => levels.len(),
+            MenuItems::Models { entries, .. } => entries.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// 当前生效值在候选里的下标；菜单打开时 `selected` 指向它。
+    pub fn current(&self) -> Option<usize> {
+        match self {
+            MenuItems::Levels { current, .. } | MenuItems::Models { current, .. } => *current,
+        }
+    }
+}
+
+/// 计算某详情行的下拉内容；渲染与键盘/鼠标共用这一份，不各算一遍。
+pub fn menu_items<'a>(
+    row: DetailRow,
+    entry: Option<&'a ModelEntry>,
+    entries: &'a [ModelEntry],
+    level: &LevelState,
+    fusion: &'a FusionDraft,
+    query: &str,
+) -> MenuItems<'a> {
+    let side_levels = |selector: &str| -> (&'a [String], Option<usize>) {
+        let levels = side_entry(entries, selector).map_or(&[][..], |entry| entry.levels.as_slice());
+        let current = side_level(entries, selector)
+            .and_then(|value| levels.iter().position(|level| *level == value));
+        (levels, current)
+    };
+    match row {
+        DetailRow::Level => {
+            let levels = entry.map_or(&[][..], |entry| entry.levels.as_slice());
+            let current = entry
+                .and_then(|entry| level.resolve(&entry.levels))
+                .and_then(|value| levels.iter().position(|level| *level == value));
+            MenuItems::Levels { levels, current }
+        }
+        DetailRow::LeadLevel => {
+            let (levels, current) = side_levels(&fusion.lead);
+            MenuItems::Levels { levels, current }
+        }
+        DetailRow::SidekickLevel => {
+            let (levels, current) = side_levels(&fusion.sidekick);
+            MenuItems::Levels { levels, current }
+        }
+        DetailRow::Lead | DetailRow::Sidekick => {
+            let (side, _) = split_selector(if row == DetailRow::Lead {
+                &fusion.lead
+            } else {
+                &fusion.sidekick
+            });
+            let candidates: Vec<(usize, &ModelEntry)> = filtered_entries(entries, query)
+                .into_iter()
+                .filter(|(_, entry)| {
+                    entry.selector != FUSION_ENTRY_SELECTOR && !entry.provider().is_empty()
+                })
+                .collect();
+            let current = candidates
+                .iter()
+                .position(|(_, entry)| entry.selector == side);
+            MenuItems::Models {
+                entries: candidates,
+                current,
+            }
+        }
+        _ => MenuItems::Levels {
+            levels: &[],
+            current: None,
+        },
+    }
+}
+
 impl PickerState {
     pub fn reset(&mut self) {
         self.query.clear();
@@ -470,34 +674,43 @@ impl PickerState {
     }
 
     pub fn move_selection(&mut self, delta: i32, count: usize, page: usize) {
-        if count == 0 {
-            self.selected = 0;
-            self.offset = 0;
-            return;
-        }
-        let max = count - 1;
-        self.selected = if delta < 0 {
-            self.selected.saturating_sub(delta.unsigned_abs() as usize)
-        } else {
-            self.selected.saturating_add(delta as usize).min(max)
-        };
-        self.keep_visible(page.max(1), count);
+        move_index(&mut self.selected, &mut self.offset, delta, count, page);
     }
 
     pub fn keep_visible(&mut self, page: usize, count: usize) {
-        if count == 0 {
-            self.offset = 0;
-            self.selected = 0;
-            return;
-        }
-        self.selected = self.selected.min(count - 1);
-        if self.selected < self.offset {
-            self.offset = self.selected;
-        } else if self.selected >= self.offset + page {
-            self.offset = self.selected + 1 - page;
-        }
-        self.offset = self.offset.min(count.saturating_sub(page));
+        keep_index_visible(&mut self.selected, &mut self.offset, page, count);
     }
+}
+
+/// 选择/下拉共用的移动语义：夹紧不循环，并把选中项收进 `page` 行可见窗。
+fn move_index(selected: &mut usize, offset: &mut usize, delta: i32, count: usize, page: usize) {
+    if count == 0 {
+        *selected = 0;
+        *offset = 0;
+        return;
+    }
+    let max = count - 1;
+    *selected = if delta < 0 {
+        selected.saturating_sub(delta.unsigned_abs() as usize)
+    } else {
+        selected.saturating_add(delta as usize).min(max)
+    };
+    keep_index_visible(selected, offset, page.max(1), count);
+}
+
+fn keep_index_visible(selected: &mut usize, offset: &mut usize, page: usize, count: usize) {
+    if count == 0 {
+        *offset = 0;
+        *selected = 0;
+        return;
+    }
+    *selected = (*selected).min(count - 1);
+    if *selected < *offset {
+        *offset = *selected;
+    } else if *selected >= *offset + page {
+        *offset = *selected + 1 - page;
+    }
+    *offset = (*offset).min(count.saturating_sub(page));
 }
 /// 单个回退目标条目（Turn / Entry）
 #[derive(Debug, Clone)]
@@ -1269,6 +1482,8 @@ pub enum Modal {
         current: String,
         picker: PickerState,
         level: LevelState,
+        /// 详情卡与下拉的交互状态（焦点行、Fusion 草稿、展开的下拉）。
+        detail: DetailState,
         target: ModelTarget,
     },
     /// 消息回退选择器。
@@ -1285,16 +1500,6 @@ pub enum Modal {
     Subagents {
         agents: Vec<moc_protocol::methods::AgentInfo>,
         picker: PickerState,
-    },
-    /// Fusion 组合配置：Lead/Sidekick 两侧各自套用普通模型选择器。
-    Fusion {
-        draft: FusionDraft,
-        /// 焦点行：0 = Lead，1 = Sidekick，2 = 应用。
-        focus: usize,
-        /// 应用 `fusion:lead+sidekick` 的目标（Session 或 PlanReview）。
-        origin: Box<ModelTarget>,
-        loading: bool,
-        error: Option<String>,
     },
     /// 计划审批（`session/plan_approve`）。装箱收窄 Modal：PlanReviewState 近 600 字节。
     Plan { state: Box<PlanReviewState> },
@@ -1386,7 +1591,6 @@ impl Modal {
                 SessionScope::All => "恢复会话（全部目录）".into(),
             },
             Modal::Subagents { .. } => "子代理".into(),
-            Modal::Fusion { .. } => "Fusion".into(),
             Modal::Plan { state } => format!("计划审批：{}", state.title),
             Modal::Help { .. } => "快捷键帮助".into(),
             Modal::Tools { tools, .. } => match tools {
@@ -1439,7 +1643,6 @@ impl Modal {
                 })
                 .count(),
             Modal::Plan { .. } => 4,
-            Modal::Fusion { .. } => 3,
             Modal::Help { .. }
             | Modal::Tools { .. }
             | Modal::Context { .. }
@@ -1513,9 +1716,6 @@ impl Modal {
             Modal::SwitchModel { option, .. } => {
                 *option = (*option as i32 + delta).clamp(0, count as i32 - 1) as usize;
             }
-            Modal::Fusion { focus, .. } => {
-                *focus = (*focus as i32 + delta).rem_euclid(3) as usize;
-            }
             Modal::WorkflowApproval { state } => {
                 state.focus = (state.focus as i32 + delta).clamp(0, count as i32 - 1) as usize;
             }
@@ -1565,7 +1765,7 @@ impl Modal {
     /// 由调用方改成通知，避免错误被静默丢弃。
     pub fn set_error(&mut self, message: &str) -> bool {
         match self {
-            Modal::SwitchModel { loading, error, .. } | Modal::Fusion { loading, error, .. } => {
+            Modal::SwitchModel { loading, error, .. } => {
                 *loading = false;
                 *error = Some(message.to_owned());
                 true
@@ -1722,22 +1922,14 @@ mod tests {
         // 目标模型装不下手动值时回退到它自己的最高等级。
         assert_eq!(state.resolve(&narrow).as_deref(), Some("low"));
 
-        // 左右移动按候选顺序环绕，并把结果记为手动值。
-        state.manual = None;
-        state.move_level(&narrow, true);
-        assert_eq!(
-            state.manual.as_deref(),
-            Some("off"),
-            "最高等级再右移回到 off"
-        );
-        state.move_level(&narrow, false);
-        assert_eq!(state.manual.as_deref(), Some("low"), "左移按顺序回退");
-        state.move_level(&[], true);
-        assert_eq!(state.manual.as_deref(), Some("low"), "空候选不动手动值");
-
         // 尚未调整的模型仍取最高档，不改变默认策略。
         state.manual = None;
         assert_eq!(state.resolve(&narrow).as_deref(), Some("low"));
+        // 不认识的名字排在 off 之后，不会成为默认等级。
+        assert_eq!(
+            super::default_level(&["strange".into(), "high".into()]).as_deref(),
+            Some("high")
+        );
     }
 
     /// 写回的 selector：模型带等级后缀，角色伪值原样。
@@ -1752,6 +1944,7 @@ mod tests {
             max_output_tokens: Some(512),
             inputs: vec![moc_protocol::methods::ModelInput::Text],
             pricing: None,
+            fast_mode: false,
         };
         assert_eq!(model.selector_with(Some("high")), "p/m:high");
         assert_eq!(model.selector_with(None), "p/m");
@@ -1765,12 +1958,32 @@ mod tests {
             max_output_tokens: None,
             inputs: Vec::new(),
             pricing: None,
+            fast_mode: false,
         };
         assert_eq!(
             inherit.selector_with(Some("max")),
             "inherit",
             "伪值不接等级"
         );
+    }
+
+    /// 展示名：等于 selector（目录未配名称）时去掉供应商前缀，不同则原样。
+    #[test]
+    fn model_entry_name_strips_provider_when_display_name_is_selector() {
+        let entry = |display_name: &str| ModelEntry {
+            selector: "p/m".into(),
+            label: "p/m".into(),
+            display_name: display_name.into(),
+            levels: Vec::new(),
+            context_window: None,
+            max_output_tokens: None,
+            inputs: Vec::new(),
+            pricing: None,
+            fast_mode: false,
+        };
+        assert_eq!(entry("p/m").name(), "m", "display_name 等于 selector 去前缀");
+        assert_eq!(entry("").name(), "m", "display_name 为空去前缀");
+        assert_eq!(entry("DeepSeek Flash").name(), "DeepSeek Flash");
     }
 
     /// 过滤同时匹配选择串与展示名，伪值也能被中文标签搜到。
@@ -1786,6 +1999,7 @@ mod tests {
                 max_output_tokens: None,
                 inputs: Vec::new(),
                 pricing: None,
+                fast_mode: false,
             },
             ModelEntry {
                 selector: "p/model".into(),
@@ -1796,6 +2010,7 @@ mod tests {
                 max_output_tokens: None,
                 inputs: Vec::new(),
                 pricing: None,
+                fast_mode: false,
             },
         ];
         let found = |query: &str| {

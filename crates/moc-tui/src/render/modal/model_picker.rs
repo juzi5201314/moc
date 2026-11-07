@@ -1,11 +1,18 @@
-//! 模型选择器：锚定触发标签的紧凑浮层，列表几何不随元信息变化。
+//! 模型选择器：锚定触发标签的列表卡 + 详情卡 + 下拉卡三层不透明浮层。
 
 use super::*;
-use crate::modal::{FUSION_ENTRY_SELECTOR, ModelEntry, ModelTarget, filtered_entries};
+use crate::modal::{
+    DetailRow, FUSION_ENTRY_SELECTOR, MENU_PAGE, MenuItems, ModelEntry, filtered_entries,
+};
+
+/// 列表卡外宽（列）；窄屏夹到屏宽。
+const LIST_WIDTH: u16 = 52;
+/// 详情卡外宽（列）。
+const DETAIL_WIDTH: u16 = 38;
 
 /// 优先向上展开；空间不足时选择下方。无可见标签时贴输入框右上方。
 fn popup_rect(screen: Rect, anchor: Rect) -> Rect {
-    let width = if screen.width >= 96 { 86 } else { 56 }.min(screen.width);
+    let width = LIST_WIDTH.min(screen.width);
     let above = anchor.y.saturating_sub(screen.y).min(screen.height);
     let below = screen.bottom().saturating_sub(anchor.bottom());
     let up = above >= 18 || above >= below;
@@ -25,6 +32,38 @@ fn popup_rect(screen: Rect, anchor: Rect) -> Rect {
     )
 }
 
+/// 卡片不透明底 + 圆角边框 + 标题；正文区矩形（边框 + 左右内边距之后）。
+fn draw_panel(frame: &mut Frame, rect: Rect, title: &str, theme: &Theme) -> Rect {
+    overlay::paint_opaque(
+        frame.buffer_mut(),
+        rect,
+        Style::new().bg(theme.bg_base).fg(theme.text_primary),
+    );
+    let width = overlay::content_width(rect.width);
+    let panel = overlay::panel(theme).title(overlay::title_span(title, width, theme));
+    frame.render_widget(panel, rect);
+    Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    )
+}
+
+/// 详情卡的横向落位：优先列表卡左侧（留 1 列空隙），其次右侧，
+/// 两侧都放不下（窄屏）时盖在列表卡左部——那种情况下详情卡只在
+/// 焦点落在它上面或下拉打开时才绘制。返回 `(x, 是否覆盖在列表卡上)`。
+fn detail_x(screen: Rect, list: Rect) -> (u16, bool) {
+    let width = DETAIL_WIDTH.min(screen.width);
+    if list.x > screen.x + width {
+        (list.x - width - 1, false)
+    } else if list.right() + 1 + width <= screen.right() {
+        (list.right() + 1, false)
+    } else {
+        (list.x, true)
+    }
+}
+
 pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     let screen = frame.area();
     let anchor = if app.model_tag_area.is_empty() {
@@ -41,65 +80,192 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     if rect.height < 4 {
         return;
     }
+    let theme = app.theme;
     let width = overlay::content_width(rect.width);
     let rows = usize::from(rect.height.saturating_sub(3));
     let modal = app.modal.as_ref().expect("模型浮层已打开");
-    let ModalBody {
-        lines,
-        footer,
-        hits,
-        level_hits,
-        ..
-    } = super::modal_body(app, modal, width, rows);
-    let footer = footer.unwrap_or_default();
-    let theme = app.theme;
-    overlay::paint_opaque(
-        frame.buffer_mut(),
-        rect,
-        Style::new().bg(theme.bg_base).fg(theme.text_primary),
-    );
-    let panel = overlay::panel(theme).title(overlay::title_span(&modal.title(), width, theme));
-    frame.render_widget(panel, rect);
-    let content = Rect::new(
-        rect.x + 2,
-        rect.y + 1,
-        rect.width.saturating_sub(4),
-        rect.height.saturating_sub(3),
-    );
-    frame.render_widget(Paragraph::new(lines), content);
+    let body = body(app, modal, width, rows);
+    let footer = body.footer.unwrap_or_default();
+    let content = draw_panel(frame, rect, &modal.title(), theme);
+    frame.render_widget(Paragraph::new(body.lines), content);
     let y = rect.bottom() - 2;
     app.key_hits = footer.hits(content.x, y).collect();
     frame.render_widget(
         Paragraph::new(footer.line),
         Rect::new(content.x, y, content.width, 1),
     );
-    let list_width =
-        if matches!(modal, Modal::Model { .. }) && width >= META_MIN_CONTENT && rows >= 8 {
-            width - META_MAX - CARD_GAP
-        } else {
-            width
-        };
-    app.modal_item_hits = hits
+    app.modal_item_hits = body
+        .hits
         .into_iter()
         .filter(|(_, row)| *row < rows)
         .map(|(index, row)| {
             (
                 index,
-                Rect::new(content.x, content.y + row as u16, list_width as u16, 1),
-            )
-        })
-        .collect();
-    app.modal_level_hits = level_hits
-        .into_iter()
-        .filter(|(_, row, _, _)| *row < rows)
-        .map(|(index, row, x, width)| {
-            (
-                index,
-                Rect::new(content.x + x, content.y + row as u16, width, 1),
+                Rect::new(content.x, content.y + row as u16, content.width, 1),
             )
         })
         .collect();
     app.modal_card_area = rect;
+
+    let Modal::Model {
+        entries,
+        picker,
+        level,
+        detail,
+        ..
+    } = modal
+    else {
+        return;
+    };
+    // 详情卡：外宽 38，顶部与列表卡对齐；高度 = 内容行数 + 边框，
+    // 超出屏幕底就整体上移，仍超高就截断内容。
+    let (dx, overlaid) = detail_x(screen, rect);
+    let focused = detail.focus.is_some() || detail.menu.is_some();
+    if overlaid && !focused {
+        return;
+    }
+    let inner = overlay::content_width(DETAIL_WIDTH.min(screen.width));
+    let (lines, row_hits) = detail_lines(app, modal, inner);
+    let height = (u16::try_from(lines.len() + 2).unwrap_or(u16::MAX)).min(screen.height);
+    let dy = rect
+        .y
+        .min(screen.bottom().saturating_sub(height))
+        .max(screen.y);
+    let drect = Rect::new(dx, dy, DETAIL_WIDTH.min(screen.width), height);
+    let dcontent = draw_panel(frame, drect, "", theme);
+    let visible = usize::from(dcontent.height);
+    frame.render_widget(
+        Paragraph::new(lines.into_iter().take(visible).collect::<Vec<_>>()),
+        dcontent,
+    );
+    app.modal_detail_area = drect;
+    app.modal_detail_hits = row_hits
+        .iter()
+        .filter(|(_, row)| *row < visible)
+        .map(|(row, line)| {
+            (
+                *row,
+                Rect::new(dcontent.x, dcontent.y + *line as u16, dcontent.width, 1),
+            )
+        })
+        .collect();
+
+    // 下拉卡：挂在所属详情行下方（放不下放上方），右缘对齐详情卡内容右缘。
+    let Some(menu) = detail.menu.as_ref() else {
+        return;
+    };
+    let entry = filtered_entries(entries, &picker.query)
+        .get(picker.selected)
+        .map(|(_, entry)| *entry);
+    let items =
+        crate::modal::menu_items(menu.row, entry, entries, level, &detail.fusion, &menu.query);
+    // 等级下拉外宽 = 最长等级 + 6（至少 14）；模型下拉与详情卡同宽。
+    let mwidth = match &items {
+        MenuItems::Models { .. } => DETAIL_WIDTH.min(screen.width),
+        MenuItems::Levels { levels, .. } => {
+            let longest = levels
+                .iter()
+                .map(|level| str_width(level))
+                .max()
+                .unwrap_or(0);
+            u16::try_from(longest + 6)
+                .unwrap_or(u16::MAX)
+                .max(14)
+                .min(screen.width)
+        }
+    };
+    let minner = overlay::content_width(mwidth);
+    let (mlines, hits) = menu_lines(&items, menu, minner, theme);
+    let mheight = u16::try_from(mlines.len() + 2)
+        .unwrap_or(u16::MAX)
+        .min(screen.height);
+    let row_y = row_hits
+        .iter()
+        .find(|(row, _)| *row == menu.row)
+        .map(|(_, line)| dcontent.y + *line as u16)
+        .unwrap_or(dcontent.y);
+    let my = if row_y + 1 + mheight <= screen.bottom() {
+        row_y + 1
+    } else {
+        row_y.saturating_sub(mheight)
+    }
+    .clamp(screen.y, screen.bottom().saturating_sub(mheight));
+    let right = dcontent.right().min(screen.right());
+    let mx = right.saturating_sub(mwidth).max(screen.x);
+    let mrect = Rect::new(
+        mx,
+        my,
+        mwidth.min(screen.right().saturating_sub(mx)),
+        mheight,
+    );
+    let mcontent = draw_panel(frame, mrect, "", theme);
+    let mvisible = usize::from(mcontent.height);
+    frame.render_widget(
+        Paragraph::new(mlines.into_iter().take(mvisible).collect::<Vec<_>>()),
+        mcontent,
+    );
+    app.modal_menu_area = mrect;
+    app.modal_menu_hits = hits
+        .into_iter()
+        .filter(|(_, row)| *row < mvisible)
+        .map(|(index, row)| {
+            (
+                index,
+                Rect::new(mcontent.x, mcontent.y + row as u16, mcontent.width, 1),
+            )
+        })
+        .collect();
+}
+
+/// 下拉卡的正文行：模型下拉首行是搜索行，候选用 `model_row` 同样式；
+/// 等级下拉竖排全部档位。返回 `(行, (过滤后候选下标, 行号))`。
+fn menu_lines(
+    items: &MenuItems,
+    menu: &crate::modal::MenuState,
+    width: usize,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+    let mut lines = Vec::new();
+    let mut hits = Vec::new();
+    match items {
+        MenuItems::Levels { levels, current } => {
+            for (index, level) in levels.iter().enumerate() {
+                hits.push((index, lines.len()));
+                let mark = if *current == Some(index) { " ✓" } else { "" };
+                lines.push(clip_line(
+                    overlay::list_row(
+                        &format!("{level}{mark}"),
+                        index == menu.selected,
+                        width,
+                        theme,
+                    ),
+                    width,
+                ));
+            }
+        }
+        MenuItems::Models { entries, current } => {
+            lines.push(clip_line(search_line(&menu.query, width, theme), width));
+            let offset = window_offset(menu.offset, menu.selected, MENU_PAGE, entries.len());
+            if entries.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    fit("没有匹配的模型", width),
+                    Style::new().fg(theme.gray),
+                )));
+            }
+            for (position, (_, entry)) in entries.iter().enumerate().skip(offset).take(MENU_PAGE) {
+                hits.push((position, lines.len()));
+                lines.push(model_row(
+                    entry,
+                    position == menu.selected,
+                    *current == Some(position),
+                    &menu.query,
+                    width,
+                    theme,
+                ));
+            }
+        }
+    }
+    (lines, hits)
 }
 
 pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> ModalBody {
@@ -107,8 +273,9 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
         entries,
         current,
         picker,
-        level,
+        detail,
         target,
+        ..
     } = modal
     else {
         unreachable!()
@@ -116,14 +283,7 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
     let theme = app.theme;
     let filtered = filtered_entries(entries, &picker.query);
     let highlighted = filtered.get(picker.selected).map(|(_, entry)| *entry);
-    let resolved = highlighted.and_then(|entry| level.resolve(&entry.levels));
-    let wide = width >= META_MIN_CONTENT && max_lines >= 8;
-    let list_width = if wide {
-        width - META_MAX - CARD_GAP
-    } else {
-        width
-    };
-    let detail_width = if wide { META_MAX } else { width };
+    let rows = crate::modal::detail_rows(highlighted, entries, target, &detail.fusion);
     let current_id = if crate::modal::parse_fusion(current).is_some() {
         FUSION_ENTRY_SELECTOR
     } else {
@@ -160,12 +320,12 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
         body.lines.push(clip_line(
             overlay::list_row(
                 if current_id == FUSION_ENTRY_SELECTOR {
-                    "单模型 / Fusion 组合… ✓"
+                    "Fusion ✓"
                 } else {
-                    "单模型 / Fusion 组合…"
+                    "Fusion"
                 },
                 picker.selected == index,
-                list_width,
+                width,
                 theme,
             ),
             width,
@@ -173,85 +333,14 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
     }
     let header_rows = body.lines.len();
     let fusion = highlighted.is_some_and(|entry| entry.selector == FUSION_ENTRY_SELECTOR);
-    let mut detail = Vec::new();
-    let mut chips = Vec::new();
-    let chip_row;
-    if fusion {
-        let draft = crate::app::initial_fusion_draft(app, current);
-        detail.push(Line::from(Span::styled(
-            "Fusion · 组合模型",
-            Style::new().fg(theme.accent_model),
-        )));
-        for (label, value) in [("Lead", draft.lead), ("Sidekick", draft.sidekick)] {
-            detail.push(Line::from(format!(
-                "{label}: {}",
-                if value.is_empty() {
-                    "未选择".into()
-                } else {
-                    crate::app::model_selector_label(&value)
-                }
-            )));
-        }
-        chip_row = 0;
-    } else {
-        if wide {
-            detail.push(Line::from(Span::styled(
-                highlighted
-                    .map_or("", |entry| entry.selector.as_str())
-                    .to_owned(),
-                Style::new().fg(theme.text_secondary),
-            )));
-        }
-        let (levels, level_chips) =
-            level_lines(theme, highlighted, resolved.as_deref(), detail_width);
-        chip_row = detail.len() + 1;
-        chips = level_chips;
-        detail.extend(levels);
-        if wide {
-            detail.extend(model_meta_lines(theme, highlighted, detail_width));
-        } else {
-            let meta = highlighted
-                .map(|entry| {
-                    let mut parts = vec![entry.provider().to_owned()];
-                    if let Some(window) = entry.context_window {
-                        parts.push(format!("{} 上下文", crate::render::format_tokens(window)));
-                    }
-                    if let Some(output) = entry.max_output_tokens {
-                        parts.push(format!(
-                            "{} 输出",
-                            crate::render::format_tokens(u64::from(output))
-                        ));
-                    }
-                    parts.join(" · ")
-                })
-                .unwrap_or_default();
-            detail.push(Line::from(Span::styled(
-                meta,
-                Style::new().fg(theme.text_secondary),
-            )));
-        }
-    }
-    // 极短窗口保留搜索、一条候选、选中的等级和操作提示。
-    let available = max_lines.saturating_sub(header_rows);
-    if !wide && available < 5 {
-        detail = vec![Line::from(Span::styled(
-            format!("思考: {}", resolved.as_deref().unwrap_or("不适用")),
-            Style::new().fg(theme.accent_model),
-        ))];
-        chips.clear();
-    }
     let status = if picker.loading {
         Some("正在切换模型…".to_owned())
     } else {
         picker.error.as_ref().map(|error| format!("错误：{error}"))
     };
+    let available = max_lines.saturating_sub(header_rows);
     let status_rows = usize::from(status.is_some() && available >= 3);
-    let detail_rows = if wide {
-        0
-    } else {
-        detail.len().min(available.saturating_sub(1 + status_rows))
-    };
-    let visible = available.saturating_sub(detail_rows + status_rows).max(1);
+    let visible = available.saturating_sub(status_rows).max(1);
     let mut list = Vec::<(Option<usize>, Line<'static>)>::new();
     let mut last_group = String::new();
     for (index, (_, entry)) in filtered.iter().enumerate() {
@@ -284,7 +373,7 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
                 index == picker.selected,
                 entry.selector == current_id,
                 &picker.query,
-                list_width,
+                width,
                 theme,
             ),
         ));
@@ -300,49 +389,20 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
         .saturating_sub(1);
     let offset = window_offset(initial_offset, selected_row, visible, list.len());
     for row in 0..visible {
-        let mut line = if let Some((index, line)) = list.get(offset + row) {
+        let line = if let Some((index, line)) = list.get(offset + row) {
             if let Some(index) = index {
                 body.hits.push((*index, body.lines.len()));
             }
-            fit_line(line.clone(), list_width)
+            fit_line(line.clone(), width)
         } else if row == 0 && filtered.is_empty() {
             Line::from(Span::styled(
-                fit("没有匹配的模型", list_width),
+                fit("没有匹配的模型", width),
                 Style::new().fg(theme.gray),
             ))
         } else {
-            Line::from(" ".repeat(list_width))
+            Line::from(" ".repeat(width))
         };
-        if wide {
-            line.spans.push(Span::raw(" ".repeat(CARD_GAP)));
-            if let Some(detail_line) = detail.get(row) {
-                line.spans
-                    .extend(clip_line(detail_line.clone(), detail_width).spans);
-            }
-        }
         body.lines.push(line);
-    }
-    let detail_start = if wide { header_rows } else { body.lines.len() };
-    if !wide {
-        body.lines.extend(
-            detail
-                .into_iter()
-                .take(detail_rows)
-                .map(|line| clip_line(line, width)),
-        );
-    }
-    let chips_y = detail_start + chip_row;
-    if (wide || detail_rows >= 2) && chips_y < max_lines {
-        let dx = if wide {
-            (list_width + CARD_GAP) as u16
-        } else {
-            0
-        };
-        body.level_hits.extend(
-            chips
-                .into_iter()
-                .map(|(index, x, w)| (index, chips_y, dx + x, w)),
-        );
     }
     if status_rows > 0 {
         body.lines.push(Line::from(Span::styled(
@@ -354,30 +414,334 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
             }),
         )));
     }
-    let enter = if fusion {
-        "配置组合"
-    } else if picker.error.is_some() {
-        "重试"
+    // 底部提示按焦点分层：下拉 > 详情卡 > 列表。
+    let items: Vec<(&str, &str)> = if let Some(menu) = detail.menu.as_ref() {
+        let mut items = vec![("↑↓", "选择"), ("enter", "确定"), ("esc", "收起")];
+        if matches!(menu.row, DetailRow::Lead | DetailRow::Sidekick) {
+            items.push(("", "输入搜索"));
+        }
+        items
+    } else if let Some(focus) = detail.focus {
+        let enter = match focus {
+            DetailRow::Fast => "切换",
+            DetailRow::Apply => "应用",
+            _ => "展开",
+        };
+        vec![("↑↓", "移动"), ("enter", enter), ("left", "返回")]
     } else {
-        "确认"
+        let mut items = vec![("↑↓", "选择")];
+        if highlighted.is_some_and(|entry| {
+            entry.selector != FUSION_ENTRY_SELECTOR && !entry.levels.is_empty()
+        }) {
+            items.push(("tab", "等级"));
+        }
+        if !rows.is_empty() {
+            items.push(("right", "详情"));
+        }
+        let enter = if fusion {
+            "应用"
+        } else if picker.error.is_some() {
+            "重试"
+        } else {
+            "确认"
+        };
+        items.push(("enter", enter));
+        items.push(("esc", "关闭"));
+        items
     };
-    let back = if matches!(target, ModelTarget::FusionSlot { .. }) {
-        "返回"
-    } else {
-        "关闭"
-    };
-    body.footer = Some(overlay::footer(
-        &[
-            ("↑↓", "选择"),
-            ("tab", "等级"),
-            ("enter", enter),
-            ("esc", back),
-        ],
-        width,
-        theme,
-    ));
+    body.footer = Some(overlay::footer(&items, width, theme));
     body.lines.truncate(max_lines);
     body
+}
+
+/// 详情卡正文：返回行与每个控制行所在的行号（鼠标命中换算用）。
+pub(super) fn detail_lines(
+    app: &App,
+    modal: &Modal,
+    width: usize,
+) -> (Vec<Line<'static>>, Vec<(DetailRow, usize)>) {
+    let Modal::Model {
+        entries,
+        picker,
+        detail,
+        target,
+        ..
+    } = modal
+    else {
+        unreachable!()
+    };
+    let theme = app.theme;
+    let filtered = filtered_entries(entries, &picker.query);
+    let Some(entry) = filtered.get(picker.selected).map(|(_, entry)| *entry) else {
+        return (Vec::new(), Vec::new());
+    };
+    let rows = crate::modal::detail_rows(Some(entry), entries, target, &detail.fusion);
+    let mut lines = Vec::new();
+    let mut hits = Vec::new();
+    let push_controls = |lines: &mut Vec<Line<'static>>, hits: &mut Vec<(DetailRow, usize)>| {
+        for row in &rows {
+            hits.push((*row, lines.len()));
+            lines.push(control_line(
+                app,
+                modal,
+                *row,
+                entry,
+                &detail.fusion,
+                width,
+                theme,
+            ));
+        }
+    };
+    if entry.selector == FUSION_ENTRY_SELECTOR {
+        lines.push(Line::from(Span::styled(
+            "Fusion",
+            Style::new()
+                .fg(theme.accent_model)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(wrapped_lines(
+            "前沿模型负责规划、调查与评审，高性价比模型执行实现与验证",
+            width,
+            Style::new().fg(theme.text_secondary),
+        ));
+        if !rows.is_empty() {
+            lines.push(Line::default());
+            push_controls(&mut lines, &mut hits);
+        }
+        if let Some(lead) = crate::modal::side_entry(entries, &detail.fusion.lead) {
+            let specs = model_meta_lines(theme, lead, width);
+            if !specs.is_empty() {
+                lines.push(Line::default());
+                lines.extend(specs);
+            }
+        }
+    } else if entry.provider().is_empty() {
+        // 角色伪值只有一行标签。
+        lines.push(Line::from(Span::styled(
+            entry.label.clone(),
+            Style::new()
+                .fg(theme.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            entry.name().to_owned(),
+            Style::new()
+                .fg(theme.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            entry.provider().to_owned(),
+            Style::new().fg(theme.text_secondary),
+        )));
+        if !rows.is_empty() {
+            lines.push(Line::default());
+            push_controls(&mut lines, &mut hits);
+        }
+        let specs = model_meta_lines(theme, entry, width);
+        if !specs.is_empty() {
+            lines.push(Line::default());
+            lines.extend(specs);
+        }
+    }
+    (lines, hits)
+}
+
+/// 详情卡的一行控制行：左标签右值（值右对齐）；focus 行整行反白。
+fn control_line(
+    app: &App,
+    modal: &Modal,
+    row: DetailRow,
+    entry: &ModelEntry,
+    fusion: &crate::modal::FusionDraft,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let Modal::Model {
+        entries,
+        current,
+        level,
+        detail,
+        ..
+    } = modal
+    else {
+        unreachable!()
+    };
+    let focused = detail.focus == Some(row);
+    let open = detail.menu.as_ref().is_some_and(|menu| menu.row == row);
+    // 键盘聚焦或该行下拉展开时标记、标签与值都加粗，整行不铺底色。
+    let active = focused || open;
+    let active_style = |color: Color| {
+        let style = Style::new().fg(if active { theme.accent_user } else { color });
+        if active {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
+    };
+    let fast = app
+        .session
+        .as_ref()
+        .is_some_and(|session| session.fast_mode);
+    // `›` 常驻在第 0 列，后接 1 个空格再接标签；值右对齐到正文右缘。
+    let (label, value, value_color): (String, String, Color) = match row {
+        DetailRow::Level => (
+            "思考等级".to_owned(),
+            level
+                .resolve(&entry.levels)
+                .unwrap_or_else(|| "—".to_owned()),
+            theme.accent_model,
+        ),
+        DetailRow::Fast => (
+            "Fast Mode".to_owned(),
+            if fast {
+                "● 开".to_owned()
+            } else {
+                "○ 关".to_owned()
+            },
+            if fast {
+                theme.accent_success
+            } else {
+                theme.gray
+            },
+        ),
+        DetailRow::Lead | DetailRow::Sidekick => {
+            let side = if row == DetailRow::Lead {
+                &fusion.lead
+            } else {
+                &fusion.sidekick
+            };
+            let (name, empty) = side_label(entries, side);
+            (
+                if row == DetailRow::Lead {
+                    "Lead".to_owned()
+                } else {
+                    "Sidekick".to_owned()
+                },
+                name,
+                if empty {
+                    theme.gray
+                } else {
+                    theme.accent_model
+                },
+            )
+        }
+        DetailRow::LeadLevel | DetailRow::SidekickLevel => {
+            let side = if row == DetailRow::LeadLevel {
+                &fusion.lead
+            } else {
+                &fusion.sidekick
+            };
+            let value =
+                crate::modal::side_level(entries, side).unwrap_or_else(|| "—".to_owned());
+            ("  思考".to_owned(), value, theme.accent_model)
+        }
+        DetailRow::Apply => {
+            let applied = !fusion.lead.is_empty()
+                && !fusion.sidekick.is_empty()
+                && crate::modal::fusion_selector(&fusion.lead, &fusion.sidekick) == *current;
+            (
+                "应用".to_owned(),
+                if applied { "✓".to_owned() } else { String::new() },
+                theme.accent_success,
+            )
+        }
+    };
+    // 值超宽时只截断值本身，标签与值之间至少 1 格空隙。
+    let value_budget = width.saturating_sub(4 + str_width(&label)).max(1);
+    let value = truncate(&value, value_budget).into_owned();
+    let gap = width
+        .saturating_sub(2 + str_width(&label) + str_width(&value))
+        .max(1);
+    fit_line(
+        Line::from(vec![
+            Span::styled(
+                "› ",
+                active_style(if active { theme.accent_user } else { theme.gray_dim }),
+            ),
+            Span::styled(label, active_style(theme.text_secondary)),
+            Span::styled(" ".repeat(gap), Style::new()),
+            Span::styled(value, active_style(value_color)),
+        ]),
+        width,
+    )
+}
+
+/// Fusion 草稿一侧的展示名：找到条目用 `name()`，找不到给裸 id，空串给「未选择」。
+fn side_label(entries: &[ModelEntry], selector: &str) -> (String, bool) {
+    if selector.is_empty() {
+        return ("未选择".to_owned(), true);
+    }
+    if let Some(entry) = crate::modal::side_entry(entries, selector) {
+        return (entry.name().to_owned(), false);
+    }
+    (
+        selector
+            .rsplit_once(':')
+            .map_or(selector, |(id, _)| id)
+            .to_owned(),
+        false,
+    )
+}
+
+/// 规格键值行：context / output / input / price / cache，只出现有值的项；
+/// 标签灰、值次要色，普通模型与 Fusion 的 lead 共用。
+fn model_meta_lines(theme: &Theme, entry: &ModelEntry, width: usize) -> Vec<Line<'static>> {
+    let mut rows: Vec<(&'static str, String)> = Vec::with_capacity(5);
+    if let Some(window) = entry.context_window {
+        rows.push(("context", crate::render::format_tokens(window)));
+    }
+    if let Some(tokens) = entry.max_output_tokens {
+        rows.push(("output", crate::render::format_tokens(u64::from(tokens))));
+    }
+    if !entry.inputs.is_empty() {
+        let inputs: Vec<&str> = entry
+            .inputs
+            .iter()
+            .map(|input| match input {
+                moc_protocol::methods::ModelInput::Text => "text",
+                moc_protocol::methods::ModelInput::Image => "image",
+            })
+            .collect();
+        rows.push(("input", inputs.join(" · ")));
+    }
+    if let Some(pricing) = &entry.pricing {
+        rows.push((
+            "price",
+            format!(
+                "{} → {}/M",
+                meta_price(pricing.input),
+                meta_price(pricing.output)
+            ),
+        ));
+        // 缓存读写各自选填，只把配置了的那一项画出来。
+        let cache: Vec<String> = [pricing.cache_read, pricing.cache_write]
+            .into_iter()
+            .flatten()
+            .map(meta_price)
+            .collect();
+        if !cache.is_empty() {
+            rows.push(("cache", format!("{}/M", cache.join(" / "))));
+        }
+    }
+    rows.into_iter()
+        .map(|(label, value)| {
+            Line::from(vec![
+                Span::styled(fit(label, 7), Style::new().fg(theme.gray)),
+                Span::raw("  "),
+                Span::styled(
+                    fit(&value, width.saturating_sub(9)),
+                    Style::new().fg(theme.text_secondary),
+                ),
+            ])
+        })
+        .collect()
+}
+
+/// 每百万 token 的单价：最多三位小数，去掉尾随零，`$1`、`$0.075`、`$1.25`。
+fn meta_price(value: f64) -> String {
+    let text = format!("{value:.3}");
+    format!("${}", text.trim_end_matches('0').trim_end_matches('.'))
 }
 
 fn model_row(
@@ -485,6 +849,8 @@ mod tests {
         }
     }
 
+    /// 背景不被压暗；列表卡底边贴模型标签行；详情卡与列表卡不相交；
+    /// 等级下拉打开时 6 档全部落在屏内；元信息变化不移动列表卡。
     #[test]
     fn model_picker_preserves_background_and_separates_detail_hits() {
         let (events, _) = tokio::sync::mpsc::unbounded_channel();
@@ -501,13 +867,15 @@ mod tests {
             max_output_tokens: None,
             inputs: Vec::new(),
             pricing: None,
+            fast_mode: false,
         };
         app.modal = Some(Modal::Model {
             entries: vec![entry],
             current: "p/model:max".into(),
             picker: Default::default(),
             level: Default::default(),
-            target: ModelTarget::Session,
+            detail: Default::default(),
+            target: crate::modal::ModelTarget::Session,
         });
         app.model_tag_area = Rect::new(90, 28, 8, 1);
         let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
@@ -522,14 +890,35 @@ mod tests {
         assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "正");
         assert_eq!(terminal.backend().buffer()[(0, 0)].fg, Color::Red);
         assert_eq!(app.modal_card_area.bottom(), app.model_tag_area.y);
-        let (_, max_hit) = app
-            .modal_level_hits
-            .iter()
-            .find(|(index, _)| *index == 5)
-            .expect("max 档位必须可见");
-        for (_, hit) in &app.modal_item_hits {
-            assert!(hit.intersection(*max_hit).is_empty());
+        assert!(
+            app.modal_detail_area
+                .intersection(app.modal_card_area)
+                .is_empty(),
+            "详情卡与列表卡不相交"
+        );
+
+        // Tab 展开等级下拉的状态：6 档全部有命中区且都在屏内。
+        if let Some(Modal::Model { detail, .. }) = app.modal.as_mut() {
+            detail.menu = Some(crate::modal::MenuState {
+                row: DetailRow::Level,
+                selected: 5,
+                offset: 0,
+                query: String::new(),
+            });
         }
+        terminal
+            .draw(|frame| super::super::draw_modal(frame, &mut app))
+            .unwrap();
+        let screen = Rect::new(0, 0, 110, 30);
+        assert_eq!(
+            app.modal_menu_hits.len(),
+            crate::modal::DEFAULT_LEVELS.len(),
+            "等级下拉给出全部档位"
+        );
+        for (_, area) in &app.modal_menu_hits {
+            assert_eq!(area.intersection(screen), *area, "下拉候选都在屏内");
+        }
+
         let before = app.modal_card_area;
         if let Some(Modal::Model { entries, .. }) = &mut app.modal {
             entries[0].context_window = None;
@@ -538,5 +927,47 @@ mod tests {
             .draw(|frame| super::super::draw_modal(frame, &mut app))
             .unwrap();
         assert_eq!(app.modal_card_area, before, "元信息变化不能移动浮层");
+    }
+
+    /// 详情卡 Level 行以 `›` 开头、完整显示最长的等级名，不被裁成省略号。
+    #[test]
+    fn detail_level_chip_shows_full_level_name() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let modal = Modal::Model {
+            entries: vec![ModelEntry {
+                selector: "p/model".into(),
+                label: "p/model".into(),
+                display_name: "Model".into(),
+                levels: crate::modal::DEFAULT_LEVELS
+                    .iter()
+                    .map(|level| (*level).into())
+                    .collect(),
+                context_window: None,
+                max_output_tokens: None,
+                inputs: Vec::new(),
+                pricing: None,
+                fast_mode: false,
+            }],
+            current: "p/model:max".into(),
+            picker: Default::default(),
+            level: Default::default(),
+            detail: Default::default(),
+            target: crate::modal::ModelTarget::Session,
+        };
+        let (lines, hits) = detail_lines(&app, &modal, 34);
+        let row = hits
+            .iter()
+            .find(|(row, _)| *row == DetailRow::Level)
+            .map(|(_, line)| *line)
+            .expect("思考等级控制行");
+        let text: String = lines[row]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.starts_with("›"), "{text}");
+        assert!(text.contains("max"), "{text}");
+        assert!(!text.contains('…'), "{text}");
     }
 }

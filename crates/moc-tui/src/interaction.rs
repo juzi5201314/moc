@@ -245,8 +245,8 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
         } => {
             // 选择器那次调用已收尾；随后由卡片自身挡住派发，无需保留忙标记。
             app.inflight_session_ops.remove(&session_id);
-            // 模型选择器与 Fusion 配置卡都可能发起这次切换。
-            if matches!(app.modal, Some(Modal::Model { .. } | Modal::Fusion { .. })) {
+            // 切换由模型选择器发起：只把它换成确认卡，不碰其他模态。
+            if matches!(app.modal, Some(Modal::Model { .. })) {
                 app.modal = Some(Modal::SwitchModel {
                     session_id,
                     selector,
@@ -265,15 +265,29 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
             app.inflight_session_ops.remove(&session_id);
             match result {
                 Ok(compaction_error) => {
-                    // 只关闭这次操作打开的选择器与确认卡片，不碰用户后来打开的模态。
-                    if matches!(
-                        app.modal,
-                        Some(
-                            Modal::Model { .. } | Modal::SwitchModel { .. } | Modal::Fusion { .. }
+                    // 选择器内联切换（改等级立即生效）：回执只写回 current，
+                    // 选择器保持打开；其余发起方照旧关闭。
+                    let mut inline = false;
+                    if let Some(Modal::Model {
+                        current,
+                        picker,
+                        detail,
+                        ..
+                    }) = app.modal.as_mut()
+                        && let Some(pending) = detail.pending.take()
+                    {
+                        *current = pending;
+                        picker.loading = false;
+                        inline = true;
+                    }
+                    if !inline
+                        && matches!(
+                            app.modal,
+                            Some(Modal::Model { .. } | Modal::SwitchModel { .. })
                         )
-                    ) {
+                    {
+                        // 只关闭这次操作打开的选择器与确认卡片，不碰用户后来打开的模态。
                         app.modal = None;
-                        app.model_picker_back = None;
                     }
                     if let Some(error) = compaction_error {
                         app.push_note(format!("上下文压缩失败：{error}"), true);
@@ -287,6 +301,10 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         .modal
                         .as_mut()
                         .is_some_and(|modal| modal.set_error(&error));
+                    if let Some(Modal::Model { detail, .. }) = app.modal.as_mut() {
+                        // 内联切换失败：清掉待写回的目标 selector。
+                        detail.pending = None;
+                    }
                     if !shown {
                         app.set_error_notice(error);
                     }

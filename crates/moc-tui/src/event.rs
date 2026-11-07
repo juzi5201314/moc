@@ -20,9 +20,10 @@ use moc_protocol::{
     SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff, SessionPlanDiffParams,
     SessionPlanDiffResult, SessionPlanMode, SessionPlanModeParams, SessionPlanRevise,
     SessionPlanReviseParams, SessionReask, SessionReaskParams, SessionRedo, SessionRedoParams,
-    SessionRewind, SessionRewindParams, SessionSetEngine, SessionSetEngineParams, SessionSetModel,
-    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
-    SessionUsage, SessionUsageParams, UpstreamField,
+    SessionRewind, SessionRewindParams, SessionSetEngine, SessionSetEngineParams,
+    SessionSetFastMode, SessionSetFastModeParams, SessionSetModel, SessionSetModelParams,
+    SessionSetPermission, SessionSetPermissionParams, SessionUpdate, SessionUsage,
+    SessionUsageParams, UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -1642,10 +1643,29 @@ fn handle_mouse_with_connection(
         }
         // 浏览/选择类模态点卡片外即关闭（与 Esc 同义）；授权、提问、计划审阅、
         // 切换确认这类需要明确答复的卡片不因误点背景而消失。
-        if left_down
-            && app.modal.as_ref().is_some_and(modal_dismissable)
-            && !app.modal_card_area.is_empty()
-            && !app.modal_card_area.contains(position.into())
+        // 模型选择器的「外」是列表卡、详情卡、下拉卡三块浮层之外。
+        let pos: ratatui::layout::Position = position.into();
+        let outside = !app.modal_card_area.is_empty()
+            && !app.modal_card_area.contains(pos)
+            && !app.modal_detail_area.contains(pos)
+            && !app.modal_menu_area.contains(pos);
+        if left_down && outside && matches!(app.modal, Some(Modal::Model { .. })) {
+            // popover 语义：一次点击即关——先收起下拉与详情焦点，再走列表层 Esc
+            // （关闭；WorkflowRole 目标回到 workflow 窗）。
+            if let Some(Modal::Model { detail, .. }) = app.modal.as_mut() {
+                detail.menu = None;
+                detail.focus = None;
+            }
+            handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Esc);
+            // 点在触发标签上只收起（否则会立刻又打开）；Workflow 回程仍有模态
+            // 时同样吞掉这次点击。
+            if app.model_tag_area.contains(pos) || app.modal.is_some() {
+                return;
+            }
+            // 已彻底关闭：把这次点击当作无模态时的普通点击重新派发。
+            handle_mouse_with_connection(app, connection, mouse);
+            return;
+        } else if left_down && outside && app.modal.as_ref().is_some_and(modal_dismissable)
         {
             handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Esc);
             return;
@@ -1666,6 +1686,10 @@ fn handle_mouse_with_connection(
             handle_plan_mouse(app, connection, mouse);
             return;
         }
+        if matches!(app.modal, Some(Modal::Model { .. })) {
+            handle_model_picker_mouse(app, connection, mouse);
+            return;
+        }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 // 命中矩形由渲染层按卡片正文行号每帧写入。
@@ -1676,13 +1700,6 @@ fn handle_mouse_with_connection(
                     .copied()
                 {
                     click_modal_item(app, connection, index);
-                } else if let Some((index, _)) = app
-                    .modal_level_hits
-                    .iter()
-                    .find(|(_, area)| area.contains(position.into()))
-                    .copied()
-                {
-                    click_model_level(app, index);
                 }
             }
             MouseEventKind::Moved => {
@@ -1700,11 +1717,9 @@ fn handle_mouse_with_connection(
                 match app.modal {
                     // 列表类模态：滚轮与 ↑↓ 同语义移动选中项，不滚背后的转写。
                     Some(
-                        Modal::Model { .. }
-                        | Modal::Sessions { .. }
+                        Modal::Sessions { .. }
                         | Modal::Subagents { .. }
                         | Modal::Jobs { .. }
-                        | Modal::Fusion { .. }
                         | Modal::SwitchModel { .. },
                     ) => handle_modal_key(
                         app,
@@ -1858,7 +1873,6 @@ fn modal_dismissable(modal: &Modal) -> bool {
             | Modal::Sessions { .. }
             | Modal::Subagents { .. }
             | Modal::Jobs { .. }
-            | Modal::Fusion { .. }
             | Modal::Rewind { .. }
             | Modal::Monitor
     )
@@ -1866,9 +1880,8 @@ fn modal_dismissable(modal: &Modal) -> bool {
 
 /// 点中通用模态的第 `index` 项。
 ///
-/// 按钮式选项（授权、Fusion 行、切换确认）点中即执行；候选列表（模型、会话、
-/// 子代理）先选中、再点已选中的一项才确认——模型的思考等级跟随高亮行，一次点击
-/// 就确认的话根本没机会先挑等级。
+/// 按钮式选项（授权、切换确认）点中即执行；候选列表（会话、子代理）先选中、
+/// 再点已选中的一项才确认。模型选择器有独立的三浮层处理，不走这里。
 fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize) {
     let mut job_kill: Option<String> = None;
     let confirm = match app.modal.as_mut() {
@@ -1876,30 +1889,9 @@ fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize
             *selected = index;
             true
         }
-        Some(Modal::Fusion { focus, .. }) => {
-            *focus = index;
-            true
-        }
         Some(Modal::SwitchModel { option, .. }) => {
             *option = index;
             true
-        }
-        Some(Modal::Model {
-            entries,
-            picker,
-            level,
-            ..
-        }) => {
-            let again = picker.selected == index;
-            if !again {
-                let filtered = crate::modal::filtered_entries(entries, &picker.query);
-                level.change_entry(
-                    filtered.get(picker.selected).map(|(_, entry)| *entry),
-                    filtered.get(index).map(|(_, entry)| *entry),
-                );
-                picker.selected = index;
-            }
-            again
         }
         Some(Modal::Sessions { picker, .. } | Modal::Subagents { picker, .. }) => {
             let again = picker.selected == index;
@@ -1963,21 +1955,6 @@ fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize
 /// 鼠标悬浮移到通用模态的第 `index` 项：与 ↑↓/Tab 换行同语义，只改高亮不确认。
 fn hover_modal_item(app: &mut App, index: usize) {
     match app.modal.as_mut() {
-        Some(Modal::Model {
-            entries,
-            picker,
-            level,
-            ..
-        }) => {
-            if picker.selected != index {
-                let filtered = crate::modal::filtered_entries(entries, &picker.query);
-                level.change_entry(
-                    filtered.get(picker.selected).map(|(_, entry)| *entry),
-                    filtered.get(index).map(|(_, entry)| *entry),
-                );
-                picker.selected = index;
-            }
-        }
         Some(
             Modal::Sessions { picker, .. }
             | Modal::Subagents { picker, .. }
@@ -1986,7 +1963,6 @@ fn hover_modal_item(app: &mut App, index: usize) {
             picker.selected = index;
         }
         Some(Modal::Permission { selected, .. }) => *selected = index,
-        Some(Modal::Fusion { focus, .. }) => *focus = index,
         Some(Modal::SwitchModel { option, .. }) => *option = index,
         Some(Modal::WorkflowApproval { state }) => state.focus = index,
         Some(Modal::WorkflowRun { state }) => state.focus = index,
@@ -2005,23 +1981,176 @@ fn hover_modal_item(app: &mut App, index: usize) {
     }
 }
 
-/// 点中模型选择器思考等级条的第 `index` 档：就地切档，焦点仍在候选列表。
-fn click_model_level(app: &mut App, index: usize) {
-    let Some(Modal::Model {
-        entries,
-        picker,
-        level,
-        ..
-    }) = app.modal.as_mut()
-    else {
+/// 模型选择器的鼠标处理：下拉打开时只认下拉（点候选提交、点其余位置收起、
+/// 悬停跟随、任意位置滚轮都移动下拉）；未打开时列表行「先选中再点确认」，
+/// 详情行点中等价于聚焦后按 Enter，滚轮移动列表选中项。
+fn handle_model_picker_mouse(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    mouse: crossterm::event::MouseEvent,
+) {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let position: ratatui::layout::Position = (mouse.column, mouse.row).into();
+    let menu_open = matches!(
+        &app.modal,
+        Some(Modal::Model {
+            detail: crate::modal::DetailState { menu: Some(_), .. },
+            ..
+        })
+    );
+    if menu_open {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some((index, _)) = app
+                    .modal_menu_hits
+                    .iter()
+                    .find(|(_, area)| area.contains(position))
+                    .copied()
+                {
+                    if let Some(Modal::Model { detail, .. }) = app.modal.as_mut()
+                        && let Some(menu) = detail.menu.as_mut()
+                    {
+                        menu.selected = index;
+                    }
+                    handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+                } else {
+                    // 点下拉以外（但在选择器内）：先收起下拉，再按未展开状态
+                    // 处理这次点击（列表行选中/确认，详情行聚焦执行）。
+                    if let Some(Modal::Model { detail, .. }) = app.modal.as_mut() {
+                        detail.menu = None;
+                    }
+                    handle_model_picker_mouse(app, connection, mouse);
+                }
+            }
+            MouseEventKind::Moved => {
+                if let Some((index, _)) = app
+                    .modal_menu_hits
+                    .iter()
+                    .find(|(_, area)| area.contains(position))
+                    .copied()
+                    && let Some(Modal::Model { detail, .. }) = app.modal.as_mut()
+                    && let Some(menu) = detail.menu.as_mut()
+                {
+                    menu.selected = index;
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                handle_modal_key(
+                    app,
+                    connection,
+                    KeyModifiers::NONE,
+                    if matches!(mouse.kind, MouseEventKind::ScrollUp) {
+                        KeyCode::Up
+                    } else {
+                        KeyCode::Down
+                    },
+                );
+            }
+            _ => {}
+        }
         return;
-    };
-    if let Some((_, entry)) = crate::modal::filtered_entries(entries, &picker.query)
-        .get(picker.selected)
-        .copied()
-        && let Some(chosen) = entry.levels.get(index)
-    {
-        level.manual = Some(chosen.clone());
+    }
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if let Some((row, _)) = app
+                .modal_detail_hits
+                .iter()
+                .find(|(_, area)| area.contains(position))
+                .copied()
+            {
+                if let Some(Modal::Model { detail, .. }) = app.modal.as_mut() {
+                    detail.focus = Some(row);
+                }
+                // 与聚焦后按 Enter 同义：展开下拉 / 切换 / 应用。
+                handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+            } else if app.modal_detail_area.contains(position)
+                || app.modal_menu_area.contains(position)
+            {
+                // 详情卡/下拉卡盖在列表上：点中卡内非控制行不穿透到候选列表。
+            } else if let Some((index, _)) = app
+                .modal_item_hits
+                .iter()
+                .find(|(_, area)| area.contains(position))
+                .copied()
+            {
+                let again = if let Some(Modal::Model {
+                    entries,
+                    picker,
+                    level,
+                    detail,
+                    ..
+                }) = app.modal.as_mut()
+                {
+                    let again = picker.selected == index;
+                    if !again {
+                        let filtered = crate::modal::filtered_entries(entries, &picker.query);
+                        level.change_entry(
+                            filtered.get(picker.selected).map(|(_, entry)| *entry),
+                            filtered.get(index).map(|(_, entry)| *entry),
+                        );
+                        picker.selected = index;
+                    }
+                    detail.focus = None;
+                    again
+                } else {
+                    false
+                };
+                if again {
+                    handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+                }
+            }
+        }
+        MouseEventKind::Moved => {
+            if let Some((row, _)) = app
+                .modal_detail_hits
+                .iter()
+                .find(|(_, area)| area.contains(position))
+                .copied()
+            {
+                if let Some(Modal::Model { detail, .. }) = app.modal.as_mut() {
+                    detail.focus = Some(row);
+                }
+            } else if app.modal_detail_area.contains(position)
+                || app.modal_menu_area.contains(position)
+            {
+                // 详情卡/下拉卡盖在列表上：卡内非控制行不穿透到候选列表。
+            } else if let Some((index, _)) = app
+                .modal_item_hits
+                .iter()
+                .find(|(_, area)| area.contains(position))
+                .copied()
+                && let Some(Modal::Model {
+                    entries,
+                    picker,
+                    level,
+                    detail,
+                    ..
+                }) = app.modal.as_mut()
+            {
+                if picker.selected != index {
+                    let filtered = crate::modal::filtered_entries(entries, &picker.query);
+                    level.change_entry(
+                        filtered.get(picker.selected).map(|(_, entry)| *entry),
+                        filtered.get(index).map(|(_, entry)| *entry),
+                    );
+                    picker.selected = index;
+                }
+                detail.focus = None;
+            }
+        }
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            handle_modal_key(
+                app,
+                connection,
+                KeyModifiers::NONE,
+                if matches!(mouse.kind, MouseEventKind::ScrollUp) {
+                    KeyCode::Up
+                } else {
+                    KeyCode::Down
+                },
+            );
+        }
+        _ => {}
     }
 }
 
@@ -3350,26 +3479,27 @@ const ASK_PREVIEW_SCROLL_STEP: usize = 8;
 /// 帮助页 PgUp/PgDn 每次滚动的行数；渲染层会夹到实际内容高度。
 const HELP_PAGE: usize = 8;
 
-/// Fusion 相关的模态跳转：全部延迟到模态借用结束后统一执行。
-enum FusionNav {
-    Models,
-    /// 模型选择器里的 Fusion 特殊项 → 打开组合配置卡。
-    Open,
-    /// 槽位选择器已选定 → 带草稿回配置卡并把焦点推进到下一行。
-    Slot(
-        usize,
-        crate::modal::FusionDraft,
-        Box<crate::modal::ModelTarget>,
-    ),
-    /// 槽位选择器 Esc → 带原草稿回配置卡。
-    Back(
-        usize,
-        crate::modal::FusionDraft,
-        Box<crate::modal::ModelTarget>,
-    ),
+/// Fusion 组合的应用：两侧已齐时，规范组合串等于 `current` 就关闭选择器（返回 `true`），
+/// 否则置 loading 并延后发起 `session/set_model`。调用方先处理两侧有空的情况。
+fn apply_fusion_pick(
+    picker: &mut crate::modal::PickerState,
+    fusion: &crate::modal::FusionDraft,
+    current: &str,
+    session_id: &Option<String>,
+    session_apply: &mut Option<(Option<String>, String)>,
+) -> bool {
+    let selector = crate::modal::fusion_selector(&fusion.lead, &fusion.sidekick);
+    if selector == current {
+        true
+    } else {
+        picker.loading = true;
+        picker.error = None;
+        *session_apply = Some((session_id.clone(), selector));
+        false
+    }
 }
 
-/// `session/set_model` 的异步发起：Session 目标与 Fusion 卡「应用」共用；
+/// `session/set_model` 的异步发起：普通模型与 Fusion 组合的应用共用；
 /// 需要压缩时照旧走 `ModelSwitchConfirm` 确认流。
 fn request_session_model(
     app: &mut App,
@@ -3775,17 +3905,14 @@ fn handle_modal_key(
     let mut focus_target: Option<String> = None;
     // 模型角色字段选定的值：延迟到模态借用结束后写回配置。
     let mut config_pick: Option<(Vec<String>, String, String)> = None;
-    // Fusion 卡的跳转（打开/槽位回填/返回计划审阅/打开槽位选择器）延迟到
-    // 模态借用结束后统一执行。
-    let mut fusion_nav: Option<FusionNav> = None;
-    let mut fusion_slot_picker: Option<(
-        crate::modal::FusionSlot,
-        String,
-        crate::modal::FusionDraft,
-        Box<crate::modal::ModelTarget>,
-    )> = None;
     // `session/set_model` 的发起也延后：模态借用期拿不走 `&mut App`。
     let mut session_apply: Option<(Option<String>, String)> = None;
+    // 详情卡 Fast Mode 行：切换请求延后到借用结束后发出。
+    let mut fast_mode_apply: Option<bool> = None;
+    let session_fast = app
+        .session
+        .as_ref()
+        .is_some_and(|session| session.fast_mode);
     // workflow：模型选择后还原的 modal、审批决策、待打开 run 面板/选择器。
     let mut workflow_back: Option<crate::workflow::WorkflowRoleBack> = None;
     let mut workflow_decision: Option<(String, moc_protocol::methods::WorkflowDecision)> = None;
@@ -4349,11 +4476,13 @@ fn handle_modal_key(
         }
         Modal::Model {
             entries,
+            current,
             picker,
             level,
+            detail,
             target,
-            ..
         } => {
+            use crate::modal::{DetailRow, FUSION_ENTRY_SELECTOR, MenuItems, MenuState};
             let filtered = crate::modal::filtered_entries(entries, &picker.query);
             let highlighted = |picker: &crate::modal::PickerState| {
                 crate::modal::filtered_entries(entries, &picker.query)
@@ -4361,204 +4490,331 @@ fn handle_modal_key(
                     .map(|(index, _)| *index)
             };
             let entry = filtered.get(picker.selected).map(|(_, entry)| *entry);
-            let levels: &[String] = entry.map_or(&[], |entry| entry.levels.as_slice());
             let before = highlighted(picker);
-            match (code, modifiers) {
-                (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
-                (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
-                (KeyCode::PageUp, _) => picker.move_selection(-8, filtered.len(), 8),
-                (KeyCode::PageDown, _) => picker.move_selection(8, filtered.len(), 8),
-                // 选择器只有一个焦点：Tab 与 ←→ 等价地就地切思考等级，不和候选列表抢焦点。
-                (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
-                    level.move_level(levels, false);
-                }
-                (KeyCode::Tab, _) => level.move_level(levels, true),
-                (KeyCode::Left, _) => level.move_level(levels, false),
-                (KeyCode::Right, _) => level.move_level(levels, true),
-                (KeyCode::Home, _) => {
-                    picker.selected = 0;
-                    picker.offset = 0;
-                }
-
-                (KeyCode::End, _) => {
-                    picker.selected = filtered.len().saturating_sub(1);
-                    picker.keep_visible(8, filtered.len());
-                }
-                (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                    picker.query.clear();
-                    picker.selected = 0;
-                    picker.offset = 0;
-                }
-                (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
-                    while picker.query.ends_with(' ') {
-                        picker.query.pop();
+            let rows = crate::modal::detail_rows(entry, entries, target, &detail.fusion);
+            // 展开某详情行的下拉：selected 指向当前生效值，query 从头开始。
+            let open_menu =
+                |detail: &mut crate::modal::DetailState, row: DetailRow, current: Option<usize>| {
+                    detail.menu = Some(MenuState {
+                        row,
+                        selected: current.unwrap_or(0),
+                        offset: 0,
+                        query: String::new(),
+                    });
+                };
+            if let Some(menu) = detail.menu.as_mut() {
+                // 下拉打开：候选内导航；模型下拉支持输入过滤，等级下拉忽略输入。
+                let items = crate::modal::menu_items(
+                    menu.row,
+                    entry,
+                    entries,
+                    level,
+                    &detail.fusion,
+                    &menu.query,
+                );
+                let count = items.len();
+                let model_menu = matches!(menu.row, DetailRow::Lead | DetailRow::Sidekick);
+                match (code, modifiers) {
+                    (KeyCode::Up, _) => menu.move_selection(-1, count),
+                    (KeyCode::Down, _) => menu.move_selection(1, count),
+                    (KeyCode::PageUp, _) => menu.move_selection(-8, count),
+                    (KeyCode::PageDown, _) => menu.move_selection(8, count),
+                    (KeyCode::Home, _) => {
+                        menu.selected = 0;
+                        menu.offset = 0;
                     }
-                    while !picker.query.is_empty() && !picker.query.ends_with(' ') {
-                        picker.query.pop();
+                    (KeyCode::End, _) => {
+                        menu.selected = count.saturating_sub(1);
+                        menu.keep_visible(count);
                     }
-                    picker.selected = 0;
-                    picker.offset = 0;
-                }
-                (KeyCode::Backspace, _) => {
-                    picker.query.pop();
-                    picker.selected = 0;
-                    picker.offset = 0;
-                }
-                (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
-                    if !ch.is_control() =>
-                {
-                    picker.query.push(ch);
-                    picker.selected = 0;
-                    picker.offset = 0;
-                }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    if picker.loading {
-                        return;
-                    }
-                    let Some((_, entry)) = filtered.get(picker.selected).copied() else {
-                        return;
-                    };
-                    // Fusion 特殊项打开组合配置卡而不是直接应用；
-                    // 配置卡的 Enter/Esc 都在 `Modal::Fusion` 分支里处理。
-                    if entry.selector == crate::modal::FUSION_ENTRY_SELECTOR
-                        && matches!(target, crate::modal::ModelTarget::Session)
-                    {
-                        fusion_nav = Some(FusionNav::Open);
-                    } else {
-                        let selector = entry.selector_with(level.resolve(&entry.levels).as_deref());
-                        match target {
-                            crate::modal::ModelTarget::Config { path, label } => {
-                                config_pick = Some((path.clone(), label.clone(), selector));
-                            }
-                            crate::modal::ModelTarget::FusionSlot {
-                                slot,
-                                draft,
-                                origin,
+                    (KeyCode::Esc, _) | (KeyCode::Left, _) => detail.menu = None,
+                    (KeyCode::Enter, KeyModifiers::NONE) => {
+                        // 会话目标下切换进行中：Level 提交是 no-op，下拉保持打开。
+                        if picker.loading
+                            && menu.row == DetailRow::Level
+                            && matches!(target, crate::modal::ModelTarget::Session)
+                        {
+                            return;
+                        }
+                        let chosen = match &items {
+                            MenuItems::Levels { levels, .. } => levels.get(menu.selected).cloned(),
+                            MenuItems::Models {
+                                entries: candidates,
+                                ..
                             } => {
-                                let index =
-                                    usize::from(matches!(slot, crate::modal::FusionSlot::Sidekick));
-                                let mut draft = std::mem::take(draft);
-                                if matches!(slot, crate::modal::FusionSlot::Lead) {
-                                    draft.lead = selector;
-                                } else {
-                                    draft.sidekick = selector;
-                                }
-                                let origin = std::mem::replace(
-                                    origin,
-                                    Box::new(crate::modal::ModelTarget::Session),
-                                );
-                                fusion_nav = Some(FusionNav::Slot(index, draft, origin));
+                                candidates
+                                    .get(menu.selected)
+                                    .map(|(_, candidate)| match menu.row {
+                                        DetailRow::Lead => crate::modal::fusion_side_pick(
+                                            &detail.fusion.lead,
+                                            candidate,
+                                        ),
+                                        _ => crate::modal::fusion_side_pick(
+                                            &detail.fusion.sidekick,
+                                            candidate,
+                                        ),
+                                    })
                             }
-                            crate::modal::ModelTarget::WorkflowRole { .. } => {
-                                // 先整体取出（借用期拿不走 back 箱），写回后统一还原。
-                                let owned =
-                                    std::mem::replace(target, crate::modal::ModelTarget::Session);
-                                if let crate::modal::ModelTarget::WorkflowRole { key, back } = owned
-                                {
-                                    let (back, action) =
-                                        crate::workflow::apply_workflow_pick(back, &key, selector);
-                                    workflow_back = Some(back);
-                                    workflow_action = action;
-                                }
-                            }
-                            crate::modal::ModelTarget::Session => {
-                                picker.loading = true;
-                                picker.error = None;
-                                session_apply = Some((session_id.clone(), selector));
-                            }
-                        }
-                    }
-                }
-
-                (KeyCode::Esc, _) => {
-                    if let crate::modal::ModelTarget::FusionSlot {
-                        slot,
-                        draft,
-                        origin,
-                    } = target
-                    {
-                        let index = usize::from(matches!(slot, crate::modal::FusionSlot::Sidekick));
-                        fusion_nav = Some(FusionNav::Back(
-                            index,
-                            std::mem::take(draft),
-                            std::mem::replace(origin, Box::new(crate::modal::ModelTarget::Session)),
-                        ));
-                    } else if matches!(target, crate::modal::ModelTarget::WorkflowRole { .. }) {
-                        // 取消选择：原样放回回程票，不写覆盖。
-                        let owned = std::mem::replace(target, crate::modal::ModelTarget::Session);
-                        if let crate::modal::ModelTarget::WorkflowRole { back, .. } = owned {
-                            workflow_back = Some(*back);
-                        }
-                    } else {
-                        close = true;
-                    }
-                }
-                _ => {}
-            }
-            level.change_entry(
-                before.and_then(|index| entries.get(index)),
-                highlighted(picker).and_then(|index| entries.get(index)),
-            );
-        }
-
-        Modal::Fusion {
-            draft,
-            focus,
-            origin,
-            loading,
-            error,
-        } => match (code, modifiers) {
-            (KeyCode::Up, _) | (KeyCode::BackTab, _) | (KeyCode::Tab, KeyModifiers::SHIFT) => {
-                *focus = (*focus + 2) % 3;
-            }
-            (KeyCode::Down, _) | (KeyCode::Tab, _) => {
-                *focus = (*focus + 1) % 3;
-            }
-            (KeyCode::Enter, _) => {
-                if *loading {
-                    return;
-                }
-                match *focus {
-                    // Lead/Sidekick 行：打开普通模型选择器填这一侧。
-                    0 | 1 => {
-                        let slot = if *focus == 0 {
-                            crate::modal::FusionSlot::Lead
-                        } else {
-                            crate::modal::FusionSlot::Sidekick
                         };
-                        let current = if *focus == 0 {
-                            draft.lead.clone()
-                        } else {
-                            draft.sidekick.clone()
-                        };
-                        fusion_slot_picker = Some((
-                            slot,
-                            current,
-                            std::mem::take(draft),
-                            std::mem::replace(origin, Box::new(crate::modal::ModelTarget::Session)),
-                        ));
-                    }
-                    _ => {
-                        if draft.lead.is_empty() || draft.sidekick.is_empty() {
-                            *error = Some("请先选择 Lead 与 Sidekick".into());
-                        } else {
-                            let selector =
-                                crate::modal::fusion_selector(&draft.lead, &draft.sidekick);
-                            match &mut **origin {
-                                crate::modal::ModelTarget::Session => {
-                                    *loading = true;
-                                    *error = None;
-                                    session_apply = Some((session_id.clone(), selector));
+                        if let Some(chosen) = chosen {
+                            match menu.row {
+                                DetailRow::Level => {
+                                    level.manual = Some(chosen.clone());
+                                    // 会话目标：改等级立即切换且不关闭选择器。
+                                    if matches!(target, crate::modal::ModelTarget::Session)
+                                        && let Some(entry) = entry
+                                    {
+                                        let selector = entry.selector_with(Some(&chosen));
+                                        if selector != *current {
+                                            picker.loading = true;
+                                            picker.error = None;
+                                            detail.pending = Some(selector.clone());
+                                            session_apply = Some((session_id.clone(), selector));
+                                        }
+                                    }
+                                }
+                                DetailRow::Lead => detail.fusion.lead = chosen,
+                                DetailRow::Sidekick => detail.fusion.sidekick = chosen,
+                                DetailRow::LeadLevel => {
+                                    let next = crate::modal::fusion_side_level(
+                                        &detail.fusion.lead,
+                                        &chosen,
+                                    );
+                                    detail.fusion.lead = next;
+                                }
+                                DetailRow::SidekickLevel => {
+                                    let next = crate::modal::fusion_side_level(
+                                        &detail.fusion.sidekick,
+                                        &chosen,
+                                    );
+                                    detail.fusion.sidekick = next;
                                 }
                                 _ => {}
                             }
                         }
+                        detail.menu = None;
                     }
+                    (KeyCode::Backspace, _) if model_menu => {
+                        menu.query.pop();
+                        menu.selected = 0;
+                        menu.offset = 0;
+                    }
+                    (KeyCode::Char('u'), KeyModifiers::CONTROL) if model_menu => {
+                        menu.query.clear();
+                        menu.selected = 0;
+                        menu.offset = 0;
+                    }
+                    (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                        if model_menu && !ch.is_control() =>
+                    {
+                        menu.query.push(ch);
+                        menu.selected = 0;
+                        menu.offset = 0;
+                    }
+                    _ => {}
                 }
+            } else if let Some(focus) = detail.focus {
+                // 详情卡焦点：↑↓ 在控制行间移动（夹紧不循环），Enter/Space 按行动作。
+                match (code, modifiers) {
+                    (KeyCode::Up, _) | (KeyCode::Down, _) if !rows.is_empty() => {
+                        let position = rows.iter().position(|row| *row == focus).unwrap_or(0);
+                        let next = position
+                            .saturating_add_signed(if matches!(code, KeyCode::Up) { -1 } else { 1 })
+                            .min(rows.len() - 1);
+                        detail.focus = Some(rows[next]);
+                    }
+                    (KeyCode::Left, _) | (KeyCode::Esc, _) => detail.focus = None,
+                    (KeyCode::Enter, KeyModifiers::NONE)
+                    | (KeyCode::Char(' '), KeyModifiers::NONE) => match focus {
+                        DetailRow::Fast => fast_mode_apply = Some(!session_fast),
+                        DetailRow::Apply => {
+                            if picker.loading {
+                                return;
+                            }
+                            if detail.fusion.lead.is_empty() || detail.fusion.sidekick.is_empty() {
+                                picker.error = Some("请先选择 Lead 与 Sidekick".into());
+                            } else if apply_fusion_pick(
+                                picker,
+                                &detail.fusion,
+                                current,
+                                &session_id,
+                                &mut session_apply,
+                            ) {
+                                close = true;
+                            }
+                        }
+                        row => {
+                            let items = crate::modal::menu_items(
+                                row,
+                                entry,
+                                entries,
+                                level,
+                                &detail.fusion,
+                                "",
+                            );
+                            open_menu(detail, row, items.current());
+                        }
+                    },
+                    _ => {}
+                }
+            } else {
+                match (code, modifiers) {
+                    (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
+                    (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
+                    (KeyCode::PageUp, _) => picker.move_selection(-8, filtered.len(), 8),
+                    (KeyCode::PageDown, _) => picker.move_selection(8, filtered.len(), 8),
+                    // Tab：普通模型展开思考等级下拉（焦点仍在列表）；高亮 Fusion 项时等同 →。
+                    (KeyCode::Tab, KeyModifiers::NONE) => {
+                        if entry.is_some_and(|entry| entry.selector == FUSION_ENTRY_SELECTOR) {
+                            if let Some(first) = rows.first() {
+                                detail.focus = Some(*first);
+                            }
+                        } else if entry.is_some_and(|entry| !entry.levels.is_empty()) {
+                            let items = crate::modal::menu_items(
+                                DetailRow::Level,
+                                entry,
+                                entries,
+                                level,
+                                &detail.fusion,
+                                "",
+                            );
+                            open_menu(detail, DetailRow::Level, items.current());
+                        }
+                    }
+                    (KeyCode::Right, _) => {
+                        if let Some(first) = rows.first() {
+                            detail.focus = Some(*first);
+                        }
+                    }
+                    (KeyCode::Home, _) => {
+                        picker.selected = 0;
+                        picker.offset = 0;
+                    }
+
+                    (KeyCode::End, _) => {
+                        picker.selected = filtered.len().saturating_sub(1);
+                        picker.keep_visible(8, filtered.len());
+                    }
+                    (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                        picker.query.clear();
+                        picker.selected = 0;
+                        picker.offset = 0;
+                    }
+                    (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+                        while picker.query.ends_with(' ') {
+                            picker.query.pop();
+                        }
+                        while !picker.query.is_empty() && !picker.query.ends_with(' ') {
+                            picker.query.pop();
+                        }
+                        picker.selected = 0;
+                        picker.offset = 0;
+                    }
+                    (KeyCode::Backspace, _) => {
+                        picker.query.pop();
+                        picker.selected = 0;
+                        picker.offset = 0;
+                    }
+                    (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                        if !ch.is_control() =>
+                    {
+                        picker.query.push(ch);
+                        picker.selected = 0;
+                        picker.offset = 0;
+                    }
+                    (KeyCode::Enter, KeyModifiers::NONE) => {
+                        if picker.loading {
+                            return;
+                        }
+                        let Some((_, entry)) = filtered.get(picker.selected).copied() else {
+                            return;
+                        };
+                        if entry.selector == FUSION_ENTRY_SELECTOR {
+                            // Fusion 特殊项：两侧都已选则应用；否则聚焦到第一个
+                            // 空槽位行并直接展开它的模型下拉。
+                            if detail.fusion.lead.is_empty() || detail.fusion.sidekick.is_empty() {
+                                let row = if detail.fusion.lead.is_empty() {
+                                    DetailRow::Lead
+                                } else {
+                                    DetailRow::Sidekick
+                                };
+                                detail.focus = Some(row);
+                                let items = crate::modal::menu_items(
+                                    row,
+                                    Some(entry),
+                                    entries,
+                                    level,
+                                    &detail.fusion,
+                                    "",
+                                );
+                                open_menu(detail, row, items.current());
+                            } else if apply_fusion_pick(
+                                picker,
+                                &detail.fusion,
+                                current,
+                                &session_id,
+                                &mut session_apply,
+                            ) {
+                                close = true;
+                            }
+                        } else {
+                            let selector =
+                                entry.selector_with(level.resolve(&entry.levels).as_deref());
+                            match target {
+                                crate::modal::ModelTarget::Config { path, label } => {
+                                    config_pick = Some((path.clone(), label.clone(), selector));
+                                }
+                                crate::modal::ModelTarget::WorkflowRole { .. } => {
+                                    // 先整体取出（借用期拿不走 back 箱），写回后统一还原。
+                                    let owned = std::mem::replace(
+                                        target,
+                                        crate::modal::ModelTarget::Session,
+                                    );
+                                    if let crate::modal::ModelTarget::WorkflowRole { key, back } =
+                                        owned
+                                    {
+                                        let (back, action) = crate::workflow::apply_workflow_pick(
+                                            back, &key, selector,
+                                        );
+                                        workflow_back = Some(back);
+                                        workflow_action = action;
+                                    }
+                                }
+                                crate::modal::ModelTarget::Session => {
+                                    picker.loading = true;
+                                    picker.error = None;
+                                    session_apply = Some((session_id.clone(), selector));
+                                }
+                            }
+                        }
+                    }
+
+                    (KeyCode::Esc, _) => {
+                        if matches!(target, crate::modal::ModelTarget::WorkflowRole { .. }) {
+                            // 取消选择：原样放回回程票，不写覆盖。
+                            let owned =
+                                std::mem::replace(target, crate::modal::ModelTarget::Session);
+                            if let crate::modal::ModelTarget::WorkflowRole { back, .. } = owned {
+                                workflow_back = Some(*back);
+                            }
+                        } else {
+                            close = true;
+                        }
+                    }
+                    _ => {}
+                }
+                // 高亮条目变化：等级跨条目记忆照旧，详情焦点与下拉一并复位。
+                let after = highlighted(picker);
+                if before != after {
+                    detail.menu = None;
+                    detail.focus = None;
+                }
+                level.change_entry(
+                    before.and_then(|index| entries.get(index)),
+                    after.and_then(|index| entries.get(index)),
+                );
             }
-            (KeyCode::Esc, _) => fusion_nav = Some(FusionNav::Models),
-            _ => {}
-        },
+        }
 
         Modal::SwitchModel {
             session_id: card_session,
@@ -5195,54 +5451,8 @@ fn handle_modal_key(
             }
         });
     }
-    if let Some((slot, current, draft, origin)) = fusion_slot_picker {
-        app.open_model_picker_for(
-            current,
-            &[],
-            crate::modal::ModelTarget::FusionSlot {
-                slot,
-                draft,
-                origin,
-            },
-        );
-    }
-    if let Some(nav) = fusion_nav {
-        match nav {
-            FusionNav::Models => {
-                app.modal = app.model_picker_back.take().map(|modal| *modal);
-            }
-            FusionNav::Open => {
-                if let Some(Modal::Model { current, .. }) = app.modal.as_ref() {
-                    let draft = crate::app::initial_fusion_draft(app, current);
-                    app.model_picker_back = app.modal.take().map(Box::new);
-                    app.modal = Some(Modal::Fusion {
-                        draft,
-                        focus: 0,
-                        origin: Box::new(crate::modal::ModelTarget::Session),
-                        loading: false,
-                        error: None,
-                    });
-                }
-            }
-            FusionNav::Slot(index, draft, origin) => {
-                app.modal = Some(Modal::Fusion {
-                    draft,
-                    focus: index + 1,
-                    origin,
-                    loading: false,
-                    error: None,
-                });
-            }
-            FusionNav::Back(index, draft, origin) => {
-                app.modal = Some(Modal::Fusion {
-                    draft,
-                    focus: index,
-                    origin,
-                    loading: false,
-                    error: None,
-                });
-            }
-        }
+    if let Some(enabled) = fast_mode_apply {
+        set_fast_mode(app, connection, enabled);
     }
 
     if let Some((path, label, value)) = config_pick {
@@ -5254,7 +5464,6 @@ fn handle_modal_key(
     }
 
     if close {
-        app.model_picker_back = None;
         // 最小化的 workflow 审批：状态移进状态栏胶囊（点击重开），不算已决。
         if let Some(Modal::WorkflowApproval { state }) = app.modal.take()
             && state.parked
@@ -6968,6 +7177,28 @@ fn set_engine(app: &mut App, connection: &EmbeddedConnection, engine: SessionEng
             Err(error) => {
                 let _ = events.send(AppEvent::Notice(format!("切换引擎失败：{error}")));
             }
+        }
+    });
+}
+
+/// 请求 core 切换会话 Fast Mode；生效后由 `SessionUpdate::FastModeChanged` 写回。
+fn set_fast_mode(app: &mut App, connection: &EmbeddedConnection, enabled: bool) {
+    let Some(session) = app.session.as_ref() else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    let client = connection.client.clone();
+    let session_id = session.id.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        if let Err(error) = client
+            .call::<SessionSetFastMode>(SessionSetFastModeParams {
+                session_id,
+                enabled,
+            })
+            .await
+        {
+            let _ = events.send(AppEvent::Notice(format!("切换 Fast Mode 失败：{error}")));
         }
     });
 }
@@ -9099,26 +9330,10 @@ mod tests {
         terminal
     }
 
-    /// 一行区域里画出的文字：宽字符的尾格不重复计入。
-    fn cell_text(
-        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
-        area: ratatui::layout::Rect,
-    ) -> String {
-        let buffer = terminal.backend().buffer();
-        let mut text = String::new();
-        let mut x = area.x;
-        while x < area.right() {
-            let symbol = buffer.cell((x, area.y)).unwrap().symbol();
-            text.push_str(symbol);
-            x += u16::try_from(crate::render::wrap::str_width(symbol).max(1)).unwrap_or(1);
-        }
-        text
-    }
-
-    /// 模型选择器：点思考等级芯片就地切档；候选行先选中、再点才确认——
-    /// 换行时恢复目标模型的等级（与 ↑↓ 同语义），确认带上点选的等级。
+    /// 模型选择器：点详情卡思考等级行展开下拉；会话目标下点等级候选
+    /// 立即发起切换（选择器保持打开、进入 loading）。
     #[tokio::test]
-    async fn model_picker_mouse_selects_row_then_level_then_confirms() {
+    async fn model_picker_mouse_selects_row_then_level_applies_inline() {
         let (core, connection, mut app) = setup_test_app().await;
         let entry = |selector: &str| crate::modal::ModelEntry {
             selector: selector.into(),
@@ -9129,12 +9344,14 @@ mod tests {
             max_output_tokens: None,
             inputs: Vec::new(),
             pricing: None,
+            fast_mode: false,
         };
         app.modal = Some(Modal::Model {
             entries: vec![entry("test/a"), entry("test/b")],
             current: "test/a".into(),
             picker: crate::modal::PickerState::default(),
             level: crate::modal::LevelState::default(),
+            detail: Default::default(),
             target: crate::modal::ModelTarget::Session,
         });
         let picker = |app: &App| match app.modal.as_ref() {
@@ -9144,28 +9361,168 @@ mod tests {
             _ => panic!("模型选择器应保持打开"),
         };
 
-        let terminal = draw_frame(&mut app, 100, 30);
-        let (_, low) = app.modal_level_hits[1];
-        assert_eq!(
-            cell_text(&terminal, low),
-            " low ",
-            "命中区与芯片文字逐列对齐"
-        );
+        let _ = draw_frame(&mut app, 140, 30);
         let (_, row_b) = app.modal_item_hits[1];
-
-        // 点芯片：只切档，不确认。
-        handle_mouse_with_connection(&mut app, &connection, left_click(low.x, low.y));
-        assert_eq!(picker(&app), (0, false, Some("low".into())));
         // 点未选中的行：只选中，未调整的模型使用默认等级。
         handle_mouse_with_connection(&mut app, &connection, left_click(row_b.x + 3, row_b.y));
         assert_eq!(picker(&app), (1, false, None));
 
-        let _ = draw_frame(&mut app, 100, 30);
-        let (_, low) = app.modal_level_hits[1];
-        handle_mouse_with_connection(&mut app, &connection, left_click(low.x + 1, low.y));
-        // 再点已选中的行：确认，按点选的等级发起切换。
-        handle_mouse_with_connection(&mut app, &connection, left_click(row_b.x + 3, row_b.y));
+        // 点详情卡 Level 行：展开等级下拉。
+        let _ = draw_frame(&mut app, 140, 30);
+        let (_, level_row) = *app
+            .modal_detail_hits
+            .iter()
+            .find(|(row, _)| *row == crate::modal::DetailRow::Level)
+            .expect("普通模型详情卡有思考等级行");
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            left_click(level_row.x + 1, level_row.y),
+        );
+        let _ = draw_frame(&mut app, 140, 30);
+        let (_, low) = app.modal_menu_hits[1];
+
+        // 点下拉候选 "low"：记下等级并立即发起切换（会话目标内联生效）。
+        handle_mouse_with_connection(&mut app, &connection, left_click(low.x, low.y));
         assert_eq!(picker(&app), (1, true, Some("low".into())));
+        let Some(Modal::Model { detail, .. }) = app.modal.as_ref() else {
+            panic!("模型选择器应保持打开");
+        };
+        assert_eq!(detail.pending.as_deref(), Some("test/b:low"));
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// popover 语义：点三块浮层之外一次即关并把点击交给被点位置；
+    /// 点触发标签只收起；下拉打开时点列表行先收起下拉再执行行点击。
+    #[tokio::test]
+    async fn model_picker_outside_click_closes_once_and_falls_through() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let entry = |selector: &str| crate::modal::ModelEntry {
+            selector: selector.into(),
+            label: selector.into(),
+            display_name: String::new(),
+            levels: vec!["off".into(), "low".into(), "high".into()],
+            context_window: None,
+            max_output_tokens: None,
+            inputs: Vec::new(),
+            pricing: None,
+            fast_mode: false,
+        };
+        let open_modal = || {
+            Modal::Model {
+                entries: vec![entry("test/a"), entry("test/b")],
+                current: "test/a".into(),
+                picker: crate::modal::PickerState::default(),
+                level: crate::modal::LevelState::default(),
+                detail: crate::modal::DetailState {
+                    focus: Some(crate::modal::DetailRow::Level),
+                    menu: Some(crate::modal::MenuState {
+                        row: crate::modal::DetailRow::Level,
+                        selected: 0,
+                        offset: 0,
+                        query: String::new(),
+                    }),
+                    ..Default::default()
+                },
+                target: crate::modal::ModelTarget::Session,
+            }
+        };
+        // a) 详情焦点+下拉打开时，点浮层之外一次：选择器直接关闭。
+        app.modal = Some(open_modal());
+        let _ = draw_frame(&mut app, 140, 30);
+        handle_mouse_with_connection(&mut app, &connection, left_click(5, 5));
+        assert!(app.modal.is_none(), "点选择器外一次即关");
+
+        // b) 点触发标签：收起且不会立刻重新打开。
+        app.modal = Some(open_modal());
+        let _ = draw_frame(&mut app, 140, 30);
+        let tag = app.model_tag_area;
+        assert!(!tag.is_empty(), "测试假定有触发标签");
+        handle_mouse_with_connection(&mut app, &connection, left_click(tag.x, tag.y));
+        assert!(app.modal.is_none(), "点触发标签只收起不 reopen");
+
+        // c) 下拉打开时点另一个列表行：下拉收起、选中变成该行。
+        app.modal = Some(open_modal());
+        let _ = draw_frame(&mut app, 140, 30);
+        let (_, row_b) = app.modal_item_hits[1];
+        handle_mouse_with_connection(&mut app, &connection, left_click(row_b.x + 3, row_b.y));
+        let Some(Modal::Model { picker, detail, .. }) = app.modal.as_ref() else {
+            panic!("模型选择器应保持打开");
+        };
+        assert!(detail.menu.is_none(), "点击后下拉已收起");
+        assert_eq!(picker.selected, 1, "点击落到列表行");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 窄屏下详情卡盖在列表卡上：卡内非控制行的移动与点击不穿透到候选列表，
+    /// 列表高亮与详情焦点都不变。
+    #[tokio::test]
+    async fn model_picker_overlay_detail_blocks_mouse_passthrough() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let entry = |selector: &str| crate::modal::ModelEntry {
+            selector: selector.into(),
+            label: selector.into(),
+            display_name: String::new(),
+            levels: vec!["off".into(), "low".into(), "high".into()],
+            context_window: None,
+            max_output_tokens: None,
+            inputs: Vec::new(),
+            pricing: None,
+            fast_mode: false,
+        };
+        app.modal = Some(Modal::Model {
+            entries: vec![entry("test/a"), entry("test/b")],
+            current: "test/a".into(),
+            picker: crate::modal::PickerState::default(),
+            level: crate::modal::LevelState::default(),
+            detail: crate::modal::DetailState {
+                focus: Some(crate::modal::DetailRow::Level),
+                ..Default::default()
+            },
+            target: crate::modal::ModelTarget::Session,
+        });
+        // 60 列放不下两块浮层：详情卡覆盖在列表卡上（因 focus 而绘制）。
+        let _ = draw_frame(&mut app, 60, 24);
+        let detail_area = app.modal_detail_area;
+        assert!(
+            !detail_area.is_empty()
+                && !detail_area.intersection(app.modal_card_area).is_empty(),
+            "窄屏下详情卡应覆盖列表卡"
+        );
+        // 详情卡内容首行是模型名（非控制行）：移上去什么都不发生。
+        let point = (detail_area.x + 2, detail_area.y + 1);
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse_event(
+                crossterm::event::MouseEventKind::Moved,
+                point.0,
+                point.1,
+            ),
+        );
+        let Some(Modal::Model { picker, detail, .. }) = app.modal.as_ref() else {
+            panic!("模型选择器应保持打开");
+        };
+        assert_eq!(picker.selected, 0, "详情卡上的移动不改列表高亮");
+        assert_eq!(
+            detail.focus,
+            Some(crate::modal::DetailRow::Level),
+            "详情卡上的移动不丢焦点"
+        );
+        handle_mouse_with_connection(&mut app, &connection, left_click(point.0, point.1));
+        let Some(Modal::Model { picker, detail, .. }) = app.modal.as_ref() else {
+            panic!("模型选择器应保持打开");
+        };
+        assert_eq!(picker.selected, 0, "详情卡上的点击不选中列表行");
+        assert_eq!(
+            detail.focus,
+            Some(crate::modal::DetailRow::Level),
+            "详情卡上的点击不丢焦点"
+        );
 
         connection.shutdown().await;
         core.shutdown().await;
@@ -10229,6 +10586,7 @@ mod tests {
                 id: 1,
                 draft: crate::widgets::prompt::PromptState::from_text("先保留原文件".into()),
                 display_text: "先保留原文件".into(),
+                echo_text: "先保留原文件".into(),
                 core_id: None,
                 withdrawal: None,
             });
@@ -10278,6 +10636,7 @@ mod tests {
                 id: 1,
                 draft: crate::widgets::prompt::PromptState::from_text("撤回的草稿".into()),
                 display_text: "撤回的草稿".into(),
+                echo_text: "撤回的草稿".into(),
                 core_id: Some(5),
                 withdrawal: Some(crate::queue::WithdrawAction::Edit),
             });
@@ -10310,6 +10669,7 @@ mod tests {
                 id: 1,
                 draft: crate::widgets::prompt::PromptState::from_text("补充内容".into()),
                 display_text: "补充内容".into(),
+                echo_text: "补充内容".into(),
                 core_id: Some(5),
                 withdrawal: None,
             });
@@ -11938,23 +12298,18 @@ mod config_picker_tests {
         assert_eq!(query(&app), "", "Ctrl+U 清空查询");
 
         // 高亮换到另一个模型：等级回到目标模型自己的最高等级。
-        // 候选首位现在是 Fusion 伪值，下移到 small 需要两步。
+        // 候选首位是继承伪值，下移到 small 需要两步。
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
         assert_eq!(choice(&app), "test/small:medium");
 
-        // 回到 big 恢复原 low；Tab 与方向键仍可循环，最终写回 max。
+        // 回到 big 恢复原 low；Tab 展开等级下拉，选中 max 后确认。
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Up);
         assert_eq!(choice(&app), "test/big:low");
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
-        assert_eq!(choice(&app), "test/big:max", "Tab 从恢复的档位继续切换");
-        handle_modal_key(&mut app, &connection, KeyModifiers::SHIFT, KeyCode::BackTab);
-        assert_eq!(choice(&app), "test/big:low", "Shift+Tab 反向切档");
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
-        assert_eq!(choice(&app), "test/big:max", "→ 直接切档，不需要先聚焦");
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
-        assert_eq!(choice(&app), "test/big:low", "← 切回上一档");
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(choice(&app), "test/big:max", "下拉里选 max 生效");
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
 
         assert!(app.modal.is_none(), "确认后关闭选择器");
@@ -12009,7 +12364,7 @@ mod config_picker_tests {
             crate::modal::ModelTarget::Session,
         );
 
-        // Fusion 特殊项排在候选首位；Enter 进入组合配置卡。
+        // Fusion 特殊项排在候选首位；→ 进入详情卡，焦点落在 Lead 行。
         let Some(Modal::Model {
             entries, picker, ..
         }) = app.modal.as_mut()
@@ -12018,54 +12373,50 @@ mod config_picker_tests {
         };
         assert_eq!(entries[0].selector, crate::modal::FUSION_ENTRY_SELECTOR);
         picker.selected = 0;
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        let Some(Modal::Fusion { draft, focus, .. }) = app.modal.as_ref() else {
-            panic!("应进入 Fusion 配置卡");
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
+        let Some(Modal::Model { detail, .. }) = app.modal.as_ref() else {
+            panic!("模型选择器应保持打开");
         };
-        assert_eq!(draft.lead, "test/big:low", "无默认组合时沿用当前执行模型");
-        assert!(draft.sidekick.is_empty());
-        assert_eq!(*focus, 0);
-
-        // Lead 槽位选择器是普通选择器（无 Fusion 项）；沿用 big:low 回填。
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        let Some(Modal::Model { entries, .. }) = app.modal.as_ref() else {
-            panic!("槽位选择器应打开");
-        };
-        assert!(
-            entries
-                .iter()
-                .all(|entry| entry.selector != crate::modal::FUSION_ENTRY_SELECTOR),
-            "槽位选择器不列 Fusion 项"
-        );
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        let Some(Modal::Fusion { draft, focus, .. }) = app.modal.as_ref() else {
-            panic!("应回到 Fusion 配置卡");
-        };
-        assert_eq!(draft.lead, "test/big:low");
-        assert_eq!(*focus, 1, "填完一侧焦点推进到下一行");
-
-        // Sidekick 槽位：选第二个模型（levels=[medium] → 解析出 :medium）。
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        let Some(Modal::Model { picker, .. }) = app.modal.as_mut() else {
-            panic!("槽位选择器应打开");
-        };
-        picker.selected = 1;
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        let Some(Modal::Fusion { draft, focus, .. }) = app.modal.as_ref() else {
-            panic!("应回到 Fusion 配置卡");
-        };
-        assert_eq!(draft.sidekick, "test/small:medium");
-        assert_eq!(*focus, 2);
-
+        assert_eq!(detail.focus, Some(crate::modal::DetailRow::Lead));
         assert_eq!(
-            crate::modal::fusion_selector(&draft.lead, &draft.sidekick),
-            "fusion:test/big:low+test/small:medium"
+            detail.fusion.lead, "test/big:low",
+            "无默认组合时沿用当前执行模型"
         );
+        assert!(detail.fusion.sidekick.is_empty());
+
+        // 移到 Sidekick 行，Enter 展开模型下拉；输入 "small" 后 Enter 回填。
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        for ch in "small".chars() {
+            handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char(ch));
+        }
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        let Some(Modal::Model { detail, .. }) = app.modal.as_ref() else {
+            panic!("模型选择器应保持打开");
+        };
+        assert_eq!(detail.fusion.sidekick, "test/small:medium");
+
+        // 回到 LeadLevel 行，下拉里把等级从 low 改成 max。
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Up);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        let Some(Modal::Model { detail, .. }) = app.modal.as_ref() else {
+            panic!("模型选择器应保持打开");
+        };
+        assert_eq!(detail.fusion.lead, "test/big:max");
+        assert_eq!(
+            crate::modal::fusion_selector(&detail.fusion.lead, &detail.fusion.sidekick),
+            "fusion:test/big:max+test/small:medium"
+        );
+
+        // Esc 回列表焦点，再 Esc 关闭。
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
-        assert!(
-            matches!(app.modal, Some(Modal::Model { .. })),
-            "Esc 返回原模型选择器"
-        );
+        let Some(Modal::Model { detail, .. }) = app.modal.as_ref() else {
+            panic!("模型选择器应保持打开");
+        };
+        assert_eq!(detail.focus, None);
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
         assert!(app.modal.is_none());
         connection.shutdown().await;
@@ -12118,35 +12469,34 @@ mod config_picker_tests {
             .unwrap();
         app.session = Some(session);
 
-        // 选择器首位是 Fusion 特殊项 → Enter 进入组合配置卡。
+        // 选择器首位是 Fusion 特殊项 → → 进入详情卡（Lead 沿用当前模型）。
         app.open_model_picker();
         let Some(Modal::Model { picker, .. }) = app.modal.as_mut() else {
             panic!("模型选择器应打开");
         };
         picker.selected = 0;
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        assert!(
-            matches!(app.modal, Some(Modal::Fusion { .. })),
-            "应进入 Fusion 配置卡"
-        );
-
-        // Lead 槽位：沿用 big:low 回填。
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        // Sidekick 槽位：选第二个模型。
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        let Some(Modal::Model { picker, .. }) = app.modal.as_mut() else {
-            panic!("Sidekick 槽位选择器应打开");
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
+        let Some(Modal::Model { detail, .. }) = app.modal.as_ref() else {
+            panic!("模型选择器应保持打开");
         };
-        picker.selected = 1;
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        let Some(Modal::Fusion { draft, focus, .. }) = app.modal.as_ref() else {
-            panic!("应回到 Fusion 配置卡");
-        };
-        assert_eq!(draft.sidekick, "test/small:medium");
-        assert_eq!(*focus, 2);
+        assert_eq!(detail.fusion.lead, "test/big:low");
 
-        // 应用：发起 session/set_model，收尾回执落地后卡片关闭。
+        // Sidekick 行：下拉里选第二个模型。
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        for ch in "small".chars() {
+            handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char(ch));
+        }
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        let Some(Modal::Model { detail, .. }) = app.modal.as_ref() else {
+            panic!("模型选择器应保持打开");
+        };
+        assert_eq!(detail.fusion.sidekick, "test/small:medium");
+
+        // 移到 Apply 行应用：发起 session/set_model，收尾回执落地后选择器关闭。
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
         let event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
@@ -12159,7 +12509,7 @@ mod config_picker_tests {
         .await
         .expect("应收到切换收尾回执");
         crate::interaction::handle_event(&mut app, &connection, event);
-        assert!(app.modal.is_none(), "收尾后 Fusion 配置卡应关闭");
+        assert!(app.modal.is_none(), "收尾后模型选择器应关闭");
 
         // 会话模型经 SessionUpdate 推送更新为规范组合串。
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -12181,6 +12531,260 @@ mod config_picker_tests {
         assert_eq!(
             app.session.as_ref().map(|session| session.model.as_str()),
             Some("fusion:test/big:low+test/small:medium")
+        );
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 会话目标下在等级下拉里选档：立即发起切换，回执后选择器保持打开、
+    /// `current` 写回新 selector；换到别的模型同样生效。
+    #[tokio::test]
+    async fn session_level_pick_applies_inline_and_stays_open() {
+        use moc_core::{Core, CoreConfig};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        )
+        .unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+            ptc_worker: None,
+        })
+        .unwrap();
+        let (events, mut receiver) = unbounded_channel();
+        let mut connection = crate::protocol::connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let mut app = App::new(Theme::global(), events);
+        app.models = connection
+            .client
+            .call::<ConfigGet>(ConfigGetParams {})
+            .await
+            .unwrap()
+            .models;
+        let session = connection
+            .client
+            .call::<SessionNew>(SessionNewParams {
+                cwd: None,
+                model: None,
+                title: None,
+                engine: SessionEngine::Standard,
+                plan_active: false,
+                fast_mode: false,
+            })
+            .await
+            .unwrap();
+        app.session = Some(session);
+
+        // 收掉一次切换的收尾回执与 ModelChanged 推送，返回会话模型。
+        async fn settle(
+            app: &mut App,
+            connection: &mut crate::protocol::EmbeddedConnection,
+            receiver: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        ) -> Option<String> {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                loop {
+                    if let Some(event @ AppEvent::SessionControlSettled { .. }) =
+                        receiver.recv().await
+                    {
+                        break event;
+                    }
+                }
+            })
+            .await
+            .expect("应收到切换收尾回执");
+            crate::interaction::handle_event(app, connection, event);
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                loop {
+                    let update = connection.updates.recv().await.unwrap();
+                    let changed = matches!(
+                        &update,
+                        crate::protocol::UiUpdate::Session(params)
+                            if matches!(&params.update, SessionUpdate::ModelChanged { .. })
+                    );
+                    apply_ui_update(app, connection, update);
+                    if changed {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("应收到模型变更推送");
+            app.session.as_ref().map(|session| session.model.clone())
+        }
+
+        // a) 高亮 big（选择器打开时默认落第一行真实模型），Tab 开等级下拉，
+        //    移到 max 提交：立即切换，选择器不关。
+        app.open_model_picker();
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        let model = settle(&mut app, &mut connection, &mut receiver).await;
+        assert_eq!(model.as_deref(), Some("test/big:max"));
+        let Some(Modal::Model {
+            current, picker, ..
+        }) = app.modal.as_ref()
+        else {
+            panic!("内联切换后选择器应保持打开");
+        };
+        assert_eq!(current, "test/big:max");
+        assert!(!picker.loading);
+
+        // b) 高亮移到 small，Tab 后唯一档位 medium 直接提交：同样立即生效。
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        let model = settle(&mut app, &mut connection, &mut receiver).await;
+        assert_eq!(model.as_deref(), Some("test/small:medium"));
+        let Some(Modal::Model {
+            current, picker, ..
+        }) = app.modal.as_ref()
+        else {
+            panic!("第二次内联切换后选择器仍应保持打开");
+        };
+        assert_eq!(current, "test/small:medium");
+        assert!(!picker.loading);
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// Fast Mode 行只出现在支持该能力的模型详情卡里，且只限会话目标；
+    /// Enter 发起 `session/set_fast_mode`，推送落地后写回会话状态。
+    #[tokio::test]
+    async fn fast_mode_row_only_for_fast_models_and_session_target() {
+        use moc_core::{Core, CoreConfig};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\nfast_mode=true\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        )
+        .unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+            ptc_worker: None,
+        })
+        .unwrap();
+        let (events, _receiver) = unbounded_channel();
+        let mut connection = crate::protocol::connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let mut app = App::new(Theme::global(), events);
+        app.models = connection
+            .client
+            .call::<ConfigGet>(ConfigGetParams {})
+            .await
+            .unwrap()
+            .models;
+        let session = connection
+            .client
+            .call::<SessionNew>(SessionNewParams {
+                cwd: None,
+                model: None,
+                title: None,
+                engine: SessionEngine::Standard,
+                plan_active: false,
+                fast_mode: false,
+            })
+            .await
+            .unwrap();
+        app.session = Some(session);
+
+        // Session 目标：fast 模型的详情行含 Fast；不支持 fast 的模型不含。
+        app.open_model_picker();
+        let Some(Modal::Model {
+            entries,
+            picker,
+            detail,
+            target,
+            ..
+        }) = app.modal.as_ref()
+        else {
+            panic!("模型选择器应打开");
+        };
+        let rows_of = |index: usize| {
+            crate::modal::detail_rows(entries.get(index), entries, target, &detail.fusion)
+        };
+        assert!(
+            rows_of(picker.selected).contains(&crate::modal::DetailRow::Fast),
+            "fast 模型的会话目标详情行含 Fast"
+        );
+        let small = entries
+            .iter()
+            .position(|entry| entry.selector == "test/small")
+            .expect("small 条目");
+        assert!(
+            !rows_of(small).contains(&crate::modal::DetailRow::Fast),
+            "非 fast 模型不显示 Fast 行"
+        );
+
+        // Config 目标下同一模型也不显示 Fast 行。
+        app.open_config_model_picker(
+            vec!["models".into(), "roles".into(), "explore".into()],
+            "探索模型".into(),
+            "test/big:low".into(),
+            &[],
+        );
+        let Some(Modal::Model {
+            entries,
+            picker,
+            detail,
+            target,
+            ..
+        }) = app.modal.as_ref()
+        else {
+            panic!("配置选择器应打开");
+        };
+        assert!(
+            !crate::modal::detail_rows(
+                entries.get(picker.selected),
+                entries,
+                target,
+                &detail.fusion,
+            )
+            .contains(&crate::modal::DetailRow::Fast),
+            "配置目标不显示 Fast 行"
+        );
+
+        // 回到会话选择器：聚焦 Fast 行按 Enter 发起切换。
+        app.open_model_picker();
+        let Some(Modal::Model { detail, .. }) = app.modal.as_mut() else {
+            panic!("模型选择器应打开");
+        };
+        detail.focus = Some(crate::modal::DetailRow::Fast);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let update = connection.updates.recv().await.unwrap();
+                let fast_changed = matches!(
+                    &update,
+                    crate::protocol::UiUpdate::Session(params)
+                        if matches!(&params.update, SessionUpdate::FastModeChanged { enabled: true })
+                );
+                apply_ui_update(&mut app, &connection, update);
+                if fast_changed {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("应收到 Fast Mode 推送");
+        assert!(
+            app.session
+                .as_ref()
+                .is_some_and(|session| session.fast_mode),
+            "推送落地后会话 fast_mode 变 true"
         );
         connection.shutdown().await;
         core.shutdown().await;

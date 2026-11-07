@@ -180,8 +180,6 @@ pub struct App {
     pub completion_prefix: Option<String>,
     /// 打开的模态；键盘优先路由给它。
     pub modal: Option<Modal>,
-    /// Fusion 配置返回时恢复同一次模型选择的搜索与等级草稿。
-    pub model_picker_back: Option<Box<Modal>>,
     /// 当前焦点。
     pub focus: Focus,
     /// 旁路问答只驻留内存，独立于主转写、输入历史及用量。
@@ -198,10 +196,16 @@ pub struct App {
     pub permission_tag_area: Rect,
     /// 模态选项行命中矩形（Permission、Model、Sessions 等）。
     pub modal_item_hits: Vec<(usize, Rect)>,
-    /// 模型选择器思考等级芯片的命中矩形：`(高亮模型 levels 下标, 区域)`。
-    pub modal_level_hits: Vec<(usize, Rect)>,
+    /// 模型选择器详情卡控制行的命中矩形：`(详情行, 区域)`。
+    pub modal_detail_hits: Vec<(crate::modal::DetailRow, Rect)>,
+    /// 模型选择器下拉候选的命中矩形：`(过滤后候选下标, 区域)`。
+    pub modal_menu_hits: Vec<(usize, Rect)>,
     /// 通用模态卡片的外框；点到卡片外即关闭（仅浏览/选择类模态）。
     pub modal_card_area: Rect,
+    /// 模型选择器详情卡的外框（点外关闭判定用；未绘制时为空）。
+    pub modal_detail_area: Rect,
+    /// 模型选择器下拉浮层的外框（点外关闭判定用；未展开时为空）。
+    pub modal_menu_area: Rect,
     /// 本帧画出的可点击键位（提示条、回退 dock 等）：点中等价于按下该键。
     /// 模态绘制时整表重建，底层界面的键位不会漏到模态上。
     pub key_hits: Vec<crate::render::labels::KeyHit>,
@@ -521,7 +525,6 @@ impl App {
             prompt_revision: 0,
             completion_prefix: None,
             modal: None,
-            model_picker_back: None,
             focus: Focus::Prompt,
             btw: crate::btw::BtwState::default(),
             prompt_area: Rect::default(),
@@ -530,8 +533,11 @@ impl App {
             model_tag_area: Rect::default(),
             permission_tag_area: Rect::default(),
             modal_item_hits: Vec::new(),
-            modal_level_hits: Vec::new(),
+            modal_detail_hits: Vec::new(),
+            modal_menu_hits: Vec::new(),
             modal_card_area: Rect::default(),
+            modal_detail_area: Rect::default(),
+            modal_menu_area: Rect::default(),
             key_hits: Vec::new(),
             legend_tip_area: Rect::default(),
             workflow_capsule_area: Rect::default(),
@@ -1285,14 +1291,11 @@ impl App {
         specials: &[(&str, &str)],
         target: crate::modal::ModelTarget,
     ) {
-        if !matches!(target, crate::modal::ModelTarget::FusionSlot { .. }) {
-            self.model_picker_back = None;
-        }
         if self.models.is_empty() {
             self.set_notice("没有可用的模型，请先在设置中添加");
             return;
         }
-        // 配置字段和 Fusion 槽位不列组合入口。
+        // 配置字段不列组合入口。
         let fusion_entry = matches!(target, crate::modal::ModelTarget::Session);
         let mut entries = Self::picker_entries(&self.models, specials, fusion_entry);
         let models_start = specials.len() + usize::from(fusion_entry);
@@ -1336,11 +1339,21 @@ impl App {
             offset: selected.saturating_sub(7),
             ..Default::default()
         };
+        // Session 目标有 Fusion 特殊项：草稿沿用当前组合或配置默认。
+        let detail = crate::modal::DetailState {
+            fusion: if fusion_entry {
+                initial_fusion_draft(self, &current)
+            } else {
+                Default::default()
+            },
+            ..Default::default()
+        };
         self.modal = Some(Modal::Model {
             entries,
             current,
             picker,
             level,
+            detail,
             target,
         });
     }
@@ -1363,6 +1376,7 @@ impl App {
                 max_output_tokens: None,
                 inputs: Vec::new(),
                 pricing: None,
+                fast_mode: false,
             });
         }
         for (selector, label) in specials {
@@ -1375,6 +1389,7 @@ impl App {
                 max_output_tokens: None,
                 inputs: Vec::new(),
                 pricing: None,
+                fast_mode: false,
             });
         }
         entries.extend(models.iter().map(|model| crate::modal::ModelEntry {
@@ -1391,6 +1406,7 @@ impl App {
             max_output_tokens: model.max_output_tokens,
             inputs: model.inputs.clone(),
             pricing: model.pricing,
+            fast_mode: model.fast_mode,
         }));
         entries
     }

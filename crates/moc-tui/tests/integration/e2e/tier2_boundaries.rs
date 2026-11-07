@@ -188,6 +188,7 @@ fn test_f2_b4_nested_border_contrast() {
         current: "claude-3-5".into(),
         picker: PickerState::default(),
         level: LevelState::default(),
+        detail: Default::default(),
         target: moc_tui::modal::ModelTarget::Session,
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
