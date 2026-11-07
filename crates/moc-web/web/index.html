@@ -5,17 +5,7 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>moc</title>
-    <script>
-      // 首帧前设好 .dark，避免亮色闪屏。主题权威来源是 core 的 web.toml；
-      // store/prefs.ts 把已生效的主题镜像到 moc-web-theme 供这里预读。
-      (() => {
-        const theme = localStorage.getItem("moc-web-theme") || "system";
-        const dark =
-          theme === "dark" ||
-          (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-        document.documentElement.classList.toggle("dark", dark);
-      })();
-    </script>
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

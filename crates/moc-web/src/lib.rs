@@ -108,7 +108,54 @@ fn routes(state: AppState) -> Router {
         .route("/ws", ws_route)
         .route("/commands.json", get(commands_handler))
         .fallback(get(static_handler))
+        .layer(axum::middleware::from_fn(security_headers))
         .with_state(state)
+}
+
+/// 页面只加载自身资源；连接层放行回环 WebSocket（`ws` 直连在 'self' 之外的兜底）。
+/// `frame-ancestors`/`frame-src` 双断 iframe 嵌套：本应用自己也不内嵌任何页面。
+const CSP: &str = concat!(
+    "default-src 'self'",
+    "; script-src 'self'",
+    "; style-src 'self' 'unsafe-inline'",
+    "; img-src 'self' data: blob: https: http:",
+    "; font-src 'self' data:",
+    "; connect-src 'self' ws://127.0.0.1:* ws://localhost:* ws://[::1]:* wss://127.0.0.1:* wss://localhost:* wss://[::1]:*",
+    "; object-src 'none'",
+    "; frame-src 'none'",
+    "; base-uri 'self'",
+    "; form-action 'self'",
+    "; frame-ancestors 'none'",
+);
+
+/// 所有响应统一的安全头：HTML、静态资源、JSON 与错误页一视同仁，新路由自动继承。
+const SECURITY_HEADERS: [(header::HeaderName, &str); 5] = [
+    (header::CONTENT_SECURITY_POLICY, CSP),
+    // frame-ancestors 的旧式兜底；现代浏览器以 CSP 为准。
+    (header::X_FRAME_OPTIONS, "DENY"),
+    (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+    // 页面会打开图片等外部链接；Referer 只泄本机源，不带任何路径信息。
+    (header::REFERRER_POLICY, "same-origin"),
+    (
+        header::HeaderName::from_static("permissions-policy"),
+        "camera=(), microphone=(), geolocation=()",
+    ),
+];
+
+fn apply_security_headers(headers: &mut HeaderMap) {
+    for (name, value) in SECURITY_HEADERS {
+        headers.insert(name, HeaderValue::from_static(value));
+    }
+}
+
+/// 挂在整棵路由树上的中间件；/ws 的拒绝响应、404 与 /commands.json 同样带头。
+async fn security_headers(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    apply_security_headers(response.headers_mut());
+    response
 }
 
 /// 内置斜杠命令元数据（注册表的可序列化视图）：与静态资源一样是公开元数据，
@@ -274,6 +321,25 @@ mod tests {
         assert!(accepts_zstd(&accept_encoding("gzip, zstd")));
         assert!(accepts_zstd(&accept_encoding("ZSTD;q=1")));
         assert!(!accepts_zstd(&accept_encoding("zstd;q=0")));
+    }
+
+    #[test]
+    fn security_headers_close_framing_and_sniffing() {
+        let mut headers = HeaderMap::new();
+        apply_security_headers(&mut headers);
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(headers[header::REFERRER_POLICY], "same-origin");
+        let csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+        for directive in [
+            "default-src 'self'",
+            "script-src 'self'",
+            "frame-ancestors 'none'",
+            "frame-src 'none'",
+            "object-src 'none'",
+        ] {
+            assert!(csp.contains(directive), "CSP 缺少 {directive}");
+        }
     }
 
     #[tokio::test]
