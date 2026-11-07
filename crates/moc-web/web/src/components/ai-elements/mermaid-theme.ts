@@ -1,4 +1,4 @@
-import type { MermaidConfig } from "@streamdown/mermaid";
+import type { MermaidConfig } from "mermaid";
 
 import type { FigureTokens } from "./svg-figure";
 

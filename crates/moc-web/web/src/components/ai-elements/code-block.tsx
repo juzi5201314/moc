@@ -1,6 +1,5 @@
 "use client";
 
-import { code as codePlugin } from "@streamdown/code";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import type { ComponentProps, CSSProperties, HTMLAttributes } from "react";
 import {
@@ -22,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { codePlugin } from "@/lib/streamdown-plugins";
 import { cn } from "@/lib/utils";
 
 // Shiki uses bitflags for font styles: 1=italic, 2=bold, 4=underline

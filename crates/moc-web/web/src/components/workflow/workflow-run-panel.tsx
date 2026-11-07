@@ -4,7 +4,7 @@
 // table key 去重、metrics 取最新值、board 按 status 分列（无专用组件，Tailwind 注释处自绘），
 // chart 以数据点表呈现（web 无现成 chart 组件，数据完整展示）。
 
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 import { streamdownControls, streamdownPlugins } from "@/components/ai-elements/message";
@@ -18,7 +18,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { WorkflowGraph } from "@/components/workflow/workflow-graph";
 import { WorkflowModelSelect } from "@/components/workflow/workflow-model-select";
 import { type ChartSpecLite, chartToMermaid } from "@/lib/workflow-chart";
 import type { WorkflowRunStatus } from "@/protocol/types";
@@ -32,6 +31,13 @@ import {
   workflowSetRoleModel,
   workflowStop,
 } from "@/store/workflow";
+
+// xyflow 整个子树经这里进首屏 chunk；图只在面板/审批打开时才需要。
+const WorkflowGraph = lazy(() =>
+  import("@/components/workflow/workflow-graph").then((module) => ({
+    default: module.WorkflowGraph,
+  })),
+);
 
 const STATUS_LABEL: Record<string, string> = {
   pending: "等待",
@@ -310,18 +316,24 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
         </DialogHeader>
 
         <div className="h-[280px]">
-          <WorkflowGraph
-            plan={view.plan}
-            statusOf={(id) => {
-              const phase = view.phases.find((p) => p.id === id);
-              return phase
-                ? {
-                    status: phase.status,
-                    detail: `ask ${phase.asks_done ?? 0} · world ${phase.world_done ?? 0}`,
-                  }
-                : { status: "pending" };
-            }}
-          />
+          <Suspense
+            fallback={
+              <div className="grid h-full place-items-center text-ui text-muted-foreground">…</div>
+            }
+          >
+            <WorkflowGraph
+              plan={view.plan}
+              statusOf={(id) => {
+                const phase = view.phases.find((p) => p.id === id);
+                return phase
+                  ? {
+                      status: phase.status,
+                      detail: `ask ${phase.asks_done ?? 0} · world ${phase.world_done ?? 0}`,
+                    }
+                  : { status: "pending" };
+              }}
+            />
+          </Suspense>
         </div>
 
         <div className="space-y-2">

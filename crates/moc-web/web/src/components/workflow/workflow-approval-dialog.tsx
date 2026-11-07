@@ -1,7 +1,7 @@
 // workflow 审批窗：ApprovalRequested 弹出；图 + role/ModelRef 模型选择 + 命令集
 // + 脚本全文 + 批准/拒绝。只读连接（无写租约）全部操作禁用。
 
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { CodeBlock } from "@/components/ai-elements/code-block";
 import { Badge } from "@/components/ui/badge";
@@ -15,11 +15,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { WorkflowGraph } from "@/components/workflow/workflow-graph";
 import { WorkflowModelSelect } from "@/components/workflow/workflow-model-select";
 import type { WorkflowApproval } from "@/protocol/types";
 import { useTranscript } from "@/store/transcript";
 import { workflowApprove } from "@/store/workflow";
+
+// xyflow 整个子树经这里进首屏 chunk；图只在审批/面板打开时才需要。
+const WorkflowGraph = lazy(() =>
+  import("@/components/workflow/workflow-graph").then((module) => ({
+    default: module.WorkflowGraph,
+  })),
+);
 
 export type WorkflowApprovalDialogProps = {
   sessionId: string;
@@ -91,7 +97,13 @@ export function WorkflowApprovalDialog({
         </DialogHeader>
 
         <div className="h-[300px]">
-          <WorkflowGraph plan={plan} />
+          <Suspense
+            fallback={
+              <div className="grid h-full place-items-center text-ui text-muted-foreground">…</div>
+            }
+          >
+            <WorkflowGraph plan={plan} />
+          </Suspense>
         </div>
 
         <div className="space-y-2">

@@ -1,9 +1,7 @@
 "use client";
 
 import { cjk } from "@streamdown/cjk";
-import { code as codePlugin } from "@streamdown/code";
 import { createMathPlugin } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
@@ -12,6 +10,7 @@ import { Streamdown, type MermaidErrorComponentProps } from "streamdown";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupText } from "@/components/ui/button-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { codePlugin, mermaidPlugin } from "@/lib/streamdown-plugins";
 import { useIsDark } from "@/lib/use-dark";
 import { cn } from "@/lib/utils";
 import { mermaidConfig } from "./mermaid-theme";
@@ -276,7 +275,7 @@ export const streamdownPlugins = {
   cjk,
   code: codePlugin,
   math: createMathPlugin({ singleDollarTextMath: true }),
-  mermaid,
+  mermaid: mermaidPlugin,
 };
 
 // GitHub 观感：代码块只留复制按钮，表格和 mermaid 不带复制/下载/全屏工具条。

@@ -1,7 +1,7 @@
 // 代码高亮：shiki 核心 + JS 正则引擎（不加载 wasm），语言与主题按需动态导入。
 // 只打包常用语言；未知语言原样显示为纯文本。
 
-import type { HighlighterCore, LanguageInput } from "shiki/core";
+import type { HighlighterCore, LanguageInput, TokensResult } from "shiki/core";
 
 // 动态导入是有意为之：语言包按代码块语言在运行时选择，静态导入会把全部语法打进首屏包。
 const LANG_LOADERS: Record<string, LanguageInput> = {
@@ -47,8 +47,12 @@ export const LIGHT_THEME = "github-light";
 export const DARK_THEME = "github-dark";
 
 let highlighter: Promise<HighlighterCore> | null = null;
+/** 已 resolve 的 core；同步 token 化路径用，未就绪时为 null。 */
+let core: HighlighterCore | null = null;
 /** 语言名 → 加载结果；运行时按需插入，同一语言只加载一次。 */
 const loadedLangs = new Map<string, Promise<boolean>>();
+/** 加载成功的语言；tokenize 的同步命中判据。 */
+const readyLangs = new Set<string>();
 
 function getHighlighter(): Promise<HighlighterCore> {
   highlighter ??= (async () => {
@@ -56,11 +60,12 @@ function getHighlighter(): Promise<HighlighterCore> {
       import("shiki/core"),
       import("shiki/engine/javascript"),
     ]);
-    return createHighlighterCore({
+    core = await createHighlighterCore({
       themes: [import("shiki/themes/github-light.mjs"), import("shiki/themes/github-dark.mjs")],
       langs: [],
       engine: createJavaScriptRegexEngine(),
     });
+    return core;
   })();
   return highlighter;
 }
@@ -73,19 +78,42 @@ export function resolveLang(lang: string | undefined): string | null {
   return Object.hasOwn(LANG_LOADERS, name) ? name : null;
 }
 
-/** 高亮成 HTML（shiki 输出已转义）；语言不支持或加载失败返回 null。 */
-export async function highlight(code: string, lang: string, dark: boolean): Promise<string | null> {
-  const name = resolveLang(lang);
-  if (!name) return null;
-  const core = await getHighlighter();
+/** 确保 core 与指定语言就绪；语言未知或加载失败返回 false。 */
+export async function ensureLang(name: string): Promise<boolean> {
+  const h = await getHighlighter();
+  const loader = LANG_LOADERS[name];
+  if (!loader) return false;
   let loaded = loadedLangs.get(name);
   if (!loaded) {
-    loaded = core
-      .loadLanguage(LANG_LOADERS[name])
-      .then(() => true)
+    loaded = h
+      .loadLanguage(loader)
+      .then(() => {
+        readyLangs.add(name);
+        return true;
+      })
       .catch(() => false);
     loadedLangs.set(name, loaded);
   }
-  if (!(await loaded)) return null;
+  return loaded;
+}
+
+/** 同步 token 化：core 与语言均已就绪才返回，否则 null（经 ensureLang 加载后用 callback 回补）。 */
+export function tokenize(code: string, name: string): TokensResult | null {
+  if (!core || !readyLangs.has(name)) return null;
+  return core.codeToTokens(code, {
+    lang: name,
+    themes: { light: LIGHT_THEME, dark: DARK_THEME },
+  });
+}
+
+/** 支持的语言名清单（白名单内，别名见 resolveLang）。 */
+export function supportedLanguages(): string[] {
+  return Object.keys(LANG_LOADERS);
+}
+
+/** 高亮成 HTML（shiki 输出已转义）；语言不支持或加载失败返回 null。 */
+export async function highlight(code: string, lang: string, dark: boolean): Promise<string | null> {
+  const name = resolveLang(lang);
+  if (!name || !(await ensureLang(name)) || !core) return null;
   return core.codeToHtml(code, { lang: name, theme: dark ? DARK_THEME : LIGHT_THEME });
 }
