@@ -117,6 +117,7 @@ async function loadSession(
         session_id: sessionId,
         max_entries: PAGE_SIZE,
         max_message_bytes: MAX_MESSAGE_BYTES,
+        full_messages: true,
         redo_page: { max_entries: 0 },
         plan_page: { max_entries: 32 },
       },
@@ -217,6 +218,7 @@ export async function loadOlder(sessionId: string): Promise<void> {
       before_entry_id: beforeEntryId,
       max_entries: PAGE_SIZE,
       max_message_bytes: MAX_MESSAGE_BYTES,
+      full_messages: true,
       redo_page: { max_entries: 0 },
       plan_page: { max_entries: 0 },
     });
@@ -260,6 +262,7 @@ export async function reloadReadOnly(sessionId: string): Promise<void> {
     session_id: sessionId,
     max_entries: PAGE_SIZE,
     max_message_bytes: MAX_MESSAGE_BYTES,
+    full_messages: true,
     redo_page: { max_entries: 0 },
     plan_page: { max_entries: 0 },
   });
