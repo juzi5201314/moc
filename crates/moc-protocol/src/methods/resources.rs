@@ -1,5 +1,6 @@
 //! `resource/complete`：统一内部资源 URI 输入补全。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::method::{ClientRequest, Method};
@@ -15,14 +16,14 @@ impl Method for ResourceComplete {
 
 impl ClientRequest for ResourceComplete {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceCompleteParams {
     pub session_id: String,
     pub prefix: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceCandidate {
     pub uri: String,
@@ -32,7 +33,7 @@ pub struct ResourceCandidate {
     pub append_space: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceCompleteResult {
     pub candidates: Vec<ResourceCandidate>,

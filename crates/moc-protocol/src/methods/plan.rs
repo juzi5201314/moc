@@ -1,5 +1,6 @@
 //! 计划方法（批准 / 批注修订 / 版本 diff）与计划 DTO。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::diff::ToolDiff;
@@ -23,7 +24,7 @@ impl Method for SessionPlanMode {
 impl ClientRequest for SessionPlanMode {}
 
 /// plan 模式切换参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPlanModeParams {
     /// 目标会话。
@@ -47,7 +48,7 @@ impl Method for SessionPlanApprove {
 impl ClientRequest for SessionPlanApprove {}
 
 /// 计划批准参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPlanApproveParams {
     pub session_id: String,
@@ -60,7 +61,7 @@ pub struct SessionPlanApproveParams {
 }
 
 /// 用户对计划的处理动作。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanAction {
     Execute,
@@ -70,7 +71,7 @@ pub enum PlanAction {
 }
 
 /// 计划批准后的结果。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPlanApproveResult {
     pub session_id: String,
@@ -102,7 +103,7 @@ impl Method for SessionPlanRevise {
 impl ClientRequest for SessionPlanRevise {}
 
 /// 计划修订请求参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPlanReviseParams {
     pub session_id: String,
@@ -115,7 +116,7 @@ pub struct SessionPlanReviseParams {
 }
 
 /// 计划修订请求的结果。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPlanReviseResult {
     pub session_id: String,
@@ -142,7 +143,7 @@ impl Method for SessionPlanDiff {
 impl ClientRequest for SessionPlanDiff {}
 
 /// 计划版本 diff 参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPlanDiffParams {
     pub session_id: String,
@@ -150,7 +151,7 @@ pub struct SessionPlanDiffParams {
 }
 
 /// 计划版本 diff 结果。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPlanDiffResult {
     pub plan_id: String,
@@ -162,7 +163,7 @@ pub struct SessionPlanDiffResult {
 }
 
 /// 会话当前已知的计划版本。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanInfo {
     pub plan_id: String,
@@ -186,7 +187,7 @@ pub struct PlanInfo {
 /// 一次计划审阅的典型轨迹：`plan` 反复起草/修订（`draft`）→ `exit_plan`
 /// 提交（`submitted`）→ 用户提交批注（`revised`）→ 模型写出新版后旧版
 /// （`superseded`）。`approved` / `rejected` 是终态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanStatus {
     /// `plan` 已保存、还没 `exit_plan`；不进入审阅列表。
@@ -206,7 +207,7 @@ pub enum PlanStatus {
 /// 批注锚定在某个计划版本的行区间上：`body` 是用户写的整段正文，允许在其中
 /// 使用 ```` ```suggestion ```` 围栏直接给出「把这几行替换成……」，语义与
 /// GitHub PR suggestion 一致；`quote` 只是用户实际选中的文本，供界面回显。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanAnnotation {
     /// 前端生成的稳定 id。

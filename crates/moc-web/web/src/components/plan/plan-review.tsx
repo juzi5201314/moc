@@ -162,7 +162,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
         id: existing.id,
         startLine: existing.start_line,
         endLine: existing.end_line,
-        quote: existing.quote,
+        quote: existing.quote ?? "",
         body: existing.body,
       });
       return;
@@ -367,7 +367,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
                   id: draft.id,
                   startLine: draft.start_line,
                   endLine: draft.end_line,
-                  quote: draft.quote,
+                  quote: draft.quote ?? "",
                   body: draft.body,
                 })
               }

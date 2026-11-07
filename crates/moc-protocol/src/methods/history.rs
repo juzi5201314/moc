@@ -1,4 +1,5 @@
 //! 历史页的大结果传输：冻结一次结果，逐块读取，原 `session/load_page` 契约不变。
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{SessionLoadPageParams, SessionLoadPageResult};
@@ -15,7 +16,7 @@ impl Method for SessionHistory {
 impl ClientRequest for SessionHistory {}
 
 /// 块偏移以冻结 JSON 的 UTF-8 字节计；同一偏移可重读，直到 close 或过期。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionHistoryParams {
     Open { page: SessionLoadPageParams },
@@ -23,7 +24,7 @@ pub enum SessionHistoryParams {
     Close { transfer_id: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionHistoryResult {
     Page {

@@ -1,9 +1,10 @@
 //! Todo 状态投影。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// 一个 todo 阶段。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TodoPhase {
     pub phase: String,
@@ -11,7 +12,7 @@ pub struct TodoPhase {
 }
 
 /// 一个 todo 任务。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TodoItem {
     pub status: TodoStatus,
@@ -21,7 +22,7 @@ pub struct TodoItem {
 }
 
 /// Todo 任务状态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
     Pending,

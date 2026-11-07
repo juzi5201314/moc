@@ -1,5 +1,6 @@
 //! `session/request_ask` 反向请求：core 向前端询问用户。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::method::{Method, ServerRequest};
@@ -17,7 +18,7 @@ impl Method for SessionRequestAsk {
 impl ServerRequest for SessionRequestAsk {}
 
 /// 一次或多次用户提问。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AskParams {
     pub session_id: String,
@@ -27,7 +28,7 @@ pub struct AskParams {
 }
 
 /// 一个问题及其候选答案。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AskQuestion {
     pub id: String,
@@ -43,7 +44,7 @@ pub struct AskQuestion {
 }
 
 /// 一个用户可选答案。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AskOption {
     pub label: String,
@@ -56,14 +57,14 @@ pub struct AskOption {
 }
 
 /// 前端为问题返回的答案集合。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AskResult {
     pub answers: Vec<AskAnswer>,
 }
 
 /// 一个问题对应的选择或自定义输入。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AskAnswer {
     pub id: String,

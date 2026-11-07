@@ -2,6 +2,7 @@
 //!
 //! 只列目录，不列文件；路径必须是绝对路径或以 `~` 开头。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::method::{ClientRequest, Method};
@@ -22,7 +23,7 @@ impl Method for FsListDir {
 impl ClientRequest for FsListDir {}
 
 /// `fs/list_dir` 的参数。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FsListDirParams {
     /// 绝对路径或以 `~` 开头；`None` 取 core 的当前目录。
@@ -34,7 +35,7 @@ pub struct FsListDirParams {
 }
 
 /// `fs/list_dir` 的结果。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FsListDirResult {
     /// 规范化后的绝对路径。
@@ -52,7 +53,7 @@ pub struct FsListDirResult {
 }
 
 /// 一个子目录。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FsDirEntry {
     /// 目录名。
@@ -76,7 +77,7 @@ impl Method for FsCreateDir {
 impl ClientRequest for FsCreateDir {}
 
 /// `fs/create_dir` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FsCreateDirParams {
     /// 父目录：绝对路径或以 `~` 开头，必须已存在。
@@ -86,7 +87,7 @@ pub struct FsCreateDirParams {
 }
 
 /// `fs/create_dir` 的结果。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FsCreateDirResult {
     /// 新目录的绝对路径。

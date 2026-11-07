@@ -1,11 +1,12 @@
 //! `initialize` 与 `ping`。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::method::{ClientRequest, Method};
 
 /// `initialize` 的参数。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeParams {
     /// 前端声明的协议版本，形状 `major.minor`；major 参与协商。
@@ -18,7 +19,7 @@ pub struct InitializeParams {
 }
 
 /// 前端自报家门。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClientInfo {
     /// 前端程序名，如 `moc-tui`。
@@ -33,7 +34,7 @@ pub struct ClientInfo {
 ///
 /// `permission_requests = false` 表示这个前端弹不出权限询问（如无交互的 `webui`
 /// 后台任务），core 应改走自身策略而不是发反向请求。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClientCapabilities {
     /// 能否处理 [`crate::methods::permission::PermissionRequestParams`]。
@@ -45,7 +46,7 @@ pub struct ClientCapabilities {
 }
 
 /// `initialize` 的结果。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeResult {
     /// 服务端协议版本；major 与前端不一致时前端必须放弃连接。
@@ -61,7 +62,7 @@ pub struct InitializeResult {
 }
 
 /// 服务端自报家门。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ServerInfo {
     /// 程序名，如 `moc-core`。
@@ -74,7 +75,7 @@ pub struct ServerInfo {
 ///
 /// `session_locking = false` 的 core：`SessionInfo.lock` 恒为 `None`，
 /// `session/unlock` 返回 [`crate::RpcErrorCode::NotSupported`]。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ServerCapabilities {
     /// 是否会发起 [`crate::methods::permission::PermissionRequestParams`] 反向请求。
@@ -89,7 +90,7 @@ pub struct ServerCapabilities {
 }
 
 /// `ping` 的结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PingResult {
     /// 服务端当前时间的 UNIX 毫秒时间戳。
@@ -121,7 +122,7 @@ impl Method for Ping {
 impl ClientRequest for Ping {}
 
 /// `ping` 的参数：空对象。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EmptyParams {}
 

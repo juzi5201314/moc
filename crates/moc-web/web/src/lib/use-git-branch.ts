@@ -16,7 +16,7 @@ const subscribers = new Map<string, Set<() => void>>();
 function fetchBranch(cwd: string): Promise<string | null> {
   const promise = rpc
     .call<WorkspaceGitBranchResult>("workspace/git_branch", { cwd })
-    .then((result) => result.branch)
+    .then((result) => result.branch ?? null)
     .catch(() => null);
   cache.set(cwd, { at: Date.now(), promise });
   void promise.then(() => {

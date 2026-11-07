@@ -46,7 +46,7 @@ export function DoctorDialog() {
     if (cwd) {
       void rpc
         .call<WorkspaceGitBranchResult>("workspace/git_branch", { cwd })
-        .then((result) => alive && setBranch(result.branch))
+        .then((result) => alive && setBranch(result.branch ?? null))
         .catch(() => undefined);
     }
     return () => {

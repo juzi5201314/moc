@@ -2,10 +2,11 @@
 
 use crate::method::{ClientRequest, Method};
 use crate::{FinishReason, Message};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// 子代理的运行状态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Queued,
@@ -17,7 +18,7 @@ pub enum AgentStatus {
 }
 
 /// 子代理信息；`id` 直接使用持久化子会话 ID。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentInfo {
     pub id: String,
@@ -36,7 +37,7 @@ pub struct AgentInfo {
 }
 
 /// 一次代理间消息投递的结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMessageOutcome {
     /// 目标正在运行，消息进入其收件箱，将在下一个轮边界注入。
@@ -48,7 +49,7 @@ pub enum AgentMessageOutcome {
 }
 
 /// 一条代理间消息的来源元信息；随消息条目持久化。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentMessageMeta {
     pub from_id: String,
@@ -58,7 +59,7 @@ pub struct AgentMessageMeta {
 }
 
 /// 单个目标的投递回执。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentMessageReceipt {
     pub agent_id: String,
@@ -72,7 +73,7 @@ pub struct AgentMessageReceipt {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentMessage;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentMessageParams {
     /// 调用方会话 ID。
@@ -82,7 +83,7 @@ pub struct AgentMessageParams {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentMessageResult {
     /// 每个目标一条，按解析顺序。
@@ -90,7 +91,7 @@ pub struct AgentMessageResult {
 }
 
 /// 运行中 `wait_agent` 的进度行（`session/update` 的 `tool_progress` 使用）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolProgressRow {
     pub agent_id: String,
@@ -107,7 +108,7 @@ pub struct ToolProgressRow {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentSpawn;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSpawnParams {
     /// 调用方会话 ID。
@@ -126,7 +127,7 @@ pub struct AgentSpawnParams {
     pub output_schema: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSpawnResult {
     pub agent: AgentInfo,
@@ -136,14 +137,14 @@ pub struct AgentSpawnResult {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentList;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentListParams {
     /// 调用方会话 ID。
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentListResult {
     pub agents: Vec<AgentInfo>,
@@ -153,7 +154,7 @@ pub struct AgentListResult {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentStop;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentStopParams {
     /// 调用方会话 ID。
@@ -163,7 +164,7 @@ pub struct AgentStopParams {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentStopResult {
     pub stopped: bool,
@@ -174,7 +175,7 @@ pub struct AgentStopResult {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentWait;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentWaitParams {
     /// 调用方会话 ID。
@@ -188,7 +189,7 @@ pub struct AgentWaitParams {
 }
 
 /// 单个被等待代理的快照。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentWaitEntry {
     pub id: String,
@@ -203,7 +204,7 @@ pub struct AgentWaitEntry {
     pub structured_result: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentWaitResult {
     /// 本次等待覆盖的全部代理快照（按解析顺序）。

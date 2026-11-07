@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "gen:protocol": "node scripts/gen-protocol.mjs",
     "test": "vitest run",
     "lint": "biome check .",
     "preview": "vite preview"
@@ -62,6 +63,7 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
     "jsdom": "30.1.3",
+    "json-schema-to-typescript": "16.0.0",
     "tailwindcss": "4.3.3",
     "typescript": "7.0.2",
     "vite": "8.3.5",

@@ -14,6 +14,7 @@
 //! core 返回 [`crate::RpcErrorCode::SessionLocked`]，`force=true` 则无条件清除。
 
 use super::{diff::ToolDiff, plan::PlanInfo, todo::TodoPhase};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::method::{ClientRequest, Method};
@@ -41,7 +42,7 @@ pub struct SessionLoadPage;
 pub struct SessionRewind;
 
 /// `session/rewind` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRewindParams {
     /// 目标会话。
@@ -61,7 +62,7 @@ pub struct SessionRewindParams {
 pub struct SessionRedo;
 
 /// `session/redo` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRedoParams {
     /// 目标会话。
@@ -83,7 +84,7 @@ pub struct SessionRedoParams {
 pub struct SessionReask;
 
 /// `session/reask` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionReaskParams {
     /// 目标会话。
@@ -123,7 +124,7 @@ pub struct SessionUnlock;
 /// plan 与 ask 不是引擎：plan 是叠加在任意引擎上的持久模式
 /// （[`SessionInfo::plan_active`]，`session/plan_mode` 进出），ask 是
 /// [`super::prompt::PromptParams::mode`] 声明的单次提示只读模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionEngine {
     /// 旧 transcript 写作 `normal`；读取时按别名映射，写入一律用 `standard`。
@@ -139,7 +140,7 @@ pub enum SessionEngine {
 /// 会话自主程度：哪些确认由系统代答而不打扰用户。
 ///
 /// 档位从低到高单向收紧人工介入；`session/set_autonomy` 随时可改，随会话持久化。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionAutonomy {
     /// 默认：所有确认都等用户本人。
@@ -152,7 +153,7 @@ pub enum SessionAutonomy {
 }
 
 /// 会话命令执行权限。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionPermission {
     #[default]
@@ -233,7 +234,7 @@ pub struct SessionContextContent;
 pub struct SessionUsage;
 
 /// `session/usage` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionUsageParams {
     /// 目标会话。
@@ -242,7 +243,7 @@ pub struct SessionUsageParams {
 
 /// 用量来源：会话自身、Fusion sidekick 子会话，或普通子代理（含其后代）。
 #[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum UsageSource {
@@ -260,7 +261,7 @@ impl UsageSource {
 }
 
 /// 一个模型在当前会话中的累计用量。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelUsageSummary {
     /// 模型选择器。
@@ -298,7 +299,7 @@ pub struct ModelUsageSummary {
 
 /// 当前会话的模型用量与全部模型总和
 /// （会话自身 + 未被回退孤立的全部后代会话）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionUsageResult {
     /// 按来源与模型选择器排序的明细（会话自身、sidekick、普通子代理）。
@@ -311,7 +312,7 @@ pub struct SessionUsageResult {
 }
 
 /// `session/tools`：返回当前会话下一轮请求的工具定义。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionToolsParams {
     pub session_id: String,
@@ -326,7 +327,7 @@ impl Method for SessionTools {
 impl ClientRequest for SessionTools {}
 
 /// `session/context` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionContextParams {
     /// 目标会话。
@@ -334,7 +335,7 @@ pub struct SessionContextParams {
 }
 
 /// 一项上下文组成部分。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextUsageSection {
     /// 展示名称：英文短语，直接显示在上下文占用窗的分块列表里。
@@ -344,7 +345,7 @@ pub struct ContextUsageSection {
 }
 
 /// 当前会话上下文估算结果。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextUsageResult {
     /// 模型上下文窗口上限。
@@ -357,7 +358,7 @@ pub struct ContextUsageResult {
 }
 
 /// 打开当前上下文；指定 view_id 时只读取已冻结视图的后续目录页。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionContextContentParams {
     pub session_id: String,
@@ -370,7 +371,7 @@ pub struct SessionContextContentParams {
 }
 
 /// 实际编码请求中的节点；目录不携带正文。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextContentSection {
     pub id: String,
@@ -387,7 +388,7 @@ pub struct ContextContentSection {
     pub children: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextContentResult {
     pub view_id: String,
@@ -401,7 +402,7 @@ pub struct ContextContentResult {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionContextReadParams {
     pub session_id: String,
@@ -413,7 +414,7 @@ pub struct SessionContextReadParams {
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextSource {
     pub source: String,
@@ -422,7 +423,7 @@ pub struct ContextSource {
     pub end: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextReadResult {
     pub view_id: String,
@@ -433,7 +434,7 @@ pub struct ContextReadResult {
     pub sources: Vec<ContextSource>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionContextCloseParams {
     pub session_id: String,
@@ -457,7 +458,7 @@ impl Method for SessionContextClose {
 impl ClientRequest for SessionContextClose {}
 
 /// `session/new` 的参数。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionNewParams {
     /// 工作目录；`None` 由 core 取自己的当前目录。
@@ -481,7 +482,7 @@ pub struct SessionNewParams {
 }
 
 /// 一条会话的元信息。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionInfo {
     /// 会话 ID，由 core 生成（如 `ses_7f3a`）。
@@ -550,7 +551,7 @@ impl SessionInfo {
 ///
 /// 内核文件锁没有安全的跨进程抢占方式，core 不会因为 `unlock` 而清除别人的锁：
 /// 要接管会话，请让持有者 `session/unload` 或退出进程。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionLockInfo {
     /// 持锁进程 PID。
@@ -565,12 +566,12 @@ pub struct SessionLockInfo {
 }
 
 /// `session/list` 的参数：空对象。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionListParams {}
 
 /// `session/list` 的结果。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionListResult {
     /// 会话列表；core 按 `updated_at_ms` 降序排列。
@@ -578,7 +579,7 @@ pub struct SessionListResult {
 }
 
 /// `session/load` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionLoadParams {
     /// 目标会话。
@@ -602,7 +603,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 /// 前滚候选列表的独立分页；正文保持完整，超预算的单条候选独占一页。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RedoPageParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -611,7 +612,7 @@ pub struct RedoPageParams {
 }
 
 /// 计划版本按创建顺序分页；游标是当前计划列表的排他上界，追加版本不移动旧下标。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanPageParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -621,7 +622,7 @@ pub struct PlanPageParams {
 }
 
 /// `session/load_page` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionLoadPageParams {
     pub session_id: String,
@@ -645,7 +646,7 @@ pub struct SessionLoadPageParams {
 }
 
 /// `session/load_page` 的结果。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionLoadPageResult {
     pub session: SessionInfo,
@@ -675,7 +676,7 @@ pub struct SessionLoadPageResult {
 }
 
 /// `session/load` 的结果。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionLoadResult {
     /// 会话元信息（含锁投影）。
@@ -699,7 +700,7 @@ pub struct SessionLoadResult {
 }
 
 /// PTC 中由 JavaScript 发起的嵌套工具调用。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TranscriptChildCall {
     pub id: String,
@@ -715,7 +716,7 @@ pub struct TranscriptChildCall {
 /// 一条运行时提醒里的一条目。
 ///
 /// 只记摘要不记正文：正文就是消息本身，摘要只用来判断「这个条目是否已经在历史里」。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReminderItem {
     /// 稳定条目键，例如 `sandbox`、`mode`、`mcp-index`。
@@ -725,7 +726,7 @@ pub struct ReminderItem {
 }
 
 /// 挂在一条 `Custom` 消息上的提醒标记。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReminderStamp {
     /// 本条消息合并了哪些条目。
@@ -733,7 +734,7 @@ pub struct ReminderStamp {
 }
 
 /// 一条 transcript 条目。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TranscriptEntry {
     /// 条目 ID，由 core 生成。
@@ -789,7 +790,7 @@ impl TranscriptEntry {
 }
 
 /// 一次工具执行的终态。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolExecution {
     /// 对应的 [`crate::ToolCall::id`]。
@@ -805,7 +806,7 @@ pub struct ToolExecution {
 }
 
 /// 工具执行终态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolStatus {
     /// 正常结束。
@@ -819,7 +820,7 @@ pub enum ToolStatus {
 }
 
 /// `session/unload` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionUnloadParams {
     /// 目标会话。
@@ -827,7 +828,7 @@ pub struct SessionUnloadParams {
 }
 
 /// `session/rename` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRenameParams {
     /// 目标会话。
@@ -837,7 +838,7 @@ pub struct SessionRenameParams {
 }
 
 /// `session/delete` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionDeleteParams {
     /// 目标会话。
@@ -845,7 +846,7 @@ pub struct SessionDeleteParams {
 }
 
 /// `session/unlock` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionUnlockParams {
     /// 目标会话。
@@ -856,7 +857,7 @@ pub struct SessionUnlockParams {
 }
 
 /// `session/set_engine` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSetEngineParams {
     pub session_id: String,
@@ -864,7 +865,7 @@ pub struct SessionSetEngineParams {
 }
 
 /// `session/set_autonomy` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSetAutonomyParams {
     pub session_id: String,
@@ -872,7 +873,7 @@ pub struct SessionSetAutonomyParams {
 }
 
 /// `session/set_permission` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSetPermissionParams {
     pub session_id: String,
@@ -883,7 +884,7 @@ pub struct SessionSetPermissionParams {
 }
 
 /// `session/set_fast_mode` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSetFastModeParams {
     pub session_id: String,
@@ -891,7 +892,7 @@ pub struct SessionSetFastModeParams {
 }
 
 /// `session/set_model` 的参数：按选择器切换会话模型。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSetModelParams {
     /// 目标会话。
@@ -904,7 +905,7 @@ pub struct SessionSetModelParams {
 }
 
 /// 目标模型容不下当前上下文时 [`SessionSetModel`] 执行的动作。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionModelOverflowAction {
     /// 直接切换，交给后续请求的既有压缩逻辑。
@@ -917,7 +918,7 @@ pub enum SessionModelOverflowAction {
 }
 
 /// 一次模型切换检查出的容量缺口。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSwitchOverflow {
     /// 当前上下文按目标模型口径的估算 token 数。
@@ -931,7 +932,7 @@ pub struct ModelSwitchOverflow {
 }
 
 /// `session/set_model` 的结果。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSetModelResult {
     /// 当前会话信息；`overflow` 非空且动作为 `ask` 时仍是切换前的模型。
@@ -945,7 +946,7 @@ pub struct SessionSetModelResult {
 }
 
 /// `session/compact` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCompactParams {
     pub session_id: String,
@@ -954,7 +955,7 @@ pub struct SessionCompactParams {
 }
 
 /// 一次上下文压缩的结果。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompactResult {
     pub method: String,
@@ -1129,7 +1130,7 @@ pub struct SessionGoal;
 /// 一轮 goal 续跑的落库标记：写进该轮用户消息条目，回放时按它累计
 /// [`GoalView::rounds_started`]。与 [`super::agent::AgentMessageMeta`] 同层，
 /// 都是「这条用户消息不是人直接敲的」的来源标注。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GoalRoundMeta {
     /// 本轮归属的目标 ID（CAS 身份的一半）。
@@ -1141,7 +1142,7 @@ pub struct GoalRoundMeta {
 }
 
 /// 目标的生命周期相位。armed/disarmed 是进程内属性，不在此列。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalPhase {
     /// 进行中：armed 时每轮提示结束自动续跑。
@@ -1155,7 +1156,7 @@ pub enum GoalPhase {
 }
 
 /// 机器可路由 + 人类可读的 blocked 原因。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GoalBlockReason {
     /// 稳定分类码（如 `model-reported`），lower-kebab-case。
@@ -1165,7 +1166,7 @@ pub struct GoalBlockReason {
 }
 
 /// 当前目标投影：持久快照 + 回放计数 + 进程内 armed。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GoalView {
     /// 目标 ID（同一会话内不复用）。
@@ -1187,7 +1188,7 @@ pub struct GoalView {
 }
 
 /// `session/goal` 的动作。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum GoalAction {
     /// 查看当前目标。
@@ -1206,7 +1207,7 @@ pub enum GoalAction {
 }
 
 /// `session/goal` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionGoalParams {
     /// 目标会话。
@@ -1215,7 +1216,7 @@ pub struct SessionGoalParams {
 }
 
 /// `session/goal` 的结果：变更后的当前目标（clear 或无目标时为 `None`）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionGoalResult {
     #[serde(default)]

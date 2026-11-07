@@ -419,9 +419,9 @@ export function PluginsOverview() {
                 {plugin.error}
               </p>
             )}
-            {(plugin.tools.length > 0 || plugin.commands.length > 0) && (
+            {((plugin.tools?.length ?? 0) > 0 || (plugin.commands?.length ?? 0) > 0) && (
               <div className="flex flex-wrap gap-1 pl-3.5">
-                {plugin.tools.map((tool) => (
+                {(plugin.tools ?? []).map((tool) => (
                   <span
                     key={tool.name}
                     title={tool.description}
@@ -430,7 +430,7 @@ export function PluginsOverview() {
                     {tool.name}
                   </span>
                 ))}
-                {plugin.commands.map((command) => (
+                {(plugin.commands ?? []).map((command) => (
                   <Badge
                     key={command.name}
                     variant="brand"

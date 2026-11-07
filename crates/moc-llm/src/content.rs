@@ -215,6 +215,18 @@ impl<'de> Deserialize<'de> for MessageContent {
         Vec::<ContentPart>::deserialize(deserializer).map(Into::into)
     }
 }
+// 线上就是内容块数组：schema 内联为 `ContentPart[]`，不单独建 $def。
+impl schemars::JsonSchema for MessageContent {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "MessageContent".into()
+    }
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        Vec::<ContentPart>::json_schema(generator)
+    }
+    fn inline_schema() -> bool {
+        true
+    }
+}
 impl std::ops::Deref for MessageContent {
     type Target = Vec<ContentPart>;
     fn deref(&self) -> &Self::Target {

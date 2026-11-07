@@ -135,8 +135,8 @@ function FastModeRow({
 /** 价格格：只画配置了的单价，模型没配 pricing 时整段不出现。 */
 function PriceGrid({ pricing }: { pricing: ModelPricing }) {
   const cells: [string, number][] = [["输入", pricing.input]];
-  if (pricing.cache_read !== undefined) cells.push(["缓存命中", pricing.cache_read]);
-  if (pricing.cache_write !== undefined) cells.push(["缓存写入", pricing.cache_write]);
+  if (pricing.cache_read != null) cells.push(["缓存命中", pricing.cache_read]);
+  if (pricing.cache_write != null) cells.push(["缓存写入", pricing.cache_write]);
   cells.push(["输出", pricing.output]);
   return (
     <div

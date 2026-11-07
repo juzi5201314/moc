@@ -1,6 +1,7 @@
 //! 插件系统的方法：列出已加载插件、执行插件斜杠命令。
 
 use crate::method::{ClientRequest, Method};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// `plugin/list`：本工作区已发现并加载的插件及其注册项。
@@ -12,20 +13,20 @@ impl Method for PluginList {
     type Result = PluginListResult;
 }
 impl ClientRequest for PluginList {}
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginListParams {
     /// 查询哪个工作目录的插件；`None` 表示用会话自己的 cwd。
     #[serde(default)]
     pub session_id: String,
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginListResult {
     pub plugins: Vec<PluginInfo>,
 }
 /// 一个插件的可见状态。`error` 非空表示它加载失败或已在本进程内被禁用。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginInfo {
     pub name: String,
@@ -43,7 +44,7 @@ pub struct PluginInfo {
     #[serde(default)]
     pub error: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginToolInfo {
     pub name: String,
@@ -51,7 +52,7 @@ pub struct PluginToolInfo {
     /// 该工具可见的执行模式（`default`/`ask`/`plan`）。
     pub modes: Vec<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginCommandInfo {
     pub name: String,
@@ -71,14 +72,14 @@ impl Method for PluginReload {
     type Result = PluginReloadResult;
 }
 impl ClientRequest for PluginReload {}
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginReloadParams {
     /// 重载哪个工作目录的插件；`None` 表示用会话自己的 cwd。
     #[serde(default)]
     pub session_id: String,
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginReloadResult {
     /// 重载后的完整插件清单（与 `plugin/list` 相同）。
@@ -94,7 +95,7 @@ impl Method for PluginRunCommand {
     type Result = PluginRunCommandResult;
 }
 impl ClientRequest for PluginRunCommand {}
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginRunCommandParams {
     pub session_id: String,
@@ -103,7 +104,7 @@ pub struct PluginRunCommandParams {
     #[serde(default)]
     pub args: String,
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginRunCommandResult {
     /// 插件返回的文本；前端按普通输出展示。

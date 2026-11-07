@@ -5,7 +5,7 @@ import { produce } from "immer";
 import { create } from "zustand";
 import { rpc } from "@/protocol/client";
 import type {
-  SessionWorkflowActivateResult,
+  SessionInfo,
   SessionWorkflowApproveParams,
   SessionWorkflowArtifactParams,
   SessionWorkflowRunParams,
@@ -114,7 +114,7 @@ export function applyWorkflowEvent(state: WorkflowState, runId: string, event: W
     case "report": {
       if (!state.runs[runId]) state.runs[runId] = emptyView(runId);
       const view = state.runs[runId];
-      view.reports.push({ item: event.item, artifact_id: event.artifact_id });
+      view.reports.push({ item: event.item, artifact_id: event.artifact_id ?? undefined });
       break;
     }
     case "artifact": {
@@ -155,8 +155,8 @@ rpc.on("session/update", ({ update }) => {
 
 // —— rpc 动作 ——
 
-export async function workflowActivate(sessionId: string): Promise<SessionWorkflowActivateResult> {
-  return rpc.call<SessionWorkflowActivateResult>("session/workflow_activate", {
+export async function workflowActivate(sessionId: string): Promise<SessionInfo> {
+  return rpc.call<SessionInfo>("session/workflow_activate", {
     session_id: sessionId,
   });
 }
@@ -177,7 +177,7 @@ export async function workflowApprove(
 export async function workflowRuns(sessionId: string): Promise<WorkflowRunSummary[]> {
   const params: SessionWorkflowRunsParams = { session_id: sessionId };
   const result = await rpc.call<SessionWorkflowRunsResult>("session/workflow_runs", params);
-  return result.runs;
+  return result.runs ?? [];
 }
 
 export async function workflowRun(sessionId: string, runId: string): Promise<WorkflowRunSnapshot> {

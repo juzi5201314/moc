@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::method::{ClientRequest, Method};
@@ -7,14 +8,14 @@ use crate::method::{ClientRequest, Method};
 pub struct WorkspaceGitBranch;
 
 /// 当前工作目录。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceGitBranchParams {
     pub cwd: String,
 }
 
 /// 目录是否处于 Git 仓库中及当前分支。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceGitBranchResult {
     pub branch: Option<String>,

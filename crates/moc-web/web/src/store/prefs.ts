@@ -80,19 +80,20 @@ function toWire(prefs: Prefs, workspaces: string[]): WebState {
 
 function fromWire(state: WebState): Prefs {
   return {
-    theme: state.theme,
-    runningEnter: state.active_submit === "steering" ? "steer" : "interrupt",
-    notify: state.notify,
-    diffMode: state.diff_mode,
-    thinkingDetail: state.thinking_detail,
-    toolDetail: state.tool_detail,
+    // 全字段 serde(default)：缺省键按 Rust `Default for WebState` 的同一组值兜底。
+    theme: state.theme ?? "system",
+    runningEnter: state.active_submit === "interrupt" ? "interrupt" : "steer",
+    notify: state.notify ?? false,
+    diffMode: state.diff_mode ?? "unified",
+    thinkingDetail: state.thinking_detail ?? "brief",
+    toolDetail: state.tool_detail ?? "brief",
   };
 }
 
 function apply(doc: WebStateDocument): void {
   revision = doc.revision;
   const prefs = fromWire(doc.state);
-  usePrefs.setState({ ...prefs, workspaces: doc.state.workspaces });
+  usePrefs.setState({ ...prefs, workspaces: doc.state.workspaces ?? [] });
   mirrorTheme(prefs.theme);
 }
 
@@ -186,7 +187,7 @@ async function migrate(doc: WebStateDocument): Promise<WebStateDocument> {
   const { prefs, workspaces } = readLegacy();
   if (Object.keys(prefs).length === 0 && workspaces.length === 0) return doc;
   const state = toWire({ ...fromWire(doc.state), ...prefs }, [
-    ...new Set([...workspaces, ...doc.state.workspaces]),
+    ...new Set([...workspaces, ...(doc.state.workspaces ?? [])]),
   ]);
   try {
     const saved = await rpc.call<WebStateDocument>("web/state_save", {

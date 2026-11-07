@@ -105,7 +105,7 @@ export function WorkflowApprovalDialog({
                   {role.fan_out && <Badge variant="secondary">×N</Badge>}
                 </span>
                 <WorkflowModelSelect
-                  value={roleModels[id] ?? approval.defaults.role_models[id] ?? ""}
+                  value={roleModels[id] ?? approval.defaults.role_models?.[id] ?? ""}
                   disabled={readOnly || pending}
                   onSelect={(selector) => setRoleModels((prev) => ({ ...prev, [id]: selector }))}
                 />
@@ -119,7 +119,7 @@ export function WorkflowApprovalDialog({
               <div key={id} className="flex items-center gap-2 text-ui">
                 <span className="min-w-0 flex-1 truncate">model({id})</span>
                 <WorkflowModelSelect
-                  value={refMap[id] ?? approval.defaults.model_ref_map[id] ?? ""}
+                  value={refMap[id] ?? approval.defaults.model_ref_map?.[id] ?? ""}
                   disabled={readOnly || pending}
                   onSelect={(selector) => setRefMap((prev) => ({ ...prev, [id]: selector }))}
                 />

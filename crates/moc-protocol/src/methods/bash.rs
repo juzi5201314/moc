@@ -1,5 +1,6 @@
 //! 用户主动执行 Bash；与模型提示共用会话取消和繁忙边界，不调用模型。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::session::ToolStatus;
@@ -18,7 +19,7 @@ impl Method for SessionBash {
 impl ClientRequest for SessionBash {}
 
 /// 命令来源及上下文可见性；随执行结果持久化。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BashCommand {
     pub command: String,
@@ -52,14 +53,14 @@ impl BashCommand {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BashParams {
     pub session_id: String,
     pub command: BashCommand,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BashResult {
     pub result: ToolResult,

@@ -288,14 +288,16 @@ function UsageCard({ summary, title }: { summary: ModelUsageSummary; title: stri
       <div className="grid grid-cols-2 gap-1.5">
         <Metric label="输入" value={tokens(summary.input_tokens)} />
         <Metric label="输出" value={tokens(summary.output_tokens)} />
-        <Metric label="缓存命中" value={tokens(summary.cached_input_tokens)} />
-        <Metric label="缓存写入" value={tokens(summary.cache_creation_input_tokens)} />
-        <Metric label="推理" value={tokens(summary.reasoning_tokens)} />
+        <Metric label="缓存命中" value={tokens(summary.cached_input_tokens ?? undefined)} />
+        <Metric label="缓存写入" value={tokens(summary.cache_creation_input_tokens ?? undefined)} />
+        <Metric label="推理" value={tokens(summary.reasoning_tokens ?? undefined)} />
         <Metric
           label="平均首字"
-          value={summary.ttft_calls ? formatDuration(summary.ttft_ms / summary.ttft_calls) : "—"}
+          value={
+            summary.ttft_calls ? formatDuration((summary.ttft_ms ?? 0) / summary.ttft_calls) : "—"
+          }
         />
-        <Metric label="生成耗时" value={formatDuration(summary.gen_ms)} />
+        <Metric label="生成耗时" value={formatDuration(summary.gen_ms ?? 0)} />
         <Metric label="活跃耗时" value={formatDuration(summary.active_ms)} />
       </div>
     </section>
@@ -319,7 +321,7 @@ export function UsageTab({ sessionId }: { sessionId: string }) {
     <div className="flex flex-col">
       <SectionBar title="会话用量">
         <span className="mr-1 font-mono text-2xs text-text-tertiary">
-          工具耗时 {formatDuration(data.tool_ms)}
+          工具耗时 {formatDuration(data.tool_ms ?? 0)}
         </span>
         <RefreshButton loading={loading} onClick={reload} />
       </SectionBar>

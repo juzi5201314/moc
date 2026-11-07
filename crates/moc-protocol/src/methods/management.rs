@@ -2,10 +2,11 @@
 
 use super::InputPart;
 use crate::method::{ClientRequest, Method};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigScope {
     #[default]
@@ -13,7 +14,7 @@ pub enum ConfigScope {
     Project,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ConfigAction {
     Read {
@@ -40,7 +41,7 @@ pub enum ConfigAction {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SettingsDocument {
     pub path: String,
     pub revision: String,
@@ -54,7 +55,7 @@ pub struct SettingsDocument {
     pub model_template: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigField {
     /// 路径按段保存，供应商与模型名称中的点号不会被误拆。
     pub path: Vec<String>,
@@ -65,7 +66,7 @@ pub struct ConfigField {
     pub advanced: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", content = "options", rename_all = "snake_case")]
 pub enum FieldKind {
     Bool,
@@ -80,7 +81,7 @@ pub enum FieldKind {
 }
 
 /// 枚举候选：`value` 是写入配置的原文，`label` 是界面展示的说明。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ChoiceOption {
     pub value: String,
     pub label: String,
@@ -103,13 +104,13 @@ impl ChoiceOption {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CatalogModel {
     pub id: String,
     pub name: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct MaintenanceReport {
     pub removed: Vec<String>,
     pub protected: usize,
@@ -117,7 +118,7 @@ pub struct MaintenanceReport {
     pub applied: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ConfigReply {
     // 装箱收窄枚举：SettingsDocument 比其余变体大 200+ 字节。
@@ -136,7 +137,7 @@ impl Method for ConfigManage {
 }
 impl ClientRequest for ConfigManage {}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SteerResult {
     pub accepted: bool,
     /// 接受后由 core 分配的稳定 ID；前端据此撤回仍在 steering 队列里的消息。
@@ -147,7 +148,7 @@ pub struct SteerResult {
 }
 
 /// Steering 在下一安全工具边界加入当前提示；队列由前端等待前一次提示完成后提交。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SteerParams {
     pub session_id: String,
@@ -167,14 +168,14 @@ impl ClientRequest for SessionSteer {}
 ///
 /// 消息只有在下一轮请求前 drain 时才算真正写入；写入之后撤回返回
 /// `removed: false`，前端应保留该消息在转写中的位置。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UnsteerParams {
     pub session_id: String,
     pub id: u64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UnsteerResult {
     pub removed: bool,

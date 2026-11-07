@@ -63,7 +63,7 @@ const approval: WorkflowApproval = {
     model_refs: [{ ref_id: "m1" }],
   },
   defaults: { role_models: { r1: "default/model" }, model_ref_map: { m1: "default/ref" } },
-  args: null,
+  args: undefined,
   max_concurrency: 4,
   kind: "launch",
 };

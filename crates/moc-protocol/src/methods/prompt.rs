@@ -30,6 +30,7 @@
 //! 因此即使出站队列拥塞、core 正忙于模型请求，取消也能即时生效。它是幂等的：
 //! 没有进行中的提示时返回 `cancelled = false` 且整体成功。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::method::{ClientRequest, Method};
@@ -39,7 +40,7 @@ use crate::{FinishReason, ImageDetail, ImageSource, Message, Usage};
 ///
 /// 模式与 [`super::session::SessionEngine`] 引擎是两个正交轴：引擎决定交互
 /// 形态且会话级锁定，模式只收紧本次提示的执行许可，不落库、不推送变更事件。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptMode {
     /// 只读问答：写工具与执行工具在本次提示内全部拒绝。
@@ -64,7 +65,7 @@ pub struct SessionRetry;
 pub struct SessionCancel;
 
 /// `session/prompt` 的参数。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PromptParams {
     /// 目标会话。
@@ -87,7 +88,7 @@ pub struct PromptParams {
 }
 
 /// `session/retry` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRetryParams {
     /// 目标会话；必须已经加载且当前没有进行中的提示。
@@ -95,7 +96,7 @@ pub struct SessionRetryParams {
 }
 
 /// 一段用户输入。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputPart {
     /// 文本。
@@ -114,7 +115,7 @@ pub enum InputPart {
 }
 
 /// 一次提示的终态。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PromptResult {
     /// 会话 ID。
@@ -130,7 +131,7 @@ pub struct PromptResult {
 }
 
 /// `session/cancel` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCancelParams {
     /// 目标会话。
@@ -138,7 +139,7 @@ pub struct SessionCancelParams {
 }
 
 /// `session/cancel` 的结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCancelResult {
     /// 是否真的取消了进行中的提示。

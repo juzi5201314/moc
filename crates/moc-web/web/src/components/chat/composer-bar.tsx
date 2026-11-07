@@ -134,7 +134,7 @@ function loadPluginCommands(sessionId: string): Promise<SlashCommand[]> {
         result.plugins.flatMap((plugin) =>
           plugin.error
             ? []
-            : plugin.commands.map((command) => ({
+            : (plugin.commands ?? []).map((command) => ({
                 name: command.name,
                 description: command.description,
                 usage: command.usage || undefined,
@@ -428,7 +428,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           composer.updatePending(sessionId, item.key, { kind: "queue" });
           dispatchNext(sessionId);
           toast("本轮已不能补充，消息转入队列");
-        } else if (result.id !== undefined) {
+        } else if (result.id != null) {
           composer.updatePending(sessionId, item.key, { steerId: result.id });
         }
       })

@@ -125,7 +125,7 @@ async function loadSession(
     );
     const planPages = [page.plans ?? []];
     let plansBefore = page.plans_before;
-    while (plansBefore !== undefined) {
+    while (plansBefore != null) {
       const older = await loadHistoryPage(
         rpc,
         {
@@ -581,7 +581,7 @@ export async function rewind(
     redo_page: { max_entries: 0 },
     plan_page: { max_entries: 0 },
   });
-  return page.redo_tip_entry_id;
+  return page.redo_tip_entry_id ?? undefined;
 }
 
 /** 前滚：把最近一次回退截掉的尾部接回到 `entryId`（含该条目）。 */

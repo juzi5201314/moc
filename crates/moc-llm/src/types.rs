@@ -6,13 +6,14 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::CacheConfig;
 use crate::error::LlmError;
 
 /// 消息角色。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum Role {
     /// 系统提示。
     System,
@@ -74,7 +75,7 @@ macro_rules! message_content {
 /// | `Assistant` | `Text`、`Reasoning`、`ToolCall` |
 /// | `Tool` | 恰好一个 `ToolResult` |
 /// | `Custom` | `Text` |
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Message {
     /// 消息角色。
     pub role: Role,
@@ -218,7 +219,7 @@ impl Message {
 }
 
 /// 消息内容块。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum ContentPart {
     /// 文本。
     Text(String),
@@ -238,7 +239,7 @@ pub enum ContentPart {
 }
 
 /// 图片来源。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum ImageSource {
     /// 远端 URL。
     Url(String),
@@ -252,7 +253,7 @@ pub enum ImageSource {
 }
 
 /// 图片精度提示。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageDetail {
     /// 由上游自行决定。
@@ -275,7 +276,7 @@ impl ImageDetail {
 }
 
 /// 一次工具调用。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolCall {
     /// 调用 ID；工具结果靠它与调用配对。
     pub id: String,
@@ -308,7 +309,7 @@ impl ToolCall {
 }
 
 /// 一条工具执行结果。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolResult {
     /// 对应的 [`ToolCall::id`]。
     pub tool_call_id: String,
@@ -324,7 +325,7 @@ pub struct ToolResult {
 }
 
 /// 思维链块。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum ReasoningBlock {
     /// Chat 的 `reasoning_content`；Anthropic 的 `thinking`（`signature` 原样回传）。
     Text {
@@ -370,7 +371,7 @@ impl ReasoningBlock {
 }
 
 /// 工具定义。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolDef {
     /// 工具名。
     pub name: String,
@@ -545,7 +546,7 @@ impl ReasoningConfig {
 }
 
 /// 结束原因。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum FinishReason {
     /// 自然结束。
     Stop,
@@ -615,7 +616,7 @@ impl std::fmt::Display for FinishReason {
 /// | `cached_input_tokens` | `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` | `input_tokens_details.cached_tokens` |
 /// | `cache_creation_input_tokens` | 无 | `cache_creation_input_tokens` | 无 |
 /// | `reasoning_tokens` | `completion_tokens_details.reasoning_tokens` | `output_tokens_details.thinking_tokens` | `output_tokens_details.reasoning_tokens` |
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Usage {
     /// 完整输入 token 数，含缓存命中与缓存写入部分。
     pub input_tokens: u64,

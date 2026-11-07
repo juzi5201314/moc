@@ -31,6 +31,7 @@
 //! [`SessionUpdate`] 与 [`AssistantDelta`] 是会增长的枚举：core 可以新增变体
 //! （不升 major），前端遇到不认识的 `type` 必须**整条丢弃**而不是报错或断开连接。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::diff::ToolDiff;
@@ -53,7 +54,7 @@ impl Method for SessionUpdateMethod {
 impl ServerNotification for SessionUpdateMethod {}
 
 /// `session/update` 的参数。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionUpdateParams {
     /// 会话 ID。
@@ -62,7 +63,7 @@ pub struct SessionUpdateParams {
     pub update: SessionUpdate,
 }
 /// 同一模型响应返回的一批工具调用。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolBatchCall {
     /// 调用 ID。
@@ -72,7 +73,7 @@ pub struct ToolBatchCall {
 }
 
 /// 一条会话更新。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionUpdate {
     /// 父会话中的子代理卡片已创建。
@@ -353,7 +354,7 @@ pub enum SessionUpdate {
 }
 
 /// 工作区路径变化。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PathChange {
     pub path: String,
@@ -361,7 +362,7 @@ pub struct PathChange {
 }
 
 /// 一处「本地请求值 ≠ 上游回显值」。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpstreamFieldMismatch {
     /// 被改写的字段。
@@ -373,7 +374,7 @@ pub struct UpstreamFieldMismatch {
 }
 
 /// 可能被上游静默改写的请求字段。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamField {
     /// 模型 id（上游 `model` 字段）。
@@ -383,7 +384,7 @@ pub enum UpstreamField {
 }
 
 /// assistant 增量。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssistantDelta {
     /// 正文增量。

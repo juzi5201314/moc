@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -8,7 +9,7 @@ use crate::method::{ClientRequest, Method};
 pub struct ChartAnalyze;
 
 /// Markdown 表格的表头与行。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChartAnalyzeParams {
     pub header: Vec<String>,
@@ -16,7 +17,7 @@ pub struct ChartAnalyzeParams {
 }
 
 /// 可绘图时返回 Core `ChartSpec` 的 JSON 表示，不可绘图时为空对象。
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChartAnalyzeResult {
     pub spec: Option<Value>,

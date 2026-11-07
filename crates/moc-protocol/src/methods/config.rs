@@ -4,6 +4,7 @@
 //! [`super::session::SessionSetModel`]。`config/get` 是唯一在 `initialize` 之后、
 //! 任何会话之前就允许调用的方法。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::features::FeatureStates;
@@ -22,12 +23,12 @@ impl Method for ConfigGet {
 impl ClientRequest for ConfigGet {}
 
 /// `config/get` 的参数：空对象。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigGetParams {}
 
 /// `config/get` 的结果。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigGetResult {
     /// 可用模型。
@@ -51,7 +52,7 @@ pub struct ConfigGetResult {
 }
 
 /// Fusion 组合的两侧模型，均为规范 `供应商/模型:等级` selector。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FusionPair {
     /// 主导模型：规划、调查、评审与对话。
@@ -61,7 +62,7 @@ pub struct FusionPair {
 }
 
 /// 模型接受的输入模态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelInput {
     /// 文本消息。
@@ -71,7 +72,7 @@ pub enum ModelInput {
 }
 
 /// 一个可用模型。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelInfo {
     /// 模型 ID，`session/new` 的 `model` 用它。
@@ -103,7 +104,7 @@ pub struct ModelInfo {
 /// `input` / `output` 必填；缓存两项选填，未配置时前端可按全价估算或跳过。
 /// 注意 moc-llm 的 `Usage::input_tokens` 已折入缓存命中部分，费用应按
 /// `input - cached` 计非命中输入、`cached` 按 `cache_read` 单价计。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelPricing {
     /// 非缓存输入，每百万 token。
@@ -119,7 +120,7 @@ pub struct ModelPricing {
 }
 
 /// 一个可用 agent。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentProfile {
     /// agent ID。

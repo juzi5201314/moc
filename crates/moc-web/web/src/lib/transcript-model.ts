@@ -353,8 +353,8 @@ export function entriesToBlocks(
           block.isError = result.is_error;
           block.images = result.images ?? [];
           block.status = entry.tool?.status ?? (result.is_error ? "error" : "completed");
-          block.durationMs = entry.tool?.duration_ms;
-          block.diff = entry.tool?.diff;
+          block.durationMs = entry.tool?.duration_ms ?? undefined;
+          block.diff = entry.tool?.diff ?? undefined;
           // 计划卡只由实时 plan_submitted 生成；历史里靠 exit_plan 的固定结果文本复原，状态与标题由卡片从 view.plans 读取。
           const submitted =
             block.name === "exit_plan" && !result.is_error
@@ -386,7 +386,7 @@ export function entriesToBlocks(
     block.result = child.result;
     block.status = child.status;
     block.isError = child.status === "error";
-    block.durationMs = child.duration_ms;
+    block.durationMs = child.duration_ms ?? undefined;
     parent.children.push(block);
   }
   // 历史里还没有结果的调用（被中断）不应显示为运行中。
@@ -674,7 +674,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       block.result = update.result.content;
       block.isError = update.result.is_error;
       block.images = update.result.images ?? [];
-      block.durationMs = update.duration_ms;
+      block.durationMs = update.duration_ms ?? undefined;
       block.awaitingPermission = false;
       if (update.diff) {
         block.diff = update.diff;
@@ -774,7 +774,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       view.info.title = update.title;
       break;
     case "lock_changed":
-      view.holder = update.lock;
+      view.holder = update.lock ?? null;
       break;
     case "permission_changed":
       view.info.permission = update.permission;
@@ -811,7 +811,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         planId: plan.plan_id,
         title: plan.title,
         path: plan.path,
-        version: plan.version,
+        version: plan.version ?? 0,
       });
       break;
     }
@@ -864,10 +864,10 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       if (tool) {
         tool.status = job.exit_code === 0 ? "completed" : "error";
         tool.isError = job.exit_code !== 0;
-        tool.durationMs = job.duration_ms;
+        tool.durationMs = job.duration_ms ?? undefined;
       }
       const bash = findBash(view, job.tool_call_id);
-      if (bash) bash.durationMs = job.duration_ms;
+      if (bash) bash.durationMs = job.duration_ms ?? undefined;
       // 前台命令的结果已随工具卡片落地，只有后台任务结束才推状态条。
       if (job.origin !== "foreground") {
         pushStatus(
@@ -930,7 +930,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       });
       break;
     case "goal_changed":
-      view.goal = update.goal;
+      view.goal = update.goal ?? null;
       break;
     default:
       break;

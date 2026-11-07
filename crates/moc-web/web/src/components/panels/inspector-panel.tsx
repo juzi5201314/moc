@@ -166,7 +166,7 @@ function PlanTab({ sessionId }: { sessionId: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   // 修订后新版本是新的 plan_id；面板总是停在最新一版。
   const latest = useMemo(
-    () => (plans ?? []).toSorted((left, right) => right.version - left.version)[0],
+    () => (plans ?? []).toSorted((left, right) => (right.version ?? 0) - (left.version ?? 0))[0],
     [plans],
   );
 

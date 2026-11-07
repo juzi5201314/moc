@@ -11,12 +11,13 @@
 //! 两个字段都以 `Option` + `default` + `skip_serializing_if` 模式出现：
 //! `None` 时线上不出现该键，旧前端照常解析。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// 一次文件变更的结构化 diff。
 ///
 /// 通常只含一个文件；`edit` 同时携带 `move` 时是两个（源 + 目标）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolDiff {
     /// 涉及的文件，按变更顺序排列。
@@ -26,7 +27,7 @@ pub struct ToolDiff {
 }
 
 /// 单个文件的 diff。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolFileDiff {
     /// 目标文件路径（绝对路径）。
@@ -36,7 +37,7 @@ pub struct ToolFileDiff {
 }
 
 /// 一段连续变更：变更行 + 两侧上下文行。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DiffHunk {
     /// 上下文前的旧文件起始行（1-based；hunk 无 delete/equal 行时等于插入点）。
@@ -48,7 +49,7 @@ pub struct DiffHunk {
 }
 
 /// diff 中的一行。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DiffLine {
     /// 行类别。
@@ -64,7 +65,7 @@ pub struct DiffLine {
 }
 
 /// [`DiffLine`] 的类别。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DiffLineKind {
     /// 未变化行（上下文）。

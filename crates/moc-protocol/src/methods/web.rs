@@ -9,6 +9,7 @@
 //! `web/state_save` 成功后 core 向其余读过 `web/state` 的连接广播
 //! `web/state_updated`，负载就是新文档——收到即采用，无需回读。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::method::{ClientRequest, Method, ServerNotification};
@@ -26,7 +27,7 @@ impl Method for WebStateGet {
 impl ClientRequest for WebStateGet {}
 
 /// `web/state` 的参数：空对象。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WebStateGetParams {}
 
@@ -43,7 +44,7 @@ impl Method for WebStateSave {
 impl ClientRequest for WebStateSave {}
 
 /// `web/state_save` 的参数。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WebStateSaveParams {
     /// 最近一次 `web/state` 返回的 `revision`；不一致时 core 拒绝写入。
@@ -52,7 +53,7 @@ pub struct WebStateSaveParams {
 }
 
 /// `web.toml` 的内容：字段名与 `tui.toml` 的对应项保持同一套词汇。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebState {
     /// 界面主题；`system` 跟随系统明暗。
@@ -85,7 +86,7 @@ impl Default for WebState {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WebTheme {
     #[default]
@@ -94,7 +95,7 @@ pub enum WebTheme {
     Dark,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WebSubmitAction {
     #[default]
@@ -102,7 +103,7 @@ pub enum WebSubmitAction {
     Interrupt,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WebDiffMode {
     #[default]
@@ -111,7 +112,7 @@ pub enum WebDiffMode {
 }
 
 /// 思考块 / 工具块的显示档位，与 `tui.toml` 的 `thinking_detail`、`tool_detail` 同义。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WebDetailLevel {
     Hidden,
@@ -121,7 +122,7 @@ pub enum WebDetailLevel {
 }
 
 /// 一份带版本戳的状态文档。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WebStateDocument {
     /// 文件内容的版本戳；`web/state_save` 必须带上最新读到的值。

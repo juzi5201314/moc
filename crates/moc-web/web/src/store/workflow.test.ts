@@ -17,7 +17,7 @@ const approval = {
   script: 'phase("a")',
   plan: {},
   defaults: { role_models: {}, model_ref_map: {} },
-  args: null,
+  args: undefined,
   max_concurrency: 4,
   kind: "launch" as const,
 };

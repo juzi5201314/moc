@@ -119,7 +119,7 @@ export function WorkspacePicker() {
     }
   };
 
-  const label = listing ? dirLabel(listing.path, listing.home) : "目录";
+  const label = listing ? dirLabel(listing.path, listing.home ?? undefined) : "目录";
 
   return (
     <Dialog open={picker.open} onOpenChange={(open) => !open && close()}>

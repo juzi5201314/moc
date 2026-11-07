@@ -12,6 +12,7 @@
 //! 通知 [`BtwUpdateMethod`] 与主 `session/update` 分开，前端可以独立渲染，
 //! 不会把旁路增量喂给主转写。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::method::{ClientRequest, Method, ServerNotification};
@@ -33,7 +34,7 @@ pub struct SessionBtwCancel;
 pub struct BtwUpdateMethod;
 
 /// 一轮已完成的旁路问答，由前端回放。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BtwExchange {
     /// 用户问题。
@@ -43,7 +44,7 @@ pub struct BtwExchange {
 }
 
 /// `session/btw` 的参数。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BtwParams {
     /// 目标会话；旁路读取它的当前已提交上下文。
@@ -58,7 +59,7 @@ pub struct BtwParams {
 }
 
 /// `session/btw` 的结果。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BtwResult {
     /// 会话 ID。
@@ -78,7 +79,7 @@ pub struct BtwResult {
 }
 
 /// `session/btw_cancel` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BtwCancelParams {
     /// 目标会话。
@@ -88,7 +89,7 @@ pub struct BtwCancelParams {
 }
 
 /// `session/btw_cancel` 的结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BtwCancelResult {
     /// 是否真的停下了该请求；请求已结束或身份不匹配时为 `false`。
@@ -99,7 +100,7 @@ pub struct BtwCancelResult {
 ///
 /// 与 [`super::update::SessionUpdate`] 一样是会增长的枚举：前端遇到不认识的
 /// `type` 必须整条丢弃，不能报错或断开连接。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BtwUpdate {
     /// 协议层已登记请求，可以安全地发定向取消。
@@ -115,7 +116,7 @@ pub enum BtwUpdate {
 }
 
 /// `session/btw_update` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BtwUpdateParams {
     /// 会话 ID。

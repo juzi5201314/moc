@@ -57,6 +57,7 @@ pub mod web;
 pub mod workflow;
 pub mod workspace;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use agent::{
@@ -165,7 +166,7 @@ pub use workspace::{WorkspaceGitBranch, WorkspaceGitBranchParams, WorkspaceGitBr
 ///
 /// 不用 `null` 表达「无结果」：`null` 与「字段缺失」「结构错误」在前端难以区分，
 /// 空对象则能直接反序列化成零字段结构体。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Empty {}
 

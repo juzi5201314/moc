@@ -262,6 +262,21 @@ impl Serialize for FeatureStates {
     }
 }
 
+// 线上是 `key -> bool` 表：schema 直接复用 map 形状，不单独建 $def。
+impl schemars::JsonSchema for FeatureStates {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "FeatureStates".into()
+    }
+    fn json_schema(
+        generator: &mut schemars::SchemaGenerator,
+    ) -> schemars::Schema {
+        std::collections::BTreeMap::<String, bool>::json_schema(generator)
+    }
+    fn inline_schema() -> bool {
+        true
+    }
+}
+
 impl<'de> Deserialize<'de> for FeatureStates {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // 未知键不报错：旧前端读到新 flag 直接忽略，默认状态见 `defaults()`。

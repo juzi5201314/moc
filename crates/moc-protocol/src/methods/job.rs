@@ -1,11 +1,12 @@
 //! 会话 shell 任务的投影与管理：前台命令同样登记为任务，前端据此计时、转后台和终止。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::method::{ClientRequest, Method};
 
 /// 任务运行状态。`exited` 时退出码见 [`JobInfo::exit_code`]。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
     Running,
@@ -24,7 +25,7 @@ impl JobStatus {
 }
 
 /// 任务生命周期：monitored 会自然结束并回报；persistent 是常驻服务，只能被终止。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobLifecycle {
     Monitored,
@@ -32,7 +33,7 @@ pub enum JobLifecycle {
 }
 
 /// 任务从哪条路径进入（或尚未进入）后台。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobOrigin {
     /// 仍挂在发起它的 bash 工具调用上，模型在等结果。
@@ -52,7 +53,7 @@ impl JobOrigin {
 }
 
 /// 一个任务的快照。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JobInfo {
     pub job_id: String,
@@ -83,13 +84,13 @@ pub struct JobInfo {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JobList;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JobListParams {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JobListResult {
     /// 运行中与最近结束的任务，按 `job_id` 升序。
@@ -97,14 +98,14 @@ pub struct JobListResult {
 }
 
 /// `job/kill` / `job/background` 共用的定位参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JobTarget {
     pub session_id: String,
     pub job_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JobResult {
     pub job: JobInfo,
@@ -120,7 +121,7 @@ pub struct JobBackground;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JobReadOutput;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JobOutputParams {
     pub session_id: String,
@@ -130,7 +131,7 @@ pub struct JobOutputParams {
     pub tail_lines: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JobOutputResult {
     pub job: JobInfo,

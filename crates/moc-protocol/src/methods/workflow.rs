@@ -4,6 +4,7 @@
 //! 通知（载荷 [`WorkflowApproval`]），并阻塞等待前端 `session/workflow_approve`
 //! 携带 `request_id` 的决策。写操作只允许持写租约的连接（server 侧统一检查）。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -26,7 +27,7 @@ impl Method for SessionWorkflowActivate {
 
 impl ClientRequest for SessionWorkflowActivate {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionWorkflowActivateParams {
     pub session_id: String,
@@ -44,7 +45,7 @@ impl Method for SessionWorkflowApprove {
 
 impl ClientRequest for SessionWorkflowApprove {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionWorkflowApproveParams {
     pub session_id: String,
@@ -54,7 +55,7 @@ pub struct SessionWorkflowApproveParams {
 }
 
 /// 审批决策：批准可携带每 role 模型与 ModelRef 重映射覆盖。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "action", deny_unknown_fields)]
 pub enum WorkflowDecision {
     Approve {
@@ -73,7 +74,7 @@ pub enum WorkflowDecision {
 }
 
 /// 简单确认结果（写操作的通用回执）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowAck {
     pub session_id: String,
@@ -91,13 +92,13 @@ impl Method for SessionWorkflowRuns {
 
 impl ClientRequest for SessionWorkflowRuns {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionWorkflowRunsParams {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionWorkflowRunsResult {
     #[serde(default)]
@@ -116,7 +117,7 @@ impl Method for SessionWorkflowRun {
 
 impl ClientRequest for SessionWorkflowRun {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionWorkflowRunParams {
     pub session_id: String,
@@ -159,7 +160,7 @@ impl Method for SessionWorkflowSetRoleModel {
 
 impl ClientRequest for SessionWorkflowSetRoleModel {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionWorkflowSetRoleModelParams {
     pub session_id: String,
@@ -181,7 +182,7 @@ impl Method for SessionWorkflowArtifact {
 
 impl ClientRequest for SessionWorkflowArtifact {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionWorkflowArtifactParams {
     pub session_id: String,
@@ -191,7 +192,7 @@ pub struct SessionWorkflowArtifactParams {
     pub version: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowArtifactResult {
     pub artifact_id: String,
@@ -203,7 +204,7 @@ pub struct WorkflowArtifactResult {
 // —— run 状态 DTO ——
 
 /// run 状态（对齐 journal 终态机）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "state")]
 pub enum WorkflowRunStatus {
     Pending,
@@ -216,7 +217,7 @@ pub enum WorkflowRunStatus {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowStopReason {
     User,
@@ -225,7 +226,7 @@ pub enum WorkflowStopReason {
 }
 
 /// run 摘要（列表项）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowRunSummary {
     pub run_id: String,
@@ -245,7 +246,7 @@ pub struct WorkflowRunSummary {
 }
 
 /// phase 节点运行态。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowPhaseState {
     pub id: String,
@@ -262,7 +263,7 @@ pub struct WorkflowPhaseState {
 }
 
 /// role（actor 实例）运行态。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowRoleState {
     pub role_id: String,
@@ -284,7 +285,7 @@ pub struct WorkflowRoleState {
 }
 
 /// run 完整快照（审批图与运行面板共用）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowRunSnapshot {
     #[serde(flatten)]
@@ -315,7 +316,7 @@ pub struct WorkflowRunSnapshot {
 }
 
 /// 审批请求载荷（`approval_requested` 事件内容；§8）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowApproval {
     /// 审批请求 id：`session/workflow_approve` 用同一 id 回传决策。
@@ -340,7 +341,7 @@ pub struct WorkflowApproval {
     pub new_commands: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowApprovalKind {
     Launch,
@@ -348,7 +349,7 @@ pub enum WorkflowApprovalKind {
     HoleFill,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowApprovalDefaults {
     /// role_id → 默认模型。
@@ -360,7 +361,7 @@ pub struct WorkflowApprovalDefaults {
 }
 
 /// `SessionUpdate::Workflow{run_id, event}` 的事件载荷。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum WorkflowEvent {
     /// 审批请求发出（前端弹审批窗）。

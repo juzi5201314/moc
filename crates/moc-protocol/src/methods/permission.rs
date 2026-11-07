@@ -12,6 +12,7 @@
 //! - `title` / `body` 里的文本是给用户看的，core 负责把工具名、命令、路径
 //!   等细节拼进去（协议层不做任何本地化）。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::diff::ToolDiff;
@@ -30,7 +31,7 @@ impl Method for SessionRequestPermission {
 impl ServerRequest for SessionRequestPermission {}
 
 /// `session/request_permission` 的参数。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionRequestParams {
     /// 会话 ID。
@@ -60,7 +61,7 @@ pub struct PermissionRequestParams {
 }
 
 /// 一个可选答案。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionOption {
     /// 选项 ID，由 core 定义（如 `allow_once`）。
@@ -72,7 +73,7 @@ pub struct PermissionOption {
 }
 
 /// 选项语义分类。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionOptionKind {
     /// 允许这一次。
@@ -84,7 +85,7 @@ pub enum PermissionOptionKind {
 }
 
 /// `session/request_permission` 的结果。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionResult {
     /// 前端选中的 `PermissionOption::id`。
