@@ -3,6 +3,7 @@
 // 令牌只在首次打开时从地址栏读取，随即存进 sessionStorage 并从 URL 去掉，
 // 避免出现在历史记录、截图与 Referer 里。
 
+import pkg from "../../package.json";
 import type { RpcError } from "./errors";
 import { type ConnectionStatus, RpcClient } from "./rpc";
 import type { InitializeResult } from "./types";
@@ -40,7 +41,7 @@ export const clientListeners: ClientListeners = {
 
 export const rpc = new RpcClient({
   url: `${wsProtocol}://${window.location.host}/ws?token=${encodeURIComponent(accessToken ?? "")}`,
-  clientVersion: "0.1.0",
+  clientVersion: pkg.version,
   onReady: (result) => {
     for (const listener of clientListeners.ready) listener(result);
   },

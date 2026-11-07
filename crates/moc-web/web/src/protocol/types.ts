@@ -532,10 +532,12 @@ export type ContextReadResult = {
   sources: { source: string; start: number; end: number }[];
 };
 
+/** 用量来源：会话自身（缺省省略）、Fusion sidekick 或普通子代理。 */
+export type UsageSource = "session" | "sidekick" | "subagent";
+
 export type ModelUsageSummary = {
   model: string;
-  /** 用量来源：会话自身（缺省省略）、Fusion sidekick 或普通子代理。 */
-  source?: "session" | "sidekick" | "subagent";
+  source?: UsageSource;
   calls: number;
   input_tokens: number;
   output_tokens: number;
@@ -727,8 +729,10 @@ export type AssistantDelta =
   | { type: "reasoning"; delta: string }
   | { type: "usage"; usage: Usage };
 
+export type UpstreamField = "model" | "effort";
+
 export type UpstreamFieldMismatch = {
-  field: "model" | "effort";
+  field: UpstreamField;
   requested: string;
   reported: string;
 };
@@ -968,10 +972,12 @@ export function finishReasonKey(reason: FinishReason): string {
 
 // ---------- workflow（crates/moc-protocol/src/methods/workflow.rs） ----------
 
+export type WorkflowStopReason = "user" | "interrupted" | "provider";
+
 /** run 状态：`{state:"stopped",reason}` 之外的终态不带字段。 */
 export type WorkflowRunStatus =
   | { state: "pending" | "running" | "completed" | "errored" }
-  | { state: "stopped"; reason: "user" | "interrupted" | "provider" };
+  | { state: "stopped"; reason: WorkflowStopReason };
 
 export type WorkflowRunSummary = {
   run_id: string;
