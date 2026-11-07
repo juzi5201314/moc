@@ -285,8 +285,9 @@ impl ResolvedConfig {
     }
 
     /// 汇总该项目的全部 MCP server 配置：TOML `[mcp.servers]`、用户
-    /// `~/.moc/mcp.json`，以及需显式开启 `[mcp] project_config` 才加载的社区
-    /// `.mcp.json`（cwd 向上到 git root）。
+    /// `~/.moc/mcp.json` 与 `~/.agents/mcp.json`，以及需显式开启
+    /// `[mcp] project_config` 才加载的项目级 `.mcp.json` / `mcp.json` /
+    /// `.agents/mcp.json`（cwd 向上到 git root）。
     pub fn mcp_servers(&self) -> Result<Vec<moc_mcp::ServerConfig>, CoreError> {
         if !self.mcp.enabled {
             return Ok(Vec::new());
@@ -307,23 +308,30 @@ impl ResolvedConfig {
             servers.map(|servers| (path, servers))
         })
         .collect::<Result<Vec<_>, CoreError>>()?;
-        let user_file = {
-            let path = moc_mcp::user_json_path(&self.home);
-            if self.mcp.user_config && path.is_file() {
-                let text = fs::read_to_string(&path).map_err(|error| {
-                    CoreError::Config(format!("读取 {}: {error}", path.display()))
-                })?;
-                let servers = moc_mcp::parse_mcp_json(&text).map_err(|error| {
-                    CoreError::Config(format!("解析 {}: {error}", path.display()))
-                })?;
-                Some((path, servers))
-            } else {
-                None
+        let user_files = if self.mcp.user_config {
+            let mut candidates = vec![moc_mcp::user_json_path(&self.home)];
+            if let Some(user_home) = crate::paths::home_dir() {
+                candidates.push(moc_mcp::agents_user_json_path(&user_home));
             }
+            candidates
+                .into_iter()
+                .filter(|path| path.is_file())
+                .map(|path| {
+                    let text = fs::read_to_string(&path).map_err(|error| {
+                        CoreError::Config(format!("读取 {}: {error}", path.display()))
+                    })?;
+                    let servers = moc_mcp::parse_mcp_json(&text).map_err(|error| {
+                        CoreError::Config(format!("解析 {}: {error}", path.display()))
+                    })?;
+                    Ok((path, servers))
+                })
+                .collect::<Result<Vec<_>, CoreError>>()?
+        } else {
+            Vec::new()
         };
         let source = moc_mcp::JsonSource {
             project_files,
-            user_file,
+            user_files,
         };
         Ok(moc_mcp::resolve_all(&self.mcp, &source))
     }

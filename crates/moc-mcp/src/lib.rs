@@ -13,7 +13,8 @@ pub mod mrtr;
 
 pub use config::{
     JsonSource, McpDocument, RawServerSpec, ServerConfig, ToolFilter, Transport,
-    discover_project_json, expand_env, parse_mcp_json, resolve_all, resolve_server, user_json_path,
+    agents_user_json_path, discover_project_json, expand_env, parse_mcp_json, resolve_all,
+    resolve_server, user_json_path,
 };
 pub use content::{ImageData, ToolOutput};
 pub use error::McpError;

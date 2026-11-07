@@ -1,9 +1,9 @@
 //! MCP 服务器配置的规范表示、社区 `.mcp.json` 解析与多来源合并。
 //!
 //! 来源优先级（同名 server 取最高优先者，冲突告警）：
-//! 1. 项目级 `.mcp.json` / `mcp.json`（cwd 向上到 git root，越近越优先）；
+//! 1. 项目级 `.mcp.json` / `mcp.json` / `.agents/mcp.json`（cwd 向上到 git root，越近越优先）；
 //! 2. moc 原生 TOML `[mcp.servers]`（用户级 + 项目级已由 core 的三层合并产出）；
-//! 3. 用户级 `~/.moc/mcp.json`。
+//! 3. 用户级 `~/.moc/mcp.json`、`~/.agents/mcp.json`（按此顺序）。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,8 +13,9 @@ use serde::Deserialize;
 
 use crate::error::McpError;
 
-/// 项目级与用户级社区配置文件名；同目录内 `.mcp.json` 优先于 `mcp.json`。
-pub const PROJECT_CONFIG_FILES: [&str; 2] = [".mcp.json", "mcp.json"];
+/// 项目级社区配置候选：同目录内 `.mcp.json` 优先于 `mcp.json`，
+/// `.agents` 约定的 `.agents/mcp.json` 垫底。
+pub const PROJECT_CONFIG_FILES: [&str; 3] = [".mcp.json", "mcp.json", ".agents/mcp.json"];
 pub const USER_CONFIG_FILE: &str = "mcp.json";
 
 /// server 名称约束：进入 `mcp__<server>__<tool>` 命名空间的前提。
@@ -299,7 +300,8 @@ pub fn parse_mcp_json(text: &str) -> Result<BTreeMap<String, RawServerSpec>, Mcp
         .map_err(|error| McpError::Config(format!("invalid server description: {error}")))
 }
 
-/// 从 cwd 向上（含 git root 本身）收集项目级 `.mcp.json` / `mcp.json`，越近越靠前。
+/// 从 cwd 向上（含 git root 本身）收集项目级 `.mcp.json` / `mcp.json` /
+/// `.agents/mcp.json`，越近越靠前；同目录按 [`PROJECT_CONFIG_FILES`] 顺序取首个命中。
 pub fn discover_project_json(cwd: &Path, git_root: Option<&Path>) -> Vec<PathBuf> {
     let mut found = Vec::new();
     for dir in cwd.ancestors() {
@@ -320,6 +322,11 @@ pub fn discover_project_json(cwd: &Path, git_root: Option<&Path>) -> Vec<PathBuf
 /// 用户级配置文件路径：`<home>/mcp.json`（`home` 即 `~/.moc`）。
 pub fn user_json_path(home: &Path) -> PathBuf {
     home.join(USER_CONFIG_FILE)
+}
+
+/// `.agents` 约定的用户级配置路径：`<user_home>/.agents/mcp.json`。
+pub fn agents_user_json_path(user_home: &Path) -> PathBuf {
+    user_home.join(".agents").join(USER_CONFIG_FILE)
 }
 
 /// 把原始描述归一化为可启动配置；做环境变量展开、传输判定与过滤编译。
@@ -411,14 +418,14 @@ fn expand_home_in_path(value: &str) -> String {
     value.to_owned()
 }
 
-/// 一个已解析的社区配置来源；`project` 内部按发现顺序（近者优先）排列。
+/// 一个已解析的社区配置来源；`project`/`user` 内部均按优先级（先列者优先）排列。
 #[derive(Debug, Clone)]
 pub struct JsonSource {
     pub project_files: Vec<(PathBuf, BTreeMap<String, RawServerSpec>)>,
-    pub user_file: Option<(PathBuf, BTreeMap<String, RawServerSpec>)>,
+    pub user_files: Vec<(PathBuf, BTreeMap<String, RawServerSpec>)>,
 }
 
-/// 按优先级合并全部来源：项目 `.mcp.json`（近者优先）> TOML `[mcp.servers]` > 用户 `mcp.json`。
+/// 按优先级合并全部来源：项目 mcp.json（近者优先）> TOML `[mcp.servers]` > 用户 mcp.json（先列者优先）。
 /// 返回按名称排序的配置列表；同名冲突告警并保留最高优先者，单条非法只告警跳过该条。
 pub fn resolve_all(toml: &McpDocument, json: &JsonSource) -> Vec<ServerConfig> {
     let mut merged: BTreeMap<String, (RawServerSpec, String)> = BTreeMap::new();
@@ -439,14 +446,14 @@ pub fn resolve_all(toml: &McpDocument, json: &JsonSource) -> Vec<ServerConfig> {
     for (name, spec) in &toml.servers {
         match merged.get(name) {
             Some((_, source)) => tracing::warn!(
-                "MCP server `{name}` 同时出现在 {source}（项目级 .mcp.json）与 [mcp.servers]，采用前者"
+                "MCP server `{name}` 同时出现在 {source}（项目级）与 [mcp.servers]，采用前者"
             ),
             None => {
                 merged.insert(name.clone(), (spec.clone(), "[mcp.servers]".to_owned()));
             }
         }
     }
-    if let Some((path, servers)) = &json.user_file {
+    for (path, servers) in &json.user_files {
         let displayed = path.display().to_string();
         for (name, spec) in servers {
             match merged.get(name) {
@@ -643,7 +650,7 @@ mod tests {
                     },
                 )]),
             )],
-            user_file: Some((
+            user_files: vec![(
                 PathBuf::from("/home/mcp.json"),
                 BTreeMap::from([(
                     "shared".to_owned(),
@@ -652,7 +659,7 @@ mod tests {
                         ..Default::default()
                     },
                 )]),
-            )),
+            )],
         };
         let resolved = resolve_all(&toml, &json);
         let by_name: BTreeMap<&str, &ServerConfig> =
@@ -695,7 +702,7 @@ mod tests {
             &toml,
             &JsonSource {
                 project_files: Vec::new(),
-                user_file: None,
+                user_files: Vec::new(),
             },
         );
         let names: Vec<&str> = resolved.iter().map(|config| config.name.as_str()).collect();
@@ -713,6 +720,24 @@ mod tests {
         assert_eq!(
             found,
             vec![nested.join("mcp.json"), dir.path().join(".mcp.json")]
+        );
+    }
+
+    #[test]
+    fn discover_finds_agents_mcp_json_below_mcp_json_in_same_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents_dir = dir.path().join(".agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(agents_dir.join("mcp.json"), "{}").unwrap();
+        // 单独存在时可被发现；与同目录 mcp.json 共存时垫底。
+        assert_eq!(
+            discover_project_json(dir.path(), Some(dir.path())),
+            vec![agents_dir.join("mcp.json")]
+        );
+        std::fs::write(dir.path().join("mcp.json"), "{}").unwrap();
+        assert_eq!(
+            discover_project_json(dir.path(), Some(dir.path())),
+            vec![dir.path().join("mcp.json")]
         );
     }
 
