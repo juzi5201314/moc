@@ -31,6 +31,48 @@ fn err(code: &'static str, message: impl Into<String>) -> RpcError {
     invalid_params(format!("{code}: {}", message.into()))
 }
 
+/// 目标续跑开关与代际打包在一个原子字：bit0 是 armed，高位是代际。
+/// 目标动作（`/goal` 命令与 `create_goal`/`update_goal` 工具）改写时先加代际再写位；
+/// 提示轮收尾的「异常收场摘 armed」只允许在代际没变过、且当前仍 armed 时 CAS 摘位。
+/// 否则 pause 取消在跑轮后立刻 resume，会被晚到的摘位盖掉刚恢复的续跑状态。
+pub(crate) struct GoalArmed(std::sync::atomic::AtomicU64);
+
+impl GoalArmed {
+    pub fn new() -> Self {
+        Self(std::sync::atomic::AtomicU64::new(0))
+    }
+
+    /// 提示轮开始时取一份代际快照，供收尾的 [`Self::disarm_if_unchanged`] 比对。
+    pub fn snapshot(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn is_armed(&self) -> bool {
+        self.0.load(Ordering::Relaxed) & 1 == 1
+    }
+
+    /// 目标动作改写续跑状态：代际 +1 再写位；在跑轮的收尾看到代际变了就让位。
+    pub fn set(&self, armed: bool) {
+        self.0.fetch_add(2, Ordering::Relaxed);
+        if armed {
+            self.0.fetch_or(1, Ordering::Relaxed);
+        } else {
+            self.0.fetch_and(!1, Ordering::Relaxed);
+        }
+    }
+
+    /// 摘 armed：快照以来有目标动作插过手（代际变了）就不动；单字 CAS
+    /// 把「代际没变」和「当前仍 armed」约束为同一个原子条件。
+    pub fn disarm_if_unchanged(&self, snapshot: u64) {
+        let _ = self.0.compare_exchange(
+            snapshot | 1,
+            snapshot & !1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
 /// 快照 + 回放计数 + 进程内 armed → 线上投影。
 pub(crate) fn view(
     snapshot: Option<&GoalSnapshot>,
@@ -57,7 +99,7 @@ fn current_view(
     view(
         state.goal.as_ref(),
         state.goal_rounds_started,
-        runtime.goal_armed.load(Ordering::Relaxed),
+        runtime.goal_armed.is_armed(),
     )
 }
 
@@ -196,10 +238,8 @@ pub(crate) async fn apply_action(
     // armed 语义：create/resume 激活续跑；pause/clear 摘掉；edit 保持原值；
     // 落库失败的路径到不了这里。
     match action {
-        GoalAction::Create { .. } | GoalAction::Resume => {
-            runtime.goal_armed.store(true, Ordering::Relaxed)
-        }
-        GoalAction::Pause | GoalAction::Unset => runtime.goal_armed.store(false, Ordering::Relaxed),
+        GoalAction::Create { .. } | GoalAction::Resume => runtime.goal_armed.set(true),
+        GoalAction::Pause | GoalAction::Unset => runtime.goal_armed.set(false),
         GoalAction::Show | GoalAction::Edit { .. } => {}
     }
     // 用户暂停：正在跑的、属于该目标的 goal round 一并中止（对齐 DSH：宿主
@@ -398,11 +438,9 @@ pub(crate) async fn apply_tool_update(
     }
     match update {
         ToolUpdate::Complete | ToolUpdate::Blocked { .. } | ToolUpdate::Pause => {
-            runtime.goal_armed.store(false, Ordering::Relaxed)
+            runtime.goal_armed.set(false)
         }
-        ToolUpdate::Resume | ToolUpdate::Edit { .. } => {
-            runtime.goal_armed.store(true, Ordering::Relaxed)
-        }
+        ToolUpdate::Resume | ToolUpdate::Edit { .. } => runtime.goal_armed.set(true),
     }
     let current = current_view(&*record.state.lock().await, &runtime);
     ctx.updates()
@@ -449,7 +487,7 @@ pub(crate) async fn maybe_continue(inner: &Arc<CoreInner>, ctx: &RequestContext,
         return;
     };
     let runtime = inner.runtime(session_id).await;
-    if !runtime.goal_armed.load(Ordering::Relaxed) {
+    if !runtime.goal_armed.is_armed() {
         return;
     }
     // 预约本轮的身份快照：抢到提示锁后要逐一复核，任何一个变了就放弃本轮。
@@ -474,7 +512,7 @@ pub(crate) async fn maybe_continue(inner: &Arc<CoreInner>, ctx: &RequestContext,
         let state = record.state.lock().await;
         let still = state.goal.as_ref().is_some_and(|goal| {
             goal.id == goal_id && goal.revision == revision && goal.phase == GoalPhase::Active
-        }) && runtime.goal_armed.load(Ordering::Relaxed);
+        }) && runtime.goal_armed.is_armed();
         if !still {
             return;
         }

@@ -222,6 +222,9 @@ pub(crate) async fn run_prompt_with_lock(
     *runtime.guard.lock() = Some(Arc::clone(&guard));
     // `/goal pause` 按这个标记识别该不该中止当前提示；仅续跑轮有值。
     *runtime.goal_active_round.lock() = params.goal_round.clone();
+    // 本轮期间的 armed 代际：收尾摘 armed 只在没别的目标动作插过手时生效，
+    // 否则 pause 取消后轮还没收完就 resume，会被晚到的摘位盖掉续跑状态。
+    let goal_armed_snapshot = runtime.goal_armed.snapshot();
     let scoped_ctx = ctx.with_cancel(guard.cancel.clone());
     let result = run_prompt_locked(
         Arc::clone(&inner),
@@ -398,9 +401,7 @@ pub(crate) async fn run_prompt_with_lock(
             )
     });
     if !keep_armed {
-        runtime
-            .goal_armed
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+        runtime.goal_armed.disarm_if_unchanged(goal_armed_snapshot);
     }
     // 必须先释放提示锁再评估续跑：本轮收尾持有 `_prompt` 时 try_prompt_lock 必失败，
     // 续跑会被自己挡掉。
@@ -950,9 +951,7 @@ async fn run_prompt_locked(
                     crate::goal::view(
                         state.goal.as_ref(),
                         state.goal_rounds_started,
-                        runtime
-                            .goal_armed
-                            .load(std::sync::atomic::Ordering::Relaxed),
+                        runtime.goal_armed.is_armed(),
                     )
                 };
                 match &goal_view {

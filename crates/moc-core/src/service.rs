@@ -61,7 +61,8 @@ pub(crate) struct SessionRuntime {
     pub guard: parking_lot::Mutex<Option<Arc<prompt::guard::PromptGuard>>>,
     /// 本进程是否允许该会话的目标自动续跑；不落库，会话加载时恒为 `false`，
     /// 由 `session/goal` 的 create/resume 或 `create_goal`/`update_goal` 工具置位。
-    pub goal_armed: std::sync::atomic::AtomicBool,
+    /// armed 位与代际打包在同一个字，见 [`crate::goal::GoalArmed`]。
+    pub goal_armed: crate::goal::GoalArmed,
     /// 正在跑的 goal 续跑轮的来源标记；`/goal pause` 用它识别该不该中止当前提示。
     pub goal_active_round: parking_lot::Mutex<Option<moc_protocol::methods::GoalRoundMeta>>,
     /// 目标操作串行化：RPC 与工具侧的读-改-写互斥。
@@ -94,7 +95,7 @@ impl SessionRuntime {
             steering: Mutex::new(management::Steering::default()),
             agent_inbox: Mutex::new(crate::agents::AgentInbox::default()),
             guard: parking_lot::Mutex::new(None),
-            goal_armed: std::sync::atomic::AtomicBool::new(false),
+            goal_armed: crate::goal::GoalArmed::new(),
             goal_active_round: parking_lot::Mutex::new(None),
             goal_op: tokio::sync::Mutex::new(()),
             grok_prefire: crate::compact::grok_build::prefire::PrefireState::default(),
@@ -2713,9 +2714,7 @@ async fn goal_with_armed(
     crate::goal::view(
         state.goal.as_ref(),
         state.goal_rounds_started,
-        runtime
-            .goal_armed
-            .load(std::sync::atomic::Ordering::Relaxed),
+        runtime.goal_armed.is_armed(),
     )
 }
 
