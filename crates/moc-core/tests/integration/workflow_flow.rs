@@ -604,6 +604,8 @@ async fn interrupted_run_marked_on_load() {
         .await;
     let harness = Harness::with_ask_support(&upstream.uri(), "openai_chat", "").await;
     let session = harness.session(SessionEngine::Standard).await;
+    // 从未落盘的会话没有 sidecar 目录：先跑一条消息让会话成为真实会话。
+    harness.prompt(&session, "hi").await;
     harness
         .client
         .call::<SessionWorkflowActivate>(SessionWorkflowActivateParams {

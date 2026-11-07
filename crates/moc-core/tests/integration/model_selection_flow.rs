@@ -135,6 +135,16 @@ async fn model_selection_is_shared_without_mode_resume_or_print_side_effects() {
         Some(latest.model.as_str())
     );
 
+    // 只改过配置的会话不落盘、卸载即消失：先跑一条 bash 让它成为可恢复的真会话。
+    tui.call::<SessionBash>(BashParams {
+        session_id: session.id.clone(),
+        command: BashCommand {
+            command: "true".into(),
+            exclude_from_context: false,
+        },
+    })
+    .await
+    .unwrap();
     // 卸载后由另一进程恢复旧会话，不覆盖最近模型记忆。
     tui.call::<SessionUnload>(SessionUnloadParams {
         session_id: session.id.clone(),

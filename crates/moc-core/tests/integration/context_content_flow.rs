@@ -86,12 +86,13 @@ fn stored_files(path: &std::path::Path) -> std::collections::BTreeMap<std::path:
         if path.is_dir() {
             files.extend(stored_files(&path));
         } else {
-            // .session-list-v1.json 是派生索引缓存：journal 变化后的首次 list() 会顺手
+            // .session-list-vN.json 是派生索引缓存：journal 变化后的首次 list() 会顺手
             // 重写它（快照组装走 subagent_prompt → peers → known() → store.list()），
             // 属于读取路径的正常缓存维护，不是对会话内容的写入。
             if path
                 .file_name()
-                .is_some_and(|name| name == ".session-list-v1.json")
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".session-list-"))
             {
                 continue;
             }

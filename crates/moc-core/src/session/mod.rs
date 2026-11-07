@@ -348,7 +348,11 @@ impl SessionTable {
                 self.store.cache_listing(
                     &record.paths.transcript,
                     file.revision(),
-                    (state.entries.len() > 1).then(|| state.session_info()),
+                    (state
+                        .entries
+                        .iter()
+                        .any(|stored| stored.message_entry().is_some()))
+                    .then(|| state.session_info()),
                 );
             }
         }
@@ -464,12 +468,34 @@ impl SessionTable {
         state
     }
 
+    /// 把内存里已缓冲、尚未落盘的条目（header 之后的簿记链）补写到刚创建的
+    /// transcript；后续 append 的 parent_id 才不会指向没落盘的条目。
+    async fn flush_buffered_entries(
+        record: &Arc<SessionRecord>,
+        file: &SessionFile,
+    ) -> Result<(), CoreError> {
+        let buffered: Vec<Entry> = {
+            let state = record.state.lock().await;
+            state
+                .entries
+                .iter()
+                .skip(1)
+                .map(StoredEntry::to_entry)
+                .collect()
+        };
+        for stored in &buffered {
+            file.append(stored, None).await?;
+        }
+        Ok(())
+    }
+
     async fn ensure_transcript_header(&self, record: &Arc<SessionRecord>) -> Result<(), CoreError> {
         let mut file = record.file.lock().await;
         if file.is_none() {
-            *file = Some(
-                SessionFile::create_with_header(&record.paths.transcript, &record.header).await?,
-            );
+            let created =
+                SessionFile::create_with_header(&record.paths.transcript, &record.header).await?;
+            Self::flush_buffered_entries(record, &created).await?;
+            *file = Some(created);
         }
         Ok(())
     }
@@ -1053,8 +1079,10 @@ impl SessionTable {
 
     /// 追加新 entry；持有状态锁时不跨文件 I/O 的 await。
     ///
-    /// transcript 文件还不存在时（新会话尚未写盘），先写 header 再写 entry，完成延迟
-    /// 写入；因此从未产生 entry 的会话不会在磁盘上留下文件。
+    /// transcript 文件还不存在时（新会话尚未写盘），非消息条目只应用到内存：
+    /// 纯配置变更（换模型/权限/引擎等）的空会话不会在磁盘上留下 JSONL 文件，
+    /// 也不会出现在 `session/list` 里。第一条消息到来时才把整链
+    /// （header + 已缓冲的簿记条目 + 本条消息）一并落盘。
     pub async fn append(
         &self,
         session_id: &str,
@@ -1075,17 +1103,17 @@ impl SessionTable {
                 Entry::from_payload(payload, state.last_entry_id.clone(), now_ms())
             };
             let mut file_slot = record.file.lock().await;
-            if file_slot.is_none() {
-                *file_slot = Some(
+            if file_slot.is_none() && matches!(entry, Entry::Message { .. }) {
+                let file =
                     SessionFile::create_with_header(&record.paths.transcript, &record.header)
-                        .await?,
-                );
+                        .await?;
+                // 内存里已缓冲的簿记条目按原序补写，保持 parent_id 链完整。
+                Self::flush_buffered_entries(&record, &file).await?;
+                *file_slot = Some(file);
             }
-            file_slot
-                .as_ref()
-                .expect("此处一定已经打开或创建了文件句柄")
-                .append(&entry, None)
-                .await?;
+            if let Some(file) = file_slot.as_ref() {
+                file.append(&entry, None).await?;
+            }
             record.state.lock().await.apply_entry(entry.clone());
             let freeze_old = {
                 let state = record.state.lock().await;
@@ -1428,12 +1456,17 @@ impl SessionTable {
         Ok(())
     }
 
-    /// 读回磁盘上的全部条目；`/retry` 用它裁剪上一轮没跑完的尾部。
+    /// 读回全部条目；`/retry` 用它裁剪上一轮没跑完的尾部。
     ///
     /// 返回原始 [`Entry`]（含 `finish_reason` 与条目 ID），这是内存里那份投影掉的
     /// 信息；重写 transcript 需要按原样写回其余条目。
+    /// 会话尚未落盘时磁盘上没有 transcript，退回内存里已缓冲的条目链。
     pub async fn read_entries(&self, session_id: &str) -> Result<Vec<Entry>, CoreError> {
         let record = self.get(session_id).await?;
+        if record.file.lock().await.is_none() {
+            let state = record.state.lock().await;
+            return Ok(state.entries.iter().map(StoredEntry::to_entry).collect());
+        }
         self.store.read_entries(&record.paths).await
     }
 
@@ -2091,7 +2124,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_session_is_deferred_to_disk_until_first_entry() {
+    async fn fresh_session_is_deferred_to_disk_until_first_message() {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
         let info = table
@@ -2127,6 +2160,77 @@ mod tests {
             .expect("读取 transcript");
         assert_eq!(entries.len(), 2, "header 加一条用户消息");
         assert_eq!(table.list().await.expect("列出会话").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn bookkeeping_changes_on_fresh_session_stay_off_disk_until_first_message() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let info = table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionEngine::Standard,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+                false,
+            )
+            .await
+            .expect("创建会话");
+        let paths = table.store.paths_for(
+            std::path::Path::new("/tmp/project"),
+            &info.id,
+            info.created_at_ms,
+        );
+
+        // 新会话上的配置变更只应用到内存：不落盘、不入列。
+        table
+            .set_model(&info.id, "p/other".into())
+            .await
+            .expect("切换模型");
+        table
+            .set_permission(&info.id, SessionPermission::Workspace)
+            .await
+            .expect("切换权限");
+        table
+            .set_engine(&info.id, SessionEngine::Ptc)
+            .await
+            .expect("切换引擎");
+        assert!(!paths.transcript.exists(), "簿记条目不触发落盘");
+        assert!(table.list().await.expect("列出会话").is_empty());
+        // 内存投影即时生效，前端读到的就是新值。
+        let record = table.get(&info.id).await.expect("取会话");
+        assert_eq!(record.state.lock().await.session.model, "p/other");
+        drop(record);
+        // 未落盘会话的 read_entries 能看到内存缓冲的整条链。
+        assert_eq!(
+            table.read_entries(&info.id).await.expect("读 entries").len(),
+            4,
+            "header + 3 条簿记"
+        );
+
+        // 首条消息到来：header + 缓冲的簿记 + 消息整链一并落盘。
+        table
+            .append_message(&info.id, Message::user_text("第一条"), None, None)
+            .await
+            .expect("追加消息");
+        assert!(paths.transcript.exists());
+        let entries = table.read_entries(&info.id).await.expect("读 entries");
+        assert_eq!(entries.len(), 5, "header + 3 条簿记 + 1 条消息");
+        for pair in entries.windows(2) {
+            assert_eq!(pair[1].parent_id(), Some(pair[0].id()), "parent_id 链不断");
+        }
+        let listed = table.list().await.expect("列出会话");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].model, "p/other");
+
+        // 落盘的是完整链：卸载重载后簿记变更仍然生效。
+        table.unload(&info.id).await.expect("卸载");
+        let reloaded = table.load(&info.id, None).await.expect("重载");
+        assert_eq!(reloaded.session.model, "p/other");
+        assert_eq!(reloaded.session.permission, SessionPermission::Workspace);
+        assert_eq!(reloaded.session.engine, SessionEngine::Ptc);
     }
 
     #[tokio::test]

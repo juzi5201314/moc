@@ -71,9 +71,9 @@ impl SessionPaths {
 
 /// 单个会话的 JSONL 文件句柄；磁盘上还没有文件时延迟创建。
 ///
-/// 新会话创建时只登记内存，第一次 append/rewrite 才把 header（以及后续 entry）真正
-/// 写入磁盘。这样从未产生 entry 的空会话不会留下 JSONL 文件，也不会出现在
-/// `session/list` 里。
+/// 新会话创建时只登记内存，第一条消息 entry 才把 header（以及已缓冲的簿记
+/// 条目）真正写入磁盘。这样只有配置变更、从未产生对话内容的空会话不会留下
+/// JSONL 文件，也不会出现在 `session/list` 里。
 pub struct SessionFile {
     path: PathBuf,
     format: log::Format,
@@ -359,7 +359,7 @@ type Listings = HashMap<
         Option<moc_protocol::SessionInfo>,
     ),
 >;
-const LISTING_CACHE: &str = ".session-list-v1.json";
+const LISTING_CACHE: &str = ".session-list-v2.json";
 const LISTING_CACHE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// 会话文件的发现、创建、读取和删除。
@@ -650,13 +650,17 @@ impl SessionStore {
     }
 
     /// 只在日志版本变化时扫描元信息，并按更新时间从新到旧排序。
-    /// 只有 header、从未产生 entry 的空会话不会出现在列表里。
+    /// 只有 header、或只有簿记条目（换模型/权限/引擎等，没有任何消息）的
+    /// 会话不会出现在列表里。
     pub async fn list(&self) -> Result<Vec<moc_protocol::methods::SessionInfo>, CoreError> {
         let _listing = self.listing_gate.lock().await;
         if !self
             .listing_loaded
             .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
+            // v1 缓存按「header 后有任意条目」判定，会把只含簿记条目的幽灵会话
+            // 永久列出来；语义收紧后旧文件作废。
+            let _ = tokio::fs::remove_file(self.root.join(".session-list-v1.json")).await;
             let path = self.root.join(LISTING_CACHE);
             let cached = tokio::task::spawn_blocking(move || read_listing_cache(&path))
                 .await
@@ -891,7 +895,7 @@ fn read_session_info_sync(
         role: moc_llm::Role,
     }
     let mut info: Option<moc_protocol::methods::SessionInfo> = None;
-    let mut has_entries = false;
+    let mut has_message = false;
     let mut header_seen = false;
     let mut skip = false;
     log::for_each_line(path, log::Policy::SkipFrame, &mut |line| {
@@ -908,10 +912,12 @@ fn read_session_info_sync(
         if skip {
             return Ok(());
         }
-        has_entries = true;
         let metadata: Metadata = match serde_json::from_slice(line) {
             Ok(metadata) => metadata,
             Err(error) => {
+                // 解析不出的非 header 行按有内容保守处理：半条残尾通常属于真实
+                // 会话，藏起来不如列出让用户可恢复（写租约阶段会截掉残尾）。
+                has_message = true;
                 // 一条记录损坏只影响它自己的元信息，其余记录照常参与列表。
                 tracing::warn!(path = %path.display(), %error, "跳过损坏的 transcript 记录");
                 return Ok(());
@@ -957,6 +963,7 @@ fn read_session_info_sync(
                 }
             }
             "message" => {
+                has_message = true;
                 // 与 SessionState::apply_entry 同口径：普通用户消息才算提示，
                 // bash / 代理消息 / 提醒不计入引擎锁定。
                 if let Some(message) = metadata.message
@@ -972,7 +979,7 @@ fn read_session_info_sync(
         }
         Ok(())
     })?;
-    Ok(info.map(|info| (info, has_entries)))
+    Ok(info.map(|info| (info, has_message)))
 }
 
 /// 把 cwd 编码成 omp 风格的可读目录名。
@@ -1249,6 +1256,62 @@ mod tests {
         assert_eq!(broken.title, "损坏行之后的标题");
         assert_eq!(broken.updated_at_ms, 4);
         assert!(listed.iter().any(|info| info.id == "ses_healthy0001"));
+    }
+
+    /// 只有 header 和簿记条目（换模型/权限/引擎等）的 transcript 是「空会话」，
+    /// 不出现在列表里；追加消息后正常入列。
+    #[tokio::test]
+    async fn metadata_only_transcript_is_not_listed_until_first_message() {
+        use super::super::entries::EntryPayload;
+        let directory = tempfile::tempdir().expect("临时目录");
+        let store = SessionStore::new(directory.path());
+        let cwd = Path::new("/tmp/project");
+        let header = Entry::header(
+            "ses_meta0000001".into(),
+            "/tmp/project".into(),
+            "p/m".into(),
+            SessionEngine::Standard,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            "新会话".into(),
+            1,
+        );
+        let paths = store.paths_for(cwd, "ses_meta0000001", 1);
+        let file = SessionFile::create_with_header(&paths.transcript, &header)
+            .await
+            .expect("创建会话文件");
+        let mut parent = header.id().to_owned();
+        for payload in [
+            EntryPayload::ModelChange {
+                model: "p/other".into(),
+            },
+            EntryPayload::PermissionChange {
+                permission: SessionPermission::Workspace,
+            },
+        ] {
+            let entry = Entry::from_payload(payload, parent, 2);
+            parent = entry.id().to_owned();
+            file.append(&entry, None).await.expect("追加簿记条目");
+        }
+        assert!(
+            store.list().await.expect("列出会话").is_empty(),
+            "纯簿记会话是幽灵，不入列"
+        );
+        let message = Entry::from_payload(
+            EntryPayload::Message {
+                message: moc_llm::Message::user_text("第一条"),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+                goal: None,
+            },
+            parent,
+            3,
+        );
+        file.append(&message, None).await.expect("追加消息");
+        let listed = store.list().await.expect("列出会话");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].model, "p/other");
     }
 
     /// 崩溃留下的半条记录：读取时忽略，拿到写租约后截掉才能继续追加。
