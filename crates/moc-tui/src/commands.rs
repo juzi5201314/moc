@@ -418,7 +418,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "help",
         aliases: &[],
         usage: "",
-        description: "快捷键与命令帮助",
+        description: "快捷键一览",
         group: CommandGroup::Ui,
         needs_session: false,
         available_during_task: true,

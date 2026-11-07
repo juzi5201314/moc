@@ -1,7 +1,7 @@
 //! 帧绘制：布局切分 + 各区域渲染。
 //!
 //! 留白 → 输入框 → statusline。所有内容左右各留 [`MARGIN_X`] 格边距，行与行
-//! 之间靠留白分隔；输入框随多行输入长高，其下边框兼作图例行（左＝帮助键提示，右＝模型 · 模式）。
+//! 之间靠留白分隔；输入框随多行输入长高，其下边框兼作图例行（左＝快捷键提示，右＝模型 · 模式）。
 //! 整帧先铺主题底色，滚动区由 [`ScrollbackView`] 按行缓存直写 buffer。
 
 pub mod btw;
@@ -526,7 +526,7 @@ pub(crate) fn prompt_cursor_from_point(
     }
 }
 
-/// 输入框下边框上的图例：运行时显示停止操作，否则显示帮助键。
+/// 输入框下边框上的图例：运行时显示停止操作，否则显示快捷键键位。
 ///
 /// 图例直接写在边框行上，因此不额外占用终端行；空间不足时先让掉左侧提示，
 /// 右侧的当前模型与模式仍然保留。
@@ -539,19 +539,25 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = usize::from(area.width).saturating_sub(2);
     let y = area.y + area.height - 1;
 
+    // 无会话时三段都是占位值：只画一个 idle，不给任何图例留点击区。
+    let no_session = app.session.is_none();
     let model = app.model_display();
     let status = app.status_label();
     let permission = app
         .session
         .as_ref()
         .map_or("full", |session| session.permission.as_str());
-    let right = [
-        (model.as_str(), theme.gray),
-        (labels::SEP, theme.border),
-        (status.as_str(), theme.accent_model),
-        (labels::SEP, theme.border),
-        (permission, theme.accent_model),
-    ];
+    let right: Vec<(&str, Color)> = if no_session {
+        vec![(labels::status::IDLE, theme.gray)]
+    } else {
+        vec![
+            (model.as_str(), theme.gray),
+            (labels::SEP, theme.border),
+            (status.as_str(), theme.accent_model),
+            (labels::SEP, theme.border),
+            (permission, theme.accent_model),
+        ]
+    };
     let right_width: usize = right.iter().map(|(text, _)| str_width(text)).sum();
     if right_width + 4 > inner {
         return;
@@ -578,26 +584,28 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
             },
         )
     } else {
-        (help_key, "帮助", theme.gray_dim)
+        (help_key, "快捷键", theme.gray_dim)
     };
     let left_key = left_key.as_str();
-    let left_separator = labels::SEP;
-    let tips_width = str_width(left_key) + 1 + str_width(left_tip) + str_width(left_separator);
+    // 左端布局：`␣key tip`（胶囊存在时接 ` · capsule`），末尾再补一格空白，
+    // 与右侧的留白对称；分隔点只画在提示与胶囊之间，不留孤点。
+    let tips_width = str_width(left_key) + 1 + str_width(left_tip);
     let show_tips = tips_width + 4 + right_width + 4 <= inner;
 
     let buffer = frame.buffer_mut();
+    let mut end_x = area.x + 3;
     if show_tips {
-        let mut x = area.x + 3;
         buffer.set_string(area.x + 2, y, " ", Style::new());
+        let mut x = end_x;
         buffer.set_string(x, y, left_key, Style::new().fg(theme.gray_bright));
         x += cell_width(left_key);
         buffer.set_string(x, y, " ", Style::new());
         x += 1;
         buffer.set_string(x, y, left_tip, Style::new().fg(left_color));
         x += cell_width(left_tip);
-        buffer.set_string(x, y, left_separator, Style::new().fg(theme.border));
-        // 左端提示可点：空闲打开帮助，运行中停止（与提示文字同义）。
+        // 左端提示可点：空闲打开快捷键，运行中停止（与提示文字同义）。
         app.legend_tip_area = Rect::new(area.x + 3, y, x - (area.x + 3), 1);
+        end_x = x;
     }
     // workflow 胶囊：活跃 run / 待审批徽标，点击打开审批或 run 面板。
     app.workflow_capsule_area = Rect::default();
@@ -613,16 +621,26 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
             format!("⚙{runs_n}跑")
         };
         let cap_cells = cell_width(&capsule);
+        // 有提示时胶囊跟在分隔点之后，没有提示就直接占左端。
         let cx = if show_tips {
-            app.legend_tip_area.x + app.legend_tip_area.width + 1
+            end_x + cell_width(labels::SEP)
         } else {
             area.x + 3
         };
         if usize::from(cx + cap_cells + 1) + right_width + 4 <= inner + usize::from(area.x) {
+            if show_tips {
+                buffer.set_string(end_x, y, labels::SEP, Style::new().fg(theme.border));
+            } else {
+                buffer.set_string(area.x + 2, y, " ", Style::new());
+            }
             buffer.set_string(cx, y, &capsule, Style::new().fg(theme.accent_warning));
-            buffer.set_string(cx + cap_cells, y, left_separator, Style::new().fg(theme.border));
             app.workflow_capsule_area = Rect::new(cx, y, cap_cells, 1);
+            end_x = cx + cap_cells;
         }
+    }
+    if end_x > area.x + 3 {
+        // 最后一个元素与边框线之间补一格空白，左右对称。
+        buffer.set_string(end_x, y, " ", Style::new());
     }
     let right_cells = u16::try_from(right_width).unwrap_or(u16::MAX);
     let right_start = area.x + area.width - 2 - right_cells;
@@ -638,6 +656,12 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         x += cell_width(text);
     }
     buffer.set_string(x, y, " ", Style::new());
+    if no_session {
+        app.model_tag_area = Rect::default();
+        app.engine_area = Rect::default();
+        app.permission_tag_area = Rect::default();
+        return;
+    }
     app.model_tag_area = Rect {
         x: right_start,
         y,
@@ -1119,18 +1143,25 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
             ));
         }
     }
-    // 右侧统计段
-    let right = format!(
-        " ⇅ {} › {} › {:.0} {}",
-        format_tokens(data.tokens_in),
-        format_tokens(data.tokens_out),
-        data.tok_s,
-        labels::RATE_UNIT,
-    );
-    let mut right_cost = data
-        .cost
-        .map(|cost| format!(" › ${cost:.2}"))
-        .unwrap_or_default();
+    // 右侧统计段：in/out 都是 0 时整段（连同 cost）不显示，空闲不刷一串 0。
+    let right = if data.tokens_in == 0 && data.tokens_out == 0 {
+        String::new()
+    } else {
+        format!(
+            " ⇅ {} › {} › {:.0} {}",
+            format_tokens(data.tokens_in),
+            format_tokens(data.tokens_out),
+            data.tok_s,
+            labels::RATE_UNIT,
+        )
+    };
+    let mut right_cost = if right.is_empty() {
+        String::new()
+    } else {
+        data.cost
+            .map(|cost| format!(" › ${cost:.2}"))
+            .unwrap_or_default()
+    };
     let used: usize = spans.iter().map(|span| str_width(&span.content)).sum();
     let available = width.saturating_sub(used + 2);
     if str_width(&right) + str_width(&right_cost) > available {

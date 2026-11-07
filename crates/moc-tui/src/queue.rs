@@ -563,10 +563,13 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         area,
         Style::new().bg(theme.bg_base).fg(theme.text_primary),
     );
-    let title = format!(
-        "待发送 {total} · 插队 {} / 队列 {queue_len} · 点击/× 撤回",
-        steers.len()
-    );
+    // 插队和队列都非零时才分列计数，只有一种就只看总数。
+    let breakdown = if !steers.is_empty() && queue_len > 0 {
+        format!(" · 插队 {} / 队列 {queue_len}", steers.len())
+    } else {
+        String::new()
+    };
+    let title = format!("待发送 {total}{breakdown} · 点击/× 撤回");
     let panel = overlay::panel(theme).title(overlay::title_span(
         &title,
         usize::from(area.width.saturating_sub(4)),

@@ -203,7 +203,11 @@ fn draw_header(
 
     if area.height >= 2 {
         lines.push(Line::from(Span::styled(
-            "选择要回退到的历史节点。确认后选中的用户消息将恢复到输入框重新编辑，该节点之后的所有对话记录将被丢弃。",
+            crate::render::wrap::truncate(
+                "确认后该条用户消息回到输入框重新编辑，之后的对话将被丢弃。",
+                usize::from(area.width),
+            )
+            .into_owned(),
             Style::new().fg(theme.gray_dim),
         )));
     }
@@ -748,75 +752,97 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
     let sep = || Span::styled(" · ", Style::new().fg(theme.gray_dim));
 
     // 回退徽标
-    push(
-        Span::styled(
-            " ⏪ 回退 ",
-            Style::new()
-                .bg(theme.accent_user)
-                .fg(theme.bg_base)
-                .add_modifier(Modifier::BOLD),
-        ),
-        None,
+    let badge = Span::styled(
+        " ⏪ 回退 ",
+        Style::new()
+            .bg(theme.accent_user)
+            .fg(theme.bg_base)
+            .add_modifier(Modifier::BOLD),
     );
+    // 徽标 + 其后一格空白。
+    let prefix_width = badge.width() + 1;
+    push(badge, None);
     push(Span::raw(" "), None);
 
+    // 项列表：(span 段, 键位, 丢弃优先级)；u8::MAX = 必须保留，数字越小越先丢。
+    // 段内不含分隔点，渲染时只在相邻的保留段之间插入，丢项后不会出现孤点或双点。
+    let mut segments: Vec<(Vec<Span<'static>>, Option<KeyCode>, u8)> = Vec::new();
     if state.filtering {
-        push(
-            Span::styled(
-                format!("过滤: \"{}\"", state.query),
-                Style::new()
-                    .fg(theme.accent_warning)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            None,
-        );
         let matches = state.filtered_indices();
-        push(
-            Span::styled(
-                format!(" (匹配 {}/{})", matches.len(), state.items.len()),
-                Style::new().fg(theme.text_secondary),
-            ),
+        segments.push((
+            vec![
+                Span::styled(
+                    format!("过滤: \"{}\"", state.query),
+                    Style::new()
+                        .fg(theme.accent_warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" (匹配 {}/{})", matches.len(), state.items.len()),
+                    Style::new().fg(theme.text_secondary),
+                ),
+            ],
             None,
-        );
-        push(sep(), None);
-        push(
-            Span::styled("↑↓ 切换匹配", Style::new().fg(theme.text_primary)),
+            u8::MAX,
+        ));
+        segments.push((
+            vec![Span::styled(
+                "↑↓ 切换匹配",
+                Style::new().fg(theme.text_primary),
+            )],
             None,
-        );
-        push(sep(), None);
-        push(
-            Span::styled("Esc 清除过滤", Style::new().fg(theme.gray_dim)),
+            0,
+        ));
+        segments.push((
+            vec![Span::styled(
+                "Esc 清除过滤",
+                Style::new().fg(theme.gray_dim),
+            )],
             Some(KeyCode::Esc),
-        );
-        push(sep(), None);
-        push(enter_hint_span(state, theme), Some(KeyCode::Enter));
+            u8::MAX,
+        ));
+        segments.push((
+            vec![enter_hint_span(state, theme)],
+            Some(KeyCode::Enter),
+            u8::MAX,
+        ));
     } else {
         if !state.items.is_empty() {
-            push(
-                Span::styled(
-                    format!("{}/{} ", state.selected + 1, state.items.len()),
+            segments.push((
+                vec![Span::styled(
+                    format!("{}/{}", state.selected + 1, state.items.len()),
                     Style::new()
                         .fg(theme.accent_model)
                         .add_modifier(Modifier::BOLD),
-                ),
+                )],
                 None,
-            );
-            push(Span::styled("· ", Style::new().fg(theme.gray_dim)), None);
+                u8::MAX,
+            ));
         }
-        push(
-            Span::styled("↑↓/jk 逐条选择", Style::new().fg(theme.text_primary)),
+        segments.push((
+            vec![Span::styled(
+                "↑↓/jk 逐条选择",
+                Style::new().fg(theme.text_primary),
+            )],
             None,
-        );
-        push(sep(), None);
-        push(
-            Span::styled("←→/hl 仅跳用户提问", Style::new().fg(theme.accent_user)),
+            1,
+        ));
+        segments.push((
+            vec![Span::styled(
+                "←→/hl 仅跳用户提问",
+                Style::new().fg(theme.accent_user),
+            )],
             None,
-        );
-        push(sep(), None);
-        push(
-            Span::styled("f// 搜索过滤", Style::new().fg(theme.text_secondary)),
+            0,
+        ));
+        segments.push((
+            vec![Span::styled(
+                "f 或 / 搜索",
+                Style::new().fg(theme.text_secondary),
+            )],
             Some(KeyCode::Char('f')),
-        );
+            2,
+        ));
         // 选中含提问调用的历史条目时提示可重新作答。
         if state.selected_item_ref().is_some_and(|item| {
             !item.future
@@ -826,19 +852,53 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
                     .tool_calls()
                     .any(|call| call.name == "ask")
         }) {
-            push(sep(), None);
-            push(
-                Span::styled("R 重新作答", Style::new().fg(theme.accent_model)),
+            segments.push((
+                vec![Span::styled(
+                    "R 重新作答",
+                    Style::new().fg(theme.accent_model),
+                )],
                 Some(KeyCode::Char('r')),
-            );
+                3,
+            ));
         }
-        push(sep(), None);
-        push(
-            Span::styled("Esc 取消", Style::new().fg(theme.gray_dim)),
+        segments.push((
+            vec![Span::styled("Esc 取消", Style::new().fg(theme.gray_dim))],
             Some(KeyCode::Esc),
-        );
-        push(sep(), None);
-        push(enter_hint_span(state, theme), Some(KeyCode::Enter));
+            u8::MAX,
+        ));
+        segments.push((
+            vec![enter_hint_span(state, theme)],
+            Some(KeyCode::Enter),
+            u8::MAX,
+        ));
+    }
+    // 宽度不够时按优先级丢次要项，最重要的项恒在；总宽含徽标与段间分隔点。
+    let sep_width = sep().width();
+    let total = |segments: &[(Vec<Span<'static>>, Option<KeyCode>, u8)]| -> usize {
+        prefix_width
+            + segments
+                .iter()
+                .flat_map(|(spans, _, _)| spans.iter().map(Span::width))
+                .sum::<usize>()
+            + sep_width * segments.len().saturating_sub(1)
+    };
+    for rank in 0..=3u8 {
+        if total(&segments) <= usize::from(area.width) {
+            break;
+        }
+        if let Some(index) = segments.iter().position(|(_, _, r)| *r == rank) {
+            segments.remove(index);
+        }
+    }
+    for (index, (segs, key, _)) in segments.into_iter().enumerate() {
+        if index > 0 {
+            push(sep(), None);
+        }
+        let last = segs.len() - 1;
+        for (position, span) in segs.into_iter().enumerate() {
+            // 键位只登记在段尾的文字上。
+            push(span, (position == last).then_some(key).flatten());
+        }
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);

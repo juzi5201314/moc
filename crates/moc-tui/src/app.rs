@@ -209,7 +209,7 @@ pub struct App {
     /// 本帧画出的可点击键位（提示条、回退 dock 等）：点中等价于按下该键。
     /// 模态绘制时整表重建，底层界面的键位不会漏到模态上。
     pub key_hits: Vec<crate::render::labels::KeyHit>,
-    /// 输入框下边框左端提示（空闲「帮助」、运行中「停止」）的命中区。
+    /// 输入框下边框左端提示（空闲「快捷键」、运行中「停止」）的命中区。
     pub legend_tip_area: Rect,
     /// workflow 胶囊命中区（活跃 run / 待审批徽标）。
     pub workflow_capsule_area: Rect,

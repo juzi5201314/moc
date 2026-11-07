@@ -274,8 +274,8 @@ impl<I: 'static> CommandRegistry<I> {
     ///
     /// `visible` 过滤当前上下文不可用的内置命令（`hidden`、flag 关闭、聚焦时不
     /// 可用于旁支、运行中不可用的命令一律不提示——它们执行也只会得到拒绝文案）。
-    /// 插件命令没有 spec 元数据可判定，始终可见。别名与主名都产出候选，命中别名
-    /// 时写入别名原文。
+    /// 插件命令没有 spec 元数据可判定，始终可见。主名命中时只产出主名；主名
+    /// 不命中而别名命中时只产出该别名候选，命中别名时写入别名原文。
     pub fn complete(
         &self,
         query: &str,
@@ -286,16 +286,23 @@ impl<I: 'static> CommandRegistry<I> {
             .iter()
             .filter(|spec| !spec.hidden && visible(spec))
             .flat_map(|spec| {
-                std::iter::once((spec.name, spec))
-                    .chain(spec.aliases.iter().map(move |alias| (*alias, spec)))
-                    .filter(move |(name, _)| name.starts_with(query))
-                    .map(move |(name, spec)| CommandCandidate {
-                        value: format!("/{name}"),
-                        label: format!("/{name}"),
-                        description: spec.description.to_owned(),
-                        append_space: true,
-                        source: CommandSource::Builtin,
-                    })
+                // 别名与主名不重复成行：`/quit` `/exit` 同描述各占一行纯属噪音。
+                let names: Vec<&'static str> = if spec.name.starts_with(query) {
+                    vec![spec.name]
+                } else {
+                    spec.aliases
+                        .iter()
+                        .copied()
+                        .filter(|alias| alias.starts_with(query))
+                        .collect()
+                };
+                names.into_iter().map(move |name| CommandCandidate {
+                    value: format!("/{name}"),
+                    label: format!("/{name}"),
+                    description: spec.description.to_owned(),
+                    append_space: true,
+                    source: CommandSource::Builtin,
+                })
             })
             .collect();
         candidates.extend(
@@ -435,13 +442,13 @@ mod tests {
     fn complete_lists_canonical_and_alias_candidates() {
         let mut registry = CommandRegistry::new(SPECS);
         registry.set_plugins(&[plugin("demo", &["deploy"])]);
-        // hidden 的 /ask 不出候选；/quit 与别名 /exit 都出现。
+        // hidden 的 /ask 不出候选；主名命中时别名不重复成行（/config、/quit）。
         let values: Vec<_> = registry
             .complete("", |_| true)
             .into_iter()
             .map(|candidate| candidate.value)
             .collect();
-        assert_eq!(values, ["/config", "/settings", "/quit", "/exit", "/deploy"]);
+        assert_eq!(values, ["/config", "/quit", "/deploy"]);
 
         // visible 只过滤内置命令（插件命令无 spec 元数据，始终可见）。
         let values: Vec<_> = registry
@@ -449,9 +456,11 @@ mod tests {
             .into_iter()
             .map(|candidate| candidate.value)
             .collect();
-        assert_eq!(values, ["/config", "/settings", "/deploy"]);
+        assert_eq!(values, ["/config", "/deploy"]);
 
+        // 主名不匹配、别名匹配时给别名候选。
         assert!(registry.complete("se", |_| true)[0].value == "/settings");
+        assert!(registry.complete("ex", |_| true)[0].value == "/exit");
         assert!(registry.complete("zzz", |_| true).is_empty());
     }
 

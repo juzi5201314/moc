@@ -7,7 +7,6 @@ mod model_picker;
 
 use std::time::{Duration, Instant};
 
-use moc_protocol::commands::CommandGroup;
 use moc_protocol::methods::{ContextUsageResult, PlanStatus};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -394,8 +393,18 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
             app.key_hits = draw_plan_editor(frame, app, layout.area, area);
         }
     }
-    if let Some(Modal::Tools { scroll, .. }) = app.modal.as_mut() {
-        *scroll = (*scroll).min(body.scroll_max);
+    // 事件层只加不减的滚动偏移按本帧上限写回；各模态同一约定。
+    match app.modal.as_mut() {
+        Some(Modal::Help { scroll } | Modal::Tools { scroll, .. }) => {
+            *scroll = (*scroll).min(body.scroll_max);
+        }
+        Some(Modal::Permission { scroll_offset, .. }) => {
+            *scroll_offset = (*scroll_offset).min(body.scroll_max);
+        }
+        Some(Modal::Plan { state }) if state.pane == PlanPane::Read => {
+            state.scroll_offset = state.scroll_offset.min(body.scroll_max);
+        }
+        _ => {}
     }
 }
 
@@ -433,6 +442,7 @@ fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
         nav_hits,
         question_area,
         detail_area,
+        preview_scroll_max,
     } = ask_layout(theme, modal, overlay::content_width(width), max_rows);
     // 问题、空行、自定义行是提问卡的最小骨架：极矮终端连骨架都放不下时只截掉底部，
     // 落在可见区外的命中由下方 `row_y` 统一丢弃。
@@ -495,6 +505,10 @@ fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     app.ask_question_area = question_area.map_or_default(map_area);
     app.ask_detail_area = detail_area.map_or_default(map_area);
+    // 事件层只加不减：详情/确认页的滚动偏移按本帧上限写回。
+    if let Some(Modal::Ask { preview_scroll, .. }) = app.modal.as_mut() {
+        *preview_scroll = (*preview_scroll).min(preview_scroll_max);
+    }
 }
 
 /// 折叠的提问细条：占据输入框位（输入框本轮不绘制），左边是进度与当前问，
@@ -615,6 +629,9 @@ const HELP_KEY_GAP: usize = 2;
 const HELP_COLUMN_GAP: usize = 4;
 /// 快捷键帮助：快捷键行左缩进（格）。
 const HELP_INDENT: usize = 2;
+/// 快捷键帮助：键位列宽上限（格）。用户自定义的多键绑定可能很长，超出上限
+/// 单列时键位独占一行、描述悬挂缩进，不让一个长键位撑宽整列。
+const HELP_KEY_MAX: usize = 28;
 
 /// 一列快捷键的（键位列宽，整列宽）。
 type HelpColumn = (usize, usize);
@@ -624,10 +641,12 @@ struct HelpSection {
     rows: Vec<(String, String)>,
 }
 
-/// 快捷键帮助内容：会话与通用、输入与编辑、旁路交互三组，组标题加粗着色。
+/// 快捷键一览：通用键位、输入与编辑、旁路交互三组，组标题加粗着色；
+/// 末尾一行指路斜杠命令（输入 `/` 即见全表，不占本表篇幅）。
 ///
-/// 默认双列（组内双列排布），宽度不足时退回单列。
-/// 键位列按最长绑定取齐，返回内容的自然宽度，模态据此收窄到刚好容纳。
+/// 每个分组独立测量键位列与描述列，再各自决定双列或单列：双列按组内自然列宽
+/// 左右排布；单列把描述按剩余宽度折行、悬挂缩进到描述列，超过 [`HELP_KEY_MAX`]
+/// 的键位独占一行。行尾不补空格，返回内容的自然宽度，模态据此收窄到刚好容纳。
 /// 只产出正文；滚动窗口与底部提示由 `modal_body` 负责。
 fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
     let theme = app.theme;
@@ -650,63 +669,9 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
             (get_key("thinking"), "切换思考显示档位".to_owned()),
             (get_key("thinking_level"), "切换思考等级".to_owned()),
             (get_key("tools"), "切换工具显示档位".to_owned()),
-            (get_key("help"), "帮助菜单".to_owned()),
+            (get_key("help"), "快捷键一览".to_owned()),
         ],
     }];
-    // 斜杠命令按注册表分组成节；flag 关闭的命令仍列出并注明，帮助就是给人查的。
-    for group in [
-        CommandGroup::Session,
-        CommandGroup::Mode,
-        CommandGroup::Context,
-        CommandGroup::Agents,
-        CommandGroup::Plugins,
-        CommandGroup::Ui,
-    ] {
-        let mut rows = Vec::new();
-        for spec in app
-            .commands
-            .builtins()
-            .iter()
-            .filter(|spec| !spec.hidden && spec.group == group)
-        {
-            let usage = if spec.usage.is_empty() {
-                format!("/{}", spec.name)
-            } else {
-                format!("/{} {}", spec.name, spec.usage)
-            };
-            let disabled = spec.flag.is_some_and(|flag| !app.features.enabled(flag));
-            rows.push((
-                usage,
-                if disabled {
-                    format!("{}（特性已禁用）", spec.description)
-                } else {
-                    spec.description.to_owned()
-                },
-            ));
-        }
-        if group == CommandGroup::Plugins {
-            rows.extend(app.commands.plugins().iter().map(|command| {
-                (
-                    if command.usage.is_empty() {
-                        format!("/{}", command.name)
-                    } else {
-                        format!("/{} {}", command.name, command.usage)
-                    },
-                    if command.description.is_empty() {
-                        format!("插件命令（{}）", command.plugin)
-                    } else {
-                        command.description.clone()
-                    },
-                )
-            }));
-        }
-        if !rows.is_empty() {
-            sections.push(HelpSection {
-                title: format!("命令 · {}", group.label()),
-                rows,
-            });
-        }
-    }
     sections.push(HelpSection {
         title: "输入与编辑".to_owned(),
         rows: vec![
@@ -727,7 +692,6 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
     sections.push(HelpSection {
         title: "旁路交互 (BTW)".to_owned(),
         rows: vec![
-            ("/btw <问题>".into(), "旁路追问(不写历史)".to_owned()),
             (
                 fixed_keys(&["alt+b", "tab"]),
                 "旁路展开与焦点切换".to_owned(),
@@ -741,20 +705,9 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
     });
     let sections = sections;
 
-    let all_rows: Vec<&(String, String)> = sections.iter().flat_map(|s| &s.rows).collect();
-    let unified = measure_column_refs(&all_rows);
-
-    let two_columns = HELP_INDENT + unified.1 + HELP_COLUMN_GAP + unified.1 <= max_width;
-    let (columns, width) = if two_columns {
-        (
-            [unified, unified],
-            HELP_INDENT + unified.1 + HELP_COLUMN_GAP + unified.1,
-        )
-    } else {
-        ([unified, unified], HELP_INDENT + unified.1)
-    };
-
     let mut lines = Vec::new();
+    // 内容自然宽度：各分组实际排版宽度的最大值。
+    let mut natural = 0usize;
     for (sec_idx, section) in sections.iter().enumerate() {
         if sec_idx > 0 {
             lines.push(Line::from(String::new()));
@@ -766,45 +719,81 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
                 .add_modifier(Modifier::BOLD),
         )));
 
+        // 每组各自测量：组内的长键位不撑宽其他组的键位列。
+        let (key_max, desc_max) = measure_section(&section.rows);
+        let key_width = key_max.min(HELP_KEY_MAX);
+        let column: HelpColumn = (key_width, key_width + HELP_KEY_GAP + desc_max);
+        // 双列要求所有键位都装得进列宽上限，且两份列宽加间距不超过可用宽度。
+        let two_columns = key_max <= HELP_KEY_MAX
+            && HELP_INDENT + column.1 + HELP_COLUMN_GAP + column.1 <= max_width;
+
         if two_columns {
+            natural = natural.max(HELP_INDENT + column.1 + HELP_COLUMN_GAP + column.1);
             let split = section.rows.len().div_ceil(2);
             for index in 0..split {
                 let mut spans = vec![Span::styled(" ".repeat(HELP_INDENT), Style::new())];
-                spans.extend(help_cell(&section.rows[index], columns[0], theme));
+                spans.extend(help_cell(&section.rows[index], column, theme));
                 if let Some(right) = section.rows.get(split + index) {
                     spans.push(Span::styled(" ".repeat(HELP_COLUMN_GAP), Style::new()));
-                    spans.extend(help_cell(right, columns[1], theme));
+                    spans.extend(help_cell(right, column, theme));
                 }
                 lines.push(Line::from(spans));
             }
-        } else {
-            for row in &section.rows {
-                let mut spans = vec![Span::styled(" ".repeat(HELP_INDENT), Style::new())];
-                spans.extend(help_cell(row, columns[0], theme));
-                lines.push(Line::from(spans));
+            continue;
+        }
+
+        // 单列：描述按剩余宽度折行、悬挂缩进到描述列；行尾不补空格。
+        natural = natural.max(HELP_INDENT + (key_width + HELP_KEY_GAP + desc_max).max(key_max));
+        let desc_x = HELP_INDENT + key_width + HELP_KEY_GAP;
+        let desc_w = max_width.saturating_sub(desc_x).max(1);
+        for (key, description) in &section.rows {
+            let mut parts = crate::render::wrap::wrap_text(description, desc_w).into_iter();
+            let mut spans = vec![Span::styled(" ".repeat(HELP_INDENT), Style::new())];
+            spans.push(Span::styled(key.clone(), Style::new().fg(theme.accent_user)));
+            if str_width(key) <= key_width {
+                // 键位装进列宽：首段描述与键位同行。
+                spans.push(Span::styled(
+                    " ".repeat(key_width - str_width(key) + HELP_KEY_GAP),
+                    Style::new(),
+                ));
+                spans.push(Span::styled(
+                    parts.next().unwrap_or_default(),
+                    Style::new().fg(theme.text_secondary),
+                ));
+            }
+            lines.push(Line::from(spans));
+            // 超长键位独占一行；其余段落统一悬挂缩进到描述列。
+            for part in parts {
+                lines.push(Line::from(vec![
+                    Span::styled(" ".repeat(desc_x), Style::new()),
+                    Span::styled(part, Style::new().fg(theme.text_secondary)),
+                ]));
             }
         }
     }
+    // 末尾指路斜杠命令：输入 `/` 即见全表，不放进本表。
+    lines.push(Line::from(String::new()));
+    lines.push(Line::from(Span::styled(
+        "输入 / 查看全部斜杠命令",
+        Style::new().fg(theme.gray_dim),
+    )));
     // 极窄终端连单列都放不下时截断，卡片不二次折行。
     let lines = lines
         .into_iter()
         .map(|line| clip_line(line, max_width))
         .collect();
-    (lines, width.min(max_width))
+    (lines, natural.min(max_width))
 }
 
-fn measure_column_refs(rows: &[&(String, String)]) -> HelpColumn {
-    let key_width = rows
-        .iter()
-        .map(|(key, _)| str_width(key))
-        .max()
-        .unwrap_or(0);
-    let description_width = rows
+/// 一组快捷键的自然宽度：最长键位与最长描述（格）。
+fn measure_section(rows: &[(String, String)]) -> (usize, usize) {
+    let key = rows.iter().map(|(key, _)| str_width(key)).max().unwrap_or(0);
+    let description = rows
         .iter()
         .map(|(_, description)| str_width(description))
         .max()
         .unwrap_or(0);
-    (key_width, key_width + HELP_KEY_GAP + description_width)
+    (key, description)
 }
 
 /// 帮助表的一格：键位右补齐到列内 `key_width`，整格再补齐到列宽。
@@ -1128,15 +1117,12 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                     usize::MAX,
                 ));
             }
-            // 正文窗口之后：空行 + 选项行。
+            // 正文窗口之后：空行 + 选项行。超出窗口时末行是标准滚动状态行，
+            // 用户能看到内容被截断而不是静默丢尾。
             let options_rows = params.options.len() + 1;
             let max_content_rows = max_lines.saturating_sub(options_rows).max(1);
-            let offset = (*scroll_offset).min(all_content.len().saturating_sub(max_content_rows));
-            let mut lines: Vec<Line<'static>> = all_content
-                .into_iter()
-                .skip(offset)
-                .take(max_content_rows)
-                .collect();
+            scroll_max = scroll_window_max(all_content.len(), max_content_rows);
+            let mut lines = scroll_window(all_content, max_content_rows, *scroll_offset, width, theme);
             if lines.is_empty() {
                 lines.push(Line::from(String::new()));
             }
@@ -1151,12 +1137,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 ));
             }
             let footer = overlay::footer(
-                &[
-                    ("pgup/pgdn", "滚动预览"),
-                    ("1-9", "直选"),
-                    ("esc", "按拒绝处理"),
-                    ("enter", "确认"),
-                ],
+                &[("1-9", "直选"), ("esc", "按拒绝处理"), ("enter", "确认")],
                 width,
                 theme,
             );
@@ -1416,7 +1397,9 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             };
             (lines, overlay::footer(items, width, theme))
         }
-        Modal::Plan { state } => plan_lines(state, width, max_lines, theme, &mut hits),
+        Modal::Plan { state } => {
+            plan_lines(state, width, max_lines, theme, &mut hits, &mut scroll_max)
+        }
         Modal::Context { usage } => {
             let lines = match usage {
                 Some(usage) => context_lines(usage, width, theme),
@@ -1545,11 +1528,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             } else {
                 rows.push(Line::from(Span::styled("正在读取工具…", dim)));
             }
-            if rows.len() > max_lines.max(1) {
-                scroll_max = rows
-                    .len()
-                    .saturating_sub(max_lines.saturating_sub(1).max(1));
-            }
+            scroll_max = scroll_window_max(rows.len(), max_lines);
             let lines = scroll_window(rows, max_lines, *scroll, width, theme);
             (
                 lines,
@@ -1572,6 +1551,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
         }
         Modal::Help { scroll } => {
             let rows = help_lines(app, width).0;
+            scroll_max = scroll_window_max(rows.len(), max_lines);
             let lines = scroll_window(rows, max_lines, *scroll, width, theme);
             (lines, overlay::footer(&[("esc", "关闭")], width, theme))
         }
@@ -1763,6 +1743,8 @@ struct AskLayout {
     question_area: Option<Rect>,
     /// 可滚动的详情区（单栏底区或双栏右栏，文本坐标）；同上仅在溢出时给出。
     detail_area: Option<Rect>,
+    /// `preview_scroll` 本帧允许的最大偏移，绘制后写回状态。
+    preview_scroll_max: usize,
 }
 
 /// 问题导航条里单项的最大宽度（格）：`n. header` 超长截断。
@@ -1792,6 +1774,8 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
     };
     let mut lines = Vec::new();
     let mut nav_hits = Vec::new();
+    // `preview_scroll` 的本帧上限：详情窗口或确认页各算各的，绘制后写回。
+    let mut preview_scroll_max = 0usize;
     // 多问时顶部是导航条而不是计数器：`n. header` 逐项排开，当前问反白、
     // 已答带 ✓；每一项记下列范围供鼠标跳问。
     if params.questions.len() > 1 {
@@ -2053,6 +2037,7 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
             .map(|option| focused_detail_lines(option, pane_width, theme))
             .unwrap_or_default();
         let pane_overflow = pane_content.len() > pane_budget;
+        preview_scroll_max = scroll_window_max(pane_content.len(), pane_budget);
         let pane = scroll_window(
             pane_content,
             pane_budget,
@@ -2083,6 +2068,7 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
                 Style::new().fg(theme.border),
             )));
             let overflow = detail_content.len() > capacity;
+            preview_scroll_max = scroll_window_max(detail_content.len(), capacity);
             let windowed = scroll_window(detail_content, capacity, *preview_scroll, width, theme);
             lines.extend(windowed);
             if overflow {
@@ -2115,6 +2101,18 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
         nav_hits,
         question_area,
         detail_area,
+        preview_scroll_max,
+    }
+}
+
+/// `scroll_window` 实际采用的最大滚动偏移：状态行占去一行，偏移上限要少算它。
+/// 渲染写回 `scroll` 与此用同一公式，保证事件里的大值一帧内就被收紧。
+fn scroll_window_max(total: usize, capacity: usize) -> usize {
+    let capacity = capacity.max(1);
+    if total <= capacity {
+        0
+    } else {
+        total - (capacity - 1).max(1)
     }
 }
 
@@ -2134,7 +2132,7 @@ fn scroll_window(
     }
     // 只剩一行时状态行没有意义：留给内容本身。
     let visible = (capacity - 1).max(1);
-    let offset = scroll.min(total - visible);
+    let offset = scroll.min(scroll_window_max(total, capacity));
     let mut out: Vec<Line<'static>> = rows.into_iter().skip(offset).take(visible).collect();
     if capacity > 1 {
         let status = format!(
@@ -2278,7 +2276,8 @@ fn ask_confirm_layout(
         }
         answers.push(Line::from(spans));
     }
-    let scroll = (*preview_scroll).min(answers.len().saturating_sub(rows));
+    let scroll_max = answers.len().saturating_sub(rows);
+    let scroll = (*preview_scroll).min(scroll_max);
     lines.extend(answers.into_iter().skip(scroll).take(rows));
     AskLayout {
         lines,
@@ -2292,6 +2291,7 @@ fn ask_confirm_layout(
             theme,
         ),
         nav_hits,
+        preview_scroll_max: scroll_max,
         ..AskLayout::default()
     }
 }
@@ -2410,6 +2410,7 @@ fn plan_lines(
     max_lines: usize,
     theme: &Theme,
     hits: &mut Vec<(usize, usize)>,
+    scroll_max: &mut usize,
 ) -> (Vec<Line<'static>>, overlay::Footer) {
     let mut lines = Vec::with_capacity(max_lines);
 
@@ -2465,10 +2466,12 @@ fn plan_lines(
                             Style::new().fg(theme.gray),
                         )));
                     } else {
+                        // 事件层只加不减：渲染时按正文行数收紧偏移并写回。
+                        *scroll_max = rendered.len().saturating_sub(body_rows);
                         lines.extend(
                             rendered
                                 .into_iter()
-                                .skip(state.scroll_offset)
+                                .skip(state.scroll_offset.min(*scroll_max))
                                 .take(body_rows),
                         );
                     }
@@ -2484,10 +2487,12 @@ fn plan_lines(
                 if rendered.is_empty() {
                     lines.push(Line::from(String::new()));
                 } else {
+                    // 事件层只加不减：渲染时按正文行数收紧偏移并写回。
+                    *scroll_max = rendered.len().saturating_sub(body_rows);
                     lines.extend(
                         rendered
                             .into_iter()
-                            .skip(state.scroll_offset)
+                            .skip(state.scroll_offset.min(*scroll_max))
                             .take(body_rows)
                             .map(|line| clip_line(line, width)),
                     );
@@ -3954,6 +3959,208 @@ mod tests {
             center_cell.bg == theme.bg_base || center_cell.bg == theme.bg_visual,
             "模态卡片中心应为 bg_base，实际为 {:?}",
             center_cell.bg
+        );
+    }
+
+    /// 快捷键一览排版：行不越宽、无省略号、不再列斜杠命令；末尾是指路行。
+    #[test]
+    fn help_layout_has_no_gaps_or_fake_ellipsis() {
+        let (events, _rx) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+
+        for width in [92usize, 40] {
+            let (lines, _) = super::help_lines(&app, width);
+            for line in &lines {
+                let text = line_text(line);
+                assert!(line_width(&text) <= width, "行宽应不超过 {width}：{text:?}");
+                assert!(!text.contains('…'), "{width} 宽下不应有截断：{text:?}");
+                assert!(
+                    !text.starts_with("  /"),
+                    "{width} 宽下不应列出命令行：{text:?}"
+                );
+            }
+            // 末尾指路斜杠命令：输入 `/` 即见全表。
+            let last = lines
+                .iter()
+                .map(line_text)
+                .rev()
+                .find(|text| !text.trim().is_empty())
+                .expect("末尾非空行");
+            assert_eq!(last, "输入 / 查看全部斜杠命令");
+        }
+
+        // 「选择模型」出现在键位列上限之内。
+        let (lines, _) = super::help_lines(&app, 92);
+        let row = lines
+            .iter()
+            .map(line_text)
+            .find(|text| text.contains("选择模型"))
+            .expect("选择模型行");
+        let offset = row.find("选择模型").expect("描述在行内");
+        let column = line_width(&row[..offset]);
+        assert!(
+            column <= super::HELP_INDENT + super::HELP_KEY_MAX + super::HELP_KEY_GAP,
+            "描述列起点 {column} 超过键位列上限"
+        );
+    }
+
+    /// 事件层只加不减的滚动偏移由渲染写回收紧：滚到底后往上滚一格立即生效。
+    #[test]
+    fn help_scroll_is_clamped_on_draw() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _rx) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.modal = Some(Modal::Help {
+            scroll: usize::MAX,
+        });
+        // 矮终端：帮助正文（约 20 行）超过正文可见行数才会出现滚动。
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).expect("构造测试终端");
+        terminal
+            .draw(|frame| super::draw_modal(frame, &mut app))
+            .expect("绘制成功");
+        let Some(Modal::Help { scroll: max }) = app.modal else {
+            unreachable!()
+        };
+        assert!((4..1000).contains(&max), "写回应把偏移收紧到底部：{max}");
+
+        app.modal = Some(Modal::Help { scroll: max - 3 });
+        terminal
+            .draw(|frame| super::draw_modal(frame, &mut app))
+            .expect("绘制成功");
+        // 状态行格式「⋯ a-b/total 行」：偏移减一，窗口起点立即跟着减一。
+        let marker = format!(" {}-", max - 2);
+        let screen = terminal.backend().buffer();
+        let found = (0..14u16).any(|y| {
+            (0..100u16)
+                .filter_map(|x| screen.cell((x, y)).map(|cell| cell.symbol()))
+                .collect::<String>()
+                .contains(&marker)
+        });
+        assert!(found, "状态行应包含 {marker:?}");
+    }
+
+    /// 权限确认正文：事件层只加不减的偏移由渲染写回收紧。
+    #[test]
+    fn permission_scroll_is_clamped_on_draw() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _rx) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        let body = (1..=60)
+            .map(|index| format!("第 {index} 行命令全文"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.modal = Some(Modal::Permission {
+            params: moc_protocol::methods::PermissionRequestParams {
+                session_id: "s".into(),
+                prompt_id: "p".into(),
+                request_id: "r".into(),
+                tool_call_id: "c".into(),
+                tool_name: "bash".into(),
+                title: "权限确认".into(),
+                body: Some(body),
+                diff: None,
+                options: vec![moc_protocol::methods::PermissionOption {
+                    id: "allow".into(),
+                    label: "允许".into(),
+                    kind: moc_protocol::methods::PermissionOptionKind::AllowOnce,
+                }],
+            },
+            selected: 0,
+            scroll_offset: usize::MAX,
+            reply: None,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("构造测试终端");
+        let snapshot = |terminal: &Terminal<TestBackend>| -> String {
+            (0..30u16)
+                .map(|y| {
+                    (0..100u16)
+                        .filter_map(|x| terminal.backend().buffer().cell((x, y)).map(|c| c.symbol()))
+                        .collect::<String>()
+                })
+                .collect()
+        };
+        terminal
+            .draw(|frame| super::draw_modal(frame, &mut app))
+            .expect("绘制成功");
+        let Some(Modal::Permission { scroll_offset: max, .. }) = app.modal else {
+            unreachable!()
+        };
+        assert!((1..1000).contains(&max), "写回应把偏移收紧到底部：{max}");
+        let first = snapshot(&terminal);
+        // 正文溢出：末行应给出标准滚动状态行而非静默截断。
+        assert!(first.contains('⋯'), "溢出应显示滚动状态行");
+
+        if let Some(Modal::Permission { scroll_offset, .. }) = &mut app.modal {
+            *scroll_offset = max - 1;
+        }
+        terminal
+            .draw(|frame| super::draw_modal(frame, &mut app))
+            .expect("绘制成功");
+        assert_ne!(first, snapshot(&terminal), "偏移减一应改变画面");
+    }
+
+    /// 计划阅读面板：事件层只加不减的偏移由渲染写回收紧，贴底正文不为空。
+    #[test]
+    fn plan_read_scroll_is_clamped_on_draw() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _rx) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        let markdown = (1..=200)
+            .map(|index| format!("第 {index} 行计划正文"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut state = crate::modal::PlanReviewState::new(
+            moc_protocol::methods::PlanInfo {
+                plan_id: "p1".into(),
+                title: "计划".into(),
+                path: "plan.md".into(),
+                markdown,
+                status: moc_protocol::methods::PlanStatus::Submitted,
+                version: 1,
+                previous_plan_id: None,
+                annotations: Vec::new(),
+            },
+            SessionEngine::Standard,
+        );
+        state.scroll_offset = usize::MAX;
+        app.modal = Some(Modal::Plan {
+            state: Box::new(state),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("构造测试终端");
+        terminal
+            .draw(|frame| super::draw_modal(frame, &mut app))
+            .expect("绘制成功");
+        let Some(Modal::Plan { state }) = &app.modal else {
+            unreachable!()
+        };
+        assert!(
+            (1..1000).contains(&state.scroll_offset),
+            "写回应把偏移收紧到底部：{}",
+            state.scroll_offset
+        );
+        // 贴底时正文区显示计划末尾内容，不是空白。
+        let text: String = (0..30u16)
+            .map(|y| {
+                (0..100u16)
+                    .filter_map(|x| {
+                        terminal
+                            .backend()
+                            .buffer()
+                            .cell((x, y))
+                            .map(|c| c.symbol().to_owned())
+                    })
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(
+            text.replace(' ', "").contains("第200行"),
+            "贴底应显示末尾正文：{text:?}"
         );
     }
 

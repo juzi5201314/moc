@@ -1591,8 +1591,8 @@ impl Modal {
                 SessionScope::All => "恢复会话（全部目录）".into(),
             },
             Modal::Subagents { .. } => "子代理".into(),
-            Modal::Plan { state } => format!("计划审批：{}", state.title),
-            Modal::Help { .. } => "快捷键帮助".into(),
+            Modal::Plan { .. } => "计划审批".into(),
+            Modal::Help { .. } => "快捷键".into(),
             Modal::Tools { tools, .. } => match tools {
                 Some(tools) => format!("可用工具 · {}", tools.len()),
                 None => "可用工具".into(),

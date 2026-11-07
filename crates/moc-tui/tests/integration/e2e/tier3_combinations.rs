@@ -135,7 +135,7 @@ fn test_combo_07_help_modal_over_expanded_btw() {
     let rows = buffer_squashed_rows(&terminal);
     let help_row = rows
         .iter()
-        .find(|r| r.contains("帮助"))
+        .find(|r| r.contains("快捷键"))
         .expect("help modal header");
     assert!(!help_row.contains("####"));
 }

@@ -1720,15 +1720,18 @@ fn handle_mouse_with_connection(
                         Modal::Sessions { .. }
                         | Modal::Subagents { .. }
                         | Modal::Jobs { .. }
-                        | Modal::SwitchModel { .. },
+                        | Modal::SwitchModel { .. }
+                        | Modal::WorkflowRuns { .. }
+                        | Modal::WorkflowRun { .. }
+                        | Modal::WorkflowApproval { .. },
                     ) => handle_modal_key(
                         app,
                         connection,
                         KeyModifiers::NONE,
                         if up { KeyCode::Up } else { KeyCode::Down },
                     ),
-                    // 占用窗没有可滚内容，也不该滚背后的转写。
-                    Some(Modal::Context { .. }) => {}
+                    // 占用窗与监控没有可滚内容，也不该滚背后的转写。
+                    Some(Modal::Context { .. } | Modal::Monitor) => {}
                     // 授权预览与帮助：滚各自的正文。
                     _ => handle_mouse(app, mouse),
                 }
@@ -1812,7 +1815,7 @@ fn handle_mouse_with_connection(
             }
             return;
         }
-        // 输入框图例左端：运行中是「停止」，空闲是「帮助」，点中与对应按键同义。
+        // 输入框图例左端：运行中是「停止」，空闲是「快捷键」，点中与对应按键同义。
         if app.legend_tip_area.contains(position.into()) {
             if app.prompt_running {
                 request_stop(app, connection);
@@ -2848,7 +2851,10 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 *scroll = scroll.saturating_sub(3);
                 return;
             }
-            scroll(app, 3);
+            // 模态打开时兜底不滚背景转写，新模态漏分组也不会误伤。
+            if app.modal.is_none() {
+                scroll(app, 3);
+            }
         }
         MouseEventKind::ScrollDown => {
             if let Some(Modal::Plan { state }) = app.modal.as_mut() {
@@ -2863,7 +2869,9 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 *scroll = scroll.saturating_add(3);
                 return;
             }
-            scroll(app, -3);
+            if app.modal.is_none() {
+                scroll(app, -3);
+            }
         }
         MouseEventKind::Down(MouseButton::Left) => {
             let area = app.prompt_area;

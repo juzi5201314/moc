@@ -10,13 +10,53 @@ const LIST_WIDTH: u16 = 52;
 /// 详情卡外宽（列）。
 const DETAIL_WIDTH: u16 = 38;
 
+/// 未过滤列表的自然正文行数：搜索行 + 分组标题行 + 条目行。
+/// 按空 query 计算，输入搜索时卡片高度不跳。
+fn list_natural_rows(app: &App, modal: &Modal) -> usize {
+    let Modal::Model {
+        entries, picker, ..
+    } = modal
+    else {
+        return 1;
+    };
+    let filtered = filtered_entries(entries, "");
+    let mut groups = 0usize;
+    let mut last_group = "";
+    for (_, entry) in &filtered {
+        let group = entry_group(app, entry);
+        if group != last_group {
+            groups += 1;
+            last_group = group;
+        }
+    }
+    // 状态行（切换中/错误）最多再占一行。
+    1 + groups + filtered.len() + usize::from(picker.loading || picker.error.is_some())
+}
+
+/// 条目所属分组名；与列表行的分组逻辑同一份。
+fn entry_group<'a>(app: &App, entry: &'a ModelEntry) -> &'a str {
+    if entry.selector == FUSION_ENTRY_SELECTOR {
+        "模式"
+    } else if entry.provider().is_empty() {
+        "继承"
+    } else if app.recent_models.rank(&entry.selector).is_some() {
+        "最近使用"
+    } else {
+        entry.provider()
+    }
+}
+
 /// 优先向上展开；空间不足时选择下方。无可见标签时贴输入框右上方。
-fn popup_rect(screen: Rect, anchor: Rect) -> Rect {
+fn popup_rect(screen: Rect, anchor: Rect, natural_rows: usize) -> Rect {
     let width = LIST_WIDTH.min(screen.width);
     let above = anchor.y.saturating_sub(screen.y).min(screen.height);
     let below = screen.bottom().saturating_sub(anchor.bottom());
-    let up = above >= 18 || above >= below;
-    let height = 18.min(if up { above } else { below });
+    // 卡片高度按内容收缩：正文自然行数 + 两行边框 + 一行提示条，上限 18。
+    let wanted = u16::try_from(natural_rows + 3)
+        .unwrap_or(u16::MAX)
+        .min(18);
+    let up = above >= wanted || above >= below;
+    let height = wanted.min(if up { above } else { below });
     Rect::new(
         anchor
             .right()
@@ -76,14 +116,14 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         app.model_tag_area
     };
-    let rect = popup_rect(screen, anchor);
+    let modal = app.modal.as_ref().expect("模型浮层已打开");
+    let rect = popup_rect(screen, anchor, list_natural_rows(app, modal));
     if rect.height < 4 {
         return;
     }
     let theme = app.theme;
     let width = overlay::content_width(rect.width);
     let rows = usize::from(rect.height.saturating_sub(3));
-    let modal = app.modal.as_ref().expect("模型浮层已打开");
     let body = body(app, modal, width, rows);
     let footer = body.footer.unwrap_or_default();
     let content = draw_panel(frame, rect, &modal.title(), theme);
@@ -347,15 +387,7 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
         if pinned_fusion == Some(index) {
             continue;
         }
-        let group = if entry.selector == FUSION_ENTRY_SELECTOR {
-            "模式"
-        } else if entry.provider().is_empty() {
-            "继承"
-        } else if app.recent_models.rank(&entry.selector).is_some() {
-            "最近使用"
-        } else {
-            entry.provider()
-        };
+        let group = entry_group(app, entry);
         if picker.query.trim().is_empty() && group != last_group && visible >= 4 {
             list.push((
                 None,
@@ -841,7 +873,7 @@ mod tests {
                 Rect::new(w - 5, h - 1, 4, 1),
                 Rect::new(w - 5, 0, 4, 1),
             ] {
-                let rect = popup_rect(screen, anchor);
+                let rect = popup_rect(screen, anchor, 20);
                 assert_eq!(rect.intersection(screen), rect);
                 assert!(rect.bottom() <= anchor.y || rect.y >= anchor.bottom());
                 assert!(rect.height >= 4);

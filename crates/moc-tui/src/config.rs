@@ -65,7 +65,7 @@ pub(crate) fn actions() -> &'static [(&'static str, &'static str, &'static [&'st
         ("queue", "排队发送", &["ctrl+enter"]),
         ("newline", "插入换行", &["shift+enter", "alt+enter"]),
         ("cancel", "停止当前生成 / 退出", &["ctrl+c"]),
-        ("help", "帮助", &["ctrl+h"]),
+        ("help", "快捷键一览", &["ctrl+h"]),
         ("thinking", "切换思考显示档位", &["ctrl+t"]),
         ("tools", "切换工具显示档位", &["ctrl+o"]),
         ("paste_image", "粘贴图片或文本", &["ctrl+v"]),

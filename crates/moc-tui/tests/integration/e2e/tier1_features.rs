@@ -686,16 +686,14 @@ fn test_f8_01_help_modal_contains_three_distinct_sections() {
 }
 
 #[test]
-fn test_f8_02_help_modal_session_commands_included() {
-    // 帮助内容来自注册表分节，35 行终端放不下；80 行确保整卡可见。
+fn test_f8_02_help_modal_points_to_slash_commands() {
+    // 斜杠命令已撤出帮助表：末尾指路行提示输入 `/` 查看全部。
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 80);
     app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     let text = rows.join("\n");
-    assert!(text.contains("/confirm-plan") || text.contains("计划"));
-    assert!(text.contains("/plugins") || text.contains("插件"));
-    assert!(text.contains("/close") || text.contains("会话"));
+    assert!(text.contains("斜杠命令"));
 }
 
 #[test]
@@ -729,7 +727,7 @@ fn test_f8_05_help_modal_sections_rendered_with_header_styling() {
     app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("快捷键帮助")));
+    assert!(rows.iter().any(|r| r.contains("快捷键")));
     assert!(rows.iter().any(|r| r.contains("输入与编辑")));
 }
 
