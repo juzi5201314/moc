@@ -1,8 +1,9 @@
 // 连接状态、握手结果与 `config/get` 缓存。
 
+import { toast } from "sonner";
 import { create } from "zustand";
 import { clientListeners, rpc } from "@/protocol/client";
-import type { RpcError } from "@/protocol/errors";
+import { ErrorCode, type RpcError } from "@/protocol/errors";
 import type { ConnectionStatus } from "@/protocol/rpc";
 import type { CommandMeta, ConfigGetResult, InitializeResult } from "@/protocol/types";
 
@@ -52,4 +53,10 @@ clientListeners.ready.add((server) => {
   void useConnection.getState().refreshConfig();
   void useConnection.getState().refreshCommands();
 });
-clientListeners.handshakeError.add((handshakeError) => useConnection.setState({ handshakeError }));
+clientListeners.handshakeError.add((handshakeError) => {
+  useConnection.setState({ handshakeError });
+  // 版本不兼容不再自动重连，是用户必须干预的终态，不能只靠状态点传达。
+  if (handshakeError.code === ErrorCode.UnsupportedProtocolVersion) {
+    toast.error("协议主版本不兼容，请刷新页面获取新版前端");
+  }
+});

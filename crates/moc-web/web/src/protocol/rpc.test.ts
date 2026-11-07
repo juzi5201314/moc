@@ -199,4 +199,93 @@ describe("RpcClient", () => {
     await expect(b).resolves.toBe(ErrorCode.ConnectionClosed);
     expect(client.status).toBe("offline");
   });
+
+  it("版本不兼容握手失败：上报后关闭连接且不再重连", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeSocket[] = [];
+      const onHandshakeError = vi.fn();
+      const client = new RpcClient({
+        url: "ws://test/ws",
+        clientVersion: "test",
+        createSocket: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        onHandshakeError,
+      });
+      client.connect();
+      const socket = sockets[0];
+      socket.open();
+      socket.receive({
+        jsonrpc: "2.0",
+        id: socket.last().id,
+        error: {
+          code: ErrorCode.UnsupportedProtocolVersion,
+          message: "协议主版本不兼容",
+          data: { server_version: "2.0" },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(onHandshakeError).toHaveBeenCalledTimes(1);
+      expect((onHandshakeError.mock.calls[0][0] as RpcError).code).toBe(
+        ErrorCode.UnsupportedProtocolVersion,
+      );
+      expect(client.status).toBe("offline");
+      vi.advanceTimersByTime(60_000);
+      expect(sockets).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("其他握手错误：关闭连接后照常退避重连", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeSocket[] = [];
+      const onHandshakeError = vi.fn();
+      const client = new RpcClient({
+        url: "ws://test/ws",
+        clientVersion: "test",
+        createSocket: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        onHandshakeError,
+      });
+      client.connect();
+      const first = sockets[0];
+      first.open();
+      first.receive({
+        jsonrpc: "2.0",
+        id: first.last().id,
+        error: { code: ErrorCode.InternalError, message: "boom" },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(onHandshakeError).toHaveBeenCalledTimes(1);
+      expect(client.status).toBe("offline");
+      vi.advanceTimersByTime(1000);
+      expect(sockets).toHaveLength(2);
+      const second = sockets[1];
+      second.open();
+      second.receive({
+        jsonrpc: "2.0",
+        id: second.last().id,
+        result: {
+          protocol_version: "1.4",
+          server: { name: "moc", version: "0" },
+          capabilities: {},
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(client.status).toBe("online");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

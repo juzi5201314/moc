@@ -29,7 +29,9 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { relativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { SessionInfo } from "@/protocol/types";
+import { ErrorCode, type RpcError } from "@/protocol/errors";
+import type { ConnectionStatus } from "@/protocol/rpc";
+import { type InitializeResult, PROTOCOL_VERSION, type SessionInfo } from "@/protocol/types";
 import { useConnection } from "@/store/connection";
 import { useLayout } from "@/store/layout";
 import { createQuickSession, openSession, renameSession } from "@/store/lifecycle";
@@ -44,6 +46,28 @@ import { selectWorkflowBadges, useWorkflow, workflowRuns } from "@/store/workflo
 const VISIBLE_SESSIONS = 6;
 
 const ROW = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-ui transition-colors";
+
+/** 状态点提示：握手错误优先于通用状态文案，版本不兼容给出双端版本与动作。 */
+function connectionTip(
+  status: ConnectionStatus,
+  handshakeError: RpcError | null,
+  everOnline: boolean,
+  server: InitializeResult | null,
+): string {
+  if (status === "online") {
+    return `已连接 ${server?.server.name ?? "moc-core"} ${server?.server.version ?? ""}`;
+  }
+  if (handshakeError) {
+    if (handshakeError.code === ErrorCode.UnsupportedProtocolVersion) {
+      const serverVersion = (handshakeError.data as { server_version?: string } | undefined)
+        ?.server_version;
+      return `协议主版本不兼容（服务端 ${serverVersion ?? "未知"}，前端 ${PROTOCOL_VERSION}），请刷新页面`;
+    }
+    return `握手失败：${handshakeError.message}`;
+  }
+  if (status === "connecting") return "正在连接…";
+  return everOnline ? "连接已断开，正在重试" : "无法连接到服务器";
+}
 
 /** workflow 入口：待审批优先开审批窗，否则开 run 列表。 */
 function WorkflowNavRow() {
@@ -128,6 +152,8 @@ export function WorkspaceSidebar() {
   const active = useTabs((state) => state.active);
   const status = useConnection((state) => state.status);
   const server = useConnection((state) => state.server);
+  const handshakeError = useConnection((state) => state.handshakeError);
+  const everOnline = useConnection((state) => state.everOnline);
 
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -350,11 +376,7 @@ export function WorkspaceSidebar() {
             </span>
           </TooltipTrigger>
           <TooltipContent side="top">
-            {status === "online"
-              ? `已连接 ${server?.server.name ?? "moc-core"} ${server?.server.version ?? ""}`
-              : status === "connecting"
-                ? "正在连接…"
-                : "连接已断开，正在重试"}
+            {connectionTip(status, handshakeError, everOnline, server)}
           </TooltipContent>
         </Tooltip>
       </div>

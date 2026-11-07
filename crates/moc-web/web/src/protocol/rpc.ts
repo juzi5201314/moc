@@ -57,7 +57,7 @@ export type RpcClientOptions = {
   /** 握手完成（含重连后）调用。 */
   onReady?: (result: InitializeResult) => void;
   onStatus?: (status: ConnectionStatus) => void;
-  /** 握手失败（版本不兼容等），不会自动重试同一连接。 */
+  /** 握手失败（版本不兼容等）：上报后关闭连接；版本不兼容属终态不再重连，其余错误照常退避重试。 */
   onHandshakeError?: (error: RpcError) => void;
   /** 关闭 setTimeout 驱动的重连（测试用）。 */
   reconnect?: boolean;
@@ -149,7 +149,7 @@ export class RpcClient {
     this.socket = socket;
 
     socket.onopen = () => {
-      void this.handshake();
+      void this.handshake(socket);
     };
     socket.onmessage = (event) => {
       if (typeof event.data !== "string") return;
@@ -174,7 +174,7 @@ export class RpcClient {
     };
   }
 
-  private async handshake(): Promise<void> {
+  private async handshake(socket: SocketLike): Promise<void> {
     try {
       const result = await this.call<InitializeResult>("initialize", {
         protocol_version: PROTOCOL_VERSION,
@@ -188,7 +188,12 @@ export class RpcClient {
     } catch (error) {
       const rpcError =
         error instanceof RpcError ? error : new RpcError(ErrorCode.InternalError, String(error));
-      if (rpcError.code !== ErrorCode.ConnectionClosed) this.options.onHandshakeError?.(rpcError);
+      // 断线导致的失败由 onclose 统一走 offline+重连，不重复上报。
+      if (rpcError.code === ErrorCode.ConnectionClosed) return;
+      this.options.onHandshakeError?.(rpcError);
+      // 协议主版本不兼容是终态：客户端版本是构建期常量，重试只会得到同样结果，等刷新换新包。
+      if (rpcError.code === ErrorCode.UnsupportedProtocolVersion) this.stopped = true;
+      socket.close();
     }
   }
 
