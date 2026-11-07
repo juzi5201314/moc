@@ -1245,7 +1245,11 @@ fn user_message(text: &str, at_ms: Option<u64>, width: usize, theme: &Theme) -> 
             Span::raw("  ")
         });
         let used = PROSE_INDENT + str_width(&row);
-        spans.push(Span::styled(row, Style::new().fg(theme.text_primary)));
+        spans.extend(crate::render::chip_spans(
+            &row,
+            theme.text_primary,
+            theme.accent_warning,
+        ));
         if index == last
             && let Some(clock) =
                 clock_pending.take_if(|clock| width.saturating_sub(used + str_width(clock)) >= 2)

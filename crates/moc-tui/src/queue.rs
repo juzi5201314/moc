@@ -35,8 +35,11 @@ pub enum WithdrawAction {
 pub struct PendingSteer {
     pub id: u64,
     pub draft: PromptState,
-    /// 待发送区展示文本（图片会显示成 `[图片]`）。
+    /// 待发送区与转写的展示文本（保留 `[image#N]` 占位供高亮）。
     pub display_text: String,
+    /// core `message.text()` 的同口径文本：`SteeringApplied` 先于 RPC 回执
+    /// 到达时按它认领先到的那条待发送项（图片不占文本）。
+    pub echo_text: String,
     /// `session/steer` 接受后由 core 分配的 ID；发送途中撤回时仍为 `None`。
     pub core_id: Option<u64>,
     /// `Some` 表示用户已请求撤回，等待 core 回执；该项暂时不渲染。
@@ -117,7 +120,8 @@ fn enqueue(
     } else {
         debug_assert!(prompt.mode.is_none(), "临时模式必须走独立队列");
         let parts = prompt.draft.preview_parts();
-        let display_text = crate::event::display_text_of(&parts);
+        let display_text = prompt.draft.expanded_text();
+        let echo_text = parts_echo(&parts);
         let prompt_id = prompt.id;
         app.steers
             .entry(session.clone())
@@ -126,6 +130,7 @@ fn enqueue(
                 id: prompt_id,
                 draft: prompt.draft,
                 display_text,
+                echo_text,
                 core_id: None,
                 withdrawal: None,
             });
@@ -216,6 +221,8 @@ pub fn dispatch(app: &mut App, connection: &EmbeddedConnection) {
     else {
         return;
     };
+    // 展示文本要在拆块之前取：保留 `[image#N]` 占位供转写高亮。
+    let display_text = prompt.draft.expanded_text();
     let parts = prompt.draft.build_input_parts();
     let command = if prompt.mode.is_none()
         && let [InputPart::Text { text }] = parts.as_slice()
@@ -225,7 +232,7 @@ pub fn dispatch(app: &mut App, connection: &EmbeddedConnection) {
         None
     };
     if command.is_none() {
-        app.push_user(crate::event::display_text_of(&parts));
+        app.push_user(display_text);
     }
     app.inflight_prompts.insert(session.clone());
     app.prompt_running = true;
@@ -337,15 +344,24 @@ fn take_steer_by_core(app: &mut App, session: &str, core_id: u64) -> Option<Pend
     entries.remove(index)
 }
 
+/// core 回执的 `text` 形态：与 `message.text()` 同口径——只拼接文本块，
+/// 图片不参与（展示文本里的 `[image#N]` 占位在此被剔除）。
+fn parts_echo(parts: &[InputPart]) -> String {
+    let mut out = String::new();
+    for part in parts {
+        if let InputPart::Text { text } = part {
+            out.push_str(text);
+        }
+    }
+    out
+}
+
 /// 事件先于 RPC 响应时按正文认领最早的一条；只匹配还没挂 core ID 的项。
 fn take_unresolved_steer_by_text(app: &mut App, session: &str, text: &str) -> Option<PendingSteer> {
-    if text.is_empty() {
-        return None;
-    }
     let entries = app.steers.get_mut(session)?;
     let index = entries
         .iter()
-        .position(|entry| entry.core_id.is_none() && entry.display_text == text)?;
+        .position(|entry| entry.core_id.is_none() && entry.echo_text == text)?;
     entries.remove(index)
 }
 
@@ -647,6 +663,7 @@ mod tests {
             id,
             draft: PromptState::from_text(text.into()),
             display_text: text.into(),
+            echo_text: text.into(),
             core_id,
             withdrawal: None,
         }

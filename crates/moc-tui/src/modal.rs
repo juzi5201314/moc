@@ -606,7 +606,12 @@ impl RewindState {
                 future_start = future_start.min(self.items.len());
             }
             let is_user = entry.message.role == Role::User;
-            let text = entry.message.text();
+            // 用户消息把图片块显示成 `[image#N]` 标记，其余角色只取文本。
+            let text = if is_user {
+                crate::transcript_restore::content_text(&entry.message.content)
+            } else {
+                entry.message.text()
+            };
             let tool_calls: Vec<String> = entry
                 .message
                 .tool_calls()

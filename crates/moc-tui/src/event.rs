@@ -6507,18 +6507,6 @@ fn format_active(active_ms: u64) -> String {
     }
 }
 
-/// 用户展示文本：图片 chip 显示为占位说明。
-pub(crate) fn display_text_of(parts: &[InputPart]) -> String {
-    parts
-        .iter()
-        .map(|part| match part {
-            InputPart::Text { text } => text.clone(),
-            InputPart::Image { .. } => "[图片]".to_owned(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// `execute_command` 的解析结果：先把借用 `app.commands` 的部分取出成自有值，
 /// 分派阶段才能对 `app` 做可变操作。
 enum ResolvedCommand {

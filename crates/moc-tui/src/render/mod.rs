@@ -696,29 +696,7 @@ fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
             } else {
                 Span::styled(" ".repeat(PROMPT_MARKER), Style::new())
             });
-            let mut rest = *row;
-            while let Some(index) = rest.find("[paste#").or_else(|| rest.find("[image#")) {
-                if index > 0 {
-                    spans.push(Span::styled(
-                        rest[..index].to_owned(),
-                        Style::new().fg(theme.text_primary),
-                    ));
-                }
-                let end = rest[index..]
-                    .find(']')
-                    .map_or(rest.len(), |end| index + end + 1);
-                spans.push(Span::styled(
-                    rest[index..end].to_owned(),
-                    Style::new().fg(theme.accent_warning),
-                ));
-                rest = &rest[end..];
-            }
-            if !rest.is_empty() {
-                spans.push(Span::styled(
-                    rest.to_owned(),
-                    Style::new().fg(theme.text_primary),
-                ));
-            }
+            spans.extend(chip_spans(row, theme.text_primary, theme.accent_warning));
             Line::from(spans)
         })
         .collect();
@@ -726,6 +704,38 @@ fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let visual_row = prompt_cursor_row(&rows, app.prompt.cursor);
     let start = prompt_scroll_offset(visual_row, lines.len().max(1), visible);
     lines.into_iter().skip(start).take(visible).collect()
+}
+
+/// 把一行文本按 chip 占位（`[paste#`、`[image#`）切分：占位用 accent 色，
+/// 其余用正文色。输入框与转写里的用户消息共用同一套标记样式。
+pub(crate) fn chip_spans(row: &str, plain: Color, accent: Color) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut rest = row;
+    while let Some(index) = rest
+        .find("[paste#")
+        .into_iter()
+        .chain(rest.find("[image#"))
+        .min()
+    {
+        if index > 0 {
+            spans.push(Span::styled(
+                rest[..index].to_owned(),
+                Style::new().fg(plain),
+            ));
+        }
+        let end = rest[index..]
+            .find(']')
+            .map_or(rest.len(), |end| index + end + 1);
+        spans.push(Span::styled(
+            rest[index..end].to_owned(),
+            Style::new().fg(accent),
+        ));
+        rest = &rest[end..];
+    }
+    if !rest.is_empty() {
+        spans.push(Span::styled(rest.to_owned(), Style::new().fg(plain)));
+    }
+    spans
 }
 
 /// 顶部信息条：左＝品牌 · git 分支 · 工作目录，右＝上下文进度 · 累计费用。

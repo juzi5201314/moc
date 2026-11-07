@@ -61,6 +61,11 @@ impl From<String> for HistoryText {
 }
 
 impl HistoryText {
+    /// 正文内容指纹：输入框把图片存档按它挂到对应条目上。
+    pub(crate) fn fingerprint(&self) -> u128 {
+        self.fingerprint
+    }
+
     pub(crate) fn read(&self) -> std::io::Result<String> {
         match &mut *self.text.lock().unwrap() {
             TextStorage::Memory(text) => Ok(text.to_string()),

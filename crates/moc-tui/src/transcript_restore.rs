@@ -62,7 +62,7 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
         match message.role {
             Role::Custom => {}
             Role::User => {
-                let text = collect_text(&message.content);
+                let text = content_text(&message.content);
                 if !text.is_empty() {
                     blocks.push(Entry::new(Block::User { text }));
                 }
@@ -194,15 +194,30 @@ pub fn blocks_from_entries_with_children(
     blocks
 }
 
-fn collect_text(parts: &[ContentPart]) -> String {
-    parts
-        .iter()
-        .filter_map(|part| match part {
-            ContentPart::Text(text) => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// 用户消息正文还原成输入时的形态：图片块按顺序显示为 `[image#N]` 标记，
+/// 连续文本块之间补回换行；其余块不展示。
+pub(crate) fn content_text(parts: &[ContentPart]) -> String {
+    let mut out = String::new();
+    let mut images = 0usize;
+    let mut previous_text = false;
+    for part in parts {
+        match part {
+            ContentPart::Text(text) => {
+                if previous_text {
+                    out.push('\n');
+                }
+                out.push_str(text);
+                previous_text = true;
+            }
+            ContentPart::Image { .. } => {
+                images += 1;
+                out.push_str(&format!("[image#{images}]"));
+                previous_text = false;
+            }
+            _ => previous_text = false,
+        }
+    }
+    out
 }
 
 #[cfg(test)]

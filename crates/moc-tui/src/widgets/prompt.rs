@@ -3,6 +3,9 @@
 //! 大粘贴（≥ 4 行或 10 KB）收成 `[paste#N]` 占位，再粘相同内容展开为原文；
 //! 图片收成 `[image#N]` 占位，发送时拆成 `InputPart::Image`。占位是普通
 //! 文本——光标、选择、发送展开都以纯文本运算，不需要幽灵字符协议。
+//!
+//! 历史文本保留 `[image#N]` 占位；提交时把被引用的 chip 收进
+//! [`PromptState::archived_images`]，召回时按占位 id 换发新 id 挂回。
 
 use moc_protocol::ImageSource;
 use moc_protocol::methods::InputPart;
@@ -14,6 +17,8 @@ use crate::history::HISTORY_MAX;
 const PASTE_CHIP_LINES: usize = 4;
 /// 粘贴超过该字节数时 chip 化。
 const PASTE_CHIP_BYTES: usize = 10_000;
+/// 已提交图片存档的总字节上限：单张图可上 20 MiB，不限顶会把常驻内存顶爆。
+const ARCHIVE_MAX_BYTES: usize = 24 * 1024 * 1024;
 
 /// 把字节偏移吸附到最近的字符边界。
 ///
@@ -69,6 +74,10 @@ pub struct PromptState {
     pub cursor: usize,
     pastes: Vec<PasteChip>,
     pub images: Vec<ImageChip>,
+    /// 已提交消息引用过的图片 chip：历史里的 `[image#N]` 召回时靠它还原。
+    /// 以历史正文指纹为键，跨进程载入的同号占位不会错绑到别的图片；
+    /// 进程级数据，不落盘——重启后载入的旧条目占位只能显示成 `[图片]`。
+    archived_images: Vec<(u128, ImageChip)>,
     histories: Vec<crate::history::HistoryText>,
     /// 当前浏览的历史位置；`None` = 编辑最新输入。
     history_cursor: Option<usize>,
@@ -103,6 +112,8 @@ impl PromptState {
     }
 
     /// 只读展开文本粘贴；命令分流必须早于任何输入历史写入。
+    ///
+    /// 图片占位保留 `[image#N]` 原样：历史、转写展示与发送拆分的共用形态。
     pub fn expanded_text(&self) -> String {
         self.expand_all_chips(self.text.clone())
     }
@@ -127,7 +138,8 @@ impl PromptState {
     /// 在草稿上记历史等于没记。返回的文本是本次真正写进历史的那条，供调用方落盘；
     /// 连续重复或空输入返回 `None`。
     pub fn take_submitted_draft(&mut self) -> (Self, Option<String>) {
-        let history = self.history_text();
+        let history = self.expanded_text();
+        self.archive_images_for(&history);
         let draft = self.take_draft();
         let recorded = self.record_history(&history).then_some(history);
         (draft, recorded)
@@ -135,6 +147,10 @@ impl PromptState {
 
     pub fn restore_draft(&mut self, mut draft: Self) {
         std::mem::swap(&mut self.histories, &mut draft.histories);
+        std::mem::swap(&mut self.archived_images, &mut draft.archived_images);
+        // 草稿挂出期间本框可能又发过新 chip：计数器取大者，保证 chip id 全局不回放，
+        // 否则历史占位会还原到同号的另一张图上。
+        draft.next_chip_id = draft.next_chip_id.max(self.next_chip_id);
         *self = draft;
     }
 
@@ -480,12 +496,13 @@ impl PromptState {
             Some(index) if index + 1 < self.histories.len() => index + 1,
             Some(_) => return false,
         };
-        let text = match self.histories[next].read() {
+        let entry = self.histories[next].clone();
+        let text = match entry.read() {
             Ok(text) => text,
             Err(error) => { tracing::warn!(%error, "读取输入历史失败"); return false; }
         };
         self.history_cursor = Some(next);
-        self.text = text;
+        self.text = self.adopt_history(text, entry.fingerprint());
         self.cursor = self.text.len();
         true
     }
@@ -499,14 +516,62 @@ impl PromptState {
             self.text = self.stash.clone();
             None
         } else {
-            self.text = match self.histories[index - 1].read() {
-                Ok(text) => text,
-                Err(error) => { tracing::warn!(%error, "读取输入历史失败"); return false; }
+            let entry = self.histories[index - 1].clone();
+            self.text = match entry.read() {
+                Ok(text) => self.adopt_history(text, entry.fingerprint()),
+                Err(error) => {
+                    tracing::warn!(%error, "读取输入历史失败");
+                    return false;
+                }
             };
             Some(index - 1)
         };
         self.cursor = self.text.len();
         true
+    }
+
+    /// 历史正文回填：可解析的 `[image#N]` 占位按本条历史指纹下的存档 chip
+    /// 换发新 id 挂回 `self.images`（不与当前草稿的 chip 撞号）；存档里没有的
+    /// 占位（持久化旧条目、已被字节上限淘汰的图）改写成 `[图片]` 普通文本，
+    /// 避免把 `[image#N]` 字面量发给模型。
+    fn adopt_history(&mut self, text: String, entry_fingerprint: u128) -> String {
+        if !text.contains("[image#") {
+            return text;
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text.as_str();
+        while let Some(index) = rest.find("[image#") {
+            out.push_str(&rest[..index]);
+            let tail = &rest[index + "[image#".len()..];
+            let token = tail
+                .find(']')
+                .and_then(|end| tail[..end].parse::<u32>().ok().map(|id| (end, id)));
+            let Some((end, id)) = token else {
+                // 不是合法占位：按普通文本原样保留，继续向后扫描。
+                out.push_str("[image#");
+                rest = tail;
+                continue;
+            };
+            rest = &tail[end + 1..];
+            let chip = self
+                .archived_images
+                .iter()
+                .find(|(fingerprint, chip)| *fingerprint == entry_fingerprint && chip.id == id)
+                .map(|(_, chip)| (chip.media_type.clone(), chip.data.clone()));
+            let Some((media_type, data)) = chip else {
+                out.push_str("[图片]");
+                continue;
+            };
+            let new_id = self.chip_id();
+            self.images.push(ImageChip {
+                id: new_id,
+                media_type,
+                data,
+            });
+            out.push_str(&format!("[image#{new_id}]"));
+        }
+        out.push_str(rest);
+        out
     }
 
     fn break_history_browse(&mut self) {
@@ -516,13 +581,26 @@ impl PromptState {
         }
     }
 
-    /// 可复用的历史文本：粘贴占位展开成原文，图片占位丢掉（图片字节随草稿走）。
-    fn history_text(&self) -> String {
-        let mut text = self.expand_all_chips(self.text.clone());
-        for chip in &self.images {
-            text = text.replace(&format!("[image#{}]", chip.id), "");
+    /// 提交时把历史正文引用到的图片 chip 收进存档：召回靠「正文指纹 + 占位 id」
+    /// 找到它。存档按总字节封顶；超限丢最旧的，最新一条始终可召回。
+    fn archive_images_for(&mut self, history: &str) {
+        if !history.contains("[image#") {
+            return;
         }
-        text
+        let fingerprint = xxhash_rust::xxh3::xxh3_128(history.as_bytes());
+        for chip in &self.images {
+            if history.contains(&format!("[image#{}]", chip.id)) {
+                self.archived_images.push((fingerprint, chip.clone()));
+            }
+        }
+        let mut total: usize = self
+            .archived_images
+            .iter()
+            .map(|(_, chip)| chip.data.len())
+            .sum();
+        while self.archived_images.len() > 1 && total > ARCHIVE_MAX_BYTES {
+            total -= self.archived_images.remove(0).1.data.len();
+        }
     }
 
     /// 记入历史：最新在前，连续重复只留一条，超出上限裁掉最旧的。
@@ -558,7 +636,8 @@ impl PromptState {
 
     /// 发送：把当前输入压入历史并清空，返回展开后的文本与本次新增的历史条目。
     pub fn take_committed_text(&mut self) -> (String, Option<String>) {
-        let history = self.history_text();
+        let history = self.expanded_text();
+        self.archive_images_for(&history);
         let text = std::mem::take(&mut self.text);
         self.cursor = 0;
         self.break_history_browse();
@@ -727,14 +806,37 @@ mod tests {
         assert_eq!(draft.pastes.len(), 1, "粘贴随草稿走");
         assert_eq!(
             history.as_deref(),
-            Some("看这个 第一行\n第二行\n第三行\n第四行"),
-            "落盘用展开后的文本，不能带占位"
+            Some("[image#1]看这个 第一行\n第二行\n第三行\n第四行"),
+            "历史保留图片占位，粘贴展开为原文"
         );
         assert!(prompt.history_up());
         assert_eq!(
-            prompt.text, "看这个 第一行\n第二行\n第三行\n第四行",
-            "历史里不能留下已随草稿消失的占位"
+            prompt.text, "[image#3]看这个 第一行\n第二行\n第三行\n第四行",
+            "图片占位按存档 chip 换发新 id 召回"
         );
+        assert!(prompt.has_attached_images(), "召回的图片要真能再发");
+        let parts = prompt.build_input_parts();
+        assert!(
+            parts
+                .iter()
+                .any(|part| matches!(part, moc_protocol::methods::InputPart::Image { .. })),
+            "召回的图片占位要能拆回图片块"
+        );
+    }
+
+    #[test]
+    fn history_recall_drops_placeholders_without_archived_chip() {
+        let mut prompt = PromptState::default();
+        prompt.insert_str_raw("先提交");
+        let _ = prompt.take_submitted_draft();
+        // 模拟重启后载入的持久化历史：占位没有对应存档 chip。
+        prompt.seed_history(vec!["[image#9]配个图 [image#bad] 手打的".into()]);
+        assert!(prompt.history_up());
+        assert_eq!(
+            prompt.text, "[图片]配个图 [image#bad] 手打的",
+            "无图占位显示为普通文本，非法占位原样保留"
+        );
+        assert!(!prompt.has_attached_images());
     }
 
     #[test]
