@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.f.outputs.rust }}
+      web: ${{ steps.f.outputs.web }}
+    steps:
+      # push 事件靠本地 git diff 判定改动，需要完整历史；
+      # pull_request 事件走 GitHub API，不消耗 checkout。
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: f
+        with:
+          filters: |
+            rust:
+              - 'crates/**'
+              - '!crates/moc-web/web/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - '.github/workflows/ci.yml'
+            web:
+              - 'crates/moc-web/web/**'
+              - '.github/workflows/ci.yml'
+
+  rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # moc-web 的 build.rs 在 cargo test 时自行 install + build 前端，需要 pnpm/node 在 PATH 上。
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: crates/moc-web/web/package.json
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: crates/moc-web/web/pnpm-lock.yaml
+
+      # aws-lc-sys 在 Linux 上汇编需要 nasm（同 release.yml）。
+      - name: Install nasm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: crates/moc-web/web
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: crates/moc-web/web/package.json
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: crates/moc-web/web/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      # build = tsc -b && vite build；web-only 的 PR 不触发 rust job，打包验证在这里补上。
+      - name: Typecheck and build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
