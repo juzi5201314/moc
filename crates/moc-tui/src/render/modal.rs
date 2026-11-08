@@ -1156,7 +1156,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             (layout.lines, layout.footer)
         }
         Modal::Model { .. } => {
-            let body = model_picker::body(app, modal, width, max_lines);
+            let (body, _) = model_picker::body(app, modal, width, max_lines);
             hits.extend(body.hits);
             (body.lines, body.footer.unwrap_or_default())
         }

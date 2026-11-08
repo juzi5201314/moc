@@ -1983,9 +1983,8 @@ fn hover_modal_item(app: &mut App, index: usize) {
     }
 }
 
-/// 模型选择器的鼠标处理：下拉打开时只认下拉（点候选提交、点其余位置收起、
-/// 悬停跟随、任意位置滚轮都移动下拉）；未打开时列表行「先选中再点确认」，
-/// 详情行点中等价于聚焦后按 Enter，滚轮移动列表选中项。
+/// 模型选择器：滚轮只滚动光标所在列表，悬停只记录坐标。
+/// 列表行先选中再点确认；详情行和下拉候选点中即执行。
 fn handle_model_picker_mouse(
     app: &mut App,
     connection: &EmbeddedConnection,
@@ -1993,166 +1992,82 @@ fn handle_model_picker_mouse(
 ) {
     use crossterm::event::{MouseButton, MouseEventKind};
     let position: ratatui::layout::Position = (mouse.column, mouse.row).into();
-    let menu_open = matches!(
-        &app.modal,
-        Some(Modal::Model {
-            detail: crate::modal::DetailState { menu: Some(_), .. },
-            ..
-        })
-    );
-    if menu_open {
-        match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                if let Some((index, _)) = app
-                    .modal_menu_hits
-                    .iter()
-                    .find(|(_, area)| area.contains(position))
-                    .copied()
-                {
-                    if let Some(Modal::Model { detail, .. }) = app.modal.as_mut()
-                        && let Some(menu) = detail.menu.as_mut()
-                    {
-                        menu.selected = index;
-                    }
-                    handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
-                } else {
-                    // 点下拉以外（但在选择器内）：先收起下拉，再按未展开状态
-                    // 处理这次点击（列表行选中/确认，详情行聚焦执行）。
-                    if let Some(Modal::Model { detail, .. }) = app.modal.as_mut() {
-                        detail.menu = None;
-                    }
-                    handle_model_picker_mouse(app, connection, mouse);
-                }
+    let Some(Modal::Model {
+        entries,
+        picker,
+        level,
+        detail,
+        ..
+    }) = app.modal.as_mut()
+    else {
+        return;
+    };
+    detail.pointer = Some(position);
+    if matches!(
+        mouse.kind,
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+    ) {
+        let delta = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
+            -3
+        } else {
+            3
+        };
+        if app.modal_menu_area.contains(position) {
+            if let Some(menu) = detail.menu.as_mut() {
+                menu.scroll.scroll_by(&mut menu.offset, delta);
             }
-            MouseEventKind::Moved => {
-                if let Some((index, _)) = app
-                    .modal_menu_hits
-                    .iter()
-                    .find(|(_, area)| area.contains(position))
-                    .copied()
-                    && let Some(Modal::Model { detail, .. }) = app.modal.as_mut()
-                    && let Some(menu) = detail.menu.as_mut()
-                {
-                    menu.selected = index;
-                }
-            }
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                handle_modal_key(
-                    app,
-                    connection,
-                    KeyModifiers::NONE,
-                    if matches!(mouse.kind, MouseEventKind::ScrollUp) {
-                        KeyCode::Up
-                    } else {
-                        KeyCode::Down
-                    },
-                );
-            }
-            _ => {}
+        } else if !app.modal_detail_area.contains(position)
+            && app.modal_card_area.contains(position)
+        {
+            detail.list_scroll.scroll_by(&mut picker.offset, delta);
         }
         return;
     }
-    match mouse.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
-            if let Some((row, _)) = app
-                .modal_detail_hits
-                .iter()
-                .find(|(_, area)| area.contains(position))
-                .copied()
-            {
-                if let Some(Modal::Model { detail, .. }) = app.modal.as_mut() {
-                    detail.focus = Some(row);
-                }
-                // 与聚焦后按 Enter 同义：展开下拉 / 切换 / 应用。
-                handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
-            } else if app.modal_detail_area.contains(position)
-                || app.modal_menu_area.contains(position)
-            {
-                // 详情卡/下拉卡盖在列表上：点中卡内非控制行不穿透到候选列表。
-            } else if let Some((index, _)) = app
-                .modal_item_hits
-                .iter()
-                .find(|(_, area)| area.contains(position))
-                .copied()
-            {
-                let again = if let Some(Modal::Model {
-                    entries,
-                    picker,
-                    level,
-                    detail,
-                    ..
-                }) = app.modal.as_mut()
-                {
-                    let again = picker.selected == index;
-                    if !again {
-                        let filtered = crate::modal::filtered_entries(entries, &picker.query);
-                        level.change_entry(
-                            filtered.get(picker.selected).map(|(_, entry)| *entry),
-                            filtered.get(index).map(|(_, entry)| *entry),
-                        );
-                        picker.selected = index;
-                    }
-                    detail.focus = None;
-                    again
-                } else {
-                    false
-                };
-                if again {
-                    handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
-                }
-            }
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return;
+    }
+    if let Some(menu) = detail.menu.as_mut() {
+        if let Some((index, _)) = app
+            .modal_menu_hits
+            .iter()
+            .find(|(_, area)| area.contains(position))
+        {
+            menu.selected = *index;
+            handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+        } else {
+            // 点下拉以外：收起下拉，再执行同一次点击。
+            detail.menu = None;
+            handle_model_picker_mouse(app, connection, mouse);
         }
-        MouseEventKind::Moved => {
-            if let Some((row, _)) = app
-                .modal_detail_hits
-                .iter()
-                .find(|(_, area)| area.contains(position))
-                .copied()
-            {
-                if let Some(Modal::Model { detail, .. }) = app.modal.as_mut() {
-                    detail.focus = Some(row);
-                }
-            } else if app.modal_detail_area.contains(position)
-                || app.modal_menu_area.contains(position)
-            {
-                // 详情卡/下拉卡盖在列表上：卡内非控制行不穿透到候选列表。
-            } else if let Some((index, _)) = app
-                .modal_item_hits
-                .iter()
-                .find(|(_, area)| area.contains(position))
-                .copied()
-                && let Some(Modal::Model {
-                    entries,
-                    picker,
-                    level,
-                    detail,
-                    ..
-                }) = app.modal.as_mut()
-            {
-                if picker.selected != index {
-                    let filtered = crate::modal::filtered_entries(entries, &picker.query);
-                    level.change_entry(
-                        filtered.get(picker.selected).map(|(_, entry)| *entry),
-                        filtered.get(index).map(|(_, entry)| *entry),
-                    );
-                    picker.selected = index;
-                }
-                detail.focus = None;
-            }
-        }
-        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            handle_modal_key(
-                app,
-                connection,
-                KeyModifiers::NONE,
-                if matches!(mouse.kind, MouseEventKind::ScrollUp) {
-                    KeyCode::Up
-                } else {
-                    KeyCode::Down
-                },
+        return;
+    }
+    if let Some((row, _)) = app
+        .modal_detail_hits
+        .iter()
+        .find(|(_, area)| area.contains(position))
+    {
+        detail.focus = Some(*row);
+        handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+    } else if app.modal_detail_area.contains(position) || app.modal_menu_area.contains(position) {
+        // 详情卡/下拉卡内非控制行不穿透到候选列表。
+    } else if let Some((index, _)) = app
+        .modal_item_hits
+        .iter()
+        .find(|(_, area)| area.contains(position))
+    {
+        let again = picker.selected == *index;
+        if !again {
+            let filtered = crate::modal::filtered_entries(entries, &picker.query);
+            level.change_entry(
+                filtered.get(picker.selected).map(|(_, entry)| *entry),
+                filtered.get(*index).map(|(_, entry)| *entry),
             );
+            picker.selected = *index;
         }
-        _ => {}
+        detail.focus = None;
+        if again {
+            handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+        }
     }
 }
 
@@ -4487,6 +4402,7 @@ fn handle_modal_key(
             target,
         } => {
             use crate::modal::{DetailRow, FUSION_ENTRY_SELECTOR, MenuItems, MenuState};
+            detail.pointer = None;
             let filtered = crate::modal::filtered_entries(entries, &picker.query);
             let highlighted = |picker: &crate::modal::PickerState| {
                 crate::modal::filtered_entries(entries, &picker.query)
@@ -4503,6 +4419,7 @@ fn handle_modal_key(
                         row,
                         selected: current.unwrap_or(0),
                         offset: 0,
+                        scroll: Default::default(),
                         query: String::new(),
                     });
                 };
@@ -4526,6 +4443,7 @@ fn handle_modal_key(
                     (KeyCode::Home, _) => {
                         menu.selected = 0;
                         menu.offset = 0;
+                        menu.scroll.reveal_selection = true;
                     }
                     (KeyCode::End, _) => {
                         menu.selected = count.saturating_sub(1);
@@ -4602,11 +4520,13 @@ fn handle_modal_key(
                         menu.query.pop();
                         menu.selected = 0;
                         menu.offset = 0;
+                        menu.scroll.reveal_selection = true;
                     }
                     (KeyCode::Char('u'), KeyModifiers::CONTROL) if model_menu => {
                         menu.query.clear();
                         menu.selected = 0;
                         menu.offset = 0;
+                        menu.scroll.reveal_selection = true;
                     }
                     (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
                         if model_menu && !ch.is_control() =>
@@ -4614,6 +4534,7 @@ fn handle_modal_key(
                         menu.query.push(ch);
                         menu.selected = 0;
                         menu.offset = 0;
+                        menu.scroll.reveal_selection = true;
                     }
                     _ => {}
                 }
@@ -4663,10 +4584,19 @@ fn handle_modal_key(
                 }
             } else {
                 match (code, modifiers) {
-                    (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
-                    (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
-                    (KeyCode::PageUp, _) => picker.move_selection(-8, filtered.len(), 8),
-                    (KeyCode::PageDown, _) => picker.move_selection(8, filtered.len(), 8),
+                    (KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown, _) => {
+                        let delta = match code {
+                            KeyCode::Up => -1,
+                            KeyCode::Down => 1,
+                            KeyCode::PageUp => -8,
+                            _ => 8,
+                        };
+                        picker.selected = picker
+                            .selected
+                            .saturating_add_signed(delta)
+                            .min(filtered.len().saturating_sub(1));
+                        detail.list_scroll.reveal_selection = true;
+                    }
                     // Tab：普通模型展开思考等级下拉（焦点仍在列表）；高亮 Fusion 项时等同 →。
                     (KeyCode::Tab, KeyModifiers::NONE) => {
                         if entry.is_some_and(|entry| entry.selector == FUSION_ENTRY_SELECTOR) {
@@ -4693,16 +4623,18 @@ fn handle_modal_key(
                     (KeyCode::Home, _) => {
                         picker.selected = 0;
                         picker.offset = 0;
+                        detail.list_scroll.reveal_selection = true;
                     }
 
                     (KeyCode::End, _) => {
                         picker.selected = filtered.len().saturating_sub(1);
-                        picker.keep_visible(8, filtered.len());
+                        detail.list_scroll.reveal_selection = true;
                     }
                     (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
                         picker.query.clear();
                         picker.selected = 0;
                         picker.offset = 0;
+                        detail.list_scroll.reveal_selection = true;
                     }
                     (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
                         while picker.query.ends_with(' ') {
@@ -4713,11 +4645,13 @@ fn handle_modal_key(
                         }
                         picker.selected = 0;
                         picker.offset = 0;
+                        detail.list_scroll.reveal_selection = true;
                     }
                     (KeyCode::Backspace, _) => {
                         picker.query.pop();
                         picker.selected = 0;
                         picker.offset = 0;
+                        detail.list_scroll.reveal_selection = true;
                     }
                     (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
                         if !ch.is_control() =>
@@ -4725,6 +4659,7 @@ fn handle_modal_key(
                         picker.query.push(ch);
                         picker.selected = 0;
                         picker.offset = 0;
+                        detail.list_scroll.reveal_selection = true;
                     }
                     (KeyCode::Enter, KeyModifiers::NONE) => {
                         if picker.loading {
@@ -9335,6 +9270,8 @@ mod tests {
         terminal
     }
 
+    include!("event_model_picker_tests.rs");
+
     /// 模型选择器：点详情卡思考等级行展开下拉；会话目标下点等级候选
     /// 立即发起切换（选择器保持打开、进入 loading）。
     #[tokio::test]
@@ -9426,6 +9363,7 @@ mod tests {
                     row: crate::modal::DetailRow::Level,
                     selected: 0,
                     offset: 0,
+                    scroll: Default::default(),
                     query: String::new(),
                 }),
                 ..Default::default()

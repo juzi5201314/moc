@@ -1336,7 +1336,6 @@ impl App {
         }
         let picker = crate::modal::PickerState {
             selected,
-            offset: selected.saturating_sub(7),
             ..Default::default()
         };
         // Session 目标有 Fusion 特殊项：草稿沿用当前组合或配置默认。

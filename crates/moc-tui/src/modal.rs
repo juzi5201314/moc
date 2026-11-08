@@ -21,7 +21,7 @@ pub struct PickerState {
     pub query: String,
     /// 过滤结果中的选中项下标。
     pub selected: usize,
-    /// 列表 viewport 的首项下标。
+    /// 列表 viewport 的起点；模型列表按显示行（含分组标题），其余按条目。
     pub offset: usize,
     /// 是否正在请求后端数据。
     pub loading: bool,
@@ -447,9 +447,36 @@ pub enum DetailRow {
     Apply,
 }
 
-/// 详情卡的交互状态。
+/// 模型列表与下拉的滚动约束；真实可见行数由绘制层回写。
+#[derive(Debug, Clone)]
+pub struct ModelScroll {
+    pub max_offset: usize,
+    /// 打开、键盘导航或搜索后显露选中项；普通重绘不拉回手动滚动的位置。
+    pub reveal_selection: bool,
+}
+
+impl Default for ModelScroll {
+    fn default() -> Self {
+        Self {
+            max_offset: 0,
+            reveal_selection: true,
+        }
+    }
+}
+
+impl ModelScroll {
+    pub fn scroll_by(&mut self, offset: &mut usize, delta: isize) {
+        *offset = offset.saturating_add_signed(delta).min(self.max_offset);
+        self.reveal_selection = false;
+    }
+}
+
+/// 模型选择器的交互状态：鼠标位置、列表滚动、详情焦点和下拉。
 #[derive(Debug, Clone, Default)]
 pub struct DetailState {
+    /// 保留坐标，在最终布局上计算悬停，避免滚动后沿用旧条目下标。
+    pub pointer: Option<ratatui::layout::Position>,
+    pub list_scroll: ModelScroll,
     /// `None` 时焦点在候选列表；`Some` 时焦点在详情卡这一行。
     pub focus: Option<DetailRow>,
     /// Fusion 组合草稿（两侧都是带等级的 selector，只有 Session 目标会用到）。
@@ -466,6 +493,7 @@ pub struct MenuState {
     pub row: DetailRow,
     pub selected: usize,
     pub offset: usize,
+    pub scroll: ModelScroll,
     /// 模型下拉的过滤字符串；等级下拉不使用。
     pub query: String,
 }
@@ -474,20 +502,18 @@ pub struct MenuState {
 pub const MENU_PAGE: usize = 8;
 
 impl MenuState {
-    /// 在候选间移动（夹紧不循环），并维持 `MENU_PAGE` 可见窗。
+    /// 在候选间移动（夹紧不循环），绘制时按实际高度显露选中项。
     pub fn move_selection(&mut self, delta: i32, count: usize) {
-        move_index(
-            &mut self.selected,
-            &mut self.offset,
-            delta,
-            count,
-            MENU_PAGE,
-        );
+        self.selected = self
+            .selected
+            .saturating_add_signed(delta as isize)
+            .min(count.saturating_sub(1));
+        self.scroll.reveal_selection = true;
     }
 
-    /// 把 `selected` 收进 `MENU_PAGE` 可见窗。
     pub fn keep_visible(&mut self, count: usize) {
-        keep_index_visible(&mut self.selected, &mut self.offset, MENU_PAGE, count);
+        self.selected = self.selected.min(count.saturating_sub(1));
+        self.scroll.reveal_selection = true;
     }
 }
 
@@ -1722,8 +1748,15 @@ impl Modal {
             Modal::WorkflowRun { state } => {
                 state.focus = (state.focus as i32 + delta).clamp(0, count as i32 - 1) as usize;
             }
-            Modal::Model { picker, .. }
-            | Modal::Sessions { picker, .. }
+            Modal::Model { picker, detail, .. } => {
+                picker.selected = picker
+                    .selected
+                    .saturating_add_signed(delta as isize)
+                    .min(count - 1);
+                detail.list_scroll.reveal_selection = true;
+                detail.pointer = None;
+            }
+            Modal::Sessions { picker, .. }
             | Modal::Subagents { picker, .. }
             | Modal::WorkflowRuns { picker, .. } => {
                 picker.move_selection(delta, count, 8);

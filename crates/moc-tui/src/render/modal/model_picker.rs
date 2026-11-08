@@ -103,6 +103,58 @@ fn detail_x(screen: Rect, list: Rect) -> (u16, bool) {
 }
 
 pub(super) fn draw(frame: &mut Frame, app: &mut App) {
+    draw_cards(frame, app);
+    draw_hover(frame, app);
+}
+
+/// 悬停只改变背景；选中标记与详情仍由点击或键盘决定。
+fn draw_hover(frame: &mut Frame, app: &App) {
+    let Some(Modal::Model { picker, detail, .. }) = app.modal.as_ref() else {
+        return;
+    };
+    let Some(pointer) = detail.pointer else {
+        return;
+    };
+    let over_menu = app.modal_menu_area.contains(pointer);
+    let over_detail = app.modal_detail_area.contains(pointer);
+    let hovered = if over_menu {
+        app.modal_menu_hits
+            .iter()
+            .find(|(index, area)| {
+                area.contains(pointer)
+                    && detail
+                        .menu
+                        .as_ref()
+                        .is_some_and(|menu| menu.selected != *index)
+            })
+            .map(|(_, area)| area)
+    } else if over_detail {
+        app.modal_detail_hits
+            .iter()
+            .find(|(_, area)| area.contains(pointer))
+            .map(|(_, area)| area)
+    } else {
+        app.modal_item_hits
+            .iter()
+            .find(|(index, area)| area.contains(pointer) && picker.selected != *index)
+            .map(|(_, area)| area)
+    };
+    if let Some(area) = hovered {
+        for x in area.x..area.right() {
+            let position = (x, area.y).into();
+            // 窄屏浮层会覆盖列表的一部分，悬停底色不能盖到上层卡片。
+            if !over_menu
+                && (app.modal_menu_area.contains(position)
+                    || (!over_detail && app.modal_detail_area.contains(position)))
+            {
+                continue;
+            }
+            frame.buffer_mut()[(x, area.y)].set_bg(app.theme.bg_hover);
+        }
+    }
+}
+
+fn draw_cards(frame: &mut Frame, app: &mut App) {
     let screen = frame.area();
     let anchor = if app.model_tag_area.is_empty() {
         Rect::new(
@@ -122,7 +174,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     let theme = app.theme;
     let width = overlay::content_width(rect.width);
     let rows = usize::from(rect.height.saturating_sub(3));
-    let body = body(app, modal, width, rows);
+    let (body, offset) = body(app, modal, width, rows);
     let footer = body.footer.unwrap_or_default();
     let content = draw_panel(frame, rect, &modal.title(), theme);
     frame.render_widget(Paragraph::new(body.lines), content);
@@ -144,6 +196,12 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         })
         .collect();
     app.modal_card_area = rect;
+    if let Some(Modal::Model { picker, detail, .. }) = app.modal.as_mut() {
+        picker.offset = offset;
+        detail.list_scroll.max_offset = body.scroll_max;
+        detail.list_scroll.reveal_selection = false;
+    }
+    let modal = app.modal.as_ref().expect("模型浮层已打开");
 
     let Modal::Model {
         entries,
@@ -213,8 +271,14 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         }
     };
     let minner = overlay::content_width(mwidth);
-    let (mlines, hits) = menu_lines(&items, menu, minner, theme);
-    let mheight = u16::try_from(mlines.len() + 2)
+    let (menu_body, menu_offset) = menu_lines(
+        &items,
+        menu,
+        minner,
+        usize::from(screen.height.saturating_sub(2)),
+        theme,
+    );
+    let mheight = u16::try_from(menu_body.lines.len() + 2)
         .unwrap_or(u16::MAX)
         .min(screen.height);
     let row_y = row_hits
@@ -238,12 +302,10 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     );
     let mcontent = draw_panel(frame, mrect, "", theme);
     let mvisible = usize::from(mcontent.height);
-    frame.render_widget(
-        Paragraph::new(mlines.into_iter().take(mvisible).collect::<Vec<_>>()),
-        mcontent,
-    );
+    frame.render_widget(Paragraph::new(menu_body.lines), mcontent);
     app.modal_menu_area = mrect;
-    app.modal_menu_hits = hits
+    app.modal_menu_hits = menu_body
+        .hits
         .into_iter()
         .filter(|(_, row)| *row < mvisible)
         .map(|(index, row)| {
@@ -253,24 +315,43 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             )
         })
         .collect();
+    if let Some(Modal::Model { detail, .. }) = app.modal.as_mut()
+        && let Some(menu) = detail.menu.as_mut()
+    {
+        menu.offset = menu_offset;
+        menu.scroll.max_offset = menu_body.scroll_max;
+        menu.scroll.reveal_selection = false;
+    }
 }
 
-/// 下拉卡的正文行：模型下拉首行是搜索行，候选用 `model_row` 同样式；
-/// 等级下拉竖排全部档位。返回 `(行, (过滤后候选下标, 行号))`。
+/// 下拉按实际高度分配可见窗口；模型下拉额外保留一行搜索框。
 fn menu_lines(
     items: &MenuItems,
     menu: &crate::modal::MenuState,
     width: usize,
+    max_lines: usize,
     theme: &Theme,
-) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
-    let mut lines = Vec::new();
-    let mut hits = Vec::new();
+) -> (ModalBody, usize) {
+    let models = matches!(items, MenuItems::Models { .. });
+    let visible = max_lines
+        .saturating_sub(usize::from(models))
+        .min(if models { MENU_PAGE } else { items.len() })
+        .max(1);
+    let mut body = ModalBody {
+        scroll_max: items.len().saturating_sub(visible),
+        ..Default::default()
+    };
+    let offset = if menu.scroll.reveal_selection {
+        window_offset(menu.offset, menu.selected, visible, items.len())
+    } else {
+        menu.offset.min(body.scroll_max)
+    };
     match items {
         MenuItems::Levels { levels, current } => {
-            for (index, level) in levels.iter().enumerate() {
-                hits.push((index, lines.len()));
+            for (index, level) in levels.iter().enumerate().skip(offset).take(visible) {
+                body.hits.push((index, body.lines.len()));
                 let mark = if *current == Some(index) { " ✓" } else { "" };
-                lines.push(clip_line(
+                body.lines.push(clip_line(
                     overlay::list_row(
                         &format!("{level}{mark}"),
                         index == menu.selected,
@@ -282,17 +363,17 @@ fn menu_lines(
             }
         }
         MenuItems::Models { entries, current } => {
-            lines.push(clip_line(search_line(&menu.query, width, theme), width));
-            let offset = window_offset(menu.offset, menu.selected, MENU_PAGE, entries.len());
+            body.lines
+                .push(clip_line(search_line(&menu.query, width, theme), width));
             if entries.is_empty() {
-                lines.push(Line::from(Span::styled(
+                body.lines.push(Line::from(Span::styled(
                     fit("没有匹配的模型", width),
                     Style::new().fg(theme.gray),
                 )));
             }
-            for (position, (_, entry)) in entries.iter().enumerate().skip(offset).take(MENU_PAGE) {
-                hits.push((position, lines.len()));
-                lines.push(model_row(
+            for (position, (_, entry)) in entries.iter().enumerate().skip(offset).take(visible) {
+                body.hits.push((position, body.lines.len()));
+                body.lines.push(model_row(
                     entry,
                     position == menu.selected,
                     *current == Some(position),
@@ -303,10 +384,10 @@ fn menu_lines(
             }
         }
     }
-    (lines, hits)
+    (body, offset)
 }
 
-pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> ModalBody {
+pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> (ModalBody, usize) {
     let Modal::Model {
         entries,
         current,
@@ -408,16 +489,14 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
             ),
         ));
     }
+    body.scroll_max = list.len().saturating_sub(visible);
     let selected_row = list
         .iter()
-        .position(|(index, _)| *index == Some(picker.selected))
-        .unwrap_or(0);
-    let initial_offset = list
-        .iter()
-        .position(|(index, _)| *index == Some(picker.offset))
-        .unwrap_or(0)
-        .saturating_sub(1);
-    let offset = window_offset(initial_offset, selected_row, visible, list.len());
+        .position(|(index, _)| *index == Some(picker.selected));
+    let offset = match selected_row.filter(|_| detail.list_scroll.reveal_selection) {
+        Some(row) => window_offset(picker.offset, row, visible, list.len()),
+        None => picker.offset.min(body.scroll_max),
+    };
     for row in 0..visible {
         let line = if let Some((index, line)) = list.get(offset + row) {
             if let Some(index) = index {
@@ -481,7 +560,7 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
     };
     body.footer = Some(overlay::footer(&items, width, theme));
     body.lines.truncate(max_lines);
-    body
+    (body, offset)
 }
 
 /// 详情卡正文：返回行与每个控制行所在的行号（鼠标命中换算用）。
@@ -940,6 +1019,7 @@ mod tests {
                 row: DetailRow::Level,
                 selected: 5,
                 offset: 0,
+                scroll: Default::default(),
                 query: String::new(),
             });
         }
