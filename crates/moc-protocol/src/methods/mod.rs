@@ -142,7 +142,7 @@ pub use session::{
     SessionUsageParams, SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall,
     TranscriptEntry, UsageSource,
 };
-pub use todo::{TodoItem, TodoPhase, TodoStatus};
+pub use todo::{TodoItem, TodoPhase, TodoStatus, parse_todos, render_todos};
 pub use update::{
     AssistantDelta, PathChange, SessionUpdate, SessionUpdateMethod, SessionUpdateParams,
     ToolBatchCall, UpstreamField, UpstreamFieldMismatch,

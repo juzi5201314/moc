@@ -2,7 +2,7 @@
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
-use moc_protocol::{SessionUpdate, TodoItem, TodoPhase, TodoStatus};
+use moc_protocol::{SessionUpdate, TodoItem, TodoPhase, TodoStatus, render_todos};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -134,7 +134,7 @@ impl Tool for TodoTool {
                     .to_owned(),
             };
             if op == "view" {
-                return Ok(ToolOutcome::success(render(&current)));
+                return Ok(ToolOutcome::success(render_todos(&current)));
             }
             let mut next = current;
             match op.as_str() {
@@ -276,7 +276,7 @@ impl Tool for TodoTool {
                 )
                 .await
                 .map_err(|error| ToolError::new("E_UPDATE", error.to_string()))?;
-            Ok(ToolOutcome::success(render(&next)))
+            Ok(ToolOutcome::success(render_todos(&next)))
         })
     }
 }
@@ -334,34 +334,6 @@ fn normalize(phases: &mut [TodoPhase]) {
     {
         item.status = TodoStatus::InProgress;
     }
-}
-
-fn render(phases: &[TodoPhase]) -> String {
-    if phases.is_empty() {
-        return "No todos.".into();
-    }
-    phases
-        .iter()
-        .map(|phase| {
-            let mut output = format!("{}\n", phase.phase);
-            for item in &phase.items {
-                let marker = match item.status {
-                    TodoStatus::Pending => "[ ]",
-                    TodoStatus::InProgress => "[/]",
-                    TodoStatus::Completed => "[x]",
-                    TodoStatus::Blocked => "[!]",
-                    TodoStatus::Abandoned => "[-]",
-                };
-                output.push_str(&format!("  {marker} {}", item.task));
-                if let Some(reason) = &item.reason {
-                    output.push_str(&format!(" ({reason})"));
-                }
-                output.push('\n');
-            }
-            output
-        })
-        .collect::<Vec<_>>()
-        .join("")
 }
 
 #[cfg(test)]
@@ -461,7 +433,7 @@ mod tests {
         normalize(&mut phases);
         assert_eq!(phases[0].items[1].status, TodoStatus::InProgress);
         assert_eq!(phases[0].items[2].status, TodoStatus::Pending);
-        assert!(render(&phases).contains("[/] two"));
+        assert!(render_todos(&phases).contains("[/] two"));
         let mut empty = vec![TodoPhase {
             phase: "x".into(),
             items: vec![TodoItem {
