@@ -37,12 +37,7 @@ import { leadSelector, parseSelector } from "@/lib/models";
 import { fromMeta, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
-import type {
-  ImageSource,
-  PluginListResult,
-  ResourceCandidate,
-  SteerResult,
-} from "@/protocol/types";
+import type { ImageSource, PluginInfo, ResourceCandidate, SteerResult } from "@/protocol/types";
 import { dispatchNext, runBash, sendPrompt } from "@/store/actions";
 import {
   type Attachment as ComposerAttachment,
@@ -122,34 +117,19 @@ const RESOURCE_ICON: Record<string, typeof FileTextIcon> = {
   namespace: FolderIcon,
 };
 
-/** 当前工作区插件注册的斜杠命令；每个会话只拉一次。 */
-const pluginCommandCache = new Map<string, Promise<SlashCommand[]>>();
-
-function loadPluginCommands(sessionId: string): Promise<SlashCommand[]> {
-  let cached = pluginCommandCache.get(sessionId);
-  if (!cached) {
-    cached = rpc
-      .call<PluginListResult>("plugin/list", { session_id: sessionId })
-      .then((result) =>
-        result.plugins.flatMap((plugin) =>
-          plugin.error
-            ? []
-            : (plugin.commands ?? []).map((command) => ({
-                name: command.name,
-                description: command.description,
-                usage: command.usage || undefined,
-                plugin: plugin.name,
-                needsSession: true,
-              })),
-        ),
-      )
-      .catch(() => {
-        pluginCommandCache.delete(sessionId);
-        return [];
-      });
-    pluginCommandCache.set(sessionId, cached);
-  }
-  return cached;
+/** 插件清单 → 斜杠命令；加载失败的插件不贡献命令。 */
+function pluginSlashCommands(plugins: PluginInfo[] | null | undefined): SlashCommand[] {
+  return (plugins ?? []).flatMap((plugin) =>
+    plugin.error
+      ? []
+      : (plugin.commands ?? []).map((command) => ({
+          name: command.name,
+          description: command.description,
+          usage: command.usage || undefined,
+          plugin: plugin.name,
+          needsSession: true,
+        })),
+  );
 }
 
 type ComposerBarProps = {
@@ -171,7 +151,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     prefix: "",
     items: [],
   });
-  const [pluginCommands, setPluginCommands] = useState<SlashCommand[]>([]);
+  const plugins = useTranscript((state) => state.bySession[sessionId]?.plugins);
 
   const info = useTranscript((state) => state.bySession[sessionId]?.info);
   const running = useTranscript((state) => Boolean(state.bySession[sessionId]?.running));
@@ -201,22 +181,14 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
 
   const token = useMemo(() => resourceToken(text, cursor), [text, cursor]);
   const tokenPrefix = token?.prefix ?? "";
+  // 插件清单由 refreshSideData 在会话打开时统一拉取；这里只做投影。
+  const pluginCommands = useMemo(() => pluginSlashCommands(plugins), [plugins]);
   const commands = useMemo(() => {
     const builtinCommands = builtinMetas.map(fromMeta);
     const builtin = new Set(builtinCommands.map((command) => command.name));
     return [...builtinCommands, ...pluginCommands.filter((command) => !builtin.has(command.name))];
   }, [builtinMetas, pluginCommands]);
   const slashItems = slashMatches(text, commands, features);
-  const slashMode = text.startsWith("/");
-
-  useEffect(() => {
-    if (isDraft || !slashMode) return;
-    let alive = true;
-    void loadPluginCommands(sessionId).then((list) => alive && setPluginCommands(list));
-    return () => {
-      alive = false;
-    };
-  }, [isDraft, sessionId, slashMode]);
 
   useEffect(() => {
     if (!tokenPrefix || isDraft) return;

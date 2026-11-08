@@ -11,6 +11,7 @@ import type {
   JobInfo,
   Message,
   PlanInfo,
+  PluginInfo,
   SessionInfo,
   SessionLockInfo,
   SessionUpdate,
@@ -150,6 +151,8 @@ export type SessionView = {
   diffs: ToolDiffRecord[];
   mismatch: { fields: UpstreamFieldMismatch[]; atMs: number } | null;
   pluginNotice: { plugin: string; code: string; message: string } | null;
+  /** 最近一次 plugin/list 结果；失败或未拉到为 null。composer 斜杠命令读它。 */
+  plugins: PluginInfo[] | null;
   /** session/context 的最近一次结果；未读到为 null。 */
   context: ContextUsageResult | null;
   compactingId: string | null;
@@ -176,6 +179,7 @@ export function createView(info: SessionInfo): SessionView {
     diffs: [],
     mismatch: null,
     pluginNotice: null,
+    plugins: null,
     context: null,
     compactingId: null,
     jobs: {},

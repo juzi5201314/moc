@@ -194,6 +194,7 @@ export async function refreshSideData(sessionId: string): Promise<void> {
   mutate(sessionId, (view) => {
     if (context.status === "fulfilled") view.context = context.value;
     if (plugins.status === "fulfilled") {
+      view.plugins = plugins.value.plugins;
       const failed = plugins.value.plugins.find((plugin) => plugin.error);
       view.pluginNotice = failed
         ? { plugin: failed.name, code: "E_PLUGIN_DISABLED", message: failed.error ?? "" }
@@ -626,13 +627,13 @@ clientListeners.ready.add(() => {
       .getState()
       .refresh()
       .catch(() => undefined);
-    // 重连后视图已失效：全部丢掉，按标签顺序重开（写租约随连接断开已释放）。
-    const views = Object.keys(useTranscript.getState().bySession);
-    for (const id of views) useTranscript.getState().drop(id);
-    const { open, active } = useTabs.getState();
-    for (const id of open) {
-      if (!useTabs.getState().open.includes(id)) continue;
-      await openSession(id, { activate: id === active }).catch(() => undefined);
+    // 重连后视图已失效：全部丢掉，只重开当前标签；其余开着的标签切到时再走
+    // openSession 的懒加载，避免断线恢复瞬间对每个标签串行 load+分页的 RPC 风暴，
+    // 也让写租约按需重取而不是在抢占窗口期集中争抢。
+    for (const id of Object.keys(useTranscript.getState().bySession)) {
+      useTranscript.getState().drop(id);
     }
+    const { active } = useTabs.getState();
+    if (active) await openSession(active).catch(() => undefined);
   })();
 });

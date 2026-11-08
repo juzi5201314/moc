@@ -31,6 +31,7 @@ import type {
   SettingsDocument,
 } from "@/protocol/types";
 import { selectModels, useConnection } from "@/store/connection";
+import { refreshSideData } from "@/store/lifecycle";
 import { type Theme, usePrefs } from "@/store/prefs";
 import { useTabs } from "@/store/tabs";
 import { fieldValues, SettingRow } from "./field";
@@ -366,7 +367,11 @@ export function PluginsOverview() {
     setBusy(true);
     setError(null);
     try {
-      if (reload) await rpc.call("plugin/reload", { session_id: sessionId });
+      if (reload) {
+        await rpc.call("plugin/reload", { session_id: sessionId });
+        // 视图里缓存的 plugin/list（斜杠命令、故障提示）也要刷新。
+        if (sessionId) void refreshSideData(sessionId);
+      }
       const result = await rpc.call<PluginListResult>("plugin/list", { session_id: sessionId });
       setPlugins(result.plugins);
       if (reload) toast.success("插件已重新加载");

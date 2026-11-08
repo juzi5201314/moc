@@ -15,7 +15,7 @@ import {
   type SessionView,
 } from "@/lib/transcript-model";
 import { invalidateGitBranch } from "@/lib/use-git-branch";
-import { clientListeners, rpc } from "@/protocol/client";
+import { rpc } from "@/protocol/client";
 import type {
   AskParams,
   AskResult,
@@ -207,48 +207,32 @@ rpc.on("session/update", (params: SessionUpdateParams) => {
 export async function refreshJobs(sessionId: string): Promise<void> {
   const signal = viewReadSignal(sessionId);
   if (!signal) return;
-  const result = await rpc.call<JobListResult>("job/list", { session_id: sessionId });
+  // tail_lines 让服务端顺带回传未结束任务的输出，省掉逐 job 的 job/output。
+  const result = await rpc.call<JobListResult>("job/list", {
+    session_id: sessionId,
+    tail_lines: 20,
+  });
   if (signal.aborted) return;
   useTranscript.setState(
     withBlockChanges((state: TranscriptState) => {
       const view = state.bySession[sessionId];
       if (!view) return;
       view.jobs = Object.fromEntries(result.jobs.map((job) => [job.job_id, job]));
-      for (const job of result.jobs) applyUpdate(view, { type: "job_updated", job });
+      for (const job of result.jobs) {
+        applyUpdate(view, { type: "job_updated", job });
+        const tail = result.outputs?.[job.job_id];
+        if (tail !== undefined) {
+          applyUpdate(view, {
+            type: "job_output",
+            job_id: job.job_id,
+            tool_call_id: job.tool_call_id,
+            tail,
+          });
+        }
+      }
     }),
   );
-  await Promise.all(
-    result.jobs
-      .filter((job) => job.status === "running" || job.status === "killing")
-      .map(async (job) => {
-        const output = await rpc.call<{ text: string }>("job/output", {
-          session_id: sessionId,
-          job_id: job.job_id,
-          tail_lines: 20,
-        });
-        if (signal.aborted) return;
-        useTranscript.setState(
-          withBlockChanges((state: TranscriptState) => {
-            const view = state.bySession[sessionId];
-            if (view) {
-              applyUpdate(view, {
-                type: "job_output",
-                job_id: job.job_id,
-                tool_call_id: job.tool_call_id,
-                tail: output.text,
-              });
-            }
-          }),
-        );
-      }),
-  );
 }
-
-clientListeners.ready.add(() => {
-  for (const sessionId of Object.keys(useTranscript.getState().bySession)) {
-    void refreshJobs(sessionId).catch(() => undefined);
-  }
-});
 
 // ---------- 反向请求 ----------
 
