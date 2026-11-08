@@ -33,9 +33,10 @@ import { cn } from "@/lib/utils";
 import type { ToolDiff } from "@/protocol/types";
 
 // ansi-to-react 是带 `__esModule` 的 CJS 包；本包 `type: module`，Vite 8 按 Node 语义把默认导入
-// 解析成整个 `module.exports`，组件在其 `.default` 上。TS 的 bundler 解析仍按 Babel 语义给类型，故此处转一次。
-const ansiExports = AnsiModule as unknown as { default: typeof AnsiModule };
-const Ansi = ansiExports.default;
+// 解析成整个 `module.exports`，组件在其 `.default` 上；vitest 的 SSR 变换则直接给组件本身。
+// TS 的 bundler 解析仍按 Babel 语义给类型，故此处转一次。
+const ansiExports = AnsiModule as unknown as { default?: typeof AnsiModule };
+const Ansi = ansiExports.default ?? AnsiModule;
 
 export function CopyButton({ text, label = "复制" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
@@ -234,6 +235,64 @@ function CommandBrief({
           <Ansi>{line || " "}</Ansi>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** 「内置工具优先」拒绝的固定前缀（ToolOutcome 的 `[{code}] ` 格式）。 */
+const PREFER_BUILTIN_TAG = "[E_PREFER_BUILTIN]";
+
+/**
+ * 策略拒绝按建议而非失败展示：说明句用警告色，`- <tool> {…}` 建议行拆出工具名，
+ * 不用 destructive 红；简略档与完整档都完整保留说明与建议（不能 tail 截断）。
+ */
+function PreferBuiltinView({
+  command,
+  showCommand,
+  result,
+}: {
+  command: string;
+  showCommand: boolean;
+  result: string;
+}) {
+  const lines = result.replace(/^\[E_PREFER_BUILTIN\] ?/, "").split("\n");
+  return (
+    <div className={CARD}>
+      {showCommand && (
+        <div className="group/cmd flex items-start gap-2 px-3 py-2">
+          <span className="select-none text-text-tertiary">$</span>
+          <pre className="max-h-40 min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere] text-foreground">
+            {command}
+          </pre>
+          <span className="opacity-0 transition-opacity group-hover/cmd:opacity-100">
+            <CopyButton text={command} label="复制命令" />
+          </span>
+        </div>
+      )}
+      <div className={cn("px-3 py-1.5", showCommand && "border-t border-border-subtle")}>
+        {lines.map((line, index) => {
+          const suggestion = /^- (\S+) (.*)$/.exec(line);
+          return (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: 只读文本，行序即身份
+              key={index}
+              className={cn(
+                "truncate whitespace-pre",
+                index === 0 ? "text-warn" : "text-muted-foreground",
+              )}
+            >
+              {suggestion ? (
+                <>
+                  <span className="text-text-tertiary">- </span>
+                  <span className="text-foreground">{suggestion[1]}</span> {suggestion[2]}
+                </>
+              ) : (
+                line
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -459,6 +518,19 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
   if (tool.name === "bash") {
     const command = arg("command");
     if (level === "hidden") return null;
+    if (result?.startsWith(PREFER_BUILTIN_TAG)) {
+      return (
+        <PreferBuiltinView
+          command={command}
+          showCommand={
+            level === "full" ||
+            toolHeadline(tool).target !== command.trim() ||
+            command.includes("\n")
+          }
+          result={result}
+        />
+      );
+    }
     if (level === "full") {
       return <TerminalCard command={command} output={result} error={failed} running={running} />;
     }

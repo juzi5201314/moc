@@ -1236,6 +1236,31 @@ fn tool_is_error(tool: &ToolCallBlock) -> bool {
         .is_some_and(|status| status != moc_protocol::methods::ToolStatus::Completed)
 }
 
+/// bash 被「内置工具优先」策略拒绝：结果带固定前缀，按建议而非失败展示。
+fn prefer_builtin_redirect(tool: &ToolCallBlock) -> bool {
+    tool_is_error(tool)
+        && tool.name == "bash"
+        && tool
+            .result
+            .as_deref()
+            .is_some_and(|result| result.starts_with("[E_PREFER_BUILTIN]"))
+}
+
+/// 策略拒绝正文的一行：`- <tool> {…}` 建议行的工具名用工具色标出，其余行整行正文色。
+fn prefer_builtin_row(text: String, theme: &Theme) -> Line<'static> {
+    if let Some(rest) = text.strip_prefix("- ")
+        && let Some(split) = rest.find(' ')
+    {
+        let (name, args) = rest.split_at(split);
+        return Line::from(vec![
+            Span::styled("- ", Style::new().fg(theme.gray_dim)),
+            Span::styled(name.to_owned(), Style::new().fg(theme.accent_tool)),
+            Span::styled(args.to_owned(), Style::new().fg(theme.gray_bright)),
+        ]);
+    }
+    Line::from(Span::styled(text, Style::new().fg(theme.gray_bright)))
+}
+
 /// 单块渲染。折叠状态由全局开关与块类型共同决定。
 ///
 /// 留白规则只有一条：块自带一行尾随留白，从不加前导留白；工具块按
@@ -1312,7 +1337,12 @@ fn render_entry_single(
 fn batch_member_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'static>> {
     let mut tail = Vec::new();
     if tool_is_error(tool) {
-        tail.push(Span::styled("✘", Style::new().fg(theme.accent_error)));
+        let (mark, color) = if prefer_builtin_redirect(tool) {
+            ("→", theme.accent_warning)
+        } else {
+            ("✘", theme.accent_error)
+        };
+        tail.push(Span::styled(mark, Style::new().fg(color)));
     }
     if tool.has_body() {
         let spans = tool_title_tail(tool, theme);
@@ -2318,6 +2348,7 @@ fn render_tool(
     let (bullet, bullet_color) = match (tool.running, tool.status) {
         (true, _) => ("▸", theme.accent_running),
         (_, Some(moc_protocol::methods::ToolStatus::Completed)) => ("◆", theme.accent_tool),
+        _ if prefer_builtin_redirect(tool) => ("→", theme.accent_warning),
         (_, Some(_)) => ("✘", theme.accent_error),
         (_, None) => ("◆", theme.accent_tool),
     };
@@ -2604,14 +2635,25 @@ fn tool_body(
             } else {
                 BASH_BRIEF_OUTPUT_ROWS
             };
-            let rows = clamp_rows(result, width, budget, BodyEdge::Tail);
-            dropped += rows.dropped;
-            let color = if is_error {
-                theme.diff_delete_fg
+            if prefer_builtin_redirect(tool) {
+                // 策略拒绝按建议展示：去掉错误码前缀、从开头截断（说明句在前），
+                // 正文用普通输出色；`- <tool> {…}` 建议行的工具名用工具色标出。
+                let text = result.strip_prefix("[E_PREFER_BUILTIN] ").unwrap_or(result);
+                let rows = clamp_rows(text, width, budget, BodyEdge::Head);
+                dropped += rows.dropped;
+                for text in rows.rows {
+                    lines.push(prefer_builtin_row(text, theme));
+                }
             } else {
-                theme.gray_bright
-            };
-            lines.extend(rows.rows.into_iter().map(|text| text_row(text, color)));
+                let rows = clamp_rows(result, width, budget, BodyEdge::Tail);
+                dropped += rows.dropped;
+                let color = if is_error {
+                    theme.diff_delete_fg
+                } else {
+                    theme.gray_bright
+                };
+                lines.extend(rows.rows.into_iter().map(|text| text_row(text, color)));
+            }
         }
     } else if tool.name == "message_agent" {
         let (rows, omitted) = message_agent_tool_rows(tool, args, width, theme, limit);
@@ -6190,6 +6232,11 @@ mod tests {
             .collect()
     }
 
+    /// 多行渲染结果的纯文本（行间以换行连接）。
+    fn text_of(lines: &[Line<'_>]) -> String {
+        lines.iter().map(plain).collect::<Vec<_>>().join("\n")
+    }
+
     /// 一行首个非空白字符所在的列。
     fn lead_col(line: &Line<'_>) -> usize {
         let text = plain(line);
@@ -6463,6 +6510,65 @@ mod tests {
         assert_eq!(
             estimate_entry_height_at(&app, 0, 80),
             lines.len(),
+            "估高与渲染一致"
+        );
+    }
+
+    /// 「内置工具优先」拒绝按建议展示：bullet 是 `→` 而非 `✘`，说明句去掉错误码前缀，
+    /// 建议行的工具名用工具色。
+    #[test]
+    fn prefer_builtin_rejection_renders_as_hint() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.tool_detail = DetailLevel::Full;
+        run_tool(
+            &mut app,
+            "b1",
+            "bash",
+            r#"{"command":"sed -i 's/a/b/' src/a.rs"}"#,
+            ToolStatus::Error,
+            "[E_PREFER_BUILTIN] This bash command only reads, searches, lists, or edits workspace files; use built-in tools instead:\n- edit {\"path\":\"src/a.rs\"} (instead of sed -i: read the file, then edit the anchored lines)",
+        );
+
+        let rendered = render_entry(0, &app.blocks[0], &app, 140);
+        let title = &rendered.lines[0];
+        assert_eq!(title.spans[1].content, "→ ", "bullet 用建议符号：{title:?}");
+        assert_eq!(
+            title.spans[1].style.fg,
+            Some(app.theme.accent_warning),
+            "bullet 用警告色"
+        );
+        let explain = rendered
+            .lines
+            .iter()
+            .map(plain)
+            .find(|line| line.contains("use built-in tools instead"))
+            .expect("说明句必须出现");
+        assert!(
+            !explain.contains("[E_PREFER_BUILTIN]"),
+            "不展示错误码前缀：{explain:?}"
+        );
+        let suggestion = rendered
+            .lines
+            .iter()
+            .find(|line| plain(line).contains("{\"path\":\"src/a.rs\"}"))
+            .expect("建议行");
+        let dash = suggestion
+            .spans
+            .iter()
+            .position(|span| span.content.as_ref() == "- ")
+            .expect("建议行带 - 前缀");
+        assert_eq!(suggestion.spans[dash + 1].content.as_ref(), "edit");
+        assert_eq!(
+            suggestion.spans[dash + 1].style.fg,
+            Some(app.theme.accent_tool),
+            "工具名用工具色"
+        );
+        assert_eq!(
+            estimate_entry_height_at(&app, 0, 140),
+            rendered.lines.len(),
             "估高与渲染一致"
         );
     }
