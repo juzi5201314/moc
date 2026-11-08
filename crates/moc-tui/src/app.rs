@@ -1716,6 +1716,14 @@ impl App {
         self.prompt.seed_history_handles(entries);
     }
 
+    /// 路径相对化的基准目录：有会话时用会话 cwd，否则用启动目录
+    /// （与 [`Self::history_project`] 同一口径）。
+    pub(crate) fn cwd(&self) -> &str {
+        self.session
+            .as_ref()
+            .map_or(self.startup_cwd.as_str(), |session| session.cwd.as_str())
+    }
+
     /// 历史归属的项目目录：有会话时用会话 cwd，否则用启动目录。
     fn history_project(&self) -> String {
         self.session

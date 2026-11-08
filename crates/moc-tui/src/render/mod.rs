@@ -972,6 +972,27 @@ fn short_workdir(cwd: &str) -> String {
     }
 }
 
+/// 工具摘要里的展示路径：`cwd` 内的路径相对化（等于 cwd 显示 `.`），
+/// 其余绝对路径交给 [`short_workdir`] 折叠 `$HOME`，相对路径原样。
+///
+/// 前缀匹配只在 `/` 边界上进行：cwd `/a/b` 不会吃掉 `/a/bc`。
+pub(crate) fn display_path<'a>(path: &'a str, cwd: &str) -> std::borrow::Cow<'a, str> {
+    if !cwd.is_empty() {
+        if path == cwd {
+            return ".".into();
+        }
+        if let Some(rest) = path.strip_prefix(cwd)
+            && (rest.starts_with('/') || cwd.ends_with('/'))
+        {
+            return rest.strip_prefix('/').unwrap_or(rest).into();
+        }
+    }
+    if path.starts_with('/') {
+        return short_workdir(path).into();
+    }
+    path.into()
+}
+
 /// 上下文进度条：整数运算算占位（`round(used / window * slots)`），最后一格保留给分母。
 ///
 /// 只用单宽的 `━`/`─`：两端不加全角括号，宽度恒为 `slots`，与右侧数字之间只隔一格空格。

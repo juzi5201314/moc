@@ -85,10 +85,29 @@ struct BatchGroup {
     /// 与 members 同序的上次布局输入；索引密集、有序比较，不使用可能碰撞的摘要。
     previous: Vec<(usize, u64, u64)>,
     generation: u64,
+    /// 嵌套段组（同一父调用下连续同名的子调用）；单成员的段不算批次。
+    nested: bool,
+}
+
+/// 批次归属键：顶层调用按协议批次 + 工具名分组；嵌套调用按「同一父调用下
+/// 连续同名的子调用段」分组，段首块下标作键（嵌套块忽略 `batch_id`）。
+#[derive(PartialEq, Eq, Hash)]
+enum BatchKey<'a> {
+    Batch(&'a str, &'a str),
+    Run(usize),
 }
 
 impl BatchIndex {
     fn sync(&mut self, blocks: &[Entry], generations: &mut Vec<u64>) {
+        // 全部 parent_id：自己也是父的嵌套块不能并入同名段（子块会插在段中间）。
+        let mut parents = std::collections::HashSet::new();
+        for entry in blocks {
+            if let Block::Tool(tool) = &entry.block
+                && let Some(parent) = tool.parent_id.as_deref()
+            {
+                parents.insert(parent);
+            }
+        }
         let mut ids = std::collections::HashMap::new();
         let mut count = 0;
         self.by_block.clear();
@@ -96,15 +115,46 @@ impl BatchIndex {
         for group in &mut self.groups {
             group.members.clear();
         }
+        // 上一块的嵌套身份（parent, name, id）与本段首块的下标。
+        let mut previous: Option<(&str, &str, &str)> = None;
+        let mut run_start = 0usize;
         for (index, entry) in blocks.iter().enumerate() {
             generations.push(entry.generation);
-            let group = tool_batch_key(entry).map(|key| {
+            let key = match &entry.block {
+                Block::Tool(tool) => {
+                    if let Some(parent) = tool.parent_id.as_deref() {
+                        let merges = previous.is_some_and(|(p, name, id)| {
+                            p == parent
+                                && name == tool.name
+                                && !parents.contains(tool.id.as_str())
+                                && !parents.contains(id)
+                        });
+                        if !merges {
+                            run_start = index;
+                        }
+                        previous = Some((parent, tool.name.as_str(), tool.id.as_str()));
+                        Some(BatchKey::Run(run_start))
+                    } else {
+                        previous = None;
+                        tool.batch_id
+                            .as_deref()
+                            .map(|batch| BatchKey::Batch(batch, tool.name.as_str()))
+                    }
+                }
+                _ => {
+                    previous = None;
+                    None
+                }
+            };
+            let group = key.map(|key| {
+                let nested = matches!(key, BatchKey::Run(_));
                 *ids.entry(key).or_insert_with(|| {
                     let id = count;
                     count += 1;
                     if self.groups.len() == id {
                         self.groups.push(BatchGroup::default());
                     }
+                    self.groups[id].nested = nested;
                     id
                 })
             });
@@ -116,6 +166,11 @@ impl BatchIndex {
         }
         self.groups.truncate(count);
         for group in &mut self.groups {
+            // 单成员的嵌套段退回单块渲染，不参与批次。
+            if group.nested && group.members.len() == 1 {
+                self.by_block[group.members[0]] = None;
+                continue;
+            }
             let inputs = || {
                 group
                     .members
@@ -154,6 +209,17 @@ impl BatchIndex {
                 .collect(),
         )
     }
+
+    /// 块的版式代表：批次组的全部成员都以最后一个成员的树形状为准
+    /// （整组的 `more` 与 `gap` 由它代表）。
+    fn layout_owner(&self, index: usize) -> usize {
+        self.by_block
+            .get(index)
+            .copied()
+            .flatten()
+            .and_then(|group| self.groups[group].members.last().copied())
+            .unwrap_or(index)
+    }
 }
 
 /// 嵌套工具块（`parent_id` 为 `Some` 的 PTC 子调用）的树形状。
@@ -170,18 +236,33 @@ struct TreeShape {
     more: bool,
 }
 
-/// 嵌套工具块的树形状索引，与 `App::blocks` 对齐；非嵌套块为 `None`。
+/// 块的树形版式：嵌套连线形状 + 块尾是否留一行空行。
+///
+/// `gap` 的规则：有子调用的父块与树中间的子调用都不留空行，只有整棵树
+/// 最后一个后代（父调用已结束、后面没有同层兄弟、祖先层也没有后续）才带
+/// 一行空行——这行空行不带任何连线前缀。顶层块恒为空行分隔。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TreeLayout {
+    shape: Option<TreeShape>,
+    gap: bool,
+}
+
+/// 嵌套工具块的树形状索引，与 `App::blocks` 对齐；非嵌套块 `shape` 为 `None`。
 ///
 /// 与 [`BatchIndex`] 同样每帧 O(n) 重建：逆序一遍算出「后面还有同 parent 的
-/// 子块」，正序一遍沿父链继承深度、把祖先标志压进 `rails` 位掩码，渲染路径
-/// 不必再向后扫块列表。
+/// 子块」与「后面已有子块」，正序一遍沿父链继承深度、把祖先标志压进 `rails`
+/// 位掩码，渲染路径不必再向后扫块列表。
 #[derive(Default)]
 struct TreeIndex {
-    shapes: Vec<Option<TreeShape>>,
+    layouts: Vec<TreeLayout>,
 }
 
 impl TreeIndex {
     const MAX_DEPTH: u8 = 32;
+    const EMPTY: TreeLayout = TreeLayout {
+        shape: None,
+        gap: true,
+    };
 
     fn sync(&mut self, blocks: &[Entry]) {
         // 调用 id → 块下标：父链解析与父块 running 读取共用。
@@ -191,13 +272,16 @@ impl TreeIndex {
                 index_of.insert(tool.id.as_str(), index);
             }
         }
-        // 逆序：「已在后面出现过子块的 parent_id」集合，标出后面还有兄弟的子块。
+        // 逆序：「已在后面出现过子块的 parent_id」集合，标出后面还有兄弟的子块；
+        // 同时记下每个块后面是否已有子块（父块不留尾随空行）。
         let mut seen = std::collections::HashSet::new();
         let mut later_sibling = vec![false; blocks.len()];
+        let mut has_children = vec![false; blocks.len()];
         for (index, entry) in blocks.iter().enumerate().rev() {
             let Block::Tool(tool) = &entry.block else {
                 continue;
             };
+            has_children[index] = seen.contains(tool.id.as_str());
             let Some(parent) = tool.parent_id.as_deref() else {
                 continue;
             };
@@ -206,41 +290,51 @@ impl TreeIndex {
         }
         // 正序：深度沿父链 +1，祖先的 `more` 标志压进位掩码；
         // 父块缺席（或排在后面）时按深度 1 处理。
-        self.shapes.clear();
-        self.shapes.resize(blocks.len(), None);
+        self.layouts.clear();
+        self.layouts.resize(blocks.len(), Self::EMPTY);
         for (index, entry) in blocks.iter().enumerate() {
             let Block::Tool(tool) = &entry.block else {
                 continue;
             };
-            let Some(parent_id) = tool.parent_id.as_deref() else {
-                continue;
-            };
-            let parent = index_of.get(parent_id).copied().filter(|&p| p < index);
-            let (depth, rails) = parent.and_then(|p| self.shapes[p]).map_or((1, 0), |shape| {
-                let depth = shape.depth.saturating_add(1).min(Self::MAX_DEPTH);
-                let rails = shape.rails | u32::from(shape.more) << (depth - 2);
-                (depth, rails)
+            let shape = tool.parent_id.as_deref().map(|parent_id| {
+                let parent = index_of.get(parent_id).copied().filter(|&p| p < index);
+                let (depth, rails) =
+                    parent
+                        .and_then(|p| self.layouts[p].shape)
+                        .map_or((1, 0), |shape| {
+                            let depth = shape.depth.saturating_add(1).min(Self::MAX_DEPTH);
+                            let rails = shape.rails | u32::from(shape.more) << (depth - 2);
+                            (depth, rails)
+                        });
+                let parent_running = parent
+                    .is_some_and(|p| matches!(&blocks[p].block, Block::Tool(tool) if tool.running));
+                TreeShape {
+                    depth,
+                    rails,
+                    more: later_sibling[index] || parent_running,
+                }
             });
-            let parent_running = parent
-                .is_some_and(|p| matches!(&blocks[p].block, Block::Tool(tool) if tool.running));
-            self.shapes[index] = Some(TreeShape {
-                depth,
-                rails,
-                more: later_sibling[index] || parent_running,
-            });
+            let gap =
+                !has_children[index] && shape.is_none_or(|shape| !shape.more && shape.rails == 0);
+            self.layouts[index] = TreeLayout { shape, gap };
         }
     }
 
-    fn shape(&self, index: usize) -> Option<TreeShape> {
-        self.shapes.get(index).copied().flatten()
+    fn layout(&self, index: usize) -> TreeLayout {
+        self.layouts.get(index).copied().unwrap_or(Self::EMPTY)
     }
+}
+
+/// 块用于版式判定的树布局：批次组取最后一个成员的形状，其余块取自身。
+fn block_layout(batches: &BatchIndex, tree: &TreeIndex, index: usize) -> TreeLayout {
+    tree.layout(batches.layout_owner(index))
 }
 
 struct CachedEntry {
     key: (u64, u64),
     layout_epoch: u64,
-    /// 嵌套工具块的树形状（[`TreeIndex`]）；形状变了必须重渲染，即使内容代次没变。
-    shape: Option<TreeShape>,
+    /// 树形版式（[`TreeIndex`]）；连线形状或尾随空行变了都必须重渲染，即使内容代次没变。
+    layout: TreeLayout,
     height: usize,
     lines: Vec<Line<'static>>,
     paged: Option<super::rows::RowBuffer>,
@@ -352,7 +446,7 @@ impl ScrollbackView {
         *cached = CachedEntry {
             key: pending.key,
             layout_epoch: pending.epoch,
-            shape: self.tree.shape(pending.index),
+            layout: block_layout(&self.batches, &self.tree, pending.index),
             height: result.rendered.height,
             lines,
             footer,
@@ -436,11 +530,11 @@ impl ScrollbackView {
                 self.generations.get(index).copied().unwrap_or(0),
                 app.view_gen,
             );
-            let shape = self.tree.shape(index);
+            let layout = block_layout(&self.batches, &self.tree, index);
             if self.cache.get(index).is_some_and(|cached| {
                 cached.key == key
                     && cached.layout_epoch == entry.layout_epoch
-                    && cached.shape == shape
+                    && cached.layout == layout
             }) {
                 continue;
             }
@@ -514,7 +608,7 @@ impl ScrollbackView {
             let cached = CachedEntry {
                 key,
                 layout_epoch: entry.layout_epoch,
-                shape,
+                layout,
                 height,
                 lines,
                 footer,
@@ -867,15 +961,6 @@ fn fill_block_generations(blocks: &[Entry], generations: &mut Vec<u64>) {
     BatchIndex::default().sync(blocks, generations);
 }
 
-fn tool_batch_key(entry: &Entry) -> Option<(&str, &str)> {
-    match &entry.block {
-        Block::Tool(tool) if tool.parent_id.is_none() => {
-            Some((tool.batch_id.as_deref()?, tool.name.as_str()))
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
     let mut batches = BatchIndex::default();
@@ -904,34 +989,47 @@ fn estimate_entry_height_indexed(
         return render_entry_with(index, entry, app, width, false, batches, tree).height;
     }
     let level = entry.level(app.block_level(&entry.block));
+    let layout = block_layout(batches, tree, index);
     let Some(tools) = batches.tools(index, app) else {
-        return estimate_entry_height(entry, app, level, width, tree.shape(index));
+        return estimate_entry_height(entry, app, level, width, layout);
     };
     if tools.is_empty() {
         return 0;
     }
-    estimate_tool_batch_height(app, &tools, level, usize::from(width))
+    estimate_tool_batch_height(app, &tools, level, usize::from(width), layout)
 }
 
-/// 批次渲染的行数：标题 + 每个工具的（摘要行 + 正文行）+ 完成统计 + 尾随留白。
+/// 成组渲染的行数：组头 + 每个成员的（摘要行 + 正文行）+ 尾随留白（树尾才有）。
 ///
-/// 批次只在组首块渲染，其余成员高度为零。
+/// 组只在组首块渲染，其余成员高度为零；`layout` 是最后一个成员的树布局。
 fn estimate_tool_batch_height(
     app: &App,
     tools: &[&ToolCallBlock],
     level: DetailLevel,
     width: usize,
+    layout: TreeLayout,
 ) -> usize {
-    let mut rows = tools.len() + 3;
+    // 成员都画在组头下一层：可用宽度固定为 width − 3×成员深度 − TITLE_INDENT。
+    let member_depth = usize::from(member_shape(layout.shape, false).depth);
+    let member_width = width.saturating_sub(3 * member_depth);
+    let mut rows = 1 + usize::from(layout.gap);
     for tool in tools {
+        rows += 1;
         if !tool.has_body() {
             continue;
         }
         let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
         let tail = batch_member_tail(tool, app.theme);
-        let budget = batch_summary_budget(&tail, width);
-        let (_, in_title) = title_summary(tool, &args, budget, level, app.theme);
-        rows += tool_body_rows(tool, &args, app, batch_body_width(width), level, in_title);
+        let budget = batch_summary_budget(&tail, member_width);
+        let (_, in_title) = title_summary(tool, &args, budget, level, app.theme, app.cwd());
+        rows += tool_body_rows(
+            tool,
+            &args,
+            app,
+            member_width.saturating_sub(TITLE_INDENT),
+            level,
+            in_title,
+        );
     }
     rows
 }
@@ -946,7 +1044,7 @@ fn estimate_entry_height(
     app: &App,
     level: DetailLevel,
     width: u16,
-    shape: Option<TreeShape>,
+    layout: TreeLayout,
 ) -> usize {
     let width = usize::from(width).max(8);
     match &entry.block {
@@ -972,7 +1070,7 @@ fn estimate_entry_height(
                 DetailLevel::Full => wrapped_rows(text, width).saturating_add(2),
             }
         }
-        Block::Tool(tool) => estimate_tool_height(tool, app, level, width, shape),
+        Block::Tool(tool) => estimate_tool_height(tool, app, level, width, layout),
         Block::AgentMessage { body, .. } | Block::GoalRound { body, .. } => {
             // 与 `agent_message_block` 同源：简略档是预览行数 + 省略行，隐藏档只剩标题行。
             let rows = wrapped_text_rows(body, prose_width(width)).len();
@@ -1094,31 +1192,43 @@ fn message_agent_rows_count(
     (rows, dropped)
 }
 
-/// 工具块高度：标题 + 正文行 + 尾随留白，与 [`render_tool`] 同规则。
+/// 工具块高度：标题 + 正文行 + 尾随留白（树尾才有），与 [`render_tool`] 同规则。
 fn estimate_tool_height(
     tool: &ToolCallBlock,
     app: &App,
     level: DetailLevel,
     width: usize,
-    shape: Option<TreeShape>,
+    layout: TreeLayout,
 ) -> usize {
+    let gap = usize::from(layout.gap);
     if !shows_tool_body(tool, level) {
-        return 2;
+        return 1 + gap;
     }
     let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
-    let depth = shape.map_or(0, |shape| usize::from(shape.depth));
+    let nested = layout.shape.is_some();
+    let depth = layout.shape.map_or(0, |shape| usize::from(shape.depth));
     let width = width.saturating_sub(3 * depth);
-    let budget = tool_summary_budget(tool_title(tool, &args), tool, app.theme, width);
-    let (_, in_title) = title_summary(tool, &args, budget, level, app.theme);
-    let body = tool_body_rows(tool, &args, app, prose_width(width), level, in_title);
-    body.saturating_add(2)
+    let budget = tool_summary_budget(tool_title(tool, &args), tool, app.theme, width, nested);
+    let (_, in_title) = title_summary(tool, &args, budget, level, app.theme, app.cwd());
+    let indent = if nested { TITLE_INDENT } else { PROSE_INDENT };
+    let body = tool_body_rows(
+        tool,
+        &args,
+        app,
+        width.saturating_sub(indent),
+        level,
+        in_title,
+    );
+    body + 1 + gap
 }
 
-/// 工具卡是否展开正文：无正文的记账工具与收起态的 read／run_code／todo 只留标题行。
+/// 工具卡是否展开正文：无正文的记账工具与收起态的 read／run_code／grep／find／todo
+/// 只留标题行（grep／find 的数量进了标题尾列）。
 fn shows_tool_body(tool: &ToolCallBlock, level: DetailLevel) -> bool {
     let policy = tool_body_policy(&tool.name);
     tool.has_body()
         && !(policy == ToolBody::FullOnly && !tool_is_error(tool) && level != DetailLevel::Full)
+        && !(policy == ToolBody::Count && !tool_is_error(tool) && level != DetailLevel::Full)
         && !(policy == ToolBody::Todo && level == DetailLevel::Hidden)
 }
 
@@ -1130,7 +1240,8 @@ fn tool_is_error(tool: &ToolCallBlock) -> bool {
 
 /// 单块渲染。折叠状态由全局开关与块类型共同决定。
 ///
-/// 留白规则只有一条：每个块自带一行尾随留白，从不加前导留白。
+/// 留白规则只有一条：块自带一行尾随留白，从不加前导留白；工具块按
+/// [`TreeLayout::gap`] 走——有子调用的父块与树中间的子调用都不留白。
 #[cfg(test)]
 fn render_entry(index: usize, entry: &Entry, app: &App, width: u16) -> EntryLines {
     let mut batches = BatchIndex::default();
@@ -1154,20 +1265,14 @@ fn render_entry_with(
     // 终端下图片版式（可容纳列数 → 行数）在两侧会算出不同的块高。
     let width = width.max(8);
     let level = entry.level(app.block_level(&entry.block));
+    let layout = block_layout(batches, tree, index);
     if let Some(tools) = batches.tools(index, app) {
         if tools.is_empty() {
             return EntryLines::plain(Vec::new());
         }
-        return render_tool_batch(app, &tools, usize::from(width), level, spawn_images);
+        return render_tool_batch(app, &tools, usize::from(width), level, spawn_images, layout);
     }
-    render_entry_single(
-        entry,
-        app,
-        usize::from(width),
-        level,
-        spawn_images,
-        tree.shape(index),
-    )
+    render_entry_single(entry, app, usize::from(width), level, spawn_images, layout)
 }
 
 fn render_entry_single(
@@ -1176,7 +1281,7 @@ fn render_entry_single(
     width: usize,
     level: DetailLevel,
     spawn_images: bool,
-    shape: Option<TreeShape>,
+    layout: TreeLayout,
 ) -> EntryLines {
     let theme = app.theme;
     match &entry.block {
@@ -1194,7 +1299,7 @@ fn render_entry_single(
             width,
             level,
         )),
-        Block::Tool(tool) => render_tool(tool, app, width, level, spawn_images, shape),
+        Block::Tool(tool) => render_tool(tool, app, width, level, spawn_images, layout),
         Block::AgentMessage { meta, body } => {
             EntryLines::plain(agent_message_block(meta, body, width, theme, level))
         }
@@ -1205,14 +1310,6 @@ fn render_entry_single(
     }
 }
 
-/// 批次成员正文与摘要的列：树挂在正文列（[`PROSE_INDENT`]），再让过 `├─ ` 分支。
-const BATCH_BODY_INDENT: usize = PROSE_INDENT + 3;
-
-/// 批次成员正文的可用宽度。
-fn batch_body_width(width: usize) -> usize {
-    width.saturating_sub(BATCH_BODY_INDENT)
-}
-
 /// 成员行尾的状态列：失败 `✘` 与耗时（todo 是完成进度）；无正文的记账工具（skill 等）不报。
 fn batch_member_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'static>> {
     let mut tail = Vec::new();
@@ -1220,60 +1317,160 @@ fn batch_member_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'static>> 
         tail.push(Span::styled("✘", Style::new().fg(theme.accent_error)));
     }
     if tool.has_body() {
-        for span in tool_title_tail(tool, theme) {
-            if !tail.is_empty() {
-                tail.push(Span::raw(" "));
-            }
-            tail.push(span);
+        let spans = tool_title_tail(tool, theme);
+        if !tail.is_empty() && !spans.is_empty() {
+            tail.push(Span::raw(" "));
         }
+        tail.extend(spans);
     }
     tail
 }
 
-/// 成员摘要的列宽预算：让出分支与行尾状态列（状态列前至少两格间距）。
+/// 成员摘要的列宽预算：让出行首缩进与行尾状态列（状态列前至少两格间距）。
+///
+/// `width` 是成员行在连线前缀之内的可用宽度。
 fn batch_summary_budget(tail: &[Span<'_>], width: usize) -> usize {
     let tail_width: usize = tail.iter().map(Span::width).sum();
     let reserved = if tail_width > 0 { tail_width + 2 } else { 0 };
-    batch_body_width(width).saturating_sub(reserved)
+    width.saturating_sub(TITLE_INDENT + reserved)
 }
 
-/// 同一模型响应中的同名工具合并为一个树形批次。
+/// 嵌套连线的行首前缀：一个空格 + 祖先层各 3 格（`│  `／`   `）+ 本层连接符
+/// （首行 `├─`／`└─`，续行 `│ `／`  `）；行尾不留空格，空行由调用方 `trim_end`。
+fn tree_prefix(shape: TreeShape, first: bool) -> String {
+    let mut prefix = String::from(" ");
+    for level in 0..usize::from(shape.depth).saturating_sub(1) {
+        prefix.push_str(if shape.rails & (1 << level) != 0 {
+            "│  "
+        } else {
+            "   "
+        });
+    }
+    prefix.push_str(match (first, shape.more) {
+        (true, true) => "├─",
+        (true, false) => "└─",
+        (false, true) => "│ ",
+        (false, false) => "  ",
+    });
+    prefix
+}
+
+/// 给一段行加树形连线前缀：首行连接符、续行竖线；空行只补 trim_end 后的竖线段。
+fn apply_tree_prefix(lines: &mut [Line<'static>], shape: TreeShape, rail: Style) {
+    for (index, line) in lines.iter_mut().enumerate() {
+        let prefix = tree_prefix(shape, index == 0);
+        if line.spans.is_empty() {
+            let prefix = prefix.trim_end();
+            if !prefix.is_empty() {
+                line.spans.push(Span::styled(prefix.to_owned(), rail));
+            }
+        } else {
+            line.spans.insert(0, Span::styled(prefix, rail));
+        }
+    }
+}
+
+/// 批次成员的树形状：组头的下一层，`rails` 继承组头自己的 `more`，
+/// 成员的 `more` 只看是否末位成员。
+fn member_shape(head: Option<TreeShape>, last: bool) -> TreeShape {
+    match head {
+        Some(head) => TreeShape {
+            depth: head.depth.saturating_add(1).min(TreeIndex::MAX_DEPTH),
+            rails: head.rails | u32::from(head.more) << (head.depth - 1),
+            more: !last,
+        },
+        None => TreeShape {
+            depth: 1,
+            rails: 0,
+            more: !last,
+        },
+    }
+}
+
+/// 同名工具的成组渲染：顶层批次与嵌套连续同名子调用共用这棵树。
 ///
-/// 档位取组首块的层档位（组内其余成员不单独渲染标题行，不参与档位判定）；
-/// 每个成员是否追加正文、追加几行，由该成员的工具策略与档位共同决定。
-/// 成员行尾右对齐状态列（失败 `✘`、耗时），左侧摘要按预算截断，不挤掉状态列。
-/// 统计行只把成功落定的成员计入完成，失败与运行中的另行点明。
+/// 组头 = bullet（仅顶层）+ 工具名 + ` (N)`；有失败或运行中的成员时右端补
+/// `{done}/{N} done` 统计（失败、运行中另行点明）。成员画在组头下一层：
+/// `{连线前缀}` + 摘要 + 右端状态列，正文悬挂一格与摘要同列。
+/// `layout` 取组内最后一个成员的树布局（它的 `more` 与 `gap` 才代表整组）。
 fn render_tool_batch(
     app: &App,
     tools: &[&ToolCallBlock],
     width: usize,
     level: DetailLevel,
     spawn_images: bool,
+    layout: TreeLayout,
 ) -> EntryLines {
     use moc_protocol::methods::ToolStatus;
 
     let theme = app.theme;
+    let head = layout.shape;
     let name = tools.first().map_or("tool", |tool| tool.name.as_str());
-    let mut lines = vec![clip_line(
-        Line::from(vec![
-            Span::raw(" ".repeat(TITLE_INDENT)),
-            Span::styled("• ", Style::new().fg(theme.gray_bright)),
-            Span::styled(name.to_owned(), Style::new().fg(theme.accent_tool)),
-            Span::styled(
-                format!(" ({})", tools.len()),
-                Style::new().fg(theme.gray_bright),
-            ),
-        ]),
-        width,
-    )];
+    let head_width = width.saturating_sub(3 * head.map_or(0, |shape| usize::from(shape.depth)));
+    let count = |pick: fn(&ToolCallBlock) -> bool| tools.iter().filter(|tool| pick(tool)).count();
+    let done = count(|tool| tool.status == Some(ToolStatus::Completed));
+    let failed = count(tool_is_error);
+    let running = count(|tool| tool.running);
+    let (bullet, bullet_color) = if running > 0 {
+        ("▸", theme.accent_running)
+    } else if failed == tools.len() {
+        ("✘", theme.accent_error)
+    } else {
+        ("◆", theme.accent_tool)
+    };
+    let mut title = vec![Span::raw(" ".repeat(TITLE_INDENT))];
+    if head.is_none() {
+        title.push(Span::styled(
+            format!("{bullet} "),
+            Style::new().fg(bullet_color),
+        ));
+    }
+    title.push(Span::styled(
+        name.to_owned(),
+        Style::new().fg(bullet_color).add_modifier(Modifier::BOLD),
+    ));
+    title.push(Span::styled(
+        format!(" ({})", tools.len()),
+        Style::new().fg(theme.gray_bright),
+    ));
+    // 组尾统计挪进组头右端：只在有失败或运行中时才占列。
+    if failed > 0 || running > 0 {
+        let mut tail = vec![Span::styled(
+            format!("{done}/{} {}", tools.len(), labels::status::DONE),
+            Style::new().fg(theme.gray_dim),
+        )];
+        if failed > 0 {
+            tail.push(Span::styled(
+                format!("{}{failed} {}", labels::SEP, labels::status::FAILED),
+                Style::new().fg(theme.accent_error),
+            ));
+        }
+        if running > 0 {
+            tail.push(Span::styled(
+                format!("{}{running} {}", labels::SEP, labels::status::RUNNING),
+                Style::new().fg(theme.accent_running),
+            ));
+        }
+        let tail_width: usize = tail.iter().map(Span::width).sum();
+        let used: usize = title.iter().map(Span::width).sum();
+        let gap = head_width.saturating_sub(used + tail_width).max(2);
+        title.push(Span::raw(" ".repeat(gap)));
+        title.extend(tail);
+    }
+    let mut lines = vec![clip_line(Line::from(title), head_width)];
+    let rail = tree_rail_style(theme);
+    if let Some(head) = head {
+        // 嵌套组的组头按最后一棒的树形状接线（├─ 表示后面还有兄弟或父调用还在跑）。
+        lines[0]
+            .spans
+            .insert(0, Span::styled(tree_prefix(head, true), rail));
+    }
     let mut images = Vec::new();
-    let body_width = batch_body_width(width);
+    let last = tools.len() - 1;
     for (offset, tool) in tools.iter().enumerate() {
-        let branch = if offset + 1 == tools.len() {
-            "└─ "
-        } else {
-            "├─ "
-        };
+        let shape = member_shape(head, offset == last);
+        let depth = usize::from(shape.depth);
+        let width = width.saturating_sub(3 * depth);
         let args = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
         let tail = batch_member_tail(tool, theme);
         let (summary, in_title) = title_summary(
@@ -1282,63 +1479,44 @@ fn render_tool_batch(
             batch_summary_budget(&tail, width),
             level,
             theme,
+            app.cwd(),
         );
-        let used = BATCH_BODY_INDENT + summary.iter().map(Span::width).sum::<usize>();
         let tail_width: usize = tail.iter().map(Span::width).sum();
-        let mut spans = vec![
-            Span::raw(" ".repeat(PROSE_INDENT)),
-            Span::styled(branch, tree_rail_style(theme)),
-        ];
+        let mut spans = vec![Span::raw(" ".repeat(TITLE_INDENT))];
         spans.extend(summary);
         if tail_width > 0 {
+            let used: usize = spans.iter().map(Span::width).sum();
             let gap = width.saturating_sub(used + tail_width).max(2);
             spans.push(Span::raw(" ".repeat(gap)));
             spans.extend(tail);
         }
-        lines.push(clip_line(Line::from(spans), width));
-        if !tool.has_body() {
-            continue;
+        let mut member_lines = vec![clip_line(Line::from(spans), width)];
+        let mut placements = Vec::new();
+        if tool.has_body() {
+            let body_width = width.saturating_sub(TITLE_INDENT);
+            let (body, body_placements) =
+                tool_body(tool, &args, app, body_width, level, spawn_images, in_title);
+            let base = member_lines.len();
+            member_lines.extend(
+                body.into_iter()
+                    .map(|line| hang(line, TITLE_INDENT, body_width)),
+            );
+            placements = body_placements;
+            for placement in &mut placements {
+                placement.row += base;
+                placement.x = placement
+                    .x
+                    .saturating_add(u16::try_from(TITLE_INDENT + 3 * depth).unwrap_or(u16::MAX));
+            }
         }
-        let base = lines.len();
-        let (body, mut placements) =
-            tool_body(tool, &args, app, body_width, level, spawn_images, in_title);
-        lines.extend(
-            body.into_iter()
-                .map(|line| hang(line, BATCH_BODY_INDENT, body_width)),
-        );
-        for placement in &mut placements {
-            placement.row += base;
-            placement.x = placement
-                .x
-                .saturating_add(u16::try_from(BATCH_BODY_INDENT).unwrap_or(u16::MAX));
-        }
+        apply_tree_prefix(&mut member_lines, shape, rail);
+        lines.extend(member_lines);
         images.extend(placements);
     }
-    let count = |pick: fn(&ToolCallBlock) -> bool| tools.iter().filter(|tool| pick(tool)).count();
-    let done = count(|tool| tool.status == Some(ToolStatus::Completed));
-    let failed = count(tool_is_error);
-    let running = count(|tool| tool.running);
-    let mut stats = vec![
-        Span::raw(" ".repeat(PROSE_INDENT)),
-        Span::styled(
-            format!("{done}/{} {}", tools.len(), labels::status::DONE),
-            Style::new().fg(theme.gray_dim),
-        ),
-    ];
-    if failed > 0 {
-        stats.push(Span::styled(
-            format!("{}{failed} {}", labels::SEP, labels::status::FAILED),
-            Style::new().fg(theme.accent_error),
-        ));
+    // 树尾才补一行纯空行（无连线前缀）。
+    if layout.gap {
+        lines.push(Line::default());
     }
-    if running > 0 {
-        stats.push(Span::styled(
-            format!("{}{running} {}", labels::SEP, labels::status::RUNNING),
-            Style::new().fg(theme.accent_running),
-        ));
-    }
-    lines.push(clip_line(Line::from(stats), width));
-    lines.push(Line::default());
     EntryLines {
         height: lines.len(),
         paged: None,
@@ -1348,7 +1526,7 @@ fn render_tool_batch(
     }
 }
 
-/// 普通正文的展示行上限；隐藏档为 0（计数型工具走独立的计数分支）。
+/// 普通正文的展示行上限；隐藏档为 0（计数型工具不进正文，数量在标题尾列）。
 fn content_limit(level: DetailLevel) -> usize {
     match level {
         DetailLevel::Hidden => 0,
@@ -1853,17 +2031,46 @@ fn tool_title_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'static>> {
             }),
         )];
     }
-    tool.duration_ms
-        .map(|ms| Span::styled(labels::duration(ms), Style::new().fg(theme.gray_dim)))
-        .into_iter()
-        .collect()
+    let mut tail: Vec<Span<'static>> = Vec::new();
+    // grep／find 的计数进尾列：非完整档没有正文，计数不能在转写里消失。
+    if !tool_is_error(tool)
+        && let Some(result) = tool.result.as_deref()
+        && let Some(text) = tool_count_text(tool, result)
+    {
+        tail.push(Span::styled(text, Style::new().fg(theme.gray_dim)));
+    }
+    if let Some(ms) = tool.duration_ms {
+        if !tail.is_empty() {
+            tail.push(Span::styled(
+                labels::SEP.to_owned(),
+                Style::new().fg(theme.gray_dim),
+            ));
+        }
+        tail.push(Span::styled(
+            labels::duration(ms),
+            Style::new().fg(theme.gray_dim),
+        ));
+    }
+    tail
 }
 
-/// 单卡标题行留给参数摘要的列宽：让出标记、bullet、工具名、一格间距与右端尾列。
-fn tool_summary_budget(name: &str, tool: &ToolCallBlock, theme: &Theme, width: usize) -> usize {
-    let tail_width: usize = tool_title_tail(tool, theme).iter().map(Span::width).sum();
+/// 单卡标题行留给参数摘要的列宽：让出标记、bullet（子调用无 bullet）、
+/// 工具名、一格间距与右端尾列。
+fn tool_summary_budget(
+    name: &str,
+    tool: &ToolCallBlock,
+    theme: &Theme,
+    width: usize,
+    nested: bool,
+) -> usize {
+    let tail = if nested {
+        batch_member_tail(tool, theme)
+    } else {
+        tool_title_tail(tool, theme)
+    };
+    let tail_width: usize = tail.iter().map(Span::width).sum();
     let reserved = if tail_width > 0 { tail_width + 2 } else { 0 };
-    width.saturating_sub(TITLE_INDENT + 2 + str_width(name) + 1 + reserved)
+    width.saturating_sub(TITLE_INDENT + usize::from(!nested) * 2 + str_width(name) + 1 + reserved)
 }
 
 /// 标题摘要（已按 `budget` 截断的分段着色 span），以及 bash 命令是否已整条放进标题。
@@ -1877,6 +2084,7 @@ fn title_summary(
     budget: usize,
     level: DetailLevel,
     theme: &Theme,
+    cwd: &str,
 ) -> (Vec<Span<'static>>, bool) {
     if tool.name == "bash" && ui_description(args).is_none() {
         let command = args
@@ -1896,15 +2104,21 @@ fn title_summary(
         return (Vec::new(), false);
     }
     (
-        clip_line(Line::from(summary_spans(tool, args, theme)), budget).spans,
+        clip_line(Line::from(summary_spans(tool, args, theme, cwd)), budget).spans,
         false,
     )
 }
 
-/// 标题摘要的分段着色：路径、行号范围、pattern、改动计数各给各的色。
+/// 标题摘要的分段着色：路径、行号范围、pattern、改动计数各给各的色；
+/// 路径一律过 [`super::display_path`] 相对化。
 ///
 /// 产出未截断的 span 序列；截断由调用方用 [`clip_line`] 统一完成。
-fn summary_spans(tool: &ToolCallBlock, args: &Value, theme: &Theme) -> Vec<Span<'static>> {
+fn summary_spans(
+    tool: &ToolCallBlock,
+    args: &Value,
+    theme: &Theme,
+    cwd: &str,
+) -> Vec<Span<'static>> {
     let styled =
         |text: String, color: ratatui::style::Color| Span::styled(text, Style::new().fg(color));
     let arg_str = |key: &str| {
@@ -1913,9 +2127,23 @@ fn summary_spans(tool: &ToolCallBlock, args: &Value, theme: &Theme) -> Vec<Span<
             .unwrap_or_default()
             .to_owned()
     };
+    let path_str = |key: &str| super::display_path(&arg_str(key), cwd).into_owned();
+    let glob_str = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_array)
+            .map(|globs| {
+                globs
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|glob| super::display_path(glob, cwd).into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default()
+    };
     match tool.name.as_str() {
         "edit" | "write" => {
-            let mut spans = vec![styled(arg_str("path"), theme.path)];
+            let mut spans = vec![styled(path_str("path"), theme.path)];
             if let Some(diff) = &tool.diff {
                 let stats = diff::stats(diff);
                 // 空 diff 不渲染 +0/-0；截断时计数只是已交付的部分，
@@ -1933,9 +2161,13 @@ fn summary_spans(tool: &ToolCallBlock, args: &Value, theme: &Theme) -> Vec<Span<
             }
             spans
         }
-        "bash" | "run_code" => vec![styled(
+        // 描述加粗：bash／run_code 的摘要不是参数值而是模型写的一句话，
+        // 加粗后才不会和后面的 path／pattern 参数混成一列。
+        "bash" | "run_code" => vec![Span::styled(
             ui_description(args).unwrap_or_default().to_owned(),
-            theme.text_secondary,
+            Style::new()
+                .fg(theme.text_secondary)
+                .add_modifier(Modifier::BOLD),
         )],
         "read" => {
             let offset = args.get("offset").and_then(Value::as_u64);
@@ -1945,42 +2177,20 @@ fn summary_spans(tool: &ToolCallBlock, args: &Value, theme: &Theme) -> Vec<Span<
                 (Some(offset), None) => format!(":{offset}-"),
                 _ => String::new(),
             };
-            let globs = args
-                .get("glob")
-                .and_then(Value::as_array)
-                .map(|globs| {
-                    globs
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .unwrap_or_default();
+            let globs = glob_str("glob");
             let globs = if globs.is_empty() {
                 String::new()
             } else {
                 format!(" {globs}")
             };
             vec![
-                styled(arg_str("path"), theme.path),
+                styled(path_str("path"), theme.path),
                 styled(range, theme.gray),
                 styled(globs, theme.gray),
             ]
         }
-        "grep" => vec![styled(arg_str("pattern"), theme.accent_running)],
-        "find" => vec![styled(
-            args.get("glob")
-                .and_then(Value::as_array)
-                .map(|globs| {
-                    globs
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .unwrap_or_default(),
-            theme.path,
-        )],
+        "grep" => vec![styled(arg_str("pattern"), theme.text_secondary)],
+        "find" => vec![styled(glob_str("glob"), theme.path)],
         "todo" => todo_summary_spans(args, theme),
         "TodoReminder" => vec![styled(
             "隐式提醒：同步待办进度".to_owned(),
@@ -2072,20 +2282,22 @@ fn todo_summary_spans(args: &Value, theme: &Theme) -> Vec<Span<'static>> {
     spans
 }
 
-/// 工具块：标题行 + 正文 + 尾随留白。
+/// 工具块：标题行 + 正文 + 尾随留白（树尾才有）。
 ///
 /// 标题落在块标记列，耗时在标题行右端（todo 是 `done/total` 进度），正文落在正文列；
-/// 收起态（无正文、read 非完整档）只留标题行。嵌套调用（PTC）按 [`TreeShape`] 加连线前缀。
+/// 收起态（无正文、read 非完整档）只留标题行。嵌套调用（PTC）按 [`TreeShape`] 加
+/// 连线前缀：子调用不画 bullet（连接符本身就是标记），正文与工具名首字对齐。
 fn render_tool(
     tool: &ToolCallBlock,
     app: &App,
     width: usize,
     level: DetailLevel,
     spawn_images: bool,
-    shape: Option<TreeShape>,
+    layout: TreeLayout,
 ) -> EntryLines {
     let theme = app.theme;
-    let depth = shape.map_or(0, |shape| usize::from(shape.depth));
+    let nested = layout.shape.is_some();
+    let depth = layout.shape.map_or(0, |shape| usize::from(shape.depth));
     let width = width.saturating_sub(3 * depth);
     let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
 
@@ -2096,23 +2308,32 @@ fn render_tool(
         (_, None) => ("◆", theme.accent_tool),
     };
     let name = tool_title(tool, &args);
-    let tail = tool_title_tail(tool, theme);
+    // 子调用没有 bullet，失败标记挪到尾列的 ✘（与批次成员同一套尾列）。
+    let tail = if nested {
+        batch_member_tail(tool, theme)
+    } else {
+        tool_title_tail(tool, theme)
+    };
     let tail_width: usize = tail.iter().map(Span::width).sum();
     let (summary, in_title) = title_summary(
         tool,
         &args,
-        tool_summary_budget(name, tool, theme, width),
+        tool_summary_budget(name, tool, theme, width, nested),
         level,
         theme,
+        app.cwd(),
     );
-    let mut title = vec![
-        Span::raw(" ".repeat(TITLE_INDENT)),
-        Span::styled(format!("{bullet} "), Style::new().fg(bullet_color)),
-        Span::styled(
-            name.to_owned(),
-            Style::new().fg(bullet_color).add_modifier(Modifier::BOLD),
-        ),
-    ];
+    let mut title = vec![Span::raw(" ".repeat(TITLE_INDENT))];
+    if !nested {
+        title.push(Span::styled(
+            format!("{bullet} "),
+            Style::new().fg(bullet_color),
+        ));
+    }
+    title.push(Span::styled(
+        name.to_owned(),
+        Style::new().fg(bullet_color).add_modifier(Modifier::BOLD),
+    ));
     if !summary.is_empty() {
         title.push(Span::raw(" "));
         title.extend(summary);
@@ -2133,54 +2354,34 @@ fn render_tool(
     let mut lines = vec![clip_line(Line::from(title), width)];
     let mut placements = Vec::new();
     if shows_tool_body(tool, level) {
-        let body_width = prose_width(width);
+        // 子调用正文与工具名首字对齐；顶层留在正文列。
+        let indent = if nested { TITLE_INDENT } else { PROSE_INDENT };
+        let body_width = width.saturating_sub(indent);
         let (body, body_placements) =
             tool_body(tool, &args, app, body_width, level, spawn_images, in_title);
         let base = lines.len();
-        lines.extend(
-            body.into_iter()
-                .map(|line| hang(line, PROSE_INDENT, body_width)),
-        );
+        lines.extend(body.into_iter().map(|line| hang(line, indent, body_width)));
         placements = body_placements;
         for placement in &mut placements {
             placement.row += base;
             placement.x = placement
                 .x
-                .saturating_add(u16::try_from(PROSE_INDENT).unwrap_or(u16::MAX));
+                .saturating_add(u16::try_from(indent).unwrap_or(u16::MAX));
         }
     }
-    lines.push(Line::default());
-    if let Some(shape) = shape {
+    if let Some(shape) = layout.shape {
         // 嵌套调用画连线：一个空格 + 祖先层各 3 格 + 本层 2 格；
         // 子块自己行首的缩进空格就是连接符后面那一格。
-        let rail = tree_rail_style(theme);
-        let mut ancestors = String::new();
-        for level in 0..usize::from(shape.depth).saturating_sub(1) {
-            ancestors.push_str(if shape.rails & (1 << level) != 0 {
-                "│  "
-            } else {
-                "   "
-            });
-        }
-        let own_connector = if shape.more { "├─" } else { "└─" };
-        let own_rail = if shape.more { "│ " } else { "  " };
-        for (index, line) in lines.iter_mut().enumerate() {
-            let connector = if index == 0 { own_connector } else { own_rail };
-            let prefix = format!(" {ancestors}{connector}");
-            if line.spans.is_empty() {
-                let prefix = prefix.trim_end();
-                if !prefix.is_empty() {
-                    line.spans.push(Span::styled(prefix.to_owned(), rail));
-                }
-            } else {
-                line.spans.insert(0, Span::styled(prefix, rail));
-            }
-        }
+        apply_tree_prefix(&mut lines, shape, tree_rail_style(theme));
         for placement in &mut placements {
             placement.x = placement
                 .x
                 .saturating_add(u16::try_from(3 * depth).unwrap_or(u16::MAX));
         }
+    }
+    // 树尾才补一行纯空行（无连线前缀）；树中间与父块不留。
+    if layout.gap {
+        lines.push(Line::default());
     }
     EntryLines {
         height: lines.len(),
@@ -2193,8 +2394,8 @@ fn render_tool(
 
 /// 工具正文行（不含标题与留白，不带缩进，宽度不超过 `width`）。
 ///
-/// 档位与工具策略共同决定正文：`Count` 在隐藏／简略档只报数量，`FullOnly`
-/// 只在完整档展开；其余内容按 [`content_limit`] 截断，被略去的内容折算成一行
+/// 档位与工具策略共同决定正文：`Count` 的数量进了标题尾列、非完整档没有正文，
+/// `FullOnly` 只在完整档展开；其余内容按 [`content_limit`] 截断，被略去的内容折算成一行
 /// 省略提示（`bash` 结果取尾部最新输出，`grep` 等文本结果取开头）。
 /// `command_in_title` 为真时 bash 命令已在标题里，正文不再重复 `$` 行。
 fn tool_body(
@@ -2210,18 +2411,9 @@ fn tool_body(
     let is_error = tool_is_error(tool);
     let policy = tool_body_policy(&tool.name);
 
-    // 计数型工具：隐藏、简略档只报结果数量；失败时仍回落到错误正文。
+    // 计数型工具：数量进了标题尾列，隐藏、简略档没有正文；失败时仍回落到错误正文。
     if policy == ToolBody::Count && level != DetailLevel::Full && !is_error {
-        let mut lines = Vec::new();
-        if let Some(result) = tool.result.as_deref()
-            && let Some(text) = tool_count_text(tool, result)
-        {
-            lines.push(Line::from(Span::styled(
-                text,
-                Style::new().fg(theme.gray_dim),
-            )));
-        }
-        return (lines, Vec::new());
+        return (Vec::new(), Vec::new());
     }
     // read 的隐藏、简略档没有正文。
     if policy == ToolBody::FullOnly && level != DetailLevel::Full && !is_error {
@@ -2567,11 +2759,7 @@ fn tool_body_rows(
     let policy = tool_body_policy(&tool.name);
 
     if policy == ToolBody::Count && level != DetailLevel::Full && !is_error {
-        return usize::from(
-            tool.result
-                .as_deref()
-                .is_some_and(|result| tool_count_text(tool, result).is_some()),
-        );
+        return 0;
     }
     if policy == ToolBody::FullOnly && level != DetailLevel::Full && !is_error {
         return 0;
@@ -4629,12 +4817,16 @@ mod tests {
         for level in [DetailLevel::Hidden, DetailLevel::Brief] {
             app.tool_detail = level;
             let lines = render_entry(0, &app.blocks[0], &app, width).lines;
-            let text = text_of(&lines);
+            assert_eq!(lines.len(), 2, "{level:?} 档 = 标题 + 留白");
+            let title = plain(&lines[0]);
             assert!(
-                text.contains("2 matches · 2 files"),
-                "{level:?} 档只报计数：{text}"
+                title.contains("2 matches · 2 files"),
+                "{level:?} 档计数进标题尾列：{title}"
             );
-            assert!(!text.contains("alpha beta"), "{level:?} 档不显示匹配正文");
+            assert!(
+                !text_of(&lines).contains("alpha beta"),
+                "{level:?} 档不显示匹配正文"
+            );
             assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
         }
 
@@ -4662,7 +4854,7 @@ mod tests {
         });
         app.tool_detail = DetailLevel::Brief;
         let lines = render_entry(0, &app.blocks[0], &app, width).lines;
-        assert!(text_of(&lines).contains("0 matches · 0 files"));
+        assert!(plain(&lines[0]).contains("0 matches · 0 files"));
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
 
@@ -4709,9 +4901,16 @@ mod tests {
         for level in [DetailLevel::Hidden, DetailLevel::Brief] {
             app.tool_detail = level;
             let lines = render_entry(0, &app.blocks[0], &app, width).lines;
-            let text = text_of(&lines);
-            assert!(text.contains("3 files"), "{level:?} 档只报文件数：{text}");
-            assert!(!text.contains("src/a.rs"), "{level:?} 档不显示路径");
+            assert_eq!(lines.len(), 2, "{level:?} 档 = 标题 + 留白");
+            let title = plain(&lines[0]);
+            assert!(
+                title.contains("3 files"),
+                "{level:?} 档计数进标题尾列：{title}"
+            );
+            assert!(
+                !text_of(&lines).contains("src/a.rs"),
+                "{level:?} 档不显示路径"
+            );
             assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
         }
 
@@ -4794,6 +4993,15 @@ mod tests {
             "标题取 description"
         );
         assert!(
+            brief[0]
+                .spans
+                .iter()
+                .any(|span| span.content == "Search the renderer"
+                    && span.style.add_modifier.contains(Modifier::BOLD)),
+            "description 加粗与参数文本区分：{:?}",
+            brief[0].spans
+        );
+        assert!(
             brief_text.contains("$ rg -n foo crates/moc-tui/src"),
             "命令折成单行：{brief_text}"
         );
@@ -4862,19 +5070,16 @@ mod tests {
             arguments: r#"{"pattern":"artifact","path":"artifact://ses_1/job.log"}"#.into(),
         });
 
-        let text = render_entry(1, &app.blocks[1], &app, 80)
-            .lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
+        let lines = render_entry(1, &app.blocks[1], &app, 80).lines;
+        let title = lines.first().map(|line| plain(line)).unwrap_or_default();
         assert!(
-            text.contains("grep artifact"),
-            "嵌套调用的摘要同样取参数里的模式：{text}"
+            title.starts_with(" ├─ ") || title.starts_with(" └─ "),
+            "嵌套调用带连线前缀：{title:?}"
         );
+        assert!(!title.contains('◆'), "子调用不画 bullet：{title}");
         assert!(
-            text.contains("├─ ") || text.contains("└─ "),
-            "嵌套调用带连线前缀：{text:?}"
+            title.contains("grep artifact"),
+            "嵌套调用的摘要同样取参数里的模式：{title}"
         );
     }
 
@@ -5197,7 +5402,7 @@ mod tests {
             usize::from(width),
             DetailLevel::Hidden,
             true,
-            None,
+            TreeIndex::EMPTY,
         );
         assert_eq!(hidden.lines.len(), 2, "隐藏档只剩标题行与尾随留白");
     }
@@ -5726,7 +5931,7 @@ mod tests {
         narrow.cache = vec![CachedEntry {
             key: (0, 0),
             layout_epoch: 0,
-            shape: None,
+            layout: TreeIndex::EMPTY,
             height: 3,
             paged: None,
             footer: Vec::new(),
@@ -5777,7 +5982,7 @@ mod tests {
         view.cache.push(CachedEntry {
             key: (0, 0),
             layout_epoch: 0,
-            shape: None,
+            layout: TreeIndex::EMPTY,
             height: 100_010,
             lines: vec![Line::from("可见正文")],
             paged: None,
@@ -6009,7 +6214,12 @@ mod tests {
             "批次 bullet 与块 bullet 同列"
         );
         for line in &batch[1..] {
-            assert!(lead_col(line) >= PROSE_INDENT, "批次树：{:?}", plain(line));
+            assert_eq!(
+                lead_col(line),
+                TITLE_INDENT,
+                "批次成员连接符落在 bullet 正下方：{:?}",
+                plain(line)
+            );
         }
     }
 
@@ -6064,10 +6274,23 @@ mod tests {
         for (index, pair) in rows.windows(2).enumerate() {
             assert!(!(pair[0] && pair[1]), "第 {index} 行起出现连续两行留白");
         }
-        // 每个可见块都以一行留白结尾：内容行后面紧跟内容行只允许出现在块内部
+        // 工具块的尾随留白由 gap 决定（树尾才有），其余块恒以一行留白结尾。
+        let mut tree = TreeIndex::default();
+        tree.sync(&app.blocks);
+        let mut batches = BatchIndex::default();
+        batches.sync(&app.blocks, &mut Vec::new());
         for index in 0..app.blocks.len() {
             let lines = render_entry(index, &app.blocks[index], &app, 80).lines;
-            if let Some(last) = lines.last() {
+            let Some(last) = lines.last() else {
+                continue;
+            };
+            if matches!(app.blocks[index].block, Block::Tool(_)) {
+                assert_eq!(
+                    plain(last).is_empty(),
+                    block_layout(&batches, &tree, index).gap,
+                    "第 {index} 块尾随留白与 gap 规则不一致"
+                );
+            } else {
                 assert!(plain(last).is_empty(), "第 {index} 块缺尾随留白");
             }
         }
@@ -6109,15 +6332,16 @@ mod tests {
             .find(|line| line.contains("bad"))
             .expect("失败成员行");
         assert!(failed.contains('✘'), "失败成员带 ✘：{failed:?}");
-        let stats = lines
-            .iter()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .expect("统计行");
-        assert!(stats.contains("1/2"), "只计成功：{stats:?}");
+        // 统计进了组头右端尾列，不再有独立的统计行。
+        let header = lines.first().expect("组头行");
+        assert!(header.contains("1/2"), "只计成功：{header:?}");
         assert!(
-            stats.contains(crate::render::labels::status::FAILED),
-            "统计行点明失败：{stats:?}"
+            header.contains(crate::render::labels::status::FAILED),
+            "组头点明失败：{header:?}"
+        );
+        assert!(
+            lines[1..].iter().all(|line| !line.contains("/2")),
+            "组尾不再有统计行：{lines:?}"
         );
         assert_eq!(
             estimate_entry_height_at(&app, 0, 80),
@@ -6251,23 +6475,28 @@ mod tests {
     }
 
     /// 嵌套连线：父已结束时首个子块 `├─`、末个 `└─`；父还在跑时末个仍 `├─`。
+    /// 子调用不画 bullet，连接符本身就是标记；空行只出现在树尾。
     #[test]
     fn nested_children_draw_tree_connectors() {
         use moc_protocol::methods::ToolStatus;
 
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(crate::theme::Theme::global(), events);
+        // 两个子调用用不同名字：同名相邻子调用会合并成组，测不到各自的连接符。
         let spawn_children = |app: &mut App| {
-            for id in ["c1", "c2"] {
+            for (id, name, arguments) in [
+                ("c1", "bash", r#"{"command":"echo c1"}"#),
+                ("c2", "grep", r#"{"pattern":"x"}"#),
+            ] {
                 app.start_tool_block(ToolCallStart {
                     id: id.into(),
-                    name: "bash".into(),
+                    name: name.into(),
                     parent_id: Some("p".into()),
-                    arguments: format!(r#"{{"command":"echo {id}"}}"#).into(),
+                    arguments: arguments.into(),
                 });
                 app.finish_tool_block(ToolCallFinish {
                     id: id.into(),
-                    name: "bash".into(),
+                    name: name.into(),
                     parent_id: Some("p".into()),
                     arguments: String::new(),
                     status: ToolStatus::Completed,
@@ -6299,17 +6528,22 @@ mod tests {
                 .unwrap_or_default()
         }
         assert!(
-            title_of(&app, 1).starts_with(" ├─ ◆"),
+            title_of(&app, 1).starts_with(" ├─ "),
             "运行中：{:?}",
             title_of(&app, 1)
         );
         assert!(
-            title_of(&app, 2).starts_with(" ├─ ◆"),
+            title_of(&app, 2).starts_with(" ├─ "),
             "运行中末块仍 ├─：{:?}",
             title_of(&app, 2)
         );
+        assert!(
+            !title_of(&app, 1).contains('◆'),
+            "子调用不画 bullet：{:?}",
+            title_of(&app, 1)
+        );
 
-        // 父结束：末个子块翻成 └─，上一个子块的留白行带 │。
+        // 父结束：末个子块翻成 └─ 并留下一行纯空行；中间的子块不留白。
         app.finish_tool_block(ToolCallFinish {
             id: "p".into(),
             name: "run_code".into(),
@@ -6326,18 +6560,24 @@ mod tests {
             diff: None,
         });
         assert!(
-            title_of(&app, 1).starts_with(" ├─ ◆"),
+            title_of(&app, 1).starts_with(" ├─ "),
             "首块仍 ├─：{:?}",
             title_of(&app, 1)
         );
         assert!(
-            title_of(&app, 2).starts_with(" └─ ◆"),
+            title_of(&app, 2).starts_with(" └─ "),
             "末块 └─：{:?}",
             title_of(&app, 2)
         );
         let child1 = render_entry(1, &app.blocks[1], &app, 80).lines;
         let tail = child1.last().map(plain).unwrap_or_default();
-        assert!(tail.contains('│'), "非末兄弟留白行带竖线：{tail:?}");
+        assert!(!tail.trim().is_empty(), "非末兄弟不留尾随空行：{tail:?}");
+        let child2 = render_entry(2, &app.blocks[2], &app, 80).lines;
+        assert_eq!(
+            plain(child2.last().expect("末块末行")),
+            "",
+            "树尾空行不带连线前缀"
+        );
         for index in 0..app.blocks.len() {
             assert_eq!(
                 estimate_entry_height_at(&app, index, 80),
@@ -6347,6 +6587,366 @@ mod tests {
                 "第 {index} 块估高与渲染一致"
             );
         }
+    }
+
+    /// 嵌套树的留白层级：父块运行中整棵树没有空行（父标题紧接第一个子行）；
+    /// 父块结束后只有最末后代带一行完全为空的空行。第一个子调用到达会让
+    /// 父块的 gap 翻转，缓存里的旧版式必须被重渲染掉。
+    #[test]
+    fn nested_tree_leaves_blank_only_after_the_last_descendant() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.tool_detail = DetailLevel::Brief;
+        let width = 80u16;
+        let finish = |app: &mut App, id: &str, name: &str, parent: Option<&str>, content: &str| {
+            app.finish_tool_block(ToolCallFinish {
+                id: id.into(),
+                name: name.into(),
+                parent_id: parent.map(str::to_owned),
+                arguments: String::new(),
+                status: ToolStatus::Completed,
+                result: moc_protocol::ToolResult {
+                    tool_call_id: id.into(),
+                    content: content.into(),
+                    is_error: false,
+                    images: Vec::new(),
+                },
+                duration_ms: Some(1),
+                diff: None,
+            });
+        };
+        app.start_tool_block(ToolCallStart {
+            id: "p".into(),
+            name: "run_code".into(),
+            parent_id: None,
+            arguments: r#"{"description":"父"}"#.into(),
+        });
+        // 尚无子调用：顶层单块照常带一行尾随留白。
+        let mut view = ScrollbackView::new();
+        view.sync(&app, width);
+        let tail = plain(view.cache[0].lines.last().expect("父块末行"));
+        assert!(tail.is_empty(), "无子调用时父块照常留白：{tail:?}");
+
+        // 两个不同名的子调用（不合并），父块仍在运行。
+        app.start_tool_block(ToolCallStart {
+            id: "c1".into(),
+            name: "bash".into(),
+            parent_id: Some("p".into()),
+            arguments: r#"{"command":"echo hi"}"#.into(),
+        });
+        finish(&mut app, "c1", "bash", Some("p"), "out");
+        app.start_tool_block(ToolCallStart {
+            id: "c2".into(),
+            name: "grep".into(),
+            parent_id: Some("p".into()),
+            arguments: r#"{"pattern":"x"}"#.into(),
+        });
+        finish(&mut app, "c2", "grep", Some("p"), "src/a.rs:1:x");
+
+        // 第一个子调用到达时父块的 gap 已翻转：缓存里是重渲染后的新版式。
+        view.sync(&app, width);
+        let parent = &view.cache[0].lines;
+        assert!(
+            parent.iter().all(|line| !plain(line).trim().is_empty()),
+            "有子调用的父块不留尾随空行：{parent:?}"
+        );
+        let parent_last = render_entry(0, &app.blocks[0], &app, width)
+            .lines
+            .last()
+            .map(plain)
+            .unwrap_or_default();
+        assert!(
+            !parent_last.trim().is_empty(),
+            "父块渲染结果没有空行：{parent_last:?}"
+        );
+
+        // 父块还在跑：整棵树没有任何空行。
+        let rows = transcript(&app, width);
+        assert!(
+            rows.iter().all(|line| !plain(line).trim().is_empty()),
+            "父运行中全树无空行：{rows:?}"
+        );
+        for index in 0..app.blocks.len() {
+            assert_eq!(
+                estimate_entry_height_at(&app, index, width),
+                render_entry(index, &app.blocks[index], &app, width)
+                    .lines
+                    .len(),
+                "第 {index} 块估高与渲染一致"
+            );
+        }
+
+        // 父块结束：整棵树只剩一行空行，且完全为空、挂在最末子调用末尾。
+        finish(&mut app, "p", "run_code", None, "[]");
+        let rows = transcript(&app, width);
+        let blanks: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| plain(line).is_empty())
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            blanks.as_slice(),
+            &[rows.len() - 1],
+            "整棵树只有末尾一行空行：{blanks:?}"
+        );
+        let child2 = render_entry(2, &app.blocks[2], &app, width).lines;
+        assert_eq!(
+            plain(child2.last().expect("末子末行")),
+            "",
+            "树尾空行不带连线前缀"
+        );
+        let child1 = render_entry(1, &app.blocks[1], &app, width).lines;
+        assert!(
+            !plain(child1.last().expect("中间子末行")).trim().is_empty(),
+            "中间子调用不留白"
+        );
+        for index in 0..app.blocks.len() {
+            assert_eq!(
+                estimate_entry_height_at(&app, index, width),
+                render_entry(index, &app.blocks[index], &app, width)
+                    .lines
+                    .len(),
+                "父结束后第 {index} 块估高与渲染一致"
+            );
+        }
+    }
+
+    /// 同一父调用下连续同名的子调用合并成组（组头 `read (N)`，成员画在下一层）；
+    /// 不同名打断成各自单块。父块结束后最末子调用翻成 `└─` 并带空行。
+    #[test]
+    fn nested_same_name_children_merge_into_one_group() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.tool_detail = DetailLevel::Brief;
+        let width = 80u16;
+        app.start_tool_block(ToolCallStart {
+            id: "p".into(),
+            name: "run_code".into(),
+            parent_id: None,
+            arguments: r#"{"description":"父"}"#.into(),
+        });
+        let children = [
+            ("r1", "read", r#"{"path":"a.rs"}"#),
+            ("r2", "read", r#"{"path":"b.rs"}"#),
+            ("g", "grep", r#"{"pattern":"x"}"#),
+            ("r3", "read", r#"{"path":"c.rs"}"#),
+        ];
+        for (id, name, arguments) in children {
+            app.start_tool_block(ToolCallStart {
+                id: id.into(),
+                name: name.into(),
+                parent_id: Some("p".into()),
+                arguments: arguments.into(),
+            });
+            app.finish_tool_block(ToolCallFinish {
+                id: id.into(),
+                name: name.into(),
+                parent_id: Some("p".into()),
+                arguments: String::new(),
+                status: ToolStatus::Completed,
+                result: moc_protocol::ToolResult {
+                    tool_call_id: id.into(),
+                    content: "out".into(),
+                    is_error: false,
+                    images: Vec::new(),
+                },
+                duration_ms: Some(1),
+                diff: None,
+            });
+        }
+
+        // 前两个 read 合并成组：组头 `├─ read (2)`，成员挂在下一层。
+        let group = render_entry(1, &app.blocks[1], &app, width).lines;
+        let head = plain(&group[0]);
+        assert!(
+            head.starts_with(" ├─ ") && head.contains("read (2)"),
+            "嵌套组头：{head}"
+        );
+        assert!(
+            plain(&group[1]).starts_with(" │  ├─ ") && plain(&group[1]).contains("a.rs"),
+            "组成员（非末位）：{:?}",
+            plain(&group[1])
+        );
+        assert!(
+            plain(&group[2]).starts_with(" │  └─ ") && plain(&group[2]).contains("b.rs"),
+            "组成员（末位）：{:?}",
+            plain(&group[2])
+        );
+        assert_eq!(
+            render_entry(2, &app.blocks[2], &app, width).lines.len(),
+            0,
+            "非组首成员不产出任何行"
+        );
+        // 单独的同名单元不合并：grep 与最后一个 read 各自渲染。
+        let grep = plain(
+            render_entry(3, &app.blocks[3], &app, width)
+                .lines
+                .first()
+                .expect("grep 标题"),
+        );
+        assert!(
+            grep.starts_with(" ├─ ") && !grep.contains('('),
+            "grep 单独渲染：{grep}"
+        );
+        let tail_read = render_entry(4, &app.blocks[4], &app, width).lines;
+        assert!(
+            plain(&tail_read[0]).starts_with(" ├─ "),
+            "父运行中末子仍 ├─：{:?}",
+            plain(&tail_read[0])
+        );
+
+        // 父块结束：最后一个 read 翻成 └─ 并带一行空行。
+        app.finish_tool_block(ToolCallFinish {
+            id: "p".into(),
+            name: "run_code".into(),
+            parent_id: None,
+            arguments: String::new(),
+            status: ToolStatus::Completed,
+            result: moc_protocol::ToolResult {
+                tool_call_id: "p".into(),
+                content: "[]".into(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(9),
+            diff: None,
+        });
+        let tail_read = render_entry(4, &app.blocks[4], &app, width).lines;
+        assert!(
+            plain(&tail_read[0]).starts_with(" └─ "),
+            "父结束末子 └─：{:?}",
+            plain(&tail_read[0])
+        );
+        assert_eq!(plain(tail_read.last().expect("末行")), "", "树尾空行");
+        for index in 0..app.blocks.len() {
+            assert_eq!(
+                estimate_entry_height_at(&app, index, width),
+                render_entry(index, &app.blocks[index], &app, width)
+                    .lines
+                    .len(),
+                "第 {index} 块估高与渲染一致"
+            );
+        }
+    }
+
+    /// 顶层批次：组头 `◆ name (N)`，成员 `├─` 落在 bullet 正下方；
+    /// 统计挪进组头右端且只在有失败或运行中时才出现。
+    #[test]
+    fn top_level_batch_header_carries_stats_only_when_needed() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.tool_detail = DetailLevel::Brief;
+        let width = 80u16;
+        app.register_tool_batch("b1".into(), ["r1".to_owned(), "r2".to_owned()]);
+        for (id, path) in [("r1", "a.rs"), ("r2", "b.rs")] {
+            run_tool(
+                &mut app,
+                id,
+                "read",
+                &format!(r#"{{"path":"{path}"}}"#),
+                ToolStatus::Completed,
+                "body",
+            );
+        }
+        let lines = render_entry(0, &app.blocks[0], &app, width).lines;
+        let head = plain(&lines[0]);
+        assert!(head.starts_with(" ◆ read (2)"), "组头：{head}");
+        assert!(
+            !head.contains(crate::render::labels::status::DONE),
+            "全部完成时组头不带统计：{head}"
+        );
+        assert!(
+            plain(&lines[1]).starts_with(" ├─ "),
+            "成员连接符在 bullet 正下方：{:?}",
+            plain(&lines[1])
+        );
+        assert!(plain(&lines[2]).starts_with(" └─ "));
+        assert_eq!(plain(lines.last().expect("末行")), "", "组尾空行");
+        assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
+
+        // 有失败成员：组头右端出现 done/failed 统计。
+        app.register_tool_batch("b2".into(), ["g1".to_owned(), "g2".to_owned()]);
+        run_tool(
+            &mut app,
+            "g1",
+            "grep",
+            r#"{"pattern":"ok"}"#,
+            ToolStatus::Completed,
+            "src/a.rs:1:ok",
+        );
+        run_tool(
+            &mut app,
+            "g2",
+            "grep",
+            r#"{"pattern":"bad"}"#,
+            ToolStatus::Error,
+            "regex parse error",
+        );
+        let lines = render_entry(2, &app.blocks[2], &app, width).lines;
+        let head = plain(&lines[0]);
+        assert!(
+            head.contains(crate::render::labels::status::DONE)
+                && head.contains(crate::render::labels::status::FAILED),
+            "有失败时组头带统计：{head}"
+        );
+        assert_eq!(estimate_entry_height_at(&app, 2, width), lines.len());
+    }
+
+    /// grep 简略档：计数内联进标题尾列，块只剩标题行和空行。
+    #[test]
+    fn grep_brief_inlines_count_into_title_tail() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.tool_detail = DetailLevel::Brief;
+        run_tool(
+            &mut app,
+            "g",
+            "grep",
+            r#"{"pattern":"x"}"#,
+            ToolStatus::Completed,
+            "src/a.rs:1:x\nsrc/b.rs:2:x",
+        );
+        let lines = render_entry(0, &app.blocks[0], &app, 80).lines;
+        assert_eq!(lines.len(), 2, "标题 + 空行");
+        let title = plain(&lines[0]);
+        assert!(title.contains("matches ·"), "计数进标题尾列：{title}");
+        assert!(plain(&lines[1]).is_empty(), "第二行是空行");
+        assert_eq!(estimate_entry_height_at(&app, 0, 80), lines.len());
+    }
+
+    /// display_path：cwd 内相对化、等于 cwd 显示 `.`、前缀必须落在 `/` 边界、
+    /// `$HOME` 折叠 `~`、相对路径与空 cwd 原样。
+    #[test]
+    fn display_path_relativizes_only_on_slash_boundary() {
+        use crate::render::display_path;
+
+        let home = std::env::var("HOME").expect("测试环境有 HOME");
+        let cases: Vec<(&str, &str, &str)> = vec![
+            ("/repo/src/a.rs", "/repo", "src/a.rs"),
+            ("/repo", "/repo", "."),
+            ("/repo2/a.rs", "/repo", "/repo2/a.rs"),
+            ("src/a.rs", "/repo", "src/a.rs"),
+            ("/repo/a.rs", "", "/repo/a.rs"),
+            ("/repo/sub/a.rs", "/repo/", "sub/a.rs"),
+        ];
+        for (path, cwd, want) in cases {
+            assert_eq!(
+                &*display_path(path, cwd),
+                want,
+                "display_path({path:?}, {cwd:?})"
+            );
+        }
+        let under_home = format!("{home}/x.rs");
+        assert_eq!(&*display_path(&under_home, "/elsewhere"), "~/x.rs");
     }
 
     /// 缓存 key 含树形状：父块从 running 变结束后，末个子块必须重渲染成 └─。
@@ -6504,12 +7104,18 @@ mod tests {
         app.tool_detail = DetailLevel::Brief;
         let single = render_entry(1, &app.blocks[1], &app, 60).lines;
         let single_text = text_of(&single);
-        eprintln!("单阶段简略档:\n{}", single.iter().map(plain).collect::<Vec<_>>().join("\n"));
+        eprintln!(
+            "单阶段简略档:\n{}",
+            single.iter().map(plain).collect::<Vec<_>>().join("\n")
+        );
         assert!(
             single_text.contains("├─ ⋯ 1 done"),
             "单阶段折叠行：{single_text}"
         );
-        assert!(!single_text.contains("├─ 单"), "单阶段省略阶段标题：{single_text}");
+        assert!(
+            !single_text.contains("├─ 单"),
+            "单阶段省略阶段标题：{single_text}"
+        );
         assert_eq!(
             col_of(&single, "⋯"),
             col_of(&single, "☑"),
