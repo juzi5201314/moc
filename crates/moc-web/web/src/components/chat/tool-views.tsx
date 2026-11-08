@@ -495,8 +495,8 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
   const running = tool.status === "running";
   const arg = (key: string) => (typeof args[key] === "string" ? (args[key] as string) : "");
 
-  if (tool.name === "bash" || tool.name === "run_code") {
-    const command = tool.name === "bash" ? arg("command") : arg("code");
+  if (tool.name === "bash") {
+    const command = arg("command");
     if (level === "hidden") return null;
     if (level === "full") {
       return <TerminalCard command={command} output={result} error={failed} running={running} />;
@@ -505,14 +505,45 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
     return (
       <CommandBrief
         command={command}
-        showCommand={
-          tool.name === "bash" && (headline !== command.trim() || command.includes("\n"))
-        }
+        showCommand={headline !== command.trim() || command.includes("\n")}
         output={result}
         error={failed}
         onExpand={onExpand}
       />
     );
+  }
+
+  if (tool.name === "run_code") {
+    if (level === "hidden") return null;
+    if (failed && result) {
+      return level === "full" ? <PlainOutput text={result} error /> : <ErrorLine text={result} />;
+    }
+    if (level === "brief") return null;
+    const code = arg("code");
+    return (
+      <div className="space-y-2">
+        {code && (
+          <CodeView
+            lines={code.split("\n").map((text, index) => ({ line: index + 1, text }))}
+            language="javascript"
+          />
+        )}
+        {result && <GenericResult text={result} error={false} />}
+      </div>
+    );
+  }
+
+  if (tool.name === "todo") {
+    if (level === "hidden") return null;
+    if (failed && result) {
+      return level === "full" ? <PlainOutput text={result} error /> : <ErrorLine text={result} />;
+    }
+    const phases = result ? parseTodo(result) : [];
+    return phases.length ? (
+      <TodoPhases phases={phases} className="rounded-xl bg-code px-1 py-2" />
+    ) : result ? (
+      <PlainOutput text={result} />
+    ) : null;
   }
 
   if (failed && result) {
@@ -561,14 +592,6 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
       );
     case "find":
       return <FindView result={result} />;
-    case "todo": {
-      const phases = parseTodo(result);
-      return phases.length ? (
-        <TodoPhases phases={phases} className="rounded-xl bg-code px-1 py-2" />
-      ) : (
-        <PlainOutput text={result} />
-      );
-    }
     case "web_search":
       return <SearchView result={result} />;
     case "web_fetch":

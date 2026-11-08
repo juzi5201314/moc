@@ -18,23 +18,25 @@ export const BRIEF_THINKING_ROWS = 4;
 
 /**
  * 简略档正文策略：
- * - `title`：只有标题行（read、web、todo 与未知工具）
+ * - `title`：只有标题行（read、web 与未知工具）
  * - `count`：标题行尾注报数量，不显示结果（grep、find）
- * - `command`：单行命令 + 末尾输出（bash、run_code）
+ * - `command`：单行命令 + 末尾输出（bash）
+ * - `script`：run_code——简略档只有标题，完整档给高亮脚本 + 结果
  * - `diff`：最多 {@link BRIEF_BODY_ROWS} 行 diff（edit、write）
+ * - `todo`：todo——简略/完整档都画任务快照树（隐藏档只有标题）
  * - `preview`：结果开头若干行（ask、子代理类）
  */
-export type BodyPolicy = "title" | "count" | "command" | "diff" | "preview";
+export type BodyPolicy = "title" | "count" | "command" | "script" | "diff" | "todo" | "preview";
 
 const POLICY: Record<string, BodyPolicy> = {
   read: "title",
   grep: "count",
   find: "count",
   bash: "command",
-  run_code: "command",
+  run_code: "script",
   edit: "diff",
   write: "diff",
-  todo: "title",
+  todo: "todo",
   web_search: "title",
   web_fetch: "title",
   ask: "preview",

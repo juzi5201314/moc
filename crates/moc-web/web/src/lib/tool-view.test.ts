@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  bodyPolicy,
   commandExit,
   findFiles,
   grepCountText,
   groupActivity,
+  groupable,
   parseGrep,
   parseRead,
   parseSearch,
@@ -145,6 +147,15 @@ it("手动切换在完整与当前档位的收起形态之间往返", () => {
   expect(toggledLevel("hidden", "full")).toBe("hidden");
   expect(toggledLevel("full", "full")).toBe("hidden");
   expect(toggledLevel("full", "hidden")).toBe("full");
+});
+
+describe("bodyPolicy / groupable", () => {
+  it("run_code 用 script 策略、todo 用 todo 策略，两者都不可合并", () => {
+    expect(bodyPolicy("run_code")).toBe("script");
+    expect(bodyPolicy("todo")).toBe("todo");
+    expect(groupable("run_code")).toBe(false);
+    expect(groupable("todo")).toBe(false);
+  });
 });
 
 describe("groupActivity", () => {
