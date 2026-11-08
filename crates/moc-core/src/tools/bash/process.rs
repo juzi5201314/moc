@@ -407,6 +407,7 @@ mod unix_tests {
             asynchronous: false,
             sandbox_permissions: None,
             justification: None,
+            force_bash: false,
         }
     }
     async fn test_log(path: PathBuf) -> JobLog {

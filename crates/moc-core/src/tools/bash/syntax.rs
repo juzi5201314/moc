@@ -214,6 +214,213 @@ fn push_bare(
     });
 }
 
+/// 命令的富视图：管道按源码顺序展开，`;`、`&&`、`||`、`&` 的区别被抹平。
+/// builtin_policy 靠它判断一条命令是否只是在读/搜/列/改工作区文件。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Tree {
+    pub(crate) pipelines: Vec<Pipe>,
+}
+
+/// 一条管道：`a | b | c`。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Pipe {
+    pub(crate) commands: Vec<Cmd>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Cmd {
+    Simple(Simple),
+    /// subshell/brace/for/while/until/if/case：体内全部管道按源码顺序展开；
+    /// 复合命令自身的重定向被忽略。
+    Compound(Tree),
+    /// 函数定义、`[[ ]]`、算术、coproc：内部对策略不透明。
+    Opaque,
+}
+
+/// 一条简单命令的静态视图。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Simple {
+    /// 命令名与参数；前缀赋值 `FOO=1` 忽略。
+    pub(crate) argv: Vec<Arg>,
+    pub(crate) redirects: Vec<Redirect>,
+}
+
+/// 一个词参数。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Arg {
+    /// 静态值；含展开（变量、命令替换、波浪号等）时为 `None`。
+    pub(crate) value: Option<String>,
+    /// 未加引号的 Text 片段含 `*`、`?`、`[` 或 `{`。
+    pub(crate) glob: bool,
+}
+
+/// 重定向的静态视图；写文件所需的形态被细化，其余归入 `Dup`。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Redirect {
+    /// `>`、`>>`、`>|`、`&>`、`&>>`；fd 默认 1，`&>`/`&>>` 记为 1。
+    Output {
+        fd: i32,
+        target: Option<String>,
+        append: bool,
+    },
+    /// `<`。
+    Input { target: Option<String> },
+    /// `<<` / `<<-`；body 取 `doc.value` 原文。
+    HereDoc { body: String },
+    /// `<<<`。
+    HereString { value: Option<String> },
+    /// `>&`、`<&`、`2>&1`、fd/Duplicate 目标、进程替换目标、`<>`。
+    Dup,
+}
+
+/// 解析成富视图；语法错误或解析器无法处理时返回 `None`，调用方按放行处理。
+pub(crate) fn tree(command: &str) -> Option<Tree> {
+    let options = ParserOptions::default();
+    let mut parser = Parser::new(Cursor::new(command.as_bytes()), &options);
+    let program = parser.parse_program().ok()?;
+    let mut pipelines = Vec::new();
+    for complete in &program.complete_commands {
+        collect_list(complete, &options, &mut pipelines);
+    }
+    Some(Tree { pipelines })
+}
+
+fn collect_list(list: &ast::CompoundList, options: &ParserOptions, pipelines: &mut Vec<Pipe>) {
+    for item in &list.0 {
+        for (_, pipeline) in item.0.iter() {
+            let commands = pipeline.seq.iter().map(|c| node(c, options)).collect();
+            pipelines.push(Pipe { commands });
+        }
+    }
+}
+
+fn node(command: &ast::Command, options: &ParserOptions) -> Cmd {
+    match command {
+        ast::Command::Simple(simple) => Cmd::Simple(rich_simple(simple, options)),
+        ast::Command::Compound(compound, _) => {
+            compound_tree(compound, options).map_or(Cmd::Opaque, Cmd::Compound)
+        }
+        _ => Cmd::Opaque,
+    }
+}
+
+/// 复合命令体内的全部管道按源码顺序展开；不透明形态返回 `None`。
+fn compound_tree(compound: &ast::CompoundCommand, options: &ParserOptions) -> Option<Tree> {
+    let mut pipelines = Vec::new();
+    match compound {
+        ast::CompoundCommand::Subshell(c) => collect_list(&c.list, options, &mut pipelines),
+        ast::CompoundCommand::BraceGroup(c) => collect_list(&c.list, options, &mut pipelines),
+        ast::CompoundCommand::ForClause(c) => collect_list(&c.body.list, options, &mut pipelines),
+        ast::CompoundCommand::WhileClause(c) | ast::CompoundCommand::UntilClause(c) => {
+            collect_list(&c.0, options, &mut pipelines);
+            collect_list(&c.1.list, options, &mut pipelines);
+        }
+        ast::CompoundCommand::IfClause(c) => {
+            collect_list(&c.condition, options, &mut pipelines);
+            collect_list(&c.then, options, &mut pipelines);
+            if let Some(elses) = &c.elses {
+                for clause in elses {
+                    if let Some(condition) = &clause.condition {
+                        collect_list(condition, options, &mut pipelines);
+                    }
+                    collect_list(&clause.body, options, &mut pipelines);
+                }
+            }
+        }
+        ast::CompoundCommand::CaseClause(c) => {
+            for case in &c.cases {
+                if let Some(cmd) = &case.cmd {
+                    collect_list(cmd, options, &mut pipelines);
+                }
+            }
+        }
+        ast::CompoundCommand::Arithmetic(_)
+        | ast::CompoundCommand::ArithmeticForClause(_)
+        | ast::CompoundCommand::Coprocess(_) => return None,
+    }
+    Some(Tree { pipelines })
+}
+
+fn rich_simple(simple: &ast::SimpleCommand, options: &ParserOptions) -> Simple {
+    let mut parsed = Simple {
+        argv: Vec::new(),
+        redirects: Vec::new(),
+    };
+    if let Some(prefix) = &simple.prefix {
+        for item in &prefix.0 {
+            if let CommandPrefixOrSuffixItem::IoRedirect(redirect) = item {
+                parsed.redirects.push(rich_redirect(redirect, options));
+            }
+        }
+    }
+    if let Some(name) = &simple.word_or_name {
+        parsed.argv.push(rich_arg(name, options));
+    }
+    if let Some(suffix) = &simple.suffix {
+        for item in &suffix.0 {
+            match item {
+                CommandPrefixOrSuffixItem::Word(word) => {
+                    parsed.argv.push(rich_arg(word, options));
+                }
+                CommandPrefixOrSuffixItem::IoRedirect(redirect) => {
+                    parsed.redirects.push(rich_redirect(redirect, options));
+                }
+                // 后缀赋值与进程替换都不是静态参数。
+                _ => {}
+            }
+        }
+    }
+    parsed
+}
+
+fn rich_arg(word: &ast::Word, options: &ParserOptions) -> Arg {
+    Arg {
+        value: static_value(word, options),
+        glob: unquoted_glob(word, options),
+    }
+}
+
+/// 未加引号的 Text 片段是否含 `*`、`?`、`[` 或 `{`；引号内与转义片段都不算。
+fn unquoted_glob(word: &ast::Word, options: &ParserOptions) -> bool {
+    let Ok(pieces) = word::parse(&word.value, options) else {
+        return false;
+    };
+    pieces.iter().any(|piece| match &piece.piece {
+        WordPiece::Text(text) => text.contains(['*', '?', '[', '{']),
+        _ => false,
+    })
+}
+
+fn rich_redirect(redirect: &ast::IoRedirect, options: &ParserOptions) -> Redirect {
+    use ast::{IoFileRedirectKind as Kind, IoFileRedirectTarget as Target};
+    match redirect {
+        ast::IoRedirect::File(fd, kind, target) => match (kind, target) {
+            (Kind::Write | Kind::Append | Kind::Clobber, Target::Filename(word)) => {
+                Redirect::Output {
+                    fd: fd.unwrap_or(1),
+                    target: static_value(word, options),
+                    append: matches!(kind, Kind::Append),
+                }
+            }
+            (Kind::Read, Target::Filename(word)) => Redirect::Input {
+                target: static_value(word, options),
+            },
+            _ => Redirect::Dup,
+        },
+        ast::IoRedirect::HereDocument(_, doc) => Redirect::HereDoc {
+            body: doc.doc.value.clone(),
+        },
+        ast::IoRedirect::HereString(_, word) => Redirect::HereString {
+            value: static_value(word, options),
+        },
+        ast::IoRedirect::OutputAndError(word, append) => Redirect::Output {
+            fd: 1,
+            target: static_value(word, options),
+            append: *append,
+        },
+    }
+}
+
 /// 字符索引到字节偏移的映射。brush-parser 的 `SourcePosition.index` 是字符索引，
 /// 而重写命令需要 UTF-8 字节偏移；命令里出现中文或 emoji 时两者不相等。
 struct Offsets(Vec<usize>);
@@ -316,6 +523,91 @@ mod tests {
             "引号里的 URI 不是裸词：{:?}",
             scan.bare_words
         );
+    }
+
+    #[test]
+    fn tree_flattens_lists_and_splits_pipelines() {
+        let tree = tree("a | b && c; d & e").expect("解析");
+        assert_eq!(tree.pipelines.len(), 4);
+        assert_eq!(tree.pipelines[0].commands.len(), 2);
+        let Cmd::Simple(first) = &tree.pipelines[0].commands[0] else {
+            panic!("应是简单命令");
+        };
+        assert_eq!(first.argv[0].value.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn tree_models_redirects() {
+        let tree = tree("cmd 2>&1 > out >> log < in").expect("解析");
+        let Cmd::Simple(cmd) = &tree.pipelines[0].commands[0] else {
+            panic!("应是简单命令");
+        };
+        assert_eq!(cmd.redirects[0], Redirect::Dup);
+        assert_eq!(
+            cmd.redirects[1],
+            Redirect::Output {
+                fd: 1,
+                target: Some("out".into()),
+                append: false,
+            }
+        );
+        assert_eq!(
+            cmd.redirects[2],
+            Redirect::Output {
+                fd: 1,
+                target: Some("log".into()),
+                append: true,
+            }
+        );
+        assert_eq!(
+            cmd.redirects[3],
+            Redirect::Input {
+                target: Some("in".into())
+            }
+        );
+    }
+
+    #[test]
+    fn tree_keeps_heredoc_body() {
+        let tree = tree("cat <<EOF\nline one\nEOF").expect("解析");
+        let Cmd::Simple(cmd) = &tree.pipelines[0].commands[0] else {
+            panic!("应是简单命令");
+        };
+        let Redirect::HereDoc { body } = &cmd.redirects[0] else {
+            panic!("应是 heredoc");
+        };
+        assert!(body.contains("line one"), "{body:?}");
+    }
+
+    #[test]
+    fn tree_expands_compound_bodies() {
+        let parsed = tree("for f in src/*.rs; do sed -i 's/a/b/' \"$f\"; done").expect("解析");
+        let Cmd::Compound(inner) = &parsed.pipelines[0].commands[0] else {
+            panic!("for 循环应是 Compound");
+        };
+        let Cmd::Simple(cmd) = &inner.pipelines[0].commands[0] else {
+            panic!("循环体应是简单命令");
+        };
+        assert_eq!(cmd.argv[0].value.as_deref(), Some("sed"));
+        assert!(matches!(
+            tree("((x++))").expect("解析").pipelines[0].commands[0],
+            Cmd::Opaque
+        ));
+        assert!(matches!(
+            tree("f() { cat a; }").expect("解析").pipelines[0].commands[0],
+            Cmd::Opaque
+        ));
+    }
+
+    #[test]
+    fn tree_marks_unquoted_globs() {
+        let tree = tree("cat *.rs '*.rs' a?x").expect("解析");
+        let Cmd::Simple(cmd) = &tree.pipelines[0].commands[0] else {
+            panic!("应是简单命令");
+        };
+        assert!(cmd.argv[1].glob);
+        assert!(!cmd.argv[2].glob);
+        assert!(cmd.argv[3].glob);
     }
 
     #[test]

@@ -13,6 +13,8 @@ use serde_json::Value;
 use super::job::ForegroundEnd;
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
 
+mod builtin_policy;
+pub(crate) use builtin_policy::{check as prefer_builtin_check, render as render_prefer_builtin};
 mod deny;
 pub(crate) use deny::denied_rule;
 mod group;
@@ -52,6 +54,10 @@ struct BashArgs {
     /// 模型申请更宽的执行模式；必须与 `justification` 同时出现。
     sandbox_permissions: Option<moc_protocol::SessionPermission>,
     justification: Option<String>,
+    /// 只在 service/prompt/tools.rs 的 prefer_builtin 策略检查里通过 JSON 读取。
+    #[serde(default)]
+    #[allow(dead_code)]
+    force_bash: bool,
 }
 
 fn resolve_timeout(
@@ -190,7 +196,8 @@ impl Tool for BashTool {
                         "type":"string",
                         "maxLength":500,
                         "description":"Why this command needs the wider mode; shown to the user in the approval prompt."
-                    }
+                    },
+                    "force_bash":{"type":"boolean","description":"Skip the E_PREFER_BUILTIN check for this call. Default false; only when no built-in tool can do the job."}
                 }),
                 &["description", "command"],
             ),
@@ -372,6 +379,7 @@ pub(crate) async fn run_manual(
         asynchronous: false,
         sandbox_permissions: None,
         justification: None,
+        force_bash: false,
     };
     // 用户手打的命令不受资源限制：输入本身即授权。
     let mut process = Process::spawn(args, cwd.clone(), Some(timeout), log, policy, None).await?;
@@ -603,6 +611,7 @@ mod tests {
             asynchronous: false,
             sandbox_permissions: Some(moc_protocol::SessionPermission::Full),
             justification: Some("cargo needs the network and host toolchain".into()),
+            force_bash: false,
         };
         // 授权通过后执行上下文已经是目标模式；同宽必须放行，否则升级成功也会被工具拒绝。
         assert!(validate_escalation(&args, moc_protocol::SessionPermission::Full).is_ok());

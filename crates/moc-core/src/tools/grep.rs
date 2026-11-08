@@ -30,6 +30,12 @@ struct GrepArgs {
     context_after: Option<usize>,
     skip: Option<usize>,
     #[serde(default)]
+    literal: bool,
+    #[serde(default)]
+    word: bool,
+    #[serde(default)]
+    files_only: bool,
+    #[serde(default)]
     cross_filesystems: bool,
 }
 
@@ -57,11 +63,14 @@ impl Tool for GrepTool {
                     "path":{"type":"string","description":"Scan root or resource URI; default cwd"},
                     "glob":{"type":"array","items":{"type":"string"}},
                     "case":{"type":"boolean","description":"Case-sensitive; default true"},
-                    "gitignore":{"type":"boolean"},
+                    "gitignore":{"type":"boolean","description":"Respect .gitignore, .ignore and git excludes; default true. Set false to search ignored files"},
                     "hidden":{"type":"boolean","description":"Include dotfiles and .git; default false"},
                     "context_before":{"type":"integer","minimum":0,"description":"Lines of context before each match; default 0"},
                     "context_after":{"type":"integer","minimum":0,"description":"Lines of context after each match; default 0"},
                     "skip":{"type":"integer","minimum":0,"description":"Matched files to skip, for paging"},
+                    "literal":{"type":"boolean","description":"Treat pattern as a literal string"},
+                    "word":{"type":"boolean","description":"Match whole words only"},
+                    "files_only":{"type":"boolean","description":"List matching file paths only"},
                     "cross_filesystems":{"type":"boolean","description":"Default false"}
                 }),
                 &["pattern"],
@@ -121,6 +130,16 @@ fn search_resource_file(
     let bytes =
         std::fs::read(path).map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
     search_resource_text(uri, &String::from_utf8_lossy(&bytes), args, config)
+}
+
+/// Search::new 与资源路径共用的 matcher 构建。
+fn build_matcher(args: &GrepArgs) -> Result<grep_regex::RegexMatcher, ToolError> {
+    grep_regex::RegexMatcherBuilder::new()
+        .case_insensitive(!args.case.unwrap_or(true))
+        .fixed_strings(args.literal)
+        .word(args.word)
+        .build(&args.pattern)
+        .map_err(|error| ToolError::new("E_BAD_REGEX", error.to_string()))
 }
 
 fn search_resource_text(
@@ -248,10 +267,7 @@ fn collect_resource_matches(
             ),
         ));
     }
-    let matcher = grep_regex::RegexMatcherBuilder::new()
-        .case_insensitive(!args.case.unwrap_or(true))
-        .build(&args.pattern)
-        .map_err(|error| ToolError::new("E_BAD_REGEX", error.to_string()))?;
+    let matcher = build_matcher(args)?;
     let lines: Vec<&str> = text.lines().collect();
     let mut matched = vec![false; lines.len()];
     let mut hits = Vec::new();
@@ -263,6 +279,14 @@ fn collect_resource_matches(
             matched[index] = true;
             hits.push(index);
         }
+    }
+    // files_only：命中只输出 URI 一行。
+    if args.files_only {
+        return Ok(if hits.is_empty() {
+            String::new()
+        } else {
+            uri.to_owned()
+        });
     }
     let skip = args.skip.unwrap_or(0);
     let selected = hits.into_iter().skip(skip).take(config.max_matches_total);
@@ -390,10 +414,7 @@ impl Search {
         if args.pattern.is_empty() {
             return Err(ToolError::new("E_BAD_REGEX", "pattern must not be empty"));
         }
-        let matcher = grep_regex::RegexMatcherBuilder::new()
-            .case_insensitive(!args.case.unwrap_or(true))
-            .build(&args.pattern)
-            .map_err(|error| ToolError::new("E_BAD_REGEX", error.to_string()))?;
+        let matcher = build_matcher(&args)?;
         let mut include = globset::GlobSetBuilder::new();
         for pattern in args.glob.as_deref().unwrap_or_default() {
             include.add(
@@ -505,6 +526,27 @@ impl Search {
                 }
                 matched_files += 1;
                 if matched_files <= skip {
+                    continue;
+                }
+                // files_only：每个命中文件只输出相对路径一行。
+                if self.args.files_only {
+                    if shown_files >= self.config.max_files {
+                        limited = true;
+                        break 'blocks;
+                    }
+                    let relative = path.strip_prefix(&self.cwd).unwrap_or(path);
+                    let line = relative.display().to_string();
+                    let needed = line.len() + usize::from(!output.is_empty());
+                    if !output.is_empty() && output.len() + needed > self.config.output_bytes {
+                        capped = true;
+                        break 'blocks;
+                    }
+                    if !output.is_empty() {
+                        output.push('\n');
+                    }
+                    output.push_str(&line);
+                    shown_files += 1;
+                    shown_matches += 1;
                     continue;
                 }
                 if shown_files >= self.config.max_files
@@ -673,6 +715,11 @@ impl Sink for MatchSink<'_> {
         if self.search.stopped() {
             return Ok(false);
         }
+        // files_only 只要知道命中过：首个命中后即停止读取。
+        if self.search.args.files_only {
+            self.result.matches += 1;
+            return Ok(false);
+        }
         if self.result.matches >= self.search.config.max_matches_per_file {
             self.result.truncated = true;
             return Ok(false);
@@ -698,7 +745,7 @@ impl Sink for MatchSink<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn run(root: &Path, args: Value, config: crate::config::GrepConfig) -> String {
+    pub(crate) fn run(root: &Path, args: Value, config: crate::config::GrepConfig) -> String {
         Search::new(
             serde_json::from_value(args).unwrap(),
             root.to_owned(),
@@ -868,5 +915,70 @@ mod absolute_scan_tests {
         .expect("执行扫描");
         assert!(output.contains("incomplete"));
         assert!(!output.contains("No matches found"));
+    }
+}
+
+#[cfg(test)]
+mod pattern_mode_tests {
+    use super::*;
+    fn run(root: &Path, args: Value) -> String {
+        super::tests::run(root, args, crate::config::GrepConfig::default())
+    }
+
+    #[test]
+    fn literal_treats_pattern_as_plain_text() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.txt"), "a.b\naxb\n").unwrap();
+        // 不带 literal 时 `a.b` 是正则，两行都中；literal 后只中字面行。
+        let regex_out = run(root.path(), serde_json::json!({"pattern":"a.b"}));
+        assert!(regex_out.contains("axb"), "{regex_out}");
+        let output = run(
+            root.path(),
+            serde_json::json!({"pattern":"a.b","literal":true}),
+        );
+        assert!(output.contains(":a.b"), "{output}");
+        assert!(!output.contains("axb"), "{output}");
+    }
+
+    #[test]
+    fn word_only_matches_whole_words() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.txt"), "cat\ncatapult\nmy cat\n").unwrap();
+        let output = run(
+            root.path(),
+            serde_json::json!({"pattern":"cat","word":true}),
+        );
+        assert!(output.contains(":cat"), "{output}");
+        assert!(output.contains(":my cat"), "{output}");
+        assert!(!output.contains("catapult"), "{output}");
+    }
+
+    #[test]
+    fn files_only_lists_paths_once() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.txt"), "hit\nhit\nhit\n").unwrap();
+        std::fs::write(root.path().join("b.txt"), "nope\n").unwrap();
+        std::fs::write(root.path().join("c.txt"), "hit\n").unwrap();
+        let output = run(
+            root.path(),
+            serde_json::json!({"pattern":"hit","files_only":true}),
+        );
+        let mut lines: Vec<&str> = output.lines().collect();
+        lines.sort_unstable();
+        assert_eq!(lines, ["a.txt", "c.txt"], "{output}");
+    }
+
+    #[test]
+    fn resource_files_only_lists_uri() {
+        let args: GrepArgs =
+            serde_json::from_value(serde_json::json!({"pattern":"hit","files_only":true})).unwrap();
+        let output = collect_resource_matches(
+            "local://x.md",
+            "hit\nmiss\n",
+            &args,
+            &crate::config::GrepConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(output, "local://x.md");
     }
 }

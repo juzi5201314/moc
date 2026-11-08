@@ -501,6 +501,8 @@ pub struct BashConfig {
     pub max_timeout_secs: u64,
     pub max_output_bytes: u64,
     pub persistent_log_bytes: u64,
+    /// 开启后，只读/搜索/列目录/改工作区文件的 bash 命令被拒并给出内置工具建议。
+    pub prefer_builtin: bool,
     pub deny_patterns: Vec<String>,
     /// 每条 bash 的资源上限；默认关闭。
     pub limits: crate::limits::BashLimitsConfig,
@@ -515,6 +517,7 @@ impl Default for BashConfig {
             max_timeout_secs: 3600,
             max_output_bytes: 16 * 1024 * 1024,
             persistent_log_bytes: 16 * 1024 * 1024,
+            prefer_builtin: true,
             // 与 defaults.toml 中的 deny_patterns 保持一致：动词本身不拦，拦“作用于整个
             // 文件环境（/、~、$HOME、顶层系统目录及其一级子项）”的组合与必然毁灭性的命令；
             // 命中后向用户申请确认而非直接拒绝。

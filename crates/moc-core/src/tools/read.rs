@@ -16,7 +16,7 @@ use crate::resources::{ResourceBacking, ResourceRouter};
 #[serde(deny_unknown_fields)]
 struct ReadArgs {
     path: String,
-    offset: Option<usize>,
+    offset: Option<i64>,
     limit: Option<usize>,
 }
 
@@ -27,7 +27,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "Read a text file, directory, or session resource URI; file output starts with [path#TAG] and numbers each line as N│text for edit and plan edits."
+        "Read a text file, directory, or session resource URI; file output starts with [path#TAG] and numbers each line as N│text for edit and plan edits. With an explicit limit, a directory lists one level at a time and offset paginates."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -41,7 +41,7 @@ impl Tool for ReadTool {
             schema(
                 serde_json::json!({
                     "path": {"type":"string","description":"File, directory, or session-internal URI"},
-                    "offset": {"type":"integer","minimum":1,"description":"1-based starting line"},
+                    "offset": {"type":"integer","description":"1-based starting line; negative counts from the end (-50 = last 50 lines)"},
                     "limit": {"type":"integer","minimum":1,"description":"Number of lines to read"}
                 }),
                 &["path"],
@@ -73,17 +73,21 @@ impl Tool for ReadTool {
                 None => (resolve_path(&ctx.cwd, &args.path)?, args.path.clone()),
             };
             if path.is_dir() {
-                return Ok(ToolOutcome::success(list_directory(&path, &ctx.cwd)?));
+                return Ok(ToolOutcome::success(list_directory(
+                    &path,
+                    &ctx.cwd,
+                    args.offset,
+                    args.limit,
+                )?));
             }
             let max_bytes = ctx.config.tools.output.max_file_bytes;
             let snapshot =
                 read_snapshot(&path, max_bytes).map_err(|error| map_read_error(&display, error))?;
-            let offset = args.offset.unwrap_or(1).max(1);
             let limit = args
                 .limit
                 .unwrap_or(ctx.config.tools.read.default_limit)
                 .max(1);
-            let start = offset.saturating_sub(1).min(snapshot.lines.len());
+            let start = page_start(args.offset, snapshot.lines.len());
             let end = start.saturating_add(limit).min(snapshot.lines.len());
             let anchored = snapshot.bytes.len() <= 4 * 1024 * 1024;
             // tag 固定 4 个字符：先按最终头部长度（含换行）预留预算，登记后再写入头部。
@@ -222,13 +226,9 @@ fn placeholder_line(line_no: usize, bytes: usize) -> String {
     )
 }
 
-fn render_text_resource(uri: &str, text: &str, offset: Option<usize>, limit: usize) -> String {
+fn render_text_resource(uri: &str, text: &str, offset: Option<i64>, limit: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
-    let start = offset
-        .unwrap_or(1)
-        .max(1)
-        .saturating_sub(1)
-        .min(lines.len());
+    let start = page_start(offset, lines.len());
     let end = start.saturating_add(limit.max(1)).min(lines.len());
     let mut output = format!("[{uri}]\n");
     if lines.is_empty() {
@@ -275,14 +275,25 @@ fn map_read_error(path: &str, error: std::io::Error) -> ToolError {
     ToolError::new(code, format!("{path}: {text}"))
 }
 
-fn list_directory(path: &Path, cwd: &Path) -> Result<String, ToolError> {
-    let relative = path.strip_prefix(cwd).unwrap_or(path);
-    let mut output = format!("[{}]", relative.display());
-    append_directory(path, 0, &mut output)?;
-    Ok(output)
+/// 1-based 页起点换算成 0-based 索引：0 视为 1，负数从末尾数（-50 = 最后 50 行）。
+fn page_start(offset: Option<i64>, total: usize) -> usize {
+    match offset.unwrap_or(1) {
+        n if n < 0 => total.saturating_sub(n.unsigned_abs() as usize),
+        n => (n.max(1) as usize - 1).min(total),
+    }
 }
 
-fn append_directory(path: &Path, depth: usize, output: &mut String) -> Result<(), ToolError> {
+/// 目录项：mtime 是排序键，其余字段供渲染与递归预览。
+struct DirEntry {
+    modified: std::time::SystemTime,
+    name: std::ffi::OsString,
+    size: u64,
+    directory: bool,
+    path: PathBuf,
+}
+
+/// 目录项按现有排序（mtime 新→旧，同刻按名字）收集。
+fn directory_entries(path: &Path) -> Result<Vec<DirEntry>, ToolError> {
     let mut entries = Vec::new();
     for entry in
         fs::read_dir(path).map_err(|error| map_read_error(&path.display().to_string(), error))?
@@ -294,28 +305,76 @@ fn append_directory(path: &Path, depth: usize, output: &mut String) -> Result<()
         let modified = metadata
             .modified()
             .map_err(|error| map_read_error(&entry.path().display().to_string(), error))?;
-        entries.push((
+        entries.push(DirEntry {
             modified,
-            entry.file_name(),
-            metadata.len(),
-            metadata.is_dir(),
-            entry.path(),
-        ));
+            name: entry.file_name(),
+            size: metadata.len(),
+            directory: metadata.is_dir(),
+            path: entry.path(),
+        });
     }
-    entries.sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    entries.sort_unstable_by(|left, right| {
+        right
+            .modified
+            .cmp(&left.modified)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(entries)
+}
+
+fn list_directory(
+    path: &Path,
+    cwd: &Path,
+    offset: Option<i64>,
+    limit: Option<usize>,
+) -> Result<String, ToolError> {
+    let relative = path.strip_prefix(cwd).unwrap_or(path);
+    let mut output = format!("[{}]", relative.display());
+    // 显式 limit 时改为单层分页列表；否则保持现有两层预览。
+    if let Some(limit) = limit {
+        let entries = directory_entries(path)?;
+        let start = page_start(offset, entries.len());
+        let end = start.saturating_add(limit.max(1)).min(entries.len());
+        if entries.is_empty() {
+            output.push_str("\n(empty directory)");
+        }
+        for entry in &entries[start..end] {
+            output.push_str(&format!(
+                "\n{}{}  {} B",
+                entry.name.to_string_lossy(),
+                if entry.directory { "/" } else { "" },
+                entry.size
+            ));
+        }
+        let remaining = entries.len() - end;
+        if remaining > 0 {
+            output.push_str(&format!(
+                "\n[… {remaining} more; use offset={} to continue]",
+                end + 1
+            ));
+        }
+        return Ok(output);
+    }
+    append_directory(path, 0, &mut output)?;
+    Ok(output)
+}
+
+fn append_directory(path: &Path, depth: usize, output: &mut String) -> Result<(), ToolError> {
+    let entries = directory_entries(path)?;
     let indent = "  ".repeat(depth);
     if entries.is_empty() {
         output.push_str(&format!("\n{indent}(empty directory)"));
     }
-    for (modified, name, size, directory, child) in entries.iter().take(12) {
-        let age = modified.elapsed().unwrap_or_default().as_secs();
+    for entry in entries.iter().take(12) {
+        let age = entry.modified.elapsed().unwrap_or_default().as_secs();
         output.push_str(&format!(
-            "\n{indent}{}{}  {size} B  {age}s ago",
-            name.to_string_lossy(),
-            if *directory { "/" } else { "" }
+            "\n{indent}{}{}  {} B  {age}s ago",
+            entry.name.to_string_lossy(),
+            if entry.directory { "/" } else { "" },
+            entry.size
         ));
-        if *directory && depth == 0 {
-            append_directory(child, depth + 1, output)?;
+        if entry.directory && depth == 0 {
+            append_directory(&entry.path, depth + 1, output)?;
         }
     }
     if entries.len() > 12 {
@@ -347,7 +406,7 @@ mod tests {
             )
             .unwrap();
         }
-        let output = list_directory(dir.path(), dir.path()).unwrap();
+        let output = list_directory(dir.path(), dir.path(), None, None).unwrap();
         assert!(output.contains("13.txt"));
         assert!(!output.contains("00.txt"));
         assert!(output.contains("2 more"));
@@ -361,9 +420,37 @@ mod tests {
         fs::write(dir.path().join("child/file.txt"), "x").unwrap();
         fs::write(dir.path().join("child/deeper/hidden.txt"), "x").unwrap();
         std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
-        let output = list_directory(dir.path(), dir.path()).unwrap();
+        let output = list_directory(dir.path(), dir.path(), None, None).unwrap();
         assert!(output.contains("  file.txt"));
         assert!(!output.contains("hidden.txt"));
+    }
+
+    #[test]
+    fn negative_offset_starts_from_the_end() {
+        assert_eq!(page_start(Some(-3), 10), 7);
+        assert_eq!(page_start(Some(-30), 10), 0);
+        assert_eq!(page_start(Some(0), 10), 0);
+        assert_eq!(page_start(None, 10), 0);
+        assert_eq!(page_start(Some(5), 10), 4);
+        let output = render_text_resource("local://x.md", "a\nb\nc\nd\n", Some(-2), 50);
+        assert_eq!(output, "[local://x.md]\nc\nd");
+    }
+
+    #[test]
+    fn directory_limit_paginates_a_single_level() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("child/deeper")).unwrap();
+        for index in 0..5 {
+            fs::write(dir.path().join(format!("{index}.txt")), "x").unwrap();
+        }
+        // 分页是单层列表：子目录出现但不展开。
+        let output = list_directory(dir.path(), dir.path(), None, Some(3)).unwrap();
+        assert_eq!(output.matches('\n').count(), 4, "{output}");
+        assert!(output.contains("more; use offset="), "{output}");
+        assert!(!output.contains("deeper"), "{output}");
+        // offset 翻页能拿到剩余项且不再有 more 提示。
+        let second = list_directory(dir.path(), dir.path(), Some(4), Some(3)).unwrap();
+        assert!(!second.contains("more;"), "{second}");
     }
 
     #[test]

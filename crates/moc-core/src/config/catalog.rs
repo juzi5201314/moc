@@ -150,6 +150,7 @@ fn rank(key: &str) -> usize {
         "max_timeout_secs" => 3,
         "max_output_bytes" => 4,
         "persistent_log_bytes" => 5,
+        "prefer_builtin" => 6,
         // bash 资源限制：开关在前，CPU → 软限 → 硬顶 → swap
         "cpu_cores" => 1,
         "memory_high_bytes" => 2,
@@ -550,6 +551,10 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "pricing" => (
                 "价格（每百万 token）",
                 "JSON：input/output 必填，cache_read/cache_write 可选，单位美元。",
+            ),
+            "prefer_builtin" => (
+                "内置工具优先",
+                "开启后，只读/搜索/列目录/改工作区文件的 bash 命令会被拒绝并给出等价的 read/grep/find/edit/write 调用；过滤命令输出等正常用法不受影响。默认开启。",
             ),
             "deny_patterns" => (
                 "危险命令规则",

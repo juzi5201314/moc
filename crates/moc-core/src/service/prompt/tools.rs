@@ -446,6 +446,18 @@ pub(super) async fn execute_tool_batch(
         observations,
     })
 }
+/// prefer_builtin 建议对应的内置工具在当前上下文是否可用：已注册、引擎/模式
+/// 允许、且未被 preset 策略禁用。
+fn builtin_available(inner: &CoreInner, ctx: &ToolCtx, name: &str) -> bool {
+    inner.tools.get(name).is_some_and(|tool| {
+        tool.permitted_in(ctx.engine, ctx.mode)
+            && ctx
+                .tool_policy
+                .as_ref()
+                .is_none_or(|policy| policy.permits(name))
+    })
+}
+
 async fn execute_tool(
     inner: &CoreInner,
     ctx: &ToolCtx,
@@ -559,6 +571,40 @@ async fn execute_tool(
     if name == "bash"
         && let Some(command) = args.get("command").and_then(Value::as_str)
     {
+        // 内置工具优先：只对 POSIX shell 生效；命令只是读/搜/列/改工作区文件时
+        // 拒绝并给出等价调用。resolve_cwd 失败时跳过策略，让 bash 自己报错；
+        // force_bash 为模型兜底逃生口，但危险命令规则照常执行。
+        if args.get("force_bash").and_then(Value::as_bool) != Some(true)
+            && config.tools.bash.prefer_builtin
+            && matches!(
+                crate::shell::detect().map(|choice| choice.kind),
+                Some(
+                    crate::shell::ShellKind::Bash
+                        | crate::shell::ShellKind::Zsh
+                        | crate::shell::ShellKind::Sh
+                        | crate::shell::ShellKind::GitBash
+                )
+            )
+            && let Ok(dir) =
+                crate::tools::bash::resolve_cwd(&ctx.cwd, args.get("cwd").and_then(Value::as_str))
+            && let Some(verdict) = crate::tools::bash::prefer_builtin_check(
+                command,
+                &ctx.cwd,
+                &dir,
+                args.get("stdin")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty()),
+            )
+            && verdict
+                .suggestions
+                .iter()
+                .all(|suggestion| builtin_available(inner, ctx, suggestion.tool))
+        {
+            return Ok(ToolOutcome::failure(
+                "E_PREFER_BUILTIN",
+                crate::tools::bash::render_prefer_builtin(&verdict),
+            ));
+        }
         match crate::tools::bash::denied_rule(&config.tools.bash.deny_patterns, command) {
             Err(error) => return Ok(error.into_outcome()),
             Ok(Some(rule)) if !ctx.sandbox_grants.read().dangerous_allowed(command) => {

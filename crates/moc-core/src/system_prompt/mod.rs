@@ -44,7 +44,10 @@ const WEB_BOTH_POLICY: &str =
 const WEB_SEARCH_ONLY_POLICY: &str =
     "Use web_search for current information; cite the URLs you use.";
 const WEB_FETCH_ONLY_POLICY: &str = "Use web_fetch for known URLs; cite the URLs you use.";
-const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files. Read before editing. File output starts with [path#TAG] and shows lines as N│text; edit takes that tag plus plain line numbers, and every number in one call refers to that tag. Each edit returns the file's new tag and renumbered lines; an older tag still works for lines no later edit touched, and on a rejected edit use the current lines it returns instead of re-reading.\n\nSession resources are read-only URIs for read, grep, find, and job: `artifact://jobs/<file>` and `artifact://artifacts/<file>` (job logs, archived tool output; copy URIs from notices or `job` op=list), `local://<id>.md` (plan), `history://transcript` (JSONL transcript), `skill://<name>/SKILL.md`. A bare scheme (`artifact://`, `artifact://jobs`, `local://`, `history://`, `skill://`) lists that namespace when read. Never pass a resource URI to bash or to any other program; for a job log use `job` op=output.\n\nA background job reports its completion notice (output preview and log URI) automatically. Keep working meanwhile; use `job` op=output for a log tail or op=wait to block; never sleep, re-run, or poll a job log through bash.\n\nExecution modes are enforced at execution; session state and todo updates are allowed in every mode. A non-default mode states its rules in a tail reminder; no such reminder means default mode, which permits workspace changes.";
+const TOOL_POLICY_BUILTIN: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files.";
+/// tools.bash.prefer_builtin 开启时追加在 TOOL_POLICY_BUILTIN 之后的一句。
+const TOOL_POLICY_PREFER_BUILTIN: &str = "Such bash calls are rejected with E_PREFER_BUILTIN: `cat`/`head`/`tail`/`sed -n`/`ls` → read, `rg`/`grep` over files → grep, `find -name`/`fd`/`rg --files` → find, single-file `sed -i`/`perl -pi`, `cat > F <<EOF`, `echo >> F`, and inline Python or Node file writes → edit or write. Filtering command output (`git log | rg x`, `cargo test 2>&1 | tail`) and multi-file mechanical replacements (`rg -l x | xargs sed -i ...`) stay in bash. Set bash force_bash=true only as a last resort, when no built-in tool can do the job; never to sidestep this rule.";
+const TOOL_POLICY_REST: &str = "Read before editing. File output starts with [path#TAG] and shows lines as N│text; edit takes that tag plus plain line numbers, and every number in one call refers to that tag. Each edit returns the file's new tag and renumbered lines; an older tag still works for lines no later edit touched, and on a rejected edit use the current lines it returns instead of re-reading.\n\nSession resources are read-only URIs for read, grep, find, and job: `artifact://jobs/<file>` and `artifact://artifacts/<file>` (job logs, archived tool output; copy URIs from notices or `job` op=list), `local://<id>.md` (plan), `history://transcript` (JSONL transcript), `skill://<name>/SKILL.md`. A bare scheme (`artifact://`, `artifact://jobs`, `local://`, `history://`, `skill://`) lists that namespace when read. Never pass a resource URI to bash or to any other program; for a job log use `job` op=output.\n\nA background job reports its completion notice (output preview and log URI) automatically. Keep working meanwhile; use `job` op=output for a log tail or op=wait to block; never sleep, re-run, or poll a job log through bash.\n\nExecution modes are enforced at execution; session state and todo updates are allowed in every mode. A non-default mode states its rules in a tail reminder; no such reminder means default mode, which permits workspace changes.";
 /// 项目指令块的开头一句：告诉模型下面是仓库规则文件，别和工具政策混着读。
 const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
 
@@ -236,13 +239,29 @@ pub fn pieces(
         (false, true) => Some(WEB_FETCH_ONLY_POLICY),
         (false, false) => None,
     };
+    let prefer_builtin = config.tools.bash.prefer_builtin;
     let mut tool_policy = String::with_capacity(
-        TOOL_POLICY.len() + TOOL_POLICY_REST.len() + web_policy.map_or(0, str::len) + 2,
+        TOOL_POLICY.len()
+            + TOOL_POLICY_BUILTIN.len()
+            + if prefer_builtin {
+                TOOL_POLICY_PREFER_BUILTIN.len()
+            } else {
+                0
+            }
+            + TOOL_POLICY_REST.len()
+            + web_policy.map_or(0, str::len)
+            + 4,
     );
     tool_policy.push_str(TOOL_POLICY);
     if let Some(policy) = web_policy {
         tool_policy.push(' ');
         tool_policy.push_str(policy);
+    }
+    tool_policy.push(' ');
+    tool_policy.push_str(TOOL_POLICY_BUILTIN);
+    if prefer_builtin {
+        tool_policy.push(' ');
+        tool_policy.push_str(TOOL_POLICY_PREFER_BUILTIN);
     }
     tool_policy.push(' ');
     tool_policy.push_str(TOOL_POLICY_REST);
@@ -547,6 +566,52 @@ mod tests {
             .map(Message::instruction_text)
             .collect::<Vec<_>>()
             .join("\n\n")
+    }
+
+    /// 取 tool policy 片段的文本。
+    fn tool_policy_text(config: &ResolvedConfig, cwd: &Path) -> String {
+        let model = config.resolve_model("p/model").expect("resolve model");
+        pieces(
+            config,
+            &model,
+            cwd,
+            &[],
+            &crate::skills::SkillIndex::empty(),
+            "",
+            "",
+            "",
+            None,
+        )
+        .into_iter()
+        .find(|piece| piece.name == PIECE_TOOL_POLICY)
+        .expect("tool policy piece")
+        .text
+    }
+
+    #[test]
+    fn prefer_builtin_policy_sentence_is_conditional() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        fs::create_dir_all(&cwd).unwrap();
+        // 开启（默认）：禁令句后紧跟 E_PREFER_BUILTIN 说明。
+        let config = resolved(&cwd, &home);
+        let text = tool_policy_text(&config, &cwd);
+        assert!(
+            text.contains(&format!(
+                "{TOOL_POLICY_BUILTIN} {TOOL_POLICY_PREFER_BUILTIN}"
+            )),
+            "{text}"
+        );
+        // 关闭：不含该句，禁令句后与原文逐字节一致地接 REST。
+        let off_home = directory.path().join("home2");
+        let config = resolved_with_compat(&cwd, &off_home, "[tools.bash]\nprefer_builtin = false");
+        let text = tool_policy_text(&config, &cwd);
+        assert!(!text.contains("E_PREFER_BUILTIN"), "{text}");
+        assert!(
+            text.contains(&format!("{TOOL_POLICY_BUILTIN} {TOOL_POLICY_REST}")),
+            "{text}"
+        );
     }
 
     #[test]
