@@ -1,8 +1,8 @@
-//! agent preset：一套固定的系统提示片段 + 工具面策略，spawn 时按名选用。
+//! 固定角色定义：用途说明、模型、系统提示与工具策略；普通 spawn 只能按 role 选用。
 //!
-//! preset 只能**收缩**子代理的工具面，不能放大：引擎、模式、配置与权限检查
-//! 原样生效。内置 preset 与插件注册的 preset 走同一张表，但模型只能按名
-//! 选用，永远看不到注册接口本身。
+//! 角色只能收缩工具面，引擎、模式、配置与权限检查原样生效。用户插件在加载时
+//! 注册 custom；内置 Explorer 与 custom 经角色目录统一筛选，Fusion 使用专用入口。
+//! 模型没有注册角色或覆盖角色定义的接口。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,7 +20,7 @@ fn invalid(message: impl Into<String>) -> CoreError {
 pub enum ToolPolicy {
     /// 白名单：仅列出的工具可用。`yield` 由注册方保证在列，交付通道不可剥夺。
     Allow(BTreeSet<String>),
-    /// 拒绝列表：除列出外全部可用（Claude Code Explore 的模型）。
+    /// 拒绝列表：仅排除列出的工具，其余仍受引擎、模式与会话权限约束。
     Deny(BTreeSet<String>),
 }
 
@@ -34,7 +34,7 @@ impl ToolPolicy {
     }
 
     /// Allow 策略必须保留 `yield`，否则子代理没有交付通道。
-    fn ensure_deliverable(&mut self) {
+    pub(super) fn ensure_deliverable(&mut self) {
         if let Self::Allow(names) = self {
             names.insert("yield".to_owned());
         }
@@ -46,6 +46,10 @@ impl ToolPolicy {
 pub struct AgentPreset {
     /// 稳定标识：spawn 参数与持久化都用它。
     pub name: String,
+    /// 主代理角色目录中的用途说明，不向父代理暴露角色系统提示。
+    pub description: String,
+    /// 角色固定模型；inherit 沿用父模型，none 禁用，不能由 spawn 覆盖。
+    pub model: String,
     /// 注入 `<subagent>` 块的系统提示片段（模型可见文本，用英文写）。
     pub system_prompt: String,
     pub tools: ToolPolicy,
@@ -56,6 +60,8 @@ pub const MAX_PRESET_PROMPT_CHARS: usize = 4000;
 
 /// Fusion 会话执行侧的 preset 名；只能经 `sidekick` 工具的内部 spawn 路径创建。
 pub const SIDEKICK_PRESET: &str = "sidekick";
+pub const EXPLORER_ROLE: &str = "explorer";
+pub const EXPLORER_DESCRIPTION: &str = "Read-only codebase exploration: locate code, trace behavior, and report evidence. No workspace writes.";
 
 /// sidekick `yield` 的结构化交付契约：spawn 时随 `output_schema` 注入。
 ///
@@ -138,45 +144,23 @@ impl PresetRegistry {
     pub fn get(&self, name: &str) -> Option<&AgentPreset> {
         self.presets.get(name)
     }
-
-    /// 全部已注册 preset 名，按字典序；供错误提示列出可选值。
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.presets.keys().map(String::as_str)
-    }
 }
 
-/// 内置 `explore`：只读侦察子代理，对齐 Claude Code Explore 的拒绝列表模型。
-///
-/// 禁项逐项对应 CC 的 `disallowedTools`：`edit`/`write`（含 `clm_context` 这类
-/// 写会话上下文的）↔ Edit/Write/NotebookEdit，`spawn_agent` ↔ Agent，
-/// `stop_agent`/`wait_agent` 随之而去（explore 恒为叶节点），`plan`/
-/// `exit_plan` ↔ ExitPlanMode。`ask` 排除：子代理的提问应经 `message_agent`
-/// 路由给父代理，直接弹用户违反委托契约。
+/// Explorer 沿用拒绝列表，保留 shell、MCP 和插件工具用于调查。
 fn builtin_explore() -> AgentPreset {
-    let denied: BTreeSet<String> = [
-        "edit",
-        "write",
-        "spawn_agent",
-        "stop_agent",
-        "wait_agent",
-        "plan",
-        "exit_plan",
-        "clm_context",
-        "ask",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
     AgentPreset {
-        name: "explore".to_owned(),
+        name: EXPLORER_ROLE.to_owned(),
+        description: EXPLORER_DESCRIPTION.to_owned(),
+        model: "inherit".to_owned(),
         system_prompt: "\
-Preset: explore — read-only reconnaissance agent.
-- Investigate and report; never modify files, run mutating commands, or change system state.
-- The parent cannot see your transcript, tool calls, or reasoning: everything it needs must be in the `yield` report.
-- Cite concrete evidence for every finding: `path:line` references, symbol names, the commands you ran.
-- Cover the task scope thoroughly; if something is ambiguous or missing, say so plainly instead of guessing."
+You are Explorer, a read-only codebase investigator. Do not perform any workspace writes. Report findings with path:line evidence and note uncertainties."
             .to_owned(),
-        tools: ToolPolicy::Deny(denied),
+        tools: ToolPolicy::Deny(
+            ["edit", "write", "spawn_agent", "stop_agent", "wait_agent", "plan", "exit_plan", "clm_context", "ask"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        ),
     }
 }
 
@@ -201,6 +185,8 @@ fn builtin_sidekick() -> AgentPreset {
     .collect();
     AgentPreset {
         name: SIDEKICK_PRESET.to_owned(),
+        description: String::new(),
+        model: "inherit".to_owned(),
         system_prompt: "\
 Preset: sidekick — the execution partner of a Fusion lead.
 - The lead is a frontier model that owns the task: it plans, makes the design decisions, talks to the user, and reviews your work. You execute its handoffs: implement changes, set up or repair the environment, run builds, linters, type-checks and tests, and verify results.
@@ -230,6 +216,8 @@ mod tests {
     fn preset(name: &str, policy: ToolPolicy) -> AgentPreset {
         AgentPreset {
             name: name.to_owned(),
+            description: "测试角色".to_owned(),
+            model: "inherit".to_owned(),
             system_prompt: "test prompt".to_owned(),
             tools: policy,
         }
@@ -238,10 +226,10 @@ mod tests {
     #[test]
     fn registry_rejects_duplicates_and_bad_names() {
         let mut registry = PresetRegistry::with_builtins();
-        assert!(registry.get("explore").is_some());
+        assert!(registry.get(EXPLORER_ROLE).is_some());
         assert!(
             registry
-                .register(preset("explore", ToolPolicy::Deny(BTreeSet::new())))
+                .register(preset(EXPLORER_ROLE, ToolPolicy::Deny(BTreeSet::new())))
                 .is_err(),
             "与内置名冲突必须拒绝"
         );
@@ -257,10 +245,6 @@ mod tests {
             registry
                 .register(preset("scout", ToolPolicy::Deny(BTreeSet::new())))
                 .is_ok()
-        );
-        assert_eq!(
-            registry.names().collect::<Vec<_>>(),
-            vec!["explore", "scout", "sidekick"]
         );
     }
 

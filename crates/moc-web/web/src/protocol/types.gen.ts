@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: d00e908112602197
+// schema sha256: 2e07da17061b32d2
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -1115,7 +1115,7 @@ export interface AgentInfo {
   model: string;
   parent_id: string;
   /**
-   * spawn 时选定的 agent preset；普通子代理为 `None`。
+   * 创建时固定的角色名；workflow 动态 actor 不注册为全局角色。
    */
   preset?: string | null;
   status: AgentStatus;
@@ -1138,6 +1138,17 @@ export interface AgentListParams {
  */
 export interface AgentListResult {
   agents: AgentInfo[];
+  roles: AgentRole[];
+}
+/**
+ * 当前调用方可派发的固定角色；定义归配置所有，不向客户端开放覆盖。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "AgentRole".
+ */
+export interface AgentRole {
+  description: string;
+  name: string;
 }
 /**
  * 一条代理间消息的来源元信息；随消息条目持久化。
@@ -1216,19 +1227,9 @@ export interface AgentProfile {
  */
 export interface AgentSpawnParams {
   /**
-   * 仅允许 `inherit`、`explore`；省略等同于 `inherit`。
+   * 已注册且启用的固定角色；角色模型、提示词和工具面不接受调用方覆盖。
    */
-  model?: string | null;
-  /**
-   * 子代理 `yield` 交付物必须满足的 JSON Schema；省略则交付物为自由文本。
-   */
-  output_schema?: {
-    [k: string]: unknown;
-  };
-  /**
-   * 已注册的 agent preset 名；省略为默认子代理。
-   */
-  preset?: string | null;
+  role: string;
   /**
    * 调用方会话 ID。
    */
@@ -1275,7 +1276,7 @@ export interface AgentWaitEntry {
   message?: Message | null;
   status: AgentStatus;
   /**
-   * 带 `output_schema` spawn 的子代理交付的结构化结果；自由文本交付为 `None`。
+   * workflow/Fusion 契约声明的结构化交付；自由文本角色为 `None`。
    */
   structured_result?: {
     [k: string]: unknown;

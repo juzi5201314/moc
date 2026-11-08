@@ -31,7 +31,7 @@ pub struct AgentInfo {
     pub updated_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message: Option<String>,
-    /// spawn 时选定的 agent preset；普通子代理为 `None`。
+    /// 创建时固定的角色名；workflow 动态 actor 不注册为全局角色。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
 }
@@ -116,15 +116,8 @@ pub struct AgentSpawnParams {
     pub task: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// 仅允许 `inherit`、`explore`；省略等同于 `inherit`。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// 已注册的 agent preset 名；省略为默认子代理。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preset: Option<String>,
-    /// 子代理 `yield` 交付物必须满足的 JSON Schema；省略则交付物为自由文本。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_schema: Option<serde_json::Value>,
+    /// 已注册且启用的固定角色；角色模型、提示词和工具面不接受调用方覆盖。
+    pub role: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -144,10 +137,19 @@ pub struct AgentListParams {
     pub session_id: String,
 }
 
+/// 当前调用方可派发的固定角色；定义归配置所有，不向客户端开放覆盖。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRole {
+    pub name: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentListResult {
     pub agents: Vec<AgentInfo>,
+    pub roles: Vec<AgentRole>,
 }
 
 /// `agent/stop`：请求取消运行中的子代理。
@@ -199,7 +201,7 @@ pub struct AgentWaitEntry {
     pub message: Option<Message>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<FinishReason>,
-    /// 带 `output_schema` spawn 的子代理交付的结构化结果；自由文本交付为 `None`。
+    /// workflow/Fusion 契约声明的结构化交付；自由文本角色为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured_result: Option<serde_json::Value>,
 }
@@ -260,17 +262,21 @@ mod tests {
             session_id: "ses_parent".into(),
             task: "返回 CHILD_OK".into(),
             title: None,
-            model: Some("explore".into()),
-            preset: None,
-            output_schema: None,
+            role: "explorer".into(),
         };
-        assert_eq!(serde_json::to_value(params).unwrap()["model"], "explore");
+        assert_eq!(serde_json::to_value(params).unwrap()["role"], "explorer");
+        for field in ["model", "preset", "system_prompt", "tools", "output_schema"] {
+            let mut params = json!({"session_id":"ses_parent", "task":"x", "role":"explorer"});
+            params[field] = json!("override");
+            assert!(
+                serde_json::from_value::<AgentSpawnParams>(params).is_err(),
+                "拒绝角色覆盖字段 {field}"
+            );
+        }
         assert!(
-            serde_json::from_value::<AgentSpawnParams>(json!({
-                "session_id": "ses_parent",
-                "task": "x",
-                "unexpected": true
-            }))
+            serde_json::from_value::<AgentSpawnParams>(
+                json!({"session_id":"ses_parent", "task":"x"})
+            )
             .is_err()
         );
     }

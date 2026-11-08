@@ -18,8 +18,8 @@ const MCP_TRUST_NOTICE: &str = "MCP server names, tool descriptions, and server 
 pub struct ToolCatalog {
     tools: Vec<Arc<dyn Tool>>,
     servers: BTreeMap<String, ServerStatus>,
-    /// 会话已激活 workflow 工具面（激活后签名/目录含 workflow 工具）。
-    workflows_active: bool,
+    /// 声明、PTC 发现与执行共享相同的角色和权限快照。
+    scope: super::ToolScope,
 }
 
 impl ToolCatalog {
@@ -28,7 +28,7 @@ impl ToolCatalog {
         snapshot: &McpSnapshot,
         manager: Arc<McpManager>,
         plugins: Vec<Arc<dyn Tool>>,
-        workflows_active: bool,
+        scope: super::ToolScope,
     ) -> Result<Self, ToolError> {
         let mut tools: Vec<Arc<dyn Tool>> = registry.all().to_vec();
         tools.extend(plugins);
@@ -50,7 +50,7 @@ impl ToolCatalog {
         Ok(Self {
             tools,
             servers: snapshot.statuses.clone(),
-            workflows_active,
+            scope,
         })
     }
 
@@ -59,6 +59,33 @@ impl ToolCatalog {
             .binary_search_by(|tool| tool.name().cmp(name))
             .ok()
             .map(|index| Arc::clone(&self.tools[index]))
+    }
+
+    pub(crate) fn definition(&self, tool: &dyn Tool) -> moc_llm::ToolDef {
+        self.scope.define(tool)
+    }
+
+    pub(crate) fn role_instructions(&self) -> String {
+        if !self.scope.control_agents
+            || self
+                .scope
+                .policy
+                .as_ref()
+                .is_some_and(|policy| !policy.permits("spawn_agent"))
+        {
+            return String::new();
+        }
+        let mut prompt = String::from("<agent-roles>\nAvailable roles for spawn_agent:\n");
+        if self.scope.roles.is_empty() {
+            prompt.push_str("No roles are enabled. spawn_agent is unavailable.\n");
+        } else {
+            for (name, description) in &self.scope.roles {
+                prompt.push_str(&format!("{name}: {description}\n"));
+            }
+            prompt.push_str("Delegate a complete task, then do independent work or wait for delivery. Send follow-up messages only for necessary clarification or blockers.\n");
+        }
+        prompt.push_str("</agent-roles>");
+        prompt
     }
 
     /// 目录里当前可调的工具：PTC 引擎下嵌套调用沿用 Standard 引擎面（除 `run_code`
@@ -78,7 +105,8 @@ impl ToolCatalog {
             engine
         };
         self.tools.iter().filter(move |tool| {
-            tool.name() != "run_code"
+            self.scope.permits(tool.name())
+                && tool.name() != "run_code"
                 && tool.origin() != ToolOrigin::Plugin
                 && (workflows_active
                     || !crate::workflow::runtime::WORKFLOW_TOOLS.contains(&tool.name()))
@@ -95,7 +123,7 @@ impl ToolCatalog {
         config: &ResolvedConfig,
     ) -> Value {
         let mut counts = BTreeMap::<&str, usize>::new();
-        for tool in self.visible(engine, mode, ask_supported, self.workflows_active, config) {
+        for tool in self.visible(engine, mode, ask_supported, self.scope.workflows, config) {
             if let Some(server) = server_of(tool.name()) {
                 *counts.entry(server).or_default() += 1;
             }
@@ -147,7 +175,7 @@ impl ToolCatalog {
         let query = query.trim().to_lowercase();
         let terms: Vec<_> = query.split_whitespace().collect();
         let mut found = Vec::new();
-        for tool in self.visible(engine, mode, ask_supported, self.workflows_active, config) {
+        for tool in self.visible(engine, mode, ask_supported, self.scope.workflows, config) {
             let name = tool.name();
             let origin = server_of(name);
             if server.is_some() && server != origin {
@@ -184,7 +212,7 @@ impl ToolCatalog {
         name: &str,
     ) -> Result<Value, ToolError> {
         let tool = self
-            .visible(engine, mode, ask_supported, self.workflows_active, config)
+            .visible(engine, mode, ask_supported, self.scope.workflows, config)
             .find(|tool| tool.name() == name)
             .ok_or_else(|| {
                 ToolError::new(
@@ -193,7 +221,7 @@ impl ToolCatalog {
                 )
             })?;
         Ok(
-            json!({"name":name,"description":tool.description(),"server":server_of(name),"inputSchema":tool.def().parameters,"outputSchema":tool.output_schema(),"readOnly":tool.tier()==Tier::Read}),
+            json!({"name":name,"description":tool.description(),"server":server_of(name),"inputSchema":self.definition(tool.as_ref()).parameters,"outputSchema":tool.output_schema(),"readOnly":tool.tier()==Tier::Read}),
         )
     }
 }
@@ -218,6 +246,55 @@ mod tests {
     use super::*;
     use crate::tools::plugin::PluginTool;
     use moc_plugin::{ModeMask, ToolDecl};
+
+    #[test]
+    fn explorer_keeps_shell_and_mcp_discoverable() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let config = ResolvedConfig::load(&crate::CoreConfig {
+            home: root.path().join("home"),
+            cwd: root.path().to_owned(),
+            ..Default::default()
+        })
+        .expect("默认配置");
+        let roles = crate::agents::PresetRegistry::with_builtins();
+        let mut scope = crate::tools::ToolScope::top();
+        scope.subagent = true;
+        scope.policy = Some(roles.get("explorer").unwrap().tools.clone());
+        let snapshot = McpSnapshot {
+            tools: vec![Arc::new(moc_mcp::McpToolInfo {
+                server: "demo".into(),
+                name: "lookup".into(),
+                qualified: "mcp__demo__lookup".into(),
+                title: None,
+                description: None,
+                input_schema: json!({"type":"object"}),
+                output_schema: None,
+                read_only: false,
+            })],
+            ..Default::default()
+        };
+        let catalog = ToolCatalog::new(
+            &ToolRegistry::new(),
+            &snapshot,
+            McpManager::new(Vec::new(), tokio_util::sync::CancellationToken::new()),
+            Vec::new(),
+            scope,
+        )
+        .expect("Explorer 工具目录");
+        for engine in [SessionEngine::Standard, SessionEngine::Ptc] {
+            let names: Vec<_> = catalog
+                .visible(engine, Mode::Default, false, false, &config)
+                .map(|tool| tool.name())
+                .collect();
+            assert!(names.contains(&"bash"), "{engine:?} 必须保留 shell");
+            assert!(
+                names.contains(&"mcp__demo__lookup"),
+                "{engine:?} 必须保留 MCP"
+            );
+            assert!(!names.contains(&"write"));
+            assert!(!names.contains(&"edit"));
+        }
+    }
 
     #[test]
     fn plugin_tools_are_not_discoverable_from_run_code() {
@@ -249,7 +326,7 @@ mod tests {
             &McpSnapshot::default(),
             McpManager::new(Vec::new(), tokio_util::sync::CancellationToken::new()),
             plugins,
-            false,
+            crate::tools::ToolScope::top(),
         )
         .expect("工具目录");
         use crate::service::mode::Mode;

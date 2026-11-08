@@ -119,11 +119,14 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
   const isDraft = sessionId === "draft-session";
   const { data, error, loading, reload } = useFetch(sessionId, () =>
     isDraft
-      ? Promise.resolve({ agents: [] })
+      ? Promise.resolve({ agents: [], roles: [] })
       : rpc.call<AgentListResult>("agent/list", { session_id: sessionId }),
   );
   const [task, setTask] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [roleName, setRoleName] = useState("");
+  const roles = data?.roles ?? [];
+  const selectedRole = roles.find((role) => role.name === roleName) ?? roles[0];
 
   // 列表结果打底，直播事件里的状态更新覆盖其上。
   const agents = useMemo(() => {
@@ -135,10 +138,10 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
 
   const spawn = async () => {
     const text = task?.trim();
-    if (!text) return;
+    if (!text || !selectedRole || readOnly || busy) return;
     setBusy("spawn");
     try {
-      await rpc.call("agent/spawn", { session_id: sessionId, task: text });
+      await rpc.call("agent/spawn", { session_id: sessionId, role: selectedRole.name, task: text });
       setTask(null);
       reload();
     } catch (spawnError) {
@@ -167,6 +170,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
           <IconButton
             label="手动启动子代理"
             size="xs"
+            disabled={loading || roles.length === 0}
             onClick={() => setTask((value) => (value === null ? "" : null))}
           >
             <PlusIcon />
@@ -177,6 +181,25 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
 
       {task !== null && (
         <div className="mx-3 mb-3 rounded-xl bg-muted p-2 ring-1 ring-inset ring-border-subtle">
+          <label className="flex items-center gap-2 px-1.5 pb-2 text-xs text-muted-foreground">
+            固定角色
+            <select
+              aria-label="子代理角色"
+              value={selectedRole?.name ?? ""}
+              onChange={(event) => setRoleName(event.target.value)}
+              disabled={roles.length === 0 || busy === "spawn"}
+              className="min-w-0 flex-1 rounded bg-background px-2 py-1 text-foreground"
+            >
+              {roles.map((role) => (
+                <option key={role.name} value={role.name}>
+                  {role.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="px-1.5 pb-2 text-xs text-muted-foreground">
+            {selectedRole?.description ?? "没有启用的子代理角色"}
+          </p>
           <textarea
             // biome-ignore lint/a11y/noAutofocus: 点开即输入
             autoFocus
@@ -196,7 +219,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
             </Button>
             <Button
               size="xs"
-              disabled={!task.trim() || busy === "spawn"}
+              disabled={!task.trim() || !selectedRole || busy === "spawn"}
               onClick={() => void spawn()}
             >
               {busy === "spawn" && <Loader2Icon className="animate-spin" />}
@@ -210,7 +233,11 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
       {agents.length === 0 && !loading && !error ? (
         <PanelEmpty
           title="还没有子代理"
-          hint="模型调用 agent 工具派出的子任务会出现在这里，可以点开只读查看过程。"
+          hint={
+            roles.length === 0
+              ? "没有启用的固定角色，无法创建子代理。"
+              : "模型派出的子任务会出现在这里，可以点开只读查看过程。"
+          }
         />
       ) : (
         <ul className="space-y-px px-2 pb-3">

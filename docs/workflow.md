@@ -12,6 +12,12 @@ moc 的动态 workflow 让模型把一个多阶段协作过程写成一段 TypeS
 
 激活后模型可见 `workflow-authoring` skill（脚本 facade 的**权威契约**：每个 facade 签名、site 词法、诊断码表都写在 skill 里，此处不重复）。
 
+普通子代理与 workflow actor 是两条独立入口：`spawn_agent(role, task)` 只能选择配置中启用的固定角色，不能定义提示词、工具或模型。仅激活 workflow 后，负责编写脚本的主代理才能在脚本内声明动态 actor；这些定义只属于当前会话的当前 run，不注册到普通角色目录，也不会覆盖 Explorer/custom。
+
+`AgentPersona.tools?: readonly string[]` 指定该 actor 的工具允许列表，例如 `agent("reader", {system: "只读调查", model: "provider/model", tools: ["read", "grep", "find"]})`。省略时沿用受控默认工具面；`yield` 始终保留，actor 自身不能再创建代理或取得 workflow 编排工具。提示、工具与所属 run 在创建时冻结；模型仍支持原有审批/运行期 role 覆盖。
+
+动态 actor 的取消令牌绑定 run；run 结束、停止或失败会终止其余活动 actor。后续 ask 只能由所属 driver 投递，同一 run 的 actor 可通信；普通 `agent/message`、跨 run 消息以及直接 `session/prompt`/`session/retry` 不得将其唤醒。resume/amend 仍由 workflow 负责重放或建立新 run 的子会话，不把前驱 actor 变成可全局复用的角色。
+
 ## 审批窗（TUI / REPL / WebUI 一致）
 
 `create_workflow`/`amend_workflow`/`fill_workflow_hole` 走到需要审批的命令集时弹出审批窗：

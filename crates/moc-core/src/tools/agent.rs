@@ -24,9 +24,7 @@ fn text(value: &str, label: &str) -> Result<String, ToolError> {
 struct SpawnTask {
     task: String,
     title: Option<String>,
-    model: Option<String>,
-    preset: Option<String>,
-    output_schema: Option<Value>,
+    role: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,10 +33,8 @@ struct SpawnArgs {
     task: Option<String>,
     tasks: Option<Vec<SpawnTask>>,
     title: Option<String>,
-    model: Option<String>,
-    preset: Option<String>,
+    role: Option<String>,
     context: Option<String>,
-    output_schema: Option<Value>,
 }
 
 /// `tasks[]` 批量 spawn 的条数上限。
@@ -93,7 +89,7 @@ impl Tool for SpawnAgentTool {
         "spawn_agent"
     }
     fn description(&self) -> &'static str {
-        "Create child agents. Single spawn: pass task (+ optional title/model/preset/context/output_schema). Batch: pass tasks[] (same fields per item, up to 16) with optional shared context. preset selects a registered agent preset (e.g. \"explore\"); output_schema makes the child's `yield` deliver a validated structured result."
+        "Spawn a fixed role from <agent-roles> with a self-contained task. Single: role + task; batch: tasks[] with role + task per item. Optional context is shared task text."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -114,18 +110,14 @@ impl Tool for SpawnAgentTool {
                         "type":"object","properties":{
                             "task":{"type":"string","minLength":1},
                             "title":{"type":"string"},
-                            "model":{"type":"string","enum":["inherit","explore"]},
-                            "preset":{"type":"string"},
-                            "output_schema":{"type":"object"}
-                        },"required":["task"],"additionalProperties":false}},
+                            "role":{"type":"string","minLength":1}
+                        },"required":["task","role"],"additionalProperties":false}},
                     "title": {"type":"string"},
-                    "model":{"type":"string","enum":["inherit","explore"]},
-                    "preset":{"type":"string"},
-                    "context":{"type":"string"},
-                    "output_schema":{"type":"object"}
+                    "role":{"type":"string","minLength":1},
+                    "context":{"type":"string"}
                 },
                 "additionalProperties": false,
-                "oneOf": [{"required":["task"]},{"required":["tasks"]}]
+                "oneOf": [{"required":["task","role"]},{"required":["tasks"]}]
             }),
         )
     }
@@ -141,9 +133,9 @@ impl Tool for SpawnAgentTool {
                 (Some(task), None) => vec![SpawnTask {
                     task,
                     title: args.title,
-                    model: args.model,
-                    preset: args.preset,
-                    output_schema: args.output_schema,
+                    role: args.role.ok_or_else(|| {
+                        ToolError::new("E_BAD_PAYLOAD", "spawn_agent requires an enabled role")
+                    })?,
                 }],
                 (None, Some(tasks)) => {
                     if tasks.is_empty() || tasks.len() > MAX_SPAWN_TASKS {
@@ -152,14 +144,10 @@ impl Tool for SpawnAgentTool {
                             format!("tasks must contain 1..={MAX_SPAWN_TASKS} items"),
                         ));
                     }
-                    if args.title.is_some()
-                        || args.model.is_some()
-                        || args.preset.is_some()
-                        || args.output_schema.is_some()
-                    {
+                    if args.title.is_some() || args.role.is_some() {
                         return Err(ToolError::new(
                             "E_BAD_PAYLOAD",
-                            "title/model/preset/output_schema belong inside each tasks[] item",
+                            "title/role belong inside each tasks[] item",
                         ));
                     }
                     tasks
@@ -180,22 +168,23 @@ impl Tool for SpawnAgentTool {
             let mut agents = Vec::with_capacity(items.len());
             let mut errors = Vec::new();
             for (index, item) in items.into_iter().enumerate() {
-                if let Some(model) = item.model.as_deref()
-                    && !matches!(model, "inherit" | "explore")
-                {
-                    errors.push(serde_json::json!({
-                        "index": index,
-                        "error": "model must be inherit or explore",
-                    }));
+                if item.task.trim().is_empty() {
+                    errors
+                        .push(serde_json::json!({"index": index, "error": "task cannot be empty"}));
                     continue;
                 }
+                let task = match args
+                    .context
+                    .as_deref()
+                    .filter(|context| !context.trim().is_empty())
+                {
+                    Some(context) => format!("{}\n\n{}", context.trim(), item.task),
+                    None => item.task,
+                };
                 let spec = crate::agents::SpawnSpec {
-                    task: item.task,
+                    task,
                     title: item.title,
-                    model: crate::agents::SpawnModel::Role(item.model),
-                    preset: item.preset,
-                    context: args.context.clone(),
-                    output_schema: item.output_schema,
+                    profile: crate::agents::SpawnProfile::FixedRole(item.role),
                     seed_entries: Vec::new(),
                 };
                 match crate::agents::spawn(
@@ -213,7 +202,7 @@ impl Tool for SpawnAgentTool {
                             "model": result.agent.model,
                         });
                         if let Some(preset) = result.agent.preset {
-                            agent["preset"] = serde_json::Value::String(preset);
+                            agent["role"] = serde_json::Value::String(preset);
                         }
                         agents.push(agent);
                     }
@@ -275,7 +264,7 @@ impl Tool for MessageAgentTool {
         "message_agent"
     }
     fn description(&self) -> &'static str {
-        "Message agents. target: an agent id, \"parent\", or \"all\" (running direct children; siblings inside a subagent). Running targets receive it at their next safe boundary; idle targets start a turn. Returns one receipt per target."
+        "Send necessary clarification or a blocker answer. target: agent id, parent, or all (running children/siblings). Running targets read messages at the next safe boundary without interruption; idle targets start a turn."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -334,7 +323,7 @@ impl Tool for StopAgentTool {
         "stop_agent"
     }
     fn description(&self) -> &'static str {
-        "Cancel a running child agent."
+        "Cancel a child whose work is no longer needed. A wait timeout alone is not a reason to cancel."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -385,7 +374,7 @@ impl Tool for WaitAgentTool {
         "wait_agent"
     }
     fn description(&self) -> &'static str {
-        "Wait until a watched child settles, a child message arrives, or timeout_secs elapses (default 180). agent_ids defaults to all running children. Returns every watched agent's snapshot; settled ones include their final message."
+        "Wait for completion, a message, or timeout (default 180 seconds). Results are announced automatically; wait only when blocked. agent_ids defaults to running children; completed snapshots include the full report."
     }
     fn tier(&self) -> Tier {
         Tier::Read

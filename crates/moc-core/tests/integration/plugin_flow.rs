@@ -11,7 +11,7 @@ use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// 装一个插件到工作区的项目级目录。`Harness` 的 cwd 固定是 `<root>/work`。
-fn install_plugin(harness: &Harness, name: &str, body: &str) {
+pub(super) fn install_plugin(harness: &Harness, name: &str, body: &str) {
     let dir = harness.root.path().join("work/.moc/plugins").join(name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(

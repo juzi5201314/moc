@@ -855,7 +855,7 @@ pub(super) fn validate_models(
             })?;
         }
     }
-    if catalog.roles.explore != ROLE_INHERIT {
+    if !matches!(catalog.roles.explore.as_str(), ROLE_INHERIT | "none") {
         resolve_selector(providers, &catalog.fusion, &catalog.roles.explore).map_err(|error| {
             CoreError::Config(format!("探索子代理模型无法解析：{}", error.detail()))
         })?;

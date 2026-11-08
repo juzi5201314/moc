@@ -380,7 +380,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
     match path {
         "models.roles.explore" => (
             "探索子代理模型",
-            "供探索子代理使用；inherit 表示沿用父会话当前模型，省略等级时用模型的默认等级。",
+            "Explorer 固定角色的模型；inherit 沿用父模型，none 禁用此角色，省略等级时使用模型默认等级。",
         ),
         "models.fusion.lead" => (
             "Fusion 主导模型",

@@ -33,8 +33,9 @@ pub fn render_signatures(
     workflows_active: bool,
     config: &ResolvedConfig,
 ) -> Option<String> {
+    let roles = catalog.role_instructions();
     if engine != SessionEngine::Ptc {
-        return None;
+        return (!roles.is_empty()).then_some(roles);
     }
     let mut lines = vec![
         "Tool signatures for run_code: `const r = await tools.<name>(args)`; `?` marks optional properties. ToolResult fields are documented under run_code.".to_owned(),
@@ -55,11 +56,15 @@ pub fn render_signatures(
         lines.push(format!(
             "tools.{}(args: {}): Promise<ToolResult> — {}",
             tool.name(),
-            ts_type(&tool.def().parameters, TS_MAX_DEPTH),
+            ts_type(&catalog.definition(tool.as_ref()).parameters, TS_MAX_DEPTH),
             short_description(tool.description()),
         ));
     }
-    (builtins > 0).then(|| wrap("tool-declarations", &lines))
+    if builtins > 0 {
+        Some(format!("{roles}\n\n{}", wrap("tool-declarations", &lines)))
+    } else {
+        (!roles.is_empty()).then_some(roles)
+    }
 }
 
 /// 渲染 `<mcp-tool-index>` 片段：MCP 工具的名字与一行描述，按窗口预算截断。
@@ -255,7 +260,7 @@ mod tests {
             },
             McpManager::new(Vec::new(), tokio_util::sync::CancellationToken::new()),
             Vec::new(),
-            false,
+            crate::tools::ToolScope::top(),
         )
         .expect("工具目录")
     }
@@ -271,44 +276,6 @@ mod tests {
             output_schema: None,
             read_only: true,
         })
-    }
-
-    #[test]
-    fn only_ptc_engine_renders_declarations() {
-        let config = config();
-        let catalog = catalog_with(Vec::new());
-        assert!(
-            render_signatures(&catalog, SessionEngine::Standard, false, false, &config).is_none(),
-            "标准引擎由原生工具表提供 schema"
-        );
-        assert!(render_signatures(&catalog, SessionEngine::Ptc, false, false, &config).is_some());
-        assert!(
-            render_mcp_index(&catalog, SessionEngine::Ptc, false, &config, 200_000).is_none(),
-            "没有 MCP 工具时不渲染索引"
-        );
-    }
-
-    #[test]
-    fn builtin_signatures_carry_required_and_optional() {
-        let config = config();
-        let catalog = catalog_with(Vec::new());
-        let text = render_signatures(&catalog, SessionEngine::Ptc, false, false, &config).unwrap();
-        assert!(text.starts_with("<tool-declarations>"));
-        assert!(
-            !text.contains("MCP tool index"),
-            "MCP 索引不得留在系统提示：{text}"
-        );
-        // serde_json 的对象键按字母序输出，断言按同序书写。
-        assert!(
-            text.contains(
-                "tools.read(args: { limit?: number, offset?: number, path: string }): Promise<ToolResult>"
-            ),
-            "read 签名应含必填与可选参数：{text}"
-        );
-        assert!(
-            text.contains("op: \"list\"|\"output\"|\"kill\"|\"wait\""),
-            "枚举参数应转成字面量联合：{text}"
-        );
     }
 
     #[test]

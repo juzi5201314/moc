@@ -1,8 +1,8 @@
 //! workflow driver：把引擎派发映射到真实副作用。
 //!
-//! - `Ask` → 子代理子会话：guest 声明的完整 `persona.system` 作 `context` 片段
-//!   叠在 harness 子代理契约上；首个 ask 以 `task` 发起（`output_schema`
-//!   结构化交付），后续 ask 走 `message`。交付不满足 schema → 修复重试有上限
+//! - `Ask` → run 专属子会话：guest 声明的 `persona.system` 与 `persona.tools`
+//!   冻结为动态角色契约；首个 ask 以 `task` 发起，后续 ask 走 run 专属消息入口。
+//!   `output_schema` 约束结构化交付；不符合 schema 时修复重试有上限
 //!   （`[workflow].ask_max_repairs`）。上下文续接按 [`ActorContext`]：Fresh 新
 //!   会话；Existing 续本会话；SeedFrom 真 fork——把前驱 actor 子会话的
 //!   transcript 逐字截到第 user_turns 个 user 消息之前，复制成新子会话，
@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::agents::SpawnModel;
 use crate::service::CoreInner;
 use crate::session::entries::Entry;
 use crate::workflow::engine::{ActorContext, DriverOutcome, DriverRequest};
@@ -226,10 +225,11 @@ impl WorkflowDriver {
                 .take()
                 .or_else(|| (attempt > 0 || !first).then(|| instructions.clone()));
             if let Some(text) = send_text
-                && let Err(e) = crate::agents::message(
+                && let Err(e) = crate::agents::message_workflow(
                     Arc::clone(&self.inner),
                     self.run.request.clone(),
                     self.session_id.clone(),
+                    &self.run.id,
                     child_id.clone(),
                     text,
                 )
@@ -306,7 +306,7 @@ impl WorkflowDriver {
         unreachable!()
     }
 
-    /// 新 actor：spawn 子会话（persona.system 全文作 context 注入 harness 子代理契约）。
+    /// 仅当前 run 的 driver 可创建动态 actor；提示、工具与所属 run 一并冻结。
     async fn spawn_actor(
         &self,
         context: &ActorContext,
@@ -338,13 +338,26 @@ impl WorkflowDriver {
             }
             _ => Vec::new(),
         };
-        // persona.system 用 guest 声明的全文（Ask 请求携带），不再从
-        // plan.roles 摘 excerpt——那是 200 字截断摘要且可能取到别的 role。
+        // 角色提示使用 guest 声明全文，不使用 plan 中截断的展示摘要。
         let context_text: Option<String> = persona
             .get("system")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
+        let tools = match persona.get("tools") {
+            None => None,
+            Some(value) => match serde_json::from_value::<Vec<String>>(value.clone()) {
+                Ok(names) if names.iter().all(|name| !name.trim().is_empty()) => Some(
+                    crate::agents::ToolPolicy::Allow(names.into_iter().collect()),
+                ),
+                _ => {
+                    return Err(DriverOutcome::Failed {
+                        code: "E_ARGS".into(),
+                        message: "persona.tools 必须是非空工具名称数组".into(),
+                    });
+                }
+            },
+        };
         let spec = crate::agents::SpawnSpec {
             task: instructions.to_string(),
             title: persona
@@ -353,10 +366,13 @@ impl WorkflowDriver {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .or_else(|| Some("workflow actor".into())),
-            model: SpawnModel::Exact(model.to_string()),
-            preset: None,
-            context: context_text,
-            output_schema: schema.clone(),
+            profile: crate::agents::SpawnProfile::Workflow {
+                run_id: self.run.id.clone(),
+                model: model.to_owned(),
+                system: context_text,
+                tools,
+                output_schema: schema.clone(),
+            },
             seed_entries,
         };
         drop(meta);

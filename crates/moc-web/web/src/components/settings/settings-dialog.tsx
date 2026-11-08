@@ -79,7 +79,7 @@ const NAV: { group: string; items: SectionMeta[] }[] = [
       {
         id: "roles",
         label: "模型角色",
-        description: "主对话、探索子代理与计划分别使用的模型。",
+        description: "Explorer 固定角色的模型与启用状态，以及 Fusion 双模型配置。",
         icon: <SparklesIcon />,
         fields: (field) =>
           field.path[0] === "models" && (field.path[1] === "roles" || field.path[1] === "fusion"),

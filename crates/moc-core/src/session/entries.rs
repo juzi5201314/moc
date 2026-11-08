@@ -441,13 +441,12 @@ impl EntryPayload {
 ///
 /// spawn 时解析并快照进 header 的委托契约。
 ///
-/// 四个字段彼此独立：普通子代理可以只带 `output_schema`（结构化 yield），
-/// preset 子代理则同时携带提示片段和工具面策略。快照在创建时冻结，插件
-/// 卸载或 preset 更新不影响已存在的子代理会话。
+/// 固定角色的定义在创建时冻结；workflow 动态角色额外绑定所属 run。
+/// 后续消息不能修改角色提示、模型选择规则或工具权限。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSessionMeta {
-    /// 选用的 preset 名；普通子代理为 `None`。
+    /// 固定角色名（含 Fusion sidekick）；workflow 动态角色无全局注册名。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
     /// preset 注入 `<subagent>` 块的系统提示片段。
@@ -459,15 +458,19 @@ pub struct AgentSessionMeta {
     /// `yield` 交付物必须满足的 JSON Schema；省略为自由文本交付。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<serde_json::Value>,
+    /// 动态角色所属 workflow run；不进入普通角色目录，不能脱离该 run 唤醒。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_run: Option<String>,
 }
 
 impl AgentSessionMeta {
-    /// 契约是否为空：四个字段全空时 `SessionOrigin.agent` 不写入 header。
+    /// 契约字段全空时不向会话头写入 agent。
     pub fn is_empty(&self) -> bool {
         self.preset.is_none()
             && self.prompt.is_none()
             && self.tool_policy.is_none()
             && self.output_schema.is_none()
+            && self.workflow_run.is_none()
     }
 }
 

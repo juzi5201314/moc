@@ -461,7 +461,7 @@ impl WorkflowManager {
         let _ = handle.to_worker.send(WorkflowHostMessage::Cancel {
             code: "E_STOPPED".into(),
         });
-        self.apply_actions(&handle, actions).await;
+        self.apply_actions(&handle, actions);
         // 终态落盘在 run_loop 异步完成；summary 先按已记录的终态投影。
         let mut meta = handle.meta.lock().clone();
         if let Some(terminal) = handle.view.lock().terminal.clone() {
@@ -614,7 +614,7 @@ impl WorkflowManager {
             };
             engine.fill_hole(&site_id, ordinal, code)
         };
-        self.apply_actions(&handle, actions).await;
+        self.apply_actions(&handle, actions);
         Ok(())
     }
 
@@ -733,7 +733,7 @@ impl WorkflowManager {
                 &mut actor_ordinals,
             );
             let actions = handle.engine.lock().handle_step(guest);
-            self.apply_actions(handle, actions).await;
+            self.apply_actions(handle, actions);
             if handle.view.lock().terminal.is_some() {
                 break;
             }
@@ -927,7 +927,7 @@ impl WorkflowManager {
     }
 
     /// 执行引擎动作；Dispatch 走 driver（异步 settle 后回流 Complete）。
-    async fn apply_actions(self: &Arc<Self>, handle: &Arc<RunHandle>, actions: Vec<EngineAction>) {
+    fn apply_actions(self: &Arc<Self>, handle: &Arc<RunHandle>, actions: Vec<EngineAction>) {
         for action in actions {
             match action {
                 EngineAction::Complete {
@@ -965,7 +965,7 @@ impl WorkflowManager {
                         manager.record_settle(&handle2, &request, &outcome);
                         let request_id = request_id_of(&request);
                         let actions = handle2.engine.lock().settle(request_id, outcome);
-                        manager.apply_actions(&handle2, actions).await;
+                        manager.apply_actions(&handle2, actions);
                     });
                 }
                 EngineAction::Session(event) => {
@@ -973,6 +973,7 @@ impl WorkflowManager {
                 }
                 EngineAction::Finalized(terminal) => {
                     handle.view.lock().terminal = Some(*terminal);
+                    handle.cancel.cancel();
                 }
             }
         }
@@ -1302,6 +1303,7 @@ impl WorkflowManager {
     }
 
     fn fail_run(&self, handle: &Arc<RunHandle>, message: &str) {
+        handle.cancel.cancel();
         let mut view = handle.view.lock();
         if view.terminal.is_none() {
             view.terminal = Some(Terminal {

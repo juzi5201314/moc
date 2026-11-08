@@ -89,19 +89,25 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 ### 子代理
 
-模型可通过 `spawn_agent` 创建独立上下文的直接子代理，并用 `list_agents`、`message_agent`、`stop_agent`、`wait_agent` 管理。`model` 仅接受 `inherit`、`explore`；`inherit` 使用父会话当前模型，`explore` 使用 `[models.roles].explore`，配置为 `inherit` 时同样继承父会话。子代理从任务文本开始，不复制父 transcript；任务原文同时写入其系统提示的 `<subagent>` 块（权威顺序高于通用仓库规则），可通信的父／兄弟名册则以尾部提醒注入、不进系统前缀。父子共享工作目录、工具、MCP 与继承的会话权限；子代理不继承父会话的沙盒路径/命令授权，需要时重新向用户申请。子代理不可创建、停止或等待其它子代理。
+普通模式只允许 `spawn_agent({role: "explorer", task: "…"})` 或批量 `tasks: [{role, task, title?}]` 派发**已注册且启用的固定角色**；`context` 只是共享任务正文。内置可选角色只有 Explorer，custom 由用户安装的插件在加载时注册。主代理不能传 `model`、`preset`、系统提示、工具集或 `output_schema` 来定义/覆盖角色。`agent/list` 同时返回可派发的 `roles: [{name, description}]`；系统提示的 `<agent-roles>` 与原生/PTC 工具声明使用同一角色目录。
 
-`message_agent` 是唯一的通信入口，`target` 接受代理 ID、`"parent"`（仅子代理）或 `"all"`（顶层是全部运行中的直接子代理，子代理是全部运行中的兄弟）；运行中的目标在下一次安全边界收到消息，空闲目标被唤醒新回合，工具为每个目标返回 `injected`／`woken`／`failed` 回执。`wait_agent` 支持批量：省略 `agent_ids` 即等待全部运行中的直接子代理，任一个进入终态、或消息到达、或窗口（默认 180 秒）到期即返回快照，运行期间以 `tool_progress` 推送进度行。
+`[models.roles].explore` 配置 Explorer 的固定模型：`inherit` 继承父会话真实模型，`none` 禁用该角色；TUI/Web settings 都可选择。没有其它启用 custom 角色时，目录为空、`spawn_agent` 从原生工具表和 PTC 声明中消失，直接 RPC 创建同样拒绝。省略 role 不会回退到通用代理；`sidekick` 不能通过普通 spawn 创建。
+
+Explorer 沿用工具拒绝列表：禁用 `edit`、`write`、`spawn_agent`、`stop_agent`、`wait_agent`、`plan`、`exit_plan`、`clm_context`、`ask`，保留 shell、MCP 与插件工具用于调查，仍受原有引擎、模式和会话权限约束。角色提示要求禁止任何工作区写入，返回调查结论与文件行号证据；这不是额外的 shell/MCP 只读沙盒。原生调用与 PTC 嵌套调用使用同一角色工具策略。
+
+子代理从任务文本开始，不复制父 transcript；任务保留为用户消息，不再提升成能覆盖角色约束的系统指令。固定角色的系统提示与工具策略在创建时冻结，父／兄弟名册作为尾部提醒注入。Fusion 仍保留原有专用 lead/sidekick 通道；workflow 动态 actor 通过内部入口创建，不加入普通角色目录。
+
+父代理给出完整任务后继续独立工作或等待交付，后续消息仅用于必要澄清或解除阻塞。`message_agent.target` 接受代理 ID、`"parent"` 或 `"all"`；运行中消息在安全边界排队注入，不取消当前请求，空闲固定角色可被唤醒。每个目标返回 `injected`／`woken`／`failed` 回执。`wait_agent` 默认等待 180 秒，结果自动通知，窗口超时不构成取消理由。workflow actor 的任务消息限于所属 run 的 driver 或同一 run 的 actor。
 
 子代理用 `yield {report}` 交付最终结果并结束本轮；缺失时最多提醒三次，仍未交付则回退到最后一条 assistant 消息。结果在子代理进入终态时自动作为 notice 投进父会话，父模型下一轮即可看到预览（正文上限 500 字符，超出提示用 `wait_agent` 取全文）。
 
-子代理使用持久子会话 transcript；core 重启后历史条目状态显示为 `idle`，可继续用 `message_agent` 唤醒。TUI 的人类面只有一个子代理命令 `/agents`（等同 `Ctrl+N`）：名册里 `Enter` 把主 TUI 聚焦到该子代理的会话（转写与输入框都属于它，直接打字即可交流），`Esc` 或双击 `←` 返回主会话，`Ctrl+S` 停止选中的子代理；创建子代理由主模型决定。REPL 只提供 `/agents` 列表。
+子代理使用持久子会话 transcript；core 重启后历史条目显示 `idle`，固定角色可继续通过 `message_agent` 交互。workflow actor 的执行权属于所属会话的活动 run，结束后不能通过 `session/prompt`、`session/retry` 或普通 `agent/message` 独立恢复，应使用 workflow 的 resume/amend。TUI `/agents`（`Ctrl+N`）打开名册，`Enter` 聚焦子会话、`Esc` 或双击 `←` 返回主会话、`Ctrl+S` 停止选中代理；REPL 只提供列表。Web 手动创建入口必须选择服务器返回的固定角色，目录为空时禁用。
 
 子代理的 transcript 与 sidecar 落在**父会话的 sidecar 目录里**（`<会话目录>/<父会话 ID>/<时间戳>_<子会话 ID>.jsonl`），因此代理树与目录树同构：会话列表与按 ID 查找会穿过会话目录发现子代理，删除父会话一并删除整棵子树。兄弟会话目录（`jobs`／`artifacts`／`plans`／`compaction`）里的文件不算会话。
 
 子代理的正文契约与运行时纪律分两层：`<subagent>` 块声明身份（你是子代理、父代理接收你的最终结果）、交付方式（`yield` 或任务不可能）与通信纪律（`message_agent` 只用于提问、阻塞与决策，进度和完成报告一律走 `yield`）；父／兄弟名册作为尾部提醒每轮注入，兄弟状态变化不会让系统前缀缓存失效。
 
-"子代理"身份的唯一判据是会话头的 `parent_session_id`，而它只由 `spawn_agent` 写入。消息回退分叉与审批计划的新会话执行都不是子代理：它们是不带父链接的独立会话，只在会话头记 `forked_from`（纯用户侧出身，`/resume` 列表与回退提示里可见），模型侧与普通会话完全一致——没有 `<subagent>` 块、没有父／兄弟名册、没有 `yield`，也不继承源会话的循环保护状态。
+“子代理”身份由会话头的 `parent_session_id` 确定，普通固定角色、Fusion sidekick 与 workflow actor 均经过统一子会话创建层。消息回退分叉与审批计划的新会话执行不是子代理：它们没有父链接，只记录 `forked_from`，模型侧仍是普通会话，没有子代理契约、名册或 `yield`。
 
 ### Web 搜索与抓取
 

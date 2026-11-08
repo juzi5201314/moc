@@ -534,7 +534,7 @@ async fn subagent_requests_carry_no_workflow_tools() {
                     support::tool_stream(vec![(
                         "call_spawn",
                         "spawn_agent",
-                        json!({"task": "child-task", "title": "child"}),
+                        json!({"task": "child-task", "title": "child", "role": "explorer"}),
                     )]),
                     "text/event-stream",
                 ),
@@ -1725,5 +1725,173 @@ return { names, head, git: git_status };
     assert_eq!(table["spec"]["key"], "k");
     // markdown 版本文件落盘（v<N>_ 前缀，service 按此解析）。
     assert!(run_dir.join("artifacts/notes/v1_content.md").exists());
+    harness.close().await;
+}
+
+/// 动态 actor 的提示/模型/工具只归当前 run；校验失败可修正，结束后不能独立唤醒。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dynamic_role_tools_and_structured_delivery_are_run_scoped() {
+    assert!(require_moc_bin());
+    const SCRIPT: &str = r#"
+interface Count { count: number }
+phase("inspect");
+const reader = agent("private-reader", {system: "PRIVATE_READER", model: "test/gpt-alt", tools: ["read"]});
+const first = await reader.ask<Count>("FIRST_ASK");
+const second = await reader.ask<Count>("SECOND_ASK");
+return {first, second};
+"#;
+    let upstream = MockServer::builder().start().await;
+    let captured: Captures = Default::default();
+    let cap = Arc::clone(&captured);
+    let parent_steps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |request: &Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            cap.lock().push(body.clone());
+            let child = body["tools"]
+                .as_array()
+                .is_some_and(|tools| tools.iter().any(|tool| tool["function"]["name"] == "yield"));
+            let stream = if child {
+                let text = body["messages"].to_string();
+                if !text.contains("attempt_write") {
+                    support::tool_stream(vec![
+                        (
+                            "attempt_write",
+                            "write",
+                            json!({"path":"forbidden.txt", "content":"bad"}),
+                        ),
+                        ("missing_result", "yield", json!({"report":"missing"})),
+                    ])
+                } else {
+                    let count = if text.contains("SECOND_ASK") { 4 } else { 3 };
+                    support::tool_stream(vec![(
+                        "valid_result",
+                        "yield",
+                        json!({"report":"done", "result":{"count":count}}),
+                    )])
+                }
+            } else {
+                match parent_steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => support::tool_stream(vec![(
+                        "skill",
+                        "skill",
+                        json!({"name":"workflow-authoring"}),
+                    )]),
+                    1 => support::tool_stream(vec![(
+                        "create",
+                        "create_workflow",
+                        json!({"script":SCRIPT}),
+                    )]),
+                    _ => support::text_stream("done"),
+                }
+            };
+            ResponseTemplate::new(200).set_body_raw(stream, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::with_ask_support(
+        &upstream.uri(),
+        "openai_chat",
+        "[providers.test.models.gpt-alt]\ncontext_window=1000000\nmax_output_tokens=4096\n",
+    )
+    .await;
+    let session = harness.session(SessionEngine::Standard).await;
+    let (run_id, status) = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        drive_run(&harness, &session, "执行受限动态角色"),
+    )
+    .await
+    .expect("workflow 必须交付");
+    assert_eq!(status, WorkflowRunStatus::Completed);
+    let snapshot = harness
+        .client
+        .call::<SessionWorkflowRun>(SessionWorkflowRunParams {
+            session_id: session.clone(),
+            run_id,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot.summary.result,
+        Some(json!({"first":{"count":3},"second":{"count":4}}))
+    );
+    assert!(!harness.root.path().join("work/forbidden.txt").exists());
+    let listed = harness
+        .client
+        .call::<AgentList>(AgentListParams {
+            session_id: session.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(listed.agents.len(), 1, "连续 ask 复用同一 actor");
+    assert!(
+        !listed
+            .roles
+            .iter()
+            .any(|role| role.name == "private-reader")
+    );
+    let child = &listed.agents[0].id;
+    let loaded = harness.load(child).await;
+    let results: Vec<_> = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .collect();
+    assert!(
+        results
+            .iter()
+            .any(|result| result.tool_call_id == "missing_result" && result.is_error)
+    );
+    assert!(
+        results
+            .iter()
+            .any(|result| result.tool_call_id == "attempt_write" && result.is_error)
+    );
+    assert!(
+        harness
+            .client
+            .call::<AgentMessage>(AgentMessageParams {
+                session_id: session.clone(),
+                target: child.clone(),
+                message: "run 外追加任务".into(),
+            })
+            .await
+            .is_err()
+    );
+    assert!(
+        harness
+            .client
+            .call::<SessionPrompt>(PromptParams {
+                session_id: child.clone(),
+                input: vec![InputPart::Text {
+                    text: "直接唤醒".into()
+                }],
+                mode: None,
+                agent_message: None,
+                goal_round: None,
+            })
+            .await
+            .is_err()
+    );
+    assert!(
+        harness
+            .client
+            .call::<SessionRetry>(SessionRetryParams {
+                session_id: child.clone()
+            })
+            .await
+            .is_err()
+    );
+    let bodies = captured.lock().clone();
+    let child_requests: Vec<_> = bodies
+        .iter()
+        .filter(|body| {
+            body["messages"][0]["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("PRIVATE_READER"))
+        })
+        .collect();
+    assert!(child_requests.iter().all(|body| body["model"] == "gpt-alt"));
     harness.close().await;
 }

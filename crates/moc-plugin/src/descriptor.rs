@@ -78,6 +78,8 @@ pub enum ConfigKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentPresetDecl {
     pub name: String,
+    pub description: String,
+    pub model: String,
     pub system_prompt: String,
     pub allow: Option<Vec<String>>,
     pub deny: Option<Vec<String>>,

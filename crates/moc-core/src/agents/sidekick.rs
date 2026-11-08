@@ -15,7 +15,7 @@ use moc_protocol::methods::{
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::{SpawnModel, SpawnSpec, WaitProgress, live, peers, preset, status_word, terminal};
+use super::{SpawnProfile, SpawnSpec, WaitProgress, live, peers, preset, status_word, terminal};
 use crate::error::CoreError;
 use crate::service::CoreInner;
 
@@ -125,10 +125,9 @@ async fn spawn_sidekick(
         SpawnSpec {
             task: task.to_owned(),
             title: Some("Sidekick".into()),
-            model: SpawnModel::Exact(model.to_owned()),
-            preset: Some(preset::SIDEKICK_PRESET.to_owned()),
-            context: None,
-            output_schema: Some(preset::sidekick_report_schema()),
+            profile: SpawnProfile::Sidekick {
+                model: model.to_owned(),
+            },
             seed_entries: Vec::new(),
         },
     )

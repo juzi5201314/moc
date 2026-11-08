@@ -45,6 +45,10 @@ export const config: {
 export interface AgentPresetDefinition {
   /** 稳定标识：小写字母开头的小写字母/数字/连字符，1–64 字节。spawn 时按名选用。 */
   name: string;
+  /** 展示给主代理的角色用途与功能边界。 */
+  description: string;
+  /** 固定模型 selector；省略/inherit 继承父模型，none 禁用。spawn 不能覆盖。 */
+  model?: string;
   /** 注入子代理系统块的提示片段（非空，≤4000 字符）；模型可见文本请用英文。 */
   systemPrompt: string;
   /**

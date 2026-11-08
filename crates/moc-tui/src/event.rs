@@ -12288,14 +12288,32 @@ mod config_picker_tests {
         );
         assert_eq!(query(&app), "", "Ctrl+U 清空查询");
 
-        // 高亮换到另一个模型：等级回到目标模型自己的最高等级。
-        // 候选首位是继承伪值，下移到 small 需要两步。
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        // 按模型名筛选，不依赖继承/禁用选项在列表中的数量。
+        for key in "small".chars() {
+            handle_modal_key(
+                &mut app,
+                &connection,
+                KeyModifiers::NONE,
+                KeyCode::Char(key),
+            );
+        }
         assert_eq!(choice(&app), "test/small:medium");
 
-        // 回到 big 恢复原 low；Tab 展开等级下拉，选中 max 后确认。
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Up);
+        // 切回 big 恢复原 low；Tab 展开等级下拉，选中 max 后确认。
+        handle_modal_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('u'),
+        );
+        for key in "big".chars() {
+            handle_modal_key(
+                &mut app,
+                &connection,
+                KeyModifiers::NONE,
+                KeyCode::Char(key),
+            );
+        }
         assert_eq!(choice(&app), "test/big:low");
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);

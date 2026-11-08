@@ -324,6 +324,8 @@ pub struct ToolScope {
     /// workflow 工具面是否激活（`session/workflow_activate` 持久化的会话位）。
     /// 未激活时 `definitions`/`visible`/signatures 一律不含 workflow 工具——零泄漏。
     pub workflows: bool,
+    /// 本次提示可派发的固定角色；不包含 sidekick 或 workflow 动态角色。
+    pub roles: std::collections::BTreeMap<String, String>,
 }
 
 impl ToolScope {
@@ -335,6 +337,11 @@ impl ToolScope {
             fusion: false,
             policy: None,
             workflows: false,
+            roles: [(
+                crate::agents::preset::EXPLORER_ROLE.to_owned(),
+                crate::agents::preset::EXPLORER_DESCRIPTION.to_owned(),
+            )]
+            .into(),
         }
     }
 
@@ -342,13 +349,15 @@ impl ToolScope {
     pub fn for_session(
         state: &crate::session::state::SessionState,
         config: &crate::config::ResolvedConfig,
+        roles: std::collections::BTreeMap<String, String>,
     ) -> Self {
-        Self::for_metadata(&state.metadata(), config)
+        Self::for_metadata(&state.metadata(), config, roles)
     }
 
     pub(crate) fn for_metadata(
         state: &crate::session::state::SessionMetadata,
         config: &crate::config::ResolvedConfig,
+        roles: std::collections::BTreeMap<String, String>,
     ) -> Self {
         Self {
             control_agents: state.session.delegation_depth < config.agents.max_depth,
@@ -357,7 +366,39 @@ impl ToolScope {
                 && crate::config::model::is_fusion_selector(&state.model),
             policy: state.tool_policy.clone(),
             workflows: state.workflows_active(&config.workflow),
+            roles,
         }
+    }
+
+    pub(crate) fn permits(&self, name: &str) -> bool {
+        let visible = match name {
+            "spawn_agent" => self.control_agents && !self.roles.is_empty(),
+            "sidekick" => self.fusion && self.control_agents,
+            "stop_agent" | "wait_agent" => self.control_agents,
+            "yield" => self.subagent,
+            name if ToolRegistry::is_goal_tool(name) => !self.subagent,
+            name if crate::workflow::runtime::WORKFLOW_TOOLS.contains(&name) => self.workflows,
+            _ => true,
+        };
+        visible
+            && self
+                .policy
+                .as_ref()
+                .is_none_or(|policy| policy.permits(name))
+    }
+
+    pub(crate) fn define(&self, tool: &dyn Tool) -> ToolDef {
+        let mut definition = tool.def();
+        if definition.description.is_none() {
+            definition.description = Some(tool.description().to_owned());
+        }
+        if tool.name() == "spawn_agent" {
+            let roles = serde_json::json!(self.roles.keys().collect::<Vec<_>>());
+            definition.parameters["properties"]["role"]["enum"] = roles.clone();
+            definition.parameters["properties"]["tasks"]["items"]["properties"]["role"]["enum"] =
+                roles;
+        }
+        definition
     }
 }
 
@@ -431,26 +472,7 @@ impl ToolRegistry {
         self.builtins
             .iter()
             .chain(extra.iter())
-            .filter(|tool| match tool.name() {
-                // sidekick 只对可委托的 Fusion lead 会话开放。
-                "sidekick" => scope.fusion && scope.control_agents,
-                // 创建、停止和等待子代理只在委托深度未满时可用；叶级子代理只能通信。
-                name if Self::is_parent_only_tool(name) => scope.control_agents,
-                // 交付最终结果只对子代理有意义：顶层会话没有父代理可交付。
-                "yield" => scope.subagent,
-                // 目标是顶层会话概念：子代理会话不开放目标面。
-                name if Self::is_goal_tool(name) => !scope.subagent,
-                // workflow 工具只在会话激活后可见（零泄漏）。
-                name if crate::workflow::runtime::WORKFLOW_TOOLS.contains(&name) => scope.workflows,
-                _ => true,
-            })
-            // preset 快照的策略对内置、MCP 与插件工具统一生效。
-            .filter(|tool| {
-                scope
-                    .policy
-                    .as_ref()
-                    .is_none_or(|policy| policy.permits(tool.name()))
-            })
+            .filter(|tool| scope.permits(tool.name()))
             .filter(|tool| {
                 tool.declared_in(engine)
                     && crate::service::mode::tool_enabled(
@@ -460,19 +482,8 @@ impl ToolRegistry {
                         config,
                     )
             })
-            .map(|tool| {
-                let mut definition = tool.def();
-                if definition.description.is_none() {
-                    definition.description = Some(tool.description().to_owned());
-                }
-                definition
-            })
+            .map(|tool| scope.define(tool.as_ref()))
             .collect()
-    }
-
-    /// 创建、停止、等待子代理的工具；子代理里全部去掉。
-    fn is_parent_only_tool(name: &str) -> bool {
-        matches!(name, "spawn_agent" | "stop_agent" | "wait_agent")
     }
 
     /// 持久目标三件套；只在顶层会话可见。
@@ -489,9 +500,9 @@ impl ToolRegistry {
         snapshot: &moc_mcp::McpSnapshot,
         manager: Arc<moc_mcp::McpManager>,
         plugins: Vec<Arc<dyn Tool>>,
-        workflows_active: bool,
+        scope: ToolScope,
     ) -> Result<catalog::ToolCatalog, ToolError> {
-        catalog::ToolCatalog::new(self, snapshot, manager, plugins, workflows_active)
+        catalog::ToolCatalog::new(self, snapshot, manager, plugins, scope)
     }
 }
 

@@ -154,16 +154,21 @@ pub(crate) async fn model_context(
         crate::workflow::workflows_active(state, &config.workflow),
     )?;
     let summary = inner.mcp_summary(config).await?;
+    let plugins = inner.project_plugins(cwd).await?;
+    let tool_scope = crate::tools::ToolScope::for_session(
+        state,
+        config,
+        crate::agents::roles::descriptions(inner, config, &plugins),
+    );
     let tool_declarations = inner
         .tool_declarations(
             state.engine,
             config,
             inner.ask_available(ctx.connection_id(), state.session.autonomy),
-            crate::workflow::workflows_active(state, &config.workflow),
+            tool_scope.clone(),
         )
         .await?;
     let context_files = inner.project_context_files(&state.session.id, cwd).await;
-    let plugins = inner.project_plugins(cwd).await?;
     let plugin_prompt = plugins
         .prompt_text(&crate::service::plugin_context(state, &model.selector))
         .await;
@@ -186,7 +191,7 @@ pub(crate) async fn model_context(
         state.engine,
         inner.ask_available(ctx.connection_id(), state.session.autonomy),
         config,
-        crate::tools::ToolScope::for_session(state, config),
+        tool_scope,
         &plugins,
     );
     let messages = replay::model_messages(state, None, Some(model));

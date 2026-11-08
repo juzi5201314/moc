@@ -1118,7 +1118,7 @@ max_output_tokens = 128000
             format!("[models.roles]\nexplore='none'\n{provider}"),
         )
         .unwrap();
-        assert!(ResolvedConfig::load(&boot).is_err());
+        assert_eq!(ResolvedConfig::load(&boot).unwrap().roles.explore, "none");
     }
 
     #[test]

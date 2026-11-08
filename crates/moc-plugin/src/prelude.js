@@ -147,9 +147,9 @@ export const config = Object.freeze({
  * 子代理 preset 注册。只能在模块顶层调用；spawn 时按名选用，
  * preset 定义快照进子代理会话，模型侧看不到注册接口本身。
  *
- * `registerPreset({name, systemPrompt, tools?})`：name 为小写字母开头的
- * 小写字母/数字/连字符；tools 取 `{allow: string[]}` 或 `{deny: string[]}`
- * 之一（互斥），省略则不限制工具面。
+ * `registerPreset({name, description, model?, systemPrompt, tools?})`：仅模块加载时注册固定角色。
+ * model 省略/inherit 继承父模型，none 禁用；description 展示给主代理。
+ * tools 取 `{allow: string[]}` 或 `{deny: string[]}` 之一，模型无法通过 spawn 覆盖。
  */
 export const agents = Object.freeze({
   registerPreset(definition) {

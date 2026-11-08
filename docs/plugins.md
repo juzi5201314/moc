@@ -9,6 +9,27 @@ moc 的插件是**本地目录里的 JavaScript（ES 模块）**，在 core 进�
 
 没有安装命令、没有注册表：把目录放进去就会被发现，改动即时生效（下一个提示或下一次命令）。
 
+## 固定 custom 子代理角色
+
+插件可在模块加载阶段注册固定角色；这不是模型工具，运行期工具/命令回调不能注册。主代理只看到角色名和 `description`，不能在 spawn 参数中覆盖定义。内置 `explorer` 与内部 `sidekick` 名称保留。
+
+```js
+import { agents } from "moc";
+
+agents.registerPreset({
+  name: "docs-reader",
+  description: "只读检索项目文档并返回文件位置，不负责修改",
+  model: "inherit", // 也可指定模型 selector；none 禁用角色
+  systemPrompt: "只读调查，返回可核对的文件与行号；拒绝任何修改请求。",
+  tools: { allow: ["read", "grep", "find"] },
+});
+
+export default {};
+```
+
+`description` 必填；`model` 省略时为 `inherit`。`tools.allow` 与 `tools.deny` 互斥，允许列表自动保留 `yield` 交付通道；工具策略只能进一步收窄引擎、模式和会话权限。主代理调用 `spawn_agent({role: "docs-reader", task: "…"})`；定义在创建时冻结，之后的任务消息不构成权限升级。不要把动态 workflow actor 注册为插件角色。
+
+
 ## 目录布局
 
 ```text

@@ -22,10 +22,11 @@ structured asks, sandboxed world commands, artifacts, and resumable journals.
 
 - The user explicitly asks for a workflow, pipeline, or multi-agent orchestration.
 - The task needs multiple named actors, staged phases, or gated shell commands.
-- Otherwise prefer `spawn_agent` or do the task yourself — workflows have real cost.
+- Otherwise use an enabled fixed role via `spawn_agent(role, task)` or do the task yourself; ordinary spawn cannot define roles or override their prompts, tools, or models.
 
 ## Discipline
 
+- Only the workflow author in this activated session may define dynamic actors in the script. Set `agent({{system, model, tools}})` as needed; these definitions belong exclusively to this workflow run, never to the ordinary role catalog. Actors cannot create workflow definitions or escape their run via ordinary messaging or session retry.
 - Always load THIS skill before authoring a script (`create_workflow`/`amend_workflow`
   refuse scripts without it).
 - `create_workflow`/`amend_workflow` submit for human approval; the run then executes

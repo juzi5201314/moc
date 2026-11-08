@@ -62,9 +62,9 @@ use serde::{Deserialize, Serialize};
 
 pub use agent::{
     AgentInfo, AgentList, AgentListParams, AgentListResult, AgentMessage, AgentMessageMeta,
-    AgentMessageOutcome, AgentMessageParams, AgentMessageReceipt, AgentMessageResult, AgentSpawn,
-    AgentSpawnParams, AgentSpawnResult, AgentStatus, AgentStop, AgentStopParams, AgentStopResult,
-    AgentWait, AgentWaitEntry, AgentWaitParams, AgentWaitResult, ToolProgressRow,
+    AgentMessageOutcome, AgentMessageParams, AgentMessageReceipt, AgentMessageResult, AgentRole,
+    AgentSpawn, AgentSpawnParams, AgentSpawnResult, AgentStatus, AgentStop, AgentStopParams,
+    AgentStopResult, AgentWait, AgentWaitEntry, AgentWaitParams, AgentWaitResult, ToolProgressRow,
 };
 pub use ask::{AskAnswer, AskOption, AskParams, AskQuestion, AskResult, SessionRequestAsk};
 pub use bash::{BashCommand, BashParams, BashResult, SessionBash};

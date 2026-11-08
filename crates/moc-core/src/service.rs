@@ -323,48 +323,50 @@ impl CoreInner {
     ///
     /// 用于代理消息唤醒顶层会话。和 [`Core::run_operation`] 的区别：不返回结果（前端
     /// 通过更新通知观察），并且调用方已经持有该会话的提示锁。
-    pub(crate) async fn spawn_detached_prompt(
+    pub(crate) fn spawn_detached_prompt(
         inner: &Arc<CoreInner>,
         ctx: RequestContext,
         params: moc_protocol::methods::PromptParams,
         record: Arc<crate::session::SessionRecord>,
         prompt_lock: tokio::sync::OwnedMutexGuard<()>,
-    ) {
-        let session_id = params.session_id.clone();
-        let cancel = inner.shutdown.child_token();
-        let ctx = ctx.with_cancel(cancel.clone());
-        let task_inner = Arc::clone(inner);
-        let mut prompts = inner.prompts.lock().await;
-        if inner.shutdown.is_cancelled() {
-            return;
-        }
-        while let Some(result) = prompts.try_join_next() {
-            if let Err(error) = result {
-                tracing::error!(%error, "会话操作任务失败");
+    ) -> futures_util::future::BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let session_id = params.session_id.clone();
+            let cancel = inner.shutdown.child_token();
+            let ctx = ctx.with_cancel(cancel.clone());
+            let task_inner = Arc::clone(inner);
+            let mut prompts = inner.prompts.lock().await;
+            if inner.shutdown.is_cancelled() {
+                return;
             }
-        }
-        prompts.spawn(async move {
-            let running = prompt::run_prompt_with_lock(
-                Arc::clone(&task_inner),
-                ctx,
-                params,
-                record,
-                prompt_lock,
-                false,
-            );
-            tokio::pin!(running);
-            let result = tokio::select! {
-                biased;
-                _ = task_inner.shutdown.cancelled() => {
-                    cancel.cancel();
-                    running.await
+            while let Some(result) = prompts.try_join_next() {
+                if let Err(error) = result {
+                    tracing::error!(%error, "会话操作任务失败");
                 }
-                result = &mut running => result,
-            };
-            if let Err(error) = result {
-                tracing::warn!(session_id = %session_id, %error, "代理消息唤醒的提示执行失败");
             }
-        });
+            prompts.spawn(async move {
+                let running = prompt::run_prompt_with_lock(
+                    Arc::clone(&task_inner),
+                    ctx,
+                    params,
+                    record,
+                    prompt_lock,
+                    false,
+                );
+                tokio::pin!(running);
+                let result = tokio::select! {
+                    biased;
+                    _ = task_inner.shutdown.cancelled() => {
+                        cancel.cancel();
+                        running.await
+                    }
+                    result = &mut running => result,
+                };
+                if let Err(error) = result {
+                    tracing::warn!(session_id = %session_id, %error, "代理消息唤醒的提示执行失败");
+                }
+            });
+        })
     }
 
     pub(crate) fn client_supports_ask(&self, connection_id: u64) -> bool {
@@ -411,27 +413,26 @@ impl CoreInner {
         let plugins = self.plugin_tools(&config.cwd).await;
         let catalog = self
             .tools
-            .catalog(&snapshot, manager, plugins, false)
+            .catalog(&snapshot, manager, plugins, crate::tools::ToolScope::top())
             .map_err(|err| CoreError::Tool(err.to_string()))?;
         Ok(catalog.summary())
     }
 
-    /// 渲染 PTC 引擎系统提示里的工具声明；非 Ptc 引擎返回空串。提示主路径直接用
-    /// 当轮 catalog 快照调用 `declarations::render_signatures`，本方法供压缩与
-    /// /context 预览复用。MCP 索引走每轮的尾部提醒，不属于系统提示。
+    /// 渲染角色目录与 PTC 工具声明；压缩、预览和实际请求使用相同的会话权限快照。
     pub(crate) async fn tool_declarations(
         &self,
         engine: SessionEngine,
         config: &ResolvedConfig,
         ask_supported: bool,
-        workflows_active: bool,
+        scope: crate::tools::ToolScope,
     ) -> Result<String, CoreError> {
         let manager = self.project_mcp(&config.cwd).await?;
         let snapshot = manager.snapshot().await;
         let plugins = self.plugin_tools(&config.cwd).await;
+        let workflows_active = scope.workflows;
         let catalog = self
             .tools
-            .catalog(&snapshot, manager, plugins, workflows_active)
+            .catalog(&snapshot, manager, plugins, scope)
             .map_err(|err| CoreError::Tool(err.to_string()))?;
         Ok(crate::tools::declarations::render_signatures(
             &catalog,
@@ -959,10 +960,7 @@ impl AgentService for Core {
             crate::agents::SpawnSpec {
                 task: params.task,
                 title: params.title,
-                model: crate::agents::SpawnModel::Role(params.model),
-                preset: params.preset,
-                context: None,
-                output_schema: params.output_schema,
+                profile: crate::agents::SpawnProfile::FixedRole(params.role),
                 seed_entries: Vec::new(),
             },
         )

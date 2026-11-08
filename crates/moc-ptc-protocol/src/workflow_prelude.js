@@ -156,6 +156,12 @@
       if (typeof persona.name === 'string') out.name = persona.name;
       if (typeof persona.system === 'string') out.system = persona.system;
       if (persona.model !== undefined) out.model = persona.model;
+      if (persona.tools !== undefined) {
+        if (!Array.isArray(persona.tools) || persona.tools.some((tool) => typeof tool !== 'string' || !tool.trim())) {
+          throw new TypeError('agent tools 必须是非空工具名称数组');
+        }
+        out.tools = Object.freeze([...persona.tools]);
+      }
     }
     if (out.name === undefined && name !== undefined) out.name = name;
     return out;

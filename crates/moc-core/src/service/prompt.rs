@@ -177,6 +177,18 @@ async fn run_prompt_entry(
         .get(&params.session_id)
         .await
         .map_err(to_rpc)?;
+    if record
+        .state
+        .lock()
+        .await
+        .agent
+        .as_ref()
+        .is_some_and(|meta| meta.workflow_run.is_some())
+    {
+        return Err(to_rpc(crate::CoreError::Session(
+            "workflow actor 不能通过 session/prompt 或 session/retry 单独执行；请继续所属 workflow run".into(),
+        )));
+    }
     let prompt = record.try_prompt_lock().map_err(to_rpc)?;
     run_prompt_with_lock(inner, ctx, params, record, prompt, retry).await
 }
@@ -782,6 +794,11 @@ async fn run_prompt_locked(
     // 加载期失败的插件只有在宿主建好后才有通知：先把积压送达模型与前端。
     flush_plugin_notices(&plugins, &record.state, &update, &params.session_id).await?;
     let plugin_tools = crate::service::plugin_tools_of(&plugins);
+    let tool_scope = crate::tools::ToolScope::for_metadata(
+        &state_snapshot,
+        &project_config,
+        crate::agents::roles::descriptions(&inner, &project_config, &plugins),
+    );
     let catalog = Arc::new(
         inner
             .tools
@@ -789,7 +806,7 @@ async fn run_prompt_locked(
                 &mcp_snapshot,
                 Arc::clone(&mcp),
                 plugin_tools.clone(),
-                state_snapshot.workflows_active(&project_config.workflow),
+                tool_scope.clone(),
             )
             .map_err(|error| to_rpc(crate::CoreError::Tool(error.to_string())))?,
     );
@@ -807,7 +824,7 @@ async fn run_prompt_locked(
         engine,
         ask_supported,
         &project_config,
-        crate::tools::ToolScope::for_metadata(&state_snapshot, &project_config),
+        tool_scope,
         &plugin_tools,
     );
     let mut last_message = Message::default();

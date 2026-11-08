@@ -2626,15 +2626,17 @@ mod tests {
             import { agents } from 'moc';
             agents.registerPreset({
                 name: 'scout',
+                description: '只读调查',
                 systemPrompt: '只读侦查，返回 path:line 证据。',
                 tools: { deny: ['edit', 'write', 'spawn_agent'] },
             });
             agents.registerPreset({
                 name: 'narrow',
+                description: '限定工具的调查角色',
                 systemPrompt: '窄面预设。',
                 tools: { allow: ['read', 'grep'] },
             });
-            agents.registerPreset({ name: 'plain', systemPrompt: '无工具限制。' });
+            agents.registerPreset({ name: 'plain', description: '用户配置的通用角色', systemPrompt: '无工具限制。' });
             export default {};
             "#,
         );
@@ -2663,6 +2665,7 @@ mod tests {
             import { agents } from 'moc';
             agents.registerPreset({
                 name: 'both',
+                description: '互斥配置校验',
                 systemPrompt: 'x',
                 tools: { allow: ['read'], deny: ['write'] },
             });

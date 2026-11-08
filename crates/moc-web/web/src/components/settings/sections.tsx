@@ -269,10 +269,12 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
   const fallbackText = typeof fallback === "string" && fallback ? fallback : "";
   const levels = parsed.model?.thinking_levels ?? [];
   const inherited = selector === "inherit";
-  const unknown = selector && !parsed.model && !inherited;
+  const explorer = field.path[1] === "roles" && field.path[2] === "explore";
+  const unknown = selector && !parsed.model && !inherited && !(explorer && selector === "none");
 
   let fallbackLabel = "默认";
   if (fallbackText === "inherit") fallbackLabel = "默认（沿用父会话当前模型）";
+  else if (explorer && fallbackText === "none") fallbackLabel = "默认（禁用 Explorer 子代理）";
   else if (fallbackText) fallbackLabel = `默认（${modelName(fallbackText)}）`;
 
   const write = (id: string, level?: string) =>
@@ -296,8 +298,11 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={INHERIT}>{fallbackLabel}</SelectItem>
-            {field.path[2] === "explore" && (
-              <SelectItem value="inherit">沿用父会话当前模型</SelectItem>
+            {explorer && (
+              <>
+                <SelectItem value="inherit">沿用父会话当前模型</SelectItem>
+                <SelectItem value="none">禁用 Explorer 子代理</SelectItem>
+              </>
             )}
             {unknown && <SelectItem value={parsed.id}>{parsed.id}（未找到）</SelectItem>}
             {groupByProvider(models).map(([provider, list]) => (

@@ -1155,10 +1155,9 @@ fn agent_preset_declaration(definition: &str) -> Result<AgentPresetDecl> {
     let object = value
         .as_object()
         .ok_or_else(|| invalid("preset 声明必须是对象"))?;
-    if object
-        .keys()
-        .any(|key| !["name", "systemPrompt", "tools"].contains(&key.as_str()))
-    {
+    if object.keys().any(|key| {
+        !["name", "description", "model", "systemPrompt", "tools"].contains(&key.as_str())
+    }) {
         return Err(invalid("preset 声明包含未知字段"));
     }
     let name = object
@@ -1176,6 +1175,18 @@ fn agent_preset_declaration(definition: &str) -> Result<AgentPresetDecl> {
             "preset name 须为小写字母开头的小写字母/数字/连字符，1–64 字节",
         ));
     }
+    let description = object
+        .get("description")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| invalid("固定角色必须提供非空 description"))?;
+    let model = match object.get("model") {
+        None => "inherit",
+        Some(value) => value
+            .as_str()
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| invalid("角色 model 必须是非空字符串"))?,
+    };
     let system_prompt = object
         .get("systemPrompt")
         .and_then(Value::as_str)
@@ -1225,6 +1236,8 @@ fn agent_preset_declaration(definition: &str) -> Result<AgentPresetDecl> {
     }
     Ok(AgentPresetDecl {
         name: name.to_owned(),
+        description: description.to_owned(),
+        model: model.to_owned(),
         system_prompt: system_prompt.to_owned(),
         allow,
         deny,

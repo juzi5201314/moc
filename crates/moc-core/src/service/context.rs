@@ -35,7 +35,11 @@ pub(crate) async fn tools(
         state.engine,
         inner.ask_available(ctx.connection_id(), state.session.autonomy),
         &config,
-        crate::tools::ToolScope::for_metadata(&state, &config),
+        crate::tools::ToolScope::for_metadata(
+            &state,
+            &config,
+            crate::agents::roles::descriptions(inner, &config, &plugins),
+        ),
         &plugin_tools,
     ))
 }
@@ -225,11 +229,15 @@ async fn snapshot(
     };
     plugin_context.writable = false;
     let plugin_prompt = plugins.prompt_text(&plugin_context).await;
-    let (autonomy, workflows_active) = {
+    let (autonomy, tool_scope) = {
         let state = record.state.lock().await;
         (
             state.session.autonomy,
-            crate::workflow::workflows_active(&state, &config.workflow),
+            crate::tools::ToolScope::for_session(
+                &state,
+                &config,
+                crate::agents::roles::descriptions(inner, &config, &plugins),
+            ),
         )
     };
     let tool_declarations = inner
@@ -237,7 +245,7 @@ async fn snapshot(
             engine,
             &config,
             inner.ask_available(ctx.connection_id(), autonomy),
-            workflows_active,
+            tool_scope.clone(),
         )
         .await
         .map_err(to_rpc)?;
@@ -258,7 +266,7 @@ async fn snapshot(
         state.engine,
         inner.ask_available(ctx.connection_id(), state.session.autonomy),
         &config,
-        crate::tools::ToolScope::for_session(&state, &config),
+        tool_scope,
         &plugin_tools,
     );
     let mut sources = Vec::new();

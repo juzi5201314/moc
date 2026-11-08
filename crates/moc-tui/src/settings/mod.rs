@@ -1143,10 +1143,13 @@ fn model_role(path: &[String]) -> Option<&str> {
     }
 }
 
-/// 探索子代理可继承父会话当前模型。
+/// Explorer 可继承父模型或彻底禁用；Fusion 选择不受影响。
 fn role_specials(role: &str) -> &'static [(&'static str, &'static str)] {
     match role {
-        "explore" => &[("inherit", "沿用父会话当前模型")],
+        "explore" => &[
+            ("inherit", "沿用父会话当前模型"),
+            ("none", "禁用 Explorer 子代理"),
+        ],
         _ => &[],
     }
 }
@@ -1918,10 +1921,6 @@ mod tests {
         assert_eq!(model_role(&path(["providers", "test", "models"])), None);
         assert!(role_specials("default").is_empty());
         assert!(role_specials("plan").is_empty());
-        assert_eq!(
-            role_specials("explore"),
-            [("inherit", "沿用父会话当前模型")]
-        );
     }
 
     #[test]

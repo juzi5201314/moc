@@ -1,7 +1,9 @@
 //! 子代理运行时注册表、持久化子会话、代理间消息和生命周期收尾。
 
 pub mod preset;
+pub(crate) mod roles;
 pub(crate) mod sidekick;
+mod workflow_scope;
 
 pub use preset::{AgentPreset, PresetRegistry, ToolPolicy};
 
@@ -162,19 +164,12 @@ async fn parent_snapshot(
 fn resolve_model(
     config: &crate::ResolvedConfig,
     parent_model: &str,
-    requested: Option<&str>,
+    selector: &str,
 ) -> Result<String, CoreError> {
-    let selector = match requested.unwrap_or("inherit") {
-        "inherit" => parent_model,
-        "explore" => match config.roles.explore.as_str() {
-            "inherit" => parent_model,
-            selector => selector,
-        },
-        other => {
-            return Err(CoreError::Config(format!(
-                "INVALID_PARAMS: 子代理 model 只能是 inherit、explore，收到 {other}"
-            )));
-        }
+    let selector = if selector == "inherit" {
+        parent_model
+    } else {
+        selector
     };
     Ok(config.resolve_model(selector)?.actual_selector().to_owned())
 }
@@ -268,104 +263,128 @@ pub(crate) async fn child_cancel(inner: &CoreInner, parent_id: &str) -> Cancella
     }
 }
 
-/// spawn 的模型指定方式。
+/// 固定角色与两条受控内部通道分开，普通调用不能构造动态角色。
 #[derive(Debug)]
-pub(crate) enum SpawnModel {
-    /// 常规委托面：inherit/explore，`None` 等同 inherit。
-    Role(Option<String>),
-    /// 已规范化的 selector，仅限内部路径（`sidekick` 工具）使用；
-    /// 解析后取 `actual_selector`，Fusion 组合不会落到子代理头上。
-    Exact(String),
+pub(crate) enum SpawnProfile {
+    FixedRole(String),
+    Sidekick {
+        model: String,
+    },
+    Workflow {
+        run_id: String,
+        model: String,
+        system: Option<String>,
+        tools: Option<ToolPolicy>,
+        output_schema: Option<serde_json::Value>,
+    },
 }
 
-/// 一次 spawn 的完整描述；批量 spawn 时逐项构造。
 #[derive(Debug)]
 pub(crate) struct SpawnSpec {
     pub task: String,
     pub title: Option<String>,
-    pub model: SpawnModel,
-    /// 选用的 preset 名；`None` 为普通子代理。
-    pub preset: Option<String>,
-    /// 共享上下文：排在任务原文之前注入首条消息（批量 spawn 的公共前缀）。
-    pub context: Option<String>,
-    /// `yield` 交付物必须满足的 JSON Schema；省略为自由文本交付。
-    pub output_schema: Option<serde_json::Value>,
-    /// SeedFrom（workflow amend 导入）：逐字接入新会话的 transcript 前缀
-    ///（不含 header；在本会话自身的插件 sessionStart 与 task 之前）。
+    pub profile: SpawnProfile,
+    /// 仅 workflow amend 导入前驱 transcript，不含会话头。
     pub seed_entries: Vec<crate::session::entries::Entry>,
 }
 
-/// 解析 preset 名 → 快照契约：先查内置注册表，再查该工作区插件声明。
-///
-/// 插件 preset 与内置同名时内置优先；未知名报错并列出可选项。
-async fn resolve_agent_meta(
+async fn resolve_profile(
     inner: &CoreInner,
-    cwd: &str,
-    name: Option<&str>,
-    output_schema: Option<serde_json::Value>,
-) -> Result<Option<crate::session::entries::AgentSessionMeta>, CoreError> {
-    let mut meta = crate::session::entries::AgentSessionMeta::default();
-    if let Some(name) = name {
-        let host = crate::service::plugin_events::host_for(inner, Path::new(cwd)).await;
-        let declared = plugin_presets(host.as_ref())?;
-        let preset = inner
-            .agent_presets
-            .get(name)
-            .cloned()
-            .or_else(|| declared.get(name).cloned());
-        let Some(preset) = preset else {
-            let mut names: Vec<String> = inner
-                .agent_presets
-                .names()
-                .map(str::to_owned)
-                .chain(declared.keys().cloned())
-                .collect();
-            names.sort();
-            names.dedup();
-            return Err(invalid(format!(
-                "未知 agent preset `{name}`；可选：{}",
-                names.join(", ")
-            )));
-        };
-        meta.preset = Some(preset.name);
-        meta.prompt = Some(preset.system_prompt);
-        meta.tool_policy = Some(preset.tools);
-    }
-    if let Some(schema) = output_schema {
-        // schema 在 spawn 时就编译校验，把坏契约挡在子代理创建之前。
-        validate_output_schema(&schema)?;
-        meta.output_schema = Some(schema);
-    }
-    Ok((!meta.is_empty()).then_some(meta))
-}
-
-/// 插件宿主声明的 preset → `AgentPreset`：allow/deny 互斥，省略则不限。
-fn plugin_presets(
-    host: Option<&Arc<moc_plugin::PluginHost>>,
-) -> Result<BTreeMap<String, AgentPreset>, CoreError> {
-    let mut presets = BTreeMap::new();
-    let Some(host) = host else {
-        return Ok(presets);
-    };
-    for decl in host.agent_preset_declarations().into_values() {
-        let tools = match (decl.allow, decl.deny) {
-            (Some(allow), None) => ToolPolicy::Allow(allow.into_iter().collect()),
-            (None, deny) => ToolPolicy::Deny(deny.unwrap_or_default().into_iter().collect()),
-            (Some(_), Some(_)) => {
-                return Err(invalid(format!(
-                    "agent preset `{}` 的 allow 与 deny 互斥",
-                    decl.name
-                )));
+    parent: &crate::session::state::SessionState,
+    config: &crate::ResolvedConfig,
+    profile: SpawnProfile,
+) -> Result<(String, crate::session::entries::AgentSessionMeta), CoreError> {
+    use crate::session::entries::AgentSessionMeta;
+    let (selector, meta) = match profile {
+        SpawnProfile::FixedRole(name) => {
+            if parent
+                .agent
+                .as_ref()
+                .and_then(|meta| meta.tool_policy.as_ref())
+                .is_some_and(|policy| !policy.permits("spawn_agent"))
+            {
+                return Err(invalid("当前角色不允许派发子代理"));
             }
-        };
-        let preset = preset::sanitize_preset(AgentPreset {
-            name: decl.name,
-            system_prompt: decl.system_prompt,
+            let plugins = inner
+                .project_plugins(Path::new(&parent.session.cwd))
+                .await?;
+            let mut roles = roles::fixed_roles(inner, config, &plugins);
+            let role = roles.remove(&name).ok_or_else(|| {
+                invalid(format!(
+                    "未知或已禁用的 role `{name}`；可用 roles：{}",
+                    roles
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })?;
+            (
+                role.model,
+                AgentSessionMeta {
+                    preset: Some(role.name),
+                    prompt: Some(role.system_prompt),
+                    tool_policy: Some(role.tools),
+                    ..Default::default()
+                },
+            )
+        }
+        SpawnProfile::Sidekick { model } => {
+            if parent.session.is_subagent()
+                || !crate::config::model::is_fusion_selector(&parent.model)
+            {
+                return Err(invalid("sidekick 只能由 Fusion lead 创建"));
+            }
+            let role = inner
+                .agent_presets
+                .get(preset::SIDEKICK_PRESET)
+                .expect("Fusion 执行侧已注册");
+            (
+                model,
+                AgentSessionMeta {
+                    preset: Some(role.name.clone()),
+                    prompt: Some(role.system_prompt.clone()),
+                    tool_policy: Some(role.tools.clone()),
+                    output_schema: Some(preset::sidekick_report_schema()),
+                    ..Default::default()
+                },
+            )
+        }
+        SpawnProfile::Workflow {
+            run_id,
+            model,
+            system,
             tools,
-        });
-        presets.insert(preset.name.clone(), preset);
-    }
-    Ok(presets)
+            output_schema,
+        } => {
+            if !crate::workflow::workflows_active(parent, &config.workflow) {
+                return Err(invalid("动态角色只能由已激活的 workflow 创建"));
+            }
+            workflow_scope::active_run(inner, &parent.session.id, &run_id).await?;
+            // actor 只能执行脚本分配的 ask；新增 actor 与生命周期编排归 driver 所有。
+            let mut tools = tools.unwrap_or_else(|| ToolPolicy::Deny(Default::default()));
+            let control = ["spawn_agent", "sidekick", "stop_agent", "wait_agent"];
+            match &mut tools {
+                ToolPolicy::Allow(names) => names.retain(|name| !control.contains(&name.as_str())),
+                ToolPolicy::Deny(names) => names.extend(control.into_iter().map(str::to_owned)),
+            }
+            tools.ensure_deliverable();
+            if let Some(schema) = &output_schema {
+                validate_output_schema(schema)?;
+            }
+            (
+                model,
+                AgentSessionMeta {
+                    prompt: system,
+                    tool_policy: Some(tools),
+                    output_schema,
+                    workflow_run: Some(run_id),
+                    ..Default::default()
+                },
+            )
+        }
+    };
+    Ok((resolve_model(config, &parent.model, &selector)?, meta))
 }
 
 /// spawn 参数里的 `output_schema` 必须是合法的 JSON Schema 对象。
@@ -391,30 +410,7 @@ pub(crate) async fn spawn(
             config.agents.max_depth
         )));
     }
-    // sidekick preset 是 `sidekick` 工具的专用通道：必须走 Exact selector，
-    // 普通委托面（含 RPC）不能冒名创建。
-    if spec.preset.as_deref() == Some(preset::SIDEKICK_PRESET)
-        && !matches!(spec.model, SpawnModel::Exact(_))
-    {
-        return Err(invalid("sidekick preset 只能由 sidekick 工具创建"));
-    }
-    let model = match &spec.model {
-        SpawnModel::Role(requested) => resolve_model(&config, &parent.model, requested.as_deref())?,
-        SpawnModel::Exact(selector) => config.resolve_model(selector)?.actual_selector().to_owned(),
-    };
-    let agent_meta = resolve_agent_meta(
-        &inner,
-        &parent.session.cwd,
-        spec.preset.as_deref(),
-        spec.output_schema,
-    )
-    .await?;
-    let task = match spec.context {
-        Some(context) if !context.trim().is_empty() => {
-            format!("{}\n\n{}", context.trim(), task)
-        }
-        _ => task,
-    };
+    let (model, agent_meta) = resolve_profile(&inner, &parent, &config, spec.profile).await?;
     let session = inner
         .sessions
         .create(
@@ -423,7 +419,7 @@ pub(crate) async fn spawn(
             parent.engine,
             parent.permission,
             spec.title.as_deref(),
-            SessionOrigin::spawned(session_id.clone(), depth, agent_meta),
+            SessionOrigin::spawned(session_id.clone(), depth, Some(agent_meta)),
             config.session.compress,
         )
         .await?;
@@ -440,7 +436,10 @@ pub(crate) async fn spawn(
         inner.sessions.rewrite(&session.id, combined).await?;
     }
     let info = info_from_session(&session, AgentStatus::Queued);
-    let cancel = child_cancel(&inner, &session_id).await;
+    let cancel = match workflow_scope::actor_run(&inner, &session).await? {
+        Some(run) => run.cancel.child_token(),
+        None => child_cancel(&inner, &session_id).await,
+    };
     prepare_agent(&inner, &info, cancel.clone()).await;
     let plugin_host =
         crate::service::plugin_events::host_for(&inner, Path::new(&parent.session.cwd)).await;
@@ -547,6 +546,8 @@ async fn activate(
         retry,
     } = wakeup;
     let record = inner.sessions.get(&agent_id).await?;
+    let session = record.state.lock().await.session.clone();
+    workflow_scope::actor_run(&inner, &session).await?;
     // 锁被占说明该会话还有提示没结束，唤醒只能放弃（调用方据此改走收件箱）。
     let prompt_lock = match prompt_lock {
         Some(lock) => lock,
@@ -998,6 +999,29 @@ pub(crate) async fn message(
     target: String,
     text: String,
 ) -> Result<AgentMessageResult, CoreError> {
+    message_scoped(inner, request, session_id, target, text, None).await
+}
+
+/// 仅 workflow driver 持有此入口，run 身份不会暴露为模型可传参数。
+pub(crate) async fn message_workflow(
+    inner: Arc<CoreInner>,
+    request: RequestContext,
+    session_id: String,
+    run_id: &str,
+    target: String,
+    text: String,
+) -> Result<AgentMessageResult, CoreError> {
+    message_scoped(inner, request, session_id, target, text, Some(run_id)).await
+}
+
+async fn message_scoped(
+    inner: Arc<CoreInner>,
+    request: RequestContext,
+    session_id: String,
+    target: String,
+    text: String,
+    workflow_run: Option<&str>,
+) -> Result<AgentMessageResult, CoreError> {
     let text = validate_text(&text, "message")?;
     let target = validate_text(&target, "target")?;
     let peers = peers(&inner, &session_id).await?;
@@ -1020,6 +1044,9 @@ pub(crate) async fn message(
         delivery: AgentMessageOutcome::Injected,
     };
     let targets = resolve_targets(&peers, &target, peers.is_subagent())?;
+    for target in &targets {
+        workflow_scope::authorize_message(&inner, &peers.me, &target.session, workflow_run).await?;
+    }
     let mut receipts = Vec::with_capacity(targets.len());
     for target in targets {
         receipts.push(deliver(&inner, &request, &from, &target, &text).await);
@@ -1081,7 +1108,13 @@ async fn deliver(
             // 收件箱不收消息、提示锁也空闲，说明旧条目（如果有）已经作废：
             // 重建条目，清掉上一轮的交付物和等待者。
             let info = info_from_session(&target.session, AgentStatus::Queued);
-            let cancel = child_cancel(inner, parent_id).await;
+            let cancel = match workflow_scope::actor_run(inner, &target.session).await {
+                Ok(Some(run)) => run.cancel.child_token(),
+                Ok(None) => child_cancel(inner, parent_id).await,
+                Err(error) => {
+                    return receipt(target, AgentMessageOutcome::Failed, Some(error.to_string()));
+                }
+            };
             prepare_agent(inner, &info, cancel.clone()).await;
             if let Err(error) = activate(
                 Arc::clone(inner),
@@ -1341,7 +1374,25 @@ pub(crate) async fn list(
             .cmp(&left.updated_at_ms)
             .then_with(|| left.id.cmp(&right.id))
     });
-    Ok(AgentListResult { agents })
+    let config = inner.project_config(Path::new(&peers.me.cwd))?;
+    let plugins = inner.project_plugins(Path::new(&peers.me.cwd)).await?;
+    let record = inner.sessions.get(&session_id).await?;
+    let state = record.state.lock().await.metadata();
+    let scope = crate::tools::ToolScope::for_metadata(
+        &state,
+        &config,
+        roles::descriptions(inner, &config, &plugins),
+    );
+    let roles = if scope.permits("spawn_agent") {
+        scope
+            .roles
+            .into_iter()
+            .map(|(name, description)| moc_protocol::methods::AgentRole { name, description })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(AgentListResult { agents, roles })
 }
 
 pub(crate) async fn stop(
@@ -1621,14 +1672,14 @@ pub(crate) async fn wait(
 
 /// 子代理提示的组装结果。
 pub(crate) struct SubagentPrompt {
-    /// 系统提示块：交付约定和任务本身。任务放在这里，优先级高于通用仓库规则。
+    /// 角色定义与交付约定；任务正文保留为用户消息，不提升为系统指令。
     pub block: String,
     /// 运行期列表：父代理和兄弟代理。兄弟状态随时会变，所以作为尾部提醒注入，
     /// 不参与系统前缀缓存。
     pub roster: String,
 }
 
-/// 子代理提示：系统块（交付契约 + preset 片段 + 任务）与尾部提醒（可通信代理清单）。
+/// 子代理提示：固定角色契约与尾部通信名册。
 pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Option<SubagentPrompt> {
     let peers = peers(inner, session_id).await.ok()?;
     let parent = peers.parent.as_ref()?;
@@ -1667,17 +1718,6 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
             block.push('\n');
         }
     }
-    // sidekick 的首次 handoff 不具权威地位：它的上下文跨 handoff 延续，后续
-    // 中断消息才是最新指令；transcript 里本来就有任务原文。
-    let sidekick =
-        meta.as_ref().and_then(|meta| meta.preset.as_deref()) == Some(preset::SIDEKICK_PRESET);
-    if !sidekick && let Some(task) = assignment(inner, session_id).await {
-        block.push_str(
-            "\nTask (authoritative; outranks general repository conventions on conflict):\n",
-        );
-        block.push_str(&task);
-        block.push('\n');
-    }
     block.push_str("</subagent>");
 
     let mut roster = String::from("<agent-roster>\n");
@@ -1701,23 +1741,6 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
     }
     roster.push_str("</agent-roster>");
     Some(SubagentPrompt { block, roster })
-}
-
-/// 子代理会话里的第一条用户消息：spawn 投递的任务原文。
-///
-/// 跳过 moc 自己注入的上下文消息（计划、todo、压缩摘要）：它们已经随 transcript 进入
-/// 上下文，再抄进系统块只会重复一遍。
-async fn assignment(inner: &CoreInner, session_id: &str) -> Option<String> {
-    let record = inner.sessions.get(session_id).await.ok()?;
-    let state = record.state.lock().await;
-    state
-        .transcript
-        .iter()
-        .filter_map(|entry| entry.context_message())
-        .find(|message| {
-            message.role == Role::User && !crate::compact::replay::is_injected_context(message)
-        })
-        .map(|message| message.text())
 }
 
 /// 状态词，子代理系统提示和工具结果共用；模型可见的文本一律用英文。
@@ -1749,20 +1772,20 @@ mod tests {
         .unwrap();
         crate::config::selection::save(root.path(), "p/a:off").unwrap();
         assert_eq!(
-            resolve_model(&config, "p/b:off", Some("explore")).unwrap(),
+            resolve_model(&config, "p/b:off", &config.roles.explore).unwrap(),
             "p/b:off"
         );
         assert_eq!(
-            resolve_model(&config, "fusion:p/b:off+p/a:off", None).unwrap(),
+            resolve_model(&config, "fusion:p/b:off+p/a:off", "inherit").unwrap(),
             "p/b:off"
         );
         config.roles.explore = "p/a:off".into();
         assert_eq!(
-            resolve_model(&config, "p/b:off", Some("explore")).unwrap(),
+            resolve_model(&config, "p/b:off", &config.roles.explore).unwrap(),
             "p/a:off"
         );
         for removed in ["default", "plan"] {
-            assert!(resolve_model(&config, "p/b:off", Some(removed)).is_err());
+            assert!(resolve_model(&config, "p/b:off", removed).is_err());
         }
         assert_eq!(
             crate::config::selection::load(root.path())

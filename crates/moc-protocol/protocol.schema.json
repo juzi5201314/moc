@@ -28,7 +28,7 @@
           "type": "string"
         },
         "preset": {
-          "description": "spawn 时选定的 agent preset；普通子代理为 `None`。",
+          "description": "创建时固定的角色名；workflow 动态 actor 不注册为全局角色。",
           "type": [
             "string",
             "null"
@@ -79,10 +79,17 @@
             "$ref": "#/$defs/AgentInfo"
           },
           "type": "array"
+        },
+        "roles": {
+          "items": {
+            "$ref": "#/$defs/AgentRole"
+          },
+          "type": "array"
         }
       },
       "required": [
-        "agents"
+        "agents",
+        "roles"
       ],
       "type": "object"
     },
@@ -219,25 +226,29 @@
       ],
       "type": "object"
     },
+    "AgentRole": {
+      "additionalProperties": false,
+      "description": "当前调用方可派发的固定角色；定义归配置所有，不向客户端开放覆盖。",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "type": "object"
+    },
     "AgentSpawnParams": {
       "additionalProperties": false,
       "properties": {
-        "model": {
-          "description": "仅允许 `inherit`、`explore`；省略等同于 `inherit`。",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "output_schema": {
-          "description": "子代理 `yield` 交付物必须满足的 JSON Schema；省略则交付物为自由文本。"
-        },
-        "preset": {
-          "description": "已注册的 agent preset 名；省略为默认子代理。",
-          "type": [
-            "string",
-            "null"
-          ]
+        "role": {
+          "description": "已注册且启用的固定角色；角色模型、提示词和工具面不接受调用方覆盖。",
+          "type": "string"
         },
         "session_id": {
           "description": "调用方会话 ID。",
@@ -255,7 +266,8 @@
       },
       "required": [
         "session_id",
-        "task"
+        "task",
+        "role"
       ],
       "type": "object"
     },
@@ -353,7 +365,7 @@
           "$ref": "#/$defs/AgentStatus"
         },
         "structured_result": {
-          "description": "带 `output_schema` spawn 的子代理交付的结构化结果；自由文本交付为 `None`。"
+          "description": "workflow/Fusion 契约声明的结构化交付；自由文本角色为 `None`。"
         },
         "title": {
           "type": "string"

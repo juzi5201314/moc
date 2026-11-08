@@ -56,9 +56,7 @@ async fn spawn_child(harness: &Harness, parent_id: &str, task: &str) -> String {
             session_id: parent_id.to_owned(),
             task: task.to_owned(),
             title: Some("child".into()),
-            model: Some("inherit".into()),
-            preset: None,
-            output_schema: None,
+            role: "explorer".into(),
         })
         .await
         .expect("spawn 成功")
@@ -643,66 +641,6 @@ async fn unknown_target_and_self_target_are_rejected() {
     harness.close().await;
 }
 
-/// 子代理系统块携带任务（权威顺序压过通用仓库规则），运行期清单只走尾部提醒，
-/// 免得兄弟状态一变就让系统前缀缓存失效。
-#[tokio::test]
-async fn child_system_carries_the_task_and_the_roster_rides_a_tail_reminder() {
-    let upstream = MockServer::builder().start().await;
-    let bodies: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
-    let recorded = Arc::clone(&bodies);
-    mount_router(&upstream, move |body| {
-        recorded.lock().push(body.clone());
-        if body.to_string().contains("CHILD_TASK") {
-            yield_call("call_yield", "CHILD_REPORT")
-        } else {
-            text_response("PARENT_OK")
-        }
-    })
-    .await;
-    let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
-    spawn_child(&harness, &parent_id, "CHILD_TASK").await;
-    wait_children(&harness, &parent_id, None, Some(5)).await;
-
-    let bodies = bodies.lock().clone();
-    let child = bodies
-        .iter()
-        .find(|body| body.to_string().contains("Task (authoritative"))
-        .expect("子代理请求已记录");
-    let messages = child["messages"].as_array().expect("消息数组");
-    let system = messages[0]["content"].as_str().expect("系统提示为字符串");
-    assert!(system.contains("<subagent>"), "{system}");
-    assert!(system.contains("Task (authoritative"), "{system}");
-    assert!(
-        system.contains("CHILD_TASK"),
-        "任务必须进入系统块：{system}"
-    );
-    assert!(
-        !system.contains("<agent-roster>"),
-        "运行期清单不得进入系统前缀：{system}"
-    );
-
-    let roster_index = messages
-        .iter()
-        .position(|message| {
-            message["content"]
-                .as_str()
-                .is_some_and(|text| text.contains("<agent-roster>"))
-        })
-        .expect("清单以尾部提醒注入");
-    assert_eq!(messages[roster_index]["role"], "user");
-    assert_eq!(
-        roster_index,
-        messages.len() - 1,
-        "清单必须是最后一条提醒：{messages:?}"
-    );
-    let roster = messages[roster_index]["content"]
-        .as_str()
-        .expect("清单文本");
-    assert!(roster.contains(&parent_id), "清单必须列出父代理：{roster}");
-    harness.close().await;
-}
-
 /// 请求体里的工具名，保持上游顺序。
 fn tool_names(body: &Value) -> Vec<&str> {
     body["tools"].as_array().map_or_else(Vec::new, |tools| {
@@ -812,8 +750,7 @@ async fn focused_child_session_keeps_subagent_contract_for_user_prompts() {
     harness.close().await;
 }
 
-/// 压缩摘要请求必须复用子代理的系统前缀：身份、交付约定和任务都在系统提示里，
-/// 压缩时漏掉这一段会让缓存前缀在第 0 条消息就分叉。
+/// 压缩摘要请求复用子代理的固定角色系统前缀，避免缓存前缀分叉。
 #[tokio::test]
 async fn subagent_compaction_reuses_the_subagent_system_prefix() {
     let upstream = MockServer::builder().start().await;
@@ -870,7 +807,6 @@ async fn subagent_compaction_reuses_the_subagent_system_prefix() {
         .as_str()
         .expect("系统提示为字符串");
     assert!(system.contains("<subagent>"), "{system}");
-    assert!(system.contains("CHILD_TASK"), "{system}");
     assert_eq!(
         compaction["messages"][0], plain["messages"][0],
         "压缩请求必须逐字节复用子代理系统提示"
@@ -889,9 +825,9 @@ fn is_subagent_request(body: &Value) -> bool {
         .is_some_and(|text| text.contains("<subagent>"))
 }
 
-/// `explore` preset 只应裁掉写入/计划/委托面，基础与通信面全开。
+/// Explorer 保留调查工具，包括 shell，同时禁止直接编辑与再次委托。
 #[tokio::test]
-async fn explore_preset_denies_plan_and_control_but_keeps_the_rest() {
+async fn explorer_role_preserves_reconnaissance_tools() {
     let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |body| {
         if is_subagent_request(body) {
@@ -909,9 +845,7 @@ async fn explore_preset_denies_plan_and_control_but_keeps_the_rest() {
             session_id: parent_id.clone(),
             task: "EXPLORE_TASK".into(),
             title: None,
-            model: Some("inherit".into()),
-            preset: Some("explore".into()),
-            output_schema: None,
+            role: "explorer".into(),
         })
         .await
         .expect("explore preset spawn 成功")
@@ -948,8 +882,8 @@ async fn explore_preset_denies_plan_and_control_but_keeps_the_rest() {
         "grep",
         "find",
         "bash",
-        "todo",
         "job",
+        "todo",
         "skill",
         "run_code",
         "web_fetch",
@@ -967,7 +901,7 @@ async fn explore_preset_denies_plan_and_control_but_keeps_the_rest() {
         })
         .await
         .expect("list 成功");
-    assert_eq!(listed.agents[0].preset.as_deref(), Some("explore"));
+    assert_eq!(listed.agents[0].preset.as_deref(), Some("explorer"));
 
     let info = harness
         .client
@@ -980,7 +914,7 @@ async fn explore_preset_denies_plan_and_control_but_keeps_the_rest() {
         .await
         .expect("child transcript 可加载")
         .session;
-    assert_eq!(info.agent_preset.as_deref(), Some("explore"));
+    assert_eq!(info.agent_preset.as_deref(), Some("explorer"));
     harness.close().await;
 }
 
@@ -998,9 +932,7 @@ async fn unknown_preset_is_rejected_with_available_names() {
             session_id: parent_id,
             task: "X".into(),
             title: None,
-            model: None,
-            preset: Some("no_such_preset".into()),
-            output_schema: None,
+            role: "no_such_preset".into(),
         })
         .await
         .expect_err("未知 preset 必须失败");
@@ -1012,8 +944,7 @@ async fn unknown_preset_is_rejected_with_available_names() {
     harness.close().await;
 }
 
-/// 默认 `max_depth=1` 时 depth-1 子代理拿不到 spawn；提到 2 后 depth-1 可委托、
-/// depth-2 仍到顶。
+/// 用户注册的固定 custom 角色仍可按工具策略委托，并受 max_depth 限制。
 #[tokio::test]
 async fn nested_delegation_respects_max_depth() {
     let upstream = MockServer::builder().start().await;
@@ -1034,7 +965,7 @@ async fn nested_delegation_respects_max_depth() {
                 support::tool_stream(vec![(
                     "call_spawn",
                     "spawn_agent",
-                    json!({"task": "GRANDCHILD_TASK"}),
+                    json!({"task": "GRANDCHILD_TASK", "role": "explorer"}),
                 )]),
                 "text/event-stream",
             );
@@ -1050,8 +981,29 @@ async fn nested_delegation_respects_max_depth() {
         "[agents]\nmax_depth=2\n",
     )
     .await;
+    crate::plugin_flow::install_plugin(
+        &harness,
+        "delegator",
+        r#"
+        import { agents } from 'moc';
+        agents.registerPreset({ name: 'delegator', description: '用户配置的委托角色',
+          systemPrompt: '完成指定委托后交付。', tools: { allow: ['spawn_agent', 'yield'] } });
+        export default {};
+    "#,
+    );
     let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
-    let child_id = spawn_child(&harness, &parent_id, "CHILD_TASK").await;
+    let child_id = harness
+        .client
+        .call::<AgentSpawn>(AgentSpawnParams {
+            session_id: parent_id.clone(),
+            task: "CHILD_TASK".into(),
+            title: None,
+            role: "delegator".into(),
+        })
+        .await
+        .unwrap()
+        .agent
+        .id;
 
     let waited = wait_children(&harness, &parent_id, Some(vec![child_id.clone()]), Some(15)).await;
     assert!(waited.settled, "子代理完成委托并交付");
@@ -1083,14 +1035,17 @@ async fn nested_delegation_respects_max_depth() {
         .iter()
         .filter_map(|request| serde_json::from_slice(&request.body).ok())
         .collect();
-    // 任务文本只出现在子代理系统块（messages[0]）；用整条 body 会把
-    // depth-1 第二轮请求里 spawn_agent 的参数误判成孙代理请求。
-    fn system(body: &Value) -> &str {
-        body["messages"][0]["content"].as_str().unwrap_or("")
+    // 只看首条普通任务消息，避免把后续 spawn 参数误认成孙代理任务。
+    fn task(body: &Value) -> &str {
+        body["messages"]
+            .as_array()
+            .and_then(|messages| messages.iter().find(|message| message["role"] == "user"))
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("")
     }
     let depth_one = bodies
         .iter()
-        .find(|body| is_subagent_request(body) && system(body).contains("CHILD_TASK"))
+        .find(|body| is_subagent_request(body) && task(body) == "CHILD_TASK")
         .expect("depth-1 请求已记录");
     assert!(
         tool_names(depth_one).contains(&"spawn_agent"),
@@ -1098,93 +1053,11 @@ async fn nested_delegation_respects_max_depth() {
     );
     let depth_two = bodies
         .iter()
-        .find(|body| is_subagent_request(body) && system(body).contains("GRANDCHILD_TASK"))
+        .find(|body| is_subagent_request(body) && task(body) == "GRANDCHILD_TASK")
         .expect("depth-2 请求已记录");
     assert!(
         !tool_names(depth_two).contains(&"spawn_agent"),
         "depth-2 已到委托上限，不得再派发"
-    );
-    harness.close().await;
-}
-
-/// `output_schema` 声明后 yield 必须带 `result` 并通过校验；结果随 wait 快照回父。
-#[tokio::test]
-async fn structured_yield_validates_result_and_surfaces_it_in_wait() {
-    let upstream = MockServer::builder().start().await;
-    mount_router(&upstream, |body| {
-        if !is_subagent_request(body) {
-            return text_response("PARENT_OK");
-        }
-        let has_tool_result = body["messages"]
-            .as_array()
-            .is_some_and(|messages| messages.iter().any(|m| m["role"] == "tool"));
-        if !has_tool_result {
-            // 第一轮故意缺 result——工具层应拒绝并让子代理重试。
-            return yield_call("call_yield", "MISSING_RESULT");
-        }
-        ResponseTemplate::new(200).set_body_raw(
-            support::tool_stream(vec![(
-                "call_yield",
-                "yield",
-                json!({"report": "DONE", "result": {"count": 3}}),
-            )]),
-            "text/event-stream",
-        )
-    })
-    .await;
-    let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
-    let child_id = harness
-        .client
-        .call::<AgentSpawn>(AgentSpawnParams {
-            session_id: parent_id.clone(),
-            task: "STRUCTURED_TASK".into(),
-            title: None,
-            model: Some("inherit".into()),
-            preset: None,
-            output_schema: Some(json!({
-                "type": "object",
-                "properties": {"count": {"type": "integer"}},
-                "required": ["count"],
-            })),
-        })
-        .await
-        .expect("结构化 spawn 成功")
-        .agent
-        .id;
-
-    let waited = wait_children(&harness, &parent_id, Some(vec![child_id.clone()]), Some(10)).await;
-    assert!(waited.settled);
-    assert_eq!(
-        waited.agents[0].structured_result,
-        Some(json!({"count": 3})),
-        "结构化结果必须随 wait 快照回父"
-    );
-
-    let child = harness
-        .client
-        .call::<SessionLoad>(SessionLoadParams {
-            omit_auxiliary: false,
-            session_id: child_id,
-            max_entries: None,
-            read_only: false,
-        })
-        .await
-        .expect("child transcript 可加载");
-    let results: Vec<String> = child
-        .entries
-        .iter()
-        .flat_map(|entry| {
-            entry
-                .message
-                .tool_results()
-                .map(|result| result.content.clone())
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    assert!(
-        results.iter().any(|text| text.contains("result")),
-        "缺 result 的 yield 必须被拒：{results:?}"
     );
     harness.close().await;
 }
@@ -1210,9 +1083,9 @@ async fn batch_spawn_creates_agents_and_reports_per_item_errors() {
                 json!({
                     "context": "SHARED_CONTEXT",
                     "tasks": [
-                        {"task": "TASK_ONE"},
-                        {"task": "TASK_TWO", "title": "second"},
-                        {"task": ""}
+                        {"task": "TASK_ONE", "role": "explorer"},
+                        {"task": "TASK_TWO", "title": "second", "role": "explorer"},
+                        {"task": "", "role": "explorer"}
                     ]
                 }),
             )]),
@@ -1294,13 +1167,11 @@ fn spawn_schema_rejects_task_task_conflict_and_batch_bounds() {
         .expect("spawn_agent schema 必须是合法 JSON Schema");
     for args in [
         json!({}),
-        json!({"task": "a", "tasks": [{"task": "b"}]}),
+        json!({"task": "a"}),
+        json!({"task": "a", "role": "explorer", "model": "inherit"}),
+        json!({"task": "a", "role": "explorer", "tasks": [{"task": "b", "role": "explorer"}]}),
         json!({"tasks": []}),
-        json!({"tasks": [{"task": "a"}, {"task": "a"}, {"task": "a"}, {"task": "a"},
-                         {"task": "a"}, {"task": "a"}, {"task": "a"}, {"task": "a"},
-                         {"task": "a"}, {"task": "a"}, {"task": "a"}, {"task": "a"},
-                         {"task": "a"}, {"task": "a"}, {"task": "a"}, {"task": "a"},
-                         {"task": "a"}]}),
+        json!({"tasks": vec![json!({"task":"a", "role":"explorer"}); 17]}),
         json!({"tasks": [{"title": "no task"}]}),
     ] {
         let errors: Vec<String> = validator
@@ -1310,9 +1181,9 @@ fn spawn_schema_rejects_task_task_conflict_and_batch_bounds() {
         assert!(!errors.is_empty(), "{args} 必须被拒：{errors:?}");
     }
     for args in [
-        json!({"task": "a"}),
-        json!({"tasks": [{"task": "a"}]}),
-        json!({"tasks": [{"task": "a"}, {"task": "b", "preset": "explore"}],
+        json!({"task": "a", "role": "explorer"}),
+        json!({"tasks": [{"task": "a", "role": "explorer"}]}),
+        json!({"tasks": [{"task": "a", "role": "explorer"}, {"task": "b", "role": "explorer"}],
                "context": "shared"}),
     ] {
         assert!(
@@ -1348,7 +1219,7 @@ async fn rewinding_past_a_spawn_orphans_stops_and_hides_the_child() {
             support::tool_stream(vec![(
                 "call_spawn",
                 "spawn_agent",
-                json!({"tasks": [{"task": "SLOW_CHILD_TASK"}]}),
+                json!({"tasks": [{"task": "SLOW_CHILD_TASK", "role": "explorer"}]}),
             )]),
             "text/event-stream",
         )
@@ -1630,9 +1501,7 @@ async fn fusion_lead_hands_off_to_a_persistent_sidekick() {
             session_id: lead_id.clone(),
             task: "CHILD_TASK".into(),
             title: None,
-            model: Some("inherit".into()),
-            preset: None,
-            output_schema: None,
+            role: "explorer".into(),
         })
         .await
         .expect("spawn 成功");
@@ -2171,5 +2040,215 @@ async fn fusion_sidekick_busy_rejects_compact_fresh_and_retry() {
         3,
         "compact/fresh/retry 在运行中的 sidekick 上都必须报错：{joined}"
     );
+    harness.close().await;
+}
+
+/// Explorer 禁用后，工具目录、角色目录和直接 RPC 必须同时关闭创建入口。
+#[tokio::test]
+async fn disabled_explorer_has_no_spawnable_roles() {
+    use moc_protocol::methods::{SessionTools, SessionToolsParams};
+    let upstream = MockServer::builder().start().await;
+    let harness = harness(&upstream).await;
+    let config_dir = harness.root.path().join("work/.moc");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[models.roles]\nexplore='none'\n",
+    )
+    .unwrap();
+    for engine in [
+        moc_protocol::SessionEngine::Standard,
+        moc_protocol::SessionEngine::Ptc,
+    ] {
+        let parent = harness.session(engine).await;
+        let listed = harness
+            .client
+            .call::<AgentList>(AgentListParams {
+                session_id: parent.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(listed.roles.is_empty());
+        let tools = harness
+            .client
+            .call::<SessionTools>(SessionToolsParams {
+                session_id: parent.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(!tools.iter().any(|tool| tool.name == "spawn_agent"));
+        for role in ["explorer", "sidekick", "default"] {
+            let error = harness
+                .client
+                .call::<AgentSpawn>(AgentSpawnParams {
+                    session_id: parent.clone(),
+                    task: "调查".into(),
+                    title: None,
+                    role: role.into(),
+                })
+                .await
+                .expect_err("未启用角色不可绕过工具目录直接创建");
+            assert!(error.to_string().contains("INVALID_PARAMS"));
+        }
+        assert!(
+            harness
+                .client
+                .call::<AgentList>(AgentListParams { session_id: parent })
+                .await
+                .unwrap()
+                .agents
+                .is_empty()
+        );
+    }
+    assert!(upstream.received_requests().await.unwrap().is_empty());
+    harness.close().await;
+}
+
+/// 后续消息中仍可用 shell 调查，直接和 PTC 嵌套 write 则保持禁用。
+#[tokio::test]
+async fn explorer_followup_preserves_shell_and_denies_write_tools() {
+    assert!(support::require_moc_bin("Explorer 工具隔离"));
+    let upstream = MockServer::builder().start().await;
+    mount_router(&upstream, |body| {
+        if !is_subagent_request(body) {
+            return text_response("PARENT_OK");
+        }
+        let text = body.to_string();
+        if !text.contains("FOLLOWUP_INSPECT") || text.contains("attempt_write") {
+            return yield_call("yield_done", "READ_ONLY_REPORT");
+        }
+        ResponseTemplate::new(200).set_body_raw(support::tool_stream(vec![
+            ("attempt_write", "write", json!({"path":"protected.txt", "content":"direct"})),
+            ("inspect_shell", "bash", json!({"description":"验证 shell 调查能力", "command":"printf 'shell-inspection-ok'"})),
+            ("attempt_nested", "run_code", json!({"description":"尝试嵌套写入", "code":"await tools.write({path:'protected.txt',content:'nested'});"})),
+        ]), "text/event-stream")
+    }).await;
+    let harness = harness(&upstream).await;
+    let path = harness.root.path().join("work/protected.txt");
+    std::fs::write(&path, "original").unwrap();
+    let parent = harness.session(moc_protocol::SessionEngine::Standard).await;
+    let child = spawn_child(&harness, &parent, "只读调查").await;
+    wait_children(&harness, &parent, Some(vec![child.clone()]), Some(10)).await;
+    message_agent(
+        &harness,
+        &parent,
+        &child,
+        "FOLLOWUP_INSPECT：继续调查 protected.txt",
+    )
+    .await
+    .unwrap();
+    let completed = wait_children(&harness, &parent, Some(vec![child.clone()]), Some(10)).await;
+    assert!(completed.settled);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
+    let loaded = harness.load(&child).await;
+    let shell = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .find(|result| result.tool_call_id == "inspect_shell")
+        .expect("shell 调查结果");
+    assert!(!shell.is_error, "{}", shell.content);
+    assert!(shell.content.contains("shell-inspection-ok"));
+    for id in ["attempt_write", "attempt_nested"] {
+        let result = loaded
+            .entries
+            .iter()
+            .flat_map(|entry| entry.message.tool_results())
+            .find(|result| result.tool_call_id == id)
+            .expect("越权调用必须返回失败结果");
+        assert!(result.is_error, "{id} 不得执行成功：{}", result.content);
+    }
+    harness.close().await;
+}
+
+/// Explorer 关闭不影响用户启用的 custom；创建模型只能来自角色定义。
+#[tokio::test]
+async fn custom_role_uses_configured_model_when_explorer_disabled() {
+    let upstream = MockServer::builder().start().await;
+    mount_router(&upstream, |body| {
+        if is_subagent_request(body) {
+            yield_call("custom_done", "CUSTOM_REPORT")
+        } else {
+            text_response("PARENT_OK")
+        }
+    })
+    .await;
+    let harness = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[providers.test.models.gpt-alt]\ncontext_window=1000000\nmax_output_tokens=4096\n",
+    )
+    .await;
+    let config_dir = harness.root.path().join("work/.moc");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[models.roles]\nexplore='none'\n",
+    )
+    .unwrap();
+    crate::plugin_flow::install_plugin(
+        &harness,
+        "fixed-custom",
+        r#"
+        import { agents } from 'moc';
+        agents.registerPreset({ name: 'reader', description: '固定模型的只读角色', model: 'test/gpt-alt',
+          systemPrompt: '只读调查，完成后交付。', tools: {allow: ['read']} });
+        agents.registerPreset({ name: 'disabled', description: '停用的角色', model: 'none', systemPrompt: '停用' });
+        agents.registerPreset({ name: 'explorer', description: '不能覆盖内置角色', systemPrompt: '不得生效' });
+        export default {};
+    "#,
+    );
+    let parent = harness.session(moc_protocol::SessionEngine::Standard).await;
+    let listed = harness
+        .client
+        .call::<AgentList>(AgentListParams {
+            session_id: parent.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        listed
+            .roles
+            .iter()
+            .map(|role| role.name.as_str())
+            .collect::<Vec<_>>(),
+        ["reader"]
+    );
+    let child = harness
+        .client
+        .call::<AgentSpawn>(AgentSpawnParams {
+            session_id: parent.clone(),
+            task: "调查入口".into(),
+            title: None,
+            role: "reader".into(),
+        })
+        .await
+        .unwrap()
+        .agent
+        .id;
+    let completed = wait_children(&harness, &parent, Some(vec![child]), Some(10)).await;
+    assert_eq!(
+        completed.agents[0].message.as_ref().unwrap().text(),
+        "CUSTOM_REPORT"
+    );
+    let bodies: Vec<Value> = upstream
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    let body = bodies
+        .iter()
+        .find(|body| is_subagent_request(body))
+        .expect("custom 请求");
+    assert_eq!(body["model"], "gpt-alt");
+    let names: Vec<_> = body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["read", "yield"]);
     harness.close().await;
 }

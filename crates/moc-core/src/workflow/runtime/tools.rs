@@ -1026,7 +1026,7 @@ mod tests {
             &moc_mcp::McpSnapshot::default(),
             moc_mcp::McpManager::new(Vec::new(), tokio_util::sync::CancellationToken::new()),
             Vec::new(),
-            false,
+            crate::tools::ToolScope::top(),
         )
         .unwrap();
         let text = crate::tools::declarations::render_signatures(
