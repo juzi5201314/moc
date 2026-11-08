@@ -11,6 +11,7 @@ impl Method for PluginList {
     const NAME: &'static str = "plugin/list";
     type Params = PluginListParams;
     type Result = PluginListResult;
+    crate::method::json_codec!();
 }
 impl ClientRequest for PluginList {}
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -70,6 +71,7 @@ impl Method for PluginReload {
     const NAME: &'static str = "plugin/reload";
     type Params = PluginReloadParams;
     type Result = PluginReloadResult;
+    crate::method::json_codec!();
 }
 impl ClientRequest for PluginReload {}
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -93,6 +95,7 @@ impl Method for PluginRunCommand {
     const NAME: &'static str = "plugin/run_command";
     type Params = PluginRunCommandParams;
     type Result = PluginRunCommandResult;
+    crate::method::json_codec!();
 }
 impl ClientRequest for PluginRunCommand {}
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

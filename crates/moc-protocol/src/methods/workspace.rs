@@ -25,6 +25,7 @@ impl Method for WorkspaceGitBranch {
     const NAME: &'static str = "workspace/git_branch";
     type Params = WorkspaceGitBranchParams;
     type Result = WorkspaceGitBranchResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for WorkspaceGitBranch {}

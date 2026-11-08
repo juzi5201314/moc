@@ -109,6 +109,7 @@ impl Method for Initialize {
     const NAME: &'static str = "initialize";
     type Params = InitializeParams;
     type Result = InitializeResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for Initialize {}
@@ -117,6 +118,7 @@ impl Method for Ping {
     const NAME: &'static str = "ping";
     type Params = EmptyParams;
     type Result = PingResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for Ping {}

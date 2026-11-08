@@ -23,6 +23,7 @@ impl Method for SessionWorkflowActivate {
     const NAME: &'static str = "session/workflow_activate";
     type Params = SessionWorkflowActivateParams;
     type Result = SessionInfo;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionWorkflowActivate {}
@@ -41,6 +42,7 @@ impl Method for SessionWorkflowApprove {
     const NAME: &'static str = "session/workflow_approve";
     type Params = SessionWorkflowApproveParams;
     type Result = WorkflowAck;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionWorkflowApprove {}
@@ -88,6 +90,7 @@ impl Method for SessionWorkflowRuns {
     const NAME: &'static str = "session/workflow_runs";
     type Params = SessionWorkflowRunsParams;
     type Result = SessionWorkflowRunsResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionWorkflowRuns {}
@@ -113,6 +116,7 @@ impl Method for SessionWorkflowRun {
     const NAME: &'static str = "session/workflow_run";
     type Params = SessionWorkflowRunParams;
     type Result = WorkflowRunSnapshot;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionWorkflowRun {}
@@ -132,6 +136,7 @@ impl Method for SessionWorkflowStop {
     const NAME: &'static str = "session/workflow_stop";
     type Params = SessionWorkflowRunParams;
     type Result = WorkflowRunSummary;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionWorkflowStop {}
@@ -144,6 +149,7 @@ impl Method for SessionWorkflowResume {
     const NAME: &'static str = "session/workflow_resume";
     type Params = SessionWorkflowRunParams;
     type Result = WorkflowRunSummary;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionWorkflowResume {}
@@ -156,6 +162,7 @@ impl Method for SessionWorkflowSetRoleModel {
     const NAME: &'static str = "session/workflow_set_role_model";
     type Params = SessionWorkflowSetRoleModelParams;
     type Result = WorkflowAck;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionWorkflowSetRoleModel {}
@@ -178,6 +185,7 @@ impl Method for SessionWorkflowArtifact {
     const NAME: &'static str = "session/workflow_artifact";
     type Params = SessionWorkflowArtifactParams;
     type Result = WorkflowArtifactResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionWorkflowArtifact {}

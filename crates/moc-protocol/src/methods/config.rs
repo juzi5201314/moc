@@ -18,6 +18,7 @@ impl Method for ConfigGet {
     const NAME: &'static str = "config/get";
     type Params = ConfigGetParams;
     type Result = ConfigGetResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for ConfigGet {}

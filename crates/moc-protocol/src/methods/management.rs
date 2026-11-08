@@ -134,6 +134,7 @@ impl Method for ConfigManage {
     const NAME: &'static str = "config/manage";
     type Params = ConfigAction;
     type Result = ConfigReply;
+    crate::method::json_codec!();
 }
 impl ClientRequest for ConfigManage {}
 
@@ -161,6 +162,7 @@ impl Method for SessionSteer {
     const NAME: &'static str = "session/steer";
     type Params = SteerParams;
     type Result = SteerResult;
+    crate::method::json_codec!();
 }
 impl ClientRequest for SessionSteer {}
 
@@ -187,5 +189,6 @@ impl Method for SessionUnsteer {
     const NAME: &'static str = "session/unsteer";
     type Params = UnsteerParams;
     type Result = UnsteerResult;
+    crate::method::json_codec!();
 }
 impl ClientRequest for SessionUnsteer {}

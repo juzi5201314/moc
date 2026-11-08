@@ -22,6 +22,7 @@ impl Method for WebStateGet {
     const NAME: &'static str = "web/state";
     type Params = WebStateGetParams;
     type Result = WebStateDocument;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for WebStateGet {}
@@ -39,6 +40,7 @@ impl Method for WebStateSave {
     const NAME: &'static str = "web/state_save";
     type Params = WebStateSaveParams;
     type Result = WebStateDocument;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for WebStateSave {}
@@ -140,6 +142,7 @@ impl Method for WebStateUpdated {
     const NAME: &'static str = "web/state_updated";
     type Params = WebStateDocument;
     type Result = crate::methods::Empty;
+    crate::method::json_codec!();
 }
 
 // 通知不返回结果；`Result` 只是 `Method` 的形状要求。

@@ -594,17 +594,20 @@ fn build_schema() -> (Value, BTreeMap<String, (String, &'static str)>) {
 #[test]
 fn protocol_schema_is_fresh() {
     let (schema, _) = build_schema();
-    let generated = serde_json::to_string_pretty(&schema).expect("JSON") + "\n";
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SCHEMA);
     if std::env::var_os("MOC_UPDATE_SCHEMA").is_some() {
+        let generated = serde_json::to_string_pretty(&schema).expect("JSON") + "\n";
         fs::write(&path, &generated).expect("schema 可写");
         return;
     }
     let checked_in = fs::read_to_string(&path).unwrap_or_else(|_| {
         panic!("缺少 {SCHEMA}；运行 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol 生成")
     });
+    // serde_json 的 preserve_order 可随工作区 feature 合并变化；对象键顺序不是线协议。
+    let checked_in: Value =
+        serde_json::from_str(&checked_in).expect("已提交的 schema 必须是合法 JSON");
     assert_eq!(
-        checked_in, generated,
+        checked_in, schema,
         "协议 schema 过期：检查上方 diff，确认后运行 \
          MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol 重新生成，\
          并同步更新 moc-web 前端类型（pnpm gen:protocol）"

@@ -228,6 +228,12 @@ impl SessionTable {
             record.accessed.store(now_ms(), Ordering::Relaxed);
             return Ok(record);
         }
+        self.load_record(session_id).await
+    }
+
+    // 热命中不携带磁盘加载和缓存驱逐代码；冷状态机不再内联到每个会话调用点。
+    #[inline(never)]
+    async fn load_record(&self, session_id: &str) -> Result<Arc<SessionRecord>, CoreError> {
         let gate = {
             let mut loading = self.loading.lock();
             loading.retain(|_, gate| gate.strong_count() > 0);
@@ -1436,6 +1442,17 @@ impl SessionTable {
         if record.lease.lock().is_some() {
             return Ok(());
         }
+        self.acquire_write_lease(session_id, record, frontend).await
+    }
+
+    // 已持有租约时只走上面的短路径，文件修复和外部写入重放共享同一实现。
+    #[inline(never)]
+    async fn acquire_write_lease(
+        &self,
+        session_id: &str,
+        record: &Arc<SessionRecord>,
+        frontend: &str,
+    ) -> Result<(), CoreError> {
         let _gate = record.lease_gate.lock().await;
         if record.lease.lock().is_some() {
             return Ok(());

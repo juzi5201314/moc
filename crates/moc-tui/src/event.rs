@@ -12079,8 +12079,23 @@ mod config_picker_tests {
 
     #[tokio::test]
     async fn startup_selects_then_remembers_model_and_resume_ignores_missing_preference() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+        let upstream = MockServer::builder().start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "data: {\"id\":\"reply\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"已记录\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                "text/event-stream",
+            ))
+            .expect(1)
+            .mount(&upstream)
+            .await;
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("config.toml"), "[providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n[providers.p.models.m]\n[workspace]\nwatch=false\n[plugins]\nenabled=false\n").unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            format!("[providers.p]\napi='openai_chat'\nbase_url='{}/v1'\n[providers.p.models.m]\n[workspace]\nwatch=false\n[plugins]\nenabled=false\n", upstream.uri()),
+        )
+        .unwrap();
         let core = Core::new(moc_core::CoreConfig {
             home: root.path().to_owned(),
             cwd: root.path().to_owned(),
@@ -12126,6 +12141,20 @@ mod config_picker_tests {
         };
         assert_eq!(info.model, "p/m:off");
         assert!(info.plan_active);
+        // 空会话刻意不落盘；先完成一轮真实 RPC 提示，再验证卸载后的冷恢复。
+        connection
+            .client
+            .call::<moc_protocol::SessionPrompt>(moc_protocol::PromptParams {
+                session_id: info.id.clone(),
+                input: vec![moc_protocol::InputPart::Text {
+                    text: "恢复前的历史".into(),
+                }],
+                mode: None,
+                agent_message: None,
+                goal_round: None,
+            })
+            .await
+            .unwrap();
         let mut next = App::new(Theme::global(), events.clone());
         bootstrap(&connection.client, &mut next, &TuiOptions::default()).await;
         assert_eq!(next.session.as_ref().unwrap().model, info.model);
@@ -12147,8 +12176,12 @@ mod config_picker_tests {
             },
         )
         .await;
-        assert_eq!(restored.session.as_ref().unwrap().id, info.id);
-        assert_eq!(restored.session.as_ref().unwrap().model, "p/m:off");
+        let session = restored
+            .session
+            .as_ref()
+            .unwrap_or_else(|| panic!("恢复会话失败：{:?}", restored.notice));
+        assert_eq!(session.id, info.id);
+        assert_eq!(session.model, "p/m:off");
         connection.shutdown().await;
         core.shutdown().await;
     }

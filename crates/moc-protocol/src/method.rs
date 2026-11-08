@@ -22,7 +22,35 @@ pub trait Method {
     type Params: Serialize + DeserializeOwned;
     /// 结果 DTO。
     type Result: Serialize + DeserializeOwned;
+
+    /// 编码请求或通知参数；具体实现留在声明方法的 crate，避免前端重复单态化。
+    fn encode_params(params: Self::Params) -> serde_json::Result<serde_json::Value>;
+    /// 解码请求或通知参数，保留 DTO 的字段校验与未知变体处理。
+    fn decode_params(value: serde_json::Value) -> serde_json::Result<Self::Params>;
+    /// 解码响应 DTO；错误到 RPC 错误码的映射仍由调用边界负责。
+    fn decode_result(value: serde_json::Value) -> serde_json::Result<Self::Result>;
 }
+
+// 不能改成 trait 默认方法：默认方法仍会在调用方实例化，重新复制整条 Serde 链。
+macro_rules! json_codec {
+    () => {
+        #[inline(never)]
+        fn encode_params(params: Self::Params) -> serde_json::Result<serde_json::Value> {
+            serde_json::to_value(params)
+        }
+
+        #[inline(never)]
+        fn decode_params(value: serde_json::Value) -> serde_json::Result<Self::Params> {
+            serde_json::from_value(value)
+        }
+
+        #[inline(never)]
+        fn decode_result(value: serde_json::Value) -> serde_json::Result<Self::Result> {
+            serde_json::from_value(value)
+        }
+    };
+}
+pub(crate) use json_codec;
 
 /// 客户端发起、服务端实现（core 实现 [`crate::AgentService`]）。
 pub trait ClientRequest: Method {}

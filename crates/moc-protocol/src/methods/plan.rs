@@ -19,6 +19,7 @@ impl Method for SessionPlanMode {
     const NAME: &'static str = "session/plan_mode";
     type Params = SessionPlanModeParams;
     type Result = super::session::SessionInfo;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionPlanMode {}
@@ -43,6 +44,7 @@ impl Method for SessionPlanApprove {
     const NAME: &'static str = "session/plan_approve";
     type Params = SessionPlanApproveParams;
     type Result = SessionPlanApproveResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionPlanApprove {}
@@ -98,6 +100,7 @@ impl Method for SessionPlanRevise {
     const NAME: &'static str = "session/plan_revise";
     type Params = SessionPlanReviseParams;
     type Result = SessionPlanReviseResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionPlanRevise {}
@@ -138,6 +141,7 @@ impl Method for SessionPlanDiff {
     const NAME: &'static str = "session/plan_diff";
     type Params = SessionPlanDiffParams;
     type Result = SessionPlanDiffResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionPlanDiff {}

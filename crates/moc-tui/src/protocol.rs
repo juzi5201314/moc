@@ -1,7 +1,7 @@
 //! 协议桥：内嵌 core 的 JSON-RPC 连接与 UI 事件流。
 //!
-//! 连接样板与 moc-cli REPL 完全一致（`transport::duplex` + `Server` +
-//! `ClientBuilder`），区别只在：通知处理器不做渲染，只把事件转投 UI 队列；
+//! 连接样板与 moc-cli REPL 共用 `CoreServer` + `ClientBuilder`，区别只在：
+//! 通知处理器不做渲染，只把事件转投 UI 队列；
 //! 反向请求（授权 / 提问）通过 oneshot 把答复权交给主循环。
 
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use moc_core::Core;
 use moc_protocol::{
-    ClientBuilder, ClientHandle, ClientInfo, ClientRequestContext, RpcError, RpcErrorCode, Server,
+    ClientBuilder, ClientHandle, ClientInfo, ClientRequestContext, RpcError, RpcErrorCode,
     ServerConnection, ServerOptions,
     methods::{
         AskParams, AskResult, ClientCapabilities, ContextUsageResult, PermissionRequestParams,
@@ -254,9 +254,8 @@ pub async fn connect_embedded(
 ) -> anyhow::Result<EmbeddedConnection> {
     let (update_tx, update_rx) = channel(256);
     let sandbox_modes = core.sandbox_support().modes;
-    let (core_side, frontend_side) = moc_protocol::transport::duplex(64 * 1024);
-    let server = Server::with_options((*core).clone(), ServerOptions::default());
-    let server_connection = server.spawn(core_side);
+    let server = core.server(ServerOptions::default());
+    let (frontend_side, server_connection) = server.connect(64 * 1024);
 
     let builder = ClientBuilder::new(ClientInfo {
         name: "moc-tui".into(),

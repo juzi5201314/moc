@@ -48,6 +48,7 @@ impl Method for SessionUpdateMethod {
     const NAME: &'static str = "session/update";
     type Params = SessionUpdateParams;
     type Result = crate::methods::Empty;
+    crate::method::json_codec!();
 }
 
 // 通知不返回结果；`Result` 只是 `Method` 的形状要求。

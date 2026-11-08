@@ -14,6 +14,7 @@ impl Method for SessionBash {
     const NAME: &'static str = "session/bash";
     type Params = BashParams;
     type Result = BashResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionBash {}

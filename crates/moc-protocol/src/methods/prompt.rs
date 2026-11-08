@@ -150,6 +150,7 @@ impl Method for SessionPrompt {
     const NAME: &'static str = "session/prompt";
     type Params = PromptParams;
     type Result = PromptResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionPrompt {}
@@ -158,6 +159,7 @@ impl Method for SessionRetry {
     const NAME: &'static str = "session/retry";
     type Params = SessionRetryParams;
     type Result = PromptResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionRetry {}
@@ -166,6 +168,7 @@ impl Method for SessionCancel {
     const NAME: &'static str = "session/cancel";
     type Params = SessionCancelParams;
     type Result = SessionCancelResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionCancel {}

@@ -574,7 +574,39 @@ pub struct Core {
     pub(crate) inner: Arc<CoreInner>,
 }
 
+/// 各前端共用的具体服务端，避免跨 crate 重复实例化 `Server<Core>` 的异步调用链。
+#[derive(Clone)]
+pub struct CoreServer {
+    server: Arc<moc_protocol::Server<Core>>,
+}
+
+impl CoreServer {
+    /// 建立独立的内嵌连接；容量和协议选项仍由前端决定。
+    #[inline(never)]
+    pub fn connect(
+        &self,
+        capacity: usize,
+    ) -> (tokio::io::DuplexStream, moc_protocol::ServerConnection) {
+        // 具体传输的实例化留在本 crate，不随前端重新生成服务分发和 Core 状态机。
+        let (core_side, frontend_side) = moc_protocol::transport::duplex(capacity);
+        let connection = self.server.spawn(core_side);
+        (frontend_side, connection)
+    }
+
+    /// 取消本服务端的全部连接，保持协议层原有的收尾语义。
+    pub fn shutdown(&self) {
+        self.server.shutdown();
+    }
+}
+
 impl Core {
+    /// 创建前端服务端；同一服务端的多条连接共享连接编号与关闭令牌。
+    pub fn server(&self, options: moc_protocol::ServerOptions) -> CoreServer {
+        CoreServer {
+            server: moc_protocol::Server::with_options(self.clone(), options),
+        }
+    }
+
     /// 截断历史后被标孤儿的子代理：还在跑的停掉并广播状态。
     ///
     /// rewind/reask 共用——孤儿代理的收尾投递会污染截断后的历史、也会作废

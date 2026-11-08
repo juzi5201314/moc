@@ -4,18 +4,14 @@
 //! 提示注册表、在飞请求上限都是 per-connection 的，和 TUI 内嵌连接没有区别。
 //! 多个标签页因此是多个前端连接共享同一个 core，而不是多路复用一条连接。
 
-use std::sync::Arc;
-
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
-use moc_core::Core;
-use moc_protocol::transport;
-use moc_protocol::{Server, ServerOptions};
+use moc_core::CoreServer;
+use moc_protocol::ServerOptions;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-pub async fn serve(socket: WebSocket, server: Arc<Server<Core>>) {
-    let (core_side, frontend_side) = transport::duplex(256 * 1024);
-    let connection = server.spawn(core_side);
+pub async fn serve(socket: WebSocket, server: CoreServer) {
+    let (frontend_side, connection) = server.connect(256 * 1024);
     let (mut sink, mut stream) = socket.split();
     let (mut reader, mut writer) = tokio::io::split(frontend_side);
 

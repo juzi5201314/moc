@@ -12,6 +12,7 @@ impl Method for SessionHistory {
     const NAME: &'static str = "session/history";
     type Params = SessionHistoryParams;
     type Result = SessionHistoryResult;
+    crate::method::json_codec!();
 }
 impl ClientRequest for SessionHistory {}
 

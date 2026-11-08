@@ -131,6 +131,7 @@ impl Method for SessionBtw {
     const NAME: &'static str = "session/btw";
     type Params = BtwParams;
     type Result = BtwResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionBtw {}
@@ -139,6 +140,7 @@ impl Method for SessionBtwCancel {
     const NAME: &'static str = "session/btw_cancel";
     type Params = BtwCancelParams;
     type Result = BtwCancelResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionBtwCancel {}
@@ -147,6 +149,7 @@ impl Method for BtwUpdateMethod {
     const NAME: &'static str = "session/btw_update";
     type Params = BtwUpdateParams;
     type Result = super::Empty;
+    crate::method::json_codec!();
 }
 
 impl ServerNotification for BtwUpdateMethod {}

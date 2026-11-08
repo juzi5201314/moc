@@ -27,6 +27,7 @@ impl Method for ChartAnalyze {
     const NAME: &'static str = "chart/analyze";
     type Params = ChartAnalyzeParams;
     type Result = ChartAnalyzeResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for ChartAnalyze {}

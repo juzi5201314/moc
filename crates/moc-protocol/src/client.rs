@@ -135,7 +135,7 @@ impl ClientBuilder {
         let erased: NotificationHandler = Arc::new(move |params, ctx| {
             let handler = Arc::clone(&handler);
             Box::pin(async move {
-                let params = match serde_json::from_value::<M::Params>(params) {
+                let params = match M::decode_params(params) {
                     Ok(params) => params,
                     Err(error) => {
                         // 前端不认识的更新：整条丢弃，连接继续用

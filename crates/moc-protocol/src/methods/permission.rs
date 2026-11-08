@@ -26,6 +26,7 @@ impl Method for SessionRequestPermission {
     const NAME: &'static str = "session/request_permission";
     type Params = PermissionRequestParams;
     type Result = PermissionResult;
+    crate::method::json_codec!();
 }
 
 impl ServerRequest for SessionRequestPermission {}

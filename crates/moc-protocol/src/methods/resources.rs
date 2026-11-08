@@ -12,6 +12,7 @@ impl Method for ResourceComplete {
     const NAME: &'static str = "resource/complete";
     type Params = ResourceCompleteParams;
     type Result = ResourceCompleteResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for ResourceComplete {}

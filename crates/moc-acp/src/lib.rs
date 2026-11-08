@@ -21,7 +21,7 @@ use moc_protocol::error::RpcCallError;
 use moc_protocol::methods::{
     ConfigGet, ConfigGetParams, ConfigGetResult, SessionInfo, SessionUpdate as MocUpdate,
 };
-use moc_protocol::{ClientRequest, Server, ServerOptions, transport};
+use moc_protocol::{ClientRequest, ServerOptions};
 
 use backend::Backend;
 use translate::SessionProjection;
@@ -190,9 +190,8 @@ impl<B: Backend> Bridge<B> {
 ///
 /// 返回 `Ok` 表示客户端正常断开；core 的关停由调用方（CLI 外层）统一负责。
 pub async fn serve(core: Arc<Core>, options: AcpOptions) -> anyhow::Result<()> {
-    let (core_side, frontend_side) = transport::duplex(64 * 1024);
-    let server = Server::with_options((*core).clone(), ServerOptions::default());
-    let connection = server.spawn(core_side);
+    let server = core.server(ServerOptions::default());
+    let (frontend_side, connection) = server.connect(64 * 1024);
     let bridge = Arc::new(Bridge::new(options));
     let builder = bridge.moc_client_builder();
 

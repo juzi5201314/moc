@@ -13,6 +13,7 @@ impl Method for SessionRequestAsk {
     const NAME: &'static str = "session/request_ask";
     type Params = AskParams;
     type Result = AskResult;
+    crate::method::json_codec!();
 }
 
 impl ServerRequest for SessionRequestAsk {}

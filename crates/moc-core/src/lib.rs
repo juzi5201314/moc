@@ -30,7 +30,7 @@ pub mod tools;
 pub mod websearch;
 pub mod workflow;
 pub mod workspace;
-pub use service::Core;
+pub use service::{Core, CoreServer};
 
 pub use config::model::{ModelCapabilities, ResolvedModel, ThinkingLevel};
 pub use config::{ResolvedConfig, resolve_models};

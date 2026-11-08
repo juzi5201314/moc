@@ -223,6 +223,7 @@ macro_rules! client_method {
             const NAME: &'static str = $name;
             type Params = $params;
             type Result = $result;
+            crate::method::json_codec!();
         }
         impl ClientRequest for $ty {}
     };

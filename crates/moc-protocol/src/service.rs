@@ -720,7 +720,7 @@ impl UpdateSink {
             session_id: session_id.into(),
             update,
         };
-        let value = serde_json::to_value(params)
+        let value = SessionUpdateMethod::encode_params(params)
             .map_err(|error| ProtocolError::Encode(error.to_string()))?;
         self.traffic
             .send(Outbound::Notification(Notification::new(
@@ -745,7 +745,7 @@ impl UpdateSink {
             request_id,
             update,
         };
-        let value = serde_json::to_value(params)
+        let value = BtwUpdateMethod::encode_params(params)
             .map_err(|error| ProtocolError::Encode(error.to_string()))?;
         self.traffic
             .send(Outbound::Notification(Notification::new(
@@ -763,8 +763,8 @@ impl UpdateSink {
         &self,
         params: M::Params,
     ) -> Result<(), ProtocolError> {
-        let value = serde_json::to_value(params)
-            .map_err(|error| ProtocolError::Encode(error.to_string()))?;
+        let value =
+            M::encode_params(params).map_err(|error| ProtocolError::Encode(error.to_string()))?;
         self.traffic
             .send(Outbound::Notification(Notification::new(
                 <M as Method>::NAME,

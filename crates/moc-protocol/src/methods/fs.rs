@@ -18,6 +18,7 @@ impl Method for FsListDir {
     const NAME: &'static str = "fs/list_dir";
     type Params = FsListDirParams;
     type Result = FsListDirResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for FsListDir {}
@@ -72,6 +73,7 @@ impl Method for FsCreateDir {
     const NAME: &'static str = "fs/create_dir";
     type Params = FsCreateDirParams;
     type Result = FsCreateDirResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for FsCreateDir {}

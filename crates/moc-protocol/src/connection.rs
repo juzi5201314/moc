@@ -166,6 +166,7 @@ impl Traffic {
     }
 
     /// 发送出站报文；连接已关闭或写任务已退出时返回 [`ProtocolError::ConnectionClosed`]。
+    #[inline(never)]
     pub(crate) async fn send(&self, message: Outbound) -> Result<(), ProtocolError> {
         tokio::select! {
             biased;
@@ -182,12 +183,18 @@ impl Traffic {
         params: M::Params,
     ) -> Result<M::Result, RpcCallError> {
         let params = serialize_params::<M>(params)?;
+        deserialize_result::<M>(self.call_value(M::NAME, params).await?)
+    }
+
+    // 收发状态机与方法 DTO 无关，固定在协议 crate 内生成，不随每个方法及前端复制。
+    #[inline(never)]
+    async fn call_value(&self, method: &'static str, params: Value) -> Result<Value, RpcCallError> {
         let id = self.pending.next_call_id();
         let receiver = self.pending.register(id.clone());
         if self
             .send(Outbound::Request(Request::new(
                 id.clone(),
-                M::NAME,
+                method,
                 Some(params),
             )))
             .await
@@ -199,7 +206,7 @@ impl Traffic {
         tokio::select! {
             biased;
             result = receiver => match result {
-                Ok(Ok(value)) => deserialize_result::<M>(value),
+                Ok(Ok(value)) => Ok(value),
                 Ok(Err(error)) => Err(RpcCallError::Rpc(error)),
                 // 收尾时发送端被丢弃（连接已关闭）
                 Err(_) => Err(RpcCallError::Closed),
@@ -224,12 +231,22 @@ impl Traffic {
             RpcCallError::Rpc(error) => RpcCallError::Rpc(error),
             _ => RpcCallError::Cancelled,
         })?;
+        deserialize_result::<M>(self.reverse_value(M::NAME, params, cancel).await?)
+    }
+
+    #[inline(never)]
+    async fn reverse_value(
+        &self,
+        method: &'static str,
+        params: Value,
+        cancel: &CancellationToken,
+    ) -> Result<Value, RpcCallError> {
         let id = self.pending.next_reverse_id();
         let receiver = self.pending.register(id.clone());
         if self
             .send(Outbound::Request(Request::new(
                 id.clone(),
-                M::NAME,
+                method,
                 Some(params),
             )))
             .await
@@ -241,7 +258,7 @@ impl Traffic {
         tokio::select! {
             biased;
             result = receiver => match result {
-                Ok(Ok(value)) => deserialize_result::<M>(value),
+                Ok(Ok(value)) => Ok(value),
                 Ok(Err(error)) => Err(RpcCallError::Rpc(error)),
                 // 收尾时发送端被丢弃
                 Err(_) => Err(RpcCallError::Cancelled),
@@ -802,7 +819,7 @@ async fn poll_step<T>(wait: Wait<'_>, step: impl Future<Output = T>) -> Option<T
 
 /// 序列化请求参数；失败按 `-32603` 报告（core / 前端的参数类型必须可序列化）。
 fn serialize_params<M: Method>(params: M::Params) -> Result<Value, RpcCallError> {
-    serde_json::to_value(params).map_err(|error| {
+    M::encode_params(params).map_err(|error| {
         RpcCallError::Rpc(RpcError::new(
             RpcErrorCode::InternalError.code(),
             format!("请求参数序列化失败：{error}"),
@@ -812,7 +829,7 @@ fn serialize_params<M: Method>(params: M::Params) -> Result<Value, RpcCallError>
 
 /// 反序列化响应结果；对端形状不符合契约时按 `-32603` 报告。
 fn deserialize_result<M: Method>(value: Value) -> Result<M::Result, RpcCallError> {
-    serde_json::from_value(value).map_err(|error| {
+    M::decode_result(value).map_err(|error| {
         RpcCallError::Rpc(RpcError::new(
             RpcErrorCode::InternalError.code(),
             format!("响应结果解析失败：{error}"),
@@ -823,7 +840,7 @@ fn deserialize_result<M: Method>(value: Value) -> Result<M::Result, RpcCallError
 /// 反序列化 params；报文省略 `params` 时按空对象处理（空参数方法照常调用）。
 pub(crate) fn params_from_value<M: Method>(params: Option<Value>) -> Result<M::Params, RpcError> {
     let value = params.unwrap_or_else(|| Value::Object(Map::new()));
-    serde_json::from_value(value).map_err(|error| {
+    M::decode_params(value).map_err(|error| {
         RpcError::new(
             RpcErrorCode::InvalidParams.code(),
             format!("参数非法：{error}"),

@@ -20,9 +20,7 @@ use moc_protocol::methods::{
     SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
     SessionUpdateMethod, SessionUsage, SessionUsageParams, prompt::PromptMode,
 };
-use moc_protocol::{
-    ClientBuilder, ClientHandle, RpcError, RpcErrorCode, Server, ServerOptions, transport,
-};
+use moc_protocol::{ClientBuilder, ClientHandle, RpcError, RpcErrorCode, ServerOptions};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::args::CliArgs;
@@ -273,9 +271,8 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
         initial_prompt = Some(prompt);
     }
 
-    let (core_side, frontend_side) = transport::duplex(64 * 1024);
-    let server = Server::with_options((*core).clone(), ServerOptions::default());
-    let connection = server.spawn(core_side);
+    let server = core.server(ServerOptions::default());
+    let (frontend_side, connection) = server.connect(64 * 1024);
     let renderer = Renderer::new(args.print, args.hide_thinking);
     let update_renderer = renderer.clone();
     let permission_input = Arc::clone(&input);

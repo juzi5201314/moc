@@ -336,6 +336,7 @@ impl Method for SessionTools {
     const NAME: &'static str = "session/tools";
     type Params = SessionToolsParams;
     type Result = Vec<moc_llm::ToolDef>;
+    crate::method::json_codec!();
 }
 impl ClientRequest for SessionTools {}
 
@@ -459,6 +460,7 @@ impl Method for SessionContextRead {
     const NAME: &'static str = "session/context_read";
     type Params = SessionContextReadParams;
     type Result = ContextReadResult;
+    crate::method::json_codec!();
 }
 impl ClientRequest for SessionContextRead {}
 
@@ -467,6 +469,7 @@ impl Method for SessionContextClose {
     const NAME: &'static str = "session/context_close";
     type Params = SessionContextCloseParams;
     type Result = super::Empty;
+    crate::method::json_codec!();
 }
 impl ClientRequest for SessionContextClose {}
 
@@ -1039,6 +1042,7 @@ impl Method for SessionNew {
     const NAME: &'static str = "session/new";
     type Params = SessionNewParams;
     type Result = SessionInfo;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionNew {}
@@ -1047,6 +1051,7 @@ impl Method for SessionList {
     const NAME: &'static str = "session/list";
     type Params = SessionListParams;
     type Result = SessionListResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionList {}
@@ -1055,6 +1060,7 @@ impl Method for SessionSearch {
     const NAME: &'static str = "session/search";
     type Params = SessionSearchParams;
     type Result = SessionSearchResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionSearch {}
@@ -1063,6 +1069,7 @@ impl Method for SessionLoad {
     const NAME: &'static str = "session/load";
     type Params = SessionLoadParams;
     type Result = SessionLoadResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionLoad {}
@@ -1070,6 +1077,7 @@ impl Method for SessionLoadPage {
     const NAME: &'static str = "session/load_page";
     type Params = SessionLoadPageParams;
     type Result = SessionLoadPageResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionLoadPage {}
@@ -1077,6 +1085,7 @@ impl Method for SessionRewind {
     const NAME: &'static str = "session/rewind";
     type Params = SessionRewindParams;
     type Result = SessionLoadResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionRewind {}
@@ -1085,6 +1094,7 @@ impl Method for SessionRedo {
     const NAME: &'static str = "session/redo";
     type Params = SessionRedoParams;
     type Result = SessionLoadResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionRedo {}
@@ -1093,6 +1103,7 @@ impl Method for SessionReask {
     const NAME: &'static str = "session/reask";
     type Params = SessionReaskParams;
     type Result = SessionLoadResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionReask {}
@@ -1101,6 +1112,7 @@ impl Method for SessionUnload {
     const NAME: &'static str = "session/unload";
     type Params = SessionUnloadParams;
     type Result = crate::methods::Empty;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionUnload {}
@@ -1109,6 +1121,7 @@ impl Method for SessionRename {
     const NAME: &'static str = "session/rename";
     type Params = SessionRenameParams;
     type Result = SessionInfo;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionRename {}
@@ -1117,6 +1130,7 @@ impl Method for SessionDelete {
     const NAME: &'static str = "session/delete";
     type Params = SessionDeleteParams;
     type Result = crate::methods::Empty;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionDelete {}
@@ -1125,6 +1139,7 @@ impl Method for SessionUnlock {
     const NAME: &'static str = "session/unlock";
     type Params = SessionUnlockParams;
     type Result = crate::methods::Empty;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionUnlock {}
@@ -1132,6 +1147,7 @@ impl Method for SessionUsage {
     const NAME: &'static str = "session/usage";
     type Params = SessionUsageParams;
     type Result = SessionUsageResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionUsage {}
@@ -1140,6 +1156,7 @@ impl Method for SessionSetEngine {
     const NAME: &'static str = "session/set_engine";
     type Params = SessionSetEngineParams;
     type Result = SessionInfo;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionSetEngine {}
@@ -1148,6 +1165,7 @@ impl Method for SessionSetAutonomy {
     const NAME: &'static str = "session/set_autonomy";
     type Params = SessionSetAutonomyParams;
     type Result = SessionInfo;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionSetAutonomy {}
@@ -1156,6 +1174,7 @@ impl Method for SessionSetPermission {
     const NAME: &'static str = "session/set_permission";
     type Params = SessionSetPermissionParams;
     type Result = SessionInfo;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionSetPermission {}
@@ -1164,6 +1183,7 @@ impl Method for SessionSetFastMode {
     const NAME: &'static str = "session/set_fast_mode";
     type Params = SessionSetFastModeParams;
     type Result = SessionInfo;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionSetFastMode {}
@@ -1172,6 +1192,7 @@ impl Method for SessionSetModel {
     const NAME: &'static str = "session/set_model";
     type Params = SessionSetModelParams;
     type Result = SessionSetModelResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionSetModel {}
@@ -1180,6 +1201,7 @@ impl Method for SessionCompact {
     const NAME: &'static str = "session/compact";
     type Params = SessionCompactParams;
     type Result = CompactResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionCompact {}
@@ -1188,6 +1210,7 @@ impl Method for SessionContext {
     const NAME: &'static str = "session/context";
     type Params = SessionContextParams;
     type Result = ContextUsageResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionContext {}
@@ -1196,6 +1219,7 @@ impl Method for SessionContextContent {
     const NAME: &'static str = "session/context_content";
     type Params = SessionContextContentParams;
     type Result = ContextContentResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionContextContent {}
@@ -1304,6 +1328,7 @@ impl Method for SessionGoal {
     const NAME: &'static str = "session/goal";
     type Params = SessionGoalParams;
     type Result = SessionGoalResult;
+    crate::method::json_codec!();
 }
 
 impl ClientRequest for SessionGoal {}

@@ -23,8 +23,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use moc_core::Core;
-use moc_protocol::Server;
+use moc_core::{Core, CoreServer};
 use serde::Deserialize;
 use tokio::net::TcpListener;
 
@@ -56,7 +55,7 @@ pub async fn run(core: Arc<Core>, options: WebOptions) -> anyhow::Result<()> {
     }
     tracing::info!(%addr, "moc web 已启动");
 
-    let server = Server::with_options((*core).clone(), bridge::options());
+    let server = core.server(bridge::options());
     let state = AppState {
         core,
         token: Arc::new(options.token.clone()),
@@ -94,7 +93,7 @@ struct AppState {
     /// 进程内端点（`api` 模块）直读 core 数据：procstats、沙盒能力、特性开关。
     pub(crate) core: Arc<Core>,
     token: Arc<String>,
-    server: Arc<Server<Core>>,
+    server: CoreServer,
 }
 
 impl AppState {
@@ -109,7 +108,10 @@ fn routes(state: AppState) -> Router {
         .route("/ws", get(ws_handler).route_layer(authed.clone()))
         .route("/commands.json", get(commands_handler))
         // 进程内部数据统一走令牌保护；/commands.json 是公开元数据（见 handler 注释）。
-        .route("/features.json", get(api::features).route_layer(authed.clone()))
+        .route(
+            "/features.json",
+            get(api::features).route_layer(authed.clone()),
+        )
         .route("/doctor.json", get(api::doctor).route_layer(authed.clone()))
         .route("/procstats.json", get(api::procstats).route_layer(authed))
         .fallback(get(static_handler))
@@ -269,7 +271,7 @@ async fn ws_handler(
     if !origin_allowed(&headers) {
         return (StatusCode::FORBIDDEN, "跨站 WebSocket 被拒绝").into_response();
     }
-    let server = Arc::clone(&state.server);
+    let server = state.server.clone();
     ws.on_upgrade(move |socket| bridge::serve(socket, server))
 }
 
