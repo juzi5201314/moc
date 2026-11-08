@@ -783,6 +783,9 @@ pub struct TranscriptChildCall {
     pub status: ToolStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// edit/write 的结构化 diff；旧会话日志没有此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<ToolDiff>,
 }
 
 /// 一条运行时提醒里的一条目。

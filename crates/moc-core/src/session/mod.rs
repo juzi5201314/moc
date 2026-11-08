@@ -733,6 +733,7 @@ impl SessionTable {
                         result: truncate_text(&call.result, child_budget).0,
                         status: call.status,
                         duration_ms: call.duration_ms,
+                        diff: call.diff.clone(),
                     })
                     .collect()
             };
@@ -2486,6 +2487,7 @@ mod tests {
                         result: "r".repeat(64 * 1024),
                         status: ToolStatus::Completed,
                         duration_ms: None,
+                        diff: None,
                     },
                 },
             )
@@ -3662,6 +3664,7 @@ mod tests {
                 },
                 status: ToolStatus::Completed,
                 duration_ms: Some(index),
+                diff: None,
             };
             table
                 .append(&info.id, EntryPayload::ChildTool { call: call.clone() })

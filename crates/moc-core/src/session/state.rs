@@ -807,6 +807,7 @@ mod tests {
                         result: "结果".into(),
                         status: moc_protocol::ToolStatus::Completed,
                         duration_ms: None,
+                        diff: None,
                     },
                 },
                 partial.last_entry_id.clone(),

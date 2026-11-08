@@ -180,7 +180,7 @@ pub fn blocks_from_entries_with_children(
             arguments: child.arguments.clone(),
             status: Some(child.status),
             result: Some(child.result.clone()),
-            diff: None,
+            diff: child.diff.clone(),
             duration_ms: child.duration_ms,
             running: false,
             progress: None,
@@ -332,6 +332,13 @@ mod tests {
             },
             None,
         )];
+        let diff = moc_protocol::methods::ToolDiff {
+            files: vec![moc_protocol::methods::ToolFileDiff {
+                path: "a.rs".into(),
+                hunks: Vec::new(),
+            }],
+            truncated: false,
+        };
         let children = [TranscriptChildCall {
             id: "parent:child".into(),
             parent_tool_call_id: "parent".into(),
@@ -340,6 +347,7 @@ mod tests {
             result: "ok".into(),
             status: ToolStatus::Completed,
             duration_ms: Some(3),
+            diff: Some(diff.clone()),
         }];
         let blocks = blocks_from_entries_with_children(&entries, &children);
         assert_eq!(blocks.len(), 2);
@@ -348,6 +356,7 @@ mod tests {
         };
         assert_eq!(child.parent_id.as_deref(), Some("parent"));
         assert_eq!(child.result.as_deref(), Some("ok"));
+        assert_eq!(child.diff.as_ref(), Some(&diff), "子调用的 diff 要带回");
     }
 
     #[test]

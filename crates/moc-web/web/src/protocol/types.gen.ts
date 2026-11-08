@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 190b3f277c0d133d
+// schema sha256: 22b136420c5bc587
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -3273,6 +3273,10 @@ export interface SessionLoadPageResult {
  */
 export interface TranscriptChildCall {
   arguments: string;
+  /**
+   * edit/write 的结构化 diff；旧会话日志没有此字段。
+   */
+  diff?: ToolDiff | null;
   duration_ms?: number | null;
   id: string;
   name: string;

@@ -391,6 +391,7 @@ export function entriesToBlocks(
     block.status = child.status;
     block.isError = child.status === "error";
     block.durationMs = child.duration_ms ?? undefined;
+    block.diff = child.diff ?? undefined;
     parent.children.push(block);
   }
   // 历史里还没有结果的调用（被中断）不应显示为运行中。

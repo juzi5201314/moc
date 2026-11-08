@@ -6984,6 +6984,17 @@
         "arguments": {
           "type": "string"
         },
+        "diff": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolDiff"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "edit/write 的结构化 diff；旧会话日志没有此字段。"
+        },
         "duration_ms": {
           "format": "uint64",
           "minimum": 0,

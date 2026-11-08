@@ -104,6 +104,7 @@ async fn perform(
                         result: content.clone(),
                         status,
                         duration_ms,
+                        diff: outcome.diff.clone(),
                     },
                 },
             )
