@@ -5,11 +5,7 @@
 //   这里做成同接口懒壳，首个 mermaid 块渲染时才动态导入。
 
 import type { TokensResult } from "shiki/core";
-import type {
-  CodeHighlighterPlugin,
-  DiagramPlugin,
-  HighlightOptions,
-} from "streamdown";
+import type { CodeHighlighterPlugin, DiagramPlugin, HighlightOptions } from "streamdown";
 import {
   DARK_THEME,
   ensureLang,

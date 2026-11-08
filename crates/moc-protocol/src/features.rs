@@ -267,9 +267,7 @@ impl schemars::JsonSchema for FeatureStates {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "FeatureStates".into()
     }
-    fn json_schema(
-        generator: &mut schemars::SchemaGenerator,
-    ) -> schemars::Schema {
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         std::collections::BTreeMap::<String, bool>::json_schema(generator)
     }
     fn inline_schema() -> bool {
