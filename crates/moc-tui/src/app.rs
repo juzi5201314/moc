@@ -355,8 +355,15 @@ pub struct App {
     pub subagent_selected: Option<String>,
     pub subagent_area: Rect,
     pub subagent_hits: Vec<(String, Rect)>,
+    /// 侧栏标题行右端 `×` 的命中区（侧栏不画时清空）。
+    pub subagent_close_area: Rect,
     pub subagent_scroll: usize,
     pub subagent_generation: u64,
+    /// 侧栏显隐覆盖：`None` = 自动（有任一 running 子代理就显示）。
+    /// 用户手动切换后记住选择；新一轮代理开跑时回自动。
+    pub subagent_sidebar: Option<bool>,
+    /// 上一轮名册状态里是否存在 running（sync 时检测「无 → 有」边沿）。
+    subagent_running_seen: bool,
     /// 聚焦中的子代理；`Some` 时当前会话就是它，`Esc` 或双击 `←` 返回。
     pub focused: Option<FocusedAgent>,
     /// 返回主会话时要还原的输入草稿与滚动偏移。
@@ -620,8 +627,11 @@ impl App {
             left_tap_pending: None,
             subagent_area: Rect::default(),
             subagent_hits: Vec::new(),
+            subagent_close_area: Rect::default(),
             subagent_scroll: 0,
             subagent_generation: 0,
+            subagent_sidebar: None,
+            subagent_running_seen: false,
             queues: HashMap::new(),
             steers: HashMap::new(),
             resolved_steers: HashMap::new(),
@@ -1232,29 +1242,29 @@ impl App {
         }
     }
 
-    /// Todo 快照更新：转写里替换最后一个 Todo 块（避免重复树），否则追加。
+    /// 子代理侧栏是否可见：无代理恒为否；自动模式下有任一运行中的代理才显示。
+    pub fn subagent_sidebar_visible(&self) -> bool {
+        !self.subagents.is_empty()
+            && self
+                .subagent_sidebar
+                .unwrap_or_else(|| self.subagents.values().any(|view| view.running))
+    }
+
+    /// 名册或运行态变化后同步侧栏显隐：running 从无到有时清掉手动覆盖
+    /// （回到自动模式），并记下这次的 running 状态。
+    pub fn sync_subagent_sidebar(&mut self) {
+        let running = self.subagents.values().any(|view| view.running);
+        if running && !self.subagent_running_seen {
+            self.subagent_sidebar = None;
+        }
+        self.subagent_running_seen = running;
+    }
+
+    /// Todo 快照更新：只维护 HUD 数据；转写里的任务树由每次 todo 调用在原位输出。
     pub fn update_todos(&mut self, phases: Vec<TodoPhase>) {
-        self.todos = phases.clone();
+        self.todos = phases;
         if self.todos.is_empty() {
             self.todo_hud.reset();
-        }
-        let has_todo_block = self
-            .blocks
-            .iter()
-            .any(|entry| matches!(entry.block, Block::Todo { .. }));
-        if has_todo_block {
-            // 替换最后一个 Todo 块：直接原地改写并推进版本
-            if let Some(entry) = self
-                .blocks
-                .iter_mut()
-                .rev()
-                .find(|entry| matches!(entry.block, Block::Todo { .. }))
-            {
-                entry.block = Block::Todo { phases };
-                entry.touch();
-            }
-        } else {
-            self.blocks.push(Entry::new(Block::Todo { phases }));
         }
     }
 

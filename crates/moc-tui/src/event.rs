@@ -635,6 +635,7 @@ fn load_subagents_for_parent(
 ) {
     let Some(parent_session_id) = parent_session_id else {
         app.subagents.clear();
+        app.sync_subagent_sidebar();
         return;
     };
     let client = client.clone();
@@ -1220,6 +1221,7 @@ async fn event_loop(
                                 app.subagent_selected = None;
                             }
                             app.subagent_generation = app.subagent_generation.wrapping_add(1);
+                            app.sync_subagent_sidebar();
                             if let Some(Modal::Subagents { agents: current, .. }) = app.modal.as_mut() {
                                 *current = app.subagents.values().map(|view| view.info.clone()).collect();
                             }
@@ -1768,6 +1770,14 @@ fn handle_mouse_with_connection(
     }
     if app.subagent_area.contains((mouse.column, mouse.row).into()) {
         match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left)
+                if app
+                    .subagent_close_area
+                    .contains((mouse.column, mouse.row).into()) =>
+            {
+                app.subagent_sidebar = Some(false);
+                return;
+            }
             MouseEventKind::ScrollUp => {
                 app.subagent_scroll = app.subagent_scroll.saturating_sub(1);
                 return;
@@ -2979,6 +2989,15 @@ fn handle_key(
         }
         Some("agents") => {
             open_subagents(app, connection);
+            return;
+        }
+        Some("sidebar") => {
+            if app.subagents.is_empty() {
+                app.set_notice("当前没有子代理");
+            } else {
+                let visible = app.subagent_sidebar_visible();
+                app.subagent_sidebar = Some(!visible);
+            }
             return;
         }
         Some("engine") => {
@@ -5801,6 +5820,7 @@ fn apply_update_and_refresh(
             {
                 view.set_status(*status, last_message.clone());
                 app.subagent_generation = app.subagent_generation.wrapping_add(1);
+                app.sync_subagent_sidebar();
             }
             if matches!(&update, SessionUpdate::AgentStarted { .. }) {
                 load_subagents(app, connection);
@@ -5824,6 +5844,7 @@ fn apply_update_and_refresh(
             .entry(agent.id.clone())
             .or_insert_with(|| crate::subagent::SubagentView::new(agent.clone()));
         app.subagent_generation = app.subagent_generation.wrapping_add(1);
+        app.sync_subagent_sidebar();
     }
     if let SessionUpdate::AgentStatusChanged {
         agent_id,
@@ -5834,6 +5855,7 @@ fn apply_update_and_refresh(
     {
         view.set_status(*status, last_message.clone());
         app.subagent_generation = app.subagent_generation.wrapping_add(1);
+        app.sync_subagent_sidebar();
         // 终态在主流里留一行：侧栏未必打开，用户仍要知道子代理已经结束。
         if matches!(
             status,

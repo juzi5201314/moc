@@ -167,12 +167,19 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     .areas(frame_area);
     let scroll_area = inset(scroll_area, MARGIN_X);
     let prompt_area = inset(prompt_area, MARGIN_X);
-    let sidebar_enabled = frame_area.width >= 100 && !app.subagents.is_empty();
+    let sidebar_enabled = frame_area.width >= 100 && app.subagent_sidebar_visible();
     let (scroll_area, sidebar_area) = if sidebar_enabled {
-        let [main, sidebar] =
-            Layout::horizontal([Constraint::Min(60), Constraint::Length(30)]).areas(scroll_area);
+        let [main, _gap, sidebar] = Layout::horizontal([
+            Constraint::Min(60),
+            Constraint::Length(1),
+            Constraint::Length(32),
+        ])
+        .areas(scroll_area);
         (main, sidebar)
     } else {
+        // 侧栏不画的帧必须清掉残留命中区，否则点原位置还会聚焦代理。
+        app.subagent_hits.clear();
+        app.subagent_close_area = Rect::default();
         (scroll_area, Rect::default())
     };
     let scroll_area = btw::split(app, scroll_area);
