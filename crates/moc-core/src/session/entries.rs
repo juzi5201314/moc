@@ -525,6 +525,12 @@ pub type HeaderFields<'a> = (
 );
 
 impl Entry {
+    // 固定 JSON 编码的实例化位置，避免日志追加与重写各自展开大型 Entry 的 Serde 链。
+    #[inline(never)]
+    pub(crate) fn to_json_vec(&self) -> serde_json::Result<Vec<u8>> {
+        serde_json::to_vec(self)
+    }
+
     /// 创建 JSONL 文件的第一行。
     #[expect(
         clippy::too_many_arguments,

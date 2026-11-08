@@ -106,7 +106,7 @@ impl SessionFile {
             )));
         }
         let format = log::format(path);
-        let mut line = serde_json::to_vec(header).map_err(|error| {
+        let mut line = header.to_json_vec().map_err(|error| {
             CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
         })?;
         line.push(b'\n');
@@ -179,7 +179,7 @@ impl SessionFile {
     /// 会让下一次追加粘到残尾，产生无法解析的中间行。压缩会话的每条记录是一个独立帧，
     /// 帧边界就是回滚边界。
     pub async fn append(&self, entry: &Entry, header: Option<&Entry>) -> Result<(), CoreError> {
-        let mut line = serde_json::to_vec(entry).map_err(|error| {
+        let mut line = entry.to_json_vec().map_err(|error| {
             CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
         })?;
         line.push(b'\n');
@@ -205,7 +205,7 @@ impl SessionFile {
                 .await?;
             *file = Some(created);
             if let Some(header) = header {
-                let mut header_line = serde_json::to_vec(header).map_err(|error| {
+                let mut header_line = header.to_json_vec().map_err(|error| {
                     CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
                 })?;
                 header_line.push(b'\n');
@@ -311,7 +311,7 @@ impl SessionFile {
             match self.format {
                 log::Format::Plain => {
                     for entry in entries {
-                        let line = serde_json::to_vec(entry).map_err(|error| {
+                        let line = entry.to_json_vec().map_err(|error| {
                             CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
                         })?;
                         replacement.write_all(&line).await?;

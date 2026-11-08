@@ -1599,12 +1599,14 @@ impl AgentService for Core {
         Ok(result)
     }
 
-    async fn session_history(
+    fn session_history(
         &self,
         ctx: RequestContext,
         params: moc_protocol::methods::SessionHistoryParams,
-    ) -> Result<moc_protocol::methods::SessionHistoryResult, RpcError> {
-        history::handle(self, ctx, params).await
+    ) -> impl std::future::Future<
+        Output = Result<moc_protocol::methods::SessionHistoryResult, RpcError>,
+    > + Send {
+        history::handle(self, ctx, params)
     }
 
     async fn session_load_page(
@@ -2135,12 +2137,12 @@ impl AgentService for Core {
             .map(|goal| SessionGoalResult { goal })
     }
 
-    async fn session_plan_mode(
+    fn session_plan_mode(
         &self,
         ctx: RequestContext,
         params: moc_protocol::methods::SessionPlanModeParams,
-    ) -> Result<SessionInfo, RpcError> {
-        mode::plan_mode(&self.inner, ctx, params).await
+    ) -> impl std::future::Future<Output = Result<SessionInfo, RpcError>> + Send {
+        mode::plan_mode(&self.inner, ctx, params)
     }
 
     async fn session_set_model(
@@ -2234,12 +2236,12 @@ impl AgentService for Core {
         Ok(result)
     }
 
-    async fn session_plan_revise(
+    fn session_plan_revise(
         &self,
         ctx: RequestContext,
         params: SessionPlanReviseParams,
-    ) -> Result<SessionPlanReviseResult, RpcError> {
-        mode::revise_plan(&self.inner, ctx, params).await
+    ) -> impl std::future::Future<Output = Result<SessionPlanReviseResult, RpcError>> + Send {
+        mode::revise_plan(&self.inner, ctx, params)
     }
 
     async fn session_plan_diff(
@@ -2569,42 +2571,44 @@ impl AgentService for Core {
         Ok(result)
     }
 
-    async fn session_tools(
+    fn session_tools(
         &self,
         ctx: RequestContext,
         params: moc_protocol::methods::SessionToolsParams,
-    ) -> Result<Vec<moc_llm::ToolDef>, RpcError> {
-        context::tools(&self.inner, ctx, params).await
+    ) -> impl std::future::Future<Output = Result<Vec<moc_llm::ToolDef>, RpcError>> + Send {
+        context::tools(&self.inner, ctx, params)
     }
 
-    async fn session_context(
+    fn session_context(
         &self,
         ctx: RequestContext,
         params: SessionContextParams,
-    ) -> Result<ContextUsageResult, RpcError> {
-        context::usage(&self.inner, ctx, params).await
+    ) -> impl std::future::Future<Output = Result<ContextUsageResult, RpcError>> + Send {
+        context::usage(&self.inner, ctx, params)
     }
 
-    async fn session_context_content(
+    fn session_context_content(
         &self,
         ctx: RequestContext,
         params: SessionContextContentParams,
-    ) -> Result<ContextContentResult, RpcError> {
-        context::content(&self.inner, ctx, params).await
+    ) -> impl std::future::Future<Output = Result<ContextContentResult, RpcError>> + Send {
+        context::content(&self.inner, ctx, params)
     }
-    async fn session_context_read(
+    fn session_context_read(
         &self,
         ctx: RequestContext,
         params: moc_protocol::methods::SessionContextReadParams,
-    ) -> Result<moc_protocol::methods::ContextReadResult, RpcError> {
-        context::read(&self.inner, ctx, params).await
+    ) -> impl std::future::Future<
+        Output = Result<moc_protocol::methods::ContextReadResult, RpcError>,
+    > + Send {
+        context::read(&self.inner, ctx, params)
     }
-    async fn session_context_close(
+    fn session_context_close(
         &self,
         ctx: RequestContext,
         params: moc_protocol::methods::SessionContextCloseParams,
-    ) -> Result<Empty, RpcError> {
-        context::close(&self.inner, ctx, params).await
+    ) -> impl std::future::Future<Output = Result<Empty, RpcError>> + Send {
+        context::close(&self.inner, ctx, params)
     }
     async fn session_usage(
         &self,
