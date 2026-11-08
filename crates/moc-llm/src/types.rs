@@ -379,7 +379,7 @@ pub struct ToolDef {
     pub description: Option<String>,
     /// 参数的 JSON Schema 对象。
     pub parameters: serde_json::Value,
-    /// 是否启用严格模式（Chat / Responses 支持，Anthropic 丢弃）。
+    /// 是否启用工具 schema 严格模式（三协议均支持，未指定时不强制开启）。
     pub strict: Option<bool>,
 }
 
@@ -817,6 +817,13 @@ pub enum StreamEvent {
         /// 增量文本。
         text: String,
     },
+    /// 完整正文快照；ChatStream 对照已收正文，只向调用方交付缺失的后缀增量。
+    TextSnapshot {
+        /// 内容块序号。
+        index: usize,
+        /// 该块的完整正文（含拒绝文本）。
+        text: String,
+    },
     /// 思维链文本增量。
     ReasoningDelta {
         /// 内容块序号。
@@ -853,7 +860,7 @@ pub enum StreamEvent {
         index: usize,
         /// 调用 ID。
         id: String,
-        /// 工具名片段。
+        /// 当前已收到的工具名；后续变化由 ToolCallSnapshot 覆盖。
         name: String,
     },
     /// 工具调用参数增量（JSON 片段）。
@@ -862,6 +869,20 @@ pub enum StreamEvent {
         index: usize,
         /// JSON 片段。
         json: String,
+    },
+    /// 工具调用的权威字段快照；已有字段覆盖而非拼接，缺失字段保持不变。
+    ///
+    /// Responses 的参数终态只有 arguments，完整 item 还会携带 id/name；
+    /// Chat 名称分片的后续修正与 Anthropic 无增量 input 共用此语义。
+    ToolCallSnapshot {
+        /// 内容块序号。
+        index: usize,
+        /// 工具调用 ID，不是 Responses 的输出 item ID。
+        id: Option<String>,
+        /// 完整工具名。
+        name: Option<String>,
+        /// 完整参数 JSON。
+        arguments: Option<String>,
     },
     /// token 用量。
     Usage(Usage),
@@ -875,8 +896,8 @@ pub enum StreamEvent {
 impl StreamEvent {
     /// 这个事件是否意味着模型已经产出第一段内容；用于统计首 token 等待（TTFT）。
     ///
-    /// `Start` 只是 HTTP 流建立，`Usage` 可能早于正文到达，`ToolCallArgumentsDelta`
-    /// 必然跟在 `ToolCallStart` 之后，都不算首 token。
+    /// `Start` 只是 HTTP 流建立，`Usage` 可能早于正文到达；参数增量不单独计作首 token。
+    /// 完整工具快照可能是该调用的首个事件；正文快照由 ChatStream 转为普通增量。
     pub fn starts_output(&self) -> bool {
         matches!(
             self,
@@ -884,6 +905,7 @@ impl StreamEvent {
                 | Self::ReasoningDelta { .. }
                 | Self::ReasoningItem { .. }
                 | Self::ToolCallStart { .. }
+                | Self::ToolCallSnapshot { .. }
         )
     }
 }

@@ -147,6 +147,7 @@ pub(crate) async fn run(
                         StreamEvent::ReasoningDelta { text, .. } => Some(BtwUpdate::ReasoningDelta { text }),
                         StreamEvent::ToolCallStart { .. }
                         | StreamEvent::ToolCallArgumentsDelta { .. }
+                        | StreamEvent::ToolCallSnapshot { .. }
                         | StreamEvent::Done { finish_reason: FinishReason::ToolCalls } => {
                             return Err(tools_unavailable());
                         }

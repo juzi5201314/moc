@@ -113,6 +113,21 @@ impl StreamGuard {
             StreamEvent::ToolCallArgumentsDelta { index, json } => {
                 (Channel::Arguments, *index, json.as_str())
             }
+            StreamEvent::ToolCallSnapshot {
+                index,
+                arguments: Some(json),
+                ..
+            } => {
+                // 完整参数会重复已检测的前缀，必须从该快照重新建检测状态。
+                if let Some((_, _, detector)) = self
+                    .blocks
+                    .iter_mut()
+                    .find(|(channel, block, _)| *channel == Channel::Arguments && *block == *index)
+                {
+                    *detector = Detector::new(Channel::Arguments);
+                }
+                return self.observe_delta(Channel::Arguments, *index, json);
+            }
             // 以下事件没有可检测文本，只保证对应块已经建立。
             StreamEvent::ReasoningSignature { index, .. } => {
                 return self.observe_delta(Channel::Reasoning, *index, "");

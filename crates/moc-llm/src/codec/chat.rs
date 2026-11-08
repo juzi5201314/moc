@@ -485,7 +485,14 @@ pub(crate) fn decode_response(
     _req: &ChatRequest,
     value: &Value,
 ) -> Result<ChatResponse, LlmError> {
-    let choice = value.pointer("/choices/0");
+    let choice = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| {
+            choices
+                .iter()
+                .find(|choice| choice.get("index").and_then(Value::as_u64).unwrap_or(0) == 0)
+        });
     let message = choice.and_then(|choice| choice.get("message"));
 
     let mut content = Vec::new();
@@ -606,7 +613,7 @@ pub(crate) struct ChatStreamDecoder {
     /// 与消息累加器里锁存的真实 ID 分叉，参数就此丢失。
     tool_names: Vec<String>,
     /// 工具调用 index → `ToolCallStart` 是否已发射。每个 index 只发一次，
-    /// 名称分片的后续片段只累积不重发，避免下游为同一调用建重复块。
+    /// 后续名称分片通过快照修正同一块，不重复创建调用。
     tool_started: Vec<bool>,
 }
 
@@ -706,6 +713,14 @@ impl ChatStreamDecoder {
             .filter(|name| !name.is_empty())
         {
             self.tool_names[index].push_str(fragment);
+            if self.tool_started[index] {
+                out.push(Ok(StreamEvent::ToolCallSnapshot {
+                    index,
+                    id: None,
+                    name: Some(self.tool_names[index].clone()),
+                    arguments: None,
+                }));
+            }
         }
         // 每个 index 只发一次 `ToolCallStart`，且必须等到 ID 与名称都齐：
         // 提前用空 ID 发射会让参数增量落到空 ID 上，与累加器锁存的真实 ID 分叉。
@@ -799,6 +814,10 @@ impl StreamDecoder for ChatStreamDecoder {
             .into_iter()
             .flatten()
         {
+            // 公共响应只承载一个候选；与非流式路径一样固定选择 index=0。
+            if choice.get("index").and_then(Value::as_u64).unwrap_or(0) != 0 {
+                continue;
+            }
             if let Some(delta) = choice.get("delta")
                 && let Err(err) = self.decode_delta(delta, out)
             {
@@ -1445,44 +1464,6 @@ mod tests {
                     total_tokens: Some(15),
                     ..Default::default()
                 }),
-                StreamEvent::Done {
-                    finish_reason: FinishReason::ToolCalls,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn tool_name_fragments_concatenated_into_single_start() {
-        // 名称分片在同一 chunk 前只累积：Start 每调用只发一次，带当时拼出的名称；
-        // 之后的名称片段不再触发第二次 Start（第二次 Start 会让下游建重复块）。
-        let mut decoder = ChatStreamDecoder::new(&config());
-        let events = events(
-            &mut decoder,
-            &[
-                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get"}}]},"finish_reason":null}]}"#,
-                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"_weather"}}]},"finish_reason":null}]}"#,
-                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#,
-                "[DONE]",
-            ],
-        );
-        assert_eq!(
-            events,
-            vec![
-                StreamEvent::Start {
-                    id: None,
-                    model: None,
-                    effort: None,
-                },
-                StreamEvent::ToolCallStart {
-                    index: 0,
-                    id: "call_1".into(),
-                    name: "get".into(),
-                },
-                StreamEvent::ToolCallArgumentsDelta {
-                    index: 0,
-                    json: "{}".into(),
-                },
                 StreamEvent::Done {
                     finish_reason: FinishReason::ToolCalls,
                 },

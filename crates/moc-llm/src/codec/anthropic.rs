@@ -9,7 +9,7 @@
 //! 2. **缓存断点落位**：合并会改变下标，因此规整过程同步产出
 //!    「IR 消息下标 → 线上 (消息下标, 内容块下标)」映射，`cache_control` 据此落位。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value, json};
 
@@ -92,7 +92,7 @@ pub(super) fn encode_inspected(
     if let Some(reasoning) = &req.reasoning {
         encode_thinking(cfg, reasoning, &mut body);
     }
-    let output_config = encode_output_config(cfg, req);
+    let output_config = encode_output_config(cfg, req)?;
     if !output_config.is_empty() {
         body.insert("output_config".into(), Value::Object(output_config));
     }
@@ -114,7 +114,10 @@ pub(super) fn encode_inspected(
 }
 
 /// 请求体顶层 `output_config`：推理强度与响应格式。
-fn encode_output_config(cfg: &LlmConfig, req: &ChatRequest) -> Map<String, Value> {
+fn encode_output_config(
+    cfg: &LlmConfig,
+    req: &ChatRequest,
+) -> Result<Map<String, Value>, LlmError> {
     let mut output_config = Map::new();
     if let Some(reasoning) = &req.reasoning
         && let Some(effort) = cfg.wire_effort(Some(reasoning))
@@ -124,18 +127,23 @@ fn encode_output_config(cfg: &LlmConfig, req: &ChatRequest) -> Map<String, Value
     if cfg.wire.response_format_dialect != crate::config::ResponseFormatDialect::Unsupported
         && let Some(format) = &req.response_format
     {
-        let value = match format {
-            ResponseFormat::Text => json!({"type": "text"}),
-            ResponseFormat::JsonObject => json!({"type": "json_object"}),
-            // Anthropic 的 output_config.format 只有 type + schema，
-            // name / description / strict 无对应字段，丢弃。
-            ResponseFormat::JsonSchema { schema, .. } => {
-                json!({"type": "json_schema", "schema": schema})
+        match format {
+            ResponseFormat::Text => {}
+            ResponseFormat::JsonObject => {
+                return Err(LlmError::Encode(
+                    "Anthropic 不支持 json_object 响应格式，请提供 JsonSchema".into(),
+                ));
             }
-        };
-        output_config.insert("format".into(), value);
+            // format 只接受 type + schema，普通文本省略该字段。
+            ResponseFormat::JsonSchema { schema, .. } => {
+                output_config.insert(
+                    "format".into(),
+                    json!({"type": "json_schema", "schema": schema}),
+                );
+            }
+        }
     }
-    output_config
+    Ok(output_config)
 }
 
 /// 线上消息与断点落位。
@@ -585,6 +593,9 @@ fn encode_tool_def(def: &ToolDef) -> Value {
         object.insert("description".into(), Value::String(description.clone()));
     }
     object.insert("input_schema".into(), def.parameters.clone());
+    if let Some(strict) = def.strict {
+        object.insert("strict".into(), Value::Bool(strict));
+    }
     Value::Object(object)
 }
 
@@ -600,7 +611,7 @@ fn encode_tool_choice(
     if cfg.wire.tool_choice_dialect == ToolChoiceDialect::Unsupported {
         return None;
     }
-    let disable_parallel = matches!(parallel, Some(false));
+    let disable_parallel = cfg.wire.parallel_tool_calls && matches!(parallel, Some(false));
     if choice.is_none() && !disable_parallel {
         return None;
     }
@@ -610,7 +621,7 @@ fn encode_tool_choice(
         Some(ToolChoice::Required) => json!({"type": "any"}),
         Some(ToolChoice::Tool(name)) => json!({"type": "tool", "name": name}),
     };
-    if disable_parallel {
+    if disable_parallel && !matches!(choice, Some(ToolChoice::None)) {
         object
             .as_object_mut()
             .expect("tool_choice 由本模块构造成 JSON 对象")
@@ -905,6 +916,8 @@ pub(crate) struct AnthropicStreamDecoder {
     /// 这些块的 `input_json_delta` 由服务端自己执行，不是客户端工具调用，
     /// 必须整段跳过。下标按响应内出现顺序最多几十个，`BTreeSet` 足够。
     server_tool_indices: BTreeSet<usize>,
+    /// 块序号稀疏、仅在开始/首个增量/结束访问；未流式化的 input 留到块结束再交付。
+    tool_inputs: BTreeMap<usize, Value>,
 }
 
 impl AnthropicStreamDecoder {
@@ -915,6 +928,7 @@ impl AnthropicStreamDecoder {
             terminated: false,
             stop_reason: None,
             server_tool_indices: BTreeSet::new(),
+            tool_inputs: BTreeMap::new(),
         }
     }
 
@@ -943,11 +957,16 @@ impl AnthropicStreamDecoder {
                     return;
                 };
                 match block.get("type").and_then(Value::as_str) {
-                    Some("tool_use") => out.push(Ok(StreamEvent::ToolCallStart {
-                        index,
-                        id: string_at(block, "/id"),
-                        name: string_at(block, "/name"),
-                    })),
+                    Some("tool_use") => {
+                        out.push(Ok(StreamEvent::ToolCallStart {
+                            index,
+                            id: string_at(block, "/id"),
+                            name: string_at(block, "/name"),
+                        }));
+                        if let Some(input) = block.get("input") {
+                            self.tool_inputs.insert(index, input.clone());
+                        }
+                    }
                     Some("redacted_thinking") => {
                         out.push(Ok(StreamEvent::ReasoningItem {
                             index,
@@ -962,7 +981,40 @@ impl AnthropicStreamDecoder {
                     Some("server_tool_use" | "mcp_tool_use") => {
                         self.server_tool_indices.insert(index);
                     }
-                    // 文本与 thinking 由首个增量隐式开始。
+                    Some("text") => {
+                        if let Some(text) = block
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .filter(|text| !text.is_empty())
+                        {
+                            out.push(Ok(StreamEvent::TextDelta {
+                                index,
+                                text: text.to_owned(),
+                            }));
+                        }
+                    }
+                    Some("thinking") => {
+                        if let Some(text) = block
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .filter(|text| !text.is_empty())
+                        {
+                            out.push(Ok(StreamEvent::ReasoningDelta {
+                                index,
+                                text: text.to_owned(),
+                            }));
+                        }
+                        if let Some(signature) = block
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .filter(|signature| !signature.is_empty())
+                        {
+                            out.push(Ok(StreamEvent::ReasoningSignature {
+                                index,
+                                signature: signature.to_owned(),
+                            }));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -990,14 +1042,27 @@ impl AnthropicStreamDecoder {
                         if self.server_tool_indices.contains(&index) {
                             return;
                         }
-                        out.push(Ok(StreamEvent::ToolCallArgumentsDelta {
-                            index,
-                            json: string_at(delta, "/partial_json"),
-                        }));
+                        let json = string_at(delta, "/partial_json");
+                        if !json.is_empty() {
+                            self.tool_inputs.remove(&index);
+                            out.push(Ok(StreamEvent::ToolCallArgumentsDelta { index, json }));
+                        }
                     }
                     // 引用信息不由本 crate 承载。
                     _ => {}
                 }
+            }
+            "content_block_stop" => {
+                let index = index_of(value);
+                if let Some(input) = self.tool_inputs.remove(&index) {
+                    out.push(Ok(StreamEvent::ToolCallSnapshot {
+                        index,
+                        id: None,
+                        name: None,
+                        arguments: Some(input.to_string()),
+                    }));
+                }
+                self.server_tool_indices.remove(&index);
             }
             "message_delta" => {
                 if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
@@ -1028,7 +1093,7 @@ impl AnthropicStreamDecoder {
                 }
                 out.push(Err(LlmError::Api(error)));
             }
-            // `ping`、`content_block_stop` 等一律忽略。
+            // ping 与未知扩展事件不改变已知内容。
             _ => {}
         }
     }
@@ -1121,6 +1186,16 @@ mod tests {
         let encoded = encode(cfg, req, stream).unwrap();
         assert_eq!(encoded.url, format!("{}/messages", cfg.base_url));
         serde_json::from_slice(&encoded.body).unwrap()
+    }
+
+    #[test]
+    fn json_object_format_is_rejected_instead_of_sending_an_invalid_request() {
+        let mut request = base_request();
+        request.response_format = Some(ResponseFormat::JsonObject);
+        assert!(matches!(
+            encode(&config(), &request, false),
+            Err(LlmError::Encode(_))
+        ));
     }
 
     fn headers_of(cfg: &LlmConfig, req: &ChatRequest) -> Vec<(String, String)> {
@@ -1247,6 +1322,7 @@ mod tests {
                     "name": "get_weather",
                     "description": "查天气",
                     "input_schema": {"type": "object"},
+                    "strict": true,
                 }],
                 "tool_choice": {"type": "auto"},
                 "temperature": 0.4,

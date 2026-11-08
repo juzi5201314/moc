@@ -51,6 +51,21 @@
 //!   可以直接 push 进下一轮 [`ChatRequest::messages`]。
 //! - **中断可续**：[`ChatStream::interrupt`] 返回修剪过的部分响应，
 //!   保留可安全回灌的内容并丢弃半截工具调用。
+//!
+//! 流式协议约定：
+//!
+//! - [Responses](https://developers.openai.com/api/docs/guides/function-calling#streaming)
+//!   的参数 delta 是增量，arguments.done、output_item.done 和最终 output 是快照。
+//!   快照覆盖已收字段而不再次拼接；最终正文只补发缺失后缀，已输出正文与快照冲突时报错。
+//! - [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions)
+//!   的流式和非流式响应都只消费 choice 0，其他候选不得污染正文、工具调用或结束原因。
+//!   兼容网关拆分工具名时，完整名称通过工具快照更新，不重复创建调用。
+//! - [Anthropic Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)
+//!   的工具 input 在没有 JSON 增量时于块结束交付；有增量时不用初始对象作前缀。
+//!   初始正文和签名同样保留。工具支持 strict；结构化输出只接受 JsonSchema，
+//!   Text 省略 format，JsonObject 在发送前报错；tool_choice=none 不附加并行开关。
+//! - 共用 [SSE 解析器](https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream)
+//!   支持 LF、CRLF、CR、跨网络块的 UTF-8 BOM，以及空 data 行形成的正文换行。
 
 #![forbid(unsafe_code)]
 

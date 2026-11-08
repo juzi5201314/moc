@@ -25,6 +25,8 @@ pub(crate) struct SseDecoder {
     buf: Vec<u8>,
     /// 已消费前缀的长度；帧完成时推进，`push` 时整体丢弃。
     pos: usize,
+    /// 只剥离流开头的一个 UTF-8 BOM；其三个字节可以分属不同网络块。
+    bom_checked: bool,
 }
 
 impl SseDecoder {
@@ -33,6 +35,7 @@ impl SseDecoder {
         Self {
             buf: Vec::new(),
             pos: 0,
+            bom_checked: false,
         }
     }
 
@@ -43,6 +46,17 @@ impl SseDecoder {
             self.pos = 0;
         }
         self.buf.extend_from_slice(chunk);
+        if !self.bom_checked {
+            const BOM: &[u8] = b"\xef\xbb\xbf";
+            if self.buf.len() >= BOM.len() {
+                if self.buf.starts_with(BOM) {
+                    self.buf.drain(..BOM.len());
+                }
+                self.bom_checked = true;
+            } else if !BOM.starts_with(&self.buf) {
+                self.bom_checked = true;
+            }
+        }
     }
 
     /// 取出下一个完整帧；不完整时返回 `None` 且不消费任何字节。
@@ -54,7 +68,7 @@ impl SseDecoder {
         let mut event = None;
         let mut id = None;
         let mut data = String::new();
-        let mut has_field = false;
+        let mut has_data = false;
 
         loop {
             let Some((line, next)) = self.line_at(cursor) else {
@@ -64,8 +78,10 @@ impl SseDecoder {
             cursor = next;
 
             if line.is_empty() {
-                if !has_field {
+                if !has_data {
                     consume_upto = cursor;
+                    event = None;
+                    id = None;
                     continue;
                 }
                 self.pos += cursor;
@@ -75,15 +91,15 @@ impl SseDecoder {
             if line[0] == b':' {
                 continue;
             }
-            has_field = true;
 
             match split_field(line) {
                 (b"event", value) => event = Some(value.into()),
-                (b"id", value) => id = Some(value.into()),
+                (b"id", value) if !value.contains('\0') => id = Some(value.into()),
                 (b"data", value) => {
-                    if !data.is_empty() {
+                    if has_data {
                         data.push('\n');
                     }
+                    has_data = true;
                     data.push_str(&value);
                 }
                 // `retry:`、注释行（`:` 开头）等一律忽略。
@@ -94,16 +110,18 @@ impl SseDecoder {
 
     /// 读取从 `cursor` 开始的一整行；返回 `(行内容, 下一行起点)`。
     ///
-    /// 行尾 `\r` 被剥除，因此 `\n` 与 `\r\n` 等价；没有行尾时返回 `None`。
+    /// LF、CRLF 和单独 CR 都是行尾；尚未到达的 LF 不会让已完成的 CR 帧等待。
     fn line_at(&self, cursor: usize) -> Option<(&[u8], usize)> {
         let rest = &self.buf[self.pos..];
-        let newline = find_byte(rest, cursor, b'\n')?;
-        let next = newline + 1;
-        let mut line = &rest[cursor..newline];
-        if line.last() == Some(&b'\r') {
-            line = &line[..line.len() - 1];
+        let newline = rest[cursor..]
+            .iter()
+            .position(|byte| matches!(byte, b'\r' | b'\n'))?
+            + cursor;
+        let mut next = newline + 1;
+        if rest[newline] == b'\r' && rest.get(next) == Some(&b'\n') {
+            next += 1;
         }
-        Some((line, next))
+        Some((&rest[cursor..newline], next))
     }
 }
 
@@ -127,14 +145,6 @@ fn split_field(line: &[u8]) -> (&[u8], Cow<'_, str>) {
         }
         None => (line, Cow::Borrowed("")),
     }
-}
-
-/// 在 `haystack[start..]` 中查找字节 `needle`，返回绝对下标。
-fn find_byte(haystack: &[u8], start: usize, needle: u8) -> Option<usize> {
-    haystack[start..]
-        .iter()
-        .position(|&byte| byte == needle)
-        .map(|offset| start + offset)
 }
 
 #[cfg(test)]
@@ -188,6 +198,32 @@ mod tests {
                 id: Some("42".into()),
             }]
         );
+    }
+
+    #[test]
+    fn accepts_bom_and_every_standard_line_ending_at_any_split() {
+        for ending in ["\n", "\r", "\r\n"] {
+            let wire = format!("\u{feff}data: 北京{ending}{ending}data: next{ending}{ending}");
+            for split in 0..=wire.len() {
+                let mut decoder = SseDecoder::new();
+                decoder.push(&wire.as_bytes()[..split]);
+                let mut events = drain(&mut decoder);
+                decoder.push(&wire.as_bytes()[split..]);
+                events.extend(drain(&mut decoder));
+                assert_eq!(
+                    events,
+                    vec![data_event("北京"), data_event("next")],
+                    "{ending:?}, split={split}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_data_lines_preserve_leading_and_trailing_newlines() {
+        let mut decoder = SseDecoder::new();
+        decoder.push(b"data:\ndata: middle\ndata:\n\n");
+        assert_eq!(drain(&mut decoder), vec![data_event("\nmiddle\n")]);
     }
 
     #[test]

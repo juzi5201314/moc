@@ -134,11 +134,8 @@ impl Accumulator {
                         name: name_buffer,
                         ..
                     } => {
-                        if id_buffer.is_empty() && !id.is_empty() {
-                            id_buffer.push_str(id);
-                        }
-                        // 少数网关把工具名拆到多个 chunk，此时拼接。
-                        name_buffer.push_str(name);
+                        id_buffer.clone_from(id);
+                        name_buffer.clone_from(name);
                     }
                     _ => unreachable!("同一种类同一 index 的块结构固定"),
                 });
@@ -149,11 +146,55 @@ impl Accumulator {
                     _ => unreachable!("同一种类同一 index 的块结构固定"),
                 });
             }
+            StreamEvent::ToolCallSnapshot {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                self.with_block(BlockKind::ToolCall, *index, |slot| match slot {
+                    AccumulatedBlock::ToolCall {
+                        id: target_id,
+                        name: target_name,
+                        arguments: target_arguments,
+                    } => {
+                        if let Some(id) = id
+                            && target_id != id
+                        {
+                            target_id.clone_from(id);
+                        }
+                        if let Some(name) = name
+                            && target_name != name
+                        {
+                            target_name.clone_from(name);
+                        }
+                        if let Some(arguments) = arguments {
+                            target_arguments.clone_from(arguments);
+                        }
+                    }
+                    _ => unreachable!("同一种类同一 index 的块结构固定"),
+                });
+            }
+            StreamEvent::TextSnapshot { .. } => unreachable!("正文快照在入队前转为缺失后缀"),
             StreamEvent::Usage(usage) => self.usage.merge(*usage),
             StreamEvent::Done { finish_reason } => {
                 self.finish_reason = Some(finish_reason.clone());
             }
         }
+    }
+
+    /// 已交付文本不可撤回；协议完整正文必须包含之前的全部增量。
+    fn text_suffix(&self, index: usize, text: &str) -> Result<usize, LlmError> {
+        let Some(&slot) = self.slots.get(&(BlockKind::Text, index)) else {
+            return Ok(0);
+        };
+        let AccumulatedBlock::Text { text: previous } = &self.blocks[slot] else {
+            unreachable!("正文下标只引用正文块");
+        };
+        if !text.starts_with(previous) {
+            return Err(LlmError::Stream("完整正文与已收到的文本增量不一致".into()));
+        }
+        Ok(previous.len())
     }
 
     /// 找到或新建 `(kind, index)` 对应的块并就地修改。
@@ -462,6 +503,44 @@ impl ChatStream {
     fn flush_pending(&mut self) {
         let mut pending = std::mem::take(&mut self.pending);
         for event in pending.drain(..) {
+            let event = match event {
+                Ok(StreamEvent::TextSnapshot { index, mut text }) => {
+                    match self.accumulator.text_suffix(index, &text) {
+                        Ok(prefix) if prefix == text.len() => continue,
+                        Ok(prefix) => {
+                            text.drain(..prefix);
+                            Ok(StreamEvent::TextDelta { index, text })
+                        }
+                        Err(error) => {
+                            self.stop_with(error);
+                            break;
+                        }
+                    }
+                }
+                Ok(StreamEvent::ToolCallSnapshot {
+                    index,
+                    id,
+                    name,
+                    mut arguments,
+                }) => {
+                    if let Some(&slot) = self.accumulator.slots.get(&(BlockKind::ToolCall, index))
+                        && let AccumulatedBlock::ToolCall {
+                            arguments: previous,
+                            ..
+                        } = &self.accumulator.blocks[slot]
+                        && arguments.as_ref() == Some(previous)
+                    {
+                        arguments = None;
+                    }
+                    Ok(StreamEvent::ToolCallSnapshot {
+                        index,
+                        id,
+                        name,
+                        arguments,
+                    })
+                }
+                event => event,
+            };
             if let Ok(stream_event) = &event
                 && let Err(violation) = self.guard.observe(stream_event)
             {
@@ -744,41 +823,6 @@ mod tests {
                 )),
                 ContentPart::ToolCall(ToolCall::new("call_2", "get_date", "{}")),
             ]
-        );
-    }
-
-    #[test]
-    fn tool_call_name_fragments_concatenated() {
-        let accumulator = accumulate(
-            Protocol::OpenAiChat,
-            &[
-                StreamEvent::ToolCallStart {
-                    index: 0,
-                    id: "call_1".into(),
-                    name: "get_".into(),
-                },
-                StreamEvent::ToolCallStart {
-                    index: 0,
-                    id: "call_1".into(),
-                    name: "weather".into(),
-                },
-                StreamEvent::ToolCallArgumentsDelta {
-                    index: 0,
-                    json: "{}".into(),
-                },
-                StreamEvent::Done {
-                    finish_reason: FinishReason::ToolCalls,
-                },
-            ],
-        );
-        let response = accumulator.fold(Protocol::OpenAiChat, false);
-        assert_eq!(
-            response.message.content,
-            vec![ContentPart::ToolCall(ToolCall::new(
-                "call_1",
-                "get_weather",
-                "{}"
-            ))]
         );
     }
 
@@ -1203,6 +1247,172 @@ mod tests {
                 .collect(),
         };
         ChatStream::new(Box::pin(body), cfg, req)
+    }
+
+    #[tokio::test]
+    async fn chat_keeps_choice_zero_and_complete_fragmented_tool_name() {
+        let stream = stream_ending_after(
+            &config(Protocol::OpenAiChat),
+            &request(),
+            vec![
+                "data: {\"choices\":[{\"index\":1,\"delta\":{\"content\":\"不能混入\",\"tool_calls\":[{\"index\":0,\"id\":\"other\",\"function\":{\"name\":\"wrong\",\"arguments\":\"{}\"}}]}},{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"get\",\"arguments\":\"{\"}}]}}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"_weather\",\"arguments\":\"\\\"city\\\":\\\"北京\\\"\"}}]}}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"_now\",\"arguments\":\"}\"}}]},\"finish_reason\":\"tool_calls\"},{\"index\":1,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n",
+                "data: [DONE]\n\n",
+            ],
+        );
+        let response = stream.finish().await.unwrap();
+        assert_eq!(
+            response.message.content.as_slice(),
+            &[ContentPart::ToolCall(ToolCall::new(
+                "call_1",
+                "get_weather_now",
+                r#"{"city":"北京"}"#
+            ))]
+        );
+        assert_eq!(response.finish_reason, FinishReason::ToolCalls);
+        assert_eq!(response.usage.total_tokens(), 15);
+    }
+
+    async fn decode_frames(protocol: Protocol, frames: &[serde_json::Value]) -> ChatResponse {
+        let body = EndedStream {
+            chunks: frames
+                .iter()
+                .map(|frame| Bytes::from(format!("data: {frame}\n\n")))
+                .collect(),
+        };
+        ChatStream::new(Box::pin(body), &config(protocol), &request())
+            .finish()
+            .await
+            .expect("夹具包含协议终态")
+    }
+
+    #[tokio::test]
+    async fn responses_tool_snapshots_preserve_arguments_without_deltas() {
+        use serde_json::json;
+        let arguments = r#"{"path":"README.md"}"#;
+        let call = json!({"type":"function_call", "id":"fc_1", "call_id":"call_1", "name":"read", "arguments":arguments});
+        for carrier in ["added", "arguments_done", "item_done", "completed"] {
+            let mut added = call.clone();
+            added["arguments"] = json!(if carrier == "added" { arguments } else { "" });
+            let mut frames =
+                vec![json!({"type":"response.output_item.added", "output_index":0, "item":added})];
+            match carrier {
+                "arguments_done" => frames.push(json!({"type":"response.function_call_arguments.done", "output_index":0, "arguments":arguments})),
+                "item_done" => frames.push(json!({"type":"response.output_item.done", "output_index":0, "item":call})),
+                _ => {}
+            }
+            frames.push(json!({"type":"response.completed", "response":{"status":"completed", "output": if carrier == "completed" { vec![call.clone()] } else { Vec::new() }}}));
+            let response = decode_frames(Protocol::OpenAiResponses, &frames).await;
+            assert_eq!(
+                response.message.tool_calls().collect::<Vec<_>>(),
+                vec![&ToolCall::new("call_1", "read", arguments)],
+                "{carrier}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn responses_final_items_replace_partial_arguments_without_duplicates() {
+        use serde_json::json;
+        let calls = [
+            json!({"type":"function_call", "call_id":"call_read", "name":"read", "arguments":"{\"path\":\"README.md\"}"}),
+            json!({"type":"function_call", "call_id":"call_find", "name":"find", "arguments":"{\"glob\":[\"*.rs\"]}"}),
+            json!({"type":"function_call", "call_id":"call_bash", "name":"bash", "arguments":"{\"command\":\"pwd\"}"}),
+        ];
+        let mut frames = Vec::new();
+        for (index, call) in calls.iter().enumerate() {
+            let mut added = call.clone();
+            added["arguments"] = json!("");
+            frames.push(
+                json!({"type":"response.output_item.added", "output_index":index, "item":added}),
+            );
+            frames.push(json!({"type":"response.function_call_arguments.delta", "output_index":index, "delta":"{"}));
+        }
+        for (index, call) in calls.iter().enumerate().rev() {
+            frames.push(json!({"type":"response.function_call_arguments.done", "output_index":index, "arguments":call["arguments"]}));
+            frames.push(
+                json!({"type":"response.output_item.done", "output_index":index, "item":call}),
+            );
+        }
+        frames.push(json!({"type":"response.completed", "response":{"id":"resp_1", "model":"test", "status":"completed", "output":calls}}));
+        let response = decode_frames(Protocol::OpenAiResponses, &frames).await;
+        assert_eq!(response.id.as_deref(), Some("resp_1"));
+        assert_eq!(response.finish_reason, FinishReason::ToolCalls);
+        assert_eq!(
+            response.message.tool_calls().cloned().collect::<Vec<_>>(),
+            vec![
+                ToolCall::new("call_read", "read", r#"{"path":"README.md"}"#),
+                ToolCall::new("call_find", "find", r#"{"glob":["*.rs"]}"#),
+                ToolCall::new("call_bash", "bash", r#"{"command":"pwd"}"#),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn responses_final_message_preserves_text_refusal_and_reasoning() {
+        use serde_json::json;
+        let reasoning =
+            json!({"type":"reasoning", "id":"rs_1", "encrypted_content":"opaque", "summary":[]});
+        let message = json!({"type":"message", "content":[{"type":"output_text", "text":"完整正文"}, {"type":"refusal", "refusal":"拒绝内容"}]});
+        let response = decode_frames(Protocol::OpenAiResponses, &[
+            json!({"type":"response.output_item.done", "output_index":0, "item":reasoning}),
+            json!({"type":"response.output_text.delta", "output_index":1, "content_index":0, "delta":"完整"}),
+            json!({"type":"response.output_item.done", "output_index":1, "item":message}),
+            json!({"type":"response.completed", "response":{"status":"completed", "output":[reasoning, message]}}),
+        ]).await;
+        assert_eq!(response.message.text(), "完整正文拒绝内容");
+        assert_eq!(response.message.content.len(), 2);
+        assert_eq!(
+            response.message.content[0],
+            ContentPart::Reasoning(ReasoningBlock::Item(Box::new(reasoning)))
+        );
+    }
+
+    #[tokio::test]
+    async fn responses_incomplete_preserves_refusal_usage_and_stop_reason() {
+        use serde_json::json;
+        let response = decode_frames(Protocol::OpenAiResponses, &[
+            json!({"type":"response.refusal.delta", "output_index":0, "delta":"不能回答"}),
+            json!({"type":"response.incomplete", "response":{"status":"incomplete", "incomplete_details":{"reason":"max_output_tokens"}, "usage":{"input_tokens":3,"output_tokens":1}}}),
+        ]).await;
+        assert_eq!(response.message.text(), "不能回答");
+        assert_eq!(response.finish_reason, FinishReason::Length);
+        assert_eq!(response.usage.input_tokens, 3);
+        assert_eq!(response.usage.output_tokens, 1);
+    }
+
+    #[tokio::test]
+    async fn anthropic_tool_input_survives_without_json_deltas() {
+        use serde_json::json;
+        for input in [json!({}), json!({"path":"README.md"})] {
+            let response = decode_frames(Protocol::AnthropicMessages, &[
+                json!({"type":"content_block_start", "index":0, "content_block":{"type":"tool_use", "id":"toolu_1", "name":"read", "input":input}}),
+                json!({"type":"content_block_stop", "index":0}),
+                json!({"type":"message_delta", "delta":{"stop_reason":"tool_use"}}),
+                json!({"type":"message_stop"}),
+            ]).await;
+            let call = response.message.tool_calls().next().expect("工具调用存在");
+            assert_eq!(call.arguments_json().unwrap(), input);
+        }
+    }
+
+    #[tokio::test]
+    async fn anthropic_json_deltas_replace_initial_input() {
+        use serde_json::json;
+        let response = decode_frames(Protocol::AnthropicMessages, &[
+            json!({"type":"content_block_start", "index":0, "content_block":{"type":"tool_use", "id":"toolu_1", "name":"read", "input":{}}}),
+            json!({"type":"content_block_delta", "index":0, "delta":{"type":"input_json_delta", "partial_json":"{\"path\":"}}),
+            json!({"type":"content_block_delta", "index":0, "delta":{"type":"input_json_delta", "partial_json":"\"README.md\"}"}}),
+            json!({"type":"content_block_stop", "index":0}),
+            json!({"type":"message_delta", "delta":{"stop_reason":"tool_use"}}),
+            json!({"type":"message_stop"}),
+        ]).await;
+        assert_eq!(
+            response.message.tool_calls().next().unwrap().arguments,
+            r#"{"path":"README.md"}"#
+        );
     }
 
     #[tokio::test]

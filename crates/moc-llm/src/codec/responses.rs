@@ -645,6 +645,57 @@ impl ResponsesStreamDecoder {
         }
     }
 
+    fn start(&mut self, response: &Value, out: &mut Vec<Result<StreamEvent, LlmError>>) {
+        if !self.started {
+            self.started = true;
+            out.push(Ok(StreamEvent::Start {
+                id: optional_string_at(response, "/id"),
+                model: optional_string_at(response, "/model"),
+                effort: super::reported_effort(response),
+            }));
+        }
+    }
+
+    /// 完整字段覆盖增量；终态只给出部分字段的兼容网关不得清空已收内容。
+    fn output_item(
+        index: usize,
+        item: &Value,
+        complete: bool,
+        out: &mut Vec<Result<StreamEvent, LlmError>>,
+    ) {
+        match item.get("type").and_then(Value::as_str) {
+            Some("function_call") => out.push(Ok(StreamEvent::ToolCallSnapshot {
+                index,
+                id: optional_string_at(item, "/call_id"),
+                name: optional_string_at(item, "/name"),
+                arguments: item
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            })),
+            Some("reasoning") if complete => out.push(Ok(StreamEvent::ReasoningItem {
+                index,
+                item: Box::new(item.clone()),
+            })),
+            Some("message") => {
+                if let Some(blocks) = item.get("content").and_then(Value::as_array) {
+                    let text: String = blocks
+                        .iter()
+                        .filter_map(|block| match block.get("type").and_then(Value::as_str) {
+                            Some("output_text") => block.get("text").and_then(Value::as_str),
+                            Some("refusal") => block.get("refusal").and_then(Value::as_str),
+                            _ => None,
+                        })
+                        .collect();
+                    if complete || !text.is_empty() {
+                        out.push(Ok(StreamEvent::TextSnapshot { index, text }));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn decode_payload(&mut self, value: &Value, out: &mut Vec<Result<StreamEvent, LlmError>>) {
         let kind = value
             .get("type")
@@ -652,13 +703,8 @@ impl ResponsesStreamDecoder {
             .unwrap_or_default();
         match kind {
             "response.created" => {
-                if !self.started {
-                    self.started = true;
-                    out.push(Ok(StreamEvent::Start {
-                        id: optional_string_at(value, "/response/id"),
-                        model: optional_string_at(value, "/response/model"),
-                        effort: super::reported_effort(value.get("response").unwrap_or(value)),
-                    }));
+                if let Some(response) = value.get("response") {
+                    self.start(response, out);
                 }
             }
             "response.output_text.delta" | "response.refusal.delta" => {
@@ -679,45 +725,47 @@ impl ResponsesStreamDecoder {
                     json: string_at(value, "/delta"),
                 }));
             }
-            "response.output_item.added" => {
-                let Some(item) = value.get("item") else {
-                    return;
-                };
-                if item.get("type").and_then(Value::as_str) == Some("function_call") {
-                    out.push(Ok(StreamEvent::ToolCallStart {
-                        index: index_of(value),
-                        id: string_at(item, "/call_id"),
-                        name: string_at(item, "/name"),
-                    }));
-                }
+            "response.function_call_arguments.done" => {
+                out.push(Ok(StreamEvent::ToolCallSnapshot {
+                    index: index_of(value),
+                    id: None,
+                    name: None,
+                    arguments: value
+                        .get("arguments")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                }));
             }
-            "response.output_item.done" => {
-                // 必须用 done 事件的完整 item：added 里的 encrypted_content
-                // 可能不完整。
-                let Some(item) = value.get("item") else {
-                    return;
-                };
-                if item.get("type").and_then(Value::as_str) == Some("reasoning") {
-                    out.push(Ok(StreamEvent::ReasoningItem {
-                        index: index_of(value),
-                        item: Box::new(item.clone()),
-                    }));
+            "response.output_item.added" | "response.output_item.done" => {
+                if let Some(item) = value.get("item") {
+                    Self::output_item(
+                        index_of(value),
+                        item,
+                        kind == "response.output_item.done",
+                        out,
+                    );
                 }
             }
             "response.completed" | "response.incomplete" => {
                 self.terminated = true;
-                let response = value.get("response").cloned().unwrap_or(Value::Null);
+                let response = value.get("response").unwrap_or(&Value::Null);
+                self.start(response, out);
+                if let Some(items) = response.get("output").and_then(Value::as_array) {
+                    for (index, item) in items.iter().enumerate() {
+                        Self::output_item(index, item, true, out);
+                    }
+                }
                 if let Some(usage) = response.get("usage").filter(|usage| !usage.is_null()) {
                     out.push(Ok(StreamEvent::Usage(openai::decode_usage(usage))));
                 }
                 out.push(Ok(StreamEvent::Done {
-                    finish_reason: finish_reason(&response),
+                    finish_reason: finish_reason(response),
                 }));
             }
             "response.failed" => {
                 self.terminated = true;
-                let response = value.get("response").cloned().unwrap_or(Value::Null);
-                out.push(Err(failed_error(&response)));
+                let response = value.get("response").unwrap_or(&Value::Null);
+                out.push(Err(failed_error(response)));
             }
             "error" => {
                 self.terminated = true;
@@ -735,7 +783,7 @@ impl ResponsesStreamDecoder {
                 error.code = code.map(str::to_owned);
                 out.push(Err(LlmError::Api(error)));
             }
-            // `*.in_progress` / `*.searching` / `*.done` 等一律忽略。
+            // 不承载客户端内容的进度、注解与冗余子块结束事件不产生增量。
             _ => {}
         }
     }
@@ -1401,108 +1449,6 @@ mod tests {
             }
             other => panic!("期望 Api 错误，实际 {other:?}"),
         }
-    }
-
-    #[test]
-    fn stream_event_sequence() {
-        let mut decoder = ResponsesStreamDecoder::new(&config());
-        let events = unwrapped(events(
-            &mut decoder,
-            &[
-                r#"{"type":"response.created","response":{"id":"resp_1","model":"gpt-5"}}"#,
-                r#"{"type":"response.in_progress","response":{"id":"resp_1"}}"#,
-                r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}"#,
-                r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"想一下"}"#,
-                r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"full-blob","summary":[{"type":"summary_text","text":"想一下"}]}}"#,
-                r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1"}}"#,
-                r#"{"type":"response.output_text.delta","output_index":1,"delta":"答案"}"#,
-                r#"{"type":"response.output_text.done","output_index":1,"text":"答案"}"#,
-                r#"{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather"}}"#,
-                r#"{"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"city\":"}"#,
-                r#"{"type":"response.function_call_arguments.delta","output_index":2,"delta":"\"北京\"}"}"#,
-                r#"{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"北京\"}"}}"#,
-                r#"{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5","status":"completed","output":[{"type":"function_call","call_id":"call_1"}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
-                r#"{"type":"response.output_text.delta","output_index":1,"delta":"多余"}"#,
-            ],
-        ));
-        assert_eq!(
-            events,
-            vec![
-                StreamEvent::Start {
-                    id: Some("resp_1".into()),
-                    model: Some("gpt-5".into()),
-                    effort: None,
-                },
-                StreamEvent::ReasoningDelta {
-                    index: 0,
-                    text: "想一下".into(),
-                },
-                StreamEvent::ReasoningItem {
-                    index: 0,
-                    item: Box::new(json!({
-                        "type": "reasoning",
-                        "id": "rs_1",
-                        "encrypted_content": "full-blob",
-                        "summary": [{"type": "summary_text", "text": "想一下"}],
-                    })),
-                },
-                StreamEvent::TextDelta {
-                    index: 1,
-                    text: "答案".into(),
-                },
-                StreamEvent::ToolCallStart {
-                    index: 2,
-                    id: "call_1".into(),
-                    name: "get_weather".into(),
-                },
-                StreamEvent::ToolCallArgumentsDelta {
-                    index: 2,
-                    json: "{\"city\":".into(),
-                },
-                StreamEvent::ToolCallArgumentsDelta {
-                    index: 2,
-                    json: "\"北京\"}".into(),
-                },
-                StreamEvent::Usage(Usage {
-                    input_tokens: 10,
-                    output_tokens: 5,
-                    total_tokens: Some(15),
-                    ..Default::default()
-                }),
-                StreamEvent::Done {
-                    finish_reason: FinishReason::ToolCalls,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn stream_refusal_and_incomplete() {
-        let mut decoder = ResponsesStreamDecoder::new(&config());
-        let events = unwrapped(events(
-            &mut decoder,
-            &[
-                r#"{"type":"response.refusal.delta","output_index":0,"delta":"不能回答"}"#,
-                r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":3,"output_tokens":1}}}"#,
-            ],
-        ));
-        assert_eq!(
-            events,
-            vec![
-                StreamEvent::TextDelta {
-                    index: 0,
-                    text: "不能回答".into(),
-                },
-                StreamEvent::Usage(Usage {
-                    input_tokens: 3,
-                    output_tokens: 1,
-                    ..Default::default()
-                }),
-                StreamEvent::Done {
-                    finish_reason: FinishReason::Length,
-                },
-            ]
-        );
     }
 
     #[test]

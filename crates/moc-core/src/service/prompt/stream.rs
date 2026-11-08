@@ -22,6 +22,8 @@ pub(super) async fn forward_event(
         | StreamEvent::Done { .. }
         | StreamEvent::ToolCallStart { .. }
         | StreamEvent::ToolCallArgumentsDelta { .. }
+        | StreamEvent::ToolCallSnapshot { .. }
+        | StreamEvent::TextSnapshot { .. }
         | StreamEvent::ReasoningSignature { .. }
         | StreamEvent::ReasoningItem { .. } => None,
     };
