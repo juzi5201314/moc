@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { relativeTime } from "@/lib/format";
+import { useSessionSearch } from "@/lib/use-session-search";
 import { cn } from "@/lib/utils";
 import { ErrorCode, type RpcError } from "@/protocol/errors";
 import type { ConnectionStatus } from "@/protocol/rpc";
@@ -44,6 +45,10 @@ import { selectWorkflowBadges, useWorkflow, workflowRuns } from "@/store/workflo
 
 /** 每个工作区默认展示的会话数；更多的折叠在「显示更多」后面。 */
 const VISIBLE_SESSIONS = 6;
+/** 搜索时每个工作区直接展开的匹配数上限；其余仍走「显示更多」。 */
+const SEARCH_VISIBLE_SESSIONS = 20;
+/** 侧栏内容匹配展示的会话数上限。 */
+const SEARCH_CONTENT_ITEMS = 8;
 
 const ROW = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-ui transition-colors";
 
@@ -165,6 +170,14 @@ export function WorkspaceSidebar() {
     return groupWorkspaces(allSessions({ list, extra }), dirs, query);
   }, [list, extra, workspaces, draft?.cwd, query]);
 
+  // 正文搜索补充标题/目录匹配不到的会话；标题已命中的不重复展示。
+  const { hits: contentHits } = useSessionSearch(query, SEARCH_CONTENT_ITEMS);
+  const shownContent = useMemo(() => {
+    if (!query.trim()) return [];
+    const known = new Set(groups.flatMap((group) => group.sessions.map((s) => s.id)));
+    return contentHits.filter((hit) => !known.has(hit.session.id));
+  }, [contentHits, groups, query]);
+
   const addWorkspace = () =>
     useUi.getState().set({
       folderPicker: {
@@ -248,106 +261,141 @@ export function WorkspaceSidebar() {
 
       {/* 原生滚动容器：Radix ScrollArea 的 table 布局会让 truncate 失效 */}
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-2">
-        {groups.length === 0 ? (
+        {groups.length === 0 && shownContent.length === 0 ? (
           <div className="px-2 py-8 text-center text-xs leading-5 text-text-tertiary">
             {query ? "没有匹配的会话" : "添加一个工作区目录开始"}
           </div>
         ) : (
-          groups.map((group) => {
-            const isFolded = Boolean(folded[group.cwd]);
-            const showAll = Boolean(expanded[group.cwd]) || Boolean(query);
-            const visible = showAll ? group.sessions : group.sessions.slice(0, VISIBLE_SESSIONS);
-            const hidden = group.sessions.length - visible.length;
-            const hasDraft = draft?.cwd === group.cwd;
-            return (
-              <div key={group.cwd} className="mb-1">
-                <div
-                  className={cn(ROW, "group/ws cursor-pointer pr-1 hover:bg-sidebar-accent")}
-                  title={group.cwd}
-                >
+          <>
+            {shownContent.length > 0 && (
+              <div className="mb-1">
+                <div className="flex h-7 items-center px-2 text-xs font-medium text-text-tertiary">
+                  内容匹配
+                </div>
+                {shownContent.map((hit) => (
                   <button
+                    key={hit.session.id}
                     type="button"
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                    onClick={() => setFolded((state) => ({ ...state, [group.cwd]: !isFolded }))}
+                    onClick={() => void openSession(hit.session.id)}
+                    className={cn(
+                      ROW,
+                      "h-auto flex-col items-start gap-0 py-1.5 pl-[26px] text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
+                    )}
                   >
-                    <ChevronRightIcon
-                      className={cn(
-                        "size-3.5 shrink-0 text-text-tertiary transition-transform duration-150",
-                        !isFolded && "rotate-90",
-                      )}
-                    />
-                    <span className="truncate font-medium text-sidebar-foreground/90">
-                      {group.name}
+                    <span className="w-full truncate">{hit.session.title || "未命名会话"}</span>
+                    <span className="w-full truncate text-xs text-text-tertiary">
+                      {hit.matches[0]?.snippet}
                     </span>
                   </button>
-                  <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/ws:opacity-100 has-[[data-state=open]]:opacity-100">
-                    <IconButton
-                      label="在此目录新建会话"
-                      size="xs"
-                      onClick={() => createQuickSession(group.cwd)}
-                    >
-                      <PlusIcon />
-                    </IconButton>
-                    <WorkspaceMenu cwd={group.cwd} removable={workspaces.includes(group.cwd)} />
-                  </div>
-                </div>
-
-                {!isFolded && (
-                  <div className="mt-px space-y-px">
-                    {hasDraft && (
-                      <button
-                        type="button"
-                        onClick={() => useTabs.getState().add("draft-session")}
-                        className={cn(
-                          ROW,
-                          "pl-[26px]",
-                          active === "draft-session"
-                            ? "bg-sidebar-accent text-sidebar-foreground"
-                            : "text-muted-foreground hover:bg-sidebar-accent",
-                        )}
-                      >
-                        <span className="truncate italic">新会话</span>
-                      </button>
-                    )}
-                    {visible.map((session) => (
-                      <SessionRow
-                        key={session.id}
-                        session={session}
-                        active={session.id === active}
-                      />
-                    ))}
-                    {hidden > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setExpanded((state) => ({ ...state, [group.cwd]: true }))}
-                        className={cn(
-                          ROW,
-                          "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
-                        )}
-                      >
-                        显示更多（{hidden}）
-                      </button>
-                    )}
-                    {expanded[group.cwd] && !query && group.sessions.length > VISIBLE_SESSIONS && (
-                      <button
-                        type="button"
-                        onClick={() => setExpanded((state) => ({ ...state, [group.cwd]: false }))}
-                        className={cn(
-                          ROW,
-                          "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
-                        )}
-                      >
-                        收起
-                      </button>
-                    )}
-                    {!hasDraft && group.sessions.length === 0 && (
-                      <div className="py-1.5 pl-[26px] text-xs text-text-tertiary">暂无会话</div>
-                    )}
-                  </div>
-                )}
+                ))}
               </div>
-            );
-          })
+            )}
+            {groups.map((group) => {
+              const isFolded = Boolean(folded[group.cwd]);
+              const expandedGroup = Boolean(expanded[group.cwd]);
+              // 搜索时先截到每组 SEARCH_VISIBLE_SESSIONS 条，避免一次查询挂满整棵树。
+              const cap = expandedGroup
+                ? Number.POSITIVE_INFINITY
+                : query
+                  ? SEARCH_VISIBLE_SESSIONS
+                  : VISIBLE_SESSIONS;
+              const visible = group.sessions.slice(0, cap);
+              const hidden = group.sessions.length - visible.length;
+              const hasDraft = draft?.cwd === group.cwd;
+              return (
+                <div key={group.cwd} className="mb-1">
+                  <div
+                    className={cn(ROW, "group/ws cursor-pointer pr-1 hover:bg-sidebar-accent")}
+                    title={group.cwd}
+                  >
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                      onClick={() => setFolded((state) => ({ ...state, [group.cwd]: !isFolded }))}
+                    >
+                      <ChevronRightIcon
+                        className={cn(
+                          "size-3.5 shrink-0 text-text-tertiary transition-transform duration-150",
+                          !isFolded && "rotate-90",
+                        )}
+                      />
+                      <span className="truncate font-medium text-sidebar-foreground/90">
+                        {group.name}
+                      </span>
+                    </button>
+                    <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/ws:opacity-100 has-[[data-state=open]]:opacity-100">
+                      <IconButton
+                        label="在此目录新建会话"
+                        size="xs"
+                        onClick={() => createQuickSession(group.cwd)}
+                      >
+                        <PlusIcon />
+                      </IconButton>
+                      <WorkspaceMenu cwd={group.cwd} removable={workspaces.includes(group.cwd)} />
+                    </div>
+                  </div>
+
+                  {!isFolded && (
+                    <div className="mt-px space-y-px">
+                      {hasDraft && (
+                        <button
+                          type="button"
+                          onClick={() => useTabs.getState().add("draft-session")}
+                          className={cn(
+                            ROW,
+                            "pl-[26px]",
+                            active === "draft-session"
+                              ? "bg-sidebar-accent text-sidebar-foreground"
+                              : "text-muted-foreground hover:bg-sidebar-accent",
+                          )}
+                        >
+                          <span className="truncate italic">新会话</span>
+                        </button>
+                      )}
+                      {visible.map((session) => (
+                        <SessionRow
+                          key={session.id}
+                          session={session}
+                          active={session.id === active}
+                        />
+                      ))}
+                      {hidden > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setExpanded((state) => ({ ...state, [group.cwd]: true }))}
+                          className={cn(
+                            ROW,
+                            "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
+                          )}
+                        >
+                          显示更多（{hidden}）
+                        </button>
+                      )}
+                      {expanded[group.cwd] &&
+                        !query &&
+                        group.sessions.length > VISIBLE_SESSIONS && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpanded((state) => ({ ...state, [group.cwd]: false }))
+                            }
+                            className={cn(
+                              ROW,
+                              "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
+                            )}
+                          >
+                            收起
+                          </button>
+                        )}
+                      {!hasDraft && group.sessions.length === 0 && (
+                        <div className="py-1.5 pl-[26px] text-xs text-text-tertiary">暂无会话</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </>
         )}
       </div>
 
