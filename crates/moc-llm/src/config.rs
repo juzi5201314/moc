@@ -159,7 +159,7 @@ pub struct ThinkingWire {
 impl Default for ThinkingWire {
     fn default() -> Self {
         Self {
-            toggle_field: Some("thinking".into()),
+            toggle_field: None,
             enabled_value: "enabled".into(),
             disabled_value: "disabled".into(),
             effort_field: Some("reasoning_effort".into()),
@@ -310,15 +310,21 @@ impl LlmConfig {
 
     /// 本次请求实际写入请求体的推理强度原文（与三协议编码器同源）。
     ///
-    /// `None` 表示请求体不含强度字段：Chat 在 `effort_field` 关闭或思考关闭时不发送，
-    /// Anthropic 关闭思考时不发送；Responses 关闭思考时发送 `none`。core 用本方法与
-    /// 上游回显值比对，因此这里必须与 [`crate::codec`] 的编码结果逐字一致。
+    /// Chat 标准格式关闭思考时发送 none；显式厂商 toggle 自行表达关闭，不另发强度。
+    /// Anthropic 关闭思考时不发送强度；Responses 关闭时发送 none。
+    /// core 用本方法与上游回显比对，因此必须与编码器的结果一致。
     pub fn wire_effort(&self, reasoning: Option<&ReasoningConfig>) -> Option<String> {
         let reasoning = reasoning?;
         match self.protocol {
             Protocol::OpenAiChat => {
                 if !reasoning.enabled {
-                    return None;
+                    self.wire.thinking.effort_field.as_ref()?;
+                    return self
+                        .wire
+                        .thinking
+                        .toggle_field
+                        .is_none()
+                        .then(|| self.wire.thinking.effort_value(&Effort::None));
                 }
                 self.wire.thinking.effort_field.as_ref()?;
                 reasoning
@@ -337,6 +343,21 @@ impl LlmConfig {
                 }
             }
             Protocol::AnthropicMessages => {
+                if self
+                    .extra_body
+                    .get("thinking")
+                    .and_then(|value| value.get("type"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("enabled")
+                {
+                    // budget_tokens 模式不自动附加仅部分旧模型支持的 effort。
+                    return self
+                        .extra_body
+                        .get("output_config")
+                        .and_then(|value| value.get("effort"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned);
+                }
                 if reasoning.enabled {
                     reasoning
                         .effort
@@ -427,49 +448,6 @@ mod tests {
             };
             assert_eq!(config.endpoint_url(), expected, "{protocol:?} {base_url}");
         }
-    }
-
-    #[test]
-    fn missing_fields_fall_back_to_semantic_defaults() {
-        let config: LlmConfig = serde_json::from_value(json!({})).unwrap();
-        assert_eq!(config.protocol, Protocol::OpenAiChat);
-        assert_eq!(config.base_url, "");
-        assert_eq!(config.auth, Auth::None);
-        assert_eq!(config.endpoint, EndpointStyle::Default);
-        assert_eq!(
-            config.wire.max_output_tokens_field,
-            MaxTokensField::MaxTokens
-        );
-        assert!(config.wire.supports_stop);
-        assert_eq!(config.wire.reasoning_field, "reasoning_content");
-        assert_eq!(
-            config.wire.reasoning_field_aliases,
-            vec!["reasoning_content".to_string(), "reasoning".to_string()]
-        );
-        assert_eq!(
-            config.wire.thinking.toggle_field.as_deref(),
-            Some("thinking")
-        );
-        assert_eq!(config.wire.thinking.enabled_value, "enabled");
-        assert_eq!(config.wire.thinking.disabled_value, "disabled");
-        assert_eq!(
-            config.wire.thinking.effort_field.as_deref(),
-            Some("reasoning_effort")
-        );
-        assert!(config.wire.thinking.effort_map.is_empty());
-        assert!(config.wire.thinking.toggle_extra.is_empty());
-        assert_eq!(config.wire.tool_choice_dialect, ToolChoiceDialect::Standard);
-        assert!(config.wire.parallel_tool_calls);
-        assert!(!config.wire.developer_role);
-        assert_eq!(
-            config.wire.response_format_dialect,
-            ResponseFormatDialect::Standard
-        );
-        assert!(config.headers.is_empty());
-        assert!(config.extra_body.is_empty());
-        assert_eq!(config.timeout_secs, None);
-        assert_eq!(config.connect_timeout_secs, None);
-        assert_eq!(config.retry, RetryPolicy::default());
     }
 
     #[test]

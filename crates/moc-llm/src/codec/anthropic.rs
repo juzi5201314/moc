@@ -95,6 +95,8 @@ pub(super) fn encode_inspected(
     let output_config = encode_output_config(cfg, req)?;
     if !output_config.is_empty() {
         body.insert("output_config".into(), Value::Object(output_config));
+    } else {
+        body.remove("output_config");
     }
     if stream {
         body.insert("stream".into(), Value::Bool(true));
@@ -118,7 +120,12 @@ fn encode_output_config(
     cfg: &LlmConfig,
     req: &ChatRequest,
 ) -> Result<Map<String, Value>, LlmError> {
-    let mut output_config = Map::new();
+    let mut output_config = cfg
+        .extra_body
+        .get("output_config")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
     if let Some(reasoning) = &req.reasoning
         && let Some(effort) = cfg.wire_effort(Some(reasoning))
     {
@@ -128,7 +135,9 @@ fn encode_output_config(
         && let Some(format) = &req.response_format
     {
         match format {
-            ResponseFormat::Text => {}
+            ResponseFormat::Text => {
+                output_config.remove("format");
+            }
             ResponseFormat::JsonObject => {
                 return Err(LlmError::Encode(
                     "Anthropic 不支持 json_object 响应格式，请提供 JsonSchema".into(),
@@ -484,6 +493,7 @@ fn encode_assistant_blocks(
     let mut blocks = Vec::with_capacity(message.content.len());
     for part in &message.content {
         match part {
+            ContentPart::ResponsePhase(_) => {}
             ContentPart::Text(text) => blocks.push(json!({"type": "text", "text": text})),
             ContentPart::Reasoning(block) => {
                 // `Never` 表示 core 主动裁剪历史，此时思维链块一律剔除；
@@ -632,13 +642,18 @@ fn encode_tool_choice(
 
 /// 写入 `thinking` 对象；思考等级通过 `output_config.effort` 发送。
 fn encode_thinking(_cfg: &LlmConfig, reasoning: &ReasoningConfig, body: &mut Map<String, Value>) {
-    let mut thinking = Map::new();
-    let kind = if reasoning.enabled {
-        "adaptive"
+    let mut thinking = body
+        .get("thinking")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if reasoning.enabled {
+        // 旧模型的 enabled + budget_tokens 由显式配置提供，不用 adaptive 覆盖它。
+        thinking.entry("type").or_insert_with(|| json!("adaptive"));
     } else {
-        "disabled"
-    };
-    thinking.insert("type".into(), Value::String(kind.into()));
+        thinking.clear();
+        thinking.insert("type".into(), json!("disabled"));
+    }
     if reasoning.enabled
         && let Some(display) = reasoning.summary.and_then(display_value)
     {
@@ -736,6 +751,7 @@ fn apply_cache(req: &ChatRequest, normalized: &mut Normalized) -> Result<CacheOu
 fn unsupported_part(role: Role, part: &ContentPart) -> LlmError {
     let kind = match part {
         ContentPart::Text(_) => "Text",
+        ContentPart::ResponsePhase(_) => "ResponsePhase",
         ContentPart::Image { .. } => "Image",
         ContentPart::Reasoning(_) => "Reasoning",
         ContentPart::ToolCall(_) => "ToolCall",
@@ -2003,7 +2019,7 @@ mod tests {
             messages: vec![Message {
                 role: Role::Assistant,
                 content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::Item(
-                    Box::new(json!({"type": "reasoning", "id": "rs_1"}),)
+                    Box::new(json!({"type": "reasoning", "id": "rs_1"}).into())
                 ))],
             }],
             max_output_tokens: Some(1024),

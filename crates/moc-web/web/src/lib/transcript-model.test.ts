@@ -44,6 +44,49 @@ const DIFF: ToolDiff = {
 };
 
 describe("entriesToBlocks", () => {
+  it("恢复 Responses 摘要并且不显示加密数据", () => {
+    const blocks = entriesToBlocks(
+      [
+        {
+          id: "reasoning",
+          at_ms: 0,
+          message: {
+            role: "Assistant",
+            content: [
+              {
+                Reasoning: {
+                  Item: {
+                    type: "reasoning",
+                    encrypted_content: "opaque",
+                    summary: [],
+                    _moc_display_text: "流式摘要",
+                  },
+                },
+              },
+              {
+                Reasoning: {
+                  Item: {
+                    type: "reasoning",
+                    summary: [{ type: "summary_text", text: "完整摘要" }],
+                  },
+                },
+              },
+              {
+                Reasoning: {
+                  Item: { type: "reasoning", encrypted_content: "opaque", summary: [] },
+                },
+              },
+            ],
+          },
+        },
+      ],
+      [],
+    );
+    expect(blocks.filter((block) => block.kind === "reasoning").map((block) => block.text)).toEqual(
+      ["流式摘要", "完整摘要"],
+    );
+  });
+
   const entries: TranscriptEntry[] = [
     { id: "e1", at_ms: 1, message: { role: "User", content: [{ Text: "你好" }] } },
     {

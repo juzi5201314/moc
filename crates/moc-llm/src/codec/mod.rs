@@ -3,7 +3,7 @@
 //! 三个协议编码器只实现纯函数与状态机，与网络交互全部由 [`crate::Client`] 与
 //! [`crate::ChatStream`] 承担，本模块负责分发：
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use reqwest::header::HeaderMap;
 use serde_json::Value;
@@ -319,27 +319,25 @@ pub(crate) fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError
             continue;
         }
 
-        let calls: Vec<&str> = message.content.tool_call_ids().collect();
+        let mut pending: HashSet<&str> = message.content.tool_call_ids().collect();
         index += 1;
-        if calls.is_empty() {
+        if pending.is_empty() {
             continue;
         }
 
-        let mut matched = 0;
         while index < messages.len() && messages[index].role == Role::Tool {
             let result = messages[index]
                 .content
                 .tool_result_ids()
                 .next()
                 .ok_or_else(|| LlmError::Encode("工具结果消息缺少 ToolResult 内容块".into()))?;
-            match calls.get(matched) {
-                Some(call) if *call == result => matched += 1,
-                _ => return Err(stray_result_error(result)),
+            if !pending.remove(result) {
+                return Err(stray_result_error(result));
             }
             index += 1;
         }
 
-        if matched != calls.len() {
+        if !pending.is_empty() {
             let (names, missing) = message.content.with_parts(|parts| {
                 let calls: Vec<_> = parts
                     .iter()
@@ -348,7 +346,12 @@ pub(crate) fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError
                         _ => None,
                     })
                     .collect();
-                (join_names(&calls), join_names(&calls[matched..]))
+                let missing: Vec<_> = calls
+                    .iter()
+                    .copied()
+                    .filter(|call| pending.contains(call.id.as_str()))
+                    .collect();
+                (join_names(&calls), join_names(&missing))
             });
             return Err(LlmError::Encode(format!(
                 "assistant 消息中的工具调用 [{names}] 缺少对应的工具结果消息（缺失: {missing}）"
@@ -405,6 +408,87 @@ mod tests {
     }
 
     #[test]
+    fn parallel_results_match_ids_in_any_order_and_reject_duplicates() {
+        let mut messages = vec![
+            assistant_with_calls(&[("a", "read"), ("b", "find")]),
+            Message::tool_result("b", "目录", false),
+            Message::tool_result("a", "文件", false),
+        ];
+        assert!(validate_tool_history(&messages).is_ok());
+        messages[2] = Message::tool_result("b", "重复", false);
+        assert!(validate_tool_history(&messages).is_err());
+    }
+
+    #[test]
+    fn nested_request_options_survive_semantic_overrides() {
+        use crate::{Effort, Protocol, ReasoningConfig, ReasoningSummary, ResponseFormat};
+        let reasoning = Some(ReasoningConfig {
+            enabled: true,
+            effort: Some(Effort::High),
+            summary: Some(ReasoningSummary::Auto),
+        });
+        let request = ChatRequest {
+            messages: vec![Message::user_text("问题")],
+            reasoning,
+            max_output_tokens: Some(4096),
+            ..Default::default()
+        };
+        let mut cfg = LlmConfig {
+            protocol: Protocol::OpenAiResponses,
+            ..Default::default()
+        };
+        cfg.extra_body.insert(
+            "reasoning".into(),
+            serde_json::json!({"context":"all_turns", "mode":"pro", "effort":"low"}),
+        );
+        cfg.extra_body
+            .insert("text".into(), serde_json::json!({"verbosity":"low"}));
+        let formatted = ChatRequest {
+            response_format: Some(ResponseFormat::Text),
+            ..request.clone()
+        };
+        let body = inspect_request(&cfg, &formatted, true).unwrap().body;
+        assert_eq!(
+            body["reasoning"],
+            serde_json::json!({"context":"all_turns", "mode":"pro", "effort":"high", "summary":"auto"})
+        );
+        assert_eq!(
+            body["text"],
+            serde_json::json!({"verbosity":"low", "format":{"type":"text"}})
+        );
+
+        cfg.protocol = Protocol::OpenAiChat;
+        cfg.extra_body.clear();
+        cfg.extra_body.insert(
+            "stream_options".into(),
+            serde_json::json!({"include_obfuscation":false}),
+        );
+        let body = inspect_request(&cfg, &request, true).unwrap().body;
+        assert_eq!(
+            body["stream_options"],
+            serde_json::json!({"include_obfuscation":false, "include_usage":true})
+        );
+
+        cfg.protocol = Protocol::AnthropicMessages;
+        cfg.extra_body.clear();
+        cfg.extra_body.insert(
+            "thinking".into(),
+            serde_json::json!({"type":"enabled", "budget_tokens":2048, "display":"omitted"}),
+        );
+        cfg.extra_body.insert(
+            "output_config".into(),
+            serde_json::json!({"format":{"type":"json_schema", "schema":{"type":"object"}}}),
+        );
+        let body = inspect_request(&cfg, &request, true).unwrap().body;
+        assert_eq!(
+            body["thinking"],
+            serde_json::json!({"type":"enabled", "budget_tokens":2048, "display":"summarized"})
+        );
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+        assert!(body["output_config"].get("effort").is_none());
+    }
+
+    #[test]
     fn missing_tool_result_reports_missing_names() {
         let messages = vec![
             Message::user_text("天气"),
@@ -439,14 +523,6 @@ mod tests {
             err.to_string(),
             "构建请求失败: 工具结果消息的 tool_call_id \"call_x\" 不在前一条 assistant 消息的工具调用中"
         );
-
-        // 顺序错位同样按「不在前一条 assistant 消息的工具调用中」报错。
-        let messages = vec![
-            assistant_with_calls(&[("call_1", "get_weather"), ("call_2", "get_date")]),
-            Message::tool_result("call_2", "2026-09-24", false),
-        ];
-        let err = validate_tool_history(&messages).unwrap_err();
-        assert!(err.to_string().contains("call_2"), "{err}");
     }
 
     #[test]

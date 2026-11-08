@@ -1687,6 +1687,7 @@ fn project_parts(role: Role, parts: &[ContentPart], budget: usize) -> (Message, 
     let mut content = Vec::with_capacity(parts.len());
     for part in parts {
         let projected = match part {
+            ContentPart::ResponsePhase(phase) => ContentPart::ResponsePhase(phase.clone()),
             ContentPart::Text(text) => {
                 let (text, was_truncated) = truncate_text(text, remaining);
                 truncated |= was_truncated;
@@ -1709,9 +1710,12 @@ fn project_parts(role: Role, parts: &[ContentPart], budget: usize) -> (Message, 
                 remaining = remaining.saturating_sub(data.len());
                 ContentPart::Reasoning(ReasoningBlock::Redacted { data })
             }
-            ContentPart::Reasoning(ReasoningBlock::Item(_)) => {
-                truncated = true;
-                ContentPart::Reasoning(ReasoningBlock::text("（思维内容已省略）"))
+            ContentPart::Reasoning(reasoning @ ReasoningBlock::Item(_)) => {
+                let display = reasoning.display_text().unwrap_or_default();
+                let (text, was_truncated) = truncate_text(&display, remaining);
+                truncated |= was_truncated;
+                remaining = remaining.saturating_sub(text.len());
+                ContentPart::Reasoning(ReasoningBlock::text(text))
             }
             ContentPart::ToolCall(call) => {
                 let (arguments, was_truncated) = truncate_text(&call.arguments, remaining);

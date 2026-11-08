@@ -71,7 +71,13 @@ pub(super) fn encode_inspected(
     if cfg.wire.response_format_dialect != ResponseFormatDialect::Unsupported
         && let Some(format) = &req.response_format
     {
-        body.insert("text".into(), json!({"format": encode_format(format)}));
+        let mut text = body
+            .get("text")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        text.insert("format".into(), encode_format(format));
+        body.insert("text".into(), Value::Object(text));
     }
     if let Some(parallel) = req.parallel_tool_calls
         && cfg.wire.parallel_tool_calls
@@ -153,8 +159,15 @@ fn cache_breakpoints(req: &ChatRequest, message_count: usize) -> Result<BTreeSet
 }
 
 fn encode_reasoning(cfg: &LlmConfig, reasoning: &ReasoningConfig) -> Option<Value> {
-    let mut object = Map::new();
+    let mut object = cfg
+        .extra_body
+        .get("reasoning")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
     if !reasoning.enabled {
+        object.remove("summary");
+        object.remove("generate_summary");
         // `none` 是 ReasoningEffort 的合法取值。
         object.insert("effort".into(), Value::String("none".into()));
         return Some(Value::Object(object));
@@ -162,10 +175,13 @@ fn encode_reasoning(cfg: &LlmConfig, reasoning: &ReasoningConfig) -> Option<Valu
     if let Some(effort) = cfg.wire_effort(Some(reasoning)) {
         object.insert("effort".into(), Value::String(effort));
     }
-    if let Some(summary) = reasoning.summary
-        && let Some(value) = summary_value(summary)
-    {
-        object.insert("summary".into(), Value::String(value.into()));
+    if let Some(summary) = reasoning.summary {
+        if let Some(value) = summary_value(summary) {
+            object.insert("summary".into(), Value::String(value.into()));
+        } else {
+            object.remove("summary");
+            object.remove("generate_summary");
+        }
     }
     (!object.is_empty()).then_some(Value::Object(object))
 }
@@ -346,52 +362,38 @@ fn encode_assistant_items(
     items: &mut Vec<Value>,
 ) -> Result<(), LlmError> {
     let mut pending_text = String::new();
-    let mut text_block_index: Option<usize> = None;
-
+    let mut phase = None;
+    let mut last_text = None;
     for part in &message.content {
         match part {
+            ContentPart::Text(text) => pending_text.push_str(text),
+            ContentPart::ResponsePhase(value) => {
+                flush_text(&mut pending_text, &mut phase, &mut last_text, items);
+                phase = Some(value.as_str());
+            }
             ContentPart::Reasoning(block) => {
-                if plan == ReasoningEchoPlan::Strip {
+                if !plan.keeps(block) {
                     continue;
                 }
-                match block {
-                    ReasoningBlock::Item(item) => {
-                        flush_text(&mut pending_text, &mut text_block_index, items);
-                        items.push((**item).clone());
-                    }
-                    // 文本与不透明块无法表达为 Responses 的 reasoning item：
-                    // 静默丢内容会让历史语义变样，直接报错。
-                    ReasoningBlock::Text { .. } | ReasoningBlock::Redacted { .. } => {
-                        return Err(LlmError::Encode(
-                            "Responses 协议只支持原样回传 reasoning item".into(),
-                        ));
-                    }
+                if let ReasoningBlock::Item(item) = block {
+                    flush_text(&mut pending_text, &mut phase, &mut last_text, items);
+                    items.push(item.raw.clone());
                 }
-            }
-            ContentPart::Text(text) => {
-                if text_block_index.is_none() {
-                    let position = items.len();
-                    items.push(json!({"type": "message", "role": "assistant", "content": []}));
-                    text_block_index = Some(position);
-                }
-                pending_text.push_str(text);
             }
             ContentPart::ToolCall(call) => {
-                flush_text(&mut pending_text, &mut text_block_index, items);
+                flush_text(&mut pending_text, &mut phase, &mut last_text, items);
                 items.push(json!({
-                    "type": "function_call",
-                    "call_id": call.id,
-                    "name": call.name,
-                    "arguments": call.arguments,
+                    "type": "function_call", "call_id": call.id,
+                    "name": call.name, "arguments": call.arguments,
                 }));
             }
             other => return Err(unsupported_part(message.role, other)),
         }
     }
-    flush_text(&mut pending_text, &mut text_block_index, items);
+    flush_text(&mut pending_text, &mut phase, &mut last_text, items);
 
     if breakpoint {
-        let position = text_block_index.ok_or_else(|| {
+        let position = last_text.ok_or_else(|| {
             LlmError::Encode("Responses 的缓存断点只能落在 assistant 消息的文本内容块上".into())
         })?;
         let blocks = items[position]
@@ -404,27 +406,24 @@ fn encode_assistant_items(
 }
 
 /// 把累积的文本写成一个 assistant message item。
-fn flush_text(pending: &mut String, block_index: &mut Option<usize>, items: &mut Vec<Value>) {
+fn flush_text(
+    pending: &mut String,
+    phase: &mut Option<&str>,
+    last_text: &mut Option<usize>,
+    items: &mut Vec<Value>,
+) {
     if pending.is_empty() {
         return;
     }
-    let text = std::mem::take(pending);
-    match *block_index {
-        Some(position) => {
-            let content = items[position]
-                .get_mut("content")
-                .and_then(Value::as_array_mut)
-                .expect("assistant message item 由本模块构造成内容块数组");
-            content.push(json!({"type": "output_text", "text": text}));
-        }
-        None => {
-            items.push(json!({
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": text}],
-            }));
-        }
+    let mut item = json!({
+        "type": "message", "role": "assistant",
+        "content": [{"type": "output_text", "text": std::mem::take(pending)}],
+    });
+    if let Some(phase) = phase.take() {
+        item["phase"] = json!(phase);
     }
+    *last_text = Some(items.len());
+    items.push(item);
 }
 
 fn encode_tool_result(
@@ -488,6 +487,7 @@ fn attach_breakpoint(blocks: &mut [Value], text_type: &str) -> Result<(), LlmErr
 fn unsupported_part(role: Role, part: &ContentPart) -> LlmError {
     let kind = match part {
         ContentPart::Text(_) => "Text",
+        ContentPart::ResponsePhase(_) => "ResponsePhase",
         ContentPart::Image { .. } => "Image",
         ContentPart::Reasoning(_) => "Reasoning",
         ContentPart::ToolCall(_) => "ToolCall",
@@ -516,7 +516,7 @@ pub(crate) fn decode_response(
         match item.get("type").and_then(Value::as_str) {
             Some("reasoning") => {
                 content.push(ContentPart::Reasoning(ReasoningBlock::Item(Box::new(
-                    item.clone(),
+                    (item.clone()).into(),
                 ))));
             }
             Some("message") => {
@@ -527,12 +527,17 @@ pub(crate) fn decode_response(
                     .flatten()
                 {
                     match block.get("type").and_then(Value::as_str) {
-                        Some("output_text") => {
-                            content.push(ContentPart::Text(string_at(block, "/text")));
-                        }
-                        // 拒绝与正文一样是模型输出，直接计入文本。
-                        Some("refusal") => {
-                            content.push(ContentPart::Text(string_at(block, "/refusal")));
+                        Some("output_text" | "refusal") => {
+                            if let Some(phase) = item.get("phase").and_then(Value::as_str) {
+                                content.push(ContentPart::ResponsePhase(phase.to_owned()));
+                            }
+                            let key =
+                                if block.get("type").and_then(Value::as_str) == Some("refusal") {
+                                    "/refusal"
+                                } else {
+                                    "/text"
+                                };
+                            content.push(ContentPart::Text(string_at(block, key)));
                         }
                         _ => {}
                     }
@@ -678,6 +683,12 @@ impl ResponsesStreamDecoder {
                 item: Box::new(item.clone()),
             })),
             Some("message") => {
+                if let Some(phase) = item.get("phase").and_then(Value::as_str) {
+                    out.push(Ok(StreamEvent::ResponsePhase {
+                        index,
+                        phase: phase.to_owned(),
+                    }));
+                }
                 if let Some(blocks) = item.get("content").and_then(Value::as_array) {
                     let text: String = blocks
                         .iter()
@@ -941,12 +952,15 @@ mod tests {
                 Message {
                     role: Role::Assistant,
                     content: crate::message_content![
-                        ContentPart::Reasoning(ReasoningBlock::Item(Box::new(json!({
-                            "type": "reasoning",
-                            "id": "rs_1",
-                            "encrypted_content": "blob",
-                            "summary": [],
-                        })))),
+                        ContentPart::Reasoning(ReasoningBlock::Item(Box::new(
+                            json!({
+                                "type": "reasoning",
+                                "id": "rs_1",
+                                "encrypted_content": "blob",
+                                "summary": [],
+                            })
+                            .into()
+                        ))),
                         ContentPart::Text("这就去查".into()),
                         ContentPart::ToolCall(ToolCall::new(
                             "call_1",
@@ -1029,7 +1043,7 @@ mod tests {
             messages: vec![Message {
                 role: Role::Assistant,
                 content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::Item(
-                    Box::new(item.clone(),)
+                    Box::new(item.clone().into())
                 ))],
             }],
             ..Default::default()
@@ -1057,10 +1071,13 @@ mod tests {
                 Message {
                     role: Role::Assistant,
                     content: crate::message_content![
-                        ContentPart::Reasoning(ReasoningBlock::Item(Box::new(json!({
-                            "type": "reasoning",
-                            "id": "rs_1",
-                        })))),
+                        ContentPart::Reasoning(ReasoningBlock::Item(Box::new(
+                            json!({
+                                "type": "reasoning",
+                                "id": "rs_1",
+                            })
+                            .into()
+                        ))),
                         ContentPart::ToolCall(ToolCall::new("call_1", "get_weather", "{}")),
                         ContentPart::ToolCall(ToolCall::new("call_2", "get_date", "{}")),
                     ],
@@ -1300,46 +1317,6 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_reasoning_blocks_are_rejected() {
-        let text_block = ChatRequest {
-            messages: vec![Message {
-                role: Role::Assistant,
-                content: crate::message_content![ContentPart::Reasoning(ReasoningBlock::text(
-                    "思考"
-                ))],
-            }],
-            ..Default::default()
-        };
-        let err = encode(&config(), &text_block, false).unwrap_err();
-        assert!(err.to_string().contains("reasoning item"), "{err}");
-
-        let redacted = ChatRequest {
-            messages: vec![Message {
-                role: Role::Assistant,
-                content: crate::message_content![ContentPart::Reasoning(
-                    ReasoningBlock::Redacted {
-                        data: "opaque".into(),
-                    }
-                )],
-            }],
-            ..Default::default()
-        };
-        let err = encode(&config(), &redacted, false).unwrap_err();
-        assert!(err.to_string().contains("reasoning item"), "{err}");
-
-        // echo = Never：core 主动裁剪历史，直接剔除而不是报错。
-        let never = ChatRequest {
-            options: RequestOptions {
-                echo_reasoning: ReasoningEcho::Never,
-                ..Default::default()
-            },
-            ..text_block
-        };
-        let body = encode_body(&config(), &never, false);
-        assert_eq!(body["input"], json!([]));
-    }
-
-    #[test]
     fn response_decode_output_items() {
         let body = json!({
             "id": "resp_1",
@@ -1380,12 +1357,15 @@ mod tests {
         assert_eq!(
             response.message.content,
             vec![
-                ContentPart::Reasoning(ReasoningBlock::Item(Box::new(json!({
-                    "type": "reasoning",
-                    "id": "rs_1",
-                    "encrypted_content": "blob",
-                    "summary": [],
-                })))),
+                ContentPart::Reasoning(ReasoningBlock::Item(Box::new(
+                    json!({
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "encrypted_content": "blob",
+                        "summary": [],
+                    })
+                    .into()
+                ))),
                 ContentPart::Text("答案是 42".into()),
                 ContentPart::Text("拒绝部分".into()),
                 ContentPart::ToolCall(ToolCall::new(

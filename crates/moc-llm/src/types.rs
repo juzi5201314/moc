@@ -223,6 +223,8 @@ impl Message {
 pub enum ContentPart {
     /// 文本。
     Text(String),
+    /// 紧随其后的 assistant 文本的 Responses phase；不属于可见正文。
+    ResponsePhase(String),
     /// 图片；只允许出现在 user 消息中。
     Image {
         /// 图片来源。
@@ -339,8 +341,52 @@ pub enum ReasoningBlock {
         /// 上游返回的不透明数据。
         data: String,
     },
-    /// Responses 的 reasoning item，原样保存与回传（含 `id` / `encrypted_content` / `summary`）。
-    Item(Box<serde_json::Value>),
+    /// Responses 的原样线上 item 与本地展示摘要；本地摘要不参与上游回传。
+    Item(Box<ReasoningItem>),
+}
+
+/// Responses reasoning 的持久化表示。flatten 保持既有会话的 Item JSON 可读，
+/// 本地字段独立于 raw，编码请求时只发送 raw，绝不改写 summary 或加密数据。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ReasoningItem {
+    /// 原始线上对象（包括未来增加的字段）。
+    #[serde(flatten)]
+    pub raw: serde_json::Value,
+    /// 仅用于展示的流式文本，终态缺摘要时保留已收到的内容。
+    #[serde(
+        default,
+        rename = "_moc_display_text",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub display_text: Option<String>,
+}
+
+impl From<serde_json::Value> for ReasoningItem {
+    fn from(raw: serde_json::Value) -> Self {
+        Self {
+            raw,
+            display_text: None,
+        }
+    }
+}
+
+impl ReasoningItem {
+    /// 摘要优先；reasoning_text 是另一种文档定义的可见内容，不能和摘要重复显示。
+    pub fn visible_text(raw: &serde_json::Value) -> String {
+        let texts = |key| {
+            raw.get(key)
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+        };
+        let summary: String = texts("summary").collect();
+        if summary.is_empty() {
+            texts("content").collect()
+        } else {
+            summary
+        }
+    }
 }
 
 impl ReasoningBlock {
@@ -358,13 +404,11 @@ impl ReasoningBlock {
             ReasoningBlock::Text { text, .. } => Some(text.clone()),
             ReasoningBlock::Redacted { .. } => None,
             ReasoningBlock::Item(item) => {
-                let mut out = String::new();
-                for entry in item.get("summary")?.as_array()? {
-                    if let Some(text) = entry.get("text").and_then(|t| t.as_str()) {
-                        out.push_str(text);
-                    }
-                }
-                (!out.is_empty()).then_some(out)
+                let text = item
+                    .display_text
+                    .clone()
+                    .unwrap_or_else(|| ReasoningItem::visible_text(&item.raw));
+                (!text.is_empty()).then_some(text)
             }
         }
     }
@@ -824,6 +868,13 @@ pub enum StreamEvent {
         /// 该块的完整正文（含拒绝文本）。
         text: String,
     },
+    /// Responses assistant 消息的阶段；按 output_index 绑定到正文块。
+    ResponsePhase {
+        /// 输出消息序号。
+        index: usize,
+        /// commentary 或 final_answer；未知值原样保留。
+        phase: String,
+    },
     /// 思维链文本增量。
     ReasoningDelta {
         /// 内容块序号。
@@ -1046,18 +1097,23 @@ mod tests {
         };
         assert_eq!(redacted.display_text(), None);
 
-        let item = ReasoningBlock::Item(Box::new(json!({
-            "type": "reasoning",
-            "id": "rs_1",
-            "encrypted_content": "blob",
-            "summary": [
-                {"type": "summary_text", "text": "第一段"},
-                {"type": "summary_text", "text": "第二段"},
-            ],
-        })));
+        let item = ReasoningBlock::Item(Box::new(
+            (json!({
+                "type": "reasoning",
+                "id": "rs_1",
+                "encrypted_content": "blob",
+                "summary": [
+                    {"type": "summary_text", "text": "第一段"},
+                    {"type": "summary_text", "text": "第二段"},
+                ],
+            }))
+            .into(),
+        ));
         assert_eq!(item.display_text().as_deref(), Some("第一段第二段"));
 
-        let empty = ReasoningBlock::Item(Box::new(json!({"type": "reasoning", "summary": []})));
+        let empty = ReasoningBlock::Item(Box::new(
+            (json!({"type": "reasoning", "summary": []})).into(),
+        ));
         assert_eq!(empty.display_text(), None);
     }
 }

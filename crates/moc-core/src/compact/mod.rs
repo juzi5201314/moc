@@ -104,6 +104,7 @@ pub(crate) fn message_tokens(message: &Message) -> u64 {
 fn content_part_tokens(part: &ContentPart) -> u64 {
     match part {
         ContentPart::Text(text) => estimate_tokens(text),
+        ContentPart::ResponsePhase(phase) => estimate_tokens(phase),
         ContentPart::Image { .. } => images::IMAGE_TOKEN_ESTIMATE,
         ContentPart::Reasoning(reasoning) => {
             serde_json::to_string(reasoning).map_or(0, |text| estimate_tokens(&text))

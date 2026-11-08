@@ -20,7 +20,7 @@ pub fn model_template() -> Value {
             "instruction_system":["intro","mcp servers","environment"],"response_format_dialect":"standard",
             "echo_reasoning":"protocol","requires_reasoning_content_for_tool_calls":false,
             "requires_reasoning_content_for_all_assistant_turns":false,"requires_assistant_content_for_tool_calls":false,
-            "thinking":{"toggle_field":"thinking","enabled_value":"enabled","disabled_value":"disabled",
+            "thinking":{"toggle_field":null,"enabled_value":"enabled","disabled_value":"disabled",
                 "effort_field":"reasoning_effort","effort_map":{},"toggle_extra":{}},"extra_body":{}}})
 }
 

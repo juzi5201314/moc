@@ -187,11 +187,10 @@ pub(crate) fn build_request(
         top_p: None,
         top_k: None,
         stop: Vec::new(),
-        reasoning: Some(ReasoningConfig {
-            enabled: model.capabilities.reasoning
-                && model.thinking_level != crate::ThinkingLevel::Off,
+        reasoning: model.capabilities.reasoning.then(|| ReasoningConfig {
+            enabled: model.thinking_level != crate::ThinkingLevel::Off,
             effort: model.thinking_level.effort(),
-            summary: None,
+            summary: Some(moc_llm::ReasoningSummary::Auto),
         }),
         response_format: None,
         parallel_tool_calls: Some(model.llm.wire.parallel_tool_calls),

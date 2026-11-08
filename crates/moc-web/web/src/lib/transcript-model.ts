@@ -198,6 +198,17 @@ export function reasoningText(part: ContentPart): string {
   if (!("Reasoning" in part)) return "";
   const block = part.Reasoning;
   if ("Text" in block) return block.Text.text;
+  if ("Item" in block && block.Item && typeof block.Item === "object") {
+    const item = block.Item as Record<string, unknown>;
+    if (typeof item._moc_display_text === "string") return item._moc_display_text;
+    for (const parts of [item.summary, item.content]) {
+      if (!Array.isArray(parts)) continue;
+      const text = parts
+        .flatMap((part) => (typeof part?.text === "string" ? [part.text] : []))
+        .join("");
+      if (text) return text;
+    }
+  }
   return "";
 }
 

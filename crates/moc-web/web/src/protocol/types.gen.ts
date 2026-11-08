@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 22b136420c5bc587
+// schema sha256: d00e908112602197
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -47,6 +47,9 @@ export type FinishReason =
 export type ContentPart =
   | {
       Text: string;
+    }
+  | {
+      ResponsePhase: string;
     }
   | {
       Image: {
@@ -119,7 +122,7 @@ export type ReasoningBlock =
       };
     }
   | {
-      Item: unknown;
+      Item: ReasoningItem;
     };
 /**
  * 图片来源。
@@ -1304,6 +1307,20 @@ export interface Message {
    * 消息角色。
    */
   role: "System" | "Developer" | "User" | "Assistant" | "Tool" | "Custom";
+}
+/**
+ * Responses reasoning 的持久化表示。flatten 保持既有会话的 Item JSON 可读，
+ * 本地字段独立于 raw，编码请求时只发送 raw，绝不改写 summary 或加密数据。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ReasoningItem".
+ */
+export interface ReasoningItem {
+  /**
+   * 仅用于展示的流式文本，终态缺摘要时保留已收到的内容。
+   */
+  _moc_display_text?: string | null;
+  [k: string]: unknown;
 }
 /**
  * 一次工具调用。
@@ -5152,7 +5169,7 @@ export interface ToolDef {
     [k: string]: unknown;
   };
   /**
-   * 是否启用严格模式（Chat / Responses 支持，Anthropic 丢弃）。
+   * 是否启用工具 schema 严格模式（三协议均支持，未指定时不强制开启）。
    */
   strict?: boolean | null;
 }

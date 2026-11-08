@@ -111,7 +111,13 @@ pub(super) fn encode_inspected(
     }
     if stream {
         body.insert("stream".into(), Value::Bool(true));
-        body.insert("stream_options".into(), json!({"include_usage": true}));
+        let mut options = body
+            .get("stream_options")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        options.insert("include_usage".into(), Value::Bool(true));
+        body.insert("stream_options".into(), Value::Object(options));
     }
 
     Ok(EncodedRequest {
@@ -274,6 +280,7 @@ fn encode_assistant(
     let mut tool_calls = Vec::new();
     for part in &message.content {
         match part {
+            ContentPart::ResponsePhase(_) => {}
             ContentPart::Text(chunk) => {
                 has_text = true;
                 text.push_str(chunk);
@@ -410,8 +417,7 @@ fn encode_response_format(cfg: &LlmConfig, format: &ResponseFormat) -> Option<Va
 
 /// 写入 `thinking` 对象与 `reasoning_effort` 顶层字段。
 ///
-/// `enabled == false` 时只写「关闭」开关，不写强度：同时发送强度与关闭是自相矛盾
-/// 的配置。`toggle_field` 为 `None` 的线格式完全不发送思考字段。
+/// 标准 Chat 不发送厂商 thinking 对象；显式配置 toggle 的厂商用 toggle 表达关闭。
 fn encode_thinking(cfg: &LlmConfig, reasoning: &ReasoningConfig, body: &mut Map<String, Value>) {
     let wire = &cfg.wire.thinking;
     if let Some(field) = &wire.toggle_field {
@@ -420,12 +426,14 @@ fn encode_thinking(cfg: &LlmConfig, reasoning: &ReasoningConfig, body: &mut Map<
         } else {
             &wire.disabled_value
         };
-        let mut object = wire.toggle_extra.clone();
+        let mut object = body
+            .get(field)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        object.extend(wire.toggle_extra.clone());
         object.insert("type".into(), Value::String(value.clone()));
         body.insert(field.clone(), Value::Object(object));
-    }
-    if !reasoning.enabled {
-        return;
     }
     if let Some(field) = &wire.effort_field
         && let Some(value) = cfg.wire_effort(Some(reasoning))
@@ -471,6 +479,7 @@ fn finish_text_content(text: String, breakpoint: bool) -> Result<Option<Value>, 
 fn unsupported_part(role: Role, part: &ContentPart) -> LlmError {
     let kind = match part {
         ContentPart::Text(_) => "Text",
+        ContentPart::ResponsePhase(_) => "ResponsePhase",
         ContentPart::Image { .. } => "Image",
         ContentPart::Reasoning(_) => "Reasoning",
         ContentPart::ToolCall(_) => "ToolCall",
@@ -969,6 +978,10 @@ mod tests {
         let cfg = LlmConfig {
             wire: WireConfig {
                 developer_role: true,
+                thinking: crate::ThinkingWire {
+                    toggle_field: Some("thinking".into()),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             ..config()
@@ -1075,15 +1088,11 @@ mod tests {
             ..Default::default()
         };
 
-        // 默认：toggle + effort 同时发送。
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(body["thinking"], json!({"type": "enabled"}));
-        assert_eq!(body["reasoning_effort"], json!("medium"));
-
         // 只有 toggle（Kimi 风格：无强度字段）。
         let cfg = LlmConfig {
             wire: WireConfig {
                 thinking: crate::config::ThinkingWire {
+                    toggle_field: Some("thinking".into()),
                     effort_field: None,
                     ..Default::default()
                 },
@@ -1095,25 +1104,11 @@ mod tests {
         assert_eq!(body["thinking"], json!({"type": "enabled"}));
         assert!(body.get("reasoning_effort").is_none());
 
-        // 只有 effort（Qwen 风格：无 thinking 对象）。
-        let cfg = LlmConfig {
-            wire: WireConfig {
-                thinking: crate::config::ThinkingWire {
-                    toggle_field: None,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..config()
-        };
-        let body = encode_body(&cfg, &req, false);
-        assert!(body.get("thinking").is_none());
-        assert_eq!(body["reasoning_effort"], json!("medium"));
-
         // toggle_extra 并入 thinking 对象。
         let cfg = LlmConfig {
             wire: WireConfig {
                 thinking: crate::config::ThinkingWire {
+                    toggle_field: Some("thinking".into()),
                     toggle_extra: serde_json::Map::from_iter([
                         ("keep".into(), json!("all")),
                         ("clear_thinking".into(), json!(false)),
@@ -1146,6 +1141,17 @@ mod tests {
         };
         let body = encode_body(&cfg, &req, false);
         assert_eq!(body["reasoning_effort"], json!("medium-effort"));
+        let standard = config();
+        let body = encode_body(&standard, &req, true);
+        assert!(
+            body.get("thinking").is_none(),
+            "标准 Chat 不接受厂商 thinking 对象"
+        );
+        assert_eq!(body["reasoning_effort"], "medium");
+        let mut disabled = req;
+        disabled.reasoning.as_mut().unwrap().enabled = false;
+        let body = encode_body(&standard, &disabled, false);
+        assert_eq!(body["reasoning_effort"], "none");
     }
 
     #[test]

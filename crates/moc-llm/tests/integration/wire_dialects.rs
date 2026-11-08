@@ -127,6 +127,10 @@ async fn deepseek_thinking_mode_with_tools() {
         wire: WireConfig {
             max_output_tokens_field: MaxTokensField::MaxTokens,
             reasoning_field: "reasoning_content".into(),
+            thinking: moc_llm::ThinkingWire {
+                toggle_field: Some("thinking".into()),
+                ..Default::default()
+            },
             ..Default::default()
         },
         retry: RetryPolicy {
@@ -248,11 +252,13 @@ async fn responses_interrupted_summary_roundtrip() {
     }
     let partial = stream.interrupt();
     assert_eq!(partial.finish_reason, FinishReason::Interrupted);
-    assert_eq!(
-        partial.message.content,
-        vec![ContentPart::Text("正文".into())],
-        "摘要型思维链没有线上形态"
-    );
+    let persisted = serde_json::to_string(&partial.message).unwrap();
+    let restored: Message = serde_json::from_str(&persisted).unwrap();
+    let ContentPart::Reasoning(reasoning) = &restored.content[0] else {
+        panic!("中断摘要丢失")
+    };
+    assert_eq!(reasoning.display_text().as_deref(), Some("想了一半"));
+    assert_eq!(restored.text(), "正文");
 
     // 回灌历史：编码阶段必须通过，且不合成 reasoning item。
     let next = ChatRequest {
@@ -396,7 +402,9 @@ async fn responses_stateless_continuation() {
             Message {
                 role: moc_llm::Role::Assistant,
                 content: moc_llm::message_content![
-                    ContentPart::Reasoning(ReasoningBlock::Item(Box::new(reasoning_item.clone()))),
+                    ContentPart::Reasoning(ReasoningBlock::Item(Box::new(
+                        reasoning_item.clone().into()
+                    ))),
                     ContentPart::ToolCall(ToolCall::new("call_1", "get_weather", "{}")),
                 ],
             },

@@ -1381,6 +1381,19 @@
         },
         {
           "additionalProperties": false,
+          "description": "紧随其后的 assistant 文本的 Responses phase；不属于可见正文。",
+          "properties": {
+            "ResponsePhase": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ResponsePhase"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "图片；只允许出现在 user 消息中。",
           "properties": {
             "Image": {
@@ -3727,9 +3740,11 @@
         },
         {
           "additionalProperties": false,
-          "description": "Responses 的 reasoning item，原样保存与回传（含 `id` / `encrypted_content` / `summary`）。",
+          "description": "Responses 的原样线上 item 与本地展示摘要；本地摘要不参与上游回传。",
           "properties": {
-            "Item": true
+            "Item": {
+              "$ref": "#/$defs/ReasoningItem"
+            }
           },
           "required": [
             "Item"
@@ -3737,6 +3752,20 @@
           "type": "object"
         }
       ]
+    },
+    "ReasoningItem": {
+      "additionalProperties": true,
+      "description": "Responses reasoning 的持久化表示。flatten 保持既有会话的 Item JSON 可读，\n本地字段独立于 raw，编码请求时只发送 raw，绝不改写 summary 或加密数据。",
+      "properties": {
+        "_moc_display_text": {
+          "description": "仅用于展示的流式文本，终态缺摘要时保留已收到的内容。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "RedoPageParams": {
       "additionalProperties": false,
@@ -6791,7 +6820,7 @@
           "description": "参数的 JSON Schema 对象。"
         },
         "strict": {
-          "description": "是否启用严格模式（Chat / Responses 支持，Anthropic 丢弃）。",
+          "description": "是否启用工具 schema 严格模式（三协议均支持，未指定时不强制开启）。",
           "type": [
             "boolean",
             "null"

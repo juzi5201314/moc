@@ -38,6 +38,7 @@ enum BlockKind {
 enum AccumulatedBlock {
     Text {
         text: String,
+        phase: Option<String>,
     },
     Reasoning {
         text: String,
@@ -91,6 +92,13 @@ impl Accumulator {
                 self.with_block(BlockKind::Text, *index, |slot| match slot {
                     AccumulatedBlock::Text { text: buffer, .. } => buffer.push_str(text),
                     _ => unreachable!("同一种类同一 index 的块结构固定"),
+                });
+            }
+            StreamEvent::ResponsePhase { index, phase } => {
+                self.with_block(BlockKind::Text, *index, |slot| {
+                    if let AccumulatedBlock::Text { phase: target, .. } = slot {
+                        *target = Some(phase.clone());
+                    }
                 });
             }
             StreamEvent::ReasoningDelta { index, text } => {
@@ -188,7 +196,7 @@ impl Accumulator {
         let Some(&slot) = self.slots.get(&(BlockKind::Text, index)) else {
             return Ok(0);
         };
-        let AccumulatedBlock::Text { text: previous } = &self.blocks[slot] else {
+        let AccumulatedBlock::Text { text: previous, .. } = &self.blocks[slot] else {
             unreachable!("正文下标只引用正文块");
         };
         if !text.starts_with(previous) {
@@ -210,6 +218,7 @@ impl Accumulator {
                 let block = match kind {
                     BlockKind::Text => AccumulatedBlock::Text {
                         text: String::new(),
+                        phase: None,
                     },
                     BlockKind::Reasoning => AccumulatedBlock::Reasoning {
                         text: String::new(),
@@ -265,8 +274,11 @@ impl Accumulator {
         let mut content = Vec::with_capacity(self.blocks.len());
         for block in &self.blocks {
             match block {
-                AccumulatedBlock::Text { text, .. } => {
+                AccumulatedBlock::Text { text, phase } => {
                     if !text.is_empty() {
+                        if let Some(phase) = phase {
+                            content.push(ContentPart::ResponsePhase(phase.clone()));
+                        }
                         content.push(ContentPart::Text(text.clone()));
                     }
                 }
@@ -282,17 +294,18 @@ impl Accumulator {
                     if protocol == Protocol::AnthropicMessages && item.is_some() {
                         continue;
                     }
-                    // Responses 只接受原样回传的 reasoning item：中断或截断的流
-                    // 只有摘要增量（缺 `output_item.done`），这种摘要型块没有
-                    // 线上形态，合成的 item 会被上游拒绝。
-                    if protocol == Protocol::OpenAiResponses && item.is_none() {
-                        continue;
-                    }
+                    // 仅有摘要也要持久化用于展示；Responses 回传策略会剔除 Text，
+                    // 因此不需要伪造可回传的 reasoning item。
                     if interrupted {
                         // Responses 的 reasoning item 与其后的 function_call 成对
                         // 使用，孤立 item 无意义。
                         if item.is_some() && protocol == Protocol::OpenAiResponses && !has_tool_call
                         {
+                            if !text.is_empty() {
+                                content.push(ContentPart::Reasoning(ReasoningBlock::text(
+                                    text.clone(),
+                                )));
+                            }
                             continue;
                         }
                         // Anthropic 的 thinking 块缺签名会被上游拒绝（签名在块末尾
@@ -311,7 +324,13 @@ impl Accumulator {
                             data: data.clone(),
                         }));
                     } else if let Some(item) = item {
-                        content.push(ContentPart::Reasoning(ReasoningBlock::Item(item.clone())));
+                        let mut saved = crate::ReasoningItem::from((**item).clone());
+                        if !text.is_empty() && *text != crate::ReasoningItem::visible_text(item) {
+                            saved.display_text = Some(text.clone());
+                        }
+                        content.push(ContentPart::Reasoning(ReasoningBlock::Item(Box::new(
+                            saved,
+                        ))));
                     } else if !text.is_empty() || signature.is_some() {
                         content.push(ContentPart::Reasoning(ReasoningBlock::Text {
                             text: text.clone(),
@@ -517,6 +536,28 @@ impl ChatStream {
                         }
                     }
                 }
+                Ok(StreamEvent::ReasoningItem { index, item }) => {
+                    let mut visible = crate::ReasoningItem::visible_text(&item);
+                    let previous = self
+                        .accumulator
+                        .slots
+                        .get(&(BlockKind::Reasoning, index))
+                        .and_then(|slot| match &self.accumulator.blocks[*slot] {
+                            AccumulatedBlock::Reasoning { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    if visible.starts_with(previous) && visible.len() > previous.len() {
+                        visible.drain(..previous.len());
+                        if !self.enqueue(Ok(StreamEvent::ReasoningDelta {
+                            index,
+                            text: visible,
+                        })) {
+                            break;
+                        }
+                    }
+                    Ok(StreamEvent::ReasoningItem { index, item })
+                }
                 Ok(StreamEvent::ToolCallSnapshot {
                     index,
                     id,
@@ -541,19 +582,26 @@ impl ChatStream {
                 }
                 event => event,
             };
-            if let Ok(stream_event) = &event
-                && let Err(violation) = self.guard.observe(stream_event)
-            {
-                self.stop_with(violation.into());
+            if !self.enqueue(event) {
                 break;
             }
-            match &event {
-                Ok(stream_event) => self.accumulator.apply(stream_event),
-                Err(error) => self.error = Some(error.clone()),
-            }
-            self.queue.push_back(event);
         }
         self.pending = pending;
+    }
+
+    fn enqueue(&mut self, event: Result<StreamEvent, LlmError>) -> bool {
+        if let Ok(stream_event) = &event
+            && let Err(violation) = self.guard.observe(stream_event)
+        {
+            self.stop_with(violation.into());
+            return false;
+        }
+        match &event {
+            Ok(stream_event) => self.accumulator.apply(stream_event),
+            Err(error) => self.error = Some(error.clone()),
+        }
+        self.queue.push_back(event);
+        true
     }
 
     /// 以错误结束流。
@@ -776,7 +824,9 @@ mod tests {
         let response = accumulator.fold(Protocol::OpenAiResponses, false);
         assert_eq!(
             response.message.content,
-            vec![ContentPart::Reasoning(ReasoningBlock::Item(Box::new(item)))]
+            vec![ContentPart::Reasoning(ReasoningBlock::Item(Box::new(
+                item.into()
+            )))]
         );
     }
 
@@ -993,7 +1043,7 @@ mod tests {
         assert_eq!(
             response.message.content,
             vec![
-                ContentPart::Reasoning(ReasoningBlock::Item(Box::new(item))),
+                ContentPart::Reasoning(ReasoningBlock::Item(Box::new(item.into()))),
                 ContentPart::ToolCall(ToolCall::new(
                     "call_1",
                     "get_weather",
@@ -1076,69 +1126,56 @@ mod tests {
         );
     }
 
-    #[test]
-    fn responses_summary_only_reasoning_is_pruned() {
-        // 中断/截断的 Responses 流只有摘要增量，没有权威 reasoning item：
-        // 摘要型块会让「落库后会话锁死」，必须按协议修剪。
-        let accumulator = accumulate(
-            Protocol::OpenAiResponses,
-            &[
-                StreamEvent::ReasoningDelta {
-                    index: 0,
-                    text: "想了一半".into(),
-                },
-                StreamEvent::TextDelta {
-                    index: 1,
-                    text: "正文".into(),
-                },
-                StreamEvent::ToolCallStart {
-                    index: 2,
-                    id: "call_1".into(),
-                    name: "get_weather".into(),
-                },
-                StreamEvent::ToolCallArgumentsDelta {
-                    index: 2,
-                    json: "{\"city\":\"北京\"}".into(),
-                },
-                StreamEvent::Done {
-                    finish_reason: FinishReason::Stop,
-                },
+    #[tokio::test]
+    async fn interrupted_summary_is_visible_but_not_replayed_as_a_reasoning_item() {
+        let mut stream = stream_from_chunks(
+            &config(Protocol::OpenAiResponses),
+            &request(),
+            vec![
+                "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"delta\":\"想了一半\"}\n\n",
             ],
         );
-        for interrupted in [false, true] {
-            let response = accumulator.fold(Protocol::OpenAiResponses, interrupted);
-            assert_eq!(
-                response.message.content,
-                vec![
-                    ContentPart::Text("正文".into()),
-                    ContentPart::ToolCall(ToolCall::new(
-                        "call_1",
-                        "get_weather",
-                        "{\"city\":\"北京\"}"
-                    )),
-                ],
-                "interrupted={interrupted}"
-            );
-        }
-
-        // 产物回灌历史后必须能构建出请求。
-        let response = accumulator.fold(Protocol::OpenAiResponses, true);
+        assert!(matches!(
+            stream.next_event().await.unwrap().unwrap(),
+            StreamEvent::ReasoningDelta { .. }
+        ));
+        let response = stream.interrupt();
+        let ContentPart::Reasoning(block) = &response.message.content[0] else {
+            panic!("缺少摘要")
+        };
+        assert_eq!(block.display_text().as_deref(), Some("想了一半"));
         let request = ChatRequest {
-            messages: vec![
-                Message::user_text("查天气"),
-                response.message,
-                Message::tool_result("call_1", "晴", false),
-            ],
+            messages: vec![response.message],
             ..Default::default()
         };
-        let encoded =
-            crate::codec::encode(&config(Protocol::OpenAiResponses), &request, false).unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&encoded.body).unwrap();
-        let input = body["input"].as_array().unwrap();
-        assert!(
-            input.iter().all(|item| item["type"] != "reasoning"),
-            "不应合成 reasoning item：{input:?}"
-        );
+        let wire =
+            crate::inspect_request(&config(Protocol::OpenAiResponses), &request, false).unwrap();
+        assert_eq!(wire.body["input"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn responses_replay_preserves_phase_and_interleaved_text_order() {
+        use serde_json::json;
+        let output = [
+            json!({"type":"message", "phase":"commentary", "role":"assistant", "content":[{"type":"output_text","text":"先查"}]}),
+            json!({"type":"function_call", "call_id":"call_1", "name":"read", "arguments":"{}"}),
+            json!({"type":"message", "phase":"final_answer", "role":"assistant", "content":[{"type":"output_text","text":"结论"}]}),
+        ];
+        let response = decode_frames(Protocol::OpenAiResponses, &[
+            json!({"type":"response.completed", "response":{"status":"completed", "output":output}}),
+        ]).await;
+        assert_eq!(response.message.text(), "先查结论");
+        let restored =
+            serde_json::from_str(&serde_json::to_string(&response.message).unwrap()).unwrap();
+        let request = ChatRequest {
+            messages: vec![restored, Message::tool_result("call_1", "结果", false)],
+            ..Default::default()
+        };
+        let wire =
+            crate::inspect_request(&config(Protocol::OpenAiResponses), &request, false).unwrap();
+        assert_eq!(wire.body["input"][0], output[0]);
+        assert_eq!(wire.body["input"][1], output[1]);
+        assert_eq!(wire.body["input"][2], output[2]);
     }
 
     #[test]
@@ -1366,8 +1403,53 @@ mod tests {
         assert_eq!(response.message.content.len(), 2);
         assert_eq!(
             response.message.content[0],
-            ContentPart::Reasoning(ReasoningBlock::Item(Box::new(reasoning)))
+            ContentPart::Reasoning(ReasoningBlock::Item(Box::new(reasoning.into())))
         );
+    }
+
+    #[tokio::test]
+    async fn responses_summary_survives_snapshots_persistence_and_replay() {
+        use serde_json::json;
+        for (delta, summary) in [
+            ("摘要", json!([])),
+            ("", json!([{"type":"summary_text", "text":"摘要"}])),
+            ("摘", json!([{"type":"summary_text", "text":"摘要"}])),
+        ] {
+            let item = json!({"type":"reasoning", "id":"rs_1", "encrypted_content":"opaque", "summary":summary});
+            let frames = [
+                json!({"type":"response.reasoning_summary_text.delta", "output_index":0, "delta":delta}),
+                json!({"type":"response.output_item.done", "output_index":0, "item":item}),
+                json!({"type":"response.completed", "response":{"status":"completed", "output":[item]}}),
+            ];
+            let body = EndedStream {
+                chunks: frames
+                    .iter()
+                    .map(|frame| Bytes::from(format!("data: {frame}\n\n")))
+                    .collect(),
+            };
+            let cfg = config(Protocol::OpenAiResponses);
+            let mut stream = ChatStream::new(Box::pin(body), &cfg, &request());
+            let mut visible = String::new();
+            while let Some(event) = stream.next_event().await {
+                if let StreamEvent::ReasoningDelta { text, .. } = event.unwrap() {
+                    visible.push_str(&text);
+                }
+            }
+            assert_eq!(visible, "摘要", "实时摘要必须完整且不重复");
+            let response = stream.finish().await.unwrap();
+            let persisted = serde_json::to_string(&response.message).unwrap();
+            let restored: Message = serde_json::from_str(&persisted).unwrap();
+            let ContentPart::Reasoning(block) = &restored.content[0] else {
+                panic!("缺少思考块")
+            };
+            assert_eq!(block.display_text().as_deref(), Some("摘要"));
+            let request = ChatRequest {
+                messages: vec![restored],
+                ..Default::default()
+            };
+            let wire = crate::inspect_request(&cfg, &request, false).unwrap();
+            assert_eq!(wire.body["input"][0], item, "本地摘要不能改写原始回传对象");
+        }
     }
 
     #[tokio::test]

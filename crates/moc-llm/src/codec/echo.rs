@@ -174,7 +174,7 @@ mod tests {
             data: "opaque".into()
         }));
         assert!(!anthropic.keeps(&ReasoningBlock::Item(Box::new(
-            serde_json::json!({"type": "reasoning"})
+            serde_json::json!({"type": "reasoning"}).into()
         ))));
 
         // Responses 只回传原生 reasoning item。
@@ -183,7 +183,7 @@ mod tests {
             &request(ReasoningEcho::Protocol, 0),
         );
         assert!(responses.keeps(&ReasoningBlock::Item(Box::new(
-            serde_json::json!({"type": "reasoning", "id": "rs_1"})
+            serde_json::json!({"type": "reasoning", "id": "rs_1"}).into()
         ))));
         assert!(!responses.keeps(&text_block()));
         assert!(!responses.keeps(&ReasoningBlock::Redacted {
@@ -203,7 +203,7 @@ mod tests {
                 ReasoningBlock::Redacted {
                     data: "opaque".into(),
                 },
-                ReasoningBlock::Item(Box::new(serde_json::json!({"type": "reasoning"}))),
+                ReasoningBlock::Item(Box::new((serde_json::json!({"type": "reasoning"})).into())),
             ] {
                 assert!(!plan.keeps(&block), "{protocol:?} 应剔除 {block:?}");
             }
