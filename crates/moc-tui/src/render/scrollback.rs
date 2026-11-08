@@ -52,6 +52,7 @@ pub struct ScrollbackView {
     /// 每帧重算的块内容代次（批次成员共享输入序列的版本），与 `App::blocks` 对齐。
     generations: Vec<u64>,
     batches: BatchIndex,
+    tree: TreeIndex,
     deferred: bool,
     background_layout: bool,
     pending_layout: Option<PendingLayout>,
@@ -155,9 +156,91 @@ impl BatchIndex {
     }
 }
 
+/// 嵌套工具块（`parent_id` 为 `Some` 的 PTC 子调用）的树形状。
+///
+/// 渲染时决定连线前缀；同时进缓存有效性判断——新子块到达会让上一个兄弟的
+/// `more` 翻转，父调用结束会让最后一个子块的 `more` 落下。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TreeShape {
+    /// 嵌套深度（1 = 顶层调用的直接子调用），上限 [`TreeIndex::MAX_DEPTH`]。
+    depth: u8,
+    /// 祖先层位掩码：第 k 位 = 第 k+1 层祖先自己的 `more` 标志（最低位是最外层）。
+    rails: u32,
+    /// 本层是否还有后续：后面出现同一 `parent_id` 的子块，或父调用仍在运行。
+    more: bool,
+}
+
+/// 嵌套工具块的树形状索引，与 `App::blocks` 对齐；非嵌套块为 `None`。
+///
+/// 与 [`BatchIndex`] 同样每帧 O(n) 重建：逆序一遍算出「后面还有同 parent 的
+/// 子块」，正序一遍沿父链继承深度、把祖先标志压进 `rails` 位掩码，渲染路径
+/// 不必再向后扫块列表。
+#[derive(Default)]
+struct TreeIndex {
+    shapes: Vec<Option<TreeShape>>,
+}
+
+impl TreeIndex {
+    const MAX_DEPTH: u8 = 32;
+
+    fn sync(&mut self, blocks: &[Entry]) {
+        // 调用 id → 块下标：父链解析与父块 running 读取共用。
+        let mut index_of = std::collections::HashMap::new();
+        for (index, entry) in blocks.iter().enumerate() {
+            if let Block::Tool(tool) = &entry.block {
+                index_of.insert(tool.id.as_str(), index);
+            }
+        }
+        // 逆序：「已在后面出现过子块的 parent_id」集合，标出后面还有兄弟的子块。
+        let mut seen = std::collections::HashSet::new();
+        let mut later_sibling = vec![false; blocks.len()];
+        for (index, entry) in blocks.iter().enumerate().rev() {
+            let Block::Tool(tool) = &entry.block else {
+                continue;
+            };
+            let Some(parent) = tool.parent_id.as_deref() else {
+                continue;
+            };
+            later_sibling[index] = seen.contains(parent);
+            seen.insert(parent);
+        }
+        // 正序：深度沿父链 +1，祖先的 `more` 标志压进位掩码；
+        // 父块缺席（或排在后面）时按深度 1 处理。
+        self.shapes.clear();
+        self.shapes.resize(blocks.len(), None);
+        for (index, entry) in blocks.iter().enumerate() {
+            let Block::Tool(tool) = &entry.block else {
+                continue;
+            };
+            let Some(parent_id) = tool.parent_id.as_deref() else {
+                continue;
+            };
+            let parent = index_of.get(parent_id).copied().filter(|&p| p < index);
+            let (depth, rails) = parent.and_then(|p| self.shapes[p]).map_or((1, 0), |shape| {
+                let depth = shape.depth.saturating_add(1).min(Self::MAX_DEPTH);
+                let rails = shape.rails | u32::from(shape.more) << (depth - 2);
+                (depth, rails)
+            });
+            let parent_running = parent
+                .is_some_and(|p| matches!(&blocks[p].block, Block::Tool(tool) if tool.running));
+            self.shapes[index] = Some(TreeShape {
+                depth,
+                rails,
+                more: later_sibling[index] || parent_running,
+            });
+        }
+    }
+
+    fn shape(&self, index: usize) -> Option<TreeShape> {
+        self.shapes.get(index).copied().flatten()
+    }
+}
+
 struct CachedEntry {
     key: (u64, u64),
     layout_epoch: u64,
+    /// 嵌套工具块的树形状（[`TreeIndex`]）；形状变了必须重渲染，即使内容代次没变。
+    shape: Option<TreeShape>,
     height: usize,
     lines: Vec<Line<'static>>,
     paged: Option<super::rows::RowBuffer>,
@@ -269,6 +352,7 @@ impl ScrollbackView {
         *cached = CachedEntry {
             key: pending.key,
             layout_epoch: pending.epoch,
+            shape: self.tree.shape(pending.index),
             height: result.rendered.height,
             lines,
             footer,
@@ -346,13 +430,17 @@ impl ScrollbackView {
                 && matches!(&app.blocks[index].block, Block::Assistant { text } if text.len() > 64 * 1024));
         let eager_start = app.blocks.len().saturating_sub(EAGER_BLOCKS);
         self.batches.sync(&app.blocks, &mut self.generations);
+        self.tree.sync(&app.blocks);
         for (index, entry) in app.blocks.iter().enumerate() {
             let key = (
                 self.generations.get(index).copied().unwrap_or(0),
                 app.view_gen,
             );
+            let shape = self.tree.shape(index);
             if self.cache.get(index).is_some_and(|cached| {
-                cached.key == key && cached.layout_epoch == entry.layout_epoch
+                cached.key == key
+                    && cached.layout_epoch == entry.layout_epoch
+                    && cached.shape == shape
             }) {
                 continue;
             }
@@ -396,7 +484,8 @@ impl ScrollbackView {
             }
             let render_started = std::time::Instant::now();
             let (lines, footer, paged, tables, images, height, rendered) = if index >= eager_start {
-                let rendered = render_entry_with(index, entry, app, width, true, &self.batches);
+                let rendered =
+                    render_entry_with(index, entry, app, width, true, &self.batches, &self.tree);
                 let (lines, footer) = if rendered.paged.is_some() {
                     (Vec::new(), rendered.lines)
                 } else {
@@ -418,13 +507,14 @@ impl ScrollbackView {
                     None,
                     Vec::new(),
                     Vec::new(),
-                    estimate_entry_height_indexed(app, index, width, &self.batches),
+                    estimate_entry_height_indexed(app, index, width, &self.batches, &self.tree),
                     false,
                 )
             };
             let cached = CachedEntry {
                 key,
                 layout_epoch: entry.layout_epoch,
+                shape,
                 height,
                 lines,
                 footer,
@@ -511,6 +601,7 @@ impl ScrollbackView {
                         self.width,
                         true,
                         &self.batches,
+                        &self.tree,
                     );
                     cached.render_cost = started.elapsed();
                     cached.rendered_at = std::time::Instant::now();
@@ -789,7 +880,9 @@ fn tool_batch_key(entry: &Entry) -> Option<(&str, &str)> {
 fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
     let mut batches = BatchIndex::default();
     batches.sync(&app.blocks, &mut Vec::new());
-    estimate_entry_height_indexed(app, index, width, &batches)
+    let mut tree = TreeIndex::default();
+    tree.sync(&app.blocks);
+    estimate_entry_height_indexed(app, index, width, &batches, &tree)
 }
 
 fn estimate_entry_height_indexed(
@@ -797,6 +890,7 @@ fn estimate_entry_height_indexed(
     index: usize,
     width: u16,
     batches: &BatchIndex,
+    tree: &TreeIndex,
 ) -> usize {
     let Some(entry) = app.blocks.get(index) else {
         return 0;
@@ -807,11 +901,11 @@ fn estimate_entry_height_indexed(
     if let Block::Assistant { text } = &entry.block
         && (may_contain_table(text) || may_contain_image(text) || may_contain_mermaid(text))
     {
-        return render_entry_with(index, entry, app, width, false, batches).height;
+        return render_entry_with(index, entry, app, width, false, batches, tree).height;
     }
     let level = entry.level(app.block_level(&entry.block));
     let Some(tools) = batches.tools(index, app) else {
-        return estimate_entry_height(entry, app, level, width);
+        return estimate_entry_height(entry, app, level, width, tree.shape(index));
     };
     if tools.is_empty() {
         return 0;
@@ -836,7 +930,7 @@ fn estimate_tool_batch_height(
         let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
         let tail = batch_member_tail(tool, app.theme);
         let budget = batch_summary_budget(&tail, width);
-        let (_, in_title) = title_summary(tool, &args, budget, level);
+        let (_, in_title) = title_summary(tool, &args, budget, level, app.theme);
         rows += tool_body_rows(tool, &args, app, batch_body_width(width), level, in_title);
     }
     rows
@@ -847,7 +941,13 @@ fn estimate_tool_batch_height(
 /// 工具结果的截断规则、折叠态与展开态都与渲染共用同一套判定；正文按显示宽度折行
 /// 近似 markdown 的落行数。估算与渲染差一个数量级会让滚动范围、滚动条与懒渲染的
 /// 可见区间同时失真。
-fn estimate_entry_height(entry: &Entry, app: &App, level: DetailLevel, width: u16) -> usize {
+fn estimate_entry_height(
+    entry: &Entry,
+    app: &App,
+    level: DetailLevel,
+    width: u16,
+    shape: Option<TreeShape>,
+) -> usize {
     let width = usize::from(width).max(8);
     match &entry.block {
         // 纯文本折行很便宜：直接复用渲染，估高与渲染恒等。
@@ -872,7 +972,7 @@ fn estimate_entry_height(entry: &Entry, app: &App, level: DetailLevel, width: u1
                 DetailLevel::Full => wrapped_rows(text, width).saturating_add(2),
             }
         }
-        Block::Tool(tool) => estimate_tool_height(tool, app, level, width),
+        Block::Tool(tool) => estimate_tool_height(tool, app, level, width, shape),
         Block::AgentMessage { body, .. } | Block::GoalRound { body, .. } => {
             // 与 `agent_message_block` 同源：简略档是预览行数 + 省略行，隐藏档只剩标题行。
             let rows = wrapped_text_rows(body, prose_width(width)).len();
@@ -886,7 +986,6 @@ fn estimate_entry_height(entry: &Entry, app: &App, level: DetailLevel, width: u1
             };
             shown + usize::from(omitted) + 2
         }
-        Block::Todo { phases } => estimate_todo_height(phases, width),
     }
 }
 
@@ -995,47 +1094,32 @@ fn message_agent_rows_count(
     (rows, dropped)
 }
 
-/// Todo 树高度：标题行 + 每阶段一行 + 每条目折行 + 尾随留白。
-fn estimate_todo_height(phases: &[moc_protocol::methods::TodoPhase], width: usize) -> usize {
-    let budget = todo_item_width(width);
-    2 + phases
-        .iter()
-        .map(|phase| {
-            1 + phase
-                .items
-                .iter()
-                .map(|item| wrap_text(&item.task, budget).len())
-                .sum::<usize>()
-        })
-        .sum::<usize>()
-}
-
-/// 工具块高度：标题 +（正文行 + 耗时尾注）+ 尾随留白，与 [`render_tool`] 同规则。
+/// 工具块高度：标题 + 正文行 + 尾随留白，与 [`render_tool`] 同规则。
 fn estimate_tool_height(
     tool: &ToolCallBlock,
     app: &App,
     level: DetailLevel,
     width: usize,
+    shape: Option<TreeShape>,
 ) -> usize {
     if !shows_tool_body(tool, level) {
         return 2;
     }
     let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
-    let width = width.saturating_sub(nest_indent(app, tool));
-    let budget = tool_summary_budget(tool_title(tool, &args), width);
-    let (_, in_title) = title_summary(tool, &args, budget, level);
+    let depth = shape.map_or(0, |shape| usize::from(shape.depth));
+    let width = width.saturating_sub(3 * depth);
+    let budget = tool_summary_budget(tool_title(tool, &args), tool, app.theme, width);
+    let (_, in_title) = title_summary(tool, &args, budget, level, app.theme);
     let body = tool_body_rows(tool, &args, app, prose_width(width), level, in_title);
-    body.saturating_add(usize::from(tool.duration_ms.is_some()))
-        .saturating_add(2)
+    body.saturating_add(2)
 }
 
-/// 工具卡是否展开正文：无正文的记账工具与收起态的 read 只留标题行。
+/// 工具卡是否展开正文：无正文的记账工具与收起态的 read／run_code／todo 只留标题行。
 fn shows_tool_body(tool: &ToolCallBlock, level: DetailLevel) -> bool {
-    // read 的成功结果只在完整档展开；隐藏／简略档收起为单行标题。
+    let policy = tool_body_policy(&tool.name);
     tool.has_body()
-        && !(tool_body_policy(&tool.name) == ToolBody::FullOnly
-            && !tool_is_error(tool)
-            && level != DetailLevel::Full)
+        && !(policy == ToolBody::FullOnly && !tool_is_error(tool) && level != DetailLevel::Full)
+        && !(policy == ToolBody::Todo && level == DetailLevel::Hidden)
 }
 
 /// 工具是否以失败终态结束；运行中（`status: None`）不算失败。
@@ -1051,7 +1135,9 @@ fn tool_is_error(tool: &ToolCallBlock) -> bool {
 fn render_entry(index: usize, entry: &Entry, app: &App, width: u16) -> EntryLines {
     let mut batches = BatchIndex::default();
     batches.sync(&app.blocks, &mut Vec::new());
-    render_entry_with(index, entry, app, width, true, &batches)
+    let mut tree = TreeIndex::default();
+    tree.sync(&app.blocks);
+    render_entry_with(index, entry, app, width, true, &batches, &tree)
 }
 
 /// `spawn_images = false` 用于估高：只查缓存，绝不触发视口外图片解码。
@@ -1062,6 +1148,7 @@ fn render_entry_with(
     width: u16,
     spawn_images: bool,
     batches: &BatchIndex,
+    tree: &TreeIndex,
 ) -> EntryLines {
     // 估高路径统一按「至少 8 列」计算宽度；渲染必须用同一口径，否则超窄
     // 终端下图片版式（可容纳列数 → 行数）在两侧会算出不同的块高。
@@ -1073,7 +1160,14 @@ fn render_entry_with(
         }
         return render_tool_batch(app, &tools, usize::from(width), level, spawn_images);
     }
-    render_entry_single(entry, app, usize::from(width), level, spawn_images)
+    render_entry_single(
+        entry,
+        app,
+        usize::from(width),
+        level,
+        spawn_images,
+        tree.shape(index),
+    )
 }
 
 fn render_entry_single(
@@ -1082,6 +1176,7 @@ fn render_entry_single(
     width: usize,
     level: DetailLevel,
     spawn_images: bool,
+    shape: Option<TreeShape>,
 ) -> EntryLines {
     let theme = app.theme;
     match &entry.block {
@@ -1099,14 +1194,13 @@ fn render_entry_single(
             width,
             level,
         )),
-        Block::Tool(tool) => render_tool(tool, app, width, level, spawn_images),
+        Block::Tool(tool) => render_tool(tool, app, width, level, spawn_images, shape),
         Block::AgentMessage { meta, body } => {
             EntryLines::plain(agent_message_block(meta, body, width, theme, level))
         }
         Block::GoalRound { meta, body } => {
             EntryLines::plain(goal_round_block(meta, body, width, theme, level))
         }
-        Block::Todo { phases } => EntryLines::plain(render_todo(phases, app, width)),
         Block::Note { text, error } => EntryLines::plain(note_block(text, *error, width, theme)),
     }
 }
@@ -1119,22 +1213,19 @@ fn batch_body_width(width: usize) -> usize {
     width.saturating_sub(BATCH_BODY_INDENT)
 }
 
-/// 成员行尾的状态列：失败 `✘` 与耗时；无正文的记账工具（todo／skill）不报耗时。
+/// 成员行尾的状态列：失败 `✘` 与耗时（todo 是完成进度）；无正文的记账工具（skill 等）不报。
 fn batch_member_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'static>> {
     let mut tail = Vec::new();
     if tool_is_error(tool) {
         tail.push(Span::styled("✘", Style::new().fg(theme.accent_error)));
     }
-    if tool.has_body()
-        && let Some(ms) = tool.duration_ms
-    {
-        if !tail.is_empty() {
-            tail.push(Span::raw(" "));
+    if tool.has_body() {
+        for span in tool_title_tail(tool, theme) {
+            if !tail.is_empty() {
+                tail.push(Span::raw(" "));
+            }
+            tail.push(span);
         }
-        tail.push(Span::styled(
-            labels::elapsed(ms),
-            Style::new().fg(theme.gray_dim),
-        ));
     }
     tail
 }
@@ -1185,15 +1276,20 @@ fn render_tool_batch(
         };
         let args = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
         let tail = batch_member_tail(tool, theme);
-        let (summary, in_title) =
-            title_summary(tool, &args, batch_summary_budget(&tail, width), level);
-        let used = BATCH_BODY_INDENT + str_width(&summary);
+        let (summary, in_title) = title_summary(
+            tool,
+            &args,
+            batch_summary_budget(&tail, width),
+            level,
+            theme,
+        );
+        let used = BATCH_BODY_INDENT + summary.iter().map(Span::width).sum::<usize>();
         let tail_width: usize = tail.iter().map(Span::width).sum();
         let mut spans = vec![
             Span::raw(" ".repeat(PROSE_INDENT)),
-            Span::styled(branch, Style::new().fg(theme.border)),
-            Span::styled(summary, Style::new().fg(theme.path)),
+            Span::styled(branch, tree_rail_style(theme)),
         ];
+        spans.extend(summary);
         if tail_width > 0 {
             let gap = width.saturating_sub(used + tail_width).max(2);
             spans.push(Span::raw(" ".repeat(gap)));
@@ -1705,19 +1801,11 @@ fn outcome_label(
     (outcome_word(outcome), color)
 }
 
-/// 嵌套调用（PTC）相对顶层工具右移的列数：每层 2 格，最多 32 层。
-fn nest_indent(app: &App, tool: &ToolCallBlock) -> usize {
-    let mut depth = 0;
-    let mut parent = tool.parent_id.as_deref();
-    while let Some(id) = parent
-        && depth < 32
-    {
-        depth += 1;
-        parent = app
-            .tool_block(id)
-            .and_then(|tool| tool.parent_id.as_deref());
-    }
-    depth * 2
+/// 树形连线的统一颜色：批次树、嵌套连线、todo 树、JSON 树共用。
+///
+/// `theme.border` 在 #141414 底上几乎看不见，统一用高一档的 `gray_dim`。
+fn tree_rail_style(theme: &Theme) -> Style {
+    Style::new().fg(theme.gray_dim)
 }
 
 /// 工具标题名：自定义标题（`IRC`、`Sidekick`、`! bash`）统一在此决定。
@@ -1733,12 +1821,52 @@ fn tool_title<'a>(tool: &'a ToolCallBlock, args: &Value) -> &'a str {
     }
 }
 
-/// 单卡标题行留给参数摘要的列宽：让出标记、bullet、工具名与一格间距。
-fn tool_summary_budget(name: &str, width: usize) -> usize {
-    width.saturating_sub(TITLE_INDENT + 2 + str_width(name) + 1)
+/// 标题行右端列：已完成调用的耗时（todo 是完成进度）；运行中没有尾部。
+///
+/// todo 的 `done/total` 里 done 计「已关闭」（completed + abandoned），
+/// 全部关闭时给成功色。
+fn tool_title_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'static>> {
+    if tool.name == "todo" {
+        let Some(result) = tool.result.as_deref() else {
+            return Vec::new();
+        };
+        let phases = moc_protocol::methods::parse_todos(result);
+        let mut done = 0usize;
+        let mut total = 0usize;
+        for item in phases.iter().flat_map(|phase| &phase.items) {
+            total += 1;
+            done += usize::from(matches!(
+                item.status,
+                moc_protocol::methods::TodoStatus::Completed
+                    | moc_protocol::methods::TodoStatus::Abandoned
+            ));
+        }
+        if total == 0 {
+            return Vec::new();
+        }
+        return vec![Span::styled(
+            format!("{done}/{total}"),
+            Style::new().fg(if done == total {
+                theme.accent_success
+            } else {
+                theme.gray_dim
+            }),
+        )];
+    }
+    tool.duration_ms
+        .map(|ms| Span::styled(labels::duration(ms), Style::new().fg(theme.gray_dim)))
+        .into_iter()
+        .collect()
 }
 
-/// 标题摘要（截到 `budget` 列），以及 bash 命令是否已整条放进标题。
+/// 单卡标题行留给参数摘要的列宽：让出标记、bullet、工具名、一格间距与右端尾列。
+fn tool_summary_budget(name: &str, tool: &ToolCallBlock, theme: &Theme, width: usize) -> usize {
+    let tail_width: usize = tool_title_tail(tool, theme).iter().map(Span::width).sum();
+    let reserved = if tail_width > 0 { tail_width + 2 } else { 0 };
+    width.saturating_sub(TITLE_INDENT + 2 + str_width(name) + 1 + reserved)
+}
+
+/// 标题摘要（已按 `budget` 截断的分段着色 span），以及 bash 命令是否已整条放进标题。
 ///
 /// bash 命令只出现一次：没有描述时命令默认进标题（单行截断），正文不再重复 `$` 行；
 /// 只有完整档且命令放不下（多行或超宽）时才留空标题、交给正文的 `$` 行完整折行展示。
@@ -1748,7 +1876,8 @@ fn title_summary(
     args: &Value,
     budget: usize,
     level: DetailLevel,
-) -> (String, bool) {
+    theme: &Theme,
+) -> (Vec<Span<'static>>, bool) {
     if tool.name == "bash" && ui_description(args).is_none() {
         let command = args
             .get("command")
@@ -1757,30 +1886,207 @@ fn title_summary(
             .trim();
         let fits = !command.contains('\n') && str_width(command) <= budget;
         if fits || level != DetailLevel::Full {
-            return (single_line_command(command, budget), true);
+            let flat = command.split_whitespace().collect::<Vec<_>>().join(" ");
+            let line = clip_line(
+                Line::from(Span::styled(flat, Style::new().fg(theme.command))),
+                budget,
+            );
+            return (line.spans, true);
         }
-        return (String::new(), false);
+        return (Vec::new(), false);
     }
     (
-        crate::render::wrap::truncate(tool_summary(tool, args), budget).into_owned(),
+        clip_line(Line::from(summary_spans(tool, args, theme)), budget).spans,
         false,
     )
 }
 
-/// 工具块：标题行 + 正文 + 耗时尾注 + 尾随留白。
+/// 标题摘要的分段着色：路径、行号范围、pattern、改动计数各给各的色。
 ///
-/// 标题落在块标记列，正文与尾注落在正文列；正文行数与耗时尾注由工具策略和档位
-/// 共同决定，收起态（无正文、read 非完整档）只留标题行。
+/// 产出未截断的 span 序列；截断由调用方用 [`clip_line`] 统一完成。
+fn summary_spans(tool: &ToolCallBlock, args: &Value, theme: &Theme) -> Vec<Span<'static>> {
+    let styled =
+        |text: String, color: ratatui::style::Color| Span::styled(text, Style::new().fg(color));
+    let arg_str = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    match tool.name.as_str() {
+        "edit" | "write" => {
+            let mut spans = vec![styled(arg_str("path"), theme.path)];
+            if let Some(diff) = &tool.diff {
+                let stats = diff::stats(diff);
+                // 空 diff 不渲染 +0/-0；截断时计数只是已交付的部分，
+                // 用 … 标明，避免把部分值当成完整统计。
+                if stats.insertions + stats.deletions > 0 {
+                    spans.push(styled(
+                        format!(" +{}", stats.insertions),
+                        theme.accent_success,
+                    ));
+                    spans.push(styled(format!(" -{}", stats.deletions), theme.accent_error));
+                    if diff.truncated {
+                        spans.push(styled(" …".to_owned(), theme.gray_dim));
+                    }
+                }
+            }
+            spans
+        }
+        "bash" | "run_code" => vec![styled(
+            ui_description(args).unwrap_or_default().to_owned(),
+            theme.text_secondary,
+        )],
+        "read" => {
+            let offset = args.get("offset").and_then(Value::as_u64);
+            let limit = args.get("limit").and_then(Value::as_u64);
+            let range = match (offset, limit) {
+                (Some(offset), Some(limit)) => format!(":{offset}-{}", offset + limit),
+                (Some(offset), None) => format!(":{offset}-"),
+                _ => String::new(),
+            };
+            let globs = args
+                .get("glob")
+                .and_then(Value::as_array)
+                .map(|globs| {
+                    globs
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            let globs = if globs.is_empty() {
+                String::new()
+            } else {
+                format!(" {globs}")
+            };
+            vec![
+                styled(arg_str("path"), theme.path),
+                styled(range, theme.gray),
+                styled(globs, theme.gray),
+            ]
+        }
+        "grep" => vec![styled(arg_str("pattern"), theme.accent_running)],
+        "find" => vec![styled(
+            args.get("glob")
+                .and_then(Value::as_array)
+                .map(|globs| {
+                    globs
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default(),
+            theme.path,
+        )],
+        "todo" => todo_summary_spans(args, theme),
+        "TodoReminder" => vec![styled(
+            "隐式提醒：同步待办进度".to_owned(),
+            theme.text_secondary,
+        )],
+        "job" | "plan" | "exit_plan" => Vec::new(),
+        "message_agent" | "sidekick" | "wait_agent" | "ask" => {
+            vec![styled(tool_summary(tool, args), theme.text_secondary)]
+        }
+        _ => {
+            // 未知工具（MCP 等）：参数截断展示
+            let text = tool.arguments.replace('\n', " ");
+            vec![styled(text.chars().take(60).collect(), theme.gray)]
+        }
+    }
+}
+
+/// todo 摘要：op + 目标——start/done/drop/block/unblock/rm 跟 task 或 phase 文本，
+/// init 跟 `N tasks`，append 跟 `phase · N items`；op 缺失时与 core 的
+/// `infer_op` 同规则推断（非空 list → init，带 phase 的非空 items → append，否则 init）。
+fn todo_summary_spans(args: &Value, theme: &Theme) -> Vec<Span<'static>> {
+    let styled =
+        |text: String, color: ratatui::style::Color| Span::styled(text, Style::new().fg(color));
+    let op = args
+        .get("op")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            let list = args.get("list").and_then(Value::as_array);
+            let items = args.get("items").and_then(Value::as_array);
+            let phase = args.get("phase").and_then(Value::as_str);
+            if list.is_some_and(|list| !list.is_empty()) {
+                "init"
+            } else if items.is_some_and(|items| !items.is_empty())
+                && phase.is_some_and(|phase| !phase.is_empty())
+            {
+                "append"
+            } else {
+                "init"
+            }
+            .to_owned()
+        });
+    let mut spans = vec![styled(op.clone(), theme.text_secondary)];
+    let arg_str = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or_default();
+    match op.as_str() {
+        "init" => {
+            let count = args
+                .get("list")
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .map(|phase| {
+                            phase
+                                .get("items")
+                                .and_then(Value::as_array)
+                                .map_or(0, Vec::len)
+                        })
+                        .sum()
+                })
+                .or_else(|| args.get("items").and_then(Value::as_array).map(Vec::len));
+            if let Some(count) = count {
+                spans.push(styled(format!(" {count} tasks"), theme.gray));
+            }
+        }
+        "append" => {
+            let phase = arg_str("phase");
+            if !phase.is_empty() {
+                spans.push(styled(format!(" {phase}"), theme.text_primary));
+            }
+            if let Some(items) = args.get("items").and_then(Value::as_array) {
+                spans.push(styled(format!(" · {} items", items.len()), theme.gray));
+            }
+        }
+        "start" | "done" | "drop" | "block" | "unblock" | "rm" => {
+            let target = {
+                let task = arg_str("task");
+                if task.is_empty() {
+                    arg_str("phase")
+                } else {
+                    task
+                }
+            };
+            if !target.is_empty() {
+                spans.push(styled(format!(" {target}"), theme.text_primary));
+            }
+        }
+        _ => {}
+    }
+    spans
+}
+
+/// 工具块：标题行 + 正文 + 尾随留白。
+///
+/// 标题落在块标记列，耗时在标题行右端（todo 是 `done/total` 进度），正文落在正文列；
+/// 收起态（无正文、read 非完整档）只留标题行。嵌套调用（PTC）按 [`TreeShape`] 加连线前缀。
 fn render_tool(
     tool: &ToolCallBlock,
     app: &App,
     width: usize,
     level: DetailLevel,
     spawn_images: bool,
+    shape: Option<TreeShape>,
 ) -> EntryLines {
     let theme = app.theme;
-    let nest = nest_indent(app, tool);
-    let width = width.saturating_sub(nest);
+    let depth = shape.map_or(0, |shape| usize::from(shape.depth));
+    let width = width.saturating_sub(3 * depth);
     let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
 
     let (bullet, bullet_color) = match (tool.running, tool.status) {
@@ -1790,7 +2096,15 @@ fn render_tool(
         (_, None) => ("◆", theme.accent_tool),
     };
     let name = tool_title(tool, &args);
-    let (summary, in_title) = title_summary(tool, &args, tool_summary_budget(name, width), level);
+    let tail = tool_title_tail(tool, theme);
+    let tail_width: usize = tail.iter().map(Span::width).sum();
+    let (summary, in_title) = title_summary(
+        tool,
+        &args,
+        tool_summary_budget(name, tool, theme, width),
+        level,
+        theme,
+    );
     let mut title = vec![
         Span::raw(" ".repeat(TITLE_INDENT)),
         Span::styled(format!("{bullet} "), Style::new().fg(bullet_color)),
@@ -1800,10 +2114,8 @@ fn render_tool(
         ),
     ];
     if !summary.is_empty() {
-        title.push(Span::styled(
-            format!(" {summary}"),
-            Style::new().fg(theme.text_secondary),
-        ));
+        title.push(Span::raw(" "));
+        title.extend(summary);
     }
     // 后台任务标记（job_id 只在任务于后台存活期间挂着）
     if let Some(job_id) = &tool.job_id {
@@ -1811,6 +2123,12 @@ fn render_tool(
             format!(" · 后台 {job_id}"),
             Style::new().fg(theme.gray_dim),
         ));
+    }
+    if tail_width > 0 {
+        let used: usize = title.iter().map(Span::width).sum();
+        let gap = width.saturating_sub(used + tail_width).max(2);
+        title.push(Span::raw(" ".repeat(gap)));
+        title.extend(tail);
     }
     let mut lines = vec![clip_line(Line::from(title), width)];
     let mut placements = Vec::new();
@@ -1830,29 +2148,38 @@ fn render_tool(
                 .x
                 .saturating_add(u16::try_from(PROSE_INDENT).unwrap_or(u16::MAX));
         }
-        // 尾注：耗时（失败原因由正文承载）
-        if let Some(duration) = tool.duration_ms {
-            lines.push(hang(
-                Line::from(Span::styled(
-                    labels::elapsed(duration),
-                    Style::new().fg(theme.gray_dim),
-                )),
-                PROSE_INDENT,
-                body_width,
-            ));
-        }
     }
     lines.push(Line::default());
-    if nest > 0 {
-        // 嵌套调用整体右移，图片跟着正文一起缩进
-        lines = lines
-            .into_iter()
-            .map(|line| hang(line, nest, usize::MAX))
-            .collect();
+    if let Some(shape) = shape {
+        // 嵌套调用画连线：一个空格 + 祖先层各 3 格 + 本层 2 格；
+        // 子块自己行首的缩进空格就是连接符后面那一格。
+        let rail = tree_rail_style(theme);
+        let mut ancestors = String::new();
+        for level in 0..usize::from(shape.depth).saturating_sub(1) {
+            ancestors.push_str(if shape.rails & (1 << level) != 0 {
+                "│  "
+            } else {
+                "   "
+            });
+        }
+        let own_connector = if shape.more { "├─" } else { "└─" };
+        let own_rail = if shape.more { "│ " } else { "  " };
+        for (index, line) in lines.iter_mut().enumerate() {
+            let connector = if index == 0 { own_connector } else { own_rail };
+            let prefix = format!(" {ancestors}{connector}");
+            if line.spans.is_empty() {
+                let prefix = prefix.trim_end();
+                if !prefix.is_empty() {
+                    line.spans.push(Span::styled(prefix.to_owned(), rail));
+                }
+            } else {
+                line.spans.insert(0, Span::styled(prefix, rail));
+            }
+        }
         for placement in &mut placements {
             placement.x = placement
                 .x
-                .saturating_add(u16::try_from(nest).unwrap_or(u16::MAX));
+                .saturating_add(u16::try_from(3 * depth).unwrap_or(u16::MAX));
         }
     }
     EntryLines {
@@ -1864,7 +2191,7 @@ fn render_tool(
     }
 }
 
-/// 工具正文行（不含标题、耗时尾注与留白，不带缩进，宽度不超过 `width`）。
+/// 工具正文行（不含标题与留白，不带缩进，宽度不超过 `width`）。
 ///
 /// 档位与工具策略共同决定正文：`Count` 在隐藏／简略档只报数量，`FullOnly`
 /// 只在完整档展开；其余内容按 [`content_limit`] 截断，被略去的内容折算成一行
@@ -1927,12 +2254,18 @@ fn tool_body(
                     .enumerate()
                 {
                     let lead = if index == 0 { "$ " } else { "  " };
-                    lines.push(text_row(format!("{lead}{row}"), theme.command));
+                    lines.push(Line::from(vec![
+                        Span::styled(lead, Style::new().fg(theme.gray_dim)),
+                        Span::styled(row, Style::new().fg(theme.command)),
+                    ]));
                 }
                 dropped += command_dropped;
             } else {
                 let command = single_line_command(command, width.saturating_sub(2));
-                lines.push(text_row(format!("$ {command}"), theme.command));
+                lines.push(Line::from(vec![
+                    Span::styled("$ ", Style::new().fg(theme.gray_dim)),
+                    Span::styled(command, Style::new().fg(theme.command)),
+                ]));
             }
         }
         // 运行中的前台任务：显示实时输出而不是完整结果
@@ -1940,7 +2273,7 @@ fn tool_body(
             if let Some(live_out) = &tool.live_output {
                 let budget = BASH_BRIEF_OUTPUT_ROWS;
                 let rows = clamp_rows(live_out, width, budget, BodyEdge::Tail);
-                let color = theme.text_secondary;
+                let color = theme.gray_bright;
                 lines.extend(rows.rows.into_iter().map(|text| text_row(text, color)));
             }
         } else if let Some(result) = &tool.result {
@@ -1954,7 +2287,7 @@ fn tool_body(
             let color = if is_error {
                 theme.diff_delete_fg
             } else {
-                theme.text_secondary
+                theme.gray_bright
             };
             lines.extend(rows.rows.into_iter().map(|text| text_row(text, color)));
         }
@@ -2007,15 +2340,27 @@ fn tool_body(
             ));
             lines.push(Line::from(spans));
         }
+    } else if tool.name == "run_code" && !is_error {
+        let (rows, omitted) = run_code_rows(tool, args, width, limit, theme);
+        dropped += omitted;
+        lines.extend(rows);
+    } else if tool.name == "todo" && !is_error {
+        let phases = tool
+            .result
+            .as_deref()
+            .map(moc_protocol::methods::parse_todos)
+            .unwrap_or_default();
+        lines.extend(todo_tree_rows(&phases, width, level, theme));
     } else if let Some(result) = &tool.result {
-        // grep 与通用文本结果：取开头
+        // grep 与通用文本结果：取开头；失败输出给错误色
         let rows = clamp_rows(result, width, limit, BodyEdge::Head);
         dropped += rows.dropped;
-        lines.extend(
-            rows.rows
-                .into_iter()
-                .map(|text| text_row(text, theme.text_secondary)),
-        );
+        let color = if is_error {
+            theme.diff_delete_fg
+        } else {
+            theme.gray_bright
+        };
+        lines.extend(rows.rows.into_iter().map(|text| text_row(text, color)));
     }
 
     // 省略提示统一由此处追加；diff 分支由 `render_diff` 自己产出（只有它知道
@@ -2284,6 +2629,18 @@ fn tool_body_rows(
         let count = ask_answer_pairs(tool, args).len();
         rows += count.min(limit);
         dropped += count.saturating_sub(limit);
+    } else if tool.name == "run_code" && !is_error {
+        // 完整档 run_code 直接复用行构造函数取行数，估高与渲染同源。
+        let (constructed, omitted) = run_code_rows(tool, args, width, limit, app.theme);
+        rows += constructed.len();
+        dropped += omitted;
+    } else if tool.name == "todo" && !is_error {
+        let phases = tool
+            .result
+            .as_deref()
+            .map(moc_protocol::methods::parse_todos)
+            .unwrap_or_default();
+        rows += todo_tree_rows(&phases, width, level, app.theme).len();
     } else if let Some(result) = &tool.result {
         let clamped = clamp_rows(result, width, limit, BodyEdge::Head);
         rows += clamped.shown;
@@ -2724,73 +3081,9 @@ fn ui_description(args: &Value) -> Option<&str> {
     text.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
-/// 标题行的参数摘要。
+/// 标题行的参数摘要：只覆盖产出单段文本的工具；分段着色的工具走 [`summary_spans`]。
 fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
     match tool.name.as_str() {
-        "edit" | "write" => {
-            let path = args.get("path").and_then(Value::as_str).unwrap_or_default();
-            let counts = tool
-                .diff
-                .as_ref()
-                .and_then(|diff| {
-                    let stats = diff::stats(diff);
-                    // 空 diff 不渲染 [+0/-0]；截断时计数只是已交付的部分，
-                    // 用 … 标明，避免把部分值当成完整统计。
-                    (stats.insertions + stats.deletions > 0).then(|| {
-                        let partial = if diff.truncated { " …" } else { "" };
-                        format!(" [+{}/-{}{partial}]", stats.insertions, stats.deletions)
-                    })
-                })
-                .unwrap_or_default();
-            format!("{path}{counts}")
-        }
-        // 命令本身由 [`title_summary`] 决定进标题还是进正文，这里只给描述
-        "bash" => ui_description(args).map(str::to_owned).unwrap_or_default(),
-        "read" => {
-            let path = args.get("path").and_then(Value::as_str).unwrap_or_default();
-            let offset = args.get("offset").and_then(Value::as_u64);
-            let limit = args.get("limit").and_then(Value::as_u64);
-            let range = match (offset, limit) {
-                (Some(offset), Some(limit)) => format!(":{offset}-{}", offset + limit),
-                (Some(offset), None) => format!(":{offset}-"),
-                _ => String::new(),
-            };
-            let globs = args
-                .get("glob")
-                .and_then(Value::as_array)
-                .map(|globs| {
-                    globs
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .unwrap_or_default();
-            let globs = if globs.is_empty() {
-                String::new()
-            } else {
-                format!(" {globs}")
-            };
-            format!("{path}{range}{globs}")
-        }
-        "grep" => args
-            .get("pattern")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        "find" => args
-            .get("glob")
-            .and_then(Value::as_array)
-            .map(|globs| {
-                globs
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .unwrap_or_default(),
-        "todo" => "更新任务清单".to_owned(),
-        "TodoReminder" => "隐式提醒：同步待办进度".to_owned(),
         "message_agent" => {
             use moc_protocol::methods::AgentMessageOutcome;
             let target = args
@@ -2887,13 +3180,7 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
                 }
             })
             .unwrap_or_default(),
-        "job" | "plan" | "exit_plan" => String::new(),
-        "run_code" => ui_description(args).unwrap_or_default().to_owned(),
-        _ => {
-            // 未知工具：参数截断展示
-            let text = tool.arguments.replace('\n', " ");
-            text.chars().take(60).collect()
-        }
+        _ => String::new(),
     }
 }
 
@@ -3017,87 +3304,373 @@ pub(crate) fn todo_status_marker(
     (glyph, marker, text)
 }
 
-/// Todo 条目文本的列：树挂在正文列，让过 `│  ` 竖线（3 格）与状态符号（2 格）。
-const TODO_ITEM_INDENT: usize = PROSE_INDENT + 5;
+/// 简略档 todo 树的正文行数上限（超出补一行省略提示）。
+const TODO_BRIEF_ROWS: usize = 10;
 
-/// Todo 条目文本的折行宽度（估高与渲染共用）。
-fn todo_item_width(width: usize) -> usize {
-    width.saturating_sub(TODO_ITEM_INDENT).max(1)
-}
-
-/// Todo 树（omp 风格）：标题落在块标记列，阶段树挂在正文列；
-/// 阶段行带完成进度，条目按状态给符号与颜色，续行悬挂对齐条目文本。
-fn render_todo(
+/// todo 调用结果的快照树：结果文本解析出的阶段列表，正文列宽度下的树形行。
+///
+/// 单阶段省略阶段标题、任务直接作树叶（`├─ ☑ 任务`）；多阶段沿用阶段树
+/// （`├─ 阶段名 · d/t`，任务挂在 `│  ` 下）。简略档折叠：全部关闭的阶段只留
+/// 标题行，未关闭阶段从第一个未关闭任务的前一项开始显示，更早的已关闭任务
+/// 折成一行 `⋯ N done`；总行数超 [`TODO_BRIEF_ROWS`] 补 [`labels::more_lines`]。
+fn todo_tree_rows(
     phases: &[moc_protocol::methods::TodoPhase],
-    app: &App,
     width: usize,
+    level: DetailLevel,
+    theme: &Theme,
 ) -> Vec<Line<'static>> {
     use moc_protocol::methods::TodoStatus;
 
-    let theme = app.theme;
-    let rail_style = Style::new().fg(theme.border);
-    let mut lines = vec![clip_line(
-        Line::from(vec![
-            Span::raw(" ".repeat(TITLE_INDENT)),
-            Span::styled(
-                format!("◆ {}", labels::title::TASKS),
-                Style::new()
-                    .fg(theme.accent_user)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        width,
-    )];
-    let phase_count = phases.len();
+    let rail_style = tree_rail_style(theme);
+    let brief = level != DetailLevel::Full;
+    let single = phases.len() == 1;
+    // 任务文本列：连接符/竖线 3 格 + 状态符号 2 格
+    let text_width = width.saturating_sub(5).max(1);
+    let closed = |item: &moc_protocol::methods::TodoItem| {
+        matches!(item.status, TodoStatus::Completed | TodoStatus::Abandoned)
+    };
+    let mut rows: Vec<Line<'static>> = Vec::new();
     for (phase_index, phase) in phases.iter().enumerate() {
-        let is_last_phase = phase_index + 1 == phase_count;
-        let branch = if is_last_phase { "└─ " } else { "├─ " };
-        let done = phase
-            .items
-            .iter()
-            .filter(|item| item.status == TodoStatus::Completed)
-            .count();
-        let total = phase.items.len();
-        let count = format!("{}{done}/{total}", labels::SEP);
-        let name_budget = width.saturating_sub(PROSE_INDENT + 3 + str_width(&count));
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(PROSE_INDENT)),
-            Span::styled(branch, rail_style),
-            Span::styled(
-                crate::render::wrap::truncate(phase.phase.as_str(), name_budget).into_owned(),
-                Style::new().fg(theme.text_secondary),
-            ),
-            Span::styled(
-                count,
-                Style::new().fg(if done == total && total > 0 {
-                    theme.accent_success
-                } else {
-                    theme.gray_dim
-                }),
-            ),
-        ]));
-        let rail = if is_last_phase { "   " } else { "│  " };
-        for item in &phase.items {
+        let last_phase = phase_index + 1 == phases.len();
+        let all_closed = !phase.items.is_empty() && phase.items.iter().all(|item| closed(item));
+        let collapse_phase = brief && all_closed;
+        let show_header = !single || collapse_phase;
+        if show_header {
+            let done = phase
+                .items
+                .iter()
+                .filter(|item| item.status == TodoStatus::Completed)
+                .count();
+            let total = phase.items.len();
+            let count = format!("{}{done}/{total}", labels::SEP);
+            let name_budget = width.saturating_sub(3 + str_width(&count));
+            rows.push(clip_line(
+                Line::from(vec![
+                    Span::styled(if last_phase { "└─ " } else { "├─ " }, rail_style),
+                    Span::styled(
+                        crate::render::wrap::truncate(phase.phase.as_str(), name_budget)
+                            .into_owned(),
+                        Style::new().fg(theme.text_secondary),
+                    ),
+                    Span::styled(
+                        count,
+                        Style::new().fg(if done == total && total > 0 {
+                            theme.accent_success
+                        } else {
+                            theme.gray_dim
+                        }),
+                    ),
+                ]),
+                width,
+            ));
+            if collapse_phase {
+                continue;
+            }
+        }
+        if phase.items.is_empty() {
+            continue;
+        }
+        // 展示窗口：简略档保留一个已完成任务作上下文，更早的已关闭任务折叠。
+        let first_open = phase.items.iter().position(|item| !closed(item));
+        let from = match (brief, first_open) {
+            (true, Some(open)) => open.saturating_sub(1),
+            _ => 0,
+        };
+        let collapsed = from;
+        let shown = &phase.items[from..];
+        // 树叶前缀：单阶段任务直接挂连接符，多阶段挂在阶段竖线下。
+        let leaf_count = shown.len() + usize::from(collapsed > 0);
+        let phase_rail = if last_phase { "   " } else { "│  " };
+        if collapsed > 0 {
+            // `⋯ N done` 与任务行的状态符号同列。
+            let prefix = if single {
+                "├─ ".to_owned()
+            } else {
+                phase_rail.to_owned()
+            };
+            rows.push(Line::from(vec![
+                Span::styled(prefix, rail_style),
+                Span::styled(
+                    format!("⋯ {collapsed} done"),
+                    Style::new().fg(theme.gray_dim),
+                ),
+            ]));
+        }
+        for (item_index, item) in shown.iter().enumerate() {
+            let last_leaf = usize::from(collapsed > 0) + item_index + 1 == leaf_count;
             let (marker, marker_style, text_style) = todo_status_marker(item.status, theme);
-            for (index, row) in wrap_text(&item.task, todo_item_width(width))
-                .into_iter()
-                .enumerate()
-            {
-                lines.push(Line::from(vec![
-                    Span::raw(" ".repeat(PROSE_INDENT)),
-                    Span::styled(rail, rail_style),
-                    if index == 0 {
-                        Span::styled(marker, marker_style)
-                    } else {
-                        Span::raw("  ")
-                    },
-                    Span::styled(row, text_style),
-                ]));
+            let wrapped = wrap_text(&item.task, text_width);
+            let last_row = wrapped.len() - 1;
+            for (row_index, row_text) in wrapped.into_iter().enumerate() {
+                let mut spans = if single {
+                    vec![Span::styled(
+                        if row_index == 0 {
+                            if last_leaf { "└─ " } else { "├─ " }
+                        } else if last_leaf {
+                            "   "
+                        } else {
+                            "│  "
+                        },
+                        rail_style,
+                    )]
+                } else {
+                    vec![Span::styled(phase_rail, rail_style)]
+                };
+                spans.push(if row_index == 0 {
+                    Span::styled(marker, marker_style)
+                } else {
+                    Span::raw("  ")
+                });
+                spans.push(Span::styled(row_text, text_style));
+                if row_index == last_row
+                    && let Some(reason) = &item.reason
+                {
+                    spans.push(Span::styled(
+                        format!(" — {reason}"),
+                        Style::new().fg(theme.gray),
+                    ));
+                }
+                rows.push(clip_line(Line::from(spans), width));
             }
         }
     }
-    lines.push(Line::default());
-    lines
+    if brief && rows.len() > TODO_BRIEF_ROWS {
+        let dropped = rows.len() - TODO_BRIEF_ROWS;
+        rows.truncate(TODO_BRIEF_ROWS);
+        rows.push(Line::from(Span::styled(
+            labels::more_lines(dropped),
+            Style::new().fg(theme.gray_dim),
+        )));
+    }
+    rows
+}
+
+/// run_code 完整档正文：高亮脚本（行号槽 `{n:>w} │ `）+ `result` 段。
+///
+/// `result` 能解析成 JSON object/array 就画 JSON 树，标量并进标签行
+/// （`result: 42`），不是 JSON 按普通文本（Head 截断）；任何档位都不把
+/// 原始返回值 JSON 直接倒出来。返回（展示行、被略去的行数）。
+fn run_code_rows(
+    tool: &ToolCallBlock,
+    args: &Value,
+    width: usize,
+    limit: usize,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, usize) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut dropped = 0usize;
+    let push = |lines: &mut Vec<Line<'static>>, line: Line<'static>, dropped: &mut usize| {
+        if lines.len() >= limit {
+            *dropped += 1;
+        } else {
+            lines.push(line);
+        }
+    };
+    let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
+    let highlighted = super::highlight::highlight("javascript", code);
+    let digits = highlighted.lines.len().max(1).to_string().len();
+    let gutter = digits + 3;
+    let text_width = width.saturating_sub(gutter).max(8);
+    let rail = tree_rail_style(theme);
+    for (index, spans) in highlighted.lines.iter().enumerate() {
+        let styled: Vec<Span<'static>> = spans
+            .iter()
+            .map(|part| {
+                Span::styled(
+                    part.text.clone(),
+                    Style::new().fg(part
+                        .fg
+                        .map(super::highlight::rgb_to_color)
+                        .unwrap_or(theme.text_secondary)),
+                )
+            })
+            .collect();
+        for (row_index, row) in super::wrap::wrap_spans(&styled, text_width)
+            .into_iter()
+            .enumerate()
+        {
+            let mut line = Vec::with_capacity(row.spans.len() + 2);
+            line.push(Span::styled(
+                if row_index == 0 {
+                    format!("{:>w$} ", index + 1, w = digits)
+                } else {
+                    " ".repeat(digits + 1)
+                },
+                Style::new().fg(theme.gray_dim),
+            ));
+            line.push(Span::styled("│ ", rail));
+            line.extend(row.spans);
+            push(&mut lines, Line::from(line), &mut dropped);
+        }
+    }
+    if let Some(result) = tool.result.as_deref() {
+        match serde_json::from_str::<Value>(result) {
+            Ok(value) if value.is_object() || value.is_array() => {
+                push(
+                    &mut lines,
+                    Line::from(Span::styled("result", Style::new().fg(theme.gray))),
+                    &mut dropped,
+                );
+                for row in json_member_rows(&value, &[], 1, width, theme) {
+                    push(&mut lines, row, &mut dropped);
+                }
+            }
+            Ok(value) => {
+                let mut spans = vec![Span::styled(
+                    "result: ".to_owned(),
+                    Style::new().fg(theme.gray),
+                )];
+                spans.extend(json_scalar_spans(&value, width.saturating_sub(8), theme));
+                push(
+                    &mut lines,
+                    clip_line(Line::from(spans), width),
+                    &mut dropped,
+                );
+            }
+            Err(_) => {
+                let budget = limit.saturating_sub(lines.len());
+                let clamped = clamp_rows(result, width, budget, BodyEdge::Head);
+                dropped += clamped.dropped;
+                for row in clamped.rows {
+                    lines.push(Line::from(Span::styled(
+                        row,
+                        Style::new().fg(theme.gray_bright),
+                    )));
+                }
+            }
+        }
+    }
+    (lines, dropped)
+}
+
+/// JSON 成员行：`├─ key: 值`；容器成员独占一行、子成员挂在竖线下。
+///
+/// 深度超过 6 的容器折成 `{N keys}`／`[N items]`；空容器写 `{}`／`[]`。
+fn json_member_rows(
+    value: &Value,
+    rails: &[bool],
+    depth: usize,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let members: Vec<(String, &Value)> = match value {
+        Value::Object(map) => map.iter().map(|(key, v)| (key.clone(), v)).collect(),
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .map(|(index, v)| (format!("[{index}]"), v))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut rows = Vec::new();
+    for (index, (key, member)) in members.iter().enumerate() {
+        let last = index + 1 == members.len();
+        let mut prefix = String::new();
+        for rail in rails {
+            prefix.push_str(if *rail { "│  " } else { "   " });
+        }
+        prefix.push_str(if last { "└─ " } else { "├─ " });
+        let content_width = width.saturating_sub(str_width(&prefix)).max(8);
+        let mut spans = vec![
+            Span::styled(prefix, tree_rail_style(theme)),
+            Span::styled(key.clone(), Style::new().fg(theme.accent_user)),
+        ];
+        let children = match member {
+            Value::Object(map) if !map.is_empty() && depth < 6 => Some(json_member_rows(
+                member,
+                &[&*rails, &[!last]].concat(),
+                depth + 1,
+                width,
+                theme,
+            )),
+            Value::Array(items) if !items.is_empty() && depth < 6 => Some(json_member_rows(
+                member,
+                &[&*rails, &[!last]].concat(),
+                depth + 1,
+                width,
+                theme,
+            )),
+            _ => None,
+        };
+        if let Some(children) = children {
+            rows.push(clip_line(Line::from(spans), width));
+            rows.extend(children);
+            continue;
+        }
+        spans.push(Span::styled(": ".to_owned(), Style::new().fg(theme.gray)));
+        match member {
+            Value::Object(map) => spans.push(Span::styled(
+                if map.is_empty() {
+                    "{}".to_owned()
+                } else {
+                    format!("{{{} keys}}", map.len())
+                },
+                Style::new().fg(theme.gray),
+            )),
+            Value::Array(items) => spans.push(Span::styled(
+                if items.is_empty() {
+                    "[]".to_owned()
+                } else {
+                    format!("[{} items]", items.len())
+                },
+                Style::new().fg(theme.gray),
+            )),
+            // 标量预算要扣掉 `key: ` 的宽度，否则整行超长时后缀会被 clip_line 吃掉。
+            scalar => spans.extend(json_scalar_spans(
+                scalar,
+                content_width.saturating_sub(str_width(key) + 2),
+                theme,
+            )),
+        }
+        rows.push(clip_line(Line::from(spans), width));
+    }
+    rows
+}
+
+/// JSON 标量的着色 span：字符串 `"首行…"`（多行追加 ` (N lines)`）、
+/// 数字 `accent_running`、bool/null `accent_assistant`。
+fn json_scalar_spans(value: &Value, budget: usize, theme: &Theme) -> Vec<Span<'static>> {
+    match value {
+        Value::String(text) => {
+            let first = text.lines().next().unwrap_or_default();
+            let count = text.lines().count();
+            // ` (N lines)` 后缀要计入预算：先扣掉它再给首行截断，
+            // 否则后缀会被行尾的 clip_line 吃掉。
+            let suffix = if count > 1 {
+                format!(" ({count} lines)")
+            } else {
+                String::new()
+            };
+            let shown = crate::render::wrap::truncate(
+                first.to_owned(),
+                budget
+                    .saturating_sub(2)
+                    .saturating_sub(str_width(&suffix))
+                    .max(1),
+            );
+            let mut spans = vec![Span::styled(
+                format!("\"{shown}\""),
+                Style::new().fg(theme.accent_success),
+            )];
+            if !suffix.is_empty() {
+                spans.push(Span::styled(suffix, Style::new().fg(theme.gray)));
+            }
+            spans
+        }
+        Value::Number(number) => vec![Span::styled(
+            number.to_string(),
+            Style::new().fg(theme.accent_running),
+        )],
+        Value::Bool(flag) => vec![Span::styled(
+            flag.to_string(),
+            Style::new().fg(theme.accent_assistant),
+        )],
+        Value::Null => vec![Span::styled(
+            "null".to_owned(),
+            Style::new().fg(theme.accent_assistant),
+        )],
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -3606,7 +4179,7 @@ mod tests {
     #[test]
     fn estimates_follow_render_rules() {
         use moc_protocol::ToolResult;
-        use moc_protocol::methods::{TodoItem, TodoPhase, TodoStatus, ToolStatus};
+        use moc_protocol::methods::ToolStatus;
 
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(crate::theme::Theme::global(), events);
@@ -3650,16 +4223,86 @@ mod tests {
             duration_ms: Some(42),
             diff: None,
         });
-        app.push_block(Block::Todo {
-            phases: vec![TodoPhase {
-                phase: "阶段".into(),
-                items: vec![TodoItem {
-                    status: TodoStatus::Pending,
-                    task: "很长的任务描述".repeat(12),
-                    reason: None,
-                }],
-            }],
+        run_tool(
+            &mut app,
+            "call_todo",
+            "todo",
+            r#"{"op":"init","list":[{"phase":"阶段","items":["很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述"]}]}"#,
+            ToolStatus::Completed,
+            "阶段\n  [ ] 很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述\n",
+        );
+        // run_code：三档 + 失败的估高都要与渲染同源
+        run_tool(
+            &mut app,
+            "call_rc",
+            "run_code",
+            &serde_json::json!({"description":"核对","code":"const a = 1;\nawait tools.bash({command:'ls'})"}).to_string(),
+            ToolStatus::Completed,
+            r#"[{"status":"fulfilled","value":{"content":" M a.rs\n M b.rs","isError":false}}]"#,
+        );
+        run_tool(
+            &mut app,
+            "call_rc_bad",
+            "run_code",
+            r#"{"code":"throw 1"}"#,
+            ToolStatus::Error,
+            "脚本执行失败",
+        );
+        // 嵌套调用树：run_code 带子调用，兄弟连线进估高
+        app.start_tool_block(ToolCallStart {
+            id: "call_parent".into(),
+            name: "run_code".into(),
+            parent_id: None,
+            arguments: r#"{"description":"父"}"#.into(),
         });
+        for (id, summary) in [("call_child1", "one"), ("call_child2", "two")] {
+            app.start_tool_block(ToolCallStart {
+                id: id.into(),
+                name: "bash".into(),
+                parent_id: Some("call_parent".into()),
+                arguments: format!(r#"{{"description":"{summary}","command":"echo {summary}"}}"#)
+                    .into(),
+            });
+            app.finish_tool_block(ToolCallFinish {
+                id: id.into(),
+                name: "bash".into(),
+                parent_id: Some("call_parent".into()),
+                arguments: String::new(),
+                status: ToolStatus::Completed,
+                result: ToolResult {
+                    tool_call_id: id.into(),
+                    content: "done".into(),
+                    is_error: false,
+                    images: Vec::new(),
+                },
+                duration_ms: Some(3),
+                diff: None,
+            });
+        }
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_parent".into(),
+            name: "run_code".into(),
+            parent_id: None,
+            arguments: String::new(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
+                tool_call_id: "call_parent".into(),
+                content: "[]".into(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(9),
+            diff: None,
+        });
+        // todo 多阶段：简略档折叠已关闭阶段与历史已完成任务
+        run_tool(
+            &mut app,
+            "call_todo2",
+            "todo",
+            r#"{"op":"start","task":"乙"}"#,
+            ToolStatus::Completed,
+            "一\n  [x] 甲\n  [-] 弃\n二\n  [x] 丙\n  [/] 乙\n  [ ] 丁\n",
+        );
 
         let rendered = |app: &App, index: usize| {
             render_entry(index, &app.blocks[index], app, width)
@@ -3689,8 +4332,8 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), rendered(&app, 0));
         assert_eq!(
             estimate_entry_height_at(&app, 0, width),
-            3,
-            "隐藏档只剩标题、耗时与留白"
+            2,
+            "隐藏档只剩标题与留白"
         );
         app.tool_detail = DetailLevel::Brief;
         assert!(
@@ -3798,8 +4441,8 @@ mod tests {
 
         app.tool_detail = DetailLevel::Brief;
         let brief = render_entry(0, &app.blocks[0], &app, width).lines;
-        // 标题（命令放得下，进标题）+ 结果尾 4 + 省略提示 1 + 耗时 1 + 留白 1
-        assert_eq!(brief.len(), 8, "简略档行数固定");
+        // 标题（命令放得下，进标题）+ 结果尾 4 + 省略提示 1 + 留白 1
+        assert_eq!(brief.len(), 7, "简略档行数固定");
         let brief_text = text_of(&brief);
         assert!(
             brief_text.contains("⋯ 还有 196 行"),
@@ -3823,15 +4466,15 @@ mod tests {
         let full = render_entry(0, &app.blocks[0], &app, width).lines;
         assert_eq!(
             full.len(),
-            200 + 3,
-            "完整档 = 标题 + 全部 200 行 + 耗时 + 留白（命令已在标题）"
+            200 + 2,
+            "完整档 = 标题 + 全部 200 行 + 留白（命令已在标题）"
         );
         assert!(!text_of(&full).contains("还有"), "完整档不出现省略提示");
         assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
 
         app.tool_detail = DetailLevel::Hidden;
         let hidden = render_entry(0, &app.blocks[0], &app, width).lines;
-        assert_eq!(hidden.len(), 3, "隐藏档 = 标题 + 耗时 + 留白");
+        assert_eq!(hidden.len(), 2, "隐藏档 = 标题 + 留白");
         assert!(!text_of(&hidden).contains("line-"), "隐藏档无正文");
         assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
     }
@@ -3891,7 +4534,7 @@ mod tests {
 
         app.tool_detail = DetailLevel::Full;
         let full = render_entry(0, &app.blocks[0], &app, width).lines;
-        assert_eq!(full.len(), 200 + 3, "完整档 = 标题 + 200 行 + 耗时 + 留白");
+        assert_eq!(full.len(), 200 + 2, "完整档 = 标题 + 200 行 + 留白");
         let full_text = full
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -4145,11 +4788,7 @@ mod tests {
         app.tool_detail = DetailLevel::Brief;
         let brief = render_entry(0, &app.blocks[0], &app, width).lines;
         let brief_text = text_of(&brief);
-        assert_eq!(
-            brief.len(),
-            9,
-            "标题 + 命令 + 4 行输出 + 省略 + 耗时 + 留白"
-        );
+        assert_eq!(brief.len(), 8, "标题 + 命令 + 4 行输出 + 省略 + 留白");
         assert!(
             brief_text.contains("Search the renderer"),
             "标题取 description"
@@ -4169,7 +4808,7 @@ mod tests {
         app.tool_detail = DetailLevel::Hidden;
         let hidden = render_entry(0, &app.blocks[0], &app, width).lines;
         let hidden_text = text_of(&hidden);
-        assert_eq!(hidden.len(), 3, "隐藏档 = 标题 + 耗时 + 留白");
+        assert_eq!(hidden.len(), 2, "隐藏档 = 标题 + 留白");
         assert!(hidden_text.contains("Search the renderer"));
         assert!(!hidden_text.contains("rg -n"), "隐藏档不显示命令与输出");
         assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
@@ -4233,7 +4872,10 @@ mod tests {
             text.contains("grep artifact"),
             "嵌套调用的摘要同样取参数里的模式：{text}"
         );
-        assert!(text.starts_with("  "), "嵌套调用按父调用缩进：{text:?}");
+        assert!(
+            text.contains("├─ ") || text.contains("└─ "),
+            "嵌套调用带连线前缀：{text:?}"
+        );
     }
 
     /// diff 简略档停在 6 行并补省略提示；完整档给出行数。
@@ -4299,8 +4941,8 @@ mod tests {
 
         app.tool_detail = DetailLevel::Brief;
         let brief = render_entry(0, &app.blocks[0], &app, width).lines;
-        // 标题 + 6 行 diff + 省略提示 + 耗时 + 留白
-        assert_eq!(brief.len(), 10, "简略档 diff 限 6 行");
+        // 标题 + 6 行 diff + 省略提示 + 留白
+        assert_eq!(brief.len(), 9, "简略档 diff 限 6 行");
         assert_eq!(
             text_of(&brief).matches("还有").count(),
             1,
@@ -4314,11 +4956,7 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), brief.len());
         app.tool_detail = DetailLevel::Full;
         let full = render_entry(0, &app.blocks[0], &app, width).lines;
-        assert_eq!(
-            full.len(),
-            total + 3,
-            "完整档 = 全部 diff 行 + 耗时 + 留白 + 标题"
-        );
+        assert_eq!(full.len(), total + 2, "完整档 = 全部 diff 行 + 留白 + 标题");
         assert!(!text_of(&full).contains("还有"));
         assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
     }
@@ -4405,13 +5043,9 @@ mod tests {
                 .map(|span| span.content.as_ref())
                 .collect::<String>()
         };
+        assert!(title(0).contains("+1 -1"), "真实改动要有计数：{}", title(0));
         assert!(
-            title(0).contains("[+1/-1]"),
-            "真实改动要有计数：{}",
-            title(0)
-        );
-        assert!(
-            !title(1).contains("[+0/-0]") && !title(1).contains("[+"),
+            !title(1).contains("+") && !title(1).contains("-0"),
             "空 diff 不显示计数：{}",
             title(1)
         );
@@ -4478,7 +5112,7 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         let body = text_of(&lines[1..]);
-        assert!(title.contains("[+2/-0 …]"), "部分统计要带 …：{title}");
+        assert!(title.contains("+2 -0 …"), "部分统计要带 …：{title}");
         assert_eq!(
             body.matches("其余改动超出").count(),
             1,
@@ -4563,6 +5197,7 @@ mod tests {
             usize::from(width),
             DetailLevel::Hidden,
             true,
+            None,
         );
         assert_eq!(hidden.lines.len(), 2, "隐藏档只剩标题行与尾随留白");
     }
@@ -5091,6 +5726,7 @@ mod tests {
         narrow.cache = vec![CachedEntry {
             key: (0, 0),
             layout_epoch: 0,
+            shape: None,
             height: 3,
             paged: None,
             footer: Vec::new(),
@@ -5141,6 +5777,7 @@ mod tests {
         view.cache.push(CachedEntry {
             key: (0, 0),
             layout_epoch: 0,
+            shape: None,
             height: 100_010,
             lines: vec![Line::from("可见正文")],
             paged: None,
@@ -5360,10 +5997,8 @@ mod tests {
 
         let grep = block(3);
         assert!(
-            plain(&grep[0])
-                .trim_end()
-                .ends_with(crate::render::wrap::ELLIPSIS),
-            "超长标题以 … 收尾：{:?}",
+            plain(&grep[0]).contains(crate::render::wrap::ELLIPSIS),
+            "超长摘要截断加 …（右端是耗时）：{:?}",
             plain(&grep[0])
         );
 
@@ -5514,6 +6149,373 @@ mod tests {
                 .is_some_and(|row| row.contains(&crate::render::labels::more_lines(4))),
             "末行提示省略：{body:?}"
         );
+    }
+
+    /// run_code：简略档只有标题行（返回值 JSON 不倒出来）；失败时简略档显示错误文本。
+    #[test]
+    fn run_code_brief_shows_title_only_and_errors() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.tool_detail = DetailLevel::Brief;
+        run_tool(
+            &mut app,
+            "rc",
+            "run_code",
+            r#"{"description":"核对","code":"await tools.bash({command:'ls'})"}"#,
+            ToolStatus::Completed,
+            r#"[{"status":"fulfilled","value":{"content":"ok"}}]"#,
+        );
+        let lines = render_entry(0, &app.blocks[0], &app, 80).lines;
+        assert_eq!(lines.len(), 2, "简略档 = 标题 + 留白");
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(
+            !text.contains("fulfilled") && !text.contains("status"),
+            "{text}"
+        );
+        assert_eq!(estimate_entry_height_at(&app, 0, 80), lines.len());
+
+        run_tool(
+            &mut app,
+            "rc_bad",
+            "run_code",
+            r#"{"code":"throw 1"}"#,
+            ToolStatus::Error,
+            "脚本执行失败：boom",
+        );
+        let lines = render_entry(1, &app.blocks[1], &app, 80).lines;
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains("脚本执行失败：boom"), "失败文本可见：{text}");
+        assert_eq!(estimate_entry_height_at(&app, 1, 80), lines.len());
+    }
+
+    /// run_code 完整档：行号槽脚本 + JSON 树；多行字符串标 `(N lines)`。
+    #[test]
+    fn run_code_full_renders_script_gutter_and_json_tree() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.tool_detail = DetailLevel::Full;
+        run_tool(
+            &mut app,
+            "rc",
+            "run_code",
+            r#"{"description":"核对","code":"const a = 1;\nawait tools.bash({command:'ls'})"}"#,
+            ToolStatus::Completed,
+            r#"[{"status":"fulfilled","value":{"content":" M crates/moc-tui/src/render/scrollback.rs 很长很长很长的第一行\n M b.rs","isError":false,"structuredContent":null}}]"#,
+        );
+        let lines = render_entry(0, &app.blocks[0], &app, 80).lines;
+        let rows: Vec<String> = lines.iter().map(plain).collect();
+        for row in &rows {
+            eprintln!("{row}");
+        }
+        assert!(
+            rows.iter().any(|row| row.contains("1 │ const a = 1;")),
+            "脚本行号槽：{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("status:") && row.contains("fulfilled")),
+            "JSON 树成员行：{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("(2 lines)")),
+            "多行字符串标注：{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("structuredContent:")),
+            "null 标量成员：{rows:?}"
+        );
+        assert_eq!(estimate_entry_height_at(&app, 0, 80), lines.len());
+
+        // 窄宽度下多行字符串先扣 ` (N lines)` 后缀再截首行，后缀不被裁掉。
+        let narrow: Vec<String> = render_entry(0, &app.blocks[0], &app, 44)
+            .lines
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            narrow.iter().any(|row| row.contains("(2 lines)")),
+            "窄宽度仍显示 (N lines)：{narrow:?}"
+        );
+    }
+
+    /// 嵌套连线：父已结束时首个子块 `├─`、末个 `└─`；父还在跑时末个仍 `├─`。
+    #[test]
+    fn nested_children_draw_tree_connectors() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let spawn_children = |app: &mut App| {
+            for id in ["c1", "c2"] {
+                app.start_tool_block(ToolCallStart {
+                    id: id.into(),
+                    name: "bash".into(),
+                    parent_id: Some("p".into()),
+                    arguments: format!(r#"{{"command":"echo {id}"}}"#).into(),
+                });
+                app.finish_tool_block(ToolCallFinish {
+                    id: id.into(),
+                    name: "bash".into(),
+                    parent_id: Some("p".into()),
+                    arguments: String::new(),
+                    status: ToolStatus::Completed,
+                    result: moc_protocol::ToolResult {
+                        tool_call_id: id.into(),
+                        content: "out".into(),
+                        is_error: false,
+                        images: Vec::new(),
+                    },
+                    duration_ms: Some(1),
+                    diff: None,
+                });
+            }
+        };
+        // 父仍在运行：两个子块都画 ├─（更多子调用还会到来）。
+        app.start_tool_block(ToolCallStart {
+            id: "p".into(),
+            name: "run_code".into(),
+            parent_id: None,
+            arguments: r#"{"description":"父"}"#.into(),
+        });
+        spawn_children(&mut app);
+        fn title_of(app: &App, index: usize) -> String {
+            render_entry(index, &app.blocks[index], app, 80)
+                .lines
+                .into_iter()
+                .next()
+                .map(|line| plain(&line))
+                .unwrap_or_default()
+        }
+        assert!(
+            title_of(&app, 1).starts_with(" ├─ ◆"),
+            "运行中：{:?}",
+            title_of(&app, 1)
+        );
+        assert!(
+            title_of(&app, 2).starts_with(" ├─ ◆"),
+            "运行中末块仍 ├─：{:?}",
+            title_of(&app, 2)
+        );
+
+        // 父结束：末个子块翻成 └─，上一个子块的留白行带 │。
+        app.finish_tool_block(ToolCallFinish {
+            id: "p".into(),
+            name: "run_code".into(),
+            parent_id: None,
+            arguments: String::new(),
+            status: ToolStatus::Completed,
+            result: moc_protocol::ToolResult {
+                tool_call_id: "p".into(),
+                content: "[]".into(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(9),
+            diff: None,
+        });
+        assert!(
+            title_of(&app, 1).starts_with(" ├─ ◆"),
+            "首块仍 ├─：{:?}",
+            title_of(&app, 1)
+        );
+        assert!(
+            title_of(&app, 2).starts_with(" └─ ◆"),
+            "末块 └─：{:?}",
+            title_of(&app, 2)
+        );
+        let child1 = render_entry(1, &app.blocks[1], &app, 80).lines;
+        let tail = child1.last().map(plain).unwrap_or_default();
+        assert!(tail.contains('│'), "非末兄弟留白行带竖线：{tail:?}");
+        for index in 0..app.blocks.len() {
+            assert_eq!(
+                estimate_entry_height_at(&app, index, 80),
+                render_entry(index, &app.blocks[index], &app, 80)
+                    .lines
+                    .len(),
+                "第 {index} 块估高与渲染一致"
+            );
+        }
+    }
+
+    /// 缓存 key 含树形状：父块从 running 变结束后，末个子块必须重渲染成 └─。
+    #[test]
+    fn parent_finish_recolors_last_child_via_cached_shape() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.start_tool_block(ToolCallStart {
+            id: "p".into(),
+            name: "run_code".into(),
+            parent_id: None,
+            arguments: r#"{"description":"父"}"#.into(),
+        });
+        app.start_tool_block(ToolCallStart {
+            id: "c".into(),
+            name: "bash".into(),
+            parent_id: Some("p".into()),
+            arguments: r#"{"command":"echo c"}"#.into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "c".into(),
+            name: "bash".into(),
+            parent_id: Some("p".into()),
+            arguments: String::new(),
+            status: ToolStatus::Completed,
+            result: moc_protocol::ToolResult {
+                tool_call_id: "c".into(),
+                content: "out".into(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(1),
+            diff: None,
+        });
+        let mut view = ScrollbackView::new();
+        view.sync(&app, 80);
+        assert!(
+            plain(&view.cache[1].lines[0]).starts_with(" ├─"),
+            "父运行中：{:?}",
+            plain(&view.cache[1].lines[0])
+        );
+        app.finish_tool_block(ToolCallFinish {
+            id: "p".into(),
+            name: "run_code".into(),
+            parent_id: None,
+            arguments: String::new(),
+            status: ToolStatus::Completed,
+            result: moc_protocol::ToolResult {
+                tool_call_id: "p".into(),
+                content: "[]".into(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(9),
+            diff: None,
+        });
+        // 子块自身内容代次没变，形状变化也要让缓存失效。
+        view.sync(&app, 80);
+        assert!(
+            plain(&view.cache[1].lines[0]).starts_with(" └─"),
+            "父结束重渲染：{:?}",
+            plain(&view.cache[1].lines[0])
+        );
+    }
+
+    /// todo：简略档画快照树、隐藏档只有标题、已关闭阶段只剩标题行、⋯ N done 折叠。
+    #[test]
+    fn todo_call_renders_snapshot_tree_per_level() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        run_tool(
+            &mut app,
+            "t1",
+            "todo",
+            r#"{"op":"start","task":"乙"}"#,
+            ToolStatus::Completed,
+            "一\n  [x] 甲\n  [-] 弃 (不需要了)\n二\n  [x] 丙\n  [x] 丁\n  [/] 乙\n  [ ] 戊\n",
+        );
+        let text_of = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        app.tool_detail = DetailLevel::Brief;
+        let brief = render_entry(0, &app.blocks[0], &app, 80).lines;
+        let brief_text = text_of(&brief);
+        assert!(
+            brief_text.contains("start 乙"),
+            "摘要 op + 目标：{brief_text}"
+        );
+        assert!(
+            brief_text.contains("├─ 一 · 1/2"),
+            "已关闭阶段只留标题：{brief_text}"
+        );
+        assert!(
+            brief_text.contains("└─ 二 · 2/4"),
+            "未关闭阶段展开：{brief_text}"
+        );
+        assert!(
+            !brief_text.contains("不需要了"),
+            "已关闭阶段不展开：{brief_text}"
+        );
+        assert!(
+            brief_text.contains("⋯ 1 done"),
+            "更早已完成折叠：{brief_text}"
+        );
+        // `⋯ N done` 与任务行的状态符号同列。
+        let col_of = |lines: &[Line<'static>], needle: &str| {
+            lines
+                .iter()
+                .map(plain)
+                .find(|row| row.contains(needle))
+                .and_then(|row| row.find(needle))
+                .expect("行存在")
+        };
+        assert_eq!(
+            col_of(&brief, "⋯"),
+            col_of(&brief, "☑"),
+            "折叠行与状态符号同列：{brief_text}"
+        );
+        assert!(
+            brief_text.contains("4/6"),
+            "标题右端 done/total：{brief_text}"
+        );
+        assert_eq!(estimate_entry_height_at(&app, 0, 80), brief.len());
+
+        app.tool_detail = DetailLevel::Hidden;
+        let hidden = render_entry(0, &app.blocks[0], &app, 80).lines;
+        assert_eq!(hidden.len(), 2, "隐藏档只剩标题 + 留白");
+        assert_eq!(estimate_entry_height_at(&app, 0, 80), hidden.len());
+
+        app.tool_detail = DetailLevel::Full;
+        let full = render_entry(0, &app.blocks[0], &app, 80).lines;
+        let full_text = text_of(&full);
+        assert!(full_text.contains("不需要了"), "完整档全展开：{full_text}");
+        assert!(!full_text.contains("⋯ 1 done"), "完整档不折叠：{full_text}");
+        assert_eq!(estimate_entry_height_at(&app, 0, 80), full.len());
+
+        // 单阶段：省略阶段标题，任务直接作树叶，`⋯ N done` 与状态符号同列。
+        run_tool(
+            &mut app,
+            "t2",
+            "todo",
+            r#"{"op":"start","task":"丙"}"#,
+            ToolStatus::Completed,
+            "单\n  [x] 甲\n  [x] 乙\n  [/] 丙\n",
+        );
+        app.tool_detail = DetailLevel::Brief;
+        let single = render_entry(1, &app.blocks[1], &app, 60).lines;
+        let single_text = text_of(&single);
+        eprintln!("单阶段简略档:\n{}", single.iter().map(plain).collect::<Vec<_>>().join("\n"));
+        assert!(
+            single_text.contains("├─ ⋯ 1 done"),
+            "单阶段折叠行：{single_text}"
+        );
+        assert!(!single_text.contains("├─ 单"), "单阶段省略阶段标题：{single_text}");
+        assert_eq!(
+            col_of(&single, "⋯"),
+            col_of(&single, "☑"),
+            "单阶段折叠行与状态符号同列：{single_text}"
+        );
+        assert_eq!(estimate_entry_height_at(&app, 1, 60), single.len());
     }
 
     /// 回归：用户消息与系统提示的估高必须与渲染完全一致（含首块与时间戳换行）。

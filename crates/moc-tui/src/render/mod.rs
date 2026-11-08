@@ -1223,7 +1223,7 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
                     .map(|elapsed| {
                         labels::elapsed(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
                     })
-                    .unwrap_or_else(|| "⏱ -".into()),
+                    .unwrap_or_else(|| "◷ -".into()),
                 theme.gray,
             )),
             "cost" => data

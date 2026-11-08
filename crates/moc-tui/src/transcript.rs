@@ -5,7 +5,7 @@
 //! 协议的 `SessionUpdate` 在 `crate::event` 里被折叠成这些块。
 
 use moc_protocol::ToolResult;
-use moc_protocol::methods::{TodoPhase, ToolDiff, ToolStatus};
+use moc_protocol::methods::{ToolDiff, ToolStatus};
 use serde::{Deserialize, Serialize};
 
 /// 转写内容的显示档位（ctrl+t 管思考、ctrl+o 管工具，逐档循环）。
@@ -404,8 +404,6 @@ pub enum Block {
         meta: moc_protocol::methods::GoalRoundMeta,
         body: String,
     },
-    /// Todo 清单快照（`TodoChanged` 时替换前一块，而非追加）。
-    Todo { phases: Vec<TodoPhase> },
     /// 系统提示（授权等待、错误、压缩等）。
     Note { text: String, error: bool },
 }
@@ -416,10 +414,7 @@ impl Block {
         match self {
             Block::Thinking { .. } | Block::AgentMessage { .. } | Block::GoalRound { .. } => true,
             Block::Tool(tool) => tool.has_body(),
-            Block::User { .. }
-            | Block::Assistant { .. }
-            | Block::Todo { .. }
-            | Block::Note { .. } => false,
+            Block::User { .. } | Block::Assistant { .. } | Block::Note { .. } => false,
         }
     }
 }
@@ -448,15 +443,18 @@ pub(crate) enum ToolBody {
     Count,
     /// 简略档给预览，完整档全文（bash、edit 等有输出的工具）。
     Preview,
+    /// todo 快照树：隐藏档不显示，简略档折叠、完整档全展开。
+    Todo,
 }
 
 /// 工具名 → 正文策略。未知工具默认走预览，只有明确无正文或只报数量的才单列。
 pub(crate) fn tool_body_policy(name: &str) -> ToolBody {
     match name {
-        "read" => ToolBody::FullOnly,
+        "read" | "run_code" => ToolBody::FullOnly,
         "grep" | "find" => ToolBody::Count,
-        "todo" | "TodoReminder" | "skill" | "clm_context" | "spawn_agent" | "list_agents"
-        | "stop_agent" | "yield" | "plan" | "exit_plan" => ToolBody::None,
+        "todo" => ToolBody::Todo,
+        "TodoReminder" | "skill" | "clm_context" | "spawn_agent" | "list_agents" | "stop_agent"
+        | "yield" | "plan" | "exit_plan" => ToolBody::None,
         _ => ToolBody::Preview,
     }
 }

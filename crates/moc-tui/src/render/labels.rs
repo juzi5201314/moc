@@ -2,7 +2,7 @@
 //!
 //! 约定：
 //! - 行内截断用 `…`（[`super::wrap::ELLIPSIS`]），整行/整块省略提示用 [`OMITTED`]。
-//! - 状态词与块标题一律英文：块标题首字母大写（`Thought`、`Tasks`），状态词小写
+//! - 状态词与块标题一律英文：块标题首字母大写（`Thought`、`Sidekick`），状态词小写
 //!   （`running`、`done`）。说明性文案（提示、错误原文）不在此列。
 //! - 耗时统一 [`duration`]：`161ms` / `54.1s` / `1m02s` / `1h05m`，不加前缀词。
 //! - 键位统一 [`key`]：修饰键首字母大写、`+` 相连（`Ctrl+P`、`Shift+Enter`）。
@@ -32,7 +32,6 @@ pub fn more_items(count: usize) -> String {
 /// 块标题。
 pub mod title {
     pub const THOUGHT: &str = "Thought";
-    pub const TASKS: &str = "Tasks";
     pub const IRC: &str = "IRC";
     pub const SIDEKICK: &str = "Sidekick";
 }
@@ -79,9 +78,12 @@ pub fn duration(ms: u64) -> String {
     }
 }
 
-/// 耗时尾注：`⏱ 1.2s`（工具卡尾注、批次成员行尾、助手回复尾注共用）。
+/// 耗时尾注：`◷ 1.2s`（批次成员行尾、助手回复尾注、statusline 共用）。
+///
+/// 图标必须是单宽非 emoji 字符：`⏱` 在 Windows Terminal 下渲染成双宽彩色
+/// emoji，会与后面的数字重叠。
 pub fn elapsed(ms: u64) -> String {
-    format!("⏱ {}", duration(ms))
+    format!("◷ {}", duration(ms))
 }
 
 /// 单个绑定的展示名：`ctrl+p` → `Ctrl+P`，`shift+tab` → `Shift+Tab`，`j` → `j`。

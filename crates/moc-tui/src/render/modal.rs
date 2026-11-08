@@ -1235,13 +1235,13 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                     hits.push((actual, lines.len()));
                     let is_selected = actual == *selected;
 
-                    // 状态图标
+                    // 状态图标（单宽非 emoji：⏱/⚡ 在 Windows Terminal 会渲染成双宽）
                     let icon = match job.status {
-                        moc_protocol::methods::JobStatus::Running => "⚙",
-                        moc_protocol::methods::JobStatus::Killing => "⚡",
+                        moc_protocol::methods::JobStatus::Running => "●",
+                        moc_protocol::methods::JobStatus::Killing => "◌",
                         moc_protocol::methods::JobStatus::Exited => "✓",
                         moc_protocol::methods::JobStatus::Killed => "✗",
-                        moc_protocol::methods::JobStatus::TimedOut => "⏱",
+                        moc_protocol::methods::JobStatus::TimedOut => "◷",
                     };
 
                     // 命令（截断；按显示宽度，宽字符不切开）
