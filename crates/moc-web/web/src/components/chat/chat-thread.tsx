@@ -1,6 +1,7 @@
 // 对话流：用户气泡 + 助手轮次（按时间排列的思考/工具/正文片段）+ 末尾的授权与提问卡片。
 // 完成的轮次把过程收进「处理过程」，只露出最后一段正文；进行中的轮次全部展开。
 
+import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
 import {
   AlertTriangleIcon,
   CheckIcon,
@@ -13,7 +14,7 @@ import {
   RotateCcwIcon,
   Undo2Icon,
 } from "lucide-react";
-import { memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { useShallow } from "zustand/react/shallow";
@@ -136,60 +137,164 @@ export function ChatThread({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="moc-chat-pane relative flex min-h-0 flex-1 overflow-hidden">
-      <Conversation className="flex-1">
-        <ConversationContent className="moc-chat-column gap-10 px-0 pt-10 pb-16">
-          {view.hasMore && <LoadOlder sessionId={sessionId} loading={view.loadingOlder} />}
-          {turnIds.map((turnId, index) => (
-            <TurnView
-              key={turnId}
-              turnId={turnId}
-              last={index === turnIds.length - 1}
-              liveStartedAt={index === turnIds.length - 1 ? view.liveStartedAt : undefined}
-              context={context}
-            />
-          ))}
-          {view.mismatch && (
-            <div className="flex items-center gap-2 text-xs text-warn">
-              <AlertTriangleIcon className="size-3.5" />
-              上游回显与请求不一致：
-              {view.mismatch.fields
-                .map((field) => `${field.field} ${field.requested} → ${field.reported}`)
-                .join("，")}
-            </div>
-          )}
-          {permissions.map((request) => (
-            <PermissionCard key={request.request_id} sessionId={sessionId} request={request} />
-          ))}
-          {asks.map((request) => (
-            <AskCard key={request.request_id} sessionId={sessionId} request={request} />
-          ))}
-        </ConversationContent>
+      {/* key 按会话重挂：换会话时虚拟器与贴底状态都从零开始，不会沿用旧滚动位置。 */}
+      <Conversation key={sessionId} className="flex-1">
+        <TranscriptRows
+          sessionId={sessionId}
+          view={view}
+          context={context}
+          turnIds={turnIds}
+          permissions={permissions}
+          asks={asks}
+        />
         <ConversationScrollButton className="bottom-4 size-8 border-0 bg-popover text-muted-foreground shadow-[var(--elevation-popover)] hover:bg-popover hover:text-foreground dark:bg-popover" />
       </Conversation>
     </div>
   );
 }
 
-/** 滚到顶部附近时自动翻页，并保持当前阅读位置不跳动。 */
+type Row =
+  | { kind: "older"; estimate: number }
+  | { kind: "turn"; turnId: string; index: number; estimate: number }
+  | { kind: "mismatch"; estimate: number }
+  | { kind: "perm"; request: PermissionRequestParams; estimate: number }
+  | { kind: "ask"; request: AskParams; estimate: number };
+
+function rowKey(row: Row): string {
+  switch (row.kind) {
+    case "older":
+      return "older";
+    case "turn":
+      return `turn:${row.turnId}`;
+    case "mismatch":
+      return "mismatch";
+    case "perm":
+      return `perm:${row.request.request_id}`;
+    case "ask":
+      return `ask:${row.request.request_id}`;
+  }
+}
+
+type TranscriptView = NonNullable<ReturnType<typeof useTranscript.getState>["bySession"][string]>;
+
+/** ChatThread 选择器取出的视图子集；只含渲染行需要的字段。 */
+type RowsView = {
+  hasMore: boolean;
+  loadingOlder: boolean;
+  mismatch: TranscriptView["mismatch"];
+  liveStartedAt?: number;
+};
+
+/**
+ * 虚拟化转写：只挂载视口附近的行。anchorTo "end" 让向前翻页（prepend）
+ * 与条目实测高度变化都按视口锚定；底部跟随仍交给 stick-to-bottom
+ * （resize="smooth" 的流式追随是既定 UX），虚拟器只在精确贴底时兜底。
+ */
+function TranscriptRows({
+  sessionId,
+  view,
+  context,
+  turnIds,
+  permissions,
+  asks,
+}: {
+  sessionId: string;
+  view: RowsView;
+  context: TurnContext;
+  turnIds: readonly string[];
+  permissions: readonly PermissionRequestParams[];
+  asks: readonly AskParams[];
+}) {
+  const { scrollRef } = useStickToBottomContext();
+  const lastIndex = turnIds.length - 1;
+  const rows = useMemo<Row[]>(() => {
+    const rows: Row[] = [];
+    if (view.hasMore) rows.push({ kind: "older", estimate: 40 });
+    turnIds.forEach((turnId, index) => {
+      rows.push({ kind: "turn", turnId, index, estimate: 240 });
+    });
+    if (view.mismatch) rows.push({ kind: "mismatch", estimate: 36 });
+    for (const request of permissions) rows.push({ kind: "perm", request, estimate: 160 });
+    for (const request of asks) rows.push({ kind: "ask", request, estimate: 160 });
+    return rows;
+  }, [view.hasMore, view.mismatch, turnIds, permissions, asks]);
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) => rows[index].estimate,
+    getItemKey: (index) => rowKey(rows[index]),
+    anchorTo: "end",
+    overscan: 5,
+    gap: 40,
+    paddingStart: 40,
+    paddingEnd: 64,
+    // jsdom 与尚未完成布局的容器都测得 0 高，此时 range=null 一行不挂；
+    // 0 高时给个兜底视口，真实尺寸一到就会被覆盖。
+    observeElementRect: (instance, cb) =>
+      observeElementRect(instance, (rect) =>
+        cb(rect.height === 0 ? { ...rect, height: 640 } : rect),
+      ),
+  });
+
+  const renderRow = (row: Row): ReactNode => {
+    switch (row.kind) {
+      case "older":
+        return <LoadOlder sessionId={sessionId} loading={view.loadingOlder} />;
+      case "turn":
+        return (
+          <TurnView
+            turnId={row.turnId}
+            last={row.index === lastIndex}
+            liveStartedAt={row.index === lastIndex ? view.liveStartedAt : undefined}
+            context={context}
+          />
+        );
+      case "mismatch":
+        return view.mismatch ? (
+          <div className="flex items-center gap-2 text-xs text-warn">
+            <AlertTriangleIcon className="size-3.5" />
+            上游回显与请求不一致：
+            {view.mismatch.fields
+              .map((field) => `${field.field} ${field.requested} → ${field.reported}`)
+              .join("，")}
+          </div>
+        ) : null;
+      case "perm":
+        return <PermissionCard sessionId={sessionId} request={row.request} />;
+      case "ask":
+        return <AskCard sessionId={sessionId} request={row.request} />;
+    }
+  };
+
+  return (
+    <ConversationContent className="moc-chat-column gap-0 p-0">
+      <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+        {virtualizer.getVirtualItems().map((item) => (
+          <div
+            key={item.key}
+            data-index={item.index}
+            ref={virtualizer.measureElement}
+            className="absolute top-0 left-0 w-full"
+            style={{ transform: `translateY(${item.start}px)` }}
+          >
+            {renderRow(rows[item.index])}
+          </div>
+        ))}
+      </div>
+    </ConversationContent>
+  );
+}
+
+/** 滚到顶部附近时自动翻页；prepend 的滚动锚定由虚拟器负责。 */
 function LoadOlder({ sessionId, loading }: { sessionId: string; loading: boolean }) {
   const { scrollRef } = useStickToBottomContext();
   const sentinel = useRef<HTMLDivElement>(null);
-  const anchor = useRef<{ height: number; top: number } | null>(null);
 
   const load = () => {
-    const scroller = scrollRef.current;
-    if (!scroller || loading) return;
-    anchor.current = { height: scroller.scrollHeight, top: scroller.scrollTop };
+    if (loading) return;
     void loadOlder(sessionId).catch((error) => toast.error(`加载历史失败：${errorText(error)}`));
   };
-
-  useLayoutEffect(() => {
-    const scroller = scrollRef.current;
-    const saved = anchor.current;
-    if (loading || !scroller || !saved) return;
-    scroller.scrollTop = saved.top + (scroller.scrollHeight - saved.height);
-    anchor.current = null;
-  });
 
   useEffect(() => {
     const node = sentinel.current;
@@ -233,11 +338,9 @@ const TurnView = memo(function TurnView({
   const turn = useTurn(context.sessionId, turnId);
   if (!turn) return null;
   const live = last && context.running;
+  // 虚拟化后不在视口附近的行根本不挂载，contentVisibility 的占位尺寸反而干扰测量。
   return (
-    <section
-      className="group/turn flex flex-col gap-3"
-      style={{ contentVisibility: live ? "visible" : "auto", containIntrinsicSize: "auto 200px" }}
-    >
+    <section className="group/turn flex flex-col gap-3">
       {turn.user && <UserMessage block={turn.user} context={context} />}
       {(turn.segments.length > 0 || live) && (
         <AssistantTurn
