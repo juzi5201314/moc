@@ -1,18 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
-  bodyPolicy,
   commandExit,
   findFiles,
   grepCountText,
   groupActivity,
-  groupable,
   parseGrep,
-  parseRead,
   parseSearch,
   parseTodo,
   previewDiff,
   toggledLevel,
   toolHeadline,
+  toolNotices,
 } from "@/lib/tool-view";
 import type { Block, ToolBlock } from "@/lib/transcript-model";
 import type { ToolDiff } from "@/protocol/types";
@@ -32,6 +30,24 @@ function tool(name: string, extra: Partial<ToolBlock> = {}): ToolBlock {
     ...extra,
   };
 }
+
+it("省略与扫描警告保留，带行号源码和匹配正文不会被误识别", () => {
+  const warnings = [
+    "[Line 12 is 9 KB and exceeds the limit; content omitted; use bash to inspect it]",
+    "[2 files, 3 matches shown; output capped at 1024 bytes. Continue with skip=2]",
+    "[1 files exceeded the 1024-byte limit and were not searched]",
+    "[Scan incomplete (time limit)]",
+    "  [… 10 more; read the subdirectory to continue]",
+    "[… 2048 bytes omitted; full output: artifact://large]",
+  ];
+  expect(
+    toolNotices(
+      ["12│[limit 10 reached]", "a.rs:1:[Scan incomplete]", "ordinary body", ...warnings].join(
+        "\n",
+      ),
+    ),
+  ).toEqual(warnings);
+});
 
 describe("grep", () => {
   it("单行与分组两种形态都只把 `:` 行计为匹配，上下文与提示行不计", () => {
@@ -69,15 +85,6 @@ it("find 跳过空结果提示与扫描提示", () => {
 });
 
 describe("read", () => {
-  it("拆出标题、行号正文与末尾分页提示；超长行占位仍是正文", () => {
-    const parsed = parseRead(
-      "[src/main.rs#AB12]\n10│fn main() {\n11│[Line 11 is 9 KB and exceeds the limit; content omitted; use bash to inspect it]\n12│}\n[Showing lines 10-12 of 40. Use offset=13 to continue.]",
-    );
-    expect(parsed.path).toBe("src/main.rs");
-    expect(parsed.lines.map((line) => line.line)).toEqual([10, 11, 12]);
-    expect(parsed.notes).toEqual(["[Showing lines 10-12 of 40. Use offset=13 to continue.]"]);
-  });
-
   it("标题的行号范围以真实交付的分页为准，否则按 offset/limit", () => {
     const paged = tool("read", {
       arguments: '{"path":"a.ts","offset":5,"limit":100}',
@@ -147,15 +154,6 @@ it("手动切换在完整与当前档位的收起形态之间往返", () => {
   expect(toggledLevel("hidden", "full")).toBe("hidden");
   expect(toggledLevel("full", "full")).toBe("hidden");
   expect(toggledLevel("full", "hidden")).toBe("full");
-});
-
-describe("bodyPolicy / groupable", () => {
-  it("run_code 用 script 策略、todo 用 todo 策略，两者都不可合并", () => {
-    expect(bodyPolicy("run_code")).toBe("script");
-    expect(bodyPolicy("todo")).toBe("todo");
-    expect(groupable("run_code")).toBe(false);
-    expect(groupable("todo")).toBe(false);
-  });
 });
 
 describe("groupActivity", () => {

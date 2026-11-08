@@ -413,22 +413,33 @@ impl Block {
     pub fn foldable(&self) -> bool {
         match self {
             Block::Thinking { .. } | Block::AgentMessage { .. } | Block::GoalRound { .. } => true,
-            Block::Tool(tool) => tool.has_body(),
+            Block::Tool(tool) => tool.expandable(),
             Block::User { .. } | Block::Assistant { .. } | Block::Note { .. } => false,
         }
     }
 }
 
 impl ToolCallBlock {
-    /// 是否可能在某个档位显示正文：决定块能否展开。
-    ///
-    /// 无正文工具成功时只占一行；失败时正文是错误原因，仍可展开。
+    /// 正文可以出现，但固定摘要、警告和图片不因此获得展开能力。
     pub fn has_body(&self) -> bool {
         tool_body_policy(&self.name) != ToolBody::None
             || !self.images.is_empty()
             || self
+                .result
+                .as_deref()
+                .is_some_and(|result| tool_notices(result).next().is_some())
+            || self
                 .status
                 .is_some_and(|status| status != ToolStatus::Completed)
+    }
+
+    pub fn expandable(&self) -> bool {
+        !matches!(
+            tool_body_policy(&self.name),
+            ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
+        ) || self
+            .status
+            .is_some_and(|status| status != ToolStatus::Completed)
     }
 }
 
@@ -437,10 +448,12 @@ impl ToolCallBlock {
 pub(crate) enum ToolBody {
     /// 成功且无图片时不显示正文（回显参数／致谢／模型向载荷类工具）。
     None,
-    /// 隐藏、简略档无正文，完整档才显示（read）。
+    /// 隐藏、简略档无正文，完整档才显示（run_code）。
     FullOnly,
-    /// 隐藏、简略档只报结果数量，完整档才显示正文（grep／find）。
-    Count,
+    /// 固定摘要与警告，不受显示档位影响（read／grep／find／web_fetch）。
+    Summary,
+    /// 固定的任务／交付报告开头预览，不可展开。
+    AgentPreview,
     /// 简略档给预览，完整档全文（bash、edit 等有输出的工具）。
     Preview,
     /// todo 快照树：隐藏档不显示，简略档折叠、完整档全展开。
@@ -450,13 +463,35 @@ pub(crate) enum ToolBody {
 /// 工具名 → 正文策略。未知工具默认走预览，只有明确无正文或只报数量的才单列。
 pub(crate) fn tool_body_policy(name: &str) -> ToolBody {
     match name {
-        "read" | "run_code" => ToolBody::FullOnly,
-        "grep" | "find" => ToolBody::Count,
+        "run_code" => ToolBody::FullOnly,
+        "read" | "grep" | "find" | "web_fetch" => ToolBody::Summary,
+        "spawn_agent" | "yield" => ToolBody::AgentPreview,
         "todo" => ToolBody::Todo,
-        "TodoReminder" | "skill" | "clm_context" | "spawn_agent" | "list_agents" | "stop_agent"
-        | "yield" | "plan" | "exit_plan" => ToolBody::None,
+        "TodoReminder" | "skill" | "clm_context" | "list_agents" | "stop_agent" | "plan"
+        | "exit_plan" => ToolBody::None,
         _ => ToolBody::Preview,
     }
+}
+
+/// 只提取工具生成的通知形状，不把带行号的源码或普通匹配行当成警告。
+pub(crate) fn tool_notices(result: &str) -> impl Iterator<Item = &str> {
+    result.lines().filter(|line| {
+        let line = line.trim_start();
+        (line.starts_with("[… ")
+            && (line.contains(" bytes omitted; full output: ") || line.contains(" more; ")))
+            || line.starts_with("[Showing lines ")
+            || line.starts_with("[File exceeds ")
+            || line.starts_with("[Invalid UTF-8 ")
+            || (line.starts_with("[Line ") && line.contains("content omitted;"))
+            || line.starts_with("Lines shown as a size notice")
+            || line.starts_with("[limit ")
+            || line.starts_with("[Scan incomplete")
+            || line.starts_with("[skipped ")
+            || (line.starts_with('[')
+                && (line.contains(" matches shown; ")
+                    || (line.contains(" files exceeded the ")
+                        && line.ends_with("were not searched]"))))
+    })
 }
 
 /// 媒体类型只保留 `type/subtype` 里合法的那部分字符。

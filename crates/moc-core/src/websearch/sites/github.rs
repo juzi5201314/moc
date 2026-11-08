@@ -266,6 +266,7 @@ async fn blob(
     Ok(ExtractResult {
         url: url.to_string(),
         final_url: response.final_url,
+        title: None,
         status: Some(response.status),
         content_type: response.content_type,
         method: "github",

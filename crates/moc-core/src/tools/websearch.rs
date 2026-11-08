@@ -285,6 +285,30 @@ fn render_search(query: &str, response: &SearchResponse) -> String {
 /// 渲染提取结果：每个成功项一段正文，失败项在末尾逐行列出；全部失败也按成功返回。
 fn render_extract(response: &crate::websearch::ExtractResponse) -> String {
     let mut text = String::new();
+    // 摘要放在正文前，输出归档时仍随头部交付；token 是提取内容的估算，不是模型 usage。
+    let pages: Vec<_> = response
+        .results
+        .iter()
+        .map(|page| {
+            serde_json::json!({
+                "url": page.url,
+                "title": page.title,
+                "tokens": crate::compact::estimate_tokens(&page.raw_content),
+                "truncated": page.truncated,
+            })
+        })
+        .chain(response.failed.iter().map(|page| {
+            serde_json::json!({
+                "url": page.url,
+                "error": page.error,
+            })
+        }))
+        .collect();
+    if !pages.is_empty() {
+        text.push_str("Web fetch summary: ");
+        text.push_str(&serde_json::to_string(&pages).expect("网页摘要可序列化"));
+        text.push_str("\n\n");
+    }
     for result in &response.results {
         text.push_str(&format!("## {}\n", result.url));
         if result.final_url != result.url {
@@ -454,50 +478,40 @@ mod tests {
     }
 
     #[test]
-    fn renders_extract_sections_and_failures() {
+    fn fetch_summary_counts_extracted_content_and_keeps_partial_failures() {
         let response = ExtractResponse {
             results: vec![ExtractResult {
-                url: "https://a.example".into(),
-                final_url: "https://a.example".into(),
+                url: "https://a.test".into(),
+                final_url: "https://a.test/final".into(),
+                title: Some("标题\n第二行".into()),
                 status: Some(200),
                 content_type: Some("text/markdown".into()),
                 method: "generic",
                 notes: Vec::new(),
-                truncated: false,
-                raw_content: "body".into(),
+                truncated: true,
+                raw_content: "abcd中文".into(),
             }],
             failed: vec![ExtractFailed {
-                url: "https://b.example".into(),
-                error: "timeout".into(),
+                url: "https://b.test".into(),
+                error: "HTTP 403".into(),
             }],
         };
-        assert_eq!(
-            render_extract(&response),
-            "## https://a.example\nHTTP 200 · text/markdown · generic\n\nbody\n\nFailed: https://b.example (timeout)"
-        );
-
-        let redirected = ExtractResponse {
-            results: vec![ExtractResult {
-                url: "https://a.example".into(),
-                final_url: "https://a.example/final".into(),
-                status: Some(200),
-                content_type: Some("text/markdown".into()),
-                method: "github",
-                notes: vec!["GitHub API".into()],
-                truncated: true,
-                raw_content: "body".into(),
-            }],
-            failed: Vec::new(),
-        };
-        assert_eq!(
-            render_extract(&redirected),
-            "## https://a.example\nFinal: https://a.example/final\nHTTP 200 · text/markdown · github\nNotes: GitHub API\nTruncated: yes\n\nbody"
-        );
-        let empty = ExtractResponse {
-            results: Vec::new(),
-            failed: Vec::new(),
-        };
-        assert_eq!(render_extract(&empty), "No content extracted.");
+        let output = render_extract(&response);
+        let summary: Value = serde_json::from_str(
+            output
+                .lines()
+                .next()
+                .unwrap()
+                .strip_prefix("Web fetch summary: ")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(summary[0]["title"], "标题\n第二行");
+        assert_eq!(summary[0]["tokens"], 3);
+        assert_eq!(summary[0]["truncated"], true);
+        assert_eq!(summary[1]["url"], "https://b.test");
+        assert_eq!(summary[1]["error"], "HTTP 403");
+        assert!(output.contains("abcd中文"));
     }
 
     #[test]

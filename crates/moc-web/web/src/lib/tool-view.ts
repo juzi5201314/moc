@@ -17,30 +17,43 @@ export const BRIEF_BODY_ROWS = 6;
 export const BRIEF_THINKING_ROWS = 4;
 
 /**
- * 简略档正文策略：
- * - `title`：只有标题行（read、web 与未知工具）
- * - `count`：标题行尾注报数量，不显示结果（grep、find）
+ * 正文策略：固定摘要与可展开正文分开，不允许完整档绕过固定摘要。
+ * - `summary`：始终只显示摘要、媒体与警告
+ * - `agent-preview`：始终显示任务／交付报告开头，不可展开
+ * - `title`：简略档只有标题（web_search 与未知工具）
  * - `command`：单行命令 + 末尾输出（bash）
  * - `script`：run_code——简略档只有标题，完整档给高亮脚本 + 结果
  * - `diff`：最多 {@link BRIEF_BODY_ROWS} 行 diff（edit、write）
  * - `todo`：todo——简略/完整档都画任务快照树（隐藏档只有标题）
  * - `preview`：结果开头若干行（ask、子代理类）
  */
-export type BodyPolicy = "title" | "count" | "command" | "script" | "diff" | "todo" | "preview";
+export type BodyPolicy =
+  | "summary"
+  | "agent-preview"
+  | "title"
+  | "command"
+  | "script"
+  | "diff"
+  | "todo"
+  | "preview";
 
 const POLICY: Record<string, BodyPolicy> = {
-  read: "title",
-  grep: "count",
-  find: "count",
+  read: "summary",
+  grep: "summary",
+  find: "summary",
+  skill: "summary",
+  clm_context: "summary",
+  stop_agent: "summary",
   bash: "command",
   run_code: "script",
   edit: "diff",
   write: "diff",
   todo: "todo",
   web_search: "title",
-  web_fetch: "title",
+  web_fetch: "summary",
   ask: "preview",
-  spawn_agent: "preview",
+  spawn_agent: "agent-preview",
+  yield: "agent-preview",
   message_agent: "preview",
   wait_agent: "preview",
   sidekick: "preview",
@@ -53,11 +66,72 @@ export function bodyPolicy(name: string): BodyPolicy {
 /** 同批次连续同名调用可以合并成一行：只看标题的工具才合并，带正文预览的逐个展示。 */
 export function groupable(name: string): boolean {
   const policy = bodyPolicy(name);
-  return policy === "title" || policy === "count";
+  return policy === "title" || (policy === "summary" && name !== "web_fetch");
 }
 
 export function toolFailed(tool: ToolBlock): boolean {
   return tool.isError || tool.status === "error";
+}
+
+export function toolExpandable(tool: ToolBlock): boolean {
+  const policy = bodyPolicy(tool.name);
+  return toolFailed(tool) || (policy !== "summary" && policy !== "agent-preview");
+}
+
+/** 只识别工具生成的通知，带行号的源码与匹配结果不在这里解包。 */
+export function toolNotices(result: string): string[] {
+  return result.split("\n").filter((raw) => {
+    const line = raw.trimStart();
+    return (
+      (line.startsWith("[… ") &&
+        (line.includes(" bytes omitted; full output: ") || line.includes(" more; "))) ||
+      /^\[(Showing lines |File exceeds |Invalid UTF-8 |limit |Scan incomplete|skipped )/.test(
+        line,
+      ) ||
+      (line.startsWith("[Line ") && line.includes("content omitted;")) ||
+      line.startsWith("Lines shown as a size notice") ||
+      (line.startsWith("[") &&
+        (line.includes(" matches shown; ") ||
+          (line.includes(" files exceeded the ") && line.endsWith("were not searched]"))))
+    );
+  });
+}
+
+export type FetchedPage = {
+  url: string;
+  title?: string;
+  tokens?: number;
+  truncated?: boolean;
+  error?: string;
+};
+
+/** 摘要在正文前，由 core 抓取结束时生成；不从 LLM usage 增量猜测页面用量。 */
+export function fetchedPages(result: string): FetchedPage[] {
+  const prefix = "Web fetch summary: ";
+  if (!result.startsWith(prefix)) return [];
+  try {
+    const pages: unknown = JSON.parse(result.split("\n", 1)[0].slice(prefix.length));
+    return Array.isArray(pages)
+      ? pages.filter(
+          (page): page is FetchedPage =>
+            page !== null && typeof page === "object" && typeof page.url === "string",
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function agentPreviews(tool: ToolBlock): { label: string; text: string }[] {
+  const args = parseArgs(tool.arguments);
+  if (tool.name === "yield") return [{ label: "交付报告", text: str(args, "report") }];
+  if (tool.name !== "spawn_agent") return [];
+  if (Array.isArray(args.tasks))
+    return args.tasks.map((task: Record<string, unknown>) => ({
+      label: str(task, "title") || "子代理任务",
+      text: str(task, "task"),
+    }));
+  return [{ label: str(args, "title") || "子代理任务", text: str(args, "task") }];
 }
 
 export function parseArgs(raw: string): Record<string, unknown> {
@@ -174,6 +248,20 @@ export function toolHeadline(tool: ToolBlock): Headline {
         stat: urls.length > 1 ? count(urls.length, "page", "pages") : undefined,
       };
     }
+    case "spawn_agent":
+      return {
+        target: str(args, "title"),
+        mono: false,
+        stat: Array.isArray(args.tasks) ? `共 ${args.tasks.length} 个任务` : undefined,
+      };
+    case "yield":
+      return { target: "交付报告", mono: false };
+    case "skill":
+      return { target: str(args, "name"), mono: true };
+    case "clm_context":
+      return { target: str(args, "op"), mono: true };
+    case "stop_agent":
+      return { target: str(args, "agent_id"), mono: true };
     case "ask": {
       const questions = Array.isArray(args.questions) ? args.questions : [];
       const first = questions[0] as { question?: unknown } | undefined;
@@ -294,43 +382,6 @@ export function findFiles(result: string): { paths: string[]; notes: string[] } 
     }
   }
   return { paths, notes };
-}
-
-// ---------- read ----------
-
-export type ReadLine = { line?: number; text: string };
-export type ReadResult = { path?: string; lines: ReadLine[]; notes: string[] };
-
-const NUMBERED = /^(\d+)│(.*)$/;
-/** read 末尾的提示行：分页、快照超限、编码、不可编辑说明。超长行占位 `[Line N is …]` 是正文。 */
-const NOTICE = /^\[(Showing lines |File exceeds |Invalid UTF-8 )|^Lines shown as a size notice/;
-
-/**
- * read 结果：`[path#TAG]` 标题行、`N│text` 正文行（目录与资源没有行号），
- * 末尾的分页 / 尺寸提示进 notes（crates/moc-core/src/tools/read.rs）。
- */
-export function parseRead(result: string): ReadResult {
-  const rows = result.split("\n");
-  let path: string | undefined;
-  const header = /^\[([^\]]+)\]$/.exec(rows[0] ?? "");
-  if (header) {
-    path = header[1].replace(/#[0-9a-fA-F]{4}$/, "");
-    rows.shift();
-  }
-  const notes: string[] = [];
-  while (rows.length > 0) {
-    const last = rows.at(-1) as string;
-    if (last === "") rows.pop();
-    else if (NOTICE.test(last)) notes.unshift(rows.pop() as string);
-    else break;
-  }
-  const lines = rows.map((row): ReadLine => {
-    const numbered = NUMBERED.exec(row);
-    if (numbered) return { line: Number(numbered[1]), text: numbered[2] };
-    const placeholder = /^\[Line (\d+) is /.exec(row);
-    return placeholder ? { line: Number(placeholder[1]), text: row } : { text: row };
-  });
-  return { path, lines, notes };
 }
 
 const EXT_LANG: Record<string, string> = {
@@ -517,7 +568,13 @@ export function groupActivity(blocks: Block[]): ActivityItem[] {
       block.batchId !== undefined &&
       previous.batchId === block.batchId &&
       previous.name === block.name &&
-      groupable(block.name)
+      groupable(block.name) &&
+      !toolFailed(previous) &&
+      !toolFailed(block) &&
+      previous.images.length === 0 &&
+      block.images.length === 0 &&
+      toolNotices(previous.result ?? "").length === 0 &&
+      toolNotices(block.result ?? "").length === 0
     ) {
       if (last?.kind === "group") last.tools.push(block);
       else

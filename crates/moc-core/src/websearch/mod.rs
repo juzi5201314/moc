@@ -75,6 +75,8 @@ pub struct ExtractRequest {
 pub struct ExtractResult {
     pub url: String,
     pub final_url: String,
+    /// query 筛选与正文截断前保留的网页标题。
+    pub title: Option<String>,
     pub status: Option<u16>,
     pub content_type: Option<String>,
     /// generic / github / docs.rs / mdn / arxiv / npm / pypi

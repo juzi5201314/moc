@@ -10,22 +10,22 @@ import { TodoPhases } from "@/components/common/todo-phases";
 import { DiffBody, DiffStat, diffStats } from "@/components/panels/diff-file";
 import { highlight } from "@/lib/highlight";
 import {
+  agentPreviews,
   BRIEF_BODY_ROWS,
   BRIEF_OUTPUT_ROWS,
   bodyPolicy,
   type DetailLevel,
-  findFiles,
+  fetchedPages,
   headLines,
   languageOf,
   parseArgs,
-  parseGrep,
-  parseRead,
   parseSearch,
   parseTodo,
   previewDiff,
   tailLines,
   toolFailed,
   toolHeadline,
+  toolNotices,
 } from "@/lib/tool-view";
 import type { ToolBlock } from "@/lib/transcript-model";
 import { useIsDark } from "@/lib/use-dark";
@@ -147,7 +147,10 @@ function PlainOutput({
 function Notes({ notes }: { notes: string[] }) {
   if (notes.length === 0) return null;
   return (
-    <div className="mt-1 space-y-0.5 px-1 font-mono text-2xs text-text-tertiary">
+    <div
+      role="status"
+      className="mt-1 space-y-0.5 px-1 text-xs whitespace-pre-wrap text-warn [overflow-wrap:anywhere]"
+    >
       {notes.map((note) => (
         <div key={note}>{note}</div>
       ))}
@@ -289,94 +292,6 @@ function DiffCard({
 
 // ---------- 搜索类 ----------
 
-/** 把 grep 模式在正文里标出来；Rust 正则与 JS 不兼容时就不标。 */
-function markMatches(text: string, pattern: RegExp | null): ReactNode {
-  if (!pattern) return text;
-  const parts: ReactNode[] = [];
-  let last = 0;
-  for (const match of text.matchAll(pattern)) {
-    if (!match[0]) break;
-    const start = match.index ?? 0;
-    parts.push(text.slice(last, start));
-    parts.push(
-      <mark key={start} className="rounded-xs bg-brand/15 text-foreground">
-        {match[0]}
-      </mark>,
-    );
-    last = start + match[0].length;
-  }
-  parts.push(text.slice(last));
-  return parts;
-}
-
-function GrepView({
-  result,
-  pattern,
-  caseSensitive,
-}: {
-  result: string;
-  pattern: string;
-  caseSensitive: boolean;
-}) {
-  const parsed = useMemo(() => parseGrep(result), [result]);
-  const regex = useMemo(() => {
-    try {
-      return pattern ? new RegExp(pattern, caseSensitive ? "g" : "gi") : null;
-    } catch {
-      return null;
-    }
-  }, [pattern, caseSensitive]);
-  if (parsed.groups.length === 0) return <Notes notes={parsed.notes} />;
-  return (
-    <div>
-      <div className={cn(CARD, "max-h-96 overflow-auto py-1.5")}>
-        {parsed.groups.map((group, groupIndex) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: 同一文件可在分页结果里重复出现
-          <div key={groupIndex} className={cn(groupIndex > 0 && "mt-1.5")}>
-            <div className="truncate px-3 text-muted-foreground" title={group.path}>
-              {group.path}
-            </div>
-            {group.rows.map((row) => (
-              <div key={row.line} className="flex gap-3 px-3">
-                <span className="w-10 shrink-0 select-none text-right text-text-tertiary/70">
-                  {row.line}
-                </span>
-                <span
-                  className={cn(
-                    "min-w-0 flex-1 truncate whitespace-pre",
-                    row.matched ? "text-foreground" : "text-text-tertiary",
-                  )}
-                >
-                  {row.matched ? markMatches(row.text, regex) : row.text}
-                </span>
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-      <Notes notes={parsed.notes} />
-    </div>
-  );
-}
-
-function FindView({ result }: { result: string }) {
-  const { paths, notes } = useMemo(() => findFiles(result), [result]);
-  return (
-    <div>
-      {paths.length > 0 && (
-        <div className={cn(CARD, "max-h-80 overflow-auto px-3 py-1.5 text-muted-foreground")}>
-          {paths.map((path) => (
-            <div key={path} className="truncate" title={path}>
-              {path}
-            </div>
-          ))}
-        </div>
-      )}
-      <Notes notes={notes} />
-    </div>
-  );
-}
-
 function hostOf(url: string): string {
   try {
     return new URL(url).host;
@@ -484,6 +399,52 @@ function PreviewLines({ text, onExpand }: { text: string; onExpand: () => void }
   );
 }
 
+/** 固定摘要没有展开按钮；Markdown 只渲染开头，视觉上最多三行。 */
+function fixedSummary(tool: ToolBlock): ReactNode {
+  const pages = fetchedPages(tool.result ?? "");
+  const previews = agentPreviews(tool);
+  const notices = toolNotices(tool.result ?? "");
+  if (!pages.length && !previews.length && !notices.length) return null;
+  return (
+    <div className="space-y-2">
+      {pages.map((page) => (
+        <div key={page.url} className="text-xs leading-5 [overflow-wrap:anywhere]">
+          <span className="text-muted-foreground">{page.title || page.url}</span>
+          {page.tokens !== undefined && (
+            <span className="ml-2 tabular-nums text-text-tertiary">
+              约 {page.tokens.toLocaleString()} tokens
+            </span>
+          )}
+          {page.truncated && (
+            <div role="status" className="text-warn">
+              警告：内容已截断
+            </div>
+          )}
+          {page.error && (
+            <div role="status" className="text-destructive">
+              抓取失败：{page.error}
+            </div>
+          )}
+        </div>
+      ))}
+      {previews.map((preview, index) => {
+        const head = headLines(preview.text, BRIEF_BODY_ROWS);
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: 任务列表是只读调用快照
+          <div key={index} className="border-l-2 border-border pl-3">
+            <div className="mb-0.5 text-xs font-medium text-muted-foreground">{preview.label}</div>
+            <div className="moc-tool-preview max-h-[3.75rem] overflow-hidden text-xs [--moc-prose-size:12px] [--moc-prose-leading:20px] [--moc-prose-color:var(--muted-foreground)]">
+              <MessageResponse>{head.lines.join("\n")}</MessageResponse>
+            </div>
+            {preview.text && <div className="mt-0.5 text-2xs text-text-tertiary">仅显示开头</div>}
+          </div>
+        );
+      })}
+      <Notes notes={notices} />
+    </div>
+  );
+}
+
 /**
  * 工具正文：按工具策略与档位选视图。返回 null 表示这一档没有正文（只剩标题行）。
  * 子调用、进度行与图片由调用方另行追加。
@@ -550,6 +511,9 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
     return level === "full" ? <PlainOutput text={result} error /> : <ErrorLine text={result} />;
   }
 
+  const policy = bodyPolicy(tool.name);
+  if (policy === "summary" || policy === "agent-preview") return fixedSummary(tool);
+
   if (tool.name === "edit" || tool.name === "write") {
     if (level === "hidden") return null;
     if (tool.diff?.files.length)
@@ -577,31 +541,9 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
 
   if (result === undefined) return tool.arguments ? <ArgsTable raw={tool.arguments} /> : null;
   switch (tool.name) {
-    case "read": {
-      const parsed = parseRead(result);
-      return (
-        <div>
-          <CodeView lines={parsed.lines} language={languageOf(parsed.path ?? arg("path"))} />
-          <Notes notes={parsed.notes} />
-        </div>
-      );
-    }
-    case "grep":
-      return (
-        <GrepView result={result} pattern={arg("pattern")} caseSensitive={args.case !== false} />
-      );
-    case "find":
-      return <FindView result={result} />;
     case "web_search":
       return <SearchView result={result} />;
-    case "web_fetch":
-      return (
-        <div className="max-h-96 overflow-auto rounded-xl bg-code px-3.5 py-2.5 [--moc-prose-color:var(--muted-foreground)] [--moc-prose-size:13px]">
-          <MessageResponse>{result}</MessageResponse>
-        </div>
-      );
     case "ask":
-    case "spawn_agent":
     case "message_agent":
     case "wait_agent":
     case "sidekick":

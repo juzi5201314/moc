@@ -86,6 +86,7 @@ pub(super) fn markdown_result(
     ExtractResult {
         url: url.to_string(),
         final_url: final_url.unwrap_or_else(|| url.to_string()),
+        title: None,
         status,
         content_type: Some("text/markdown".into()),
         method,

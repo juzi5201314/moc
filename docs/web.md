@@ -65,11 +65,16 @@ Web 作为 moc 的 Agent 工作台而不是 IDE：项目内文件阅读、变更
 
 | 档位 | 思考 | 工具 |
 |---|---|---|
-| 隐藏（`hidden`） | 只留一行「思考」标题 | 只留标题行；失败的调用仍附一行红色错误 |
-| 简略（`brief`） | 标题行带一句摘要，流式时显示渐隐的末尾几行 | `read` 只有标题；`grep` / `find` 只报数量；`bash` 给单行命令与末尾 4 行输出；`edit` / `write` 给最多 6 行 diff，可点开看完整 |
-| 完整（`full`） | 完整思考正文 | 完整入参与结果（终端、diff、带行号代码等） |
+| 隐藏（`hidden`） | 只留一行「思考」标题 | 标题行；固定摘要、警告和子代理开头预览仍显示，失败调用附错误原因 |
+| 简略（`brief`） | 标题行带一句摘要，流式时显示渐隐的末尾几行 | `bash` 给单行命令与末尾 4 行输出；`edit` / `write` 给最多 6 行 diff，可点开看完整；固定摘要不变 |
+| 完整（`full`） | 完整思考正文 | 可展开工具的完整入参与结果（终端、diff 等）；固定摘要仍不可展开 |
 
-点任意一行可在完整与该层档位之间切换；全局档位变化时，手动展开会被收回。同一批次里连续的同名只读工具（`read`、`grep` 等）合并成一行「读取 N 个文件」。档位写在 `~/.moc/web.toml` 的 `thinking_detail` / `tool_detail`；旧版的 `expand_thinking = true / false` 读取时分别迁移为 `thinking_detail = "full" / "brief"`。
+只有可展开的行响应点击；全局档位变化时，手动展开会被收回。同一批次里连续的同名只读工具（`read`、`grep` 等）合并成一行「读取 N 个文件」，但有警告、失败或图片的调用独立显示，避免收起分组藏住重要信息。档位写在 `~/.moc/web.toml` 的 `thinking_detail` / `tool_detail`；旧版的 `expand_thinking = true / false` 读取时分别迁移为 `thinking_detail = "full" / "brief"`。
+
+- `read`、`grep`、`find`、`web_fetch`、`skill`、`clm_context`、`stop_agent` 成功时始终只显示摘要，无展开按钮，完整档也不显示原始正文。路径、搜索范围和数量保留；图片独立预览，错误仍可展开。
+- 分页、超长行省略、扫描不完整、输出截断和归档地址等警告始终可见。
+- `web_fetch` 逐页显示标题、约 N tokens、截断与失败信息。token 是 query 筛选和抓取截断后、工具输出归档前的提取文本估算，不是 LLM response usage 增量或精确计费值。
+- `spawn_agent` 按任务分组显示任务开头，`yield` 显示交付报告开头：保留 Markdown 的加粗和列表，正文视口最多三行，不显示原始确认回执，也不能展开。
 
 ## 后台任务
 

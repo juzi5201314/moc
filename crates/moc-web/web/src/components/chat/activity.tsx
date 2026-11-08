@@ -37,6 +37,7 @@ import {
   headLines,
   parseSearch,
   toggledLevel,
+  toolExpandable,
   toolFailed,
   toolHeadline,
 } from "@/lib/tool-view";
@@ -326,10 +327,14 @@ function ToolRow({
   const now = useNow(tool.status === "running" && Boolean(tool.job));
   const headline = toolHeadline(tool);
   const failed = toolFailed(tool);
-  const interactive = Boolean(tool.result || tool.liveOutput || tool.diff || tool.arguments.trim());
+  const interactive =
+    toolExpandable(tool) &&
+    Boolean(tool.result || tool.liveOutput || tool.diff || tool.arguments.trim());
   const toggle = () => setLevel(toggledLevel(axis, level));
   const body = toolBody(tool, level, () => setLevel("full"));
-  const extras = level !== "hidden" && (tool.images.length > 0 || Boolean(tool.progress?.length));
+  const extras =
+    (level !== "hidden" || !toolExpandable(tool)) &&
+    (tool.images.length > 0 || Boolean(tool.progress?.length));
   const canBackground = tool.job?.origin === "foreground" && tool.job.status === "running";
   const background = () => {
     if (!tool.job) return;

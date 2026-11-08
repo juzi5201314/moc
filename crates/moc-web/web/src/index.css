@@ -621,3 +621,11 @@
 .moc-prose > :last-child {
   margin-bottom: 0;
 }
+
+/* 固定工具预览只容纳三行正文：去掉段落与列表的额外垂直留白，避免裁断半行。 */
+.moc-tool-preview .moc-prose :is(p, ul, ol, li, h1, h2, h3, h4, h5, h6) {
+  margin-block: 0;
+  padding-block: 0;
+  font-size: inherit;
+  line-height: inherit;
+}

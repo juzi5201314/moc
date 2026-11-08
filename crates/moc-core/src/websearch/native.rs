@@ -183,6 +183,7 @@ impl NativeFetcher {
             ExtractResult {
                 url: raw_url.to_owned(),
                 final_url: response.final_url,
+                title: None,
                 status: Some(response.status),
                 content_type: response.content_type,
                 method: "generic",
@@ -201,6 +202,15 @@ impl NativeFetcher {
 }
 
 fn post_process(mut result: ExtractResult, query: Option<&str>, max_chars: usize) -> ExtractResult {
+    // HTML 转换与站点 handler 都把页面标题放在首个一级标题；必须在 query 筛选前保存。
+    result.title = result
+        .raw_content
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("# "))
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_owned);
     if let Some(query) = query {
         result.raw_content = select_relevant_chunks(&result.raw_content, query);
     }
@@ -370,6 +380,31 @@ fn cap_chars(text: &mut String, max: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_title_before_query_selection_and_truncation() {
+        let page = ExtractResult {
+            url: "https://example.test".into(),
+            final_url: "https://example.test".into(),
+            title: None,
+            status: Some(200),
+            content_type: Some("text/markdown".into()),
+            method: "generic",
+            notes: Vec::new(),
+            truncated: false,
+            raw_content: format!(
+                "# 完整网页标题\n\n{}\n\nneedle 是需要的内容",
+                "无关段落\n\n".repeat(1000)
+            ),
+        };
+        let selected = post_process(page.clone(), Some("needle"), 100_000);
+        assert_eq!(selected.title.as_deref(), Some("完整网页标题"));
+        assert!(selected.raw_content.contains("needle"));
+        let truncated = post_process(page, None, 3);
+        assert_eq!(truncated.title.as_deref(), Some("完整网页标题"));
+        assert!(truncated.truncated);
+        assert!(!truncated.raw_content.contains("完整网页标题"));
+    }
 
     #[test]
     fn converts_html_and_strips_active_content() {

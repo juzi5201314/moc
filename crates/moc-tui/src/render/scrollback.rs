@@ -1222,13 +1222,11 @@ fn estimate_tool_height(
     body + 1 + gap
 }
 
-/// 工具卡是否展开正文：无正文的记账工具与收起态的 read／run_code／grep／find／todo
-/// 只留标题行（grep／find 的数量进了标题尾列）。
+/// 正文是否需要渲染；固定摘要独立于全局档位与手动展开状态。
 fn shows_tool_body(tool: &ToolCallBlock, level: DetailLevel) -> bool {
     let policy = tool_body_policy(&tool.name);
     tool.has_body()
         && !(policy == ToolBody::FullOnly && !tool_is_error(tool) && level != DetailLevel::Full)
-        && !(policy == ToolBody::Count && !tool_is_error(tool) && level != DetailLevel::Full)
         && !(policy == ToolBody::Todo && level == DetailLevel::Hidden)
 }
 
@@ -2191,6 +2189,22 @@ fn summary_spans(
         }
         "grep" => vec![styled(arg_str("pattern"), theme.text_secondary)],
         "find" => vec![styled(glob_str("glob"), theme.path)],
+        "web_fetch" => vec![styled(
+            args.get("urls")
+                .and_then(Value::as_array)
+                .map_or_default(|urls| {
+                    urls.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                }),
+            theme.path,
+        )],
+        "spawn_agent" => vec![styled(arg_str("title"), theme.text_secondary)],
+        "yield" => vec![styled("交付报告".to_owned(), theme.text_secondary)],
+        "skill" => vec![styled(arg_str("name"), theme.text_secondary)],
+        "clm_context" => vec![styled(arg_str("op"), theme.text_secondary)],
+        "stop_agent" => vec![styled(arg_str("agent_id"), theme.text_secondary)],
         "todo" => todo_summary_spans(args, theme),
         "TodoReminder" => vec![styled(
             "隐式提醒：同步待办进度".to_owned(),
@@ -2392,11 +2406,111 @@ fn render_tool(
     }
 }
 
+/// 固定摘要只渲染元信息、任务／报告开头和截断警告，不显示原始正文。
+fn fixed_tool_rows(
+    tool: &ToolCallBlock,
+    args: &Value,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut rows = Vec::new();
+    let mut preview = |label: &str, text: &str| {
+        rows.push(Line::from(Span::styled(
+            label.to_owned(),
+            Style::new()
+                .fg(theme.text_secondary)
+                .add_modifier(Modifier::BOLD),
+        )));
+        let (head, omitted) = head_lines(text, BRIEF_BODY_ROWS);
+        let rendered = render_markdown(&head, width.max(8), theme);
+        let mut content = rendered
+            .into_iter()
+            .filter(|line| !plain_text(line).trim().is_empty());
+        rows.extend(content.by_ref().take(AGENT_MESSAGE_PREVIEW_ROWS));
+        if omitted > 0 || content.next().is_some() {
+            rows.push(Line::from(Span::styled(
+                "⋯ 仅显示开头",
+                Style::new().fg(theme.gray_dim),
+            )));
+        }
+    };
+    if tool.name == "spawn_agent" {
+        if let Some(tasks) = args.get("tasks").and_then(Value::as_array) {
+            for task in tasks {
+                preview(
+                    task.get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("子代理任务"),
+                    task.get("task").and_then(Value::as_str).unwrap_or_default(),
+                );
+            }
+        } else {
+            preview(
+                "子代理任务",
+                args.get("task").and_then(Value::as_str).unwrap_or_default(),
+            );
+        }
+    } else if tool.name == "yield" {
+        preview(
+            "交付报告",
+            args.get("report")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        );
+    }
+    if let Some(result) = tool.result.as_deref() {
+        if tool.name == "web_fetch"
+            && let Some(json) = result
+                .lines()
+                .next()
+                .and_then(|line| line.strip_prefix("Web fetch summary: "))
+            && let Ok(Value::Array(pages)) = serde_json::from_str::<Value>(json)
+        {
+            for page in pages {
+                let url = page.get("url").and_then(Value::as_str).unwrap_or_default();
+                let title = page.get("title").and_then(Value::as_str).unwrap_or(url);
+                let text = if let Some(error) = page.get("error").and_then(Value::as_str) {
+                    format!("抓取失败：{url} — {error}")
+                } else {
+                    format!(
+                        "{title} · 约 {} tokens{}",
+                        page.get("tokens").and_then(Value::as_u64).unwrap_or(0),
+                        if page.get("truncated").and_then(Value::as_bool) == Some(true) {
+                            " · 警告：内容已截断"
+                        } else {
+                            ""
+                        }
+                    )
+                };
+                let color = if page.get("error").is_some()
+                    || page.get("truncated").and_then(Value::as_bool) == Some(true)
+                {
+                    theme.accent_warning
+                } else {
+                    theme.text_secondary
+                };
+                rows.extend(
+                    wrap_text(&text, width)
+                        .into_iter()
+                        .map(|row| Line::from(Span::styled(row, Style::new().fg(color)))),
+                );
+            }
+        }
+        for notice in crate::transcript::tool_notices(result) {
+            rows.extend(
+                wrap_text(notice, width).into_iter().map(|row| {
+                    Line::from(Span::styled(row, Style::new().fg(theme.accent_warning)))
+                }),
+            );
+        }
+    }
+    rows
+}
+
 /// 工具正文行（不含标题与留白，不带缩进，宽度不超过 `width`）。
 ///
-/// 档位与工具策略共同决定正文：`Count` 的数量进了标题尾列、非完整档没有正文，
-/// `FullOnly` 只在完整档展开；其余内容按 [`content_limit`] 截断，被略去的内容折算成一行
-/// 省略提示（`bash` 结果取尾部最新输出，`grep` 等文本结果取开头）。
+/// 固定摘要不受档位影响；其余内容按 [`content_limit`] 截断，被略去的内容折算成一行
+/// 省略提示（`bash` 结果取尾部最新输出，其他文本结果取开头）。
 /// `command_in_title` 为真时 bash 命令已在标题里，正文不再重复 `$` 行。
 fn tool_body(
     tool: &ToolCallBlock,
@@ -2410,12 +2524,28 @@ fn tool_body(
     let theme = app.theme;
     let is_error = tool_is_error(tool);
     let policy = tool_body_policy(&tool.name);
+    let level = if is_error
+        && level == DetailLevel::Hidden
+        && matches!(
+            policy,
+            ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
+        ) {
+        DetailLevel::Brief
+    } else {
+        level
+    };
 
-    // 计数型工具：数量进了标题尾列，隐藏、简略档没有正文；失败时仍回落到错误正文。
-    if policy == ToolBody::Count && level != DetailLevel::Full && !is_error {
-        return (Vec::new(), Vec::new());
+    if !is_error
+        && matches!(
+            policy,
+            ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
+        )
+    {
+        let mut lines = fixed_tool_rows(tool, args, width, theme);
+        let placements = tool_images(tool, app, width, spawn_images, &mut lines);
+        return (lines, placements);
     }
-    // read 的隐藏、简略档没有正文。
+    // run_code 的隐藏、简略档没有正文。
     if policy == ToolBody::FullOnly && level != DetailLevel::Full && !is_error {
         return (Vec::new(), Vec::new());
     }
@@ -2757,9 +2887,26 @@ fn tool_body_rows(
 ) -> usize {
     let is_error = tool_is_error(tool);
     let policy = tool_body_policy(&tool.name);
+    let level = if is_error
+        && level == DetailLevel::Hidden
+        && matches!(
+            policy,
+            ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
+        ) {
+        DetailLevel::Brief
+    } else {
+        level
+    };
 
-    if policy == ToolBody::Count && level != DetailLevel::Full && !is_error {
-        return 0;
+    if !is_error
+        && matches!(
+            policy,
+            ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
+        )
+    {
+        let mut rows = fixed_tool_rows(tool, args, width, app.theme);
+        tool_images(tool, app, width, false, &mut rows);
+        return rows.len();
     }
     if policy == ToolBody::FullOnly && level != DetailLevel::Full && !is_error {
         return 0;
@@ -4667,9 +4814,9 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
     }
 
-    /// read 在隐藏／简略档严格一行；完整档才展开正文。
+    /// read 始终只显示摘要；失败原因仍可展开查看。
     #[test]
-    fn read_tool_stays_one_line_until_full() {
+    fn read_summary_never_expands_but_errors_remain_visible() {
         use moc_protocol::ToolResult;
         use moc_protocol::methods::ToolStatus;
 
@@ -4702,9 +4849,9 @@ mod tests {
             duration_ms: Some(5),
             diff: None,
         });
-        assert!(app.blocks[0].block.foldable(), "read 应可展开查看正文");
+        assert!(!app.blocks[0].block.foldable());
 
-        for level in [DetailLevel::Hidden, DetailLevel::Brief] {
+        for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
             app.tool_detail = level;
             let lines = render_entry(0, &app.blocks[0], &app, width).lines;
             assert_eq!(lines.len(), 2, "{level:?} 档 read 只占标题行 + 尾随留白");
@@ -4719,29 +4866,6 @@ mod tests {
             );
             assert_eq!(estimate_entry_height_at(&app, 0, width), 2);
         }
-
-        app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width).lines;
-        assert_eq!(full.len(), 200 + 2, "完整档 = 标题 + 200 行 + 留白");
-        let full_text = full
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        assert!(full_text.contains("line-0") && full_text.contains("line-199"));
-        assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
-
-        // 简略档点击标题：就地展开为完整，再点一次收回。
-        app.tool_detail = DetailLevel::Brief;
-        app.blocks[0].toggle_level(DetailLevel::Brief);
-        assert_eq!(app.blocks[0].level_override, Some(DetailLevel::Full));
-        assert_eq!(
-            render_entry(0, &app.blocks[0], &app, width).lines.len(),
-            full.len()
-        );
-        app.blocks[0].toggle_level(DetailLevel::Brief);
-        assert_eq!(app.blocks[0].level_override, None);
-        assert_eq!(render_entry(0, &app.blocks[0], &app, width).lines.len(), 2);
 
         // 失败时正文是错误原因，仍可展开。
         app.finish_tool_block(ToolCallFinish {
@@ -4773,9 +4897,9 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
 
-    /// grep 在隐藏／简略档只报匹配数和文件数，不显示匹配正文。
+    /// grep 始终只报计数和警告，不显示匹配正文。
     #[test]
-    fn grep_brief_reports_counts_only() {
+    fn grep_summary_reports_counts_and_warnings() {
         use moc_protocol::ToolResult;
         use moc_protocol::methods::ToolStatus;
 
@@ -4805,7 +4929,7 @@ mod tests {
             duration_ms: Some(5),
             diff: None,
         });
-        assert!(app.blocks[0].block.foldable(), "grep 现在可以展开看正文");
+        assert!(!app.blocks[0].block.foldable());
         let text_of = |lines: &[Line<'static>]| {
             lines
                 .iter()
@@ -4814,10 +4938,13 @@ mod tests {
                 .collect::<String>()
         };
 
-        for level in [DetailLevel::Hidden, DetailLevel::Brief] {
+        for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
             app.tool_detail = level;
             let lines = render_entry(0, &app.blocks[0], &app, width).lines;
-            assert_eq!(lines.len(), 2, "{level:?} 档 = 标题 + 留白");
+            assert!(
+                text_of(&lines).contains("limit reached"),
+                "截断警告必须可见"
+            );
             let title = plain(&lines[0]);
             assert!(
                 title.contains("2 matches · 2 files"),
@@ -4829,12 +4956,6 @@ mod tests {
             );
             assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
         }
-
-        app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width).lines;
-        let full_text = text_of(&full);
-        assert!(full_text.contains("alpha beta"), "完整档显示匹配正文");
-        assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
 
         // 零匹配同样给出计数行。
         app.finish_tool_block(ToolCallFinish {
@@ -4858,9 +4979,9 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
 
-    /// find 在隐藏／简略档只报路径数，完整档才显示路径。
+    /// find 始终只报路径数和扫描警告。
     #[test]
-    fn find_brief_reports_file_count() {
+    fn find_summary_reports_file_count_and_warnings() {
         use moc_protocol::ToolResult;
         use moc_protocol::methods::ToolStatus;
 
@@ -4898,10 +5019,11 @@ mod tests {
                 .collect::<String>()
         };
 
-        for level in [DetailLevel::Hidden, DetailLevel::Brief] {
+        for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
             app.tool_detail = level;
             let lines = render_entry(0, &app.blocks[0], &app, width).lines;
-            assert_eq!(lines.len(), 2, "{level:?} 档 = 标题 + 留白");
+            assert!(text_of(&lines).contains("limit 200 reached"));
+            assert!(text_of(&lines).contains("Scan incomplete"));
             let title = plain(&lines[0]);
             assert!(
                 title.contains("3 files"),
@@ -4913,11 +5035,6 @@ mod tests {
             );
             assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
         }
-
-        app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width).lines;
-        assert!(text_of(&full).contains("src/a.rs"), "完整档显示路径");
-        assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
 
         app.finish_tool_block(ToolCallFinish {
             id: "call_find".into(),
@@ -6897,6 +7014,136 @@ mod tests {
             "有失败时组头带统计：{head}"
         );
         assert_eq!(estimate_entry_height_at(&app, 2, width), lines.len());
+    }
+
+    #[test]
+    fn fixed_summaries_keep_warnings_and_reject_expansion() {
+        use moc_protocol::methods::ToolStatus;
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let notice = "[… 2048 bytes omitted; full output: artifact://large]";
+        for name in [
+            "read",
+            "grep",
+            "find",
+            "web_fetch",
+            "skill",
+            "clm_context",
+            "stop_agent",
+        ] {
+            run_tool(
+                &mut app,
+                name,
+                name,
+                r#"{"path":"a.rs"}"#,
+                ToolStatus::Completed,
+                &format!("secret-body\n{notice}"),
+            );
+        }
+        for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
+            app.tool_detail = level;
+            for index in 0..app.blocks.len() {
+                assert!(!app.blocks[index].block.foldable());
+                app.blocks[index].toggle_level(level);
+                assert!(app.blocks[index].level_override.is_none());
+                let rendered = render_entry(index, &app.blocks[index], &app, 100);
+                let text = rendered
+                    .lines
+                    .iter()
+                    .map(plain_text)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(!text.contains("secret-body"), "{text}");
+                assert!(text.contains(notice), "{text}");
+                assert_eq!(estimate_entry_height_at(&app, index, 100), rendered.height);
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_agent_previews_show_tasks_and_reports_not_receipts() {
+        use moc_protocol::methods::ToolStatus;
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let report =
+            "**检查边界**\n\n- 核对错误路径\n- 核对取消路径\n- 核对缓存\n- 核对结果\nsecret-tail";
+        let tasks = serde_json::json!({"tasks":[{"title":"解析器","task":report,"role":"scout"},{"title":"渲染器","task":"检查布局","role":"scout"}]}).to_string();
+        run_tool(
+            &mut app,
+            "spawn",
+            "spawn_agent",
+            &tasks,
+            ToolStatus::Completed,
+            "secret-receipt",
+        );
+        run_tool(
+            &mut app,
+            "yield",
+            "yield",
+            &serde_json::json!({"report":report}).to_string(),
+            ToolStatus::Completed,
+            "secret-receipt",
+        );
+        for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
+            app.tool_detail = level;
+            let text = transcript(&app, 80)
+                .iter()
+                .map(plain_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                text.contains("解析器") && text.contains("渲染器") && text.contains("交付报告"),
+                "{text}"
+            );
+            assert!(text.contains("检查边界") && !text.contains("**"), "{text}");
+            assert!(
+                !text.contains("secret-tail") && !text.contains("secret-receipt"),
+                "{text}"
+            );
+            for index in 0..app.blocks.len() {
+                assert!(!app.blocks[index].block.foldable());
+                assert_eq!(
+                    estimate_entry_height_at(&app, index, 80),
+                    render_entry(index, &app.blocks[index], &app, 80).height
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_fetch_summary_preserves_page_metadata_and_failures() {
+        use moc_protocol::methods::ToolStatus;
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let result = "Web fetch summary: [{\"url\":\"https://a.test\",\"title\":\"Rust 文档\",\"tokens\":1234,\"truncated\":true},{\"url\":\"https://b.test\",\"error\":\"HTTP 403\"}]\n\nsecret-body";
+        run_tool(
+            &mut app,
+            "fetch",
+            "web_fetch",
+            r#"{"urls":["https://a.test","https://b.test"]}"#,
+            ToolStatus::Completed,
+            result,
+        );
+        for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
+            app.tool_detail = level;
+            let rendered = render_entry(0, &app.blocks[0], &app, 80);
+            let text = rendered
+                .lines
+                .iter()
+                .map(plain_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                text.contains("Rust 文档") && text.contains("约 1234 tokens"),
+                "{text}"
+            );
+            assert!(
+                text.contains("内容已截断") && text.contains("HTTP 403"),
+                "{text}"
+            );
+            assert!(!text.contains("secret-body"), "{text}");
+            assert_eq!(estimate_entry_height_at(&app, 0, 80), rendered.height);
+        }
     }
 
     /// grep 简略档：计数内联进标题尾列，块只剩标题行和空行。
