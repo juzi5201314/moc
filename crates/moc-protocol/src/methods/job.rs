@@ -88,6 +88,9 @@ pub struct JobList;
 #[serde(deny_unknown_fields)]
 pub struct JobListParams {
     pub session_id: String,
+    /// 为每个未结束的任务附带最后 N 行输出；省略时 `outputs` 为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_lines: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -95,6 +98,10 @@ pub struct JobListParams {
 pub struct JobListResult {
     /// 运行中与最近结束的任务，按 `job_id` 升序。
     pub jobs: Vec<JobInfo>,
+    /// `tail_lines` 非空时各未结束任务的末尾输出（`job_id` → 文本），
+    /// 读取失败的任务不出现。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub outputs: std::collections::BTreeMap<String, String>,
 }
 
 /// `job/kill` / `job/background` 共用的定位参数。

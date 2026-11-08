@@ -6961,6 +6961,7 @@ fn dispatch_command(app: &mut App, connection: &EmbeddedConnection, id: CommandI
                 match client
                     .call::<moc_protocol::methods::JobList>(moc_protocol::methods::JobListParams {
                         session_id,
+                        tail_lines: None,
                     })
                     .await
                 {

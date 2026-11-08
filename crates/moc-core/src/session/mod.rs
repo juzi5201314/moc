@@ -5,6 +5,7 @@ pub mod entries;
 pub mod lock;
 pub(crate) mod log;
 pub mod maintenance;
+pub(crate) mod search;
 pub mod state;
 pub mod store;
 pub mod stored;

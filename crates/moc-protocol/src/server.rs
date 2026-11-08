@@ -41,12 +41,12 @@ use crate::methods::{
     SessionCancel, SessionCancelResult, SessionCompact, SessionContext, SessionContextContent,
     SessionDelete, SessionGoal, SessionList, SessionLoad, SessionLoadPage, SessionNew,
     SessionPlanApprove, SessionPlanDiff, SessionPlanMode, SessionPlanRevise, SessionPrompt,
-    SessionReask, SessionRedo, SessionRename, SessionRetry, SessionRewind, SessionSetAutonomy,
-    SessionSetEngine, SessionSetFastMode, SessionSetModel, SessionSetPermission, SessionSteer,
-    SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage, SessionWorkflowActivate,
-    SessionWorkflowApprove, SessionWorkflowArtifact, SessionWorkflowResume, SessionWorkflowRun,
-    SessionWorkflowRuns, SessionWorkflowSetRoleModel, SessionWorkflowStop, WebStateGet,
-    WebStateSave, WorkspaceGitBranch,
+    SessionReask, SessionRedo, SessionRename, SessionRetry, SessionRewind, SessionSearch,
+    SessionSetAutonomy, SessionSetEngine, SessionSetFastMode, SessionSetModel,
+    SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage,
+    SessionWorkflowActivate, SessionWorkflowApprove, SessionWorkflowArtifact,
+    SessionWorkflowResume, SessionWorkflowRun, SessionWorkflowRuns, SessionWorkflowSetRoleModel,
+    SessionWorkflowStop, WebStateGet, WebStateSave, WorkspaceGitBranch,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
@@ -716,6 +716,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_list(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionSearch as Method>::NAME => {
+                let params = params_from_value::<SessionSearch>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_search(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

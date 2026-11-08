@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 1b6592939dc6e93f
+// schema sha256: 190b3f277c0d133d
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -2426,6 +2426,10 @@ export interface JobInfo {
  */
 export interface JobListParams {
   session_id: string;
+  /**
+   * 为每个未结束的任务附带最后 N 行输出；省略时 `outputs` 为空。
+   */
+  tail_lines?: number | null;
 }
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
@@ -2436,6 +2440,13 @@ export interface JobListResult {
    * 运行中与最近结束的任务，按 `job_id` 升序。
    */
   jobs: JobInfo[];
+  /**
+   * `tail_lines` 非空时各未结束任务的末尾输出（`job_id` → 文本），
+   * 读取失败的任务不出现。
+   */
+  outputs?: {
+    [k: string]: string;
+  };
 }
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
@@ -3914,6 +3925,154 @@ export interface SessionRewindParams {
   session_id: string;
 }
 /**
+ * 一个会话的命中：取它最近的几条匹配。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SessionSearchHit".
+ */
+export interface SessionSearchHit {
+  /**
+   * 会话内命中，按条目时间从新到旧，最多 3 条。
+   */
+  matches: SessionSearchMatch[];
+  session: SessionInfo2;
+}
+/**
+ * 会话内的一条命中。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SessionSearchMatch".
+ */
+export interface SessionSearchMatch {
+  /**
+   * 条目时间戳（毫秒）。
+   */
+  at_ms: number;
+  /**
+   * 命中条目的 transcript ID，可用于历史定位。
+   */
+  entry_id: string;
+  /**
+   * 命中消息的角色（`user`/`assistant` 等线上角色名）。
+   */
+  role: string;
+  /**
+   * 命中点前后的摘录（空白已折叠）。
+   */
+  snippet: string;
+}
+/**
+ * 一条会话的元信息。
+ */
+export interface SessionInfo2 {
+  /**
+   * spawn 时选定的 agent preset 名；普通子代理与普通会话为 `None`。
+   */
+  agent_preset?: string | null;
+  /**
+   * 当前自主程度。
+   */
+  autonomy?: "default" | "dont_ask" | "unattended";
+  /**
+   * 创建时间的 UNIX 毫秒时间戳。
+   */
+  created_at_ms: number;
+  /**
+   * 工作目录。
+   */
+  cwd: string;
+  /**
+   * 有效委托深度：顶层会话为 0，直接子代理为 1。旧 header 未记录深度的
+   * 子代理按 1 处理。
+   */
+  delegation_depth?: number;
+  /**
+   * 当前会话引擎。
+   */
+  engine?: "standard" | "ptc" | "clm_experimental";
+  /**
+   * 引擎是否已锁定：会话跑过第一条用户提示后为真，此后 `session/set_engine` 会被拒绝。
+   */
+  engine_locked?: boolean;
+  /**
+   * Fast Mode 开关；当前模型支持时请求带 `service_tier = "fast"`。
+   */
+  fast_mode?: boolean;
+  /**
+   * 消息回退分叉的来源会话 ID。**纯用户侧出身信息**：分叉在模型侧与普通会话
+   * 完全一致，模型永远不会看到它。
+   */
+  forked_from?: string | null;
+  /**
+   * 会话 ID，由 core 生成（如 `ses_7f3a`）。
+   */
+  id: string;
+  /**
+   * 锁投影；`None` 表示当前没有其它进程在该会话里跑提示。
+   */
+  lock?: SessionLockInfo | null;
+  /**
+   * 当前模型 ID。
+   */
+  model: string;
+  /**
+   * 父会话 ID：只有 `spawn_agent` 出来的子代理会话有，其余会话为 `None`。
+   */
+  parent_session_id?: string | null;
+  /**
+   * 当前命令执行权限。
+   */
+  permission?: ("full" | "workspace") | "workspace_only";
+  /**
+   * plan 模式是否激活；激活时本次各次提示按计划模式运行。
+   */
+  plan_active?: boolean;
+  /**
+   * 标题。
+   */
+  title: string;
+  /**
+   * 最近一次更新的 UNIX 毫秒时间戳。
+   */
+  updated_at_ms: number;
+}
+/**
+ * `session/search` 的参数。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SessionSearchParams".
+ */
+export interface SessionSearchParams {
+  /**
+   * 只搜某个工作目录下的会话；省略时搜全部。
+   */
+  cwd?: string | null;
+  /**
+   * 最多返回多少个会话；默认 20，上限 100。
+   */
+  limit?: number | null;
+  /**
+   * 搜索词；对消息 `Text` 块做大小写不敏感的子串匹配。
+   */
+  query: string;
+}
+/**
+ * `session/search` 的结果。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SessionSearchResult".
+ */
+export interface SessionSearchResult {
+  /**
+   * 命中的会话，按 `session/list` 的 `updated_at_ms` 降序。
+   */
+  matches: SessionSearchHit[];
+  /**
+   * 命中数到达上限或扫描预算耗尽、更早的会话未扫描时为真。
+   */
+  truncated?: boolean;
+}
+/**
  * `session/set_autonomy` 的参数。
  *
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
@@ -3978,12 +4137,12 @@ export interface SessionSetModelResult {
    * 本次检查出的容量缺口；`None` 表示目标模型装得下。
    */
   overflow?: ModelSwitchOverflow | null;
-  session: SessionInfo2;
+  session: SessionInfo3;
 }
 /**
  * 一条会话的元信息。
  */
-export interface SessionInfo2 {
+export interface SessionInfo3 {
   /**
    * spawn 时选定的 agent preset 名；普通子代理与普通会话为 `None`。
    */

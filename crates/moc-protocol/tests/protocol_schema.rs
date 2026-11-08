@@ -132,6 +132,7 @@ fn register_all(
     // session.rs
     client::<SessionNew>(generator, client_map);
     client::<SessionList>(generator, client_map);
+    client::<SessionSearch>(generator, client_map);
     client::<SessionLoad>(generator, client_map);
     client::<SessionLoadPage>(generator, client_map);
     client::<SessionUnload>(generator, client_map);
@@ -215,9 +216,7 @@ fn clean(src: &str) -> String {
                 }
             }
             // 字符字面量 `'x'` / `'\n'` 原样跳过；生命周期 `'a` 不当字符串。
-            b'\'' if bytes.get(i + 2) == Some(&b'\'')
-                || bytes.get(i + 1) == Some(&b'\\') =>
-            {
+            b'\'' if bytes.get(i + 2) == Some(&b'\'') || bytes.get(i + 1) == Some(&b'\\') => {
                 out.push(b'\'');
                 i += 1;
                 while i < bytes.len() {
@@ -240,7 +239,10 @@ fn clean(src: &str) -> String {
 
 fn rust_sources() -> Vec<String> {
     let mut files = Vec::new();
-    collect(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    collect(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
     files.sort();
     files
         .iter()
@@ -292,7 +294,9 @@ fn matching(src: &[u8], open: usize) -> usize {
     let mut i = open;
     while i < src.len() {
         if src[i] == b'"' {
-            i = next_literal(src, i).map(|(_, end)| end).unwrap_or(src.len());
+            i = next_literal(src, i)
+                .map(|(_, end)| end)
+                .unwrap_or(src.len());
             continue;
         }
         if src[i] == l {
@@ -384,9 +388,10 @@ fn scanned_methods(sources: &[String]) -> BTreeMap<String, (String, &'static str
                         directions.insert(ty, direction);
                     }
                     None => {
-                        let body_open = src[end..].find('{').map(|o| end + o).unwrap_or_else(|| {
-                            panic!("`impl Method for {ty}` 没有方法体");
-                        });
+                        let body_open =
+                            src[end..].find('{').map(|o| end + o).unwrap_or_else(|| {
+                                panic!("`impl Method for {ty}` 没有方法体");
+                            });
                         let body_close = matching(bytes, body_open);
                         let body = &src[body_open..=body_close];
                         let name_at = body
@@ -505,11 +510,8 @@ fn build_schema() -> (Value, BTreeMap<String, (String, &'static str)>) {
     let scanned = scanned_methods(&sources);
 
     let mut generator = SchemaGenerator::default();
-    let (mut client_map, mut server_req, mut server_ntf) = (
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-    );
+    let (mut client_map, mut server_req, mut server_ntf) =
+        (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     register_all(
         &mut generator,
         &mut client_map,
@@ -518,17 +520,21 @@ fn build_schema() -> (Value, BTreeMap<String, (String, &'static str)>) {
     );
 
     // 覆盖核对一：扫到的每个方法类型都在注册表里，且 wire 名、方向一致。
-    let registered: BTreeMap<String, (String, &str)> = [("client", &client_map), ("server_request", &server_req), ("server_notification", &server_ntf)]
-        .into_iter()
-        .flat_map(|(direction, map)| {
-            map.iter().map(move |(name, entry)| {
-                (
-                    entry["type"].as_str().unwrap().to_owned(),
-                    (name.clone(), direction),
-                )
-            })
+    let registered: BTreeMap<String, (String, &str)> = [
+        ("client", &client_map),
+        ("server_request", &server_req),
+        ("server_notification", &server_ntf),
+    ]
+    .into_iter()
+    .flat_map(|(direction, map)| {
+        map.iter().map(move |(name, entry)| {
+            (
+                entry["type"].as_str().unwrap().to_owned(),
+                (name.clone(), direction),
+            )
         })
-        .collect();
+    })
+    .collect();
     let mut problems: Vec<String> = Vec::new();
     for (ty, (name, direction)) in &scanned {
         match registered.get(ty) {
@@ -549,7 +555,11 @@ fn build_schema() -> (Value, BTreeMap<String, (String, &'static str)>) {
             problems.push(format!("register_all 里的 {ty} 不是源码中的 Method 类型"));
         }
     }
-    assert!(problems.is_empty(), "方法注册表与源码不一致：\n{}", problems.join("\n"));
+    assert!(
+        problems.is_empty(),
+        "方法注册表与源码不一致：\n{}",
+        problems.join("\n")
+    );
 
     // 覆盖核对二：每个 serde pub 类型都能从方法根到达 $defs（即在线上）。
     // 豁免的是「有 serde 形状但不走 RPC 方法面」的类型：CommandMeta 走

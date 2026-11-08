@@ -27,11 +27,11 @@ use moc_protocol::methods::{
     SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
     SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult, SessionReaskParams,
     SessionRedoParams, SessionRenameParams, SessionRetryParams, SessionRewindParams,
-    SessionSetAutonomyParams, SessionSetEngineParams, SessionSetFastModeParams,
-    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate, SessionUsageParams, SessionUsageResult, UnsteerParams,
-    UnsteerResult, WebStateDocument, WebStateGetParams, WebStateSaveParams,
-    WorkspaceGitBranchParams, WorkspaceGitBranchResult,
+    SessionSearchParams, SessionSearchResult, SessionSetAutonomyParams, SessionSetEngineParams,
+    SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
+    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
+    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument,
+    WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode, UpdateSink};
 use parking_lot::RwLock;
@@ -1002,9 +1002,20 @@ impl AgentService for Core {
         params: JobListParams,
     ) -> Result<JobListResult, RpcError> {
         let runtime = self.inner.runtime(&params.session_id).await;
-        Ok(JobListResult {
-            jobs: runtime.jobs.list(),
-        })
+        let jobs = runtime.jobs.list();
+        let mut outputs = std::collections::BTreeMap::new();
+        if let Some(lines) = params.tail_lines {
+            for job in &jobs {
+                if job.status.is_terminal() {
+                    continue;
+                }
+                if let Ok((_info, text, _path)) = runtime.jobs.output(&job.job_id, lines.min(2000))
+                {
+                    outputs.insert(job.job_id.clone(), text);
+                }
+            }
+        }
+        Ok(JobListResult { jobs, outputs })
     }
 
     async fn job_output(
@@ -1501,6 +1512,24 @@ impl AgentService for Core {
             session.permission = self.inner.effective_permission(session.permission);
         }
         Ok(SessionListResult { sessions })
+    }
+
+    async fn session_search(
+        &self,
+        _ctx: RequestContext,
+        params: SessionSearchParams,
+    ) -> Result<SessionSearchResult, RpcError> {
+        let limit = params.limit.unwrap_or(20).clamp(1, 100) as usize;
+        let (mut matches, truncated) = self
+            .inner
+            .sessions
+            .search(&params.query, params.cwd.as_deref(), limit)
+            .await
+            .map_err(to_rpc)?;
+        for hit in &mut matches {
+            hit.session.permission = self.inner.effective_permission(hit.session.permission);
+        }
+        Ok(SessionSearchResult { matches, truncated })
     }
 
     async fn session_load(

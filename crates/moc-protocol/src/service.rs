@@ -44,8 +44,8 @@ use crate::methods::{
     SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
     SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams, SessionPlanReviseResult,
     SessionReaskParams, SessionRedoParams, SessionRenameParams, SessionRetryParams,
-    SessionRewindParams, SessionSetAutonomyParams, SessionSetEngineParams,
-    SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
+    SessionRewindParams, SessionSearchParams, SessionSearchResult, SessionSetAutonomyParams,
+    SessionSetEngineParams, SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
     SessionUpdateParams, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
     WebStateDocument, WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams,
@@ -333,6 +333,15 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: SessionListParams,
     ) -> impl Future<Output = Result<SessionListResult, RpcError>> + Send;
+
+    /// 跨会话正文子串搜索：消息 `Text` 块的大小写不敏感匹配，按会话最近更新降序。
+    fn session_search(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionSearchParams,
+    ) -> impl Future<Output = Result<SessionSearchResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
 
     /// 冻结一页历史供分块读取；简单服务可以直接返回小页。
     fn session_history(

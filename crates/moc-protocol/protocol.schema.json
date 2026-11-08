@@ -2618,6 +2618,15 @@
       "properties": {
         "session_id": {
           "type": "string"
+        },
+        "tail_lines": {
+          "description": "为每个未结束的任务附带最后 N 行输出；省略时 `outputs` 为空。",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2634,6 +2643,13 @@
             "$ref": "#/$defs/JobInfo"
           },
           "type": "array"
+        },
+        "outputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "`tail_lines` 非空时各未结束任务的末尾输出（`job_id` → 文本），\n读取失败的任务不出现。",
+          "type": "object"
         }
       },
       "required": [
@@ -5084,6 +5100,111 @@
       "required": [
         "session_id",
         "entry_id"
+      ],
+      "type": "object"
+    },
+    "SessionSearchHit": {
+      "additionalProperties": false,
+      "description": "一个会话的命中：取它最近的几条匹配。",
+      "properties": {
+        "matches": {
+          "description": "会话内命中，按条目时间从新到旧，最多 3 条。",
+          "items": {
+            "$ref": "#/$defs/SessionSearchMatch"
+          },
+          "type": "array"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionInfo",
+          "description": "命中的会话（与 `session/list` 相同的投影）。"
+        }
+      },
+      "required": [
+        "session",
+        "matches"
+      ],
+      "type": "object"
+    },
+    "SessionSearchMatch": {
+      "additionalProperties": false,
+      "description": "会话内的一条命中。",
+      "properties": {
+        "at_ms": {
+          "description": "条目时间戳（毫秒）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "entry_id": {
+          "description": "命中条目的 transcript ID，可用于历史定位。",
+          "type": "string"
+        },
+        "role": {
+          "description": "命中消息的角色（`user`/`assistant` 等线上角色名）。",
+          "type": "string"
+        },
+        "snippet": {
+          "description": "命中点前后的摘录（空白已折叠）。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entry_id",
+        "role",
+        "snippet",
+        "at_ms"
+      ],
+      "type": "object"
+    },
+    "SessionSearchParams": {
+      "additionalProperties": false,
+      "description": "`session/search` 的参数。",
+      "properties": {
+        "cwd": {
+          "description": "只搜某个工作目录下的会话；省略时搜全部。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "最多返回多少个会话；默认 20，上限 100。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "description": "搜索词；对消息 `Text` 块做大小写不敏感的子串匹配。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "SessionSearchResult": {
+      "additionalProperties": false,
+      "description": "`session/search` 的结果。",
+      "properties": {
+        "matches": {
+          "description": "命中的会话，按 `session/list` 的 `updated_at_ms` 降序。",
+          "items": {
+            "$ref": "#/$defs/SessionSearchHit"
+          },
+          "type": "array"
+        },
+        "truncated": {
+          "default": false,
+          "description": "命中数到达上限或扫描预算耗尽、更早的会话未扫描时为真。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "matches"
       ],
       "type": "object"
     },
@@ -8427,6 +8548,15 @@
           "$ref": "#/$defs/SessionLoadResult"
         },
         "type": "SessionRewind"
+      },
+      "session/search": {
+        "params": {
+          "$ref": "#/$defs/SessionSearchParams"
+        },
+        "result": {
+          "$ref": "#/$defs/SessionSearchResult"
+        },
+        "type": "SessionSearch"
       },
       "session/set_autonomy": {
         "params": {

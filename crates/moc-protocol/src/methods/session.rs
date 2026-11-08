@@ -140,7 +140,9 @@ pub enum SessionEngine {
 /// 会话自主程度：哪些确认由系统代答而不打扰用户。
 ///
 /// 档位从低到高单向收紧人工介入；`session/set_autonomy` 随时可改，随会话持久化。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionAutonomy {
     /// 默认：所有确认都等用户本人。
@@ -243,7 +245,18 @@ pub struct SessionUsageParams {
 
 /// 用量来源：会话自身、Fusion sidekick 子会话，或普通子代理（含其后代）。
 #[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum UsageSource {
@@ -576,6 +589,62 @@ pub struct SessionListParams {}
 pub struct SessionListResult {
     /// 会话列表；core 按 `updated_at_ms` 降序排列。
     pub sessions: Vec<SessionInfo>,
+}
+
+/// `session/search`：跨会话正文子串搜索（消息 `Text` 块，大小写不敏感）。
+///
+/// 标题与工作目录的匹配由前端在 `session/list` 结果上本地完成，这里只补
+/// 本地做不了的正文搜索。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionSearch;
+
+/// `session/search` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSearchParams {
+    /// 搜索词；对消息 `Text` 块做大小写不敏感的子串匹配。
+    pub query: String,
+    /// 最多返回多少个会话；默认 20，上限 100。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// 只搜某个工作目录下的会话；省略时搜全部。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+/// 会话内的一条命中。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSearchMatch {
+    /// 命中条目的 transcript ID，可用于历史定位。
+    pub entry_id: String,
+    /// 命中消息的角色（`user`/`assistant` 等线上角色名）。
+    pub role: String,
+    /// 命中点前后的摘录（空白已折叠）。
+    pub snippet: String,
+    /// 条目时间戳（毫秒）。
+    pub at_ms: u64,
+}
+
+/// 一个会话的命中：取它最近的几条匹配。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSearchHit {
+    /// 命中的会话（与 `session/list` 相同的投影）。
+    pub session: SessionInfo,
+    /// 会话内命中，按条目时间从新到旧，最多 3 条。
+    pub matches: Vec<SessionSearchMatch>,
+}
+
+/// `session/search` 的结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSearchResult {
+    /// 命中的会话，按 `session/list` 的 `updated_at_ms` 降序。
+    pub matches: Vec<SessionSearchHit>,
+    /// 命中数到达上限或扫描预算耗尽、更早的会话未扫描时为真。
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// `session/load` 的参数。
@@ -981,6 +1050,14 @@ impl Method for SessionList {
 }
 
 impl ClientRequest for SessionList {}
+
+impl Method for SessionSearch {
+    const NAME: &'static str = "session/search";
+    type Params = SessionSearchParams;
+    type Result = SessionSearchResult;
+}
+
+impl ClientRequest for SessionSearch {}
 
 impl Method for SessionLoad {
     const NAME: &'static str = "session/load";
