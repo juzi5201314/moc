@@ -1,33 +1,29 @@
-// 右侧检查面板：变更 / 计划 / 任务 / 子代理 / 上下文 / 用量 / 旁路。
-// 分页标签带计数徽标；需要远端数据的分页只在打开时拉取。
+// 右侧检查面板：文件 / 终端 / 变更 / 旁路。
+// 计数徽标只保留 changes；需要远端数据的分页只在打开时拉取。
 
 import { Columns2Icon, RowsIcon, XIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo } from "react";
 import { IconButton } from "@/components/common/icon-button";
-import { TodoPhases } from "@/components/common/todo-phases";
+import { FilesTab } from "@/components/files/files-tab";
 import { DiffFile } from "@/components/panels/diff-file";
-import { PlanReview } from "@/components/plan/plan-review";
 import { cn } from "@/lib/utils";
-import type { PlanAction, PlanInfo, SessionEngine, ToolFileDiff } from "@/protocol/types";
-import { approvePlan } from "@/store/actions";
+import type { ToolFileDiff } from "@/protocol/types";
 import { type InspectorTab, useLayout } from "@/store/layout";
 import { usePrefs } from "@/store/prefs";
 import { useTranscript } from "@/store/transcript";
-import { AgentsTab, BtwTab, ContextTab, PanelEmpty, UsageTab } from "./inspector-tabs";
+import { BtwTab, PanelEmpty } from "./inspector-tabs";
+
+// 终端整页懒加载：xterm 依赖大，不进主路径。
+const TerminalTab = lazy(() =>
+  import("@/components/terminal/terminal-tab").then((module) => ({ default: module.TerminalTab })),
+);
 
 const TABS: { id: InspectorTab; label: string }[] = [
+  { id: "files", label: "文件" },
+  { id: "terminal", label: "终端" },
   { id: "changes", label: "变更" },
-  { id: "plan", label: "计划" },
-  { id: "todo", label: "任务" },
-  { id: "agents", label: "子代理" },
-  { id: "context", label: "上下文" },
-  { id: "usage", label: "用量" },
   { id: "btw", label: "旁路" },
 ];
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 export function InspectorPanel({ sessionId }: { sessionId: string }) {
   const tab = useLayout((state) => state.inspectorTab);
@@ -36,12 +32,6 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
   const counts: Partial<Record<InspectorTab, number>> = {
     changes: new Set(view?.diffs.flatMap((record) => record.diff.files.map((file) => file.path)))
       .size,
-    plan: view?.plans.filter((plan) => plan.status === "submitted").length,
-    todo: view?.todos.flatMap((phase) => phase.items).filter((item) => item.status !== "completed")
-      .length,
-    agents: Object.values(view?.agents ?? {}).filter(
-      (agent) => agent.status === "running" || agent.status === "queued",
-    ).length,
   };
 
   return (
@@ -64,14 +54,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
               >
                 {item.label}
                 {count > 0 && (
-                  <span
-                    className={cn(
-                      "min-w-4 rounded-full px-1 text-center text-2xs leading-4 tabular-nums",
-                      item.id === "plan"
-                        ? "bg-brand text-brand-foreground"
-                        : "bg-foreground/10 text-muted-foreground",
-                    )}
-                  >
+                  <span className="min-w-4 rounded-full bg-foreground/10 px-1 text-center text-2xs leading-4 tabular-nums text-muted-foreground">
                     {count}
                   </span>
                 )}
@@ -89,18 +72,17 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
         </IconButton>
       </div>
 
+      {/* files/terminal/btw 各自管理内部滚动，只有 changes 用外层滚动 */}
       <div
-        className={cn(
-          "min-h-0 flex-1",
-          tab === "btw" || tab === "context" ? "flex flex-col" : "overflow-y-auto",
-        )}
+        className={cn("min-h-0 flex-1", tab === "changes" ? "overflow-y-auto" : "flex flex-col")}
       >
+        {tab === "files" && <FilesTab key={sessionId} sessionId={sessionId} />}
+        {tab === "terminal" && (
+          <Suspense fallback={<p className="px-4 py-6 text-xs text-text-tertiary">加载终端…</p>}>
+            <TerminalTab key={sessionId} sessionId={sessionId} />
+          </Suspense>
+        )}
         {tab === "changes" && <ChangesTab sessionId={sessionId} />}
-        {tab === "plan" && <PlanTab sessionId={sessionId} />}
-        {tab === "todo" && <TodoTab sessionId={sessionId} />}
-        {tab === "agents" && <AgentsTab key={sessionId} sessionId={sessionId} />}
-        {tab === "context" && <ContextTab key={sessionId} sessionId={sessionId} />}
-        {tab === "usage" && <UsageTab key={sessionId} sessionId={sessionId} />}
         {tab === "btw" && <BtwTab key={sessionId} sessionId={sessionId} />}
       </div>
     </div>
@@ -156,61 +138,4 @@ function ChangesTab({ sessionId }: { sessionId: string }) {
       </div>
     </div>
   );
-}
-
-// ---------- 计划 ----------
-
-function PlanTab({ sessionId }: { sessionId: string }) {
-  const plans = useTranscript((state) => state.bySession[sessionId]?.plans);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  // 修订后新版本是新的 plan_id；面板总是停在最新一版。
-  const latest = useMemo(
-    () => (plans ?? []).toSorted((left, right) => (right.version ?? 0) - (left.version ?? 0))[0],
-    [plans],
-  );
-
-  if (!latest) {
-    return (
-      <PanelEmpty
-        title="还没有计划"
-        hint="在输入框打开「计划」后发送任务，模型会先写出计划交给你审阅，批准后才开始改动。"
-      />
-    );
-  }
-
-  const act = async (plan: PlanInfo, action: PlanAction, executionEngine?: SessionEngine) => {
-    setBusy(plan.plan_id);
-    setActionError(null);
-    try {
-      await approvePlan(sessionId, plan.plan_id, action, executionEngine);
-    } catch (error) {
-      setActionError(errorText(error));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  return (
-    <PlanReview
-      key={latest.plan_id}
-      sessionId={sessionId}
-      plan={latest}
-      busy={busy === latest.plan_id}
-      actionError={actionError}
-      onAction={(plan, action, executionEngine) => void act(plan, action, executionEngine)}
-    />
-  );
-}
-
-// ---------- 任务 ----------
-
-function TodoTab({ sessionId }: { sessionId: string }) {
-  const phases = useTranscript((state) => state.bySession[sessionId]?.todos);
-  if (!phases?.some((phase) => phase.items.length > 0)) {
-    return (
-      <PanelEmpty title="还没有任务清单" hint="模型拆解多步任务时维护的 todo 会实时同步到这里。" />
-    );
-  }
-  return <TodoPhases phases={phases} className="px-3 py-3" />;
 }

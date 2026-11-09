@@ -13,12 +13,22 @@ import {
   type Components,
   type MermaidErrorComponentProps,
 } from "streamdown";
-import { toast } from "sonner";
+
 import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupText } from "@/components/ui/button-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  FS_SENTINEL,
+  isResourceUri,
+  RESOURCE_SENTINEL,
+  resolveAnchorTarget,
+  splitLineRef,
+} from "@/lib/file-target";
 import { codePlugin, mermaidPlugin } from "@/lib/streamdown-plugins";
 import { useIsDark } from "@/lib/use-dark";
+import { openFile } from "@/store/files";
+import { useTabs } from "@/store/tabs";
+import { useTranscript } from "@/store/transcript";
 import { cn } from "@/lib/utils";
 import { mermaidConfig } from "./mermaid-theme";
 import { SVG_ALLOWED_TAGS, liftSvgFences, readFigureTokens } from "./svg-figure";
@@ -302,15 +312,28 @@ function MermaidFallback({ chart }: MermaidErrorComponentProps) {
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
-/// file:// 在 rehype-harden 的安全死名单里，到组件前就被拦成 [blocked]；
-/// 在 remark 层先改写成裸路径，与模型直接写路径的链接走同一条本地链接通道。
+/// file:// 与 local:// 等资源 URI 都不在 rehype-sanitize 的协议白名单里，
+/// href 会被剥掉、链接退化成 button。在 remark 层先改写：file:// → 裸路径；
+/// 资源 URI → `#moc-res:<uri>` 哨兵（fragment 不是协议，能活到组件层再解开）。
 const fileLinkRewrite = () => (tree: { children?: unknown[]; url?: string }) => {
   const walk = (node: { children?: unknown[]; url?: string }) => {
-    if (typeof node.url === "string" && /^file:\/\//i.test(node.url)) {
-      try {
-        node.url = decodeURIComponent(new URL(node.url).pathname);
-      } catch {
-        // 非法 file:// URL 保留原样，交给后续管线按既有规则处理。
+    if (typeof node.url === "string") {
+      if (/^file:\/\//i.test(node.url)) {
+        try {
+          node.url = decodeURIComponent(new URL(node.url).pathname);
+        } catch {
+          // 非法 file:// URL 保留原样，交给后续管线按既有规则处理。
+        }
+      } else if (isResourceUri(node.url)) {
+        node.url = `${RESOURCE_SENTINEL}${node.url}`;
+      } else if (
+        !node.url.startsWith("#") &&
+        !/^[a-zA-Z][\w+.-]*:/.test(node.url) &&
+        splitLineRef(node.url).line !== undefined
+      ) {
+        // `src/a.ts:9` 这类行号写法含冒号，会被 URL 安全判定拦成按钮；
+        // 同样走哨兵 fragment 通道，组件层再拆回路径与行号。
+        node.url = `${FS_SENTINEL}${node.url}`;
       }
     }
     for (const child of node.children ?? []) {
@@ -323,29 +346,9 @@ const fileLinkRewrite = () => (tree: { children?: unknown[]; url?: string }) => 
 // remarkPlugins prop 是整体替换默认列表，GFM/代码元信息必须显式保留。
 const messageRemarkPlugins = [...Object.values(defaultRemarkPlugins), fileLinkRewrite];
 
-/// 链接目标是本地文件路径（浏览器里点不开：裸路径变同源 404、file:// 被拦）。
-/// 规则与 TUI 一致：file:// 是本地路径；scheme: 与 #锚点 算 URL；其余按路径处理。
-function isLocalFileRef(href: string): boolean {
-  const target = href.trim();
-  if (/^file:\/\//i.test(target)) return true;
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target) || target.startsWith("#")) return false;
-  return true;
-}
-
-function localFileRefPath(href: string): string {
-  const target = href.trim();
-  if (!/^file:\/\//i.test(target)) return target;
-  try {
-    return decodeURIComponent(new URL(target).pathname);
-  } catch {
-    return target;
-  }
-}
-
 const BuiltinAnchor = defaultComponents.a;
 
-/// 本地路径链接在浏览器里打不开：保留 <a> 语义（悬停见路径、右键可复制地址），
-/// 点击改成复制路径 + toast，而不是导航到同源 404。
+/// 本地路径/资源 URI 链接：点击在文件分页打开（`path:12` 与 `path#L12` 带行号）。
 const MarkdownAnchor: NonNullable<Components["a"]> = ({
   href,
   children,
@@ -353,7 +356,12 @@ const MarkdownAnchor: NonNullable<Components["a"]> = ({
   node,
   ...props
 }) => {
-  if (href && isLocalFileRef(href)) {
+  const sessionId = useTabs((state) => state.active);
+  const cwd = useTranscript((state) =>
+    sessionId ? (state.bySession[sessionId]?.info.cwd ?? "") : "",
+  );
+  const parsed = resolveAnchorTarget(href, cwd);
+  if (parsed) {
     return (
       <a
         {...props}
@@ -367,11 +375,10 @@ const MarkdownAnchor: NonNullable<Components["a"]> = ({
         target={undefined}
         onClick={(event) => {
           event.preventDefault();
-          const path = localFileRefPath(href);
-          void navigator.clipboard.writeText(path);
-          toast.success("已复制路径", { description: path });
+          const id = useTabs.getState().active;
+          if (id) openFile(id, parsed.target, { line: parsed.line });
         }}
-        title={`复制路径 ${href}`}
+        title={href}
       >
         {children}
       </a>

@@ -18,7 +18,7 @@ vi.mock("@tanstack/react-virtual", () => ({
   }),
 }));
 
-import { ContextTab } from "./context-tab";
+import { ContextViewer } from "./context-viewer";
 
 const node = (index: number): ContextNode => ({
   id: String(index),
@@ -50,7 +50,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 it("千条消息默认折叠，只读取展开正文，关闭释放视图", async () => {
-  const ui = render(<ContextTab sessionId="s1" />);
+  const ui = render(<ContextViewer sessionId="s1" />);
   await waitFor(() => expect(ui.getByText("messages[0]")).toBeTruthy());
   expect(ui.queryByText("messages[99]")).toBeNull();
   expect(call.mock.calls.filter((args) => args[0] === "session/context_read")).toHaveLength(0);
@@ -127,7 +127,7 @@ it("按role消息、content和来源子块逐级独立展开", async () => {
       sources: [],
     });
   });
-  const ui = render(<ContextTab sessionId="s1" />);
+  const ui = render(<ContextViewer sessionId="s1" />);
   await waitFor(() => expect(ui.getByRole("button", { name: /system.*#1/ })).toBeTruthy());
   fireEvent.click(ui.getByRole("button", { name: /system.*#1/ }));
   await waitFor(() => expect(ui.getByText("content")).toBeTruthy());
@@ -160,7 +160,7 @@ it("刷新后丢弃旧目录回执并释放旧视图", async () => {
         })
       : Promise.resolve({}),
   );
-  const ui = render(<ContextTab sessionId="s1" />);
+  const ui = render(<ContextViewer sessionId="s1" />);
   call.mockImplementation((method: string) =>
     Promise.resolve(
       method === "session/context_content" ? { ...view("new"), model: "new-model" } : {},

@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AUTONOMY } from "@/lib/autonomy";
-import { compactTokens, sessionCost } from "@/lib/models";
+import { sessionCost } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type {
@@ -49,6 +49,8 @@ import {
 } from "@/store/lifecycle";
 import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
+import { useUi } from "@/store/ui";
+import { AgentsPopover, UsagePopover } from "./status-popovers";
 
 export const CHIP =
   "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-foreground";
@@ -157,7 +159,12 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
   const current =
     todos.find((item) => item.status === "in_progress") ??
     todos.find((item) => item.status !== "completed");
-  const inspect = (tab: "changes" | "agents" | "usage") => useLayout.getState().openInspector(tab);
+  const inspect = (tab: "changes") => useLayout.getState().openInspector(tab);
+  const agentTotal = Object.keys(view?.agents ?? {}).length;
+  const popoverKind = useUi((state) => state.statusPopover);
+  const popoverOpen = popoverKind?.sessionId === sessionId ? popoverKind.kind : null;
+  const usageOpen = popoverOpen === "usage";
+  const agentsOpen = popoverOpen === "agents";
 
   return (
     <div className="text-xs">
@@ -203,27 +210,10 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
             <DiffStat added={changes.added} removed={changes.removed} />
           </button>
         )}
-        {agents > 0 && (
-          <button
-            type="button"
-            onClick={() => inspect("agents")}
-            className={STAT}
-            title="查看子代理"
-          >
-            <span className="size-1.5 animate-pulse rounded-full bg-brand" />
-            {agents} 个子代理运行中
-          </button>
+        {(agents > 0 || agentTotal > 0 || agentsOpen) && (
+          <AgentsPopover sessionId={sessionId} running={agents} total={agentTotal} />
         )}
-        {cost > 0 && (
-          <button
-            type="button"
-            onClick={() => inspect("usage")}
-            className={cn(STAT, "font-mono tabular-nums")}
-            title="查看本会话用量"
-          >
-            {formatCost(cost)}
-          </button>
-        )}
+        {(cost > 0 || usageOpen) && <UsagePopover sessionId={sessionId} label={formatCost(cost)} />}
       </div>
       {open && todos.length > 0 && (
         <ul className="max-h-48 space-y-0.5 overflow-y-auto px-5 pt-0.5 pb-2 text-ui">
@@ -514,64 +504,8 @@ export function PlanToggle({ sessionId, disabled }: { sessionId: string; disable
 
 // ---------- 上下文圆环 ----------
 
-export function ContextRing({ used, window }: { used: number; window: number }) {
-  const percent = Math.min(100, Math.round((used / window) * 100));
-  const size = 18;
-  const stroke = 2;
-  const radius = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * radius;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={() => useLayout.getState().openInspector("context")}
-          className="flex size-7 items-center justify-center rounded-lg hover:bg-accent"
-          aria-label={`上下文已用 ${percent}%`}
-        >
-          <svg
-            width={size}
-            height={size}
-            viewBox={`0 0 ${size} ${size}`}
-            className={cn(
-              "-rotate-90",
-              percent >= 90
-                ? "text-destructive"
-                : percent >= 75
-                  ? "text-warn"
-                  : "text-muted-foreground",
-            )}
-            aria-hidden="true"
-          >
-            <circle
-              cx={size / 2}
-              cy={size / 2}
-              r={radius}
-              fill="none"
-              stroke="currentColor"
-              strokeOpacity={0.2}
-              strokeWidth={stroke}
-            />
-            <circle
-              cx={size / 2}
-              cy={size / 2}
-              r={radius}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={stroke}
-              strokeLinecap="round"
-              strokeDasharray={circumference}
-              strokeDashoffset={circumference * (1 - percent / 100)}
-            />
-          </svg>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="top">
-        上下文 {compactTokens(used) || "0"} / {compactTokens(window)} · {percent}%
-      </TooltipContent>
-    </Tooltip>
-  );
-}
+// 圆环 + Popover 在 status-popovers.tsx；这里保留再导出给 composer-bar。
+export { ContextRingPopover as ContextRing } from "./status-popovers";
 
 // ---------- 补全菜单 ----------
 

@@ -21,6 +21,7 @@ export const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: "Alt N", label: "新会话" },
   { keys: "Ctrl B", label: "展开 / 收起侧栏" },
   { keys: "Alt R", label: "展开 / 收起检查面板" },
+  { keys: "Ctrl `", label: "打开 / 收起终端分页" },
   { keys: "Alt P", label: "切换模型" },
   { keys: "Alt M", label: "切换会话引擎（首条消息前）" },
   { keys: "Alt J", label: "进入 / 退出计划状态" },
@@ -130,6 +131,15 @@ function handleCtrl(code: string): boolean {
     case "KeyB":
       useLayout.getState().toggleSidebar();
       return true;
+    case "Backquote": {
+      const layout = useLayout.getState();
+      if (layout.rightbarOpen && layout.inspectorTab === "terminal") {
+        layout.toggleRightbar(false);
+      } else {
+        layout.openInspector("terminal");
+      }
+      return true;
+    }
     case "Slash":
       openSettings("shortcuts");
       return true;

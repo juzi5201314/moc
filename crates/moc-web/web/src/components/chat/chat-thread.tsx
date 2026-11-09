@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
 import type { AskParams, ImageSource, PermissionRequestParams } from "@/protocol/types";
 import { retrySession } from "@/store/actions";
 import { useComposer } from "@/store/composer";
-import { useLayout } from "@/store/layout";
+import { openFile } from "@/store/files";
 import { loadOlder, redo, rewind } from "@/store/lifecycle";
 import { useTranscript } from "@/store/transcript";
 import { useTurn, useTurnIds } from "@/store/turns";
@@ -736,7 +736,9 @@ function PlanCard({
         size="sm"
         variant={pending ? "default" : "outline"}
         className="h-8"
-        onClick={() => useLayout.getState().openInspector("plan")}
+        onClick={() => {
+          if (plan) openFile(sessionId, { kind: "resource", uri: plan.path });
+        }}
       >
         {pending ? "审阅计划" : "查看计划"}
         {plan?.status === "approved" && <CheckIcon className="size-3.5" />}

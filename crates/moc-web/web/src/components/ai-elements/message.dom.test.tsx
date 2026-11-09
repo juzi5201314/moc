@@ -1,7 +1,14 @@
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { useTabs } from "@/store/tabs";
+import { useTranscript } from "@/store/transcript";
 import { CodeBlock, highlightCode } from "./code-block";
 import { MessageResponse } from "./message";
+
+const openFile = vi.fn();
+vi.mock("@/store/files", () => ({
+  openFile: (...args: unknown[]) => openFile(...args),
+}));
 
 class ImmediateIntersectionObserver {
   readonly callback: IntersectionObserverCallback;
@@ -150,26 +157,34 @@ describe("MessageResponse GitHub 风格渲染", () => {
     expect(bad.container.querySelector("svg.moc-svg-figure")).toBeNull();
   });
 
-  it("本地路径链接点击复制路径，URL 保持原样", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+  it("本地路径链接点击在文件分页打开，URL 保持原样", async () => {
+    openFile.mockClear();
+    useTabs.setState({ active: "s1" });
+    useTranscript.setState((state) => ({
+      bySession: {
+        ...state.bySession,
+        s1: { info: { cwd: "/repo" } } as never,
+      },
+    }));
     const source =
       "改了 [ModelCompat](/repo/src/model.rs) 和 [lib](file:///repo/src/lib.rs)，" +
+      "还有 [源码](src/a.ts:9) 与 [URI](local://plan_1.md)，" +
       "参考 [文档](https://example.com/spec)。";
     const { container } = render(<MessageResponse>{source}</MessageResponse>);
     await waitFor(() => {
-      expect(container.querySelectorAll('[data-streamdown="link"]')).toHaveLength(3);
+      expect(container.querySelectorAll('[data-streamdown="link"]')).toHaveLength(5);
     });
 
-    const [model, lib, doc] = [...container.querySelectorAll('[data-streamdown="link"]')];
+    const [model, lib, rel, uri, doc] = [...container.querySelectorAll('[data-streamdown="link"]')];
     fireEvent.click(model);
-    expect(writeText).toHaveBeenLastCalledWith("/repo/src/model.rs");
+    expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "fs", path: "/repo/src/model.rs" }, {});
     fireEvent.click(lib);
-    expect(writeText).toHaveBeenLastCalledWith("/repo/src/lib.rs");
-    expect(writeText).toHaveBeenCalledTimes(2);
+    expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "fs", path: "/repo/src/lib.rs" }, {});
+    fireEvent.click(rel);
+    expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "fs", path: "/repo/src/a.ts" }, { line: 9 });
+    fireEvent.click(uri);
+    expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "resource", uri: "local://plan_1.md" }, {});
+    expect(openFile).toHaveBeenCalledTimes(4);
     // 真 URL 交给内建渲染（linkSafety 弹窗按钮），不进入复制路径
     expect(doc.tagName).toBe("BUTTON");
     expect(doc.textContent).toBe("文档");

@@ -26,6 +26,7 @@ import { MessageResponse } from "@/components/ai-elements/message";
 import { toolBody } from "@/components/chat/tool-views";
 import { DiffStat, diffStats } from "@/components/panels/diff-file";
 import { Button } from "@/components/ui/button";
+import { parseLinkTarget } from "@/lib/file-target";
 import { formatDuration } from "@/lib/format";
 import {
   BRIEF_BODY_ROWS,
@@ -47,7 +48,9 @@ import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type { ImageSource, JobResult } from "@/protocol/types";
 import { reanswerAsk } from "@/store/actions";
+import { openFile } from "@/store/files";
 import { usePrefs } from "@/store/prefs";
+import { useTranscript } from "@/store/transcript";
 
 const KIND_ICON: Record<ActivityKind, ReactNode> = {
   thinking: <BrainIcon />,
@@ -108,10 +111,12 @@ function RowHeader({
   open,
   pulse,
   onToggle,
+  onTargetClick,
 }: {
   icon: ReactNode;
   verb: string;
   target?: string;
+  onTargetClick?: () => void;
   scope?: string;
   mono?: boolean;
   failed?: boolean;
@@ -142,14 +147,38 @@ function RowHeader({
       </span>
       <span className={cn("shrink-0", pulse && "animate-pulse")}>{verb}</span>
       <span className="flex min-w-0 flex-1 items-baseline gap-2 truncate">
-        {target && (
-          <span
-            className={cn("min-w-0 truncate text-text-tertiary", mono && "font-mono text-xs")}
-            title={target}
-          >
-            {target}
-          </span>
-        )}
+        {target &&
+          (onTargetClick ? (
+            // biome-ignore lint/a11y/useSemanticElements: 行内截断 span 才能嵌进 title 截断布局，语义等价于 <a>
+            <span
+              role="link"
+              tabIndex={0}
+              className={cn(
+                "min-w-0 truncate text-text-tertiary hover:text-foreground",
+                mono && "font-mono text-xs",
+              )}
+              title={target}
+              onClick={(event) => {
+                event.stopPropagation();
+                onTargetClick();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.stopPropagation();
+                  onTargetClick();
+                }
+              }}
+            >
+              {target}
+            </span>
+          ) : (
+            <span
+              className={cn("min-w-0 truncate text-text-tertiary", mono && "font-mono text-xs")}
+              title={target}
+            >
+              {target}
+            </span>
+          ))}
         {scope && (
           <span className="shrink-0 truncate font-mono text-2xs text-text-tertiary/70">
             {scope}
@@ -332,6 +361,18 @@ function ToolRow({
     Boolean(tool.result || tool.liveOutput || tool.diff || tool.arguments.trim());
   const toggle = () => setLevel(toggledLevel(axis, level));
   const body = toolBody(tool, level, () => setLevel("full"));
+  // read / edit / write 的目标路径可点击：在文件分页打开（read 带 offset 行号）。
+  const targetClick = (() => {
+    if (tool.name !== "read" && tool.name !== "edit" && tool.name !== "write") return undefined;
+    const target = headline.target;
+    if (!target) return undefined;
+    return () => {
+      const cwd = useTranscript.getState().bySession[sessionId]?.info.cwd ?? "";
+      const parsed = parseLinkTarget(target, cwd);
+      const offset = tool.name === "read" ? argOffset(tool) : undefined;
+      if (parsed) openFile(sessionId, parsed.target, { line: parsed.line ?? offset });
+    };
+  })();
   const extras =
     (level !== "hidden" || !toolExpandable(tool)) &&
     (tool.images.length > 0 || Boolean(tool.progress?.length));
@@ -394,6 +435,7 @@ function ToolRow({
         interactive={interactive}
         open={level === "full"}
         onToggle={toggle}
+        onTargetClick={targetClick}
       />
       {(body || extras) && (
         <Body>
@@ -410,6 +452,16 @@ function ToolRow({
       )}
     </div>
   );
+}
+
+/** read 的 offset 起始行（入参 JSON 里的数字）。 */
+function argOffset(tool: ToolBlock): number | undefined {
+  try {
+    const offset = (JSON.parse(tool.arguments) as { offset?: number }).offset;
+    return typeof offset === "number" && offset > 0 ? offset : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** 子代理进度行与工具返回的图片。 */

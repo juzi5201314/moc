@@ -291,7 +291,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
   );
 }
 
-export { ContextTab } from "./context-tab";
+// ContextViewer 已迁到 components/context/context-viewer.tsx（ContextDialog 承载）。
 
 // ---------- 用量 ----------
 

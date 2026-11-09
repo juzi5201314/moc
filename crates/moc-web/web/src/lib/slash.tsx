@@ -16,6 +16,7 @@ import type {
 import { retrySession, sendPrompt } from "@/store/actions";
 import { useBtw } from "@/store/btw";
 import { toInput, useComposer } from "@/store/composer";
+import { openFile } from "@/store/files";
 import { useLayout } from "@/store/layout";
 import {
   closeSession,
@@ -183,13 +184,17 @@ export function runSlash(
         .catch((error) => toast.error(`切换计划状态失败：${errorText(error)}`));
       break;
     }
-    case "confirm-plan":
-      if (!view?.info.plan_active) {
-        toast("只有计划状态可以重新审阅计划");
+    case "confirm-plan": {
+      const plan = view?.plans.toSorted(
+        (left, right) => (right.version ?? 0) - (left.version ?? 0),
+      )[0];
+      if (!plan) {
+        toast("还没有可审阅的计划");
         break;
       }
-      useLayout.getState().openInspector("plan");
+      openFile(sessionId, { kind: "resource", uri: plan.path });
       break;
+    }
     case "autonomy": {
       const index = AUTONOMY.findIndex((item) => item.id === view?.info.autonomy);
       const next = args
@@ -324,10 +329,10 @@ export function runSlash(
       useUi.getState().set({ toolsSession: sessionId });
       break;
     case "context":
-      useLayout.getState().openInspector("context");
+      useUi.getState().set({ contextDialog: sessionId });
       break;
     case "usage":
-      useLayout.getState().openInspector("usage");
+      useUi.getState().set({ statusPopover: { sessionId, kind: "usage" } });
       break;
     case "workflow": {
       // 激活后有指令就作为提示发送；失败（无审批能力/已禁用）显示 toast。
@@ -347,7 +352,7 @@ export function runSlash(
       break;
     }
     case "agents":
-      useLayout.getState().openInspector("agents");
+      useUi.getState().set({ statusPopover: { sessionId, kind: "agents" } });
       break;
     case "jobs":
       useUi.getState().set({ jobsSession: sessionId });

@@ -647,7 +647,11 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
 
               <div className="ml-auto flex min-w-0 items-center gap-1">
                 {context && context.context_window > 0 && (
-                  <ContextRing used={context.total_tokens} window={context.context_window} />
+                  <ContextRing
+                    sessionId={sessionId}
+                    used={context.total_tokens}
+                    window={context.context_window}
+                  />
                 )}
                 <ModelPicker sessionId={sessionId} />
                 {running && !canSend ? (

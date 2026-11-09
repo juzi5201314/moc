@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 2e07da17061b32d2
+// schema sha256: eaf0965da136a303
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -309,6 +309,20 @@ export type ConfigReply =
  * via the `definition` "DiffLineKind".
  */
 export type DiffLineKind = "equal" | "delete" | "insert";
+/**
+ * 目录项类型。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "FsEntryKind".
+ */
+export type FsEntryKind = "dir" | "file";
+/**
+ * 文件内容编码判定。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "FsFileEncoding".
+ */
+export type FsFileEncoding = "utf8" | "binary";
 /**
  * `session/goal` 的动作。
  *
@@ -2168,7 +2182,47 @@ export interface FsCreateDirResult {
   path: string;
 }
 /**
- * 一个子目录。
+ * `fs/create_file` 的参数。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "FsCreateFileParams".
+ */
+export interface FsCreateFileParams {
+  /**
+   * 新文件名：单段名字，不接受路径分隔符与 `..`。
+   */
+  name: string;
+  /**
+   * 父目录：绝对路径或以 `~` 开头，必须已存在。
+   */
+  parent: string;
+}
+/**
+ * `fs/create_file` 的结果。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "FsCreateFileResult".
+ */
+export interface FsCreateFileResult {
+  /**
+   * 新文件的绝对路径。
+   */
+  path: string;
+}
+/**
+ * `fs/delete` 的参数。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "FsDeleteParams".
+ */
+export interface FsDeleteParams {
+  /**
+   * 绝对路径或以 `~` 开头。
+   */
+  path: string;
+}
+/**
+ * 一个目录项。
  *
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
  * via the `definition` "FsDirEntry".
@@ -2179,13 +2233,29 @@ export interface FsDirEntry {
    */
   git: boolean;
   /**
-   * 目录名。
+   * 条目类型。
+   */
+  kind: "dir" | "file";
+  /**
+   * 修改时间（epoch 毫秒）；取不到时为 `None`。
+   */
+  modified_ms?: number | null;
+  /**
+   * 条目名。
    */
   name: string;
   /**
    * 绝对路径。
    */
   path: string;
+  /**
+   * 字节数；仅文件有值。
+   */
+  size?: number | null;
+  /**
+   * 本身是符号链接。
+   */
+  symlink?: boolean;
 }
 /**
  * `fs/list_dir` 的参数。
@@ -2194,6 +2264,10 @@ export interface FsDirEntry {
  * via the `definition` "FsListDirParams".
  */
 export interface FsListDirParams {
+  /**
+   * 是否同时列出文件（目录在前、文件在后）。
+   */
+  include_files?: boolean;
   /**
    * 绝对路径或以 `~` 开头；`None` 取 core 的当前目录。
    */
@@ -2211,7 +2285,7 @@ export interface FsListDirParams {
  */
 export interface FsListDirResult {
   /**
-   * 子目录，按名称（不区分大小写）排序。
+   * 目录项：目录在前、文件在后，各自按名称（不区分大小写）排序。
    */
   entries: FsDirEntry[];
   /**
@@ -2230,6 +2304,123 @@ export interface FsListDirResult {
    * 超过 [`FS_LIST_DIR_MAX_ENTRIES`] 被截断。
    */
   truncated: boolean;
+}
+/**
+ * `fs/read_file` 的参数。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "FsReadFileParams".
+ */
+export interface FsReadFileParams {
+  /**
+   * 最多读取的字节数；缺省 [`FS_READ_FILE_DEFAULT_MAX_BYTES`]，
+   * 上限 [`FS_READ_FILE_MAX_BYTES`]。
+   */
+  max_bytes?: number | null;
+  /**
+   * 绝对路径或以 `~` 开头。
+   */
+  path: string;
+}
+/**
+ * `fs/read_file` 的结果。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "FsReadFileResult".
+ */
+export interface FsReadFileResult {
+  /**
+   * UTF-8 正文；`encoding == "binary"` 时为 `None`。
+   */
+  content?: string | null;
+  /**
+   * 内容编码判定。
+   */
+  encoding: "utf8" | "binary";
+  /**
+   * 修改时间（epoch 毫秒）；取不到时为 `None`。
+   */
+  modified_ms?: number | null;
+  /**
+   * 规范化后的绝对路径。
+   */
+  path: string;
+  /**
+   * 文件实际字节数（不受 `max_bytes` 截断影响）。
+   */
+  size: number;
+  /**
+   * 文件超过 `max_bytes`，只回了头部（在字符边界截断）。
+   */
+  truncated: boolean;
+}
+/**
+ * `fs/rename` 的参数。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "FsRenameParams".
+ */
+export interface FsRenameParams {
+  /**
+   * 源路径：绝对路径或以 `~` 开头。
+   */
+  from: string;
+  /**
+   * 目标路径：绝对路径或以 `~` 开头；已存在时报错。
+   */
+  to: string;
+}
+/**
+ * `fs/rename` 的结果。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "FsRenameResult".
+ */
+export interface FsRenameResult {
+  /**
+   * 目标的规范化绝对路径。
+   */
+  path: string;
+}
+/**
+ * `fs/write_file` 的参数。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "FsWriteFileParams".
+ */
+export interface FsWriteFileParams {
+  /**
+   * 新内容（UTF-8）。
+   */
+  content: string;
+  /**
+   * 乐观锁：给定时要求磁盘当前 mtime 相等，否则回 `-32016`。
+   */
+  expected_modified_ms?: number | null;
+  /**
+   * 绝对路径或以 `~` 开头；必须是已存在的普通文件。
+   */
+  path: string;
+}
+/**
+ * `fs/write_file` 的结果。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "FsWriteFileResult".
+ */
+export interface FsWriteFileResult {
+  /**
+   * 写入后的修改时间（epoch 毫秒）。
+   */
+  modified_ms?: number | null;
+  /**
+   * 规范化后的绝对路径。
+   */
+  path: string;
+  /**
+   * 写入后的字节数。
+   */
+  size: number;
 }
 /**
  * 机器可路由 + 人类可读的 blocked 原因。
@@ -3072,6 +3263,98 @@ export interface ResourceCompleteParams {
  */
 export interface ResourceCompleteResult {
   candidates: ResourceCandidate[];
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ResourceListEntry".
+ */
+export interface ResourceListEntry {
+  /**
+   * 补充说明（如 skill 的 description）。
+   */
+  description?: string | null;
+  kind: FsEntryKind;
+  /**
+   * 修改时间（epoch 毫秒）。
+   */
+  modified_ms?: number | null;
+  /**
+   * 展示名。
+   */
+  name: string;
+  /**
+   * 字节数；仅文件有值。
+   */
+  size?: number | null;
+  /**
+   * 子项 URI：`kind == "dir"` 可继续 `resource/list`，`"file"` 可 `resource/read`。
+   */
+  uri: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ResourceListParams".
+ */
+export interface ResourceListParams {
+  session_id: string;
+  /**
+   * 要列举的 URI；`""` 是根（列出各命名空间入口）。
+   */
+  uri: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ResourceListResult".
+ */
+export interface ResourceListResult {
+  entries: ResourceListEntry[];
+  truncated: boolean;
+  /**
+   * 回显请求的 URI。
+   */
+  uri: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ResourceReadParams".
+ */
+export interface ResourceReadParams {
+  /**
+   * 最多读取的字节数；缺省与上限同 `fs/read_file`。
+   */
+  max_bytes?: number | null;
+  session_id: string;
+  uri: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ResourceReadResult".
+ */
+export interface ResourceReadResult {
+  /**
+   * UTF-8 正文；`encoding == "binary"` 时为 `None`。
+   */
+  content?: string | null;
+  /**
+   * 内容编码判定。
+   */
+  encoding: "utf8" | "binary";
+  /**
+   * 修改时间（epoch 毫秒）；取不到时为 `None`。
+   */
+  modified_ms?: number | null;
+  /**
+   * 资源实际字节数（不受 `max_bytes` 截断影响）。
+   */
+  size: number;
+  /**
+   * 资源超过 `max_bytes`，只回了头部（在字符边界截断）。
+   */
+  truncated: boolean;
+  /**
+   * 回显请求的 URI。
+   */
+  uri: string;
 }
 /**
  * 服务端能力。

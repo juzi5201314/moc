@@ -75,6 +75,8 @@ export function reasoningLevels(model: ModelInfo | undefined): string[] {
 
 export function compactTokens(value: number | undefined): string {
   if (!value) return "";
+  // 小于 1K 时精确显示，0K 没有信息量。
+  if (value < 1_000) return `${value}`;
   if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`;
   return `${Math.round(value / 1000)}K`;
 }

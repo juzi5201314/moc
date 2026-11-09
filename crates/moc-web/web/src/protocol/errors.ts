@@ -14,6 +14,7 @@ export const ErrorCode = {
   SessionBusy: -32011,
   NotSupported: -32014,
   SessionLocked: -32015,
+  FileConflict: -32016,
 } as const;
 
 export class RpcError extends Error {

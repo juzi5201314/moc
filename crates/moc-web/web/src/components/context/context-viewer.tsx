@@ -19,7 +19,7 @@ type Page = {
 };
 type Row = { node: ContextNode; depth: number; body?: boolean };
 
-export function ContextTab({ sessionId }: { sessionId: string }) {
+export function ContextViewer({ sessionId }: { sessionId: string }) {
   const [view, setView] = useState<ContextContentResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);

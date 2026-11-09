@@ -14,7 +14,7 @@ import type {
 
 export * from "./types.gen";
 
-export const PROTOCOL_VERSION = "1.4";
+export const PROTOCOL_VERSION = "1.5";
 
 // ---------- /commands.json（HTTP 面，不走 RPC，不进 schema） ----------
 

@@ -4,6 +4,7 @@ import { ChatThread } from "@/components/chat/chat-thread";
 import { ComposerBar } from "@/components/chat/composer-bar";
 import { SessionHeader } from "@/components/chat/session-header";
 import { WelcomeView } from "@/components/chat/welcome";
+import { ContextDialog } from "@/components/context/context-dialog";
 import { CommandPalette } from "@/components/dialogs/command-palette";
 import { DoctorDialog } from "@/components/dialogs/doctor-dialog";
 import { FeaturesDialog } from "@/components/dialogs/features-dialog";
@@ -33,6 +34,7 @@ import "@/store/dispatch";
 export function App() {
   useThemeSync();
   useGlobalShortcuts();
+  // files store 只读 cwd，避免 store 间循环依赖。
 
   const jobsSession = useUi((state) => state.jobsSession);
   const toolsSession = useUi((state) => state.toolsSession);
@@ -110,6 +112,7 @@ export function App() {
       {featuresOpen && <FeaturesDialog />}
       {doctorOpen && <DoctorDialog />}
       {monitorOpen && <MonitorDialog />}
+      <ContextDialog />
       <Toaster />
     </TooltipProvider>
   );

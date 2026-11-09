@@ -38,6 +38,10 @@ export type UiState = {
   focusComposer: number;
   /** 旁路输入框聚焦请求计数。 */
   focusBtw: number;
+  /** 状态条浮层（上下文/用量/子代理）；打开时对应 chip 必须渲染出来。 */
+  statusPopover: { sessionId: string; kind: "context" | "usage" | "agents" } | null;
+  /** 「查看完整上下文」大模态。 */
+  contextDialog: string | null;
   set: (patch: Partial<Omit<UiState, "set">>) => void;
 };
 
@@ -54,6 +58,8 @@ export const useUi = create<UiState>()((set) => ({
   monitor: false,
   focusComposer: 0,
   focusBtw: 0,
+  statusPopover: null,
+  contextDialog: null,
   set: (patch) => set(patch),
 }));
 
