@@ -159,7 +159,9 @@ async fn preview_file(path: &Path, config: &OutputConfig, uri: &str) -> std::io:
 }
 
 fn render_preview(head: &str, tail: &str, omitted: impl std::fmt::Display, uri: &str) -> String {
-    format!("{head}\n[… {omitted} bytes omitted; full output: {uri}]\n{tail}")
+    format!(
+        "{head}\n[… {omitted} bytes omitted; full output: {uri}; read, grep, and bash accept this URI]\n{tail}"
+    )
 }
 
 #[cfg(test)]
@@ -198,6 +200,14 @@ mod tests {
         assert!(result.starts_with("前中\n"));
         assert!(result.ends_with("前中"));
         assert!(!result.contains('\u{fffd}'));
+        assert!(
+            result.contains("full output: artifact://"),
+            "省略提示应给出归档 URI"
+        );
+        assert!(
+            result.contains("read, grep, and bash accept this URI"),
+            "省略提示应说明 URI 可直接用于 read/grep/bash"
+        );
         let mut artifacts = tokio::fs::read_dir(paths.artifacts())
             .await
             .expect("归档目录");

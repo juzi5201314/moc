@@ -38,7 +38,7 @@ it("省略与扫描警告保留，带行号源码和匹配正文不会被误识�
     "[1 files exceeded the 1024-byte limit and were not searched]",
     "[Scan incomplete (time limit)]",
     "  [… 10 more; read the subdirectory to continue]",
-    "[… 2048 bytes omitted; full output: artifact://large]",
+    "[… 2048 bytes omitted; full output: artifact://large; read, grep, and bash accept this URI]",
   ];
   expect(
     toolNotices(

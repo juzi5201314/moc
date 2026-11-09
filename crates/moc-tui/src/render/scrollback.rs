@@ -7201,7 +7201,7 @@ mod tests {
         use moc_protocol::methods::ToolStatus;
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(crate::theme::Theme::global(), events);
-        let notice = "[… 2048 bytes omitted; full output: artifact://large]";
+        let notice = "[… 2048 bytes omitted; full output: artifact://large; read, grep, and bash accept this URI]";
         for name in [
             "read",
             "grep",
