@@ -6,7 +6,14 @@ import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { Streamdown, type MermaidErrorComponentProps } from "streamdown";
+import {
+  defaultComponents,
+  defaultRemarkPlugins,
+  Streamdown,
+  type Components,
+  type MermaidErrorComponentProps,
+} from "streamdown";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupText } from "@/components/ui/button-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -295,6 +302,90 @@ function MermaidFallback({ chart }: MermaidErrorComponentProps) {
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
+/// file:// 在 rehype-harden 的安全死名单里，到组件前就被拦成 [blocked]；
+/// 在 remark 层先改写成裸路径，与模型直接写路径的链接走同一条本地链接通道。
+const fileLinkRewrite = () => (tree: { children?: unknown[]; url?: string }) => {
+  const walk = (node: { children?: unknown[]; url?: string }) => {
+    if (typeof node.url === "string" && /^file:\/\//i.test(node.url)) {
+      try {
+        node.url = decodeURIComponent(new URL(node.url).pathname);
+      } catch {
+        // 非法 file:// URL 保留原样，交给后续管线按既有规则处理。
+      }
+    }
+    for (const child of node.children ?? []) {
+      walk(child as typeof node);
+    }
+  };
+  walk(tree);
+};
+
+// remarkPlugins prop 是整体替换默认列表，GFM/代码元信息必须显式保留。
+const messageRemarkPlugins = [...Object.values(defaultRemarkPlugins), fileLinkRewrite];
+
+/// 链接目标是本地文件路径（浏览器里点不开：裸路径变同源 404、file:// 被拦）。
+/// 规则与 TUI 一致：file:// 是本地路径；scheme: 与 #锚点 算 URL；其余按路径处理。
+function isLocalFileRef(href: string): boolean {
+  const target = href.trim();
+  if (/^file:\/\//i.test(target)) return true;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target) || target.startsWith("#")) return false;
+  return true;
+}
+
+function localFileRefPath(href: string): string {
+  const target = href.trim();
+  if (!/^file:\/\//i.test(target)) return target;
+  try {
+    return decodeURIComponent(new URL(target).pathname);
+  } catch {
+    return target;
+  }
+}
+
+const BuiltinAnchor = defaultComponents.a;
+
+/// 本地路径链接在浏览器里打不开：保留 <a> 语义（悬停见路径、右键可复制地址），
+/// 点击改成复制路径 + toast，而不是导航到同源 404。
+const MarkdownAnchor: NonNullable<Components["a"]> = ({
+  href,
+  children,
+  className,
+  node,
+  ...props
+}) => {
+  if (href && isLocalFileRef(href)) {
+    return (
+      <a
+        {...props}
+        className={cn(
+          "wrap-anywhere cursor-pointer font-medium text-primary underline",
+          className,
+        )}
+        data-streamdown="link"
+        href={href}
+        rel={undefined}
+        target={undefined}
+        onClick={(event) => {
+          event.preventDefault();
+          const path = localFileRefPath(href);
+          void navigator.clipboard.writeText(path);
+          toast.success("已复制路径", { description: path });
+        }}
+        title={`复制路径 ${href}`}
+      >
+        {children}
+      </a>
+    );
+  }
+  return (
+    <BuiltinAnchor className={className} href={href} node={node} {...props}>
+      {children}
+    </BuiltinAnchor>
+  );
+};
+
+const messageComponents: Components = { a: MarkdownAnchor };
+
 export const MessageResponse = memo(
   ({ className, children, ...props }: MessageResponseProps) => {
     const dark = useIsDark();
@@ -308,10 +399,12 @@ export const MessageResponse = memo(
       <Streamdown
         allowedTags={SVG_ALLOWED_TAGS}
         className={cn("moc-prose size-full", className)}
+        components={messageComponents}
         controls={streamdownControls}
         lineNumbers={false}
         mermaid={mermaid}
         plugins={streamdownPlugins}
+        remarkPlugins={messageRemarkPlugins}
         {...props}
       >
         {source}

@@ -1,5 +1,5 @@
-import { render, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { CodeBlock, highlightCode } from "./code-block";
 import { MessageResponse } from "./message";
 
@@ -148,6 +148,32 @@ describe("MessageResponse GitHub 风格渲染", () => {
       expect(bad.container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
     });
     expect(bad.container.querySelector("svg.moc-svg-figure")).toBeNull();
+  });
+
+  it("本地路径链接点击复制路径，URL 保持原样", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const source =
+      "改了 [ModelCompat](/repo/src/model.rs) 和 [lib](file:///repo/src/lib.rs)，" +
+      "参考 [文档](https://example.com/spec)。";
+    const { container } = render(<MessageResponse>{source}</MessageResponse>);
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-streamdown="link"]')).toHaveLength(3);
+    });
+
+    const [model, lib, doc] = [...container.querySelectorAll('[data-streamdown="link"]')];
+    fireEvent.click(model);
+    expect(writeText).toHaveBeenLastCalledWith("/repo/src/model.rs");
+    fireEvent.click(lib);
+    expect(writeText).toHaveBeenLastCalledWith("/repo/src/lib.rs");
+    expect(writeText).toHaveBeenCalledTimes(2);
+    // 真 URL 交给内建渲染（linkSafety 弹窗按钮），不进入复制路径
+    expect(doc.tagName).toBe("BUTTON");
+    expect(doc.textContent).toBe("文档");
+    expect(container.textContent).not.toContain("[blocked]");
   });
 
   it("mermaid 解析失败时显示源码，不画红框", async () => {
