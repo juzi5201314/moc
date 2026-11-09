@@ -776,11 +776,17 @@ fn test_f9_03_click_toggles_card_expansion() {
     assert!(app.todo_hud.is_open(), "Card is expanded by default");
     app.todo_hud.pointer_down((42, 3));
     app.todo_hud.pointer_up((42, 3));
-    assert!(!app.todo_hud.is_open(), "Clicking the card collapses to capsule");
+    assert!(
+        !app.todo_hud.is_open(),
+        "Clicking the card collapses to capsule"
+    );
     app.todo_hud.chip_area = Rect::new(80, 1, 15, 1);
     app.todo_hud.pointer_down((82, 1));
     app.todo_hud.pointer_up((82, 1));
-    assert!(app.todo_hud.is_open(), "Clicking the capsule expands the card");
+    assert!(
+        app.todo_hud.is_open(),
+        "Clicking the capsule expands the card"
+    );
 }
 
 #[test]

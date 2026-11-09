@@ -1920,7 +1920,10 @@ mod tests {
     fn check_case(command: &str, expected: &[&str]) {
         let parse = |s: &str| {
             let (tool, args) = s.split_once(' ').unwrap();
-            (tool.to_string(), serde_json::from_str::<Value>(args).unwrap())
+            (
+                tool.to_string(),
+                serde_json::from_str::<Value>(args).unwrap(),
+            )
         };
         let expected: Vec<_> = expected.iter().map(|s| parse(s)).collect();
         let actual = hit(command).map(|items| items.iter().map(|s| parse(s)).collect::<Vec<_>>());
