@@ -11,6 +11,7 @@ use providers::{ProviderAction, Providers};
 use crate::{
     app::{App, ConfigWrite},
     config::{KeyMap, TuiConfig},
+    modal::ModelScroll,
     protocol::{AppEvent, EmbeddedConnection},
     widgets::prompt::PromptState,
 };
@@ -61,6 +62,10 @@ pub struct SettingsPanel {
     pub tab: usize,
     pub selected: usize,
     pub offset: usize,
+    /// 字段列表的滚动约束；真实可见行数由绘制层回写。
+    pub scroll: ModelScroll,
+    /// 保留坐标，在最终布局上计算悬停，避免滚动后沿用旧命中。
+    pub pointer: Option<ratatui::layout::Position>,
     pub advanced: bool,
     pub filter: String,
     /// 正在进行的编辑：行内单行输入或弹窗控件。
@@ -205,7 +210,8 @@ pub struct EditState {
 
 pub enum View {
     Fields,
-    Maintenance(MaintenanceReport),
+    /// 维护预览清单有自己的视口偏移，不与字段列表共用 `offset`。
+    Maintenance { report: MaintenanceReport, offset: usize },
     Confirm { text: String, action: ConfirmAction },
 }
 pub enum EditTarget {
@@ -241,6 +247,8 @@ pub enum Hit {
     Item(usize),
     /// 点击弹窗外部或关闭按钮。
     DismissPopup,
+    /// 滚动条点击：目标是视口偏移，不动光标。
+    Scroll(usize),
 }
 
 impl Drop for SettingsPanel {
@@ -277,6 +285,8 @@ pub fn open(app: &mut App, connection: &EmbeddedConnection) {
         tab: if app.session.is_none() { 1 } else { 0 },
         selected: 0,
         offset: 0,
+        scroll: Default::default(),
+        pointer: None,
         advanced: false,
         filter: String::new(),
         edit: None,
@@ -483,6 +493,7 @@ impl SettingsPanel {
         self.rows.clear();
         self.selected = 0;
         self.offset = 0;
+        self.scroll.reveal_selection = true;
         self.edit = None;
         self.request(
             connection,
@@ -525,7 +536,9 @@ impl SettingsPanel {
                 }
             }
             Ok(ConfigReply::Models(_)) => {}
-            Ok(ConfigReply::Maintenance(report)) => self.view = View::Maintenance(report),
+            Ok(ConfigReply::Maintenance(report)) => {
+                self.view = View::Maintenance { report, offset: 0 }
+            }
             Ok(ConfigReply::Updated(message)) => {
                 self.view = View::Fields;
                 self.message = Some(message);
@@ -587,12 +600,20 @@ impl SettingsPanel {
         self.effective["tui"] = self.tui.clone();
         self.rebuild_rows();
     }
+    /// 行集重建后收紧选中项；被钳动过才重新显露，普通重绘不拉回手动滚动的位置。
+    fn clamp_selected(&mut self) {
+        let selected = self.selected.min(self.rows.len().saturating_sub(1));
+        if selected != self.selected {
+            self.scroll.reveal_selection = true;
+        }
+        self.selected = selected;
+        self.offset = self.offset.min(self.rows.len().saturating_sub(1));
+    }
     fn rebuild_rows(&mut self) {
         if self.provider_page() {
             self.sync_provider();
             self.rows = self.provider_rows();
-            self.selected = self.selected.min(self.rows.len().saturating_sub(1));
-            self.offset = self.offset.min(self.rows.len().saturating_sub(1));
+            self.clamp_selected();
             return;
         }
         let filter = self.filter.to_lowercase();
@@ -640,8 +661,7 @@ impl SettingsPanel {
             }
         }
         self.rows = rows;
-        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
-        self.offset = self.offset.min(self.rows.len().saturating_sub(1));
+        self.clamp_selected();
     }
     fn matches_tab(&self, field: &ConfigField) -> bool {
         let tab = TABS[self.tab];
@@ -862,6 +882,7 @@ impl SettingsPanel {
         } else if !self.expanded.remove(&key) {
             self.expanded.insert(key);
         }
+        self.scroll.reveal_selection = true;
         self.rebuild_rows();
     }
     pub fn expand_all(&mut self) {
@@ -871,6 +892,7 @@ impl SettingsPanel {
                 self.expanded.insert(group.key.clone());
             }
         }
+        self.scroll.reveal_selection = true;
         self.rebuild_rows();
     }
     pub fn collapse_all(&mut self) {
@@ -880,6 +902,7 @@ impl SettingsPanel {
                 self.expanded.remove(&group.key);
             }
         }
+        self.scroll.reveal_selection = true;
         self.rebuild_rows();
     }
     pub fn row(&self) -> Option<&RowKind> {
@@ -961,6 +984,7 @@ impl SettingsPanel {
         self.tab = index;
         self.selected = 0;
         self.offset = 0;
+        self.scroll.reveal_selection = true;
         self.edit = None;
         self.rebuild_rows();
     }
@@ -974,6 +998,7 @@ impl SettingsPanel {
             };
             if matched {
                 self.selected = index;
+                self.scroll.reveal_selection = true;
                 return;
             }
         }
@@ -1344,6 +1369,8 @@ pub fn handle_key(
     let Some(mut panel) = app.settings.take() else {
         return;
     };
+    // 键盘接管后鼠标坐标作废，悬停底色不再与选中态抢视线。
+    panel.pointer = None;
     let close = forms::key(&mut panel, app, connection, modifiers, code);
     if !close {
         app.settings = Some(panel);
@@ -1384,83 +1411,65 @@ pub fn paste(app: &mut App, text: &str) {
         }
     }
 }
-pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) {
-    let Some(panel) = &mut app.settings else {
-        return;
-    };
-    if panel.provider_page()
-        && panel.edit.is_none()
-        && matches!(
-            event.kind,
-            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-        )
+/// 滚轮只滚动指针所在子区的视口，不动任何光标；悬停交给绘制层按坐标重算。
+fn scroll(panel: &mut SettingsPanel, point: ratatui::layout::Position, delta: isize) {
+    if let Some(edit) = &mut panel.edit
+        && edit.popup
     {
-        let down = event.kind == MouseEventKind::ScrollDown;
-        let point = (event.column, event.row).into();
+        edit.editor.scroll_by(delta);
+        return;
+    }
+    match &mut panel.view {
+        View::Fields => {}
+        View::Maintenance { report, offset } => {
+            let last = report.removed.len().saturating_sub(1);
+            *offset = offset.saturating_add_signed(delta).min(last);
+            return;
+        }
+        View::Confirm { .. } => return,
+    }
+    // 供应商页按指针落在侧栏还是详情区分流；行内编辑只占一行，照常滚动。
+    if panel.provider_page() {
         let sidebar = panel
             .hits
             .iter()
             .any(|(area, hit)| area.contains(point) && matches!(hit, Hit::Provider(_)));
-        if let Some(draft) = &mut panel.providers.draft {
-            if draft.pending.is_none() {
-                draft.focus = if down {
-                    (draft.focus + 1).min(5)
-                } else {
-                    draft.focus.saturating_sub(1)
-                };
-            }
+        if sidebar {
+            panel
+                .providers
+                .scroll
+                .scroll_by(&mut panel.providers.offset, delta);
             return;
         }
-        if sidebar {
-            let last = panel.provider_ids().len();
-            panel.providers.sidebar = true;
-            panel.providers.cursor = if down {
-                (panel.providers.cursor + 3).min(last)
-            } else {
-                panel.providers.cursor.saturating_sub(3)
-            };
+        if let Some(draft) = &mut panel.providers.draft {
+            if draft.pending.is_none() {
+                draft.scroll.scroll_by(&mut draft.offset, delta);
+            }
             return;
         }
     }
-    match event.kind {
-        MouseEventKind::ScrollDown => {
-            if let Some(edit) = &mut panel.edit {
-                edit.editor.scroll(true);
-                return;
-            }
-            match &mut panel.view {
-                View::Fields => {
-                    panel.selected = panel
-                        .selected
-                        .saturating_add(3)
-                        .min(panel.rows.len().saturating_sub(1));
-                }
-                View::Maintenance(report) => {
-                    let total = report.removed.len();
-                    panel.offset = (panel.offset + 3).min(total.saturating_sub(1));
-                }
-                _ => {}
-            }
-            return;
-        }
-        MouseEventKind::ScrollUp => {
-            if let Some(edit) = &mut panel.edit {
-                edit.editor.scroll(false);
-                return;
-            }
-            match &mut panel.view {
-                View::Fields => {
-                    panel.selected = panel.selected.saturating_sub(3);
-                }
-                View::Maintenance(_) => {
-                    panel.offset = panel.offset.saturating_sub(3);
-                }
-                _ => {}
-            }
-            return;
-        }
-        MouseEventKind::Down(MouseButton::Left) => {}
-        _ => return,
+    panel.scroll.scroll_by(&mut panel.offset, delta);
+}
+
+pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) {
+    let Some(panel) = &mut app.settings else {
+        return;
+    };
+    panel.pointer = Some((event.column, event.row).into());
+    if matches!(
+        event.kind,
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+    ) {
+        let delta = if event.kind == MouseEventKind::ScrollDown {
+            3
+        } else {
+            -3
+        };
+        scroll(panel, (event.column, event.row).into(), delta);
+        return;
+    }
+    if event.kind != MouseEventKind::Down(MouseButton::Left) {
+        return;
     }
     let clicked = (event.column, event.row).into();
     let hit = panel
@@ -1501,6 +1510,11 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
                 handle_key(app, connection, KeyModifiers::NONE, KeyCode::Esc);
             }
             Some(Hit::Hint(code, modifiers)) => handle_key(app, connection, modifiers, code),
+            // 弹窗清空命中表收不到 Scroll；这里是行内编辑：滚视口但不提交。
+            Some(Hit::Scroll(offset)) => {
+                panel.offset = offset.min(panel.scroll.max_offset);
+                panel.scroll.reveal_selection = false;
+            }
             _ => {}
         }
         return;
@@ -1510,17 +1524,25 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
     };
     match hit {
         Hit::Tab(index) => panel.select_tab(index),
+        // 滚动条是视口操作不是「点到别处」：只滚所在清单，不动光标。
+        Hit::Scroll(offset) => match &mut panel.view {
+            View::Maintenance { offset: view_offset, .. } => *view_offset = offset,
+            _ => {
+                panel.offset = offset.min(panel.scroll.max_offset);
+                panel.scroll.reveal_selection = false;
+            }
+        },
         Hit::Row(index) => {
             let action = panel
                 .rows
                 .get(index)
                 .is_some_and(|row| matches!(row.kind, RowKind::Action(_)));
+            let was_selected = panel.selected == index;
             panel.providers.sidebar = false;
-            if panel.selected == index || action {
-                panel.selected = index;
+            panel.selected = index;
+            panel.scroll.reveal_selection = true;
+            if was_selected || action {
                 handle_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
-            } else {
-                panel.selected = index;
             }
         }
         Hit::Provider(index) => {
@@ -1530,6 +1552,7 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
         Hit::ProviderInput(index) => {
             if let Some(draft) = &mut panel.providers.draft {
                 draft.focus = index;
+                draft.scroll.reveal_selection = true;
                 if index == 1 || index >= 4 {
                     handle_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
                 }
@@ -1672,6 +1695,8 @@ mod tests {
             tab: 0,
             selected: 0,
             offset: 0,
+            scroll: Default::default(),
+            pointer: None,
             advanced: false,
             filter: String::new(),
             edit: None,
@@ -1971,6 +1996,8 @@ mod tests {
             tab: TABS.iter().position(|tab| *tab == "插件").unwrap(),
             selected: 0,
             offset: 0,
+            scroll: Default::default(),
+            pointer: None,
             advanced: false,
             filter: String::new(),
             edit: None,
@@ -2042,6 +2069,8 @@ mod tests {
             tab: TABS.iter().position(|tab| *tab == "插件").unwrap(),
             selected: 0,
             offset: 0,
+            scroll: Default::default(),
+            pointer: None,
             advanced: false,
             filter: String::new(),
             edit: None,

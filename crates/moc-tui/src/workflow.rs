@@ -20,10 +20,14 @@ pub struct WorkflowApprovalState {
     pub model_ref_map: BTreeMap<String, String>,
     /// 焦点行：roles + model_refs 的合并游标（先 roles 后 model_refs）。
     pub focus: usize,
-    /// 分区滚动：图区、role 区、命令区各一个。
-    pub graph_scroll: usize,
+    /// 正文 viewport 的起点与滚动约束；真实可见行数由绘制层回写。
+    /// 焦点移动时置 `reveal_selection`，绘制层把焦点行收进窗口。
+    pub body_scroll: usize,
     pub list_scroll: usize,
     pub command_scroll: usize,
+    pub scroll: crate::modal::ModelScroll,
+    /// 保留鼠标坐标，悬停在渲染层按最终命中矩形计算，不直接写 `focus`。
+    pub pointer: Option<ratatui::layout::Position>,
     /// 拒绝反馈输入态：`Some` 时键盘进文本行。
     pub feedback: Option<String>,
     /// 折叠（停车）：最小化成状态栏胶囊，事件仍在后台累积。
@@ -37,9 +41,11 @@ impl WorkflowApprovalState {
             model_ref_map: request.defaults.model_ref_map.clone(),
             request,
             focus: 0,
-            graph_scroll: 0,
+            body_scroll: 0,
             list_scroll: 0,
             command_scroll: 0,
+            scroll: crate::modal::ModelScroll::default(),
+            pointer: None,
             feedback: None,
             parked: false,
         }
@@ -166,8 +172,12 @@ pub struct WorkflowRunState {
     pub artifact_view: Option<(String, Vec<Line<'static>>)>,
     /// 焦点行：roles 游标（回车改模型）。
     pub focus: usize,
-    pub graph_scroll: usize,
+    /// 正文 viewport 的起点与滚动约束（与审批窗同一语义）。
+    pub body_scroll: usize,
     pub list_scroll: usize,
+    pub scroll: crate::modal::ModelScroll,
+    /// 保留鼠标坐标，悬停在渲染层按最终命中矩形计算，不直接写 `focus`。
+    pub pointer: Option<ratatui::layout::Position>,
 }
 
 impl WorkflowRunState {
@@ -1276,8 +1286,10 @@ mod tests {
             artifact_versions: BTreeMap::new(),
             artifact_view: None,
             focus: 0,
-            graph_scroll: 0,
+            body_scroll: 0,
             list_scroll: 0,
+            scroll: crate::modal::ModelScroll::default(),
+            pointer: None,
         }
     }
 

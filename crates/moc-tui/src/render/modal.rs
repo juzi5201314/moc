@@ -285,6 +285,9 @@ struct ModalBody {
     lines: Vec<Line<'static>>,
     footer: Option<overlay::Footer>,
     scroll_max: usize,
+    /// 本帧实际取用的 viewport 起点；列表模态据此把 offset 写回状态，
+    /// 让滚轮从真实窗口继续滚而不是从滞后值跳。
+    applied_offset: Option<usize>,
     /// (条目下标, 正文行号)。
     hits: Vec<(usize, usize)>,
 }
@@ -376,6 +379,30 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         .collect();
     app.modal_card_area = layout.area;
     app.key_hits = layout.keys;
+    // 悬停只铺底色：pointer 坐标由事件层记录，选中项保持自己的高亮。
+    {
+        let (pointer, selected) = match modal {
+            Modal::Sessions { picker, .. }
+            | Modal::Subagents { picker, .. }
+            | Modal::WorkflowRuns { picker, .. } => (picker.pointer, Some(picker.selected)),
+            Modal::Jobs {
+                pointer, selected, ..
+            } => (*pointer, Some(*selected)),
+            Modal::WorkflowApproval { state } => (state.pointer, Some(state.focus)),
+            Modal::WorkflowRun { state } => (state.pointer, Some(state.focus)),
+            _ => (None, None),
+        };
+        if let Some(position) = pointer
+            && let Some((_, area)) = app
+                .modal_item_hits
+                .iter()
+                .find(|(index, area)| Some(*index) != selected && area.contains(position))
+        {
+            frame
+                .buffer_mut()
+                .set_style(*area, Style::new().bg(theme.bg_hover));
+        }
+    }
     if let Modal::Plan { state } = modal {
         if state.pane == PlanPane::Annotate {
             // 批注视图是一行源码对一行屏幕行，鼠标拖选直接按行换算。
@@ -394,6 +421,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         }
     }
     // 事件层只加不减的滚动偏移按本帧上限写回；各模态同一约定。
+    // 列表模态 additionally 回写实取窗口与滚动约束，并消费掉 reveal 标记。
     match app.modal.as_mut() {
         Some(Modal::Help { scroll } | Modal::Tools { scroll, .. }) => {
             *scroll = (*scroll).min(body.scroll_max);
@@ -403,6 +431,38 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         }
         Some(Modal::Plan { state }) if state.pane == PlanPane::Read => {
             state.scroll_offset = state.scroll_offset.min(body.scroll_max);
+        }
+        Some(
+            Modal::Sessions { picker, .. }
+            | Modal::Subagents { picker, .. }
+            | Modal::WorkflowRuns { picker, .. },
+        ) => {
+            if let Some(offset) = body.applied_offset {
+                picker.offset = offset;
+            }
+            picker.scroll.max_offset = body.scroll_max;
+            picker.scroll.reveal_selection = false;
+        }
+        Some(Modal::Jobs { offset, scroll, .. }) => {
+            if let Some(start) = body.applied_offset {
+                *offset = start;
+            }
+            scroll.max_offset = body.scroll_max;
+            scroll.reveal_selection = false;
+        }
+        Some(Modal::WorkflowApproval { state }) => {
+            if let Some(start) = body.applied_offset {
+                state.body_scroll = start;
+            }
+            state.scroll.max_offset = body.scroll_max;
+            state.scroll.reveal_selection = false;
+        }
+        Some(Modal::WorkflowRun { state }) => {
+            if let Some(start) = body.applied_offset {
+                state.body_scroll = start;
+            }
+            state.scroll.max_offset = body.scroll_max;
+            state.scroll.reveal_selection = false;
         }
         _ => {}
     }
@@ -1055,7 +1115,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
 /// 列表窗口起点：沿用选择器自己的偏移，但保证选中项落在 `visible` 行之内。
 ///
 /// 键盘处理按固定翻页步长维护 `offset`，真实可见行数只有渲染知道，两边在此对齐。
-fn window_offset(offset: usize, selected: usize, visible: usize, total: usize) -> usize {
+pub(crate) fn window_offset(offset: usize, selected: usize, visible: usize, total: usize) -> usize {
     let visible = visible.max(1);
     let offset = if selected < offset {
         selected
@@ -1095,6 +1155,7 @@ fn wrapped_lines(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
 /// 返回的每行都不超过 `width` 列、总行数不超过 `max_lines`。
 fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> ModalBody {
     let mut scroll_max = 0;
+    let mut applied_offset = None;
     let theme = app.theme;
     let dim = Style::new().fg(theme.gray_dim);
     let mut hits = Vec::new();
@@ -1220,6 +1281,9 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             jobs,
             selected,
             pending_kill,
+            offset,
+            scroll,
+            ..
         } => {
             let mut lines = Vec::new();
             if jobs.is_empty() {
@@ -1228,8 +1292,14 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                     Style::new().fg(theme.gray_dim),
                 )));
             } else {
-                // 任务多时按选中项开窗口，保证高亮行可见。
-                let offset = window_offset(0, *selected, max_lines, jobs.len());
+                // 键盘/点击选中后开窗口显露选中项；滚轮只动 offset，重绘不拉回。
+                scroll_max = jobs.len().saturating_sub(max_lines);
+                let offset = if scroll.reveal_selection {
+                    window_offset(*offset, *selected, max_lines, jobs.len())
+                } else {
+                    (*offset).min(scroll.max_offset)
+                };
+                applied_offset = Some(offset);
                 for (index, job) in jobs.iter().skip(offset).take(max_lines).enumerate() {
                     let actual = offset + index;
                     hits.push((actual, lines.len()));
@@ -1267,7 +1337,25 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
         }
         Modal::WorkflowApproval { state } => {
             let (lines, row_hits) = crate::workflow::approval_lines(state, width, theme);
-            hits.extend(row_hits);
+            // 正文按 body_scroll 开窗：滚轮/翻页只动视口；键盘/点击把焦点行收进窗口。
+            let total = lines.len();
+            scroll_max = scroll_window_max(total, max_lines);
+            let focus_row = row_hits
+                .iter()
+                .find(|(index, _)| *index == state.focus)
+                .map(|(_, row)| *row);
+            let start = if state.scroll.reveal_selection {
+                focus_row
+                    .map(|row| window_offset(state.body_scroll, row, max_lines, total))
+                    .unwrap_or_else(|| state.body_scroll.min(scroll_max))
+            } else {
+                state.body_scroll.min(scroll_max)
+            };
+            applied_offset = Some(start);
+            hits.extend(row_hits.into_iter().filter_map(|(index, row)| {
+                row.checked_sub(start).map(|row| (index, row))
+            }));
+            let windowed: Vec<_> = lines.into_iter().skip(start).take(max_lines).collect();
             let footer = if state.feedback.is_some() {
                 overlay::footer(&[("enter", "提交拒绝"), ("esc", "取消输入")], width, theme)
             } else {
@@ -1283,7 +1371,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                     theme,
                 )
             };
-            (lines, footer)
+            (windowed, footer)
         }
         Modal::WorkflowRuns { runs, picker } => {
             let filtered = runs
@@ -1303,7 +1391,15 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             if filtered.is_empty() {
                 lines.push(Line::from(Span::styled("没有 workflow run", dim)));
             } else {
-                for (index, run) in filtered.iter().enumerate() {
+                // 键盘/搜索显露选中项；滚轮只动 offset，重绘不拉回。
+                scroll_max = filtered.len().saturating_sub(max_lines);
+                let offset = if picker.scroll.reveal_selection {
+                    window_offset(picker.offset, picker.selected, max_lines, filtered.len())
+                } else {
+                    picker.offset.min(picker.scroll.max_offset)
+                };
+                applied_offset = Some(offset);
+                for (index, run) in filtered.iter().enumerate().skip(offset).take(max_lines) {
                     hits.push((index, lines.len()));
                     let status = crate::workflow::status_label(run.status);
                     let title = run.title.as_deref().unwrap_or(run.run_id.as_str());
@@ -1324,7 +1420,25 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
         }
         Modal::WorkflowRun { state } => {
             let (lines, row_hits) = crate::workflow::run_lines(state, width, theme);
-            hits.extend(row_hits);
+            // 与审批窗同一开窗语义：正文随 body_scroll 滚动，焦点行按需显露。
+            let total = lines.len();
+            scroll_max = scroll_window_max(total, max_lines);
+            let focus_row = row_hits
+                .iter()
+                .find(|(index, _)| *index == state.focus)
+                .map(|(_, row)| *row);
+            let start = if state.scroll.reveal_selection {
+                focus_row
+                    .map(|row| window_offset(state.body_scroll, row, max_lines, total))
+                    .unwrap_or_else(|| state.body_scroll.min(scroll_max))
+            } else {
+                state.body_scroll.min(scroll_max)
+            };
+            applied_offset = Some(start);
+            hits.extend(row_hits.into_iter().filter_map(|(index, row)| {
+                row.checked_sub(start).map(|row| (index, row))
+            }));
+            let windowed: Vec<_> = lines.into_iter().skip(start).take(max_lines).collect();
             let footer = overlay::footer(
                 &[
                     ("↑↓", "选择 role"),
@@ -1336,7 +1450,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 width,
                 theme,
             );
-            (lines, footer)
+            (windowed, footer)
         }
         // 回退视图与上下文正文窗自带布局，`draw_modal` 在此之前就已分派走。
         Modal::Rewind { .. } | Modal::ContextContent { .. } => {
@@ -1371,7 +1485,14 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 lines.push(Line::from(Span::styled(hint, Style::new().fg(theme.gray))));
             } else {
                 let visible = max_lines.saturating_sub(lines.len()).max(1);
-                let offset = window_offset(picker.offset, picker.selected, visible, filtered.len());
+                // 键盘/搜索/切范围显露选中项；滚轮只动 offset，重绘不拉回。
+                scroll_max = filtered.len().saturating_sub(visible);
+                let offset = if picker.scroll.reveal_selection {
+                    window_offset(picker.offset, picker.selected, visible, filtered.len())
+                } else {
+                    picker.offset.min(picker.scroll.max_offset)
+                };
+                applied_offset = Some(offset);
                 for (index, (_, session)) in filtered.iter().skip(offset).take(visible).enumerate()
                 {
                     let actual = offset + index;
@@ -1448,17 +1569,33 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                     ));
                 }
             } else {
-                // 每个子代理占 1 行（无最近消息）或 2 行：窗口按行预算取，选中项恒在窗内。
+                // 每个子代理占 1 行（无最近消息）或 2 行：窗口按行预算取。
+                // 选中项移动时收进窗内（reveal）；滚轮只动 offset，重绘不拉回。
                 let heights: Vec<usize> = filtered
                     .iter()
                     .map(|agent| 1 + usize::from(agent.last_message.is_some()))
                     .collect();
                 let budget = max_lines.saturating_sub(lines.len()).max(1);
                 let selected = picker.selected.min(filtered.len() - 1);
-                let mut start = picker.offset.min(selected);
-                while start < selected && heights[start..=selected].iter().sum::<usize>() > budget {
-                    start += 1;
+                // offset 以条目计：上限是「末页恰好填满预算」的最早起点。
+                scroll_max = filtered.len().saturating_sub(1);
+                let mut tail_rows = heights.last().copied().unwrap_or(0);
+                while scroll_max > 0 && tail_rows + heights[scroll_max - 1] <= budget {
+                    tail_rows += heights[scroll_max - 1];
+                    scroll_max -= 1;
                 }
+                let start = if picker.scroll.reveal_selection {
+                    let mut start = picker.offset.min(selected);
+                    while start < selected
+                        && heights[start..=selected].iter().sum::<usize>() > budget
+                    {
+                        start += 1;
+                    }
+                    start
+                } else {
+                    picker.offset.min(picker.scroll.max_offset)
+                };
+                applied_offset = Some(start);
                 let mut used = 0;
                 for (index, agent) in filtered.iter().enumerate().skip(start) {
                     if used > 0 && used + heights[index] > budget {
@@ -1569,6 +1706,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
         lines,
         footer: Some(footer),
         scroll_max,
+        applied_offset,
         hits,
     }
 }

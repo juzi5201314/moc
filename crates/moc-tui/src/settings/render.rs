@@ -1,6 +1,7 @@
 use super::controls::Entry;
 use super::*;
 use crate::render::MARGIN_X;
+use crate::render::modal::window_offset;
 use crate::render::labels::{self, SEP};
 use crate::render::overlay;
 use crate::render::wrap::{
@@ -154,7 +155,7 @@ fn toolbar(panel: &SettingsPanel) -> Vec<Button> {
             buttons
         }
 
-        View::Maintenance(report) => {
+        View::Maintenance { report, .. } => {
             let mut buttons = Vec::new();
             if !report.applied {
                 buttons.push(("执行维护", "enter", KeyCode::Enter, NONE));
@@ -306,7 +307,7 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
             draw_providers(frame, panel, theme, body, &mut hits)
         }
         View::Fields => draw_fields(frame, panel, theme, body, &mut hits),
-        View::Maintenance(_) => draw_maintenance(frame, panel, theme, body),
+        View::Maintenance { .. } => draw_maintenance(frame, panel, theme, body, &mut hits),
         View::Confirm { text, .. } => {
             let lines = prose(
                 text,
@@ -354,6 +355,7 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
         (hit.area, Hit::Hint(hit.code, hit.modifiers))
     }));
     draw_edit_popup(frame, panel, theme, outer, &mut hits);
+    paint_hover(frame, panel, &hits, theme);
     // 失败红字、普通反馈中性色，与主界面 notice 同一套配色；都不铺底。
     let message_area = Rect::new(area.x, message_y, area.width, 1);
     if let Some(error) = &panel.error {
@@ -405,9 +407,41 @@ fn scrollbar(
     );
     if let Some((hits, make)) = hit {
         for row in 0..height {
-            let target = (row * total / height).min(total - 1);
+            // 轨道上的行号线性映射到目标偏移：点击只滚视口，不动光标。
+            let target = (row * max_offset / height).min(max_offset);
             hits.push((Rect::new(track.x, track.y + cells(row), 1, 1), make(target)));
         }
+    }
+}
+
+/// 悬停只改变背景；选中标记与编辑焦点仍由点击或键盘决定。
+/// 与模型选择器同一做法：按指针坐标在刚登记的最终命中区上重算，滚动后不会沿用旧行号。
+fn paint_hover(frame: &mut Frame, panel: &SettingsPanel, hits: &[(Rect, Hit)], theme: &Theme) {
+    let Some(pointer) = panel.pointer else {
+        return;
+    };
+    let Some((area, hit)) = hits.iter().find(|(area, _)| area.contains(pointer)) else {
+        return;
+    };
+    let hoverable = match hit {
+        Hit::Row(index) => *index != panel.selected,
+        Hit::Provider(index) => !panel.provider_selected(&panel.provider_ids(), *index),
+        Hit::ProviderInput(index) => panel
+            .providers
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.focus != *index),
+        Hit::Item(index) => panel
+            .edit
+            .as_ref()
+            .is_some_and(|edit| edit.editor.cursor() != *index),
+        _ => false,
+    };
+    if !hoverable {
+        return;
+    }
+    for x in area.x..area.right() {
+        frame.buffer_mut()[(x, area.y)].set_bg(theme.bg_hover);
     }
 }
 
@@ -491,12 +525,15 @@ fn draw_fields(
         };
     }
     let height = usize::from(body.height);
-    if panel.selected < panel.offset {
-        panel.offset = panel.selected;
-    }
-    if panel.selected >= panel.offset.saturating_add(height) {
-        panel.offset = panel.selected.saturating_sub(height.saturating_sub(1));
-    }
+    let total = panel.rows.len();
+    // 键盘/点击选中了才显露选中项；滚轮手动滚到的位置普通重绘不拉回。
+    panel.offset = if panel.scroll.reveal_selection {
+        window_offset(panel.offset, panel.selected, height, total)
+    } else {
+        panel.offset.min(total.saturating_sub(height))
+    };
+    panel.scroll.max_offset = total.saturating_sub(height);
+    panel.scroll.reveal_selection = false;
     let label_width = label_column(panel, width);
     let value_x = body.x + cells(label_width);
     let value_width = body.width.saturating_sub(cells(label_width));
@@ -671,7 +708,7 @@ fn draw_fields(
         panel.offset,
         panel.rows.len(),
         theme,
-        Some((hits, Hit::Row)),
+        Some((hits, Hit::Scroll)),
     );
     if let Some(edit) = panel.edit.as_ref().filter(|edit| !edit.popup) {
         let note = match &edit.target {
@@ -787,12 +824,14 @@ fn draw_providers(
     if wide || panel.providers.sidebar {
         let height = usize::from(sidebar.height);
         let cursor = panel.providers.cursor;
-        if cursor < panel.providers.offset {
-            panel.providers.offset = cursor;
-        }
-        if cursor >= panel.providers.offset + height {
-            panel.providers.offset = cursor.saturating_sub(height.saturating_sub(1));
-        }
+        let total = ids.len() + 1;
+        panel.providers.offset = if panel.providers.scroll.reveal_selection {
+            window_offset(panel.providers.offset, cursor, height, total)
+        } else {
+            panel.providers.offset.min(total.saturating_sub(height))
+        };
+        panel.providers.scroll.max_offset = total.saturating_sub(height);
+        panel.providers.scroll.reveal_selection = false;
         for index in (panel.providers.offset..=ids.len()).take(height) {
             let text = match ids.get(index) {
                 Some(id) => {
@@ -803,12 +842,7 @@ fn draw_providers(
                 }
                 None => "+ 添加供应商".into(),
             };
-            let selected = if panel.providers.sidebar {
-                index == cursor
-            } else {
-                ids.get(index) == panel.providers.selected.as_ref()
-                    && panel.providers.draft.is_none()
-            };
+            let selected = panel.provider_selected(&ids, index);
             let style = if selected {
                 Style::new().bg(theme.bg_visual).fg(theme.accent_model)
             } else {
@@ -952,13 +986,15 @@ fn draw_provider_draft(
         body.height.saturating_sub(2),
     );
     let height = usize::from(list.height);
-    if draft.focus < draft.offset {
-        draft.offset = draft.focus;
-    }
-    if draft.focus >= draft.offset + height {
-        draft.offset = draft.focus.saturating_sub(height.saturating_sub(1));
-    }
-    for index in (draft.offset..6).take(height) {
+    const CONTROLS: usize = 6;
+    draft.offset = if draft.scroll.reveal_selection {
+        window_offset(draft.offset, draft.focus, height, CONTROLS)
+    } else {
+        draft.offset.min(CONTROLS.saturating_sub(height))
+    };
+    draft.scroll.max_offset = CONTROLS.saturating_sub(height);
+    draft.scroll.reveal_selection = false;
+    for index in (draft.offset..CONTROLS).take(height) {
         let area = Rect::new(list.x, list.y + cells(index - draft.offset), list.width, 1);
         let selected = draft.focus == index;
         let style = if selected {
@@ -1028,8 +1064,9 @@ fn draw_maintenance(
     panel: &mut SettingsPanel,
     theme: &Theme,
     body: Rect,
+    hits: &mut Vec<(Rect, Hit)>,
 ) -> Footer {
-    let View::Maintenance(report) = &panel.view else {
+    let View::Maintenance { report, offset } = &panel.view else {
         return Footer::default();
     };
     let summary = format!(
@@ -1059,7 +1096,7 @@ fn draw_maintenance(
     );
     let height = usize::from(list.height);
     let total = report.removed.len();
-    let offset = panel.offset.min(total.saturating_sub(height));
+    let offset = (*offset).min(total.saturating_sub(height));
     for (row, path) in report.removed.iter().skip(offset).take(height).enumerate() {
         label(
             frame,
@@ -1068,8 +1105,10 @@ fn draw_maintenance(
             Style::new().fg(theme.text_secondary),
         );
     }
-    scrollbar(frame, list, offset, total, theme, None);
-    panel.offset = offset;
+    scrollbar(frame, list, offset, total, theme, Some((hits, Hit::Scroll)));
+    if let View::Maintenance { offset: current, .. } = &mut panel.view {
+        *current = offset;
+    }
     // 执行与返回都在工具栏上；清单溢出时才提示可以滚动。
     Footer {
         description: "只清理过期且没有被会话引用的临时文件。".into(),
@@ -1085,12 +1124,12 @@ fn draw_maintenance(
 /// 弹窗编辑器：单选、清单、键值表与多行文本共用一张居中卡片；单行文本在字段行内编辑。
 fn draw_edit_popup(
     frame: &mut Frame,
-    panel: &SettingsPanel,
+    panel: &mut SettingsPanel,
     theme: &Theme,
     area: Rect,
     hits: &mut Vec<(Rect, Hit)>,
 ) {
-    let Some(edit) = panel.edit.as_ref().filter(|edit| edit.popup) else {
+    let Some(edit) = panel.edit.as_mut().filter(|edit| edit.popup) else {
         return;
     };
     // 弹窗是模态的：底下的行与按钮不再响应点击。
@@ -1113,7 +1152,7 @@ fn draw_edit_popup(
         lines.clear();
     }
     let offset = lines.len();
-    let body = popup_body(&edit.editor, width, rows - offset, theme);
+    let body = popup_body(&mut edit.editor, width, rows - offset, theme);
     lines.extend(body.lines);
     frame
         .buffer_mut()
@@ -1185,11 +1224,11 @@ struct PopupBody {
     cursor: Option<(usize, usize)>,
 }
 
-fn popup_body(editor: &Editor, width: usize, rows: usize, theme: &Theme) -> PopupBody {
+fn popup_body(editor: &mut Editor, width: usize, rows: usize, theme: &Theme) -> PopupBody {
     match editor {
         Editor::Text(editor) => text_body(editor, width, rows),
         Editor::Select(editor) => {
-            let lines = editor
+            let lines: Vec<_> = editor
                 .picks
                 .iter()
                 .enumerate()
@@ -1207,23 +1246,41 @@ fn popup_body(editor: &Editor, width: usize, rows: usize, theme: &Theme) -> Popu
                     )
                 })
                 .collect();
-            window(lines, editor.selected, rows, None)
+            let start = viewport(&mut editor.scroll, &mut editor.offset, editor.selected, rows, lines.len());
+            window(lines, start, rows, None)
         }
         Editor::List(editor) => list_body(editor, width, rows, theme),
         Editor::Record(editor) => record_body(editor, width, rows, theme),
     }
 }
 
-/// 截出让 `focus` 居中的 `rows` 行，光标行号随之平移。
+/// 弹窗视口起点：光标移动过才显露，滚轮手动滚到的位置普通重绘不拉回；
+/// 顺带回写 `max_offset`、记消费过的 `reveal_selection`，与模型选择器同一套。
+fn viewport(
+    scroll: &mut ModelScroll,
+    offset: &mut usize,
+    focus: usize,
+    rows: usize,
+    total: usize,
+) -> usize {
+    scroll.max_offset = total.saturating_sub(rows);
+    let start = if scroll.reveal_selection {
+        window_offset(*offset, focus, rows, total)
+    } else {
+        (*offset).min(scroll.max_offset)
+    };
+    *offset = start;
+    scroll.reveal_selection = false;
+    start
+}
+
+/// 截出从 `start` 起的 `rows` 行，光标行号随之平移。
 fn window(
     lines: Vec<(Line<'static>, Option<usize>)>,
-    focus: usize,
+    start: usize,
     rows: usize,
     cursor: Option<(usize, usize)>,
 ) -> PopupBody {
-    let start = focus
-        .saturating_sub(rows / 2)
-        .min(lines.len().saturating_sub(rows));
     let end = (start + rows).min(lines.len());
     let (lines, items) = lines.into_iter().skip(start).take(rows).unzip();
     PopupBody {
@@ -1298,7 +1355,7 @@ fn list_draft(
     (line, Some(column))
 }
 
-fn list_body(editor: &ListEditor, width: usize, rows: usize, theme: &Theme) -> PopupBody {
+fn list_body(editor: &mut ListEditor, width: usize, rows: usize, theme: &Theme) -> PopupBody {
     let entry = editor.spec.custom;
     let capture = matches!(entry, Some(Entry::Key));
     let checklist = editor.checklist();
@@ -1396,10 +1453,13 @@ fn list_body(editor: &ListEditor, width: usize, rows: usize, theme: &Theme) -> P
             None,
         ));
     }
-    window(lines, editor.cursor, rows, cursor)
+    let total = lines.len();
+    let focus = cursor.map_or(editor.cursor, |(row, _)| row);
+    let start = viewport(&mut editor.scroll, &mut editor.offset, focus, rows, total);
+    window(lines, start, rows, cursor)
 }
 
-fn record_body(editor: &RecordEditor, width: usize, rows: usize, theme: &Theme) -> PopupBody {
+fn record_body(editor: &mut RecordEditor, width: usize, rows: usize, theme: &Theme) -> PopupBody {
     let column = editor
         .rows
         .iter()
@@ -1459,8 +1519,10 @@ fn record_body(editor: &RecordEditor, width: usize, rows: usize, theme: &Theme) 
             }
         }
     }
+    let total = lines.len();
     let focus = cursor.map_or(editor.cursor, |(row, _)| row);
-    window(lines, focus, rows, cursor)
+    let start = viewport(&mut editor.scroll, &mut editor.offset, focus, rows, total);
+    window(lines, start, rows, cursor)
 }
 
 /// 弹窗里的文本框：单行横向滚动，多行按宽度折行并让光标行可见。
@@ -1475,14 +1537,19 @@ fn text_body(editor: &TextEditor, width: usize, rows: usize) -> PopupBody {
         );
     }
     let wrapped = wrap_editor(&editor.input, width);
-    let lines = wrapped
+    let lines: Vec<_> = wrapped
         .lines
         .into_iter()
         .map(|line| (Line::from(line), None))
         .collect();
+    // 文本框没有独立视口状态：光标行仍按居中窗口显露。
+    let start = wrapped
+        .cursor_row
+        .saturating_sub(rows / 2)
+        .min(lines.len().saturating_sub(rows));
     window(
         lines,
-        wrapped.cursor_row,
+        start,
         rows,
         Some((wrapped.cursor_row, wrapped.cursor_column)),
     )
@@ -1674,6 +1741,8 @@ mod tests {
             tab: 0,
             selected: 0,
             offset: 0,
+            scroll: Default::default(),
+            pointer: None,
             advanced: false,
             filter: String::new(),
             edit: Some(EditState {
@@ -1774,6 +1843,8 @@ mod tests {
                 .expect("选项卡存在"),
             selected: 0,
             offset: 0,
+            scroll: Default::default(),
+            pointer: None,
             advanced: false,
             filter: String::new(),
             edit: None,
@@ -2032,5 +2103,155 @@ mod tests {
             rows.iter().any(|(text, _)| text.ends_with('▐')),
             "滚动条应在最右列：{rows:?}"
         );
+    }
+
+    /// 一帧的真实缓冲区（`screen` 只给文本，这里要按格看底色）。
+    fn buffer_of(panel: &mut SettingsPanel, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("构造测试终端");
+        terminal
+            .draw(|frame| draw(frame, panel, false, Theme::global()))
+            .expect("绘制成功");
+        terminal.backend().buffer().clone()
+    }
+
+    /// 「界面」页的一组平铺字段，行数足以溢出正文区。
+    fn flat_fields(count: usize) -> Vec<ConfigField> {
+        (0..count)
+            .map(|index| ConfigField {
+                path: vec!["ui".into(), format!("f{index}")],
+                tab: "界面".into(),
+                label: format!("字段{index}"),
+                description: "测试用".into(),
+                kind: FieldKind::Text,
+                advanced: false,
+            })
+            .collect()
+    }
+
+    /// 滚轮只滚视口：选中项不动，普通重绘也不把手动滚到的位置拉回。
+    #[test]
+    fn wheel_scrolls_fields_viewport_not_selection() {
+        let mut panel = loaded("界面", json!({}), flat_fields(20));
+        screen(&mut panel, 80, 16);
+        assert!(panel.scroll.max_offset > 0, "行数应溢出正文区");
+
+        crate::settings::scroll(&mut panel, (10, 10).into(), 6);
+        assert_eq!(panel.selected, 0, "滚轮不得移动选中项");
+        assert_eq!(panel.offset, 6.min(panel.scroll.max_offset));
+        assert!(!panel.scroll.reveal_selection);
+
+        let offset = panel.offset;
+        screen(&mut panel, 80, 16);
+        assert_eq!(panel.offset, offset, "普通重绘不得拉回手动滚到的位置");
+    }
+
+    /// 悬停只铺底色：不改选中行，选中行保留自己的色带。
+    #[test]
+    fn hover_paints_background_without_moving_selection() {
+        let theme = Theme::global();
+        let mut panel = loaded("界面", json!({}), flat_fields(20));
+        screen(&mut panel, 80, 24);
+        let (row_y, row_x) = {
+            let (area, _) = panel
+                .hits
+                .iter()
+                .find(|(area, hit)| {
+                    matches!(hit, Hit::Row(index) if *index != panel.selected)
+                        && area.height == 1
+                })
+                .expect("有未选中的行");
+            (area.y, area.x)
+        };
+        let selected_y = panel
+            .hits
+            .iter()
+            .find_map(|(area, hit)| match hit {
+                Hit::Row(index) if *index == panel.selected => Some(area.y),
+                _ => None,
+            })
+            .expect("选中行可见");
+        panel.pointer = Some((row_x, row_y).into());
+
+        let buffer = buffer_of(&mut panel, 80, 24);
+        assert_eq!(panel.selected, 0, "悬停不得移动选中项");
+        assert_eq!(buffer.cell((row_x + 2, row_y)).unwrap().bg, theme.bg_hover);
+        let selected = buffer.cell((row_x + 2, selected_y)).unwrap();
+        assert_eq!(selected.bg, theme.bg_visual, "选中行保留选中色带");
+        assert_ne!(selected.bg, theme.bg_hover);
+    }
+
+    /// 供应商页滚轮按指针所在子区分流：侧栏滚动不动详情列表与侧栏光标。
+    #[test]
+    fn wheel_routes_to_provider_sidebar_not_detail() {
+        let providers: serde_json::Map<String, Value> = (0..30)
+            .map(|index| (format!("p{index:02}"), json!({"models": {}})))
+            .collect();
+        let mut panel = loaded(
+            "供应商与模型",
+            json!({ "providers": Value::Object(providers) }),
+            Vec::new(),
+        );
+        screen(&mut panel, 100, 16);
+        let point = panel
+            .hits
+            .iter()
+            .find_map(|(area, hit)| match hit {
+                Hit::Provider(_) => Some(*area),
+                _ => None,
+            })
+            .map(|area| ratatui::layout::Position::new(area.x, area.y))
+            .expect("侧栏行存在");
+        assert!(panel.providers.scroll.max_offset > 0, "侧栏应溢出");
+
+        crate::settings::scroll(&mut panel, point, 6);
+        assert_eq!(panel.providers.offset, 6.min(panel.providers.scroll.max_offset));
+        assert_eq!(panel.providers.cursor, 0, "滚轮不得移动侧栏光标");
+        assert_eq!(panel.offset, 0, "详情列表的视口不得跟着滚动");
+        assert!(!panel.providers.scroll.reveal_selection);
+
+        let offset = panel.providers.offset;
+        screen(&mut panel, 100, 16);
+        assert_eq!(panel.providers.offset, offset, "普通重绘不得拉回侧栏");
+    }
+
+    /// 弹窗列表滚轮只滚自己的视口，光标行不动。
+    #[test]
+    fn popup_wheel_scrolls_viewport_not_cursor() {
+        let mut panel = loaded("界面", json!({}), flat_fields(1));
+        panel.edit = Some(EditState {
+            target: EditTarget::Filter,
+            editor: Editor::Select(SelectEditor::new(
+                (0..30)
+                    .map(|index| controls::Pick {
+                        label: format!("候选{index}"),
+                        action: PickAction::Set(json!(index)),
+                    })
+                    .collect(),
+                &Value::Null,
+            )),
+            popup: true,
+            title: "选择".into(),
+            note: String::new(),
+        });
+        screen(&mut panel, 80, 24);
+        let Editor::Select(editor) = &panel.edit.as_ref().unwrap().editor else {
+            panic!("是单选编辑器");
+        };
+        assert!(editor.scroll.max_offset > 0, "候选应溢出弹窗");
+
+        crate::settings::scroll(&mut panel, (40, 12).into(), 3);
+        let Editor::Select(editor) = &panel.edit.as_ref().unwrap().editor else {
+            panic!("是单选编辑器");
+        };
+        assert_eq!(editor.offset, 3.min(editor.scroll.max_offset));
+        assert_eq!(editor.selected, 0, "滚轮不得移动弹窗光标");
+        assert!(!editor.scroll.reveal_selection);
+
+        let offset = editor.offset;
+        screen(&mut panel, 80, 24);
+        let Editor::Select(editor) = &panel.edit.as_ref().unwrap().editor else {
+            panic!("是单选编辑器");
+        };
+        assert_eq!(editor.offset, offset, "普通重绘不得拉回弹窗视口");
     }
 }

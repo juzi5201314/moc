@@ -1292,6 +1292,9 @@ async fn event_loop(
                             jobs,
                             selected: 0,
                             pending_kill: None,
+                            offset: 0,
+                            scroll: crate::modal::ModelScroll::default(),
+                            pointer: None,
                         });
                     }
                     Some(AppEvent::OpenWorkflowApproval(request)) => {
@@ -1325,8 +1328,10 @@ async fn event_loop(
                             artifact_versions: std::collections::BTreeMap::new(),
                             artifact_view: None,
                             focus: 0,
-                            graph_scroll: 0,
+                            body_scroll: 0,
                             list_scroll: 0,
+                            scroll: crate::modal::ModelScroll::default(),
+                            pointer: None,
                         };
                         app.modal = Some(Modal::WorkflowRun {
                             state: Box::new(state),
@@ -1691,6 +1696,22 @@ fn handle_mouse_with_connection(
             handle_model_picker_mouse(app, connection, mouse);
             return;
         }
+        // 列表/面板类模态只记鼠标坐标：悬停高亮由渲染层按最终命中矩形计算，
+        // 键盘导航时清空（handle_modal_key 开头），不与选中态抢视觉。
+        {
+            let pos: ratatui::layout::Position = position.into();
+            match app.modal.as_mut() {
+                Some(
+                    Modal::Sessions { picker, .. }
+                    | Modal::Subagents { picker, .. }
+                    | Modal::WorkflowRuns { picker, .. },
+                ) => picker.pointer = Some(pos),
+                Some(Modal::Jobs { pointer, .. }) => *pointer = Some(pos),
+                Some(Modal::WorkflowApproval { state }) => state.pointer = Some(pos),
+                Some(Modal::WorkflowRun { state }) => state.pointer = Some(pos),
+                _ => {}
+            }
+        }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 // 命中矩形由渲染层按卡片正文行号每帧写入。
@@ -1715,26 +1736,46 @@ fn handle_mouse_with_connection(
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
-                match app.modal {
-                    // 列表类模态：滚轮与 ↑↓ 同语义移动选中项，不滚背后的转写。
+                let delta: isize = if up { -3 } else { 3 };
+                // 列表/面板类模态：滚轮只滚 viewport，不移动选中项，也不滚背后的转写。
+                let scrolled = match app.modal.as_mut() {
                     Some(
-                        Modal::Sessions { .. }
-                        | Modal::Subagents { .. }
-                        | Modal::Jobs { .. }
-                        | Modal::SwitchModel { .. }
-                        | Modal::WorkflowRuns { .. }
-                        | Modal::WorkflowRun { .. }
-                        | Modal::WorkflowApproval { .. },
-                    ) => handle_modal_key(
-                        app,
-                        connection,
-                        KeyModifiers::NONE,
-                        if up { KeyCode::Up } else { KeyCode::Down },
-                    ),
+                        Modal::Sessions { picker, .. }
+                        | Modal::Subagents { picker, .. }
+                        | Modal::WorkflowRuns { picker, .. },
+                    ) => {
+                        picker.scroll.scroll_by(&mut picker.offset, delta);
+                        true
+                    }
+                    Some(Modal::Jobs { offset, scroll, .. }) => {
+                        scroll.scroll_by(offset, delta);
+                        true
+                    }
+                    Some(Modal::WorkflowApproval { state }) => {
+                        state.scroll.scroll_by(&mut state.body_scroll, delta);
+                        true
+                    }
+                    Some(Modal::WorkflowRun { state }) => {
+                        state.scroll.scroll_by(&mut state.body_scroll, delta);
+                        true
+                    }
                     // 占用窗与监控没有可滚内容，也不该滚背后的转写。
-                    Some(Modal::Context { .. } | Modal::Monitor) => {}
-                    // 授权预览与帮助：滚各自的正文。
-                    _ => handle_mouse(app, mouse),
+                    Some(Modal::Context { .. } | Modal::Monitor) => true,
+                    _ => false,
+                };
+                if !scrolled {
+                    // 切换确认是二选一菜单：保留滚轮 = 换项的菜单语义。
+                    if matches!(app.modal, Some(Modal::SwitchModel { .. })) {
+                        handle_modal_key(
+                            app,
+                            connection,
+                            KeyModifiers::NONE,
+                            if up { KeyCode::Up } else { KeyCode::Down },
+                        );
+                    } else {
+                        // 授权预览与帮助：滚各自的正文。
+                        handle_mouse(app, mouse);
+                    }
                 }
             }
             _ => {}
@@ -1932,6 +1973,7 @@ fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize
             jobs,
             selected,
             pending_kill,
+            ..
         }) => {
             let again = *selected == index;
             *selected = index;
@@ -1964,31 +2006,12 @@ fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize
     }
 }
 
-/// 鼠标悬浮移到通用模态的第 `index` 项：与 ↑↓/Tab 换行同语义，只改高亮不确认。
+/// 鼠标悬浮移到按钮式选项（授权、切换确认）：与 ↑↓ 换行同语义，只改高亮不确认。
+/// 列表类模态的悬停不写选中态——pointer 已记录，渲染层只铺悬停底色。
 fn hover_modal_item(app: &mut App, index: usize) {
     match app.modal.as_mut() {
-        Some(
-            Modal::Sessions { picker, .. }
-            | Modal::Subagents { picker, .. }
-            | Modal::WorkflowRuns { picker, .. },
-        ) => {
-            picker.selected = index;
-        }
         Some(Modal::Permission { selected, .. }) => *selected = index,
         Some(Modal::SwitchModel { option, .. }) => *option = index,
-        Some(Modal::WorkflowApproval { state }) => state.focus = index,
-        Some(Modal::WorkflowRun { state }) => state.focus = index,
-        // 悬停换行会撤掉待确认标记，与键盘其他键的语义一致。
-        Some(Modal::Jobs {
-            selected,
-            pending_kill,
-            ..
-        }) => {
-            if *selected != index {
-                *pending_kill = None;
-            }
-            *selected = index;
-        }
         _ => {}
     }
 }
@@ -2262,6 +2285,8 @@ fn handle_rewind_mouse(
         return;
     };
     let pos = (mouse.column, mouse.row).into();
+    // 只记坐标：悬停高亮由渲染层按最终布局计算，不写选中态。
+    state.pointer = Some(pos);
     let in_detail = detail_area.contains(pos);
     let in_timeline = timeline_area.contains(pos);
 
@@ -2269,15 +2294,16 @@ fn handle_rewind_mouse(
         MouseEventKind::ScrollUp => {
             if in_detail {
                 state.scroll_detail(-3);
-            } else {
-                state.step(-1);
+            } else if in_timeline {
+                // 滚轮只滚时间线 viewport，不移动选中项（键盘/点击才动 selected）。
+                state.scroll.scroll_by(&mut state.list_scroll, -3);
             }
         }
         MouseEventKind::ScrollDown => {
             if in_detail {
                 state.scroll_detail(3);
-            } else {
-                state.step(1);
+            } else if in_timeline {
+                state.scroll.scroll_by(&mut state.list_scroll, 3);
             }
         }
         MouseEventKind::Down(MouseButton::Left) if in_timeline && timeline_area.height > 2 => {
@@ -3870,6 +3896,19 @@ fn handle_modal_key(
     let mut workflow_picker: Option<(crate::workflow::FocusTarget, String)> = None;
     let mut workflow_action: Option<crate::workflow::WorkflowAction> = None;
     let plan_review_open = matches!(app.modal, Some(Modal::Plan { .. }));
+    // 键盘接管：丢掉悬停坐标，不与选中高亮抢视觉（模型选择器在其分支内自处理）。
+    match app.modal.as_mut() {
+        Some(
+            Modal::Sessions { picker, .. }
+            | Modal::Subagents { picker, .. }
+            | Modal::WorkflowRuns { picker, .. },
+        ) => picker.pointer = None,
+        Some(Modal::Jobs { pointer, .. }) => *pointer = None,
+        Some(Modal::WorkflowApproval { state }) => state.pointer = None,
+        Some(Modal::WorkflowRun { state }) => state.pointer = None,
+        Some(Modal::Rewind { state }) => state.pointer = None,
+        _ => {}
+    }
     let Some(modal) = app.modal.as_mut() else {
         return;
     };
@@ -4991,14 +5030,18 @@ fn handle_modal_key(
             jobs,
             selected,
             pending_kill,
+            scroll,
+            ..
         } => match (code, modifiers) {
             (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
                 *selected = selected.saturating_sub(1);
                 *pending_kill = None;
+                scroll.reveal_selection = true;
             }
             (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
                 *selected = (*selected + 1).min(jobs.len().saturating_sub(1));
                 *pending_kill = None;
+                scroll.reveal_selection = true;
             }
             (KeyCode::Char('x'), KeyModifiers::NONE) => {
                 if *pending_kill == Some(*selected) {
@@ -5057,15 +5100,19 @@ fn handle_modal_key(
                 match (code, modifiers) {
                     (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
                         state.focus = state.focus.saturating_sub(1);
+                        state.scroll.reveal_selection = true;
                     }
                     (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
                         state.focus = (state.focus + 1).min(state.rows().saturating_sub(1));
+                        state.scroll.reveal_selection = true;
                     }
                     (KeyCode::PageUp, _) => {
-                        state.graph_scroll = state.graph_scroll.saturating_sub(6);
+                        state.body_scroll = state.body_scroll.saturating_sub(6);
+                        state.scroll.reveal_selection = false;
                     }
                     (KeyCode::PageDown, _) => {
-                        state.graph_scroll = state.graph_scroll.saturating_add(6);
+                        state.body_scroll = state.body_scroll.saturating_add(6);
+                        state.scroll.reveal_selection = false;
                     }
                     (KeyCode::Enter, KeyModifiers::NONE) => {
                         // 选中 role/ref → 打开模型选择器；回程票带回整个审批状态。
@@ -5123,12 +5170,14 @@ fn handle_modal_key(
                 (KeyCode::Backspace, _) => {
                     picker.query.pop();
                     picker.selected = 0;
+                    picker.scroll.reveal_selection = true;
                 }
                 (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
                     if !ch.is_control() =>
                 {
                     picker.query.push(ch);
                     picker.selected = 0;
+                    picker.scroll.reveal_selection = true;
                 }
                 (KeyCode::Enter, KeyModifiers::NONE) => {
                     if let Some(run) = filtered.get(picker.selected) {
@@ -5144,15 +5193,19 @@ fn handle_modal_key(
         Modal::WorkflowRun { state } => match (code, modifiers) {
             (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
                 state.focus = state.focus.saturating_sub(1);
+                state.scroll.reveal_selection = true;
             }
             (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
                 state.focus = (state.focus + 1).min(state.roles.len().saturating_sub(1));
+                state.scroll.reveal_selection = true;
             }
             (KeyCode::PageUp, _) => {
-                state.graph_scroll = state.graph_scroll.saturating_sub(6);
+                state.body_scroll = state.body_scroll.saturating_sub(6);
+                state.scroll.reveal_selection = false;
             }
             (KeyCode::PageDown, _) => {
-                state.graph_scroll = state.graph_scroll.saturating_add(6);
+                state.body_scroll = state.body_scroll.saturating_add(6);
+                state.scroll.reveal_selection = false;
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {
                 if let Some(role) = state.roles.get(state.focus) {
@@ -5234,12 +5287,14 @@ fn handle_modal_key(
                 (KeyCode::Backspace, _) => {
                     picker.query.pop();
                     picker.selected = 0;
+                    picker.scroll.reveal_selection = true;
                 }
                 (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
                     if !ch.is_control() =>
                 {
                     picker.query.push(ch);
                     picker.selected = 0;
+                    picker.scroll.reveal_selection = true;
                 }
                 (KeyCode::Enter, KeyModifiers::NONE) => {
                     // 借用检查：`app.modal` 正被 match 借用，聚焦要等这层借用结束。
@@ -9320,6 +9375,286 @@ mod tests {
 
     include!("event_model_picker_tests.rs");
 
+    /// 列表类模态（PickerState）：滚轮只滚 viewport，悬停只铺底色，选中项不动；
+    /// 键盘导航重新显露选中项。语义与模型选择器一致。
+    #[tokio::test]
+    async fn sessions_wheel_and_hover_preserve_selection() {
+        use crossterm::event::MouseEventKind::{Moved, ScrollDown};
+        let (core, connection, mut app) = setup_test_app().await;
+        let session = |index: usize| moc_protocol::methods::SessionInfo {
+            id: format!("ses_{index:04}"),
+            title: format!("会话 {index}"),
+            model: "model".into(),
+            permission: Default::default(),
+            engine: Default::default(),
+            autonomy: Default::default(),
+            plan_active: false,
+            fast_mode: false,
+            engine_locked: false,
+            parent_session_id: None,
+            forked_from: None,
+            agent_preset: None,
+            delegation_depth: 0,
+            cwd: "/tmp".into(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            lock: None,
+        };
+        app.modal = Some(Modal::Sessions {
+            sessions: (0..30).map(session).collect(),
+            cwd: "/tmp".into(),
+            scope: crate::modal::SessionScope::All,
+            picker: Default::default(),
+        });
+        let _ = draw_frame(&mut app, 100, 24);
+        let (_, row) = *app.modal_item_hits.first().expect("列表有命中行");
+        for step in 0..4 {
+            handle_mouse_with_connection(
+                &mut app,
+                &connection,
+                mouse_event(ScrollDown, row.x, row.y),
+            );
+            handle_mouse_with_connection(
+                &mut app,
+                &connection,
+                mouse_event(Moved, row.x, row.y + step % 2),
+            );
+            let _ = draw_frame(&mut app, 100, 24);
+            let Some(Modal::Sessions { picker, .. }) = &app.modal else {
+                panic!("选择器应保持打开")
+            };
+            assert_eq!(picker.selected, 0, "滚轮与悬停不能改选中项");
+            assert_eq!(picker.offset, (step as usize + 1) * 3);
+            assert_eq!(app.modal_item_hits.first().unwrap().0, picker.offset);
+        }
+        // 普通重绘不把视口拉回选中项。
+        let before = app.modal_item_hits.clone();
+        let _ = draw_frame(&mut app, 100, 24);
+        assert_eq!(app.modal_item_hits, before, "重绘不能拉回选中项");
+        // 悬停只铺底色。
+        let (_, hover_row) = *app.modal_item_hits.last().unwrap();
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse_event(Moved, hover_row.x, hover_row.y),
+        );
+        let terminal = draw_frame(&mut app, 100, 24);
+        assert_eq!(
+            terminal.backend().buffer()[(hover_row.x, hover_row.y)].bg,
+            app.theme.bg_hover
+        );
+        // 键盘导航重新显露选中项。
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        let _ = draw_frame(&mut app, 100, 24);
+        let Some(Modal::Sessions { picker, .. }) = &app.modal else {
+            panic!("选择器应保持打开")
+        };
+        assert_eq!(picker.selected, 1);
+        assert!(
+            app.modal_item_hits.iter().any(|(index, _)| *index == 1),
+            "键盘导航后选中项在视口内"
+        );
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// /jobs：滚轮只滚 viewport；悬停不换行也不再误撤待确认标记。
+    #[tokio::test]
+    async fn jobs_wheel_and_hover_preserve_selection_and_pending_kill() {
+        use crossterm::event::MouseEventKind::{Moved, ScrollDown};
+        let (core, connection, mut app) = setup_test_app().await;
+        let job = |index: usize| moc_protocol::methods::JobInfo {
+            job_id: format!("job-{index}"),
+            command: format!("sleep {index}"),
+            description: None,
+            tool_call_id: format!("call-{index}"),
+            status: moc_protocol::methods::JobStatus::Running,
+            exit_code: None,
+            lifecycle: moc_protocol::methods::JobLifecycle::Monitored,
+            origin: moc_protocol::methods::JobOrigin::Explicit,
+            stalled: false,
+            output_elided: false,
+            started_at_ms: 0,
+            duration_ms: None,
+            log_uri: format!("artifact://jobs/{index}"),
+        };
+        app.modal = Some(Modal::Jobs {
+            jobs: (0..30).map(job).collect(),
+            selected: 0,
+            pending_kill: None,
+            offset: 0,
+            scroll: Default::default(),
+            pointer: None,
+        });
+        let _ = draw_frame(&mut app, 100, 24);
+        // 待确认标记：按一次 x。
+        handle_modal_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('x'),
+        );
+        let (_, row) = *app.modal_item_hits.last().expect("列表有命中行");
+        handle_mouse_with_connection(&mut app, &connection, mouse_event(Moved, row.x, row.y));
+        let Some(Modal::Jobs {
+            selected,
+            pending_kill,
+            ..
+        }) = &app.modal
+        else {
+            panic!("任务列表应保持打开")
+        };
+        assert_eq!(*selected, 0, "悬停不能改选中项");
+        assert_eq!(*pending_kill, Some(0), "悬停不能撤掉待确认标记");
+        for _ in 0..3 {
+            handle_mouse_with_connection(
+                &mut app,
+                &connection,
+                mouse_event(ScrollDown, row.x, row.y),
+            );
+        }
+        let _ = draw_frame(&mut app, 100, 24);
+        let Some(Modal::Jobs {
+            selected, offset, ..
+        }) = &app.modal
+        else {
+            panic!("任务列表应保持打开")
+        };
+        assert_eq!(*selected, 0, "滚轮不能改选中项");
+        assert_eq!(*offset, 9, "滚轮推进列表视口");
+        assert_eq!(app.modal_item_hits.first().unwrap().0, 9);
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 回退时间线：滚轮只滚列表 viewport，不改选中项；键盘导航重新显露。
+    #[tokio::test]
+    async fn rewind_wheel_scrolls_timeline_not_selection() {
+        use crossterm::event::MouseEventKind::ScrollUp;
+        let (core, connection, mut app) = setup_test_app().await;
+        let entry = |index: usize| moc_protocol::methods::TranscriptEntry {
+            id: format!("e{index}"),
+            at_ms: index as u64,
+            message: moc_protocol::Message::user_text(format!("提问 {index}")),
+            tool: None,
+            bash: None,
+            agent: None,
+            goal_round: None,
+            reminder: None,
+        };
+        let mut state = crate::modal::RewindState::default();
+        state.set_entries((0..30).map(entry).collect(), vec![]);
+        let selected = state.selected;
+        app.modal = Some(Modal::Rewind { state });
+        let _ = draw_frame(&mut app, 120, 32);
+        let timeline = app.rewind_timeline_area;
+        assert!(!timeline.is_empty(), "时间线区域已登记");
+        for _ in 0..3 {
+            handle_mouse_with_connection(
+                &mut app,
+                &connection,
+                mouse_event(ScrollUp, timeline.x + 1, timeline.y + 2),
+            );
+        }
+        let _ = draw_frame(&mut app, 120, 32);
+        let scrolled = match &app.modal {
+            Some(Modal::Rewind { state }) => {
+                assert_eq!(state.selected, selected, "滚轮不能改选中项");
+                assert!(state.list_scroll > 0, "时间线视口已滚动");
+                state.list_scroll
+            }
+            _ => panic!("回退视图应保持打开"),
+        };
+        // 普通重绘不把视口拉回选中项。
+        let _ = draw_frame(&mut app, 120, 32);
+        let Some(Modal::Rewind { state }) = &app.modal else {
+            panic!("回退视图应保持打开")
+        };
+        assert_eq!(state.list_scroll, scrolled, "重绘不能拉回选中项");
+        // 键盘导航重新显露选中项：视口向选中项回移。
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Up);
+        let _ = draw_frame(&mut app, 120, 32);
+        let Some(Modal::Rewind { state }) = &app.modal else {
+            panic!("回退视图应保持打开")
+        };
+        assert_eq!(state.selected, selected - 1);
+        assert!(
+            state.list_scroll > scrolled,
+            "键盘导航把选中项收回窗内"
+        );
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// workflow run 面板：滚轮滚正文 viewport，不改 focus；键盘移动焦点重新显露。
+    #[tokio::test]
+    async fn workflow_run_wheel_scrolls_body_not_focus() {
+        use crossterm::event::MouseEventKind::ScrollDown;
+        let (core, connection, mut app) = setup_test_app().await;
+        let role = |index: usize| moc_protocol::methods::WorkflowRoleState {
+            role_id: format!("role-{index}"),
+            name: Some(format!("角色 {index}")),
+            fan_out: false,
+            status: "running".into(),
+            model: None,
+            asks_in_flight: 0,
+            asks_done: 0,
+            spent_tokens: 0,
+        };
+        let state = crate::workflow::WorkflowRunState {
+            run_id: "run-1".into(),
+            title: "run".into(),
+            status: moc_protocol::methods::WorkflowRunStatus::Running,
+            plan: serde_json::json!({"roles": []}),
+            phases: vec![],
+            roles: (0..8).map(role).collect(),
+            commands: vec![],
+            reports: vec![],
+            artifacts: vec![],
+            holes: vec![],
+            usage: serde_json::json!({}),
+            log: (0..80).map(|i| format!("log {i}")).collect(),
+            artifact_versions: Default::default(),
+            artifact_view: None,
+            focus: 0,
+            body_scroll: 0,
+            list_scroll: 0,
+            scroll: Default::default(),
+            pointer: None,
+        };
+        app.modal = Some(Modal::WorkflowRun {
+            state: Box::new(state),
+        });
+        let _ = draw_frame(&mut app, 100, 24);
+        let (_, row) = *app.modal_item_hits.first().expect("role 行有命中");
+        for _ in 0..3 {
+            handle_mouse_with_connection(
+                &mut app,
+                &connection,
+                mouse_event(ScrollDown, row.x, row.y),
+            );
+        }
+        let _ = draw_frame(&mut app, 100, 24);
+        let Some(Modal::WorkflowRun { state }) = &app.modal else {
+            panic!("run 面板应保持打开")
+        };
+        assert_eq!(state.focus, 0, "滚轮不能改焦点");
+        assert!(state.body_scroll > 0, "正文视口已滚动");
+        // 键盘移动焦点重新显露焦点行。
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        let _ = draw_frame(&mut app, 100, 24);
+        let Some(Modal::WorkflowRun { state }) = &app.modal else {
+            panic!("run 面板应保持打开")
+        };
+        assert_eq!(state.focus, 1);
+        assert!(
+            app.modal_item_hits.iter().any(|(index, _)| *index == 1),
+            "键盘导航后焦点行在视口内"
+        );
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
     /// 模型选择器：点详情卡思考等级行展开下拉；会话目标下点等级候选
     /// 立即发起切换（选择器保持打开、进入 loading）。
     #[tokio::test]
@@ -12245,6 +12580,8 @@ mod config_picker_tests {
             tab: 0,
             selected: 0,
             offset: 0,
+            scroll: Default::default(),
+            pointer: None,
             advanced: true,
             filter: String::new(),
             edit: None,

@@ -325,13 +325,19 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
         .position(|&idx| idx == state.selected)
         .unwrap_or(0);
 
-    // 滚动视口收敛
-    if selected_pos < state.list_scroll {
-        state.list_scroll = selected_pos;
+    // 选中项移动时收进窗内（键盘/点击/搜索置 reveal）；滚轮只动 list_scroll，
+    // 普通重绘不把视口拉回选中项。
+    if state.scroll.reveal_selection {
+        if selected_pos < state.list_scroll {
+            state.list_scroll = selected_pos;
+        }
+        if selected_pos >= state.list_scroll + visible_count && visible_count > 0 {
+            state.list_scroll = selected_pos.saturating_sub(visible_count - 1);
+        }
     }
-    if selected_pos >= state.list_scroll + visible_count && visible_count > 0 {
-        state.list_scroll = selected_pos.saturating_sub(visible_count - 1);
-    }
+    state.scroll.max_offset = matches.len().saturating_sub(visible_count);
+    state.list_scroll = state.list_scroll.min(state.scroll.max_offset);
+    state.scroll.reveal_selection = false;
 
     let total_items = state.items.len();
     let mut lines = Vec::new();
@@ -485,6 +491,22 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
+
+    // 悬停只铺底色：pointer 坐标由事件层记录，选中项保持自己的高亮。
+    if let Some(pos) = state.pointer.filter(|p| inner.contains(*p))
+        && let item_pos = usize::from(pos.y - inner.y) / item_height
+        && let Some(&match_idx) = matches.get(item_pos + state.list_scroll)
+        && match_idx != state.selected
+    {
+        let y = inner.y + (item_pos * item_height) as u16;
+        let height = (item_height as u16).min(inner.bottom().saturating_sub(y));
+        if height > 0 {
+            frame.buffer_mut().set_style(
+                Rect::new(inner.x, y, inner.width, height),
+                Style::new().bg(theme.bg_hover),
+            );
+        }
+    }
 }
 
 /// 绘制右侧详情与回退影响面板

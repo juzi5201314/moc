@@ -86,6 +86,7 @@ pub(super) fn key(
                 } else {
                     panel.selected = (panel.selected + 1).min(panel.rows.len().saturating_sub(1));
                 }
+                panel.scroll.reveal_selection = true;
             }
             return false;
         }
@@ -100,7 +101,7 @@ pub(super) fn key(
     match &panel.view {
         View::Fields => fields_key(panel, app, connection, mods, code),
         View::Confirm { .. } => confirm_key(panel, app, connection, code),
-        View::Maintenance(_) => maintenance_key(panel, code),
+        View::Maintenance { .. } => maintenance_key(panel, code),
     }
 }
 
@@ -276,6 +277,7 @@ fn fields_key(
         }
     }
     let last = panel.rows.len().saturating_sub(1);
+    let before = panel.selected;
     match code {
         KeyCode::Up | KeyCode::Char('k') => panel.selected = panel.selected.saturating_sub(1),
         KeyCode::Down | KeyCode::Char('j') => panel.selected = (panel.selected + 1).min(last),
@@ -324,6 +326,8 @@ fn fields_key(
         }
         _ => {}
     }
+    // 选中项移动过（含层级导航跳转）才重新显露，手动滚动的位置不丢。
+    panel.scroll.reveal_selection |= panel.selected != before;
     false
 }
 
@@ -450,7 +454,9 @@ fn confirm_key(
 }
 
 fn maintenance_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
-    let View::Maintenance(report) = std::mem::replace(&mut panel.view, View::Fields) else {
+    let View::Maintenance { report, mut offset } =
+        std::mem::replace(&mut panel.view, View::Fields)
+    else {
         return false;
     };
     if code == KeyCode::Esc {
@@ -469,26 +475,26 @@ fn maintenance_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
     let total = report.removed.len();
     match code {
         KeyCode::Down | KeyCode::Char('j') => {
-            panel.offset = (panel.offset + 1).min(total);
+            offset = (offset + 1).min(total);
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            panel.offset = panel.offset.saturating_sub(1);
+            offset = offset.saturating_sub(1);
         }
         KeyCode::PageDown => {
-            panel.offset = (panel.offset + 10).min(total);
+            offset = (offset + 10).min(total);
         }
         KeyCode::PageUp => {
-            panel.offset = panel.offset.saturating_sub(10);
+            offset = offset.saturating_sub(10);
         }
         KeyCode::Home | KeyCode::Char('g') => {
-            panel.offset = 0;
+            offset = 0;
         }
         KeyCode::End | KeyCode::Char('G') => {
-            panel.offset = total.saturating_sub(1);
+            offset = total.saturating_sub(1);
         }
         _ => {}
     }
-    panel.view = View::Maintenance(report);
+    panel.view = View::Maintenance { report, offset };
     false
 }
 
@@ -569,6 +575,7 @@ fn apply_edit(
             panel.filter = text.trim().into();
             panel.selected = 0;
             panel.offset = 0;
+            panel.scroll.reveal_selection = true;
             panel.rebuild_rows();
         }
     }

@@ -23,6 +23,10 @@ pub struct PickerState {
     pub selected: usize,
     /// 列表 viewport 的起点；模型列表按显示行（含分组标题），其余按条目。
     pub offset: usize,
+    /// 列表 viewport 的滚动约束；真实可见行数由绘制层回写。
+    pub scroll: ModelScroll,
+    /// 保留鼠标坐标，悬停在渲染层按最终命中矩形计算，不直接写 `selected`。
+    pub pointer: Option<ratatui::layout::Position>,
     /// 是否正在请求后端数据。
     pub loading: bool,
     /// 最近一次请求错误。
@@ -701,10 +705,12 @@ impl PickerState {
 
     pub fn move_selection(&mut self, delta: i32, count: usize, page: usize) {
         move_index(&mut self.selected, &mut self.offset, delta, count, page);
+        self.scroll.reveal_selection = true;
     }
 
     pub fn keep_visible(&mut self, page: usize, count: usize) {
         keep_index_visible(&mut self.selected, &mut self.offset, page, count);
+        self.scroll.reveal_selection = true;
     }
 }
 
@@ -786,8 +792,12 @@ pub struct RewindState {
     pub filtering: bool,
     /// 搜索过滤关键词
     pub query: String,
-    /// 列表滚动偏移
+    /// 时间线列表 viewport 的起点（已过滤结果中的下标）
     pub list_scroll: usize,
+    /// 时间线 viewport 的滚动约束；真实可见行数由绘制层回写。
+    pub scroll: ModelScroll,
+    /// 保留鼠标坐标，悬停在渲染层按最终布局计算，不直接写 `selected`。
+    pub pointer: Option<ratatui::layout::Position>,
     /// 详情预览滚动偏移
     pub detail_scroll: usize,
 }
@@ -806,6 +816,8 @@ impl Default for RewindState {
             filtering: false,
             query: String::new(),
             list_scroll: 0,
+            scroll: ModelScroll::default(),
+            pointer: None,
             detail_scroll: 0,
         }
     }
@@ -936,6 +948,8 @@ impl RewindState {
         self.filtering = false;
         self.query.clear();
         self.list_scroll = 0;
+        self.scroll = ModelScroll::default();
+        self.pointer = None;
         self.detail_scroll = 0;
     }
 
@@ -947,6 +961,7 @@ impl RewindState {
         } else {
             self.selected = self.items.len().saturating_sub(1);
         }
+        self.scroll.reveal_selection = true;
         self.detail_scroll = 0;
     }
 
@@ -955,6 +970,7 @@ impl RewindState {
             self.selected_prompt = item.prompt_index;
             self.selected_item = item.item_index;
         }
+        self.scroll.reveal_selection = true;
         self.detail_scroll = 0;
     }
 
@@ -1559,6 +1575,11 @@ pub enum Modal {
         selected: usize,
         /// 待确认删除的任务索引（需要按 x 两次）。
         pending_kill: Option<usize>,
+        /// 列表 viewport 的起点与滚动约束（同 [`PickerState`] 的滚动语义）。
+        offset: usize,
+        scroll: ModelScroll,
+        /// 保留鼠标坐标，悬停在渲染层按最终命中矩形计算。
+        pointer: Option<ratatui::layout::Position>,
     },
     /// workflow 审批：phase 分层图 + role 模型覆盖 + 命令集 + 脚本/差异。
     WorkflowApproval {

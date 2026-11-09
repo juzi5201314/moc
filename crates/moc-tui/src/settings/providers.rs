@@ -18,6 +18,8 @@ pub struct Providers {
     pub sidebar: bool,
     pub cursor: usize,
     pub offset: usize,
+    /// 侧栏的滚动约束；真实可见行数由绘制层回写。
+    pub scroll: ModelScroll,
     pub more: bool,
     pub draft: Option<ProviderDraft>,
     pub discovery: Option<Discovery>,
@@ -32,6 +34,8 @@ pub struct ProviderDraft {
     /// 四个字段与两个提交按钮，共六个控件。
     pub focus: usize,
     pub offset: usize,
+    /// 表单的滚动约束；真实可见行数由绘制层回写。
+    pub scroll: ModelScroll,
     pub pending: Option<Snapshot>,
     pub discover: bool,
 }
@@ -45,6 +49,7 @@ impl Default for ProviderDraft {
             key: TextEditor::new(FieldKind::Secret, String::new()),
             focus: 0,
             offset: 0,
+            scroll: Default::default(),
             pending: None,
             discover: true,
         }
@@ -150,6 +155,7 @@ impl SettingsPanel {
                 .and_then(|id| ids.iter().position(|item| item == id))
                 .unwrap_or(ids.len())
         };
+        self.providers.scroll.reveal_selection = true;
     }
 
     pub fn choose_provider(&mut self, index: usize) {
@@ -163,6 +169,7 @@ impl SettingsPanel {
         }
         let ids = self.provider_ids();
         self.providers.cursor = index.min(ids.len());
+        self.providers.scroll.reveal_selection = true;
         if let Some(id) = ids.get(index) {
             if self.providers.selected.as_ref() != Some(id) {
                 self.providers.discovery = None;
@@ -171,6 +178,7 @@ impl SettingsPanel {
             self.providers.draft = None;
             self.selected = 0;
             self.offset = 0;
+            self.scroll.reveal_selection = true;
             self.error = None;
             self.rebuild_rows();
         } else {
@@ -184,6 +192,7 @@ impl SettingsPanel {
             .get_or_insert_with(ProviderDraft::default);
         self.providers.sidebar = false;
         self.providers.cursor = self.provider_ids().len();
+        self.providers.scroll.reveal_selection = true;
         self.edit = None;
         self.error = None;
     }
@@ -346,6 +355,15 @@ impl SettingsPanel {
         }
     }
 
+    /// 侧栏里的高亮行：导航态看光标，详情态看已选供应商。
+    pub fn provider_selected(&self, ids: &[String], index: usize) -> bool {
+        if self.providers.sidebar {
+            index == self.providers.cursor
+        } else {
+            ids.get(index) == self.providers.selected.as_ref() && self.providers.draft.is_none()
+        }
+    }
+
     pub fn select_action(&mut self, action: ProviderAction) {
         if let Some(index) = self
             .rows
@@ -353,6 +371,7 @@ impl SettingsPanel {
             .position(|row| matches!(&row.kind, RowKind::Action(a) if *a == action))
         {
             self.selected = index;
+            self.scroll.reveal_selection = true;
         }
     }
 
@@ -608,6 +627,7 @@ impl SettingsPanel {
         self.providers.sidebar = false;
         self.selected = 0;
         self.offset = 0;
+        self.scroll.reveal_selection = true;
         self.sync_provider();
         self.rebuild_rows();
         if draft.discover {
@@ -646,6 +666,7 @@ pub fn key(
             panel.submit_provider(app, connection, true);
             return true;
         }
+        let focus_before = draft.focus;
         match code {
             KeyCode::Tab if mods.contains(KeyModifiers::SHIFT) => {
                 draft.focus = (draft.focus + 5) % 6
@@ -670,10 +691,17 @@ pub fn key(
                 }
             }
         }
+        if let Some(draft) = panel.providers.draft.as_mut()
+            && draft.focus != focus_before
+        {
+            draft.scroll.reveal_selection = true;
+        }
         return true;
     }
     if matches!(code, KeyCode::Tab | KeyCode::BackTab) {
         let previous = code == KeyCode::BackTab || mods.contains(KeyModifiers::SHIFT);
+        let selected_before = panel.selected;
+        let sidebar_before = panel.providers.sidebar;
         if panel.providers.sidebar {
             panel.choose_provider(panel.providers.cursor);
             panel.providers.sidebar = false;
@@ -684,6 +712,12 @@ pub fn key(
         } else {
             panel.providers.sidebar = true;
         }
+        if panel.selected != selected_before {
+            panel.scroll.reveal_selection = true;
+        }
+        if !sidebar_before && panel.providers.sidebar {
+            panel.providers.scroll.reveal_selection = true;
+        }
         return true;
     }
     if code == KeyCode::Esc && panel.providers.sidebar {
@@ -692,6 +726,7 @@ pub fn key(
     }
     if code == KeyCode::Left && !matches!(panel.row(), Some(RowKind::Group(_))) {
         panel.providers.sidebar = true;
+        panel.providers.scroll.reveal_selection = true;
         return true;
     }
     if code == KeyCode::Char('x') && mods == KeyModifiers::CONTROL {
@@ -728,6 +763,7 @@ pub fn key(
     }
     if panel.providers.sidebar {
         let last = panel.provider_ids().len();
+        let cursor_before = panel.providers.cursor;
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
                 panel.providers.cursor = panel.providers.cursor.saturating_sub(1)
@@ -742,6 +778,9 @@ pub fn key(
                 panel.providers.sidebar = false;
             }
             _ => return false,
+        }
+        if panel.providers.cursor != cursor_before {
+            panel.providers.scroll.reveal_selection = true;
         }
         return true;
     }

@@ -255,6 +255,7 @@ fn test_scenario_04_error_recovery_and_session_switch_flow() {
             offset: 0,
             loading: false,
             error: None,
+            ..Default::default()
         },
     });
 

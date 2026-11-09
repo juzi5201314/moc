@@ -38,6 +38,10 @@ pub struct TextEditor {
 pub struct SelectEditor {
     pub picks: Vec<Pick>,
     pub selected: usize,
+    /// 视口起点；与光标的跟随关系由 `scroll` 决定。
+    pub offset: usize,
+    /// 弹窗列表的滚动约束；真实可见行数由绘制层回写。
+    pub scroll: ModelScroll,
     /// 当前值对应的候选。
     pub current: Option<usize>,
 }
@@ -47,6 +51,10 @@ pub struct ListEditor {
     pub items: Vec<ListItem>,
     /// `items.len()` 是末尾的「添加」行（允许自定义时）。
     pub cursor: usize,
+    /// 视口起点；与光标的跟随关系由 `scroll` 决定。
+    pub offset: usize,
+    /// 弹窗列表的滚动约束；真实可见行数由绘制层回写。
+    pub scroll: ModelScroll,
     pub draft: Option<Draft>,
     initial: Option<Value>,
 }
@@ -70,6 +78,10 @@ pub struct RecordEditor {
     pub rows: Vec<RecordRow>,
     /// `rows.len()` 是末尾的「添加键」行（允许自定义键时）。
     pub cursor: usize,
+    /// 视口起点；与光标的跟随关系由 `scroll` 决定。
+    pub offset: usize,
+    /// 弹窗列表的滚动约束；真实可见行数由绘制层回写。
+    pub scroll: ModelScroll,
     /// `index` 为 `None` 时在填写新键名，否则在填写该行的值。
     pub draft: Option<Draft>,
     initial: Option<Value>,
@@ -141,23 +153,27 @@ impl Editor {
         input.insert_str_raw(text);
     }
 
-    /// 滚轮：在候选间移动；输入草稿时不动。
-    pub fn scroll(&mut self, down: bool) {
-        let code = if down { KeyCode::Down } else { KeyCode::Up };
-        let (cursor, rows) = match self {
-            Editor::Select(editor) => (&mut editor.selected, editor.picks.len()),
+    /// 滚轮只滚弹窗的视口，不动光标；输入草稿时不动。
+    pub fn scroll_by(&mut self, delta: isize) {
+        match self {
+            Editor::Select(editor) => editor.scroll.scroll_by(&mut editor.offset, delta),
             Editor::List(editor) if editor.draft.is_none() => {
-                let rows = editor.rows();
-                (&mut editor.cursor, rows)
+                editor.scroll.scroll_by(&mut editor.offset, delta)
             }
             Editor::Record(editor) if editor.draft.is_none() => {
-                let rows = editor.rows();
-                (&mut editor.cursor, rows)
+                editor.scroll.scroll_by(&mut editor.offset, delta)
             }
-            _ => return,
-        };
-        if let Some(next) = navigate(*cursor, rows, code) {
-            *cursor = next;
+            _ => {}
+        }
+    }
+
+    /// 弹窗里高亮的行：悬停底色要跳过的行号；文本框没有行光标。
+    pub fn cursor(&self) -> usize {
+        match self {
+            Editor::Select(editor) => editor.selected,
+            Editor::List(editor) => editor.cursor,
+            Editor::Record(editor) => editor.cursor,
+            Editor::Text(_) => usize::MAX,
         }
     }
 
@@ -167,10 +183,12 @@ impl Editor {
             Editor::Text(_) => None,
             Editor::Select(editor) => {
                 editor.selected = index;
+                editor.scroll.reveal_selection = true;
                 Some(KeyCode::Enter)
             }
             Editor::List(editor) if editor.draft.is_none() => {
                 editor.cursor = index;
+                editor.scroll.reveal_selection = true;
                 Some(if index < editor.items.len() {
                     KeyCode::Char(' ')
                 } else {
@@ -179,6 +197,7 @@ impl Editor {
             }
             Editor::Record(editor) if editor.draft.is_none() => {
                 editor.cursor = index;
+                editor.scroll.reveal_selection = true;
                 Some(KeyCode::Enter)
             }
             _ => None,
@@ -284,6 +303,8 @@ impl SelectEditor {
         let current = current_pick(&picks, value);
         Self {
             selected: current.unwrap_or(0),
+            offset: 0,
+            scroll: Default::default(),
             current,
             picks,
         }
@@ -307,6 +328,7 @@ impl SelectEditor {
             _ => {
                 if let Some(next) = navigate(self.selected, self.picks.len(), code) {
                     self.selected = next;
+                    self.scroll.reveal_selection = true;
                 }
                 Outcome::Stay
             }
@@ -360,6 +382,8 @@ impl ListEditor {
             spec,
             items,
             cursor: 0,
+            offset: 0,
+            scroll: Default::default(),
             draft: None,
             initial: None,
         };
@@ -424,6 +448,7 @@ impl ListEditor {
             _ => {
                 if let Some(next) = navigate(self.cursor, self.rows(), code) {
                     self.cursor = next;
+                    self.scroll.reveal_selection = true;
                 }
             }
         }
@@ -445,6 +470,7 @@ impl ListEditor {
         if target < self.items.len() {
             self.items.swap(self.cursor, target);
             self.cursor = target;
+            self.scroll.reveal_selection = true;
         }
     }
 
@@ -480,6 +506,7 @@ impl ListEditor {
         } else {
             self.items.remove(self.cursor);
             self.cursor = self.cursor.min(self.rows().saturating_sub(1));
+            self.scroll.reveal_selection = true;
         }
     }
 
@@ -527,10 +554,12 @@ impl ListEditor {
                 );
                 item.checked = true;
                 self.cursor = found;
+                self.scroll.reveal_selection = true;
             }
             (_, Some(index)) => {
                 self.items[index].value = value;
                 self.cursor = index;
+                self.scroll.reveal_selection = true;
             }
             (_, None) => {
                 let at = self
@@ -548,6 +577,7 @@ impl ListEditor {
                     },
                 );
                 self.cursor = at;
+                self.scroll.reveal_selection = true;
             }
         }
         self.draft = None;
@@ -592,6 +622,8 @@ impl RecordEditor {
             spec,
             rows,
             cursor: 0,
+            offset: 0,
+            scroll: Default::default(),
             draft: None,
             initial: None,
         };
@@ -678,11 +710,13 @@ impl RecordEditor {
                 } else {
                     self.rows.remove(self.cursor);
                     self.cursor = self.cursor.min(self.rows().saturating_sub(1));
+                    self.scroll.reveal_selection = true;
                 }
             }
             _ => {
                 if let Some(next) = navigate(self.cursor, self.rows(), code) {
                     self.cursor = next;
+                    self.scroll.reveal_selection = true;
                 }
             }
         }
@@ -717,6 +751,7 @@ impl RecordEditor {
                     fixed: false,
                 });
                 self.cursor = self.rows.len() - 1;
+                self.scroll.reveal_selection = true;
                 self.draft = Some(Draft {
                     index: Some(self.cursor),
                     input: PromptState::default(),

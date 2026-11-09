@@ -33,6 +33,8 @@ fn panel(document: Value) -> SettingsPanel {
         tab: TAB,
         selected: 0,
         offset: 0,
+        scroll: Default::default(),
+        pointer: None,
         advanced: false,
         filter: String::new(),
         edit: None,
