@@ -2608,6 +2608,20 @@ fn legend_menu_mouse<T: Copy>(
             }
             LegendAction::Consumed
         }
+        // 菜单内滚轮与 ↑↓ 同语义循环换高亮（同补全菜单约定）；菜单外照旧穿透滚转写。
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            if state.area.contains((mouse.column, mouse.row).into())
+                && !state.items.is_empty() =>
+        {
+            let count = state.items.len();
+            let selected = state.selected.min(count - 1);
+            state.selected = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
+                (selected + count - 1) % count
+            } else {
+                (selected + 1) % count
+            };
+            LegendAction::Consumed
+        }
         _ => LegendAction::Passthrough,
     }
 }
@@ -10134,6 +10148,27 @@ mod tests {
         assert_eq!(app.engine_menu.as_ref().map(|menu| menu.selected), Some(2));
         handle_mouse_with_connection(&mut app, &connection, mouse(MouseEventKind::Moved, 10, 5));
         assert_eq!(app.engine_menu.as_ref().map(|menu| menu.selected), Some(2));
+
+        // 菜单内滚轮与 ↑↓ 同语义循环换高亮；菜单外照旧穿透、菜单不关。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::ScrollDown, 45, 16),
+        );
+        assert_eq!(app.engine_menu.as_ref().map(|menu| menu.selected), Some(0));
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::ScrollUp, 45, 16),
+        );
+        assert_eq!(app.engine_menu.as_ref().map(|menu| menu.selected), Some(2));
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::ScrollDown, 10, 5),
+        );
+        assert_eq!(app.engine_menu.as_ref().map(|menu| menu.selected), Some(2));
+        assert!(app.engine_menu.is_some(), "菜单外滚轮不关菜单");
 
         // 点第二条（ptc）直达该引擎。
         handle_mouse_with_connection(
