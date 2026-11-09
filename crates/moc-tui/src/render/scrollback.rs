@@ -85,8 +85,6 @@ struct BatchGroup {
     /// 与 members 同序的上次布局输入；索引密集、有序比较，不使用可能碰撞的摘要。
     previous: Vec<(usize, u64, u64)>,
     generation: u64,
-    /// 嵌套段组（同一父调用下连续同名的子调用）；单成员的段不算批次。
-    nested: bool,
 }
 
 /// 批次归属键：顶层调用按协议批次 + 工具名分组；嵌套调用按「同一父调用下
@@ -147,14 +145,12 @@ impl BatchIndex {
                 }
             };
             let group = key.map(|key| {
-                let nested = matches!(key, BatchKey::Run(_));
                 *ids.entry(key).or_insert_with(|| {
                     let id = count;
                     count += 1;
                     if self.groups.len() == id {
                         self.groups.push(BatchGroup::default());
                     }
-                    self.groups[id].nested = nested;
                     id
                 })
             });
@@ -166,8 +162,9 @@ impl BatchIndex {
         }
         self.groups.truncate(count);
         for group in &mut self.groups {
-            // 单成员的嵌套段退回单块渲染，不参与批次。
-            if group.nested && group.members.len() == 1 {
+            // 单成员的组退回单块渲染，不参与批次：批次按（批次, 工具名）分组，
+            // 一批异名调用拆出的单成员组没有可合并对象，画组头只会多一行 `(1)`。
+            if group.members.len() == 1 {
                 self.by_block[group.members[0]] = None;
                 continue;
             }
@@ -4420,6 +4417,53 @@ mod tests {
             "较低版本成员变化也必须使整批失效"
         );
         assert_eq!(render_entry(1, &app.blocks[1], &app, 80).lines.len(), 0);
+    }
+
+    /// 批次按（批次, 工具名）分组：同批的异名调用各自是单成员组，退回单块
+    /// 渲染——标题行内联摘要，不出现 `(1)` 组头与 `└─` 成员行。
+    #[test]
+    fn different_name_calls_in_one_batch_render_as_singles() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.register_tool_batch("batch".into(), ["call_a".to_owned(), "call_b".to_owned()]);
+        run_tool(
+            &mut app,
+            "call_a",
+            "read",
+            r#"{"path":"a.rs"}"#,
+            ToolStatus::Completed,
+            "body",
+        );
+        run_tool(
+            &mut app,
+            "call_b",
+            "todo",
+            r#"{"op":"init","list":[{"phase":"阶段","items":["任务"]}]}"#,
+            ToolStatus::Completed,
+            "阶段\n  [x] 任务\n",
+        );
+
+        let lines = render_entry(0, &app.blocks[0], &app, 80).lines;
+        let head = plain(&lines[0]);
+        assert!(head.starts_with(" ◆ read "), "单块标题行内联摘要：{head}");
+        assert!(
+            head.contains("a.rs") && !head.contains('('),
+            "无 (1) 组头：{head}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .skip(1)
+                .map(plain)
+                .any(|row| row.contains("─ ")),
+            "无成员连线行：{lines:?}"
+        );
+        assert!(
+            !render_entry(1, &app.blocks[1], &app, 80).lines.is_empty(),
+            "第二个调用自己产出块"
+        );
     }
 
     /// C6：懒渲染与绘制共用同一份渲染后高度累计。
