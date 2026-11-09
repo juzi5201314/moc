@@ -1337,16 +1337,6 @@ impl<'a> MdRenderer<'a> {
         let bg = self.theme.code_bg;
         let pad = Span::styled("  ", Style::new().bg(bg));
 
-        if !lang.is_empty() {
-            let tag = Span::styled(
-                truncate(lang, body).into_owned(),
-                Style::new()
-                    .fg(self.theme.accent_tool)
-                    .bg(bg)
-                    .add_modifier(Modifier::BOLD),
-            );
-            self.push_code_row(indent, band, pad.clone(), vec![tag]);
-        }
         if code.is_empty() {
             self.push_code_row(indent, band, pad.clone(), Vec::new());
         }
