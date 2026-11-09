@@ -12,6 +12,8 @@ mod assets;
 mod bridge;
 mod browser;
 mod commands;
+mod fsraw;
+mod terminal;
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -19,10 +21,10 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Query, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use moc_core::{Core, CoreServer};
 use serde::Deserialize;
 use tokio::net::TcpListener;
@@ -60,6 +62,7 @@ pub async fn run(core: Arc<Core>, options: WebOptions) -> anyhow::Result<()> {
         core,
         token: Arc::new(options.token.clone()),
         server,
+        terminals: terminal::Terminals::default(),
     };
 
     let url = format!("http://{addr}/?token={}", options.token);
@@ -94,6 +97,9 @@ struct AppState {
     pub(crate) core: Arc<Core>,
     token: Arc<String>,
     server: CoreServer,
+    /// 终端分页的进程内 PTY 表；条目经 DELETE 显式杀进程，进程退出时
+    /// master fd 关闭、shell 收 SIGHUP 结束。
+    terminals: terminal::Terminals,
 }
 
 impl AppState {
@@ -113,7 +119,26 @@ fn routes(state: AppState) -> Router {
             get(api::features).route_layer(authed.clone()),
         )
         .route("/doctor.json", get(api::doctor).route_layer(authed.clone()))
-        .route("/procstats.json", get(api::procstats).route_layer(authed))
+        .route(
+            "/procstats.json",
+            get(api::procstats).route_layer(authed.clone()),
+        )
+        // 文件管理器/终端面板的服务端能力；非 GET 与 WS 升级在 handler 内过 origin_allowed。
+        .route(
+            "/fs/raw",
+            get(fsraw::read)
+                .put(fsraw::write)
+                // 上传单独放宽 body 上限；超限在 handler 流式计数里兜底拦截。
+                .route_layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+                .route_layer(authed.clone()),
+        )
+        .route("/pty", post(terminal::create).route_layer(authed.clone()))
+        .route("/pty/list", get(terminal::list).route_layer(authed.clone()))
+        .route(
+            "/pty/{id}",
+            delete(terminal::remove).route_layer(authed.clone()),
+        )
+        .route("/pty/{id}/ws", get(terminal::attach).route_layer(authed))
         .fallback(get(static_handler))
         .layer(axum::middleware::from_fn(security_headers))
         .with_state(state)
