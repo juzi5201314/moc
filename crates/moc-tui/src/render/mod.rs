@@ -326,7 +326,7 @@ fn highlight_selection(frame: &mut Frame, app: &App, area: Rect) {
             let Some(cell) = buffer.cell_mut((col, row)) else {
                 continue;
             };
-            cell.set_style(Style::new().fg(theme.text_primary).bg(theme.bg_visual));
+            cell.set_style(Style::new().fg(theme.text_primary).bg(theme.bg_selection));
         }
     }
 }
@@ -1765,7 +1765,7 @@ mod tests {
 
         // 测试环境没有终端配色能力，先给主题塞两个可区分的颜色再交给 App。
         let mut custom = *Theme::global();
-        custom.bg_visual = ratatui::style::Color::Rgb(10, 20, 30);
+        custom.bg_selection = ratatui::style::Color::Rgb(10, 20, 30);
         custom.text_primary = ratatui::style::Color::Rgb(200, 200, 200);
         let theme: &'static Theme = Box::leak(Box::new(custom));
 
@@ -1786,26 +1786,26 @@ mod tests {
         terminal
             .draw(|frame| highlight_selection(frame, &app, area))
             .expect("绘制成功");
-        assert_eq!(bg(&terminal, 5, 1), theme.bg_visual, "起点格子高亮");
+        assert_eq!(bg(&terminal, 5, 1), theme.bg_selection, "起点格子高亮");
         assert_eq!(
             bg(&terminal, 10, 1),
-            theme.bg_visual,
+            theme.bg_selection,
             "终点格子包含在选区内"
         );
-        assert_ne!(bg(&terminal, 4, 1), theme.bg_visual, "选区左侧不铺色");
-        assert_ne!(bg(&terminal, 11, 1), theme.bg_visual, "选区右侧不铺色");
-        assert_ne!(bg(&terminal, 5, 2), theme.bg_visual, "选区外的行不铺色");
+        assert_ne!(bg(&terminal, 4, 1), theme.bg_selection, "选区左侧不铺色");
+        assert_ne!(bg(&terminal, 11, 1), theme.bg_selection, "选区右侧不铺色");
+        assert_ne!(bg(&terminal, 5, 2), theme.bg_selection, "选区外的行不铺色");
 
         // 反向跨行拖选：首行铺到右缘、末行从左缘铺到终点，中间整行。
         app.selection = Some(((10, 3), (5, 1)));
         terminal
             .draw(|frame| highlight_selection(frame, &app, area))
             .expect("绘制成功");
-        assert_ne!(bg(&terminal, 4, 1), theme.bg_visual);
-        assert_eq!(bg(&terminal, area.right() - 1, 1), theme.bg_visual);
-        assert_eq!(bg(&terminal, area.x, 2), theme.bg_visual, "中间行整行高亮");
-        assert_eq!(bg(&terminal, area.x, 3), theme.bg_visual);
-        assert_eq!(bg(&terminal, 10, 3), theme.bg_visual);
-        assert_ne!(bg(&terminal, 11, 3), theme.bg_visual);
+        assert_ne!(bg(&terminal, 4, 1), theme.bg_selection);
+        assert_eq!(bg(&terminal, area.right() - 1, 1), theme.bg_selection);
+        assert_eq!(bg(&terminal, area.x, 2), theme.bg_selection, "中间行整行高亮");
+        assert_eq!(bg(&terminal, area.x, 3), theme.bg_selection);
+        assert_eq!(bg(&terminal, 10, 3), theme.bg_selection);
+        assert_ne!(bg(&terminal, 11, 3), theme.bg_selection);
     }
 }

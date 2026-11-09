@@ -69,6 +69,7 @@ pub struct Theme {
     pub bg_highlight: Color,
     pub bg_hover: Color,
     pub bg_visual: Color,
+    pub bg_selection: Color,
 
     // 文本与灰阶
     pub text_primary: Color,
@@ -266,6 +267,7 @@ define_theme! {
     bg_highlight:       (0x24, 0x24, 0x24),
     bg_hover:           (0x1c, 0x1c, 0x1c),
     bg_visual:          (0x2a, 0x2a, 0x30),
+    bg_selection:       (0x4e, 0x4e, 0x52),
     // 文本与灰阶
     text_primary:       (0xe1, 0xe1, 0xe1),
     text_secondary:     (0xc8, 0xc8, 0xc8),
