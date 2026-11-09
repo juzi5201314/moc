@@ -297,6 +297,8 @@ pub struct App {
     pub image_slots: Vec<ImageSlot>,
     /// 本帧可点击的表格入口（`paint` 填充，命中判定读它）。
     pub chart_hits: Vec<ChartHit>,
+    /// 本帧可点击的参考链接折叠入口（`paint` 填充，命中判定读它）。
+    pub link_hits: Vec<LinkHit>,
     /// 已贴到终端上的位图（kitty 依靠它删旧放置，其余协议靠它跳过多余重发）。
     pub image_placed: Vec<Placed>,
     /// 上一帧是否被浮层覆盖：切换瞬间整批重放，避免残影或盖住浮层。
@@ -308,6 +310,8 @@ pub struct App {
     pub image_repaint: bool,
     /// 鼠标悬停的表格入口 `(块下标, 表格序号)`。
     pub hover_chart: Option<(usize, usize)>,
+    /// 鼠标悬停的参考链接入口（块下标）。
+    pub hover_link: Option<usize>,
     /// 鼠标拖选区（屏幕坐标 (列, 行) 起点 / 终点）。
     pub selection: Option<((u16, u16), (u16, u16))>,
     /// 按下未抬起的位置（区分点击与拖选）。
@@ -443,6 +447,15 @@ pub enum SlotSource {
 pub struct ChartHit {
     pub entry: usize,
     pub table: usize,
+    pub row: u16,
+    pub x: u16,
+    pub w: u16,
+}
+
+/// 一个可点击的参考链接折叠入口：列区间限定在按钮文字上。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkHit {
+    pub entry: usize,
     pub row: u16,
     pub x: u16,
     pub w: u16,
@@ -587,11 +600,13 @@ impl App {
             images,
             image_slots: Vec::new(),
             chart_hits: Vec::new(),
+            link_hits: Vec::new(),
             image_placed: Vec::new(),
             image_covered: false,
             image_resume: false,
             image_repaint: false,
             hover_chart: None,
+            hover_link: None,
             selection: None,
             pending_click: None,
             scrollbar_drag: None,
@@ -1077,6 +1092,14 @@ impl App {
                     image_id,
                 }),
             );
+        }
+    }
+
+    /// 切换正文末尾参考链接的折叠态：展开与收起共用同一个入口。
+    pub fn toggle_links(&mut self, entry: usize) {
+        if let Some(block) = self.blocks.get_mut(entry) {
+            block.links_expanded = !block.links_expanded;
+            block.touch();
         }
     }
 

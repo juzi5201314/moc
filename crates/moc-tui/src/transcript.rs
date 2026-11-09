@@ -76,6 +76,11 @@ pub struct Entry {
     /// 纯进程内视图态：不进会话文件、不随历史恢复回填；追加正文时
     /// 整表清空——表格内容变了，旧的图表数据立刻作废。
     pub charts: Vec<Option<TableChartState>>,
+    /// 正文末尾参考链接是否已展开；`false` 时超上限的条目收进可点入口。
+    ///
+    /// 纯进程内视图态：不进会话文件；追加正文不重置——展开是用户主动
+    /// 意图，链接列表随正文增长继续全量列出即可。
+    pub links_expanded: bool,
 }
 
 impl Entry {
@@ -88,6 +93,7 @@ impl Entry {
             at_ms: None,
             elapsed_ms: None,
             charts: Vec::new(),
+            links_expanded: false,
         }
     }
 

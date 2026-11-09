@@ -2831,6 +2831,11 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     app.selection = None;
                     return;
                 }
+                if let Some(hit) = link_hit_at(app, position) {
+                    app.toggle_links(hit.entry);
+                    app.selection = None;
+                    return;
+                }
                 // 单击：命中折叠块标题则切换该块档位（完整 ↔ 收起形态）
                 if let Some(&(index, ..)) = app
                     .mouse_hits
@@ -2857,6 +2862,7 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
         MouseEventKind::Moved => {
             // 悬停只做视觉反馈：命中的入口整行提亮
             app.hover_chart = chart_hit_at(app, position).map(|hit| (hit.entry, hit.table));
+            app.hover_link = link_hit_at(app, position).map(|hit| hit.entry);
         }
         _ => {}
     }
@@ -2865,6 +2871,13 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
 /// 坐标命中的表格入口（列区间限定在按钮文字上，行号必须完全一致）。
 fn chart_hit_at(app: &App, position: (u16, u16)) -> Option<ChartHit> {
     app.chart_hits.iter().copied().find(|hit| {
+        hit.row == position.1 && position.0 >= hit.x && position.0 < hit.x.saturating_add(hit.w)
+    })
+}
+
+/// 坐标命中的参考链接折叠入口（列区间限定在按钮文字上）。
+fn link_hit_at(app: &App, position: (u16, u16)) -> Option<crate::app::LinkHit> {
+    app.link_hits.iter().copied().find(|hit| {
         hit.row == position.1 && position.0 >= hit.x && position.0 < hit.x.saturating_add(hit.w)
     })
 }

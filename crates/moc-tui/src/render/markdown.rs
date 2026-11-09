@@ -31,6 +31,9 @@ use crate::transcript::TableChartState;
 const ENTRY_CHART: &str = "▸ 可视化图表";
 const ENTRY_HIDE: &str = "▾ 隐藏图表";
 
+/// 参考链接直接展示的上限：超出时收进可点入口，点击后全量列出。
+const LINKS_SHOWN: usize = 5;
+
 /// 表格列间距（格）。
 const TABLE_COLUMN_GAP: usize = 2;
 
@@ -65,6 +68,9 @@ pub struct RenderViews<'a> {
     pub cwd: Option<&'a std::path::Path>,
     /// `false` = 估高路径：只 `peek`，绝不触发解码。
     pub spawn_images: bool,
+    /// 参考链接展开态：`false` 时超出 [`LINKS_SHOWN`] 的条目收进可点入口。
+    /// 默认 `true`——非交互表面没有命中区，折叠了用户也无从点开，直接全量展示。
+    pub links_expanded: bool,
 }
 
 impl Default for RenderViews<'_> {
@@ -76,6 +82,7 @@ impl Default for RenderViews<'_> {
             images: None,
             cwd: None,
             spawn_images: true,
+            links_expanded: true,
         }
     }
 }
@@ -118,6 +125,8 @@ pub struct Rendered {
     pub raw: Vec<RawTable>,
     /// 位图占位区（markdown 图片与 SVG 代码块），行号是块内局部行。
     pub images: Vec<ImagePlacement>,
+    /// 参考链接折叠入口的行与列区间；链接数不超上限时为 `None`。
+    pub links_button: Option<ButtonSpan>,
 }
 
 /// 渲染 markdown 文本，并带上表格视图态。
@@ -133,6 +142,7 @@ pub fn render_markdown_with(
         tables: rendered.tables,
         raw: rendered.raw,
         images: rendered.images,
+        links_button: rendered.links_button,
     }
 }
 
@@ -141,6 +151,7 @@ pub(super) struct PagedRendered {
     pub tables: Vec<TableSlot>,
     pub raw: Vec<RawTable>,
     pub images: Vec<ImagePlacement>,
+    pub links_button: Option<ButtonSpan>,
 }
 
 pub(super) fn render_markdown_pages(
@@ -184,6 +195,7 @@ pub(super) fn render_markdown_pages(
         links: Vec::new(),
         current_link_url: None,
         current_link_text: String::new(),
+        links_button: None,
     };
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
@@ -424,6 +436,8 @@ struct MdRenderer<'a> {
     links: Vec<(String, String)>,
     current_link_url: Option<String>,
     current_link_text: String,
+    /// 参考链接折叠入口的落位（图表入口落定前的行号，收尾时统一修正）。
+    links_button: Option<ButtonSpan>,
 }
 
 impl<'a> MdRenderer<'a> {
@@ -1067,7 +1081,16 @@ impl<'a> MdRenderer<'a> {
     /// （那是用户主动打开的东西，必须随时能关掉）。
     fn finish(mut self) -> PagedRendered {
         self.flush_inline();
-        if !self.links.is_empty() {
+        // 附录只收「目标在文内不可见」的链接：URL（含 file://）的目标只在这一处
+        // 出现；裸本地路径的行内 label 本已表达引用，仅空标签（文内什么都看不到）
+        // 时才需要附录补上目标。
+        let links: Vec<(String, String)> = self
+            .links
+            .iter()
+            .filter(|(label, url)| url.contains("://") || label.is_empty())
+            .cloned()
+            .collect();
+        if !links.is_empty() {
             self.ensure_block_gap();
             self.out.push(Line::from(Span::styled(
                 "参考链接：",
@@ -1075,7 +1098,19 @@ impl<'a> MdRenderer<'a> {
                     .fg(self.theme.gray_dim)
                     .add_modifier(Modifier::BOLD),
             )));
-            for (idx, (label, url)) in self.links.iter().enumerate() {
+            let folded = links.len() > LINKS_SHOWN && !self.views.links_expanded;
+            let shown = if folded { LINKS_SHOWN } else { links.len() };
+            let cwd = self
+                .views
+                .cwd
+                .and_then(|cwd| cwd.to_str())
+                .unwrap_or_default();
+            for (idx, (label, url)) in links.iter().enumerate().take(shown) {
+                // 本地文件路径按 cwd 相对化（与工具标题同口径）；真 URL 原样展示。
+                let target = self.local_path(url).map_or_else(
+                    || url.clone(),
+                    |path| super::display_path(&path.to_string_lossy(), cwd).into_owned(),
+                );
                 let num = format!("  [{}] ", idx + 1);
                 let room = self.width.saturating_sub(str_width(&num));
                 let label_prefix = if label.is_empty() || label == url {
@@ -1094,7 +1129,30 @@ impl<'a> MdRenderer<'a> {
                         Style::new().fg(self.theme.gray_dim),
                     ),
                     Span::styled(
-                        truncate(url.as_str(), rem).into_owned(),
+                        truncate(target.as_str(), rem).into_owned(),
+                        Style::new()
+                            .fg(self.theme.link)
+                            .add_modifier(Modifier::UNDERLINED),
+                    ),
+                ]));
+            }
+            if links.len() > LINKS_SHOWN {
+                let label = if folded {
+                    format!("▸ 还有 {} 条链接", links.len() - shown)
+                } else {
+                    "▾ 收起链接".to_owned()
+                };
+                let row = self.out.len();
+                let width = str_width(&label);
+                self.links_button = Some(ButtonSpan {
+                    row,
+                    x: 2,
+                    w: u16::try_from(width).unwrap_or(u16::MAX),
+                });
+                self.out.push(Line::from(vec![
+                    Span::styled("  ", Style::new()),
+                    Span::styled(
+                        label,
                         Style::new()
                             .fg(self.theme.link)
                             .add_modifier(Modifier::UNDERLINED),
@@ -1144,6 +1202,10 @@ impl<'a> MdRenderer<'a> {
         for image in &mut images {
             image.row += kept.iter().filter(|(_, row, _)| *row <= image.row).count();
         }
+        // 参考链接的折叠入口也在入口插入之后，同样按偏移修正。
+        if let Some(button) = self.links_button.as_mut() {
+            button.row += kept.iter().filter(|(_, row, _)| *row <= button.row).count();
+        }
         // 宽度契约：每行不超过正文宽度。超宽内容必须在这里折行或带 `…` 截断，
         // 不能交给 buffer 静默裁掉。
         debug_assert!(
@@ -1161,6 +1223,7 @@ impl<'a> MdRenderer<'a> {
             tables: self.slots,
             raw: self.raw,
             images,
+            links_button: self.links_button,
         }
     }
 
@@ -2109,6 +2172,7 @@ mod tests {
                 images: Some(&store),
                 cwd: Some(directory.path()),
                 spawn_images: false,
+                links_expanded: true,
             },
         );
         let layout = image_layout((320, 180), CellPixels { w: 8, h: 18 }, 80).expect("版式");
@@ -2153,6 +2217,7 @@ mod tests {
                 images: Some(&store),
                 cwd: Some(directory.path()),
                 spawn_images: false,
+                links_expanded: true,
             },
         );
         assert!(rendered.images.is_empty());
@@ -2224,6 +2289,7 @@ mod tests {
                 images: Some(&store),
                 cwd: Some(directory.path()),
                 spawn_images: true,
+                links_expanded: true,
             },
         );
         assert!(rendered.images.is_empty());
@@ -2253,6 +2319,7 @@ mod tests {
                 images: Some(&store),
                 cwd: Some(directory.path()),
                 spawn_images: false,
+                links_expanded: true,
             },
         );
         assert!(rendered.images.is_empty(), "容器内不贴图");
@@ -2285,6 +2352,7 @@ mod tests {
                 images: Some(&store),
                 cwd: None,
                 spawn_images: false,
+                links_expanded: true,
             },
         );
         assert_eq!(rendered.images.len(), 1, "一张 SVG 落位");
@@ -2312,6 +2380,7 @@ mod tests {
                 images: Some(&store),
                 cwd: None,
                 spawn_images: false,
+                links_expanded: true,
             },
         );
         assert!(rendered.images.is_empty());
@@ -2418,5 +2487,72 @@ mod tests {
             RenderViews::default(),
         );
         assert!(listed.contains("flowchart"), "{listed}");
+    }
+
+    /// 带 label 的本地路径链接文内已表达引用，不进附录；URL 与 file:// 保留，
+    /// file:// 与空标签的裸路径按 cwd 相对化（与工具标题同口径）。
+    #[test]
+    fn reference_links_filter_local_paths_and_relativize() {
+        let rendered = render(
+            "改了 [ModelCompat](/repo/src/config/model.rs)、[](/repo/src/lib.rs)，\
+             参考 [文档](https://example.com/spec) 与 [旧版](file:///repo/OLD.md)。",
+            77,
+            RenderViews {
+                cwd: Some(std::path::Path::new("/repo")),
+                ..RenderViews::default()
+            },
+        );
+        let out = text(&rendered.lines);
+        let appendix: Vec<&String> = out
+            .iter()
+            .skip_while(|line| !line.contains("参考链接："))
+            .collect();
+        assert_eq!(appendix.len(), 4, "附录头部 + 3 条：{out:?}");
+        assert!(appendix[1].contains("src/lib.rs"), "{out:?}");
+        assert!(appendix[2].contains("https://example.com/spec"), "{out:?}");
+        assert!(appendix[3].contains("OLD.md"), "{out:?}");
+        assert!(
+            appendix.iter().all(|line| !line.contains("/repo")),
+            "本地路径必须相对化、被过滤的 ModelCompat 不得出现：{out:?}"
+        );
+        assert!(rendered.links_button.is_none(), "{out:?}");
+    }
+
+    /// 附录超过上限时只留前几条，其余收进「▸ 还有 N 条」入口；展开后出「▾ 收起」。
+    /// 入口的行号要落在渲染出的那一行上（含表格入口插入造成的偏移）。
+    #[test]
+    fn reference_links_fold_beyond_limit_with_clickable_entry() {
+        let source = format!(
+            "{NUMERIC_TABLE}\n\n{links}",
+            links = (1..=8)
+                .map(|i| format!("[l{i}](https://e{i}.example.com)"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        for expanded in [false, true] {
+            let rendered = render(
+                &source,
+                77,
+                RenderViews {
+                    graphics: graphics(),
+                    links_expanded: expanded,
+                    ..RenderViews::default()
+                },
+            );
+            let out = text(&rendered.lines);
+            let button = rendered.links_button.expect("8 条链接必有折叠入口");
+            let entry = &out[button.row];
+            let refs = out.iter().filter(|line| line.contains("https://e")).count();
+            if expanded {
+                assert_eq!(refs, 8, "{out:?}");
+                assert_eq!(entry.trim(), "▾ 收起链接", "{out:?}");
+            } else {
+                assert_eq!(refs, 5, "{out:?}");
+                assert_eq!(entry.trim(), "▸ 还有 3 条链接", "{out:?}");
+            }
+            // 命中的行/列区间就是入口文字本身：正文缩进之外从 x=2 起算。
+            assert_eq!(button.x, 2);
+            assert_eq!(button.w as usize, str_width(entry.trim()));
+        }
     }
 }

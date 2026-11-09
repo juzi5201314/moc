@@ -345,6 +345,8 @@ struct CachedEntry {
     render_cost: std::time::Duration,
     /// 表格入口与图表占位（行号是块内局部行）。
     tables: Vec<LocalTable>,
+    /// 参考链接折叠入口（行号是块内局部行）。
+    links_button: Option<ButtonSpan>,
     /// 通用图片落位（行号是块内局部行）。
     images: Vec<ImagePlacement>,
 }
@@ -366,6 +368,8 @@ struct EntryLines {
     paged: Option<super::rows::RowBuffer>,
     height: usize,
     tables: Vec<LocalTable>,
+    /// 参考链接折叠入口（块内局部行号）。
+    links_button: Option<ButtonSpan>,
     images: Vec<ImagePlacement>,
 }
 
@@ -377,6 +381,7 @@ impl EntryLines {
             lines,
             paged: None,
             tables: Vec::new(),
+            links_button: None,
             images: Vec::new(),
         }
     }
@@ -453,6 +458,7 @@ impl ScrollbackView {
             paged: result.rendered.paged,
             line_start: 0,
             tables: result.rendered.tables,
+            links_button: result.rendered.links_button,
             images: result.rendered.images,
             rendered: true,
             rendered_at: std::time::Instant::now(),
@@ -468,6 +474,7 @@ impl ScrollbackView {
         };
         let text = text.clone();
         let charts = entry.charts.clone();
+        let links_expanded = entry.links_expanded;
         let graphics = app.graphics;
         let images = app.images.clone();
         let cwd = std::path::PathBuf::from(&app.startup_cwd);
@@ -489,6 +496,7 @@ impl ScrollbackView {
                     images: Some(&images),
                     cwd: Some(&cwd),
                     spawn_images: true,
+                    links_expanded,
                 },
                 None,
             );
@@ -577,7 +585,9 @@ impl ScrollbackView {
                 continue;
             }
             let render_started = std::time::Instant::now();
-            let (lines, footer, paged, tables, images, height, rendered) = if index >= eager_start {
+            let (lines, footer, paged, tables, links_button, images, height, rendered) = if index
+                >= eager_start
+            {
                 let rendered =
                     render_entry_with(index, entry, app, width, true, &self.batches, &self.tree);
                 let (lines, footer) = if rendered.paged.is_some() {
@@ -590,6 +600,7 @@ impl ScrollbackView {
                     footer,
                     rendered.paged,
                     rendered.tables,
+                    rendered.links_button,
                     rendered.images,
                     rendered.height,
                     true,
@@ -600,6 +611,7 @@ impl ScrollbackView {
                     Vec::new(),
                     None,
                     Vec::new(),
+                    None,
                     Vec::new(),
                     estimate_entry_height_indexed(app, index, width, &self.batches, &self.tree),
                     false,
@@ -618,6 +630,7 @@ impl ScrollbackView {
                 rendered_at: std::time::Instant::now(),
                 render_cost: render_started.elapsed(),
                 tables,
+                links_button,
                 images,
             };
             if index < self.cache.len() {
@@ -659,6 +672,7 @@ impl ScrollbackView {
                 }
                 if cached.paged.is_none() {
                     cached.tables = Vec::new();
+                    cached.links_button = None;
                     cached.images = Vec::new();
                     cached.rendered = false;
                 }
@@ -778,11 +792,13 @@ impl ScrollbackView {
         collect_lines: bool,
         theme: &Theme,
         hover: Option<(usize, usize)>,
+        links_hover: Option<usize>,
         sinks: PaintSinks<'_>,
     ) {
         let PaintSinks {
             hits,
             charts,
+            links,
             slots,
             lines,
         } = sinks;
@@ -863,6 +879,27 @@ impl ScrollbackView {
                     }
                 }
             }
+            // 参考链接的折叠入口：与表格入口一样只在按钮文字区间命中
+            if let Some(button) = cached.links_button
+                && button.row >= offset
+            {
+                let row =
+                    origin.saturating_add(u16::try_from(button.row - offset).unwrap_or(u16::MAX));
+                if row < bottom {
+                    if links_hover == Some(index) {
+                        buffer.set_style(
+                            Rect::new(area.x, row, area.width, 1),
+                            Style::new().bg(theme.bg_hover),
+                        );
+                    }
+                    links.push(crate::app::LinkHit {
+                        entry: index,
+                        row,
+                        x: area.x + PROSE_INDENT as u16 + button.x,
+                        w: button.w,
+                    });
+                }
+            }
             // 通用图片：同一张图可以在一屏里出现多次，放置 ID 按块内序号区分
             for (ordinal, image) in cached.images.iter().enumerate() {
                 if image.row < offset {
@@ -908,14 +945,16 @@ impl ScrollbackView {
     }
 }
 
-/// 绘制时的登记目标：标题命中、表格入口、位图槽位与行文本。
+/// 绘制时的登记目标：标题命中、表格入口、链接入口、位图槽位与行文本。
 ///
-/// 打包成结构体传参：四个 `&mut Vec` 平铺在签名里既难读，也容易传错顺序。
+/// 打包成结构体传参：五个 `&mut Vec` 平铺在签名里既难读，也容易传错顺序。
 pub struct PaintSinks<'a> {
     /// 块标题行命中（点击折叠）。
     pub hits: &'a mut Vec<(usize, u16, u16)>,
     /// 表格入口命中（点击切换图表）。
     pub charts: &'a mut Vec<ChartHit>,
+    /// 参考链接折叠入口命中（点击展开 / 收起）。
+    pub links: &'a mut Vec<crate::app::LinkHit>,
     /// 本帧要贴的位图。
     pub slots: &'a mut Vec<ImageSlot>,
     /// 行文本快照（拖选复制）。
@@ -1550,6 +1589,7 @@ fn render_tool_batch(
         paged: None,
         lines,
         tables: Vec::new(),
+        links_button: None,
         images,
     }
 }
@@ -1624,6 +1664,7 @@ fn assistant_message(
             images: Some(&app.images),
             cwd: Some(std::path::Path::new(&app.startup_cwd)),
             spawn_images,
+            links_expanded: entry.links_expanded,
         },
         prompt_footer(entry, width, theme),
     )
@@ -1656,6 +1697,7 @@ fn assistant_layout(
             paged: Some(rendered.lines),
             height,
             images: rendered.images,
+            links_button: rendered.links_button,
             tables: rendered
                 .tables
                 .into_iter()
@@ -1682,6 +1724,7 @@ fn assistant_layout(
         paged: None,
         lines,
         images: rendered.images,
+        links_button: rendered.links_button,
         tables: rendered
             .tables
             .into_iter()
@@ -2455,6 +2498,7 @@ fn render_tool(
         paged: None,
         lines,
         tables: Vec::new(),
+        links_button: None,
         images: placements,
     }
 }
@@ -4163,8 +4207,8 @@ mod tests {
                 let rect = Rect::new(0, 0, width as u16, 20);
                 let mut actual = Buffer::empty(rect);
                 let mut expected = Buffer::empty(rect);
-                let (mut hits, mut charts, mut slots, mut lines) =
-                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                let (mut hits, mut charts, mut links, mut slots, mut lines) =
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
                 view.paint(
                     &mut actual,
                     rect,
@@ -4172,9 +4216,11 @@ mod tests {
                     true,
                     app.theme,
                     None,
+                    None,
                     PaintSinks {
                         hits: &mut hits,
                         charts: &mut charts,
+                        links: &mut links,
                         slots: &mut slots,
                         lines: &mut lines,
                     },
@@ -6178,6 +6224,7 @@ mod tests {
             rendered_at: std::time::Instant::now(),
             render_cost: std::time::Duration::ZERO,
             tables: Vec::new(),
+            links_button: None,
             images: vec![ImagePlacement {
                 row: 1,
                 x: 2,
@@ -6191,6 +6238,7 @@ mod tests {
         let mut slots = Vec::new();
         let mut hits = Vec::new();
         let mut charts = Vec::new();
+        let mut links = Vec::new();
         let mut lines = Vec::new();
         narrow.paint(
             &mut buffer,
@@ -6199,9 +6247,11 @@ mod tests {
             false,
             Theme::global(),
             None,
+            None,
             PaintSinks {
                 hits: &mut hits,
                 charts: &mut charts,
+                links: &mut links,
                 slots: &mut slots,
                 lines: &mut lines,
             },
@@ -6238,6 +6288,7 @@ mod tests {
                     px: (40, 36),
                 }),
             }],
+            links_button: None,
             images: vec![ImagePlacement {
                 row: 100_004,
                 x: 0,
@@ -6249,8 +6300,8 @@ mod tests {
         });
         let area = Rect::new(0, 5, 80, 10);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 20));
-        let (mut hits, mut charts, mut slots, mut lines) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut hits, mut charts, mut links, mut slots, mut lines) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         view.paint(
             &mut buffer,
             area,
@@ -6258,9 +6309,11 @@ mod tests {
             true,
             Theme::global(),
             None,
+            None,
             PaintSinks {
                 hits: &mut hits,
                 charts: &mut charts,
+                links: &mut links,
                 slots: &mut slots,
                 lines: &mut lines,
             },
@@ -6268,6 +6321,66 @@ mod tests {
         assert!(charts.is_empty());
         assert!(slots.is_empty());
         assert_eq!(lines, [(5, "可见正文".to_owned())]);
+    }
+
+    /// 链接折叠入口的命中区：行号贴视口原点，列 = 正文缩进 + 行内偏移（前导两空格）。
+    #[test]
+    fn paint_registers_links_entry_hit_on_its_button_row() {
+        let mut view = ScrollbackView::new();
+        view.cache.push(CachedEntry {
+            key: (0, 0),
+            layout_epoch: 0,
+            layout: TreeIndex::EMPTY,
+            height: 3,
+            lines: vec![
+                Line::from("正文"),
+                Line::from("  ▸ 还有 3 条链接"),
+                Line::from("尾"),
+            ],
+            paged: None,
+            footer: Vec::new(),
+            line_start: 0,
+            rendered: true,
+            rendered_at: std::time::Instant::now(),
+            render_cost: std::time::Duration::ZERO,
+            tables: Vec::new(),
+            links_button: Some(ButtonSpan {
+                row: 1,
+                x: 2,
+                w: 14,
+            }),
+            images: Vec::new(),
+        });
+        let area = Rect::new(2, 5, 80, 10);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 90, 20));
+        let (mut hits, mut charts, mut links, mut slots, mut lines) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        view.paint(
+            &mut buffer,
+            area,
+            0,
+            false,
+            Theme::global(),
+            None,
+            None,
+            PaintSinks {
+                hits: &mut hits,
+                charts: &mut charts,
+                links: &mut links,
+                slots: &mut slots,
+                lines: &mut lines,
+            },
+        );
+        let prose_col = u16::try_from(PROSE_INDENT).expect("正文列应放得进 u16");
+        assert_eq!(
+            links,
+            [crate::app::LinkHit {
+                entry: 0,
+                row: area.y + 1,
+                x: area.x + prose_col + 2,
+                w: 14,
+            }]
+        );
     }
 
     #[test]

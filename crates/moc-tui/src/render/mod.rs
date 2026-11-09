@@ -200,6 +200,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     app.scroll_offset = window.scroll_offset;
     app.mouse_hits.clear();
     app.chart_hits.clear();
+    app.link_hits.clear();
     app.image_slots.clear();
     app.paint_lines.clear();
     let collect_lines = app.selection.is_some() || app.pending_click.is_some();
@@ -211,9 +212,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
         collect_lines,
         theme,
         hover,
+        app.hover_link,
         scrollback::PaintSinks {
             hits: &mut app.mouse_hits,
             charts: &mut app.chart_hits,
+            links: &mut app.link_hits,
             slots: &mut app.image_slots,
             lines: &mut app.paint_lines,
         },
