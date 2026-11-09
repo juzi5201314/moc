@@ -217,8 +217,6 @@ pub struct App {
     pub header_back_area: Rect,
     /// statusline 右侧会话用量统计段的命中区（点击与 `/usage` 同义）。
     pub usage_area: Rect,
-    /// 离底时输入框上方「回到底部」胶囊的命中区（点击贴回最新消息）。
-    pub jump_bottom_area: Rect,
     /// 计划审阅中的执行模型文本命中区。
     /// 计划批注视图的正文区域（鼠标行选择换算用）。
     pub plan_body_area: Rect,
@@ -567,7 +565,6 @@ impl App {
             workflow_capsule_area: Rect::default(),
             header_back_area: Rect::default(),
             usage_area: Rect::default(),
-            jump_bottom_area: Rect::default(),
             plan_body_area: Rect::default(),
             plan_row_map: Vec::new(),
             rewind_timeline_area: Rect::default(),

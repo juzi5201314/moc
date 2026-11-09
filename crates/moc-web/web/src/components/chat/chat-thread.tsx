@@ -147,7 +147,7 @@ export function ChatThread({ sessionId }: { sessionId: string }) {
           permissions={permissions}
           asks={asks}
         />
-        <ConversationScrollButton className="bottom-4 size-8 border-0 bg-popover text-foreground shadow-[var(--elevation-popover)] hover:bg-popover dark:bg-popover" />
+        <ConversationScrollButton className="bottom-4 size-8 border-0 bg-popover text-muted-foreground shadow-[var(--elevation-popover)] hover:bg-popover hover:text-foreground dark:bg-popover" />
       </Conversation>
     </div>
   );

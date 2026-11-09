@@ -118,7 +118,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     app.key_hits.clear();
     app.legend_tip_area = Rect::default();
     app.usage_area = Rect::default();
-    app.jump_bottom_area = Rect::default();
     app.header_back_area = Rect::default();
     app.todo_hud.begin_frame();
     let saving = app.saving_config();
@@ -254,10 +253,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     } else {
         app.todo_hud.on_hidden();
     }
-    // 离底时，输入框上方的缝行正中浮出「回到底部」胶囊。
-    if app.scroll_offset > 0 && app.modal.is_none() {
-        draw_jump_bottom(frame, app, scroll_area);
-    }
 
     draw_header(frame, app, inset(header_area, MARGIN_X));
     // 折叠的提问卡占住输入框位：输入框本体（含光标）不画，
@@ -294,27 +289,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     // 调暗层压住，临时提示始终可读。
     draw_notice(frame, app, scroll_area);
     draw_warning(frame, app, scroll_area);
-}
-
-/// 「回到底部」指示条：缝行整行亮底、正中一个加粗 ↓，整行可点贴回最新。
-fn draw_jump_bottom(frame: &mut Frame, app: &mut App, scroll_area: Rect) {
-    let theme = app.theme;
-    let y = scroll_area.bottom();
-    let buffer = frame.buffer_mut();
-    buffer.set_style(
-        Rect::new(scroll_area.x, y, scroll_area.width, 1),
-        Style::new().bg(theme.bg_highlight),
-    );
-    buffer.set_string(
-        scroll_area.x + scroll_area.width / 2,
-        y,
-        "↓",
-        Style::new()
-            .fg(theme.text_primary)
-            .bg(theme.bg_highlight)
-            .add_modifier(Modifier::BOLD),
-    );
-    app.jump_bottom_area = Rect::new(scroll_area.x, y, scroll_area.width, 1);
 }
 
 /// 拖选高亮：只覆盖选区内的格子；跨行时中间整行、首尾行按列收边。

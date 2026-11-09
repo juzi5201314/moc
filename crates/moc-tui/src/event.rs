@@ -1898,11 +1898,6 @@ fn handle_mouse_with_connection(
             execute_command(app, connection, "/usage".to_owned());
             return;
         }
-        // 离底时输入框上方的「回到底部」胶囊：点击贴回最新消息。
-        if app.jump_bottom_area.contains(position.into()) {
-            app.scroll_offset = 0;
-            return;
-        }
     }
     handle_mouse(app, mouse);
 }
@@ -7772,41 +7767,6 @@ mod tests {
             panic!("应收到用量事件");
         };
         assert!(show, "点击统计段等价 /usage：明细要写进转写");
-
-        connection.shutdown().await;
-        core.shutdown().await;
-    }
-
-    /// 离底时输入框上方浮出「回到底部」胶囊，点击贴回最新消息。
-    #[tokio::test]
-    async fn jump_bottom_pill_scrolls_back_to_bottom() {
-        use crate::transcript::Block;
-
-        let (core, connection, mut app) = setup_test_app().await;
-        for index in 0..50 {
-            app.push_block(Block::User {
-                text: format!("历史消息 {index}"),
-            });
-        }
-        app.scroll_offset = 10;
-        let terminal = draw_frame(&mut app, 100, 24);
-        let area = app.jump_bottom_area;
-        assert!(!area.is_empty(), "离底时应画出回到底部胶囊");
-        // 胶囊落在输入框上方的缝行。
-        assert_eq!(area.y, app.prompt_area.y - 1);
-        let text: String = (area.x..area.x.saturating_add(area.width))
-            .filter_map(|x| terminal.backend().buffer().cell((x, area.y)))
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(text.contains('↓'), "指示条正中应是加粗箭头：{text:?}");
-        assert_eq!(area.width, app.scrollback_area.width, "整行可点");
-
-        handle_mouse_with_connection(&mut app, &connection, left_click(area.x, area.y));
-        assert_eq!(app.scroll_offset, 0, "点击胶囊应贴回底部");
-
-        // 贴底后胶囊退场。
-        draw_frame(&mut app, 100, 24);
-        assert!(app.jump_bottom_area.is_empty(), "贴底后不再登记命中区");
 
         connection.shutdown().await;
         core.shutdown().await;
