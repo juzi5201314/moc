@@ -2252,8 +2252,9 @@ fn summary_spans(
     }
 }
 
-/// todo 摘要：op + 目标——start/done/drop/block/unblock/rm 跟 task 或 phase 文本，
-/// init 跟 `N tasks`，append 跟 `phase · N items`；op 缺失时与 core 的
+/// todo 摘要：op——init 跟 `N tasks`，append 跟 `phase · N items`，rm 跟 task 或
+/// phase 文本（rm 后目标已不在清单里，标题是唯一留痕）；start/done/drop/block/
+/// unblock 只留 op，目标在下方快照树里可见，不重复。op 缺失时与 core 的
 /// `infer_op` 同规则推断（非空 list → init，带 phase 的非空 items → append，否则 init）。
 fn todo_summary_spans(args: &Value, theme: &Theme) -> Vec<Span<'static>> {
     let styled =
@@ -2308,7 +2309,9 @@ fn todo_summary_spans(args: &Value, theme: &Theme) -> Vec<Span<'static>> {
                 spans.push(styled(format!(" · {} items", items.len()), theme.gray));
             }
         }
-        "start" | "done" | "drop" | "block" | "unblock" | "rm" => {
+        // 目标 op 只留 op 词：start/done/drop/block/unblock 的目标都在快照树里
+        // （☑/▶/✗/⚠/☐ 标得出是哪条），重复一遍只是噪音。
+        "rm" => {
             let target = {
                 let task = arg_str("task");
                 if task.is_empty() {
@@ -7393,9 +7396,11 @@ mod tests {
         app.tool_detail = DetailLevel::Brief;
         let brief = render_entry(0, &app.blocks[0], &app, 80).lines;
         let brief_text = text_of(&brief);
+        let brief_title = plain(&brief[0]);
+        assert!(brief_title.contains("start"), "摘要 op：{brief_title}");
         assert!(
-            brief_text.contains("start 乙"),
-            "摘要 op + 目标：{brief_text}"
+            !brief_title.contains('乙'),
+            "目标已在快照树里，标题不重复：{brief_title}"
         );
         assert!(
             brief_text.contains("├─ 一 · 1/2"),
