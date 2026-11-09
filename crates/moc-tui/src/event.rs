@@ -2090,7 +2090,7 @@ fn request_stop(app: &mut App, connection: &EmbeddedConnection) {
     }
 }
 
-/// todo HUD：悬停展开、点击固定、按住卡片拖动。
+/// todo HUD：单击在展开卡片与折叠胶囊间切换、按住卡片拖动。
 fn handle_todo_hud_mouse(app: &mut App, mouse: &crossterm::event::MouseEvent) -> bool {
     use crossterm::event::{MouseButton, MouseEventKind};
     let position = (mouse.column, mouse.row);
@@ -9226,12 +9226,11 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// HUD 鼠标：悬停展开、点击固定、拖动改位置；HUD 上的按下不启动转写点击。
+    /// HUD 鼠标：单击切换展开/折叠、按住卡片拖动；HUD 上的按下不启动转写点击。
     #[test]
-    fn todo_hud_mouse_captures_hover_click_and_drag() {
+    fn todo_hud_mouse_toggles_and_drags() {
         let mut app = app();
         app.scrollback_area = ratatui::layout::Rect::new(0, 2, 80, 20);
-        app.todo_hud.chip_area = ratatui::layout::Rect::new(60, 2, 15, 1);
         let mouse = |kind: MouseEventKind, column: u16, row: u16| MouseEvent {
             kind,
             column,
@@ -9239,16 +9238,17 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
 
+        // 展开态只有卡片命中区；悬停算命中但不改状态。
+        app.todo_hud.card_area = ratatui::layout::Rect::new(40, 2, 35, 10);
         app.hover_chart = Some((0, 0));
         assert!(handle_todo_hud_mouse(
             &mut app,
-            &mouse(MouseEventKind::Moved, 62, 2)
+            &mouse(MouseEventKind::Moved, 42, 3)
         ));
         assert!(app.todo_hud.is_open());
         assert!(app.hover_chart.is_none(), "悬停 HUD 时清掉图表高亮");
 
-        // 卡片在下一帧出现后，点击固定；不进入转写点击/拖选状态。
-        app.todo_hud.card_area = ratatui::layout::Rect::new(40, 2, 35, 10);
+        // 单击卡片折叠成胶囊；不进入转写点击/拖选状态。
         assert!(handle_todo_hud_mouse(
             &mut app,
             &mouse(MouseEventKind::Down(MouseButton::Left), 42, 3)
@@ -9258,9 +9258,22 @@ mod tests {
             &mut app,
             &mouse(MouseEventKind::Up(MouseButton::Left), 42, 3)
         ));
-        assert!(app.todo_hud.pinned);
+        assert!(!app.todo_hud.is_open());
 
-        // 按住卡片拖过阈值：自动固定并更新记忆位置。
+        // 折叠态单击胶囊回到展开。
+        app.todo_hud.chip_area = ratatui::layout::Rect::new(60, 2, 15, 1);
+        assert!(handle_todo_hud_mouse(
+            &mut app,
+            &mouse(MouseEventKind::Down(MouseButton::Left), 62, 2)
+        ));
+        assert!(handle_todo_hud_mouse(
+            &mut app,
+            &mouse(MouseEventKind::Up(MouseButton::Left), 62, 2)
+        ));
+        assert!(app.todo_hud.is_open());
+
+        // 按住卡片拖过阈值：更新记忆位置，保持展开。
+        app.todo_hud.card_area = ratatui::layout::Rect::new(40, 2, 35, 10);
         assert!(handle_todo_hud_mouse(
             &mut app,
             &mouse(MouseEventKind::Down(MouseButton::Left), 42, 3)
@@ -9274,7 +9287,7 @@ mod tests {
             &mut app,
             &mouse(MouseEventKind::Up(MouseButton::Left), 45, 6)
         ));
-        assert!(app.todo_hud.pinned);
+        assert!(app.todo_hud.is_open());
     }
 
     /// 画一帧整屏 UI，让鼠标命中几何与真实绘制同源。

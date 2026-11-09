@@ -185,7 +185,6 @@ fn test_f2_02_btw_dock_uses_rounded_borders() {
 fn test_f2_03_todo_hud_task_card_uses_rounded_borders() {
     let (mut app, _rx, mut terminal) = create_test_terminal(120, 30);
     app.todos.push(sample_todo_phase("阶段一", "重构渲染模块"));
-    app.todo_hud.pinned = true;
     terminal
         .draw(|f| moc_tui::render::todo_hud::draw(f, &mut app, Rect::new(0, 0, 120, 30), true))
         .unwrap();
@@ -740,6 +739,7 @@ fn test_f9_01_todo_hud_capsule_does_not_obscure_scrollback_row_zero() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.todos
         .push(sample_todo_phase("阶段一", "第一项重要任务"));
+    app.todo_hud.collapsed = true;
     let mut view = moc_tui::render::ScrollbackView::default();
     terminal
         .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
@@ -756,19 +756,31 @@ fn test_f9_01_todo_hud_capsule_does_not_obscure_scrollback_row_zero() {
 fn test_f9_02_hover_does_not_instantly_open_expanded_card() {
     let (mut app, _rx, _) = create_test_terminal(100, 30);
     app.todo_hud.chip_area = Rect::new(80, 1, 15, 1);
+    app.todo_hud.collapsed = true;
     app.todo_hud.pointer_moved((10, 10));
     assert!(
-        !app.todo_hud.is_open() || app.todo_hud.pinned,
-        "Hovering outside capsule must not instantly trigger card expansion"
+        !app.todo_hud.is_open(),
+        "Hovering outside capsule must not trigger card expansion"
+    );
+    app.todo_hud.pointer_moved((82, 1));
+    assert!(
+        !app.todo_hud.is_open(),
+        "Hovering the capsule itself must not expand it; only clicks toggle"
     );
 }
 
 #[test]
 fn test_f9_03_click_toggles_card_expansion() {
     let (mut app, _rx, _) = create_test_terminal(100, 30);
+    app.todo_hud.card_area = Rect::new(40, 2, 35, 10);
+    assert!(app.todo_hud.is_open(), "Card is expanded by default");
+    app.todo_hud.pointer_down((42, 3));
+    app.todo_hud.pointer_up((42, 3));
+    assert!(!app.todo_hud.is_open(), "Clicking the card collapses to capsule");
     app.todo_hud.chip_area = Rect::new(80, 1, 15, 1);
-    app.todo_hud.pinned = true;
-    assert!(app.todo_hud.is_open(), "Pinned state must keep card open");
+    app.todo_hud.pointer_down((82, 1));
+    app.todo_hud.pointer_up((82, 1));
+    assert!(app.todo_hud.is_open(), "Clicking the capsule expands the card");
 }
 
 #[test]

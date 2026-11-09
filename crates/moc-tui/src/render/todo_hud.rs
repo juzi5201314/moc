@@ -1,7 +1,7 @@
-//! 右上角 todo HUD：折叠胶囊 + 可拖动的展开卡片。
+//! 右上角 todo HUD：折叠胶囊与展开卡片互斥，单击切换。
 //!
-//! 胶囊贴转写区首行右端，任务名超宽时按显示宽度横向滚动；悬停或点击固定后
-//! 展开卡片。卡片是临时浮层，不参与转写区折行；拖动可把它移开正文。
+//! 默认展开卡片：按内容定高、可拖动移位、不参与转写区折行；点卡片折叠成
+//! 右上角一行胶囊（任务名超宽时横向滚动），再点胶囊回到卡片。
 
 use std::time::{Duration, Instant};
 
@@ -49,9 +49,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, header_visible: bool) 
         app.todo_hud.on_hidden();
         return;
     };
+    let chip_y = chip_row(area, header_visible, app.warning_visible());
+    // 展开态只画卡片、折叠态只画胶囊，二者互斥不同时存在。
+    if app.todo_hud.is_open() {
+        draw_card(frame, app, area, chip_y, done, total);
+        return;
+    }
     let task = sanitize(&task);
     let theme = app.theme;
-    let chip_y = chip_row(area, header_visible, app.warning_visible());
     let Some(chip) = build_chip(app, &task, status, done, total, area.width) else {
         app.todo_hud.on_hidden();
         return;
@@ -71,16 +76,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, header_visible: bool) 
         Paragraph::new(Line::from(chip.spans)).style(Style::new().bg(theme.bg_highlight)),
         chip_area,
     );
-
-    if !app.todo_hud.is_open() {
-        return;
-    }
-    draw_card(frame, app, area, chip_y, done, total);
 }
 
-/// 胶囊所在行：有 header 时优先占用转写区上方的间隙行，不遮挡正文。
+/// 胶囊（或展开卡片顶行）所在行：有 header 时优先占用转写区上方的间隙行，不遮挡正文。
 ///
-/// warning 胶囊固定贴转写区首行（`area.y`）右端；只有 todo 胶囊也落在首行时才下移一行避让。
+/// warning 胶囊固定贴转写区首行（`area.y`）右端；只有 todo HUD 也落在首行时才下移一行避让。
 fn chip_row(area: Rect, header_visible: bool, warning_visible: bool) -> u16 {
     if header_visible && area.y > 0 {
         area.y - 1
@@ -147,22 +147,17 @@ fn build_chip(
 
     let overflow = str_width(task) > task_budget;
     let mut display = if overflow {
-        if app.todo_hud.is_open() {
-            // 卡片展开时胶囊通常被盖住；即使被拖开也保持静态，省掉无意义的定时重绘。
-            display_window(task, 0, task_budget)
-        } else {
-            if app.todo_hud.marquee_key != task {
-                app.todo_hud.marquee_key.clear();
-                app.todo_hud.marquee_key.push_str(task);
-                app.todo_hud.marquee_start = Some(Instant::now());
-            }
-            let start = *app.todo_hud.marquee_start.get_or_insert_with(Instant::now);
-            let cycle = format!("{task}{MARQUEE_SEPARATOR}");
-            let cycle_chars = cycle.chars().count().max(1);
-            let offset = marquee_offset(start, Instant::now(), cycle_chars);
-            app.todo_hud.marquee_active = true;
-            marquee_view(task, offset, task_budget)
+        if app.todo_hud.marquee_key != task {
+            app.todo_hud.marquee_key.clear();
+            app.todo_hud.marquee_key.push_str(task);
+            app.todo_hud.marquee_start = Some(Instant::now());
         }
+        let start = *app.todo_hud.marquee_start.get_or_insert_with(Instant::now);
+        let cycle = format!("{task}{MARQUEE_SEPARATOR}");
+        let cycle_chars = cycle.chars().count().max(1);
+        let offset = marquee_offset(start, Instant::now(), cycle_chars);
+        app.todo_hud.marquee_active = true;
+        marquee_view(task, offset, task_budget)
     } else {
         app.todo_hud.marquee_key.clear();
         app.todo_hud.marquee_start = None;
@@ -223,13 +218,8 @@ fn draw_card(
         )));
     }
     let height = u16::try_from(shown.len() + 2).unwrap_or(area.height);
-    let pinned = app.todo_hud.pinned;
     let default_origin = (area.right().saturating_sub(card_width), default_y);
-    let origin = if pinned {
-        app.todo_hud.drag_origin.unwrap_or(default_origin)
-    } else {
-        default_origin
-    };
+    let origin = app.todo_hud.drag_origin.unwrap_or(default_origin);
     let max_x = area.right().saturating_sub(card_width).max(area.x);
     let max_y = area.bottom().saturating_sub(height).max(area.y);
     let card_area = Rect::new(
@@ -259,24 +249,15 @@ fn draw_card(
         ),
         Span::styled(format!("{done}/{total} "), count_style),
     ]);
-    let hint = if pinned {
-        " 已固定 · 点击取消 "
-    } else {
-        " 拖动 · 点击固定 "
-    };
     let title_right = Line::from(Span::styled(
-        hint.to_owned(),
+        " 拖动 · 点击折叠 ".to_owned(),
         Style::new().fg(theme.gray_dim),
     ))
     .alignment(Alignment::Right);
     let block = Block::bordered()
         .border_set(ratatui::symbols::border::ROUNDED)
         .style(Style::new().bg(theme.bg_base).fg(theme.text_primary))
-        .border_style(Style::new().fg(if pinned {
-            theme.border_active
-        } else {
-            theme.border
-        }))
+        .border_style(Style::new().fg(theme.border))
         .title(title_left)
         .title(title_right);
 
@@ -569,7 +550,6 @@ mod tests {
         let (events, _) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(Theme::global(), events);
         app.todos = vec![phase("阶段", &[(TodoStatus::InProgress, "进行中")])];
-        app.todo_hud.pinned = true;
         let area = Rect::new(0, 0, 80, 20);
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
