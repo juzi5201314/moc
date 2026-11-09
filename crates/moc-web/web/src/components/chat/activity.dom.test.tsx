@@ -110,3 +110,43 @@ it("子代理显示任务与报告而不是回执，批量任务分别排版且�
     expect((button as HTMLButtonElement).disabled).toBe(true);
   view.unmount();
 });
+
+it("可折叠行的标题钉在滚动容器顶部，嵌套子工具与状态行不钉", () => {
+  // 隐藏档正文完全收起，点击标题展开才有正文——顺带验证钉住后点击仍走原折叠路径。
+  usePrefs.setState({ toolDetail: "hidden" });
+  const view = render(
+    <ActivityGroup
+      blocks={[
+        { kind: "reasoning", id: "r1", text: "长思考\n".repeat(50) },
+        tool("bash", {
+          arguments: '{"command":"ls"}',
+          result: "secret-out",
+          children: [
+            tool("read", {
+              id: "c1",
+              toolCallId: "c1",
+              arguments: '{"path":"a.rs"}',
+              result: "x",
+            }),
+          ],
+        }),
+        { kind: "status", id: "s1", tone: "info", text: "就绪" },
+      ]}
+      live={false}
+      sessionId="s"
+    />,
+  );
+  // 顶层可折叠行钉住；点击仍走原有折叠路径。
+  const thinking = view.getByRole("button", { name: /思考/ });
+  expect(thinking.className).toContain("sticky");
+  const bash = view.getByRole("button", { name: /ls/ });
+  expect(bash.className).toContain("sticky");
+  const nested = view.getByRole("button", { name: /a\.rs/ });
+  expect(nested.className).not.toContain("sticky");
+  const status = view.getByRole("button", { name: /就绪/ });
+  expect(status.className).not.toContain("sticky");
+  expect((status as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(bash);
+  expect(view.getByText(/secret-out/)).toBeTruthy();
+  view.unmount();
+});

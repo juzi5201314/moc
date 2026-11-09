@@ -222,6 +222,27 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
             lines: &mut app.paint_lines,
         },
     );
+    // 粘性折叠头：盖住顶行的可折叠块（思考 / 工具等）把标题钉在首行，
+    // 命中区一并补登——正文再长也能随时点回折叠。
+    if let Some((index, title)) = view.sticky_title(app, window.skip_rows) {
+        frame
+            .buffer_mut()
+            .set_line(scroll_area.x, scroll_area.y, title, scroll_area.width);
+        app.mouse_hits
+            .push((index, scroll_area.y, scroll_area.y + 1));
+        // 首行已被标题覆盖，拖选复制登记的文本同步换成标题，保持所见即所得。
+        if let Some((_, text)) = app
+            .paint_lines
+            .iter_mut()
+            .find(|(row, _)| *row == scroll_area.y)
+        {
+            *text = title
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+        }
+    }
     view.trim_outside(window.skip_rows, viewport);
     highlight_selection(frame, app, scroll_area);
     // 滚动条贴终端右缘：与内容边距无关，避免压住正文

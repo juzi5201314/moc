@@ -776,6 +776,33 @@ impl ScrollbackView {
         self.cache.iter().map(|cached| cached.height).sum()
     }
 
+    /// 粘性折叠头：标题被滚出视口而正文仍盖住顶行的可折叠块，返回其标题行。
+    ///
+    /// 顶层绘制把这行叠在转写区首行并补登命中，折叠入口不随滚动丢失。
+    pub fn sticky_title(&self, app: &App, skip_rows: usize) -> Option<(usize, &Line<'static>)> {
+        let mut offset = 0usize;
+        for (index, cached) in self.cache.iter().enumerate() {
+            let end = offset.saturating_add(cached.height);
+            if end <= skip_rows {
+                offset = end;
+                continue;
+            }
+            // 盖住顶行的第一块：只有块头在 skip_rows 之前才算「被滚出」，
+            // 标题恰好在顶的行自然绘制、不钉。
+            if offset < skip_rows
+                && cached.line_start == 0
+                && app
+                    .blocks
+                    .get(index)
+                    .is_some_and(|entry| entry.block.foldable())
+            {
+                return cached.lines.first().map(|line| (index, line));
+            }
+            return None;
+        }
+        None
+    }
+
     /// 从第 `skip_rows` 行开始把内容画进视口，并登记命中表、位图槽位与行文本。
     ///
     /// 位图槽位只在**完整落在视口内**时登记：图像按格坐标一次性贴上，半截
@@ -7664,6 +7691,94 @@ mod tests {
             "单阶段折叠行与状态符号同列：{single_text}"
         );
         assert_eq!(estimate_entry_height_at(&app, 1, 60), single.len());
+    }
+
+    /// 粘性折叠头：盖住顶行的可折叠块报出标题行；标题恰好在顶或非折叠块不钉。
+    #[test]
+    fn sticky_title_picks_the_spanning_foldable_block() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.thinking_detail = DetailLevel::Full;
+        app.push_block(Block::Thinking {
+            text: "一段很长的思考\n".repeat(40),
+            reasoning_tokens: None,
+            duration_ms: None,
+        });
+        app.push_block(Block::User {
+            text: "尾巴".into(),
+        });
+        let mut view = ScrollbackView::new();
+        view.sync(&app, 80);
+        // 先滚到顶让思考块完成真实渲染，再取它的实际高度。
+        view.ensure_visible(&app, 20, usize::MAX);
+        let thinking_end = view.cache[0].height;
+        assert!(thinking_end > 4, "思考块要高过几行");
+
+        let (index, title) = view
+            .sticky_title(&app, 3)
+            .expect("盖住顶行的思考块应报出标题");
+        assert_eq!(index, 0);
+        let text: String = title
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains('◆'), "钉住的是标题行：{text}");
+
+        assert!(
+            view.sticky_title(&app, 0).is_none(),
+            "标题恰好在顶时自然绘制"
+        );
+        assert!(
+            view.sticky_title(&app, thinking_end).is_none(),
+            "盖住顶行的用户消息不可折叠"
+        );
+        assert!(
+            view.sticky_title(&app, thinking_end + 1).is_none(),
+            "顶行越过用户消息标题也只是普通滚动"
+        );
+    }
+
+    /// 整帧：完整展开的思考块滚进正文后，标题行钉在转写区首行并仍可点击。
+    #[test]
+    fn expanded_block_title_pins_to_the_top_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.thinking_detail = DetailLevel::Full;
+        app.push_block(Block::Thinking {
+            text: "正文\n".repeat(200),
+            reasoning_tokens: None,
+            duration_ms: None,
+        });
+        // 停在块尾：标题早已滚出视口。
+        app.scroll_offset = 0;
+        let mut view = ScrollbackView::new();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        terminal
+            .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+            .expect("绘制");
+
+        let top = app.scrollback_area.y;
+        let mut row = String::new();
+        for x in app.scrollback_area.x..app.scrollback_area.right() {
+            row.push_str(
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((x, top))
+                    .expect("cell")
+                    .symbol(),
+            );
+        }
+        assert!(row.contains('◆'), "标题应钉在转写区首行：{row}");
+        assert!(
+            app.mouse_hits
+                .iter()
+                .any(|&(index, start, _)| index == 0 && start == top),
+            "钉住的标题行仍登记折叠命中区"
+        );
     }
 
     /// 回归：用户消息与系统提示的估高必须与渲染完全一致（含首块与时间戳换行）。

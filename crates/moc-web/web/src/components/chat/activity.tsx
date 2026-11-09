@@ -110,6 +110,7 @@ function RowHeader({
   interactive,
   open,
   pulse,
+  sticky,
   onToggle,
   onTargetClick,
 }: {
@@ -125,6 +126,8 @@ function RowHeader({
   interactive: boolean;
   open: boolean;
   pulse?: boolean;
+  /** 长块正文滚过顶缘后把标题钉在滚动容器顶部，随时可点回折叠；块尾处被下一块顶走。 */
+  sticky?: boolean;
   onToggle: () => void;
 }) {
   return (
@@ -135,6 +138,8 @@ function RowHeader({
       className={cn(
         "group/row flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-ui text-muted-foreground transition-colors",
         interactive ? "hover:text-foreground" : "cursor-default",
+        // 钉住时正文从行底滚过，需要不透明背景与层级；嵌套行不钉，避免多层叠头。
+        sticky && "sticky top-0 z-10 bg-background",
       )}
     >
       <span
@@ -277,6 +282,7 @@ function ReasoningRow({
         pulse={streaming}
         interactive={hasText}
         open={level === "full"}
+        sticky={hasText}
         onToggle={() => setLevel(toggledLevel(axis, level))}
         suffix={
           <>
@@ -347,10 +353,13 @@ function ToolRow({
   tool,
   axis,
   sessionId,
+  sticky,
 }: {
   tool: ToolBlock;
   axis: DetailLevel;
   sessionId: string;
+  /** 仅顶层行钉住标题；嵌套子工具与合并组成员由各自的组头承载折叠入口。 */
+  sticky?: boolean;
 }) {
   const [level, setLevel] = useState(axis);
   const now = useNow(tool.status === "running" && Boolean(tool.job));
@@ -434,6 +443,7 @@ function ToolRow({
         action={headerAction}
         interactive={interactive}
         open={level === "full"}
+        sticky={sticky && interactive}
         onToggle={toggle}
         onTargetClick={targetClick}
       />
@@ -586,6 +596,7 @@ function ToolGroupRow({
         failed={failedCount > 0}
         interactive
         open={open}
+        sticky
         onToggle={() => setOpen(!open)}
         suffix={
           running ? (
@@ -656,6 +667,7 @@ function AgentMessageRow({
         target={block.from}
         interactive
         open={level === "full"}
+        sticky
         onToggle={() => setLevel(toggledLevel(axis, level))}
       />
       {level !== "hidden" && (
@@ -695,6 +707,7 @@ function GoalRoundRow({
         verb={`目标续跑 · 第 ${block.round} 轮`}
         interactive
         open={level === "full"}
+        sticky
         onToggle={() => setLevel(toggledLevel(axis, level))}
       />
       {level !== "hidden" && (
@@ -762,6 +775,7 @@ export function ActivityGroup({
                 tool={block}
                 axis={tools}
                 sessionId={sessionId}
+                sticky
               />
             );
           case "bash":
@@ -771,6 +785,7 @@ export function ActivityGroup({
                 tool={bashAsTool(block)}
                 axis={tools}
                 sessionId={sessionId}
+                sticky
               />
             );
           case "agent-message":
