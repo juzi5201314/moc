@@ -1538,11 +1538,6 @@ pub enum Modal {
         scope: SessionScope,
         picker: PickerState,
     },
-    /// 当前会话的子代理列表。
-    Subagents {
-        agents: Vec<moc_protocol::methods::AgentInfo>,
-        picker: PickerState,
-    },
     /// 计划审批（`session/plan_approve`）。装箱收窄 Modal：PlanReviewState 近 600 字节。
     Plan { state: Box<PlanReviewState> },
     /// 快捷键帮助；`scroll` 是正文滚动偏移（渲染时按可见行数收紧）。
@@ -1637,7 +1632,6 @@ impl Modal {
                 SessionScope::Folder => "恢复会话（当前目录）".into(),
                 SessionScope::All => "恢复会话（全部目录）".into(),
             },
-            Modal::Subagents { .. } => "子代理".into(),
             Modal::Plan { .. } => "计划审批".into(),
             Modal::Help { .. } => "快捷键".into(),
             Modal::Tools { tools, .. } => match tools {
@@ -1682,13 +1676,6 @@ impl Modal {
                 cwd,
                 scope,
             } => filtered_sessions(sessions, &picker.query, *scope, cwd).len(),
-            Modal::Subagents { picker, agents } => agents
-                .iter()
-                .filter(|agent| {
-                    let query = picker.query.to_lowercase();
-                    agent.title.to_lowercase().contains(&query) || agent.id.contains(&query)
-                })
-                .count(),
             Modal::Plan { .. } => 4,
             Modal::Help { .. }
             | Modal::Tools { .. }
@@ -1777,9 +1764,7 @@ impl Modal {
                 detail.list_scroll.reveal_selection = true;
                 detail.pointer = None;
             }
-            Modal::Sessions { picker, .. }
-            | Modal::Subagents { picker, .. }
-            | Modal::WorkflowRuns { picker, .. } => {
+            Modal::Sessions { picker, .. } | Modal::WorkflowRuns { picker, .. } => {
                 picker.move_selection(delta, count, 8);
             }
         }

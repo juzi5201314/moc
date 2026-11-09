@@ -382,9 +382,9 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     // 悬停只铺底色：pointer 坐标由事件层记录，选中项保持自己的高亮。
     {
         let (pointer, selected) = match modal {
-            Modal::Sessions { picker, .. }
-            | Modal::Subagents { picker, .. }
-            | Modal::WorkflowRuns { picker, .. } => (picker.pointer, Some(picker.selected)),
+            Modal::Sessions { picker, .. } | Modal::WorkflowRuns { picker, .. } => {
+                (picker.pointer, Some(picker.selected))
+            }
             Modal::Jobs {
                 pointer, selected, ..
             } => (*pointer, Some(*selected)),
@@ -432,11 +432,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         Some(Modal::Plan { state }) if state.pane == PlanPane::Read => {
             state.scroll_offset = state.scroll_offset.min(body.scroll_max);
         }
-        Some(
-            Modal::Sessions { picker, .. }
-            | Modal::Subagents { picker, .. }
-            | Modal::WorkflowRuns { picker, .. },
-        ) => {
+        Some(Modal::Sessions { picker, .. } | Modal::WorkflowRuns { picker, .. }) => {
             if let Some(offset) = body.applied_offset {
                 picker.offset = offset;
             }
@@ -724,7 +720,7 @@ fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
             (get_key("model"), "选择模型".to_owned()),
             (get_key("engine"), "切换会话引擎".to_owned()),
             (get_key("config"), "打开设置".to_owned()),
-            (get_key("agents"), "打开子代理管理".to_owned()),
+            (get_key("agents"), "唤出子代理侧栏".to_owned()),
             (get_key("resume"), "恢复会话".to_owned()),
             (get_key("thinking"), "切换思考显示档位".to_owned()),
             (get_key("thinking_level"), "切换思考等级".to_owned()),
@@ -1538,109 +1534,6 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 ])],
             };
             (lines, overlay::footer(&[("esc", "关闭")], width, theme))
-        }
-        Modal::Subagents { agents, picker } => {
-            let query = picker.query.to_lowercase();
-            let filtered: Vec<_> = agents
-                .iter()
-                .filter(|agent| {
-                    agent.title.to_lowercase().contains(&query) || agent.id.contains(&query)
-                })
-                .collect();
-            let mut lines = vec![search_line(&picker.query, width, theme)];
-            if filtered.is_empty() {
-                // 过滤无结果与名册为空分开说：前者是搜索词的问题。
-                if picker.query.is_empty() {
-                    lines.extend(wrapped_lines(
-                        "当前会话还没有子代理",
-                        width,
-                        Style::new().fg(theme.text_secondary),
-                    ));
-                    lines.extend(wrapped_lines(
-                        "子代理由模型在复杂任务中自动派生",
-                        width,
-                        dim,
-                    ));
-                } else {
-                    lines.extend(wrapped_lines(
-                        "没有匹配的子代理",
-                        width,
-                        Style::new().fg(theme.gray),
-                    ));
-                }
-            } else {
-                // 每个子代理占 1 行（无最近消息）或 2 行：窗口按行预算取。
-                // 选中项移动时收进窗内（reveal）；滚轮只动 offset，重绘不拉回。
-                let heights: Vec<usize> = filtered
-                    .iter()
-                    .map(|agent| 1 + usize::from(agent.last_message.is_some()))
-                    .collect();
-                let budget = max_lines.saturating_sub(lines.len()).max(1);
-                let selected = picker.selected.min(filtered.len() - 1);
-                // offset 以条目计：上限是「末页恰好填满预算」的最早起点。
-                scroll_max = filtered.len().saturating_sub(1);
-                let mut tail_rows = heights.last().copied().unwrap_or(0);
-                while scroll_max > 0 && tail_rows + heights[scroll_max - 1] <= budget {
-                    tail_rows += heights[scroll_max - 1];
-                    scroll_max -= 1;
-                }
-                let start = if picker.scroll.reveal_selection {
-                    let mut start = picker.offset.min(selected);
-                    while start < selected
-                        && heights[start..=selected].iter().sum::<usize>() > budget
-                    {
-                        start += 1;
-                    }
-                    start
-                } else {
-                    picker.offset.min(picker.scroll.max_offset)
-                };
-                applied_offset = Some(start);
-                let mut used = 0;
-                for (index, agent) in filtered.iter().enumerate().skip(start) {
-                    if used > 0 && used + heights[index] > budget {
-                        break;
-                    }
-                    used += heights[index];
-                    let status = crate::render::scrollback::agent_status_label(agent.status);
-                    hits.push((index, lines.len()));
-                    lines.push(overlay::list_row(
-                        &format!(
-                            "{}{}{status}{}{}",
-                            agent.title,
-                            labels::SEP,
-                            labels::SEP,
-                            agent.model
-                        ),
-                        index == selected,
-                        width,
-                        theme,
-                    ));
-                    if let Some(message) = &agent.last_message {
-                        // 最近消息行属于同一项：点它与点标题行等价。
-                        hits.push((index, lines.len()));
-                        lines.push(Line::from(Span::styled(
-                            format!(
-                                "    {}",
-                                truncate(message.as_str(), width.saturating_sub(4))
-                            ),
-                            dim,
-                        )));
-                    }
-                }
-            }
-            let footer = overlay::footer(
-                &[
-                    ("", "输入搜索"),
-                    ("↑↓", "选择"),
-                    ("ctrl+s", "停止"),
-                    ("enter", "聚焦"),
-                    ("esc", "关闭"),
-                ],
-                width,
-                theme,
-            );
-            (lines, footer)
         }
         Modal::Tools {
             tools,

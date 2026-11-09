@@ -1,7 +1,7 @@
-//! TUI 子代理视图：侧栏与名册用的状态快照。
+//! TUI 子代理视图：侧栏卡片用的状态快照。
 //!
-//! 子代理的转写不在 TUI 里另存一份：`Ctrl+N` 名册里 `Enter` 把主 TUI 聚焦到该
-//! 子代理的会话，转写直接走主滚动区（见 `docs/tui.md` 的子代理一节）。
+//! 子代理的转写不在 TUI 里另存一份：点侧栏卡片把主 TUI 聚焦到该子代理的
+//! 会话，转写直接走主滚动区（见 `docs/tui.md` 的子代理一节）。
 
 use moc_protocol::methods::{AgentInfo, AgentStatus};
 
@@ -9,7 +9,7 @@ use moc_protocol::methods::{AgentInfo, AgentStatus};
 #[derive(Debug, Clone)]
 pub struct SubagentView {
     pub info: AgentInfo,
-    /// 是否仍在运行（侧栏的 ● / ○，以及名册里的排序依据）。
+    /// 是否仍在运行（侧栏的 ● / ○ 与自动显隐的依据）。
     pub running: bool,
 }
 

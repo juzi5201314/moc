@@ -306,7 +306,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "agents",
         aliases: &[],
         usage: "",
-        description: "子代理名册：聚焦、停止、查看",
+        description: "子代理侧栏：唤出、聚焦、查看",
         group: CommandGroup::Agents,
         needs_session: true,
         available_during_task: true,

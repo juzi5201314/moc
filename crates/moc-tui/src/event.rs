@@ -525,19 +525,19 @@ fn load_subagents(app: &App, connection: &EmbeddedConnection) {
     });
 }
 
+/// 唤出子代理侧栏：手动覆盖显示（名册曾以居中模态呈现，已收敛为右侧停靠）。
+///
+/// 顺手向 core 刷新一次名册；迟到的回执照常并入 `app.subagents`，
+/// 有代理时侧栏随之现身。名册为空时不强开面板，只提示。
 fn open_subagents(app: &mut App, connection: &EmbeddedConnection) {
-    app.modal = Some(Modal::Subagents {
-        agents: app
-            .subagents
-            .values()
-            .map(|view| view.info.clone())
-            .collect(),
-        picker: crate::modal::PickerState::default(),
-    });
+    app.subagent_sidebar = Some(true);
     load_subagents(app, connection);
+    if app.subagents.is_empty() {
+        app.set_notice("当前没有子代理");
+    }
 }
 
-/// 停止一个子代理：名册 `Ctrl+S` 与聚焦时的 `Ctrl+S` 共用。
+/// 停止一个子代理：聚焦时的 `Ctrl+S` 用它。
 fn stop_agent_operation(app: &App, connection: &EmbeddedConnection, agent_id: String) {
     // 停止请求的父会话永远是代理面挂靠的那个：聚焦子代理时 `app.session` 是子代理自己。
     let Some(parent_session_id) = app.agents_root_id() else {
@@ -1222,9 +1222,6 @@ async fn event_loop(
                             }
                             app.subagent_generation = app.subagent_generation.wrapping_add(1);
                             app.sync_subagent_sidebar();
-                            if let Some(Modal::Subagents { agents: current, .. }) = app.modal.as_mut() {
-                                *current = app.subagents.values().map(|view| view.info.clone()).collect();
-                            }
                         }
                         Err(error) => app.set_error_notice(format!("读取子代理列表失败：{error}")),
                     },
@@ -1701,11 +1698,9 @@ fn handle_mouse_with_connection(
         {
             let pos: ratatui::layout::Position = position.into();
             match app.modal.as_mut() {
-                Some(
-                    Modal::Sessions { picker, .. }
-                    | Modal::Subagents { picker, .. }
-                    | Modal::WorkflowRuns { picker, .. },
-                ) => picker.pointer = Some(pos),
+                Some(Modal::Sessions { picker, .. } | Modal::WorkflowRuns { picker, .. }) => {
+                    picker.pointer = Some(pos)
+                }
                 Some(Modal::Jobs { pointer, .. }) => *pointer = Some(pos),
                 Some(Modal::WorkflowApproval { state }) => state.pointer = Some(pos),
                 Some(Modal::WorkflowRun { state }) => state.pointer = Some(pos),
@@ -1739,11 +1734,7 @@ fn handle_mouse_with_connection(
                 let delta: isize = if up { -3 } else { 3 };
                 // 列表/面板类模态：滚轮只滚 viewport，不移动选中项，也不滚背后的转写。
                 let scrolled = match app.modal.as_mut() {
-                    Some(
-                        Modal::Sessions { picker, .. }
-                        | Modal::Subagents { picker, .. }
-                        | Modal::WorkflowRuns { picker, .. },
-                    ) => {
+                    Some(Modal::Sessions { picker, .. } | Modal::WorkflowRuns { picker, .. }) => {
                         picker.scroll.scroll_by(&mut picker.offset, delta);
                         true
                     }
@@ -1929,7 +1920,6 @@ fn modal_dismissable(modal: &Modal) -> bool {
             | Modal::ContextContent { .. }
             | Modal::Model { .. }
             | Modal::Sessions { .. }
-            | Modal::Subagents { .. }
             | Modal::Jobs { .. }
             | Modal::Rewind { .. }
             | Modal::Monitor
@@ -1951,12 +1941,7 @@ fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize
             *option = index;
             true
         }
-        Some(Modal::Sessions { picker, .. } | Modal::Subagents { picker, .. }) => {
-            let again = picker.selected == index;
-            picker.selected = index;
-            again
-        }
-        Some(Modal::WorkflowRuns { picker, .. }) => {
+        Some(Modal::Sessions { picker, .. } | Modal::WorkflowRuns { picker, .. }) => {
             let again = picker.selected == index;
             picker.selected = index;
             again
@@ -3898,7 +3883,6 @@ fn handle_modal_key(
     let session_id = app.session.as_ref().map(|session| session.id.clone());
     let events = app.events.clone();
     let mut close = false;
-    let mut focus_target: Option<String> = None;
     // 模型角色字段选定的值：延迟到模态借用结束后写回配置。
     let mut config_pick: Option<(Vec<String>, String, String)> = None;
     // `session/set_model` 的发起也延后：模态借用期拿不走 `&mut App`。
@@ -3917,11 +3901,9 @@ fn handle_modal_key(
     let plan_review_open = matches!(app.modal, Some(Modal::Plan { .. }));
     // 键盘接管：丢掉悬停坐标，不与选中高亮抢视觉（模型选择器在其分支内自处理）。
     match app.modal.as_mut() {
-        Some(
-            Modal::Sessions { picker, .. }
-            | Modal::Subagents { picker, .. }
-            | Modal::WorkflowRuns { picker, .. },
-        ) => picker.pointer = None,
+        Some(Modal::Sessions { picker, .. } | Modal::WorkflowRuns { picker, .. }) => {
+            picker.pointer = None
+        }
         Some(Modal::Jobs { pointer, .. }) => *pointer = None,
         Some(Modal::WorkflowApproval { state }) => state.pointer = None,
         Some(Modal::WorkflowRun { state }) => state.pointer = None,
@@ -5292,68 +5274,6 @@ fn handle_modal_key(
             }
             _ => {}
         },
-        Modal::Subagents { agents, picker } => {
-            let filtered: Vec<_> = agents
-                .iter()
-                .filter(|agent| {
-                    let query = picker.query.to_lowercase();
-                    agent.title.to_lowercase().contains(&query) || agent.id.contains(&query)
-                })
-                .collect();
-            match (code, modifiers) {
-                (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
-                (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
-                (KeyCode::Backspace, _) => {
-                    picker.query.pop();
-                    picker.selected = 0;
-                    picker.scroll.reveal_selection = true;
-                }
-                (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
-                    if !ch.is_control() =>
-                {
-                    picker.query.push(ch);
-                    picker.selected = 0;
-                    picker.scroll.reveal_selection = true;
-                }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    // 借用检查：`app.modal` 正被 match 借用，聚焦要等这层借用结束。
-                    focus_target = filtered.get(picker.selected).map(|agent| agent.id.clone());
-                    close = true;
-                }
-                (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                    // `x` 已经被过滤输入吃掉（名册的输入行常驻），停止统一用 ctrl+s：
-                    // 与聚焦时的停止键一致，也不和查询字符抢键位。
-                    if let Some(agent) = filtered.get(picker.selected) {
-                        let agent_id = agent.id.clone();
-                        let client = connection.client.clone();
-                        let parent_session_id = app.agents_root_id();
-                        let events = events.clone();
-                        tokio::spawn(async move {
-                            let result = match parent_session_id {
-                                Some(parent_session_id) => client
-                                    .call::<moc_protocol::methods::AgentStop>(
-                                        moc_protocol::methods::AgentStopParams {
-                                            session_id: parent_session_id,
-                                            agent_id: agent_id.clone(),
-                                            reason: None,
-                                        },
-                                    )
-                                    .await
-                                    .map(|result| crate::subagent::AgentOperationNotice {
-                                        target: agent_id,
-                                        message: format!("停止请求已处理：{}", result.stopped),
-                                    })
-                                    .map_err(anyhow::Error::from),
-                                None => Err(anyhow::anyhow!("当前没有活动会话")),
-                            };
-                            let _ = events.send(AppEvent::SubagentOperation(result));
-                        });
-                    }
-                }
-                (KeyCode::Esc, _) => close = true,
-                _ => {}
-            }
-        }
     }
     if let Some((id, selector)) = session_apply {
         request_session_model(app, connection, id, selector);
@@ -5503,9 +5423,6 @@ fn handle_modal_key(
     if let Some((path, label, value)) = config_pick {
         app.modal = None;
         crate::settings::apply_model_role(app, connection, path, &label, value);
-    } else if let Some(agent_id) = focus_target {
-        focus_agent(app, connection, agent_id);
-        return;
     }
 
     if close {
@@ -11127,54 +11044,6 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// 名册：`x` 是过滤字符，停止统一认 Ctrl+S（不被查询输入遮蔽）。
-    #[tokio::test]
-    async fn subagent_roster_types_x_and_stops_on_ctrl_s() {
-        let (core, connection, mut app) = setup_test_app().await;
-        app.modal = Some(Modal::Subagents {
-            agents: vec![moc_protocol::methods::AgentInfo {
-                id: "agent_1".into(),
-                parent_id: "ses_parent".into(),
-                title: "任务".into(),
-                model: "test/model".into(),
-                cwd: "/tmp".into(),
-                preset: None,
-                status: moc_protocol::methods::AgentStatus::Running,
-                created_at_ms: 0,
-                updated_at_ms: 0,
-                last_message: None,
-            }],
-            picker: crate::modal::PickerState::default(),
-        });
-        handle_key(
-            &mut app,
-            &connection,
-            KeyModifiers::NONE,
-            KeyCode::Char('x'),
-        );
-        match app.modal.as_ref() {
-            Some(Modal::Subagents { picker, .. }) => {
-                assert_eq!(picker.query, "x", "x 应作为过滤字符")
-            }
-            _ => panic!("名册应保持打开"),
-        }
-        handle_key(
-            &mut app,
-            &connection,
-            KeyModifiers::CONTROL,
-            KeyCode::Char('s'),
-        );
-        match app.modal.as_ref() {
-            Some(Modal::Subagents { picker, .. }) => {
-                assert_eq!(picker.query, "x", "Ctrl+S 不得进入过滤查询")
-            }
-            _ => panic!("名册应保持打开"),
-        }
-
-        connection.shutdown().await;
-        core.shutdown().await;
-    }
-
     /// 小9：多问时自定义答案各归各问，第 1 问的输入不会挂到最后一问。
     #[tokio::test]
     async fn ask_custom_answers_stay_with_their_question() {
@@ -12380,7 +12249,62 @@ mod tests {
             .expect("创建子会话")
     }
 
-    /// 聚焦：名册 `Enter` 把当前会话换成子代理，空输入的 `Esc` 返回并还原草稿。
+    /// `Ctrl+N`/`/agents` 唤出右侧子代理侧栏而非旧居中模态；名册为空时只提示。
+    #[tokio::test]
+    async fn agents_action_summons_sidebar_not_modal() {
+        let (core, connection, mut app) = setup_test_app().await;
+
+        // 名册为空：不强开面板，只给提示。
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('n'),
+        );
+        assert!(app.modal.is_none(), "Ctrl+N 不得打开模态");
+        assert_eq!(app.subagent_sidebar, Some(true), "记录唤出意图");
+        assert!(!app.subagent_sidebar_visible(), "空名册仍不可见");
+        assert_eq!(app.notice.as_deref(), Some("当前没有子代理"));
+
+        // 名册有代理：Ctrl+N 后立即可见，先前手动关掉的也能再唤出。
+        app.notice = None;
+        app.subagents.insert(
+            "agent_1".into(),
+            crate::subagent::SubagentView::new(moc_protocol::methods::AgentInfo {
+                id: "agent_1".into(),
+                parent_id: "ses_parent".into(),
+                title: "任务".into(),
+                model: "test/model".into(),
+                cwd: "/tmp".into(),
+                preset: None,
+                status: moc_protocol::methods::AgentStatus::Running,
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                last_message: None,
+            }),
+        );
+        app.subagent_sidebar = Some(false);
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('n'),
+        );
+        assert!(app.modal.is_none());
+        assert!(app.subagent_sidebar_visible(), "Ctrl+N 唤出侧栏");
+
+        // /agents 与 Ctrl+N 同路。
+        app.subagent_sidebar = Some(false);
+        execute_command(&mut app, &connection, "/agents".to_owned());
+        assert!(app.modal.is_none());
+        assert!(app.subagent_sidebar_visible(), "/agents 唤出侧栏");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 聚焦：点中侧栏卡片（`focus_agent`）把当前会话换成子代理，
+    /// 空输入的 `Esc` 返回并还原草稿。
     #[tokio::test]
     async fn focusing_a_subagent_switches_session_and_escape_returns() {
         let (core, connection, mut app, _root) = setup_test_app_keeping_root().await;
@@ -12388,15 +12312,15 @@ mod tests {
         let child = new_child(&connection, "探查者").await;
         let view = agent_view(&child);
         app.subagents.insert(child.id.clone(), view.clone());
-        app.modal = Some(Modal::Subagents {
-            agents: vec![view.info.clone()],
-            picker: crate::modal::PickerState::default(),
-        });
         app.prompt.insert_str_raw("未发送的草稿");
 
-        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        assert!(app.modal.is_none(), "聚焦后名册关闭");
+        focus_agent(&mut app, &connection, child.id.clone());
         assert!(app.focused.is_some(), "聚焦状态必须置位");
+        assert_eq!(
+            app.subagent_selected.as_deref(),
+            Some(child.id.as_str()),
+            "聚焦的子代理应记为选中项"
+        );
         assert_eq!(
             app.agents_root_id().as_deref(),
             Some(home.id.as_str()),

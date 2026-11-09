@@ -80,7 +80,7 @@ pub(crate) fn actions() -> &'static [(&'static str, &'static str, &'static [&'st
         ("delete_word", "删除前一词", &["ctrl+w"]),
         ("delete_to_end", "删除至行尾", &["ctrl+k"]),
         ("config", "打开设置", &["ctrl+g"]),
-        ("agents", "打开子代理管理", &["ctrl+n"]),
+        ("agents", "唤出子代理侧栏", &["ctrl+n"]),
         ("sidebar", "显示/隐藏子代理侧栏", &["alt+a"]),
         ("queue_edit", "编辑排队中的消息", &["alt+up"]),
     ]

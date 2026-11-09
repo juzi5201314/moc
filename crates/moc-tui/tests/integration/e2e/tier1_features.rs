@@ -331,211 +331,169 @@ fn test_f4_05_scrollback_thinking_header_is_chinese() {
 }
 
 // ============================================================================
-// F5: Subagent Roster Status Label (R2.2)
+// F5: Subagent Sidebar Status Label (R2.2)
 // ============================================================================
 
+/// 侧栏把代理状态渲染为本地化标签 + 状态符号，裸数字不得上屏。
 #[test]
-fn test_f5_01_subagent_roster_running_status_label() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Subagents {
-        agents: vec![sample_agent_info("ag_1", "CodeAgent", AgentStatus::Running)],
-        picker: PickerState::default(),
-    });
-    terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
+fn test_f5_01_subagent_sidebar_running_status_label() {
+    let (mut app, _rx, mut terminal) = create_test_terminal(120, 30);
+    app.subagents.insert(
+        "ag_1".into(),
+        moc_tui::subagent::SubagentView::new(sample_agent_info(
+            "ag_1",
+            "CodeAgent",
+            AgentStatus::Running,
+        )),
+    );
+    app.subagent_sidebar = Some(true);
+    let mut view = moc_tui::render::ScrollbackView::default();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let agent_line = rows
+    // 标题行有 `· N running`：必须用「符号 + 标签」定位卡片状态行。
+    let status_row = rows
         .iter()
-        .find(|r| r.contains("CodeAgent"))
-        .expect("agent line found");
+        .find(|r| r.contains(&format!("● {}", status::RUNNING)))
+        .expect("running glyph+label row");
     assert!(
-        agent_line.contains(status::RUNNING),
-        "Running agent must be labeled '{}': {}",
-        status::RUNNING,
-        agent_line
+        rows.iter().any(|r| r.contains("CodeAgent")),
+        "agent title shown"
     );
     assert!(
-        !agent_line.contains(" · 0 · "),
+        !status_row.contains(" · 0 · "),
         "Status must not be formatted as raw integer 0"
     );
 }
 
 #[test]
-fn test_f5_02_subagent_roster_waiting_status_label() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Subagents {
-        agents: vec![sample_agent_info(
+fn test_f5_02_subagent_sidebar_queued_status_label() {
+    let (mut app, _rx, mut terminal) = create_test_terminal(120, 30);
+    app.subagents.insert(
+        "ag_2".into(),
+        moc_tui::subagent::SubagentView::new(sample_agent_info(
             "ag_2",
             "ReviewAgent",
             AgentStatus::Queued,
-        )],
-        picker: PickerState::default(),
-    });
-    terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
+        )),
+    );
+    app.subagent_sidebar = Some(true);
+    let mut view = moc_tui::render::ScrollbackView::default();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let agent_line = rows
+    let status_row = rows
         .iter()
-        .find(|r| r.contains("ReviewAgent"))
-        .expect("agent line found");
+        .find(|r| r.contains(&format!("● {}", status::QUEUED)))
+        .expect("queued glyph+label row");
     assert!(
-        agent_line.contains(status::QUEUED),
-        "Queued agent must have its status label"
+        rows.iter().any(|r| r.contains("ReviewAgent")),
+        "agent title shown"
     );
     assert!(
-        !agent_line.contains(" · 1 · ") && !agent_line.contains(" · 0 · "),
+        !status_row.contains(" · 1 · ") && !status_row.contains(" · 0 · "),
         "Status must not be raw integer"
     );
 }
 
 #[test]
-fn test_f5_03_subagent_roster_completed_status_label() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Subagents {
-        agents: vec![sample_agent_info(
+fn test_f5_03_subagent_sidebar_completed_status_label() {
+    let (mut app, _rx, mut terminal) = create_test_terminal(120, 30);
+    app.subagents.insert(
+        "ag_3".into(),
+        moc_tui::subagent::SubagentView::new(sample_agent_info(
             "ag_3",
             "BuildAgent",
             AgentStatus::Completed,
-        )],
-        picker: PickerState::default(),
-    });
-    terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
+        )),
+    );
+    app.subagent_sidebar = Some(true);
+    let mut view = moc_tui::render::ScrollbackView::default();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let agent_line = rows
+    let status_row = rows
         .iter()
-        .find(|r| r.contains("BuildAgent"))
-        .expect("agent line found");
+        .find(|r| r.contains(&format!("✓ {}", status::DONE)))
+        .expect("done glyph+label row");
     assert!(
-        agent_line.contains(status::DONE),
-        "Completed agent must be labeled done"
+        rows.iter().any(|r| r.contains("BuildAgent")),
+        "agent title shown"
     );
     assert!(
-        !agent_line.contains(" · 2 · "),
+        !status_row.contains(" · 2 · "),
         "Status must not be raw integer 2"
     );
 }
 
 #[test]
-fn test_f5_04_subagent_roster_failed_status_label() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Subagents {
-        agents: vec![sample_agent_info("ag_4", "TestAgent", AgentStatus::Failed)],
-        picker: PickerState::default(),
-    });
-    terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
+fn test_f5_04_subagent_sidebar_failed_status_label() {
+    let (mut app, _rx, mut terminal) = create_test_terminal(120, 30);
+    app.subagents.insert(
+        "ag_4".into(),
+        moc_tui::subagent::SubagentView::new(sample_agent_info(
+            "ag_4",
+            "TestAgent",
+            AgentStatus::Failed,
+        )),
+    );
+    app.subagent_sidebar = Some(true);
+    let mut view = moc_tui::render::ScrollbackView::default();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let agent_line = rows
+    let status_row = rows
         .iter()
-        .find(|r| r.contains("TestAgent"))
-        .expect("agent line found");
+        .find(|r| r.contains(&format!("✘ {}", status::FAILED)))
+        .expect("failed glyph+label row");
     assert!(
-        agent_line.contains(status::FAILED),
-        "Failed agent must be labeled failed"
+        rows.iter().any(|r| r.contains("TestAgent")),
+        "agent title shown"
     );
     assert!(
-        !agent_line.contains(" · 3 · "),
+        !status_row.contains(" · 3 · "),
         "Status must not be raw integer 3"
     );
 }
 
 #[test]
-fn test_f5_05_subagent_roster_stopped_status_label() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Subagents {
-        agents: vec![sample_agent_info(
+fn test_f5_05_subagent_sidebar_stopped_status_label() {
+    let (mut app, _rx, mut terminal) = create_test_terminal(120, 30);
+    app.subagents.insert(
+        "ag_5".into(),
+        moc_tui::subagent::SubagentView::new(sample_agent_info(
             "ag_5",
             "DeployAgent",
             AgentStatus::Stopped,
-        )],
-        picker: PickerState::default(),
-    });
-    terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
+        )),
+    );
+    app.subagent_sidebar = Some(true);
+    let mut view = moc_tui::render::ScrollbackView::default();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let agent_line = rows
+    let status_row = rows
         .iter()
-        .find(|r| r.contains("DeployAgent"))
-        .expect("agent line found");
+        .find(|r| r.contains(&format!("■ {}", status::STOPPED)))
+        .expect("stopped glyph+label row");
     assert!(
-        agent_line.contains(status::STOPPED),
-        "Stopped agent must be labeled stopped"
+        rows.iter().any(|r| r.contains("DeployAgent")),
+        "agent title shown"
     );
     assert!(
-        !agent_line.contains(" · 4 · "),
+        !status_row.contains(" · 4 · "),
         "Status must not be raw integer 4"
     );
 }
 
 // ============================================================================
-// F6: Subagent Empty Hint Cleanup (R2.3)
+// F6: Subagent Empty State (R2.3)
 // ============================================================================
-
-#[test]
-fn test_f6_01_empty_subagent_roster_does_not_contain_nonexistent_agent_command() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Subagents {
-        agents: Vec::new(),
-        picker: PickerState::default(),
-    });
-    terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
-    let rows = buffer_compact_rows(&terminal);
-    for row in &rows {
-        assert!(
-            !row.contains("/agent <task>"),
-            "Empty subagent roster contains invalid hint '/agent <task>': {}",
-            row
-        );
-    }
-}
-
-#[test]
-fn test_f6_02_empty_subagent_roster_displays_clean_empty_message() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Subagents {
-        agents: Vec::new(),
-        picker: PickerState::default(),
-    });
-    terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
-    let rows = buffer_compact_rows(&terminal);
-    let empty_row = rows
-        .iter()
-        .find(|r| r.contains("当前会话还没有子代理") || r.contains("暂无子代理"));
-    assert!(
-        empty_row.is_some(),
-        "Empty roster should indicate no subagents exist"
-    );
-}
-
-#[test]
-fn test_f6_03_filtered_subagent_roster_empty_state_has_no_agent_command() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    let picker = PickerState {
-        query: "non_existent_search".into(),
-        ..Default::default()
-    };
-    app.modal = Some(Modal::Subagents {
-        agents: vec![sample_agent_info("ag_1", "CodeAgent", AgentStatus::Running)],
-        picker,
-    });
-    terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
-    let rows = buffer_compact_rows(&terminal);
-    for row in &rows {
-        assert!(!row.contains("/agent <task>"));
-    }
-}
-
-#[test]
-fn test_f6_04_populated_subagent_roster_does_not_show_empty_guidance() {
-    let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Subagents {
-        agents: vec![sample_agent_info(
-            "ag_1",
-            "ExplorerAgent",
-            AgentStatus::Running,
-        )],
-        picker: PickerState::default(),
-    });
-    terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
-    let rows = buffer_compact_rows(&terminal);
-    assert!(!rows.iter().any(|r| r.contains("当前会话还没有子代理")));
-}
 
 #[test]
 fn test_f6_05_subagent_sidebar_empty_when_no_subagents() {

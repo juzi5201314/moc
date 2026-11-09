@@ -101,7 +101,7 @@ Explorer 沿用工具拒绝列表：禁用 `edit`、`write`、`spawn_agent`、`s
 
 子代理用 `yield {report}` 交付最终结果并结束本轮；缺失时最多提醒三次，仍未交付则回退到最后一条 assistant 消息。结果在子代理进入终态时自动作为 notice 投进父会话，父模型下一轮即可看到预览（正文上限 500 字符，超出提示用 `wait_agent` 取全文）。
 
-子代理使用持久子会话 transcript；core 重启后历史条目显示 `idle`，固定角色可继续通过 `message_agent` 交互。workflow actor 的执行权属于所属会话的活动 run，结束后不能通过 `session/prompt`、`session/retry` 或普通 `agent/message` 独立恢复，应使用 workflow 的 resume/amend。TUI `/agents`（`Ctrl+N`）打开名册，`Enter` 聚焦子会话、`Esc` 或双击 `←` 返回主会话、`Ctrl+S` 停止选中代理；REPL 只提供列表。Web 手动创建入口必须选择服务器返回的固定角色，目录为空时禁用。
+子代理使用持久子会话 transcript；core 重启后历史条目显示 `idle`，固定角色可继续通过 `message_agent` 交互。workflow actor 的执行权属于所属会话的活动 run，结束后不能通过 `session/prompt`、`session/retry` 或普通 `agent/message` 独立恢复，应使用 workflow 的 resume/amend。TUI `/agents`（`Ctrl+N`）唤出子代理侧栏，点击卡片聚焦子会话、`Esc` 或双击 `←` 返回主会话、`Ctrl+S` 停止聚焦中的代理；REPL 只提供列表。Web 手动创建入口必须选择服务器返回的固定角色，目录为空时禁用。
 
 子代理的 transcript 与 sidecar 落在**父会话的 sidecar 目录里**（`<会话目录>/<父会话 ID>/<时间戳>_<子会话 ID>.jsonl`），因此代理树与目录树同构：会话列表与按 ID 查找会穿过会话目录发现子代理，删除父会话一并删除整棵子树。兄弟会话目录（`jobs`／`artifacts`／`plans`／`compaction`）里的文件不算会话。
 
