@@ -2137,6 +2137,16 @@ fn title_summary(
     )
 }
 
+/// read 分页 footer 给出的真实交付范围；结果里没有 footer 时返回 `None`。
+fn read_shown_range(result: &str) -> Option<String> {
+    result.lines().find_map(|line| {
+        line.trim_start()
+            .strip_prefix("[Showing lines ")
+            .and_then(|rest| rest.split_once(" of "))
+            .map(|(range, _)| format!(":{range}"))
+    })
+}
+
 /// 标题摘要的分段着色：路径、行号范围、pattern、改动计数各给各的色；
 /// 路径一律过 [`super::display_path`] 相对化。
 ///
@@ -2198,13 +2208,22 @@ fn summary_spans(
                 .add_modifier(Modifier::BOLD),
         )],
         "read" => {
-            let offset = args.get("offset").and_then(Value::as_u64);
-            let limit = args.get("limit").and_then(Value::as_u64);
-            let range = match (offset, limit) {
-                (Some(offset), Some(limit)) => format!(":{offset}-{}", offset + limit),
-                (Some(offset), None) => format!(":{offset}-"),
-                _ => String::new(),
-            };
+            // 分页 footer 是真实交付的范围，优先于请求的 offset/limit；与 web readRange 同规则。
+            let range = tool
+                .result
+                .as_deref()
+                .and_then(read_shown_range)
+                .unwrap_or_else(|| {
+                    let offset = args.get("offset").and_then(Value::as_u64);
+                    let limit = args.get("limit").and_then(Value::as_u64);
+                    match (offset, limit) {
+                        (Some(offset), Some(limit)) => {
+                            format!(":{offset}-{}", offset + limit.saturating_sub(1))
+                        }
+                        (Some(offset), None) => format!(":{offset}-"),
+                        _ => String::new(),
+                    }
+                });
             let globs = glob_str("glob");
             let globs = if globs.is_empty() {
                 String::new()
@@ -4906,7 +4925,7 @@ mod tests {
                 .map(|span| span.content.as_ref())
                 .collect::<String>();
             assert!(
-                text.contains("crates/moc-tui/src/app.rs:1-201"),
+                text.contains("crates/moc-tui/src/app.rs:1-200"),
                 "摘要带行号范围：{text}"
             );
             assert_eq!(estimate_entry_height_at(&app, 0, width), 2);
@@ -5786,6 +5805,58 @@ mod tests {
             "{text}"
         );
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
+    }
+
+    /// read 标题行号：分页 footer 的真实交付范围优先，缺结果时按 offset/limit 推算。
+    #[test]
+    fn read_range_prefers_delivered_page() {
+        use moc_protocol::methods::ToolStatus;
+
+        let theme = Theme::resolved(ColorLevel::TrueColor);
+        let block = |result: Option<&str>| ToolCallBlock {
+            id: "call_read".into(),
+            batch_id: None,
+            parent_id: None,
+            name: "read".into(),
+            arguments: "{}".into(),
+            status: Some(ToolStatus::Completed),
+            result: result.map(str::to_owned),
+            diff: None,
+            duration_ms: None,
+            running: false,
+            progress: None,
+            images: Vec::new(),
+            job_id: None,
+            live_output: None,
+        };
+        let args: Value = serde_json::json!({"offset": 1, "limit": 300, "path": "a.rs"});
+        let range_of = |spans: &[Span]| {
+            spans
+                .iter()
+                .find(|span| span.content.starts_with(':'))
+                .map(|span| span.content.to_string())
+        };
+
+        // 字节预算截到 210 时按 footer 报，而不是按请求的 limit 报 300。
+        let spans = summary_spans(
+            &block(Some(
+                "[a.rs#0F00]\n1│x\n[Showing lines 1-210 of 909. Use offset=211 to continue.]",
+            )),
+            &args,
+            &theme,
+            "",
+        );
+        assert_eq!(range_of(&spans).as_deref(), Some(":1-210"));
+        // 没有结果时按请求范围推算；limit 含端点，末行是 offset+limit-1。
+        let spans = summary_spans(&block(None), &args, &theme, "");
+        assert_eq!(range_of(&spans).as_deref(), Some(":1-300"));
+        let args: Value = serde_json::json!({"offset": 546, "limit": 125, "path": "a.rs"});
+        let spans = summary_spans(&block(None), &args, &theme, "");
+        assert_eq!(range_of(&spans).as_deref(), Some(":546-670"));
+        // 只有 offset 时是开区间。
+        let args: Value = serde_json::json!({"offset": 546, "path": "a.rs"});
+        let spans = summary_spans(&block(None), &args, &theme, "");
+        assert_eq!(range_of(&spans).as_deref(), Some(":546-"));
     }
 
     /// ask 结果解析：header 优先 id 兜底、逐问「未回答」标记、整单取消与超时哨兵、
