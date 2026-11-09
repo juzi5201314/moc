@@ -1,7 +1,7 @@
 //! 协议 schema 生成与对账：`protocol.schema.json` 是协议的单一事实来源，
 //! 供协议文档、未来非 TS 客户端与前端 `types.gen.ts` 代码生成共用。
 //!
-//! 生成方式：[`register_all`] 用 73 个 Method 的 `Params`/`Result` 做根，
+//! 生成方式：[`register_all`] 用 80 个 Method 的 `Params`/`Result` 做根，
 //! schemars 传递闭包出全部线上 DTO 进 `$defs`；方法表本身记录方向与
 //! params/result 的 `$ref`，即方法索引。
 //!
@@ -96,6 +96,11 @@ fn register_all(
     // fs.rs
     client::<FsListDir>(generator, client_map);
     client::<FsCreateDir>(generator, client_map);
+    client::<FsReadFile>(generator, client_map);
+    client::<FsWriteFile>(generator, client_map);
+    client::<FsCreateFile>(generator, client_map);
+    client::<FsRename>(generator, client_map);
+    client::<FsDelete>(generator, client_map);
     // history.rs
     client::<SessionHistory>(generator, client_map);
     // initialize.rs
@@ -129,6 +134,8 @@ fn register_all(
     client::<SessionReask>(generator, client_map);
     // resources.rs
     client::<ResourceComplete>(generator, client_map);
+    client::<ResourceList>(generator, client_map);
+    client::<ResourceRead>(generator, client_map);
     // session.rs
     client::<SessionNew>(generator, client_map);
     client::<SessionList>(generator, client_map);

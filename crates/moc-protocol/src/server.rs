@@ -35,9 +35,10 @@ use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
     AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, BtwCancelResult, BtwUpdate,
-    ChartAnalyze, ClientInfo, ConfigGet, ConfigManage, FsCreateDir, FsListDir, Initialize,
-    JobBackground, JobKill, JobList, JobReadOutput, Ping, PingResult, PluginList, PluginReload,
-    PluginRunCommand, PromptParams, ResourceComplete, SessionBash, SessionBtw, SessionBtwCancel,
+    ChartAnalyze, ClientInfo, ConfigGet, ConfigManage, FsCreateDir, FsCreateFile, FsDelete,
+    FsListDir, FsReadFile, FsRename, FsWriteFile, Initialize, JobBackground, JobKill, JobList,
+    JobReadOutput, Ping, PingResult, PluginList, PluginReload, PluginRunCommand, PromptParams,
+    ResourceComplete, ResourceList, ResourceRead, SessionBash, SessionBtw, SessionBtwCancel,
     SessionCancel, SessionCancelResult, SessionCompact, SessionContext, SessionContextContent,
     SessionDelete, SessionGoal, SessionList, SessionLoad, SessionLoadPage, SessionNew,
     SessionPlanApprove, SessionPlanDiff, SessionPlanMode, SessionPlanRevise, SessionPrompt,
@@ -665,6 +666,24 @@ impl<S: AgentService> ServerDispatch<S> {
                         .await?,
                 )
             }
+            <ResourceList as Method>::NAME => {
+                let params = params_from_value::<ResourceList>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .resource_list(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <ResourceRead as Method>::NAME => {
+                let params = params_from_value::<ResourceRead>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .resource_read(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
             <FsListDir as Method>::NAME => {
                 let params = params_from_value::<FsListDir>(params)?;
                 value_from(
@@ -680,6 +699,51 @@ impl<S: AgentService> ServerDispatch<S> {
                     self.server
                         .service
                         .fs_create_dir(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <FsReadFile as Method>::NAME => {
+                let params = params_from_value::<FsReadFile>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .fs_read_file(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <FsWriteFile as Method>::NAME => {
+                let params = params_from_value::<FsWriteFile>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .fs_write_file(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <FsCreateFile as Method>::NAME => {
+                let params = params_from_value::<FsCreateFile>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .fs_create_file(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <FsRename as Method>::NAME => {
+                let params = params_from_value::<FsRename>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .fs_rename(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <FsDelete as Method>::NAME => {
+                let params = params_from_value::<FsDelete>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .fs_delete(self.context(client, cancel), params)
                         .await?,
                 )
             }

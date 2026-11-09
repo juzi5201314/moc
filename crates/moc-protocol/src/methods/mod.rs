@@ -23,7 +23,8 @@
 //! | [`job::JobList`] / [`job::JobReadOutput`] / [`job::JobKill`] / [`job::JobBackground`] | C→S | core | 已初始化 | `-32010` / `-32602` |
 //! | [`management::SessionSteer`] / [`management::SessionUnsteer`] | C→S | core | 已初始化 | `-32010` / `-32014` |
 //! | [`prompt::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
-//! | [`fs::FsListDir`] / [`fs::FsCreateDir`] / [`chart::ChartAnalyze`] | C→S | core | 已初始化 | `-32602` / `-32014` |
+//! | [`resources::ResourceComplete`] / [`resources::ResourceList`] / [`resources::ResourceRead`] | C→S | core | 已初始化 | `-32602` / `-32010` |
+//! | [`fs::FsListDir`] / [`fs::FsCreateDir`] / [`fs::FsReadFile`] / [`fs::FsWriteFile`] / [`fs::FsCreateFile`] / [`fs::FsRename`] / [`fs::FsDelete`] / [`chart::ChartAnalyze`] | C→S | core | 已初始化 | `-32602` / `-32014` / `-32016` |
 //! | [`workspace::WorkspaceGitBranch`] | C→S | core | 已初始化 | `-32602` |
 //! | [`web::WebStateGet`] / [`web::WebStateSave`] | C→S | core | 已初始化 | `-32602` / `-32014` |
 //! | [`update::SessionUpdateMethod`] / [`update::BtwUpdateMethod`] | S→C | 前端 | — | — |
@@ -82,8 +83,11 @@ pub use diff::{
     build_hunks_from_changes,
 };
 pub use fs::{
-    FS_LIST_DIR_MAX_ENTRIES, FsCreateDir, FsCreateDirParams, FsCreateDirResult, FsDirEntry,
-    FsListDir, FsListDirParams, FsListDirResult,
+    FS_LIST_DIR_MAX_ENTRIES, FS_READ_FILE_DEFAULT_MAX_BYTES, FS_READ_FILE_MAX_BYTES, FsCreateDir,
+    FsCreateDirParams, FsCreateDirResult, FsCreateFile, FsCreateFileParams, FsCreateFileResult,
+    FsDelete, FsDeleteParams, FsDirEntry, FsEntryKind, FsFileEncoding, FsListDir, FsListDirParams,
+    FsListDirResult, FsReadFile, FsReadFileParams, FsReadFileResult, FsRename, FsRenameParams,
+    FsRenameResult, FsWriteFile, FsWriteFileParams, FsWriteFileResult,
 };
 pub use history::{SessionHistory, SessionHistoryParams, SessionHistoryResult};
 pub use initialize::{
@@ -120,6 +124,8 @@ pub use prompt::{
 };
 pub use resources::{
     ResourceCandidate, ResourceComplete, ResourceCompleteParams, ResourceCompleteResult,
+    ResourceList, ResourceListEntry, ResourceListParams, ResourceListResult, ResourceRead,
+    ResourceReadParams, ResourceReadResult,
 };
 pub use session::{
     CompactResult, ContextContentResult, ContextContentSection, ContextReadResult, ContextSource,
@@ -240,8 +246,15 @@ mod tests {
             (<PluginReload as Method>::NAME, "plugin/reload"),
             (<PluginRunCommand as Method>::NAME, "plugin/run_command"),
             (<ResourceComplete as Method>::NAME, "resource/complete"),
+            (<ResourceList as Method>::NAME, "resource/list"),
+            (<ResourceRead as Method>::NAME, "resource/read"),
             (<FsListDir as Method>::NAME, "fs/list_dir"),
             (<FsCreateDir as Method>::NAME, "fs/create_dir"),
+            (<FsReadFile as Method>::NAME, "fs/read_file"),
+            (<FsWriteFile as Method>::NAME, "fs/write_file"),
+            (<FsCreateFile as Method>::NAME, "fs/create_file"),
+            (<FsRename as Method>::NAME, "fs/rename"),
+            (<FsDelete as Method>::NAME, "fs/delete"),
             (<ChartAnalyze as Method>::NAME, "chart/analyze"),
             (<WorkspaceGitBranch as Method>::NAME, "workspace/git_branch"),
             (<WebStateGet as Method>::NAME, "web/state"),

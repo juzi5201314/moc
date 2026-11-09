@@ -12,9 +12,9 @@
 //! 而不自持 `io::Error`（后者不可克隆），与 `moc_llm::TransportError` 同思路，便于
 //! 同一个失败同时交付给多个观察者。
 //!
-//! `-32000` 段里 core 侧（`-32001` / `-32010` / `-32014` / `-32015`）与协议层侧
-//! （`-32002` / `-32003` / `-32011`）共用一张表：码的含义是全局约定，谁发出由
-//! [`crate::AgentService`] 的实现决定。
+//! `-32000` 段里 core 侧（`-32001` / `-32010` / `-32014` / `-32015` / `-32016`）
+//! 与协议层侧（`-32002` / `-32003` / `-32011`）共用一张表：码的含义是全局约定，
+//! 谁发出由 [`crate::AgentService`] 的实现决定。
 
 use std::io;
 
@@ -116,6 +116,9 @@ pub enum RpcErrorCode {
     NotSupported,
     /// `-32015`：会话被其它进程锁定，只读。
     SessionLocked,
+    /// `-32016`：乐观锁冲突（如 `fs/write_file` 的 `expected_modified_ms` 不匹配），
+    /// `data` 携带磁盘当前值。
+    FileConflict,
 }
 
 impl RpcErrorCode {
@@ -135,6 +138,7 @@ impl RpcErrorCode {
             Self::SessionBusy => -32011,
             Self::NotSupported => -32014,
             Self::SessionLocked => -32015,
+            Self::FileConflict => -32016,
         }
     }
 
@@ -154,6 +158,7 @@ impl RpcErrorCode {
             -32011 => Self::SessionBusy,
             -32014 => Self::NotSupported,
             -32015 => Self::SessionLocked,
+            -32016 => Self::FileConflict,
             _ => return None,
         };
         Some(known)
@@ -175,6 +180,7 @@ impl RpcErrorCode {
             Self::SessionBusy => "该会话已有进行中的提示",
             Self::NotSupported => "服务端不支持该操作",
             Self::SessionLocked => "会话被其它进程锁定，只读",
+            Self::FileConflict => "目标内容已被修改",
         }
     }
 }
@@ -343,6 +349,7 @@ mod tests {
             RpcErrorCode::SessionBusy,
             RpcErrorCode::NotSupported,
             RpcErrorCode::SessionLocked,
+            RpcErrorCode::FileConflict,
         ];
         for code in all {
             assert_eq!(RpcErrorCode::from_code(code.code()), Some(code));

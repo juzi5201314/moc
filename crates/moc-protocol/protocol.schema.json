@@ -2040,34 +2040,129 @@
       ],
       "type": "object"
     },
+    "FsCreateFileParams": {
+      "additionalProperties": false,
+      "description": "`fs/create_file` 的参数。",
+      "properties": {
+        "name": {
+          "description": "新文件名：单段名字，不接受路径分隔符与 `..`。",
+          "type": "string"
+        },
+        "parent": {
+          "description": "父目录：绝对路径或以 `~` 开头，必须已存在。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "parent",
+        "name"
+      ],
+      "type": "object"
+    },
+    "FsCreateFileResult": {
+      "additionalProperties": false,
+      "description": "`fs/create_file` 的结果。",
+      "properties": {
+        "path": {
+          "description": "新文件的绝对路径。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "FsDeleteParams": {
+      "additionalProperties": false,
+      "description": "`fs/delete` 的参数。",
+      "properties": {
+        "path": {
+          "description": "绝对路径或以 `~` 开头。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
     "FsDirEntry": {
       "additionalProperties": false,
-      "description": "一个子目录。",
+      "description": "一个目录项。",
       "properties": {
         "git": {
           "description": "目录下有 `.git`。",
           "type": "boolean"
         },
+        "kind": {
+          "$ref": "#/$defs/FsEntryKind",
+          "description": "条目类型。"
+        },
+        "modified_ms": {
+          "description": "修改时间（epoch 毫秒）；取不到时为 `None`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "name": {
-          "description": "目录名。",
+          "description": "条目名。",
           "type": "string"
         },
         "path": {
           "description": "绝对路径。",
           "type": "string"
+        },
+        "size": {
+          "description": "字节数；仅文件有值。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "symlink": {
+          "description": "本身是符号链接。",
+          "type": "boolean"
         }
       },
       "required": [
         "name",
         "path",
-        "git"
+        "git",
+        "kind"
       ],
       "type": "object"
+    },
+    "FsEntryKind": {
+      "description": "目录项类型。",
+      "enum": [
+        "dir",
+        "file"
+      ],
+      "type": "string"
+    },
+    "FsFileEncoding": {
+      "description": "文件内容编码判定。",
+      "enum": [
+        "utf8",
+        "binary"
+      ],
+      "type": "string"
     },
     "FsListDirParams": {
       "additionalProperties": false,
       "description": "`fs/list_dir` 的参数。",
       "properties": {
+        "include_files": {
+          "default": false,
+          "description": "是否同时列出文件（目录在前、文件在后）。",
+          "type": "boolean"
+        },
         "path": {
           "description": "绝对路径或以 `~` 开头；`None` 取 core 的当前目录。",
           "type": [
@@ -2088,7 +2183,7 @@
       "description": "`fs/list_dir` 的结果。",
       "properties": {
         "entries": {
-          "description": "子目录，按名称（不区分大小写）排序。",
+          "description": "目录项：目录在前、文件在后，各自按名称（不区分大小写）排序。",
           "items": {
             "$ref": "#/$defs/FsDirEntry"
           },
@@ -2121,6 +2216,167 @@
         "path",
         "entries",
         "truncated"
+      ],
+      "type": "object"
+    },
+    "FsReadFileParams": {
+      "additionalProperties": false,
+      "description": "`fs/read_file` 的参数。",
+      "properties": {
+        "max_bytes": {
+          "description": "最多读取的字节数；缺省 [`FS_READ_FILE_DEFAULT_MAX_BYTES`]，\n上限 [`FS_READ_FILE_MAX_BYTES`]。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "绝对路径或以 `~` 开头。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "FsReadFileResult": {
+      "additionalProperties": false,
+      "description": "`fs/read_file` 的结果。",
+      "properties": {
+        "content": {
+          "description": "UTF-8 正文；`encoding == \"binary\"` 时为 `None`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "encoding": {
+          "$ref": "#/$defs/FsFileEncoding",
+          "description": "内容编码判定。"
+        },
+        "modified_ms": {
+          "description": "修改时间（epoch 毫秒）；取不到时为 `None`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "规范化后的绝对路径。",
+          "type": "string"
+        },
+        "size": {
+          "description": "文件实际字节数（不受 `max_bytes` 截断影响）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "truncated": {
+          "description": "文件超过 `max_bytes`，只回了头部（在字符边界截断）。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "encoding",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "FsRenameParams": {
+      "additionalProperties": false,
+      "description": "`fs/rename` 的参数。",
+      "properties": {
+        "from": {
+          "description": "源路径：绝对路径或以 `~` 开头。",
+          "type": "string"
+        },
+        "to": {
+          "description": "目标路径：绝对路径或以 `~` 开头；已存在时报错。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "FsRenameResult": {
+      "additionalProperties": false,
+      "description": "`fs/rename` 的结果。",
+      "properties": {
+        "path": {
+          "description": "目标的规范化绝对路径。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "FsWriteFileParams": {
+      "additionalProperties": false,
+      "description": "`fs/write_file` 的参数。",
+      "properties": {
+        "content": {
+          "description": "新内容（UTF-8）。",
+          "type": "string"
+        },
+        "expected_modified_ms": {
+          "description": "乐观锁：给定时要求磁盘当前 mtime 相等，否则回 `-32016`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "绝对路径或以 `~` 开头；必须是已存在的普通文件。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "type": "object"
+    },
+    "FsWriteFileResult": {
+      "additionalProperties": false,
+      "description": "`fs/write_file` 的结果。",
+      "properties": {
+        "modified_ms": {
+          "description": "写入后的修改时间（epoch 毫秒）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "规范化后的绝对路径。",
+          "type": "string"
+        },
+        "size": {
+          "description": "写入后的字节数。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "size"
       ],
       "type": "object"
     },
@@ -3892,6 +4148,165 @@
       },
       "required": [
         "candidates"
+      ],
+      "type": "object"
+    },
+    "ResourceListEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "description": "补充说明（如 skill 的 description）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/FsEntryKind"
+        },
+        "modified_ms": {
+          "description": "修改时间（epoch 毫秒）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "展示名。",
+          "type": "string"
+        },
+        "size": {
+          "description": "字节数；仅文件有值。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "uri": {
+          "description": "子项 URI：`kind == \"dir\"` 可继续 `resource/list`，`\"file\"` 可 `resource/read`。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri",
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ResourceListParams": {
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "uri": {
+          "description": "要列举的 URI；`\"\"` 是根（列出各命名空间入口）。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "uri"
+      ],
+      "type": "object"
+    },
+    "ResourceListResult": {
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/ResourceListEntry"
+          },
+          "type": "array"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "uri": {
+          "description": "回显请求的 URI。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri",
+        "entries",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "ResourceReadParams": {
+      "additionalProperties": false,
+      "properties": {
+        "max_bytes": {
+          "description": "最多读取的字节数；缺省与上限同 `fs/read_file`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "uri"
+      ],
+      "type": "object"
+    },
+    "ResourceReadResult": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "description": "UTF-8 正文；`encoding == \"binary\"` 时为 `None`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "encoding": {
+          "$ref": "#/$defs/FsFileEncoding",
+          "description": "内容编码判定。"
+        },
+        "modified_ms": {
+          "description": "修改时间（epoch 毫秒）；取不到时为 `None`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "资源实际字节数（不受 `max_bytes` 截断影响）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "truncated": {
+          "description": "资源超过 `max_bytes`，只回了头部（在字符边界截断）。",
+          "type": "boolean"
+        },
+        "uri": {
+          "description": "回显请求的 URI。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri",
+        "size",
+        "encoding",
+        "truncated"
       ],
       "type": "object"
     },
@@ -8268,6 +8683,24 @@
         },
         "type": "FsCreateDir"
       },
+      "fs/create_file": {
+        "params": {
+          "$ref": "#/$defs/FsCreateFileParams"
+        },
+        "result": {
+          "$ref": "#/$defs/FsCreateFileResult"
+        },
+        "type": "FsCreateFile"
+      },
+      "fs/delete": {
+        "params": {
+          "$ref": "#/$defs/FsDeleteParams"
+        },
+        "result": {
+          "$ref": "#/$defs/Empty"
+        },
+        "type": "FsDelete"
+      },
       "fs/list_dir": {
         "params": {
           "$ref": "#/$defs/FsListDirParams"
@@ -8276,6 +8709,33 @@
           "$ref": "#/$defs/FsListDirResult"
         },
         "type": "FsListDir"
+      },
+      "fs/read_file": {
+        "params": {
+          "$ref": "#/$defs/FsReadFileParams"
+        },
+        "result": {
+          "$ref": "#/$defs/FsReadFileResult"
+        },
+        "type": "FsReadFile"
+      },
+      "fs/rename": {
+        "params": {
+          "$ref": "#/$defs/FsRenameParams"
+        },
+        "result": {
+          "$ref": "#/$defs/FsRenameResult"
+        },
+        "type": "FsRename"
+      },
+      "fs/write_file": {
+        "params": {
+          "$ref": "#/$defs/FsWriteFileParams"
+        },
+        "result": {
+          "$ref": "#/$defs/FsWriteFileResult"
+        },
+        "type": "FsWriteFile"
       },
       "initialize": {
         "params": {
@@ -8366,6 +8826,24 @@
           "$ref": "#/$defs/ResourceCompleteResult"
         },
         "type": "ResourceComplete"
+      },
+      "resource/list": {
+        "params": {
+          "$ref": "#/$defs/ResourceListParams"
+        },
+        "result": {
+          "$ref": "#/$defs/ResourceListResult"
+        },
+        "type": "ResourceList"
+      },
+      "resource/read": {
+        "params": {
+          "$ref": "#/$defs/ResourceReadParams"
+        },
+        "result": {
+          "$ref": "#/$defs/ResourceReadResult"
+        },
+        "type": "ResourceRead"
       },
       "session/bash": {
         "params": {
@@ -8862,6 +9340,6 @@
       }
     }
   },
-  "protocolVersion": "1.4",
+  "protocolVersion": "1.5",
   "title": "moc protocol"
 }

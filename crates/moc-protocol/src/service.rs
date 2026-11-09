@@ -32,20 +32,23 @@ use crate::methods::{
     AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams, AgentWaitResult,
     BtwParams, BtwResult, BtwUpdate, BtwUpdateMethod, BtwUpdateParams, ChartAnalyzeParams,
     ChartAnalyzeResult, CompactResult, ConfigGetParams, ConfigGetResult, ContextContentResult,
-    ContextUsageResult, Empty, FsCreateDirParams, FsCreateDirResult, FsListDirParams,
-    FsListDirResult, InitializeParams, InitializeResult, JobListParams, JobListResult,
-    JobOutputParams, JobOutputResult, JobResult, JobTarget, PermissionRequestParams,
-    PermissionResult, PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
+    ContextUsageResult, Empty, FsCreateDirParams, FsCreateDirResult, FsCreateFileParams,
+    FsCreateFileResult, FsDeleteParams, FsListDirParams, FsListDirResult, FsReadFileParams,
+    FsReadFileResult, FsRenameParams, FsRenameResult, FsWriteFileParams, FsWriteFileResult,
+    InitializeParams, InitializeResult, JobListParams, JobListResult, JobOutputParams,
+    JobOutputResult, JobResult, JobTarget, PermissionRequestParams, PermissionResult,
+    PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
     PluginRunCommandParams, PluginRunCommandResult, PromptParams, PromptResult,
-    ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams,
-    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionGoalParams,
-    SessionGoalResult, SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
-    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
-    SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
-    SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams, SessionPlanReviseResult,
-    SessionReaskParams, SessionRedoParams, SessionRenameParams, SessionRetryParams,
-    SessionRewindParams, SessionSearchParams, SessionSearchResult, SessionSetAutonomyParams,
-    SessionSetEngineParams, SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
+    ResourceCompleteParams, ResourceCompleteResult, ResourceListParams, ResourceListResult,
+    ResourceReadParams, ResourceReadResult, SessionCompactParams, SessionContextContentParams,
+    SessionContextParams, SessionDeleteParams, SessionGoalParams, SessionGoalResult, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
+    SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
+    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams,
+    SessionPlanReviseParams, SessionPlanReviseResult, SessionReaskParams, SessionRedoParams,
+    SessionRenameParams, SessionRetryParams, SessionRewindParams, SessionSearchParams,
+    SessionSearchResult, SessionSetAutonomyParams, SessionSetEngineParams,
+    SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
     SessionUpdateParams, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
     WebStateDocument, WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams,
@@ -284,6 +287,24 @@ pub trait AgentService: Send + Sync + 'static {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 
+    /// 结构化列举会话虚拟空间的一层；`uri == ""` 列出各命名空间入口。
+    fn resource_list(
+        &self,
+        _ctx: RequestContext,
+        _params: ResourceListParams,
+    ) -> impl Future<Output = Result<ResourceListResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 按 URI 读取资源内容；命名空间回 `-32602`。
+    fn resource_read(
+        &self,
+        _ctx: RequestContext,
+        _params: ResourceReadParams,
+    ) -> impl Future<Output = Result<ResourceReadResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
     /// 列出目录下的子目录，供前端选择工作目录。
     fn fs_list_dir(
         &self,
@@ -299,6 +320,51 @@ pub trait AgentService: Send + Sync + 'static {
         _ctx: RequestContext,
         _params: FsCreateDirParams,
     ) -> impl Future<Output = Result<FsCreateDirResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 读取文件内容；二进制只回元信息，`max_bytes` 截断在字符边界。
+    fn fs_read_file(
+        &self,
+        _ctx: RequestContext,
+        _params: FsReadFileParams,
+    ) -> impl Future<Output = Result<FsReadFileResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 覆盖写入已存在的普通文件；mtime 乐观锁冲突回 `-32016`。
+    fn fs_write_file(
+        &self,
+        _ctx: RequestContext,
+        _params: FsWriteFileParams,
+    ) -> impl Future<Output = Result<FsWriteFileResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 在指定目录下新建空文件。
+    fn fs_create_file(
+        &self,
+        _ctx: RequestContext,
+        _params: FsCreateFileParams,
+    ) -> impl Future<Output = Result<FsCreateFileResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 重命名或移动文件/目录；目标已存在时报错。
+    fn fs_rename(
+        &self,
+        _ctx: RequestContext,
+        _params: FsRenameParams,
+    ) -> impl Future<Output = Result<FsRenameResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 把文件或目录整体移入系统回收站。
+    fn fs_delete(
+        &self,
+        _ctx: RequestContext,
+        _params: FsDeleteParams,
+    ) -> impl Future<Output = Result<Empty, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 
