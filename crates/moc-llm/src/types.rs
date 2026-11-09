@@ -380,9 +380,9 @@ impl ReasoningItem {
                 .flatten()
                 .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
         };
-        let summary: String = texts("summary").collect();
+        let summary: String = texts("summary").collect::<Vec<_>>().join("\n\n");
         if summary.is_empty() {
-            texts("content").collect()
+            texts("content").collect::<Vec<_>>().join("\n\n")
         } else {
             summary
         }
@@ -1109,7 +1109,7 @@ mod tests {
             }))
             .into(),
         ));
-        assert_eq!(item.display_text().as_deref(), Some("第一段第二段"));
+        assert_eq!(item.display_text().as_deref(), Some("第一段\n\n第二段"));
 
         let empty = ReasoningBlock::Item(Box::new(
             (json!({"type": "reasoning", "summary": []})).into(),

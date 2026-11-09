@@ -1399,7 +1399,7 @@ mod tests {
             json!({"type":"response.output_item.done", "output_index":1, "item":message}),
             json!({"type":"response.completed", "response":{"status":"completed", "output":[reasoning, message]}}),
         ]).await;
-        assert_eq!(response.message.text(), "完整正文拒绝内容");
+        assert_eq!(response.message.text(), "完整正文\n\n拒绝内容");
         assert_eq!(response.message.content.len(), 2);
         assert_eq!(
             response.message.content[0],

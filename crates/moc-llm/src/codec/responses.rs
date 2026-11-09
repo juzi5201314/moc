@@ -639,6 +639,10 @@ pub(crate) struct ResponsesStreamDecoder {
     started: bool,
     /// 已到终态（`response.completed` / `failed` / `error` 或收尾完成）。
     terminated: bool,
+    /// 文本通道最近一次的 `(output_index, content_index)`。
+    text_part: Option<(usize, usize)>,
+    /// 思维链通道最近一次的 `(output_index, summary_index / content_index)`。
+    reasoning_part: Option<(usize, usize)>,
 }
 
 impl ResponsesStreamDecoder {
@@ -647,6 +651,8 @@ impl ResponsesStreamDecoder {
         Self {
             started: false,
             terminated: false,
+            text_part: None,
+            reasoning_part: None,
         }
     }
 
@@ -658,6 +664,20 @@ impl ResponsesStreamDecoder {
                 model: optional_string_at(response, "/model"),
                 effort: super::reported_effort(response),
             }));
+        }
+    }
+
+    /// 同一输出项内的子块（`summary_index` / `content_index`）是独立段落，delta
+    /// 自身不带边界；子块或输出项前进时在增量前补段落分隔，否则 `**A**` + `**B**`
+    /// 会拼成 `**A****B**` 这类坏 Markdown。
+    fn part_delta(last: &mut Option<(usize, usize)>, value: &Value, sub_key: &str) -> String {
+        let part = (index_of(value), index_at(value, sub_key));
+        let boundary = last.replace(part).is_some_and(|prev| prev != part);
+        let delta = delta_text(value);
+        if boundary {
+            format!("\n\n{delta}")
+        } else {
+            delta
         }
     }
 
@@ -697,7 +717,8 @@ impl ResponsesStreamDecoder {
                             Some("refusal") => block.get("refusal").and_then(Value::as_str),
                             _ => None,
                         })
-                        .collect();
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
                     if complete || !text.is_empty() {
                         out.push(Ok(StreamEvent::TextSnapshot { index, text }));
                     }
@@ -721,13 +742,18 @@ impl ResponsesStreamDecoder {
             "response.output_text.delta" | "response.refusal.delta" => {
                 out.push(Ok(StreamEvent::TextDelta {
                     index: index_of(value),
-                    text: delta_text(value),
+                    text: Self::part_delta(&mut self.text_part, value, "content_index"),
                 }));
             }
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                let sub_key = if kind == "response.reasoning_summary_text.delta" {
+                    "summary_index"
+                } else {
+                    "content_index"
+                };
                 out.push(Ok(StreamEvent::ReasoningDelta {
                     index: index_of(value),
-                    text: delta_text(value),
+                    text: Self::part_delta(&mut self.reasoning_part, value, sub_key),
                 }));
             }
             "response.function_call_arguments.delta" => {
@@ -845,8 +871,12 @@ fn delta_text(value: &Value) -> String {
 }
 
 fn index_of(value: &Value) -> usize {
+    index_at(value, "output_index")
+}
+
+fn index_at(value: &Value, key: &str) -> usize {
     value
-        .get("output_index")
+        .get(key)
         .and_then(Value::as_u64)
         .and_then(|index| usize::try_from(index).ok())
         .unwrap_or(0)
@@ -1473,6 +1503,49 @@ mod tests {
                 StreamEvent::TextDelta {
                     index: 0,
                     text: "完".into(),
+                },
+                StreamEvent::Done {
+                    finish_reason: FinishReason::Other("unknown".into()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn stream_part_boundaries_insert_paragraph_separator() {
+        let mut decoder = ResponsesStreamDecoder::new(&config());
+        let events = unwrapped(events(
+            &mut decoder,
+            &[
+                r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"**A**"}"#,
+                r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"**B**"}"#,
+                r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"续"}"#,
+                r#"{"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"甲"}"#,
+                r#"{"type":"response.output_text.delta","output_index":1,"content_index":1,"delta":"乙"}"#,
+            ],
+        ));
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::ReasoningDelta {
+                    index: 0,
+                    text: "**A**".into(),
+                },
+                StreamEvent::ReasoningDelta {
+                    index: 0,
+                    text: "\n\n**B**".into(),
+                },
+                StreamEvent::ReasoningDelta {
+                    index: 0,
+                    text: "续".into(),
+                },
+                StreamEvent::TextDelta {
+                    index: 1,
+                    text: "甲".into(),
+                },
+                StreamEvent::TextDelta {
+                    index: 1,
+                    text: "\n\n乙".into(),
                 },
                 StreamEvent::Done {
                     finish_reason: FinishReason::Other("unknown".into()),
