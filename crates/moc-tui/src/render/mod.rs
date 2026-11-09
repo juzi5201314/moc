@@ -117,6 +117,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     app.plan_row_map.clear();
     app.key_hits.clear();
     app.legend_tip_area = Rect::default();
+    app.usage_area = Rect::default();
     app.header_back_area = Rect::default();
     app.todo_hud.begin_frame();
     let saving = app.saving_config();
@@ -889,15 +890,21 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn draw_statusline(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_statusline(frame: &mut Frame, app: &mut App, area: Rect) {
     if area.is_empty() {
         return;
     }
-    let line = match &app.statusline_template {
-        Some(template) => statusline_from_template(app, template),
+    // 内置渲染回报右侧统计段宽度：该段可点（与 `/usage` 同义），右对齐贴边。
+    // 自定义模板布局未知，不登记命中区。
+    let (line, usage_width) = match &app.statusline_template {
+        Some(template) => (statusline_from_template(app, template), 0),
         None => statusline_builtin(app, area.width as usize),
     };
     frame.render_widget(Paragraph::new(line), area);
+    if usage_width > 0 {
+        let width = u16::try_from(usage_width).unwrap_or(area.width);
+        app.usage_area = Rect::new(area.x + area.width.saturating_sub(width), area.y, width, 1);
+    }
 }
 
 /// statusline 数据快照（内置渲染、信息条与模板共用）。
@@ -1144,7 +1151,10 @@ pub fn terminal_title(app: &App) -> String {
 }
 
 /// 内置渲染：左侧运行状态，右侧会话累计 token 统计（与 `/usage` 同源）。
-fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
+///
+/// 返回值附带右侧统计段的显示宽度：统计段可点（等价 `/usage`），由调用方登记命中区；
+/// 统计为空或空间不够被裁掉时宽度为 0。
+fn statusline_builtin(app: &App, width: usize) -> (Line<'static>, usize) {
     let theme = app.theme;
     let data = statusline_data(app);
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -1203,7 +1213,7 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
         right_cost,
         Style::new().fg(theme.accent_warning),
     ));
-    Line::from(spans)
+    (Line::from(spans), right_width)
 }
 
 /// 模板渲染：`{model} · {status} → {workdir}`，占位符按语义着色。

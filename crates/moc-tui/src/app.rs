@@ -215,6 +215,8 @@ pub struct App {
     pub workflow_capsule_area: Rect,
     /// 聚焦子代理时头部「Esc 返回」的命中区。
     pub header_back_area: Rect,
+    /// statusline 右侧会话用量统计段的命中区（点击与 `/usage` 同义）。
+    pub usage_area: Rect,
     /// 计划审阅中的执行模型文本命中区。
     /// 计划批注视图的正文区域（鼠标行选择换算用）。
     pub plan_body_area: Rect,
@@ -562,6 +564,7 @@ impl App {
             legend_tip_area: Rect::default(),
             workflow_capsule_area: Rect::default(),
             header_back_area: Rect::default(),
+            usage_area: Rect::default(),
             plan_body_area: Rect::default(),
             plan_row_map: Vec::new(),
             rewind_timeline_area: Rect::default(),

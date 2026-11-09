@@ -1902,6 +1902,11 @@ fn handle_mouse_with_connection(
             open_context(app, connection);
             return;
         }
+        // statusline 右侧用量统计段：点击与输入 /usage 同义。
+        if app.usage_area.contains(position.into()) {
+            execute_command(app, connection, "/usage".to_owned());
+            return;
+        }
     }
     handle_mouse(app, mouse);
 }
@@ -7794,6 +7799,60 @@ mod tests {
         assert!(request > 1);
         app.apply_session_usage(request, result);
         assert_eq!(app.blocks.len(), blocks, "静默刷新不写转写");
+    }
+
+    /// 点状态栏右侧统计段 = 输入 `/usage`：命中区正好盖住渲染的统计文本，
+    /// 点击发出带 `show` 的刷新请求（明细写进转写）。
+    #[tokio::test]
+    async fn statusline_usage_click_runs_usage_command() {
+        use moc_protocol::{ModelUsageSummary, SessionUsageResult};
+
+        let (core, connection, mut app, mut receiver, _root) = app_with_core().await;
+        let summary = || ModelUsageSummary {
+            model: "p/m".into(),
+            source: moc_protocol::methods::UsageSource::Session,
+            calls: 1,
+            input_tokens: 1_200,
+            output_tokens: 340,
+            cached_input_tokens: None,
+            cache_creation_input_tokens: None,
+            reasoning_tokens: None,
+            active_ms: 1_000,
+            ttft_ms: 0,
+            ttft_calls: 0,
+            gen_ms: 0,
+        };
+        let request = app.begin_usage_request();
+        app.apply_session_usage(
+            request,
+            SessionUsageResult {
+                models: Vec::new(),
+                total: summary(),
+                tool_ms: 0,
+            },
+        );
+
+        let terminal = draw_frame(&mut app, 100, 24);
+        let area = app.usage_area;
+        assert!(!area.is_empty(), "有用量时统计段应登记命中区");
+        let text: String = (area.x..area.x.saturating_add(area.width))
+            .filter_map(|x| terminal.backend().buffer().cell((x, area.y)))
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains('⇅'), "命中区应正好盖住统计段：{text:?}");
+
+        handle_mouse_with_connection(&mut app, &connection, left_click(area.x, area.y));
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+            .await
+            .expect("点击应触发用量回执")
+            .expect("事件队列未关闭");
+        let AppEvent::Usage { show, .. } = event else {
+            panic!("应收到用量事件");
+        };
+        assert!(show, "点击统计段等价 /usage：明细要写进转写");
+
+        connection.shutdown().await;
+        core.shutdown().await;
     }
 
     /// 搭一个连到真 core 的 app，并把事件接收端一并交出（用例要观察回执）。
