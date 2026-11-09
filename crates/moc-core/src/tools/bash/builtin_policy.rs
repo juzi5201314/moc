@@ -1915,10 +1915,16 @@ mod tests {
         blocked(&root, &root, false, command)
     }
 
-    /// 断言命令被拦截且建议列表与期望一致。
+    /// 断言命令被拦截且建议列表与期望一致；args 按 JSON 值比较，键序随
+    /// `serde_json/preserve_order` 特性统一而变，不能按字符串序断言。
     fn check_case(command: &str, expected: &[&str]) {
-        let expected: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
-        assert_eq!(hit(command), Some(expected), "{command}");
+        let parse = |s: &str| {
+            let (tool, args) = s.split_once(' ').unwrap();
+            (tool.to_string(), serde_json::from_str::<Value>(args).unwrap())
+        };
+        let expected: Vec<_> = expected.iter().map(|s| parse(s)).collect();
+        let actual = hit(command).map(|items| items.iter().map(|s| parse(s)).collect::<Vec<_>>());
+        assert_eq!(actual, Some(expected), "{command}");
     }
 
     fn miss(root: &Path, command: &str) {
