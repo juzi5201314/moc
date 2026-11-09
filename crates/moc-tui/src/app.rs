@@ -217,6 +217,8 @@ pub struct App {
     pub header_back_area: Rect,
     /// statusline 右侧会话用量统计段的命中区（点击与 `/usage` 同义）。
     pub usage_area: Rect,
+    /// 「回到底部」浮动胶囊的命中区；滚离底部才登记，不占转写行数。
+    pub jump_bottom_area: Rect,
     /// 计划审阅中的执行模型文本命中区。
     /// 计划批注视图的正文区域（鼠标行选择换算用）。
     pub plan_body_area: Rect,
@@ -594,6 +596,7 @@ impl App {
             git_branch: None,
             statusline_template: None,
             scrollback_area: Rect::default(),
+            jump_bottom_area: Rect::default(),
             scrollbar: ScrollbackScrollbar::default(),
             mouse_hits: Vec::new(),
             paint_lines: Vec::new(),

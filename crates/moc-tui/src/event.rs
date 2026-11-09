@@ -2828,6 +2828,11 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
+            // 「回到底部」浮动胶囊：按下即贴尾，不进入文本选区。
+            if app.jump_bottom_area.contains(position.into()) {
+                app.scroll_offset = 0;
+                return;
+            }
             let area = app.prompt_area;
             if position.0 >= area.x
                 && position.0 < area.x.saturating_add(area.width)
@@ -10231,6 +10236,41 @@ mod tests {
         app.scroll_offset = 1;
         handle_mouse(&mut app, mouse(MouseEventKind::ScrollDown));
         assert_eq!(app.scroll_offset, 0, "已在尾部时下滚饱和为 0");
+    }
+
+    /// 点击「回到底部」胶囊 = 贴尾；按下不进入文本选区。
+    #[test]
+    fn jump_bottom_pill_click_returns_to_tail() {
+        use ratatui::layout::Rect;
+
+        fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+            MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }
+        }
+
+        let (events, _receiver) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.scroll_offset = 10;
+        app.jump_bottom_area = Rect::new(30, 18, 1, 1);
+
+        handle_mouse(
+            &mut app,
+            mouse(MouseEventKind::Down(MouseButton::Left), 30, 18),
+        );
+        assert_eq!(app.scroll_offset, 0, "点中胶囊直接贴尾");
+        assert!(app.pending_click.is_none(), "按下不进入文本选区");
+
+        app.scroll_offset = 10;
+        app.jump_bottom_area = Rect::default();
+        handle_mouse(
+            &mut app,
+            mouse(MouseEventKind::Down(MouseButton::Left), 30, 18),
+        );
+        assert_eq!(app.scroll_offset, 10, "胶囊隐藏后同位置是普通点击");
     }
 
     /// 右缘滚动条：按在滑块上保持抓取点拖动，按在轨道空白处把滑块中线挪过来；

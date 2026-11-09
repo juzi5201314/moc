@@ -118,6 +118,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     app.key_hits.clear();
     app.legend_tip_area = Rect::default();
     app.usage_area = Rect::default();
+    app.jump_bottom_area = Rect::default();
     app.header_back_area = Rect::default();
     app.todo_hud.begin_frame();
     let saving = app.saving_config();
@@ -250,6 +251,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     // todo HUD 在转写之上。
     if app.modal.is_none() {
         todo_hud::draw(frame, app, scroll_area, header_rows > 0);
+        draw_jump_bottom(frame, app, scroll_area);
     } else {
         app.todo_hud.on_hidden();
     }
@@ -426,6 +428,34 @@ fn draw_chip(
         row,
         &text,
         Style::new().fg(theme.text_secondary).bg(theme.bg_highlight),
+    );
+}
+
+/// 「回到底部」浮动箭头：滚动区底缘居中、直接压在正文上不占行。
+///
+/// 单格实心三角 `▼`，加粗白字、无底色透出正文；命中区登记在
+/// [`App::jump_bottom_area`]，按下即贴尾。只在滚离底部时出现。
+fn draw_jump_bottom(frame: &mut Frame, app: &mut App, area: Rect) {
+    const BODY: &str = "▼";
+    if app.scroll_offset == 0 || area.is_empty() || area.width < str_width(BODY) as u16 {
+        return;
+    }
+    let theme = app.theme;
+    let x = area.x + (area.width - 1) / 2;
+    let y = area.bottom() - 1;
+    app.jump_bottom_area = Rect::new(x, y, 1, 1);
+    let buffer = frame.buffer_mut();
+    // 左邻是宽字符时尾格被盖后引导格会吞掉箭头左缘，换成空格拆开。
+    if x > buffer.area.x && str_width(buffer[(x - 1, y)].symbol()) > 1 {
+        buffer[(x - 1, y)].set_symbol(" ");
+    }
+    buffer.set_string(
+        x,
+        y,
+        BODY,
+        Style::new()
+            .fg(theme.text_primary)
+            .add_modifier(Modifier::BOLD),
     );
 }
 
@@ -1473,6 +1503,53 @@ mod tests {
             app.scrollbar.thumb < app.scrollbar.track.height,
             "滑块只占视口比例，不铺满轨道"
         );
+    }
+
+    /// 「回到底部」按钮压在滚动区底缘一行正文上（不占行），贴尾时消失。
+    #[test]
+    fn jump_bottom_pill_floats_over_scrollback_bottom() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        let text = (0..200)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.push_block(TranscriptBlock::Assistant { text });
+        app.scroll_offset = 8;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+
+        let theme = Theme::global();
+        let pill = app.jump_bottom_area;
+        let buffer = terminal.backend().buffer();
+        assert_eq!((pill.width, pill.height), (1, 1));
+        assert_eq!(
+            pill.bottom(),
+            app.scrollback_area.bottom(),
+            "箭头压在滚动区底缘、输入框上方"
+        );
+        let center = app.scrollback_area.x + app.scrollback_area.width / 2;
+        assert!(
+            pill.x <= center && center <= pill.right(),
+            "单格箭头落在中间两格之一即居中"
+        );
+        let cell = &buffer[(pill.x, pill.y)];
+        assert_eq!(cell.symbol(), "▼", "实心三角箭头");
+        assert_eq!(cell.fg, theme.text_primary, "白字");
+        assert!(cell.modifier.contains(Modifier::BOLD), "加粗");
+        assert_eq!(cell.bg, theme.bg_base, "无底色、浮在正文上");
+
+        app.scroll_offset = 0;
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        assert!(app.jump_bottom_area.is_empty(), "贴尾时胶囊消失");
     }
 
     /// 状态图例的命中区正好盖住引擎名；就地菜单右上对齐图例、整体贴在其上方。
