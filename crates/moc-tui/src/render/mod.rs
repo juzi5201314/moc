@@ -118,6 +118,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     app.key_hits.clear();
     app.legend_tip_area = Rect::default();
     app.usage_area = Rect::default();
+    app.jump_bottom_area = Rect::default();
     app.header_back_area = Rect::default();
     app.todo_hud.begin_frame();
     let saving = app.saving_config();
@@ -253,6 +254,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     } else {
         app.todo_hud.on_hidden();
     }
+    // 离底时，输入框上方的缝行正中浮出「回到底部」胶囊。
+    if app.scroll_offset > 0 && app.modal.is_none() {
+        draw_jump_bottom(frame, app, scroll_area);
+    }
 
     draw_header(frame, app, inset(header_area, MARGIN_X));
     // 折叠的提问卡占住输入框位：输入框本体（含光标）不画，
@@ -289,6 +294,25 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     // 调暗层压住，临时提示始终可读。
     draw_notice(frame, app, scroll_area);
     draw_warning(frame, app, scroll_area);
+}
+
+/// 「回到底部」胶囊：灰底白字，居中画在转写区与输入框之间的缝行，整颗可点。
+fn draw_jump_bottom(frame: &mut Frame, app: &mut App, scroll_area: Rect) {
+    const LABEL: &str = " ↓ 回到底部 ";
+    let width = u16::try_from(str_width(LABEL)).unwrap_or(u16::MAX);
+    if scroll_area.width < width {
+        return;
+    }
+    let theme = app.theme;
+    let x = scroll_area.x + (scroll_area.width - width) / 2;
+    let y = scroll_area.bottom();
+    frame.buffer_mut().set_string(
+        x,
+        y,
+        LABEL,
+        Style::new().fg(theme.text_primary).bg(theme.bg_highlight),
+    );
+    app.jump_bottom_area = Rect::new(x, y, width, 1);
 }
 
 /// 拖选高亮：只覆盖选区内的格子；跨行时中间整行、首尾行按列收边。
