@@ -261,6 +261,19 @@ impl ResourceRouter {
         }
     }
 
+    /// 按字符串 URI 解析；scheme 未注册时报错。供 `resource/read` 这类
+    /// 没有 `ToolCtx` 的调用方使用，history 走 full sandbox（与
+    /// [`Self::resolve_context`] 一致）。
+    pub fn resolve(
+        context: &ResourceContext<'_>,
+        input: &str,
+    ) -> Result<ResolvedResource, ResourceError> {
+        let scheme = resource_scheme(input)
+            .ok_or_else(|| ResourceError::new("E_URI_INVALID", "unknown resource URI"))?;
+        Self::resolve_context(context, scheme, input)?
+            .ok_or_else(|| ResourceError::new("E_URI_INVALID", "unknown resource URI"))
+    }
+
     pub fn complete(
         context: &ResourceContext<'_>,
         prefix: &str,
@@ -658,8 +671,16 @@ fn file_count(directory: &Path) -> usize {
         .count()
 }
 
-/// 目录里的文件条目：`{uri}  {size} B  {age}s ago`，按 mtime 降序、同名按 URI 升序。
-fn directory_rows(prefix: &str, directory: &Path) -> Vec<(SystemTime, String)> {
+/// 目录里的文件条目（非隐藏普通文件）：mtime 降序、同名按 URI 升序。
+/// 文本 listing 与 `resource/list` 的结构化列举共用这一条事实来源。
+struct DirRow {
+    name: String,
+    uri: String,
+    size: u64,
+    modified: SystemTime,
+}
+
+fn directory_entries(prefix: &str, directory: &Path) -> Vec<DirRow> {
     let Ok(entries) = fs::read_dir(directory) else {
         return Vec::new();
     };
@@ -676,17 +697,301 @@ fn directory_rows(prefix: &str, directory: &Path) -> Vec<(SystemTime, String)> {
             continue;
         }
         let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
-        rows.push((
+        rows.push(DirRow {
+            uri: format!("{prefix}{name}"),
+            name,
+            size: metadata.len(),
             modified,
-            format!(
-                "{prefix}{name}  {} B  {}s ago",
-                metadata.len(),
-                age_secs(modified)
-            ),
+        });
+    }
+    rows.sort_unstable_by(|left, right| {
+        right
+            .modified
+            .cmp(&left.modified)
+            .then_with(|| left.uri.cmp(&right.uri))
+    });
+    rows
+}
+
+/// 目录里的文件条目：`{uri}  {size} B  {age}s ago`，按 mtime 降序、同名按 URI 升序。
+fn directory_rows(prefix: &str, directory: &Path) -> Vec<(SystemTime, String)> {
+    directory_entries(prefix, directory)
+        .into_iter()
+        .map(|row| {
+            (
+                row.modified,
+                format!(
+                    "{}  {} B  {}s ago",
+                    row.uri,
+                    row.size,
+                    age_secs(row.modified)
+                ),
+            )
+        })
+        .collect()
+}
+
+/// `resource/list` 的一次列举结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceListing {
+    /// 回显请求的 URI（根为 `""`）。
+    pub uri: String,
+    pub entries: Vec<ListedEntry>,
+    /// 条目超过 [`moc_protocol::FS_LIST_DIR_MAX_ENTRIES`] 被截断。
+    pub truncated: bool,
+}
+
+/// `resource/list` 的单条：`is_dir` 可继续列举，`!is_dir` 可 `resource/read`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedEntry {
+    pub uri: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub size: Option<u64>,
+    pub modified_ms: Option<u64>,
+    pub description: Option<String>,
+}
+
+impl ListedEntry {
+    fn namespace(uri: &str) -> Self {
+        Self {
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+            is_dir: true,
+            size: None,
+            modified_ms: None,
+            description: None,
+        }
+    }
+}
+
+impl From<DirRow> for ListedEntry {
+    fn from(row: DirRow) -> Self {
+        Self {
+            uri: row.uri,
+            name: row.name,
+            is_dir: false,
+            size: Some(row.size),
+            modified_ms: to_ms(row.modified),
+            description: None,
+        }
+    }
+}
+
+fn to_ms(time: SystemTime) -> Option<u64> {
+    u64::try_from(time.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()
+}
+
+/// `resource/list`：把内部 URI 展开成结构化的一层条目。
+///
+/// URI→目录/文件的映射与 [`ResourceRouter`] 的 resolve 系列同一份规则；
+/// 文件 URI 不是命名空间，报错（该用 `resource/read`）。
+pub fn list(context: &ResourceContext<'_>, input: &str) -> Result<ResourceListing, ResourceError> {
+    if input.is_empty() {
+        return Ok(ResourceListing {
+            uri: input.to_owned(),
+            entries: [
+                "local://",
+                "artifact://jobs",
+                "artifact://artifacts",
+                "history://",
+                "skill://",
+            ]
+            .into_iter()
+            .map(ListedEntry::namespace)
+            .collect(),
+            truncated: false,
+        });
+    }
+    let mut entries = match resource_scheme(input) {
+        Some(ResourceScheme::Artifact) => list_artifact(context, input)?,
+        Some(ResourceScheme::Local) => list_local(context, input)?,
+        Some(ResourceScheme::History) => list_history(context, input)?,
+        Some(ResourceScheme::Skill) => list_skill(context, input)?,
+        None => {
+            return Err(ResourceError::new("E_URI_INVALID", "unknown resource URI"));
+        }
+    };
+    // 目录在前、文件在后，各自按名称不区分大小写排序。
+    entries.sort_by(|left, right| {
+        (!left.is_dir)
+            .cmp(&!right.is_dir)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    let truncated = entries.len() > moc_protocol::FS_LIST_DIR_MAX_ENTRIES;
+    entries.truncate(moc_protocol::FS_LIST_DIR_MAX_ENTRIES);
+    Ok(ResourceListing {
+        uri: input.to_owned(),
+        entries,
+        truncated,
+    })
+}
+
+fn list_artifact(
+    context: &ResourceContext<'_>,
+    input: &str,
+) -> Result<Vec<ListedEntry>, ResourceError> {
+    if input == "artifact://" {
+        return Ok(vec![
+            ListedEntry::namespace("artifact://jobs"),
+            ListedEntry::namespace("artifact://artifacts"),
+        ]);
+    }
+    let uri = InternalUri::parse(input)
+        .map_err(|error| ResourceError::new("E_ARTIFACT_URI", error.message))?;
+    let (prefix, root) = match uri.authority() {
+        "jobs" => ("artifact://jobs/", context.paths.jobs()),
+        "artifacts" => ("artifact://artifacts/", context.paths.artifacts()),
+        _ => return Err(ResourceError::new("E_ARTIFACT_URI", artifact_shape())),
+    };
+    if !uri.segments().is_empty() {
+        return Err(ResourceError::new("E_ARTIFACT_URI", artifact_shape()));
+    }
+    Ok(directory_entries(prefix, &root)
+        .into_iter()
+        .map(ListedEntry::from)
+        .collect())
+}
+
+fn list_local(
+    context: &ResourceContext<'_>,
+    input: &str,
+) -> Result<Vec<ListedEntry>, ResourceError> {
+    if input != "local://" {
+        return Err(ResourceError::new(
+            "E_LOCAL_URI",
+            "local supports only local:// listing",
         ));
     }
-    rows.sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
-    rows
+    // 与 resolve_local 同一份规则：只列 `*.md` 计划文件。
+    Ok(directory_entries("local://", &context.paths.plans())
+        .into_iter()
+        .filter(|row| row.name.ends_with(".md"))
+        .map(ListedEntry::from)
+        .collect())
+}
+
+/// 与 resolve_history 的命名空间一致：`history://` 列出 transcript 与
+/// compaction 下的条目；`history://compaction` 只列后者。
+fn list_history(
+    context: &ResourceContext<'_>,
+    input: &str,
+) -> Result<Vec<ListedEntry>, ResourceError> {
+    if !matches!(input, "history://" | "history://compaction") {
+        return Err(ResourceError::new(
+            "E_HISTORY_URI",
+            "history supports only history:// or history://compaction listing",
+        ));
+    }
+    let mut entries = Vec::new();
+    if input == "history://"
+        && let Ok(metadata) = fs::metadata(&context.paths.transcript)
+    {
+        entries.push(ListedEntry {
+            uri: "history://transcript".to_owned(),
+            name: "transcript".to_owned(),
+            is_dir: false,
+            size: Some(metadata.len()),
+            modified_ms: metadata.modified().ok().and_then(to_ms),
+            description: None,
+        });
+    }
+    entries.extend(
+        directory_entries("history://compaction/", &context.paths.compaction())
+            .into_iter()
+            .map(ListedEntry::from),
+    );
+    Ok(entries)
+}
+
+/// `skill://` → 每个技能一个 dir；`skill://<name>[/sub...]` → 该技能
+/// base_dir 下对应层。与 resolve_skill 同一份段规则（拒绝 `.` 开头与 `..` 段）。
+fn list_skill(
+    context: &ResourceContext<'_>,
+    input: &str,
+) -> Result<Vec<ListedEntry>, ResourceError> {
+    if input == "skill://" {
+        return Ok(context
+            .skills
+            .list()
+            .map(|skill| ListedEntry {
+                uri: format!("skill://{}", skill.name),
+                name: skill.name.clone(),
+                is_dir: true,
+                size: None,
+                modified_ms: None,
+                description: Some(skill.description.clone()),
+            })
+            .collect());
+    }
+    let uri =
+        InternalUri::parse(input).map_err(|error| ResourceError::new(error.code, error.message))?;
+    let skill = context
+        .skills
+        .get(uri.authority())
+        .ok_or_else(|| ResourceError::new("E_SKILL_NOT_FOUND", "skill was not found"))?;
+    let mut relative = PathBuf::new();
+    for segment in uri.segments() {
+        if segment.starts_with('.') {
+            return Err(ResourceError::new(
+                "E_SKILL_PATH",
+                "skill path contains an invalid segment",
+            ));
+        }
+        relative.push(segment);
+    }
+    let base = fs::canonicalize(&skill.base_dir)
+        .map_err(|error| ResourceError::new("E_SKILL_PATH", error.to_string()))?;
+    let directory = fs::canonicalize(base.join(&relative))
+        .map_err(|error| ResourceError::new("E_SKILL_NOT_FOUND", error.to_string()))?;
+    if !directory.starts_with(&base) || !directory.is_dir() {
+        return Err(ResourceError::new(
+            "E_SKILL_PATH",
+            "skill path escapes the skill directory or is not a directory",
+        ));
+    }
+    let prefix = format!(
+        "skill://{}",
+        std::iter::once(uri.authority())
+            .chain(uri.segments().iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join("/")
+    );
+    let mut entries = Vec::new();
+    let reader = fs::read_dir(&directory)
+        .map_err(|error| ResourceError::new("E_SKILL_PATH", error.to_string()))?;
+    for entry in reader.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let child_uri = format!("{prefix}/{name}");
+        if file_type.is_dir() {
+            entries.push(ListedEntry {
+                uri: child_uri,
+                name,
+                is_dir: true,
+                size: None,
+                modified_ms: None,
+                description: None,
+            });
+        } else if file_type.is_file()
+            && let Ok(metadata) = entry.metadata()
+        {
+            entries.push(ListedEntry {
+                uri: child_uri,
+                name,
+                is_dir: false,
+                size: Some(metadata.len()),
+                modified_ms: metadata.modified().ok().and_then(to_ms),
+                description: None,
+            });
+        }
+    }
+    Ok(entries)
 }
 
 /// 命名空间正文：`lead` 是固定行，其后接目录行；总条数超过上限只给计数。
@@ -1114,6 +1419,149 @@ mod tests {
             fs::read_to_string(&mirror).expect("读取镜像"),
             "{\"a\":1}\n{\"a\":2}\n",
             "压缩会话对外暴露完整解码后的日志"
+        );
+    }
+
+    /// `resource/list`：根列出 5 个命名空间，各 scheme 展开成一层条目。
+    #[test]
+    fn list_exposes_namespaces_as_structured_entries() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let paths = test_paths(root.path());
+        fs::create_dir_all(paths.plans()).expect("plans 目录");
+        fs::create_dir_all(paths.jobs()).expect("jobs 目录");
+        fs::write(paths.plans().join("plan_1.md"), "# plan\n").expect("计划");
+        fs::write(paths.plans().join("note.txt"), "x\n").expect("非 md 不列");
+        fs::write(paths.jobs().join("job_1.log"), "alpha\n").expect("job 日志");
+        let sessions = SessionTable::new(root.path().join("sessions"), false);
+        let skills = SkillIndex::empty();
+        let context = context_of(&paths, root.path(), &skills, &sessions);
+
+        let root_listing = list(&context, "").expect("根列举");
+        let uris: Vec<_> = root_listing
+            .entries
+            .iter()
+            .map(|entry| (entry.uri.as_str(), entry.is_dir))
+            .collect();
+        assert_eq!(
+            uris,
+            [
+                ("local://", true),
+                ("artifact://jobs", true),
+                ("artifact://artifacts", true),
+                ("history://", true),
+                ("skill://", true),
+            ]
+        );
+        assert!(!root_listing.truncated);
+
+        let local = list(&context, "local://").expect("local 列举");
+        assert_eq!(local.entries.len(), 1);
+        assert_eq!(local.entries[0].uri, "local://plan_1.md");
+        assert!(!local.entries[0].is_dir);
+        assert_eq!(local.entries[0].size, Some(7));
+
+        let jobs = list(&context, "artifact://jobs").expect("jobs 列举");
+        assert_eq!(jobs.entries.len(), 1);
+        assert_eq!(jobs.entries[0].uri, "artifact://jobs/job_1.log");
+        assert_eq!(jobs.entries[0].size, Some(6));
+
+        assert_eq!(
+            list(&context, "local://plan_1.md").unwrap_err().code,
+            "E_LOCAL_URI",
+            "文件 URI 不是命名空间"
+        );
+    }
+
+    #[test]
+    fn list_skill_expands_base_dir_one_level() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let skill_dir = root.path().join("demo");
+        fs::create_dir_all(skill_dir.join("refs")).expect("refs 目录");
+        fs::write(skill_dir.join("SKILL.md"), "x").expect("SKILL.md");
+        fs::write(skill_dir.join("refs").join("a.md"), "a").expect("资源");
+        fs::write(skill_dir.join(".hidden"), "h").expect("隐藏文件不列");
+        let paths = test_paths(root.path());
+        let sessions = SessionTable::new(root.path().join("sessions"), false);
+        let mut skills = SkillIndex::empty();
+        skills.insert_builtin(crate::skills::SkillMeta {
+            name: "demo".into(),
+            description: "演示技能".into(),
+            when_to_use: None,
+            globs: Vec::new(),
+            model_invocable: true,
+            base_dir: skill_dir.clone(),
+            source: "test".into(),
+        });
+        let context = context_of(&paths, root.path(), &skills, &sessions);
+
+        let skill_root = list(&context, "skill://").expect("skill 根");
+        assert_eq!(skill_root.entries.len(), 1);
+        assert_eq!(skill_root.entries[0].uri, "skill://demo");
+        assert!(skill_root.entries[0].is_dir);
+        assert_eq!(
+            skill_root.entries[0].description.as_deref(),
+            Some("演示技能")
+        );
+
+        let listing = list(&context, "skill://demo").expect("技能一层");
+        let uris: Vec<_> = listing
+            .entries
+            .iter()
+            .map(|entry| (entry.uri.as_str(), entry.is_dir))
+            .collect();
+        assert_eq!(
+            uris,
+            [
+                ("skill://demo/refs", true),
+                ("skill://demo/SKILL.md", false),
+            ]
+        );
+
+        let sub = list(&context, "skill://demo/refs").expect("子目录");
+        assert_eq!(sub.entries.len(), 1);
+        assert_eq!(sub.entries[0].uri, "skill://demo/refs/a.md");
+        assert!(!sub.entries[0].is_dir);
+
+        assert_eq!(
+            list(&context, "skill://demo/.hidden").unwrap_err().code,
+            "E_SKILL_PATH"
+        );
+        assert_eq!(
+            list(&context, "skill://missing").unwrap_err().code,
+            "E_SKILL_NOT_FOUND"
+        );
+    }
+
+    /// `resource/read`：经 ResourceRouter 把 URI 解析成文件后读内容；
+    /// 命名空间不可读。
+    #[test]
+    fn read_plan_file_through_router() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let paths = test_paths(root.path());
+        fs::create_dir_all(paths.plans()).expect("plans 目录");
+        fs::write(paths.plans().join("plan_1.md"), "# plan\n").expect("计划");
+        let sessions = SessionTable::new(root.path().join("sessions"), false);
+        let skills = SkillIndex::empty();
+        let context = context_of(&paths, root.path(), &skills, &sessions);
+
+        let resolved = ResourceRouter::resolve(&context, "local://plan_1.md").expect("解析计划");
+        let ResourceBacking::File(path) = &resolved.backing else {
+            panic!("local://plan_1.md 必须是文件：{:?}", resolved.backing);
+        };
+        let read = crate::fs::read_path(path, None).expect("读计划");
+        assert!(!read.binary);
+        assert_eq!(read.content.as_deref(), Some("# plan\n"));
+
+        let namespace = ResourceRouter::resolve(&context, "local://").expect("解析命名空间");
+        assert!(matches!(
+            namespace.backing,
+            ResourceBacking::Namespace { .. }
+        ));
+        assert_eq!(
+            ResourceRouter::resolve(&context, "proc://1")
+                .unwrap_err()
+                .code,
+            "E_URI_INVALID"
         );
     }
 

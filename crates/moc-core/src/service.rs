@@ -14,12 +14,15 @@ use moc_protocol::methods::{
     AgentSpawnParams, AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams,
     AgentWaitResult, ChartAnalyzeParams, ChartAnalyzeResult, ClientCapabilities, CompactResult,
     ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult, Empty,
-    FsCreateDirParams, FsCreateDirResult, FsListDirParams, FsListDirResult, InitializeParams,
-    InitializeResult, JobListParams, JobListResult, JobOutputParams, JobOutputResult, JobResult,
-    JobTarget, ModelInfo, ModelInput, ModelUsageSummary, PluginCommandInfo, PluginInfo,
-    PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
-    PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo, PromptResult,
-    ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
+    FsCreateDirParams, FsCreateDirResult, FsCreateFileParams, FsCreateFileResult, FsDeleteParams,
+    FsEntryKind, FsFileEncoding, FsListDirParams, FsListDirResult, FsReadFileParams,
+    FsReadFileResult, FsRenameParams, FsRenameResult, FsWriteFileParams, FsWriteFileResult,
+    InitializeParams, InitializeResult, JobListParams, JobListResult, JobOutputParams,
+    JobOutputResult, JobResult, JobTarget, ModelInfo, ModelInput, ModelUsageSummary,
+    PluginCommandInfo, PluginInfo, PluginListParams, PluginListResult, PluginReloadParams,
+    PluginReloadResult, PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo,
+    PromptResult, ResourceCompleteParams, ResourceCompleteResult, ResourceListParams,
+    ResourceListResult, ResourceReadParams, ResourceReadResult, ServerCapabilities, ServerInfo,
     SessionAutonomy, SessionCompactParams, SessionContextContentParams, SessionContextParams,
     SessionDeleteParams, SessionEngine, SessionGoalParams, SessionGoalResult, SessionInfo,
     SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
@@ -662,6 +665,32 @@ impl Core {
         self.inner.config().features
     }
 
+    /// resource/* 方法共用的上下文三件套：会话记录、cwd 与会话级 skill 索引。
+    async fn resource_context(
+        &self,
+        session_id: &str,
+    ) -> Result<
+        (
+            Arc<crate::session::SessionRecord>,
+            PathBuf,
+            Arc<crate::skills::SkillIndex>,
+        ),
+        RpcError,
+    > {
+        let record = self.inner.sessions.get(session_id).await.map_err(to_rpc)?;
+        let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
+        let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
+        let workflows_active = {
+            let state = record.state.lock().await;
+            crate::workflow::workflows_active(&state, &config.workflow)
+        };
+        let skills = self
+            .inner
+            .session_skills(&cwd, workflows_active)
+            .map_err(to_rpc)?;
+        Ok((record, cwd, skills))
+    }
+
     /// 加载配置、校验供应商，并创建会话存储目录。
     pub fn new(config: CoreConfig) -> anyhow::Result<Arc<Self>> {
         Self::new_with_sandbox_support(config, crate::sandbox::detect())
@@ -1249,22 +1278,7 @@ impl AgentService for Core {
         _ctx: RequestContext,
         params: ResourceCompleteParams,
     ) -> Result<ResourceCompleteResult, RpcError> {
-        let record = self
-            .inner
-            .sessions
-            .get(&params.session_id)
-            .await
-            .map_err(to_rpc)?;
-        let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
-        let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
-        let workflows_active = {
-            let state = record.state.lock().await;
-            crate::workflow::workflows_active(&state, &config.workflow)
-        };
-        let skills = self
-            .inner
-            .session_skills(&cwd, workflows_active)
-            .map_err(to_rpc)?;
+        let (record, cwd, skills) = self.resource_context(&params.session_id).await?;
         let context = crate::resources::ResourceContext {
             session_id: &params.session_id,
             cwd: &cwd,
@@ -1286,6 +1300,88 @@ impl AgentService for Core {
         Ok(ResourceCompleteResult { candidates })
     }
 
+    async fn resource_list(
+        &self,
+        _ctx: RequestContext,
+        params: ResourceListParams,
+    ) -> Result<ResourceListResult, RpcError> {
+        let (record, cwd, skills) = self.resource_context(&params.session_id).await?;
+        let sessions = self.inner.sessions.clone();
+        let listing = tokio::task::spawn_blocking(move || {
+            let context = crate::resources::ResourceContext {
+                session_id: &params.session_id,
+                cwd: &cwd,
+                paths: &record.paths,
+                skills: &skills,
+                sessions: &sessions,
+            };
+            crate::resources::list(&context, &params.uri)
+        })
+        .await
+        .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
+        .map_err(|error| invalid_params(error.to_string()))?;
+        Ok(ResourceListResult {
+            uri: listing.uri,
+            truncated: listing.truncated,
+            entries: listing
+                .entries
+                .into_iter()
+                .map(|entry| moc_protocol::ResourceListEntry {
+                    uri: entry.uri,
+                    name: entry.name,
+                    kind: if entry.is_dir {
+                        FsEntryKind::Dir
+                    } else {
+                        FsEntryKind::File
+                    },
+                    size: entry.size,
+                    modified_ms: entry.modified_ms,
+                    description: entry.description,
+                })
+                .collect(),
+        })
+    }
+
+    async fn resource_read(
+        &self,
+        _ctx: RequestContext,
+        params: ResourceReadParams,
+    ) -> Result<ResourceReadResult, RpcError> {
+        let (record, cwd, skills) = self.resource_context(&params.session_id).await?;
+        let sessions = self.inner.sessions.clone();
+        let uri = params.uri.clone();
+        tokio::task::spawn_blocking(move || {
+            let context = crate::resources::ResourceContext {
+                session_id: &params.session_id,
+                cwd: &cwd,
+                paths: &record.paths,
+                skills: &skills,
+                sessions: &sessions,
+            };
+            let resolved = crate::resources::ResourceRouter::resolve(&context, &params.uri)
+                .map_err(|error| invalid_params(error.to_string()))?;
+            let crate::resources::ResourceBacking::File(path) = resolved.backing else {
+                return Err(invalid_params("该 URI 是命名空间，请用 resource/list 列举"));
+            };
+            let read = crate::fs::read_path(&path, params.max_bytes)
+                .map_err(|error| invalid_params(error.to_string()))?;
+            Ok(ResourceReadResult {
+                uri,
+                size: read.size,
+                modified_ms: read.modified_ms,
+                encoding: if read.binary {
+                    FsFileEncoding::Binary
+                } else {
+                    FsFileEncoding::Utf8
+                },
+                content: read.content,
+                truncated: read.truncated,
+            })
+        })
+        .await
+        .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
+    }
+
     async fn fs_list_dir(
         &self,
         _ctx: RequestContext,
@@ -1293,7 +1389,12 @@ impl AgentService for Core {
     ) -> Result<FsListDirResult, RpcError> {
         let default_cwd = self.inner.config().cwd.clone();
         tokio::task::spawn_blocking(move || {
-            crate::fs::list_dir(params.path.as_deref(), &default_cwd, params.show_hidden)
+            crate::fs::list_dir(
+                params.path.as_deref(),
+                &default_cwd,
+                params.show_hidden,
+                params.include_files,
+            )
         })
         .await
         .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
@@ -1309,6 +1410,88 @@ impl AgentService for Core {
             .await
             .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
             .map_err(|error| invalid_params(error.to_string()))
+    }
+
+    async fn fs_read_file(
+        &self,
+        _ctx: RequestContext,
+        params: FsReadFileParams,
+    ) -> Result<FsReadFileResult, RpcError> {
+        tokio::task::spawn_blocking(move || crate::fs::read_file(&params.path, params.max_bytes))
+            .await
+            .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
+            .map(|read| FsReadFileResult {
+                path: read.path.to_string_lossy().into_owned(),
+                size: read.size,
+                modified_ms: read.modified_ms,
+                encoding: if read.binary {
+                    FsFileEncoding::Binary
+                } else {
+                    FsFileEncoding::Utf8
+                },
+                content: read.content,
+                truncated: read.truncated,
+            })
+            .map_err(|error| invalid_params(error.to_string()))
+    }
+
+    async fn fs_write_file(
+        &self,
+        _ctx: RequestContext,
+        params: FsWriteFileParams,
+    ) -> Result<FsWriteFileResult, RpcError> {
+        tokio::task::spawn_blocking(move || {
+            crate::fs::write_file(&params.path, &params.content, params.expected_modified_ms)
+        })
+        .await
+        .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
+        .map(|write| FsWriteFileResult {
+            path: write.path.to_string_lossy().into_owned(),
+            size: write.size,
+            modified_ms: write.modified_ms,
+        })
+        .map_err(|error| match error {
+            crate::fs::WriteFileError::Conflict { modified_ms } => {
+                RpcError::of(RpcErrorCode::FileConflict).with_data(json!({
+                    "modified_ms": modified_ms,
+                }))
+            }
+            other => invalid_params(other.to_string()),
+        })
+    }
+
+    async fn fs_create_file(
+        &self,
+        _ctx: RequestContext,
+        params: FsCreateFileParams,
+    ) -> Result<FsCreateFileResult, RpcError> {
+        tokio::task::spawn_blocking(move || crate::fs::create_file(&params.parent, &params.name))
+            .await
+            .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
+            .map_err(|error| invalid_params(error.to_string()))
+    }
+
+    async fn fs_rename(
+        &self,
+        _ctx: RequestContext,
+        params: FsRenameParams,
+    ) -> Result<FsRenameResult, RpcError> {
+        tokio::task::spawn_blocking(move || crate::fs::rename(&params.from, &params.to))
+            .await
+            .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
+            .map_err(|error| invalid_params(error.to_string()))
+    }
+
+    async fn fs_delete(
+        &self,
+        _ctx: RequestContext,
+        params: FsDeleteParams,
+    ) -> Result<Empty, RpcError> {
+        tokio::task::spawn_blocking(move || crate::fs::delete(&params.path))
+            .await
+            .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
+            .map_err(|error| invalid_params(error.to_string()))?;
+        Ok(Empty {})
     }
 
     async fn chart_analyze(

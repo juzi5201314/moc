@@ -16,6 +16,7 @@ async fn fs_list_dir_lists_sorted_subdirectories_with_git_marks() {
         .call::<FsListDir>(FsListDirParams {
             path: Some(work.to_string_lossy().into_owned()),
             show_hidden: false,
+            include_files: false,
         })
         .await
         .expect("fs/list_dir 成功");
@@ -43,6 +44,7 @@ async fn fs_list_dir_rejects_relative_paths_as_invalid_params() {
         .call::<FsListDir>(FsListDirParams {
             path: Some("relative/dir".into()),
             show_hidden: false,
+            include_files: false,
         })
         .await
         .expect_err("相对路径应被拒绝");

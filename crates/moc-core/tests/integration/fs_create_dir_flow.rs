@@ -23,6 +23,7 @@ async fn fs_create_dir_makes_one_level_directory_and_relist_shows_it() {
         .call::<FsListDir>(FsListDirParams {
             path: Some(work.to_string_lossy().into_owned()),
             show_hidden: false,
+            include_files: false,
         })
         .await
         .expect("fs/list_dir 成功");
