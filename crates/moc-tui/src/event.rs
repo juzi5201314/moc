@@ -7798,10 +7798,8 @@ mod tests {
             .filter_map(|x| terminal.backend().buffer().cell((x, area.y)))
             .map(|cell| cell.symbol())
             .collect();
-        assert!(
-            text.contains('◖') && text.contains('↓') && text.contains('◗'),
-            "命中区应正好盖住圆角胶囊：{text:?}"
-        );
+        assert!(text.contains('↓'), "指示条正中应是加粗箭头：{text:?}");
+        assert_eq!(area.width, app.scrollback_area.width, "整行可点");
 
         handle_mouse_with_connection(&mut app, &connection, left_click(area.x, area.y));
         assert_eq!(app.scroll_offset, 0, "点击胶囊应贴回底部");

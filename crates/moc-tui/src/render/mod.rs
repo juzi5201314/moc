@@ -296,30 +296,25 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     draw_warning(frame, app, scroll_area);
 }
 
-/// 「回到底部」胶囊：半圆端帽拼出圆角、加粗箭头居中，画在转写区与输入框之间
-/// 的缝行，整颗可点。
+/// 「回到底部」指示条：缝行整行亮底、正中一个加粗 ↓，整行可点贴回最新。
 fn draw_jump_bottom(frame: &mut Frame, app: &mut App, scroll_area: Rect) {
     let theme = app.theme;
-    // 端帽是半圆实心符：前景取胶囊色、背景取缝行底色，弧面朝外拼出圆端。
-    let capsule = Line::from(vec![
-        Span::styled("◖", Style::new().fg(theme.bg_highlight).bg(theme.bg_base)),
-        Span::styled(
-            " ↓ ",
-            Style::new()
-                .fg(theme.text_primary)
-                .bg(theme.bg_highlight)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("◗", Style::new().fg(theme.bg_highlight).bg(theme.bg_base)),
-    ]);
-    let width = u16::try_from(capsule.width()).unwrap_or(u16::MAX);
-    if scroll_area.width < width {
-        return;
-    }
-    let x = scroll_area.x + (scroll_area.width - width) / 2;
     let y = scroll_area.bottom();
-    frame.buffer_mut().set_line(x, y, &capsule, width);
-    app.jump_bottom_area = Rect::new(x, y, width, 1);
+    let buffer = frame.buffer_mut();
+    buffer.set_style(
+        Rect::new(scroll_area.x, y, scroll_area.width, 1),
+        Style::new().bg(theme.bg_highlight),
+    );
+    buffer.set_string(
+        scroll_area.x + scroll_area.width / 2,
+        y,
+        "↓",
+        Style::new()
+            .fg(theme.text_primary)
+            .bg(theme.bg_highlight)
+            .add_modifier(Modifier::BOLD),
+    );
+    app.jump_bottom_area = Rect::new(scroll_area.x, y, scroll_area.width, 1);
 }
 
 /// 拖选高亮：只覆盖选区内的格子；跨行时中间整行、首尾行按列收边。
