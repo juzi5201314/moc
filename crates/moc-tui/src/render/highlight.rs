@@ -21,9 +21,10 @@ fn syntax_set() -> &'static SyntaxSet {
 
 fn highlight_theme() -> &'static Theme {
     HIGHLIGHT_THEME.get_or_init(|| {
-        // OneHalfDark 与主题的 TokyoNight 系强调色最协调
+        // CatppuccinMocha 与主题的 TokyoNight 系强调色最协调，且给 support.* 作用域
+        // 单独配色——Some/None/Option 这类 token 不会再落回默认前景。
         two_face::theme::extra()
-            .get(two_face::theme::EmbeddedThemeName::OneHalfDark)
+            .get(two_face::theme::EmbeddedThemeName::CatppuccinMocha)
             .clone()
     })
 }
