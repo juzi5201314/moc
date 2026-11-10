@@ -165,7 +165,7 @@ overflow = "error"
 
 [compaction]
 enabled = true
-# moc：shake 本地修剪兜底 soft 摘要；grok_build：Grok Build 复刻管线
+# moc：本地修剪+摘要；grok_build：Grok Build；eocc：实验性交接状态
 method = "moc"
 threshold = { mode = "percent", value = 85 }
 keep_recent_tokens = 20000

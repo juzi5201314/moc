@@ -1,14 +1,16 @@
 //! 上下文压缩：token 估算与预算、按 `compaction.method` 选择压缩管线、提交 checkpoint。
 //!
-//! `moc` 管线先 `shake` 本地修剪、腾不出空间再 `soft` 摘要；`grok_build` 复刻
-//! Grok Build，整体替换历史，不做本地修剪。
+//! `moc` 先本地修剪再摘要；`grok_build` 复刻 Grok Build；`eocc` 实验性地
+//! 用任务原文与有界交接状态替换历史。
 
 pub mod archive;
 mod digest;
+mod eocc;
 pub mod grok_build;
 mod guard;
 pub mod images;
 pub mod replay;
+pub(crate) mod sample;
 pub mod shake;
 pub mod soft;
 mod tail;
@@ -355,7 +357,7 @@ pub(crate) async fn compact(
     // 只有真正要等上游模型的压缩才让前端开始计时；纯本地裁剪瞬时可成。
     let mut started = false;
     let outcome: Result<CompactReport, CoreError> = async {
-        if instructions.is_some() || config.compaction.method == CompactionMethod::GrokBuild {
+        if instructions.is_some() || config.compaction.method != CompactionMethod::Moc {
             emit_compaction_started(ctx, session_id).await?;
             started = true;
             let result = summarize(SoftInput {
@@ -520,7 +522,7 @@ async fn emit_compaction_started(ctx: &RequestContext, session_id: &str) -> Resu
         .map_err(|error| CoreError::Protocol(error.to_string()))
 }
 
-/// soft 压缩的公共输入；两种实现只在摘要提示词和提交方式上不同。
+/// 各摘要算法的公共输入；具体实现决定历史保留方式与提示词。
 pub(crate) struct SoftInput<'a> {
     pub inner: &'a CoreInner,
     pub ctx: &'a RequestContext,
@@ -561,6 +563,7 @@ async fn summarize(input: SoftInput<'_>) -> Result<CompactResult, CoreError> {
         budget,
     } = input;
     match config.compaction.method {
+        CompactionMethod::Eocc => eocc::compact(input).await,
         CompactionMethod::Moc => {
             soft::compact(soft::SoftContext {
                 inner,
@@ -600,8 +603,9 @@ pub(crate) enum HistoryArchive {
     /// 记录 checkpoint 时按当前状态写出压缩前的历史，并把运行状态（todos/jobs）
     /// 一并追加进摘要。
     Write,
-    /// 与 `Write` 一样归档并追加历史指引，但不追加运行状态块：Grok Build 的
-    /// 运行时状态由它自己的 system-reminder 覆盖。
+    /// 调用方已追加归档指引并核算最终预算，不再改写摘要。
+    Prepared,
+    /// 归档并追加历史指引，但不追加运行状态块；全替换算法单独携带提醒。
     WriteWithoutRuntime,
     /// 调用方已在改写 transcript 前完成归档，直接用它的结果。
     Precomputed(Option<String>),
@@ -613,7 +617,7 @@ pub(crate) struct Checkpoint {
     /// 生成 checkpoint 的模型；沿用摘要时保留原来的来源。
     pub model: Option<String>,
     pub summary: String,
-    /// Grok Build 整体替换历史时附带的运行时状态提醒；其它方法为 `None`。
+    /// 全替换算法附带的运行时状态提醒；其它方法为 `None`。
     pub reminder: Option<String>,
     pub first_kept_id: Option<String>,
     pub tokens_before: u64,
@@ -677,6 +681,9 @@ async fn append_runtime_checkpoint(
     summary: &mut String,
     archive: HistoryArchive,
 ) -> Result<(), CoreError> {
+    if matches!(archive, HistoryArchive::Prepared) {
+        return Ok(());
+    }
     let record = inner.sessions.get(session_id).await?;
     let state = record.state.lock().await.clone();
     let write_runtime = !matches!(archive, HistoryArchive::WriteWithoutRuntime);
@@ -685,6 +692,7 @@ async fn append_runtime_checkpoint(
             archive::write(&record.paths, &state).await?
         }
         HistoryArchive::Precomputed(uri) => uri,
+        HistoryArchive::Prepared => unreachable!("已准备的 checkpoint 在入口返回"),
     };
     let jobs = inner.runtime(session_id).await.jobs.background();
     if archive_uri.is_none() && (!write_runtime || (state.todos.is_empty() && jobs.is_empty())) {

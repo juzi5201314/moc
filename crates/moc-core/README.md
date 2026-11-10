@@ -146,7 +146,9 @@ PTC Host 入口已编译进 `moc`，首次 `run_code` 时将当前 `moc` 作为�
 
 ### 上下文压缩与解释
 
-`compaction.method` 单选压缩实现，默认 `"moc"`：先用 shake 裁剪旧工具结果，腾出的空间不足时再用 soft 生成摘要并保留最近对话。选择 `"grok_build"` 时直接进入 Grok Build 摘要流程：阈值前后台摘要历史前缀，触发压缩时结合该摘要和新增尾部生成 9 段摘要，再整体替换历史，只保留最后真实用户查询、摘要与运行时提醒。Grok Build 不执行 shake，也不使用 `keep_recent_tokens`、`protect_recent_tool_tokens` 或 shake 参数。两种实现都归档压缩前的历史，并在摘要中加入 `history://compaction/INDEX.md` 回读指引；Grok Build 的运行状态由独立提醒携带。
+`compaction.method` 单选压缩实现，默认 `"moc"`：先用 shake 裁剪旧工具结果，腾出的空间不足时再用 soft 生成摘要并保留最近对话。选择 `"grok_build"` 时直接进入 Grok Build 摘要流程：阈值前后台摘要历史前缀，触发压缩时结合该摘要和新增尾部生成 9 段摘要，再整体替换历史，只保留最后真实用户查询、摘要与运行时提醒。Grok Build 不执行 shake，也不使用 `keep_recent_tokens`、`protect_recent_tool_tokens` 或 shake 参数。
+
+新增的 `"eocc"` 是 NVIDIA《You don’t need long context》启发的实验算法：保留有界任务原文，把历史改写成面向剩余工作的六段交接状态，不做 shake 或预火，不保留普通近期尾部；尚未完成的工具组仍保留，避免结果失去调用所有者。三种算法并存，默认及原有两种算法不变。它们均归档压缩前历史，并提供 `history://compaction/INDEX.md` 回读指引；Grok Build 和 EoCC 用独立提醒携带运行状态。EoCC 的预算、配置示例与论文结论边界见 [上下文压缩说明](../../docs/compaction.md#eocc实验性交接状态)。
 
 手动 `/compact <指令>` 会直接进入所选实现的摘要步骤；不带指令时按该实现的默认流程执行。自动压缩及上下文溢出恢复也使用同一 `method`。
 
@@ -198,7 +200,7 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。覆盖超过读写容量上限（`tools.output.max_file_bytes`，默认 100 MiB）的旧文件时不产出 diff、也不记录撤销，工具结果里会说明。撤销栈每个文件最多保留 8 份、全会话合计 64 MiB，超限淘汰最旧记录，被淘汰的快照不能恢复。
 - 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。
 - 会话使用追加式 JSONL，逐条 flush；`session/new` 只登记内存，首条消息 entry 才把 header 与已缓冲的簿记条目一并落盘，因此只改过配置、从未产生对话内容的空会话不会落盘、也不会出现在 `session/list` 中。压缩与历史重写使用临时文件加 rename。它不是每条记录都 fsync 的事务数据库。
-- `compaction.method` 选择 moc（shake 不足再 soft）或 Grok Build（直接摘要并整体替换历史）；两者都提供历史归档回读指引。`auto_continue=false` 会在提示内压缩完成后停止继续请求模型。
+- `compaction.method` 可选 `moc`（shake 不足再 soft）、`grok_build`（Grok Build 两遍摘要）或 `eocc`（实验性有界交接状态）；三者都提供历史归档回读指引。`auto_continue=false` 会在提示内压缩完成后停止继续请求模型。
 
 ### 循环保护
 

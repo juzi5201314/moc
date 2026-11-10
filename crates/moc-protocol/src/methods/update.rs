@@ -284,7 +284,7 @@ pub enum SessionUpdate {
     PlanUpdated { plan: super::plan::PlanInfo },
     /// 上下文压缩开始：前端应开始计时，并在完成或失败时原位替换这条提示。
     ///
-    /// 只有需要等待上游模型的压缩（`soft` / `grok_build`）才发这条；纯本地裁剪
+    /// 只有需要等待上游模型的压缩（`soft` / `grok_build` / `eocc`）才发这条；纯本地裁剪
     /// （`shake`）瞬时可成，不单独占用一条进行中提示。
     ContextCompactionStarted,
     /// 上下文压缩完成。

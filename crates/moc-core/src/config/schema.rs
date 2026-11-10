@@ -740,6 +740,8 @@ pub enum CompactionMethod {
     Moc,
     /// Grok Build 复刻管线。
     GrokBuild,
+    /// NVIDIA EoCC 实验算法：有界任务原文与面向剩余工作的交接状态。
+    Eocc,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -747,7 +749,7 @@ pub enum CompactionMethod {
 pub struct CompactionConfig {
     /// 总开关；关闭后手动与自动压缩一并禁用。
     pub enabled: bool,
-    /// 压缩实现：`moc` 先本地修剪再摘要；`grok_build` 直接走 Grok Build 管线。
+    /// 压缩实现；仅 `moc` 先做本地修剪，其他算法直接生成交接状态。
     pub method: CompactionMethod,
     pub threshold: CompactionThreshold,
     pub keep_recent_tokens: u32,

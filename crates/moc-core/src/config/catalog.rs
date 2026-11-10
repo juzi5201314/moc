@@ -307,6 +307,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         "method" if path.first().is_some_and(|part| part == "compaction") => &[
             ("moc", "Moc（本地修剪+摘要）"),
             ("grok_build", "Grok Build"),
+            ("eocc", "EoCC（实验性：交接状态）"),
         ],
         "default_mode" if path.first().is_some_and(|part| part == "sandbox") => {
             let support = crate::sandbox::detect();
@@ -638,7 +639,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "overflow" => ("超出上限时", "直接报错，或等待有空位再继续。"),
             "method" => (
                 "压缩方式",
-                "moc：先 shake 本地修剪，不足再 soft 摘要；grok_build：Grok Build 复刻管线（9 段摘要+整体替换历史，忽略「保留最近对话」「保留最近工具结果」与修剪参数）。",
+                "moc：先本地修剪再摘要；grok_build：Grok Build 9 段摘要与两遍预火；eocc：NVIDIA 论文启发的有界任务原文与六段交接状态。后两者不使用保留最近对话、工具结果与 shake 参数；eocc 仅保留尚未完成的工具组。",
             ),
             "keep_recent_tokens" => ("保留最近对话", "压缩后保留的最近对话长度（token）。"),
             "protect_recent_tool_tokens" => {

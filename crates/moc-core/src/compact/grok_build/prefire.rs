@@ -11,7 +11,8 @@ use crate::ResolvedModel;
 use crate::config::{CompactionMethod, CompactionThreshold, ResolvedConfig};
 use crate::service::{CoreInner, SessionRuntime};
 
-use super::{PromptSkeleton, Sampler, prompt};
+use super::super::sample::{PromptSkeleton, Sampler};
+use super::prompt;
 
 /// 第一遍覆盖对话的权重比例。
 pub(crate) const TWO_PASS_DEFAULT_SPLIT_FRACTION: f64 = 0.95;
@@ -253,7 +254,7 @@ async fn run_pass1(
     let sampled = tokio::select! {
         biased;
         _ = cancel.cancelled() => None,
-        result = sampler.sample(cancel, prefix, &prompt) => Some(result),
+        result = sampler.sample(cancel, prefix, &prompt, None) => Some(result),
     };
     match sampled {
         Some(Ok(raw)) => {

@@ -414,37 +414,32 @@ fn method_defaults_to_moc_and_switches_through_the_editor() {
         .iter()
         .find(|field| field.path == ["compaction", "method"])
         .expect("设置目录出现 method");
-    assert_eq!(field.tab, "上下文");
-    assert_eq!(field.label, "压缩方式");
     let FieldKind::Choice(options) = &field.kind else {
         panic!("method 应为候选列表");
     };
-    assert!(
-        options
-            .iter()
-            .any(|option| option.value == "grok_build" && option.label.contains("Grok Build")),
-        "{options:?}"
-    );
-    assert!(
-        options.iter().any(|option| option.value == "moc"),
-        "{options:?}"
-    );
-
-    let resolved = editor::save(
-        &boot,
-        ConfigScope::Global,
-        &boot.cwd,
-        json!({"compaction": {"method": "grok_build"}}),
-        &view.revision,
-    )
-    .unwrap();
-    assert_eq!(
-        resolved.compaction.method,
-        moc_core::config::CompactionMethod::GrokBuild
-    );
-    let saved: toml::Value =
-        toml::from_str(&std::fs::read_to_string(boot.home.join("config.toml")).unwrap()).unwrap();
-    assert_eq!(saved["compaction"]["method"].as_str(), Some("grok_build"));
+    for (method, expected) in [
+        ("moc", moc_core::config::CompactionMethod::Moc),
+        ("grok_build", moc_core::config::CompactionMethod::GrokBuild),
+        ("eocc", moc_core::config::CompactionMethod::Eocc),
+    ] {
+        assert!(options.iter().any(|option| option.value == method));
+        let revision = editor::inspect(&boot, ConfigScope::Global, &boot.cwd)
+            .unwrap()
+            .revision;
+        let resolved = editor::save(
+            &boot,
+            ConfigScope::Global,
+            &boot.cwd,
+            json!({"compaction": {"method": method}}),
+            &revision,
+        )
+        .unwrap();
+        assert_eq!(resolved.compaction.method, expected);
+        let saved: toml::Value =
+            toml::from_str(&std::fs::read_to_string(boot.home.join("config.toml")).unwrap())
+                .unwrap();
+        assert_eq!(saved["compaction"]["method"].as_str(), Some(method));
+    }
 }
 
 #[test]

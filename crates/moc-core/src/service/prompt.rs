@@ -1053,7 +1053,7 @@ async fn run_prompt_locked(
                     &project_config,
                     &model,
                     context_tokens,
-                    compact::grok_build::PromptSkeleton {
+                    compact::sample::PromptSkeleton {
                         system: &system.messages,
                         static_prefix: &system.static_prefix,
                         tools: &tools_available,

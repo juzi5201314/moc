@@ -119,7 +119,7 @@ pub struct SessionState {
     pub summary: Option<(String, String)>,
     /// 当前 checkpoint 的生成模型。
     pub summary_model: Option<String>,
-    /// Grok Build 整体替换历史时附带的运行时状态提醒；其它 checkpoint 为 `None`。
+    /// 全替换算法附带的运行时状态提醒；其它 checkpoint 为 `None`。
     pub summary_reminder: Option<String>,
     pub first_kept_id: Option<String>,
     /// 与 transcript 索引同口径的上下文边界；回放/重写时重建。

@@ -148,7 +148,7 @@ pub enum Entry {
         /// 生成该 checkpoint 的模型；旧记录没有这个字段。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
-        /// Grok Build 整体替换历史时附带的运行时状态提醒；其它压缩方法为 `None`。
+        /// 全替换算法附带的运行时状态提醒；其它压缩方法为 `None`。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reminder: Option<String>,
     },
@@ -325,7 +325,7 @@ pub enum EntryPayload {
         instructions: Option<String>,
         /// 生成该 checkpoint 的模型；沿用上一份 checkpoint 时保留原来的来源。
         model: Option<String>,
-        /// Grok Build 压缩时快照的运行时状态提醒；其它方法为 `None`。
+        /// 全替换算法压缩时快照的运行时状态提醒；其它方法为 `None`。
         reminder: Option<String>,
     },
     /// 引擎变化；`plan_active` 是写入时的 plan 状态投影，供回放直接采用。

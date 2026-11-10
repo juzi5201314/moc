@@ -9,10 +9,11 @@ use crate::session::state::SessionState;
 
 /// 本地注入消息的固定前缀与对应的分块短名：压缩摘要、活动计划、todo 快照、
 /// 代理消息和 Grok Build 的续接前言。运行时提醒用自己的 [`moc_llm::Role::Custom`]。
-const INJECTED_PREFIXES: [(&str, &str); 6] = [
+const INJECTED_PREFIXES: [(&str, &str); 7] = [
     ("<agent-message ", "agent message"),
     ("<compaction-user-request>", "latest user request"),
     ("<compaction-summary", "compaction summary"),
+    ("<compaction-task>", "compaction task"),
     ("<active-plan", "active plan"),
     ("<active-todos", "active todos"),
     ("This session is being continued", "grok build summary"),
@@ -47,6 +48,18 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]
         messages.extend_from_slice(system);
     }
     let start = visible_history_start(state);
+    if let Some((method, summary)) = &state.summary
+        && method == "eocc"
+    {
+        if let Some(task) = super::eocc::task_message(state, start) {
+            messages.push(task);
+        }
+        messages.push(super::eocc::carrier(summary));
+        if let Some(reminder) = &state.summary_reminder {
+            messages.push(Message::custom(reminder.clone()));
+        }
+        return messages;
+    }
     // Grok Build 整体替换历史：回放只有最后一条用户消息、摘要和运行时提醒，不带旧消息。
     if let Some((method, summary)) = &state.summary
         && method == "grok_build"
@@ -147,15 +160,28 @@ pub(super) fn pinned_user_request(
 /// 短请求完整保留内容块；长粘贴只留首尾意图和归档指针，不能把数十万 token 重新塞回摘要后。
 pub(super) fn user_request_excerpt(request: &Message) -> Message {
     const MAX_REQUEST_TOKENS: u64 = 4096;
-    let prefix = "<compaction-user-request>\nLatest actual user request at this checkpoint, quoted verbatim unless marked as an excerpt; later user messages supersede it.\n";
-    let suffix = "\n</compaction-user-request>";
+    request_excerpt(
+        request,
+        "<compaction-user-request>\nLatest actual user request at this checkpoint, quoted verbatim unless marked as an excerpt; later user messages supersede it.\n",
+        "\n</compaction-user-request>",
+        MAX_REQUEST_TOKENS,
+    )
+}
+
+/// 引用任务原文；预算包含包装和消息开销，不改变短请求的内容块。
+pub(super) fn request_excerpt(
+    request: &Message,
+    prefix: &str,
+    suffix: &str,
+    max_tokens: u64,
+) -> Message {
     let overhead = super::message_tokens(&Message::user_text(format!("{prefix}{suffix}")));
     let mut message = Message::user_text(prefix);
-    if super::message_tokens(request).saturating_add(overhead) <= MAX_REQUEST_TOKENS {
+    if super::message_tokens(request).saturating_add(overhead) <= max_tokens {
         message.content.extend(request.content.clone());
     } else {
         let note = "\n[Long request excerpt; omitted content/attachments remain in history://transcript.]\n";
-        let budget = MAX_REQUEST_TOKENS.saturating_sub(overhead + super::estimate_tokens(note) + 2);
+        let budget = max_tokens.saturating_sub(overhead + super::estimate_tokens(note) + 2);
         let text = request.text();
         let excerpt = if super::estimate_tokens(&text) <= budget {
             format!("{text}{note}")
@@ -170,7 +196,7 @@ pub(super) fn user_request_excerpt(request: &Message) -> Message {
     message
         .content
         .push(moc_llm::ContentPart::Text(suffix.into()));
-    debug_assert!(super::message_tokens(&message) <= MAX_REQUEST_TOKENS);
+    debug_assert!(super::message_tokens(&message) <= max_tokens);
     message
 }
 

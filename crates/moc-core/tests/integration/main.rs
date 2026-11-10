@@ -10,6 +10,7 @@ mod autonomy_flow;
 mod bash_flow;
 mod config_management;
 mod context_content_flow;
+mod eocc_compaction;
 mod fast_mode_flow;
 mod fs_create_dir_flow;
 mod fs_list_flow;
