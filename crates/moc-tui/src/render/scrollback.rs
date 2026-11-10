@@ -1075,10 +1075,10 @@ fn estimate_tool_batch_height(
     // 成员都画在组头下一层：可用宽度固定为 width − 3×成员深度 − TITLE_INDENT。
     let member_depth = usize::from(member_shape(layout.shape, false).depth);
     let member_width = width.saturating_sub(3 * member_depth);
-    let mut rows = 1 + usize::from(layout.gap);
+    let mut rows = 1 + usize::from(layout.gap && level != DetailLevel::Hidden);
     for tool in tools {
         rows += 1;
-        if !tool.has_body() {
+        if !shows_tool_body(tool, level) {
             continue;
         }
         let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
@@ -1263,8 +1263,9 @@ fn estimate_tool_height(
     width: usize,
     layout: TreeLayout,
 ) -> usize {
-    let gap = usize::from(layout.gap);
-    if !shows_tool_body(tool, level) {
+    let body_visible = shows_tool_body(tool, level);
+    let gap = usize::from(layout.gap && level != DetailLevel::Hidden);
+    if !body_visible {
         return 1 + gap;
     }
     let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
@@ -1285,12 +1286,26 @@ fn estimate_tool_height(
     body + 1 + gap
 }
 
-/// 正文是否需要渲染；固定摘要独立于全局档位与手动展开状态。
+/// 警告不受详细程度限制，其余正文遵循全局预设或单条展开。
 fn shows_tool_body(tool: &ToolCallBlock, level: DetailLevel) -> bool {
-    let policy = tool_body_policy(&tool.name);
-    tool.has_body()
-        && !(policy == ToolBody::FullOnly && !tool_is_error(tool) && level != DetailLevel::Full)
-        && !(policy == ToolBody::Todo && level == DetailLevel::Hidden)
+    shows_tool_content(tool, level)
+        || tool.has_notices()
+        || prefer_builtin_redirect(tool)
+        || tool.name == "web_fetch"
+}
+
+fn shows_tool_content(tool: &ToolCallBlock, level: DetailLevel) -> bool {
+    if level == DetailLevel::Hidden || !tool.has_body() {
+        return false;
+    }
+    if level == DetailLevel::Full {
+        return true;
+    }
+    match tool_body_policy(&tool.name) {
+        ToolBody::Summary => tool.name == "web_fetch" || tool_is_error(tool),
+        ToolBody::FullOnly => tool_is_error(tool),
+        _ => true,
+    }
 }
 
 /// 工具是否以失败终态结束；运行中（`status: None`）不算失败。
@@ -1583,7 +1598,7 @@ fn render_tool_batch(
         }
         let mut member_lines = vec![clip_line(Line::from(spans), width)];
         let mut placements = Vec::new();
-        if tool.has_body() {
+        if shows_tool_body(tool, level) {
             let body_width = width.saturating_sub(TITLE_INDENT);
             let (body, body_placements) =
                 tool_body(tool, &args, app, body_width, level, spawn_images, in_title);
@@ -1605,7 +1620,7 @@ fn render_tool_batch(
         images.extend(placements);
     }
     // 树尾才补一行纯空行（无连线前缀）。
-    if layout.gap {
+    if layout.gap && level != DetailLevel::Hidden {
         lines.push(Line::default());
     }
     EntryLines {
@@ -2344,7 +2359,19 @@ fn summary_spans(
                 }),
             theme.path,
         )],
-        "spawn_agent" => vec![styled(arg_str("title"), theme.text_secondary)],
+        "spawn_agent" => vec![styled(
+            args.get("tasks")
+                .and_then(Value::as_array)
+                .map(|tasks| {
+                    tasks
+                        .iter()
+                        .filter_map(|task| task.get("title").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                })
+                .unwrap_or_else(|| arg_str("title")),
+            theme.text_secondary,
+        )],
         "yield" => vec![styled("交付报告".to_owned(), theme.text_secondary)],
         "skill" => vec![styled(arg_str("name"), theme.text_secondary)],
         "clm_context" => vec![styled(arg_str("op"), theme.text_secondary)],
@@ -2541,8 +2568,8 @@ fn render_tool(
                 .saturating_add(u16::try_from(3 * depth).unwrap_or(u16::MAX));
         }
     }
-    // 树尾才补一行纯空行（无连线前缀）；树中间与父块不留。
-    if layout.gap {
+    // 隐藏档不加额外留白，警告仍显示；简略与手动展开沿用树尾留白。
+    if layout.gap && level != DetailLevel::Hidden {
         lines.push(Line::default());
     }
     EntryLines {
@@ -2561,6 +2588,7 @@ fn fixed_tool_rows(
     args: &Value,
     width: usize,
     theme: &Theme,
+    warnings_only: bool,
 ) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
     let mut preview = |label: &str, text: &str| {
@@ -2583,7 +2611,7 @@ fn fixed_tool_rows(
             )));
         }
     };
-    if tool.name == "spawn_agent" {
+    if tool.name == "spawn_agent" && !warnings_only {
         if let Some(tasks) = args.get("tasks").and_then(Value::as_array) {
             for task in tasks {
                 preview(
@@ -2599,7 +2627,7 @@ fn fixed_tool_rows(
                 args.get("task").and_then(Value::as_str).unwrap_or_default(),
             );
         }
-    } else if tool.name == "yield" {
+    } else if tool.name == "yield" && !warnings_only {
         preview(
             "交付报告",
             args.get("report")
@@ -2616,6 +2644,12 @@ fn fixed_tool_rows(
             && let Ok(Value::Array(pages)) = serde_json::from_str::<Value>(json)
         {
             for page in pages {
+                if warnings_only
+                    && page.get("truncated").and_then(Value::as_bool) != Some(true)
+                    && page.get("error").is_none()
+                {
+                    continue;
+                }
                 let url = page.get("url").and_then(Value::as_str).unwrap_or_default();
                 let title = page.get("title").and_then(Value::as_str).unwrap_or(url);
                 let text = if let Some(error) = page.get("error").and_then(Value::as_str) {
@@ -2658,7 +2692,7 @@ fn fixed_tool_rows(
 
 /// 工具正文行（不含标题与留白，不带缩进，宽度不超过 `width`）。
 ///
-/// 固定摘要不受档位影响；其余内容按 [`content_limit`] 截断，被略去的内容折算成一行
+/// 正文先按档位决定是否可见，再按 [`content_limit`] 截断；被略去的内容补一行
 /// 省略提示（`bash` 结果取尾部最新输出，其他文本结果取开头）。
 /// `command_in_title` 为真时 bash 命令已在标题里，正文不再重复 `$` 行。
 fn tool_body(
@@ -2670,19 +2704,22 @@ fn tool_body(
     spawn_images: bool,
     command_in_title: bool,
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
+    if !shows_tool_content(tool, level) {
+        let mut lines = fixed_tool_rows(tool, args, width, app.theme, true);
+        if prefer_builtin_redirect(tool) {
+            let result = tool.result.as_deref().unwrap_or_default();
+            let text = result.strip_prefix("[E_PREFER_BUILTIN] ").unwrap_or(result);
+            lines.extend(
+                wrap_text(text, width)
+                    .into_iter()
+                    .map(|row| prefer_builtin_row(row, app.theme)),
+            );
+        }
+        return (lines, Vec::new());
+    }
     let theme = app.theme;
     let is_error = tool_is_error(tool);
     let policy = tool_body_policy(&tool.name);
-    let level = if is_error
-        && level == DetailLevel::Hidden
-        && matches!(
-            policy,
-            ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
-        ) {
-        DetailLevel::Brief
-    } else {
-        level
-    };
 
     if !is_error
         && matches!(
@@ -2690,17 +2727,9 @@ fn tool_body(
             ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
         )
     {
-        let mut lines = fixed_tool_rows(tool, args, width, theme);
+        let mut lines = fixed_tool_rows(tool, args, width, theme, false);
         let placements = tool_images(tool, app, width, spawn_images, &mut lines);
         return (lines, placements);
-    }
-    // run_code 的隐藏、简略档没有正文。
-    if policy == ToolBody::FullOnly && level != DetailLevel::Full && !is_error {
-        return (Vec::new(), Vec::new());
-    }
-    // 其余工具在隐藏档没有正文（计数型已在上面返回）。
-    if level == DetailLevel::Hidden {
-        return (Vec::new(), Vec::new());
     }
 
     let limit = content_limit(level);
@@ -2849,6 +2878,23 @@ fn tool_body(
     // diff 的总行数），因此不叠加第二行。
     if dropped > 0 && tool.diff.is_none() {
         lines.push(text_row(labels::more_lines(dropped), theme.gray_dim));
+    }
+    if tool.has_notices() {
+        // 通知可能落在预览裁掉的中段；只补充尚未显示的内容。
+        let shown: String = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .map(|span| span.content.as_ref())
+            .collect();
+        for notice in crate::transcript::tool_notices(tool.result.as_deref().unwrap_or_default()) {
+            if !shown.contains(notice) {
+                lines.extend(
+                    wrap_text(notice, width)
+                        .into_iter()
+                        .map(|row| text_row(row, theme.accent_warning)),
+                );
+            }
+        }
     }
     let placements = tool_images(tool, app, width, spawn_images, &mut lines);
     (lines, placements)
@@ -3045,18 +3091,11 @@ fn tool_body_rows(
     level: DetailLevel,
     command_in_title: bool,
 ) -> usize {
+    if !shows_tool_content(tool, level) || tool.has_notices() {
+        return tool_body(tool, args, app, width, level, false, command_in_title).0.len();
+    }
     let is_error = tool_is_error(tool);
     let policy = tool_body_policy(&tool.name);
-    let level = if is_error
-        && level == DetailLevel::Hidden
-        && matches!(
-            policy,
-            ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
-        ) {
-        DetailLevel::Brief
-    } else {
-        level
-    };
 
     if !is_error
         && matches!(
@@ -3064,15 +3103,9 @@ fn tool_body_rows(
             ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
         )
     {
-        let mut rows = fixed_tool_rows(tool, args, width, app.theme);
+        let mut rows = fixed_tool_rows(tool, args, width, app.theme, false);
         tool_images(tool, app, width, false, &mut rows);
         return rows.len();
-    }
-    if policy == ToolBody::FullOnly && level != DetailLevel::Full && !is_error {
-        return 0;
-    }
-    if level == DetailLevel::Hidden {
-        return 0;
     }
 
     let limit = content_limit(level);
@@ -3799,15 +3832,10 @@ pub(crate) fn todo_status_marker(
     (glyph, marker, text)
 }
 
-/// 简略档 todo 树的正文行数上限（超出补一行省略提示）。
-const TODO_BRIEF_ROWS: usize = 10;
-
 /// todo 调用结果的快照树：结果文本解析出的阶段列表，正文列宽度下的树形行。
 ///
-/// 单阶段省略阶段标题、任务直接作树叶（`├─ ☑ 任务`）；多阶段沿用阶段树
-/// （`├─ 阶段名 · d/t`，任务挂在 `│  ` 下）。简略档折叠：全部关闭的阶段只留
-/// 标题行，未关闭阶段从第一个未关闭任务的前一项开始显示，更早的已关闭任务
-/// 折成一行 `⋯ N done`；总行数超 [`TODO_BRIEF_ROWS`] 补 [`labels::more_lines`]。
+/// 单阶段省略阶段标题，多阶段保留阶段树。简略档按整份清单保留前三项和后两项，
+/// 不因完成状态隐藏任务；省略提示放在第三项后，不截掉末尾任务。
 fn todo_tree_rows(
     phases: &[moc_protocol::methods::TodoPhase],
     width: usize,
@@ -3817,20 +3845,26 @@ fn todo_tree_rows(
     use moc_protocol::methods::TodoStatus;
 
     let rail_style = tree_rail_style(theme);
-    let brief = level != DetailLevel::Full;
+    let total: usize = phases.iter().map(|phase| phase.items.len()).sum();
+    let omitted = if level == DetailLevel::Brief {
+        total.saturating_sub(5)
+    } else {
+        0
+    };
+    let tail = total.saturating_sub(2);
     let single = phases.len() == 1;
+    let mut offset = 0;
     // 任务文本列：连接符/竖线 3 格 + 状态符号 2 格
     let text_width = width.saturating_sub(5).max(1);
-    let closed = |item: &moc_protocol::methods::TodoItem| {
-        matches!(item.status, TodoStatus::Completed | TodoStatus::Abandoned)
-    };
     let mut rows: Vec<Line<'static>> = Vec::new();
     for (phase_index, phase) in phases.iter().enumerate() {
+        let start = offset;
+        offset += phase.items.len();
+        if omitted > 0 && start >= 3 && offset <= tail {
+            continue;
+        }
         let last_phase = phase_index + 1 == phases.len();
-        let all_closed = !phase.items.is_empty() && phase.items.iter().all(|item| closed(item));
-        let collapse_phase = brief && all_closed;
-        let show_header = !single || collapse_phase;
-        if show_header {
+        if !single {
             let done = phase
                 .items
                 .iter()
@@ -3858,41 +3892,17 @@ fn todo_tree_rows(
                 ]),
                 width,
             ));
-            if collapse_phase {
-                continue;
-            }
         }
         if phase.items.is_empty() {
             continue;
         }
-        // 展示窗口：简略档保留一个已完成任务作上下文，更早的已关闭任务折叠。
-        let first_open = phase.items.iter().position(|item| !closed(item));
-        let from = match (brief, first_open) {
-            (true, Some(open)) => open.saturating_sub(1),
-            _ => 0,
-        };
-        let collapsed = from;
-        let shown = &phase.items[from..];
-        // 树叶前缀：单阶段任务直接挂连接符，多阶段挂在阶段竖线下。
-        let leaf_count = shown.len() + usize::from(collapsed > 0);
         let phase_rail = if last_phase { "   " } else { "│  " };
-        if collapsed > 0 {
-            // `⋯ N done` 与任务行的状态符号同列。
-            let prefix = if single {
-                "├─ ".to_owned()
-            } else {
-                phase_rail.to_owned()
-            };
-            rows.push(Line::from(vec![
-                Span::styled(prefix, rail_style),
-                Span::styled(
-                    format!("⋯ {collapsed} done"),
-                    Style::new().fg(theme.gray_dim),
-                ),
-            ]));
-        }
-        for (item_index, item) in shown.iter().enumerate() {
-            let last_leaf = usize::from(collapsed > 0) + item_index + 1 == leaf_count;
+        for (item_index, item) in phase.items.iter().enumerate() {
+            let index = start + item_index;
+            if omitted > 0 && (3..tail).contains(&index) {
+                continue;
+            }
+            let last_leaf = item_index + 1 == phase.items.len();
             let (marker, marker_style, text_style) = todo_status_marker(item.status, theme);
             let wrapped = wrap_text(&item.task, text_width);
             let last_row = wrapped.len() - 1;
@@ -3927,15 +3937,16 @@ fn todo_tree_rows(
                 }
                 rows.push(clip_line(Line::from(spans), width));
             }
+            if omitted > 0 && index == 2 {
+                rows.push(Line::from(vec![
+                    Span::styled(if single { "├─ " } else { "   " }, rail_style),
+                    Span::styled(
+                        format!("⋯ 已省略 {omitted} 项"),
+                        Style::new().fg(theme.gray_dim),
+                    ),
+                ]));
+            }
         }
-    }
-    if brief && rows.len() > TODO_BRIEF_ROWS {
-        let dropped = rows.len() - TODO_BRIEF_ROWS;
-        rows.truncate(TODO_BRIEF_ROWS);
-        rows.push(Line::from(Span::styled(
-            labels::more_lines(dropped),
-            Style::new().fg(theme.gray_dim),
-        )));
     }
     rows
 }
@@ -4896,8 +4907,8 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), rendered(&app, 0));
         assert_eq!(
             estimate_entry_height_at(&app, 0, width),
-            2,
-            "隐藏档只剩标题与留白"
+            1,
+            "隐藏档只占标题一行"
         );
         app.tool_detail = DetailLevel::Brief;
         assert!(
@@ -5038,7 +5049,7 @@ mod tests {
 
         app.tool_detail = DetailLevel::Hidden;
         let hidden = render_entry(0, &app.blocks[0], &app, width).lines;
-        assert_eq!(hidden.len(), 2, "隐藏档 = 标题 + 留白");
+        assert_eq!(hidden.len(), 1, "隐藏档只占标题一行");
         assert!(!text_of(&hidden).contains("line-"), "隐藏档无正文");
         assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
     }
@@ -5083,7 +5094,10 @@ mod tests {
         for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
             app.tool_detail = level;
             let lines = render_entry(0, &app.blocks[0], &app, width).lines;
-            assert_eq!(lines.len(), 2, "{level:?} 档 read 只占标题行 + 尾随留白");
+            assert_eq!(
+                lines.len(),
+                if level == DetailLevel::Hidden { 1 } else { 2 }
+            );
             let text = lines[0]
                 .spans
                 .iter()
@@ -5093,7 +5107,7 @@ mod tests {
                 text.contains("crates/moc-tui/src/app.rs:1-200"),
                 "摘要带行号范围：{text}"
             );
-            assert_eq!(estimate_entry_height_at(&app, 0, width), 2);
+            assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
         }
 
         // 失败时正文是错误原因，仍可展开。
@@ -5158,7 +5172,6 @@ mod tests {
             duration_ms: Some(5),
             diff: None,
         });
-        assert!(!app.blocks[0].block.foldable());
         let text_of = |lines: &[Line<'static>]| {
             lines
                 .iter()
@@ -5170,10 +5183,8 @@ mod tests {
         for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
             app.tool_detail = level;
             let lines = render_entry(0, &app.blocks[0], &app, width).lines;
-            assert!(
-                text_of(&lines).contains("limit reached"),
-                "截断警告必须可见"
-            );
+            assert!(text_of(&lines).contains("limit reached"));
+            assert!(!plain(&lines[0]).contains("有提示"));
             let title = plain(&lines[0]);
             assert!(
                 title.contains("2 matches · 2 files"),
@@ -5362,7 +5373,7 @@ mod tests {
         app.tool_detail = DetailLevel::Hidden;
         let hidden = render_entry(0, &app.blocks[0], &app, width).lines;
         let hidden_text = text_of(&hidden);
-        assert_eq!(hidden.len(), 2, "隐藏档 = 标题 + 留白");
+        assert_eq!(hidden.len(), 1, "隐藏档只占标题一行");
         assert!(hidden_text.contains("Search the renderer"));
         assert!(!hidden_text.contains("rg -n"), "隐藏档不显示命令与输出");
         assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
@@ -7435,7 +7446,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_summaries_keep_warnings_and_reject_expansion() {
+    fn fixed_summaries_always_show_notices_without_raw_body() {
         use moc_protocol::methods::ToolStatus;
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(crate::theme::Theme::global(), events);
@@ -7461,9 +7472,7 @@ mod tests {
         for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
             app.tool_detail = level;
             for index in 0..app.blocks.len() {
-                assert!(!app.blocks[index].block.foldable());
-                app.blocks[index].toggle_level(level);
-                assert!(app.blocks[index].level_override.is_none());
+                app.blocks[index].clear_level_override();
                 let rendered = render_entry(index, &app.blocks[index], &app, 100);
                 let text = rendered
                     .lines
@@ -7473,6 +7482,7 @@ mod tests {
                     .join("\n");
                 assert!(!text.contains("secret-body"), "{text}");
                 assert!(text.contains(notice), "{text}");
+                assert!(!plain(&rendered.lines[0]).contains("有提示"));
                 assert_eq!(estimate_entry_height_at(&app, index, 100), rendered.height);
             }
         }
@@ -7513,7 +7523,12 @@ mod tests {
                 text.contains("解析器") && text.contains("渲染器") && text.contains("交付报告"),
                 "{text}"
             );
-            assert!(text.contains("检查边界") && !text.contains("**"), "{text}");
+            assert_eq!(
+                text.contains("检查边界"),
+                level != DetailLevel::Hidden,
+                "{text}"
+            );
+            assert!(!text.contains("**"), "{text}");
             assert!(
                 !text.contains("secret-tail") && !text.contains("secret-receipt"),
                 "{text}"
@@ -7551,14 +7566,10 @@ mod tests {
                 .map(plain_text)
                 .collect::<Vec<_>>()
                 .join("\n");
-            assert!(
-                text.contains("Rust 文档") && text.contains("约 1234 tokens"),
-                "{text}"
-            );
-            assert!(
-                text.contains("内容已截断") && text.contains("HTTP 403"),
-                "{text}"
-            );
+            assert!(text.contains("Rust 文档"), "{text}");
+            assert!(text.contains("约 1234 tokens"), "{text}");
+            assert!(text.contains("内容已截断"), "{text}");
+            assert!(text.contains("HTTP 403"), "{text}");
             assert!(!text.contains("secret-body"), "{text}");
             assert_eq!(estimate_entry_height_at(&app, 0, 80), rendered.height);
         }
@@ -7679,116 +7690,59 @@ mod tests {
         );
     }
 
-    /// todo：简略档画快照树、隐藏档只有标题、已关闭阶段只剩标题行、⋯ N done 折叠。
+    /// 简略档按整份清单保留首尾，不隐藏已完成任务；完整档不截断。
     #[test]
     fn todo_call_renders_snapshot_tree_per_level() {
         use moc_protocol::methods::ToolStatus;
 
-        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(crate::theme::Theme::global(), events);
-        run_tool(
-            &mut app,
-            "t1",
-            "todo",
-            r#"{"op":"start","task":"乙"}"#,
-            ToolStatus::Completed,
-            "一\n  [x] 甲\n  [-] 弃 (不需要了)\n二\n  [x] 丙\n  [x] 丁\n  [/] 乙\n  [ ] 戊\n",
-        );
-        let text_of = |lines: &[Line<'static>]| {
-            lines
-                .iter()
-                .flat_map(|line| line.spans.iter())
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        };
-
-        app.tool_detail = DetailLevel::Brief;
-        let brief = render_entry(0, &app.blocks[0], &app, 80).lines;
-        let brief_text = text_of(&brief);
-        let brief_title = plain(&brief[0]);
-        assert!(brief_title.contains("start"), "摘要 op：{brief_title}");
-        assert!(
-            !brief_title.contains('乙'),
-            "目标已在快照树里，标题不重复：{brief_title}"
-        );
-        assert!(
-            brief_text.contains("├─ 一 · 1/2"),
-            "已关闭阶段只留标题：{brief_text}"
-        );
-        assert!(
-            brief_text.contains("└─ 二 · 2/4"),
-            "未关闭阶段展开：{brief_text}"
-        );
-        assert!(
-            !brief_text.contains("不需要了"),
-            "已关闭阶段不展开：{brief_text}"
-        );
-        assert!(
-            brief_text.contains("⋯ 1 done"),
-            "更早已完成折叠：{brief_text}"
-        );
-        // `⋯ N done` 与任务行的状态符号同列。
-        let col_of = |lines: &[Line<'static>], needle: &str| {
-            lines
-                .iter()
-                .map(plain)
-                .find(|row| row.contains(needle))
-                .and_then(|row| row.find(needle))
-                .expect("行存在")
-        };
-        assert_eq!(
-            col_of(&brief, "⋯"),
-            col_of(&brief, "☑"),
-            "折叠行与状态符号同列：{brief_text}"
-        );
-        assert!(
-            brief_text.contains("4/6"),
-            "标题右端 done/total：{brief_text}"
-        );
-        assert_eq!(estimate_entry_height_at(&app, 0, 80), brief.len());
-
-        app.tool_detail = DetailLevel::Hidden;
-        let hidden = render_entry(0, &app.blocks[0], &app, 80).lines;
-        assert_eq!(hidden.len(), 2, "隐藏档只剩标题 + 留白");
-        assert_eq!(estimate_entry_height_at(&app, 0, 80), hidden.len());
-
-        app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, 80).lines;
-        let full_text = text_of(&full);
-        assert!(full_text.contains("不需要了"), "完整档全展开：{full_text}");
-        assert!(!full_text.contains("⋯ 1 done"), "完整档不折叠：{full_text}");
-        assert_eq!(estimate_entry_height_at(&app, 0, 80), full.len());
-
-        // 单阶段：省略阶段标题，任务直接作树叶，`⋯ N done` 与状态符号同列。
-        run_tool(
-            &mut app,
-            "t2",
-            "todo",
-            r#"{"op":"start","task":"丙"}"#,
-            ToolStatus::Completed,
-            "单\n  [x] 甲\n  [x] 乙\n  [/] 丙\n",
-        );
-        app.tool_detail = DetailLevel::Brief;
-        let single = render_entry(1, &app.blocks[1], &app, 60).lines;
-        let single_text = text_of(&single);
-        eprintln!(
-            "单阶段简略档:\n{}",
-            single.iter().map(plain).collect::<Vec<_>>().join("\n")
-        );
-        assert!(
-            single_text.contains("├─ ⋯ 1 done"),
-            "单阶段折叠行：{single_text}"
-        );
-        assert!(
-            !single_text.contains("├─ 单"),
-            "单阶段省略阶段标题：{single_text}"
-        );
-        assert_eq!(
-            col_of(&single, "⋯"),
-            col_of(&single, "☑"),
-            "单阶段折叠行与状态符号同列：{single_text}"
-        );
-        assert_eq!(estimate_entry_height_at(&app, 1, 60), single.len());
+        for count in [4, 5, 6, 10] {
+            for single in [true, false] {
+                let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+                let mut app = App::new(crate::theme::Theme::global(), events);
+                let mut result = if single {
+                    "阶段\n".to_owned()
+                } else {
+                    String::new()
+                };
+                for index in 0..count {
+                    if !single {
+                        result.push_str(&format!("阶段{index}\n"));
+                    }
+                    result.push_str(&format!("  [x] 任务{index}\n"));
+                }
+                run_tool(
+                    &mut app,
+                    "todo",
+                    "todo",
+                    r#"{"op":"done"}"#,
+                    ToolStatus::Completed,
+                    &result,
+                );
+                for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
+                    app.tool_detail = level;
+                    let rendered = render_entry(0, &app.blocks[0], &app, 80);
+                    let text: String = rendered.lines.iter().map(plain).collect();
+                    for index in 0..count {
+                        let visible = level == DetailLevel::Full
+                            || (level == DetailLevel::Brief
+                                && (count <= 5 || index < 3 || index >= count - 2));
+                        assert_eq!(
+                            text.contains(&format!("任务{index}")),
+                            visible,
+                            "{level:?}: {text}"
+                        );
+                    }
+                    assert_eq!(
+                        text.contains("已省略"),
+                        level == DetailLevel::Brief && count > 5
+                    );
+                    if level == DetailLevel::Hidden {
+                        assert_eq!(rendered.height, 1);
+                    }
+                    assert_eq!(estimate_entry_height_at(&app, 0, 80), rendered.height);
+                }
+            }
+        }
     }
 
     /// 粘性折叠头：盖住顶行的可折叠块报出标题行；标题恰好在顶或非折叠块不钉。

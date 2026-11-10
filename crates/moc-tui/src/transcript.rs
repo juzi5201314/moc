@@ -8,7 +8,7 @@ use moc_protocol::ToolResult;
 use moc_protocol::methods::{ToolDiff, ToolStatus};
 use serde::{Deserialize, Serialize};
 
-/// 转写内容的显示档位（ctrl+t 管思考、ctrl+o 管工具，逐档循环）。
+/// 转写内容的显示档位；工具全局只用隐藏／简略，完整档由单块点击进入。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DetailLevel {
@@ -18,7 +18,7 @@ pub enum DetailLevel {
     /// 工具正文 [`crate::render::scrollback::BRIEF_BODY_ROWS`] 行。
     #[default]
     Brief,
-    /// 正文全文，不做截断。
+    /// 展示已交付正文，仍受输出预算与渲染上限约束。
     Full,
 }
 
@@ -29,6 +29,14 @@ impl DetailLevel {
             Self::Hidden => Self::Brief,
             Self::Brief => Self::Full,
             Self::Full => Self::Hidden,
+        }
+    }
+
+    /// 工具全局预设不展开全文；完整档只保留给单块视图。
+    pub fn tool_preset(self) -> Self {
+        match self {
+            Self::Hidden => Self::Hidden,
+            Self::Brief | Self::Full => Self::Brief,
         }
     }
 
@@ -426,26 +434,31 @@ impl Block {
 }
 
 impl ToolCallBlock {
-    /// 正文可以出现，但固定摘要、警告和图片不因此获得展开能力。
+    /// 工具是否有正文、媒体、通知或失败详情可供展示。
     pub fn has_body(&self) -> bool {
         tool_body_policy(&self.name) != ToolBody::None
             || !self.images.is_empty()
-            || self
-                .result
-                .as_deref()
-                .is_some_and(|result| tool_notices(result).next().is_some())
+            || self.has_notices()
             || self
                 .status
                 .is_some_and(|status| status != ToolStatus::Completed)
+    }
+
+    pub fn has_notices(&self) -> bool {
+        self.result
+            .as_deref()
+            .is_some_and(|result| tool_notices(result).next().is_some())
     }
 
     pub fn expandable(&self) -> bool {
         !matches!(
             tool_body_policy(&self.name),
             ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
-        ) || self
-            .status
-            .is_some_and(|status| status != ToolStatus::Completed)
+        ) || !self.images.is_empty()
+            || (self.name == "web_fetch" && self.result.is_some())
+            || self
+                .status
+                .is_some_and(|status| status != ToolStatus::Completed)
     }
 }
 
@@ -456,13 +469,13 @@ pub(crate) enum ToolBody {
     None,
     /// 隐藏、简略档无正文，完整档才显示（run_code）。
     FullOnly,
-    /// 固定摘要与警告，不受显示档位影响（read／grep／find／web_fetch）。
+    /// 不展示原始正文；通知常显，网页可简略预览，媒体按需展开。
     Summary,
     /// 固定的任务／交付报告开头预览，不可展开。
     AgentPreview,
     /// 简略档给预览，完整档全文（bash、edit 等有输出的工具）。
     Preview,
-    /// todo 快照树：隐藏档不显示，简略档折叠、完整档全展开。
+    /// todo 快照树：隐藏档不显示，简略档取前三项和后两项，完整档全展开。
     Todo,
 }
 

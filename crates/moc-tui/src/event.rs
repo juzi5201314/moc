@@ -56,7 +56,7 @@ pub struct TuiOptions {
     pub resume: Option<Option<String>>,
     /// 启动即发送的提示词（`moc "提示词"`）。
     pub initial_prompt: Option<String>,
-    /// 启动覆盖显示档位（思考与工具同时生效）；`None` 用偏好设置。
+    /// 启动覆盖显示档位；工具的 Full 按简略处理，`None` 用偏好设置。
     pub detail: Option<DetailLevel>,
 }
 
@@ -85,7 +85,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     app.tool_detail = preferences.tool_detail;
     if let Some(level) = opts.detail {
         app.thinking_detail = level;
-        app.tool_detail = level;
+        app.tool_detail = level.tool_preset();
     }
     app.statusline_template = preferences.statusline.clone();
     app.keymap = crate::config::KeyMap::compile(&preferences)?;

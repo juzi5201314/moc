@@ -31,6 +31,7 @@ import { formatDuration } from "@/lib/format";
 import {
   BRIEF_BODY_ROWS,
   BRIEF_THINKING_ROWS,
+  bodyPolicy,
   type DetailLevel,
   findFiles,
   grepCounts,
@@ -383,7 +384,8 @@ function ToolRow({
     };
   })();
   const extras =
-    (level !== "hidden" || !toolExpandable(tool)) &&
+    level !== "hidden" &&
+    (level === "full" || bodyPolicy(tool.name) !== "summary" || tool.name === "web_fetch") &&
     (tool.images.length > 0 || Boolean(tool.progress?.length));
   const canBackground = tool.job?.origin === "foreground" && tool.job.status === "running";
   const background = () => {

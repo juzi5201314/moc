@@ -86,7 +86,7 @@ function fromWire(state: WebState): Prefs {
     notify: state.notify ?? false,
     diffMode: state.diff_mode ?? "unified",
     thinkingDetail: state.thinking_detail ?? "brief",
-    toolDetail: state.tool_detail ?? "brief",
+    toolDetail: state.tool_detail === "hidden" ? "hidden" : "brief",
   };
 }
 

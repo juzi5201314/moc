@@ -1,5 +1,5 @@
-// 工具块的呈现规则：每个工具在三档（隐藏 / 简略 / 完整）下露出什么，以及把工具
-// 结果文本解析成可渲染的结构。规则与 TUI（crates/moc-tui/src/render/scrollback.rs）
+// 工具块使用隐藏／简略两个全局预设，完整结果由单块点击展开；这里定义展示策略，
+// 并把工具结果文本解析成可渲染的结构。规则与 TUI（crates/moc-tui/src/render/scrollback.rs）
 // 同一套：read 只占一行、grep/find 只报数量、bash 给单行命令 + 末尾 4 行输出、
 // edit/write 给最多 6 行 diff。全部是纯函数，组件只负责画。
 
@@ -18,13 +18,13 @@ export const BRIEF_THINKING_ROWS = 4;
 
 /**
  * 正文策略：固定摘要与可展开正文分开，不允许完整档绕过固定摘要。
- * - `summary`：始终只显示摘要、媒体与警告
- * - `agent-preview`：始终显示任务／交付报告开头，不可展开
+ * - `summary`：不展示原始正文；通知常显，网页给摘要预览，媒体按需展开
+ * - `agent-preview`：简略档显示任务／交付报告开头，不展开原始载荷
  * - `title`：简略档只有标题（web_search 与未知工具）
  * - `command`：单行命令 + 末尾输出（bash）
  * - `script`：run_code——简略档只有标题，完整档给高亮脚本 + 结果
  * - `diff`：最多 {@link BRIEF_BODY_ROWS} 行 diff（edit、write）
- * - `todo`：todo——简略/完整档都画任务快照树（隐藏档只有标题）
+ * - `todo`：简略保留前三项和后两项，完整显示全部，隐藏不显示任务项
  * - `preview`：结果开头若干行（ask、子代理类）
  */
 export type BodyPolicy =
@@ -75,7 +75,12 @@ export function toolFailed(tool: ToolBlock): boolean {
 
 export function toolExpandable(tool: ToolBlock): boolean {
   const policy = bodyPolicy(tool.name);
-  return toolFailed(tool) || (policy !== "summary" && policy !== "agent-preview");
+  return (
+    toolFailed(tool) ||
+    (policy !== "summary" && policy !== "agent-preview") ||
+    tool.images.length > 0 ||
+    (tool.name === "web_fetch" && tool.result !== undefined)
+  );
 }
 
 /** 只识别工具生成的通知，带行号的源码与匹配结果不在这里解包。 */
@@ -250,7 +255,9 @@ export function toolHeadline(tool: ToolBlock): Headline {
     }
     case "spawn_agent":
       return {
-        target: str(args, "title"),
+        target: Array.isArray(args.tasks)
+          ? args.tasks.map((task: Record<string, unknown>) => str(task, "title")).join(" · ")
+          : str(args, "title"),
         mono: false,
         stat: Array.isArray(args.tasks) ? `共 ${args.tasks.length} 个任务` : undefined,
       };
@@ -536,10 +543,10 @@ export function toggledLevel(axis: DetailLevel, current: DetailLevel): DetailLev
   return axis === "full" ? "hidden" : axis;
 }
 
-/** 档位循环：隐藏 → 简略 → 完整，与 TUI 的 Ctrl+O 一致。 */
+/** 工具全局只循环隐藏／简略；完整结果由单条工具手动展开。 */
 export const NEXT_LEVEL: Record<DetailLevel, DetailLevel> = {
   hidden: "brief",
-  brief: "full",
+  brief: "hidden",
   full: "hidden",
 };
 

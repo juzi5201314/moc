@@ -213,6 +213,7 @@ function CommandBrief({
   onExpand: () => void;
 }) {
   const tail = output ? tailLines(output, BRIEF_OUTPUT_ROWS) : { lines: [], hidden: 0 };
+  const notices = toolNotices(output ?? "");
   if (!showCommand && tail.lines.length === 0) return null;
   return (
     <div className={cn(CARD, "py-1.5")}>
@@ -223,18 +224,21 @@ function CommandBrief({
         </div>
       )}
       {tail.hidden > 0 && <MoreLines hidden={tail.hidden} onExpand={onExpand} />}
-      {tail.lines.map((line, index) => (
-        <div
-          // biome-ignore lint/suspicious/noArrayIndexKey: 输出行只读，行序即身份
-          key={index}
-          className={cn(
-            "truncate px-3 whitespace-pre",
-            error ? "text-destructive" : "text-muted-foreground",
-          )}
-        >
-          <Ansi>{line || " "}</Ansi>
-        </div>
-      ))}
+      {tail.lines
+        .filter((line) => !notices.includes(line))
+        .map((line, index) => (
+          <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: 输出行只读，行序即身份
+            key={index}
+            className={cn(
+              "truncate px-3 whitespace-pre",
+              error ? "text-destructive" : "text-muted-foreground",
+            )}
+          >
+            <Ansi>{line || " "}</Ansi>
+          </div>
+        ))}
+      <Notes notes={notices} />
     </div>
   );
 }
@@ -433,35 +437,46 @@ function GenericResult({ text, error }: { text: string; error: boolean }) {
 
 // ---------- 分发 ----------
 
-/** 失败时露出的一行原因；隐藏 / 简略档也给，失败不能被藏起来。 */
+/** 简略档显示错误原因；附带通知必须完整保留。 */
 function ErrorLine({ text }: { text: string }) {
+  const first = text.trim().split("\n", 1)[0];
+  const notices = toolNotices(text);
   return (
-    <div className="truncate font-mono text-xs text-destructive/90">
-      {text.trim().split("\n", 1)[0]}
-    </div>
+    <>
+      {!notices.includes(first) && (
+        <div className="truncate font-mono text-xs text-destructive/90">{first}</div>
+      )}
+      <Notes notes={notices} />
+    </>
   );
 }
 
 function PreviewLines({ text, onExpand }: { text: string; onExpand: () => void }) {
   const head = headLines(text, BRIEF_BODY_ROWS);
+  const notices = toolNotices(text);
   if (head.lines.length === 0) return null;
   return (
     <div className={cn(CARD, "py-1.5")}>
-      {head.lines.map((line, index) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: 只读预览，行序即身份
-        <div key={index} className="truncate px-3 whitespace-pre text-muted-foreground">
-          {line || " "}
-        </div>
-      ))}
+      {head.lines
+        .filter((line) => !notices.includes(line))
+        .map((line, index) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: 只读预览，行序即身份
+          <div key={index} className="truncate px-3 whitespace-pre text-muted-foreground">
+            {line || " "}
+          </div>
+        ))}
       {head.hidden > 0 && <MoreLines hidden={head.hidden} onExpand={onExpand} />}
+      <Notes notes={notices} />
     </div>
   );
 }
 
-/** 固定摘要没有展开按钮；Markdown 只渲染开头，视觉上最多三行。 */
-function fixedSummary(tool: ToolBlock): ReactNode {
-  const pages = fetchedPages(tool.result ?? "");
-  const previews = agentPreviews(tool);
+/** 固定摘要不展示原始正文；隐藏档仍保留通知与逐页警告。 */
+function fixedSummary(tool: ToolBlock, warningsOnly = false): ReactNode {
+  const pages = fetchedPages(tool.result ?? "").filter(
+    (page) => !warningsOnly || page.truncated || page.error,
+  );
+  const previews = warningsOnly ? [] : agentPreviews(tool);
   const notices = toolNotices(tool.result ?? "");
   if (!pages.length && !previews.length && !notices.length) return null;
   return (
@@ -509,6 +524,13 @@ function fixedSummary(tool: ToolBlock): ReactNode {
  * 子调用、进度行与图片由调用方另行追加。
  */
 export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => void): ReactNode {
+  if (level === "hidden") {
+    const result = tool.result ?? "";
+    if (tool.name === "bash" && result.startsWith(PREFER_BUILTIN_TAG)) {
+      return <PreferBuiltinView command="" showCommand={false} result={result} />;
+    }
+    return fixedSummary(tool, true);
+  }
   const args = parseArgs(tool.arguments);
   const result = tool.result ?? tool.liveOutput;
   const failed = toolFailed(tool);
@@ -517,7 +539,6 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
 
   if (tool.name === "bash") {
     const command = arg("command");
-    if (level === "hidden") return null;
     if (result?.startsWith(PREFER_BUILTIN_TAG)) {
       return (
         <PreferBuiltinView
@@ -547,11 +568,10 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
   }
 
   if (tool.name === "run_code") {
-    if (level === "hidden") return null;
     if (failed && result) {
       return level === "full" ? <PlainOutput text={result} error /> : <ErrorLine text={result} />;
     }
-    if (level === "brief") return null;
+    if (level === "brief") return <Notes notes={toolNotices(result ?? "")} />;
     const code = arg("code");
     return (
       <div className="space-y-2">
@@ -567,31 +587,35 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
   }
 
   if (tool.name === "todo") {
-    if (level === "hidden") return null;
     if (failed && result) {
       return level === "full" ? <PlainOutput text={result} error /> : <ErrorLine text={result} />;
     }
     const phases = result ? parseTodo(result) : [];
     return phases.length ? (
-      <TodoPhases phases={phases} className="rounded-xl bg-code px-1 py-2" />
+      <TodoPhases
+        phases={phases}
+        brief={level === "brief"}
+        className="rounded-xl bg-code px-1 py-2"
+      />
     ) : result ? (
       <PlainOutput text={result} />
     ) : null;
   }
 
+  const policy = bodyPolicy(tool.name);
+  if (level === "brief" && !failed && policy === "summary" && tool.name !== "web_fetch")
+    return fixedSummary(tool, true);
   if (failed && result) {
     return level === "full" ? <PlainOutput text={result} error /> : <ErrorLine text={result} />;
   }
 
-  const policy = bodyPolicy(tool.name);
   if (policy === "summary" || policy === "agent-preview") return fixedSummary(tool);
 
   if (tool.name === "edit" || tool.name === "write") {
-    if (level === "hidden") return null;
     if (tool.diff?.files.length)
       return <DiffCard diff={tool.diff} level={level} onExpand={onExpand} />;
     // 旧版会话的 write 没有持久化 diff：按写入内容显示，edit 只剩入参。
-    if (level === "brief") return null;
+    if (level === "brief") return <Notes notes={toolNotices(result ?? "")} />;
     const content = arg("content");
     if (tool.name === "write" && content) {
       return (
@@ -608,7 +632,7 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
     if (level === "brief" && bodyPolicy(tool.name) === "preview") {
       return result ? <PreviewLines text={result} onExpand={onExpand} /> : null;
     }
-    return null;
+    return <Notes notes={toolNotices(result ?? "")} />;
   }
 
   if (result === undefined) return tool.arguments ? <ArgsTable raw={tool.arguments} /> : null;

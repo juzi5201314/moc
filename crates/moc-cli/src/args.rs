@@ -44,7 +44,7 @@ pub struct CliArgs {
     /// 行式／`--print` 输出不打印思维链增量（TUI 用 `--detail`）。
     #[arg(long)]
     pub hide_thinking: bool,
-    /// 启动时的显示档位（思考与工具同时生效）。
+    /// 启动时的显示档位（full 只展开思考，工具仍为简略）。
     #[arg(long, value_enum)]
     pub detail: Option<DetailArg>,
     /// 覆盖会话存储目录。

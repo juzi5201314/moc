@@ -1250,9 +1250,12 @@ impl App {
         self.view_gen += 1;
     }
 
-    /// 工具块档位循环一档并使视图缓存失效。
+    /// 工具全局只循环隐藏／简略，并收回单块的手动展开。
     pub fn cycle_tool_detail(&mut self) {
-        self.tool_detail = self.tool_detail.next();
+        self.tool_detail = match self.tool_detail {
+            DetailLevel::Hidden => DetailLevel::Brief,
+            DetailLevel::Brief | DetailLevel::Full => DetailLevel::Hidden,
+        };
         for entry in &mut self.blocks {
             if matches!(entry.block, Block::Tool(_)) {
                 entry.clear_level_override();
@@ -2027,12 +2030,20 @@ mod detail_control_tests {
 
         app.blocks[0].toggle_level(app.thinking_detail);
         app.cycle_tool_detail();
+        assert_eq!(app.tool_detail, DetailLevel::Hidden);
         assert_eq!(app.blocks[1].level_override, None);
         assert_eq!(
             app.blocks[0].level_override,
             Some(DetailLevel::Full),
             "Ctrl+O 不该碰思考块"
         );
+        app.blocks[1].toggle_level(app.tool_detail);
+        assert_eq!(app.blocks[1].level(app.tool_detail), DetailLevel::Full);
+        app.cycle_tool_detail();
+        assert_eq!(app.tool_detail, DetailLevel::Brief);
+        assert_eq!(app.blocks[1].level_override, None);
+        app.cycle_tool_detail();
+        assert_eq!(app.tool_detail, DetailLevel::Hidden);
     }
 }
 

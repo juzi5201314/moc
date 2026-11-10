@@ -43,6 +43,7 @@ const DETAIL_OPTIONS = (["hidden", "brief", "full"] as const).map((value) => ({
   value,
   label: LEVEL_LABEL[value],
 }));
+const TOOL_DETAIL_OPTIONS = DETAIL_OPTIONS.filter((option) => option.value !== "full");
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -154,12 +155,12 @@ export function GeneralSection() {
           </SettingRow>
           <SettingRow
             label="工具显示"
-            description="隐藏只留标题行；简略按工具给少量预览（命令末尾输出、几行 diff）；完整显示全部。Ctrl+O 循环切换。"
+            description="隐藏时只留标题，简略按工具给少量预览；警告始终显示。Ctrl+O 切换两档，完整结果需点击单条工具展开。"
           >
             <Segmented<DetailLevel>
               value={prefs.toolDetail}
               onChange={(toolDetail) => prefs.set({ toolDetail })}
-              options={DETAIL_OPTIONS}
+              options={TOOL_DETAIL_OPTIONS}
             />
           </SettingRow>
           <SettingRow label="差异视图" description="文件变更的展示方式。">

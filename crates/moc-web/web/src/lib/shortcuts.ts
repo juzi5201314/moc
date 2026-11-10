@@ -25,7 +25,7 @@ export const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: "Alt P", label: "切换模型" },
   { keys: "Alt M", label: "切换会话引擎（首条消息前）" },
   { keys: "Alt J", label: "进入 / 退出计划状态" },
-  { keys: "Ctrl O", label: "切换工具显示档位（隐藏 / 简略 / 完整）" },
+  { keys: "Ctrl O", label: "切换工具显示档位（隐藏 / 简略）" },
   { keys: "Ctrl /", label: "查看快捷键" },
   { keys: "Enter", label: "发送；生成中按偏好补充或中断" },
   { keys: "Ctrl Enter", label: "生成中排队发送" },

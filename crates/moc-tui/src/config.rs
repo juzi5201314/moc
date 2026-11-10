@@ -257,6 +257,7 @@ impl TuiStore {
         let stored: toml::Value = toml::from_str(&original)?;
         moc_core::config::editor::merge_json(&mut merged, serde_json::to_value(stored)?);
         let mut config: TuiConfig = serde_json::from_value(merged)?;
+        config.tool_detail = config.tool_detail.tool_preset();
         config.statusline = config.statusline.filter(|text| !text.trim().is_empty());
         KeyMap::compile(&config)?;
         Ok((Self { path, original }, config))
@@ -303,7 +304,7 @@ fn read_optional(path: &Path) -> anyhow::Result<String> {
     }
 }
 
-/// 三档显示的单选项（思考与工具共用同一组语义）。
+/// 思考块保留三档显示；工具只使用前两个全局预设。
 fn detail_options() -> Vec<ChoiceOption> {
     vec![
         ChoiceOption::new("hidden", "隐藏"),
@@ -323,8 +324,11 @@ pub fn fields() -> Vec<ConfigField> {
         (
             "tool_detail",
             "工具显示档位",
-            "启动时工具块的档位：隐藏只留摘要行，简略微量正文预览，完整显示全部输出。",
-            FieldKind::Choice(detail_options()),
+            "隐藏时只留标题，简略按工具显示短预览；警告始终显示，完整结果需点击单条展开。",
+            FieldKind::Choice(vec![
+                ChoiceOption::new("hidden", "隐藏"),
+                ChoiceOption::new("brief", "简略"),
+            ]),
         ),
         (
             "notify_complete",

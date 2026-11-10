@@ -387,6 +387,7 @@ impl SettingsPanel {
     /// 写入界面偏好文件，并把新设置应用到当前界面。
     fn save_prefs(&mut self, app: &mut App) -> anyhow::Result<()> {
         let mut preferences: TuiConfig = serde_json::from_value(self.tui.clone())?;
+        preferences.tool_detail = preferences.tool_detail.tool_preset();
         preferences.statusline = preferences
             .statusline
             .filter(|text| !text.trim().is_empty());
