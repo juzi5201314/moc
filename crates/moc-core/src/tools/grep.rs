@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use super::output::ToolOutput;
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 use crate::resources::{ResourceBacking, ResourceRouter};
 
@@ -97,7 +98,7 @@ impl Tool for GrepTool {
                         search_resource_namespace(&entries, &args, &ctx.config.tools.grep)?
                     }
                 };
-                return Ok(ToolOutcome::success(output));
+                return Ok(ToolOutcome::success(ToolOutput::Verbatim(output)));
             }
             let cancel = ctx.cancel.child_token();
             let _cancel_on_drop = cancel.clone().drop_guard();
@@ -105,7 +106,7 @@ impl Tool for GrepTool {
             let result = tokio::task::spawn_blocking(move || search.run())
                 .await
                 .map_err(|error| ToolError::new("E_GREP", error.to_string()))??;
-            Ok(ToolOutcome::success(result))
+            Ok(ToolOutcome::success(ToolOutput::Verbatim(result)))
         })
     }
 }

@@ -678,7 +678,7 @@ impl Default for GrepConfig {
             max_matches_per_file: 20,
             max_matches_total: 200,
             line_max_chars: 200,
-            output_bytes: 24_576,
+            output_bytes: 131_072,
             context_before: 0,
             context_after: 0,
             max_file_bytes: 4_194_304,
