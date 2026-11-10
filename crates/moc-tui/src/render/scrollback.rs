@@ -1627,20 +1627,43 @@ fn content_limit(level: DetailLevel) -> usize {
     }
 }
 
-/// 用户消息：`>` 落在块标记列，正文落在正文列，右侧本地时间；不使用面板边框。
+/// 用户消息：与输入框同款的圆角边框定格进转写，边框与 `❯` 提示符取
+/// `accent_user`；末行右侧放本地时间，放不下则在框下另起一行。
 fn user_message(text: &str, at_ms: Option<u64>, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let rows = wrap_text(text, prose_width(width));
+    let border = Style::new().fg(theme.accent_user);
+    // 框从块标记列起：`│ ` + `❯ ` + 正文 + ` │`，正文列宽 = 框宽 − 6。
+    let box_width = width.saturating_sub(TITLE_INDENT);
+    let rows = wrap_text(text, box_width.saturating_sub(6).max(1));
     let last = rows.len().saturating_sub(1);
     let mut clock_pending = at_ms.and_then(format_clock);
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 2);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 4);
+    let frame = |open: &str, close: &str| {
+        Line::from(vec![
+            Span::raw(" ".repeat(TITLE_INDENT)),
+            Span::styled(
+                format!("{open}{}{close}", "─".repeat(box_width.saturating_sub(2))),
+                border,
+            ),
+        ])
+    };
+    lines.push(frame("╭", "╮"));
     for (index, row) in rows.into_iter().enumerate() {
-        let mut spans = vec![Span::raw(" ".repeat(TITLE_INDENT))];
+        let mut spans = vec![
+            Span::raw(" ".repeat(TITLE_INDENT)),
+            Span::styled("│ ", border),
+        ];
         spans.push(if index == 0 {
-            Span::styled("> ", Style::new().fg(theme.gray_bright))
+            Span::styled(
+                "❯ ",
+                Style::new()
+                    .fg(theme.accent_user)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             Span::raw("  ")
         });
-        let used = PROSE_INDENT + str_width(&row);
+        // 正文列右侧的余量：`│` 前的全部空位；时间戳要留至少两格间距加一格贴框。
+        let rest = box_width.saturating_sub(5 + str_width(&row));
         spans.extend(crate::render::chip_spans(
             &row,
             theme.text_primary,
@@ -1648,13 +1671,18 @@ fn user_message(text: &str, at_ms: Option<u64>, width: usize, theme: &Theme) -> 
         ));
         if index == last
             && let Some(clock) =
-                clock_pending.take_if(|clock| width.saturating_sub(used + str_width(clock)) >= 2)
+                clock_pending.take_if(|clock| str_width(clock) + 3 <= rest)
         {
-            spans.push(Span::raw(" ".repeat(width - used - str_width(&clock))));
+            spans.push(Span::raw(" ".repeat(rest - str_width(&clock) - 1)));
             spans.push(Span::styled(clock, Style::new().fg(theme.gray_dim)));
+            spans.push(Span::raw(" "));
+        } else {
+            spans.push(Span::raw(" ".repeat(rest.max(1))));
         }
+        spans.push(Span::styled("│", border));
         lines.push(Line::from(spans));
     }
+    lines.push(frame("╰", "╯"));
     if let Some(clock) = clock_pending {
         lines.push(Line::from(vec![
             Span::raw(" ".repeat(width.saturating_sub(str_width(&clock)))),
@@ -4180,29 +4208,49 @@ mod tests {
         );
     }
 
-    /// 用户消息：使用 `>` 前缀，短消息时间戳右对齐，窄宽度时另起一行。
+    /// 用户消息：圆角边框取 `accent_user`，首行 `❯` 提示符；时间戳放在末行
+    /// 框内右缘，余量不足时在框下另起一行。
     #[test]
-    fn user_message_aligns_clock_without_panel_borders() {
+    fn user_message_in_accent_frame_with_clock() {
         let theme = Theme::resolved(ColorLevel::TrueColor);
         let at_ms = 1_700_000_000_000;
         let clock = format_clock(at_ms).expect("演示时间戳应可格式化");
 
         let short = user_message("hi", Some(at_ms), 40, &theme);
-        assert_eq!(short.len(), 2, "短消息应只有正文和尾随留白");
-        assert!(short[0].spans.iter().any(|span| span.content == "> "));
-        assert!(short[0].spans.iter().any(|span| span.content == clock));
-        assert!(!short[0].spans.iter().any(|span| span.content.contains('╭')));
+        assert_eq!(short.len(), 4, "短消息 = 上框 + 正文 + 下框 + 留白");
+        let top: String = short[0].spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(top.contains('╭') && top.contains('╮'));
+        let body = &short[1];
+        assert!(
+            body.spans
+                .iter()
+                .any(|span| span.content == "❯ " && span.style.fg == Some(theme.accent_user))
+        );
+        assert!(body.spans.iter().any(|span| span.content == clock));
+        assert!(
+            body.spans
+                .iter()
+                .any(|span| span.content == "│" && span.style.fg == Some(theme.accent_user))
+        );
+        let bottom: String = short[2].spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(bottom.contains('╰') && bottom.contains('╯'));
 
-        let narrow = user_message("一二三四五六七八九十", Some(at_ms), 24, &theme);
-        assert_eq!(narrow.len(), 3, "时间戳应在正文后另起一行");
+        let narrow = user_message("一二三四五六七八九十", Some(at_ms), 20, &theme);
         for line in &narrow {
-            assert!(line.width() <= 24, "行宽 {} 超出消息区域", line.width());
+            assert!(line.width() <= 20, "行宽 {} 超出消息区域", line.width());
         }
-        let clock_rows = narrow
+        let clock_rows: Vec<_> = narrow
             .iter()
             .filter(|line| line.spans.iter().any(|span| span.content == clock))
-            .count();
-        assert_eq!(clock_rows, 1, "时间戳应恰好出现一次");
+            .collect();
+        assert_eq!(clock_rows.len(), 1, "时间戳应恰好出现一次");
+        assert!(
+            clock_rows[0]
+                .spans
+                .iter()
+                .all(|span| !span.content.contains('│')),
+            "余量不足时时间戳应在框下另起一行"
+        );
     }
     #[test]
     fn paged_message_paints_identically_after_scroll_and_resize() {
@@ -6607,8 +6655,14 @@ mod tests {
         };
 
         let user = block(0);
-        assert_eq!(lead_col(&user[0]), TITLE_INDENT, "用户标记与块 bullet 同列");
-        assert!(plain(&user[0])[TITLE_INDENT..].starts_with("> 你好"));
+        for line in &user {
+            assert_eq!(lead_col(line), TITLE_INDENT, "用户框线与块 bullet 同列");
+        }
+        assert!(
+            plain(&user[1]).contains("❯ 你好"),
+            "框内首行带提示符：{:?}",
+            plain(&user[1])
+        );
         assert_eq!(lead_col(&block(1)[0]), PROSE_INDENT, "助手正文");
 
         let bash = block(2);
