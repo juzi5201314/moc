@@ -620,7 +620,7 @@ impl Default for ReadConfig {
     fn default() -> Self {
         Self {
             default_limit: 300,
-            max_bytes: 51_200,
+            max_bytes: 262_144,
             line_max_bytes: 4_096,
         }
     }

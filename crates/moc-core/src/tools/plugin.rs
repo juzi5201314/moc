@@ -183,7 +183,9 @@ impl moc_plugin::HostBridge for ReadOnlyBridge {
             .map_err(|error| moc_plugin::PluginError::new("E_PLUGIN_TOOL", error.to_string()))?;
             // 插件拿到的永远是纯文本；结构化结果交给宿主自己的呈现层。
             let content = match outcome.content {
-                crate::tools::ToolOutput::Text(text) => text,
+                crate::tools::ToolOutput::Text(text) | crate::tools::ToolOutput::Verbatim(text) => {
+                    text
+                }
                 crate::tools::ToolOutput::File { path, suffix } => {
                     format!("{}{suffix}", path.display())
                 }

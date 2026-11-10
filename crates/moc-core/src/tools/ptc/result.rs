@@ -34,7 +34,7 @@ pub(super) async fn script_result(
         artifact: None,
     };
     match &outcome.content {
-        ToolOutput::Text(text) => result.content.clone_from(text),
+        ToolOutput::Text(text) | ToolOutput::Verbatim(text) => result.content.clone_from(text),
         ToolOutput::Excerpt { text, path } => {
             result.content.clone_from(text);
             result.artifact = Some(

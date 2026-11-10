@@ -669,7 +669,8 @@ async fn execute_tool(
             if !ctx.nested && !ctx.plugins.is_empty() {
                 let result = moc_plugin::ToolResult {
                     content: match &outcome.content {
-                        crate::tools::ToolOutput::Text(text) => text.clone(),
+                        crate::tools::ToolOutput::Text(text)
+                        | crate::tools::ToolOutput::Verbatim(text) => text.clone(),
                         crate::tools::ToolOutput::File { path, .. } => path.display().to_string(),
                         crate::tools::ToolOutput::Excerpt { text, .. } => text.clone(),
                     },
@@ -682,7 +683,12 @@ async fn execute_tool(
                     .after_tool_call(name, &args, &result, &ctx.plugin_call_context())
                     .await;
                 if let Some(content) = rewrite.content {
-                    outcome.content = crate::tools::ToolOutput::Text(content);
+                    outcome.content = if let crate::tools::ToolOutput::Verbatim(_) = outcome.content
+                    {
+                        crate::tools::ToolOutput::Verbatim(content)
+                    } else {
+                        crate::tools::ToolOutput::Text(content)
+                    };
                 }
                 if let Some(structured) = rewrite.structured {
                     outcome.structured_content = (!structured.is_null()).then_some(structured);

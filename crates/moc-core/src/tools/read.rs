@@ -8,6 +8,7 @@ use moc_llm::ToolDef;
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::output::ToolOutput;
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 use crate::hashline::{numbered_line, served::read_snapshot, tag_text};
 use crate::resources::{ResourceBacking, ResourceRouter};
@@ -42,7 +43,7 @@ impl Tool for ReadTool {
                 serde_json::json!({
                     "path": {"type":"string","description":"File, directory, or session-internal URI"},
                     "offset": {"type":"integer","description":"1-based starting line; negative counts from the end (-50 = last 50 lines)"},
-                    "limit": {"type":"integer","minimum":1,"description":"Number of lines to read"}
+                    "limit": {"type":"integer","minimum":1,"description":"Number of lines to read (default 300); oversized pages are truncated by a byte budget"}
                 }),
                 &["path"],
             ),
@@ -66,7 +67,8 @@ impl Tool for ReadTool {
                             &resource.uri,
                             &listing,
                             args.offset,
-                            args.limit.unwrap_or(ctx.config.tools.read.default_limit),
+                            args.limit,
+                            ctx.config.tools.read.default_limit,
                         )));
                     }
                 },
@@ -104,14 +106,21 @@ impl Tool for ReadTool {
                 );
             }
             let total = snapshot.lines.len();
-            let footer_budget = page_footer(total, total.saturating_sub(1), total).len();
-            let page_budget = ctx
-                .config
-                .tools
-                .read
-                .max_bytes
-                .min(super::output::budget(&ctx.config.tools.output))
-                .saturating_sub(header_len + notices.len() + footer_budget);
+            // 截断文案最长：limit 取 usize::MAX 时数字位数最多，足作预留上界。
+            let footer_budget = page_footer(
+                total,
+                total.saturating_sub(1),
+                total,
+                Some(usize::MAX),
+                usize::MAX,
+            )
+            .len();
+            let page_budget = page_byte_budget(
+                limit,
+                super::output::budget(&ctx.config.tools.output),
+                ctx.config.tools.read.max_bytes,
+            )
+            .saturating_sub(header_len + notices.len() + footer_budget);
             let max_line_bytes = ctx
                 .config
                 .tools
@@ -190,7 +199,7 @@ impl Tool for ReadTool {
                 output.push_str(&rendered.join("\n"));
             }
             let shown_end = start + rendered.len();
-            output.push_str(&page_footer(start + 1, shown_end, total));
+            output.push_str(&page_footer(start + 1, shown_end, total, args.limit, limit));
             output.push_str(&notices);
             if has_uneditable_shown {
                 output.push_str("\nLines shown as a size notice instead of N│text are not editable; inspect them with bash or rewrite the file with write.");
@@ -198,9 +207,21 @@ impl Tool for ReadTool {
             if !anchored {
                 ctx.anchors.invalidate(&path);
             }
-            Ok(ToolOutcome::success(output))
+            Ok(ToolOutcome::success(ToolOutput::Verbatim(output)))
         })
     }
+}
+
+/// 页预算随 `limit` 缩放时每行预留的字节数；远大于普通代码行宽，使 limit 近似按字面送达。
+const BYTES_PER_REQUESTED_LINE: usize = 512;
+
+/// 页字节预算随请求行数缩放：小窗口保底共享输出预算（避免单行都装不下的退化页），
+/// 大窗口上限 tools.read.max_bytes；输出以 Verbatim 豁免共享预算的归档预览。
+fn page_byte_budget(limit: usize, output_budget: usize, max_bytes: usize) -> usize {
+    limit
+        .saturating_mul(BYTES_PER_REQUESTED_LINE)
+        .max(output_budget)
+        .min(max_bytes)
 }
 
 /// 单行渲染模式；只有 `Anchor` 行会被登记为可编辑。
@@ -226,28 +247,53 @@ fn placeholder_line(line_no: usize, bytes: usize) -> String {
     )
 }
 
-fn render_text_resource(uri: &str, text: &str, offset: Option<i64>, limit: usize) -> String {
+fn render_text_resource(
+    uri: &str,
+    text: &str,
+    offset: Option<i64>,
+    limit: Option<usize>,
+    default_limit: usize,
+) -> String {
     let lines: Vec<&str> = text.lines().collect();
+    let effective = limit.unwrap_or(default_limit).max(1);
     let start = page_start(offset, lines.len());
-    let end = start.saturating_add(limit.max(1)).min(lines.len());
+    let end = start.saturating_add(effective).min(lines.len());
     let mut output = format!("[{uri}]\n");
     if lines.is_empty() {
         output.push_str("(empty resource)");
     } else {
         output.push_str(&lines[start..end].join("\n"));
-        output.push_str(&page_footer(start + 1, end, lines.len()));
+        output.push_str(&page_footer(start + 1, end, lines.len(), limit, effective));
     }
     output
 }
 
-fn page_footer(start: usize, end: usize, total: usize) -> String {
-    if end < total {
+/// 页脚只在工具主动截断时出现：显式 limit 的行数全部送达视为未截断，保持静默；
+/// 默认页大小截断沿用普通续读提示，字节预算砍在请求行数之前则点名原因。
+fn page_footer(
+    start: usize,
+    end: usize,
+    total: usize,
+    explicit: Option<usize>,
+    limit: usize,
+) -> String {
+    if end >= total {
+        return String::new();
+    }
+    let served = end + 1 - start;
+    if explicit.is_some_and(|n| served >= n) {
+        return String::new();
+    }
+    if served < limit {
+        format!(
+            "\n[Showing lines {start}-{end} of {total}; byte budget truncated the {limit}-line page. Use offset={} to continue.]",
+            end + 1
+        )
+    } else {
         format!(
             "\n[Showing lines {start}-{end} of {total}. Use offset={} to continue.]",
             end + 1
         )
-    } else {
-        String::new()
     }
 }
 
@@ -432,8 +478,39 @@ mod tests {
         assert_eq!(page_start(Some(0), 10), 0);
         assert_eq!(page_start(None, 10), 0);
         assert_eq!(page_start(Some(5), 10), 4);
-        let output = render_text_resource("local://x.md", "a\nb\nc\nd\n", Some(-2), 50);
+        let output = render_text_resource("local://x.md", "a\nb\nc\nd\n", Some(-2), Some(50), 300);
         assert_eq!(output, "[local://x.md]\nc\nd");
+    }
+
+    #[test]
+    fn page_byte_budget_scales_with_requested_lines() {
+        // 小窗口保底共享输出预算，与旧行为一致。
+        assert_eq!(page_byte_budget(10, 40_960, 262_144), 40_960);
+        // 大窗口按每行 512B 缩放，默认 300 行拿到 150KiB。
+        assert_eq!(page_byte_budget(300, 40_960, 262_144), 153_600);
+        // 顶到 tools.read.max_bytes 硬顶，防一次性注入过多上下文。
+        assert_eq!(page_byte_budget(10_000, 40_960, 262_144), 262_144);
+        // 用户配置的 max_bytes 低于保底时以配置为准。
+        assert_eq!(page_byte_budget(10, 40_960, 8_192), 8_192);
+    }
+
+    #[test]
+    fn page_footer_only_when_the_tool_cut_the_output() {
+        // 显式 limit 全数送达：文件未完也静默。
+        assert!(page_footer(626, 695, 2456, Some(70), 70).is_empty());
+        assert!(page_footer(1, 300, 2456, Some(300), 300).is_empty());
+        // 字节预算砍在请求行数之前：保留行范围前缀，点名截断原因。
+        let cut = page_footer(626, 695, 2456, Some(300), 300);
+        assert!(cut.contains("Showing lines 626-695 of 2456"), "{cut}");
+        assert!(cut.contains("byte budget"), "{cut}");
+        assert!(cut.contains("offset=696"), "{cut}");
+        // 默认页大小截断：模型没选停点，保留普通续读提示。
+        assert_eq!(
+            page_footer(1, 300, 2456, None, 300),
+            "\n[Showing lines 1-300 of 2456. Use offset=301 to continue.]"
+        );
+        // 读到文件尾：无页脚。
+        assert!(page_footer(2400, 2456, 2456, Some(300), 300).is_empty());
     }
 
     #[test]

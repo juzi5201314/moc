@@ -171,7 +171,7 @@ pub(super) async fn observe_tool(
         hash.update(code.as_bytes());
     }
     match &outcome.content {
-        ToolOutput::Text(text) => hash.update(text.as_bytes()),
+        ToolOutput::Text(text) | ToolOutput::Verbatim(text) => hash.update(text.as_bytes()),
         ToolOutput::File { path, .. } | ToolOutput::Excerpt { path, .. } => {
             let mut file = tokio::fs::File::open(path).await?;
             let mut buffer = [0u8; 16 * 1024];

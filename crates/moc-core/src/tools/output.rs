@@ -19,6 +19,8 @@ pub enum OutputError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolOutput {
     Text(String),
+    /// 已按工具自身预算截好的文本（read 的分页）：跳过共享输出预算的归档预览，原样交付模型。
+    Verbatim(String),
     /// 已写入文件的流式输出；`suffix` 是附在后面、不属于原始日志的说明，例如退出状态。
     File {
         path: PathBuf,
@@ -49,12 +51,15 @@ pub(crate) async fn prepare_outcome(
     config: &OutputConfig,
     artifacts: &ArtifactStore,
 ) -> Result<String, OutputError> {
+    if let ToolOutput::Verbatim(text) = &outcome.content {
+        return Ok(text.clone());
+    }
     let Some(structured) = &outcome.structured_content else {
         return prepare(outcome.content.clone(), config, artifacts).await;
     };
     let json = serde_json::to_string_pretty(structured).expect("JSON Value 可序列化");
     let mut text = match &outcome.content {
-        ToolOutput::Text(text) => text.clone(),
+        ToolOutput::Text(text) | ToolOutput::Verbatim(text) => text.clone(),
         ToolOutput::File { path, suffix } => {
             let uri = artifacts.uri_for_path(path)?;
             let mut text = preview_file(path, config, &uri).await?;
@@ -86,6 +91,7 @@ pub(crate) async fn prepare(
             let uri = artifacts.archive_text(&text).await?;
             Ok(preview(&text, config, &uri))
         }
+        ToolOutput::Verbatim(text) => Ok(text),
         ToolOutput::File { path, suffix } => {
             let uri = artifacts.uri_for_path(&path)?;
             let mut text = preview_file(&path, config, &uri).await?;
