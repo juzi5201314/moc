@@ -7,8 +7,8 @@ use std::ops::Range;
 
 use moc_protocol::Role;
 use moc_protocol::methods::{
-    AskParams, AskResult, ContextContentResult, ContextContentSection, ContextUsageResult,
-    ModelSwitchOverflow, PermissionRequestParams, PermissionResult, SessionInfo, TranscriptEntry,
+    AskParams, AskResult, ContextContentResult, ContextContentSection, ModelSwitchOverflow,
+    PermissionRequestParams, PermissionResult, SessionInfo, TranscriptEntry,
 };
 
 use ratatui::layout::Rect;
@@ -1194,15 +1194,18 @@ pub struct ContextDrag {
     pub grab: i32,
 }
 
-/// 上下文正文窗：分块正文、折叠状态与滚动位置。
+/// 上下文快照：总览、来源目录与正文共用一条导航栈。
 #[derive(Debug, Default)]
 pub struct ContextContentState {
     /// 拉取结果；`None` = 还在读。
     pub content: Option<ContextContentResult>,
     /// 读取失败的原因。
     pub error: Option<String>,
-    /// 每块的展开状态，与 `sections` 等长；短块展不展开都全文显示。
-    pub expanded: Vec<bool>,
+    pub current: Option<ContextContentSection>,
+    pub navigation: Vec<(Option<ContextContentSection>, usize, Option<usize>, bool)>,
+    pub stale: bool,
+    pub raw: bool,
+    pub copy: bool,
     /// 键盘焦点块；`None` = 未选中（Tab 或点击后出现高亮）。
     pub focus: Option<usize>,
     /// 视口顶端行号。
@@ -1221,26 +1224,22 @@ pub struct ContextContentState {
     pub pending: std::collections::HashSet<String>,
     pub node_errors: std::collections::HashMap<String, String>,
     pub loads: Vec<(String, Option<u64>)>,
-    pub root_more: bool,
     pub refresh: bool,
-    pub depths: Vec<usize>,
-    pub body_cache: std::collections::HashMap<String, (usize, Vec<String>)>,
     pub cursors: std::collections::HashMap<String, u64>,
     pub previous: std::collections::HashMap<String, Vec<u64>>,
 }
 
 impl ContextContentState {
-    /// 装载结果：全部折叠、焦点清空、视口回到顶部。
+    /// 装载同一份用量与目录快照。
     pub fn set_content(&mut self, content: ContextContentResult) {
-        self.expanded = vec![false; content.sections.len()];
-        self.depths = vec![0; content.sections.len()];
+        self.current = None;
+        self.navigation.clear();
         self.error = content.error.clone();
         self.content = Some(content);
         self.pages.clear();
         self.pending.clear();
         self.node_errors.clear();
         self.loads.clear();
-        self.body_cache.clear();
         self.cursors.clear();
         self.previous.clear();
         self.focus = None;
@@ -1257,9 +1256,21 @@ impl ContextContentState {
 
     /// 分块列表；还没读到结果时为空。
     pub fn sections(&self) -> &[ContextContentSection] {
-        self.content
+        if let Some(node) = &self.current {
+            self.pages
+                .get(&node.id)
+                .map_or(&[], |page| page.children.as_slice())
+        } else {
+            self.content
+                .as_ref()
+                .map_or(&[], |content| content.sections.as_slice())
+        }
+    }
+
+    pub fn is_body(&self) -> bool {
+        self.current
             .as_ref()
-            .map_or(&[], |content| content.sections.as_slice())
+            .is_some_and(|node| node.kind != "category")
     }
 
     /// 当前分块数。
@@ -1267,54 +1278,36 @@ impl ContextContentState {
         self.sections().len()
     }
 
-    /// 切换第 `index` 块的展开状态。
-    pub fn toggle(&mut self, index: usize) {
-        let Some(section) = self.sections().get(index) else {
+    /// 隐藏项与空分类不可进入；返回时恢复父页面的滚动、焦点与阅读模式。
+    pub fn enter(&mut self, index: usize) {
+        let Some(node) = self.sections().get(index).cloned() else {
             return;
         };
-        let id = section.id.clone();
-        if self.expanded[index] {
-            let depth = self.depths[index];
-            let end = (index + 1..self.count())
-                .find(|i| self.depths[*i] <= depth)
-                .unwrap_or(self.count());
-            self.content
-                .as_mut()
-                .unwrap()
-                .sections
-                .drain(index + 1..end);
-            self.expanded.drain(index + 1..end);
-            self.depths.drain(index + 1..end);
-            self.expanded[index] = false;
-        } else {
-            self.expanded[index] = true;
-            if let Some(page) = self.pages.get(&id).cloned() {
-                self.insert_children(index, &page.children);
-            } else {
-                self.queue(id, None);
-            }
+        if node.hidden.is_some() || (node.kind == "category" && node.children == 0) {
+            return;
         }
-        self.focus = self
-            .focus
-            .map(|focus| focus.min(self.count().saturating_sub(1)));
+        self.navigation
+            .push((self.current.take(), self.scroll, Some(index), self.raw));
+        self.scroll = 0;
+        self.focus = None;
+        self.raw = node.kind == "json";
+        if !self.pages.contains_key(&node.id) {
+            self.queue(node.id.clone(), None);
+        }
+        self.current = Some(node);
         self.layout = None;
     }
 
-    fn insert_children(&mut self, index: usize, children: &[ContextContentSection]) {
-        let depth = self.depths[index] + 1;
-        self.content
-            .as_mut()
-            .unwrap()
-            .sections
-            .splice(index + 1..index + 1, children.iter().cloned());
-        self.expanded.splice(
-            index + 1..index + 1,
-            std::iter::repeat_n(false, children.len()),
-        );
-        self.depths.splice(
-            index + 1..index + 1,
-            std::iter::repeat_n(depth, children.len()),
-        );
+    pub fn back(&mut self) -> bool {
+        let Some((node, scroll, focus, raw)) = self.navigation.pop() else {
+            return false;
+        };
+        self.current = node;
+        self.scroll = scroll;
+        self.focus = focus;
+        self.raw = raw;
+        self.layout = None;
+        true
     }
 
     fn queue(&mut self, id: String, cursor: Option<u64>) {
@@ -1325,8 +1318,8 @@ impl ContextContentState {
     }
 
     pub fn next_page(&mut self) {
-        if let Some(index) = self.focus {
-            let id = self.sections()[index].id.clone();
+        if let Some(node) = &self.current {
+            let id = node.id.clone();
             let cursor = self.pages.get(&id).and_then(|page| page.next_cursor);
             if self.pending.contains(&id) {
                 return;
@@ -1338,60 +1331,27 @@ impl ContextContentState {
                 self.previous.entry(id.clone()).or_default().push(current);
                 self.cursors.insert(id.clone(), cursor);
                 self.queue(id, Some(cursor));
+                self.scroll = 0;
             }
-        } else {
-            self.root_more = true;
         }
     }
 
     pub fn previous_page(&mut self) {
-        let Some(index) = self.focus else { return };
-        let id = self.sections()[index].id.clone();
+        let Some(node) = &self.current else { return };
+        let id = node.id.clone();
         if self.pending.contains(&id) {
             return;
         }
         if let Some(cursor) = self.previous.get_mut(&id).and_then(Vec::pop) {
             self.cursors.insert(id.clone(), cursor);
+            self.scroll = 0;
             self.queue(id, Some(cursor));
         }
     }
 
     pub fn apply_page(&mut self, result: moc_protocol::methods::ContextReadResult) {
         self.pending.remove(&result.node_id);
-        self.body_cache.remove(&result.node_id);
-        if let Some(index) = self
-            .sections()
-            .iter()
-            .position(|node| node.id == result.node_id)
-        {
-            if self.expanded[index] {
-                let end = (index + 1..self.count())
-                    .find(|i| self.depths[*i] <= self.depths[index])
-                    .unwrap_or(self.count());
-                self.content
-                    .as_mut()
-                    .unwrap()
-                    .sections
-                    .drain(index + 1..end);
-                self.expanded.drain(index + 1..end);
-                self.depths.drain(index + 1..end);
-                self.insert_children(index, &result.children);
-            }
-        }
         self.pages.insert(result.node_id.clone(), result);
-        self.focus = self
-            .focus
-            .map(|focus| focus.min(self.count().saturating_sub(1)));
-        self.layout = None;
-    }
-
-    /// 收起不会读取正文；展开仅作用于已加载目录。
-    pub fn set_all_expanded(&mut self, expanded: bool) {
-        for index in (0..self.count()).rev() {
-            if self.expanded[index] != expanded {
-                self.toggle(index);
-            }
-        }
         self.layout = None;
     }
 
@@ -1549,9 +1509,7 @@ pub enum Modal {
         error: Option<String>,
         scroll: usize,
     },
-    /// 上下文组成估算详情。
-    Context { usage: Option<ContextUsageResult> },
-    /// 上下文正文：分块展示真正送进模型的内容。
+    /// 上下文总览与逐层来源阅读。
     ContextContent { state: ContextContentState },
     /// 切换模型需要压缩上下文时的确认卡片。
     SwitchModel {
@@ -1638,8 +1596,10 @@ impl Modal {
                 Some(tools) => format!("可用工具 · {}", tools.len()),
                 None => "可用工具".into(),
             },
-            Modal::Context { .. } => "上下文占用".into(),
-            Modal::ContextContent { .. } => "上下文内容".into(),
+            Modal::ContextContent { state } => state
+                .current
+                .as_ref()
+                .map_or_else(|| "上下文".into(), |node| node.name.clone()),
             Modal::Jobs { .. } => "后台任务".into(),
             Modal::SwitchModel { .. } => "切换模型：需要压缩上下文".into(),
             Modal::WorkflowApproval { state } => match state.request.kind {
@@ -1677,10 +1637,7 @@ impl Modal {
                 scope,
             } => filtered_sessions(sessions, &picker.query, *scope, cwd).len(),
             Modal::Plan { .. } => 4,
-            Modal::Help { .. }
-            | Modal::Tools { .. }
-            | Modal::Context { .. }
-            | Modal::ContextContent { .. } => 0,
+            Modal::Help { .. } | Modal::Tools { .. } | Modal::ContextContent { .. } => 0,
             Modal::Jobs { jobs, .. } => jobs.len(),
             Modal::SwitchModel { .. } => 2,
             Modal::WorkflowApproval { state } => state.rows(),
@@ -1744,7 +1701,6 @@ impl Modal {
             | Modal::Rewind { .. }
             | Modal::Help { .. }
             | Modal::Tools { .. }
-            | Modal::Context { .. }
             | Modal::ContextContent { .. }
             | Modal::Monitor => {}
             Modal::SwitchModel { option, .. } => {
@@ -2318,10 +2274,6 @@ mod tests {
         ));
 
         assert!(!Modal::Help { scroll: 0 }.set_error("没有位置显示"));
-        assert!(
-            !Modal::Context { usage: None }.set_error("没有位置显示"),
-            "上下文占用卡片不承载错误"
-        );
     }
 
     /// 正文窗的滚动、焦点与命中：都按上一帧缓存的几何换算。
@@ -2346,7 +2298,6 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(state.count(), 3);
-        assert_eq!(state.expanded, vec![false; 3]);
         // 视口 10 行、全文 30 行：滚动夹在 [0, 20]。
         state.viewport = 10;
         state.layout = Some(super::ContextLayout {
@@ -2372,16 +2323,6 @@ mod tests {
         state.focus_step(-10);
         assert_eq!(state.focus, Some(0));
         assert_eq!(state.scroll, 0);
-
-        // 展开状态切换会作废渲染缓存。
-        state.layout = Some(super::ContextLayout {
-            width: 40,
-            spans: vec![0..1, 1..2],
-            lines: vec![ratatui::text::Line::default(); 2],
-        });
-        state.toggle(1);
-        assert_eq!(state.expanded, vec![false, true, false]);
-        assert!(state.layout.is_none(), "折叠状态变了必须重排");
 
         // 命中：轨道覆盖正文区，行号换算成行表里的行。
         state.scrollbar.track = Rect::new(30, 4, 1, 10);

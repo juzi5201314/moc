@@ -1,4 +1,5 @@
 //! 当前上下文的只读组装；正文视图复用实际发送的回放、预算与协议编码。
+mod outline;
 mod view;
 use super::{CoreInner, to_rpc};
 use crate::{
@@ -48,10 +49,11 @@ struct Snapshot {
     model: crate::ResolvedModel,
     config: Arc<crate::ResolvedConfig>,
     pieces: Vec<PromptPiece>,
+    context_files: Arc<Vec<crate::system_prompt::context_files::ContextFile>>,
     system: SystemPrompt,
     tools: Vec<moc_llm::ToolDef>,
     messages: Vec<Message>,
-    sources: Vec<String>,
+    sources: Vec<compact::replay::MessageSource>,
     history_tokens: u64,
 }
 impl Snapshot {
@@ -133,29 +135,16 @@ pub(crate) async fn content(
 }
 
 fn build_view(
-    snapshot: Snapshot,
+    mut snapshot: Snapshot,
     session_id: &str,
     client: &moc_llm::Client,
 ) -> Result<view::View, RpcError> {
     let usage = snapshot.usage();
-    // compose 按角色分组；来源也按同一规则排列，不能沿原 pieces 顺序错配。
-    let mut instruction_sources = Vec::new();
-    for keep_system in [true, false] {
-        let labels: Vec<String> = snapshot
-            .pieces
-            .iter()
-            .filter(|piece| snapshot.model.piece_keeps_system(piece.name) == keep_system)
-            .map(|piece| format!("系统提示 · {}", piece.name))
-            .collect();
-        if !labels.is_empty() {
-            instruction_sources.push(labels);
-        }
-    }
     let request = super::prompt::request::build_request(
         &snapshot.model,
         &snapshot.config,
-        snapshot.messages,
-        snapshot.tools,
+        std::mem::take(&mut snapshot.messages),
+        std::mem::take(&mut snapshot.tools),
         session_id,
         super::prompt::request::CacheAnchors {
             instruction_static: &snapshot.system.static_prefix,
@@ -163,24 +152,7 @@ fn build_view(
         },
     );
     let inspection = client.inspect_request(&snapshot.model.llm, &request, true);
-    let protocol = serde_json::to_value(snapshot.model.llm.protocol)
-        .map_err(|e| {
-            RpcError::new(
-                moc_protocol::RpcErrorCode::InternalError.code(),
-                e.to_string(),
-            )
-        })?
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
-    let mut view = view::View::new(
-        usage,
-        snapshot.model.selector,
-        protocol,
-        inspection,
-        &snapshot.sources,
-        &instruction_sources,
-    );
+    let mut view = outline::build(snapshot, request, inspection, usage);
     view.bound_text(view::TEXT_CACHE_BYTES).map_err(|error| {
         RpcError::new(
             moc_protocol::RpcErrorCode::InternalError.code(),
@@ -285,6 +257,7 @@ async fn snapshot(
         model,
         config,
         pieces,
+        context_files,
         system,
         tools,
         messages,

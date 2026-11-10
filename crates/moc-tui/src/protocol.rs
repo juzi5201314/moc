@@ -132,6 +132,10 @@ pub enum AppEvent {
         node_id: String,
         result: anyhow::Result<moc_protocol::methods::ContextReadResult>,
     },
+    ContextCopied {
+        request: u64,
+        result: anyhow::Result<String>,
+    },
     Sessions(Vec<moc_protocol::SessionInfo>),
     /// 历史展示页；`prepend=true` 时插入当前转写之前。
     HistoryPageLoaded {

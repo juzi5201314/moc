@@ -225,18 +225,34 @@ pub fn model_messages(
     model_messages_traced(state, system, model, None)
 }
 
+/// 查看器的隐藏边界来自日志元数据，不依赖显示名称或正文标签。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextOrigin {
+    Other,
+    User,
+    Tool,
+}
+
+pub(crate) struct MessageSource {
+    pub label: String,
+    pub origin: ContextOrigin,
+}
+
 /// 检查窗口按构造来源标记消息；发送路径传 None，不额外分配标记。
 pub(crate) fn model_messages_traced(
     state: &SessionState,
     system: Option<&[Message]>,
     model: Option<&crate::ResolvedModel>,
-    mut sources: Option<&mut Vec<String>>,
+    mut sources: Option<&mut Vec<MessageSource>>,
 ) -> Vec<Message> {
     let mut messages = Vec::with_capacity(2);
     if let Some(system) = system {
         messages.extend_from_slice(system);
         if let Some(sources) = sources.as_deref_mut() {
-            sources.extend(system.iter().map(|_| "系统提示".to_owned()));
+            sources.extend(system.iter().map(|_| MessageSource {
+                label: "系统提示".into(),
+                origin: ContextOrigin::Other,
+            }));
         }
     }
     if state.engine == moc_protocol::methods::SessionEngine::ClmExperimental
@@ -244,13 +260,26 @@ pub(crate) fn model_messages_traced(
     {
         messages.push(crate::clm::message(context));
         if let Some(sources) = sources.as_deref_mut() {
-            sources.push("CLM 上下文".into());
+            sources.push(MessageSource {
+                label: "CLM 上下文".into(),
+                origin: ContextOrigin::Other,
+            });
         }
         return messages;
     }
     let synthetic = synthetic_messages(state, None);
     if let Some(sources) = sources.as_deref_mut() {
-        sources.extend(synthetic.iter().map(|_| "会话状态生成".to_owned()));
+        sources.extend(synthetic.iter().map(|message| {
+            let name = injected_name(message).unwrap_or("会话状态生成");
+            MessageSource {
+                label: name.into(),
+                origin: if name == "latest user request" {
+                    ContextOrigin::User
+                } else {
+                    ContextOrigin::Other
+                },
+            }
+        }));
     }
     messages.extend(synthetic);
     let start = visible_history_start(state);
@@ -274,7 +303,20 @@ pub(crate) fn model_messages_traced(
                     Role::System | Role::Developer => "指令",
                 }
             };
-            sources.push(format!("{source} · {}", entry.id));
+            let origin = if entry.bash.is_some() || message.role == Role::Tool {
+                ContextOrigin::Tool
+            } else if entry.agent.is_none()
+                && entry.goal_round.is_none()
+                && message.role == Role::User
+            {
+                ContextOrigin::User
+            } else {
+                ContextOrigin::Other
+            };
+            sources.push(MessageSource {
+                label: format!("{source} · {}", entry.id),
+                origin,
+            });
         }
         messages.push(repair_tool_history(message, model));
     }

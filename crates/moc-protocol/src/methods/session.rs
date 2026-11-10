@@ -384,22 +384,19 @@ pub struct SessionContextContentParams {
     pub limit: Option<u32>,
 }
 
-/// 实际编码请求中的节点；目录不携带正文。
+/// 冻结上下文中的分类或来源条目；目录与隐藏项不携带正文。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextContentSection {
     pub id: String,
-    pub path: String,
-    /// 可视化来源子块在 path 指向的原文中的 UTF-8 字节范围；不是新增的线上字段。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_range: Option<[u64; 2]>,
     pub name: String,
+    /// `category`、`markdown` 或 `json`；不暴露编码协议的字段树。
     pub kind: String,
-    pub role: Option<String>,
     pub source: Option<String>,
-    pub bytes: u64,
     pub tokens: u64,
     pub children: u64,
+    /// 隐藏原因；有值时不可读取正文或子节点，仍计入上下文用量。
+    pub hidden: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -409,10 +406,9 @@ pub struct ContextContentResult {
     pub context_window: u64,
     pub total_tokens: u64,
     pub model: String,
-    pub protocol: String,
     pub sections: Vec<ContextContentSection>,
     pub next_cursor: Option<u64>,
-    /// 编码器拒绝尚不完整的当前状态时给出原因，不补造消息。
+    /// 当前状态无法编码成模型请求时的原因。
     pub error: Option<String>,
 }
 
@@ -428,15 +424,6 @@ pub struct SessionContextReadParams {
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ContextSource {
-    pub source: String,
-    /// 完整叶子字符串中的 UTF-8 字节范围，不是当前页相对范围。
-    pub start: u64,
-    pub end: u64,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextReadResult {
@@ -445,7 +432,6 @@ pub struct ContextReadResult {
     pub children: Vec<ContextContentSection>,
     pub text: Option<String>,
     pub next_cursor: Option<u64>,
-    pub sources: Vec<ContextSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

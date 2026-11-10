@@ -128,7 +128,7 @@ pub use resources::{
     ResourceReadParams, ResourceReadResult,
 };
 pub use session::{
-    CompactResult, ContextContentResult, ContextContentSection, ContextReadResult, ContextSource,
+    CompactResult, ContextContentResult, ContextContentSection, ContextReadResult,
     ContextUsageResult, ContextUsageSection, GoalAction, GoalBlockReason, GoalPhase, GoalRoundMeta,
     GoalView, ModelSwitchOverflow, ModelUsageSummary, ReminderItem, ReminderStamp, SessionAutonomy,
     SessionCompact, SessionCompactParams, SessionContext, SessionContextClose,

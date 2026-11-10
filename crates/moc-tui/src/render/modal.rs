@@ -345,8 +345,6 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
             let natural = help_lines(app, probe).1 + usize::from(2 + overlay::CARD_PAD_X * 2);
             overlay::card_width(area, u16::try_from(natural).unwrap_or(u16::MAX))
         }
-        // 上下文占用：收敛到紧凑宽度，避免宽屏下右侧过度留白、色条过长。
-        Modal::Context { .. } => overlay::card_width(area, CONTEXT_CARD_MAX_WIDTH),
         Modal::Plan { .. } => overlay::card_width(area, overlay::CARD_WIDE_MAX_WIDTH),
         _ => overlay::card_width(area, overlay::CARD_MAX_WIDTH),
     };
@@ -463,9 +461,6 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         _ => {}
     }
 }
-
-/// 上下文占用卡片的最大外宽。
-const CONTEXT_CARD_MAX_WIDTH: u16 = 58;
 
 /// 提问卡片：渲染的同时把每个选项（含自定义行）的命中矩形记到 `ask_option_hits`，
 /// 鼠标点选据此换算。带选项预览时放宽到 [`overlay::CARD_WIDE_MAX_WIDTH`]。
@@ -910,7 +905,11 @@ pub(crate) fn share_percent(part: u64, total: u64) -> String {
 /// 列表每块以 `▌` 色标起头，颜色与色条上对应那段一致；色条按上下文窗口定标，
 /// 因此空会话就是一整条暗色轨道，已用部分永远落在左侧。边界标注落在各分块
 /// 右界，只在不重叠处显示，并优先保住「已用总量」与窗口上限两条。
-fn context_lines(usage: &ContextUsageResult, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+pub(super) fn context_lines(
+    usage: &ContextUsageResult,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let total = usage.total_tokens;
     let window = usage.context_window;
     let mut lines = Vec::with_capacity(usage.sections.len() + 6);
@@ -1348,9 +1347,11 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 state.body_scroll.min(scroll_max)
             };
             applied_offset = Some(start);
-            hits.extend(row_hits.into_iter().filter_map(|(index, row)| {
-                row.checked_sub(start).map(|row| (index, row))
-            }));
+            hits.extend(
+                row_hits
+                    .into_iter()
+                    .filter_map(|(index, row)| row.checked_sub(start).map(|row| (index, row))),
+            );
             let windowed: Vec<_> = lines.into_iter().skip(start).take(max_lines).collect();
             let footer = if state.feedback.is_some() {
                 overlay::footer(&[("enter", "提交拒绝"), ("esc", "取消输入")], width, theme)
@@ -1431,9 +1432,11 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 state.body_scroll.min(scroll_max)
             };
             applied_offset = Some(start);
-            hits.extend(row_hits.into_iter().filter_map(|(index, row)| {
-                row.checked_sub(start).map(|row| (index, row))
-            }));
+            hits.extend(
+                row_hits
+                    .into_iter()
+                    .filter_map(|(index, row)| row.checked_sub(start).map(|row| (index, row))),
+            );
             let windowed: Vec<_> = lines.into_iter().skip(start).take(max_lines).collect();
             let footer = overlay::footer(
                 &[
@@ -1448,7 +1451,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             );
             (windowed, footer)
         }
-        // 回退视图与上下文正文窗自带布局，`draw_modal` 在此之前就已分派走。
+        // 回退视图与统一上下文面板自带布局，`draw_modal` 在此之前就已分派走。
         Modal::Rewind { .. } | Modal::ContextContent { .. } => {
             (Vec::new(), overlay::Footer::default())
         }
@@ -1524,16 +1527,6 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
         }
         Modal::Plan { state } => {
             plan_lines(state, width, max_lines, theme, &mut hits, &mut scroll_max)
-        }
-        Modal::Context { usage } => {
-            let lines = match usage {
-                Some(usage) => context_lines(usage, width, theme),
-                None => vec![Line::from(vec![
-                    Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()),
-                    Span::styled("正在计算上下文…", Style::new().fg(theme.accent_running)),
-                ])],
-            };
-            (lines, overlay::footer(&[("esc", "关闭")], width, theme))
         }
         Modal::Tools {
             tools,
@@ -3055,149 +3048,27 @@ mod tests {
         );
     }
 
-    /// 上下文窗：分块名用英文、数值统一为 k，色标与色条同色，色条按窗口定标。
-    #[test]
-    fn context_modal_colors_sections_and_scales_bar_to_window() {
-        let (events, _receiver) = unbounded_channel();
-        let app = App::new(Theme::global(), events);
-        let theme = app.theme;
-        let modal = Modal::Context {
-            usage: Some(ContextUsageResult {
-                context_window: 500_000,
-                total_tokens: 250_000,
-                sections: vec![
-                    ContextUsageSection {
-                        name: "system".into(),
-                        tokens: 100_000,
-                    },
-                    ContextUsageSection {
-                        name: "tools".into(),
-                        tokens: 50_000,
-                    },
-                    ContextUsageSection {
-                        name: "messages".into(),
-                        tokens: 100_000,
-                    },
-                ],
-            }),
-        };
-
-        let lines = modal_lines(&app, &modal, 80, 24);
-        let texts: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(texts[0], "  250k / 500k · 50.0%");
-        assert_eq!(texts[2], "  ▌ system             100k   40.0%");
-        assert_eq!(texts[3], "  ▌ tools               50k   20.0%");
-        assert_eq!(texts[4], "  ▌ messages           100k   40.0%");
-        for (index, row) in [&lines[2], &lines[3], &lines[4]].iter().enumerate() {
-            assert_eq!(
-                row.spans[1].style.fg,
-                Some(theme.chart(index)),
-                "第 {index} 块色标应与色条同色"
-            );
-        }
-
-        // 已用 250k 落在一半格位（39/78），剩余 39 格是空窗口
-        let segments: Vec<(usize, Option<Color>)> = lines[6]
-            .spans
-            .iter()
-            .skip(1)
-            .map(|span| (span.content.chars().count(), span.style.fg))
-            .collect();
-        assert_eq!(
-            segments,
-            vec![
-                (16, Some(theme.chart(0))),
-                (7, Some(theme.chart(1))),
-                (16, Some(theme.chart(2))),
-                (39, Some(theme.border)),
-            ]
-        );
-
-        // 刻度行：分块右界的累积用量 + 右端窗口上限，行宽与色条一致
-        let labels: Vec<(String, Option<Color>)> = lines[7]
-            .spans
-            .iter()
-            .filter(|span| !span.content.trim().is_empty())
-            .map(|span| (span.content.to_string(), span.style.fg))
-            .collect();
-        assert_eq!(
-            labels,
-            vec![
-                ("100k".to_owned(), Some(theme.chart(0))),
-                ("150k".to_owned(), Some(theme.chart(1))),
-                ("250k".to_owned(), Some(theme.chart(2))),
-                ("500k".to_owned(), Some(theme.gray_dim)),
-            ]
-        );
-        assert_eq!(line_width(&texts[7]), line_width(&texts[6]));
-    }
-
-    /// 上下文窗：空会话是一整条空窗口，分块与合计都显示 0。
-    #[test]
-    fn context_modal_shows_empty_window_for_fresh_session() {
-        let (events, _receiver) = unbounded_channel();
-        let app = App::new(Theme::global(), events);
-        let modal = Modal::Context {
-            usage: Some(ContextUsageResult {
-                context_window: 500_000,
-                total_tokens: 0,
-                sections: vec![
-                    ContextUsageSection {
-                        name: "system".into(),
-                        tokens: 0,
-                    },
-                    ContextUsageSection {
-                        name: "messages".into(),
-                        tokens: 0,
-                    },
-                ],
-            }),
-        };
-
-        let lines = modal_lines(&app, &modal, 60, 24);
-        let texts: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(texts[0], "  0 / 500k · 0.0%");
-        assert_eq!(
-            texts[2],
-            format!("  ▌ {:<16}{:>7}    0.0%", "system", "0"),
-            "空会话分块也显示 0"
-        );
-        assert_eq!(
-            texts[3],
-            format!("  ▌ {:<16}{:>7}    0.0%", "messages", "0")
-        );
-        assert!(
-            texts[5].chars().all(|ch| ch == ' ' || ch == '─'),
-            "空会话的色条整条都是空窗口：{:?}",
-            texts[5]
-        );
-        assert!(texts[6].starts_with("  0 "), "{:?}", texts[6]);
-        assert!(texts[6].ends_with("500k"), "{:?}", texts[6]);
-    }
-
     /// 上下文窗：分块名称过长或包含宽字符时保持列宽对齐。
     #[test]
     fn context_modal_handles_wide_names() {
         let (events, _receiver) = unbounded_channel();
         let app = App::new(Theme::global(), events);
-        let modal = Modal::Context {
-            usage: Some(ContextUsageResult {
-                context_window: 100_000,
-                total_tokens: 50_000,
-                sections: vec![
-                    ContextUsageSection {
-                        name: "very_long_custom_section_name_overflow".into(),
-                        tokens: 30_000,
-                    },
-                    ContextUsageSection {
-                        name: "中文分块名称".into(),
-                        tokens: 20_000,
-                    },
-                ],
-            }),
+        let usage = ContextUsageResult {
+            context_window: 100_000,
+            total_tokens: 50_000,
+            sections: vec![
+                ContextUsageSection {
+                    name: "very_long_custom_section_name_overflow".into(),
+                    tokens: 30_000,
+                },
+                ContextUsageSection {
+                    name: "中文分块名称".into(),
+                    tokens: 20_000,
+                },
+            ],
         };
 
-        let lines = modal_lines(&app, &modal, 60, 24);
+        let lines = super::context_lines(&usage, 60, app.theme);
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         // 验证各分块行总宽度一致，列对齐未被顶破
         assert_eq!(line_width(&texts[2]), line_width(&texts[3]));
@@ -4219,7 +4090,9 @@ mod tests {
         // 帮助（双列表）、上下文占用（紧凑宽度）、会话列表（通用宽度）：覆盖三种卡宽。
         let modal = |kind: usize| match kind {
             0 => Modal::Help { scroll: 0 },
-            1 => Modal::Context { usage: None },
+            1 => Modal::ContextContent {
+                state: Default::default(),
+            },
             _ => Modal::Sessions {
                 sessions: Vec::new(),
                 cwd: "/tmp".into(),

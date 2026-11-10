@@ -250,7 +250,7 @@ impl Card {
 
 /// 竖向滚动条：一列 `▐`，滑块 `scrollbar_fg`、轨道 `scrollbar_bg`。
 ///
-/// 主转写区、上下文正文窗、设置页共用同一字形与配色；`thumb_top`/`thumb` 由
+/// 主转写区、上下文面板、设置页共用同一字形与配色；`thumb_top`/`thumb` 由
 /// 各自的滚动几何算好再传入。
 pub fn paint_scrollbar(
     buffer: &mut Buffer,

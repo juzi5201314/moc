@@ -1,179 +1,119 @@
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ContextContentResult, ContextNode } from "@/protocol/types";
+import { useUi } from "@/store/ui";
 
-const { call } = vi.hoisted(() => ({ call: vi.fn() }));
-vi.mock("@/protocol/client", () => ({ rpc: { call } }));
-// jsdom 没有布局；用固定视口呈现前12行，验证组件只请求展开节点。
-vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: (options: { count: number; getItemKey: (index: number) => string }) => ({
-    getTotalSize: () => options.count * 54,
-    measureElement: () => {},
-    getVirtualItems: () =>
-      Array.from({ length: Math.min(12, options.count) }, (_, index) => ({
-        index,
-        key: options.getItemKey(index),
-        start: index * 54,
-      })),
-  }),
-}));
+const { call, on } = vi.hoisted(() => ({ call: vi.fn(), on: vi.fn() }));
+vi.mock("@/protocol/client", () => ({ rpc: { call, on } }));
+vi.mock("@/store/connection", () => ({ useConnection: { subscribe: () => () => {} } }));
+vi.mock("@/store/lifecycle", () => ({ compactSession: vi.fn() }));
+vi.mock("@/store/transcript", () => ({ useTranscript: () => false }));
 
+import { ContextDialog } from "./context-dialog";
 import { ContextViewer } from "./context-viewer";
 
-const node = (index: number): ContextNode => ({
-  id: String(index),
-  path: `/messages/${index}`,
-  name: `messages[${index}]`,
-  kind: "text",
-  role: index ? "assistant" : "system",
-  source: null,
-  bytes: 1000000,
+const category: ContextNode = {
+  id: "0",
+  name: "messages",
+  kind: "category",
   tokens: 100,
+  children: 2,
+};
+const visible: ContextNode = {
+  id: "1",
+  name: "运行时提醒",
+  kind: "markdown",
+  tokens: 20,
   children: 0,
-});
-const view = (id = "v1"): ContextContentResult => ({
-  view_id: id,
+};
+const hidden: ContextNode = {
+  id: "2",
+  name: "工具结果",
+  kind: "markdown",
+  tokens: 80,
+  children: 0,
+  hidden: "工具输出已隐藏",
+};
+const snapshot: ContextContentResult = {
+  view_id: "v1",
   model: "test/model",
-  protocol: "openai_chat",
-  context_window: 100000,
-  total_tokens: 1000,
-  sections: Array.from({ length: 1000 }, (_, index) => node(index)),
-  next_cursor: null,
-  error: null,
-});
+  context_window: 1000,
+  total_tokens: 100,
+  sections: [category],
+};
+
 beforeEach(() => {
   call.mockReset();
-  call.mockImplementation((method: string) =>
-    Promise.resolve(method === "session/context_content" ? view() : {}),
-  );
+  on.mockReset().mockReturnValue(() => {});
+  call.mockImplementation(async (method: string, params: { node_id?: string }) => {
+    if (method === "session/context_content") return snapshot;
+    if (method === "session/context_read")
+      return {
+        view_id: "v1",
+        node_id: params.node_id,
+        children: params.node_id === "0" ? [visible, hidden] : [],
+        text: params.node_id === "1" ? "提醒正文" : null,
+      };
+    return {};
+  });
 });
 afterEach(cleanup);
 
-it("千条消息默认折叠，只读取展开正文，关闭释放视图", async () => {
+it("隐藏项无法进入，阅读后返回恢复目录焦点，更新不替换当前快照", async () => {
   const ui = render(<ContextViewer sessionId="s1" />);
-  await waitFor(() => expect(ui.getByText("messages[0]")).toBeTruthy());
-  expect(ui.queryByText("messages[99]")).toBeNull();
-  expect(call.mock.calls.filter((args) => args[0] === "session/context_read")).toHaveLength(0);
-  call.mockImplementation((method: string) =>
-    Promise.resolve(
-      method === "session/context_read"
-        ? {
-            view_id: "v1",
-            node_id: "0",
-            children: [],
-            text: "默认提示词的真实原文",
-            next_cursor: 65536,
-            sources: [],
-          }
-        : {},
-    ),
-  );
-  fireEvent.click(ui.getByText("messages[0]"));
-  await waitFor(() => expect(ui.getByText("默认提示词的真实原文")).toBeTruthy());
-  expect(call.mock.calls.filter((args) => args[0] === "session/context_read")).toHaveLength(1);
-  fireEvent.click(ui.getByText("下一页"));
-  await waitFor(() =>
-    expect(call).toHaveBeenCalledWith(
-      "session/context_read",
-      expect.objectContaining({ cursor: 65536 }),
-    ),
-  );
-  ui.unmount();
-  expect(call).toHaveBeenCalledWith("session/context_close", { session_id: "s1", view_id: "v1" });
-});
-
-it("按role消息、content和来源子块逐级独立展开", async () => {
-  const system = { ...node(0), name: "#1", kind: "object", children: 1 };
-  const content = {
-    ...node(1),
-    id: "content",
-    name: "content",
-    role: null,
-    path: "/messages/0/content",
-    children: 2,
-  };
-  const intro = {
-    ...content,
-    id: "intro",
-    name: "intro",
-    children: 0,
-    text_range: [0, 6] as [number, number],
-  };
-  const policy = {
-    ...intro,
-    id: "policy",
-    name: "tool policy",
-    text_range: [6, 12] as [number, number],
-  };
-  call.mockImplementation((method: string, params: { node_id?: string }) => {
-    if (method === "session/context_content")
-      return Promise.resolve({
-        ...view(),
-        sections: [
-          system,
-          { ...node(2), name: "#2", role: "user" },
-          { ...node(3), name: "#3", role: "user" },
-        ],
-      });
-    if (method !== "session/context_read") return Promise.resolve({});
-    const children =
-      params.node_id === "0" ? [content] : params.node_id === "content" ? [intro, policy] : [];
-    return Promise.resolve({
-      view_id: "v1",
-      node_id: params.node_id,
-      children,
-      text: params.node_id === "intro" ? "身份原文" : null,
-      next_cursor: null,
-      sources: [],
-    });
-  });
-  const ui = render(<ContextViewer sessionId="s1" />);
-  await waitFor(() => expect(ui.getByRole("button", { name: /system.*#1/ })).toBeTruthy());
-  fireEvent.click(ui.getByRole("button", { name: /system.*#1/ }));
-  await waitFor(() => expect(ui.getByText("content")).toBeTruthy());
-  expect(ui.queryByText("intro")).toBeNull();
-  fireEvent.click(ui.getByText("content"));
-  await waitFor(() => expect(ui.getByText("tool policy")).toBeTruthy());
-  expect(ui.queryByText("身份原文")).toBeNull();
-  fireEvent.click(ui.getByText("intro"));
-  await waitFor(() => expect(ui.getByText("身份原文")).toBeTruthy());
+  fireEvent.click(await ui.findByText("messages"));
+  const hiddenButton = await ui.findByRole("button", { name: /工具结果/ });
+  expect(hiddenButton.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(hiddenButton);
   expect(
-    call.mock.calls
-      .filter((args) => args[0] === "session/context_read")
-      .map((args) => args[1].node_id),
-  ).toEqual(["0", "content", "intro"]);
-  expect(ui.getByRole("button", { name: /tool policy/ }).getAttribute("aria-expanded")).toBe(
-    "false",
+    call.mock.calls.some(
+      ([method, params]) => method === "session/context_read" && params.node_id === "2",
+    ),
+  ).toBe(false);
+  fireEvent.click(ui.getByText("运行时提醒"));
+  await ui.findByText("提醒正文");
+  const notify = on.mock.calls[0][1];
+  act(() => notify({ session_id: "s1", update: { type: "prompt_finished" } }));
+  expect(ui.getByLabelText("有更新，刷新上下文")).toBeTruthy();
+  expect(ui.getByText("提醒正文")).toBeTruthy();
+  expect(call.mock.calls.filter(([method]) => method === "session/context_content")).toHaveLength(
+    1,
   );
-  fireEvent.click(ui.getByRole("button", { name: /system.*#1/ }));
-  expect(ui.queryByText("intro")).toBeNull();
-  expect(ui.getByRole("button", { name: /user.*#2/ })).toBeTruthy();
-  expect(ui.getByRole("button", { name: /user.*#3/ })).toBeTruthy();
+  fireEvent.click(ui.getByLabelText("返回上一级"));
+  expect(ui.queryByText("提醒正文")).toBeNull();
+  expect(document.activeElement).toBe(ui.getByRole("button", { name: /运行时提醒/ }));
+  fireEvent.click(ui.getByLabelText("有更新，刷新上下文"));
+  await ui.findByText("messages");
+  expect(call).toHaveBeenCalledWith("session/context_close", { session_id: "s1", view_id: "v1" });
+  ui.unmount();
 });
 
-it("刷新后丢弃旧目录回执并释放旧视图", async () => {
-  let resolveOld: (value: ContextContentResult) => void = () => {};
+it("关闭前尚未完成的快照返回后立即释放，不污染其它会话", async () => {
+  const { promise, resolve } = Promise.withResolvers<ContextContentResult>();
   call.mockImplementation((method: string) =>
-    method === "session/context_content"
-      ? new Promise<ContextContentResult>((resolve) => {
-          resolveOld = resolve;
-        })
-      : Promise.resolve({}),
+    method === "session/context_content" ? promise : Promise.resolve({}),
   );
   const ui = render(<ContextViewer sessionId="s1" />);
-  call.mockImplementation((method: string) =>
-    Promise.resolve(
-      method === "session/context_content" ? { ...view("new"), model: "new-model" } : {},
-    ),
-  );
-  fireEvent.click(ui.getByLabelText("刷新上下文"));
-  await waitFor(() => expect(ui.getByText(/new-model/)).toBeTruthy());
-  resolveOld({ ...view("old"), model: "old-model" });
+  ui.unmount();
+  await act(async () => resolve(snapshot));
   await waitFor(() =>
-    expect(call).toHaveBeenCalledWith("session/context_close", {
-      session_id: "s1",
-      view_id: "old",
-    }),
+    expect(call).toHaveBeenCalledWith("session/context_close", { session_id: "s1", view_id: "v1" }),
   );
-  expect(ui.queryByText(/old-model/)).toBeNull();
+});
+
+it("Esc 逐层返回，只在总览层关闭统一面板", async () => {
+  useUi.getState().set({ contextDialog: "s1" });
+  const ui = render(<ContextDialog />);
+  fireEvent.click(await ui.findByText("messages"));
+  fireEvent.click(await ui.findByText("运行时提醒"));
+  await ui.findByText("提醒正文");
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(ui.queryByText("提醒正文")).toBeNull());
+  expect(ui.getByRole("dialog")).toBeTruthy();
+  expect(ui.getByRole("button", { name: /工具结果/ })).toBeTruthy();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await ui.findByText("messages");
+  expect(ui.getByRole("dialog")).toBeTruthy();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(ui.queryByRole("dialog")).toBeNull());
 });

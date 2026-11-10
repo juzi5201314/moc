@@ -1,10 +1,9 @@
-//! 连接级、只在内存中存在的上下文树。字符串只存一份，目录分页不复制正文。
+//! 连接级上下文快照：分类目录按页读取，隐藏内容从不进入可读节点或落盘缓存。
 use super::CoreInner;
 #[cfg(test)]
 mod tests;
 use moc_protocol::methods::*;
 use moc_protocol::{RequestContext, RpcError, RpcErrorCode};
-use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,38 +13,17 @@ const PAGE: usize = 128;
 const TEXT_PAGE: usize = 64 * 1024;
 pub(super) const TEXT_CACHE_BYTES: usize = 8 * 1024 * 1024;
 
-struct TextSlice {
-    text: Arc<str>,
-    range: std::ops::Range<usize>,
-}
-impl TextSlice {
-    fn as_str(&self) -> &str {
-        &self.text[self.range.clone()]
-    }
-}
-impl From<String> for TextSlice {
-    fn from(text: String) -> Self {
-        let len = text.len();
-        Self {
-            text: Arc::from(text),
-            range: 0..len,
-        }
-    }
-}
-
 struct Node {
     meta: ContextContentSection,
-    text: Option<TextSlice>,
+    text: Option<String>,
     spilled: Option<(u64, usize)>,
     children: Vec<usize>,
-    sources: Vec<ContextSource>,
 }
 pub(super) struct View {
     id: String,
     touched: Instant,
     usage: ContextUsageResult,
     model: String,
-    protocol: String,
     error: Option<String>,
     nodes: Vec<Node>,
     roots: Vec<usize>,
@@ -53,281 +31,67 @@ pub(super) struct View {
     memory_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 impl View {
-    pub(super) fn new(
-        usage: ContextUsageResult,
-        model: String,
-        protocol: String,
-        inspection: Result<moc_llm::RequestInspection, moc_llm::LlmError>,
-        messages: &[String],
-        instructions: &[Vec<String>],
-    ) -> Self {
+    pub(super) fn new(usage: ContextUsageResult, model: String) -> Self {
         let mut view = Self {
             id: uuid::Uuid::now_v7().to_string(),
             touched: Instant::now(),
             usage,
             model,
-            protocol,
             error: None,
             nodes: Vec::new(),
             roots: Vec::new(),
             spool: None,
             memory_permit: None,
         };
-        match inspection {
-            Err(error) => view.error = Some(format!("当前上下文尚未形成可发送请求：{error}")),
-            Ok(inspection) => {
-                let mut labels: HashMap<String, Vec<ContextSource>> = HashMap::new();
-                for source in inspection.sources {
-                    let label = source
-                        .text_range
-                        .as_ref()
-                        .and_then(|_| {
-                            instructions
-                                .get(source.message_index)
-                                .and_then(|parts| parts.get(source.part_index))
-                        })
-                        .or_else(|| messages.get(source.message_index))
-                        .cloned()
-                        .unwrap_or_else(|| "会话上下文".into());
-                    let (start, end) = source.text_range.map_or((0, u64::MAX), |range| {
-                        (range.start as u64, range.end as u64)
-                    });
-                    labels
-                        .entry(source.pointer)
-                        .or_default()
-                        .push(ContextSource {
-                            source: label,
-                            start,
-                            end,
-                        });
-                }
-                let Value::Object(mut body) = inspection.body else {
-                    unreachable!("编码请求体是对象")
-                };
-                // 数组内顺序是协议定义的；顶层字段只有展示顺序，不宣称模型处理的先后顺序。
-                for field in ["system", "messages", "input", "tools"] {
-                    if let Some(value) = body.remove(field) {
-                        if matches!(field, "messages" | "input") {
-                            if let Value::Array(items) = value {
-                                for (index, item) in items.into_iter().enumerate() {
-                                    let node = view.add(
-                                        item,
-                                        format!("/{field}/{index}"),
-                                        format!("#{}", index + 1),
-                                        &labels,
-                                        None,
-                                    );
-                                    view.roots.push(node);
-                                }
-                            }
-                        } else {
-                            let node =
-                                view.add(value, format!("/{field}"), field.into(), &labels, None);
-                            view.roots.push(node);
-                        }
-                    }
-                }
-                for (field, value) in body {
-                    let node =
-                        view.add(value, format!("/{}", escape(&field)), field, &labels, None);
-                    view.roots.push(node);
-                }
-            }
+        for section in &view.usage.sections {
+            let index = view.nodes.len();
+            view.nodes.push(Node {
+                meta: ContextContentSection {
+                    id: index.to_string(),
+                    name: section.name.clone(),
+                    kind: "category".into(),
+                    tokens: section.tokens,
+                    ..Default::default()
+                },
+                text: None,
+                spilled: None,
+                children: Vec::new(),
+            });
+            view.roots.push(index);
         }
         view
     }
-    fn add(
-        &mut self,
-        value: Value,
-        path: String,
-        name: String,
-        labels: &HashMap<String, Vec<ContextSource>>,
-        inherited: Option<String>,
-    ) -> usize {
-        let index = self.nodes.len();
-        let sources = labels.get(&path).cloned().unwrap_or_default();
-        let label = if sources.len() == 1 {
-            Some(sources[0].source.clone())
-        } else if sources.is_empty() {
-            inherited
-        } else {
-            None
-        };
-        let role = value.get("role").and_then(Value::as_str).map(str::to_owned);
-        let kind = match &value {
-            Value::Object(_) => "object",
-            Value::Array(_) => "array",
-            Value::String(_) => "text",
-            Value::Null => "null",
-            Value::Bool(_) => "boolean",
-            Value::Number(_) => "number",
-        };
-        let detail = value
-            .get("type")
-            .and_then(Value::as_str)
-            .or_else(|| value.get("name").and_then(Value::as_str));
-        let name = if let Some(detail) = detail {
-            format!("{name} · {detail}")
-        } else {
-            name
-        };
-        self.nodes.push(Node {
-            meta: ContextContentSection {
-                id: index.to_string(),
-                path: path.clone(),
-                name,
-                kind: kind.into(),
-                role,
-                source: label.clone(),
-                ..Default::default()
-            },
-            text: None,
-            spilled: None,
-            children: Vec::new(),
-            sources,
-        });
-        let mut children = Vec::new();
-        let text = match value {
-            Value::Object(fields) => {
-                for (key, value) in fields {
-                    children.push(self.add(
-                        value,
-                        format!("{path}/{}", escape(&key)),
-                        key,
-                        labels,
-                        label.clone(),
-                    ));
-                }
-                None
-            }
-            Value::Array(items) => {
-                for (offset, value) in items.into_iter().enumerate() {
-                    children.push(self.add(
-                        value,
-                        format!("{path}/{offset}"),
-                        format!("[{offset}]"),
-                        labels,
-                        label.clone(),
-                    ));
-                }
-                None
-            }
-            Value::String(text) => {
-                if self.nodes[index].sources.len() > 1 {
-                    children = self.source_sections(index, text);
-                    None
-                } else {
-                    Some(TextSlice::from(text))
-                }
-            }
-            scalar => Some(TextSlice::from(scalar.to_string())),
-        };
-        let (bytes, tokens) = if let Some(text) = &text {
-            (
-                text.as_str().len() as u64,
-                crate::compact::estimate_tokens(text.as_str()),
-            )
-        } else {
-            children
-                .iter()
-                .map(|child| {
-                    let m = &self.nodes[*child].meta;
-                    (m.bytes, m.tokens)
-                })
-                .fold((0, 0), |(a, b), (c, d)| (a + c, b + d))
-        };
-        let mut child_sources = Vec::new();
-        for child in &children {
-            if let Some(source) = &self.nodes[*child].meta.source
-                && !child_sources.contains(source)
-            {
-                child_sources.push(source.clone());
-            }
-            if child_sources.len() == 3 {
-                break;
-            }
-        }
-        let inferred_source = match child_sources.as_slice() {
-            [] => None,
-            [source] => Some(source.clone()),
-            sources => Some(format!("混合来源 · {}", sources.join(" / "))),
-        };
-        let node = &mut self.nodes[index];
-        if node.meta.source.is_none() {
-            node.meta.source = inferred_source;
-        }
-        node.meta.bytes = bytes;
-        node.meta.tokens = tokens;
-        node.meta.children = children.len() as u64;
-        node.text = text;
-        node.children = children;
-        index
-    }
-    /// 来源子块只是原文本的展示切片，路径仍指向真实字段；拼接子块必须逐字还原父文本。
-    fn source_sections(&mut self, parent: usize, text: String) -> Vec<usize> {
-        let mut sources = std::mem::take(&mut self.nodes[parent].sources);
-        sources.sort_by_key(|source| source.start);
-        let text: Arc<str> = Arc::from(text);
-        let path = self.nodes[parent].meta.path.clone();
-        let mut children = Vec::with_capacity(sources.len() + 1);
-        let first = sources[0].start as usize;
-        if first > 0 {
-            children.push(self.text_section(&text, &path, 0..first, "原文前缀".into(), None));
-        }
-        for (index, source) in sources.iter().enumerate() {
-            let start = source.start as usize;
-            let end = sources
-                .get(index + 1)
-                .map_or(text.len(), |next| next.start as usize);
-            // 坐标来自编码器；块不重叠、以 UTF-8 字符为边界，块间分隔符归前一块。
-            debug_assert!(start <= source.end as usize && source.end as usize <= end);
-            debug_assert!(text.is_char_boundary(start) && text.is_char_boundary(end));
-            let name = source
-                .source
-                .strip_prefix("系统提示 · ")
-                .unwrap_or(&source.source)
-                .to_owned();
-            let local = ContextSource {
-                source: source.source.clone(),
-                start: 0,
-                end: source.end - source.start,
-            };
-            children.push(self.text_section(&text, &path, start..end, name, Some(local)));
-        }
-        children
+
+    pub(super) fn set_error(&mut self, error: impl std::fmt::Display) {
+        self.error = Some(format!("当前上下文尚未形成可发送请求：{error}"));
     }
 
-    fn text_section(
+    pub(super) fn add(
         &mut self,
-        text: &Arc<str>,
-        path: &str,
-        range: std::ops::Range<usize>,
-        name: String,
-        source: Option<ContextSource>,
-    ) -> usize {
+        category: &str,
+        mut meta: ContextContentSection,
+        text: Option<String>,
+    ) {
+        let parent = self
+            .roots
+            .iter()
+            .copied()
+            .find(|index| self.nodes[*index].meta.name == category)
+            .expect("条目所属分类已由同一快照的用量生成");
+        debug_assert!(
+            meta.hidden.is_none() || text.is_none(),
+            "隐藏正文不能进入快照"
+        );
         let index = self.nodes.len();
-        let section = &text[range.clone()];
+        meta.id = index.to_string();
         self.nodes.push(Node {
-            meta: ContextContentSection {
-                id: index.to_string(),
-                path: path.to_owned(),
-                name,
-                kind: "text".into(),
-                text_range: Some([range.start as u64, range.end as u64]),
-                source: source.as_ref().map(|source| source.source.clone()),
-                bytes: section.len() as u64,
-                tokens: crate::compact::estimate_tokens(section),
-                ..Default::default()
-            },
-            text: Some(TextSlice {
-                text: Arc::clone(text),
-                range,
-            }),
+            meta,
+            text,
             spilled: None,
             children: Vec::new(),
-            sources: source.into_iter().collect(),
         });
-        index
+        self.nodes[parent].children.push(index);
+        self.nodes[parent].meta.children += 1;
     }
 
     fn directory(
@@ -362,7 +126,6 @@ impl View {
             context_window: self.usage.context_window,
             total_tokens: self.usage.total_tokens,
             model: self.model.clone(),
-            protocol: self.protocol.clone(),
             sections,
             next_cursor,
             error: self.error.clone(),
@@ -372,7 +135,7 @@ impl View {
         self.nodes
             .iter()
             .filter_map(|node| node.text.as_ref())
-            .fold(0usize, |bytes, text| bytes.saturating_add(text.range.len()))
+            .fold(0usize, |bytes, text| bytes.saturating_add(text.len()))
     }
 
     /// 在后台构建完成后执行；大视图的字符串不常驻内存，节点与来源仍完整保留。
@@ -402,6 +165,9 @@ impl View {
             .parse::<usize>()
             .map_err(|_| invalid("无效节点"))?;
         let node = self.nodes.get(index).ok_or_else(|| invalid("节点不存在"))?;
+        if let Some(reason) = &node.meta.hidden {
+            return Err(invalid(reason));
+        }
         let mut result = ContextReadResult {
             view_id: self.id.clone(),
             node_id: params.node_id.clone(),
@@ -448,25 +214,12 @@ impl View {
             let end = start + text.len();
             result.text = Some(text);
             result.next_cursor = (end < len).then_some(end as u64);
-            result.sources = node
-                .sources
-                .iter()
-                .filter(|source| source.start < end as u64 && source.end > start as u64)
-                .cloned()
-                .map(|mut source| {
-                    source.end = source.end.min(len as u64);
-                    source
-                })
-                .collect();
         } else {
             (result.children, result.next_cursor) =
                 self.directory(&node.children, params.cursor, params.limit)?;
         }
         Ok(result)
     }
-}
-fn escape(value: &str) -> String {
-    value.replace('~', "~0").replace('/', "~1")
 }
 fn io_error(error: impl std::fmt::Display) -> RpcError {
     RpcError::new(

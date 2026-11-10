@@ -1487,7 +1487,7 @@
           "type": "integer"
         },
         "error": {
-          "description": "编码器拒绝尚不完整的当前状态时给出原因，不补造消息。",
+          "description": "当前状态无法编码成模型请求时的原因。",
           "type": [
             "string",
             "null"
@@ -1503,9 +1503,6 @@
             "integer",
             "null"
           ]
-        },
-        "protocol": {
-          "type": "string"
         },
         "sections": {
           "items": {
@@ -1527,60 +1524,39 @@
         "context_window",
         "total_tokens",
         "model",
-        "protocol",
         "sections"
       ],
       "type": "object"
     },
     "ContextContentSection": {
       "additionalProperties": false,
-      "description": "实际编码请求中的节点；目录不携带正文。",
+      "description": "冻结上下文中的分类或来源条目；目录与隐藏项不携带正文。",
       "properties": {
-        "bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
         "children": {
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
+        "hidden": {
+          "description": "隐藏原因；有值时不可读取正文或子节点，仍计入上下文用量。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "type": "string"
         },
         "kind": {
+          "description": "`category`、`markdown` 或 `json`；不暴露编码协议的字段树。",
           "type": "string"
         },
         "name": {
           "type": "string"
         },
-        "path": {
-          "type": "string"
-        },
-        "role": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "source": {
           "type": [
             "string",
-            "null"
-          ]
-        },
-        "text_range": {
-          "description": "可视化来源子块在 path 指向的原文中的 UTF-8 字节范围；不是新增的线上字段。",
-          "items": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "maxItems": 2,
-          "minItems": 2,
-          "type": [
-            "array",
             "null"
           ]
         },
@@ -1592,10 +1568,8 @@
       },
       "required": [
         "id",
-        "path",
         "name",
         "kind",
-        "bytes",
         "tokens",
         "children"
       ],
@@ -1621,12 +1595,6 @@
         "node_id": {
           "type": "string"
         },
-        "sources": {
-          "items": {
-            "$ref": "#/$defs/ContextSource"
-          },
-          "type": "array"
-        },
         "text": {
           "type": [
             "string",
@@ -1640,33 +1608,7 @@
       "required": [
         "view_id",
         "node_id",
-        "children",
-        "sources"
-      ],
-      "type": "object"
-    },
-    "ContextSource": {
-      "additionalProperties": false,
-      "properties": {
-        "end": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "source": {
-          "type": "string"
-        },
-        "start": {
-          "description": "完整叶子字符串中的 UTF-8 字节范围，不是当前页相对范围。",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "source",
-        "start",
-        "end"
+        "children"
       ],
       "type": "object"
     },

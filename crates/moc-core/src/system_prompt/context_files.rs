@@ -10,10 +10,17 @@ use std::path::{Path, PathBuf};
 const MAX_CONTEXT_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_IMPORT_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextFileScope {
+    Project,
+    Global,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextFile {
     pub path: PathBuf,
     pub content: String,
+    pub scope: ContextFileScope,
 }
 
 /// 从仓库根（不在仓库里则从 cwd）逐级读到 cwd 的 AGENTS.md，最后拼上全局规则。
@@ -39,6 +46,7 @@ pub fn load_context_files(
         for directory in directories {
             push_file(
                 directory.join("AGENTS.md"),
+                ContextFileScope::Project,
                 &import_root,
                 config.import_depth,
                 &mut visited,
@@ -50,6 +58,7 @@ pub fn load_context_files(
     if config.user {
         push_file(
             moc_home.join("AGENTS.md"),
+            ContextFileScope::Global,
             &canonical_or_owned(moc_home),
             config.import_depth,
             &mut visited,
@@ -91,6 +100,7 @@ fn enclosing_repository(cwd: &Path) -> Option<PathBuf> {
 
 fn push_file(
     path: PathBuf,
+    scope: ContextFileScope,
     root: &Path,
     max_depth: usize,
     visited: &mut HashSet<PathBuf>,
@@ -113,6 +123,7 @@ fn push_file(
     output.push(ContextFile {
         path,
         content: expanded,
+        scope,
     });
 }
 

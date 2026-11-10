@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 64cf53f108debe04
+// schema sha256: 9cfc20a834da119b
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -1997,38 +1997,34 @@ export interface MaintenanceReport {
 export interface ContextContentResult {
   context_window: number;
   /**
-   * 编码器拒绝尚不完整的当前状态时给出原因，不补造消息。
+   * 当前状态无法编码成模型请求时的原因。
    */
   error?: string | null;
   model: string;
   next_cursor?: number | null;
-  protocol: string;
   sections: ContextContentSection[];
   total_tokens: number;
   view_id: string;
 }
 /**
- * 实际编码请求中的节点；目录不携带正文。
+ * 冻结上下文中的分类或来源条目；目录与隐藏项不携带正文。
  *
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
  * via the `definition` "ContextContentSection".
  */
 export interface ContextContentSection {
-  bytes: number;
   children: number;
+  /**
+   * 隐藏原因；有值时不可读取正文或子节点，仍计入上下文用量。
+   */
+  hidden?: string | null;
   id: string;
+  /**
+   * `category`、`markdown` 或 `json`；不暴露编码协议的字段树。
+   */
   kind: string;
   name: string;
-  path: string;
-  role?: string | null;
   source?: string | null;
-  /**
-   * 可视化来源子块在 path 指向的原文中的 UTF-8 字节范围；不是新增的线上字段。
-   *
-   * @minItems 2
-   * @maxItems 2
-   */
-  text_range?: [number, number] | null;
   tokens: number;
 }
 /**
@@ -2039,21 +2035,8 @@ export interface ContextReadResult {
   children: ContextContentSection[];
   next_cursor?: number | null;
   node_id: string;
-  sources: ContextSource[];
   text?: string | null;
   view_id: string;
-}
-/**
- * This interface was referenced by `ProtocolTypes`'s JSON-Schema
- * via the `definition` "ContextSource".
- */
-export interface ContextSource {
-  end: number;
-  source: string;
-  /**
-   * 完整叶子字符串中的 UTF-8 字节范围，不是当前页相对范围。
-   */
-  start: number;
 }
 /**
  * 当前会话上下文估算结果。

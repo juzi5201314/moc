@@ -504,8 +504,8 @@ export function PlanToggle({ sessionId, disabled }: { sessionId: string; disable
 
 // ---------- 上下文圆环 ----------
 
-// 圆环 + Popover 在 status-popovers.tsx；这里保留再导出给 composer-bar。
-export { ContextRingPopover as ContextRing } from "./status-popovers";
+// 上下文圆环与 /context 打开同一个总览。
+export { ContextRing } from "./status-popovers";
 
 // ---------- 补全菜单 ----------
 

@@ -719,19 +719,8 @@ fn open_tools(app: &mut App, connection: &EmbeddedConnection) {
     });
 }
 
+/// `/context` 与顶部占用条统一打开冻结总览。
 fn open_context(app: &mut App, connection: &EmbeddedConnection) {
-    if app.session.is_none() {
-        app.set_notice("当前没有活动会话");
-        return;
-    }
-    app.modal = Some(Modal::Context {
-        usage: app.context_usage.clone(),
-    });
-    refresh_context(app, connection, true);
-}
-
-/// `/context`：拉取上下文里的真实正文，开着窗等结果（拉取失败在窗内显示）。
-fn open_context_content(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
         app.set_notice("当前没有活动会话");
         return;
@@ -774,24 +763,6 @@ fn apply_context_content(
             return;
         }
         match result {
-            Ok(mut content)
-                if state
-                    .content
-                    .as_ref()
-                    .is_some_and(|old| old.view_id == content.view_id) =>
-            {
-                state
-                    .expanded
-                    .extend(std::iter::repeat_n(false, content.sections.len()));
-                state
-                    .depths
-                    .extend(std::iter::repeat_n(0, content.sections.len()));
-                let old = state.content.as_mut().unwrap();
-                old.sections.append(&mut content.sections);
-                old.next_cursor = content.next_cursor;
-                state.pending.remove("");
-                state.layout = None;
-            }
             Ok(content) => state.set_content(content),
             Err(error) => state.set_error(error.to_string()),
         }
@@ -1078,6 +1049,10 @@ async fn event_loop(
                         | AppEvent::PlanRevised(_) | AppEvent::PlanDiff(_)
                         | AppEvent::ModelSwitchConfirm { .. }
                         | AppEvent::SessionControlSettled { .. })) => {
+                        if matches!(&event, AppEvent::ConfigurationLoaded(_) | AppEvent::SettingsResponse { .. })
+                            && let Some(Modal::ContextContent { state }) = app.modal.as_mut() {
+                            state.stale = true;
+                        }
                         crate::interaction::handle_event(app, connection, event);
                     }
                     Some(AppEvent::PlanReview(result)) => {
@@ -1177,10 +1152,7 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::ContextUsage(usage)) => {
-                        app.context_usage = Some(usage.clone());
-                        if let Some(Modal::Context { usage: current }) = app.modal.as_mut() {
-                            *current = Some(usage);
-                        }
+                        app.context_usage = Some(usage);
                     }
                     Some(AppEvent::ContextContent { request, session_id, result }) => {
                         if !matches!(&app.modal, Some(Modal::ContextContent{state}) if state.request==request) {
@@ -1189,6 +1161,18 @@ async fn event_loop(
                                 tokio::spawn(async move {let _=client.call::<moc_protocol::methods::SessionContextClose>(moc_protocol::methods::SessionContextCloseParams{session_id,view_id:content.view_id}).await;});
                             }
                         } else {apply_context_content(app, request, result);}
+                    }
+                    Some(AppEvent::ContextCopied { request, result }) => {
+                        if matches!(&app.modal, Some(Modal::ContextContent { state }) if state.request == request) {
+                            match result {
+                                Ok(text) => {
+                                    write_osc52(&text);
+                                    tokio::spawn(async move { let _ = crate::clipboard::copy_text_to_clipboard(&text).await; });
+                                    app.set_notice("已复制完整原文");
+                                }
+                                Err(error) => app.set_notice(format!("复制失败：{error}")),
+                            }
+                        }
                     }
                     Some(AppEvent::ContextRead { request, view_id, node_id, result }) => {
                         if let Some(Modal::ContextContent { state })=app.modal.as_mut()
@@ -1517,7 +1501,7 @@ fn flush_context_loads(app: &mut App, connection: &EmbeddedConnection) {
         return;
     };
     if state.refresh {
-        open_context_content(app, connection);
+        open_context(app, connection);
         return;
     }
     let Some(content) = &state.content else {
@@ -1526,30 +1510,45 @@ fn flush_context_loads(app: &mut App, connection: &EmbeddedConnection) {
     let view_id = content.view_id.clone();
     let request = state.request;
     let session_id = state.session_id.clone();
-    if std::mem::take(&mut state.root_more)
-        && content.next_cursor.is_some()
-        && state.pending.insert(String::new())
+    if std::mem::take(&mut state.copy)
+        && let Some(node) = state
+            .current
+            .as_ref()
+            .filter(|node| node.hidden.is_none() && node.kind != "category")
     {
-        let cursor = content.next_cursor;
-        let view_id = view_id.clone();
-        let session_id = session_id.clone();
+        let node_id = node.id.clone();
         let client = connection.client.clone();
         let events = app.events.clone();
+        let view_id = view_id.clone();
+        let session_id = session_id.clone();
         tokio::spawn(async move {
-            let result = client
-                .call::<SessionContextContent>(SessionContextContentParams {
-                    session_id: session_id.clone(),
-                    view_id: Some(view_id),
-                    cursor,
-                    limit: None,
-                })
-                .await
-                .map_err(anyhow::Error::from);
-            let _ = events.send(AppEvent::ContextContent {
-                request,
-                session_id,
-                result,
-            });
+            let result = async {
+                let mut cursor = None;
+                let mut text = String::new();
+                loop {
+                    let page = client
+                        .call::<moc_protocol::methods::SessionContextRead>(
+                            moc_protocol::methods::SessionContextReadParams {
+                                session_id: session_id.clone(),
+                                view_id: view_id.clone(),
+                                node_id: node_id.clone(),
+                                cursor,
+                                limit: None,
+                            },
+                        )
+                        .await?;
+                    if let Some(body) = page.text {
+                        text.push_str(&body);
+                    }
+                    cursor = page.next_cursor;
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+                Ok::<_, anyhow::Error>(text)
+            }
+            .await;
+            let _ = events.send(AppEvent::ContextCopied { request, result });
         });
     }
     for (node_id, cursor) in std::mem::take(&mut state.loads) {
@@ -1751,7 +1750,7 @@ fn handle_mouse_with_connection(
                         true
                     }
                     // 占用窗与监控没有可滚内容，也不该滚背后的转写。
-                    Some(Modal::Context { .. } | Modal::Monitor) => true,
+                    Some(Modal::Monitor) => true,
                     _ => false,
                 };
                 if !scrolled {
@@ -1916,7 +1915,6 @@ fn modal_dismissable(modal: &Modal) -> bool {
         modal,
         Modal::Help { .. }
             | Modal::Tools { .. }
-            | Modal::Context { .. }
             | Modal::ContextContent { .. }
             | Modal::Model { .. }
             | Modal::Sessions { .. }
@@ -2134,7 +2132,7 @@ fn handle_todo_hud_mouse(app: &mut App, mouse: &crossterm::event::MouseEvent) ->
     }
 }
 
-/// 上下文正文窗的鼠标：滚轮滚动、点击分块展开收起、拖拽滚动条。
+/// 统一上下文面板的鼠标：滚轮滚动、点击进入下一级、拖拽滚动条。
 ///
 /// 几何全部来自上一帧绘制（轨道、滑块、行区间），因此这里只做换算，不重排正文。
 fn handle_context_content_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
@@ -2163,7 +2161,7 @@ fn handle_context_content_mouse(app: &mut App, mouse: crossterm::event::MouseEve
                 state.scroll = scrollbar.offset_at(mouse.row, grab);
             } else if let Some(index) = state.block_at(mouse.row) {
                 state.focus = Some(index);
-                state.toggle(index);
+                state.enter(index);
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
@@ -2600,8 +2598,7 @@ fn legend_menu_mouse<T: Copy>(
         }
         // 菜单内滚轮与 ↑↓ 同语义循环换高亮（同补全菜单约定）；菜单外照旧穿透滚转写。
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-            if state.area.contains((mouse.column, mouse.row).into())
-                && !state.items.is_empty() =>
+            if state.area.contains((mouse.column, mouse.row).into()) && !state.items.is_empty() =>
         {
             let count = state.items.len();
             let selected = state.selected.min(count - 1);
@@ -4997,7 +4994,7 @@ fn handle_modal_key(
             (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => close = true,
             _ => {}
         },
-        Modal::Context { .. } | Modal::Monitor => {
+        Modal::Monitor => {
             if matches!(
                 (code, modifiers),
                 (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE)
@@ -5006,8 +5003,20 @@ fn handle_modal_key(
             }
         }
         Modal::ContextContent { state } => match (code, modifiers) {
-            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => state.scroll_by(-1),
-            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => state.scroll_by(1),
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                if state.is_body() {
+                    state.scroll_by(-1);
+                } else {
+                    state.focus_step(-1);
+                }
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                if state.is_body() {
+                    state.scroll_by(1);
+                } else {
+                    state.focus_step(1);
+                }
+            }
             (KeyCode::PageUp, _) => state.scroll_by(-(state.viewport as i64)),
             (KeyCode::PageDown, _) => state.scroll_by(state.viewport as i64),
             (KeyCode::Home, _) | (KeyCode::Char('g'), KeyModifiers::NONE) => {
@@ -5020,16 +5029,20 @@ fn handle_modal_key(
             (KeyCode::BackTab, _) | (KeyCode::Tab, KeyModifiers::SHIFT) => state.focus_step(-1),
             (KeyCode::Enter, KeyModifiers::NONE) | (KeyCode::Char(' '), KeyModifiers::NONE) => {
                 if let Some(index) = state.focus {
-                    state.toggle(index);
+                    state.enter(index);
                 }
             }
             (KeyCode::Char('p'), KeyModifiers::NONE) => state.previous_page(),
             (KeyCode::Char('n'), KeyModifiers::NONE) => state.next_page(),
-            (KeyCode::Char('m'), KeyModifiers::NONE) => state.root_more = true,
             (KeyCode::Char('r'), KeyModifiers::NONE) => state.refresh = true,
-            (KeyCode::Char('e'), KeyModifiers::NONE) => state.set_all_expanded(true),
-            (KeyCode::Char('c'), KeyModifiers::NONE) => state.set_all_expanded(false),
-            (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => close = true,
+            (KeyCode::Char('v'), KeyModifiers::NONE) if state.is_body() => {
+                state.raw = !state.raw;
+                state.scroll = 0;
+                state.layout = None;
+            }
+            (KeyCode::Char('y'), KeyModifiers::NONE) if state.is_body() => state.copy = true,
+            (KeyCode::Left | KeyCode::Backspace | KeyCode::Esc, _) => close = !state.back(),
+            (KeyCode::Char('q'), KeyModifiers::NONE) => close = true,
             _ => {}
         },
         Modal::Jobs {
@@ -5803,6 +5816,11 @@ fn apply_update_and_refresh(
     session_id: String,
     update: SessionUpdate,
 ) {
+    if let Some(Modal::ContextContent { state }) = app.modal.as_mut()
+        && state.session_id == session_id
+    {
+        state.stale = true;
+    }
     let is_current = app
         .session
         .as_ref()
@@ -6849,7 +6867,7 @@ fn dispatch_command(app: &mut App, connection: &EmbeddedConnection, id: CommandI
         CommandId::Monitor => app.modal = Some(Modal::Monitor),
         CommandId::Doctor => app.push_note(crate::doctor::report(app), false),
         CommandId::Help => app.modal = Some(Modal::Help { scroll: 0 }),
-        CommandId::Context => open_context_content(app, connection),
+        CommandId::Context => open_context(app, connection),
         CommandId::Tools => open_tools(app, connection),
         CommandId::Quit => app.should_quit = true,
         CommandId::Compact => {
@@ -7901,7 +7919,7 @@ mod tests {
         );
     }
 
-    /// `/context` 打开正文窗，并把 core 的真实分块装进窗里。
+    /// `/context` 打开统一总览，并装入 core 的真实快照。
     #[tokio::test]
     async fn context_command_opens_content_window_with_core_sections() {
         use moc_protocol::methods::ContextContentResult;
@@ -7910,7 +7928,7 @@ mod tests {
         execute_command(&mut app, &connection, "/context".into());
         assert!(
             matches!(app.modal, Some(Modal::ContextContent { .. })),
-            "/context 打开上下文正文窗"
+            "/context 打开统一上下文面板"
         );
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
@@ -7927,28 +7945,11 @@ mod tests {
         };
         assert_eq!(app.session.as_ref().unwrap().id, session_id);
         let content = result.expect("读取上下文正文");
-        assert!(content.total_tokens > 0);
-        assert!(
-            content
-                .sections
-                .iter()
-                .any(|section| section.role.as_deref() == Some("system")),
-            "实际 system 消息必须在目录里"
-        );
-        assert!(
-            content.sections.iter().all(|section| !matches!(
-                section.name.as_str(),
-                "user" | "assistant" | "tool result"
-            )),
-            "空会话不该有消息分块"
-        );
 
         apply_context_content(&mut app, request, Ok(content));
-        let Some(Modal::ContextContent { state }) = app.modal.as_ref() else {
+        let Some(Modal::ContextContent { .. }) = app.modal.as_ref() else {
             panic!("正文窗应保持打开");
         };
-        assert!(state.content.is_some());
-        assert!(!state.expanded.is_empty() && state.expanded.iter().all(|flag| !flag));
 
         // 窗已关掉时回执不得把窗重新打开。
         app.modal = None;
@@ -7966,7 +7967,7 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// 正文窗的鼠标：滚轮滚动、点分块切换展开、拖滑块换算滚动位置。
+    /// 上下文面板的鼠标：滚轮滚动、点击进入条目、拖滑块换算位置。
     #[test]
     fn context_window_mouse_toggles_and_drags() {
         use crate::modal::{ContextLayout, ContextScrollbar};
@@ -8036,7 +8037,7 @@ mod tests {
         };
         assert!(state.drag.is_none(), "抬起后结束拖拽");
 
-        // 点第 3 块正文：命中该块并展开。
+        // 点击滚动位置对应的条目，进入独立正文页。
         handle_context_content_mouse(
             &mut app,
             mouse(MouseEventKind::Down(MouseButton::Left), 10, 6),
@@ -8044,9 +8045,10 @@ mod tests {
         let Some(Modal::ContextContent { state }) = app.modal.as_ref() else {
             panic!("正文窗应保持打开");
         };
-        assert_eq!(state.focus, Some(2), "命中的是滚动位置对应的块");
-        assert_eq!(state.expanded, vec![false, false, true]);
-        assert!(state.layout.is_none(), "展开后必须重排");
+        assert_eq!(state.current.as_ref().unwrap().id, "2");
+        assert_eq!(state.scroll, 0);
+        assert_eq!(state.navigation.last().unwrap().1, 20);
+        assert!(state.layout.is_none());
         // 轨道之外的点不改变焦点。
         let Some(Modal::ContextContent { state }) = app.modal.as_mut() else {
             panic!("正文窗应保持打开");
@@ -8063,7 +8065,7 @@ mod tests {
         let Some(Modal::ContextContent { state }) = app.modal.as_ref() else {
             panic!("正文窗应保持打开");
         };
-        assert_eq!(state.focus, Some(2), "正文区之外的点不命中分块");
+        assert!(state.focus.is_none(), "正文区之外的点不命中条目");
     }
 
     #[tokio::test]
@@ -9573,10 +9575,7 @@ mod tests {
             panic!("回退视图应保持打开")
         };
         assert_eq!(state.selected, selected - 1);
-        assert!(
-            state.list_scroll > scrolled,
-            "键盘导航把选中项收回窗内"
-        );
+        assert!(state.list_scroll > scrolled, "键盘导航把选中项收回窗内");
         connection.shutdown().await;
         core.shutdown().await;
     }

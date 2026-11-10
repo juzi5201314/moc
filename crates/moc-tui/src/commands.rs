@@ -278,7 +278,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "context",
         aliases: &[],
         usage: "",
-        description: "查看上下文内容",
+        description: "查看上下文占用与来源正文",
         group: CommandGroup::Context,
         needs_session: true,
         available_during_task: true,
