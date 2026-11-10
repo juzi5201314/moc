@@ -51,7 +51,7 @@ async fn run_step(
     call: &moc_llm::ToolCall,
     start: Instant,
 ) -> Result<CommittedTool, CoreError> {
-    let (outcome, protocol_fault) = match execute_tool(inner, ctx, call).await {
+    let (outcome, protocol_fault) = match execute_tool(inner, ctx, call, true).await {
         Ok(outcome) => (outcome, None),
         Err(CoreError::Protocol(message)) => (
             ToolOutcome::failure("E_PROTOCOL", message.clone()),
@@ -462,6 +462,7 @@ async fn execute_tool(
     inner: &CoreInner,
     ctx: &ToolCtx,
     call: &moc_llm::ToolCall,
+    hooks: bool,
 ) -> Result<ToolOutcome, CoreError> {
     if ctx.cancel.is_cancelled() {
         return Ok(cancelled_outcome());
@@ -548,8 +549,8 @@ async fn execute_tool(
         }
     };
     // 插件钩子先于一切本地检查：改写后的参数才是沙盒、规则和工具真正看到的那份。
-    // 只有模型发起的调用会触发钩子；PTC 与插件内部的工具调用不重入钩子。
-    if !ctx.nested
+    // 模型直调及模型经 PTC 发起的延迟能力保留目标工具钩子；插件内部调用不重入。
+    if hooks
         && !ctx.plugins.is_empty()
         && let Some(denied) = plugin_before_tool_call(ctx, name, &mut args).await
     {
@@ -666,7 +667,7 @@ async fn execute_tool(
             if outcome.diff.is_some() {
                 ctx.guard.record_change();
             }
-            if !ctx.nested && !ctx.plugins.is_empty() {
+            if hooks && !ctx.plugins.is_empty() {
                 let result = moc_plugin::ToolResult {
                     content: match &outcome.content {
                         crate::tools::ToolOutput::Text(text)
@@ -710,6 +711,7 @@ pub(crate) async fn execute_nested_tool(
     inner: &CoreInner,
     ctx: &ToolCtx,
     call: &moc_llm::ToolCall,
+    from_model: bool,
 ) -> Result<ToolOutcome, CoreError> {
     if call.name == "run_code" {
         return Ok(ToolOutcome::failure(
@@ -733,7 +735,8 @@ pub(crate) async fn execute_nested_tool(
     if nested.engine == moc_protocol::SessionEngine::Ptc {
         nested.engine = moc_protocol::SessionEngine::Standard;
     }
-    execute_tool(inner, &nested, call).await
+    let hooks = from_model && crate::tools::documentation::deferred(&call.name);
+    execute_tool(inner, &nested, call, hooks).await
 }
 
 /// 调用全部插件的 `beforeToolCall`；拒绝时返回原因，允许时就地改写参数。

@@ -40,7 +40,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &'static str {
-        "Edit a file by line number. Pass the file's tag from the [path#TAG] header of the latest read or edit output, then ops: replace lines from-to with text, insert text after a line (0 = top), or delete lines from-to. Line numbers refer to that tag; untouched lines stay addressable through older tags."
+        "Edit previously read lines. Use the latest read/edit tag; untouched lines remain addressable through older tags. Successful edits return the new tag and line numbers. On rejection, use the current lines in the error instead of re-reading."
     }
 
     fn tier(&self) -> Tier {

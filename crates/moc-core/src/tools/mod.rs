@@ -5,6 +5,7 @@ pub mod ask;
 pub mod bash;
 pub mod catalog;
 pub mod declarations;
+pub mod documentation;
 pub mod edit;
 pub mod find;
 pub mod goal;
@@ -235,13 +236,23 @@ impl ToolCtx {
         }
         policy
     }
-    pub fn resource_context(&self) -> crate::resources::ResourceContext<'_> {
+    pub async fn resource_context(&self) -> crate::resources::ResourceContext<'_> {
         crate::resources::ResourceContext {
             session_id: &self.session_id,
             cwd: &self.cwd,
             paths: &self.paths,
             skills: &self.skills,
             sessions: &self.sessions,
+            tools: Some(documentation::ToolDocumentation {
+                catalog: Arc::clone(&self.catalog),
+                config: Arc::clone(&self.config),
+                engine: self.engine,
+                mode: self.mode,
+                ask_supported: self.core.ask_available(
+                    self.request.connection_id(),
+                    self.state.lock().await.session.autonomy,
+                ),
+            }),
         }
     }
 
@@ -288,8 +299,7 @@ pub trait Tool: Send + Sync {
     fn origin(&self) -> ToolOrigin {
         ToolOrigin::Builtin
     }
-    /// 是否出现在引擎工具面（schema/声明）里：只归引擎，模式切换不重写工具表。
-    /// 默认等价于默认模式的执行面；插件工具只按引擎判定，模式掩码在执行许可检查。
+    /// 引擎决定基础声明面；延迟披露由 ToolScope 结合角色的读取和执行权限决定。
     fn declared_in(&self, engine: SessionEngine) -> bool {
         self.permitted_in(engine, crate::service::mode::Mode::Default)
     }
@@ -387,6 +397,11 @@ impl ToolScope {
                 .is_none_or(|policy| policy.permits(name))
     }
 
+    /// 禁止文档读取或 PTC 的角色保留直接入口，不为省 schema 擅自扩大权限。
+    pub(crate) fn defers(&self, name: &str) -> bool {
+        documentation::deferred(name) && self.permits("read") && self.permits("run_code")
+    }
+
     pub(crate) fn define(&self, tool: &dyn Tool) -> ToolDef {
         let mut definition = tool.def();
         if definition.description.is_none() {
@@ -475,6 +490,7 @@ impl ToolRegistry {
             .filter(|tool| scope.permits(tool.name()))
             .filter(|tool| {
                 tool.declared_in(engine)
+                    && !scope.defers(tool.name())
                     && crate::service::mode::tool_enabled(
                         tool.name(),
                         tool.origin(),

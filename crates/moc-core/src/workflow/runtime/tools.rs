@@ -984,16 +984,23 @@ mod tests {
             assert!(!inactive.iter().any(|s| s.contains(tool)), "leak: {tool}");
         }
         scope.workflows = true;
-        let active_names: Vec<String> = registry
-            .definitions(
+        let active = crate::tools::catalog::ToolCatalog::new(
+            &registry,
+            &moc_mcp::McpSnapshot::default(),
+            moc_mcp::McpManager::new(Vec::new(), tokio_util::sync::CancellationToken::new()),
+            Vec::new(),
+            scope,
+        )
+        .unwrap();
+        let active_names: Vec<_> = active
+            .visible(
                 moc_protocol::SessionEngine::Standard,
+                crate::service::mode::Mode::Default,
                 false,
+                true,
                 &config,
-                scope,
-                &[],
             )
-            .iter()
-            .map(|d| d.name.clone())
+            .map(|tool| tool.name())
             .collect();
         for tool in WORKFLOW_TOOLS {
             assert!(

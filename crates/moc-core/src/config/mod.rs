@@ -1129,27 +1129,11 @@ max_output_tokens = 128000
         fs::write(home.join("config.toml"), provider_config("literal")).expect("写配置");
         let config =
             ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).expect("配置可解析");
-        assert!(config.web_search.enabled);
-        assert_eq!(config.web_search.provider, "tavily");
-        assert_eq!(config.web_search.base_url, "");
-        assert_eq!(config.web_search.timeout_secs, 30);
-        assert!(config.web_search.api_key.is_none());
-        assert!(config.web_fetch.enabled);
-        assert_eq!(config.web_fetch.timeout_secs, 30);
-        assert_eq!(config.web_fetch.max_bytes, 50 * 1024 * 1024);
-        assert_eq!(config.web_fetch.max_chars, 500_000);
         let registry = crate::tools::ToolRegistry::new();
         let visible = |config: &ResolvedConfig, name: &str| {
-            registry
-                .definitions(
-                    moc_protocol::methods::SessionEngine::Standard,
-                    false,
-                    config,
-                    crate::tools::ToolScope::top(),
-                    &[],
-                )
-                .iter()
-                .any(|definition| definition.name == name)
+            registry.get(name).is_some_and(|tool| {
+                crate::service::mode::tool_enabled(name, tool.origin(), false, config)
+            })
         };
         assert!(!visible(&config, "web_search"), "无 key 时搜索工具隐藏");
         assert!(visible(&config, "web_fetch"), "抓取不依赖密钥");

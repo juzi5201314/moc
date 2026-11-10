@@ -1,7 +1,7 @@
 // 文件/资源目标的解析纯函数：Markdown 链接、工具调用参数 → openFile 的统一目标。
 //
 // 支持三种来源：
-// - `local://` `artifact://` `history://` `skill://` 这类会话空间 URI；
+// - `local://` `artifact://` `history://` `skill://` `tool://` 这类会话空间 URI；
 // - `/abs/path`、`~/path`、相对路径（相对当前会话 cwd 解析）；
 // - `path:12` 或 `path#L12` 行号后缀（path 本身含 `:` 时优先按绝对路径判断）。
 
@@ -9,7 +9,7 @@
 export type FileTarget = { kind: "fs"; path: string } | { kind: "resource"; uri: string };
 
 /** 会话空间 URI 的 scheme 表（与 core 资源路由一致）。 */
-const RESOURCE_SCHEMES = ["local", "artifact", "history", "skill"] as const;
+const RESOURCE_SCHEMES = ["local", "artifact", "history", "skill", "tool"] as const;
 
 export type ParsedLink = {
   target: FileTarget;

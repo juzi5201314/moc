@@ -58,11 +58,12 @@ impl Tool for ReadTool {
             let args: ReadArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
             let (path, display) = match ResourceRouter::resolve_read(ctx, &args.path)
+                .await
                 .map_err(|error| ToolError::new(error.code, error.message))?
             {
                 Some(resource) => match resource.backing {
                     ResourceBacking::File(path) => (path, resource.uri),
-                    ResourceBacking::Namespace { listing, .. } => {
+                    ResourceBacking::Text(listing) | ResourceBacking::Namespace { listing, .. } => {
                         return Ok(ToolOutcome::success(render_text_resource(
                             &resource.uri,
                             &listing,

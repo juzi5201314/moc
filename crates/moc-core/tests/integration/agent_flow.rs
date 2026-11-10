@@ -878,20 +878,21 @@ async fn explorer_role_preserves_reconnaissance_tools() {
     }
     // `web_search` 依赖 provider 能力，harness 未配置——不列入保留面断言。
     for kept in [
-        "read",
-        "grep",
-        "find",
-        "bash",
-        "job",
-        "todo",
-        "skill",
-        "run_code",
-        "web_fetch",
-        "yield",
-        "list_agents",
-        "message_agent",
+        "read", "grep", "find", "bash", "job", "todo", "skill", "run_code", "yield",
     ] {
         assert!(tools.contains(&kept), "explore 必须保留 {kept}：{tools:?}");
+    }
+    for name in ["web_fetch", "list_agents", "message_agent"] {
+        assert!(!tools.contains(&name), "低频工具不再常驻：{name}");
+        let doc = harness
+            .client
+            .call::<moc_protocol::ResourceRead>(moc_protocol::ResourceReadParams {
+                session_id: child_id.clone(),
+                uri: format!("tool://{name}"),
+                max_bytes: None,
+            })
+            .await;
+        assert!(doc.is_ok(), "Explorer 的获准工具仍可发现：{name}");
     }
 
     let listed = harness
@@ -1453,7 +1454,7 @@ async fn fusion_lead_hands_off_to_a_persistent_sidekick() {
             "sidekick 不得拿到 {denied}：{sidekick_tools:?}"
         );
     }
-    for kept in ["yield", "message_agent", "bash", "edit"] {
+    for kept in ["yield", "run_code", "bash", "edit"] {
         assert!(
             sidekick_tools.contains(&kept),
             "sidekick 必须保留 {kept}：{sidekick_tools:?}"
@@ -1492,6 +1493,29 @@ async fn fusion_lead_hands_off_to_a_persistent_sidekick() {
     assert_eq!(
         handoff_results[0]["agent_id"], handoff_results[1]["agent_id"],
         "同一边 kick 会话必须复用"
+    );
+    let sidekick_id = handoff_results[0]["agent_id"].as_str().unwrap();
+    let documentation = harness
+        .client
+        .call::<moc_protocol::ResourceRead>(moc_protocol::ResourceReadParams {
+            session_id: sidekick_id.to_owned(),
+            uri: "tool://message_agent".into(),
+            max_bytes: None,
+        })
+        .await
+        .expect("sidekick 仍可发现消息工具");
+    assert!(documentation.content.unwrap().contains("message_agent"));
+    assert!(
+        harness
+            .client
+            .call::<moc_protocol::ResourceRead>(moc_protocol::ResourceReadParams {
+                session_id: sidekick_id.to_owned(),
+                uri: "tool://spawn_agent".into(),
+                max_bytes: None,
+            })
+            .await
+            .is_err(),
+        "按需读取不能绕过 sidekick 的禁止再委派策略"
     );
 
     // 普通子代理 inherit 的是 lead 的真实 selector，不是组合写法。
@@ -2250,5 +2274,81 @@ async fn custom_role_uses_configured_model_when_explorer_disabled() {
         .map(|tool| tool["function"]["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["read", "yield"]);
+    harness.close().await;
+}
+
+/// 从文档发现到真实 PTC 派发、交付；延迟调用仍受目标工具插件钩子约束。
+#[tokio::test]
+async fn deferred_agent_documentation_dispatch_and_hooks() {
+    assert!(support::require_moc_bin("按需子代理"));
+    let upstream = MockServer::builder().start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    mount_router(&upstream, move |body| {
+        if is_subagent_request(body) {
+            return yield_call("child_yield", "DEFERRED_AGENT_REPORT");
+        }
+        let response = match counter.fetch_add(1, Ordering::SeqCst) {
+            0 => support::tool_stream(vec![("agent_docs", "read", json!({"path":"tool://agents"}))]),
+            1 => support::tool_stream(vec![("agent_program", "run_code", json!({
+                "description":"Delegate work and collect its report",
+                "code": "let denied; try { await tools.spawn_agent({role:'explorer',task:'BLOCKED_TASK'}); } catch(e) { denied=e.code; } const spawned=JSON.parse((await tools.spawn_agent({role:'explorer',task:'ALLOWED_TASK'})).content); const waited=await tools.wait_agent({agent_ids:spawned.agents.map(a=>a.agent_id),timeout_secs:10}); const listed=await tools.list_agents({}); return {denied,waited:waited.structuredContent,listed:listed.content};"
+            }))]),
+            _ => support::text_stream("委派完成"),
+        };
+        ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+    }).await;
+    let harness = harness(&upstream).await;
+    super::plugin_flow::install_plugin(
+        &harness,
+        "deferred-policy",
+        r#"
+        export default { hooks: {
+          beforeToolCall(event) {
+            if (event.name === 'spawn_agent' && event.arguments.task === 'BLOCKED_TASK') return {deny:'Blocked by target policy'};
+          },
+          afterToolCall(event) {
+            if (event.name === 'list_agents') return {content:'REDACTED_AGENT_LIST'};
+          }
+        }};
+    "#,
+    );
+    let parent = harness.session(moc_protocol::SessionEngine::Standard).await;
+    harness.prompt(&parent, "委派独立任务并收集报告").await;
+    let results = support::tool_result_texts(&harness.load(&parent).await);
+    let result = results
+        .iter()
+        .find(|text| text.contains("REDACTED_AGENT_LIST"))
+        .expect("目标工具结果钩子必须作用于嵌套调用");
+    assert!(
+        result.contains("E_PLUGIN_DENIED"),
+        "目标工具前置钩子必须阻止派发：{result}"
+    );
+    assert!(
+        result.contains("DEFERRED_AGENT_REPORT"),
+        "子代理报告必须回到父代理：{result}"
+    );
+    let agents = harness
+        .client
+        .call::<AgentList>(AgentListParams {
+            session_id: parent.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(agents.agents.len(), 1, "被钩子拒绝的派发不得创建子代理");
+    assert_eq!(agents.agents[0].status, AgentStatus::Completed);
+    let requests = upstream.received_requests().await.unwrap();
+    let first: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(!tool_names(&first).contains(&"spawn_agent"));
+    assert!(
+        !first["messages"].to_string().contains("<agent-roles>"),
+        "初始请求不应包含完整角色表"
+    );
+    assert!(
+        results
+            .iter()
+            .any(|text| text.contains("inputSchema") && text.contains("spawn_agent")),
+        "按需读取才获得参数"
+    );
     harness.close().await;
 }

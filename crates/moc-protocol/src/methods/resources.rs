@@ -2,7 +2,7 @@
 //!
 //! `resource/complete` 服务输入框补全；`resource/list` / `resource/read`
 //! 服务 WebUI 文件管理器的虚拟空间分页，URI 命名空间与 core 的
-//! `ResourceRouter` 一致（`local://` / `artifact://` / `history://` / `skill://`）。
+//! `ResourceRouter` 一致（`local://` / `artifact://` / `history://` / `skill://` / `tool://`）。
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

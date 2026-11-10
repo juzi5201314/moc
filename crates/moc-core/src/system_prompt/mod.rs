@@ -38,16 +38,10 @@ const DEFAULT_INTRO: &str = "You are a precise software-engineering agent workin
 const VISUAL_GUIDE: &str = "Use a ```mermaid fence for flow, sequence, state, or dependencies, and a ```svg fence for a layout, mockup, or geometry mermaid cannot draw; both render inline, so do not restate the figure. In SVG use only currentColor and var(--fg), var(--muted), var(--border), var(--surface), var(--accent), var(--success), var(--warning), var(--error); no background, scripts, animation, foreignObject, or external hrefs.";
 // 跨工具纪律只写在这里；单个工具的用法写在各自的 description，这里不重复。
 const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored changes, write for new or complete files, and bash only when a shell is required.";
-/// web_search/web_fetch 按各自可见性拼进工具政策。
-const WEB_BOTH_POLICY: &str =
-    "Use web_search for current information and web_fetch for known URLs; cite the URLs you use.";
-const WEB_SEARCH_ONLY_POLICY: &str =
-    "Use web_search for current information; cite the URLs you use.";
-const WEB_FETCH_ONLY_POLICY: &str = "Use web_fetch for known URLs; cite the URLs you use.";
 const TOOL_POLICY_BUILTIN: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files.";
 /// tools.bash.prefer_builtin 开启时追加在 TOOL_POLICY_BUILTIN 之后的一句。
 const TOOL_POLICY_PREFER_BUILTIN: &str = "Such bash calls are rejected with E_PREFER_BUILTIN: `cat`/`head`/`tail`/`sed -n`/`ls` → read, `rg`/`grep` over files → grep, `find -name`/`fd`/`rg --files` → find, single-file `sed -i`/`perl -pi`, `cat > F <<EOF`, `echo >> F`, and inline Python or Node file writes → edit or write. Filtering command output (`git log | rg x`, `cargo test 2>&1 | tail`) and multi-file mechanical replacements (`rg -l x | xargs sed -i ...`) stay in bash. Set bash force_bash=true only as a last resort, when no built-in tool can do the job; never to sidestep this rule.";
-const TOOL_POLICY_REST: &str = "Read before editing. File output starts with [path#TAG] and shows lines as N│text; edit takes that tag plus plain line numbers, and every number in one call refers to that tag. Each edit returns the file's new tag and renumbered lines; an older tag still works for lines no later edit touched, and on a rejected edit use the current lines it returns instead of re-reading.\n\nSession resources are read-only URIs for read, grep, find, and job: `artifact://jobs/<file>` and `artifact://artifacts/<file>` (job logs, archived tool output; copy URIs from notices or `job` op=list), `local://<id>.md` (plan), `history://transcript` (JSONL transcript), `skill://<name>/SKILL.md`. A bare scheme (`artifact://`, `artifact://jobs`, `local://`, `history://`, `skill://`) lists that namespace when read. Never pass a resource URI to bash or to any other program; for a job log use `job` op=output.\n\nA background job reports its completion notice (output preview and log URI) automatically. Keep working meanwhile; use `job` op=output for a log tail or op=wait to block; never sleep, re-run, or poll a job log through bash.\n\nExecution modes are enforced at execution; session state and todo updates are allowed in every mode. A non-default mode states its rules in a tail reminder; no such reminder means default mode, which permits workspace changes.";
+const TOOL_POLICY_REST: &str = "Read before editing. Internal resources are read-only: artifact://jobs/<file> and artifact://artifacts/<file> (copy URIs from notices or job op=list), local://<id>.md (plans), history://transcript, skill://<name>/SKILL.md, and tool://<capability> (tool documentation). Use read for resource text; a bare scheme lists its namespace. Never pass internal URIs to external programs.\n\nBackground jobs deliver completion notices automatically. Continue independent work; use job op=output for logs or op=wait when blocked, never sleep or poll through bash.\n\nExecution modes restrict execution, not discovery. Session state and todo updates remain available in every mode. A non-default mode supplies a tail reminder; without one, workspace changes are permitted.";
 /// 项目指令块的开头一句：告诉模型下面是仓库规则文件，别和工具政策混着读。
 const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
 
@@ -233,12 +227,6 @@ pub fn pieces(
 ) -> Vec<PromptPiece> {
     let mut sections = Vec::new();
     sections.push(intro_piece(config));
-    let web_policy = match (config.web_search.available(), config.web_fetch.enabled) {
-        (true, true) => Some(WEB_BOTH_POLICY),
-        (true, false) => Some(WEB_SEARCH_ONLY_POLICY),
-        (false, true) => Some(WEB_FETCH_ONLY_POLICY),
-        (false, false) => None,
-    };
     let prefer_builtin = config.tools.bash.prefer_builtin;
     let mut tool_policy = String::with_capacity(
         TOOL_POLICY.len()
@@ -249,14 +237,9 @@ pub fn pieces(
                 0
             }
             + TOOL_POLICY_REST.len()
-            + web_policy.map_or(0, str::len)
             + 4,
     );
     tool_policy.push_str(TOOL_POLICY);
-    if let Some(policy) = web_policy {
-        tool_policy.push(' ');
-        tool_policy.push_str(policy);
-    }
     tool_policy.push(' ');
     tool_policy.push_str(TOOL_POLICY_BUILTIN);
     if prefer_builtin {
@@ -275,12 +258,7 @@ pub fn pieces(
         title: "tools",
         name: PIECE_PTC_RUNTIME,
         scope: PieceScope::Static,
-        text: format!(
-            "run_code works in every mode; in PTC mode it is the only native tool. MCP tools are reachable only inside run_code: `await catalog.search({{query:\"\"}})`, then `await catalog.describe(name)`, then `await tools[name](args)`; discovery grants no permission.\n\nResults are `{{content,summary,structuredContent,isError,status,artifact}}`; prefer structuredContent, else `JSON.parse(r.content)` for JSON text. Failures reject with serializable `code`, `message`, `result`; use try/catch or Promise.allSettled. Example: `const r = await tools.read({{path:\"README.md\"}}); return r.content;`\n\nIndependent read-only calls may use Promise.all. Standard tool batches allow up to {} concurrent calls; run_code child calls up to {} concurrently and {} total times per script. Writes, bash approval, and session-state updates are barriers. Await all calls before returning and return only final information; intermediate results never reach model history. `state.store(key,json)`, `state.load(key)`, `state.remove(key)`, `state.keys()` persist session JSON (missing key: undefined); writes commit immediately and later failures do not roll them back. JS globals do not persist. The worker has no file, network, process, or timer APIs; use host tools.",
-            config.tools.max_concurrent_calls,
-            config.tools.ptc.max_concurrent_calls,
-            config.tools.ptc.max_total_calls,
-        ),
+        text: "run_code evaluates JavaScript in a fresh QuickJS runtime. Call await tools.<name>(args); return the needed result. Tool results contain {content,structuredContent,isError,status,artifact}; prefer structuredContent, otherwise content. Failures reject with {code,message,result}. Await every call before returning; JavaScript globals do not persist. Standard mode also exposes core tools directly; PTC exposes only run_code. Read capability docs with await tools.read({path:\"tool://capability\"}). Composition, MCP discovery, and named state: tool://run-code.".to_owned(),
     });
     // Fusion lead 的分工契约：只注入 Fusion 顶层会话，静态片段保持前缀连续。
     if model.fusion.is_some() && subagent.is_none() {
@@ -680,9 +658,6 @@ mod tests {
         assert!(text.contains(REPO_RULES_INTRO));
         assert!(text.contains("model: p/model"));
         assert!(text.contains("<mcp-servers>"));
-        assert!(text.contains("structuredContent"));
-        assert!(text.contains("state.store"));
-        assert!(text.contains("Standard tool batches allow up to 16"));
         assert!(!text.contains("Current mode:"));
         // 默认配置下所有片段都在 system：只有一条消息，前三块是静态前缀。
         assert_eq!(prompt.messages.len(), 1);
@@ -698,51 +673,6 @@ mod tests {
             !blocks[..3]
                 .iter()
                 .any(|block| block.contains(&cwd.display().to_string()))
-        );
-    }
-
-    /// 工具政策必须说明内部 URI 该用哪些工具读，以及后台任务的结果会自动送达。
-    /// 模型只能从这里知道不该用 bash 去 tail `artifact://jobs/job_1.log`。
-    #[test]
-    fn tool_policy_declares_internal_uris_and_job_delivery() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let cwd = directory.path().join("repo");
-        let home = directory.path().join("home");
-        let config = resolved(&cwd, &home);
-        let model = config.resolve_model("p/model").expect("resolve model");
-        let prompt = build(
-            &config,
-            &model,
-            &cwd,
-            &[],
-            &crate::skills::SkillIndex::empty(),
-            "",
-            "",
-            "",
-            None,
-        );
-        let text = prompt_text(&prompt);
-        for uri in [
-            "artifact://jobs/<file>",
-            "artifact://artifacts/<file>",
-            "local://<id>.md",
-            "history://transcript",
-            "skill://<name>/SKILL.md",
-        ] {
-            assert!(text.contains(uri), "工具政策缺少 {uri}：{text}");
-        }
-        assert!(
-            text.contains("A bare scheme") && text.contains("lists that namespace when read"),
-            "必须说明读裸 scheme 会列出该命名空间：{text}"
-        );
-        assert!(
-            text.contains("Never pass a resource URI to bash or to any other program"),
-            "必须禁止把 URI 交给 shell 或任何程序：{text}"
-        );
-        assert!(
-            text.contains("reports its completion notice")
-                && text.contains("never sleep, re-run, or poll"),
-            "必须说明后台任务的完成通知会自动送达，且禁止轮询：{text}"
         );
     }
 
@@ -899,50 +829,6 @@ mod tests {
             .err()
             .expect("未知片段名必须报错");
         assert!(error.to_string().contains("tool polcy"), "{error}");
-    }
-
-    #[test]
-    fn web_search_policy_follows_tool_visibility() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let cwd = directory.path().join("repo");
-        let home = directory.path().join("home");
-        fs::create_dir_all(&cwd).expect("create repo");
-        let mut config = resolved(&cwd, &home);
-        let model = config.resolve_model("p/model").expect("resolve model");
-        let context_files =
-            context_files::load_context_files(&cwd, &config.home, &config.context_files);
-        let prompt = |config: &ResolvedConfig| {
-            prompt_text(&build(
-                config,
-                &model,
-                &cwd,
-                &context_files,
-                &crate::skills::SkillIndex::empty(),
-                "",
-                "",
-                "",
-                None,
-            ))
-        };
-        let fetch_only = prompt(&config);
-        assert!(!fetch_only.contains("web_search"));
-        assert!(
-            fetch_only.contains("web_fetch"),
-            "无密钥时仍应提示 web_fetch"
-        );
-
-        config.web_fetch.enabled = false;
-        let none = prompt(&config);
-        assert!(!none.contains("web_search") && !none.contains("web_fetch"));
-
-        config.web_fetch.enabled = true;
-        config.web_search.api_key = Some("tvly-test".to_owned());
-        let both = prompt(&config);
-        assert!(both.contains("web_search") && both.contains("web_fetch"));
-
-        config.web_fetch.enabled = false;
-        let search_only = prompt(&config);
-        assert!(search_only.contains("web_search") && !search_only.contains("web_fetch"));
     }
 
     #[test]

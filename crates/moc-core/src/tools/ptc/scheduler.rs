@@ -71,7 +71,7 @@ async fn perform(
         } else if let Err(err) = start_result {
             ToolOutcome::failure("E_UPDATE", err.to_string())
         } else {
-            crate::service::prompt::tools::execute_nested_tool(&ctx.core, ctx, &call)
+            crate::service::prompt::tools::execute_nested_tool(&ctx.core, ctx, &call, true)
                 .await
                 .unwrap_or_else(|err| ToolOutcome::failure("E_TOOL", err.to_string()))
         };

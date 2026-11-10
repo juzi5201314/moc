@@ -33,6 +33,8 @@ impl ResourceError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceBacking {
     File(PathBuf),
+    /// 按当前会话生成的只读文档，不落盘，也不参与文件编辑锚定。
+    Text(String),
     /// 命名空间/根：`listing` 是 read 展示的列表正文；`entries` 是
     /// （URI 前缀, 真实目录）对，grep 逐目录扫描后按前缀拼出条目 URI。
     Namespace {
@@ -65,6 +67,7 @@ pub struct ResourceContext<'ctx> {
     pub paths: &'ctx SessionPaths,
     pub skills: &'ctx SkillIndex,
     pub sessions: &'ctx SessionTable,
+    pub tools: Option<crate::tools::documentation::ToolDocumentation>,
 }
 
 /// 命名空间列表里最多列出的条目数；超出部分只给计数。
@@ -235,7 +238,7 @@ fn resource_scheme(input: &str) -> Option<ResourceScheme> {
 pub struct ResourceRouter;
 
 impl ResourceRouter {
-    pub fn resolve_read(
+    pub async fn resolve_read(
         ctx: &crate::tools::ToolCtx,
         input: &str,
     ) -> Result<Option<ResolvedResource>, ResourceError> {
@@ -243,7 +246,7 @@ impl ResourceRouter {
         let Some(scheme) = resource_scheme(input) else {
             return Ok(None);
         };
-        let context = ctx.resource_context();
+        let context = ctx.resource_context().await;
         if scheme == ResourceScheme::History {
             return resolve_history(&context, input, &ctx.sandbox_policy()).map(Some);
         }
@@ -290,6 +293,8 @@ impl ResourceRouter {
             local_candidates(context, prefix)
         } else if prefix.starts_with("history://") {
             history_candidates(context, prefix)
+        } else if prefix.starts_with("tool://") {
+            tool_candidates(context, prefix)
         } else {
             Vec::new()
         };
@@ -321,6 +326,14 @@ impl ResourceRouter {
                 &crate::sandbox::SandboxPolicy::full(context.cwd.to_owned()),
             )
             .map(Some),
+            ResourceScheme::Tool => Ok(Some(ResolvedResource {
+                uri: input.to_owned(),
+                backing: ResourceBacking::Text(
+                    tool_documentation(context)?
+                        .read(input)
+                        .map_err(|error| ResourceError::new(error.code, error.message))?,
+                ),
+            })),
         }
     }
 }
@@ -331,6 +344,7 @@ fn scheme_candidates(_context: &ResourceContext<'_>) -> Vec<ResourceCandidate> {
         namespace("history://", "current session transcript", "history"),
         namespace("local://", "current session plan files", "local"),
         namespace("skill://", "discovered agent skill", "skill"),
+        namespace("tool://", "on-demand tool documentation", "tool"),
     ]
 }
 
@@ -338,7 +352,7 @@ fn normalized_scheme_candidates(
     context: &ResourceContext<'_>,
     scheme: &str,
 ) -> Vec<ResourceCandidate> {
-    if !matches!(scheme, "artifact" | "history" | "local" | "skill") {
+    if !matches!(scheme, "artifact" | "history" | "local" | "skill" | "tool") {
         return Vec::new();
     }
     if scheme == "local" {
@@ -359,6 +373,37 @@ fn namespace(uri: &str, description: &str, kind: &str) -> ResourceCandidate {
         kind: kind.into(),
         append_space: false,
     }
+}
+
+fn tool_documentation<'ctx>(
+    context: &'ctx ResourceContext<'_>,
+) -> Result<&'ctx crate::tools::documentation::ToolDocumentation, ResourceError> {
+    context.tools.as_ref().ok_or_else(|| {
+        ResourceError::new(
+            "E_TOOL_DOC",
+            "Tool documentation requires a session tool context",
+        )
+    })
+}
+
+fn tool_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<ResourceCandidate> {
+    let Some(tools) = context.tools.as_ref() else {
+        return Vec::new();
+    };
+    tools
+        .topics()
+        .map(|(name, description)| {
+            let uri = format!("tool://{name}");
+            ResourceCandidate {
+                label: name.to_owned(),
+                uri,
+                description: description.to_owned(),
+                kind: "tool".into(),
+                append_space: true,
+            }
+        })
+        .filter(|candidate| candidate.uri.starts_with(prefix))
+        .collect()
 }
 
 fn context_artifact_candidates(
@@ -796,6 +841,7 @@ pub fn list(context: &ResourceContext<'_>, input: &str) -> Result<ResourceListin
                 "artifact://artifacts",
                 "history://",
                 "skill://",
+                "tool://",
             ]
             .into_iter()
             .map(ListedEntry::namespace)
@@ -808,6 +854,25 @@ pub fn list(context: &ResourceContext<'_>, input: &str) -> Result<ResourceListin
         Some(ResourceScheme::Local) => list_local(context, input)?,
         Some(ResourceScheme::History) => list_history(context, input)?,
         Some(ResourceScheme::Skill) => list_skill(context, input)?,
+        Some(ResourceScheme::Tool) => {
+            if input != "tool://" {
+                return Err(ResourceError::new(
+                    "E_TOOL_DOC",
+                    "Tool documents are not directories; use resource/read",
+                ));
+            }
+            tool_documentation(context)?
+                .topics()
+                .map(|(name, description)| ListedEntry {
+                    uri: format!("tool://{name}"),
+                    name: name.to_owned(),
+                    is_dir: false,
+                    size: None,
+                    modified_ms: None,
+                    description: Some(description.to_owned()),
+                })
+                .collect()
+        }
         None => {
             return Err(ResourceError::new("E_URI_INVALID", "unknown resource URI"));
         }
@@ -1096,6 +1161,7 @@ mod tests {
             paths,
             skills,
             sessions,
+            tools: None,
         }
     }
 
@@ -1422,7 +1488,7 @@ mod tests {
         );
     }
 
-    /// `resource/list`：根列出 5 个命名空间，各 scheme 展开成一层条目。
+    /// `resource/list`：根列出资源命名空间，各 scheme 展开成一层条目。
     #[test]
     fn list_exposes_namespaces_as_structured_entries() {
         let root = tempfile::tempdir().expect("临时目录");
@@ -1450,6 +1516,7 @@ mod tests {
                 ("artifact://artifacts", true),
                 ("history://", true),
                 ("skill://", true),
+                ("tool://", true),
             ]
         );
         assert!(!root_listing.truncated);

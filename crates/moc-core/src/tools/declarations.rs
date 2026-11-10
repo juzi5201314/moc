@@ -1,13 +1,7 @@
-//! PTC 模式的工具声明：把当前可见工具生成 TS 签名放进系统提示。
+//! 常驻工具上下文：PTC 只内联核心签名，各引擎共享按需能力目录。
 //!
-//! 没有声明时模型对参数形状一无所知，每个未知工具都要 `catalog.search` →
-//! `catalog.describe` 两轮宿主往返才能安全调用。内置工具集合固定且 schema 浅，
-//! 给完整签名（成本与普通模式的原生工具表相当）；MCP 工具数量不可控，只给
-//! 名字加一行描述的紧凑索引，完整 schema 仍走 `catalog.describe`，并按上下文
-//! 窗口预算截断（算法对齐 skills 目录）。
-//!
-//! 两部分的稳定性不同：内置签名只随模式与配置变化，留在系统提示；MCP 集合每次
-//! 提示都可能刷新，作为尾部提醒注入，免得工具增删一次就改写整段前缀。
+//! 完整低频定义由 tool:// 文档读取，参数仍来自同一个工具注册表。
+//! MCP 的紧凑索引作为尾部提醒，避免服务器变化改写系统前缀。
 
 use moc_protocol::SessionEngine;
 
@@ -22,10 +16,7 @@ const DESCRIPTION_MAX_CHARS: usize = 110;
 /// TS 转换的最大嵌套深度；更深或无法表达的关键字降级为 `unknown`。
 const TS_MAX_DEPTH: usize = 5;
 
-/// 渲染 `<tool-declarations>` 片段：只有内置工具签名。
-///
-/// 仅 Ptc 引擎且存在可见内置工具时返回 `Some`。签名只随引擎和配置变化，同一引擎下
-/// 逐字节稳定，所以可以留在系统提示里；MCP 部分见 [`render_mcp_index`]。
+/// 渲染常驻能力目录，以及 PTC 引擎所需的核心工具签名。
 pub fn render_signatures(
     catalog: &ToolCatalog,
     engine: SessionEngine,
@@ -33,9 +24,15 @@ pub fn render_signatures(
     workflows_active: bool,
     config: &ResolvedConfig,
 ) -> Option<String> {
-    let roles = catalog.role_instructions();
+    let directory = super::documentation::index(
+        catalog,
+        engine,
+        crate::service::mode::Mode::Default,
+        ask_supported,
+        config,
+    );
     if engine != SessionEngine::Ptc {
-        return (!roles.is_empty()).then_some(roles);
+        return Some(directory);
     }
     let mut lines = vec![
         "Tool signatures for run_code: `const r = await tools.<name>(args)`; `?` marks optional properties. ToolResult fields are documented under run_code.".to_owned(),
@@ -49,7 +46,7 @@ pub fn render_signatures(
         workflows_active,
         config,
     ) {
-        if tool.origin() == ToolOrigin::Mcp {
+        if tool.origin() == ToolOrigin::Mcp || catalog.scope.defers(tool.name()) {
             continue;
         }
         builtins += 1;
@@ -61,9 +58,12 @@ pub fn render_signatures(
         ));
     }
     if builtins > 0 {
-        Some(format!("{roles}\n\n{}", wrap("tool-declarations", &lines)))
+        Some(format!(
+            "{directory}\n{}",
+            wrap("tool-declarations", &lines)
+        ))
     } else {
-        (!roles.is_empty()).then_some(roles)
+        Some(directory)
     }
 }
 

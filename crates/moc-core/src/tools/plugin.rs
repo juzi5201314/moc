@@ -178,6 +178,7 @@ impl moc_plugin::HostBridge for ReadOnlyBridge {
                 &self.ctx.core,
                 &self.ctx,
                 &call,
+                false,
             )
             .await
             .map_err(|error| moc_plugin::PluginError::new("E_PLUGIN_TOOL", error.to_string()))?;

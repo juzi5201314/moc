@@ -89,7 +89,7 @@ impl Tool for SpawnAgentTool {
         "spawn_agent"
     }
     fn description(&self) -> &'static str {
-        "Spawn a fixed role from <agent-roles> with a self-contained task. Single: role + task; batch: tasks[] with role + task per item. Optional context is shared task text."
+        "Delegate a self-contained task to an available fixed role; role selection and coordination rules: tool://agents."
     }
     fn tier(&self) -> Tier {
         Tier::Write

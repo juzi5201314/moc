@@ -88,11 +88,25 @@ impl Tool for GrepTool {
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
             if let Some(path) = args.path.as_deref()
                 && let Some(resource) = ResourceRouter::resolve_read(ctx, path)
+                    .await
                     .map_err(|error| ToolError::new(error.code, error.message))?
             {
                 let output = match resource.backing {
                     ResourceBacking::File(path) => {
                         search_resource_file(&resource.uri, &path, &args, &ctx.config.tools.grep)?
+                    }
+                    ResourceBacking::Text(text) => {
+                        let output = collect_resource_matches(
+                            &resource.uri,
+                            &text,
+                            &args,
+                            &ctx.config.tools.grep,
+                        )?;
+                        if output.is_empty() {
+                            "No matches found".to_owned()
+                        } else {
+                            output
+                        }
                     }
                     ResourceBacking::Namespace { entries, .. } => {
                         search_resource_namespace(&entries, &args, &ctx.config.tools.grep)?

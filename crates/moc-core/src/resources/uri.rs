@@ -153,6 +153,7 @@ pub enum ResourceScheme {
     Skill,
     Local,
     History,
+    Tool,
 }
 
 impl ResourceScheme {
@@ -162,6 +163,7 @@ impl ResourceScheme {
             Self::Skill => "skill",
             Self::Local => "local",
             Self::History => "history",
+            Self::Tool => "tool",
         }
     }
 
@@ -171,6 +173,7 @@ impl ResourceScheme {
             "skill" => Some(Self::Skill),
             "local" => Some(Self::Local),
             "history" => Some(Self::History),
+            "tool" => Some(Self::Tool),
             _ => None,
         }
     }

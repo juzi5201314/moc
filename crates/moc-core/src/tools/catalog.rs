@@ -19,7 +19,7 @@ pub struct ToolCatalog {
     tools: Vec<Arc<dyn Tool>>,
     servers: BTreeMap<String, ServerStatus>,
     /// 声明、PTC 发现与执行共享相同的角色和权限快照。
-    scope: super::ToolScope,
+    pub(super) scope: super::ToolScope,
 }
 
 impl ToolCatalog {
@@ -82,7 +82,6 @@ impl ToolCatalog {
             for (name, description) in &self.scope.roles {
                 prompt.push_str(&format!("{name}: {description}\n"));
             }
-            prompt.push_str("Delegate a complete task, then do independent work or wait for delivery. Send follow-up messages only for necessary clarification or blockers.\n");
         }
         prompt.push_str("</agent-roles>");
         prompt

@@ -691,6 +691,43 @@ impl Core {
         Ok((record, cwd, skills))
     }
 
+    /// 只有工具文档请求才准备目录，普通文件读取不触发 MCP/插件发现。
+    async fn resource_tools(
+        &self,
+        ctx: &RequestContext,
+        record: &crate::session::SessionRecord,
+        uri: &str,
+    ) -> Result<Option<crate::tools::documentation::ToolDocumentation>, RpcError> {
+        if !uri.starts_with("tool://") {
+            return Ok(None);
+        }
+        let metadata = record.state.lock().await.metadata();
+        let cwd = Path::new(&metadata.session.cwd);
+        let config = self.inner.project_config(cwd).map_err(to_rpc)?;
+        let plugins = self.inner.project_plugins(cwd).await.map_err(to_rpc)?;
+        let scope = crate::tools::ToolScope::for_metadata(
+            &metadata,
+            &config,
+            crate::agents::roles::descriptions(&self.inner, &config, &plugins),
+        );
+        let manager = self.inner.project_mcp(cwd).await.map_err(to_rpc)?;
+        let snapshot = manager.snapshot().await;
+        let catalog = self
+            .inner
+            .tools
+            .catalog(&snapshot, manager, plugin_tools_of(&plugins), scope)
+            .map_err(|error| invalid_params(error.to_string()))?;
+        Ok(Some(crate::tools::documentation::ToolDocumentation {
+            catalog: Arc::new(catalog),
+            config,
+            engine: metadata.engine,
+            mode: mode::Mode::effective(metadata.plan_active, None),
+            ask_supported: self
+                .inner
+                .ask_available(ctx.connection_id(), metadata.session.autonomy),
+        }))
+    }
+
     /// 加载配置、校验供应商，并创建会话存储目录。
     pub fn new(config: CoreConfig) -> anyhow::Result<Arc<Self>> {
         Self::new_with_sandbox_support(config, crate::sandbox::detect())
@@ -1275,16 +1312,18 @@ impl AgentService for Core {
 
     async fn resource_complete(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         params: ResourceCompleteParams,
     ) -> Result<ResourceCompleteResult, RpcError> {
         let (record, cwd, skills) = self.resource_context(&params.session_id).await?;
+        let tools = self.resource_tools(&ctx, &record, &params.prefix).await?;
         let context = crate::resources::ResourceContext {
             session_id: &params.session_id,
             cwd: &cwd,
             paths: &record.paths,
             skills: &skills,
             sessions: &self.inner.sessions,
+            tools,
         };
         let candidates = crate::resources::ResourceRouter::complete(&context, &params.prefix)
             .map_err(|error| RpcError::new(RpcErrorCode::InvalidParams.code(), error.to_string()))?
@@ -1302,10 +1341,11 @@ impl AgentService for Core {
 
     async fn resource_list(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         params: ResourceListParams,
     ) -> Result<ResourceListResult, RpcError> {
         let (record, cwd, skills) = self.resource_context(&params.session_id).await?;
+        let tools = self.resource_tools(&ctx, &record, &params.uri).await?;
         let sessions = self.inner.sessions.clone();
         let listing = tokio::task::spawn_blocking(move || {
             let context = crate::resources::ResourceContext {
@@ -1314,6 +1354,7 @@ impl AgentService for Core {
                 paths: &record.paths,
                 skills: &skills,
                 sessions: &sessions,
+                tools,
             };
             crate::resources::list(&context, &params.uri)
         })
@@ -1344,10 +1385,11 @@ impl AgentService for Core {
 
     async fn resource_read(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         params: ResourceReadParams,
     ) -> Result<ResourceReadResult, RpcError> {
         let (record, cwd, skills) = self.resource_context(&params.session_id).await?;
+        let tools = self.resource_tools(&ctx, &record, &params.uri).await?;
         let sessions = self.inner.sessions.clone();
         let uri = params.uri.clone();
         tokio::task::spawn_blocking(move || {
@@ -1357,11 +1399,36 @@ impl AgentService for Core {
                 paths: &record.paths,
                 skills: &skills,
                 sessions: &sessions,
+                tools,
             };
             let resolved = crate::resources::ResourceRouter::resolve(&context, &params.uri)
                 .map_err(|error| invalid_params(error.to_string()))?;
-            let crate::resources::ResourceBacking::File(path) = resolved.backing else {
-                return Err(invalid_params("该 URI 是命名空间，请用 resource/list 列举"));
+            let path = match resolved.backing {
+                crate::resources::ResourceBacking::File(path) => path,
+                crate::resources::ResourceBacking::Text(mut text) => {
+                    let size = text.len() as u64;
+                    let limit = params
+                        .max_bytes
+                        .unwrap_or(moc_protocol::FS_READ_FILE_DEFAULT_MAX_BYTES)
+                        .min(moc_protocol::FS_READ_FILE_MAX_BYTES)
+                        as usize;
+                    let mut end = text.len().min(limit);
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    text.truncate(end);
+                    return Ok(ResourceReadResult {
+                        uri,
+                        size,
+                        modified_ms: None,
+                        encoding: FsFileEncoding::Utf8,
+                        content: Some(text),
+                        truncated: size > limit as u64,
+                    });
+                }
+                crate::resources::ResourceBacking::Namespace { .. } => {
+                    return Err(invalid_params("该 URI 是命名空间，请用 resource/list 列举"));
+                }
             };
             let read = crate::fs::read_path(&path, params.max_bytes)
                 .map_err(|error| invalid_params(error.to_string()))?;
