@@ -135,12 +135,6 @@ async fn fresh_session_shows_assembled_context_only() {
     );
     assert_eq!(page.children[0].name, "intro");
     assert!(page.children.iter().all(|child| child.text_range.is_some()));
-    assert!(
-        text(&harness, &id, &result, "/messages/0/content")
-            .await
-            .len()
-            > 100
-    );
     let usage = harness
         .client
         .call::<SessionContext>(SessionContextParams {
@@ -150,6 +144,64 @@ async fn fresh_session_shows_assembled_context_only() {
         .unwrap();
     assert_eq!(result.total_tokens, usage.total_tokens);
     assert_eq!(result.context_window, usage.context_window);
+    assert_eq!(
+        usage
+            .sections
+            .iter()
+            .map(|section| section.name.as_str())
+            .collect::<Vec<_>>(),
+        ["system", "AGENTS.md (p+g)", "skills", "tools", "messages"]
+    );
+    assert_eq!(
+        usage.total_tokens,
+        usage
+            .sections
+            .iter()
+            .map(|section| section.tokens)
+            .sum::<u64>()
+    );
+
+    crate::plugin_flow::install_plugin(
+        &harness,
+        "context",
+        "export default { prompt: () => '独立插件提示' };",
+    );
+    let with_plugin = harness
+        .client
+        .call::<SessionContext>(SessionContextParams {
+            session_id: id.clone(),
+        })
+        .await
+        .unwrap();
+    let plugin_tokens = moc_core::compact::estimate_tokens("<plugins>\n独立插件提示\n</plugins>");
+    assert_eq!(
+        with_plugin
+            .sections
+            .iter()
+            .find(|section| section.name == "plugins")
+            .unwrap()
+            .tokens,
+        plugin_tokens
+    );
+    for section in &usage.sections {
+        assert_eq!(
+            with_plugin
+                .sections
+                .iter()
+                .find(|candidate| candidate.name == section.name),
+            Some(section),
+            "插件提示词不能重复计入其它分类"
+        );
+    }
+    assert_eq!(with_plugin.total_tokens, usage.total_tokens + plugin_tokens);
+    assert_eq!(
+        with_plugin.total_tokens,
+        with_plugin
+            .sections
+            .iter()
+            .map(|section| section.tokens)
+            .sum::<u64>()
+    );
     assert!(
         upstream.received_requests().await.unwrap().is_empty(),
         "打开窗口不调用模型"

@@ -131,7 +131,7 @@ pub enum PieceScope {
 
 #[derive(Clone)]
 pub struct PromptPiece {
-    /// 上下文占用统计用的分类：`system`、`project`、`skills` 或 `tools`。
+    /// 上下文占用统计用的分类：`system`、`AGENTS.md (p+g)`、`skills`、`tools` 或 `plugins`。
     pub title: &'static str,
     /// 片段短名（1-3 个英文单词），上下文正文窗直接用它作标题；与 `title` 的分类互不影响。
     pub name: &'static str,
@@ -266,13 +266,13 @@ pub fn pieces(
     tool_policy.push(' ');
     tool_policy.push_str(TOOL_POLICY_REST);
     sections.push(PromptPiece {
-        title: "system",
+        title: "tools",
         name: PIECE_TOOL_POLICY,
         scope: PieceScope::Static,
         text: tool_policy,
     });
     sections.push(PromptPiece {
-        title: "system",
+        title: "tools",
         name: PIECE_PTC_RUNTIME,
         scope: PieceScope::Static,
         text: format!(
@@ -330,7 +330,7 @@ pub fn pieces(
     }
     if let Some(subagent) = subagent {
         sections.push(PromptPiece {
-            title: "project",
+            title: "system",
             name: PIECE_SUBAGENT,
             scope: PieceScope::Project,
             text: subagent.to_owned(),
@@ -397,7 +397,7 @@ fn repo_rules_piece(context_files: &[context_files::ContextFile]) -> Option<Prom
     }
     rules.push_str("\n</repo-rules>");
     Some(PromptPiece {
-        title: "project",
+        title: "AGENTS.md (p+g)",
         name: PIECE_REPO_RULES,
         scope: PieceScope::Project,
         text: rules,

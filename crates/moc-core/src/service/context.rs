@@ -64,9 +64,10 @@ impl Snapshot {
                 .map(|p| compact::estimate_tokens(&p.text))
                 .sum::<u64>()
         };
-        let project = piece_tokens("project");
+        let agents = piece_tokens("AGENTS.md (p+g)");
         let skills = piece_tokens("skills");
         let directory = piece_tokens("tools");
+        let plugins = piece_tokens("plugins");
         let tools = compact::tools_tokens(&self.tools);
         let history = self.history_tokens;
         ContextUsageResult {
@@ -75,14 +76,15 @@ impl Snapshot {
             sections: [
                 (
                     "system",
-                    system_tokens.saturating_sub(project + skills + directory),
+                    system_tokens.saturating_sub(agents + skills + directory + plugins),
                 ),
-                ("project", project),
+                ("AGENTS.md (p+g)", agents),
                 ("skills", skills),
                 ("tools", tools + directory),
-                ("messages", history),
             ]
             .into_iter()
+            .chain((plugins > 0).then_some(("plugins", plugins)))
+            .chain([("messages", history)])
             .map(|(name, tokens)| ContextUsageSection {
                 name: name.into(),
                 tokens,

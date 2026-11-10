@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 90fba0b781200e57
+// schema sha256: 64cf53f108debe04
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -2067,8 +2067,8 @@ export interface ContextUsageResult {
    */
   context_window: number;
   /**
-   * 系统底座、项目指令、技能、工具定义、会话消息等明细；分块名是 `system`、
-   * `project`、`skills`、`tools`、`messages` 固定英文短语。
+   * 按来源分类：`system`、`AGENTS.md (p+g)`、`skills`、`tools`、`messages`；
+   * 插件贡献提示词时额外显示 `plugins`。运行时提醒与工具结果归入 `messages`。
    */
   sections: ContextUsageSection[];
   /**
@@ -2084,7 +2084,7 @@ export interface ContextUsageResult {
  */
 export interface ContextUsageSection {
   /**
-   * 展示名称：英文短语，直接显示在上下文占用窗的分块列表里。
+   * 展示名称，直接显示在上下文占用窗的分块列表里。
    */
   name: string;
   /**

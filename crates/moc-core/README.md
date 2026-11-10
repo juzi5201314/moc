@@ -156,7 +156,9 @@ PTC Host 入口已编译进 `moc`，首次 `run_code` 时将当前 `moc` 作为�
 
 `compaction.threshold` 表示开始压缩的触发阈值，默认 `{ mode = "percent", value = 85 }`；固定 token 可写为 `{ mode = "tokens", value = 120000 }`。百分比只乘上下文窗口，不扣除模型 `max_output_tokens`。自动压缩完成还必须进入触发阈值的 80% recovery band；例如 200k 窗口的 170k 触发线要求压缩后不高于 136k，避免在临界线附近反复压缩。上下文溢出恢复只要求压缩后重新放入可用窗口，再继续请求。
 
-上下文计量优先使用最近一次上游完整 input/output usage 作为精确锚点，仅对锚点后的新消息本地估算；同时以当前完整会话、系统提示和工具定义的本地估算作为安全下限。图片按固定视觉 token 估算，不把 Base64 当作文本。压缩改变历史后会清除旧锚点并重新估算。上下文详情按 `system`、`project`、`skills`、`tools`、`messages` 等固定分块展示占用分解；供应商 usage 可用时，内部触发使用 provider 锚点与本地估算的较大值。
+上下文计量优先使用最近一次上游完整 input/output usage 作为精确锚点，仅对锚点后的新消息本地估算；同时以当前完整会话、系统提示和工具定义的本地估算作为安全下限。图片按固定视觉 token 估算，不把 Base64 当作文本。压缩改变历史后会清除旧锚点并重新估算。上下文详情按 `system`、`AGENTS.md (p+g)`、`skills`、`tools`、`messages` 展示占用分解，插件贡献提示词时额外显示 `plugins`；供应商 usage 可用时，内部触发使用 provider 锚点与本地估算的较大值。
+
+WebUI 与 TUI 共用 `session/context` 的分类口径：`AGENTS.md (p+g)` 合计项目（project）与全局（global）规则及其导入内容；`tools` 包含工具定义/schema、tool policy、PTC 使用说明、工具声明和系统前缀中的 MCP 服务器目录；`system` 保留身份、环境、自定义系统提示词及代理协作指令。`skills` 统计常驻技能目录，`plugins` 只统计插件贡献的提示词；会话历史、工具调用与结果、按需加载的技能正文，以及执行过程中注入的运行时提醒（含 PTC MCP 工具索引）都归 `messages`。分类只改变占用展示，不改变模型收到的提示词或上下文总量。
 
 `session/set_model` 在切换前按目标模型窗口与它在当前压缩配置下的触发线检查上下文：装得下就直接切换，装不下则按参数 `overflow` 处理——`switch` 直接切换并把缺口回报给前端，`compact` 先切换再由新模型压缩上下文，`ask` 不切换、只回报缺口让前端询问用户。压缩在切换后由新模型执行，已有文本摘要仍可跨模型使用。压缩失败不回退切换，失败原因随结果返回。
 

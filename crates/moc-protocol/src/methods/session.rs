@@ -352,7 +352,7 @@ pub struct SessionContextParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextUsageSection {
-    /// 展示名称：英文短语，直接显示在上下文占用窗的分块列表里。
+    /// 展示名称，直接显示在上下文占用窗的分块列表里。
     pub name: String,
     /// 估算 token 数。
     pub tokens: u64,
@@ -366,8 +366,8 @@ pub struct ContextUsageResult {
     pub context_window: u64,
     /// 所有组成部分合计。
     pub total_tokens: u64,
-    /// 系统底座、项目指令、技能、工具定义、会话消息等明细；分块名是 `system`、
-    /// `project`、`skills`、`tools`、`messages` 固定英文短语。
+    /// 按来源分类：`system`、`AGENTS.md (p+g)`、`skills`、`tools`、`messages`；
+    /// 插件贡献提示词时额外显示 `plugins`。运行时提醒与工具结果归入 `messages`。
     pub sections: Vec<ContextUsageSection>,
 }
 

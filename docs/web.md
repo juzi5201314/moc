@@ -47,6 +47,8 @@ moc web 已启动：http://127.0.0.1:7432/?token=3f2a...
 
 Web 仍是 moc 的 Agent 工作台，但在右侧提供一个内嵌的文件分页：工作区树按需加载，支持查看编辑（CodeMirror、mtime 乐观锁防覆盖）、新建、重命名、删除到回收站、上传与拖拽移动；会话空间（计划 / 任务日志 / 工具归档 / 历史 / 技能）整体只读；消息与工具里的文件路径直接点开到这一页。它不取代对话式浏览，只是把「看一眼文件、顺手改一处」收进同一个窗口；主视线的任务编排仍在对话里进行。
 
+上下文浮层与 TUI 共用 core 的[上下文分类](../crates/moc-core/README.md#上下文压缩与解释)：`system`、`AGENTS.md (p+g)`、`skills`、`tools`、`messages`，有插件提示词时额外显示 `plugins`。项目与全局规则合并到 `AGENTS.md (p+g)`，静态工具使用指令归 `tools`，运行时提醒和工具结果保留在 `messages`。
+
 ### 自主程度
 
 与 TUI 一致，每个会话有三档自主程度，可在输入区的权限菜单里切换，或用 `/autonomy [default|dont_ask|unattended]`（不带参数时循环）：
