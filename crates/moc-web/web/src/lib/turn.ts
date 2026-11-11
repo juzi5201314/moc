@@ -40,7 +40,7 @@ function pushSegment(turn: Turn, block: Block): void {
     return;
   }
   // 告警与错误不藏进折叠组：用户必须一眼看到。
-  if (block.kind === "status" && block.tone !== "info") {
+  if (block.kind === "status" && (block.tone !== "info" || block.localCommand)) {
     turn.segments.push({ kind: "notice", id: block.id, block });
     return;
   }

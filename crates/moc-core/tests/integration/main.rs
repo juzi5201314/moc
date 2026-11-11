@@ -26,6 +26,7 @@ mod recovery_flow;
 mod resource_uri_flow;
 mod retry_flow;
 mod sandbox_flow;
+mod skills_compact_flow;
 mod soft_checkpoint_guard;
 mod web_state_flow;
 mod workflow_flow;

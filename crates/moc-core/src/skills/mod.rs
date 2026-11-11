@@ -5,7 +5,9 @@
 //! 另加 moc 自有 `.moc/skills/` 与配置目录。上下文治理：目录常驻只含
 //! name + description（预算超限降级为短语），正文经 `skill` 工具按需加载。
 
+pub(crate) mod cache;
 pub mod catalog;
+pub(crate) mod compact;
 pub mod discovery;
 pub mod frontmatter;
 pub mod tool;
@@ -43,6 +45,7 @@ impl SkillMeta {
 pub struct SkillIndex {
     skills: BTreeMap<String, SkillMeta>,
     order: Vec<String>,
+    pub(crate) hints: BTreeMap<String, String>,
 }
 
 impl SkillIndex {

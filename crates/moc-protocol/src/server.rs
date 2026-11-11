@@ -47,7 +47,8 @@ use crate::methods::{
     SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage,
     SessionWorkflowActivate, SessionWorkflowApprove, SessionWorkflowArtifact,
     SessionWorkflowResume, SessionWorkflowRun, SessionWorkflowRuns, SessionWorkflowSetRoleModel,
-    SessionWorkflowStop, WebStateGet, WebStateSave, WorkspaceGitBranch,
+    SessionWorkflowStop, SkillsCancel, SkillsCompact, WebStateGet, WebStateSave,
+    WorkspaceGitBranch,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
@@ -290,10 +291,13 @@ enum Handshake {
     Ready(ClientInfo),
 }
 
+const SKILLS_FLIGHT: &str = "\0skills-compact";
+
 /// 提示注册表的摘除守卫：任务正常结束、被取消、被 abort 都会摘除，绝不留脏记录。
 struct PromptGuard {
     prompts: Arc<Mutex<HashMap<String, CancellationToken>>>,
     session_id: String,
+    skills: bool,
 }
 
 /// `session/prompt` 的占位结果。
@@ -302,6 +306,7 @@ enum PromptClaim {
     NotPrompt,
     /// 占位成功，附带 `session_id` 供守卫摘除。
     Claimed(String),
+    Skills(String),
     /// 同一会话已有进行中的提示。
     Busy,
 }
@@ -318,10 +323,11 @@ enum BtwClaim {
 
 impl Drop for PromptGuard {
     fn drop(&mut self) {
-        self.prompts
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.session_id);
+        let mut prompts = self.prompts.lock().unwrap_or_else(PoisonError::into_inner);
+        prompts.remove(&self.session_id);
+        if self.skills {
+            prompts.remove(SKILLS_FLIGHT);
+        }
     }
 }
 
@@ -382,31 +388,47 @@ impl<S: AgentService> ServerDispatch<S> {
     /// `session/retry` 后面到达的取消报文只能靠这里的登记才找得到令牌。
     fn claim_prompt(&self, request: &Request, cancel: &CancellationToken) -> PromptClaim {
         let method = request.method.as_ref();
-        let is_prompt =
-            method == <SessionPrompt as Method>::NAME || method == <SessionRetry as Method>::NAME;
-        let is_compact = method == <SessionCompact as Method>::NAME;
-        let is_bash = method == <SessionBash as Method>::NAME;
-        if !is_prompt && !is_compact && !is_bash {
+        let skills = method == <SkillsCompact as Method>::NAME;
+        let starts = skills
+            || method == <SessionPrompt as Method>::NAME
+            || method == <SessionRetry as Method>::NAME
+            || method == <SessionBash as Method>::NAME
+            || method == <SessionCompact as Method>::NAME;
+        let mut prompts = self.prompts();
+        if prompts.contains_key(SKILLS_FLIGHT)
+            && (starts
+                || method == <SessionSteer as Method>::NAME
+                || method == <SessionBtw as Method>::NAME
+                || method == <SessionNew as Method>::NAME)
+        {
+            return PromptClaim::Busy;
+        }
+        if !starts {
             return PromptClaim::NotPrompt;
         }
-        let Some(session_id) = request
+        let session_id = request
             .params
             .as_ref()
             .and_then(|params| params.get("session_id"))
-            .and_then(Value::as_str)
-        else {
+            .and_then(Value::as_str);
+        if skills {
+            if !prompts.is_empty() {
+                return PromptClaim::Busy;
+            }
+            prompts.insert(SKILLS_FLIGHT.to_owned(), cancel.clone());
+            if let Some(id) = session_id {
+                prompts.insert(id.to_owned(), cancel.clone());
+            }
+            return PromptClaim::Skills(session_id.unwrap_or(SKILLS_FLIGHT).to_owned());
+        }
+        let Some(session_id) = session_id else {
             return PromptClaim::NotPrompt;
         };
-        let mut prompts = self.prompts();
         if prompts.contains_key(session_id) {
             return PromptClaim::Busy;
         }
-        if is_prompt || is_bash {
-            prompts.insert(session_id.to_owned(), cancel.clone());
-            PromptClaim::Claimed(session_id.to_owned())
-        } else {
-            PromptClaim::NotPrompt
-        }
+        prompts.insert(session_id.to_owned(), cancel.clone());
+        PromptClaim::Claimed(session_id.to_owned())
     }
 
     /// 在读循环里为 `session/btw` 占位旁路注册表。
@@ -495,6 +517,12 @@ impl<S: AgentService> ServerDispatch<S> {
             PromptClaim::Claimed(session_id) => Some(PromptGuard {
                 prompts: Arc::clone(&self.prompts),
                 session_id,
+                skills: false,
+            }),
+            PromptClaim::Skills(session_id) => Some(PromptGuard {
+                prompts: Arc::clone(&self.prompts),
+                session_id,
+                skills: true,
             }),
             // 无占位：非提示类请求，或参数里读不出 `session_id`
             PromptClaim::NotPrompt => None,
@@ -576,6 +604,19 @@ impl<S: AgentService> ServerDispatch<S> {
         cancel: CancellationToken,
     ) -> Result<Value, RpcError> {
         match method {
+            <SkillsCompact as Method>::NAME => {
+                let params = params_from_value::<SkillsCompact>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .skills_compact(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <SkillsCancel as Method>::NAME => {
+                let _ = params_from_value::<SkillsCancel>(params)?;
+                value_from(self.cancel_prompt(SKILLS_FLIGHT))
+            }
             <ConfigManage as Method>::NAME => {
                 let params = params_from_value::<ConfigManage>(params)?;
                 value_from(
@@ -1290,7 +1331,11 @@ impl<S: AgentService> Inbound for ServerDispatch<S> {
         // 是确定的，取消绝不会因为任务调度顺序而落空。
         let cancel = self.connection.closed().child_token();
         let claim = self.claim_prompt(&request, &cancel);
-        let btw = self.claim_btw(&request, &cancel);
+        let btw = if matches!(&claim, PromptClaim::Busy) {
+            BtwClaim::NotBtw
+        } else {
+            self.claim_btw(&request, &cancel)
+        };
         if matches!(&claim, PromptClaim::Busy) || matches!(&btw, BtwClaim::Busy) {
             let connection = Arc::clone(&self.connection);
             let id = Some(request.id);

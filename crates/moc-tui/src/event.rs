@@ -1264,6 +1264,12 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::Notice(message)) => app.set_notice(message),
+                    Some(AppEvent::SkillsProgress(update)) => app.update_skills_compaction(&update),
+                    Some(AppEvent::SkillsCompacted(result)) => {
+                        let succeeded = result.is_ok();
+                        app.finish_skills_compaction(result);
+                        if succeeded { refresh_context(app, connection, false); }
+                    }
                     Some(AppEvent::GoalResult { goal, text }) => {
                         app.goal = goal;
                         app.push_note(text, false);
@@ -2096,6 +2102,9 @@ fn handle_model_picker_mouse(
 fn request_stop(app: &mut App, connection: &EmbeddedConnection) {
     if !app.cancel_requested {
         app.cancel_requested = true;
+        if app.skills_compacting {
+            app.replace_skills_note("技能摘要处理中：正在取消，等待请求结束…".into(), false);
+        }
         app.set_notice("正在停止...");
         cancel_prompt(&connection.client, app);
     }
@@ -3334,6 +3343,10 @@ fn accept_completion(app: &mut App) -> bool {
 
 /// 提交输入：补全确认 > 斜杠命令 > Bash 命令或普通发送。
 fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
+    if app.skills_compacting {
+        app.set_notice("正在维护技能摘要；输入已保留，完成或取消后才能发送");
+        return;
+    }
     if accept_completion(app) {
         return;
     }
@@ -6441,6 +6454,15 @@ fn apply_workflow_update(
 
 /// 发出取消；core 会终止本次提示并给未执行的工具调用补 Cancelled 结果。
 pub(crate) fn cancel_prompt(client: &ClientHandle, app: &App) {
+    if app.skills_compacting {
+        let client = client.clone();
+        tokio::spawn(async move {
+            let _ = client
+                .call::<moc_protocol::SkillsCancel>(moc_protocol::EmptyParams {})
+                .await;
+        });
+        return;
+    }
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
         return;
     };
@@ -6713,6 +6735,10 @@ enum ResolvedCommand {
 }
 
 fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String) {
+    if app.skills_compacting && !matches!(line.trim(), "/quit" | "/exit") {
+        app.set_notice("正在维护技能摘要；请等待完成或按 Esc 取消");
+        return;
+    }
     let (name, rest) = line
         .split_once(char::is_whitespace)
         .unwrap_or((line.as_str(), ""));
@@ -6870,6 +6896,31 @@ fn dispatch_command(app: &mut App, connection: &EmbeddedConnection, id: CommandI
         CommandId::Context => open_context(app, connection),
         CommandId::Tools => open_tools(app, connection),
         CommandId::Quit => app.should_quit = true,
+        CommandId::CompactSkills => {
+            let action = match moc_protocol::SkillsCompactAction::parse_args(rest) {
+                Ok(action) => action,
+                Err(error) => {
+                    app.set_error_notice(error);
+                    return;
+                }
+            };
+            let params = moc_protocol::SkillsCompactParams {
+                session_id,
+                cwd: Some(app.startup_cwd.clone()),
+                model: app.session.as_ref().map(|session| session.model.clone()),
+                action,
+            };
+            app.start_skills_compaction(action);
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            tokio::spawn(async move {
+                let result = client
+                    .call::<moc_protocol::SkillsCompact>(params)
+                    .await
+                    .map_err(Into::into);
+                let _ = events.send(AppEvent::SkillsCompacted(result));
+            });
+        }
         CommandId::Compact => {
             // needs_session 已在分派前检查。
             let session_id = session_id.expect("needs_session 已校验");
@@ -9232,6 +9283,56 @@ mod tests {
             .unwrap();
         app.session = Some(session);
         (core, connection, app, root)
+    }
+
+    #[tokio::test]
+    async fn skills_compaction_updates_inline_without_modal_or_dismissal() {
+        use crate::transcript::Block;
+        let (core, connection, mut app) = setup_test_app().await;
+        app.start_skills_compaction(moc_protocol::SkillsCompactAction::Missing);
+        app.update_skills_compaction(&moc_protocol::SkillsProgressParams {
+            phase: moc_protocol::SkillsProgressPhase::Generating,
+            completed: 7,
+            total: 39,
+            skipped: 2,
+        });
+        assert!(app.modal.is_none());
+        assert_eq!(app.blocks.len(), 1);
+        assert!(
+            matches!(&app.blocks[0].block, Block::Note { text, .. } if text.contains("7 / 39"))
+        );
+        app.finish_skills_compaction(Ok(moc_protocol::SkillsCompactResult {
+            compressed: 39,
+            skipped: 2,
+            removed: 0,
+            tokens_before: 3920,
+            tokens_after: 900,
+            message: "技能摘要：压缩 39 个；目录预估 3920 → 900 tokens".into(),
+            warnings: Vec::new(),
+        }));
+        app.notice = None;
+        assert!(!app.skills_compacting && !app.prompt_running);
+        assert_eq!(app.blocks.len(), 1);
+        assert!(app.modal.is_none());
+        let terminal = draw_frame(&mut app, 100, 24);
+        let screen = terminal.backend().buffer();
+        let visible = (0..24)
+            .map(|y| {
+                (0..100)
+                    .map(|x| screen[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(visible.contains("3920 → 900"));
+        // 后续内容在同一滚动流追加，无需关闭状态块。
+        app.push_note("next".into(), false);
+        assert_eq!(app.blocks.len(), 2);
+        assert!(
+            matches!(&app.blocks[0].block, Block::Note { text, .. } if text.contains("3920 → 900"))
+        );
+        connection.shutdown().await;
+        core.shutdown().await;
     }
 
     #[tokio::test]

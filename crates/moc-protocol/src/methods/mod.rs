@@ -52,6 +52,7 @@ pub mod plugin;
 pub mod prompt;
 pub mod resources;
 pub mod session;
+pub mod skills;
 pub mod todo;
 pub mod update;
 pub mod web;
@@ -147,6 +148,10 @@ pub use session::{
     SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage,
     SessionUsageParams, SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall,
     TranscriptEntry, UsageSource,
+};
+pub use skills::{
+    SkillsCancel, SkillsCompact, SkillsCompactAction, SkillsCompactParams, SkillsCompactResult,
+    SkillsProgress, SkillsProgressParams, SkillsProgressPhase,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus, parse_todos, render_todos};
 pub use update::{

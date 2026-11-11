@@ -7035,6 +7035,135 @@
       ],
       "type": "object"
     },
+    "SkillsCompactAction": {
+      "enum": [
+        "missing",
+        "force",
+        "cleanup",
+        "clear"
+      ],
+      "type": "string"
+    },
+    "SkillsCompactParams": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/SkillsCompactAction",
+          "default": "missing"
+        },
+        "cwd": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "default": null,
+          "description": "已有会话使用其模型与目录；留空时只使用草稿参数，不创建会话。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SkillsCompactResult": {
+      "properties": {
+        "compressed": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "message": {
+          "description": "只用于临时命令结果，不追加到 transcript。",
+          "type": "string"
+        },
+        "removed": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "skipped": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tokens_after": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tokens_before": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "compressed",
+        "skipped",
+        "removed",
+        "tokens_before",
+        "tokens_after",
+        "message",
+        "warnings"
+      ],
+      "type": "object"
+    },
+    "SkillsProgressParams": {
+      "additionalProperties": false,
+      "properties": {
+        "completed": {
+          "description": "已完成生成并通过校验的数量，尚未发布缓存。",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "phase": {
+          "$ref": "#/$defs/SkillsProgressPhase"
+        },
+        "skipped": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "phase",
+        "completed",
+        "total",
+        "skipped"
+      ],
+      "type": "object"
+    },
+    "SkillsProgressPhase": {
+      "description": "仅发送到发起连接的临时进度，不属于 session/update，不写入会话。",
+      "enum": [
+        "generating",
+        "committing"
+      ],
+      "type": "string"
+    },
     "SteerParams": {
       "additionalProperties": false,
       "description": "Steering 在下一安全工具边界加入当前提示；队列由前端等待前一次提示完成后提交。",
@@ -9204,6 +9333,24 @@
         },
         "type": "SessionWorkflowStop"
       },
+      "skills/cancel": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "$ref": "#/$defs/SessionCancelResult"
+        },
+        "type": "SkillsCancel"
+      },
+      "skills/compact": {
+        "params": {
+          "$ref": "#/$defs/SkillsCompactParams"
+        },
+        "result": {
+          "$ref": "#/$defs/SkillsCompactResult"
+        },
+        "type": "SkillsCompact"
+      },
       "web/state": {
         "params": {
           "$ref": "#/$defs/WebStateGetParams"
@@ -9250,6 +9397,15 @@
           "$ref": "#/$defs/Empty"
         },
         "type": "SessionUpdateMethod"
+      },
+      "skills/progress": {
+        "params": {
+          "$ref": "#/$defs/SkillsProgressParams"
+        },
+        "result": {
+          "type": "null"
+        },
+        "type": "SkillsProgress"
       },
       "web/state_updated": {
         "params": {

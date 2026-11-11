@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 9cfc20a834da119b
+// schema sha256: 2799fb64e9e5792d
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -1068,6 +1068,18 @@ export type WorkflowDecision =
        */
       feedback?: string | null;
     };
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SkillsCompactAction".
+ */
+export type SkillsCompactAction = "missing" | "force" | "cleanup" | "clear";
+/**
+ * 仅发送到发起连接的临时进度，不属于 session/update，不写入会话。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SkillsProgressPhase".
+ */
+export type SkillsProgressPhase = "generating" | "committing";
 /**
  * 可能被上游静默改写的请求字段。
  *
@@ -5390,6 +5402,48 @@ export interface SessionWorkflowSetRoleModelParams {
   role_id: string;
   run_id: string;
   session_id: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SkillsCompactParams".
+ */
+export interface SkillsCompactParams {
+  action?: "missing" | "force" | "cleanup" | "clear";
+  cwd?: string | null;
+  model?: string | null;
+  /**
+   * 已有会话使用其模型与目录；留空时只使用草稿参数，不创建会话。
+   */
+  session_id?: string | null;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SkillsCompactResult".
+ */
+export interface SkillsCompactResult {
+  compressed: number;
+  /**
+   * 只用于临时命令结果，不追加到 transcript。
+   */
+  message: string;
+  removed: number;
+  skipped: number;
+  tokens_after: number;
+  tokens_before: number;
+  warnings: string[];
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SkillsProgressParams".
+ */
+export interface SkillsProgressParams {
+  /**
+   * 已完成生成并通过校验的数量，尚未发布缓存。
+   */
+  completed: number;
+  phase: SkillsProgressPhase;
+  skipped: number;
+  total: number;
 }
 /**
  * Steering 在下一安全工具边界加入当前提示；队列由前端等待前一次提示完成后提交。

@@ -34,6 +34,8 @@ pub enum UiUpdate {
 pub enum AppEvent {
     /// 长消息后台布局完成，唤醒下一帧读取其结果。
     LayoutReady,
+    SkillsCompacted(anyhow::Result<moc_protocol::SkillsCompactResult>),
+    SkillsProgress(moc_protocol::SkillsProgressParams),
     BtwReturned {
         session_id: String,
         request_id: u64,
@@ -289,6 +291,15 @@ pub async fn connect_embedded(
                 if let Err(error) = events.send(UiUpdate::Btw(params)).await {
                     tracing::debug!(%error, "旁路更新队列已关闭，丢弃通知");
                 }
+            }
+        });
+
+    let skills_events = events.clone();
+    let builder =
+        builder.on_notification::<moc_protocol::SkillsProgress, _, _>(move |params, _ctx| {
+            let events = skills_events.clone();
+            async move {
+                let _ = events.send(AppEvent::SkillsProgress(params));
             }
         });
 

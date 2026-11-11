@@ -16,6 +16,7 @@ import {
   PROTOCOL_VERSION,
   SESSION_UPDATE_TYPES,
   type SessionUpdateParams,
+  type SkillsProgressParams,
   type WebStateDocument,
 } from "./types";
 
@@ -40,6 +41,7 @@ const RECONNECT_MAX_MS = 8000;
 type NotificationMap = {
   "session/update": SessionUpdateParams;
   "session/btw_update": BtwUpdateParams;
+  "skills/progress": SkillsProgressParams;
   "web/state_updated": WebStateDocument;
 };
 

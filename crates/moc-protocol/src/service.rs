@@ -83,6 +83,15 @@ pub trait AgentService: Send + Sync + 'static {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 
+    /// 手动维护技能摘要；草稿不需要真实会话。
+    fn skills_compact(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SkillsCompactParams,
+    ) -> impl Future<Output = Result<crate::SkillsCompactResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
     /// 读取 webui 前端状态文档（`config_home()/web.toml`）。
     fn web_state(
         &self,

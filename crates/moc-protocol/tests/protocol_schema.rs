@@ -136,6 +136,10 @@ fn register_all(
     client::<ResourceComplete>(generator, client_map);
     client::<ResourceList>(generator, client_map);
     client::<ResourceRead>(generator, client_map);
+    // skills.rs
+    client::<SkillsCompact>(generator, client_map);
+    client::<SkillsCancel>(generator, client_map);
+    server_notification::<SkillsProgress>(generator, server_ntf);
     // session.rs
     client::<SessionNew>(generator, client_map);
     client::<SessionList>(generator, client_map);

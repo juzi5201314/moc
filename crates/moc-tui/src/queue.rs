@@ -47,6 +47,10 @@ pub struct PendingSteer {
 }
 
 pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
+    if app.skills_compacting {
+        app.set_notice("正在维护技能摘要，完成或取消后才能发送消息");
+        return;
+    }
     if crate::btw::submit(app, connection) {
         return;
     }

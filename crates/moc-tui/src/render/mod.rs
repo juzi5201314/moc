@@ -1129,6 +1129,12 @@ fn activity(app: &App) -> Option<Activity> {
             color: app.theme.accent_warning,
         });
     }
+    if app.skills_compacting {
+        return Some(Activity {
+            label: "Working",
+            color: app.theme.accent_running,
+        });
+    }
     if app
         .modal
         .as_ref()
@@ -1803,7 +1809,11 @@ mod tests {
             .expect("绘制成功");
         assert_ne!(bg(&terminal, 4, 1), theme.bg_selection);
         assert_eq!(bg(&terminal, area.right() - 1, 1), theme.bg_selection);
-        assert_eq!(bg(&terminal, area.x, 2), theme.bg_selection, "中间行整行高亮");
+        assert_eq!(
+            bg(&terminal, area.x, 2),
+            theme.bg_selection,
+            "中间行整行高亮"
+        );
         assert_eq!(bg(&terminal, area.x, 3), theme.bg_selection);
         assert_eq!(bg(&terminal, 10, 3), theme.bg_selection);
         assert_ne!(bg(&terminal, 11, 3), theme.bg_selection);

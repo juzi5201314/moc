@@ -15,7 +15,7 @@ use wiremock::{
     matchers::{method, path},
 };
 
-async fn request(socket: &mut tokio::net::TcpStream) -> Value {
+pub(crate) async fn request(socket: &mut tokio::net::TcpStream) -> Value {
     let mut bytes = Vec::with_capacity(8192);
     loop {
         assert!(socket.read_buf(&mut bytes).await.unwrap() > 0);

@@ -154,7 +154,9 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const plugins = useTranscript((state) => state.bySession[sessionId]?.plugins);
 
   const info = useTranscript((state) => state.bySession[sessionId]?.info);
-  const running = useTranscript((state) => Boolean(state.bySession[sessionId]?.running));
+  const promptRunning = useTranscript((state) => Boolean(state.bySession[sessionId]?.running));
+  const skillsWorking = useUi((state) => state.skillsWorking !== null);
+  const running = promptRunning || skillsWorking;
   const readOnly = useTranscript((state) => Boolean(state.bySession[sessionId]?.readOnly));
   const phases = useTranscript((state) => state.bySession[sessionId]?.todos);
   const context = useTranscript((state) => state.bySession[sessionId]?.context);
@@ -346,7 +348,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
 
   // ---------- 发送 ----------
 
-  const canSend = (text.trim().length > 0 || images.length > 0) && !readOnly && !reading;
+  const canSend =
+    (text.trim().length > 0 || images.length > 0) && !readOnly && !reading && !skillsWorking;
 
   const send = (forceQueue = false) => {
     const trimmed = text.trim();
@@ -418,7 +421,10 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
 
   const stop = () =>
     void rpc
-      .call("session/cancel", { session_id: sessionId })
+      .call(
+        skillsWorking ? "skills/cancel" : "session/cancel",
+        skillsWorking ? {} : { session_id: sessionId },
+      )
       .catch((error) => toast.error(`停止失败：${errorText(error)}`));
 
   const removePending = async (item: PendingItem) => {
@@ -503,13 +509,15 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     );
   }
 
-  const placeholder = running
-    ? runningEnter === "interrupt"
-      ? "回车中断当前生成并发送，Ctrl+Enter 排队"
-      : "回车补充到当前轮，Ctrl+Enter 排队"
-    : inline
-      ? "描述任务，/ 查看命令，! 执行命令"
-      : "继续对话，/ 查看命令，! 执行命令";
+  const placeholder = skillsWorking
+    ? "正在维护技能摘要，完成或取消后才能发送"
+    : running
+      ? runningEnter === "interrupt"
+        ? "回车中断当前生成并发送，Ctrl+Enter 排队"
+        : "回车补充到当前轮，Ctrl+Enter 排队"
+      : inline
+        ? "描述任务，/ 查看命令，! 执行命令"
+        : "继续对话，/ 查看命令，! 执行命令";
 
   return (
     <ComposerDock inline={inline}>

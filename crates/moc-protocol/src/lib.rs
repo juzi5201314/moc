@@ -31,6 +31,9 @@
 //! | `session/set_engine` / `session/set_permission` / `session/set_model` / `session/set_fast_mode` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
 //! | `session/plan_approve` | 前端→core | core | 已初始化 | `-32010` / `-32602` |
 //! | `session/compact` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
+//! | `skills/compact` | 前端→core | core | 已初始化 + 前台空闲；允许无 session_id 的草稿 | `-32602` / `-32010` / `-32011` / `-32014` |
+//! | `skills/cancel` | 前端→core | 协议层自答 | 已初始化；只取消该连接的技能维护操作 | — |
+//! | `skills/progress` | core→前端通知 | core | 仅发起连接；独立批次进度，不属于 session/update 或持久化事件 | — |
 //! | `session/prompt` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
 //! | `session/retry` | 前端→core | core | 已初始化 + 该会话无进行中的提示 + 已有上下文且上一轮未正常结束 | `-32010` / `-32015` / `-32011` / `-32602` |
 //! | `session/btw` | 前端→core | core | 已初始化 + 该会话无进行中的旁路 | `-32010` / `-32011` / `-32014` |

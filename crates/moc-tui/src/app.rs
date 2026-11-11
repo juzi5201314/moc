@@ -256,6 +256,8 @@ pub struct App {
     pub scroll_offset: usize,
     /// 是否有进行中的提示。
     pub prompt_running: bool,
+    /// 独立技能摘要操作；占用前台，状态只显示为不落盘的本地 Note。
+    pub skills_compacting: bool,
     /// 是否已经发出取消当前提示的请求。
     pub cancel_requested: bool,
     /// 当前提示开始时间（statusline 计时）。
@@ -583,6 +585,7 @@ impl App {
             context_usage: None,
             scroll_offset: 0,
             prompt_running: false,
+            skills_compacting: false,
             cancel_requested: false,
             prompt_started_at: None,
             compaction_progress: None,
@@ -912,6 +915,67 @@ impl App {
     /// 追加一条系统提示。
     pub fn push_note(&mut self, text: String, error: bool) {
         self.blocks.push(Entry::new(Block::Note { text, error }));
+    }
+
+    pub fn start_skills_compaction(&mut self, action: moc_protocol::SkillsCompactAction) {
+        self.skills_compacting = true;
+        self.prompt_running = true;
+        self.prompt_started_at = Some(std::time::Instant::now());
+        self.cancel_requested = false;
+        let operation = match action {
+            moc_protocol::SkillsCompactAction::Missing
+            | moc_protocol::SkillsCompactAction::Force => "检查技能与缓存，准备压缩 skills…",
+            moc_protocol::SkillsCompactAction::Cleanup => "清理已不存在的技能缓存…",
+            moc_protocol::SkillsCompactAction::Clear => "清空技能摘要缓存…",
+        };
+        self.push_note(format!("技能摘要处理中：{operation}"), false);
+        self.scroll_offset = 0;
+    }
+
+    pub fn update_skills_compaction(&mut self, progress: &moc_protocol::SkillsProgressParams) {
+        if !self.skills_compacting || self.cancel_requested {
+            return;
+        }
+        let stage = match progress.phase {
+            moc_protocol::SkillsProgressPhase::Generating => "正在压缩 skills",
+            moc_protocol::SkillsProgressPhase::Committing => "正在原子提交缓存",
+        };
+        self.replace_skills_note(format!("技能摘要处理中：{stage}\n已生成并校验 {} / {} 个 · 缓存跳过 {} 个\n进度按批次更新；全部成功后才发布缓存。", progress.completed, progress.total, progress.skipped), false);
+    }
+
+    pub fn finish_skills_compaction(
+        &mut self,
+        result: anyhow::Result<moc_protocol::SkillsCompactResult>,
+    ) {
+        self.skills_compacting = false;
+        self.prompt_running = false;
+        self.prompt_started_at = None;
+        self.cancel_requested = false;
+        let (text, error) = match result {
+            Ok(result) => {
+                let mut text = result.message;
+                for warning in result.warnings {
+                    text.push('\n');
+                    text.push_str(&warning);
+                }
+                (text, false)
+            }
+            Err(error) => (
+                format!("技能摘要操作未完成：{error:#}\n本次操作没有发布缓存。"),
+                true,
+            ),
+        };
+        self.replace_skills_note(text, error);
+    }
+
+    /// 与上下文压缩提示相同，按进行中前缀原位替换，不影响更早的命令结果。
+    pub fn replace_skills_note(&mut self, text: String, error: bool) {
+        if let Some(entry) = self.blocks.iter_mut().rev().find(|entry| {
+            matches!(&entry.block, Block::Note { text, .. } if text.starts_with("技能摘要处理中："))
+        }) {
+            entry.block = Block::Note { text, error };
+            entry.touch();
+        }
     }
 
     /// 上下文压缩开始：插入进行中提示；换方法重试时沿用同一条计时。

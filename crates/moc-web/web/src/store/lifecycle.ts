@@ -18,6 +18,8 @@ import type {
   SessionLoadResult,
   SessionPermission,
   SessionSetModelResult,
+  SkillsCompactAction,
+  SkillsCompactResult,
 } from "@/protocol/types";
 import { useComposer } from "./composer";
 import { useConnection } from "./connection";
@@ -25,7 +27,7 @@ import { usePrefs } from "./prefs";
 import { type DraftSession, useSessions } from "./sessions";
 import { useTabs } from "./tabs";
 import { refreshJobs, useTranscript } from "./transcript";
-import { requestComposerFocus } from "./ui";
+import { requestComposerFocus, useUi } from "./ui";
 import { cancelViewReads, startViewReads, viewReadSignal } from "./view-reads";
 
 const PAGE_SIZE = 80;
@@ -532,6 +534,66 @@ export async function compactSession(sessionId: string): Promise<CompactResult> 
   const result = await rpc.call<CompactResult>("session/compact", { session_id: sessionId });
   void refreshSideData(sessionId);
   return result;
+}
+
+/** 独立前台操作；状态仅存本地滚动视图，不 materialize 草稿或写入 core。 */
+export async function compactSkills(sessionId: string, action: SkillsCompactAction): Promise<void> {
+  if (
+    useUi.getState().skillsWorking ||
+    Object.values(useTranscript.getState().bySession).some((view) => view.running)
+  ) {
+    throw new Error("前台正在运行，暂时不能维护技能摘要");
+  }
+  const draft = sessionId === "draft-session" ? useSessions.getState().draftSession : null;
+  useUi.getState().set({ skillsWorking: sessionId });
+  const statusId = `skills-${crypto.randomUUID()}`;
+  const store = useTranscript.getState();
+  store.mutate(sessionId, (view) => {
+    view.blocks.push({
+      kind: "status",
+      id: statusId,
+      tone: "info",
+      localCommand: true,
+      text:
+        action === "cleanup" || action === "clear"
+          ? "正在清理技能摘要缓存…"
+          : "正在检查技能与缓存，准备压缩 skills…",
+    });
+  });
+  const updateStatus = (text: string, tone: "info" | "error" = "info") => {
+    store.mutate(sessionId, (view) => {
+      const block = view.blocks.find((block) => block.id === statusId);
+      if (block?.kind === "status") {
+        block.text = text;
+        block.tone = tone;
+      }
+    });
+  };
+  const unsubscribe = rpc.on("skills/progress", (progress) => {
+    const stage =
+      progress.phase === "committing" ? "正在原子提交缓存…" : "正在使用当前模型压缩 skills…";
+    updateStatus(
+      `${stage}\n已生成并校验 ${progress.completed} / ${progress.total} 个 · 缓存跳过 ${progress.skipped} 个\n进度按批次更新；全部成功后才发布缓存。`,
+    );
+  });
+  try {
+    const result = await rpc.call<SkillsCompactResult>("skills/compact", {
+      action,
+      ...(sessionId === "draft-session"
+        ? { cwd: draft?.cwd, model: draft?.model }
+        : { session_id: sessionId }),
+    });
+    updateStatus([result.message, ...result.warnings].join("\n"));
+    if (sessionId !== "draft-session") void refreshSideData(sessionId);
+  } catch (error) {
+    updateStatus(
+      `技能摘要操作未完成：${error instanceof Error ? error.message : String(error)}\n本次操作没有发布缓存。`,
+      "error",
+    );
+  } finally {
+    unsubscribe();
+    useUi.getState().set({ skillsWorking: null });
+  }
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

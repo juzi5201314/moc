@@ -18,6 +18,8 @@ export type SettingsSection =
   | "shortcuts";
 
 export type UiState = {
+  /** 技能维护占用前台；不写 transcript 或持久化状态。 */
+  skillsWorking: string | null;
   folderPicker: { open: boolean; start?: string; onPick?: (path: string) => void };
   settings: { open: boolean; section?: SettingsSection };
   palette: boolean;
@@ -46,6 +48,7 @@ export type UiState = {
 };
 
 export const useUi = create<UiState>()((set) => ({
+  skillsWorking: null,
   folderPicker: { open: false },
   settings: { open: false },
   palette: false,
@@ -65,7 +68,7 @@ export const useUi = create<UiState>()((set) => ({
 
 /** 有模态浮层打开时暂停队列派发（设置）。 */
 export function dispatchPaused(state: UiState): boolean {
-  return state.settings.open;
+  return state.settings.open || state.skillsWorking !== null;
 }
 
 export function requestComposerFocus(): void {

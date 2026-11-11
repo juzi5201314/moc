@@ -521,12 +521,14 @@ impl CoreInner {
         if let Some(index) = self.skill_indexes.read().get(&key).cloned() {
             return Ok(index);
         }
-        let index = Arc::new(crate::skills::discovery::discover_index(
+        let mut discovered = crate::skills::discovery::discover_index(
             cwd,
             &config.home,
             crate::paths::home_dir().as_deref(),
             &config.skills,
-        ));
+        );
+        crate::skills::cache::Cache::load(&config.home)?.apply(&mut discovered);
+        let index = Arc::new(discovered);
         self.skill_indexes.write().insert(key, Arc::clone(&index));
         Ok(index)
     }
@@ -545,6 +547,7 @@ impl CoreInner {
         let mut cloned = (*index).clone();
         let config = self.project_config(cwd)?;
         crate::workflow::skill::inject(&mut cloned, &config.home);
+        crate::skills::cache::Cache::load(&config.home)?.apply(&mut cloned);
         Ok(Arc::new(cloned))
     }
 
@@ -974,6 +977,20 @@ impl AgentService for Core {
         management::manage(&self.inner, ctx, params)
             .await
             .map_err(to_rpc)
+    }
+
+    async fn skills_compact(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::SkillsCompactParams,
+    ) -> Result<moc_protocol::SkillsCompactResult, RpcError> {
+        let inner = Arc::clone(&self.inner);
+        self.run_operation(ctx.cancel(), async move {
+            crate::skills::compact::run(inner, ctx, params)
+                .await
+                .map_err(to_rpc)
+        })
+        .await
     }
 
     async fn web_state(

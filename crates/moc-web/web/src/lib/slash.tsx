@@ -12,6 +12,7 @@ import type {
   PluginRunCommandResult,
   SessionGoalResult,
   SessionPermission,
+  SkillsCompactAction,
 } from "@/protocol/types";
 import { retrySession, sendPrompt } from "@/store/actions";
 import { useBtw } from "@/store/btw";
@@ -21,6 +22,7 @@ import { useLayout } from "@/store/layout";
 import {
   closeSession,
   compactSession,
+  compactSkills,
   createQuickSession,
   setSessionAutonomy,
   setSessionPermission,
@@ -121,6 +123,10 @@ export function runSlash(
   const view = useTranscript.getState().bySession[sessionId];
   const composer = useComposer.getState();
 
+  if (useUi.getState().skillsWorking) {
+    toast("正在维护技能摘要，请等待完成或取消");
+    return true;
+  }
   if (flagDisabled(command, features)) {
     toast(`/${command.name} 依赖的特性 ${command.flag} 已禁用`);
     return true;
@@ -162,6 +168,25 @@ export function runSlash(
   }
 
   switch (command.name) {
+    case "compact-skills": {
+      const normalized = args.split(/\s+/).filter(Boolean).join(" ");
+      const action: SkillsCompactAction | undefined = (
+        {
+          "": "missing",
+          compact: "missing",
+          force: "force",
+          cleanup: "cleanup",
+          "cleanup all": "clear",
+        } as Record<string, SkillsCompactAction>
+      )[normalized];
+      if (!action) {
+        toast.error("用法：/compact-skills [compact | force | cleanup [all]]");
+        break;
+      }
+      // 请求中的结果/错误由行内状态显示；这里只提示启动前被拒绝的情况。
+      void compactSkills(sessionId, action).catch((error) => toast.error(errorText(error)));
+      break;
+    }
     case "new":
       createQuickSession(view?.info.cwd);
       break;

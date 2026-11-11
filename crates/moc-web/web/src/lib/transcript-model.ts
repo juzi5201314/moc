@@ -88,6 +88,8 @@ export type Block =
       tone: StatusTone;
       text: string;
       retryable?: boolean;
+      /** 前端命令的临时行内状态：始终可见，不折叠、不提供模型重试。 */
+      localCommand?: boolean;
     }
   | {
       kind: "plan";

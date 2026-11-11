@@ -39,6 +39,12 @@ pub(super) async fn steer(
     params: SteerParams,
 ) -> Result<SteerResult, CoreError> {
     let record = inner.sessions.get(&params.session_id).await?;
+    if record
+        .skills_compacting
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(CoreError::Session("SESSION_BUSY: 正在维护技能摘要".into()));
+    }
     let snapshot = record.state.lock().await.metadata();
     let config = inner.project_config(Path::new(&snapshot.session.cwd))?;
     let model = config.resolve_model(&snapshot.model)?;

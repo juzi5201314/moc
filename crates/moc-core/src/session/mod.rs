@@ -90,6 +90,7 @@ impl RewindTail {
 pub struct SessionRecord {
     pub state: Arc<Mutex<SessionState>>,
     pub prompt_lock: Arc<Mutex<()>>,
+    pub(crate) skills_compacting: AtomicBool,
     append_lock: Mutex<()>,
     active: AtomicBool,
     /// 曾打开写模式的会话拥有运行态，不能作为只读缓存自动回收。
@@ -205,6 +206,7 @@ impl SessionTable {
             Arc::new(SessionRecord {
                 state: Arc::new(Mutex::new(state)),
                 prompt_lock: Arc::new(Mutex::new(())),
+                skills_compacting: AtomicBool::new(false),
                 append_lock: Mutex::new(()),
                 active: AtomicBool::new(true),
                 pinned: AtomicBool::new(true),
@@ -281,6 +283,7 @@ impl SessionTable {
         let record = Arc::new(SessionRecord {
             state: Arc::new(Mutex::new(state)),
             prompt_lock: Arc::new(Mutex::new(())),
+            skills_compacting: AtomicBool::new(false),
             append_lock: Mutex::new(()),
             active: AtomicBool::new(true),
             pinned: AtomicBool::new(false),

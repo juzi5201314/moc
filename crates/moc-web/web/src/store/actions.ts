@@ -95,6 +95,12 @@ export function dispatchNext(sessionId: string): void {
 async function materialize(sessionId: string): Promise<string> {
   if (sessionId !== "draft-session") return sessionId;
   const draft = useSessions.getState().draftSession;
+  const localCommands =
+    useTranscript
+      .getState()
+      .bySession[sessionId]?.blocks.filter(
+        (block) => block.kind === "status" && block.localCommand,
+      ) ?? [];
   const info = await newSession({
     cwd: draft?.cwd,
     model: draft?.model,
@@ -116,6 +122,12 @@ async function materialize(sessionId: string): Promise<string> {
         .getState()
         .localStatus(info.id, "warn", `会话选项未能应用：${errorText(result.reason)}`);
     }
+  }
+  // 草稿升格时只迁移本地显示块，不把命令结果加入发送给模型的 input。
+  if (localCommands.length > 0) {
+    useTranscript.getState().mutate(info.id, (view) => {
+      view.blocks.unshift(...localCommands);
+    });
   }
   useSessions.getState().setDraftSession(null);
   useTabs.getState().replace("draft-session", info.id);
@@ -140,6 +152,10 @@ export async function sendPrompt(
   input: InputPart[],
   options: SendOptions = {},
 ): Promise<void> {
+  if (useUi.getState().skillsWorking) {
+    toast("正在维护技能摘要，消息未发送");
+    return;
+  }
   if (input.length === 0) return;
   let target: string;
   try {
@@ -171,6 +187,10 @@ export async function sendPrompt(
 
 /** 接着现有上下文继续跑：不追加用户消息，上一轮没跑完时 core 会先剪掉半截回合。 */
 export async function retrySession(sessionId: string): Promise<void> {
+  if (useUi.getState().skillsWorking) {
+    toast("正在维护技能摘要，请等待完成或取消");
+    return;
+  }
   await ownPrompt(sessionId, async () => {
     try {
       await rpc.call<PromptResult>("session/retry", { session_id: sessionId });

@@ -511,7 +511,11 @@ function AssistantTurn({
     (segments.some((segment) => segment.kind === "notice" && segment.block.tone === "error") ||
       Boolean(finishText) ||
       !turn.footer);
-  const canRetry = abnormal && !context.readOnly && !context.running;
+  const commandOnly =
+    turn.texts.length === 0 &&
+    turn.activity.length > 0 &&
+    turn.activity.every((block) => block.kind === "status" && block.localCommand);
+  const canRetry = abnormal && !commandOnly && !context.readOnly && !context.running;
 
   const renderSegment = (segment: Segment, index: number): ReactNode => {
     switch (segment.kind) {
@@ -662,6 +666,19 @@ function NoticeCard({
   block: Extract<Block, { kind: "status" }>;
   onRetry?: () => void;
 }) {
+  if (block.localCommand) {
+    return (
+      <div
+        role="status"
+        className={cn(
+          "whitespace-pre-wrap break-words text-sm leading-relaxed",
+          block.tone === "error" ? "text-destructive" : "text-text-secondary",
+        )}
+      >
+        {block.text}
+      </div>
+    );
+  }
   const error = block.tone === "error";
   return (
     <div

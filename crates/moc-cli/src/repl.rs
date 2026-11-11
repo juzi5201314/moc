@@ -700,6 +700,36 @@ async fn run_command(
             .await?;
         }
         CommandId::Approve => approve_plan(client, argument, session).await?,
+        CommandId::CompactSkills => {
+            let action = moc_protocol::SkillsCompactAction::parse_args(argument)
+                .map_err(anyhow::Error::msg)?;
+            let pending =
+                client.call::<moc_protocol::SkillsCompact>(moc_protocol::SkillsCompactParams {
+                    session_id: Some(session.id.clone()),
+                    cwd: None,
+                    model: None,
+                    action,
+                });
+            tokio::pin!(pending);
+            eprintln!("Working：正在维护技能摘要，Ctrl+C 取消");
+            let result = loop {
+                tokio::select! {
+                    result = &mut pending => break result?,
+                    signal = tokio::signal::ctrl_c() => {
+                        signal?;
+                        client.call::<moc_protocol::SkillsCancel>(moc_protocol::EmptyParams {}).await?;
+                    }
+                    line = read_line(input) => {
+                        if line?.is_some() { eprintln!("技能摘要操作尚未完成，输入未发送也未排队"); }
+                        else { client.call::<moc_protocol::SkillsCancel>(moc_protocol::EmptyParams {}).await?; break pending.await?; }
+                    }
+                }
+            };
+            println!("{}", result.message);
+            for warning in result.warnings {
+                eprintln!("警告：{warning}");
+            }
+        }
         CommandId::Compact => {
             let result = client
                 .call::<SessionCompact>(SessionCompactParams {
