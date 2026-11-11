@@ -31,15 +31,32 @@ const SCROLLBACK_BYTES: usize = 512 * 1024;
 const EVENT_CAPACITY: usize = 512;
 
 /// 进程内终端表：`id` 单调递增，BTreeMap 序即创建时间序。
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Terminals {
     inner: Arc<Mutex<TableInner>>,
+    slots: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for Terminals {
+    fn default() -> Self {
+        Self {
+            inner: Arc::default(),
+            slots: Arc::new(tokio::sync::Semaphore::new(MAX_TERMINALS)),
+        }
+    }
+}
+
+impl Terminals {
+    fn reserve(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.slots.clone().try_acquire_owned().ok()
+    }
 }
 
 #[derive(Default)]
 struct TableInner {
     next_id: u64,
-    items: BTreeMap<u64, Arc<Terminal>>,
+    // 名额随表项持有，DELETE 才释放；启动期间由阻塞任务持有。
+    items: BTreeMap<u64, (Arc<Terminal>, tokio::sync::OwnedSemaphorePermit)>,
 }
 
 /// 一条终端的对外视图（`/pty` 与 `/pty/list` 的 JSON 形状）。
@@ -301,8 +318,8 @@ pub async fn list(State(state): State<AppState>, Query(query): Query<ListQuery>)
         inner
             .items
             .values()
-            .filter(|terminal| terminal.cwd.starts_with(&cwd))
-            .map(|terminal| terminal.info())
+            .filter(|(terminal, _)| terminal.cwd.starts_with(&cwd))
+            .map(|(terminal, _)| terminal.info())
             .collect::<Vec<_>>(),
     )
     .into_response()
@@ -327,26 +344,29 @@ pub async fn create(
     let Some(cwd) = canonical_dir(&body.cwd) else {
         return (StatusCode::BAD_REQUEST, "cwd 不是已存在的绝对目录").into_response();
     };
+    let Some(permit) = state.terminals.reserve() else {
+        return (StatusCode::TOO_MANY_REQUESTS, "终端数已达上限").into_response();
+    };
     let id = {
         let mut inner = state.terminals.inner.lock().expect("终端表锁");
-        if inner.items.len() >= MAX_TERMINALS {
-            return (StatusCode::TOO_MANY_REQUESTS, "终端数已达上限").into_response();
-        }
         inner.next_id += 1;
         inner.next_id
     };
     let terminals = state.terminals.clone();
-    match tokio::task::spawn_blocking(move || spawn(cwd, id, body.cols, body.rows)).await {
-        Ok(Ok(terminal)) => {
-            let info = terminal.info();
-            terminals
-                .inner
-                .lock()
-                .expect("终端表锁")
-                .items
-                .insert(id, terminal);
-            Json(info).into_response()
-        }
+    match tokio::task::spawn_blocking(move || {
+        let terminal = spawn(cwd, id, body.cols, body.rows)?;
+        let info = terminal.info();
+        terminals
+            .inner
+            .lock()
+            .expect("终端表锁")
+            .items
+            .insert(id, (terminal, permit));
+        Ok::<_, std::io::Error>(info)
+    })
+    .await
+    {
+        Ok(Ok(info)) => Json(info).into_response(),
         Ok(Err(error)) => {
             (StatusCode::BAD_REQUEST, format!("无法启动终端：{error}")).into_response()
         }
@@ -375,7 +395,7 @@ pub async fn remove(
         .items
         .remove(&id);
     match removed {
-        Some(terminal) => {
+        Some((terminal, _permit)) => {
             terminal.kill();
             StatusCode::NO_CONTENT.into_response()
         }
@@ -402,7 +422,7 @@ pub async fn attach(
         .expect("终端表锁")
         .items
         .get(&id)
-        .cloned();
+        .map(|(terminal, _)| Arc::clone(terminal));
     let Some(terminal) = terminal else {
         return (StatusCode::NOT_FOUND, "终端不存在").into_response();
     };
@@ -494,6 +514,30 @@ fn canonical_dir(raw: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_reservations_include_starting_terminals() {
+        let terminals = Terminals::default();
+        let held: Vec<_> = (0..MAX_TERMINALS - 1)
+            .map(|_| terminals.reserve().unwrap())
+            .collect();
+        let barrier = std::sync::Barrier::new(2);
+        let permits = std::thread::scope(|scope| {
+            let reserve = || {
+                barrier.wait();
+                terminals.reserve()
+            };
+            let left = scope.spawn(reserve);
+            let right = scope.spawn(reserve);
+            [left.join().unwrap(), right.join().unwrap()]
+        });
+        assert_eq!(permits.iter().filter(|permit| permit.is_some()).count(), 1);
+        assert!(terminals.reserve().is_none());
+        drop(permits);
+        assert!(terminals.reserve().is_some(), "失败或移除后应释放名额");
+        drop(held);
+        assert_eq!(terminals.slots.available_permits(), MAX_TERMINALS);
+    }
 
     #[test]
     fn scrollback_caps_and_aligns_eviction_to_newline() {
