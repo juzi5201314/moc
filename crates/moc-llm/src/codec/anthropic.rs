@@ -1107,7 +1107,7 @@ impl AnthropicStreamDecoder {
                 if !error_type.is_empty() {
                     error.code = Some(error_type);
                 }
-                out.push(Err(LlmError::Api(error)));
+                out.push(Err(LlmError::Api(Box::new(error))));
             }
             // ping 与未知扩展事件不改变已知内容。
             _ => {}

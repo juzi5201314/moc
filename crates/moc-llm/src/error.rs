@@ -29,9 +29,10 @@ pub enum LlmError {
         /// 原始响应体，便于定位上游格式变化。
         body: Option<Box<str>>,
     },
-    /// 上游返回错误响应。
+    /// 上游返回错误响应。装入 `Box`：`ApiError` 带七个可选字段，内联会让
+    /// 每个 `Result` 都背着两百多字节。
     #[error("上游返回错误: {0}")]
-    Api(ApiError),
+    Api(Box<ApiError>),
     /// 流式响应异常（SSE 帧结构错误、流中断等）。
     #[error("流式响应异常: {0}")]
     Stream(String),
@@ -523,12 +524,12 @@ mod tests {
 
     #[test]
     fn llm_error_delegates_classification() {
-        let api = LlmError::Api(ApiError::new(
+        let api = LlmError::Api(Box::new(ApiError::new(
             Some(503),
             ApiErrorKind::ServerError,
             "unavailable",
             "",
-        ));
+        )));
         assert!(api.is_retryable());
         assert_eq!(api.status(), Some(503));
         assert_eq!(

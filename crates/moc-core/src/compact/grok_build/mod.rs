@@ -442,7 +442,7 @@ mod tests {
             (ApiErrorKind::RateLimit, SampleFailure::Transient),
             (ApiErrorKind::ServerError, SampleFailure::Transient),
         ] {
-            let error = LlmError::Api(ApiError::new(None, kind, "测试错误", "{}"));
+            let error = LlmError::Api(Box::new(ApiError::new(None, kind, "测试错误", "{}")));
             assert_eq!(classify_failure(&CoreError::Llm(error.clone())), expected);
             assert_eq!(
                 classify_failure(&CoreError::Llm(LlmError::RetriesExhausted {

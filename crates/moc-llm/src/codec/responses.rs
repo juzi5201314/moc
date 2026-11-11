@@ -526,20 +526,18 @@ pub(crate) fn decode_response(
                     .into_iter()
                     .flatten()
                 {
-                    match block.get("type").and_then(Value::as_str) {
-                        Some("output_text" | "refusal") => {
-                            if let Some(phase) = item.get("phase").and_then(Value::as_str) {
-                                content.push(ContentPart::ResponsePhase(phase.to_owned()));
-                            }
-                            let key =
-                                if block.get("type").and_then(Value::as_str) == Some("refusal") {
-                                    "/refusal"
-                                } else {
-                                    "/text"
-                                };
-                            content.push(ContentPart::Text(string_at(block, key)));
+                    if let Some("output_text" | "refusal") =
+                        block.get("type").and_then(Value::as_str)
+                    {
+                        if let Some(phase) = item.get("phase").and_then(Value::as_str) {
+                            content.push(ContentPart::ResponsePhase(phase.to_owned()));
                         }
-                        _ => {}
+                        let key = if block.get("type").and_then(Value::as_str) == Some("refusal") {
+                            "/refusal"
+                        } else {
+                            "/text"
+                        };
+                        content.push(ContentPart::Text(string_at(block, key)));
                     }
                 }
             }
@@ -622,7 +620,7 @@ fn failed_error(response: &Value) -> LlmError {
         error.map_or_else(String::new, Value::to_string),
     );
     api_error.code = code.map(str::to_owned);
-    LlmError::Api(api_error)
+    LlmError::Api(Box::new(api_error))
 }
 
 fn string_at(value: &Value, pointer: &str) -> String {
@@ -818,7 +816,7 @@ impl ResponsesStreamDecoder {
                     value.to_string(),
                 );
                 error.code = code.map(str::to_owned);
-                out.push(Err(LlmError::Api(error)));
+                out.push(Err(LlmError::Api(Box::new(error))));
             }
             // 不承载客户端内容的进度、注解与冗余子块结束事件不产生增量。
             _ => {}

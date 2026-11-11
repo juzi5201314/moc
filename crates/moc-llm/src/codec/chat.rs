@@ -799,7 +799,7 @@ impl StreamDecoder for ChatStreamDecoder {
                 event.data,
             );
             error.code = code;
-            out.push(Err(LlmError::Api(error)));
+            out.push(Err(LlmError::Api(Box::new(error))));
             return;
         }
 

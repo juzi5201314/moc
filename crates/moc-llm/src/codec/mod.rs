@@ -138,7 +138,7 @@ pub(crate) fn decode_response(
         body: Some(String::from_utf8_lossy(body).into_owned().into_boxed_str()),
     })?;
     if let Some(error) = in_band_error(cfg, &value, body) {
-        return Err(LlmError::Api(error));
+        return Err(LlmError::Api(Box::new(error)));
     }
     let mut response = match cfg.protocol {
         Protocol::OpenAiChat => chat::decode_response(cfg, req, &value)?,

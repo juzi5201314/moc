@@ -257,12 +257,12 @@ impl Client {
                 tokio::time::timeout(Duration::from_secs_f64(secs), builder.send())
                     .await
                     .map_err(|_| {
-                        LlmError::Api(ApiError::new(
+                        LlmError::Api(Box::new(ApiError::new(
                             None,
                             ApiErrorKind::Timeout,
                             format!("上游在 {secs} 秒内没有返回响应头"),
                             "",
-                        ))
+                        )))
                     })??
             }
             None => builder.send().await?,
@@ -283,7 +283,7 @@ impl Client {
                 .get("cf-ray")
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
-            return Err(LlmError::Api(error));
+            return Err(LlmError::Api(Box::new(error)));
         }
         tracing::debug!(status = status.as_u16(), "收到响应头");
         Ok(response)
@@ -339,12 +339,12 @@ async fn error_body(mut response: reqwest::Response) -> Vec<u8> {
 
 /// 连接与重试时限到点：请求未完成，恢复策略交给调用方。
 fn deadline_error(subject: &str, secs: u64) -> LlmError {
-    LlmError::Api(ApiError::new(
+    LlmError::Api(Box::new(ApiError::new(
         None,
         ApiErrorKind::Timeout,
         format!("{subject} {secs} 秒连接与重试时限内没有完成"),
         "",
-    ))
+    )))
 }
 
 /// 读取完整的 2xx 响应体。
