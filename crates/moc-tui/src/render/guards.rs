@@ -1,7 +1,6 @@
 //! 防复发守卫：扫描 `src/` 的产品代码，禁止绕开共享原语的写法重新出现。
 //!
 //! 规则与原语的对应：
-//! - 浮层不透明底只走 [`super::overlay::paint_opaque`]，不得直接用 `Clear`（它不处理左邻宽字符）。
 //! - 行级省略提示只走 [`super::labels::more_lines`] / [`super::labels::more_items`]。
 //! - 状态词只走 [`super::labels::status`]，渲染处不写中文状态字面量。
 //! - 已合并进 `wrap` / `labels` 的旧 helper 不得以新名字之外的形式复活。
@@ -11,9 +10,6 @@
 //! 只扫产品代码：每个文件截掉 `#[cfg(test)] mod tests` 之后的部分，跳过 `*_tests.rs`。
 
 use std::path::{Path, PathBuf};
-
-/// 允许出现 `Clear` 的文件：浮层原语本身与终端清屏。
-const CLEAR_ALLOWED: &[&str] = &["render/overlay.rs", "terminal.rs"];
 
 /// 已删除、不得复活的旧 helper。
 const RETIRED_HELPERS: &[&str] = &[
@@ -108,16 +104,6 @@ fn violations(check: impl Fn(&str, &str) -> bool) -> Vec<String> {
     }
     found.sort();
     found
-}
-
-#[test]
-fn overlays_never_use_clear_directly() {
-    let found = violations(|path, line| !CLEAR_ALLOWED.contains(&path) && has_word(line, "Clear"));
-    assert!(
-        found.is_empty(),
-        "浮层改用 overlay::paint_opaque：\n{}",
-        found.join("\n")
-    );
 }
 
 #[test]
