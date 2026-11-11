@@ -51,10 +51,17 @@ pub async fn read(Query(query): Query<RawQuery>) -> Response {
         HeaderValue::from_str(&metadata.len().to_string()).expect("长度是数字"),
     );
     if query.download == Some(1) {
-        headers.insert(
-            header::CONTENT_DISPOSITION,
-            HeaderValue::from_str(&content_disposition(&path)).expect("附件头不含非法字节"),
-        );
+        let disposition = match HeaderValue::from_str(&content_disposition(&path)) {
+            Ok(value) => value,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("文件名无法用于下载：{error}"),
+                )
+                    .into_response();
+            }
+        };
+        headers.insert(header::CONTENT_DISPOSITION, disposition);
     }
     let stream = tokio_util::io::ReaderStream::new(file);
     (headers, Body::from_stream(stream)).into_response()
@@ -81,59 +88,110 @@ pub async fn write(
         Ok(path) => path,
         Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     };
-    let exists =
-        tokio::fs::try_exists(&path).await.unwrap_or(false) || path.symlink_metadata().is_ok();
-    if exists && query.overwrite != Some(1) {
+    upload_to(
+        &path,
+        query.overwrite == Some(1),
+        request.into_body(),
+        UPLOAD_MAX_BYTES,
+    )
+    .await
+}
+
+async fn upload_to(
+    path: &std::path::Path,
+    overwrite: bool,
+    body: Body,
+    max_bytes: u64,
+) -> Response {
+    let exists = path.symlink_metadata().is_ok();
+    if exists && !overwrite {
         return (StatusCode::CONFLICT, "目标已存在").into_response();
     }
-    let mut file = match tokio::fs::File::create(&path).await {
-        Ok(file) => file,
-        Err(error) => {
+    // 覆盖已有链接时沿用原接口语义，替换链接指向的普通文件。
+    let target = if exists {
+        match tokio::fs::canonicalize(path).await {
+            Ok(target) => target,
+            Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        }
+    } else {
+        path.to_owned()
+    };
+    let Some(parent) = target.parent().map(std::path::Path::to_owned) else {
+        return (StatusCode::BAD_REQUEST, "不是普通文件路径").into_response();
+    };
+    let staged = tokio::task::spawn_blocking(move || tempfile::NamedTempFile::new_in(parent)).await;
+    let temporary = match staged {
+        Ok(Ok(file)) => file,
+        Ok(Err(error)) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("无法创建文件：{}：{error}", path.display()),
+                format!("无法创建暂存文件：{error}"),
             )
                 .into_response();
         }
+        Err(error) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+        }
     };
+    let (handle, temporary) = temporary.into_parts();
+    // TempPath 保持到发布完成；请求失败或取消时自动删除半成品。
+    let mut file = tokio::fs::File::from_std(handle);
+    match tokio::fs::metadata(&target).await {
+        Ok(metadata) => {
+            if !metadata.is_file() {
+                return (StatusCode::BAD_REQUEST, "不是普通文件").into_response();
+            }
+            if let Err(error) = file.set_permissions(metadata.permissions()).await {
+                return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    }
     let mut received = 0u64;
-    let mut stream = request.into_body().into_data_stream();
+    let mut stream = body.into_data_stream();
     while let Some(chunk) = stream.next().await {
         let bytes = match chunk {
             Ok(bytes) => bytes,
             Err(error) => {
-                let _ = tokio::fs::remove_file(&path).await;
                 return (StatusCode::BAD_REQUEST, format!("读取请求体失败：{error}"))
                     .into_response();
             }
         };
         received += bytes.len() as u64;
-        if received > UPLOAD_MAX_BYTES {
-            drop(file);
-            let _ = tokio::fs::remove_file(&path).await;
-            return (StatusCode::PAYLOAD_TOO_LARGE, "文件超过 512 MiB 上限").into_response();
+        if received > max_bytes {
+            return (StatusCode::PAYLOAD_TOO_LARGE, "文件超过上传上限").into_response();
         }
         if let Err(error) = file.write_all(&bytes).await {
-            let _ = tokio::fs::remove_file(&path).await;
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("写入失败：{}：{error}", path.display()),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, format!("写入失败：{error}")).into_response();
         }
     }
-    if let Err(error) = file.flush().await {
+    if let Err(error) = file.sync_all().await {
         return (StatusCode::BAD_REQUEST, format!("写入失败：{error}")).into_response();
     }
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        format!(
-            "{{\"path\":{}}}",
-            serde_json::to_string(&path.to_string_lossy()).unwrap()
-        ),
-    )
-        .into_response()
+    drop(file);
+    // 不覆盖发布不能使用 exists + rename；persist_noclobber 在发布时原子拒绝竞争者。
+    let published = tokio::task::spawn_blocking(move || {
+        if overwrite {
+            temporary.persist(&target)
+        } else {
+            temporary.persist_noclobber(&target)
+        }
+    })
+    .await;
+    match published {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return (StatusCode::CONFLICT, "目标已存在").into_response();
+        }
+        Ok(Err(error)) => {
+            return (StatusCode::BAD_REQUEST, format!("发布文件失败：{error}")).into_response();
+        }
+        Err(error) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+        }
+    }
+    axum::Json(serde_json::json!({"path": path.to_string_lossy()})).into_response()
 }
 
 /// 路径校验：复用 core 的 `~` 展开与绝对路径要求。
@@ -173,12 +231,15 @@ fn content_disposition(path: &std::path::Path) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "download".to_owned());
-    if name.is_ascii() && !name.contains(['"', '\\']) {
+    if name
+        .bytes()
+        .all(|byte| (0x20..=0x7e).contains(&byte) && !b"\"\\".contains(&byte))
+    {
         return format!("attachment; filename=\"{name}\"");
     }
     let mut encoded = String::new();
     for byte in name.as_bytes() {
-        if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~'".contains(byte) {
+        if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(byte) {
             encoded.push(*byte as char);
         } else {
             encoded.push_str(&format!("%{byte:02X}"));
@@ -190,6 +251,130 @@ fn content_disposition(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn upload(path: &std::path::Path, overwrite: bool, body: Body) -> Response {
+        write(
+            Query(WriteQuery {
+                path: path.to_string_lossy().into_owned(),
+                overwrite: overwrite.then_some(1),
+            }),
+            HeaderMap::new(),
+            Request::new(body),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn interrupted_upload_preserves_original_and_cleans_temporary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, b"original").unwrap();
+        let body = Body::from_stream(futures_util::stream::iter([
+            Ok(bytes::Bytes::from_static(b"partial")),
+            Err(std::io::Error::other("连接中断")),
+        ]));
+        assert_eq!(
+            upload(&path, true, body).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn oversized_and_cancelled_uploads_preserve_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, b"original").unwrap();
+        let response = upload_to(&path, true, Body::from("oversized"), 4).await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let body = Body::from_stream(futures_util::stream::once(async move {
+            started.send(()).unwrap();
+            std::future::pending::<Result<bytes::Bytes, std::io::Error>>().await
+        }));
+        let mut request = Box::pin(upload(&path, true, body));
+        tokio::select! {
+            _ = &mut request => panic!("请求体尚未完成"),
+            _ = waiting => {}
+        }
+        drop(request);
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn successful_overwrite_preserves_permissions_and_symlink() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        let link = dir.path().join("link.txt");
+        std::fs::write(&path, b"original").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&path, &link).unwrap();
+        assert_eq!(
+            upload(&link, true, Body::from("complete")).await.status(),
+            StatusCode::OK
+        );
+        assert!(link.symlink_metadata().unwrap().is_symlink());
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_uploads_do_not_overwrite_without_permission() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.txt");
+        // 在消费请求体时同步，确保两个请求都已经通过存在性预检。
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let body = |text: &'static [u8]| {
+            let barrier = barrier.clone();
+            Body::from_stream(futures_util::stream::once(async move {
+                barrier.wait().await;
+                Ok::<_, std::io::Error>(bytes::Bytes::from_static(text))
+            }))
+        };
+        let (left, right) = tokio::join!(
+            upload(&path, false, body(b"left")),
+            upload(&path, false, body(b"right")),
+        );
+        let statuses = [left.status(), right.status()];
+        assert!(statuses.contains(&StatusCode::OK));
+        assert!(statuses.contains(&StatusCode::CONFLICT));
+        let expected = if left.status() == StatusCode::OK {
+            b"left".as_slice()
+        } else {
+            b"right".as_slice()
+        };
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn download_encodes_control_characters_in_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("line\n\r\x7f'break.txt");
+        std::fs::write(&path, b"data").unwrap();
+        let response = read(Query(RawQuery {
+            path: path.to_string_lossy().into_owned(),
+            download: Some(1),
+        }))
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_DISPOSITION],
+            "attachment; filename*=UTF-8''line%0A%0D%7F%27break.txt"
+        );
+    }
 
     #[test]
     fn content_type_covers_the_small_table() {
