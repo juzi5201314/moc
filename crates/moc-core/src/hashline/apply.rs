@@ -421,13 +421,24 @@ async fn commit_plan(
         None => None,
     };
 
+    // 两个文件都必须先通过大小校验，避免提交后读取快照失败而丢失撤销记录。
+    for bytes in std::iter::once(source_bytes.as_slice())
+        .chain(target_change.as_ref().map(|(_, bytes)| bytes.as_slice()))
+    {
+        if bytes.len() as u64 > max_file_bytes {
+            return Err(tool_error(
+                "E_TOO_LARGE",
+                "edited file exceeds the per-file byte limit",
+            ));
+        }
+    }
     let source_temp = stage_file(&source_path, &source_bytes).await?;
     let target_temp = if let Some((target, bytes)) = &target_change {
         match stage_file(&target.path, bytes).await {
             Ok(path) => Some(path),
             Err(error) => {
                 let _ = tokio::fs::remove_file(&source_temp).await;
-                return Err(error);
+                return Err(error.into());
             }
         }
     } else {
@@ -439,7 +450,7 @@ async fn commit_plan(
             Ok(backup) => Some(backup),
             Err(error) => {
                 cleanup_staged(source_temp, target_temp).await;
-                return Err(error);
+                return Err(error.into());
             }
         }
     } else {
@@ -830,17 +841,26 @@ async fn rollback_source(
     }
 }
 
-async fn stage_file(path: &Path, bytes: &[u8]) -> Result<PathBuf, EditError> {
+/// write、edit 与 undo 共用的暂存写入；已有文件保留权限，写入失败清理临时文件。
+pub(crate) async fn stage_file(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    let permissions = match tokio::fs::metadata(path).await {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let temp = parent.join(format!(".moc-{}.tmp", crate::ids::entry_id()));
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .await?;
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // 已有文件的暂存副本从创建时就不向其他用户开放；随后恢复目标权限。
+    #[cfg(unix)]
+    if permissions.is_some() {
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temp).await?;
     let result = async {
-        if let Ok(metadata) = tokio::fs::metadata(path).await {
-            file.set_permissions(metadata.permissions()).await?;
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions).await?;
         }
         file.write_all(bytes).await?;
         file.sync_all().await
@@ -849,7 +869,7 @@ async fn stage_file(path: &Path, bytes: &[u8]) -> Result<PathBuf, EditError> {
     if let Err(error) = result {
         drop(file);
         let _ = tokio::fs::remove_file(&temp).await;
-        return Err(error.into());
+        return Err(error);
     }
     Ok(temp)
 }
@@ -1385,6 +1405,47 @@ mod tests {
             1,
             "临时文件与备份必须清理"
         );
+    }
+
+    #[tokio::test]
+    async fn oversized_edits_preserve_files_and_undo() {
+        for moving in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("source");
+            let target = dir.path().join("target");
+            // BOM 和 CRLF 也计入最终字节数，不能只检查请求中的文本长度。
+            let original = "\u{feff}move\r\nkeep\r\n";
+            let (_, served, tag) = served_snapshot(&source, original);
+            let (_, target_served, target_tag) = served_snapshot(&target, "target12345\n");
+            let store = AnchorStore::new();
+            let mut edit = request("source", &tag, vec![replace(1, 1, "x\nx\nx\nx")]);
+            if moving {
+                edit.edits.clear();
+                edit.move_lines = Some(MoveRequest {
+                    from: 1,
+                    to: 1,
+                    target_path: "target".into(),
+                    target_tag,
+                    after: None,
+                });
+            }
+            let error = apply_edit(
+                dir.path(),
+                &edit,
+                &served,
+                Some(&target_served),
+                &store,
+                32,
+                15,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("E_TOO_LARGE"), "{error}");
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "target12345\n");
+            assert!(store.latest_undo_path().is_none());
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        }
     }
 
     #[tokio::test]

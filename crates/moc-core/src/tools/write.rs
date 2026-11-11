@@ -6,7 +6,6 @@ use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, resolve_tool_path, schema};
 use crate::resources::ResourceRouter;
@@ -284,21 +283,9 @@ fn normalize_line_endings(content: &str, ending: &[u8]) -> String {
 }
 
 async fn stage(path: &Path, content: &[u8]) -> Result<PathBuf, ToolError> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temporary = parent.join(format!(".moc-write-{}.tmp", crate::ids::entry_id()));
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
+    crate::hashline::apply::stage_file(path, content)
         .await
-        .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
-    file.write_all(content)
-        .await
-        .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
-    file.sync_all()
-        .await
-        .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
-    Ok(temporary)
+        .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))
 }
 
 #[cfg(test)]
@@ -306,6 +293,30 @@ mod tests {
     use super::*;
     use crate::hashline::{AnchorStore, served::read_snapshot};
     use std::fs;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replacement_preserves_private_and_executable_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file");
+        for mode in [0o600, 0o755] {
+            fs::write(&path, b"old").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            let temporary = stage(&path, b"new").await.unwrap();
+            assert_eq!(
+                fs::metadata(&temporary).unwrap().permissions().mode() & 0o777,
+                mode
+            );
+            tokio::fs::rename(temporary, &path).await.unwrap();
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                mode
+            );
+            assert_eq!(fs::read(&path).unwrap(), b"new");
+        }
+    }
 
     #[test]
     fn write_hash_echo_is_rejected_only_for_shown_lines() {
