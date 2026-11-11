@@ -728,11 +728,11 @@ fn open_context(app: &mut App, connection: &EmbeddedConnection) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let request = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     app.modal = Some(Modal::ContextContent {
-        state: ContextContentState {
+        state: Box::new(ContextContentState {
             request,
             session_id: session_id.clone(),
             ..Default::default()
-        },
+        }),
     });
     let client = connection.client.clone();
     let events = app.events.clone();
@@ -8051,7 +8051,9 @@ mod tests {
             thumb: 3,
             max_offset: 20,
         };
-        app.modal = Some(Modal::ContextContent { state });
+        app.modal = Some(Modal::ContextContent {
+            state: Box::new(state),
+        });
         let mouse = |kind, column, row| crossterm::event::MouseEvent {
             kind,
             column,

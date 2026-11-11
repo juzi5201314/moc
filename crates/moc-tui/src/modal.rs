@@ -1509,8 +1509,8 @@ pub enum Modal {
         error: Option<String>,
         scroll: usize,
     },
-    /// 上下文总览与逐层来源阅读。
-    ContextContent { state: ContextContentState },
+    /// 上下文总览与逐层来源阅读。装箱收窄 Modal：ContextContentState 逾 700 字节。
+    ContextContent { state: Box<ContextContentState> },
     /// 切换模型需要压缩上下文时的确认卡片。
     SwitchModel {
         /// 发起切换的会话；卡片期间该会话视为忙，队列不派发。
