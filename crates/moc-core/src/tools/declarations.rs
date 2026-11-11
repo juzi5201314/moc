@@ -215,7 +215,7 @@ fn ts_type(schema: &serde_json::Value, depth: usize) -> String {
                 .unwrap_or_default();
             let mut properties: Vec<_> = properties.iter().collect();
             // 工作区的 feature 合并可能启用 preserve_order；签名顺序不能依赖 JSON Map 后端。
-            properties.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            properties.sort_unstable_by_key(|(left, _)| *left);
             let fields: Vec<String> = properties
                 .into_iter()
                 .map(|(name, property)| {

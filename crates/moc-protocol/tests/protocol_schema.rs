@@ -324,7 +324,7 @@ fn matching(src: &[u8], open: usize) -> usize {
 }
 
 /// `src[open]` 闭括号体内的顶层逗号切片（忽略嵌套 `(){}[]` 与字符串内的逗号）。
-fn top_level_split<'a>(src: &'a [u8], open: usize, close: usize) -> Vec<&'a str> {
+fn top_level_split(src: &[u8], open: usize, close: usize) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
     let mut start = open + 1;

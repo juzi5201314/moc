@@ -321,9 +321,7 @@ pub(crate) fn ask_answers(history: &[Message], previous: Option<&str>) -> Vec<As
     let mut out: Vec<AskAnswer> = Vec::new();
     if let Some(previous) = previous {
         for line in previous.lines() {
-            let line = line
-                .trim()
-                .trim_start_matches(|c| c == '-' || c == '*' || c == ' ');
+            let line = line.trim().trim_start_matches(['-', '*', ' ']);
             if !line
                 .get(..ASKED_MARKER.len())
                 .is_some_and(|head| head.eq_ignore_ascii_case(ASKED_MARKER))

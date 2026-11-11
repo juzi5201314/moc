@@ -1685,8 +1685,7 @@ fn user_message(text: &str, at_ms: Option<u64>, width: usize, theme: &Theme) -> 
             theme.accent_warning,
         ));
         if index == last
-            && let Some(clock) =
-                clock_pending.take_if(|clock| str_width(clock) + 3 <= rest)
+            && let Some(clock) = clock_pending.take_if(|clock| str_width(clock) + 3 <= rest)
         {
             spans.push(Span::raw(" ".repeat(rest - str_width(&clock) - 1)));
             spans.push(Span::styled(clock, Style::new().fg(theme.gray_dim)));
@@ -3092,7 +3091,9 @@ fn tool_body_rows(
     command_in_title: bool,
 ) -> usize {
     if !shows_tool_content(tool, level) || tool.has_notices() {
-        return tool_body(tool, args, app, width, level, false, command_in_title).0.len();
+        return tool_body(tool, args, app, width, level, false, command_in_title)
+            .0
+            .len();
     }
     let is_error = tool_is_error(tool);
     let policy = tool_body_policy(&tool.name);
@@ -4084,14 +4085,14 @@ fn json_member_rows(
         let children = match member {
             Value::Object(map) if !map.is_empty() && depth < 6 => Some(json_member_rows(
                 member,
-                &[&*rails, &[!last]].concat(),
+                &[rails, &[!last]].concat(),
                 depth + 1,
                 width,
                 theme,
             )),
             Value::Array(items) if !items.is_empty() && depth < 6 => Some(json_member_rows(
                 member,
-                &[&*rails, &[!last]].concat(),
+                &[rails, &[!last]].concat(),
                 depth + 1,
                 width,
                 theme,
@@ -4229,7 +4230,11 @@ mod tests {
 
         let short = user_message("hi", Some(at_ms), 40, &theme);
         assert_eq!(short.len(), 4, "短消息 = 上框 + 正文 + 下框 + 留白");
-        let top: String = short[0].spans.iter().map(|span| span.content.as_ref()).collect();
+        let top: String = short[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         assert!(top.contains('╭') && top.contains('╮'));
         let body = &short[1];
         assert!(
@@ -4243,7 +4248,11 @@ mod tests {
                 .iter()
                 .any(|span| span.content == "│" && span.style.fg == Some(theme.accent_user))
         );
-        let bottom: String = short[2].spans.iter().map(|span| span.content.as_ref()).collect();
+        let bottom: String = short[2]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         assert!(bottom.contains('╰') && bottom.contains('╯'));
 
         let narrow = user_message("一二三四五六七八九十", Some(at_ms), 20, &theme);
@@ -4835,8 +4844,7 @@ mod tests {
                 id: id.into(),
                 name: "bash".into(),
                 parent_id: Some("call_parent".into()),
-                arguments: format!(r#"{{"description":"{summary}","command":"echo {summary}"}}"#)
-                    .into(),
+                arguments: format!(r#"{{"description":"{summary}","command":"echo {summary}"}}"#),
             });
             app.finish_tool_block(ToolCallFinish {
                 id: id.into(),
@@ -6547,11 +6555,6 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
-    }
-
-    /// 多行渲染结果的纯文本（行间以换行连接）。
-    fn text_of(lines: &[Line<'_>]) -> String {
-        lines.iter().map(plain).collect::<Vec<_>>().join("\n")
     }
 
     /// 一行首个非空白字符所在的列。

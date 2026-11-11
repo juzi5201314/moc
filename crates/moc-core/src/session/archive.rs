@@ -214,6 +214,14 @@ impl Replayer {
     }
 }
 
+pub(super) fn replay(entries: Vec<super::entries::Entry>) -> Result<SessionState, CoreError> {
+    let mut replay = Replayer::default();
+    for entry in entries {
+        replay.push(entry)?;
+    }
+    replay.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::entries::{Entry, EntryPayload, SessionOrigin};
@@ -290,12 +298,4 @@ mod tests {
             std::mem::size_of::<super::super::stored::StoredEntry>() < std::mem::size_of::<Entry>()
         );
     }
-}
-
-pub(super) fn replay(entries: Vec<super::entries::Entry>) -> Result<SessionState, CoreError> {
-    let mut replay = Replayer::default();
-    for entry in entries {
-        replay.push(entry)?;
-    }
-    replay.finish()
 }

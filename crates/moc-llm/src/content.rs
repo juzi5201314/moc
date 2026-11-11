@@ -19,8 +19,8 @@ enum Storage {
 
 struct Archive {
     bytes: Bytes,
-    // 冷消息通常不解析；把 Vec 缓存移到首次解析时分配。
-    parsed: OnceLock<Box<Vec<ContentPart>>>,
+    // 冷消息通常不解析；缓存等到首次解析时才填。
+    parsed: OnceLock<Vec<ContentPart>>,
     // 两类 ID 同生同死且归档后不追加：一个紧凑切片，calls_len 为分界。
     ids: Box<[String]>,
     calls_len: usize,
@@ -48,18 +48,14 @@ impl Storage {
     fn parts(&self) -> &Vec<ContentPart> {
         match self {
             Self::Resident(parts) => parts,
-            Self::Archived(archive) => archive.parsed.get_or_init(|| Box::new(archive.parse())),
+            Self::Archived(archive) => archive.parsed.get_or_init(|| archive.parse()),
         }
     }
 
     fn into_parts(self) -> Vec<ContentPart> {
         match self {
             Self::Resident(parts) => parts,
-            Self::Archived(mut archive) => archive
-                .parsed
-                .take()
-                .map(|parts| *parts)
-                .unwrap_or_else(|| archive.parse()),
+            Self::Archived(mut archive) => archive.parsed.take().unwrap_or_else(|| archive.parse()),
         }
     }
 }
@@ -276,6 +272,12 @@ impl FromIterator<ContentPart> for MessageContent {
         Vec::from_iter(iter).into()
     }
 }
+
+impl PartialEq<Vec<ContentPart>> for MessageContent {
+    fn eq(&self, other: &Vec<ContentPart>) -> bool {
+        self.with_parts(|parts| parts == other.as_slice())
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,11 +304,5 @@ mod tests {
         assert_eq!(cold.len(), 5);
         assert_eq!(content.len(), 6);
         assert_eq!(serde_json::to_value(&cold).unwrap(), json);
-    }
-}
-
-impl PartialEq<Vec<ContentPart>> for MessageContent {
-    fn eq(&self, other: &Vec<ContentPart>) -> bool {
-        self.with_parts(|parts| parts == other.as_slice())
     }
 }
