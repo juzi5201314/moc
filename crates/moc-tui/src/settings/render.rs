@@ -1,8 +1,8 @@
 use super::controls::Entry;
 use super::*;
 use crate::render::MARGIN_X;
-use crate::render::modal::window_offset;
 use crate::render::labels::{self, SEP};
+use crate::render::modal::window_offset;
 use crate::render::overlay;
 use crate::render::wrap::{
     ELLIPSIS, clip_line, fit, fit_line, str_width, truncate, wrap_spans, wrap_text,
@@ -1106,7 +1106,10 @@ fn draw_maintenance(
         );
     }
     scrollbar(frame, list, offset, total, theme, Some((hits, Hit::Scroll)));
-    if let View::Maintenance { offset: current, .. } = &mut panel.view {
+    if let View::Maintenance {
+        offset: current, ..
+    } = &mut panel.view
+    {
         *current = offset;
     }
     // 执行与返回都在工具栏上；清单溢出时才提示可以滚动。
@@ -1246,7 +1249,13 @@ fn popup_body(editor: &mut Editor, width: usize, rows: usize, theme: &Theme) -> 
                     )
                 })
                 .collect();
-            let start = viewport(&mut editor.scroll, &mut editor.offset, editor.selected, rows, lines.len());
+            let start = viewport(
+                &mut editor.scroll,
+                &mut editor.offset,
+                editor.selected,
+                rows,
+                lines.len(),
+            );
             window(lines, start, rows, None)
         }
         Editor::List(editor) => list_body(editor, width, rows, theme),
@@ -2156,8 +2165,7 @@ mod tests {
                 .hits
                 .iter()
                 .find(|(area, hit)| {
-                    matches!(hit, Hit::Row(index) if *index != panel.selected)
-                        && area.height == 1
+                    matches!(hit, Hit::Row(index) if *index != panel.selected) && area.height == 1
                 })
                 .expect("有未选中的行");
             (area.y, area.x)
@@ -2204,7 +2212,10 @@ mod tests {
         assert!(panel.providers.scroll.max_offset > 0, "侧栏应溢出");
 
         crate::settings::scroll(&mut panel, point, 6);
-        assert_eq!(panel.providers.offset, 6.min(panel.providers.scroll.max_offset));
+        assert_eq!(
+            panel.providers.offset,
+            6.min(panel.providers.scroll.max_offset)
+        );
         assert_eq!(panel.providers.cursor, 0, "滚轮不得移动侧栏光标");
         assert_eq!(panel.offset, 0, "详情列表的视口不得跟着滚动");
         assert!(!panel.providers.scroll.reveal_selection);

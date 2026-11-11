@@ -211,8 +211,14 @@ pub struct EditState {
 pub enum View {
     Fields,
     /// 维护预览清单有自己的视口偏移，不与字段列表共用 `offset`。
-    Maintenance { report: MaintenanceReport, offset: usize },
-    Confirm { text: String, action: ConfirmAction },
+    Maintenance {
+        report: MaintenanceReport,
+        offset: usize,
+    },
+    Confirm {
+        text: String,
+        action: ConfirmAction,
+    },
 }
 pub enum EditTarget {
     Field(Vec<String>),
@@ -1527,7 +1533,10 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
         Hit::Tab(index) => panel.select_tab(index),
         // 滚动条是视口操作不是「点到别处」：只滚所在清单，不动光标。
         Hit::Scroll(offset) => match &mut panel.view {
-            View::Maintenance { offset: view_offset, .. } => *view_offset = offset,
+            View::Maintenance {
+                offset: view_offset,
+                ..
+            } => *view_offset = offset,
             _ => {
                 panel.offset = offset.min(panel.scroll.max_offset);
                 panel.scroll.reveal_selection = false;

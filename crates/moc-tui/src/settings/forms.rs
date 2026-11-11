@@ -454,8 +454,7 @@ fn confirm_key(
 }
 
 fn maintenance_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
-    let View::Maintenance { report, mut offset } =
-        std::mem::replace(&mut panel.view, View::Fields)
+    let View::Maintenance { report, mut offset } = std::mem::replace(&mut panel.view, View::Fields)
     else {
         return false;
     };
