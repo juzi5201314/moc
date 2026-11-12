@@ -93,9 +93,17 @@ async fn load_skill_text(
     skill: &super::SkillMeta,
     loaded: &parking_lot::RwLock<LoadedSkills>,
 ) -> Result<ToolOutcome, ToolError> {
+    // 描述随结果落盘，前端无需重新扫描技能目录，重复加载也保留摘要。
+    let mut description = String::with_capacity(skill.description.len());
+    for word in skill.description.split_whitespace() {
+        if !description.is_empty() {
+            description.push(' ');
+        }
+        description.push_str(word);
+    }
     if loaded.read().contains(&skill.name) {
         return Ok(ToolOutcome::success(format!(
-            "Skill `{}` is already loaded in this session; its content is still in context.",
+            "Skill description: {description}\nSkill `{}` is already loaded in this session; its content is still in context.",
             skill.name
         )));
     }
@@ -105,7 +113,7 @@ async fn load_skill_text(
     let parsed = super::frontmatter::parse(&text)
         .map_err(|error| ToolError::new("E_SKILL", error.to_string()))?;
     let mut output = format!(
-        "<skill_content name=\"{}\" base=\"skill://{}\" dir=\"{}\">\n{}\n</skill_content>",
+        "Skill description: {description}\n<skill_content name=\"{}\" base=\"skill://{}\" dir=\"{}\">\n{}\n</skill_content>",
         skill.name,
         skill.name,
         escape_attr(&skill.base_dir.to_string_lossy()),
@@ -237,7 +245,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().join("demo");
         std::fs::create_dir_all(&base).unwrap();
-        let skill = meta("demo", base.clone(), true);
+        let mut skill = meta("demo", base.clone(), true);
+        skill.description = "检查代码\n  与复用\t边界".into();
         let loaded = parking_lot::RwLock::new(LoadedSkills::default());
         // SKILL.md 缺失时读取失败，不得留下「已加载」记账。
         assert!(load_skill_text(&skill, &loaded).await.is_err());
@@ -251,6 +260,10 @@ mod tests {
         let ToolOutput::Text(first_text) = &first.content else {
             panic!("首次加载返回文本");
         };
+        assert_eq!(
+            first_text.lines().next(),
+            Some("Skill description: 检查代码 与复用 边界")
+        );
         assert!(first_text.contains(&format!("dir=\"{}\"", escape_attr(&base.to_string_lossy()))));
         assert!(loaded.read().contains("demo"));
         let again = load_skill_text(&skill, &loaded).await.unwrap();
@@ -258,6 +271,7 @@ mod tests {
             panic!("重复加载返回文本提示");
         };
         assert!(text.contains("already loaded"));
+        assert_eq!(text.lines().next(), first_text.lines().next());
     }
 
     #[test]

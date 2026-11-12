@@ -2288,10 +2288,27 @@ fn title_summary(
         }
         return (Vec::new(), false);
     }
-    (
-        clip_line(Line::from(summary_spans(tool, args, theme, cwd)), budget).spans,
-        false,
-    )
+    let line = Line::from(summary_spans(tool, args, theme, cwd));
+    if tool.name == "skill" && line.width() > budget {
+        if budget < 3 {
+            return (
+                vec![Span::styled(
+                    ".".repeat(budget),
+                    Style::new().fg(theme.gray_dim),
+                )],
+                false,
+            );
+        }
+        // 通用裁剪已预留一格省略号；再让出两格，将末尾标记换成三个点。
+        let mut clipped = clip_line(line, budget - 2);
+        clipped
+            .spans
+            .last_mut()
+            .expect("超宽裁剪必带省略号")
+            .content = "...".into();
+        return (clipped.spans, false);
+    }
+    (clip_line(line, budget).spans, false)
 }
 
 /// read 分页 footer 给出的真实交付范围；结果里没有 footer 时返回 `None`。
@@ -2416,7 +2433,19 @@ fn summary_spans(
             theme.gray_dim,
         )],
         "yield" => vec![styled("交付报告".to_owned(), theme.gray_dim)],
-        "skill" => vec![styled(arg_str("name"), theme.gray_dim)],
+        "skill" => {
+            let mut summary = arg_str("name");
+            if let Some(description) = tool
+                .result
+                .as_deref()
+                .and_then(|result| result.lines().next())
+                .and_then(|line| line.strip_prefix("Skill description: "))
+            {
+                summary.push_str("  ");
+                summary.push_str(description);
+            }
+            vec![styled(summary, theme.gray_dim)]
+        }
         "clm_context" => vec![styled(arg_str("op"), theme.gray_dim)],
         "stop_agent" => vec![styled(arg_str("agent_id"), theme.gray_dim)],
         "todo" => todo_summary_spans(args, theme),
@@ -7507,6 +7536,51 @@ mod tests {
             "有失败时组头带统计：{head}"
         );
         assert_eq!(estimate_entry_height_at(&app, 2, width), lines.len());
+    }
+
+    #[test]
+    fn skill_descriptions_stay_on_one_line_in_single_and_grouped_calls() {
+        use moc_protocol::methods::ToolStatus;
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.tool_detail = DetailLevel::Hidden;
+        run_tool(
+            &mut app,
+            "single",
+            "skill",
+            r#"{"name":"review"}"#,
+            ToolStatus::Completed,
+            "Skill description: 检查代码与复用边界\n正文不应显示",
+        );
+        let full = render_entry(0, &app.blocks[0], &app, 80).lines;
+        assert_eq!(full.len(), 1);
+        assert!(plain(&full[0]).contains("review  检查代码与复用边界"));
+        for width in [10, 11, 12, 24] {
+            let lines = render_entry(0, &app.blocks[0], &app, width).lines;
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].width() <= usize::from(width));
+            if width == 24 {
+                assert!(plain(&lines[0]).contains("..."));
+            }
+        }
+        app.register_tool_batch("skills".into(), ["first".into(), "second".into()]);
+        for id in ["first", "second"] {
+            run_tool(
+                &mut app,
+                id,
+                "skill",
+                r#"{"name":"review"}"#,
+                ToolStatus::Completed,
+                "Skill description: 检查代码与复用边界\n正文不应显示",
+            );
+        }
+        let lines = render_entry(1, &app.blocks[1], &app, 28).lines;
+        assert_eq!(lines.len(), 3);
+        for line in &lines[1..] {
+            assert!(plain(line).contains("review  检查"));
+            assert!(plain(line).ends_with("..."));
+            assert!(line.width() <= 28);
+        }
     }
 
     #[test]
