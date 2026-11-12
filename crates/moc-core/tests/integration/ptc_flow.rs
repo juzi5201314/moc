@@ -15,7 +15,7 @@ use wiremock::{
 };
 
 #[tokio::test]
-async fn ptc_run_code_executes_worker_in_normal_mode() {
+async fn ptc_execute_executes_worker_in_normal_mode() {
     if !support::require_moc_bin("PTC flow") {
         return;
     }
@@ -27,11 +27,11 @@ async fn ptc_run_code_executes_worker_in_normal_mode() {
         .respond_with(move |_request: &Request| {
             let response = match counter.fetch_add(1, Ordering::SeqCst) {
                 0 => support::tool_stream(vec![(
-                    "call_run", "run_code",
+                    "call_run", "execute",
                     json!({"description":"Sum numbers in the worker","code":"return {sum: [1,2,3].reduce((a,b)=>a+b,0)};"}),
                 )]),
                 2 => support::tool_stream(vec![(
-                    "nested_run", "run_code",
+                    "nested_run", "execute",
                     json!({"description":"Write two files","code":"await tools.write({path:'first.txt', content:'已提交'}); await tools.write({path:'second.txt', content:'同样提交'});"}),
                 )]),
                 _ => support::text_stream("guest sum=6"),
@@ -102,7 +102,7 @@ async fn ptc_run_code_executes_worker_in_normal_mode() {
     assert_eq!(nested.len(), 4, "两次嵌套写入各有起止两条更新：{nested:?}");
     for (id, name, parent, arguments) in &nested {
         assert_eq!(name, "write");
-        assert_eq!(parent, "nested_run", "父调用 ID 必须是发起它的 run_code");
+        assert_eq!(parent, "nested_run", "父调用 ID 必须是发起它的 execute");
         assert!(
             id.starts_with("nested_run:"),
             "嵌套调用 ID 挂在父调用下：{id}"

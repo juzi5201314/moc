@@ -215,7 +215,7 @@ fn tool_kind(name: &str) -> ToolKind {
         "delete" | "remove" | "delete_file" => ToolKind::Delete,
         "move" | "rename" | "move_file" => ToolKind::Move,
         "grep" | "glob" | "find" | "search" | "search_code" | "list" => ToolKind::Search,
-        "bash" | "shell" | "run_code" | "ptc" | "execute" => ToolKind::Execute,
+        "bash" | "shell" | "ptc" | "execute" => ToolKind::Execute,
         "web_fetch" | "fetch" | "web_search" => ToolKind::Fetch,
         "think" | "reason" => ToolKind::Think,
         "plan" | "exit_plan" | "update_plan" => ToolKind::SwitchMode,

@@ -333,7 +333,7 @@ async fn print_runs_code_in_worker_process() {
             let response = match seen.fetch_add(1, Ordering::SeqCst) {
                 0 => call(
                     "run",
-                    "run_code",
+                    "execute",
                     json!({"description":"Sum numbers in the worker","code":"return [1,2,3].reduce((a,b)=>a+b,0);"}),
                 ),
                 _ => text("worker 结果 6"),
@@ -353,7 +353,7 @@ async fn print_runs_code_in_worker_process() {
 }
 
 #[tokio::test]
-async fn run_code_timeout_kills_worker_and_keeps_prompt_alive() {
+async fn execute_timeout_kills_worker_and_keeps_prompt_alive() {
     let upstream = MockServer::builder().start().await;
     let counter = Arc::new(AtomicUsize::new(0));
     let seen = counter.clone();
@@ -362,7 +362,7 @@ async fn run_code_timeout_kills_worker_and_keeps_prompt_alive() {
             let response = match seen.fetch_add(1, Ordering::SeqCst) {
                 0 => call(
                     "run",
-                    "run_code",
+                    "execute",
                     json!({"description":"Busy loop until the timeout","code":"while(true) {}","timeout_secs":1}),
                 ),
                 _ => text("超时处理完成"),

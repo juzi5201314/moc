@@ -1,4 +1,4 @@
-//! run_code 工具：在 Core 级长期 QuickJS Host 中执行独立 Runtime；工具调用和会话权限仍由宿主负责。
+//! execute 工具：在 Core 级长期 QuickJS Host 中执行独立 Runtime；工具调用和会话权限仍由宿主负责。
 
 mod process;
 mod result;
@@ -15,9 +15,9 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub struct RunCodeTool;
+pub struct ExecuteTool;
 
-/// `description` 参数的模型可见说明；与 dsh 的 run_code 工具保持同一前端卡片契约。
+/// `description` 参数的模型可见说明，用作前端执行卡片的摘要。
 const DESCRIPTION_PARAM: &str = "Clear, concise description of what this program does in active voice, 5-10 words (shown in the UI). Examples: \"Count TODO markers across crates\"; \"Read failing test and its fixture\"; \"Rename a config key across files\".";
 
 /// 模型为前端卡片提供的一句话说明；目前只校验非空，展示留给后续 UI 消费。
@@ -29,18 +29,18 @@ fn validate_description(args: &Value) -> Result<(), ToolError> {
     {
         return Err(ToolError::new(
             "E_ARGUMENT",
-            "run_code requires a non-empty description argument",
+            "execute requires a non-empty description argument",
         ));
     }
     Ok(())
 }
 
-impl Tool for RunCodeTool {
+impl Tool for ExecuteTool {
     fn name(&self) -> &str {
-        "run_code"
+        "execute"
     }
     fn description(&self) -> &str {
-        "Run JavaScript in an isolated QuickJS runtime; call tools with await tools.<name>(args)."
+        "Execute JavaScript to call tools and process results in an isolated QuickJS runtime; use await tools.<name>(args)."
     }
     fn tier(&self) -> Tier {
         Tier::Exec
@@ -68,7 +68,7 @@ impl Tool for RunCodeTool {
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
             let code = args.get("code").and_then(Value::as_str).ok_or_else(|| {
-                ToolError::new("E_ARGUMENT", "run_code requires a string code argument")
+                ToolError::new("E_ARGUMENT", "execute requires a string code argument")
             })?;
             validate_description(&args)?;
             let limit = ctx.config.tools.ptc.max_output_bytes;
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn tool_definition_requires_a_ui_description() {
-        let parameters = RunCodeTool.def().parameters;
+        let parameters = ExecuteTool.def().parameters;
         assert_eq!(
             parameters["required"],
             serde_json::json!(["code", "description"])

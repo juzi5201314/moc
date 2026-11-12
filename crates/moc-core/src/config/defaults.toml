@@ -6,7 +6,7 @@
 [features]
 # CLM 实验引擎（SessionEngine::ClmExperimental）
 clm = true
-# PTC 引擎（SessionEngine::Ptc）：模型只调 run_code，工具经代码沙盒触达
+# PTC 引擎（SessionEngine::Ptc）：模型只调 execute，工具经代码沙盒触达
 ptc = true
 
 [models.roles]

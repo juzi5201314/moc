@@ -4525,7 +4525,7 @@
         },
         {
           "const": "ptc",
-          "description": "模型只调用 `run_code`，全部工具经代码沙盒触达。",
+          "description": "模型只调用 `execute`，全部工具经代码沙盒触达。",
           "type": "string"
         },
         {
@@ -6005,7 +6005,7 @@
           "type": "object"
         },
         {
-          "description": "一次工具调用开始执行（模型直发与 `run_code` 沙盒内的嵌套调用共用）。",
+          "description": "一次工具调用开始执行（模型直发与 `execute` 沙盒内的嵌套调用共用）。",
           "properties": {
             "arguments": {
               "description": "参数 JSON 原文：core 实际执行的那一份，前端直接展示。",
@@ -6016,7 +6016,7 @@
               "type": "string"
             },
             "parent_tool_call_id": {
-              "description": "父调用 ID；`Some` 表示这是 `run_code` 沙盒里发起、以该调用为父的嵌套调用。",
+              "description": "父调用 ID；`Some` 表示这是 `execute` 沙盒里发起、以该调用为父的嵌套调用。",
               "type": [
                 "string",
                 "null"

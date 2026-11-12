@@ -159,7 +159,7 @@ async fn tool_documents_preserve_visibility_and_read_only_boundaries() {
         })
         .await
         .unwrap();
-    for name in ["read", "edit", "write", "run_code"] {
+    for name in ["read", "edit", "write", "execute"] {
         assert!(
             tools.iter().any(|tool| tool.name == name),
             "核心入口缺失：{name}"

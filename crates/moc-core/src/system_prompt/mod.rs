@@ -45,7 +45,7 @@ const TOOL_POLICY_REST: &str = "Read before editing. Internal resources are read
 const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
 
 /// Fusion lead 的分工契约：只在 Fusion 顶层会话注入，子代理与普通会话没有。
-/// 静态片段，排在 ptc runtime 之后，保持静态前缀连续。
+/// 静态片段，排在 execution runtime 之后，保持静态前缀连续。
 const FUSION_PIECE: &str = "<fusion>
 You are the lead of a Fusion pair. A persistent sidekick agent (a cheaper model on the same machine, filesystem and workspace) works under your direction through the `sidekick` tool. The user talks only to you: do not mention the sidekick unless asked, and describe all work as your own.
 
@@ -83,7 +83,7 @@ Do not use `spawn_agent` subagents unless the user asks for them.
 pub const PIECE_INTRO: &str = "intro";
 pub const PIECE_OUTPUT_FORMAT: &str = "output format";
 pub const PIECE_TOOL_POLICY: &str = "tool policy";
-pub const PIECE_PTC_RUNTIME: &str = "ptc runtime";
+pub const PIECE_EXECUTION_RUNTIME: &str = "execution runtime";
 pub const PIECE_FUSION: &str = "fusion";
 pub const PIECE_TOOL_DECLS: &str = "tool declarations";
 pub const PIECE_MCP_SERVERS: &str = "mcp servers";
@@ -214,9 +214,9 @@ pub fn pieces(
     });
     sections.push(PromptPiece {
         title: "tools",
-        name: PIECE_PTC_RUNTIME,
+        name: PIECE_EXECUTION_RUNTIME,
         scope: PieceScope::Static,
-        text: "run_code evaluates JavaScript in a fresh QuickJS runtime. Call await tools.<name>(args); return the needed result. Tool results contain {content,structuredContent,isError,status,artifact}; prefer structuredContent, otherwise content. Failures reject with {code,message,result}. Await every call before returning; JavaScript globals do not persist. Standard mode also exposes core tools directly; PTC exposes only run_code. Read capability docs with await tools.read({path:\"tool://capability\"}). Composition, MCP discovery, and named state: tool://run-code.".to_owned(),
+        text: "execute evaluates JavaScript in a fresh QuickJS runtime. Call await tools.<name>(args); return the needed result. Tool results contain {content,structuredContent,isError,status,artifact}; prefer structuredContent, otherwise content. Failures reject with {code,message,result}. Await every call before returning; JavaScript globals do not persist. Standard mode also exposes core tools directly; PTC exposes only execute. Read capability docs with await tools.read({path:\"tool://capability\"}). Composition, MCP discovery, and named state: tool://execute.".to_owned(),
     });
     // Fusion lead 的分工契约：只注入 Fusion 顶层会话，静态片段保持前缀连续。
     if model.fusion.is_some() && subagent.is_none() {
@@ -391,7 +391,7 @@ pub fn engine_reminder(engine: SessionEngine) -> String {
             "Standard engine is active: native tool calls run directly; the workspace is writable unless an execution mode says otherwise."
         }
         SessionEngine::Ptc => {
-            "PTC engine is active: call tools only through run_code; other native calls are rejected. Child calls still obey tool enablement, mode policy, and the bash sandbox."
+            "PTC engine is active: call tools only through execute; other native calls are rejected. Child calls still obey tool enablement, mode policy, and the bash sandbox."
         }
         SessionEngine::ClmExperimental => crate::clm::SYSTEM_INSTRUCTION,
     };
@@ -407,10 +407,10 @@ pub fn mode_reminder(mode: crate::service::mode::Mode) -> Option<String> {
     let text = match mode {
         Mode::Default => return None,
         Mode::Ask => {
-            "Ask mode applies to this prompt only: the workspace is read-only, including inside run_code; read and search freely. The restriction ends when this prompt ends."
+            "Ask mode applies to this prompt only: the workspace is read-only, including inside execute; read and search freely. The restriction ends when this prompt ends."
         }
         Mode::Plan => {
-            "Plan mode is active: the workspace is read-only, including inside run_code. Save the plan with plan(markdown); read the saved plan file for anchors and refine it with plan(edits) — after review notes, plan(edits) on the reviewed version produces the next draft. Before calling exit_plan, make sure the plan is finished: exit_plan submits the working draft, ends this prompt immediately, and puts the session into plan review — no tool call runs after it."
+            "Plan mode is active: the workspace is read-only, including inside execute. Save the plan with plan(markdown); read the saved plan file for anchors and refine it with plan(edits) — after review notes, plan(edits) on the reviewed version produces the next draft. Before calling exit_plan, make sure the plan is finished: exit_plan submits the working draft, ends this prompt immediately, and puts the session into plan review — no tool call runs after it."
         }
     };
     Some(text.to_owned())
@@ -583,13 +583,7 @@ mod tests {
         assert!(system.contains("Keep the appendix."));
         assert!(system.contains("No tools are available"));
         let text = prompt_text(&prompt);
-        for excluded in [
-            TOOL_POLICY,
-            "run_code works",
-            "<skills>",
-            "<plugins>",
-            "<mcp-servers>",
-        ] {
+        for excluded in [TOOL_POLICY, "<skills>", "<plugins>", "<mcp-servers>"] {
             assert!(!text.contains(excluded), "旁路不能包含 {excluded}");
         }
     }
@@ -665,10 +659,10 @@ mod tests {
         assert!(prompt.static_prefix[0] < blocks.len());
     }
 
-    /// 工具声明只在调用方渲染出来时注入：紧随 ptc runtime 之后，且不进静态前缀
+    /// 工具声明只在调用方渲染出来时注入：紧随 execution runtime 之后，且不进静态前缀
     /// （依赖 MCP 集合与配置，Project 作用域）。
     #[test]
-    fn tool_declarations_piece_lands_after_ptc_runtime() {
+    fn tool_declarations_piece_lands_after_execution_runtime() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let cwd = directory.path().join("repo");
         let home = directory.path().join("home");
@@ -690,7 +684,6 @@ mod tests {
             .iter()
             .position(|block| block.starts_with("<tool-declarations>"))
             .expect("工具声明片段");
-        assert!(blocks[declarations - 1].contains("run_code"));
         assert_eq!(prompt.static_prefix[0], declarations);
     }
 
@@ -737,7 +730,7 @@ mod tests {
             ),
             (
                 SessionEngine::Ptc,
-                ["PTC engine is active", "only through run_code"].as_slice(),
+                ["PTC engine is active", "only through execute"].as_slice(),
             ),
             (
                 SessionEngine::ClmExperimental,

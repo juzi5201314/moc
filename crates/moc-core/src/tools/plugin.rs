@@ -271,7 +271,7 @@ mod tests {
             "bash",
             "write",
             "edit",
-            "run_code",
+            "execute",
             "spawn_agent",
             "sidekick",
             "mcp__demo__search",

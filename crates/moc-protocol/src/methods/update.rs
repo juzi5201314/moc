@@ -23,8 +23,8 @@
 //!
 //! 参数**只**经 [`SessionUpdate::ToolStarted`] / [`SessionUpdate::ToolFinished`] 的
 //! `arguments` 下发，内容是 core 实际执行的那一份；前端不必自己拼接增量，也就不存在
-//! 「增量与执行分叉」的形态。模型直发的调用与 `run_code` 沙盒里的嵌套调用共用这两个
-//! 更新：嵌套调用的 `parent_tool_call_id` 指向发起它的 `run_code`，其余字段含义相同。
+//! 「增量与执行分叉」的形态。模型直发的调用与 `execute` 沙盒里的嵌套调用共用这两个
+//! 更新：嵌套调用的 `parent_tool_call_id` 指向发起它的 `execute`，其余字段含义相同。
 //!
 //! # 兼容规则
 //!
@@ -134,7 +134,7 @@ pub enum SessionUpdate {
         tool_call_id: String,
         command: super::bash::BashCommand,
     },
-    /// 一次工具调用开始执行（模型直发与 `run_code` 沙盒内的嵌套调用共用）。
+    /// 一次工具调用开始执行（模型直发与 `execute` 沙盒内的嵌套调用共用）。
     ToolStarted {
         /// prompt ID。
         prompt_id: String,
@@ -142,7 +142,7 @@ pub enum SessionUpdate {
         tool_call_id: String,
         /// 工具名。
         name: String,
-        /// 父调用 ID；`Some` 表示这是 `run_code` 沙盒里发起、以该调用为父的嵌套调用。
+        /// 父调用 ID；`Some` 表示这是 `execute` 沙盒里发起、以该调用为父的嵌套调用。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_tool_call_id: Option<String>,
         /// 参数 JSON 原文：core 实际执行的那一份，前端直接展示。

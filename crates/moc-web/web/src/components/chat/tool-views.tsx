@@ -567,7 +567,7 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
     );
   }
 
-  if (tool.name === "run_code") {
+  if (tool.name === "execute") {
     if (failed && result) {
       return level === "full" ? <PlainOutput text={result} error /> : <ErrorLine text={result} />;
     }

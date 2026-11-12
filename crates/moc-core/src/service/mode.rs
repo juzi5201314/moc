@@ -642,7 +642,7 @@ const ASK_MODE_TOOLS: &[&str] = &[
     "ask",
     "skill",
     "clm_context",
-    "run_code",
+    "execute",
     "web_search",
     "web_fetch",
     // 目标是只读可取的会话状态：读它不改写任何东西。
@@ -662,7 +662,7 @@ const PLAN_MODE_TOOLS: &[&str] = &[
     "clm_context",
     "plan",
     "exit_plan",
-    "run_code",
+    "execute",
     "web_search",
     "web_fetch",
     "get_goal",
@@ -705,7 +705,7 @@ pub fn allowed_tools(engine: SessionEngine) -> &'static [&'static str] {
             "clm_context",
             "plan",
             "exit_plan",
-            "run_code",
+            "execute",
             "web_search",
             "web_fetch",
             // 持久目标工具面（`get_goal` 另入只读模式白名单）。
@@ -723,7 +723,7 @@ pub fn allowed_tools(engine: SessionEngine) -> &'static [&'static str] {
             "workflow_status",
             "eval_workflow_snippet",
         ],
-        SessionEngine::Ptc => &["run_code"],
+        SessionEngine::Ptc => &["execute"],
     }
 }
 
@@ -896,7 +896,7 @@ mod agent_mode_tests {
             Tier::Read,
             ToolOrigin::Mcp,
         ));
-        // PTC 引擎下模式不放宽可达面：MCP 依旧只能走 run_code。
+        // PTC 引擎下模式不放宽可达面：MCP 依旧只能走 execute。
         assert!(!mode_allows(
             SessionEngine::Ptc,
             Mode::Default,

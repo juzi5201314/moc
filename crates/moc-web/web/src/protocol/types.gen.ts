@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 2799fb64e9e5792d
+// schema sha256: 2869597396f020ef
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -667,7 +667,7 @@ export type SessionUpdate =
        */
       name: string;
       /**
-       * 父调用 ID；`Some` 表示这是 `run_code` 沙盒里发起、以该调用为父的嵌套调用。
+       * 父调用 ID；`Some` 表示这是 `execute` 沙盒里发起、以该调用为父的嵌套调用。
        */
       parent_tool_call_id?: string | null;
       /**
@@ -4953,7 +4953,7 @@ export interface SessionUpdateParams {
          */
         name: string;
         /**
-         * 父调用 ID；`Some` 表示这是 `run_code` 沙盒里发起、以该调用为父的嵌套调用。
+         * 父调用 ID；`Some` 表示这是 `execute` 沙盒里发起、以该调用为父的嵌套调用。
          */
         parent_tool_call_id?: string | null;
         /**

@@ -22,7 +22,7 @@ export const BRIEF_THINKING_ROWS = 4;
  * - `agent-preview`：简略档显示任务／交付报告开头，不展开原始载荷
  * - `title`：简略档只有标题（web_search 与未知工具）
  * - `command`：单行命令 + 末尾输出（bash）
- * - `script`：run_code——简略档只有标题，完整档给高亮脚本 + 结果
+ * - `script`：execute——简略档只有标题，完整档给高亮脚本 + 结果
  * - `diff`：最多 {@link BRIEF_BODY_ROWS} 行 diff（edit、write）
  * - `todo`：简略保留前三项和后两项，完整显示全部，隐藏不显示任务项
  * - `preview`：结果开头若干行（ask、子代理类）
@@ -45,7 +45,7 @@ const POLICY: Record<string, BodyPolicy> = {
   clm_context: "summary",
   stop_agent: "summary",
   bash: "command",
-  run_code: "script",
+  execute: "script",
   edit: "diff",
   write: "diff",
   todo: "todo",
@@ -219,7 +219,7 @@ export function toolHeadline(tool: ToolBlock): Headline {
         statError: exit !== null,
       };
     }
-    case "run_code":
+    case "execute":
       return { target: str(args, "description"), mono: false };
     case "edit":
     case "write":

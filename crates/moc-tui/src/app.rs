@@ -815,7 +815,7 @@ impl App {
 
     /// 工具执行开始：把更新里的调用信息落地成转写块。
     ///
-    /// 模型直发的调用与 `run_code` 沙盒里的嵌套调用共用这里，形状只差 `parent_id`
+    /// 模型直发的调用与 `execute` 沙盒里的嵌套调用共用这里，形状只差 `parent_id`
     /// （嵌套调用据此在滚动区缩进）；批次归属在批次开始时就登记好了。
     pub fn start_tool_block(&mut self, call: ToolCallStart) {
         // 工具调用开始即思考流结束：耗时不能把随后的工具执行算进去。
@@ -2407,7 +2407,7 @@ impl LegendItem for SessionEngine {
     fn description(&self) -> &'static str {
         match self {
             SessionEngine::Standard => "默认引擎：模型直接调用工具",
-            SessionEngine::Ptc => "模型只调用 run_code，全部工具经代码沙盒触达",
+            SessionEngine::Ptc => "模型只调用 execute，全部工具经代码沙盒触达",
             SessionEngine::ClmExperimental => "模型自主维护实时上下文（实验）",
         }
     }

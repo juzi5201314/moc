@@ -224,7 +224,7 @@ pub(super) async fn execute_tool_batch(
 
     'calls: for (index, call) in calls.iter().enumerate() {
         if call.name.starts_with("mcp__") {
-            let outcome = ToolOutcome::failure("E_MODE", "Call MCP tools through run_code");
+            let outcome = ToolOutcome::failure("E_MODE", "Call MCP tools through execute");
             slots[index] = Some(
                 commit_outcome(inner, tool_ctx, call, outcome, 0)
                     .await
@@ -474,7 +474,7 @@ async fn execute_tool(
     if !ctx.nested && name.starts_with("mcp__") {
         return Ok(ToolOutcome::failure(
             "E_MODE",
-            "Call MCP tools through run_code",
+            "Call MCP tools through execute",
         ));
     }
     // 插件工具活在本次提示的工具目录里（和 MCP 工具一样按提示快照），不进内置注册表。
@@ -713,17 +713,17 @@ pub(crate) async fn execute_nested_tool(
     call: &moc_llm::ToolCall,
     from_model: bool,
 ) -> Result<ToolOutcome, CoreError> {
-    if call.name == "run_code" {
+    if call.name == "execute" {
         return Ok(ToolOutcome::failure(
             "E_PTC_RECURSION",
-            "Nested run_code calls are not allowed",
+            "Nested execute calls are not allowed",
         ));
     }
     // 插件工具不是 PTC 的扩展面：插件已经能直接调宿主只读工具，再开放会绕开钩子与模式限制。
     if ctx.plugins.owns_tool(&call.name) {
         return Ok(ToolOutcome::failure(
             "E_PLUGIN_RECURSION",
-            "Plugin tools cannot be called from run_code or from another plugin",
+            "Plugin tools cannot be called from execute or from another plugin",
         ));
     }
     let mut nested = ctx.clone();

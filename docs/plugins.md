@@ -146,7 +146,7 @@ export default {
 
 工具声明只接受上表中的字段，未知字段会加载失败。`modes` 省略时三种全开，显式传入 `null`、非数组或非字符串元素会加载失败。
 
-`modes` 只约束调用放行，不授予额外能力；插件的宿主能力由 `tools.call` 白名单决定。`run_code` 的工具目录不列出插件工具，也不能调用它们。
+`modes` 只约束调用放行，不授予额外能力；插件的宿主能力由 `tools.call` 白名单决定。`execute` 的工具目录不列出插件工具，也不能调用它们。
 
 工具名全局唯一：与内置工具、MCP 工具（`mcp__` 前缀）、其它插件工具撞名会让该工具被忽略并告警（内置优先）。工具名只允许字母、数字、下划线、连字符。
 
@@ -172,7 +172,7 @@ export default {
 
 钩子按插件加载顺序串联：后一个看到前一个改写后的值。抛异常或超时只停用出错插件并通知，其余插件与核心操作继续。
 
-**模型直发调用会触发工具钩子**。模型经 `run_code` 调用按需能力（子代理、联网、目标、workflow）时，实际目标工具也触发 `beforeToolCall` / `afterToolCall`，避免隐藏原生 schema 后绕过原有拒绝、参数改写与结果处理。其他 PTC 子调用仍不触发目标钩子；插件内部的工具调用始终不重入。插件工具仍不能经 PTC 调用。
+**模型直发调用会触发工具钩子**。模型经 `execute` 调用按需能力（子代理、联网、目标、workflow）时，实际目标工具也触发 `beforeToolCall` / `afterToolCall`，避免隐藏原生 schema 后绕过原有拒绝、参数改写与结果处理。其他 PTC 子调用仍不触发目标钩子；插件内部的工具调用始终不重入。插件工具仍不能经 PTC 调用。
 
 **能改变行为的钩子**（只消费下表中的字段；字段类型不对就忽略并告警，不会停用插件）：
 
@@ -237,8 +237,8 @@ export default {
 `tools.call` 的边界：
 
 - 只在工具的 `run` 里可用；命令、钩子、`prompt`、`activate` 里调用会抛 `E_PLUGIN_TOOLS_UNAVAILABLE`
-- 只放行白名单里的只读工具：`read`、`grep`、`find`、`web_search`、`web_fetch`；写、shell、`job`、`ask`、`todo`、`run_code`、MCP 工具与插件工具一律拒绝
-- 不能调自身或其它插件工具，也不能从 `run_code` 里调用插件工具（`E_PLUGIN_RECURSION`）
+- 只放行白名单里的只读工具：`read`、`grep`、`find`、`web_search`、`web_fetch`；写、shell、`job`、`ask`、`todo`、`execute`、MCP 工具与插件工具一律拒绝
+- 不能调自身或其它插件工具，也不能从 `execute` 里调用插件工具（`E_PLUGIN_RECURSION`）
 
 ## 插件持久化配置
 

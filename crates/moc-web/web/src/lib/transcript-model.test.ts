@@ -97,7 +97,7 @@ describe("entriesToBlocks", () => {
         content: [
           { Reasoning: { Text: { text: "想一想", signature: null } } },
           { Text: "先跑代码" },
-          { ToolCall: { id: "call_1", name: "run_code", arguments: '{"description":"x"}' } },
+          { ToolCall: { id: "call_1", name: "execute", arguments: '{"description":"x"}' } },
         ],
       },
     },

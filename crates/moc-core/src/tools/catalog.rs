@@ -87,7 +87,7 @@ impl ToolCatalog {
         prompt
     }
 
-    /// 目录里当前可调的工具：PTC 引擎下嵌套调用沿用 Standard 引擎面（除 `run_code`
+    /// 目录里当前可调的工具：PTC 引擎下嵌套调用沿用 Standard 引擎面（除 `execute`
     /// 自身与插件工具），模式再按执行许可收紧；`workflows_active` 为假时 workflow
     /// 工具一律不可见（零泄漏：与 workflow 模块不存在时产物逐字节一致）。
     pub fn visible<'a>(
@@ -105,7 +105,7 @@ impl ToolCatalog {
         };
         self.tools.iter().filter(move |tool| {
             self.scope.permits(tool.name())
-                && tool.name() != "run_code"
+                && tool.name() != "execute"
                 && tool.origin() != ToolOrigin::Plugin
                 && (workflows_active
                     || !crate::workflow::runtime::WORKFLOW_TOOLS.contains(&tool.name()))
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_tools_are_not_discoverable_from_run_code() {
+    fn plugin_tools_are_not_discoverable_from_execute() {
         let root = tempfile::tempdir().expect("临时目录");
         let config = ResolvedConfig::load(&crate::CoreConfig {
             home: root.path().join("home"),
@@ -344,7 +344,7 @@ mod tests {
                     assert!(catalog.get(&name).is_some(), "原生调用仍需持有插件工具");
                     let error = catalog
                         .describe(engine, mode, false, &config, &name)
-                        .expect_err("run_code 不能发现插件工具");
+                        .expect_err("execute 不能发现插件工具");
                     assert_eq!(error.code, "E_TOOL_NOT_FOUND", "{engine:?}");
                 }
                 assert!(
@@ -354,7 +354,7 @@ mod tests {
                 );
                 assert!(
                     catalog
-                        .describe(engine, mode, false, &config, "run_code")
+                        .describe(engine, mode, false, &config, "execute")
                         .is_err()
                 );
             }

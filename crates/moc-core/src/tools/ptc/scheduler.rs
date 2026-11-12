@@ -45,7 +45,7 @@ async fn perform(
         let started = Instant::now();
         let update = ctx.request.updates();
         // 沙盒内的嵌套调用和模型直接发起的调用推送同样的开始/结束更新：`parent_tool_call_id`
-        // 指明它属于哪个 `run_code`，参数就是马上要执行的那一份。
+        // 指明它属于哪个 `execute`，参数就是马上要执行的那一份。
         let start_result = update
             .emit(
                 ctx.session_id.clone(),

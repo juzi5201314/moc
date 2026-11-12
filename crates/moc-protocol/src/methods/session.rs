@@ -131,7 +131,7 @@ pub enum SessionEngine {
     #[default]
     #[serde(alias = "normal")]
     Standard,
-    /// 模型只调用 `run_code`，全部工具经代码沙盒触达。
+    /// 模型只调用 `execute`，全部工具经代码沙盒触达。
     Ptc,
     /// 模型自主维护实时上下文的实验引擎。
     ClmExperimental,

@@ -229,7 +229,7 @@ pub struct ToolCallStart {
     pub id: String,
     /// 工具名。
     pub name: String,
-    /// 父调用 ID；`Some` 表示 `run_code` 沙盒里发起、以该调用为父的嵌套调用。
+    /// 父调用 ID；`Some` 表示 `execute` 沙盒里发起、以该调用为父的嵌套调用。
     pub parent_id: Option<String>,
     /// 参数 JSON 原文（core 实际执行的那一份）。
     pub arguments: String,
@@ -467,7 +467,7 @@ impl ToolCallBlock {
 pub(crate) enum ToolBody {
     /// 成功且无图片时不显示正文（回显参数／致谢／模型向载荷类工具）。
     None,
-    /// 隐藏、简略档无正文，完整档才显示（run_code）。
+    /// 隐藏、简略档无正文，完整档才显示（execute）。
     FullOnly,
     /// 不展示原始正文；通知常显，网页可简略预览，媒体按需展开。
     Summary,
@@ -482,7 +482,7 @@ pub(crate) enum ToolBody {
 /// 工具名 → 正文策略。未知工具默认走预览，只有明确无正文或只报数量的才单列。
 pub(crate) fn tool_body_policy(name: &str) -> ToolBody {
     match name {
-        "run_code" => ToolBody::FullOnly,
+        "execute" => ToolBody::FullOnly,
         "read" | "grep" | "find" | "web_fetch" => ToolBody::Summary,
         "spawn_agent" | "yield" => ToolBody::AgentPreview,
         "todo" => ToolBody::Todo,

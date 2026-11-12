@@ -113,7 +113,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
         // <tool-declarations> 段：全部内置工具的 TS 签名（实测 ≈980 token）。
         context_tokens: Some(1_000),
-        summary: "PTC 引擎：模型只调 run_code，工具经代码沙盒触达",
+        summary: "PTC 引擎：模型只调 execute，工具经代码沙盒触达",
     },
     FeatureSpec {
         flag: FeatureFlag::Workflow,

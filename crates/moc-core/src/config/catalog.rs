@@ -611,9 +611,9 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             ),
             "max_total_calls" => (
                 "脚本调用总上限",
-                "单个 run_code 脚本最多发起的宿主调用次数。",
+                "单个 execute 脚本最多发起的宿主调用次数。",
             ),
-            "max_concurrent_runs" => ("脚本并发上限", "同一 Core 同时运行的 run_code 脚本数量。"),
+            "max_concurrent_runs" => ("脚本并发上限", "同一 Core 同时运行的 execute 脚本数量。"),
             "host_idle_timeout_secs" => (
                 "Host 空闲回收时间（秒）",
                 "长期 PTC Host 没有活跃脚本时，等待多久后回收。",

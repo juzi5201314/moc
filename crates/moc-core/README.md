@@ -103,7 +103,7 @@ TUI、Web 与行式 CLI 均支持：
 - `providers.<id>.max_concurrency`：同一供应商跨会话共享并发限额，`0` 表示不限；取消等待不会占用名额。模型生成和压缩请求使用同一限额。
 - `providers.<id>.cache`：`auto`（默认）、`short`、`long`、`off`。自动模式按协议使用缓存，不发额外预热请求；Anthropic 的断点落在最后一条含静态前缀的指令消息内的静态末块、指令边界（指令以 system 下发时上提为「系统提示 + 工具定义」的最小缓存单元）与最后一条会进入历史的消息上——本轮追加的提醒不落位（它不进历史，落上去也永远不会命中），静态块断点让同一模板在不同工作目录间复用；OpenAI 兼容协议使用稳定会话路由键而不强塞缓存断点。长保留需要上游支持：Anthropic 为一小时，OpenAI 为 `24h`。`supports_prompt_cache_key=false` 可关闭不兼容的 OpenAI 扩展字段。上下文压缩固定使用当前会话模型；`explore` 角色已供子代理任务选模。
 - 模型的 `max_request_bytes` 控制最终 JSON 请求体，留空为 50 MiB。供应商发送边界统一压缩当前、历史及工具图片；内联图片 Base64 共享至多 8 MiB 且不超过请求剩余额度，单图目标 500 KiB。不能在尺寸/质量下限内满足预算时本地报错，不静默删图；原始会话不改写。图片 token 仍按视觉估算，不按 Base64 字节计量。完整策略与 524 诊断见 [图片发送规则](../../docs/images.md)。
-- `tools.max_concurrent_calls`：标准模型工具批次中只读工具的同时执行上限；写入工具、bash、询问、计划、todo、skill 与 `run_code` 仍作为顺序屏障。默认 16。
+- `tools.max_concurrent_calls`：标准模型工具批次中只读工具的同时执行上限；写入工具、bash、询问、计划、todo、skill 与 `execute` 仍作为顺序屏障。默认 16。
 - `tools.todo`：`reminders=true` 时，距上次 todo 变更累计 `reminders_after=12` 次工具调用、且仍有未完成项，就在下一轮注入一次提醒；前端以 `TodoReminder` 占位行展示，每个提示最多 `reminders_max=3` 次。`init` 同时收到 `list` 与 `items` 时以 `list` 为准，缺 `op` 的载荷按无歧义形态推断。
 - `tools.job.max_running=4`：限制后台进程数量；`overflow="error"` 默认直接向模型返回超限错误，`"wait"` 等待空闲名额，可取消。前台命令不占后台名额。
 - `tools.output`：所有工具（包括 MCP）共用首尾输出预算（各 20 KiB）和读写文件容量上限（100 MiB），超出预算的完整文本自动归档；工具本身的分页、搜索和专项限制仍在各自分组。
@@ -144,21 +144,23 @@ Explorer 沿用工具拒绝列表：禁用 `edit`、`write`、`spawn_agent`、`s
 
 `[web_search]` 当前只有 Tavily 一个供应商：`api_key` 支持字面量、`env:变量名` 或 `!命令`（与供应商密钥同语法），`base_url` 留空使用官方 `https://api.tavily.com`，自定义代理直接按 `{base}/search` 拼接，`timeout_secs` 默认 30。鉴权失败、限流（429/432/433）与超时分别以 `E_WEB_AUTH`、`E_WEB_RATE_LIMIT`、`E_TIMEOUT` 返回，限流提示附带 `Retry-After`。
 
-### 代码编排（PTC）
+### 工具执行与编排（execute / PTC）
 
-`run_code` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。Core 按需启动一个长期 `moc --ptc-worker` Host，多个逻辑 execution 通过 ID 复用同一进程；每次 execution 都创建全新的 QuickJS Runtime/Context，因此全局变量、Promise 和堆不会跨 execution 泄漏。Host 与 core 通过一行一条 JSON 的 RPC 推进脚本；工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。
+`execute` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。Core 按需启动一个长期 `moc --ptc-worker` Host，多个逻辑 execution 通过 ID 复用同一进程；每次 execution 都创建全新的 QuickJS Runtime/Context，因此全局变量、Promise 和堆不会跨 execution 泄漏。Host 与 core 通过一行一条 JSON 的 RPC 推进脚本；工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。
+
+`execute` 是共享的工具调用与结果处理入口，不是 PTC 引擎专属能力：标准引擎可直接调用核心工具，也可通过它编排调用；PTC 引擎要求所有工具调用都经过它。`tool://execute` 提供组合调用、MCP 发现和命名状态说明，系统提示中的共享运行时片段名为 `execution runtime`。工具改名不改变 `[tools.ptc]` 配置、worker 协议或执行权限。
 
 脚本工具结果固定为 `{content, summary, structuredContent, isError, status, artifact}`；结构化 MCP 数据保留原始 JSON，文本预算只影响模型展示。失败会 reject 带 `code`、`message`、`result` 的错误。`state.store/load/remove/keys` 提供会话级 JSON 状态，每次成功写入立即追加到 JSONL，重启和回退按日志重建，普通 JavaScript 全局变量不会跨次保留。
 
 PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`、`max_result_bytes`、`max_pending_calls`、`max_total_calls`、`max_concurrent_calls`、`max_concurrent_runs`、`host_idle_timeout_secs`、`max_state_bytes` 以及默认/最大超时。写工具和需要授权的调用是并发屏障；脚本返回前必须等待所有调用。同步 JS 循环由 QuickJS interrupt watchdog 中断，Core deadline 覆盖完整工具等待；取消若超过宽限期无响应会重启整个 Host，并让所有活跃 execution 收到 `E_PTC_WORKER`。worker 不提供文件、网络、进程、模块加载或定时器 API，工作区修改仍由宿主工具的现有授权与事务策略控制。
 
-PTC Host 入口已编译进 `moc`，首次 `run_code` 时将当前 `moc` 作为子进程并传入隐藏参数；因此发布和安装只需要一个 `moc` 文件。Host 崩溃、协议损坏或无法在取消宽限期内停止时，core 会让所有活跃 execution 收到 `E_PTC_WORKER`，随后下一次 execution 懒启动新 Host；空闲 Host 按 `host_idle_timeout_secs` 回收。QuickJS 是原生 C 构建（rquickjs），Windows x86_64 MSVC 支持仍是 experimental，跨平台发布需要在该平台构建。Host 只通过 stdio 通信，后续可以把它放进 OS 沙箱（bwrap 等）作为统一边界。
+PTC Host 入口已编译进 `moc`，首次 `execute` 时将当前 `moc` 作为子进程并传入隐藏参数；因此发布和安装只需要一个 `moc` 文件。Host 崩溃、协议损坏或无法在取消宽限期内停止时，core 会让所有活跃 execution 收到 `E_PTC_WORKER`，随后下一次 execution 懒启动新 Host；空闲 Host 按 `host_idle_timeout_secs` 回收。QuickJS 是原生 C 构建（rquickjs），Windows x86_64 MSVC 支持仍是 experimental，跨平台发布需要在该平台构建。Host 只通过 stdio 通信，后续可以把它放进 OS 沙箱（bwrap 等）作为统一边界。
 
 ### 插件
 
 插件是本地目录里的 JavaScript（ES 模块），在 core 进程内用 QuickJS 执行（每个插件一个专用线程与 Runtime，与 PTC 的独立 worker 不同）。发现来源按优先级为项目 `.moc/plugins`（cwd 向上到 git root）、`[plugins] dirs`、`$MOC_HOME/plugins`；**发现即启用**，因此项目级来源等于信任该仓库，`[plugins] project=false` 或 `disable` 是退出口。完整契约见 [docs/plugins.md](../../docs/plugins.md)，类型声明在 `crates/moc-plugin/js/moc.d.ts`。
 
-插件可注册四类能力：工具（`modes` 取 `default`/`ask`/`plan`，默认三种全开；`parallel` 默认 `false` 作为批次屏障）、斜杠命令、工具钩子与提示词贡献。插件工具按声明的 `modes` 决定原生可见性（`default` 覆盖 CLM 实验引擎，PTC 不放行）；`run_code` 的工具目录不列出插件工具，`run_code` 与插件内部都不能调用插件工具（`E_PLUGIN_RECURSION`）。
+插件可注册四类能力：工具（`modes` 取 `default`/`ask`/`plan`，默认三种全开；`parallel` 默认 `false` 作为批次屏障）、斜杠命令、工具钩子与提示词贡献。插件工具按声明的 `modes` 决定原生可见性（`default` 覆盖 CLM 实验引擎，PTC 不放行）；`execute` 的工具目录不列出插件工具，`execute` 与插件内部都不能调用插件工具（`E_PLUGIN_RECURSION`）。
 
 `beforeToolCall` 只对模型发起的调用生效，返回值可 `deny`（模型收到 `E_PLUGIN_DENIED`）或改写 `arguments`；改写发生在沙盒判定、bash 规则与授权之前，多个插件按加载顺序串联。`afterToolCall` 是观察型，失败只记日志。钩子自身抛错或超时按 fail-open 处理，不会阻断工具执行。
 

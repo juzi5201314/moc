@@ -151,7 +151,7 @@ export type ActivityKind =
 /** 工具名 → 活动类别。覆盖 MCP 工具前缀（`mcp__fs__read_file`）与驼峰写法。 */
 function toolKind(name: string): ActivityKind {
   const normalized = name.toLowerCase();
-  if (normalized === "run_code") return "code";
+  if (normalized === "execute") return "code";
   if (/(^|_)(web_search|websearch|search_web|google|bing|tavily|brave)(_|$)/.test(normalized)) {
     return "webSearch";
   }

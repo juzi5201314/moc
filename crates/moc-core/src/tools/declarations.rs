@@ -35,7 +35,7 @@ pub fn render_signatures(
         return Some(directory);
     }
     let mut lines = vec![
-        "Tool signatures for run_code: `const r = await tools.<name>(args)`; `?` marks optional properties. ToolResult fields are documented under run_code.".to_owned(),
+        "Tool signatures for execute: `const r = await tools.<name>(args)`; `?` marks optional properties. ToolResult fields are documented under execute.".to_owned(),
     ];
     let mut builtins = 0usize;
     // 声明渲染引擎面：模式只拦执行，不改写这段签名（系统前缀因此跨模式稳定）。

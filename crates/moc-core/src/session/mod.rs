@@ -3648,7 +3648,7 @@ mod tests {
                     role: Role::Assistant,
                     content: moc_llm::message_content![ContentPart::ToolCall(ToolCall::new(
                         "parent-full",
-                        "run_code",
+                        "execute",
                         "{}"
                     ))],
                 },

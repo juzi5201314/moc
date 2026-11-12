@@ -399,7 +399,7 @@ impl ToolScope {
 
     /// 禁止文档读取或 PTC 的角色保留直接入口，不为省 schema 擅自扩大权限。
     pub(crate) fn defers(&self, name: &str) -> bool {
-        documentation::deferred(name) && self.permits("read") && self.permits("run_code")
+        documentation::deferred(name) && self.permits("read") && self.permits("execute")
     }
 
     pub(crate) fn define(&self, tool: &dyn Tool) -> ToolDef {
@@ -454,7 +454,7 @@ impl ToolRegistry {
                 Arc::new(crate::workflow::runtime::tools::WorkflowStatusTool),
                 Arc::new(crate::workflow::runtime::tools::EvalSnippetTool),
                 Arc::new(clm::ClmContextTool),
-                Arc::new(crate::tools::ptc::RunCodeTool),
+                Arc::new(crate::tools::ptc::ExecuteTool),
                 Arc::new(crate::skills::tool::SkillTool),
                 Arc::new(websearch::WebSearchTool),
                 Arc::new(websearch::WebFetchTool),

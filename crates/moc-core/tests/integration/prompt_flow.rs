@@ -2679,7 +2679,7 @@ async fn anthropic_requests_put_cache_breakpoints_on_static_prefix_and_stable_ta
         .position(|block| {
             block["text"]
                 .as_str()
-                .is_some_and(|text| text.starts_with("run_code evaluates"))
+                .is_some_and(|text| text.starts_with("execute evaluates"))
         })
         .expect("PTC 静态片段");
     assert_eq!(

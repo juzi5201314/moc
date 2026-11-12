@@ -2308,9 +2308,9 @@ fn summary_spans(
             }
             spans
         }
-        // 描述加粗：bash／run_code 的摘要不是参数值而是模型写的一句话，
+        // 描述加粗：bash／execute 的摘要不是参数值而是模型写的一句话，
         // 加粗后才不会和后面的 path／pattern 参数混成一列。
-        "bash" | "run_code" => vec![Span::styled(
+        "bash" | "execute" => vec![Span::styled(
             ui_description(args).unwrap_or_default().to_owned(),
             Style::new()
                 .fg(theme.text_secondary)
@@ -2850,8 +2850,8 @@ fn tool_body(
             ));
             lines.push(Line::from(spans));
         }
-    } else if tool.name == "run_code" && !is_error {
-        let (rows, omitted) = run_code_rows(tool, args, width, limit, theme);
+    } else if tool.name == "execute" && !is_error {
+        let (rows, omitted) = execute_rows(tool, args, width, limit, theme);
         dropped += omitted;
         lines.extend(rows);
     } else if tool.name == "todo" && !is_error {
@@ -3158,9 +3158,9 @@ fn tool_body_rows(
         let count = ask_answer_pairs(tool, args).len();
         rows += count.min(limit);
         dropped += count.saturating_sub(limit);
-    } else if tool.name == "run_code" && !is_error {
-        // 完整档 run_code 直接复用行构造函数取行数，估高与渲染同源。
-        let (constructed, omitted) = run_code_rows(tool, args, width, limit, app.theme);
+    } else if tool.name == "execute" && !is_error {
+        // 完整档 execute 直接复用行构造函数取行数，估高与渲染同源。
+        let (constructed, omitted) = execute_rows(tool, args, width, limit, app.theme);
         rows += constructed.len();
         dropped += omitted;
     } else if tool.name == "todo" && !is_error {
@@ -3952,12 +3952,12 @@ fn todo_tree_rows(
     rows
 }
 
-/// run_code 完整档正文：高亮脚本（行号槽 `{n:>w} │ `）+ `result` 段。
+/// execute 完整档正文：高亮脚本（行号槽 `{n:>w} │ `）+ `result` 段。
 ///
 /// `result` 能解析成 JSON object/array 就画 JSON 树，标量并进标签行
 /// （`result: 42`），不是 JSON 按普通文本（Head 截断）；任何档位都不把
 /// 原始返回值 JSON 直接倒出来。返回（展示行、被略去的行数）。
-fn run_code_rows(
+fn execute_rows(
     tool: &ToolCallBlock,
     args: &Value,
     width: usize,
@@ -4815,11 +4815,11 @@ mod tests {
             ToolStatus::Completed,
             "阶段\n  [ ] 很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述很长的任务描述\n",
         );
-        // run_code：三档 + 失败的估高都要与渲染同源
+        // execute：三档 + 失败的估高都要与渲染同源
         run_tool(
             &mut app,
             "call_rc",
-            "run_code",
+            "execute",
             &serde_json::json!({"description":"核对","code":"const a = 1;\nawait tools.bash({command:'ls'})"}).to_string(),
             ToolStatus::Completed,
             r#"[{"status":"fulfilled","value":{"content":" M a.rs\n M b.rs","isError":false}}]"#,
@@ -4827,15 +4827,15 @@ mod tests {
         run_tool(
             &mut app,
             "call_rc_bad",
-            "run_code",
+            "execute",
             r#"{"code":"throw 1"}"#,
             ToolStatus::Error,
             "脚本执行失败",
         );
-        // 嵌套调用树：run_code 带子调用，兄弟连线进估高
+        // 嵌套调用树：execute 带子调用，兄弟连线进估高
         app.start_tool_block(ToolCallStart {
             id: "call_parent".into(),
-            name: "run_code".into(),
+            name: "execute".into(),
             parent_id: None,
             arguments: r#"{"description":"父"}"#.into(),
         });
@@ -4864,7 +4864,7 @@ mod tests {
         }
         app.finish_tool_block(ToolCallFinish {
             id: "call_parent".into(),
-            name: "run_code".into(),
+            name: "execute".into(),
             parent_id: None,
             arguments: String::new(),
             status: ToolStatus::Completed,
@@ -5424,7 +5424,7 @@ mod tests {
         let mut app = App::new(crate::theme::Theme::global(), events);
         app.start_tool_block(ToolCallStart {
             id: "call_run".into(),
-            name: "run_code".into(),
+            name: "execute".into(),
             parent_id: None,
             arguments: r#"{"code":"await tools.grep({pattern:'artifact'})"}"#.into(),
         });
@@ -6924,9 +6924,9 @@ mod tests {
         );
     }
 
-    /// run_code：简略档只有标题行（返回值 JSON 不倒出来）；失败时简略档显示错误文本。
+    /// execute：简略档只有标题行（返回值 JSON 不倒出来）；失败时简略档显示错误文本。
     #[test]
-    fn run_code_brief_shows_title_only_and_errors() {
+    fn execute_brief_shows_title_only_and_errors() {
         use moc_protocol::methods::ToolStatus;
 
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -6935,7 +6935,7 @@ mod tests {
         run_tool(
             &mut app,
             "rc",
-            "run_code",
+            "execute",
             r#"{"description":"核对","code":"await tools.bash({command:'ls'})"}"#,
             ToolStatus::Completed,
             r#"[{"status":"fulfilled","value":{"content":"ok"}}]"#,
@@ -6956,7 +6956,7 @@ mod tests {
         run_tool(
             &mut app,
             "rc_bad",
-            "run_code",
+            "execute",
             r#"{"code":"throw 1"}"#,
             ToolStatus::Error,
             "脚本执行失败：boom",
@@ -6971,9 +6971,9 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 1, 80), lines.len());
     }
 
-    /// run_code 完整档：行号槽脚本 + JSON 树；多行字符串标 `(N lines)`。
+    /// execute 完整档：行号槽脚本 + JSON 树；多行字符串标 `(N lines)`。
     #[test]
-    fn run_code_full_renders_script_gutter_and_json_tree() {
+    fn execute_full_renders_script_gutter_and_json_tree() {
         use moc_protocol::methods::ToolStatus;
 
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -6982,7 +6982,7 @@ mod tests {
         run_tool(
             &mut app,
             "rc",
-            "run_code",
+            "execute",
             r#"{"description":"核对","code":"const a = 1;\nawait tools.bash({command:'ls'})"}"#,
             ToolStatus::Completed,
             r#"[{"status":"fulfilled","value":{"content":" M crates/moc-tui/src/render/scrollback.rs 很长很长很长的第一行\n M b.rs","isError":false,"structuredContent":null}}]"#,
@@ -7063,7 +7063,7 @@ mod tests {
         // 父仍在运行：两个子块都画 ├─（更多子调用还会到来）。
         app.start_tool_block(ToolCallStart {
             id: "p".into(),
-            name: "run_code".into(),
+            name: "execute".into(),
             parent_id: None,
             arguments: r#"{"description":"父"}"#.into(),
         });
@@ -7095,7 +7095,7 @@ mod tests {
         // 父结束：末个子块翻成 └─ 并留下一行纯空行；中间的子块不留白。
         app.finish_tool_block(ToolCallFinish {
             id: "p".into(),
-            name: "run_code".into(),
+            name: "execute".into(),
             parent_id: None,
             arguments: String::new(),
             status: ToolStatus::Completed,
@@ -7168,7 +7168,7 @@ mod tests {
         };
         app.start_tool_block(ToolCallStart {
             id: "p".into(),
-            name: "run_code".into(),
+            name: "execute".into(),
             parent_id: None,
             arguments: r#"{"description":"父"}"#.into(),
         });
@@ -7228,7 +7228,7 @@ mod tests {
         }
 
         // 父块结束：整棵树只剩一行空行，且完全为空、挂在最末子调用末尾。
-        finish(&mut app, "p", "run_code", None, "[]");
+        finish(&mut app, "p", "execute", None, "[]");
         let rows = transcript(&app, width);
         let blanks: Vec<usize> = rows
             .iter()
@@ -7275,7 +7275,7 @@ mod tests {
         let width = 80u16;
         app.start_tool_block(ToolCallStart {
             id: "p".into(),
-            name: "run_code".into(),
+            name: "execute".into(),
             parent_id: None,
             arguments: r#"{"description":"父"}"#.into(),
         });
@@ -7352,7 +7352,7 @@ mod tests {
         // 父块结束：最后一个 read 翻成 └─ 并带一行空行。
         app.finish_tool_block(ToolCallFinish {
             id: "p".into(),
-            name: "run_code".into(),
+            name: "execute".into(),
             parent_id: None,
             arguments: String::new(),
             status: ToolStatus::Completed,
@@ -7637,7 +7637,7 @@ mod tests {
         let mut app = App::new(crate::theme::Theme::global(), events);
         app.start_tool_block(ToolCallStart {
             id: "p".into(),
-            name: "run_code".into(),
+            name: "execute".into(),
             parent_id: None,
             arguments: r#"{"description":"父"}"#.into(),
         });
@@ -7671,7 +7671,7 @@ mod tests {
         );
         app.finish_tool_block(ToolCallFinish {
             id: "p".into(),
-            name: "run_code".into(),
+            name: "execute".into(),
             parent_id: None,
             arguments: String::new(),
             status: ToolStatus::Completed,

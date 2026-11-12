@@ -878,7 +878,7 @@ async fn explorer_role_preserves_reconnaissance_tools() {
     }
     // `web_search` 依赖 provider 能力，harness 未配置——不列入保留面断言。
     for kept in [
-        "read", "grep", "find", "bash", "job", "todo", "skill", "run_code", "yield",
+        "read", "grep", "find", "bash", "job", "todo", "skill", "execute", "yield",
     ] {
         assert!(tools.contains(&kept), "explore 必须保留 {kept}：{tools:?}");
     }
@@ -1454,7 +1454,7 @@ async fn fusion_lead_hands_off_to_a_persistent_sidekick() {
             "sidekick 不得拿到 {denied}：{sidekick_tools:?}"
         );
     }
-    for kept in ["yield", "run_code", "bash", "edit"] {
+    for kept in ["yield", "execute", "bash", "edit"] {
         assert!(
             sidekick_tools.contains(&kept),
             "sidekick 必须保留 {kept}：{sidekick_tools:?}"
@@ -2144,7 +2144,7 @@ async fn explorer_followup_preserves_shell_and_denies_write_tools() {
         ResponseTemplate::new(200).set_body_raw(support::tool_stream(vec![
             ("attempt_write", "write", json!({"path":"protected.txt", "content":"direct"})),
             ("inspect_shell", "bash", json!({"description":"验证 shell 调查能力", "command":"printf 'shell-inspection-ok'"})),
-            ("attempt_nested", "run_code", json!({"description":"尝试嵌套写入", "code":"await tools.write({path:'protected.txt',content:'nested'});"})),
+            ("attempt_nested", "execute", json!({"description":"尝试嵌套写入", "code":"await tools.write({path:'protected.txt',content:'nested'});"})),
         ]), "text/event-stream")
     }).await;
     let harness = harness(&upstream).await;
@@ -2290,7 +2290,7 @@ async fn deferred_agent_documentation_dispatch_and_hooks() {
         }
         let response = match counter.fetch_add(1, Ordering::SeqCst) {
             0 => support::tool_stream(vec![("agent_docs", "read", json!({"path":"tool://agents"}))]),
-            1 => support::tool_stream(vec![("agent_program", "run_code", json!({
+            1 => support::tool_stream(vec![("agent_program", "execute", json!({
                 "description":"Delegate work and collect its report",
                 "code": "let denied; try { await tools.spawn_agent({role:'explorer',task:'BLOCKED_TASK'}); } catch(e) { denied=e.code; } const spawned=JSON.parse((await tools.spawn_agent({role:'explorer',task:'ALLOWED_TASK'})).content); const waited=await tools.wait_agent({agent_ids:spawned.agents.map(a=>a.agent_id),timeout_secs:10}); const listed=await tools.list_agents({}); return {denied,waited:waited.structuredContent,listed:listed.content};"
             }))]),

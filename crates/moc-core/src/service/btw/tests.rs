@@ -269,7 +269,6 @@ async fn readonly_snapshot_works_while_main_lock_is_held_and_never_loads_hosts()
         assert!(text.contains(expected), "请求应包含 {expected}：{text}");
     }
     for excluded in [
-        "run_code works",
         "Standard tool batches",
         "<skills>",
         "<plugins>",

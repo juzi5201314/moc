@@ -327,7 +327,7 @@ mod tests {
             Message {
                 role: Role::Assistant,
                 content: moc_protocol::message_content![ContentPart::ToolCall(ToolCall::new(
-                    "parent", "run_code", "{}",
+                    "parent", "execute", "{}",
                 ))],
             },
             None,
