@@ -1,0 +1,31 @@
+# moc 评测用配置示例（参考用）。
+#
+# moc_agent.py 会在任务环境内自动生成等价配置并通过 --config 传入，
+# 本文件不需要手工上传。两个用途：
+#   1. 说明生成配置的确切形状（provider 固定名 eval，key 走 env 引用）
+#   2. 复制一份改好后用 --ak config=<path> 作为额外 --config 覆盖层，
+#      追加 providers 之外的任何 moc 设置（思考等级、压缩、工具限制等）。
+#
+# 生成的实际内容（{base_url}/{model_id}/{api_key_env} 由 --ak/-m/环境变量决定）：
+#
+#   [providers.eval]
+#   api = "openai_chat"
+#   base_url = "{moc_base_url}"
+#   api_key = "env:{api_key_env}"      # 默认 env:MOC_API_KEY
+#   timeout_secs = 1800.0
+#
+#   [providers.eval.models."{model_id}"]
+#   context_window = 262144
+#   max_output_tokens = 32768
+#   reasoning = false
+
+# ---- 覆盖层示例：按需取消注释 ----
+
+# [session]
+# compress = false                # 会话落盘不压缩，便于取证解析
+
+# [tools.todo]
+# enabled = false                 # 关掉 todo 工具的纯对照实验
+
+# [compaction]
+# threshold = { mode = "percent", value = 80 }
