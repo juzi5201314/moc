@@ -62,7 +62,9 @@ deny_write_paths = []
 - `supports_prompt_cache_key = false`：Chat/Responses 请求不发送缓存键及相关缓存选项，适用于拒绝扩展字段的上游；不关闭 Anthropic 的消息缓存断点。默认 `true`。
 - `requires_reasoning_content_for_all_assistant_turns = true`：回传所有 assistant 思维链，并为缺失的历史补显式空块；不只针对工具调用。默认 `false`。
 - `requires_reasoning_content_for_tool_calls` 与 `requires_assistant_content_for_tool_calls`：分别补齐工具调用历史中的推理字段和正文；显式空字符串不会被编码器转换成缺失字段。
-- `instruction_role = "user"`：把规定性指令片段（工具政策、PTC 运行时、仓库规则、技能目录、子代理契约与追加指令）改以 user 角色下发，供对 system 角色遵循度不足的上游使用；默认 `"system"`，行为与不配置完全一致。配套的 `instruction_system`（默认 `["intro", "mcp servers", "environment"]`）列出仍留在 system 消息里的描述性片段，留空表示整条指令都用 user；可用片段名（即正文窗里的标题）：`intro`、`tool policy`、`ptc runtime`、`mcp servers`、`repo rules`、`skills`、`plugins`、`subagent`、`environment`、`append`，拼错会在配置加载期报错。分组只改变消息边界与角色：片段正文、顺序与 token 占用不变，Anthropic 下 user 组会与首条用户消息合并。
+- `instruction_role = "user"`：把规定性指令片段（输出格式、工具政策、PTC 运行时、仓库规则、技能目录、子代理契约与追加指令）改以 user 角色下发，供对 system 角色遵循度不足的上游使用；默认 `"system"`，行为与不配置完全一致。配套的 `instruction_system`（默认 `["intro", "tool declarations", "mcp servers", "environment"]`）列出仍留在 system 消息里的描述性片段，留空表示整条指令都用 user；可用片段名（即正文窗里的标题）：`intro`、`output format`、`tool policy`、`ptc runtime`、`fusion`、`tool declarations`、`mcp servers`、`repo rules`、`skills`、`plugins`、`subagent`、`environment`、`append`，拼错会在配置加载期报错。分组只改变消息边界与角色：片段正文与组内顺序不变，Anthropic 下 user 组会与首条用户消息合并。
+
+`intro` 只包含默认或自定义身份；全局 Mermaid/SVG 渲染约定独立放在静态片段 `output format`，主会话和旁路问答共用，不受身份覆写影响。约定保留完整主题调色板与 SVG 内容限制；`var(--NAME)` 中的 `NAME` 从列出的名称中选择。默认以 system 角色发送；配置 `instruction_role = "user"` 时随其他规定性指令进入 user，如需仍留在 system，应将 `output format` 加入 `instruction_system`。
 
 供应商的 `connect_timeout_secs` 只限制 DNS/TCP/TLS 建连，默认 20 秒。`timeout_secs` 默认不设置，不限制首包等待或流式空闲；仅用户显式设置时才限制非流式整请求以及流式首包等待和后续空闲。
 
@@ -177,7 +179,7 @@ PTC Host 入口已编译进 `moc`，首次 `run_code` 时将当前 `moc` 作为�
 
 上下文计量优先使用最近一次上游完整 input/output usage 作为精确锚点，仅对锚点后的新消息本地估算；同时以当前完整会话、系统提示和工具定义的本地估算作为安全下限。图片按固定视觉 token 估算，不把 Base64 当作文本。压缩改变历史后会清除旧锚点并重新估算。上下文详情按 `system`、`AGENTS.md (p+g)`、`skills`、`tools`、`messages` 展示占用分解，插件贡献提示词时额外显示 `plugins`；供应商 usage 可用时，内部触发使用 provider 锚点与本地估算的较大值。
 
-WebUI 与 TUI 共用 `session/context` 的分类口径：`AGENTS.md (p+g)` 合计项目（project）与全局（global）规则及其导入内容；`tools` 包含工具定义/schema、tool policy、PTC 使用说明、工具声明和系统前缀中的 MCP 服务器目录；`system` 保留身份、环境、自定义系统提示词及代理协作指令。`skills` 统计常驻技能目录，`plugins` 只统计插件贡献的提示词；会话历史、工具调用与结果、按需加载的技能正文，以及执行过程中注入的运行时提醒（含 PTC MCP 工具索引）都归 `messages`。分类只改变占用展示，不改变模型收到的提示词或上下文总量。
+WebUI 与 TUI 共用 `session/context` 的分类口径：`AGENTS.md (p+g)` 合计项目（project）与全局（global）规则及其导入内容；`tools` 包含工具定义/schema、tool policy、PTC 使用说明、工具声明和系统前缀中的 MCP 服务器目录；`system` 保留身份、输出格式、环境、自定义系统提示词及代理协作指令。`skills` 统计常驻技能目录，`plugins` 只统计插件贡献的提示词；会话历史、工具调用与结果、按需加载的技能正文，以及执行过程中注入的运行时提醒（含 PTC MCP 工具索引）都归 `messages`。分类只改变占用展示，不改变模型收到的提示词或上下文总量。
 
 `session/context_content` 将同一快照的用量与来源分类一起返回；`session/context_read` 只读取指定分类的目录或单条正文，不暴露请求 JSON 树，也不通过父节点拼接全文。所有工具结果及手动 Bash 输出不可读取；用户输入超过 2,000 个 Unicode 字符或 80 行时整条正文不可读取。隐藏项只保留来源、原因与用量，正文不进入查看器的内存／临时文件缓存；原模型请求与统计保持不变。来源由日志元数据标记，不由用户正文或界面显示名称推断。可见长正文按 UTF-8 边界分页，连接级快照的过期、关闭与隔离规则不变。
 

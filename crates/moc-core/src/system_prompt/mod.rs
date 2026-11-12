@@ -33,9 +33,8 @@ use crate::config::ResolvedSandboxConfig;
 use crate::config::model::ResolvedModel;
 
 const DEFAULT_INTRO: &str = "You are a precise software-engineering agent working in the user's local workspace through tools.";
-/// 回复里的图怎么写。自定义身份会换掉 [`DEFAULT_INTRO`]，这句仍接在后面：
-/// 终端和网页都按这个契约渲染，换身份不该把图画不出来。
-const VISUAL_GUIDE: &str = "Use a ```mermaid fence for flow, sequence, state, or dependencies, and a ```svg fence for a layout, mockup, or geometry mermaid cannot draw; both render inline, so do not restate the figure. In SVG use only currentColor and var(--fg), var(--muted), var(--border), var(--surface), var(--accent), var(--success), var(--warning), var(--error); no background, scripts, animation, foreignObject, or external hrefs.";
+/// 全局渲染契约独立于身份；主会话与旁路问答共用，自定义身份不覆盖它。
+const VISUAL_GUIDE: &str = "Use inline ```mermaid for flows/sequences/states/dependencies; ```svg for layouts/mockups/geometry Mermaid cannot express. Don't repeat diagrams in prose.\nSVG: colors only currentColor or var(--NAME), NAME=fg/muted/border/surface/accent/success/warning/error; no background/scripts/animation/foreignObject/external hrefs.";
 // 跨工具纪律只写在这里；单个工具的用法写在各自的 description，这里不重复。
 const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored changes, write for new or complete files, and bash only when a shell is required.";
 const TOOL_POLICY_BUILTIN: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files.";
@@ -82,6 +81,7 @@ Do not use `spawn_agent` subagents unless the user asks for them.
 
 /// 提示片段名。上下文正文窗用它作标题，模型配置用它指定片段归哪个角色。
 pub const PIECE_INTRO: &str = "intro";
+pub const PIECE_OUTPUT_FORMAT: &str = "output format";
 pub const PIECE_TOOL_POLICY: &str = "tool policy";
 pub const PIECE_PTC_RUNTIME: &str = "ptc runtime";
 pub const PIECE_FUSION: &str = "fusion";
@@ -94,8 +94,9 @@ pub const PIECE_SUBAGENT: &str = "subagent";
 pub const PIECE_ENVIRONMENT: &str = "environment";
 pub const PIECE_APPEND: &str = "append";
 /// 全部片段名，配置校验和角色分组都以此为准。
-pub const PIECE_NAMES: [&str; 12] = [
+pub const PIECE_NAMES: [&str; 13] = [
     PIECE_INTRO,
+    PIECE_OUTPUT_FORMAT,
     PIECE_TOOL_POLICY,
     PIECE_PTC_RUNTIME,
     PIECE_FUSION,
@@ -227,6 +228,7 @@ pub fn pieces(
 ) -> Vec<PromptPiece> {
     let mut sections = Vec::new();
     sections.push(intro_piece(config));
+    sections.push(output_format_piece());
     let prefer_builtin = config.tools.bash.prefer_builtin;
     let mut tool_policy = String::with_capacity(
         TOOL_POLICY.len()
@@ -322,14 +324,14 @@ pub fn pieces(
     sections
 }
 
-/// 旁路只复用身份、仓库规则、环境和追加指令，不发现技能或启动工具宿主。
+/// 旁路只复用身份、输出格式、仓库规则、环境和追加指令，不发现技能或启动工具宿主。
 pub(crate) fn build_btw(
     config: &ResolvedConfig,
     model: &ResolvedModel,
     cwd: &Path,
     context_files: &[context_files::ContextFile],
 ) -> SystemPrompt {
-    let mut pieces = vec![intro_piece(config)];
+    let mut pieces = vec![intro_piece(config), output_format_piece()];
     pieces.extend(repo_rules_piece(context_files));
     pieces.push(environment_piece(config, model, cwd));
     pieces.extend(append_piece(config));
@@ -353,7 +355,16 @@ fn intro_piece(config: &ResolvedConfig) -> PromptPiece {
         title: "system",
         name: PIECE_INTRO,
         scope: PieceScope::Static,
-        text: format!("{identity}\n\n{VISUAL_GUIDE}"),
+        text: identity.to_owned(),
+    }
+}
+
+fn output_format_piece() -> PromptPiece {
+    PromptPiece {
+        title: "system",
+        name: PIECE_OUTPUT_FORMAT,
+        scope: PieceScope::Static,
+        text: VISUAL_GUIDE.to_owned(),
     }
 }
 
@@ -608,11 +619,12 @@ mod tests {
         assert_eq!(prompt.messages.len(), 2);
         assert_eq!(prompt.messages[0].role, Role::System);
         assert_eq!(prompt.messages[1].role, Role::User);
-        assert_eq!(prompt.static_prefix, [1, 0]);
+        assert_eq!(prompt.static_prefix, [1, 1]);
         let system = prompt.messages[0].instruction_text();
         let user = prompt.messages[1].instruction_text();
         assert!(system.starts_with("Custom identity."));
-        assert!(system.contains(VISUAL_GUIDE));
+        assert!(!system.contains(VISUAL_GUIDE));
+        assert!(user.contains(VISUAL_GUIDE));
         assert!(system.contains("<env>"));
         assert!(user.contains("Keep the local rule."));
         assert!(user.contains("Keep the appendix."));
@@ -659,20 +671,16 @@ mod tests {
         assert!(text.contains("model: p/model"));
         assert!(text.contains("<mcp-servers>"));
         assert!(!text.contains("Current mode:"));
-        // 默认配置下所有片段都在 system：只有一条消息，前三块是静态前缀。
+        // 默认配置下所有片段都在 system；项目内容不能进入静态缓存前缀。
         assert_eq!(prompt.messages.len(), 1);
         assert_eq!(prompt.messages[0].role, Role::System);
-        assert_eq!(prompt.static_prefix, vec![3]);
+        assert_eq!(prompt.static_prefix, vec![4]);
         let blocks = blocks(&prompt);
-        assert!(blocks[0].starts_with(DEFAULT_INTRO));
-        assert!(blocks[1].starts_with(TOOL_POLICY));
-        assert!(blocks[2].contains("run_code"));
-        assert!(blocks[3].starts_with("<mcp-servers>"));
-        assert!(blocks[4].starts_with("<repo-rules>\n"));
+        assert_eq!(blocks[0], DEFAULT_INTRO);
         assert!(
-            !blocks[..3]
+            blocks[..prompt.static_prefix[0]]
                 .iter()
-                .any(|block| block.contains(&cwd.display().to_string()))
+                .all(|block| !block.contains(&cwd.display().to_string()))
         );
     }
 
@@ -701,7 +709,7 @@ mod tests {
             blocks.last().map(String::as_str),
             Some("Always answer in Chinese.")
         );
-        assert_eq!(prompt.static_prefix, vec![3]);
+        assert!(prompt.static_prefix[0] < blocks.len());
     }
 
     /// 工具声明只在调用方渲染出来时注入：紧随 ptc runtime 之后，且不进静态前缀
@@ -725,16 +733,12 @@ mod tests {
             None,
         );
         let blocks = blocks(&prompt);
-        assert!(blocks[2].contains("run_code"), "ptc runtime 在声明之前");
-        assert!(
-            blocks[3].starts_with("<tool-declarations>"),
-            "声明片段紧随 ptc runtime：{blocks:?}"
-        );
-        assert_eq!(
-            prompt.static_prefix,
-            vec![3],
-            "声明是 Project 作用域，不得进静态前缀"
-        );
+        let declarations = blocks
+            .iter()
+            .position(|block| block.starts_with("<tool-declarations>"))
+            .expect("工具声明片段");
+        assert!(blocks[declarations - 1].contains("run_code"));
+        assert_eq!(prompt.static_prefix[0], declarations);
     }
 
     /// 指令角色设为 user 时，规定性片段改用 user 消息，描述性片段留在 system；
@@ -765,7 +769,7 @@ mod tests {
         assert_eq!(prompt.messages.len(), 2);
         assert_eq!(prompt.messages[0].role, Role::System);
         assert_eq!(prompt.messages[1].role, Role::User);
-        assert_eq!(prompt.static_prefix, vec![1, 2]);
+        assert_eq!(prompt.static_prefix, vec![1, 3]);
         let system = prompt.messages[0].text();
         assert!(system.starts_with(DEFAULT_INTRO));
         assert!(system.contains("<mcp-servers>"));
@@ -773,7 +777,9 @@ mod tests {
         assert!(system.contains("shell: "), "环境块必须声明实际 shell");
         assert!(!system.contains(TOOL_POLICY), "工具政策不得留在 system 组");
         let user = prompt.messages[1].text();
-        assert!(user.starts_with(TOOL_POLICY));
+        assert!(!system.contains(VISUAL_GUIDE));
+        assert!(user.contains(VISUAL_GUIDE));
+        assert!(user.contains(TOOL_POLICY));
         assert!(user.contains("structuredContent"));
         assert!(user.contains(REPO_RULES_INTRO));
         assert!(user.contains("Follow local rule."));

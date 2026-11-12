@@ -2674,9 +2674,17 @@ async fn anthropic_requests_put_cache_breakpoints_on_static_prefix_and_stable_ta
         .filter(|(_, block)| block.get("cache_control").is_some())
         .map(|(index, _)| index)
         .collect();
+    let ptc = system
+        .iter()
+        .position(|block| {
+            block["text"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("run_code evaluates"))
+        })
+        .expect("PTC 静态片段");
     assert_eq!(
         cached,
-        vec![2, system.len() - 1],
+        vec![ptc, system.len() - 1],
         "断点应落在静态前缀末块与系统边界块：{system:?}"
     );
     assert!(
@@ -2684,13 +2692,6 @@ async fn anthropic_requests_put_cache_breakpoints_on_static_prefix_and_stable_ta
             .as_str()
             .expect("首块文本")
             .starts_with("You are a precise software-engineering agent"),
-        "{system:?}"
-    );
-    assert!(
-        system[2]["text"]
-            .as_str()
-            .expect("静态末块")
-            .contains("run_code"),
         "{system:?}"
     );
     assert!(
@@ -2785,7 +2786,7 @@ async fn user_role_instructions_ride_in_a_user_message_with_their_own_breakpoint
         "系统边界断点仍落在顶层 system 的末块上：{system:?}"
     );
 
-    // 首条 user 消息承载工具政策与 PTC 运行时，静态前缀断点落在 PTC 块上；本轮的真实
+    // 首条 user 消息承载输出格式、工具政策与 PTC 运行时，静态前缀断点落在 PTC 块上；本轮的真实
     // 用户消息与它合并成同一条线上消息，并带走尾部断点。
     let messages = body["messages"].as_array().expect("线上消息");
     assert_eq!(messages.len(), 1, "{messages:?}");
@@ -2795,15 +2796,12 @@ async fn user_role_instructions_ride_in_a_user_message_with_their_own_breakpoint
         .iter()
         .map(|block| block["text"].as_str().expect("文本块"))
         .collect();
-    let policy = texts[0];
+    let ptc = texts
+        .iter()
+        .position(|text| text.starts_with("run_code evaluates"))
+        .expect("PTC 静态片段");
     assert!(
-        policy.starts_with("Use read for files and directories"),
-        "{policy}"
-    );
-    assert!(policy.contains("Do not use bash"), "{policy}");
-    assert!(texts[1].contains("run_code"), "{texts:?}");
-    assert!(
-        content[1].get("cache_control").is_some(),
+        content[ptc].get("cache_control").is_some(),
         "user 组静态前缀断点落在 PTC 块上：{content:?}"
     );
     let task = texts
