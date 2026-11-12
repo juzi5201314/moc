@@ -81,18 +81,6 @@ async fn commit_outcome(
     commit_prepared(inner, ctx, call, outcome, duration_ms, observation).await
 }
 
-/// 工具执行本身失败（例如未注册）时也留下配对结果，错误文本进入模型可见内容。
-async fn commit_failure(
-    inner: &CoreInner,
-    ctx: &ToolCtx,
-    call: &moc_llm::ToolCall,
-    error: CoreError,
-    duration_ms: u64,
-) -> Result<CommittedTool, CoreError> {
-    let outcome = ToolOutcome::failure("E_TOOL", error.to_string());
-    commit_outcome(inner, ctx, call, outcome, duration_ms).await
-}
-
 async fn commit_prepared(
     inner: &CoreInner,
     ctx: &ToolCtx,
@@ -223,34 +211,11 @@ pub(super) async fn execute_tool_batch(
     let mut stop_reason = None;
 
     'calls: for (index, call) in calls.iter().enumerate() {
-        if call.name.starts_with("mcp__") {
-            let outcome = ToolOutcome::failure("E_MODE", "Call MCP tools through execute");
-            slots[index] = Some(
-                commit_outcome(inner, tool_ctx, call, outcome, 0)
-                    .await
-                    .map_err(to_rpc)?,
-            );
-            continue;
-        }
-        let selected = inner.tools.get(&call.name).or_else(|| {
-            tool_ctx
-                .catalog
-                .get(&call.name)
-                .filter(|tool| tool.origin() == crate::tools::ToolOrigin::Plugin)
-        });
-        let Some(tool) = selected else {
-            let error = CoreError::Tool(format!(
-                "E_TOOL_NOT_FOUND: tool `{}` is not registered",
-                call.name
-            ));
-            slots[index] = Some(
-                commit_failure(inner, tool_ctx, call, error, 0)
-                    .await
-                    .map_err(to_rpc)?,
-            );
-            continue;
-        };
-        let parallel = tool.parallel_safe();
+        // 调度只查询并行性；工具解析、入口限制与执行许可统一由 execute_tool 判定。
+        let parallel = tool_ctx
+            .catalog
+            .get(&call.name)
+            .is_some_and(|tool| tool.parallel_safe());
 
         if !parallel {
             while let Some((done, committed)) = pending.next().await {
@@ -448,9 +413,9 @@ pub(super) async fn execute_tool_batch(
 }
 /// prefer_builtin 建议对应的内置工具在当前上下文是否可用：已注册、引擎/模式
 /// 允许、且未被 preset 策略禁用。
-fn builtin_available(inner: &CoreInner, ctx: &ToolCtx, name: &str) -> bool {
-    inner.tools.get(name).is_some_and(|tool| {
-        tool.permitted_in(ctx.engine, ctx.mode)
+fn builtin_available(ctx: &ToolCtx, name: &str) -> bool {
+    ctx.catalog.get(name).is_some_and(|tool| {
+        tool.permitted_in(ctx.execution_engine(), ctx.mode)
             && ctx
                 .tool_policy
                 .as_ref()
@@ -477,17 +442,8 @@ async fn execute_tool(
             "Call MCP tools through execute",
         ));
     }
-    // 插件工具活在本次提示的工具目录里（和 MCP 工具一样按提示快照），不进内置注册表。
-    let selected = if ctx.nested {
-        ctx.catalog.get(name)
-    } else {
-        inner.tools.get(name).or_else(|| {
-            ctx.catalog
-                .get(name)
-                .filter(|tool| tool.origin() == crate::tools::ToolOrigin::Plugin)
-        })
-    };
-    let Some(tool) = selected else {
+    // 原生、execute 子调用与插件内部回调共享本轮工具快照。
+    let Some(tool) = ctx.catalog.get(name) else {
         return Ok(ToolOutcome::failure(
             "E_TOOL_NOT_FOUND",
             format!("tool `{name}` is not registered"),
@@ -516,7 +472,7 @@ async fn execute_tool(
             "yield is available only to subagents",
         ));
     }
-    if !tool.permitted_in(ctx.engine, ctx.mode) {
+    if !tool.permitted_in(ctx.execution_engine(), ctx.mode) {
         return Ok(ToolOutcome::failure(
             "E_MODE",
             "This tool is not allowed in the current mode",
@@ -548,8 +504,8 @@ async fn execute_tool(
             ));
         }
     };
-    // 插件钩子先于一切本地检查：改写后的参数才是沙盒、规则和工具真正看到的那份。
-    // 模型直调及模型经 PTC 发起的延迟能力保留目标工具钩子；插件内部调用不重入。
+    // 模型发起的原生和 execute 子调用都应用目标工具钩子；插件内部回调不重入。
+    // 改写后的参数才是沙盒、规则和工具真正看到的那份。
     if hooks
         && !ctx.plugins.is_empty()
         && let Some(denied) = plugin_before_tool_call(ctx, name, &mut args).await
@@ -599,7 +555,7 @@ async fn execute_tool(
             && verdict
                 .suggestions
                 .iter()
-                .all(|suggestion| builtin_available(inner, ctx, suggestion.tool))
+                .all(|suggestion| builtin_available(ctx, suggestion.tool))
         {
             return Ok(ToolOutcome::failure(
                 "E_PREFER_BUILTIN",
@@ -706,7 +662,7 @@ async fn execute_tool(
     }
 }
 
-/// 执行 PTC 脚本发起的子工具调用：沿用当前提示的权限，结果不写入模型消息。
+/// 执行 execute 或插件内部发起的子调用；模型发起的调用保留完整工具钩子。
 pub(crate) async fn execute_nested_tool(
     inner: &CoreInner,
     ctx: &ToolCtx,
@@ -719,24 +675,12 @@ pub(crate) async fn execute_nested_tool(
             "Nested execute calls are not allowed",
         ));
     }
-    // 插件工具不是 PTC 的扩展面：插件已经能直接调宿主只读工具，再开放会绕开钩子与模式限制。
-    if ctx.plugins.owns_tool(&call.name) {
-        return Ok(ToolOutcome::failure(
-            "E_PLUGIN_RECURSION",
-            "Plugin tools cannot be called from execute or from another plugin",
-        ));
-    }
     let mut nested = ctx.clone();
     nested.nested = true;
     nested.call_grants = crate::sandbox::SandboxGrants::default();
     // 一次性的 bash 升级只属于那次调用，不能泄漏给 PTC 嵌套工具。
     nested.permission = ctx.state.lock().await.permission;
-    // PTC 的嵌套调用按 Standard 引擎判定可达面，模式照常生效（如 PTC+plan 只读）。
-    if nested.engine == moc_protocol::SessionEngine::Ptc {
-        nested.engine = moc_protocol::SessionEngine::Standard;
-    }
-    let hooks = from_model && crate::tools::documentation::deferred(&call.name);
-    execute_tool(inner, &nested, call, hooks).await
+    execute_tool(inner, &nested, call, from_model).await
 }
 
 /// 调用全部插件的 `beforeToolCall`；拒绝时返回原因，允许时就地改写参数。

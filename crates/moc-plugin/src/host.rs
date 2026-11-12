@@ -587,13 +587,6 @@ impl PluginHost {
             .collect()
     }
 
-    /// 工具是否属于某个可用插件。
-    pub fn owns_tool(&self, name: &str) -> bool {
-        self.tools
-            .get(name)
-            .is_some_and(|(index, _)| self.plugins[*index].alive())
-    }
-
     /// 插件命令：`(插件名, 声明)`，按命令名升序。
     pub fn commands(&self) -> Vec<(String, CommandDecl)> {
         self.commands
@@ -1741,7 +1734,6 @@ mod tests {
         assert_eq!(host.info()[0].error, None);
         assert_eq!(host.tools().len(), 1);
         assert_eq!(host.commands()[0].1.name, "demo");
-        assert!(host.owns_tool("hello"));
 
         let result = host
             .call_tool(

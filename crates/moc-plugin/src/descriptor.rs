@@ -8,7 +8,7 @@ use serde_json::Value;
 /// 插件工具可见的执行模式集合。
 ///
 /// 固定三个标志，用 `u8` 位图即可，不为每个工具分配 `Vec`。这里没有引擎维度：
-/// PTC 引擎下模型只能看到 `execute`，插件工具也会被宿主以 `E_PLUGIN_RECURSION` 拒绝。
+/// PTC 引擎通过 `execute` 调用插件工具，执行模式许可与原生调用一致。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModeMask(u8);
 

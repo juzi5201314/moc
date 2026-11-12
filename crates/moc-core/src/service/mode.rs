@@ -727,6 +727,14 @@ pub fn allowed_tools(engine: SessionEngine) -> &'static [&'static str] {
     }
 }
 
+/// 代码调用的能力面与原生 Standard 一致；只映射权限判定，不改写真实会话引擎。
+pub(crate) fn nested_engine(engine: SessionEngine) -> SessionEngine {
+    match engine {
+        SessionEngine::Ptc => SessionEngine::Standard,
+        engine => engine,
+    }
+}
+
 /// 当前引擎 + 模式是否允许执行该工具。
 ///
 /// 两层判定：可达面归引擎（内置工具必须在引擎白名单里；MCP/插件等非内置工具在

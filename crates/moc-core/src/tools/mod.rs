@@ -175,7 +175,7 @@ pub struct ToolCtx {
     pub sessions: Arc<SessionTable>,
     pub(crate) core: Arc<crate::service::CoreInner>,
     pub catalog: Arc<catalog::ToolCatalog>,
-    /// 会话引擎：决定工具可达面（schema 与可调集合）。
+    /// 真实会话引擎：原生入口受它约束，嵌套调用仅在执行许可判定时映射能力面。
     pub engine: SessionEngine,
     /// 本次提示的执行模式（plan 模式 / ask 单次模式）：只收紧执行许可。
     pub mode: crate::service::mode::Mode,
@@ -216,6 +216,14 @@ pub struct ToolCtx {
     pub(crate) sandbox_scratch: Option<Arc<SandboxScratch>>,
 }
 impl ToolCtx {
+    pub(crate) fn execution_engine(&self) -> SessionEngine {
+        if self.nested {
+            crate::service::mode::nested_engine(self.engine)
+        } else {
+            self.engine
+        }
+    }
+
     /// 用当前会话模式、配置、会话授权与本次调用授权构造沙盒策略。
     pub(crate) fn sandbox_policy(&self) -> SandboxPolicy {
         let session = self.sandbox_grants.read();

@@ -150,6 +150,8 @@ Explorer 沿用工具拒绝列表：禁用 `edit`、`write`、`spawn_agent`、`s
 
 `execute` 是共享的工具调用与结果处理入口，不是 PTC 引擎专属能力：标准引擎可直接调用核心工具，也可通过它编排调用；PTC 引擎要求所有工具调用都经过它。`tool://execute` 提供组合调用、MCP 发现和命名状态说明，系统提示中的共享运行时片段名为 `execution runtime`。工具改名不改变 `[tools.ptc]` 配置、worker 协议或执行权限。
 
+原生调用、`execute` 子调用和插件内部回调统一从本轮 `ToolCatalog` 解析工具，再走同一执行许可、授权与沙盒路径。`execute` 的目录包含获准的内置、skill、MCP 和插件工具，只排除自身；模型发起的子调用与原生调用一样应用目标工具的前后钩子。PTC 仍只暴露 `execute` 原生入口，MCP 仍经代码调用；这些入口限制不另建一套工具实现。插件内部回调保留只读白名单且不重入钩子。
+
 脚本工具结果固定为 `{content, summary, structuredContent, isError, status, artifact}`；结构化 MCP 数据保留原始 JSON，文本预算只影响模型展示。失败会 reject 带 `code`、`message`、`result` 的错误。`state.store/load/remove/keys` 提供会话级 JSON 状态，每次成功写入立即追加到 JSONL，重启和回退按日志重建，普通 JavaScript 全局变量不会跨次保留。
 
 PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`、`max_result_bytes`、`max_pending_calls`、`max_total_calls`、`max_concurrent_calls`、`max_concurrent_runs`、`host_idle_timeout_secs`、`max_state_bytes` 以及默认/最大超时。写工具和需要授权的调用是并发屏障；脚本返回前必须等待所有调用。同步 JS 循环由 QuickJS interrupt watchdog 中断，Core deadline 覆盖完整工具等待；取消若超过宽限期无响应会重启整个 Host，并让所有活跃 execution 收到 `E_PTC_WORKER`。worker 不提供文件、网络、进程、模块加载或定时器 API，工作区修改仍由宿主工具的现有授权与事务策略控制。
@@ -160,9 +162,9 @@ PTC Host 入口已编译进 `moc`，首次 `execute` 时将当前 `moc` 作为�
 
 插件是本地目录里的 JavaScript（ES 模块），在 core 进程内用 QuickJS 执行（每个插件一个专用线程与 Runtime，与 PTC 的独立 worker 不同）。发现来源按优先级为项目 `.moc/plugins`（cwd 向上到 git root）、`[plugins] dirs`、`$MOC_HOME/plugins`；**发现即启用**，因此项目级来源等于信任该仓库，`[plugins] project=false` 或 `disable` 是退出口。完整契约见 [docs/plugins.md](../../docs/plugins.md)，类型声明在 `crates/moc-plugin/js/moc.d.ts`。
 
-插件可注册四类能力：工具（`modes` 取 `default`/`ask`/`plan`，默认三种全开；`parallel` 默认 `false` 作为批次屏障）、斜杠命令、工具钩子与提示词贡献。插件工具按声明的 `modes` 决定原生可见性（`default` 覆盖 CLM 实验引擎，PTC 不放行）；`execute` 的工具目录不列出插件工具，`execute` 与插件内部都不能调用插件工具（`E_PLUGIN_RECURSION`）。
+插件可注册四类能力：工具（`modes` 取 `default`/`ask`/`plan`，默认三种全开；`parallel` 默认 `false` 作为批次屏障）、斜杠命令、工具钩子与提示词贡献。插件工具按声明的 `modes` 决定执行许可，各引擎一致；Standard/CLM 可原生调用，PTC 经 `execute` 调用。`execute` 支持插件发现与执行，但插件内部的 `tools.call` 仍不能调用插件工具。
 
-`beforeToolCall` 只对模型发起的调用生效，返回值可 `deny`（模型收到 `E_PLUGIN_DENIED`）或改写 `arguments`；改写发生在沙盒判定、bash 规则与授权之前，多个插件按加载顺序串联。`afterToolCall` 是观察型，失败只记日志。钩子自身抛错或超时按 fail-open 处理，不会阻断工具执行。
+`beforeToolCall` 对模型发起的原生和 `execute` 子调用生效，返回值可 `deny`（模型收到 `E_PLUGIN_DENIED`）或改写 `arguments`；改写发生在沙盒判定、bash 规则与授权之前，多个插件按加载顺序串联。`afterToolCall` 可改写结果正文与结构化内容，归档、落库、回灌模型与前端展示使用同一结果。插件内部回调不重入这些钩子。钩子自身抛错或超时按 fail-open 处理，不会阻断工具执行。
 
 插件提示词汇总进系统提示的 `plugins` 片段（`PIECE_PLUGINS`），按插件名排序拼接并受 `[plugins] max_prompt_chars` 限制；该片段每轮重建，不属于稳定前缀。`moc.tools.call()` 是插件获得文件/搜索能力的唯一通道，只放行 `read`、`grep`、`find`、`web_search`、`web_fetch`。
 

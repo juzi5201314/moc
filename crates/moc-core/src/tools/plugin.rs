@@ -57,8 +57,8 @@ impl Tool for PluginTool {
         ToolOrigin::Plugin
     }
 
-    /// 引擎工具面：插件工具只在 Standard/CLM 引擎的面里（PTC 不开放），模式掩码不在
-    /// 这一层判定——模式切换不能重写 schema。
+    /// 插件原生声明仅在 Standard/CLM 下暴露；PTC 通过 execute 调用同一插件工具。
+    /// 模式掩码不在这一层判定——模式切换不能重写 schema。
     fn declared_in(&self, engine: SessionEngine) -> bool {
         matches!(
             engine,

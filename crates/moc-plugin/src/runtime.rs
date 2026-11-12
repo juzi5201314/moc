@@ -705,7 +705,7 @@ fn optional_bool<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result
 }
 
 /// 可选 `modes`：缺失时三种模式全开；存在时必须是 `default`/`ask`/`plan`
-/// 的非空字符串数组。没有引擎维度：PTC 只暴露 `execute`，插件工具在那里不可达。
+/// 的非空字符串数组。没有引擎维度：原生和 execute 调用共用同一模式许可。
 fn optional_modes<'js>(ctx: &Ctx<'js>, object: &Object<'js>, owner: &str) -> Result<ModeMask> {
     let value: JsValue = object.get("modes").map_err(|error| js_error(ctx, error))?;
     if value.is_undefined() {

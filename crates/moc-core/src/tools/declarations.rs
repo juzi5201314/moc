@@ -39,13 +39,7 @@ pub fn render_signatures(
     ];
     let mut builtins = 0usize;
     // 声明渲染引擎面：模式只拦执行，不改写这段签名（系统前缀因此跨模式稳定）。
-    for tool in catalog.visible(
-        engine,
-        crate::service::mode::Mode::Default,
-        ask_supported,
-        workflows_active,
-        config,
-    ) {
+    for tool in catalog.declared(engine, ask_supported, workflows_active, config) {
         if tool.origin() == ToolOrigin::Mcp || catalog.scope.defers(tool.name()) {
             continue;
         }

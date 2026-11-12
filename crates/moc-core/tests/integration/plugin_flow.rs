@@ -138,9 +138,14 @@ async fn plugin_tool_runs_and_its_prompt_reaches_the_model() {
 /// plan 模式下 `default_only` 仍被声明、调用时被 E_MODE 拒绝。
 #[tokio::test]
 async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
-    let upstream = MockServer::builder().start().await;
-    Mock::given(method("POST"))
-        .respond_with(|request: &wiremock::Request| {
+    for (engine, nested) in [
+        (SessionEngine::Standard, false),
+        (SessionEngine::Standard, true),
+        (SessionEngine::Ptc, true),
+    ] {
+        let upstream = MockServer::builder().start().await;
+        Mock::given(method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).expect("请求体是 JSON");
             let has_result = body["messages"]
                 .as_array()
@@ -148,22 +153,27 @@ async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
             if has_result {
                 ResponseTemplate::new(200).set_body_raw(text_stream("完成"), "text/event-stream")
             } else {
-                ResponseTemplate::new(200).set_body_raw(
-                    tool_stream(vec![
+                let calls = if nested {
+                    vec![("nested", "execute", json!({
+                        "description": "核对嵌套插件的模式限制",
+                        "code": "let denied; try { await tools.default_only({}); } catch(e) { denied=e.code; } const result=await tools.everywhere({}); return {denied,content:result.content};"
+                    }))]
+                } else {
+                    vec![
                         ("hidden", "default_only", json!({})),
                         ("visible", "everywhere", json!({})),
-                    ]),
-                    "text/event-stream",
-                )
+                    ]
+                };
+                ResponseTemplate::new(200).set_body_raw(tool_stream(calls), "text/event-stream")
             }
         })
         .mount(&upstream)
         .await;
-    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
-    install_plugin(
-        &harness,
-        "demo",
-        r#"
+        let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+        install_plugin(
+            &harness,
+            "demo",
+            r#"
         export default {
           tools: {
             default_only: {
@@ -180,52 +190,57 @@ async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
           }
         };
         "#,
-    );
-    let session = harness.session_plan(SessionEngine::Standard).await;
-    harness.prompt(&session, "先给计划").await;
+        );
+        let session = harness.session_plan(engine).await;
+        harness.prompt(&session, "先给计划").await;
 
-    let requests = upstream.received_requests().await.expect("请求记录");
-    let first: Value = serde_json::from_slice(&requests[0].body).expect("请求体是 JSON");
-    let names: Vec<&str> = first["tools"]
-        .as_array()
-        .expect("请求带工具")
-        .iter()
-        .filter_map(|tool| tool["function"]["name"].as_str())
-        .collect();
-    assert!(
-        names.contains(&"default_only"),
-        "模式不裁剪工具表，default_only 仍在声明面：{names:?}"
-    );
-    assert!(
-        names.contains(&"everywhere"),
-        "默认全开的插件工具应可见：{names:?}"
-    );
-    let results = load(&harness, &session).await;
-    assert!(
-        results.iter().any(|text| text.contains("E_MODE")),
-        "{results:?}"
-    );
-    assert!(
-        !results
+        let requests = upstream.received_requests().await.expect("请求记录");
+        let first: Value = serde_json::from_slice(&requests[0].body).expect("请求体是 JSON");
+        let names: Vec<&str> = first["tools"]
+            .as_array()
+            .expect("请求带工具")
             .iter()
-            .any(|text| text.contains("HIDDEN_PLUGIN_EXECUTED")),
-        "隐藏工具不得执行：{results:?}"
-    );
-    assert!(
-        results
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect();
+        if engine == SessionEngine::Ptc {
+            assert_eq!(names, ["execute"]);
+        } else {
+            assert!(
+                names.contains(&"default_only"),
+                "模式不裁剪声明面：{names:?}"
+            );
+            assert!(
+                names.contains(&"everywhere"),
+                "默认全开的插件工具应可见：{names:?}"
+            );
+        }
+        let results = load(&harness, &session).await;
+        assert!(
+            results.iter().any(|text| text.contains("E_MODE")),
+            "{results:?}"
+        );
+        assert!(
+            !results
+                .iter()
+                .any(|text| text.contains("HIDDEN_PLUGIN_EXECUTED")),
+            "隐藏工具不得执行：{results:?}"
+        );
+        assert!(
+            results
+                .iter()
+                .any(|text| text.contains("VISIBLE_PLUGIN_EXECUTED")),
+            "可见工具应执行：{results:?}"
+        );
+        let plugins = plugin_list(&harness, &session).await;
+        let default_only = plugins[0]
+            .tools
             .iter()
-            .any(|text| text.contains("VISIBLE_PLUGIN_EXECUTED")),
-        "可见工具应执行：{results:?}"
-    );
-    let plugins = plugin_list(&harness, &session).await;
-    let default_only = plugins[0]
-        .tools
-        .iter()
-        .find(|tool| tool.name == "default_only")
-        .unwrap();
-    assert_eq!(default_only.modes, ["default"]);
+            .find(|tool| tool.name == "default_only")
+            .unwrap();
+        assert_eq!(default_only.modes, ["default"]);
 
-    harness.close().await;
+        harness.close().await;
+    }
 }
 
 /// `beforeToolCall` 拒绝后工具的副作用不得发生。

@@ -115,7 +115,7 @@ export interface Session {
   readonly state: Record<string, JsonValue | undefined>;
 }
 
-/** 工具可见的执行模式；`default` 同时覆盖 CLM 实验引擎，PTC 不开放插件工具。 */
+/** 工具可执行的模式；所有引擎共用，PTC 经 `execute` 调用插件工具。 */
 export type ToolMode = "default" | "ask" | "plan";
 
 export interface ToolDefinition {
@@ -132,11 +132,11 @@ export interface ToolDefinition {
     [key: string]: unknown;
   };
   /**
-   * 该工具在哪些执行模式可见；默认 `["default", "ask", "plan"]`。
+   * 该工具在哪些执行模式允许调用；默认 `["default", "ask", "plan"]`。
    *
-   * 只影响模型工具表与调用放行，不授予任何额外能力：插件能做什么仍由
+   * 只影响执行许可与按需发现，不裁剪原生声明或 PTC 常驻签名；插件能做什么仍由
    * `tools.call` 的只读白名单决定。显式值必须是非空模式数组，否则加载失败。
-   * `execute` 不能发现或调用插件工具。
+   * 模型可通过 `execute` 发现并调用获准的插件工具，插件内部回调仍受白名单限制。
    */
   modes?: ToolMode[];
   /** 默认 `false`：作为批次屏障，不与其它工具并发。 */

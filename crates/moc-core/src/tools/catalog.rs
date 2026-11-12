@@ -6,7 +6,7 @@ use moc_mcp::{McpManager, McpSnapshot, ServerStatus};
 use moc_protocol::SessionEngine;
 use serde_json::{Value, json};
 
-use super::{Tier, Tool, ToolError, ToolOrigin, ToolRegistry};
+use super::{Tier, Tool, ToolError, ToolRegistry};
 use crate::{config::ResolvedConfig, service::mode, service::mode::Mode};
 
 /// MCP 服务器文本的信任声明，随服务器列表一起放进系统提示。
@@ -87,9 +87,8 @@ impl ToolCatalog {
         prompt
     }
 
-    /// 目录里当前可调的工具：PTC 引擎下嵌套调用沿用 Standard 引擎面（除 `execute`
-    /// 自身与插件工具），模式再按执行许可收紧；`workflows_active` 为假时 workflow
-    /// 工具一律不可见（零泄漏：与 workflow 模块不存在时产物逐字节一致）。
+    /// 代码调用的工具目录与 Standard 共用能力面，只排除 `execute` 自身。
+    /// 模式、角色和配置照常收紧；未激活的 workflow 工具不可见。
     pub fn visible<'a>(
         &'a self,
         engine: SessionEngine,
@@ -98,18 +97,25 @@ impl ToolCatalog {
         workflows_active: bool,
         config: &'a ResolvedConfig,
     ) -> impl Iterator<Item = &'a Arc<dyn Tool>> + 'a {
-        let engine = if engine == SessionEngine::Ptc {
-            SessionEngine::Standard
-        } else {
-            engine
-        };
+        self.declared(engine, ask_supported, workflows_active, config)
+            .filter(move |tool| tool.permitted_in(mode::nested_engine(engine), mode))
+    }
+
+    /// PTC 常驻声明不随 ask/plan 改变；包括只允许特定模式执行的插件。
+    pub(super) fn declared<'a>(
+        &'a self,
+        engine: SessionEngine,
+        ask_supported: bool,
+        workflows_active: bool,
+        config: &'a ResolvedConfig,
+    ) -> impl Iterator<Item = &'a Arc<dyn Tool>> + 'a {
+        let engine = mode::nested_engine(engine);
         self.tools.iter().filter(move |tool| {
             self.scope.permits(tool.name())
                 && tool.name() != "execute"
-                && tool.origin() != ToolOrigin::Plugin
                 && (workflows_active
                     || !crate::workflow::runtime::WORKFLOW_TOOLS.contains(&tool.name()))
-                && tool.permitted_in(engine, mode)
+                && tool.declared_in(engine)
                 && mode::tool_enabled(tool.name(), tool.origin(), ask_supported, config)
         })
     }
@@ -296,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_tools_are_not_discoverable_from_execute() {
+    fn plugin_discovery_preserves_mode_permissions_in_every_engine() {
         let root = tempfile::tempdir().expect("临时目录");
         let config = ResolvedConfig::load(&crate::CoreConfig {
             home: root.path().join("home"),
@@ -338,14 +344,28 @@ mod tests {
                 let found = catalog
                     .search(engine, mode, false, &config, "plugin_", None, 0, 20)
                     .expect("目录检索");
-                assert_eq!(found["total"], 0, "{engine:?} {mode:?}: {found}");
-                for index in 0..3 {
+                let expected = match mode {
+                    Mode::Default => [true, true, false],
+                    Mode::Ask => [true, false, false],
+                    Mode::Plan => [true, false, true],
+                };
+                for (index, allowed) in expected.into_iter().enumerate() {
                     let name = format!("plugin_{index}");
-                    assert!(catalog.get(&name).is_some(), "原生调用仍需持有插件工具");
-                    let error = catalog
-                        .describe(engine, mode, false, &config, &name)
-                        .expect_err("execute 不能发现插件工具");
-                    assert_eq!(error.code, "E_TOOL_NOT_FOUND", "{engine:?}");
+                    assert_eq!(
+                        found["items"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|item| item["name"] == name),
+                        allowed,
+                        "目录检索必须遵循 {engine:?} {mode:?} 下的插件许可"
+                    );
+                    let definition = catalog.describe(engine, mode, false, &config, &name);
+                    if allowed {
+                        assert_eq!(definition.expect("允许的插件可发现")["name"], name);
+                    } else {
+                        assert_eq!(definition.unwrap_err().code, "E_TOOL_NOT_FOUND");
+                    }
                 }
                 assert!(
                     catalog

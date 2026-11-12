@@ -140,13 +140,13 @@ export default {
 |---|---|
 | `description` | 必填，非空。会作为工具描述进模型提示，按提示词规范写：只讲这个工具自己的用法。 |
 | `parameters` | 必填，JSON Schema 对象（`type: "object"`）。原样进模型提示；调用时按其中的 `type`、`required`、`properties`、`additionalProperties`、`items`、`enum` 校验参数。 |
-| `modes` | 可选，取值 `default`/`ask`/`plan` 的数组，默认三种全开。取值是会话的执行模式词表（`default` 指无模式限制的常规提示），决定该工具何时允许调用；工具表本身只随引擎变化、不随执行模式裁剪。`default` 同时覆盖 CLM 实验引擎，PTC 不开放插件工具。空数组或未知模式会加载失败。 |
+| `modes` | 可选，取值 `default`/`ask`/`plan` 的数组，默认三种全开。取值是会话的执行模式词表（`default` 指无模式限制的常规提示），决定该工具何时允许调用；原生工具表和 PTC 常驻签名不随执行模式裁剪。所有引擎使用同一模式许可；PTC 通过 `execute` 调用插件工具。空数组或未知模式会加载失败。 |
 | `parallel` | 默认 `false`。为 `true` 时允许与其它只读工具并发，否则整批作为屏障。 |
 | `run(input, ctx)` | 必填。第一个参数是按 schema 校验过的对象（不满足时模型收到 `E_PLUGIN_ARGUMENTS`），第二个是会话快照。 |
 
 工具声明只接受上表中的字段，未知字段会加载失败。`modes` 省略时三种全开，显式传入 `null`、非数组或非字符串元素会加载失败。
 
-`modes` 只约束调用放行，不授予额外能力；插件的宿主能力由 `tools.call` 白名单决定。`execute` 的工具目录不列出插件工具，也不能调用它们。
+`modes` 只约束调用放行，不授予额外能力；插件的宿主能力由 `tools.call` 白名单决定。模型可以通过 `execute` 里的 `catalog.search()` / `catalog.describe()` 发现插件工具，或读取 `tool://<插件工具名>`，再用 `tools.<工具名>(args)` 调用。原生调用和代码调用共享本轮工具目录、执行许可与插件钩子；代码调用仅额外禁止递归调用 `execute` 自身。
 
 工具名全局唯一：与内置工具、MCP 工具（`mcp__` 前缀）、其它插件工具撞名会让该工具被忽略并告警（内置优先）。工具名只允许字母、数字、下划线、连字符。
 
@@ -172,7 +172,7 @@ export default {
 
 钩子按插件加载顺序串联：后一个看到前一个改写后的值。抛异常或超时只停用出错插件并通知，其余插件与核心操作继续。
 
-**模型直发调用会触发工具钩子**。模型经 `execute` 调用按需能力（子代理、联网、目标、workflow）时，实际目标工具也触发 `beforeToolCall` / `afterToolCall`，避免隐藏原生 schema 后绕过原有拒绝、参数改写与结果处理。其他 PTC 子调用仍不触发目标钩子；插件内部的工具调用始终不重入。插件工具仍不能经 PTC 调用。
+**模型直发和经 `execute` 发起的目标工具调用都触发 `beforeToolCall` / `afterToolCall`**，包括内置、skill、MCP 和插件工具；拒绝、参数改写与结果处理不因调用入口改变。插件内部 `tools.call` 是独立的只读能力边界，不重入钩子，也不能调用插件工具或 `execute`。插件及钩子上下文保留真实会话引擎：PTC 默认执行模式下 `ctx.mode` 为 `ptc`，不会因为内部权限判定而变成 `standard`。
 
 **能改变行为的钩子**（只消费下表中的字段；字段类型不对就忽略并告警，不会停用插件）：
 
@@ -238,7 +238,7 @@ export default {
 
 - 只在工具的 `run` 里可用；命令、钩子、`prompt`、`activate` 里调用会抛 `E_PLUGIN_TOOLS_UNAVAILABLE`
 - 只放行白名单里的只读工具：`read`、`grep`、`find`、`web_search`、`web_fetch`；写、shell、`job`、`ask`、`todo`、`execute`、MCP 工具与插件工具一律拒绝
-- 不能调自身或其它插件工具，也不能从 `execute` 里调用插件工具（`E_PLUGIN_RECURSION`）
+- 插件内部不能调自身或其它插件工具，越过白名单返回 `E_PLUGIN_TOOLS_UNAVAILABLE`；这不限制模型经 `execute` 调用插件
 
 ## 插件持久化配置
 
@@ -371,7 +371,6 @@ max_prompt_chars = 4000
 | `E_PLUGIN_ARGUMENTS` | 工具参数不符合 `parameters` 里的 schema |
 | `E_PLUGIN_TOOLS_UNAVAILABLE` | 在不允许的地方调 `tools.call`，或调用了白名单外的工具 |
 | `E_PLUGIN_DENIED` | `beforeToolCall` 拒绝了本次调用 |
-| `E_PLUGIN_RECURSION` | 试图嵌套调用插件工具 |
 
 ## 示例
 

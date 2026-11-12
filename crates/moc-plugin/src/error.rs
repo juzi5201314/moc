@@ -5,7 +5,7 @@
 ///
 /// `E_PLUGIN_DISABLED` 由宿主产生：插件已在本进程内停用后，后续调用统一返回它，
 /// 而不是复读首次失败的原因。
-pub const CODES: [&str; 20] = [
+pub const CODES: [&str; 19] = [
     "E_PLUGIN_CONFIG",
     "E_PLUGIN",
     "E_PLUGIN_LOAD",
@@ -24,7 +24,6 @@ pub const CODES: [&str; 20] = [
     "E_PLUGIN_DENIED",
     "E_PLUGIN_TOOLS_UNAVAILABLE",
     "E_PLUGIN_ARGUMENTS",
-    "E_PLUGIN_RECURSION",
     "E_PLUGIN_DISABLED",
 ];
 
