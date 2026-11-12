@@ -42,6 +42,8 @@ impl Focus {
 
 /// 一次性提示（notice）的存活时长。
 const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+/// 选区复制后的轻量反馈只短暂留在输入框下边框。
+const SELECTION_COPY_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 /// 上游配置不一致告警的存活时长：比 notice 长，避免用户错过静默改写。
 const WARNING_TTL: std::time::Duration = std::time::Duration::from_secs(8);
 /// Ctrl+C 二次确认的动作类型。
@@ -322,6 +324,8 @@ pub struct App {
     pub selection: Option<((u16, u16), (u16, u16))>,
     /// 按下未抬起的位置（区分点击与拖选）。
     pub pending_click: Option<(u16, u16)>,
+    /// 最近一次选区复制的时刻；反馈不占用通知槽位。
+    pub selection_copied_at: Option<std::time::Instant>,
     /// 滚动条拖拽；`Some` 时左键拖动只改滚动偏移，不进入文本选区。
     pub scrollbar_drag: Option<ScrollbackDrag>,
     /// ctrl+c 二次确认状态及触发时刻（3 秒内有效）。
@@ -618,6 +622,7 @@ impl App {
             hover_link: None,
             selection: None,
             pending_click: None,
+            selection_copied_at: None,
             scrollbar_drag: None,
             ctrl_c_pending: None,
             clear_pending: false,
@@ -740,6 +745,11 @@ impl App {
         let at = self.notice_at.filter(|_| self.notice.is_some())?;
         let deadline = at + NOTICE_TTL;
         (std::time::Instant::now() < deadline).then_some(deadline)
+    }
+
+    /// 保留过期的反馈截止时刻直到事件循环消费，避免其他工作延迟后漏掉重绘。
+    pub fn selection_copy_deadline(&self) -> Option<std::time::Instant> {
+        self.selection_copied_at.map(|at| at + SELECTION_COPY_TTL)
     }
 
     /// 检查当前是否存在指定类型且在 3 秒 TTL 内有效的 Ctrl+C 待确认状态。
@@ -1774,6 +1784,9 @@ impl App {
     // ---------- 输入框编辑（委托给 PromptState） ----------
 
     pub fn prompt_changed(&mut self) {
+        self.selection = None;
+        self.pending_click = None;
+        self.selection_copied_at = None;
         self.prompt_revision = self.prompt_revision.wrapping_add(1);
         self.completion = CompletionState::derive(self);
         self.completion_prefix = None;
@@ -2907,6 +2920,18 @@ mod tests {
         assert_eq!(app.session_tokens(), (0, 0));
         app.apply_session_usage(second, usage(9_999, 1_000));
         assert_eq!(app.session_tokens(), (0, 0), "跨会话迟到的回执必须丢弃");
+    }
+
+    /// 过期反馈仍需唤醒循环擦除；消费后不再安排唤醒，避免空转。
+    #[test]
+    fn overdue_selection_copy_keeps_wakeup_until_consumed() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+        app.selection_copied_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+        let deadline = app.selection_copy_deadline().expect("过期反馈仍需擦除");
+        assert!(deadline < std::time::Instant::now());
+        app.selection_copied_at = None;
+        assert!(app.selection_copy_deadline().is_none());
     }
 
     /// 告警与 notice 的 TTL：期内可见且给出未来的截止时刻，过期后两者都消失。

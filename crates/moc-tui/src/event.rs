@@ -981,9 +981,12 @@ async fn event_loop(
         let activity_tick_enabled = app.prompt_running
             || app.compaction_progress.is_some()
             || matches!(app.modal, Some(Modal::Monitor));
-        // notice / warning 显示中：安排 TTL 到点重绘，擦除浮层
+        // 通知、告警与选区复制反馈到期时重绘；选区操作提示本身不计时。
         let notice_deadline = app.notice_deadline().map(tokio::time::Instant::from_std);
         let warning_deadline = app.warning_deadline().map(tokio::time::Instant::from_std);
+        let selection_copy_deadline = app
+            .selection_copy_deadline()
+            .map(tokio::time::Instant::from_std);
         let marquee_tick_enabled = app.todo_hud.marquee_active;
         let memory_deadline = if !dirty && !activity_tick_enabled && !marquee_tick_enabled {
             memory.deadline().map(tokio::time::Instant::from_std)
@@ -998,6 +1001,10 @@ async fn event_loop(
             _ = tokio::time::sleep_until(next_frame), if need_frame_wait => {}
             _ = tokio::time::sleep_until(notice_deadline.unwrap_or_else(tokio::time::Instant::now)), if notice_deadline.is_some() => dirty = true,
             _ = tokio::time::sleep_until(warning_deadline.unwrap_or_else(tokio::time::Instant::now)), if warning_deadline.is_some() => dirty = true,
+            _ = tokio::time::sleep_until(selection_copy_deadline.unwrap_or_else(tokio::time::Instant::now)), if selection_copy_deadline.is_some() => {
+                app.selection_copied_at = None;
+                dirty = true;
+            }
             _ = tokio::time::sleep_until(next_marquee_tick), if marquee_tick_enabled => {
                 next_marquee_tick = tokio::time::Instant::now() + render::todo_hud::MARQUEE_TICK;
                 dirty = true;
@@ -1476,7 +1483,12 @@ fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: 
                 request_resource_completion(app, connection);
             }
         }
-        Event::Resize(_, _) => app.todo_hud.on_resize(),
+        Event::Resize(_, _) => {
+            app.selection = None;
+            app.pending_click = None;
+            app.selection_copied_at = None;
+            app.todo_hud.on_resize();
+        }
         Event::FocusGained => app.terminal_focused = true,
         Event::FocusLost => {
             app.terminal_focused = false;
@@ -2792,6 +2804,9 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     // 新的一次按下总是结束上一轮滚动条拖拽：拖拽途中弹出模态时抬起事件会被吞掉。
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
         app.scrollbar_drag = None;
+        app.selection = None;
+        app.pending_click = None;
+        app.selection_copied_at = None;
     }
     if handle_scrollbar_mouse(app, &mouse) {
         return;
@@ -2846,26 +2861,30 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 && position.1 < area.y.saturating_add(area.height)
             {
                 app.focus = Focus::Prompt;
-                if let Some(cursor) =
-                    crate::render::prompt_cursor_from_point(app, area, position.0, position.1)
-                {
-                    app.prompt.cursor = cursor;
-                }
             }
             app.pending_click = Some(position);
         }
         MouseEventKind::Drag(MouseButton::Left) => {
             if let Some(start) = app.pending_click {
-                if app.selection.is_none() {
-                    app.selection = Some((start, position));
-                } else if let Some((_, end)) = app.selection.as_mut() {
-                    *end = position;
-                }
+                app.selection = Some((start, position));
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {
             let clicked = app.pending_click.take() == Some(position);
             if clicked {
+                if app.prompt_area.contains(position.into()) {
+                    // 单击才移动光标；按下即移动会让长输入的视口在拖选前跳动。
+                    if let Some(cursor) = crate::render::prompt_cursor_from_point(
+                        app,
+                        app.prompt_area,
+                        position.0,
+                        position.1,
+                    ) {
+                        app.prompt.cursor = cursor;
+                    }
+                    app.selection = None;
+                    return;
+                }
                 // 表格入口优先：它独占一行，若同时命中块标题会点出两件事
                 if let Some(hit) = chart_hit_at(app, position) {
                     app.toggle_table_chart(hit.entry, hit.table);
@@ -2892,8 +2911,8 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     }
                 }
                 app.selection = None;
-            } else if app.selection.is_some() {
-                app.set_notice("Ctrl+C / 右键 / y 复制选中内容");
+            } else if let Some((_, end)) = app.selection.as_mut() {
+                *end = position;
             }
         }
         // 与 Windows Terminal 一致：有选区时右键直接复制，不再需要额外按键。
@@ -3028,6 +3047,11 @@ fn handle_key(
     if handle_legend_menu_key(app, connection, modifiers, code) {
         return;
     }
+    if code == KeyCode::Esc && app.selection.is_some() {
+        app.selection = None;
+        app.pending_click = None;
+        return;
+    }
     if matches!(code, KeyCode::Esc) && app.completion.is_some() {
         app.completion = None;
         return;
@@ -3101,6 +3125,20 @@ fn handle_key(
     {
         app.ctrl_c_pending = None;
         return;
+    }
+    if app.focus == Focus::Prompt
+        && (matches!(
+            code,
+            KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End
+        ) || matches!(
+            (code, modifiers),
+            (KeyCode::Char('a' | 'e'), KeyModifiers::CONTROL)
+                | (KeyCode::Char('b' | 'f'), KeyModifiers::ALT)
+        ))
+    {
+        app.selection = None;
+        app.pending_click = None;
+        app.selection_copied_at = None;
     }
     if app.focus == Focus::Scrollback {
         match (code, modifiers) {
@@ -3196,9 +3234,7 @@ fn handle_key(
             copy_selection(app);
         }
         (KeyCode::Esc, _) => {
-            if app.selection.is_some() {
-                app.selection = None;
-            } else if app.focused.is_some()
+            if app.focused.is_some()
                 && app.focus == Focus::Prompt
                 && app.prompt_text().is_empty()
             {
@@ -7447,7 +7483,7 @@ fn refresh_git_branch(app: &App, cwd: &str) {
     });
 }
 
-/// 把拖选覆盖的视口行文本复制到系统剪贴板；没有可复制内容时返回 `false`。
+/// 把拖选覆盖的转写或输入框文本复制到系统剪贴板；没有可复制内容时返回 `false`。
 fn copy_selection(app: &mut App) -> bool {
     let body = selection_text(app);
     if body.is_empty() {
@@ -7461,7 +7497,8 @@ fn copy_selection(app: &mut App) -> bool {
         }
     });
     app.selection = None;
-    app.set_notice("已复制选中内容");
+    app.pending_click = None;
+    app.selection_copied_at = Some(std::time::Instant::now());
     true
 }
 
@@ -7492,6 +7529,11 @@ fn selection_text(app: &App) -> String {
             text.push_str(line_text);
         }
         text.push('\n');
+    }
+    let prompt = crate::render::prompt_selection_text(app);
+    if !prompt.is_empty() {
+        text.push_str(prompt);
+        return text;
     }
     text.trim_end().to_owned()
 }
@@ -10678,6 +10720,97 @@ mod tests {
         core.shutdown().await;
     }
 
+    /// 输入框选区按原文复制：宽字符、组合字符与尾部空格不丢失，反向拖选一致。
+    #[test]
+    fn prompt_drag_selection_preserves_text_and_highlight() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = app();
+        let text = "甲乙 e\u{301}  \n尾行 ";
+        app.prompt = crate::widgets::prompt::PromptState::from_text(text.into());
+        let mut terminal = Terminal::new(TestBackend::new(30, 18)).unwrap();
+        let mut view = crate::render::scrollback::ScrollbackView::new();
+        terminal
+            .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+            .unwrap();
+        let left = app.prompt_area.x + 4;
+        let top = app.prompt_area.y + 1;
+        let first = (left + 1, top);
+        let last = (left + 4, top + 1);
+        for (start, end) in [(first, last), (last, first)] {
+            for (kind, (column, row)) in [
+                (MouseEventKind::Down(MouseButton::Left), start),
+                (MouseEventKind::Drag(MouseButton::Left), end),
+                (MouseEventKind::Up(MouseButton::Left), end),
+            ] {
+                handle_mouse(
+                    &mut app,
+                    MouseEvent {
+                        kind,
+                        column,
+                        row,
+                        modifiers: KeyModifiers::NONE,
+                    },
+                );
+            }
+            terminal
+                .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+                .unwrap();
+            assert_eq!(selection_text(&app), text);
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(left, top)].bg, app.theme.bg_selection);
+            assert_eq!(buffer[(left + 4, top + 1)].bg, app.theme.bg_selection);
+            assert_ne!(buffer[(left - 1, top)].bg, app.theme.bg_selection);
+            assert_ne!(buffer[(left + 5, top + 1)].bg, app.theme.bg_selection);
+        }
+        app.selection = Some(((left + 5, top), (left + 5, top)));
+        assert_eq!(selection_text(&app), "e\u{301}");
+    }
+
+    /// 长输入的拖选不因按下移动光标而跳动视口，软折行不混入换行符。
+    #[test]
+    fn prompt_drag_selection_keeps_scrolled_viewport() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = app();
+        app.prompt = crate::widgets::prompt::PromptState::from_text("abcdefghij".repeat(24));
+        let mut terminal = Terminal::new(TestBackend::new(30, 18)).unwrap();
+        let mut view = crate::render::scrollback::ScrollbackView::new();
+        terminal
+            .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+            .unwrap();
+        let width = usize::from(app.prompt_area.width - 6);
+        app.prompt.cursor = width * 2;
+        terminal
+            .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+            .unwrap();
+        let left = app.prompt_area.x + 4;
+        let top = app.prompt_area.y + 1;
+        for (kind, column, row) in [
+            (MouseEventKind::Down(MouseButton::Left), left + 2, top + 1),
+            (MouseEventKind::Drag(MouseButton::Left), left + 4, top + 2),
+            (MouseEventKind::Up(MouseButton::Left), left + 4, top + 2),
+        ] {
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind,
+                    column,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                },
+            );
+            terminal
+                .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+                .unwrap();
+            assert_eq!(app.prompt.cursor, width * 2);
+        }
+        assert_eq!(
+            selection_text(&app),
+            &app.prompt.text[width * 3 + 2..width * 4 + 5]
+        );
+    }
+
     /// 拖选复制按显示列切片：端点格子包含在内，跨行时首尾行裁边、中间整行。
     #[test]
     fn selection_text_slices_columns_inclusively() {
@@ -10706,6 +10839,58 @@ mod tests {
         assert_eq!(selection_text(&app), "中文字");
     }
 
+    /// 图例里的复制与取消作用于选区，不停止生成、不关闭补全，也不覆盖错误通知。
+    #[tokio::test]
+    async fn selection_legend_actions_preserve_prompt_and_error() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (core, connection, mut app, _root) = setup_test_app_keeping_root().await;
+        app.prompt.insert_text("/re");
+        app.prompt_changed();
+        app.prompt_running = true;
+        app.set_error_notice("需要保留的错误");
+        let original_notice = app.notice.clone();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut view = crate::render::ScrollbackView::new();
+        for code in [KeyCode::Esc, KeyCode::Char('c')] {
+            terminal
+                .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+                .unwrap();
+            let area = app.prompt_area;
+            app.selection = Some(((area.x + 4, area.y + 1), (area.x + 6, area.y + 1)));
+            terminal
+                .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+                .unwrap();
+            let hit = app
+                .key_hits
+                .iter()
+                .find(|hit| hit.code == code && hit.area.y == area.bottom() - 1)
+                .copied()
+                .expect("选区操作应当可以点击");
+            handle_mouse_with_connection(
+                &mut app,
+                &connection,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: hit.area.x,
+                    row: hit.area.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+            );
+            assert!(app.selection.is_none());
+            assert_eq!(app.prompt_text(), "/re");
+            assert!(app.completion.is_some());
+            assert!(app.prompt_running);
+            assert!(!app.cancel_requested);
+            assert!(!app.should_quit);
+            assert!(app.modal.is_none());
+            assert_eq!(app.notice, original_notice);
+            assert!(app.notice_error);
+        }
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
     /// 原生语义：有选区时 Ctrl+C 复制选区，而不是清空输入或取消。
     #[tokio::test]
     async fn ctrl_c_copies_selection_when_present() {
@@ -10723,7 +10908,6 @@ mod tests {
         );
         assert_eq!(app.prompt_text(), "pending text", "复制优先于清空输入");
         assert!(app.selection.is_none());
-        assert_eq!(app.notice.as_deref(), Some("已复制选中内容"));
         assert!(!app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
 
         // 没有选区时恢复 Ctrl+C 原语义：第一次只提示清空输入。
@@ -10733,7 +10917,7 @@ mod tests {
             KeyModifiers::CONTROL,
             KeyCode::Char('c'),
         );
-        assert_eq!(app.notice.as_deref(), Some("再次按 Ctrl+C 清空输入"));
+        assert!(app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
 
         connection.shutdown().await;
         core.shutdown().await;
@@ -10755,7 +10939,6 @@ mod tests {
 
         handle_mouse(&mut app, mouse(MouseEventKind::Up(MouseButton::Right)));
         assert!(app.selection.is_none());
-        assert_eq!(app.notice.as_deref(), Some("已复制选中内容"));
     }
 
     /// M17+M18：运行中切会话后，旧会话的更新不得写进新会话，收尾仍回收在飞记账。

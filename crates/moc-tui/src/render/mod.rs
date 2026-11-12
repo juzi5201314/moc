@@ -32,6 +32,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
+use std::borrow::Cow;
 
 pub use scrollback::ScrollbackView;
 
@@ -320,8 +321,24 @@ fn highlight_selection(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             (left, right)
         };
-        let from = from.clamp(left, right);
-        let to = to.clamp(left, right);
+        let mut from = from.max(left);
+        let mut to = to.min(right);
+        if from > to {
+            continue;
+        }
+        // 宽字符只由首格绘制；选到续格时也要给首格铺色。
+        if from > left
+            && buffer
+                .cell((from - 1, row))
+                .is_some_and(|cell| str_width(cell.symbol()) > 1)
+        {
+            from -= 1;
+        }
+        if let Some(cell) = buffer.cell((to, row)) {
+            to = to
+                .saturating_add(cell_width(cell.symbol()).saturating_sub(1))
+                .min(right);
+        }
         for col in from..=to {
             let Some(cell) = buffer.cell_mut((col, row)) else {
                 continue;
@@ -507,6 +524,14 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, area: Rect) {
         ),
         area,
     );
+    let prefix = u16::try_from(1 + PROMPT_PAD + PROMPT_MARKER).expect("输入框前缀宽度不超过 u16");
+    let body = Rect::new(
+        area.x + prefix,
+        area.y + 1,
+        area.width.saturating_sub(prefix + 2),
+        area.height.saturating_sub(2),
+    );
+    highlight_selection(frame, app, body);
     draw_prompt_legends(frame, app, area);
     if app.focus == Focus::Prompt {
         let (x, y) = prompt_cursor_position(app, area);
@@ -567,20 +592,82 @@ pub(crate) fn prompt_cursor_from_point(app: &App, area: Rect, col: u16, row: u16
     let start = prompt_scroll_offset(visual_row, visual_rows.len(), visible_rows);
     let clicked_visual_row = start + usize::from(row - top);
     if let Some((start_offset, sub_text)) = visual_rows.get(clicked_visual_row) {
-        let mut accumulated_width = 0;
-        let mut char_offset = 0;
-        for ch in sub_text.chars() {
-            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if accumulated_width + w > target_col {
-                break;
-            }
-            accumulated_width += w;
-            char_offset += ch.len_utf8();
-        }
-        Some((*start_offset + char_offset).min(text.len()))
+        Some(*start_offset + prompt_cell_range(sub_text, target_col).start)
     } else {
         Some(text.len())
     }
+}
+
+/// 显示格对应的字节范围；宽字符的两格归同一字符，尾随组合字符一并保留。
+fn prompt_cell_range(text: &str, column: usize) -> std::ops::Range<usize> {
+    let mut width = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((offset, ch)) = chars.next() {
+        width += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width > column {
+            let mut end = offset + ch.len_utf8();
+            while let Some(&(offset, ch)) = chars.peek() {
+                if unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) > 0 {
+                    break;
+                }
+                end = offset + ch.len_utf8();
+                chars.next();
+            }
+            return offset..end;
+        }
+    }
+    text.len()..text.len()
+}
+
+/// 从当前可见输入行映射回原文：软折行不插入换行，也不复制边框与提示符。
+pub(crate) fn prompt_selection_text(app: &App) -> &str {
+    let Some(((start_col, start_row), (end_col, end_row))) =
+        app.selection.map(crate::app::ordered_selection)
+    else {
+        return "";
+    };
+    let area = app.prompt_area;
+    if area.width < 6 || area.height < 3 {
+        return "";
+    }
+    if end_row < area.y + 1 || start_row >= area.y + area.height - 1 {
+        return "";
+    }
+    let text = app.prompt_text();
+    let rows = prompt_rows(text, area.width);
+    let visible = usize::from(area.height - 2);
+    let start = prompt_scroll_offset(
+        prompt_cursor_row(&rows, app.prompt.cursor),
+        rows.len(),
+        visible,
+    );
+    let top = area.y + 1;
+    let visible = u16::try_from((rows.len() - start).min(visible)).expect("可见行数不超过输入框高度");
+    let bottom = top + visible;
+    if end_row < top || start_row >= bottom {
+        return "";
+    }
+    let first_row = start_row.max(top);
+    let last_row = end_row.min(bottom - 1);
+    let prefix = u16::try_from(1 + PROMPT_PAD + PROMPT_MARKER).expect("输入框前缀宽度不超过 u16");
+    let left = area.x + prefix;
+    let (first_offset, first_text) = rows[start + usize::from(first_row - top)];
+    let (last_offset, last_text) = rows[start + usize::from(last_row - top)];
+    let from = first_offset
+        + if first_row == start_row {
+            prompt_cell_range(first_text, usize::from(start_col.saturating_sub(left))).start
+        } else {
+            0
+        };
+    let to = last_offset
+        + if last_row != end_row {
+            last_text.len()
+        } else if end_col < left {
+            0
+        } else {
+            prompt_cell_range(last_text, usize::from(end_col - left)).end
+        };
+    if from < to { &text[from..to] } else { "" }
 }
 
 /// 输入框下边框上的图例：运行时显示停止操作，否则显示快捷键键位。
@@ -589,6 +676,7 @@ pub(crate) fn prompt_cursor_from_point(app: &App, area: Rect, col: u16, row: u16
 /// 右侧的当前模型与模式仍然保留。
 fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     app.engine_area = Rect::default();
+    app.legend_tip_area = Rect::default();
     if area.height < 3 || area.width < 24 {
         return;
     }
@@ -596,7 +684,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = usize::from(area.width).saturating_sub(2);
     let y = area.y + area.height - 1;
 
-    // 无会话时三段都是占位值：只画一个 idle，不给任何图例留点击区。
+    // 无会话时右端只画 idle；左端仍能显示选区操作。
     let no_session = app.session.is_none();
     let model = app.model_display();
     let status = app.status_label();
@@ -620,15 +708,18 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let help_key = app
-        .preferences
-        .keybindings
-        .get("help")
-        .and_then(|keys| keys.first())
-        .map_or_else(|| "—".to_owned(), |binding| labels::key(binding));
-    let (left_key, left_tip, left_color) = if app.prompt_running {
+    let selecting = app.selection.is_some() && app.modal.is_none();
+    let copy_feedback = app.modal.is_none()
+        && app
+            .selection_copy_deadline()
+            .is_some_and(|deadline| std::time::Instant::now() < deadline);
+    let (left_key, mut left_tip, left_color) = if selecting {
+        (Cow::Borrowed("Ctrl+C"), "复制 · Esc 取消", theme.gray_bright)
+    } else if copy_feedback {
+        (Cow::Borrowed(""), "已复制", theme.gray_bright)
+    } else if app.prompt_running {
         (
-            labels::key("esc"),
+            Cow::Borrowed("Esc"),
             if app.cancel_requested {
                 "正在停止"
             } else {
@@ -641,12 +732,23 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
             },
         )
     } else {
-        (help_key, "快捷键", theme.gray_dim)
+        let help_key = app
+            .preferences
+            .keybindings
+            .get("help")
+            .and_then(|keys| keys.first())
+            .map_or_else(|| "—".to_owned(), |binding| labels::key(binding));
+        (Cow::Owned(help_key), "快捷键", theme.gray_dim)
     };
-    let left_key = left_key.as_str();
+    let left_key = left_key.as_ref();
+    let show_cancel =
+        selecting && str_width(left_key) + 1 + str_width(left_tip) + right_width + 8 <= inner;
+    if selecting && !show_cancel {
+        left_tip = "复制";
+    }
     // 左端布局：`␣key tip`（胶囊存在时接 ` · capsule`），末尾再补一格空白，
     // 与右侧的留白对称；分隔点只画在提示与胶囊之间，不留孤点。
-    let tips_width = str_width(left_key) + 1 + str_width(left_tip);
+    let tips_width = str_width(left_key) + usize::from(!left_key.is_empty()) + str_width(left_tip);
     let show_tips = tips_width + 4 + right_width + 4 <= inner;
 
     let buffer = frame.buffer_mut();
@@ -654,14 +756,37 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     if show_tips {
         buffer.set_string(area.x + 2, y, " ", Style::new());
         let mut x = end_x;
-        buffer.set_string(x, y, left_key, Style::new().fg(theme.gray_bright));
-        x += cell_width(left_key);
-        buffer.set_string(x, y, " ", Style::new());
-        x += 1;
+        if !left_key.is_empty() {
+            buffer.set_string(x, y, left_key, Style::new().fg(theme.gray_bright));
+            x += cell_width(left_key);
+            buffer.set_string(x, y, " ", Style::new());
+            x += 1;
+        }
         buffer.set_string(x, y, left_tip, Style::new().fg(left_color));
         x += cell_width(left_tip);
-        // 左端提示可点：空闲打开快捷键，运行中停止（与提示文字同义）。
-        app.legend_tip_area = Rect::new(area.x + 3, y, x - (area.x + 3), 1);
+        if selecting {
+            let copy_width = cell_width(left_key) + 1 + cell_width("复制");
+            app.key_hits.push(labels::KeyHit {
+                area: Rect::new(end_x, y, copy_width, 1),
+                modifiers: crossterm::event::KeyModifiers::CONTROL,
+                code: crossterm::event::KeyCode::Char('c'),
+            });
+            if show_cancel {
+                app.key_hits.push(labels::KeyHit {
+                    area: Rect::new(
+                        end_x + copy_width + cell_width(labels::SEP),
+                        y,
+                        cell_width("Esc 取消"),
+                        1,
+                    ),
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                    code: crossterm::event::KeyCode::Esc,
+                });
+            }
+        } else if !copy_feedback {
+            // 普通图例仍然可点：空闲打开帮助，运行中停止。
+            app.legend_tip_area = Rect::new(end_x, y, x - end_x, 1);
+        }
         end_x = x;
     }
     // workflow 胶囊：活跃 run / 待审批徽标，点击打开审批或 run 面板。
