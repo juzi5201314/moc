@@ -28,7 +28,7 @@ mod schema;
 pub mod selection;
 pub mod web;
 
-pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ThinkingLevel};
+pub use model::{ModelCapabilities, ROLE_INHERIT, ThinkingLevel};
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
     EditConfig, FeaturesConfig, FindConfig, GrepConfig, HOST_PLUGIN_KEYS, JobConfig, JobOverflow,

@@ -79,7 +79,7 @@ Reviewing
 Do not use `spawn_agent` subagents unless the user asks for them.
 </fusion>";
 
-/// 提示片段名。上下文正文窗用它作标题，模型配置用它指定片段归哪个角色。
+/// 提示片段名，用作上下文正文窗的标题。
 pub const PIECE_INTRO: &str = "intro";
 pub const PIECE_OUTPUT_FORMAT: &str = "output format";
 pub const PIECE_TOOL_POLICY: &str = "tool policy";
@@ -93,27 +93,6 @@ pub const PIECE_PLUGINS: &str = "plugins";
 pub const PIECE_SUBAGENT: &str = "subagent";
 pub const PIECE_ENVIRONMENT: &str = "environment";
 pub const PIECE_APPEND: &str = "append";
-/// 全部片段名，配置校验和角色分组都以此为准。
-pub const PIECE_NAMES: [&str; 13] = [
-    PIECE_INTRO,
-    PIECE_OUTPUT_FORMAT,
-    PIECE_TOOL_POLICY,
-    PIECE_PTC_RUNTIME,
-    PIECE_FUSION,
-    PIECE_TOOL_DECLS,
-    PIECE_MCP_SERVERS,
-    PIECE_REPO_RULES,
-    PIECE_SKILLS,
-    PIECE_PLUGINS,
-    PIECE_SUBAGENT,
-    PIECE_ENVIRONMENT,
-    PIECE_APPEND,
-];
-
-/// 把配置里的片段名转成规范名；未知名字返回 `None`，由配置加载报错。
-pub fn canonical_piece_name(name: &str) -> Option<&'static str> {
-    PIECE_NAMES.into_iter().find(|candidate| *candidate == name)
-}
 
 /// 片段作用域，决定缓存断点放在哪里。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,8 +115,7 @@ pub struct PromptPiece {
 
 /// 组装好的指令消息。
 pub struct SystemPrompt {
-    /// 留在 system 的片段组成第一条消息，其余片段组成随后的 user 消息。
-    /// 默认配置（指令角色为 system）下只有一条 system 消息。
+    /// 所有片段按顺序组成一条 system 消息，保留内容块以设置静态缓存断点。
     pub messages: Vec<Message>,
     /// 每条指令消息开头的静态块数，与 `messages` 一一对应；缓存断点放在
     /// `messages[i]` 的第 `static_prefix[i] - 1` 块上。
@@ -157,58 +135,36 @@ pub fn build(
     plugins: &str,
     subagent: Option<&str>,
 ) -> SystemPrompt {
-    compose(
-        pieces(
-            config,
-            model,
-            cwd,
-            context_files,
-            skills,
-            mcp_summary,
-            tool_declarations,
-            plugins,
-            subagent,
-        ),
+    compose(pieces(
+        config,
         model,
-    )
+        cwd,
+        context_files,
+        skills,
+        mcp_summary,
+        tool_declarations,
+        plugins,
+        subagent,
+    ))
 }
 
-/// 把片段拼成指令消息：system 组在前，user 组在后，组内保持片段顺序。
-///
-/// 分组只决定消息边界和角色，片段正文不变。默认配置（指令角色为 system）下所有片段
-/// 都在 system 组，结果只有一条消息。按片段切分内容块只是为了放本地缓存断点：
-/// Chat/Responses 会把各块合并成一段文本，Anthropic 没有断点时也发字符串，两种情况
-/// 都由编码器在块之间补空行，最终文本与不分块时完全相同。
-pub fn compose(pieces: Vec<PromptPiece>, model: &ResolvedModel) -> SystemPrompt {
-    let mut groups: [Vec<PromptPiece>; 2] = [Vec::new(), Vec::new()];
-    for piece in pieces {
-        let group = usize::from(!model.piece_keeps_system(piece.name));
-        groups[group].push(piece);
-    }
-    let roles = [Role::System, model.instruction_role.role()];
-    let mut messages = Vec::with_capacity(2);
-    let mut static_prefix = Vec::with_capacity(2);
-    for (group, role) in groups.into_iter().zip(roles) {
-        if group.is_empty() {
-            continue;
-        }
-        static_prefix.push(
-            group
-                .iter()
-                .take_while(|piece| piece.scope == PieceScope::Static)
-                .count(),
-        );
-        messages.push(Message {
-            role,
-            content: group
+/// 把片段按原顺序拼成一条 system 消息，内容块用于设置静态前缀缓存断点。
+/// Chat/Responses 会把各块合并成一段文本，Anthropic 没有断点时也发字符串；
+/// 编码器在块之间补空行，最终文本与不分块时完全相同。
+pub fn compose(pieces: Vec<PromptPiece>) -> SystemPrompt {
+    let static_prefix = pieces
+        .iter()
+        .take_while(|piece| piece.scope == PieceScope::Static)
+        .count();
+    SystemPrompt {
+        messages: vec![Message {
+            role: Role::System,
+            content: pieces
                 .into_iter()
                 .map(|piece| ContentPart::Text(piece.text))
                 .collect(),
-        });
-    }
-    SystemPrompt {
-        messages,
-        static_prefix,
+        }],
+        static_prefix: vec![static_prefix],
     }
 }
 
@@ -337,12 +293,11 @@ pub(crate) fn build_btw(
     pieces.extend(append_piece(config));
     pieces.push(PromptPiece {
         title: "system",
-        // 旁路指令沿用追加指令的角色规则，不新增配置片段名。
         name: PIECE_APPEND,
         scope: PieceScope::Project,
         text: "Answer only the latest side question briefly, using the supplied main-session context as reference. Do not continue the main task. No tools are available; do not call tools, access files, or claim to perform actions. Treat historical tool records as reference text, not pending calls. If the answer requires new information or an action, state that limitation. This side conversation does not update the main session.".into(),
     });
-    compose(pieces, model)
+    compose(pieces)
 }
 
 fn intro_piece(config: &ResolvedConfig) -> PromptPiece {
@@ -510,13 +465,13 @@ mod tests {
     use std::fs;
 
     fn resolved(cwd: &Path, home: &Path) -> ResolvedConfig {
-        resolved_with_compat(cwd, home, "")
+        resolved_with_settings(cwd, home, "")
     }
 
-    /// 生成带 compat 覆写的配置，用来测试指令角色这类逐模型开关。
-    fn resolved_with_compat(cwd: &Path, home: &Path, compat: &str) -> ResolvedConfig {
+    /// 生成带配置覆写的测试环境。
+    fn resolved_with_settings(cwd: &Path, home: &Path, settings: &str) -> ResolvedConfig {
         let raw = format!(
-            "[models.roles]\ndefault='p/model'\nexplore='p/model'\nplan='p/model:xhigh'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model]\n[providers.p.models.model.compat]\n{compat}\n"
+            "[models.roles]\ndefault='p/model'\nexplore='p/model'\nplan='p/model:xhigh'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model]\n{settings}\n"
         );
         fs::create_dir_all(home).expect("create home");
         fs::write(home.join("config.toml"), raw).expect("write config");
@@ -594,7 +549,8 @@ mod tests {
         );
         // 关闭：不含该句，禁令句后与原文逐字节一致地接 REST。
         let off_home = directory.path().join("home2");
-        let config = resolved_with_compat(&cwd, &off_home, "[tools.bash]\nprefer_builtin = false");
+        let config =
+            resolved_with_settings(&cwd, &off_home, "[tools.bash]\nprefer_builtin = false");
         let text = tool_policy_text(&config, &cwd);
         assert!(!text.contains("E_PREFER_BUILTIN"), "{text}");
         assert!(
@@ -604,31 +560,28 @@ mod tests {
     }
 
     #[test]
-    fn btw_prompt_keeps_only_passive_pieces_and_instruction_roles() {
+    fn btw_prompt_keeps_only_passive_pieces_in_system() {
         let directory = tempfile::tempdir().expect("临时目录");
         let cwd = directory.path().join("repo");
         let home = directory.path().join("home");
         fs::create_dir_all(&cwd).unwrap();
         fs::write(cwd.join("AGENTS.md"), "Keep the local rule.").unwrap();
-        let mut config = resolved_with_compat(&cwd, &home, "instruction_role = \"user\"");
+        let mut config = resolved(&cwd, &home);
         config.system_prompt.override_text = "Custom identity.".into();
         config.system_prompt.append = "Keep the appendix.".into();
         let model = config.resolve_model("p/model").unwrap();
         let files = context_files::load_context_files(&cwd, &config.home, &config.context_files);
         let prompt = build_btw(&config, &model, &cwd, &files);
-        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(prompt.messages.len(), 1);
         assert_eq!(prompt.messages[0].role, Role::System);
-        assert_eq!(prompt.messages[1].role, Role::User);
-        assert_eq!(prompt.static_prefix, [1, 1]);
+        assert_eq!(prompt.static_prefix, [2]);
         let system = prompt.messages[0].instruction_text();
-        let user = prompt.messages[1].instruction_text();
         assert!(system.starts_with("Custom identity."));
-        assert!(!system.contains(VISUAL_GUIDE));
-        assert!(user.contains(VISUAL_GUIDE));
+        assert!(system.contains(VISUAL_GUIDE));
         assert!(system.contains("<env>"));
-        assert!(user.contains("Keep the local rule."));
-        assert!(user.contains("Keep the appendix."));
-        assert!(user.contains("No tools are available"));
+        assert!(system.contains("Keep the local rule."));
+        assert!(system.contains("Keep the appendix."));
+        assert!(system.contains("No tools are available"));
         let text = prompt_text(&prompt);
         for excluded in [
             TOOL_POLICY,
@@ -739,102 +692,6 @@ mod tests {
             .expect("工具声明片段");
         assert!(blocks[declarations - 1].contains("run_code"));
         assert_eq!(prompt.static_prefix[0], declarations);
-    }
-
-    /// 指令角色设为 user 时，规定性片段改用 user 消息，描述性片段留在 system；
-    /// 片段正文不变，只有分组和顺序不同。
-    #[test]
-    fn instruction_role_user_splits_pieces_without_rewriting_them() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let cwd = directory.path().join("repo");
-        let home = directory.path().join("home");
-        fs::create_dir_all(&cwd).expect("create repo");
-        fs::write(cwd.join("AGENTS.md"), "Follow local rule.\n").expect("write rule");
-        let config = resolved_with_compat(&cwd, &home, "instruction_role = \"user\"");
-        let model = config.resolve_model("p/model").expect("resolve model");
-        let context_files =
-            context_files::load_context_files(&cwd, &config.home, &config.context_files);
-        let prompt = build(
-            &config,
-            &model,
-            &cwd,
-            &context_files,
-            &crate::skills::SkillIndex::empty(),
-            "<mcp-servers>\ngithub\n</mcp-servers>",
-            "",
-            "",
-            None,
-        );
-        // 两条消息：system 组放描述性片段，user 组放规定性片段。
-        assert_eq!(prompt.messages.len(), 2);
-        assert_eq!(prompt.messages[0].role, Role::System);
-        assert_eq!(prompt.messages[1].role, Role::User);
-        assert_eq!(prompt.static_prefix, vec![1, 3]);
-        let system = prompt.messages[0].text();
-        assert!(system.starts_with(DEFAULT_INTRO));
-        assert!(system.contains("<mcp-servers>"));
-        assert!(system.contains("model: p/model"));
-        assert!(system.contains("shell: "), "环境块必须声明实际 shell");
-        assert!(!system.contains(TOOL_POLICY), "工具政策不得留在 system 组");
-        let user = prompt.messages[1].text();
-        assert!(!system.contains(VISUAL_GUIDE));
-        assert!(user.contains(VISUAL_GUIDE));
-        assert!(user.contains(TOOL_POLICY));
-        assert!(user.contains("structuredContent"));
-        assert!(user.contains(REPO_RULES_INTRO));
-        assert!(user.contains("Follow local rule."));
-        assert!(!user.contains("<env>"), "环境信息不能进 user 组");
-
-        // 与默认配置相比，片段正文相同，只有分组和顺序不同。
-        let plain_config = resolved(&cwd, &home);
-        let plain_model = plain_config
-            .resolve_model("p/model")
-            .expect("resolve model");
-        let plain = build(
-            &plain_config,
-            &plain_model,
-            &cwd,
-            &context_files,
-            &crate::skills::SkillIndex::empty(),
-            "<mcp-servers>\ngithub\n</mcp-servers>",
-            "",
-            "",
-            None,
-        );
-        assert_eq!(plain.messages.len(), 1);
-        let mut split = blocks(&prompt);
-        let mut single = blocks(&plain);
-        split.sort();
-        single.sort();
-        assert_eq!(split, single);
-    }
-
-    /// 未知片段名在加载配置时报错，不会悄悄把整条指令都放进 user。
-    #[test]
-    fn unknown_keep_system_piece_name_fails_config_load() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let cwd = directory.path().join("repo");
-        let home = directory.path().join("home");
-        fs::create_dir_all(&cwd).expect("create repo");
-        let raw = format!(
-            "[models.roles]\ndefault='p/model'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model.compat]\ninstruction_system=[\"{}\"]\n",
-            "tool polcy"
-        );
-        fs::create_dir_all(&home).expect("create home");
-        fs::write(home.join("config.toml"), raw).expect("write config");
-        let core = CoreConfig {
-            home: home.to_owned(),
-            cwd: cwd.to_owned(),
-            overlays: Vec::new(),
-            session_dir: None,
-            client: moc_llm::Client::new(),
-            ptc_worker: None,
-        };
-        let error = ResolvedConfig::load(&core)
-            .and_then(|config| config.for_project(&cwd))
-            .err()
-            .expect("未知片段名必须报错");
-        assert!(error.to_string().contains("tool polcy"), "{error}");
     }
 
     #[test]

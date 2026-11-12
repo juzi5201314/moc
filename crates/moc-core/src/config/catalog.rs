@@ -16,8 +16,7 @@ pub fn model_template() -> Value {
         "compat":{"max_output_tokens_field":"max_tokens","supports_stop":true,
             "supports_prompt_cache_key":true,"reasoning_field":"reasoning_content",
             "reasoning_field_aliases":["reasoning_content","reasoning"],"tool_choice_dialect":"standard",
-            "parallel_tool_calls":true,"developer_role":false,"instruction_role":"system",
-            "instruction_system":["intro","mcp servers","environment"],"response_format_dialect":"standard",
+            "parallel_tool_calls":true,"developer_role":false,"response_format_dialect":"standard",
             "echo_reasoning":"protocol","requires_reasoning_content_for_tool_calls":false,
             "requires_reasoning_content_for_all_assistant_turns":false,"requires_assistant_content_for_tool_calls":false,
             "thinking":{"toggle_field":null,"enabled_value":"enabled","disabled_value":"disabled",
@@ -220,15 +219,6 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
     let key = path.last().map(String::as_str).unwrap_or_default();
     let joined = path.join(".");
     let (label, description) = describe(&joined, key);
-    // 片段名清单由规范名单生成：字段说明与加载期校验共用同一份来源，不会漂移。
-    let description = if key == "instruction_system" {
-        format!(
-            "{description}可用片段：{}。",
-            crate::system_prompt::PIECE_NAMES.join("、")
-        )
-    } else {
-        description.to_owned()
-    };
     let advanced = path
         .iter()
         .any(|part| matches!(part.as_str(), "compat" | "shake"))
@@ -292,7 +282,6 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
             ("unsupported", "不发送"),
         ],
         "response_format_dialect" => &[("standard", "标准"), ("unsupported", "不发送")],
-        "instruction_role" => &[("system", "system 角色"), ("user", "user 角色")],
         "echo_reasoning" => &[
             ("protocol", "按协议默认"),
             ("always", "总是"),
@@ -372,7 +361,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         path: path.clone(),
         tab: tab.into(),
         label: label.into(),
-        description,
+        description: description.into(),
         kind,
         advanced,
     });
@@ -731,14 +720,6 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "developer_role" => (
                 "支持 developer 角色",
                 "关闭后 developer 消息会转成 system 发送。",
-            ),
-            "instruction_role" => (
-                "指令角色",
-                "工具政策、仓库规则等指令消息以哪个角色下发；user 用于对 system 遵循度不足的上游。",
-            ),
-            "instruction_system" => (
-                "保持 system 的片段",
-                "指令角色为 user 时仍留在 system 消息里的片段名，逐行填写；留空表示整条指令都用 user。",
             ),
             "response_format_dialect" => ("结构化输出", "上游不支持时选择不发送。"),
             "echo_reasoning" => ("回传历史思考", "按协议默认、总是或从不回传历史思考内容。"),

@@ -200,15 +200,6 @@ pub fn control(field: &ConfigField) -> Control {
             number: false,
             required: &[],
         }),
-        "instruction_system" if compat => Control::List(ListSpec {
-            presets: moc_core::system_prompt::PIECE_NAMES
-                .iter()
-                .map(|name| ((*name).to_owned(), String::new()))
-                .collect(),
-            custom: None,
-            ordered: false,
-            empty: Empty::Array,
-        }),
         "reasoning_field_aliases" if compat => Control::List(ListSpec {
             presets: pairs(&[("reasoning_content", ""), ("reasoning", "")]),
             custom: Some(Entry::Text),

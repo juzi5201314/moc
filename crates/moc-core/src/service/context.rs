@@ -235,7 +235,7 @@ async fn snapshot(
         &plugin_prompt,
         subagent.as_ref().map(|p| p.block.as_str()),
     );
-    let system = crate::system_prompt::compose(pieces.clone(), &model);
+    let system = crate::system_prompt::compose(pieces.clone());
     let tools = inner.tools.definitions(
         state.engine,
         inner.ask_available(ctx.connection_id(), state.session.autonomy),

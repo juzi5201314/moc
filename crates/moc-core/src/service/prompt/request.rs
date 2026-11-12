@@ -224,9 +224,8 @@ pub(crate) fn cache_options(
         if tail != 0 && tail < message_count {
             points.push(tail);
         }
-        // 静态前缀断点：与工作目录无关的部分单独设断点，跨目录、跨会话复用。只放在最后
-        // 一条含静态前缀的指令消息上：指令拆成 system 和 user 两组后前缀不再连续，多放
-        // 几个收益很小，而 Anthropic 每个请求最多只能有 4 个断点。
+        // 静态前缀断点：与工作目录无关的部分单独设断点，跨目录、跨会话复用。
+        // 仅取最后一个静态前缀，给系统边界和历史尾部保留断点额度。
         let blocks = anchors
             .instruction_static
             .iter()
@@ -397,51 +396,5 @@ mod tests {
         );
         assert_eq!(options.key, None);
         assert_eq!(options.ttl, Some(moc_llm::CacheTtl::FiveMinutes));
-    }
-
-    #[test]
-    fn static_prefix_anchor_follows_the_last_split_instruction_message() {
-        // 指令拆成 system 与 user 两组时，静态前缀断点落在最后一条含静态前缀的
-        // 指令消息上（此处是第 1 条 user 组消息的第 1 块），首尾断点不变。
-        let directory = tempfile::tempdir().expect("临时目录");
-        let cwd = directory.path().join("repo");
-        let home = directory.path().join("home");
-        std::fs::create_dir_all(&home).expect("创建 home");
-        std::fs::write(
-            home.join("config.toml"),
-            "[models.roles]\ndefault='p/model'\nexplore='p/model'\nplan='p/model'\n[providers.p]\napi='anthropic_messages'\nbase_url='https://example.invalid'\n[providers.p.models.model]\n",
-        )
-        .expect("写配置");
-        let core = crate::CoreConfig {
-            home: home.clone(),
-            cwd: cwd.clone(),
-            overlays: Vec::new(),
-            session_dir: None,
-            client: moc_llm::Client::new(),
-            ptc_worker: None,
-        };
-        let config = crate::ResolvedConfig::load(&core)
-            .expect("载入配置")
-            .for_project(&cwd)
-            .expect("解析项目");
-        let model = config.resolve_model("p/model").expect("解析模型");
-        let options = cache_options(
-            &model,
-            9,
-            CacheAnchors {
-                instruction_static: &[1, 2],
-                trailing_reminders: 1,
-            },
-            "session-1",
-        )
-        .expect("缓存配置");
-        assert_eq!(options.breakpoints, vec![0, 7]);
-        assert_eq!(
-            options.instruction_blocks,
-            vec![moc_llm::InstructionBlock {
-                message: 1,
-                block: 1
-            }]
-        );
     }
 }

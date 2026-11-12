@@ -699,8 +699,8 @@ fn apply_cache(req: &ChatRequest, normalized: &mut Normalized) -> Result<CacheOu
 
     if cache.breakpoints.is_empty() && cache.instruction_blocks.is_empty() {
         // 未指定断点时缓存整个前缀：`system` 的最后一块之后即「系统提示 + 工具定义」
-        // 的边界，这是 Anthropic 官方推荐的最小缓存单元；指令消息以 user 角色下发
-        // 且没有系统提示时，退到首条指令消息的最后一块。
+        // 的边界，这是 Anthropic 官方推荐的最小缓存单元；没有系统提示时，
+        // 断点落在首条消息的最后一块。
         if normalized.system_is_empty() {
             normalized.attach_instruction_block(&cache_control, 0, None)?;
         } else {
@@ -1624,9 +1624,8 @@ mod tests {
     }
 
     #[test]
-    fn user_role_instruction_blocks_land_on_their_own_message() {
-        // 指令消息以 user 角色下发（上游对 system 遵循度不足时的模型配置）：它留在
-        // `messages` 里，块断点按块下标落在该消息上，而不是要求非空系统提示。
+    fn user_message_blocks_keep_cache_breakpoints_without_system() {
+        // 没有系统提示时，user 内容块仍可设置独立缓存断点。
         let req = ChatRequest {
             messages: vec![
                 Message {
@@ -1669,9 +1668,8 @@ mod tests {
     }
 
     #[test]
-    fn split_instruction_messages_keep_their_own_breakpoints() {
-        // 指令拆成 system 组与 user 组两条消息：系统侧的边界断点落在顶层 `system`，
-        // user 组的块断点落在它自己的消息块上，互不干扰。
+    fn system_and_user_messages_keep_independent_cache_breakpoints() {
+        // 系统边界断点与 user 内容块断点互不干扰，相邻 user 消息合并后仍保留位置。
         let req = ChatRequest {
             messages: vec![
                 Message {

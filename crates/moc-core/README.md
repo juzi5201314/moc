@@ -62,9 +62,10 @@ deny_write_paths = []
 - `supports_prompt_cache_key = false`：Chat/Responses 请求不发送缓存键及相关缓存选项，适用于拒绝扩展字段的上游；不关闭 Anthropic 的消息缓存断点。默认 `true`。
 - `requires_reasoning_content_for_all_assistant_turns = true`：回传所有 assistant 思维链，并为缺失的历史补显式空块；不只针对工具调用。默认 `false`。
 - `requires_reasoning_content_for_tool_calls` 与 `requires_assistant_content_for_tool_calls`：分别补齐工具调用历史中的推理字段和正文；显式空字符串不会被编码器转换成缺失字段。
-- `instruction_role = "user"`：把规定性指令片段（输出格式、工具政策、PTC 运行时、仓库规则、技能目录、子代理契约与追加指令）改以 user 角色下发，供对 system 角色遵循度不足的上游使用；默认 `"system"`，行为与不配置完全一致。配套的 `instruction_system`（默认 `["intro", "tool declarations", "mcp servers", "environment"]`）列出仍留在 system 消息里的描述性片段，留空表示整条指令都用 user；可用片段名（即正文窗里的标题）：`intro`、`output format`、`tool policy`、`ptc runtime`、`fusion`、`tool declarations`、`mcp servers`、`repo rules`、`skills`、`plugins`、`subagent`、`environment`、`append`，拼错会在配置加载期报错。分组只改变消息边界与角色：片段正文与组内顺序不变，Anthropic 下 user 组会与首条用户消息合并。
 
-`intro` 只包含默认或自定义身份；全局 Mermaid/SVG 渲染约定独立放在静态片段 `output format`，主会话和旁路问答共用，不受身份覆写影响。约定保留完整主题调色板与 SVG 内容限制；`var(--NAME)` 中的 `NAME` 从列出的名称中选择。默认以 system 角色发送；配置 `instruction_role = "user"` 时随其他规定性指令进入 user，如需仍留在 system，应将 `output format` 加入 `instruction_system`。
+`instruction_role` 与 `instruction_system` 已移除；旧配置中的这两个字段必须删除，否则加载时会报未知字段错误，不会静默忽略。提示词片段现在按原顺序统一组装为一条 system 消息，保留内容块及静态前缀缓存断点，不再向 user 消息分流。
+
+`intro` 只包含默认或自定义身份；全局 Mermaid/SVG 渲染约定独立放在静态片段 `output format`，主会话和旁路问答共用，不受身份覆写影响。约定保留完整主题调色板与 SVG 内容限制；`var(--NAME)` 中的 `NAME` 从列出的名称中选择。片段名称继续用于上下文查看与分类。
 
 供应商的 `connect_timeout_secs` 只限制 DNS/TCP/TLS 建连，默认 20 秒。`timeout_secs` 默认不设置，不限制首包等待或流式空闲；仅用户显式设置时才限制非流式整请求以及流式首包等待和后续空闲。
 
