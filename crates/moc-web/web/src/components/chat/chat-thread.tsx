@@ -25,7 +25,7 @@ import {
 } from "@/components/ai-elements/conversation";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { ActivityGroup, imageSrc } from "@/components/chat/activity";
+import { ActivityGroup, AgentResultCard, imageSrc } from "@/components/chat/activity";
 import { AskCard, PermissionCard } from "@/components/chat/requests";
 import { IconButton } from "@/components/common/icon-button";
 import { Button } from "@/components/ui/button";
@@ -536,6 +536,8 @@ function AssistantTurn({
         );
       case "plan":
         return <PlanCard key={segment.id} sessionId={context.sessionId} block={segment.block} />;
+      case "agent-result":
+        return <AgentResultCard key={segment.id} block={segment.block} />;
       case "notice":
         return (
           <NoticeCard
@@ -576,7 +578,10 @@ function AssistantTurn({
               {processOpen && (
                 <div className="mt-1.5 ml-[7px] flex flex-col gap-3 border-l border-border pl-4">
                   {segments.map((segment, index) =>
-                    index === finalIndex || segment.kind === "plan" || segment.kind === "notice"
+                    index === finalIndex ||
+                    segment.kind === "plan" ||
+                    segment.kind === "notice" ||
+                    segment.kind === "agent-result"
                       ? null
                       : renderSegment(segment, index),
                   )}
@@ -585,7 +590,10 @@ function AssistantTurn({
             </div>
           )}
           {segments.map((segment, index) =>
-            index === finalIndex || segment.kind === "plan" || segment.kind === "notice"
+            index === finalIndex ||
+            segment.kind === "plan" ||
+            segment.kind === "notice" ||
+            segment.kind === "agent-result"
               ? renderSegment(segment, index)
               : processCount === 0
                 ? renderSegment(segment, index)

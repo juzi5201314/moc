@@ -813,6 +813,9 @@ pub struct TranscriptEntry {
     /// 代理间消息的来源元信息；`None` 表示本地输入。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<super::agent::AgentMessageMeta>,
+    /// 子代理交付的完整结果；仅供展示，不重复进入模型上下文。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_result: Option<super::agent::AgentResultMeta>,
     /// goal 续跑轮的来源元信息；`None` 表示非续跑消息。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_round: Option<GoalRoundMeta>,
@@ -823,10 +826,11 @@ pub struct TranscriptEntry {
 
 impl TranscriptEntry {
     pub fn in_context(&self) -> bool {
-        !self
-            .bash
-            .as_ref()
-            .is_some_and(|bash| bash.exclude_from_context)
+        self.agent_result.is_none()
+            && !self
+                .bash
+                .as_ref()
+                .is_some_and(|bash| bash.exclude_from_context)
     }
 
     /// 模型视图：`!!` 不产生消息，`!` 带上命令来源，代理消息包上来源标签，

@@ -58,6 +58,15 @@ pub struct AgentMessageMeta {
     pub delivery: AgentMessageOutcome,
 }
 
+/// 子代理终态结果的来源；完整报告只供前端展示，模型仍消费原有结果提醒。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentResultMeta {
+    pub agent_id: String,
+    pub title: String,
+    pub status: AgentStatus,
+}
+
 /// 单个目标的投递回执。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

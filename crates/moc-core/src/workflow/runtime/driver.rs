@@ -1491,6 +1491,7 @@ mod tests {
             agent: None,
             goal: None,
             reminder: None,
+            agent_result: None,
         }
     }
 
@@ -1506,6 +1507,7 @@ mod tests {
             agent: None,
             goal: None,
             reminder: None,
+            agent_result: None,
         }
     }
 

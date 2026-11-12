@@ -106,6 +106,7 @@ function RowHeader({
   scope,
   mono,
   failed,
+  emphasized,
   suffix,
   action,
   interactive,
@@ -122,6 +123,7 @@ function RowHeader({
   scope?: string;
   mono?: boolean;
   failed?: boolean;
+  emphasized?: boolean;
   suffix?: ReactNode;
   action?: ReactNode;
   interactive: boolean;
@@ -151,7 +153,15 @@ function RowHeader({
       >
         {failed ? <CircleAlertIcon /> : icon}
       </span>
-      <span className={cn("shrink-0", pulse && "animate-pulse")}>{verb}</span>
+      <span
+        className={cn(
+          "shrink-0",
+          emphasized && "font-medium text-foreground",
+          pulse && "animate-pulse",
+        )}
+      >
+        {verb}
+      </span>
       <span className="flex min-w-0 flex-1 items-baseline gap-2 truncate">
         {target &&
           (onTargetClick ? (
@@ -179,7 +189,11 @@ function RowHeader({
             </span>
           ) : (
             <span
-              className={cn("min-w-0 truncate text-text-tertiary", mono && "font-mono text-xs")}
+              className={cn(
+                "min-w-0 truncate",
+                emphasized ? "text-muted-foreground" : "text-text-tertiary",
+                mono && "font-mono text-xs",
+              )}
               title={target}
             >
               {target}
@@ -651,22 +665,32 @@ function bashAsTool(block: Extract<Block, { kind: "bash" }>): ToolBlock {
   };
 }
 
-function AgentMessageRow({
+/** 结果卡片独立于处理过程；全局工具档位改变时收回手动展开。 */
+export function AgentResultCard({ block }: { block: Extract<Block, { kind: "agent-result" }> }) {
+  const axis = usePrefs((state) => state.toolDetail);
+  return <AgentReportRow key={`${block.id}:${axis}`} block={block} axis={axis} />;
+}
+
+function AgentReportRow({
   block,
   axis,
 }: {
-  block: Extract<Block, { kind: "agent-message" }>;
+  block: Extract<Block, { kind: "agent-message" | "agent-result" }>;
   axis: DetailLevel;
 }) {
   const [level, setLevel] = useState(axis);
   const head = headLines(block.body, BRIEF_BODY_ROWS);
   const lines = level === "full" ? block.body : head.lines.join("\n");
+  const result = block.kind === "agent-result";
   return (
     <div>
       <RowHeader
         icon={<BotIcon />}
-        verb="子代理消息"
-        target={block.from}
+        verb={result ? "子代理结果" : "子代理消息"}
+        target={result ? block.meta.title : block.from}
+        failed={result && block.meta.status === "failed"}
+        emphasized={result}
+        suffix={result && <span className="text-xs">{block.meta.status}</span>}
         interactive
         open={level === "full"}
         sticky
@@ -674,8 +698,13 @@ function AgentMessageRow({
       />
       {level !== "hidden" && (
         <Body>
-          <div className="rounded-xl bg-code px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground">
-            {lines}
+          <div
+            className={cn(
+              "rounded-xl bg-code px-3.5 py-2.5 text-sm",
+              result ? "text-foreground" : "whitespace-pre-wrap text-muted-foreground",
+            )}
+          >
+            {result ? <MessageResponse mode="static">{lines}</MessageResponse> : lines}
             {level === "brief" && head.hidden > 0 && (
               <button
                 type="button"
@@ -791,7 +820,7 @@ export function ActivityGroup({
               />
             );
           case "agent-message":
-            return <AgentMessageRow key={`${block.id}:${tools}`} block={block} axis={tools} />;
+            return <AgentReportRow key={`${block.id}:${tools}`} block={block} axis={tools} />;
           case "goal-round":
             return <GoalRoundRow key={`${block.id}:${tools}`} block={block} axis={tools} />;
           case "status":

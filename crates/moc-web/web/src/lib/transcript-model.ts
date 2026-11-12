@@ -3,6 +3,7 @@
 
 import type {
   AgentInfo,
+  AgentResultMeta,
   ContentPart,
   ContextUsageResult,
   FinishReason,
@@ -70,6 +71,14 @@ export type Block =
       atMs: number;
     }
   | { kind: "agent-message"; id: string; from: string; body: string; atMs: number }
+  | {
+      kind: "agent-result";
+      id: string;
+      entryId: string;
+      meta: AgentResultMeta;
+      body: string;
+      atMs: number;
+    }
   | { kind: "goal-round"; id: string; round: number; body: string; atMs: number }
   | {
       kind: "reasoning";
@@ -303,6 +312,17 @@ export function entriesToBlocks(
         kind: "agent-message",
         id: nextId(),
         from: entry.agent.from_title,
+        body: messageText(message),
+        atMs: entry.at_ms,
+      });
+      continue;
+    }
+    if (entry.agent_result) {
+      blocks.push({
+        kind: "agent-result",
+        id: nextId(),
+        entryId: entry.id,
+        meta: entry.agent_result,
         body: messageText(message),
         atMs: entry.at_ms,
       });
@@ -936,6 +956,16 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         from: update.meta.from_title,
         body: update.body,
         atMs: now,
+      });
+      break;
+    case "agent_result":
+      view.blocks.push({
+        kind: "agent-result",
+        id: nextId(view),
+        entryId: update.entry_id,
+        meta: update.meta,
+        body: update.body,
+        atMs: update.at_ms,
       });
       break;
     case "goal_round_message":

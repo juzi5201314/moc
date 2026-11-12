@@ -685,6 +685,7 @@ impl SessionTable {
                     tool: entry.tool.clone(),
                     bash: entry.bash.clone(),
                     agent: entry.agent.clone(),
+                    agent_result: entry.agent_result.clone(),
                     goal_round: entry.goal_round.clone(),
                     reminder: entry.reminder.clone(),
                 };

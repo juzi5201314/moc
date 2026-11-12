@@ -330,6 +330,7 @@ async fn append_until(
                 agent: None,
                 goal: None,
                 reminder: None,
+                agent_result: None,
             };
             file.append(&entry, None).await?;
             parent = id;

@@ -676,17 +676,39 @@ async fn finish(
                 text
             }
         });
-        runtime.info.status = status;
-        runtime.info.updated_at_ms = now_ms();
         runtime.info.last_message = last_message.clone();
         runtime.message = message.clone();
         runtime.finish_reason = finish_reason;
         let title = runtime.info.title.clone();
         let notify = Arc::clone(&runtime.notify);
         let awaited = runtime.awaited;
-        prune_terminal_agents(&mut registry);
         (message, last_message, title, notify, awaited)
     };
+    // 阻塞中的 `sidekick` 调用已把报告放在工具结果里，完成通知不再重复投递。
+    if !awaited {
+        if let Err(error) = deliver_result(
+            &inner,
+            &request.updates(),
+            &parent_id,
+            &agent_id,
+            &title,
+            status,
+            message.as_ref(),
+        )
+        .await
+        {
+            tracing::error!(agent_id, %error, "子代理结果投递失败");
+        }
+    }
+    // 先提交报告与模型提醒，再公开终态；wait_agent 返回时结果已经可读取。
+    {
+        let mut registry = inner.agents.lock().await;
+        if let Some(runtime) = registry.items.get_mut(&agent_id) {
+            runtime.info.status = status;
+            runtime.info.updated_at_ms = now_ms();
+        }
+        prune_terminal_agents(&mut registry);
+    }
     notify.notify_waiters();
     let _ = request
         .updates()
@@ -722,34 +744,23 @@ async fn finish(
             .await;
         }
     }
-    // 阻塞中的 `sidekick` 调用已把报告放在工具结果里，完成通知不再重复投递。
-    if !awaited {
-        deliver_result_notice(
-            &inner,
-            &parent_id,
-            &agent_id,
-            &title,
-            status,
-            message.as_ref(),
-        )
-        .await;
-    }
 }
 
-/// 子代理结束时把结果作为 notice 投进父会话，父模型下一轮就能看到。
-async fn deliver_result_notice(
+/// 保存完整展示结果并推送卡片；模型仍只接收原有的有界结果提醒。
+async fn deliver_result(
     inner: &CoreInner,
+    updates: &UpdateSink,
     parent_id: &str,
     agent_id: &str,
     title: &str,
     status: AgentStatus,
     message: Option<&Message>,
-) {
+) -> Result<(), CoreError> {
     let label = match status {
         AgentStatus::Completed => "completed",
         AgentStatus::Stopped => "stopped",
         AgentStatus::Failed => "failed",
-        _ => return,
+        _ => return Ok(()),
     };
     // 回退孤儿的收尾通知不进父会话 notice 队列：它在 transcript 里的痕迹已被
     // 截断，"已停止"通知只会成为指向死时间线的噪音。
@@ -759,23 +770,49 @@ async fn deliver_result_notice(
         .await
         .contains(agent_id)
     {
-        return;
+        return Ok(());
     }
-    let Ok(parent) = inner.sessions.get(parent_id).await else {
-        return;
-    };
+    let parent = inner.sessions.get(parent_id).await?;
     let mut notice = format!("Subagent \"{title}\" ({agent_id}) {label}");
-    if let Some(text) = message
-        .map(Message::text)
-        .filter(|text| !text.trim().is_empty())
-    {
-        let (preview, truncated) = preview_text(&text, RESULT_PREVIEW_CHARS);
+    let body = message.map_or_else(String::new, Message::text);
+    if !body.trim().is_empty() {
+        let (preview, truncated) = preview_text(&body, RESULT_PREVIEW_CHARS);
         notice.push_str(&format!(". Result preview:\n{preview}"));
         if truncated {
             notice.push_str("\n(truncated; wait_agent returns the full result)");
         }
     }
+    let meta = moc_protocol::methods::AgentResultMeta {
+        agent_id: agent_id.to_owned(),
+        title: title.to_owned(),
+        status,
+    };
+    let entry = inner
+        .sessions
+        .append(
+            parent_id,
+            crate::session::entries::EntryPayload::AgentResult {
+                meta: meta.clone(),
+                report: body,
+            },
+        )
+        .await?;
     parent.state.lock().await.notices.push(notice);
+    updates
+        .emit(
+            parent_id,
+            SessionUpdate::AgentResult {
+                entry_id: entry.id().to_owned(),
+                at_ms: entry.at_ms(),
+                meta,
+                body: match entry {
+                    crate::session::entries::Entry::Message { message, .. } => message.text(),
+                    _ => unreachable!("结果载荷只生成消息条目"),
+                },
+            },
+        )
+        .await
+        .map_err(|error| CoreError::Protocol(error.to_string()))
 }
 
 async fn current_info(inner: &CoreInner, agent_id: &str) -> Result<AgentInfo, CoreError> {

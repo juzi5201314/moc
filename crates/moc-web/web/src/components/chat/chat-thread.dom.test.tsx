@@ -1,8 +1,10 @@
 import { act, fireEvent, render } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { createView } from "@/lib/transcript-model";
+import { BRIEF_BODY_ROWS } from "@/lib/tool-view";
+import { applyUpdate, createView, entriesToBlocks } from "@/lib/transcript-model";
 import type { SessionInfo } from "@/protocol/types";
+import { usePrefs } from "@/store/prefs";
 import { useTranscript } from "@/store/transcript";
 import { ChatThread } from "./chat-thread";
 
@@ -22,8 +24,10 @@ const info: SessionInfo = {
 };
 
 const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+const toolDetail = usePrefs.getState().toolDetail;
 afterEach(() => {
   useTranscript.getState().drop(info.id);
+  usePrefs.setState({ toolDetail });
   if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
   else Reflect.deleteProperty(navigator, "clipboard");
   vi.restoreAllMocks();
@@ -93,5 +97,59 @@ it("复制回复按需拼接全部正文，保留空段、顺序和流式入口"
     expect(Boolean(thread.queryByRole("button", { name: "复制回复" }))).toBe(Boolean(expected));
     thread.unmount();
     spy.mockRestore();
+  }
+});
+
+it("实时与恢复的子代理结果独立显示，展开后保留尾部并响应全局折叠", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const meta = { agent_id: "child", title: "探查者", status: "completed" as const };
+  const body = `第一段\n\n${"中间段\n\n".repeat(BRIEF_BODY_ROWS)}报告末尾`;
+  for (const restored of [false, true]) {
+    usePrefs.setState({ toolDetail: "brief" });
+    const view = createView(info);
+    view.blocks = [
+      { kind: "reasoning", id: "thinking", text: "已折叠的处理过程" },
+      { kind: "text", id: "reply", text: "父代理回复" },
+    ];
+    if (restored) {
+      view.blocks.push(
+        ...entriesToBlocks([
+          {
+            id: "result",
+            at_ms: 1,
+            message: { role: "Custom", content: [{ Text: body }] },
+            agent_result: meta,
+          },
+        ]),
+      );
+    } else {
+      applyUpdate(view, { type: "agent_result", entry_id: "result", at_ms: 1, meta, body });
+    }
+    view.blocks.push({ kind: "footer", id: "footer", atMs: 2, finishReason: "Stop" });
+    useTranscript.setState({ bySession: { [info.id]: view } });
+    const thread = render(
+      <TooltipProvider>
+        <ChatThread sessionId={info.id} />
+      </TooltipProvider>,
+    );
+    await act(async () => {});
+    expect(thread.queryByText("已折叠的处理过程")).toBeNull();
+    expect(thread.getByText("第一段")).toBeTruthy();
+    expect(thread.queryByText("报告末尾")).toBeNull();
+    const header = thread.getByRole("button", { name: /探查者/ });
+    fireEvent.click(header);
+    expect(thread.getByText("报告末尾")).toBeTruthy();
+    act(() => usePrefs.setState({ toolDetail: "hidden" }));
+    expect(thread.queryByText("第一段")).toBeNull();
+    act(() => usePrefs.setState({ toolDetail: "brief" }));
+    expect(thread.queryByText("报告末尾")).toBeNull();
+    thread.unmount();
   }
 });

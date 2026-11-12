@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 2869597396f020ef
+// schema sha256: e78203fd198e8972
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -573,6 +573,13 @@ export type SessionUpdate =
       body: string;
       meta: AgentMessageMeta1;
       type: "agent_message";
+    }
+  | {
+      at_ms: number;
+      body: string;
+      entry_id: string;
+      meta: AgentResultMeta;
+      type: "agent_result";
     }
   | {
       /**
@@ -1246,6 +1253,17 @@ export interface AgentProfile {
    * agent ID。
    */
   id: string;
+}
+/**
+ * 子代理终态结果的来源；完整报告只供前端展示，模型仍消费原有结果提醒。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "AgentResultMeta".
+ */
+export interface AgentResultMeta {
+  agent_id: string;
+  status: AgentStatus;
+  title: string;
 }
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
@@ -3592,6 +3610,10 @@ export interface TranscriptEntry {
    */
   agent?: AgentMessageMeta | null;
   /**
+   * 子代理交付的完整结果；仅供展示，不重复进入模型上下文。
+   */
+  agent_result?: AgentResultMeta | null;
+  /**
    * 记录时间的 UNIX 毫秒时间戳。
    */
   at_ms: number;
@@ -4859,6 +4881,13 @@ export interface SessionUpdateParams {
         body: string;
         meta: AgentMessageMeta1;
         type: "agent_message";
+      }
+    | {
+        at_ms: number;
+        body: string;
+        entry_id: string;
+        meta: AgentResultMeta;
+        type: "agent_result";
       }
     | {
         /**

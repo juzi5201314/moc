@@ -298,6 +298,7 @@ fn transcript(session_id: &str) -> Vec<TranscriptEntry> {
             agent: None,
             goal_round: None,
             reminder: None,
+            agent_result: None,
         })
         .collect()
 }
@@ -491,6 +492,7 @@ impl ScriptedService {
                     agent: None,
                     goal_round: None,
                     reminder: None,
+                    agent_result: None,
                 });
             }
         });
@@ -1037,6 +1039,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::AgentStarted { .. } => "agent_started",
         SessionUpdate::AgentStatusChanged { .. } => "agent_status_changed",
         SessionUpdate::AgentMessage { .. } => "agent_message",
+        SessionUpdate::AgentResult { .. } => "agent_result",
         SessionUpdate::ToolProgress { .. } => "tool_progress",
         SessionUpdate::ToolBatchStarted { .. } => "tool_batch_started",
         SessionUpdate::PromptStarted { .. } => "prompt_started",

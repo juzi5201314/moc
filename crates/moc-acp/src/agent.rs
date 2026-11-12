@@ -569,6 +569,7 @@ mod tests {
             agent: None,
             goal_round: None,
             reminder: None,
+            agent_result: None,
         }
     }
 

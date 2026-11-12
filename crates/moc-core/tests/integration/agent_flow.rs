@@ -190,6 +190,67 @@ async fn spawn_wait_returns_yield_report() {
     harness.close().await;
 }
 
+/// 完整报告跨越状态预览上限，持久化展示结果不得再次进入父模型上下文。
+#[tokio::test]
+async fn result_card_persists_full_report_without_context_duplication() {
+    let upstream = MockServer::builder().start().await;
+    let report = format!("{}\n报告末尾", "完整结果\n".repeat(2_000));
+    let response_report = report.clone();
+    mount_router(&upstream, move |body| {
+        if body.to_string().contains("CARD_TASK") {
+            yield_call("call_yield", &response_report)
+        } else {
+            text_response("PARENT_OK")
+        }
+    })
+    .await;
+    let harness = harness(&upstream).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
+    let mut events = harness.events.subscribe();
+    let child_id = spawn_child(&harness, &parent_id, "CARD_TASK").await;
+    let (entry_id, meta, body) = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let moc_protocol::SessionUpdate::AgentResult {
+                entry_id,
+                meta,
+                body,
+                ..
+            } = events.recv().await.expect("连接仍在")
+            {
+                break (entry_id, meta, body);
+            }
+        }
+    })
+    .await
+    .expect("结果应及时送达");
+    assert_eq!(meta.agent_id, child_id);
+    assert_eq!(meta.status, AgentStatus::Completed);
+    assert_eq!(body, report, "展示结果不能使用截断的状态预览");
+    let entries = transcript_entries(&harness, &parent_id).await;
+    let stored = entries
+        .iter()
+        .find(|entry| entry.id() == entry_id)
+        .expect("结果已落盘");
+    let result = stored.transcript_entry().expect("结果转写");
+    assert_eq!(result.agent_result.as_ref(), Some(&meta));
+    assert_eq!(result.message.text(), report);
+    assert!(
+        result.context_message().is_none(),
+        "展示记录不能重复进入上下文"
+    );
+    harness.prompt(&parent_id, "检查结果提醒").await;
+    let requests = upstream.received_requests().await.expect("上游请求");
+    let parent_request: Value =
+        serde_json::from_slice(&requests.last().expect("父提示").body).expect("请求 JSON");
+    let context = parent_request["messages"].to_string();
+    assert!(context.contains("Result preview"), "保留原有模型结果提醒");
+    assert!(
+        !context.contains("报告末尾"),
+        "完整展示报告不能泄漏到有界提醒之外"
+    );
+    harness.close().await;
+}
+
 #[tokio::test]
 async fn failed_child_agent_reports_its_error_to_the_parent() {
     let upstream = MockServer::builder().start().await;

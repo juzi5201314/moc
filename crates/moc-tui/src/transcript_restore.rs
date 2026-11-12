@@ -47,6 +47,16 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
             }));
             continue;
         }
+        if let Some(meta) = &record.agent_result {
+            blocks.push(Entry {
+                at_ms: Some(record.at_ms),
+                ..Entry::new(Block::AgentResult {
+                    meta: meta.clone(),
+                    body: message.text(),
+                })
+            });
+            continue;
+        }
         // goal 续跑轮：带轮次标记的用户消息，恢复成独立卡片而不是普通输入。
         if let Some(meta) = &record.goal_round {
             blocks.push(Entry::new(Block::GoalRound {
@@ -238,6 +248,7 @@ mod tests {
             agent: None,
             goal_round: None,
             reminder: None,
+            agent_result: None,
         }
     }
 

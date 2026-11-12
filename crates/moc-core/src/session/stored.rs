@@ -60,6 +60,7 @@ impl StoredEntry {
                 finish_reason: finish_reason.clone(),
                 bash: entry.bash.clone(),
                 agent: entry.agent.clone(),
+                agent_result: entry.agent_result.clone(),
                 goal: entry.goal_round.clone(),
                 reminder: entry.reminder.clone(),
             },

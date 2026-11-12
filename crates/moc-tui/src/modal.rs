@@ -2106,6 +2106,7 @@ mod tests {
             agent: None,
             goal_round: None,
             reminder: None,
+            agent_result: None,
         };
         let mut state = RewindState::default();
         state.set_entries(
@@ -2141,6 +2142,7 @@ mod tests {
             agent: None,
             goal_round: None,
             reminder: None,
+            agent_result: None,
         };
         let mut state = RewindState::default();
         state.set_entries(

@@ -1321,19 +1321,19 @@ impl App {
             DetailLevel::Brief | DetailLevel::Full => DetailLevel::Hidden,
         };
         for entry in &mut self.blocks {
-            if matches!(entry.block, Block::Tool(_)) {
+            if matches!(entry.block, Block::Tool(_) | Block::AgentResult { .. }) {
                 entry.clear_level_override();
             }
         }
         self.view_gen += 1;
     }
 
-    /// 块的层档位：思考块看 `thinking_detail`、工具块看 `tool_detail`、
+    /// 块的层档位：思考块看 `thinking_detail`、工具和结果卡片看 `tool_detail`，
     /// 其余块（IRC 卡片等）固定简略预览。
     pub fn block_level(&self, block: &Block) -> DetailLevel {
         match block {
             Block::Thinking { .. } => self.thinking_detail,
-            Block::Tool(_) => self.tool_detail,
+            Block::Tool(_) | Block::AgentResult { .. } => self.tool_detail,
             _ => DetailLevel::Brief,
         }
     }

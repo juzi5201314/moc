@@ -16,7 +16,8 @@ export type Segment =
   | { kind: "activity"; id: string; blocks: Block[] }
   | { kind: "text"; id: string; block: TextBlock }
   | { kind: "plan"; id: string; block: PlanBlock }
-  | { kind: "notice"; id: string; block: StatusBlock };
+  | { kind: "notice"; id: string; block: StatusBlock }
+  | { kind: "agent-result"; id: string; block: Extract<Block, { kind: "agent-result" }> };
 
 export type Turn = {
   /** 轮次 id：优先用用户块，续接轮（开头没有用户块）退回首个块的 id。 */
@@ -37,6 +38,11 @@ function pushSegment(turn: Turn, block: Block): void {
   }
   if (block.kind === "plan") {
     turn.segments.push({ kind: "plan", id: block.id, block });
+    return;
+  }
+  // 交付结果独立显示，不埋进完成轮次的「处理过程」。
+  if (block.kind === "agent-result") {
+    turn.segments.push({ kind: "agent-result", id: block.id, block });
     return;
   }
   // 告警与错误不藏进折叠组：用户必须一眼看到。
@@ -190,6 +196,7 @@ export function activityKind(block: Block): ActivityKind | null {
     case "plan":
       return "plan";
     case "agent-message":
+    case "agent-result":
       return "subagents";
     case "tool":
       return toolKind((block as ToolBlock).name);
@@ -369,6 +376,7 @@ export function activitySnippet(block: Block, limit = 80): string {
     case "plan":
       return block.path;
     case "agent-message":
+    case "agent-result":
       return clip(block.body);
     case "status":
       return clip(block.text);

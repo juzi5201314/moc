@@ -41,7 +41,7 @@ const FULL_BODY_ROWS: usize = 4001;
 // 走不同的收窄口径。
 const _: () = assert!(FULL_BODY_ROWS >= diff::MAX_RENDERED_ROWS);
 
-/// 接收侧 IRC 卡片折叠时保留的正文行数。
+/// 接收侧 IRC 与子代理结果卡片折叠时保留的正文行数。
 const AGENT_MESSAGE_PREVIEW_ROWS: usize = 3;
 
 /// 滚动区渲染状态（与 `App::blocks` 长度保持同步）。
@@ -1134,7 +1134,9 @@ fn estimate_entry_height(
             }
         }
         Block::Tool(tool) => estimate_tool_height(tool, app, level, width, layout),
-        Block::AgentMessage { body, .. } | Block::GoalRound { body, .. } => {
+        Block::AgentMessage { body, .. }
+        | Block::AgentResult { body, .. }
+        | Block::GoalRound { body, .. } => {
             // 与 `agent_message_block` 同源：简略档是预览行数 + 省略行，隐藏档只剩标题行。
             let rows = wrapped_text_rows(body, prose_width(width)).len();
             let (shown, omitted) = match level {
@@ -1403,6 +1405,9 @@ fn render_entry_single(
         Block::Tool(tool) => render_tool(tool, app, width, level, spawn_images, layout),
         Block::AgentMessage { meta, body } => {
             EntryLines::plain(agent_message_block(meta, body, width, theme, level))
+        }
+        Block::AgentResult { meta, body } => {
+            EntryLines::plain(agent_result_block(meta, body, width, theme, level))
         }
         Block::GoalRound { meta, body } => {
             EntryLines::plain(goal_round_block(meta, body, width, theme, level))
@@ -1936,7 +1941,7 @@ fn agent_message_block(
     level: DetailLevel,
 ) -> Vec<Line<'static>> {
     let (word, color) = outcome_label(meta.delivery, theme);
-    let mut lines = vec![clip_line(
+    agent_card(
         Line::from(vec![
             Span::raw(" ".repeat(TITLE_INDENT)),
             Span::styled("◆ ", Style::new().fg(theme.accent_tool)),
@@ -1950,8 +1955,57 @@ fn agent_message_block(
             Span::styled(meta.from_title.clone(), Style::new().fg(theme.text_primary)),
             Span::styled(format!("{}{word}", labels::SEP), Style::new().fg(color)),
         ]),
+        body,
         width,
-    )];
+        theme,
+        level,
+    )
+}
+
+/// 结果标题明确区分来源与终态；报告正文沿用 IRC 的折叠与折行规则。
+fn agent_result_block(
+    meta: &moc_protocol::methods::AgentResultMeta,
+    body: &str,
+    width: usize,
+    theme: &Theme,
+    level: DetailLevel,
+) -> Vec<Line<'static>> {
+    let color = match meta.status {
+        moc_protocol::methods::AgentStatus::Failed => theme.accent_error,
+        moc_protocol::methods::AgentStatus::Stopped => theme.gray_bright,
+        _ => theme.accent_tool,
+    };
+    agent_card(
+        Line::from(vec![
+            Span::raw(" ".repeat(TITLE_INDENT)),
+            Span::styled("◆ ", Style::new().fg(color)),
+            Span::styled(
+                "子代理结果 ",
+                Style::new()
+                    .fg(theme.accent_tool)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(meta.title.clone(), Style::new().fg(theme.text_primary)),
+            Span::styled(
+                format!("{}{}", labels::SEP, agent_status_label(meta.status)),
+                Style::new().fg(color),
+            ),
+        ]),
+        body,
+        width,
+        theme,
+        level,
+    )
+}
+
+fn agent_card(
+    header: Line<'static>,
+    body: &str,
+    width: usize,
+    theme: &Theme,
+    level: DetailLevel,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![clip_line(header, width)];
     let indent = " ".repeat(PROSE_INDENT);
     let rows = wrapped_text_rows(body, prose_width(width));
     let total = rows.len();
@@ -5770,6 +5824,38 @@ mod tests {
             TreeIndex::EMPTY,
         );
         assert_eq!(hidden.lines.len(), 2, "隐藏档只剩标题行与尾随留白");
+    }
+
+    #[test]
+    fn result_card_folding_keeps_report_and_scroll_height_in_sync() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.push_block(Block::AgentResult {
+            meta: moc_protocol::methods::AgentResultMeta {
+                agent_id: "ses_child".into(),
+                title: "探查者".into(),
+                status: moc_protocol::methods::AgentStatus::Completed,
+            },
+            body: "第一行\n第二行\n第三行\n报告末尾".into(),
+        });
+        let width = 24;
+        let text =
+            |lines: &[Line<'static>]| lines.iter().map(plain_text).collect::<Vec<_>>().join("\n");
+        let preview = render_entry(0, &app.blocks[0], &app, width).lines;
+        assert!(text(&preview).contains("第三行"));
+        assert!(!text(&preview).contains("报告末尾"));
+        assert_eq!(estimate_entry_height_at(&app, 0, width), preview.len());
+        app.blocks[0].toggle_level(DetailLevel::Brief);
+        let full = render_entry(0, &app.blocks[0], &app, width).lines;
+        assert!(text(&full).contains("报告末尾"));
+        assert!(full.iter().all(|line| line.width() <= usize::from(width)));
+        assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
+        app.cycle_tool_detail();
+        let hidden = render_entry(0, &app.blocks[0], &app, width).lines;
+        assert!(!text(&hidden).contains("第一行"));
+        assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
+        app.cycle_tool_detail();
+        assert!(!text(&render_entry(0, &app.blocks[0], &app, width).lines).contains("报告末尾"));
     }
 
     /// 发送侧 IRC 卡片：广播回执逐行展开，摘要给出总量。

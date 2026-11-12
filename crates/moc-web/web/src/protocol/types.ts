@@ -47,6 +47,7 @@ export const SESSION_UPDATE_TYPES: Record<SessionUpdateType, true> = {
   agent_started: true,
   agent_status_changed: true,
   agent_message: true,
+  agent_result: true,
   tool_progress: true,
   tool_batch_started: true,
   prompt_started: true,

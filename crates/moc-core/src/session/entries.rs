@@ -116,6 +116,9 @@ pub enum Entry {
         /// 代理间消息的来源信息；普通输入没有这个字段。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<moc_protocol::methods::AgentMessageMeta>,
+        /// 子代理终态结果，仅供前端展示。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_result: Option<moc_protocol::methods::AgentResultMeta>,
         /// goal 续跑轮的来源信息；普通输入没有这个字段。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         goal: Option<moc_protocol::methods::GoalRoundMeta>,
@@ -301,6 +304,11 @@ pub enum EntryPayload {
         agent: Option<moc_protocol::methods::AgentMessageMeta>,
         /// goal 续跑轮的来源信息；普通输入为 `None`。
         goal: Option<moc_protocol::methods::GoalRoundMeta>,
+    },
+    /// 完整结果与模型提醒分离，避免长报告重复进入上下文。
+    AgentResult {
+        meta: moc_protocol::methods::AgentResultMeta,
+        report: String,
     },
     /// 运行时提醒：一段按条目差分后写入历史的 `Role::Custom` 消息。
     ///
@@ -592,7 +600,21 @@ impl Entry {
                 finish_reason,
                 bash: None,
                 agent,
+                agent_result: None,
                 goal,
+                reminder: None,
+            },
+            EntryPayload::AgentResult { meta, report } => Self::Message {
+                id,
+                parent_id,
+                at_ms,
+                message: Message::custom(report),
+                tool: None,
+                finish_reason: None,
+                bash: None,
+                agent: None,
+                agent_result: Some(meta),
+                goal: None,
                 reminder: None,
             },
             EntryPayload::Reminder { message, items } => Self::Message {
@@ -604,6 +626,7 @@ impl Entry {
                 finish_reason: None,
                 bash: None,
                 agent: None,
+                agent_result: None,
                 goal: None,
                 reminder: Some(moc_protocol::ReminderStamp { items }),
             },
@@ -620,6 +643,7 @@ impl Entry {
                 finish_reason: None,
                 bash: Some(command),
                 agent: None,
+                agent_result: None,
                 goal: None,
                 reminder: None,
             },
@@ -895,6 +919,7 @@ impl Entry {
                 tool,
                 bash,
                 agent,
+                agent_result,
                 goal,
                 reminder,
                 ..
@@ -905,6 +930,7 @@ impl Entry {
                 tool: tool.clone(),
                 bash: bash.clone(),
                 agent: agent.clone(),
+                agent_result: agent_result.clone(),
                 goal_round: goal.clone(),
                 reminder: reminder.clone(),
             }),
@@ -961,16 +987,25 @@ impl Entry {
 ///
 /// `spawn_agent` 的结果正文是 `{"agents":[{"agent_id": ...}], "errors": [...]}`，
 /// 批量与嵌套形状都可能变化，所以对工具结果 JSON 递归找 `agent_id` 键；
-/// 代理投递消息另用 `agent.from_id` 记入。回退后仍被历史引用的子会话才在
-/// 代理名册中可见，引用全部截掉的子会话即孤儿。
+/// 代理投递消息另用 `agent.from_id`、结果卡片用 `agent_result.agent_id` 记入。
+/// 回退后仍被历史引用的子会话才在代理名册中可见，引用全部截掉的子会话即孤儿。
 pub fn referenced_agent_ids(entries: &[Entry]) -> std::collections::BTreeSet<String> {
     let mut ids = std::collections::BTreeSet::new();
     for entry in entries {
-        let Entry::Message { message, agent, .. } = entry else {
+        let Entry::Message {
+            message,
+            agent,
+            agent_result,
+            ..
+        } = entry
+        else {
             continue;
         };
         if let Some(meta) = agent {
             ids.insert(meta.from_id.clone());
+        }
+        if let Some(meta) = agent_result {
+            ids.insert(meta.agent_id.clone());
         }
         for result in message.tool_results() {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&result.content) {

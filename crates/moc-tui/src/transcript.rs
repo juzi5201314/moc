@@ -413,6 +413,11 @@ pub enum Block {
         meta: moc_protocol::methods::AgentMessageMeta,
         body: String,
     },
+    /// 子代理交付的终态结果，不冒充本会话的工具调用或普通通知。
+    AgentResult {
+        meta: moc_protocol::methods::AgentResultMeta,
+        body: String,
+    },
     /// goal 自动续跑的一轮（带轮次标记的用户消息）。
     GoalRound {
         meta: moc_protocol::methods::GoalRoundMeta,
@@ -426,7 +431,10 @@ impl Block {
     /// 块是否响应折叠切换。
     pub fn foldable(&self) -> bool {
         match self {
-            Block::Thinking { .. } | Block::AgentMessage { .. } | Block::GoalRound { .. } => true,
+            Block::Thinking { .. }
+            | Block::AgentMessage { .. }
+            | Block::AgentResult { .. }
+            | Block::GoalRound { .. } => true,
             Block::Tool(tool) => tool.expandable(),
             Block::User { .. } | Block::Assistant { .. } | Block::Note { .. } => false,
         }

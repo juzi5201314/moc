@@ -415,6 +415,7 @@ impl Renderer {
             | SessionUpdate::SteeringApplied { .. }
             | SessionUpdate::PromptRewound { .. }
             | SessionUpdate::LockChanged { .. }
+            | SessionUpdate::AgentResult { .. }
             | SessionUpdate::JobStarted { .. }
             | SessionUpdate::JobUpdated { .. }
             | SessionUpdate::JobOutput { .. } => {}

@@ -93,6 +93,13 @@ pub enum SessionUpdate {
         /// 消息正文。
         body: String,
     },
+    /// 子代理的完整终态结果已写入父会话；与代理间通信消息区分。
+    AgentResult {
+        entry_id: String,
+        at_ms: u64,
+        meta: super::agent::AgentResultMeta,
+        body: String,
+    },
     /// 运行中工具的进度快照（目前仅 `wait_agent` 推送）。
     ToolProgress {
         /// 提示 ID。

@@ -5896,24 +5896,6 @@ fn apply_update_and_refresh(
         view.set_status(*status, last_message.clone());
         app.subagent_generation = app.subagent_generation.wrapping_add(1);
         app.sync_subagent_sidebar();
-        // 终态在主流里留一行：侧栏未必打开，用户仍要知道子代理已经结束。
-        if matches!(
-            status,
-            moc_protocol::methods::AgentStatus::Completed
-                | moc_protocol::methods::AgentStatus::Stopped
-                | moc_protocol::methods::AgentStatus::Failed
-        ) {
-            let title = app
-                .subagents
-                .get(agent_id)
-                .map_or(agent_id.as_str(), |view| view.info.title.as_str())
-                .to_owned();
-            let label = crate::render::scrollback::agent_status_label(*status);
-            app.push_note(
-                format!("子代理「{title}」{}{label}", crate::render::labels::SEP),
-                false,
-            );
-        }
     }
     let prompt_started = matches!(
         &update,
@@ -6027,6 +6009,14 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::AgentMessage { meta, body } => {
             app.push_block(Block::AgentMessage { meta, body })
+        }
+        SessionUpdate::AgentResult {
+            meta, body, at_ms, ..
+        } => {
+            app.blocks.push(crate::transcript::Entry {
+                at_ms: Some(at_ms),
+                ..crate::transcript::Entry::new(Block::AgentResult { meta, body })
+            });
         }
         SessionUpdate::GoalRoundMessage { meta, body } => {
             app.push_block(Block::GoalRound { meta, body })
@@ -9639,6 +9629,7 @@ mod tests {
             tool: None,
             bash: None,
             agent: None,
+            agent_result: None,
             goal_round: None,
             reminder: None,
         };

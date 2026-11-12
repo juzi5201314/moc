@@ -226,6 +226,27 @@
       ],
       "type": "object"
     },
+    "AgentResultMeta": {
+      "additionalProperties": false,
+      "description": "子代理终态结果的来源；完整报告只供前端展示，模型仍消费原有结果提醒。",
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/AgentStatus"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "title",
+        "status"
+      ],
+      "type": "object"
+    },
     "AgentRole": {
       "additionalProperties": false,
       "description": "当前调用方可派发的固定角色；定义归配置所有，不向客户端开放覆盖。",
@@ -5852,6 +5873,37 @@
           "type": "object"
         },
         {
+          "description": "子代理的完整终态结果已写入父会话；与代理间通信消息区分。",
+          "properties": {
+            "at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "body": {
+              "type": "string"
+            },
+            "entry_id": {
+              "type": "string"
+            },
+            "meta": {
+              "$ref": "#/$defs/AgentResultMeta"
+            },
+            "type": {
+              "const": "agent_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "entry_id",
+            "at_ms",
+            "meta",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
           "description": "运行中工具的进度快照（目前仅 `wait_agent` 推送）。",
           "properties": {
             "prompt_id": {
@@ -7570,6 +7622,17 @@
             }
           ],
           "description": "代理间消息的来源元信息；`None` 表示本地输入。"
+        },
+        "agent_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentResultMeta"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "子代理交付的完整结果；仅供展示，不重复进入模型上下文。"
         },
         "at_ms": {
           "description": "记录时间的 UNIX 毫秒时间戳。",
