@@ -840,9 +840,26 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
             .content
             .as_str()
     };
-    assert!(output("pipe_wait").contains("TimedOut\njob finished\npipe-ready"));
-    assert!(output("pty_wait").contains("TimedOut"));
-    assert!(output("pty_wait").contains("pty-ready"));
+    // deadline 回收由 JobFinished 事件佐证；wait 返回「终态」或「新输出」
+    // 取决于完成通知送达的时点，两种结局都必须带出终态或增量文本。
+    let updates = h.updates.lock().clone();
+    for job_id in ["job_1", "job_2"] {
+        assert!(
+            updates.iter().any(|update| matches!(
+                update,
+                SessionUpdate::JobFinished { job }
+                    if job.job_id == job_id && job.status == JobStatus::TimedOut
+            )),
+            "{job_id} 应被 deadline 回收：{updates:?}"
+        );
+    }
+    for (call, marker) in [("pipe_wait", "pipe-ready"), ("pty_wait", "pty-ready")] {
+        let text = output(call);
+        assert!(
+            text.contains("job finished") || text.contains(marker),
+            "{call} 应返回终态或增量输出：{text}"
+        );
+    }
     assert_eq!(output("pty_kill"), "Killed");
     assert!(results.iter().all(|result| !result.is_error));
     let original_uri = output("pipe_start")
@@ -866,6 +883,7 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
         .join("jobs")
         .join(file_name);
     let before = std::fs::read(&original_log).unwrap();
+    assert_eq!(before, b"pipe-ready", "被杀任务的输出应完整落盘");
     h.client
         .call::<SessionUnload>(SessionUnloadParams {
             session_id: id.clone(),

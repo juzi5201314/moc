@@ -70,6 +70,8 @@ struct Job {
     attached: Option<oneshot::Sender<ForegroundResult>>,
     announce: Announce,
     log: JobLog,
+    /// 模型已看到的逻辑输出位置（`JobLog` 的 `seen` 坐标）；`job output`/`job wait`/通知送达后推进。
+    read_cursor: u64,
 }
 
 impl Job {
@@ -256,6 +258,7 @@ impl JobManager {
                 session_id: ctx.session_id.clone(),
             },
             log: spec.log.clone(),
+            read_cursor: 0,
         };
         let started = SessionUpdate::JobStarted { job: job.info() };
         let announce = job.announce.clone();
@@ -531,6 +534,38 @@ impl JobManager {
         Ok((info, text, log.path().to_owned()))
     }
 
+    /// 模型侧的 `job output`：与 `output` 相同，但把游标推进到展示文本的末尾，
+    /// 之后的 `job wait` 只返回真正的新输出。前端 RPC 走 `output`，不动游标。
+    pub(crate) fn output_for_model(
+        &self,
+        id: &str,
+        lines: usize,
+    ) -> Result<(JobInfo, String, PathBuf), ToolError> {
+        let mut jobs = self.jobs.lock();
+        let job = jobs
+            .get_mut(id)
+            .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("unknown job `{id}`")))?;
+        let (mut text, elided, seen) = job
+            .log
+            .read_tail_and_seen(lines)
+            .map_err(|error| ToolError::new("E_JOB_LOG", error.to_string()))?;
+        job.read_cursor = seen;
+        if elided {
+            text.insert_str(
+                0,
+                "[output_elided=true; the middle of the output was dropped]\n",
+            );
+        }
+        Ok((job.info(), text, job.log.path().to_owned()))
+    }
+
+    /// 「展示即已读」：把游标推进到 `seen`（展示文本的末尾）；只前进不回退。
+    pub(crate) fn mark_output_read(&self, id: &str, seen: u64) {
+        if let Some(job) = self.jobs.lock().get_mut(id) {
+            job.read_cursor = job.read_cursor.max(seen);
+        }
+    }
+
     /// 终止并等进程组退出。
     pub async fn kill(&self, id: &str) -> Result<JobInfo, ToolError> {
         let before = self.require(id)?;
@@ -543,13 +578,88 @@ impl JobManager {
         }))
     }
 
-    /// 等任务结束，最多 `timeout`；返回当时的快照。
-    pub async fn wait(&self, id: &str, timeout: Duration) -> Result<JobInfo, ToolError> {
-        let before = self.require(id)?;
-        Ok(self
-            .wait_terminal(id, Some(tokio::time::Instant::now() + timeout))
-            .await
-            .unwrap_or(before))
+    /// 等任务结束、等到新输出，或超时；返回快照与自上次展示以来的增量文本。
+    pub(crate) async fn wait(
+        &self,
+        id: &str,
+        timeout: Duration,
+        tail_lines: usize,
+    ) -> Result<WaitOutcome, ToolError> {
+        enum Step {
+            Done(JobInfo, String, u64, WaitReason),
+            Pending(JobInfo),
+        }
+        let deadline = tokio::time::Instant::now() + timeout;
+        let log = {
+            let jobs = self.jobs.lock();
+            jobs.get(id)
+                .map(|job| job.log.clone())
+                .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("unknown job `{id}`")))?
+        };
+        loop {
+            // 先挂号再检查，免得把「检查后、入睡前」到达的输出或终态睡过去。
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let output = log.output_notified();
+            tokio::pin!(output);
+            output.as_mut().enable();
+            let step = {
+                let mut jobs = self.jobs.lock();
+                let Some(job) = jobs.get_mut(id) else {
+                    return Err(ToolError::new(
+                        "E_JOB_NOT_FOUND",
+                        format!("unknown job `{id}`"),
+                    ));
+                };
+                let reason = if job.status.is_terminal() {
+                    Some(WaitReason::Finished)
+                } else if job.log.bytes_seen() > job.read_cursor {
+                    Some(WaitReason::NewOutput)
+                } else {
+                    None
+                };
+                match reason {
+                    Some(reason) => {
+                        let (text, next, skipped) = job
+                            .log
+                            .read_since(job.read_cursor)
+                            .map_err(|error| ToolError::new("E_JOB_LOG", error.to_string()))?;
+                        job.read_cursor = next;
+                        Step::Done(job.info(), text, skipped, reason)
+                    }
+                    None => Step::Pending(job.info()),
+                }
+            };
+            let (info, text, skipped, reason) = match step {
+                Step::Done(info, text, skipped, reason) => (info, text, skipped, reason),
+                Step::Pending(info) => {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if !remaining.is_zero() {
+                        tokio::select! {
+                            _ = changed => continue,
+                            _ = output => continue,
+                            _ = tokio::time::sleep(remaining) => {}
+                        }
+                    }
+                    return Ok(WaitOutcome {
+                        info,
+                        reason: WaitReason::TimedOut,
+                        text: String::new(),
+                        log_path: log.path().to_owned(),
+                        skipped_bytes: 0,
+                    });
+                }
+            };
+            let (text, omitted) = truncate_to_lines(text, tail_lines);
+            return Ok(WaitOutcome {
+                info,
+                reason,
+                text,
+                log_path: log.path().to_owned(),
+                skipped_bytes: skipped + omitted,
+            });
+        }
     }
 
     /// 任务已被驱逐时返回 `None`（说明早已结束）。
@@ -651,7 +761,17 @@ impl JobManager {
 
     /// 通知已整体送入模型上下文；调用方必须持有会话状态锁。
     pub(crate) fn mark_all_reported(&self) {
-        self.unreported.lock().clear();
+        let unreported = std::mem::take(&mut *self.unreported.lock());
+        if unreported.is_empty() {
+            return;
+        }
+        let mut jobs = self.jobs.lock();
+        for id in unreported {
+            // 完成通知的 tail 已随 notices 进入上下文；这些任务均已结束，seen 不再增长。
+            if let Some(job) = jobs.get_mut(&id) {
+                job.read_cursor = job.log.bytes_seen();
+            }
+        }
     }
 
     /// 是否有后台任务结束、通知还没送达，且唤醒没有被用户取消抑制。
@@ -764,6 +884,38 @@ impl Drop for Foreground {
     }
 }
 
+/// `job wait` 返回的原因。
+pub(crate) enum WaitReason {
+    /// 任务进入终态。
+    Finished,
+    /// 等到了自上次展示以来的新输出。
+    NewOutput,
+    /// 超时；期间没有新输出、任务仍在运行。
+    TimedOut,
+}
+
+/// `job wait` 的结果：状态快照、返回原因、增量文本与被折叠的字节数。
+pub(crate) struct WaitOutcome {
+    pub info: JobInfo,
+    pub reason: WaitReason,
+    /// 自游标以来的增量文本（按 `tail_lines` 截断）；超时为空。
+    pub text: String,
+    pub log_path: PathBuf,
+    /// 增量范围里没有展示的字节数：日志容量丢弃 + 行数截断省略。
+    pub skipped_bytes: u64,
+}
+
+/// 增量文本按行截断：保留末尾 `max_lines` 行；返回展示文本与被省略的前缀字节数。
+fn truncate_to_lines(text: String, max_lines: usize) -> (String, u64) {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= max_lines {
+        return (text, 0);
+    }
+    let tail = lines[lines.len() - max_lines..].join("\n");
+    let omitted = u64::try_from(text.len() - tail.len()).unwrap_or(u64::MAX);
+    (tail, omitted)
+}
+
 pub(crate) async fn copy_output<R: AsyncRead + Unpin>(
     mut reader: R,
     log: JobLog,
@@ -808,7 +960,7 @@ impl Tool for JobTool {
         "job"
     }
     fn description(&self) -> &'static str {
-        "Manage background shell jobs: list, output, kill, or wait (blocks up to timeout_secs). Completion of a background job is reported to you automatically."
+        "Manage background shell jobs: list, output (recent tail), kill, or wait (returns early when the job finishes or produces output you have not seen, up to timeout_secs). Completion of a background job is reported to you automatically."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -824,7 +976,7 @@ impl Tool for JobTool {
                     "op":{"type":"string","enum":["list","output","kill","wait"]},
                     "job_id":{"type":"string","description":"Job id from list or a notice"},
                     "tail_lines":{"type":"integer","minimum":1,"maximum":2000,"description":"Log lines to return; default 200"},
-                    "timeout_secs":{"type":"integer","minimum":1,"description":"wait only: seconds to block; default 60, capped by tools.job.max_wait_secs"}
+                    "timeout_secs":{"type":"integer","minimum":1,"description":"wait only: max seconds to block before returning; returns earlier on finish or unseen output; default 60, capped by tools.job.max_wait_secs"}
                 }),
                 &["op"],
             ),
@@ -867,7 +1019,7 @@ impl Tool for JobTool {
                 }
                 "output" => {
                     let id = require_id(args.job_id)?;
-                    let (_, text, path) = ctx.jobs.output(&id, tail_lines)?;
+                    let (_, text, path) = ctx.jobs.output_for_model(&id, tail_lines)?;
                     ToolOutput::Excerpt { text, path }
                 }
                 "kill" => {
@@ -882,43 +1034,55 @@ impl Tool for JobTool {
                         .timeout_secs
                         .unwrap_or(60)
                         .clamp(1, ctx.config.tools.job.max_wait_secs);
-                    let info = ctx.jobs.wait(&id, Duration::from_secs(timeout)).await?;
-                    let (_, text, path) = ctx.jobs.output(&id, tail_lines).or_else(|error| {
-                        // 结束后被驱逐的任务只剩日志文件。
-                        if error.code == "E_JOB_NOT_FOUND" {
-                            Ok((info.clone(), String::new(), PathBuf::new()))
-                        } else {
-                            Err(error)
+                    let waited = ctx
+                        .jobs
+                        .wait(&id, Duration::from_secs(timeout), tail_lines)
+                        .await?;
+                    let reason = match waited.reason {
+                        WaitReason::Finished => "finished",
+                        WaitReason::NewOutput => "new_output",
+                        WaitReason::TimedOut => "timeout",
+                    };
+                    let message = match waited.reason {
+                        WaitReason::Finished => {
+                            ctx.jobs.mark_reported(&ctx.state, &id).await;
+                            "job finished".to_owned()
                         }
-                    })?;
-                    let message = if info.status.is_terminal() {
-                        ctx.jobs.mark_reported(&ctx.state, &id).await;
-                        "job finished"
-                    } else if info.lifecycle == JobLifecycle::Persistent {
-                        "persistent job will not auto-complete; use output or kill"
-                    } else {
-                        "monitored job is still running; its completion will be reported automatically, so continue with other work or check output instead of waiting again"
+                        WaitReason::NewOutput => {
+                            "still running; it produced new output since you last saw it (below); wait again to keep watching".to_owned()
+                        }
+                        WaitReason::TimedOut => {
+                            if waited.info.lifecycle == JobLifecycle::Persistent {
+                                "persistent job will not auto-complete; use output or kill"
+                                    .to_owned()
+                            } else {
+                                "monitored job is still running and produced no new output; its completion will be reported automatically, so continue with other work instead of waiting again".to_owned()
+                            }
+                        }
                     };
                     let structured = serde_json::json!({
-                        "status": format!("{:?}", info.status),
-                        "exit_code": info.exit_code,
-                        "lifecycle": wire(info.lifecycle),
-                        "origin": wire(info.origin),
-                        "elapsed_secs": elapsed_secs(&info),
-                        "stalled": info.stalled,
-                        "output_elided": info.output_elided,
+                        "status": format!("{:?}", waited.info.status),
+                        "reason": reason,
+                        "exit_code": waited.info.exit_code,
+                        "lifecycle": wire(waited.info.lifecycle),
+                        "origin": wire(waited.info.origin),
+                        "elapsed_secs": elapsed_secs(&waited.info),
+                        "stalled": waited.info.stalled,
+                        "output_elided": waited.info.output_elided,
                         "message": message,
                     });
-                    let header = format!("{:?}\n{message}\n", info.status);
-                    let output = if path.as_os_str().is_empty() {
-                        ToolOutput::from(header)
-                    } else {
-                        ToolOutput::Excerpt {
-                            text: format!("{header}{text}"),
-                            path,
-                        }
-                    };
-                    let mut outcome = ToolOutcome::success(output);
+                    let mut header = format!("{:?}\n{message}\n", waited.info.status);
+                    if waited.skipped_bytes > 0 {
+                        header.push_str(&format!(
+                            "[... {} earlier bytes of new output are not shown; the log keeps full output ...]\n",
+                            waited.skipped_bytes
+                        ));
+                    }
+                    let text = format!("{header}{}", waited.text);
+                    let mut outcome = ToolOutcome::success(ToolOutput::Excerpt {
+                        text,
+                        path: waited.log_path,
+                    });
                     outcome.structured_content = Some(structured);
                     return Ok(outcome);
                 }

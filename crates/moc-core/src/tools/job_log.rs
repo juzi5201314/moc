@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use tokio::sync::Notify;
 
 /// `read_tail` 最多回看的字节数；只用于取最后几行，不需要整份日志。
 const TAIL_WINDOW: u64 = 1024 * 1024;
@@ -35,6 +36,8 @@ pub(crate) struct JobLog {
     /// 溢出后保留的开头字节数；结尾保留 `capacity - head_cap`。
     head_cap: u64,
     state: Arc<Mutex<JobLogState>>,
+    /// 每次追加后唤醒；`job wait` 据此实现「出新输出即返回」。
+    output_notify: Arc<Notify>,
 }
 
 impl JobLog {
@@ -65,6 +68,7 @@ impl JobLog {
                 seen: 0,
                 finished: false,
             })),
+            output_notify: Arc::new(Notify::new()),
         })
     }
 
@@ -93,6 +97,7 @@ impl JobLog {
             let excess = state.ring.len().saturating_sub(cap);
             state.ring.drain(..excess);
         }
+        self.output_notify.notify_waiters();
         Ok(())
     }
 
@@ -140,18 +145,75 @@ impl JobLog {
         Ok(bytes)
     }
 
-    /// 最后 `max_lines` 行；第二个值表示中段是否已被丢弃。
-    pub(crate) fn read_tail(&self, max_lines: usize) -> std::io::Result<(String, bool)> {
+    /// 有新输出时完成的 future；等待方要先 `enable` 再检查 `bytes_seen`，避免睡过已到的输出。
+    pub(crate) fn output_notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.output_notify.notified()
+    }
+
+    /// `read_tail` 同时返回当时的 `seen`，让「展示即已读」的游标推进不丢也不重。
+    pub(crate) fn read_tail_and_seen(
+        &self,
+        max_lines: usize,
+    ) -> std::io::Result<(String, bool, u64)> {
         let state = self.state.lock();
+        let seen = state.seen;
         let bytes = self.tail_bytes(&state, TAIL_WINDOW)?;
-        let elided = state.seen > self.capacity;
+        let elided = seen > self.capacity;
         drop(state);
         let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<&str> = text.lines().collect();
         Ok((
             lines[lines.len().saturating_sub(max_lines)..].join("\n"),
             elided,
+            seen,
         ))
+    }
+
+    /// 自 `offset`（此前返回的 `seen` 游标）之后收到的输出。
+    ///
+    /// 返回增量文本、新游标（当前 `seen`）与请求范围内因容量被丢弃的字节数。
+    /// 溢出日志的中间一段不保留：请求穿过丢弃段时返回两端保留内容并计入丢弃数。
+    pub(crate) fn read_since(&self, offset: u64) -> std::io::Result<(String, u64, u64)> {
+        let state = self.state.lock();
+        let seen = state.seen;
+        if offset >= seen {
+            return Ok((String::new(), seen, 0));
+        }
+        // 保留区间：逻辑位置 [0, head_end) 存于文件开头，[tail_start, seen) 存于尾部；
+        // 运行中尾部在 ring，定稿溢出后尾部是文件末段（中段标记不算数据，跳过）。
+        let (head_end, tail_start) = if seen <= self.capacity {
+            (state.file_len, state.file_len)
+        } else if state.finished {
+            (
+                self.head_cap,
+                self.capacity.max(seen - len64(self.tail_cap())),
+            )
+        } else {
+            (self.capacity, seen - len64(state.ring.len()))
+        };
+        let mut bytes = Vec::new();
+        if offset < head_end {
+            // 克隆句柄共享文件偏移；读完恢复末尾，后续追加才不会被截断。
+            let mut file = state.file.try_clone()?;
+            file.seek(SeekFrom::Start(offset))?;
+            (&mut file)
+                .take(head_end - offset)
+                .read_to_end(&mut bytes)?;
+            file.seek(SeekFrom::Start(state.file_len))?;
+        }
+        if tail_start < seen {
+            let tail = self.tail_bytes(&state, seen - tail_start)?;
+            let from = usize::try_from(offset.max(tail_start) - tail_start).unwrap_or(tail.len());
+            bytes.extend_from_slice(&tail[from.min(tail.len())..]);
+        }
+        let skipped = tail_start.saturating_sub(offset.max(head_end));
+        Ok((String::from_utf8_lossy(&bytes).into_owned(), seen, skipped))
+    }
+
+    /// 最后 `max_lines` 行；第二个值表示中段是否已被丢弃。
+    pub(crate) fn read_tail(&self, max_lines: usize) -> std::io::Result<(String, bool)> {
+        let (text, elided, _) = self.read_tail_and_seen(max_lines)?;
+        Ok((text, elided))
     }
 
     /// 界面用的实时尾部：最后 `max_lines` 行，`\r` 覆盖的进度行只取最终显示，单行截到 `line_chars` 字符。
@@ -232,5 +294,62 @@ mod tests {
         assert!(!log.output_elided());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
         assert_eq!(log.read_tail(1).unwrap().0, "two");
+    }
+
+    #[test]
+    fn read_since_returns_only_new_bytes() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let log = JobLog::create(directory.path().join("job.log"), 64).expect("创建日志");
+        log.append(b"one\ntwo\n").expect("写入");
+        let (text, next, skipped) = log.read_since(0).expect("首次读取");
+        assert_eq!(text, "one\ntwo\n");
+        assert_eq!(next, 8);
+        assert_eq!(skipped, 0);
+        log.append(b"three\n").expect("追加");
+        let (text, next, skipped) = log.read_since(next).expect("增量读取");
+        assert_eq!(text, "three\n");
+        assert_eq!(next, 14);
+        assert_eq!(skipped, 0);
+        let (text, next, skipped) = log.read_since(next).expect("无新输出");
+        assert_eq!(text, "");
+        assert_eq!(next, 14);
+        assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn read_since_reports_skipped_bytes_across_dropped_middle() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        // capacity 8：文件保留前 8 字节，ring 留最后 4 字节；写 16 字节后逻辑 [8, 12) 被挤出。
+        let log = JobLog::create(directory.path().join("job.log"), 8).expect("创建日志");
+        log.append(b"aaaabbbbccccdddd").expect("写入");
+        // 游标在文件保留区：返回头部剩余 + ring，中段丢弃计入 skipped。
+        let (text, _, skipped) = log.read_since(2).expect("读取");
+        assert_eq!(text, "aabbbbdddd");
+        assert_eq!(skipped, 4);
+        // 游标落在丢弃段：只拿尾部，跳过的字节照常上报。
+        let (text, _, skipped) = log.read_since(10).expect("读取");
+        assert_eq!(text, "dddd");
+        assert_eq!(skipped, 2);
+        // 游标在尾部内部：只给更靠后的字节，无丢弃。
+        let (text, _, skipped) = log.read_since(14).expect("读取");
+        assert_eq!(text, "dd");
+        assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn read_since_works_after_finish_rewrote_log() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("job.log");
+        let log = JobLog::create(path.clone(), 8).expect("创建日志");
+        log.append(b"aaaabbbbccccdddd").expect("写入");
+        log.finish().expect("定稿");
+        // 定稿文件 = aaaa + 标记 + dddd；旧游标照样能增量读。
+        let (text, next, skipped) = log.read_since(2).expect("读取");
+        assert_eq!(text, "aadddd");
+        assert_eq!(next, 16);
+        assert_eq!(skipped, 8);
+        let (text, _, skipped) = log.read_since(12).expect("读取");
+        assert_eq!(text, "dddd");
+        assert_eq!(skipped, 0);
     }
 }

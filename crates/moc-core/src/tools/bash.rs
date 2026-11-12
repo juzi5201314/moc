@@ -307,7 +307,7 @@ impl Tool for BashTool {
 }
 
 /// 工具描述里关于自动转后台的说明：模型应当预先知道长命令不会一直阻塞。
-const BACKGROUND_NOTE: &str = "A monitored command still running after the foreground threshold (tools.bash.foreground_after_secs) moves to the background as a job and the call returns early; its completion is reported to you automatically, so do not poll it. Prefer fast, narrow commands (one package, one test, a filtered path) and non-interactive flags; start known-long builds or test suites with async=true. Use async=true with lifecycle=persistent only for long-lived services; persistent jobs never complete on their own.";
+const BACKGROUND_NOTE: &str = "A monitored command still running after the foreground threshold (tools.bash.foreground_after_secs) moves to the background as a job and the call returns early; its completion is reported to you automatically, so do not poll it. To watch a running job, use `job wait`: it returns as soon as the job finishes or produces output you have not seen, so prefer it over repeated `job output` polls. Prefer fast, narrow commands (one package, one test, a filtered path) and non-interactive flags; start known-long builds or test suites with async=true. Use async=true with lifecycle=persistent only for long-lived services; persistent jobs never complete on their own.";
 
 /// 转入后台时附在结果里的输出尾部行数。
 const BACKGROUNDED_TAIL_LINES: usize = 20;
@@ -324,9 +324,11 @@ fn backgrounded_outcome(ctx: &ToolCtx, job_id: &str, log: &JobLog, after: u64) -
         ),
     };
     let uri = info.map_or_else(|| log.path().display().to_string(), |info| info.log_uri);
-    let (tail, elided) = log
-        .read_tail(BACKGROUNDED_TAIL_LINES)
-        .unwrap_or_else(|error| (format!("[E_JOB_LOG] failed to read log: {error}"), false));
+    let (tail, elided, seen) = log
+        .read_tail_and_seen(BACKGROUNDED_TAIL_LINES)
+        .unwrap_or_else(|error| (format!("[E_JOB_LOG] failed to read log: {error}"), false, 0));
+    // 预览尾部即「模型已见」：游标推进到 seen，之后 job wait/output 只报新输出。
+    ctx.jobs.mark_output_read(job_id, seen);
     let tail = if tail.trim().is_empty() {
         "(no output yet)".to_owned()
     } else if elided {
