@@ -12,8 +12,10 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 use rmcp::ServiceError;
-use rmcp::model::{CallToolRequestParams, CallToolResponse, InputResponses};
-use rmcp::service::{Peer, RoleClient};
+use rmcp::model::{
+    CallToolRequest, CallToolRequestParams, ClientRequest, InputResponses, ServerResult,
+};
+use rmcp::service::{Peer, PeerRequestOptions, RequestHandle, RoleClient};
 use serde_json::Value;
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -23,9 +25,6 @@ use crate::config::{CompiledToolFilter, ServerConfig};
 use crate::content::{ToolOutput, map_call_result};
 use crate::error::McpError;
 use crate::mrtr::{InputFulfiller, default_fulfiller, has_requests, translate};
-
-/// 调用遇到连接错误后，等待重连成功的最长时长。
-const RECONNECT_WAIT: Duration = Duration::from_secs(15);
 
 /// 只有 `requestState` 没有 `inputRequests` 的 MRTR 轮次之间的最小间隔。
 const STATE_ONLY_BACKOFF: Duration = Duration::from_millis(50);
@@ -124,6 +123,8 @@ pub struct McpSnapshot {
     pub statuses: BTreeMap<String, ServerStatus>,
     /// 已连接 server 的全部工具，按限定名排序（保证请求内工具顺序稳定）。
     pub tools: Vec<Arc<McpToolInfo>>,
+    /// 握手说明仅供按需读取；共享正文，避免每次快照复制长说明。
+    pub instructions: BTreeMap<String, Arc<str>>,
 }
 
 enum Phase {
@@ -131,6 +132,7 @@ enum Phase {
     Connected {
         peer: Peer<RoleClient>,
         tools: Vec<Arc<McpToolInfo>>,
+        instructions: Option<Arc<str>>,
     },
     Reconnecting {
         attempts: u32,
@@ -247,11 +249,40 @@ impl McpManager {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
+                slot.set_phase(if slot.config.enabled {
+                    Phase::Connecting
+                } else {
+                    Phase::Disabled
+                });
                 let shutdown = self.shutdown.clone();
                 let notices = self.notices.clone();
                 let policy = self.policy;
                 tasks.spawn(supervise(slot.clone(), shutdown, notices, policy));
             }
+        }
+    }
+
+    /// 并行等待首次连接尝试结束；失败的 server 不阻塞其它能力，取消立即返回。
+    /// 各 server 使用自己的握手时限，不把等待时间串行相加。
+    pub async fn wait_ready(&self, cancel: &CancellationToken) -> Result<(), McpError> {
+        let ready = futures_util::future::join_all(self.slots.values().map(|slot| async move {
+            let mut generation = slot.generation.subscribe();
+            let wait = async {
+                while matches!(&*slot.phase.read(), Phase::Connecting) {
+                    if generation.changed().await.is_err() {
+                        break;
+                    }
+                }
+            };
+            let _ =
+                tokio::time::timeout(Duration::from_secs(slot.config.connect_timeout_secs), wait)
+                    .await;
+        }));
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(McpError::Cancelled),
+            _ = self.shutdown.cancelled() => Err(McpError::Shutdown),
+            _ = ready => Ok(()),
         }
     }
 
@@ -277,12 +308,17 @@ impl McpManager {
     pub async fn snapshot(&self) -> McpSnapshot {
         let mut statuses = BTreeMap::new();
         let mut tools = Vec::new();
+        let mut instructions = BTreeMap::new();
         for (name, slot) in &self.slots {
             match &*slot.phase.read() {
                 Phase::Connecting => {
                     statuses.insert(name.clone(), ServerStatus::Connecting);
                 }
-                Phase::Connected { tools: listed, .. } => {
+                Phase::Connected {
+                    tools: listed,
+                    instructions: text,
+                    ..
+                } => {
                     statuses.insert(
                         name.clone(),
                         ServerStatus::Connected {
@@ -290,6 +326,9 @@ impl McpManager {
                         },
                     );
                     tools.extend(listed.iter().cloned());
+                    if let Some(text) = text {
+                        instructions.insert(name.clone(), Arc::clone(text));
+                    }
                 }
                 Phase::Reconnecting { attempts, error } => {
                     statuses.insert(
@@ -314,15 +353,17 @@ impl McpManager {
             }
         }
         tools.sort_unstable_by(|left, right| left.qualified.cmp(&right.qualified));
-        McpSnapshot { statuses, tools }
+        McpSnapshot {
+            statuses,
+            tools,
+            instructions,
+        }
     }
 
     /// 调用一次工具。
     ///
-    /// 同一 server 的在飞调用数受 slot 信号量约束（默认 1）：permit 覆盖整个调用，
-    /// 含断线后的重连等待与重试，保证同 server 调用不交错。连接层故障时等待重连
-    /// （至多 [`RECONNECT_WAIT`]）并重试一次；服务端错误与超时不重试，
-    /// 避免副作用型工具被重复执行。
+    /// 同一 server 的在飞调用数受 slot 信号量约束（默认 1）。连接由监督任务重建，
+    /// 已发送调用绝不自动重放：响应丢失时无法确定服务端是否已提交副作用。
     ///
     /// `input` 是 MRTR（SEP-2322）履行端：server 返回 `input_required` 时逐键
     /// 履行 `inputRequests` 并原样回显 `requestState` 重试。`None` 时使用
@@ -345,7 +386,6 @@ impl McpManager {
             _ = self.shutdown.cancelled() => return Err(McpError::Cancelled),
             permit = slot.calls.acquire() => permit.expect("server 信号量不会关闭"),
         };
-        let mut generation = slot.generation.subscribe();
         let peer = connected_peer(slot).ok_or_else(|| {
             McpError::Transport(format!(
                 "server `{}` is not connected (status: {:?})",
@@ -353,44 +393,7 @@ impl McpManager {
                 status_of(slot)
             ))
         })?;
-        match call_once(&peer, slot, info, args.clone(), cancel.clone(), input).await {
-            Ok(output) => Ok(output),
-            Err(error) if error.is_retriable() && !self.shutdown.is_cancelled() => {
-                let deadline = Instant::now() + RECONNECT_WAIT;
-                loop {
-                    if shutdown_or_failed(slot, &self.shutdown) {
-                        return Err(McpError::Transport(format!(
-                            "server `{}` reconnect failed; call aborted",
-                            info.server
-                        )));
-                    }
-                    match tokio::time::timeout_at(deadline.into(), generation.changed()).await {
-                        Ok(Ok(())) => match connected_peer(slot) {
-                            Some(peer) => {
-                                return call_once(&peer, slot, info, args, cancel, input).await;
-                            }
-                            // 仍在重连，继续等待代际变化。
-                            None => continue,
-                        },
-                        // 通道关闭说明 slot 已被放弃；立即失败。
-                        Ok(Err(_)) => {
-                            return Err(McpError::Transport(format!(
-                                "server `{}` connection abandoned",
-                                info.server
-                            )));
-                        }
-                        Err(_) => {
-                            return Err(McpError::Transport(format!(
-                                "server `{}` did not reconnect within {}s",
-                                info.server,
-                                RECONNECT_WAIT.as_secs()
-                            )));
-                        }
-                    }
-                }
-            }
-            Err(error) => Err(error),
-        }
+        call_once(&peer, slot, info, args, cancel, &self.shutdown, input).await
     }
 
     /// 关闭全部连接并等待监督任务退出。
@@ -429,40 +432,34 @@ fn connected_peer(slot: &ServerSlot) -> Option<Peer<RoleClient>> {
     }
 }
 
-fn shutdown_or_failed(slot: &ServerSlot, shutdown: &CancellationToken) -> bool {
-    shutdown.is_cancelled()
-        || matches!(&*slot.phase.read(), Phase::Failed { .. })
-        || slot.generation.is_closed()
-}
-
-/// 工具名合法化：限定名只保留 `[A-Za-z0-9_-]`。
-pub(crate) fn sanitize_name(raw: &str) -> String {
-    let sanitized: String = raw
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if sanitized.is_empty() {
-        "_".to_owned()
-    } else {
-        sanitized
-    }
-}
-
+/// 两段都按 UTF-8 字节编码 `_`，避免 server 尾部下划线与分隔符产生碰撞。
 fn qualified_tool_name(server: &str, tool: &str) -> String {
-    format!("mcp__{}__{}", sanitize_name(server), sanitize_name(tool))
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut name = String::with_capacity(7 + server.len() + tool.len());
+    name.push_str("mcp");
+    for segment in [server, tool] {
+        name.push_str("__");
+        if segment.is_empty() {
+            name.push('_');
+        }
+        for byte in segment.bytes() {
+            if byte.is_ascii_alphanumeric() || byte == b'-' {
+                name.push(char::from(byte));
+            } else {
+                name.push('_');
+                name.push(char::from(HEX[usize::from(byte >> 4)]));
+                name.push(char::from(HEX[usize::from(byte & 15)]));
+            }
+        }
+    }
+    name
 }
 
 fn convert_tools(
     server: &str,
     listing: &[rmcp::model::Tool],
     filter: Option<&CompiledToolFilter>,
-) -> Vec<Arc<McpToolInfo>> {
+) -> Result<Vec<Arc<McpToolInfo>>, McpError> {
     let mut infos: Vec<_> = listing
         .iter()
         .filter(|tool| filter.is_none_or(|filter| filter.admits(tool.name.as_ref())))
@@ -487,15 +484,53 @@ fn convert_tools(
         })
         .collect();
     infos.sort_unstable_by(|left, right| left.name.cmp(&right.name));
-    infos
+    if let Some(pair) = infos.windows(2).find(|pair| pair[0].name == pair[1].name) {
+        return Err(McpError::Tool(format!(
+            "server `{server}` listed duplicate tool {:?}",
+            pair[0].name
+        )));
+    }
+    Ok(infos)
 }
 
 fn map_service_error(error: ServiceError) -> McpError {
     match error {
         ServiceError::McpError(remote) => McpError::Tool(remote.to_string()),
         ServiceError::Timeout { timeout } => McpError::Timeout(timeout.as_secs().max(1)),
-        // 其余（transport closed / send 失败 / 响应类型异常）都按连接层处理。
+        ServiceError::Cancelled { .. } => McpError::Cancelled,
+        ServiceError::UnexpectedResponse => McpError::Tool("unexpected MCP response".into()),
         other => McpError::Transport(other.to_string()),
+    }
+}
+
+/// 上层 select 可以直接丢弃工具 future；仍须通知服务端取消已发出的请求。
+struct PendingCall(Option<RequestHandle<RoleClient>>);
+
+impl PendingCall {
+    async fn cancel(&mut self, reason: &str) {
+        if let Some(request) = self.0.take() {
+            // 即使外层再次丢弃 future，已启动的取消通知也会独立完成。
+            let reason = reason.to_owned();
+            let _ = tokio::spawn(async move {
+                let _ = tokio::time::timeout(Duration::from_secs(1), request.cancel(Some(reason)))
+                    .await;
+            })
+            .await;
+        }
+    }
+}
+
+impl Drop for PendingCall {
+    fn drop(&mut self) {
+        if let Some(request) = self.0.take() {
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(1),
+                    request.cancel(Some("caller stopped waiting".into())),
+                )
+                .await;
+            });
+        }
     }
 }
 
@@ -511,6 +546,7 @@ async fn call_once(
     info: &McpToolInfo,
     args: Value,
     cancel: CancellationToken,
+    shutdown: &CancellationToken,
     input: Option<&InputFulfiller>,
 ) -> Result<ToolOutput, McpError> {
     let Some(arguments) = args.as_object().cloned() else {
@@ -533,19 +569,43 @@ async fn call_once(
         }
     };
     for _round in 0..rmcp::model::DEFAULT_MRTR_MAX_ROUNDS {
-        let response = tokio::select! {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let request = ClientRequest::CallToolRequest(CallToolRequest::new(params.clone()));
+        let handle = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(McpError::Cancelled),
-            _ = tokio::time::sleep(timeout) => {
+            _ = shutdown.cancelled() => return Err(McpError::Shutdown),
+            _ = tokio::time::sleep_until(deadline) => return Err(McpError::Timeout(slot.config.call_timeout_secs)),
+            result = peer.send_request_with_option(request, PeerRequestOptions::no_options()) => result.map_err(map_service_error)?,
+        };
+        let mut pending = PendingCall(Some(handle));
+        let response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                pending.cancel("caller cancelled").await;
+                return Err(McpError::Cancelled);
+            }
+            _ = shutdown.cancelled() => {
+                pending.cancel("MCP manager closed").await;
+                return Err(McpError::Shutdown);
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                pending.cancel("request timeout").await;
                 return Err(McpError::Timeout(slot.config.call_timeout_secs));
             }
-            result = peer.call_tool_once(params.clone()) => result,
+            response = &mut pending.0.as_mut().expect("请求尚未完成").rx => {
+                response.unwrap_or_else(|_| Err(ServiceError::TransportClosed))
+            }
         };
-        let required = match response.map_err(map_service_error)? {
-            CallToolResponse::Complete(result) => return Ok(map_call_result(&result)),
-            CallToolResponse::InputRequired(required) => required,
+        pending.0 = None;
+        let required = match response.map_err(|error| match map_service_error(error) {
+            McpError::Transport(message) => McpError::OutcomeUnknown(message),
+            error => error,
+        })? {
+            ServerResult::CallToolResult(result) => return Ok(map_call_result(&result)),
+            ServerResult::InputRequiredResult(required) => required,
             // tasks 扩展（SEP-2663）未声明：spec 不允许 server 在此返回 task。
-            CallToolResponse::Task(_) => {
+            ServerResult::CreateTaskResult(_) => {
                 return Err(McpError::Tool(format!(
                     "tool `{}` returned resultType `task`, which moc does not support",
                     info.qualified
@@ -567,6 +627,7 @@ async fn call_once(
                 let response = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return Err(McpError::Cancelled),
+                    _ = shutdown.cancelled() => return Err(McpError::Shutdown),
                     response = fulfiller(pending) => response,
                 }?;
                 responses.insert(key, response);
@@ -580,6 +641,7 @@ async fn call_once(
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Err(McpError::Cancelled),
+                _ = shutdown.cancelled() => return Err(McpError::Shutdown),
                 _ = tokio::time::sleep(STATE_ONLY_BACKOFF) => {}
             }
         }
@@ -607,27 +669,33 @@ async fn supervise(
     let connect_timeout = Duration::from_secs(slot.config.connect_timeout_secs);
     let mut attempts: u32 = 0;
     'supervise: loop {
-        let (changed_tx, mut changed_rx) = mpsc::unbounded_channel::<()>();
+        let (changed_tx, mut changed_rx) = mpsc::channel::<()>(1);
         // 连接 + 列取工具，整体受 connect_timeout 约束。
         let established = async {
             let service = (slot.connector)(changed_tx).await?;
             let peer = service.peer().clone();
-            let listing = tokio::time::timeout(connect_timeout, peer.list_all_tools())
-                .await
-                .map_err(|_| McpError::Timeout(connect_timeout.as_secs().max(1)))?
-                .map_err(map_service_error)?;
+            let listing = peer.list_all_tools().await.map_err(map_service_error)?;
             Ok::<(Peer<RoleClient>, Vec<Arc<McpToolInfo>>, Connection), McpError>((
                 peer,
-                convert_tools(&server, &listing, slot.config.tools.as_ref()),
+                convert_tools(&server, &listing, slot.config.tools.as_ref())?,
                 service,
             ))
         };
-        match tokio::time::timeout(connect_timeout, established).await {
+        let established = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => break 'supervise,
+            result = tokio::time::timeout(connect_timeout, established) => result,
+        };
+        match established {
             Ok(Ok((peer, tools, mut service))) => {
                 let tool_count = tools.len();
+                let instructions = peer
+                    .peer_info()
+                    .and_then(|info| info.instructions.as_deref().map(Arc::from));
                 slot.set_phase(Phase::Connected {
                     peer: peer.clone(),
                     tools,
+                    instructions,
                 });
                 // 稳定性从握手成功起算：连接尝试耗时长不该算成「稳定运行」
                 let connected_at = Instant::now();
@@ -643,15 +711,28 @@ async fn supervise(
                     tokio::select! {
                         biased;
                         _ = shutdown.cancelled() => {
+                            slot.set_phase(Phase::Disabled);
                             let _ = service.close_with_timeout(Duration::from_secs(5)).await;
                             slot.supervising.store(false, Ordering::Release);
                             return;
                         }
                         Some(()) = changed_rx.recv() => {
-                            match tokio::time::timeout(connect_timeout, peer.list_all_tools()).await {
+                            let listing = tokio::select! {
+                                biased;
+                                _ = shutdown.cancelled() => break 'supervise,
+                                result = tokio::time::timeout(connect_timeout, peer.list_all_tools()) => result,
+                            };
+                            match listing {
                                 Ok(Ok(listing)) => {
-                                    let tools =
-                                        convert_tools(&server, &listing, slot.config.tools.as_ref());
+                                    let tools = match convert_tools(&server, &listing, slot.config.tools.as_ref()) {
+                                        Ok(tools) => tools,
+                                        Err(error) => {
+                                            let message = error.to_string();
+                                            slot.set_phase(Phase::Failed { error: message.clone() });
+                                            let _ = notices.send(McpNotice { server: server.clone(), message });
+                                            break 'supervise;
+                                        }
+                                    };
                                     let count = tools.len();
                                     let replaced = match &*slot.phase.read() {
                                         Phase::Connected { tools: old, .. } => {
@@ -717,6 +798,16 @@ async fn supervise(
                     message: "Connection interrupted; reconnecting".into(),
                 });
             }
+            Ok(Err(McpError::Tool(message))) => {
+                slot.set_phase(Phase::Failed {
+                    error: message.clone(),
+                });
+                let _ = notices.send(McpNotice {
+                    server: server.clone(),
+                    message,
+                });
+                break 'supervise;
+            }
             Ok(Err(error)) => {
                 slot.set_phase(Phase::Reconnecting {
                     attempts,
@@ -756,6 +847,9 @@ async fn supervise(
             _ = tokio::time::sleep(delay) => {}
         }
     }
+    if shutdown.is_cancelled() {
+        slot.set_phase(Phase::Disabled);
+    }
     slot.supervising.store(false, Ordering::Release);
 }
 
@@ -764,9 +858,23 @@ mod naming {
     use super::*;
 
     #[test]
-    fn sanitize_keeps_identifier_chars_only() {
-        assert_eq!(sanitize_name("get-file.v2"), "get-file_v2");
-        assert_eq!(sanitize_name(""), "_");
+    fn qualified_names_are_injective_and_independent_of_listing_order() {
+        let names = ["a.b", "a_b", "a_2eb", "a-b", "工具", "工_具", "", "_", "\0"];
+        let mapped: std::collections::BTreeSet<_> = names
+            .iter()
+            .map(|name| qualified_tool_name("demo", name))
+            .collect();
+        assert_eq!(mapped.len(), names.len());
+        assert_ne!(
+            qualified_tool_name("a_", "5fb"),
+            qualified_tool_name("a", "_b")
+        );
+        for name in mapped {
+            assert!(
+                name.bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            );
+        }
     }
 
     #[test]
@@ -817,6 +925,9 @@ mod tests {
         max_inflight: AtomicUsize,
         /// `loop` 工具收到的 `tools/call` 轮数（供 MRTR 上限用例）。
         rounds: AtomicUsize,
+        started: tokio::sync::Notify,
+        cancelled: tokio::sync::Notify,
+        effects: AtomicUsize,
     }
 
     struct TestServer {
@@ -838,7 +949,7 @@ mod tests {
             let mut tools = ToolsCapability::default();
             tools.list_changed = Some(true);
             capabilities.tools = Some(tools);
-            RmcpServerInfo::new(capabilities)
+            RmcpServerInfo::new(capabilities).with_instructions("Use echo to inspect values.")
         }
 
         async fn list_tools(
@@ -966,6 +1077,20 @@ mod tests {
                     self.state.rounds.fetch_add(1, Ordering::SeqCst);
                     Ok(InputRequiredResult::from_request_state("again").into())
                 }
+                "lost" => {
+                    self.state.effects.fetch_add(1, Ordering::SeqCst);
+                    self.state.kill.notify_one();
+                    std::future::pending().await
+                }
+                "blocked" => {
+                    let state = Arc::clone(&self.state);
+                    tokio::spawn(async move {
+                        context.ct.cancelled().await;
+                        state.cancelled.notify_one();
+                    });
+                    self.state.started.notify_one();
+                    std::future::pending().await
+                }
                 other => Err(rmcp::model::ErrorData::invalid_params(
                     format!("未知工具 {other}"),
                     None,
@@ -979,19 +1104,25 @@ mod tests {
             let state = state.clone();
             Box::pin(async move {
                 state.connect_count.fetch_add(1, Ordering::SeqCst);
-                let (client_io, server_io) = tokio::io::duplex(1 << 16);
+                let (client_io, mut client_relay) = tokio::io::duplex(1 << 16);
+                let (server_io, mut server_relay) = tokio::io::duplex(1 << 16);
+                let kill_state = Arc::clone(&state);
+                tokio::spawn(async move {
+                    // kill 模拟进程崩溃：立即断开传输，不走 rmcp 的优雅关闭排空。
+                    tokio::select! {
+                        _ = kill_state.kill.notified() => {}
+                        _ = tokio::io::copy_bidirectional(&mut client_relay, &mut server_relay) => {}
+                    }
+                });
                 let serve = TestServer {
                     state: state.clone(),
                 }
                 .serve(server_io);
-                let kill_state = state.clone();
                 tokio::spawn(async move {
                     match serve.await {
-                        // 服务端握手完成后必须持有句柄，否则 RunningService 被
-                        // Drop 会立刻关闭传输——这正是「传输已关闭」的来源。
-                        Ok(mut service) => {
-                            let _ = kill_state.kill.notified().await;
-                            let _ = service.close().await;
+                        // 保持服务句柄直到对端关闭；断线由上面的传输代理控制。
+                        Ok(service) => {
+                            let _ = service.waiting().await;
                         }
                         Err(error) => eprintln!("[test-server] serve 失败：{error}"),
                     }
@@ -1089,7 +1220,13 @@ mod tests {
             |_| test_connector(state.clone()),
         );
         manager.start().await;
-        let tools = connected_tools(&manager, Duration::from_secs(5)).await;
+        manager.wait_ready(&CancellationToken::new()).await.unwrap();
+        let snapshot = manager.snapshot().await;
+        assert_eq!(
+            snapshot.instructions["test"].as_ref(),
+            "Use echo to inspect values."
+        );
+        let tools = snapshot.tools;
         assert_eq!(tools.len(), 7);
         let echo = tools.iter().find(|t| t.name == "echo").unwrap();
         assert_eq!(echo.qualified, "mcp__test__echo");
@@ -1166,10 +1303,10 @@ mod tests {
         let tools = connected_tools(&manager, Duration::from_secs(5)).await;
 
         let die = tools.iter().find(|t| t.name == "die").unwrap();
-        manager
+        let result = manager
             .call(die, json!({}), CancellationToken::new(), None)
-            .await
-            .unwrap();
+            .await;
+        assert!(result.is_ok() || matches!(result, Err(McpError::OutcomeUnknown(_))));
 
         // 服务端退出 → 传输关闭 → 重连；期间调用应报连接错误而非 panic。
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1183,6 +1320,87 @@ mod tests {
         }
         let _ = connected_tools(&manager, Duration::from_secs(5)).await;
         manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn response_loss_never_replays_effects() {
+        let state = Arc::new(TestState::default());
+        let manager = McpManager::build_with_policy(
+            vec![test_server("test", true)],
+            CancellationToken::new(),
+            |_| test_connector(Arc::clone(&state)),
+            fast_policy(2, Duration::from_secs(30)),
+        );
+        manager.start().await;
+        manager.wait_ready(&CancellationToken::new()).await.unwrap();
+        let mut info = (*manager.snapshot().await.tools[0]).clone();
+        info.name = "lost".into();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            manager.call(&info, json!({}), CancellationToken::new(), None),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(result, Err(McpError::OutcomeUnknown(_))));
+        assert_eq!(state.effects.load(Ordering::SeqCst), 1);
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn timeout_cancellation_and_dropped_future_notify_server() {
+        for path in 0..3 {
+            let state = Arc::new(TestState::default());
+            let mut config = test_server("test", true);
+            config.call_timeout_secs = 1;
+            let manager = McpManager::build(vec![config], CancellationToken::new(), |_| {
+                test_connector(Arc::clone(&state))
+            });
+            manager.start().await;
+            manager.wait_ready(&CancellationToken::new()).await.unwrap();
+            let mut info = (*manager.snapshot().await.tools[0]).clone();
+            info.name = "blocked".into();
+            let cancel = CancellationToken::new();
+            let call = tokio::spawn({
+                let manager = Arc::clone(&manager);
+                let cancel = cancel.clone();
+                async move { manager.call(&info, json!({}), cancel, None).await }
+            });
+            tokio::time::timeout(Duration::from_secs(2), state.started.notified())
+                .await
+                .unwrap();
+            match path {
+                0 => assert!(matches!(call.await.unwrap(), Err(McpError::Timeout(1)))),
+                1 => {
+                    cancel.cancel();
+                    assert!(matches!(call.await.unwrap(), Err(McpError::Cancelled)));
+                }
+                _ => {
+                    call.abort();
+                    let _ = call.await;
+                }
+            }
+            tokio::time::timeout(Duration::from_secs(2), state.cancelled.notified())
+                .await
+                .expect("服务端必须收到取消");
+            manager.shutdown().await;
+        }
+    }
+
+    #[test]
+    fn duplicate_wire_names_are_rejected_before_catalog_construction() {
+        let tool = Tool::new("a.b", "first", schema(json!({})));
+        assert!(matches!(
+            convert_tools("test", &[tool.clone(), tool], None),
+            Err(McpError::Tool(_))
+        ));
+        let tools = [
+            Tool::new("a.b", "dot", schema(json!({}))),
+            Tool::new("a_b", "underscore", schema(json!({}))),
+        ];
+        let converted = convert_tools("test", &tools, None).unwrap();
+        assert_ne!(converted[0].qualified, converted[1].qualified);
+        assert_eq!(converted[0].name, "a.b");
+        assert_eq!(converted[1].name, "a_b");
     }
 
     #[tokio::test]

@@ -782,6 +782,9 @@ async fn run_prompt_locked(
         .await
         .map_err(to_rpc)?;
     mcp.start().await;
+    mcp.wait_ready(&cancel)
+        .await
+        .map_err(|_| to_rpc(crate::CoreError::Cancelled))?;
     for notice in mcp.drain_notices().await {
         record
             .state
@@ -849,6 +852,15 @@ async fn run_prompt_locked(
         &project_config,
     )
     .unwrap_or_default();
+    // 目录、模式和窗口在本次提示内固定；压缩后重用同一正文补回提醒。
+    let mcp_index = crate::tools::declarations::render_mcp_index(
+        &catalog,
+        engine,
+        mode,
+        ask_supported,
+        &project_config,
+        model.context_window,
+    );
     let context_files = inner.project_context_files(&params.session_id, &cwd).await;
     let subagent_prompt = crate::agents::subagent_prompt(&inner, &params.session_id).await;
     let plugin_prompt = plugins.prompt_text(&plugin_context).await;
@@ -988,20 +1000,13 @@ async fn run_prompt_locked(
                         "The earlier goal context no longer applies: this session has no goal.",
                     )),
                 }
-                // MCP 服务器可以在会话中途刷新工具列表：索引走提醒通道，系统前缀
-                // 因此不会因为一次工具增删而失效。
-                if let Some(index) = crate::tools::declarations::render_mcp_index(
-                    &catalog,
-                    engine,
-                    ask_supported,
-                    &project_config,
-                    model.context_window,
-                ) {
-                    candidates.push(Reminder::durable(reminder::key::MCP_INDEX, index));
+                // 动态目录不进入系统前缀，正文不变时由提醒摘要去重。
+                if let Some(index) = &mcp_index {
+                    candidates.push(Reminder::durable(reminder::key::MCP_INDEX, index.clone()));
                 } else {
                     candidates.push(Reminder::retract(
                         reminder::key::MCP_INDEX,
-                        "The earlier MCP tool index no longer applies: no MCP tools are currently available.",
+                        "The earlier MCP index no longer applies. Discover currently available tools through catalog.search().",
                     ));
                 }
                 if let Some(detail) = cycle_redirect.take() {

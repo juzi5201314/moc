@@ -1,7 +1,7 @@
 //! MCP 工具桥接：把 moc-mcp 协商得到的工具适配成 [`Tool`]。
 //!
-//! 命名沿用 Claude Code 的惯例 `mcp__<server>__<tool>`。配置层保证 server 名不含 `__`，
-//! 所以限定名可以无歧义地拆回 server 名和工具名。风险等级不采信 MCP `annotations` 里
+//! 限定名使用 `mcp__<encoded-server>__<encoded-tool>`，调用仍使用原始 server/tool。
+//! 来源直接取元数据，不反解限定名。风险等级不采信 MCP `annotations` 里
 //! 服务端的自我声明：`readOnlyHint` 只当描述信息保留，`tier` 和并行性都由本地策略决定，
 //! 服务端无法借此扩大自己的权限。
 
@@ -42,6 +42,10 @@ impl Tool for McpTool {
 
     fn origin(&self) -> ToolOrigin {
         ToolOrigin::Mcp
+    }
+
+    fn mcp_server(&self) -> Option<&str> {
+        Some(&self.info.server)
     }
 
     /// MCP 工具的风险等级不采信服务端声明的 `readOnlyHint`。

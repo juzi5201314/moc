@@ -30,6 +30,7 @@ Rust 编写的终端 AI 编码助手（Cargo workspace，edition 2024，Rust 1.8
 ## 工作规则
 
 - 中文优先：commit message、文档、代码注释一律中文
+- 系统提示词必须使用精确、简洁的英语，禁止中文；此规则同样适用于运行时提醒、工具描述和按需提供给模型的工具说明。代码注释及维护文档仍使用中文，用户和外部服务提供的原始内容不强制翻译。
 - Commit 风格：conventional commit `type(scope): 描述`，如 `fix(tui): …`、`feat(transcript): …`
 - 改 `crates/moc-web/web/` 前必读 [`crates/moc-web/web/agents.md`](crates/moc-web/web/agents.md) 与 [`DESIGN.md`](crates/moc-web/web/DESIGN.md)
 

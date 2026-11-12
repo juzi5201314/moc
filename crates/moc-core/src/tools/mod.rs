@@ -307,6 +307,10 @@ pub trait Tool: Send + Sync {
     fn origin(&self) -> ToolOrigin {
         ToolOrigin::Builtin
     }
+    /// MCP 的原始服务器名；不能从转义后的限定名反推来源。
+    fn mcp_server(&self) -> Option<&str> {
+        None
+    }
     /// 引擎决定基础声明面；延迟披露由 ToolScope 结合角色的读取和执行权限决定。
     fn declared_in(&self, engine: SessionEngine) -> bool {
         self.permitted_in(engine, crate::service::mode::Mode::Default)

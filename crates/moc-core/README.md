@@ -148,6 +148,14 @@ Explorer 沿用工具拒绝列表：禁用 `edit`、`write`、`spawn_agent`、`s
 
 `execute` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。Core 按需启动一个长期 `moc --ptc-worker` Host，多个逻辑 execution 通过 ID 复用同一进程；每次 execution 都创建全新的 QuickJS Runtime/Context，因此全局变量、Promise 和堆不会跨 execution 泄漏。Host 与 core 通过一行一条 JSON 的 RPC 推进脚本；工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。
 
+MCP 在首次提示建立目录前并行等待各 server 的首次连接尝试，等待受 `connect_timeout_secs` 与取消约束；失败只影响该 server。目录在整条用户提示内固定，`catalog.servers()` 返回快照状态，工具列表变化在下一条提示生效。服务端使用说明不常驻：`catalog.servers()` 的 `instructionsUri` 指向 `tool://mcp/<server>`，通过 `read` 按需获取；说明与索引描述都作为不可信数据转义，不能闭合系统提醒标签。
+
+限定名为 `mcp__<encoded-server>__<encoded-tool>`：两段中除 ASCII 字母、数字和连字符之外的字节编码为 `_hh`，包括下划线本身；调用线上仍使用原始工具名。模型应使用发现返回的名称并通过 `tools[name](args)` 调用，不自行拼接名称。硬编码旧限定名的脚本和角色工具策略须迁移到发现返回的新名称；不保留可能有歧义的旧别名。`mcp.servers.<name>.tools` 的 allow/deny 仍匹配原始 wire name，不受影响。重复原始工具名使该 server 失败，不中断其它工具或提示。
+
+连接故障会后台重连，但已经发送的调用绝不自动重放。响应丢失时报告执行结果未知；超时、主动取消或调用 future 被丢弃会尽力发送 `notifications/cancelled`，这不保证已发生的副作用被撤销。重试写操作前须检查实际结果。同 server 默认串行，不依赖服务端自报的 `readOnlyHint` 扩大权限。
+
+PTC 的 MCP 尾部索引按本次模式过滤并只渲染一次；内容未变时不重复追加，压缩后复用同一正文。预算取窗口 1%，通常限制在 256–2048 token，极小窗口最多占 1/32，完整计入标签、换行及提醒外壳。小目录保留所有工具简介，超额目录整体切为 server 数量概览与搜索入口，不偏向排序靠前的工具；极小预算放不下入口时依赖系统能力目录。Standard 不注入工具索引，两种引擎均不常驻完整 MCP schema。搜索支持 server 过滤、`offset/limit` 和 `nextOffset`；空查询不构造描述搜索文本，精确命中优先且其余结果保序。`tools/list_changed` 使用容量为 1 的待刷新标记，连续通知合并，刷新期间的新变更保留一次后续刷新。
+
 `execute` 是共享的工具调用与结果处理入口，不是 PTC 引擎专属能力：标准引擎可直接调用核心工具，也可通过它编排调用；PTC 引擎要求所有工具调用都经过它。`tool://execute` 提供组合调用、MCP 发现和命名状态说明，系统提示中的共享运行时片段名为 `execution runtime`。工具改名不改变 `[tools.ptc]` 配置、worker 协议或执行权限。
 
 原生调用、`execute` 子调用和插件内部回调统一从本轮 `ToolCatalog` 解析工具，再走同一执行许可、授权与沙盒路径。`execute` 的目录包含获准的内置、skill、MCP 和插件工具，只排除自身；模型发起的子调用与原生调用一样应用目标工具的前后钩子。PTC 仍只暴露 `execute` 原生入口，MCP 仍经代码调用；这些入口限制不另建一套工具实现。插件内部回调保留只读白名单且不重入钩子。

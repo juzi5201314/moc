@@ -28,11 +28,11 @@ use crate::error::McpError;
 pub(crate) type Connection = RunningService<RoleClient, ClientHandlerBridge>;
 /// 建立一条新连接的异步闭包；监督任务在每次（重）连接时调用。
 pub(crate) type ConnectFuture = BoxFuture<'static, Result<Connection, McpError>>;
-pub(crate) type Connector = Arc<dyn Fn(mpsc::UnboundedSender<()>) -> ConnectFuture + Send + Sync>;
+pub(crate) type Connector = Arc<dyn Fn(mpsc::Sender<()>) -> ConnectFuture + Send + Sync>;
 
 /// 客户端 handler：只做两件事——自报身份、把 `tools/list_changed` 转发出去。
 pub(crate) struct ClientHandlerBridge {
-    tool_list_changed: mpsc::UnboundedSender<()>,
+    tool_list_changed: mpsc::Sender<()>,
 }
 
 /// 启动握手：先 `server/discover` 协商（2026-07-28 的 inline 生命周期），
@@ -66,7 +66,7 @@ where
 }
 
 impl ClientHandlerBridge {
-    pub(crate) fn new(tool_list_changed: mpsc::UnboundedSender<()>) -> Self {
+    pub(crate) fn new(tool_list_changed: mpsc::Sender<()>) -> Self {
         Self { tool_list_changed }
     }
 }
@@ -90,7 +90,8 @@ impl ClientHandler for ClientHandlerBridge {
     }
 
     async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
-        let _ = self.tool_list_changed.send(());
+        // 队列只保留一次待刷新标记；刷新期间的新通知仍会触发下一次列举。
+        let _ = self.tool_list_changed.try_send(());
     }
 }
 
@@ -133,7 +134,7 @@ async fn connect_stdio(
     args: &[String],
     env: &BTreeMap<String, String>,
     cwd: Option<&Path>,
-    tool_list_changed: mpsc::UnboundedSender<()>,
+    tool_list_changed: mpsc::Sender<()>,
 ) -> Result<Connection, McpError> {
     let mut child = tokio::process::Command::new(command);
     child.args(args);
@@ -166,7 +167,7 @@ async fn connect_http(
     server: &str,
     url: &str,
     headers: &BTreeMap<String, String>,
-    tool_list_changed: mpsc::UnboundedSender<()>,
+    tool_list_changed: mpsc::Sender<()>,
 ) -> Result<Connection, McpError> {
     let mut custom_headers = HashMap::with_capacity(headers.len());
     for (name, value) in headers {
