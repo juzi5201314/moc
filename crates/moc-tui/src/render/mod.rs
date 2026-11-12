@@ -482,6 +482,10 @@ fn draw_jump_bottom(frame: &mut Frame, app: &mut App, area: Rect) {
 /// 几何写回 [`App::scrollbar`]，鼠标点击与拖拽按同一份几何换算滚动位置。
 fn draw_scrollbar(frame: &mut Frame, app: &mut App, area: Rect, max_offset: usize) {
     app.scrollbar = ScrollbackScrollbar::default();
+    let interactive = matches!(app.modal, None | Some(Modal::Ask { .. }));
+    if !interactive || max_offset == 0 {
+        app.scrollbar_drag = None;
+    }
     if max_offset == 0 || area.width < 2 || area.height < 2 {
         return;
     }
@@ -490,21 +494,25 @@ fn draw_scrollbar(frame: &mut Frame, app: &mut App, area: Rect, max_offset: usiz
     let total = (max_offset as u32) + track_height as u32;
     let thumb = ((track_height as u32 * track_height as u32) / total.max(1))
         .clamp(1, track_height as u32) as u16;
-    // 贴终端右缘（在内容边距之外），不压内容
-    let x = frame.area().width.saturating_sub(1);
+    // 两列感应区完全落在右侧留白内，展开不改变正文宽度，也不覆盖提问卡。
+    let right = frame.area().right();
     app.scrollbar = ScrollbackScrollbar {
-        track: Rect::new(x, area.y, 1, track_height),
+        track: Rect::new(right.saturating_sub(2), area.y, 2, track_height),
         thumb,
         max_offset,
     };
     let thumb_top = app.scrollbar.thumb_top(app.scroll_offset);
-    overlay::paint_scrollbar(
-        frame.buffer_mut(),
-        app.scrollbar.track,
-        thumb_top,
-        thumb,
-        theme,
-    );
+    let expanded = interactive
+        && (app.scrollbar_drag.is_some()
+            || app
+                .scrollbar_pointer
+                .is_some_and(|position| app.scrollbar.track.contains(position.into())));
+    let track = if expanded {
+        app.scrollbar.track
+    } else {
+        Rect::new(right - 1, area.y, 1, track_height)
+    };
+    overlay::paint_scrollbar(frame.buffer_mut(), track, thumb_top, thumb, theme);
 }
 
 fn draw_prompt(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -642,7 +650,8 @@ pub(crate) fn prompt_selection_text(app: &App) -> &str {
         visible,
     );
     let top = area.y + 1;
-    let visible = u16::try_from((rows.len() - start).min(visible)).expect("可见行数不超过输入框高度");
+    let visible =
+        u16::try_from((rows.len() - start).min(visible)).expect("可见行数不超过输入框高度");
     let bottom = top + visible;
     if end_row < top || start_row >= bottom {
         return "";
@@ -714,7 +723,11 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
             .selection_copy_deadline()
             .is_some_and(|deadline| std::time::Instant::now() < deadline);
     let (left_key, mut left_tip, left_color) = if selecting {
-        (Cow::Borrowed("Ctrl+C"), "复制 · Esc 取消", theme.gray_bright)
+        (
+            Cow::Borrowed("Ctrl+C"),
+            "复制 · Esc 取消",
+            theme.gray_bright,
+        )
     } else if copy_feedback {
         (Cow::Borrowed(""), "已复制", theme.gray_bright)
     } else if app.prompt_running {
@@ -1605,35 +1618,6 @@ mod tests {
             max_offset: 0,
         };
         assert_eq!(flat.offset_at(8, 4), 0);
-    }
-
-    /// 整帧绘制把滚动条几何写回 `App`：命中区与拖拽换算读的就是这份几何。
-    #[test]
-    fn frame_draw_records_scrollbar_geometry() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(Theme::global(), events);
-        let text = (0..200)
-            .map(|index| format!("line-{index}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        app.push_block(TranscriptBlock::Assistant { text });
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
-        let mut view = ScrollbackView::new();
-        terminal
-            .draw(|frame| draw(frame, &mut app, &mut view))
-            .expect("绘制成功");
-
-        assert!(app.scroll_max_offset > 0, "长内容应可滚动");
-        assert_eq!(app.scrollbar.track.x, 79, "滚动条贴在终端右缘");
-        assert_eq!(app.scrollbar.track.height, app.scrollback_area.height);
-        assert_eq!(app.scrollbar.max_offset, app.scroll_max_offset);
-        assert!(
-            app.scrollbar.thumb < app.scrollbar.track.height,
-            "滑块只占视口比例，不铺满轨道"
-        );
     }
 
     /// 「回到底部」按钮压在滚动区底缘一行正文上（不占行），贴尾时消失。

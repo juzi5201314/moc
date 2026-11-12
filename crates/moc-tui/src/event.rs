@@ -1421,6 +1421,10 @@ async fn event_loop(
 
 /// 终端事件分派（键盘、鼠标、粘贴与窗口变化）。
 fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: Event) {
+    if matches!(event, Event::FocusLost | Event::Resize(_, _)) {
+        app.scrollbar_pointer = None;
+        app.scrollbar_drag = None;
+    }
     let previous_context = match &app.modal {
         Some(Modal::ContextContent { state }) => state
             .content
@@ -1655,6 +1659,18 @@ fn handle_mouse_with_connection(
 ) {
     use crossterm::event::{MouseButton, MouseEventKind};
     let position = (mouse.column, mouse.row);
+    app.scrollbar_pointer = Some(position);
+    // 已抓住滑块后，拖动与松开优先于 BTW、HUD 等区域，横向移出也不丢捕获。
+    if matches!(app.modal, None | Some(Modal::Ask { .. }))
+        && app.scrollbar_drag.is_some()
+        && matches!(
+            mouse.kind,
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+        )
+        && handle_scrollbar_mouse(app, &mouse)
+    {
+        return;
+    }
     let left_down = matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left));
     if app.modal.is_some() {
         // 提示条上的键位（footer、回退 dock、提问细条）：点中 = 按下该键。
@@ -2760,10 +2776,7 @@ fn handle_completion_mouse(app: &mut App, mouse: &crossterm::event::MouseEvent) 
 fn handle_scrollbar_mouse(app: &mut App, mouse: &crossterm::event::MouseEvent) -> bool {
     use crossterm::event::{MouseButton, MouseEventKind};
     let bar = app.scrollbar;
-    let on_track = bar.max_offset > 0
-        && mouse.column == bar.track.x
-        && mouse.row >= bar.track.y
-        && mouse.row < bar.track.y.saturating_add(bar.track.height);
+    let on_track = bar.max_offset > 0 && bar.track.contains((mouse.column, mouse.row).into());
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) if on_track => {
             let top = bar.track.y.saturating_add(bar.thumb_top(app.scroll_offset));
@@ -2801,6 +2814,7 @@ fn drag_scroll(app: &mut App, row: u16, grab: i32) {
 /// 鼠标：滚轮滚动、点击折叠、拖选复制。
 fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     use crossterm::event::{MouseButton, MouseEventKind};
+    app.scrollbar_pointer = Some((mouse.column, mouse.row));
     // 新的一次按下总是结束上一轮滚动条拖拽：拖拽途中弹出模态时抬起事件会被吞掉。
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
         app.scrollbar_drag = None;
@@ -3129,7 +3143,12 @@ fn handle_key(
     if app.focus == Focus::Prompt
         && (matches!(
             code,
-            KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End
+            KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Home
+                | KeyCode::End
         ) || matches!(
             (code, modifiers),
             (KeyCode::Char('a' | 'e'), KeyModifiers::CONTROL)
@@ -3234,10 +3253,7 @@ fn handle_key(
             copy_selection(app);
         }
         (KeyCode::Esc, _) => {
-            if app.focused.is_some()
-                && app.focus == Focus::Prompt
-                && app.prompt_text().is_empty()
-            {
+            if app.focused.is_some() && app.focus == Focus::Prompt && app.prompt_text().is_empty() {
                 // 聚焦子代理时的 `Esc` 只返回主会话，不打断子代理（omp Hub 的语义）；
                 // 取消仍在运行的那个提示交给 `Ctrl+C`。
                 leave_focus(app, connection);
@@ -10485,6 +10501,124 @@ mod tests {
         assert!(app.pending_click.is_some(), "没有滚动条时右缘仍是普通点击");
     }
 
+    /// 悬停展开不重排正文；从扩展列抓取后跨区域拖动，松开与失焦均能收起。
+    #[tokio::test]
+    async fn scrollbar_hover_and_drag_preserve_layout_and_capture() {
+        use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+        let (core, connection, mut app) = setup_test_app().await;
+        app.push_block(crate::transcript::Block::Assistant {
+            text: "用于验证正文换行不随滚动条展开变化的长内容。".repeat(400),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut view = render::ScrollbackView::new();
+        terminal
+            .draw(|frame| render::draw(frame, &mut app, &mut view))
+            .unwrap();
+        let area = app.scrollback_area;
+        let track = app.scrollbar.track;
+        let original = terminal.backend().buffer().clone();
+        let draw = |app: &mut App,
+                    terminal: &mut Terminal<TestBackend>,
+                    view: &mut render::ScrollbackView,
+                    expanded: bool| {
+            terminal
+                .draw(|frame| render::draw(frame, app, view))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            assert_eq!(
+                buffer[(78, track.y)].symbol(),
+                if expanded { "█" } else { " " }
+            );
+            assert_eq!(
+                buffer[(79, track.y)].symbol(),
+                if expanded { "█" } else { "▐" }
+            );
+            assert_eq!(app.scrollback_area, area, "展开不挤压正文");
+        };
+        draw(&mut app, &mut terminal, &mut view, false);
+
+        handle_terminal_event(
+            &mut app,
+            &connection,
+            Event::Mouse(mouse_event(MouseEventKind::Moved, 78, track.y)),
+        );
+        draw(&mut app, &mut terminal, &mut view, true);
+        assert_eq!(app.scroll_offset, 0, "悬停不改变滚动位置");
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                assert_eq!(
+                    terminal.backend().buffer()[(x, y)],
+                    original[(x, y)],
+                    "正文不重排"
+                );
+            }
+        }
+
+        // BTW 会吞掉落入其区域的鼠标事件；移出仍须收起，已开始的拖拽不能中断。
+        app.btw.area = Rect::new(10, track.y, 20, track.height);
+        handle_terminal_event(
+            &mut app,
+            &connection,
+            Event::Mouse(mouse_event(MouseEventKind::Moved, 10, track.y)),
+        );
+        draw(&mut app, &mut terminal, &mut view, false);
+        let thumb_row = track.y + app.scrollbar.thumb_top(app.scroll_offset);
+        handle_terminal_event(
+            &mut app,
+            &connection,
+            Event::Mouse(left_click(78, thumb_row)),
+        );
+        assert_eq!(app.scroll_offset, 0, "扩展列按在滑块上不跳动");
+        assert!(app.pending_click.is_none());
+        draw(&mut app, &mut terminal, &mut view, true);
+
+        app.btw.area = Rect::new(10, track.y, 20, track.height);
+        handle_terminal_event(
+            &mut app,
+            &connection,
+            Event::Mouse(mouse_event(
+                MouseEventKind::Drag(MouseButton::Left),
+                10,
+                track.y,
+            )),
+        );
+        assert_eq!(
+            app.scroll_offset, app.scroll_max_offset,
+            "横向移出后仍能拖到历史顶端"
+        );
+        assert!(app.selection.is_none());
+        draw(&mut app, &mut terminal, &mut view, true);
+        app.btw.area = Rect::new(10, track.y, 20, track.height);
+        handle_terminal_event(
+            &mut app,
+            &connection,
+            Event::Mouse(mouse_event(
+                MouseEventKind::Up(MouseButton::Left),
+                10,
+                track.y,
+            )),
+        );
+        assert!(app.scrollbar_drag.is_none());
+        draw(&mut app, &mut terminal, &mut view, false);
+
+        handle_terminal_event(&mut app, &connection, Event::Mouse(left_click(78, track.y)));
+        draw(&mut app, &mut terminal, &mut view, true);
+        handle_terminal_event(&mut app, &connection, Event::FocusLost);
+        assert!(app.scrollbar_drag.is_none());
+        draw(&mut app, &mut terminal, &mut view, false);
+
+        app.modal = Some(Modal::Help { scroll: 0 });
+        handle_terminal_event(
+            &mut app,
+            &connection,
+            Event::Mouse(mouse_event(MouseEventKind::Moved, 78, track.y)),
+        );
+        draw(&mut app, &mut terminal, &mut view, false);
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
     #[tokio::test]
     async fn ctrl_c_clears_input_when_nonempty_within_three_seconds() {
         let (core, connection, mut app) = setup_test_app().await;
@@ -12250,14 +12384,14 @@ mod tests {
         app.ask_strip_area = ratatui::layout::Rect::new(3, 20, 114, 2);
         app.scrollback_area = ratatui::layout::Rect::new(3, 2, 114, 18);
         app.scrollbar = crate::app::ScrollbackScrollbar {
-            track: ratatui::layout::Rect::new(119, 2, 1, 18),
+            track: ratatui::layout::Rect::new(118, 2, 2, 18),
             thumb: 6,
             max_offset: 36,
         };
         app.scroll_max_offset = 36;
 
         // 作答态按下轨道空白：折叠 + 拖拽开始（滑块中线跟到光标行）。
-        handle_mouse_with_connection(&mut app, &connection, left_click(119, 10));
+        handle_mouse_with_connection(&mut app, &connection, left_click(118, 10));
         match app.modal.as_ref() {
             Some(Modal::Ask { parked, .. }) => assert!(*parked, "按滚动条应折叠"),
             _ => unreachable!("模态应保留"),

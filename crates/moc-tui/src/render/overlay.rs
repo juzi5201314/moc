@@ -248,7 +248,7 @@ impl Card {
     }
 }
 
-/// 竖向滚动条：一列 `▐`，滑块 `scrollbar_fg`、轨道 `scrollbar_bg`。
+/// 竖向滚动条：收起为一列 `▐`，展开时填满轨道宽度；滑块与轨道使用主题配色。
 ///
 /// 主转写区、上下文面板、设置页共用同一字形与配色；`thumb_top`/`thumb` 由
 /// 各自的滚动几何算好再传入。
@@ -266,7 +266,10 @@ pub fn paint_scrollbar(
         } else {
             theme.scrollbar_bg
         };
-        buffer.set_string(track.x, track.y + row, "▐", Style::new().fg(color));
+        let symbol = if track.width > 1 { "█" } else { "▐" };
+        for x in track.left()..track.right() {
+            buffer.set_string(x, track.y + row, symbol, Style::new().fg(color));
+        }
     }
 }
 

@@ -80,7 +80,7 @@ fn compaction_running_note(secs: u64) -> String {
 /// 转写区右缘滚动条上一帧的几何：点击与拖拽都按它换算滚动位置。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ScrollbackScrollbar {
-    /// 轨道区域（屏幕坐标，一列宽）。
+    /// 轨道命中区域（屏幕坐标，包含悬停展开所需的右侧留白）。
     pub track: Rect,
     /// 滑块行数。
     pub thumb: u16,
@@ -328,6 +328,8 @@ pub struct App {
     pub selection_copied_at: Option<std::time::Instant>,
     /// 滚动条拖拽；`Some` 时左键拖动只改滚动偏移，不进入文本选区。
     pub scrollbar_drag: Option<ScrollbackDrag>,
+    /// 最近的鼠标坐标；绘制时按当前轨道判定悬停，避免布局变化后沿用旧命中状态。
+    pub scrollbar_pointer: Option<(u16, u16)>,
     /// ctrl+c 二次确认状态及触发时刻（3 秒内有效）。
     pub ctrl_c_pending: Option<(CtrlCPending, std::time::Instant)>,
     /// Esc 二次确认状态。
@@ -624,6 +626,7 @@ impl App {
             pending_click: None,
             selection_copied_at: None,
             scrollbar_drag: None,
+            scrollbar_pointer: None,
             ctrl_c_pending: None,
             clear_pending: false,
             notice: None,
@@ -2927,7 +2930,8 @@ mod tests {
     fn overdue_selection_copy_keeps_wakeup_until_consumed() {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = super::App::new(crate::theme::Theme::global(), events);
-        app.selection_copied_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+        app.selection_copied_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
         let deadline = app.selection_copy_deadline().expect("过期反馈仍需擦除");
         assert!(deadline < std::time::Instant::now());
         app.selection_copied_at = None;
