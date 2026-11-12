@@ -146,9 +146,11 @@ export default {
 
 工具声明只接受上表中的字段，未知字段会加载失败。`modes` 省略时三种全开，显式传入 `null`、非数组或非字符串元素会加载失败。
 
-`modes` 只约束调用放行，不授予额外能力；插件的宿主能力由 `tools.call` 白名单决定。模型可以通过 `execute` 里的 `catalog.search()` / `catalog.describe()` 发现插件工具，或读取 `tool://<插件工具名>`，再用 `tools.<工具名>(args)` 调用。原生调用和代码调用共享本轮工具目录、执行许可与插件钩子；代码调用仅额外禁止递归调用 `execute` 自身。
+`modes` 只约束调用放行，不授予额外能力；插件的宿主能力由 `tools.call` 白名单决定。模型可以通过 `execute` 里的 `catalog.search()` / `catalog.describe()` 发现插件工具，或读取 `tool://<插件工具名>`，再用 `tools["工具名"](args)` 调用。原生调用和代码调用共享本轮工具目录、执行许可与插件钩子；代码调用仅额外禁止递归调用 `execute` 自身。
 
 工具名全局唯一：与内置工具、MCP 工具（`mcp__` 前缀）、其它插件工具撞名会让该工具被忽略并告警（内置优先）。工具名只允许字母、数字、下划线、连字符。
+
+PTC 签名对连字符或数字开头的名称使用方括号，例如 `tools["Read-Tool2"](args)`、`tools["1probe"](args)`；其它名称仍可用点号访问。`then` 也是合法工具名，`tools.then(args)` 与 `tools["then"](args)` 均可调用。应当 `await` 工具调用返回的 Promise，而不是 `tools` 命名空间本身；`await tools` / `Promise.resolve(tools)` 返回 `E_ARGUMENT`，不会误发宿主工具请求。
 
 返回值按下面的规则映射成工具结果：
 

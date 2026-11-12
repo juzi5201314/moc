@@ -248,3 +248,72 @@ async fn execute_preserves_plugin_hooks_and_callback_boundaries() {
     }
     harness.close().await;
 }
+
+/// 直接执行模型收到的签名，覆盖连字符、数字开头与 then 保留属性。
+#[tokio::test]
+async fn plugin_tool_signatures_are_callable_in_execute() {
+    assert!(support::require_moc_bin("插件工具名兼容性"));
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let messages = body["messages"].as_array().unwrap();
+            let response = if messages.iter().any(|message| message["role"] == "tool") {
+                support::text_stream("验证完成")
+            } else {
+                let system = messages
+                    .iter()
+                    .find(|message| message["role"] == "system")
+                    .unwrap()["content"]
+                    .as_str()
+                    .unwrap();
+                let calls = ["Read-Tool2", "1probe", "then"]
+                    .map(|name| {
+                        let expression = system
+                            .lines()
+                            .filter_map(|line| line.split_once("(args:"))
+                            .map(|(expression, _)| expression)
+                            .find(|expression| expression.contains(name))
+                            .expect("模型能发现插件工具签名");
+                        format!("(await {expression}({{n:7}})).content")
+                    })
+                    .join(",");
+                support::tool_stream(vec![(
+                    "plugin_names",
+                    "execute",
+                    json!({"description":"执行插件签名", "code":format!("return [{calls}];")}),
+                )])
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    crate::plugin_flow::install_plugin(
+        &harness,
+        "names",
+        r#"
+        const tool = factor => ({
+          description: '计算整数倍数',
+          parameters: {type:'object', properties:{n:{type:'integer'}}, required:['n']},
+          run({n}) { return String(n * factor); }
+        });
+        export default {tools:{'Read-Tool2':tool(2), '1probe':tool(3), then:tool(4)}};
+        "#,
+    );
+    let session = harness.session(moc_protocol::SessionEngine::Ptc).await;
+    harness.prompt(&session, "执行插件工具").await;
+    let loaded = harness.load(&session).await;
+    let result = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .find(|result| result.tool_call_id == "plugin_names")
+        .expect("execute 结果");
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&result.content).unwrap(),
+        json!(["14", "21", "28"])
+    );
+    harness.close().await;
+}

@@ -44,9 +44,21 @@ pub fn render_signatures(
             continue;
         }
         builtins += 1;
+        let name = tool.name();
+        // 内置与插件工具名只含 ASCII 字母、数字、下划线、连字符，无需字符串转义。
+        debug_assert!(
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        );
+        let (open, close) = if !name.as_bytes()[0].is_ascii_digit() && !name.contains('-') {
+            (".", "")
+        } else {
+            ("[\"", "\"]")
+        };
         lines.push(format!(
-            "tools.{}(args: {}): Promise<ToolResult> — {}",
-            tool.name(),
+            "tools{open}{name}{close}(args: {}): Promise<ToolResult> — {}",
             ts_type(&catalog.definition(tool.as_ref()).parameters, TS_MAX_DEPTH),
             short_description(tool.description()),
         ));

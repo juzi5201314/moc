@@ -165,6 +165,12 @@ fn round_trips_tool_result() {
     done(&steps[1], json!(7));
 }
 #[test]
+fn tools_namespace_is_not_awaited_as_a_then_tool_call() {
+    let steps = run_with(start("return Promise.resolve(tools);"), &[]);
+    failed_with(&steps[0], "E_ARGUMENT");
+    assert!(steps[0].requests.is_empty(), "Promise 同化不能调用宿主工具");
+}
+#[test]
 fn keeps_parallel_tool_calls_in_one_batch() {
     let completions = vec![
         HostCompletion {

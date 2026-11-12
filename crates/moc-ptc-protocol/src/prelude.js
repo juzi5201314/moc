@@ -64,8 +64,13 @@
   }
   const tools = new Proxy(Object.create(null), {
     get(_, name) {
-      if (name === 'then' || typeof name !== 'string') return undefined;
-      return (args = {}) => {
+      if (typeof name !== 'string') return undefined;
+      return (args = {}, reject) => {
+        // then 是合法工具名；Promise 同化传入两个回调，不能误发请求或悬挂等待。
+        if (name === 'then' && typeof args === 'function' && typeof reject === 'function') {
+          reject(fail('E_ARGUMENT', 'Await a tool call, not the tools namespace'));
+          return;
+        }
         if (!args || typeof args !== 'object' || Array.isArray(args)) return Promise.reject(fail('E_ARGUMENT', 'tool arguments must be an object'));
         return submit({op:'tool', name, arguments:args});
       };
