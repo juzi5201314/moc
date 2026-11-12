@@ -76,13 +76,15 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                             blocks.push(Entry::new(Block::Assistant { text: text.clone() }));
                         }
                         ContentPart::Reasoning(reasoning) => {
-                            blocks.push(Entry::new(Block::Thinking {
-                                text: reasoning
-                                    .display_text()
-                                    .unwrap_or_else(|| "（思维链内容不可用）".into()),
-                                reasoning_tokens: None,
-                                duration_ms: None,
-                            }));
+                            if let Some(text) = reasoning.display_text()
+                                && !text.trim().is_empty()
+                            {
+                                blocks.push(Entry::new(Block::Thinking {
+                                    text,
+                                    reasoning_tokens: None,
+                                    duration_ms: None,
+                                }));
+                            }
                         }
                         ContentPart::ToolCall(call) => {
                             let block = ToolCallBlock {
