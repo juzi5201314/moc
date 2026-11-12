@@ -17,6 +17,22 @@ fn len64(length: usize) -> u64 {
     u64::try_from(length).unwrap_or(u64::MAX)
 }
 
+/// 不完整 UTF-8 尾缀最多 3 字节；只检查这段，已确定非法的序列仍立即按替换字符输出。
+fn incomplete_utf8_suffix(bytes: &[u8]) -> usize {
+    for start in (bytes.len().saturating_sub(3)..bytes.len()).rev() {
+        if bytes[start] & 0xc0 == 0x80 {
+            continue;
+        }
+        if let Err(error) = std::str::from_utf8(&bytes[start..])
+            && error.error_len().is_none()
+        {
+            return bytes.len() - start;
+        }
+        break;
+    }
+    0
+}
+
 #[derive(Debug)]
 struct JobLogState {
     file: File,
@@ -150,17 +166,23 @@ impl JobLog {
         self.output_notify.notified()
     }
 
-    /// `read_tail` 同时返回当时的 `seen`，让「展示即已读」的游标推进不丢也不重。
+    /// `read_tail` 同时返回已展示的逻辑字节位置；运行中不消费末尾尚未完整的 UTF-8 字符。
     pub(crate) fn read_tail_and_seen(
         &self,
         max_lines: usize,
     ) -> std::io::Result<(String, bool, u64)> {
         let state = self.state.lock();
-        let seen = state.seen;
+        let mut seen = state.seen;
         let bytes = self.tail_bytes(&state, TAIL_WINDOW)?;
         let elided = seen > self.capacity;
+        let pending = if state.finished {
+            0
+        } else {
+            incomplete_utf8_suffix(&bytes)
+        };
+        seen -= len64(pending);
         drop(state);
-        let text = String::from_utf8_lossy(&bytes);
+        let text = String::from_utf8_lossy(&bytes[..bytes.len() - pending]);
         let lines: Vec<&str> = text.lines().collect();
         Ok((
             lines[lines.len().saturating_sub(max_lines)..].join("\n"),
@@ -171,7 +193,7 @@ impl JobLog {
 
     /// 自 `offset`（此前返回的 `seen` 游标）之后收到的输出。
     ///
-    /// 返回增量文本、新游标（当前 `seen`）与请求范围内因容量被丢弃的字节数。
+    /// 返回增量文本、新游标与请求范围内因容量被丢弃的字节数；运行中残缺的 UTF-8 尾缀留待下次读取。
     /// 溢出日志的中间一段不保留：请求穿过丢弃段时返回两端保留内容并计入丢弃数。
     pub(crate) fn read_since(&self, offset: u64) -> std::io::Result<(String, u64, u64)> {
         let state = self.state.lock();
@@ -184,10 +206,7 @@ impl JobLog {
         let (head_end, tail_start) = if seen <= self.capacity {
             (state.file_len, state.file_len)
         } else if state.finished {
-            (
-                self.head_cap,
-                self.capacity.max(seen - len64(self.tail_cap())),
-            )
+            (self.head_cap, seen - len64(self.tail_cap()))
         } else {
             (self.capacity, seen - len64(state.ring.len()))
         };
@@ -207,7 +226,16 @@ impl JobLog {
             bytes.extend_from_slice(&tail[from.min(tail.len())..]);
         }
         let skipped = tail_start.saturating_sub(offset.max(head_end));
-        Ok((String::from_utf8_lossy(&bytes).into_owned(), seen, skipped))
+        let pending = if state.finished {
+            0
+        } else {
+            incomplete_utf8_suffix(&bytes)
+        };
+        Ok((
+            String::from_utf8_lossy(&bytes[..bytes.len() - pending]).into_owned(),
+            seen - len64(pending),
+            skipped,
+        ))
     }
 
     /// 最后 `max_lines` 行；第二个值表示中段是否已被丢弃。
@@ -351,5 +379,87 @@ mod tests {
         let (text, _, skipped) = log.read_since(12).expect("读取");
         assert_eq!(text, "dddd");
         assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn read_since_keeps_final_tail_when_output_barely_overflows() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let input = b"abcdefghijkl";
+        for length in 9..=12 {
+            let log = JobLog::create(directory.path().join("job.log"), 8).expect("创建日志");
+            log.append(&input[..length]).expect("写入");
+            log.finish().expect("定稿");
+            let tail_start = length - 4;
+            for offset in 0..=length {
+                let expected: Vec<u8> = (offset..length)
+                    .filter(|&index| index < 4 || index >= tail_start)
+                    .map(|index| input[index])
+                    .collect();
+                let (text, next, skipped) = log.read_since(len64(offset)).expect("增量读取");
+                assert_eq!(
+                    text.as_bytes(),
+                    expected,
+                    "length={length}, offset={offset}"
+                );
+                assert_eq!(next, len64(length));
+                assert_eq!(skipped, len64(tail_start.saturating_sub(offset.max(4))));
+            }
+        }
+    }
+
+    #[test]
+    fn incremental_reads_preserve_split_utf8_after_invalid_bytes() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        for character in ["é", "中", "\u{1f680}"] {
+            for split in 1..character.len() {
+                let log = JobLog::create(directory.path().join("job.log"), 64).expect("创建日志");
+                log.append(b"ok\xff").expect("写入含非法字节的前缀");
+                log.append(&character.as_bytes()[..split])
+                    .expect("写入字符前半段");
+                assert_eq!(
+                    log.read_since(0).expect("首次读取"),
+                    ("ok\u{fffd}".into(), 3, 0)
+                );
+                assert_eq!(
+                    log.read_tail_and_seen(1).expect("尾部预览"),
+                    ("ok\u{fffd}".into(), false, 3)
+                );
+                assert_eq!(
+                    log.read_since(3).expect("残缺字符不推进游标"),
+                    (String::new(), 3, 0)
+                );
+                log.append(&character.as_bytes()[split..])
+                    .expect("补齐字符");
+                assert_eq!(
+                    log.read_since(3).expect("增量读取"),
+                    (character.into(), 3 + len64(character.len()), 0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn finish_flushes_incomplete_utf8_but_invalid_sequences_do_not_wait() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let log = JobLog::create(directory.path().join("job.log"), 64).expect("创建日志");
+        log.append(b"\xe0\x80").expect("写入已确定非法的序列");
+        assert_eq!(
+            log.read_since(0).expect("非法序列立即输出"),
+            ("\u{fffd}\u{fffd}".into(), 2, 0)
+        );
+        log.append(b"\xe4\xb8").expect("写入未完成字符");
+        assert_eq!(
+            log.read_since(2).expect("等待字符补齐"),
+            (String::new(), 2, 0)
+        );
+        log.finish().expect("定稿");
+        assert_eq!(
+            log.read_since(2).expect("结束后输出替换字符"),
+            ("\u{fffd}".into(), 4, 0)
+        );
+        assert_eq!(
+            log.read_tail_and_seen(1).expect("定稿预览"),
+            ("\u{fffd}\u{fffd}\u{fffd}".into(), false, 4)
+        );
     }
 }

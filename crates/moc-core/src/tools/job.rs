@@ -625,8 +625,13 @@ impl JobManager {
                             .log
                             .read_since(job.read_cursor)
                             .map_err(|error| ToolError::new("E_JOB_LOG", error.to_string()))?;
-                        job.read_cursor = next;
-                        Step::Done(job.info(), text, skipped, reason)
+                        if next == job.read_cursor && matches!(reason, WaitReason::NewOutput) {
+                            // 只收到 UTF-8 字符的前半段：继续等补齐或终态，不返回空增量。
+                            Step::Pending(job.info())
+                        } else {
+                            job.read_cursor = next;
+                            Step::Done(job.info(), text, skipped, reason)
+                        }
                     }
                     None => Step::Pending(job.info()),
                 }
