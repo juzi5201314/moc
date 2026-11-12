@@ -11348,6 +11348,80 @@ mod tests {
         assert!(app.blocks.is_empty(), "失败回合的预览与占位工具块都要撤掉");
     }
 
+    /// 父请求失败只撤临时预览，异步到达且已落盘的结果保持原顺序。
+    #[test]
+    fn parent_error_preserves_delivered_agent_results() {
+        use crate::transcript::Block;
+        use moc_protocol::methods::{AgentResultMeta, AgentStatus, AssistantDelta};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.push_block(Block::User {
+            text: "父任务".into(),
+        });
+        app.start_generation();
+        for id in ["first", "second"] {
+            apply_update(
+                &mut app,
+                SessionUpdate::AssistantDelta {
+                    prompt_id: "prompt_parent".into(),
+                    delta: AssistantDelta::Text {
+                        delta: "未提交的父回复".into(),
+                    },
+                },
+            );
+            apply_update(
+                &mut app,
+                SessionUpdate::AgentResult {
+                    entry_id: format!("result_{id}"),
+                    at_ms: 42,
+                    meta: AgentResultMeta {
+                        agent_id: id.into(),
+                        title: id.into(),
+                        status: AgentStatus::Completed,
+                    },
+                    body: format!("报告 {id}"),
+                },
+            );
+        }
+        apply_update(
+            &mut app,
+            SessionUpdate::Error {
+                prompt_id: "prompt_parent".into(),
+                message: "父请求失败".into(),
+                retryable: true,
+            },
+        );
+
+        assert!(matches!(&app.blocks[0].block, Block::User { text } if text == "父任务"));
+        let results = app
+            .blocks
+            .iter()
+            .filter_map(|entry| match &entry.block {
+                Block::AgentResult { meta, body } => {
+                    Some((meta.agent_id.as_str(), body.as_str(), entry.at_ms))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            results,
+            [
+                ("first", "报告 first", Some(42)),
+                ("second", "报告 second", Some(42))
+            ]
+        );
+        assert!(
+            !app.blocks
+                .iter()
+                .any(|entry| matches!(entry.block, Block::Assistant { .. }))
+        );
+        assert!(matches!(
+            app.blocks.last().expect("保留错误反馈").block,
+            Block::Note { error: true, .. }
+        ));
+    }
+
     /// 生成中不能重试：原地提示，不占通道。
     #[tokio::test]
     async fn retry_is_rejected_while_a_prompt_is_running() {

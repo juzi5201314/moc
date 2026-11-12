@@ -1207,11 +1207,15 @@ impl App {
 
     pub fn discard_generation(&mut self) {
         if let Some(start) = self.generation_start.take() {
-            self.blocks.truncate(start);
+            // 结果已独立落盘，不属于这次失败的模型生成；只扫描并移除临时尾部。
+            self.blocks
+                .extract_if(start.., |entry| {
+                    !matches!(entry.block, Block::AgentResult { .. })
+                })
+                .for_each(drop);
+            self.tool_indices.retain(|_, index| *index < start);
             self.view_gen = self.view_gen.wrapping_add(1);
         }
-        self.tool_indices
-            .retain(|_, index| *index < self.blocks.len());
         self.thinking_started_at = None;
         self.thinking_has_block = false;
     }

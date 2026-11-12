@@ -104,7 +104,8 @@ pub struct SessionRecord {
     /// 跨进程写租约；`None` 表示本进程只读打开或尚未打开写模式。
     ///
     /// 用同步锁包装：只在取/放租约的短临界区里访问，不跨 `await`。
-    lease: parking_lot::Mutex<Option<lock::SessionLockGuard>>,
+    /// 结果事务共享租约句柄，卸载不能在在途写入完成前释放内核锁。
+    lease: parking_lot::Mutex<Option<Arc<lock::SessionLockGuard>>>,
     /// 串行化「检查 → 取租约 → 对齐磁盘」的整个流程，避免两个并发请求同时去抢内核锁。
     lease_gate: Mutex<()>,
     /// 回退截掉的尾部，栈式存放供 `redo` 前滚；每次回退压一层，栈顶是当前可接回的
@@ -1109,10 +1110,22 @@ impl SessionTable {
         payload: EntryPayload,
     ) -> Result<Entry, CoreError> {
         let record = self.get(session_id).await?;
+        let result_lease = self.locking && matches!(payload, EntryPayload::AgentResult { .. });
+        if result_lease {
+            self.ensure_write_lease(session_id, &record, "moc-core")
+                .await?;
+        }
         record.pinned.store(true, Ordering::Release);
         // 写入事务放在独立任务里：即使请求的 future 被丢弃，磁盘和内存的提交也必须完成。
         tokio::spawn(async move {
             let _append = record.append_lock.lock().await;
+            let _lease = if result_lease {
+                Some(record.lease.lock().clone().ok_or_else(|| {
+                    CoreError::Session("SESSION_LOCKED: 子代理结果提交前父会话写租约已释放".into())
+                })?)
+            } else {
+                None
+            };
             if !record.active.load(Ordering::Acquire) {
                 return Err(CoreError::Session(
                     "SESSION_NOT_FOUND: 会话已卸载或删除".into(),
@@ -1485,7 +1498,7 @@ impl SessionTable {
             *current = fresh;
         }
         record.pinned.store(true, Ordering::Release);
-        *record.lease.lock() = Some(lease);
+        *record.lease.lock() = Some(Arc::new(lease));
         Ok(())
     }
 
@@ -1513,11 +1526,7 @@ impl SessionTable {
 
     /// 会话当前写租约的持有者投影：本进程持有则直接给出，否则探测其它进程。
     pub fn lease_info(&self, session_id: &str, record: &SessionRecord) -> Option<SessionLockInfo> {
-        let held = record
-            .lease
-            .lock()
-            .as_ref()
-            .map(lock::SessionLockGuard::info);
+        let held = record.lease.lock().as_ref().map(|lease| lease.info());
         held.or_else(|| lock::read(record.paths.lock_file(session_id)))
     }
 
@@ -2678,6 +2687,84 @@ mod tests {
             .ensure_write_lease(&info.id, &record, "webui")
             .await
             .expect("释放后可再取");
+    }
+
+    /// 父会话卸载后，结果必须遵守新写者的租约；租约释放后沿最新历史接续。
+    #[tokio::test]
+    async fn agent_result_requires_parent_write_lease() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let first = SessionTable::new(directory.path(), true);
+        let info = first
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionEngine::Standard,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+                false,
+            )
+            .await
+            .expect("创建父会话");
+        first
+            .append_message(&info.id, Message::user_text("原有历史"), None, None)
+            .await
+            .expect("持久化父会话");
+        first.unload(&info.id).await.expect("卸载父会话");
+
+        let second = SessionTable::new(directory.path(), true);
+        let owner = second.get(&info.id).await.expect("新写者加载父会话");
+        second
+            .ensure_write_lease(&info.id, &owner, "webui")
+            .await
+            .expect("新写者取得租约");
+        let latest = second
+            .append_message(&info.id, Message::user_text("新写者历史"), None, None)
+            .await
+            .expect("新写者追加历史");
+        let before = second.read_entries(&info.id).await.expect("读取最新历史");
+        let payload = EntryPayload::AgentResult {
+            meta: moc_protocol::methods::AgentResultMeta {
+                agent_id: "ses_child".into(),
+                title: "子代理".into(),
+                status: moc_protocol::methods::AgentStatus::Completed,
+            },
+            report: "完整交付报告".into(),
+        };
+        let error = first
+            .append(&info.id, payload.clone())
+            .await
+            .expect_err("结果不能绕过新写者的租约");
+        assert!(error.to_string().contains("SESSION_LOCKED"), "{error}");
+        assert_eq!(
+            second.read_entries(&info.id).await.expect("读取磁盘历史"),
+            before,
+            "租约冲突不能修改父会话历史"
+        );
+
+        second.unload(&info.id).await.expect("释放新写者租约");
+        let result = first
+            .append(&info.id, payload)
+            .await
+            .expect("租约释放后可交付结果");
+        assert_eq!(result.parent_id(), Some(latest.id()));
+        let loaded = first.load(&info.id, None).await.expect("恢复交付历史");
+        assert_eq!(
+            loaded
+                .entries
+                .iter()
+                .map(|entry| entry.message.text())
+                .collect::<Vec<_>>(),
+            ["原有历史", "新写者历史", "完整交付报告"]
+        );
+        assert!(
+            loaded
+                .entries
+                .last()
+                .expect("结果已落盘")
+                .context_message()
+                .is_none()
+        );
     }
 
     #[tokio::test]
