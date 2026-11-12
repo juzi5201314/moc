@@ -113,6 +113,7 @@ function RowHeader({
   open,
   pulse,
   sticky,
+  inlineSuffix,
   onToggle,
   onTargetClick,
 }: {
@@ -131,6 +132,8 @@ function RowHeader({
   pulse?: boolean;
   /** 长块正文滚过顶缘后把标题钉在滚动容器顶部，随时可点回折叠；块尾处被下一块顶走。 */
   sticky?: boolean;
+  /** 工具尾注紧跟摘要；其他活动保留右侧尾注。 */
+  inlineSuffix?: boolean;
   onToggle: () => void;
 }) {
   return (
@@ -162,7 +165,7 @@ function RowHeader({
       >
         {verb}
       </span>
-      <span className="flex min-w-0 flex-1 items-baseline gap-2 truncate">
+      <span className={cn("flex min-w-0 items-baseline gap-2 truncate", !inlineSuffix && "flex-1")}>
         {target &&
           (onTargetClick ? (
             // biome-ignore lint/a11y/useSemanticElements: 行内截断 span 才能嵌进 title 截断布局，语义等价于 <a>
@@ -205,7 +208,7 @@ function RowHeader({
           </span>
         )}
       </span>
-      {action}
+      {!inlineSuffix && action}
       <span className="flex shrink-0 items-center gap-1.5">
         {suffix}
         {interactive && (
@@ -217,6 +220,7 @@ function RowHeader({
           />
         )}
       </span>
+      {inlineSuffix && action}
     </button>
   );
 }
@@ -456,6 +460,7 @@ function ToolRow({
         mono={headline.mono}
         failed={failed}
         suffix={toolSuffix(tool, headline.stat, headline.statError, now)}
+        inlineSuffix
         action={headerAction}
         interactive={interactive}
         open={level === "full"}
@@ -613,6 +618,7 @@ function ToolGroupRow({
         interactive
         open={open}
         sticky
+        inlineSuffix
         onToggle={() => setOpen(!open)}
         suffix={
           running ? (

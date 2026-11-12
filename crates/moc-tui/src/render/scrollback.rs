@@ -1500,9 +1500,9 @@ fn member_shape(head: Option<TreeShape>, last: bool) -> TreeShape {
 
 /// 同名工具的成组渲染：顶层批次与嵌套连续同名子调用共用这棵树。
 ///
-/// 组头 = bullet（仅顶层）+ 工具名 + ` (N)`；有失败或运行中的成员时右端补
+/// 组头 = bullet（仅顶层）+ 工具名 + ` (N)`；有失败或运行中的成员时紧接着补
 /// `{done}/{N} done` 统计（失败、运行中另行点明）。成员画在组头下一层：
-/// `{连线前缀}` + 摘要 + 右端状态列，正文悬挂一格与摘要同列。
+/// `{连线前缀}` + 摘要 + 状态尾注，正文悬挂一格与摘要同列。
 /// `layout` 取组内最后一个成员的树布局（它的 `more` 与 `gap` 才代表整组）。
 fn render_tool_batch(
     app: &App,
@@ -1542,9 +1542,9 @@ fn render_tool_batch(
     ));
     title.push(Span::styled(
         format!(" ({})", tools.len()),
-        Style::new().fg(theme.gray_bright),
+        Style::new().fg(theme.gray_dim),
     ));
-    // 组尾统计挪进组头右端：只在有失败或运行中时才占列。
+    // 组统计紧跟数量：只在有失败或运行中时显示。
     if failed > 0 || running > 0 {
         let mut tail = vec![Span::styled(
             format!("{done}/{} {}", tools.len(), labels::status::DONE),
@@ -1562,10 +1562,7 @@ fn render_tool_batch(
                 Style::new().fg(theme.accent_running),
             ));
         }
-        let tail_width: usize = tail.iter().map(Span::width).sum();
-        let used: usize = title.iter().map(Span::width).sum();
-        let gap = head_width.saturating_sub(used + tail_width).max(2);
-        title.push(Span::raw(" ".repeat(gap)));
+        title.push(Span::raw("  "));
         title.extend(tail);
     }
     let mut lines = vec![clip_line(Line::from(title), head_width)];
@@ -1592,13 +1589,10 @@ fn render_tool_batch(
             theme,
             app.cwd(),
         );
-        let tail_width: usize = tail.iter().map(Span::width).sum();
         let mut spans = vec![Span::raw(" ".repeat(TITLE_INDENT))];
         spans.extend(summary);
-        if tail_width > 0 {
-            let used: usize = spans.iter().map(Span::width).sum();
-            let gap = width.saturating_sub(used + tail_width).max(2);
-            spans.push(Span::raw(" ".repeat(gap)));
+        if !tail.is_empty() {
+            spans.push(Span::raw("  "));
             spans.extend(tail);
         }
         let mut member_lines = vec![clip_line(Line::from(spans), width)];
@@ -2190,7 +2184,7 @@ fn tool_title<'a>(tool: &'a ToolCallBlock, args: &Value) -> &'a str {
     }
 }
 
-/// 标题行右端列：已完成调用的耗时（todo 是完成进度）；运行中没有尾部。
+/// 摘要后的尾注：已完成调用的耗时（todo 是完成进度）；运行中没有尾部。
 ///
 /// todo 的 `done/total` 里 done 计「已关闭」（completed + abandoned），
 /// 全部关闭时给成功色。
@@ -2246,7 +2240,7 @@ fn tool_title_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'static>> {
 }
 
 /// 单卡标题行留给参数摘要的列宽：让出标记、bullet（子调用无 bullet）、
-/// 工具名、一格间距与右端尾列。
+/// 工具名、一格间距与紧随摘要的尾注。
 fn tool_summary_budget(
     name: &str,
     tool: &ToolCallBlock,
@@ -2287,7 +2281,7 @@ fn title_summary(
         if fits || level != DetailLevel::Full {
             let flat = command.split_whitespace().collect::<Vec<_>>().join(" ");
             let line = clip_line(
-                Line::from(Span::styled(flat, Style::new().fg(theme.command))),
+                Line::from(Span::styled(flat, Style::new().fg(theme.gray_dim))),
                 budget,
             );
             return (line.spans, true);
@@ -2310,7 +2304,7 @@ fn read_shown_range(result: &str) -> Option<String> {
     })
 }
 
-/// 标题摘要的分段着色：路径、行号范围、pattern、改动计数各给各的色；
+/// 标题摘要与普通尾注统一用弱化色，改动计数保留增删语义色；
 /// 路径一律过 [`super::display_path`] 相对化。
 ///
 /// 产出未截断的 span 序列；截断由调用方用 [`clip_line`] 统一完成。
@@ -2344,7 +2338,7 @@ fn summary_spans(
     };
     match tool.name.as_str() {
         "edit" | "write" => {
-            let mut spans = vec![styled(path_str("path"), theme.path)];
+            let mut spans = vec![styled(path_str("path"), theme.gray_dim)];
             if let Some(diff) = &tool.diff {
                 let stats = diff::stats(diff);
                 // 空 diff 不渲染 +0/-0；截断时计数只是已交付的部分，
@@ -2362,13 +2356,9 @@ fn summary_spans(
             }
             spans
         }
-        // 描述加粗：bash／execute 的摘要不是参数值而是模型写的一句话，
-        // 加粗后才不会和后面的 path／pattern 参数混成一列。
-        "bash" | "execute" => vec![Span::styled(
+        "bash" | "execute" => vec![styled(
             ui_description(args).unwrap_or_default().to_owned(),
-            Style::new()
-                .fg(theme.text_secondary)
-                .add_modifier(Modifier::BOLD),
+            theme.gray_dim,
         )],
         "read" => {
             // 分页 footer 是真实交付的范围，优先于请求的 offset/limit；与 web readRange 同规则。
@@ -2394,13 +2384,13 @@ fn summary_spans(
                 format!(" {globs}")
             };
             vec![
-                styled(path_str("path"), theme.path),
-                styled(range, theme.gray),
-                styled(globs, theme.gray),
+                styled(path_str("path"), theme.gray_dim),
+                styled(range, theme.gray_dim),
+                styled(globs, theme.gray_dim),
             ]
         }
-        "grep" => vec![styled(arg_str("pattern"), theme.text_secondary)],
-        "find" => vec![styled(glob_str("glob"), theme.path)],
+        "grep" => vec![styled(arg_str("pattern"), theme.gray_dim)],
+        "find" => vec![styled(glob_str("glob"), theme.gray_dim)],
         "web_fetch" => vec![styled(
             args.get("urls")
                 .and_then(Value::as_array)
@@ -2410,7 +2400,7 @@ fn summary_spans(
                         .collect::<Vec<_>>()
                         .join(" · ")
                 }),
-            theme.path,
+            theme.gray_dim,
         )],
         "spawn_agent" => vec![styled(
             args.get("tasks")
@@ -2423,25 +2413,22 @@ fn summary_spans(
                         .join(" · ")
                 })
                 .unwrap_or_else(|| arg_str("title")),
-            theme.text_secondary,
+            theme.gray_dim,
         )],
-        "yield" => vec![styled("交付报告".to_owned(), theme.text_secondary)],
-        "skill" => vec![styled(arg_str("name"), theme.text_secondary)],
-        "clm_context" => vec![styled(arg_str("op"), theme.text_secondary)],
-        "stop_agent" => vec![styled(arg_str("agent_id"), theme.text_secondary)],
+        "yield" => vec![styled("交付报告".to_owned(), theme.gray_dim)],
+        "skill" => vec![styled(arg_str("name"), theme.gray_dim)],
+        "clm_context" => vec![styled(arg_str("op"), theme.gray_dim)],
+        "stop_agent" => vec![styled(arg_str("agent_id"), theme.gray_dim)],
         "todo" => todo_summary_spans(args, theme),
-        "TodoReminder" => vec![styled(
-            "隐式提醒：同步待办进度".to_owned(),
-            theme.text_secondary,
-        )],
+        "TodoReminder" => vec![styled("隐式提醒：同步待办进度".to_owned(), theme.gray_dim)],
         "job" | "plan" | "exit_plan" => Vec::new(),
         "message_agent" | "sidekick" | "wait_agent" | "ask" => {
-            vec![styled(tool_summary(tool, args), theme.text_secondary)]
+            vec![styled(tool_summary(tool, args), theme.gray_dim)]
         }
         _ => {
             // 未知工具（MCP 等）：参数截断展示
             let text = tool.arguments.replace('\n', " ");
-            vec![styled(text.chars().take(60).collect(), theme.gray)]
+            vec![styled(text.chars().take(60).collect(), theme.gray_dim)]
         }
     }
 }
@@ -2472,7 +2459,7 @@ fn todo_summary_spans(args: &Value, theme: &Theme) -> Vec<Span<'static>> {
             }
             .to_owned()
         });
-    let mut spans = vec![styled(op.clone(), theme.text_secondary)];
+    let mut spans = vec![styled(op.clone(), theme.gray_dim)];
     let arg_str = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or_default();
     match op.as_str() {
         "init" => {
@@ -2491,16 +2478,16 @@ fn todo_summary_spans(args: &Value, theme: &Theme) -> Vec<Span<'static>> {
                 })
                 .or_else(|| args.get("items").and_then(Value::as_array).map(Vec::len));
             if let Some(count) = count {
-                spans.push(styled(format!(" {count} tasks"), theme.gray));
+                spans.push(styled(format!(" {count} tasks"), theme.gray_dim));
             }
         }
         "append" => {
             let phase = arg_str("phase");
             if !phase.is_empty() {
-                spans.push(styled(format!(" {phase}"), theme.text_primary));
+                spans.push(styled(format!(" {phase}"), theme.gray_dim));
             }
             if let Some(items) = args.get("items").and_then(Value::as_array) {
-                spans.push(styled(format!(" · {} items", items.len()), theme.gray));
+                spans.push(styled(format!(" · {} items", items.len()), theme.gray_dim));
             }
         }
         // 目标 op 只留 op 词：start/done/drop/block/unblock 的目标都在快照树里
@@ -2515,7 +2502,7 @@ fn todo_summary_spans(args: &Value, theme: &Theme) -> Vec<Span<'static>> {
                 }
             };
             if !target.is_empty() {
-                spans.push(styled(format!(" {target}"), theme.text_primary));
+                spans.push(styled(format!(" {target}"), theme.gray_dim));
             }
         }
         _ => {}
@@ -2525,7 +2512,7 @@ fn todo_summary_spans(args: &Value, theme: &Theme) -> Vec<Span<'static>> {
 
 /// 工具块：标题行 + 正文 + 尾随留白（树尾才有）。
 ///
-/// 标题落在块标记列，耗时在标题行右端（todo 是 `done/total` 进度），正文落在正文列；
+/// 标题落在块标记列，耗时紧跟摘要（todo 是 `done/total` 进度），正文落在正文列；
 /// 收起态（无正文、read 非完整档）只留标题行。嵌套调用（PTC）按 [`TreeShape`] 加
 /// 连线前缀：子调用不画 bullet（连接符本身就是标记），正文与工具名首字对齐。
 fn render_tool(
@@ -2556,7 +2543,6 @@ fn render_tool(
     } else {
         tool_title_tail(tool, theme)
     };
-    let tail_width: usize = tail.iter().map(Span::width).sum();
     let (summary, in_title) = title_summary(
         tool,
         &args,
@@ -2587,10 +2573,8 @@ fn render_tool(
             Style::new().fg(theme.gray_dim),
         ));
     }
-    if tail_width > 0 {
-        let used: usize = title.iter().map(Span::width).sum();
-        let gap = width.saturating_sub(used + tail_width).max(2);
-        title.push(Span::raw(" ".repeat(gap)));
+    if !tail.is_empty() {
+        title.push(Span::raw("  "));
         title.extend(tail);
     }
     let mut lines = vec![clip_line(Line::from(title), width)];
@@ -5410,15 +5394,6 @@ mod tests {
         assert!(
             brief_text.contains("Search the renderer"),
             "标题取 description"
-        );
-        assert!(
-            brief[0]
-                .spans
-                .iter()
-                .any(|span| span.content == "Search the renderer"
-                    && span.style.add_modifier.contains(Modifier::BOLD)),
-            "description 加粗与参数文本区分：{:?}",
-            brief[0].spans
         );
         assert!(
             brief_text.contains("$ rg -n foo crates/moc-tui/src"),
