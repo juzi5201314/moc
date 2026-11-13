@@ -162,3 +162,40 @@ async fn responses_incomplete_preserves_refusal_usage_and_stop_reason() {
     assert_eq!(response.usage.input_tokens, 3);
     assert_eq!(response.usage.output_tokens, 1);
 }
+
+#[tokio::test]
+async fn responses_text_survives_multi_message_and_mismatched_snapshots() {
+    use serde_json::json;
+    // 多 message 输出项不应向后续输出项补前导空行而破坏快照前缀校验
+    let msg1 = json!({"type":"message", "phase":"commentary", "role":"assistant", "content":[{"type":"output_text", "text":"先查"}]});
+    let call = json!({"type":"function_call", "call_id":"call_1", "name":"read", "arguments":"{}"});
+    let msg2 = json!({"type":"message", "phase":"final_answer", "role":"assistant", "content":[{"type":"output_text", "text":"结论"}]});
+    let multi = decode_frames(
+        Protocol::OpenAiResponses,
+        &[
+            json!({"type":"response.output_text.delta", "output_index":0, "content_index":0, "delta":"先查"}),
+            json!({"type":"response.output_item.done", "output_index":0, "item":msg1}),
+            json!({"type":"response.output_item.done", "output_index":1, "item":call}),
+            json!({"type":"response.output_text.delta", "output_index":2, "content_index":0, "delta":"结论"}),
+            json!({"type":"response.output_item.done", "output_index":2, "item":msg2}),
+            json!({"type":"response.completed", "response":{"status":"completed", "output":[msg1, call, msg2]}}),
+        ],
+    )
+    .await;
+    assert_eq!(multi.message.text(), "先查结论");
+
+    // 兼容网关终态 content 为空或与已收增量不一致时，保留已收增量而不中止流
+    for done_text in [json!([]), json!([{"type":"output_text", "text":"改写后的正文"}])] {
+        let item = json!({"type":"message", "role":"assistant", "content":done_text});
+        let response = decode_frames(
+            Protocol::OpenAiResponses,
+            &[
+                json!({"type":"response.output_text.delta", "output_index":0, "content_index":0, "delta":"原始增量"}),
+                json!({"type":"response.output_item.done", "output_index":0, "item":item}),
+                json!({"type":"response.completed", "response":{"status":"completed", "output":[item]}}),
+            ],
+        )
+        .await;
+        assert_eq!(response.message.text(), "原始增量");
+    }
+}

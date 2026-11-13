@@ -627,6 +627,7 @@ fn stream_part_boundaries_insert_paragraph_separator() {
             r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"续"}"#,
             r#"{"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"甲"}"#,
             r#"{"type":"response.output_text.delta","output_index":1,"content_index":1,"delta":"乙"}"#,
+            r#"{"type":"response.output_text.delta","output_index":2,"content_index":0,"delta":"丙"}"#,
         ],
     ));
     assert_eq!(
@@ -651,6 +652,10 @@ fn stream_part_boundaries_insert_paragraph_separator() {
             StreamEvent::TextDelta {
                 index: 1,
                 text: "\n\n乙".into(),
+            },
+            StreamEvent::TextDelta {
+                index: 2,
+                text: "丙".into(),
             },
             StreamEvent::Done {
                 finish_reason: FinishReason::Other("unknown".into()),

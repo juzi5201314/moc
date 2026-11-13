@@ -191,18 +191,15 @@ impl Accumulator {
         }
     }
 
-    /// 已交付文本不可撤回；协议完整正文必须包含之前的全部增量。
-    fn text_suffix(&self, index: usize, text: &str) -> Result<usize, LlmError> {
+    /// 已交付文本不可撤回；仅当快照以已交付增量为前缀时补发缺失后缀，兼容网关不一致时保留已收增量。
+    fn text_suffix(&self, index: usize, text: &str) -> Option<usize> {
         let Some(&slot) = self.slots.get(&(BlockKind::Text, index)) else {
-            return Ok(0);
+            return Some(0);
         };
         let AccumulatedBlock::Text { text: previous, .. } = &self.blocks[slot] else {
             unreachable!("正文下标只引用正文块");
         };
-        if !text.starts_with(previous) {
-            return Err(LlmError::Stream("完整正文与已收到的文本增量不一致".into()));
-        }
-        Ok(previous.len())
+        text.starts_with(previous).then_some(previous.len())
     }
 
     /// 找到或新建 `(kind, index)` 对应的块并就地修改。
@@ -580,17 +577,14 @@ impl ChatStream {
         for event in pending.drain(..) {
             let event = match event {
                 Ok(StreamEvent::TextSnapshot { index, mut text }) => {
-                    match self.accumulator.text_suffix(index, &text) {
-                        Ok(prefix) if prefix == text.len() => continue,
-                        Ok(prefix) => {
-                            text.drain(..prefix);
-                            Ok(StreamEvent::TextDelta { index, text })
-                        }
-                        Err(error) => {
-                            self.stop_with(error);
-                            break;
-                        }
+                    let Some(prefix) = self.accumulator.text_suffix(index, &text) else {
+                        continue;
+                    };
+                    if prefix == text.len() {
+                        continue;
                     }
+                    text.drain(..prefix);
+                    Ok(StreamEvent::TextDelta { index, text })
                 }
                 Ok(StreamEvent::ReasoningItem { index, item }) => {
                     let mut visible = crate::ReasoningItem::visible_text(&item);

@@ -666,11 +666,14 @@ impl ResponsesStreamDecoder {
     }
 
     /// 同一输出项内的子块（`summary_index` / `content_index`）是独立段落，delta
-    /// 自身不带边界；子块或输出项前进时在增量前补段落分隔，否则 `**A**` + `**B**`
-    /// 会拼成 `**A****B**` 这类坏 Markdown。
+    /// 自身不带边界；同输出项内子块前进时在增量前补段落分隔，否则 `**A**` + `**B**`
+    /// 会拼成 `**A****B**` 这类坏 Markdown。跨 `output_index` 对应不同输出项，各自
+    /// 从空前缀起算，不能给新输出项补前导空行。
     fn part_delta(last: &mut Option<(usize, usize)>, value: &Value, sub_key: &str) -> String {
         let part = (index_of(value), index_at(value, sub_key));
-        let boundary = last.replace(part).is_some_and(|prev| prev != part);
+        let boundary = last
+            .replace(part)
+            .is_some_and(|(prev_output, prev_sub)| prev_output == part.0 && prev_sub != part.1);
         let delta = delta_text(value);
         if boundary {
             format!("\n\n{delta}")
@@ -717,7 +720,7 @@ impl ResponsesStreamDecoder {
                         })
                         .collect::<Vec<_>>()
                         .join("\n\n");
-                    if complete || !text.is_empty() {
+                    if !text.is_empty() {
                         out.push(Ok(StreamEvent::TextSnapshot { index, text }));
                     }
                 }
