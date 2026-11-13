@@ -317,3 +317,90 @@ async fn plugin_tool_signatures_are_callable_in_execute() {
     );
     harness.close().await;
 }
+
+/// 真实 worker 串起网页快照、重复查询与 read；验证模型接收的文本而非 UI 副本。
+#[tokio::test]
+async fn fetch_documents_are_reused_and_readable_through_execute() {
+    assert!(support::require_moc_bin("网页快照与 PTC"));
+    let upstream = MockServer::builder().start().await;
+    let document = format!(
+        "# API\n\n## Request\n\n- `temperature: number`\n\n{}\n## Last section\nFINAL-FIELD\n",
+        "body line\n".repeat(60_000)
+    );
+    let last_line = document
+        .lines()
+        .position(|line| line == "## Last section")
+        .unwrap()
+        + 1;
+    Mock::given(method("GET"))
+        .and(path("/document"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(document, "text/markdown"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let url = format!("{}/document", upstream.uri());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    Mock::given(method("POST")).and(path("/v1/chat/completions"))
+        .respond_with(move |_request: &Request| {
+            let response = match counter.fetch_add(1, Ordering::SeqCst) {
+                0 => support::tool_stream(vec![("fetch_docs", "execute", json!({
+                    "description": "Fetch a document and reuse its query",
+                    "code": format!("const first = await tools.web_fetch({{urls:[{url:?}],query:'temperature'}}); await state.store('document',first.artifact); const repeated = await tools.web_fetch({{urls:[{url:?}],query:'temperature'}}); return {{first,repeated}};")
+                }))]),
+                1 => support::tool_stream(vec![("read_doc", "execute", json!({
+                    "description": "Read the final document section",
+                    "code": format!("const path = await state.load('document'); return (await tools.read({{path,offset:{last_line},limit:2}})).content;")
+                }))]),
+                _ => support::text_stream("完成"),
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        }).mount(&upstream).await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    let session = harness.session(moc_protocol::SessionEngine::Standard).await;
+    harness.prompt(&session, "保存网页，然后读取末尾字段").await;
+    let loaded = harness.load(&session).await;
+    let results: Vec<_> = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .collect();
+    let fetch = results
+        .iter()
+        .find(|result| result.tool_call_id == "fetch_docs")
+        .unwrap();
+    assert!(!fetch.is_error, "{}", fetch.content);
+    let value: serde_json::Value = serde_json::from_str(&fetch.content).unwrap();
+    assert!(
+        value["first"]["artifact"]
+            .as_str()
+            .unwrap()
+            .starts_with("artifact://artifacts/web-")
+    );
+    assert_eq!(value["first"]["artifact"], value["repeated"]["artifact"]);
+    assert!(
+        !value["repeated"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("- `temperature: number`")
+    );
+    assert_eq!(
+        value["first"]["structuredContent"]["pages"][0]["source_truncated"],
+        false
+    );
+    let read = results
+        .iter()
+        .find(|result| result.tool_call_id == "read_doc")
+        .unwrap();
+    assert!(!read.is_error, "{}", read.content);
+    assert!(
+        read.content.starts_with("[artifact://"),
+        "字符串不能再包成 JSON 字面量"
+    );
+    assert!(read.content.contains(&format!(
+        "{last_line}│## Last section\n{}│FINAL-FIELD",
+        last_line + 1
+    )));
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    harness.close().await;
+}

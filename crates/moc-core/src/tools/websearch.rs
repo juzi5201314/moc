@@ -7,7 +7,7 @@ use moc_llm::ToolDef;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
+use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
 use crate::config::{ResolvedWebFetch, ResolvedWebSearch};
 use crate::websearch::{ExtractRequest, SearchRequest, SearchResponse, TimeRange};
 
@@ -125,6 +125,8 @@ impl Tool for WebSearchTool {
 struct FetchArgs {
     urls: Vec<String>,
     query: Option<String>,
+    #[serde(default)]
+    refresh: bool,
 }
 
 pub struct WebFetchTool;
@@ -135,7 +137,7 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Extract page text of URLs as markdown. With query, return only the most relevant ~800-char chunks per page. Large results are archived; read the artifact URI for specific lines."
+        "Fetch and save page documents. Returns a bounded outline or query excerpts with source line numbers and artifact URIs. Reuses session snapshots; read/grep artifacts for more content. Query is not an exhaustive field inventory."
     }
 
     fn tier(&self) -> Tier {
@@ -157,11 +159,15 @@ impl Tool for WebFetchTool {
                         "items": {"type": "string"},
                         "minItems": 1,
                         "maxItems": 20,
-                        "description": "Duplicates are fetched once."
+                        "description": "URLs to read; repeated URLs reuse saved session documents."
                     },
                     "query": {
                         "type": "string",
-                        "description": "Relevance filter; omit for full page text."
+                        "description": "Select relevant sections from the saved document; omit for an outline and preview."
+                    },
+                    "refresh": {
+                        "type": "boolean",
+                        "description": "Fetch a new snapshot only when current website content is required; default false."
                     }
                 }),
                 &["urls"],
@@ -183,8 +189,11 @@ impl Tool for WebFetchTool {
                 .query
                 .map(|query| query.trim().to_owned())
                 .filter(|query| !query.is_empty());
-            let request = ExtractRequest { urls, query };
-            let response = crate::websearch::extract_urls(
+            let request = ExtractRequest {
+                urls,
+                refresh: args.refresh,
+            };
+            let mut response = crate::websearch::extract_urls(
                 &ctx.config.web_fetch,
                 &request,
                 &ctx.cancel,
@@ -192,7 +201,35 @@ impl Tool for WebFetchTool {
             )
             .await
             .map_err(crate::websearch::WebSearchError::into_tool_error)?;
-            Ok(ToolOutcome::success(render_extract(&response)))
+            crate::websearch::view::mark_seen(&ctx.paths.sidecar, &mut response, query.as_deref())
+                .await
+                .map_err(|error| ToolError::new("E_ARTIFACT", error.to_string()))?;
+            let text = crate::websearch::view::render(
+                &response,
+                query.as_deref(),
+                ctx.config.web_fetch.max_chars,
+            );
+            let content = if let [page] = response.results.as_slice() {
+                let resource = ctx
+                    .artifact_store()
+                    .resolve_uri(page.artifact.as_deref().expect("网页已归档"))
+                    .map_err(|error| ToolError::new(error.code, error.message))?;
+                let crate::resources::ResourceBacking::File(path) = resource.backing else {
+                    unreachable!("网页快照是文件");
+                };
+                ToolOutput::Excerpt { text, path }
+            } else {
+                ToolOutput::Verbatim(text)
+            };
+            let mut outcome = ToolOutcome::success(content);
+            outcome.structured_content = Some(
+                serde_json::json!({"pages": response.results.iter().map(|page| {
+                serde_json::json!({"url": page.url, "artifact": page.artifact,
+                    "cached": page.cached, "source_truncated": page.truncated,
+                    "lines": page.raw_content.lines().count()})
+            }).collect::<Vec<_>>()}),
+            );
+            Ok(outcome)
         })
     }
 }
@@ -280,69 +317,6 @@ fn render_search(query: &str, response: &SearchResponse) -> String {
         }
     }
     text.trim_end().to_owned()
-}
-
-/// 渲染提取结果：每个成功项一段正文，失败项在末尾逐行列出；全部失败也按成功返回。
-fn render_extract(response: &crate::websearch::ExtractResponse) -> String {
-    let mut text = String::new();
-    // 摘要放在正文前，输出归档时仍随头部交付；token 是提取内容的估算，不是模型 usage。
-    let pages: Vec<_> = response
-        .results
-        .iter()
-        .map(|page| {
-            serde_json::json!({
-                "url": page.url,
-                "title": page.title,
-                "tokens": crate::compact::estimate_tokens(&page.raw_content),
-                "truncated": page.truncated,
-            })
-        })
-        .chain(response.failed.iter().map(|page| {
-            serde_json::json!({
-                "url": page.url,
-                "error": page.error,
-            })
-        }))
-        .collect();
-    if !pages.is_empty() {
-        text.push_str("Web fetch summary: ");
-        text.push_str(&serde_json::to_string(&pages).expect("网页摘要可序列化"));
-        text.push_str("\n\n");
-    }
-    for result in &response.results {
-        text.push_str(&format!("## {}\n", result.url));
-        if result.final_url != result.url {
-            text.push_str(&format!("Final: {}\n", result.final_url));
-        }
-        let mut meta = Vec::new();
-        if let Some(status) = result.status {
-            meta.push(format!("HTTP {status}"));
-        }
-        if let Some(content_type) = &result.content_type {
-            meta.push(content_type.clone());
-        }
-        meta.push(result.method.to_owned());
-        text.push_str(&meta.join(" · "));
-        text.push('\n');
-        if !result.notes.is_empty() {
-            text.push_str(&format!("Notes: {}\n", result.notes.join("; ")));
-        }
-        if result.truncated {
-            text.push_str("Truncated: yes\n");
-        }
-        text.push('\n');
-        text.push_str(&result.raw_content);
-        text.push_str("\n\n");
-    }
-    for failed in &response.failed {
-        text.push_str(&format!("Failed: {} ({})\n", failed.url, failed.error));
-    }
-    let text = text.trim_end();
-    if text.is_empty() {
-        "No content extracted.".to_owned()
-    } else {
-        text.to_owned()
-    }
 }
 
 /// 按字符（不是字节）截断到 `max`；不足 `max` 时原样返回。
@@ -443,7 +417,6 @@ fn is_iso_date(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::websearch::{ExtractFailed, ExtractResponse, ExtractResult};
 
     #[test]
     fn parses_site_and_date_operators() {
@@ -475,43 +448,6 @@ mod tests {
         );
         assert_eq!(truncate_chars("héllo", 2), "hé");
         assert_eq!(truncate_chars("abc", 5), "abc");
-    }
-
-    #[test]
-    fn fetch_summary_counts_extracted_content_and_keeps_partial_failures() {
-        let response = ExtractResponse {
-            results: vec![ExtractResult {
-                url: "https://a.test".into(),
-                final_url: "https://a.test/final".into(),
-                title: Some("标题\n第二行".into()),
-                status: Some(200),
-                content_type: Some("text/markdown".into()),
-                method: "generic",
-                notes: Vec::new(),
-                truncated: true,
-                raw_content: "abcd中文".into(),
-            }],
-            failed: vec![ExtractFailed {
-                url: "https://b.test".into(),
-                error: "HTTP 403".into(),
-            }],
-        };
-        let output = render_extract(&response);
-        let summary: Value = serde_json::from_str(
-            output
-                .lines()
-                .next()
-                .unwrap()
-                .strip_prefix("Web fetch summary: ")
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(summary[0]["title"], "标题\n第二行");
-        assert_eq!(summary[0]["tokens"], 3);
-        assert_eq!(summary[0]["truncated"], true);
-        assert_eq!(summary[1]["url"], "https://b.test");
-        assert_eq!(summary[1]["error"], "HTTP 403");
-        assert!(output.contains("abcd中文"));
     }
 
     #[test]

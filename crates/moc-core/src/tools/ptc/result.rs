@@ -67,9 +67,15 @@ pub(super) async fn script_result(
     let bytes = serde_json::to_vec(&result).expect("结果可序列化");
     if bytes.len() > limit {
         if result.artifact.is_none() {
+            let text = if result.content.is_empty() {
+                serde_json::to_string_pretty(&result.structured_content)
+                    .expect("结构化结果可序列化")
+            } else {
+                std::mem::take(&mut result.content)
+            };
             result.artifact = Some(
                 artifacts
-                    .archive_text(std::str::from_utf8(&bytes).expect("JSON UTF-8"))
+                    .archive_text(&text)
                     .await
                     .map_err(|err| error("E_RESULT_READ", err))?,
             );

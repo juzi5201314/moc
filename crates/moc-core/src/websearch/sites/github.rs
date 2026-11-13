@@ -146,7 +146,7 @@ async fn issue(
             Err(WebFetchFailure::Cancelled) => {
                 return Err(WebFetchFailure::Cancelled);
             }
-            Err(WebFetchFailure::Message(error)) => {
+            Err(error) => {
                 notes.push(format!("comments unavailable: {error}"));
             }
         }
@@ -222,7 +222,7 @@ async fn repo(
         }
         Ok(response) => notes.push(format!("README unavailable (HTTP {})", response.status)),
         Err(WebFetchFailure::Cancelled) => return Err(WebFetchFailure::Cancelled),
-        Err(WebFetchFailure::Message(error)) => {
+        Err(error) => {
             notes.push(format!("README unavailable: {error}"));
         }
     }
@@ -269,9 +269,12 @@ async fn blob(
         title: None,
         status: Some(response.status),
         content_type: response.content_type,
-        method: "github",
+        method: "github".into(),
         notes: vec!["raw file".into()],
         truncated: response.truncated,
+        artifact: None,
+        cached: false,
+        view_repeated: false,
         raw_content: content,
     })
 }

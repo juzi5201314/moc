@@ -136,9 +136,11 @@ Explorer 沿用工具拒绝列表：禁用 `edit`、`write`、`spawn_agent`、`s
 `web_search` 查询互联网并返回答案与编号来源；`web_fetch` 抓取 1–20 个 URL 的正文（markdown）。两者都是只读工具，在标准、问答与计划模式可用，但开关独立：
 
 - `web_search` 需要 `[web_search] api_key`，未配置时从工具定义隐藏。查询支持 `site:host`、`-site:host`、`after:YYYY-MM-DD`、`before:YYYY-MM-DD`、引号短语与 `-term`；带时间过滤的查询零结果时自动去掉时间过滤重试一次。每条来源摘要按 240 字符截断。
-- `web_fetch` 只受 `[web_fetch] enabled` 控制，不需要密钥。HTML 用 htmd 转 Markdown；`query` 传入时每页只返回相关度最高的 3 个约 800 字符块，省略则返回整页；结果头给出 final URL、HTTP 状态、Content-Type、method 与截断说明。失败项随成功正文一同返回，全部失败仍算成功，便于模型更换地址重试。
+- `web_fetch` 只受 `[web_fetch] enabled` 控制，不需要密钥。优先协商 Markdown；HTML 会发现 Markdown alternate、尝试 `.md`，再用 htmd 提取 `main`／`article` 正文并去掉导航和表单。默认返回目录与短预览；`query` 返回带原文行号的相关章节，字段定义优先于响应示例，代码块不从中间切断，无命中明确说明。它不是完整字段清单生成器；完整盘点应按目录回读相关章节。失败项随成功结果返回，全部失败仍算成功。
 
-`[web_fetch]` 默认 `timeout_secs=30`、`max_bytes=52428800`（50 MiB，单页原始响应）、`max_chars=500000`（单页转换后正文）。一次调用最多 20 个 URL，并发 4 个，整批读取上限 100 MiB；原始响应超限、正文超限都会截断并标记。工具输出超过统一首尾预算（默认 40 KiB）时自动归档到 `artifact://artifacts/<id>-output.txt`，模型可用 `read` 的 `offset`/`limit` 精确回读长文。
+每页正文保存为独立的 `artifact://artifacts/web-<id>.md`，查询筛选与展示裁切不修改快照。相同 URL 在会话中复用快照（包括重启后），并发请求合并；再次索要全文或相同 query 只给引用，不重复回灌正文。URL fragment 不参与网络文档身份，最终地址也可复用快照。需要网站最新内容时传 `refresh=true` 创建新快照；旧 URI 仍指向旧正文。用 `read` 的 `offset`／`limit` 分页，或 `grep` 检索已有 artifact，不必重新 fetch 或把全文保存到 PTC state。
+
+`[web_fetch]` 默认 `timeout_secs=30`、`max_bytes=52428800`（50 MiB，单次响应）、`max_chars=500000`（现为单页预览字符上限，不再裁切正文）。一次调用最多 20 个 URL，并发 4 个，整批响应读取上限 100 MiB；所有页面共享 16 KiB 的展示字节预算。结果明确区分源响应不完整与仅省略预览：源响应超限时快照只有已取得的前缀，不能把它称作完整网页；展示省略不丢失快照内容。
 
 站点感知：GitHub issue/PR/README/blob、docs.rs rustdoc JSON、MDN `index.json`、arXiv Atom API、npm registry、PyPI JSON。站点 API 失败、限流或格式变化时回退通用 HTML 抓取；GitHub 匿名 API 限流 60 次/小时，环境中有 `GITHUB_TOKEN` 或 `GH_TOKEN` 时自动携带；docs.rs rustdoc JSON 缓存在会话 sidecar。只接受 `http(s)` 且拒绝含内嵌凭据的 URL，允许 localhost 与私网地址；不做 JS 渲染、PDF/Office 转换与 Stack Exchange。
 
@@ -160,7 +162,7 @@ PTC 的 MCP 尾部索引按本次模式过滤并只渲染一次；内容未变�
 
 原生调用、`execute` 子调用和插件内部回调统一从本轮 `ToolCatalog` 解析工具，再走同一执行许可、授权与沙盒路径。`execute` 的目录包含获准的内置、skill、MCP 和插件工具，只排除自身；模型发起的子调用与原生调用一样应用目标工具的前后钩子。PTC 仍只暴露 `execute` 原生入口，MCP 仍经代码调用；这些入口限制不另建一套工具实现。插件内部回调保留只读白名单且不重入钩子。
 
-脚本工具结果固定为 `{content, summary, structuredContent, isError, status, artifact}`；结构化 MCP 数据保留原始 JSON，文本预算只影响模型展示。失败会 reject 带 `code`、`message`、`result` 的错误。`state.store/load/remove/keys` 提供会话级 JSON 状态，每次成功写入立即追加到 JSONL，重启和回退按日志重建，普通 JavaScript 全局变量不会跨次保留。
+脚本工具结果固定为 `{content, summary, structuredContent, isError, status, artifact}`；结构化 MCP 数据保留原始 JSON，文本预算只影响模型展示。网页结果的 `content` 是有界视图，`structuredContent.pages` 提供每页 URL、artifact、行数、缓存和源截断状态；单页结果另在 `artifact` 直接提供正文 URI。失败会 reject 带 `code`、`message`、`result` 的错误。脚本返回字符串时原样保留换行，不再包成 JSON 字面量；对象仍按 JSON 返回，因此应精选字段而非返回大对象。`state.store/load/remove/keys` 均须 `await`，提供会话级 JSON 状态，每次成功写入立即追加到 JSONL，重启和回退按日志重建，普通 JavaScript 全局变量不会跨次保留。
 
 PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`、`max_result_bytes`、`max_pending_calls`、`max_total_calls`、`max_concurrent_calls`、`max_concurrent_runs`、`host_idle_timeout_secs`、`max_state_bytes` 以及默认/最大超时。写工具和需要授权的调用是并发屏障；脚本返回前必须等待所有调用。同步 JS 循环由 QuickJS interrupt watchdog 中断，Core deadline 覆盖完整工具等待；取消若超过宽限期无响应会重启整个 Host，并让所有活跃 execution 收到 `E_PTC_WORKER`。worker 不提供文件、网络、进程、模块加载或定时器 API，工作区修改仍由宿主工具的现有授权与事务策略控制。
 

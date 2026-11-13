@@ -153,7 +153,7 @@ fn render_section(markdown: &mut String, section: &MdnSection) -> Result<(), Web
 }
 
 fn push_html(markdown: &mut String, html: &str) -> Result<(), WebFetchFailure> {
-    let converted = html_to_markdown(html).map_err(WebFetchFailure::message)?;
+    let converted = html_to_markdown(html)?;
     markdown.push_str(converted.trim());
     markdown.push_str("\n\n");
     Ok(())

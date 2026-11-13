@@ -54,6 +54,10 @@ pub(crate) async fn prepare_outcome(
     if let ToolOutput::Verbatim(text) = &outcome.content {
         return Ok(text.clone());
     }
+    if matches!(outcome.content, ToolOutput::Excerpt { .. }) {
+        // 工具已挑选展示片段；结构化值只供程序读取，不能再拼回大段元数据。
+        return prepare(outcome.content.clone(), config, artifacts).await;
+    }
     let Some(structured) = &outcome.structured_content else {
         return prepare(outcome.content.clone(), config, artifacts).await;
     };

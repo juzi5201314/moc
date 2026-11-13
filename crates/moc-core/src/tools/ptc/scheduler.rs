@@ -260,7 +260,10 @@ pub(super) async fn run(
                         "await all host calls before returning",
                     )
                 } else {
-                    ToolOutcome::success(value.to_string())
+                    ToolOutcome::success(match value {
+                        Value::String(text) => text,
+                        value => value.to_string(),
+                    })
                 };
                 break;
             }

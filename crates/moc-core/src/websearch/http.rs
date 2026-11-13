@@ -10,10 +10,18 @@ use tokio_util::sync::CancellationToken;
 pub(super) const MAX_BATCH_BYTES: usize = 100 * 1024 * 1024;
 
 /// 单 URL 抓取失败：取消必须中止整个工具调用，普通失败只记一条 `Failed`。
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(super) enum WebFetchFailure {
+    #[error("web fetch cancelled")]
     Cancelled,
+    #[error("{0}")]
     Message(String),
+    #[error("web document I/O: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("web document metadata: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("web document task: {0}")]
+    Task(#[from] tokio::task::JoinError),
 }
 
 impl WebFetchFailure {
@@ -147,11 +155,7 @@ async fn read_body(
             break;
         }
         bytes.extend_from_slice(&chunk[..granted]);
-        if granted < want {
-            truncated = true;
-            break;
-        }
-        if bytes.len() >= max_bytes {
+        if granted < chunk.len() {
             truncated = true;
             break;
         }

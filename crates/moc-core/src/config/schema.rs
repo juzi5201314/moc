@@ -346,7 +346,7 @@ pub struct WebFetchConfig {
     pub timeout_secs: u64,
     /// 单页原始响应的最大字节数。
     pub max_bytes: usize,
-    /// 单页转换后正文的最大字符数。
+    /// 单页预览的字符上限；正文快照不裁切，仍受响应字节上限约束。
     pub max_chars: usize,
 }
 

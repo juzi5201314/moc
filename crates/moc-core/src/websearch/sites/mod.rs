@@ -74,7 +74,7 @@ pub(super) async fn try_extract(
     }
 }
 
-/// 统一站点结果形状；正文的 query/字符上限由调用方统一后处理。
+/// 统一站点结果形状；正文由调用方保存，展示选段不修改原文。
 pub(super) fn markdown_result(
     url: &Url,
     final_url: Option<String>,
@@ -89,9 +89,12 @@ pub(super) fn markdown_result(
         title: None,
         status,
         content_type: Some("text/markdown".into()),
-        method,
+        method: method.into(),
         notes,
         truncated: false,
+        artifact: None,
+        cached: false,
+        view_repeated: false,
         raw_content: content,
     }
 }

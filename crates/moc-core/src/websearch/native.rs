@@ -1,4 +1,4 @@
-//! 本地抓取：通用 HTML→Markdown、字符集解码、相关块选择与批调度。
+//! 本地抓取：会话快照复用、站点 handler 与 Markdown 优先的正文获取。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use futures_util::stream::{self, StreamExt};
 use reqwest::Url;
-use reqwest::header::{ACCEPT, HeaderMap, HeaderValue};
 use tokio_util::sync::CancellationToken;
 
+use super::documents::DocumentStore;
 use super::http::{
     BatchBudget, HttpFetcher, MAX_BATCH_BYTES, WebFetchFailure, content_type_essence, decode_body,
 };
@@ -17,14 +17,11 @@ use super::{ExtractFailed, ExtractRequest, ExtractResponse, ExtractResult, WebSe
 use crate::config::ResolvedWebFetch;
 
 const FETCH_CONCURRENCY: usize = 4;
-const CHUNKS_PER_SOURCE: usize = 3;
-const CHUNK_CHARS: usize = 800;
 const MAX_URLS: usize = 20;
 
 pub(super) struct NativeFetcher {
     timeout: Duration,
     max_bytes: usize,
-    max_chars: usize,
     endpoints: SiteEndpoints,
     cache_dir: PathBuf,
 }
@@ -34,7 +31,6 @@ impl NativeFetcher {
         Self {
             timeout: Duration::from_secs(config.timeout_secs),
             max_bytes: config.max_bytes,
-            max_chars: config.max_chars,
             endpoints: SiteEndpoints::from_env(),
             cache_dir: cache_dir.to_path_buf(),
         }
@@ -49,7 +45,6 @@ impl NativeFetcher {
         Self {
             timeout: Duration::from_secs(config.timeout_secs),
             max_bytes: config.max_bytes,
-            max_chars: config.max_chars,
             endpoints,
             cache_dir: cache_dir.to_path_buf(),
         }
@@ -60,7 +55,7 @@ impl NativeFetcher {
         request: &ExtractRequest,
         cancel: &CancellationToken,
     ) -> Result<ExtractResponse, WebSearchError> {
-        let query = request.query.as_deref();
+        let refresh = request.refresh;
         let batch = Arc::new(BatchBudget::new(MAX_BATCH_BYTES));
         let mut tasks = Vec::with_capacity(request.urls.len().min(MAX_URLS));
         for (index, url) in request.urls.iter().take(MAX_URLS).enumerate() {
@@ -73,7 +68,7 @@ impl NativeFetcher {
                     batch: &batch,
                     cancel,
                 };
-                let outcome = self.fetch_one(url, query, &fetcher, &endpoints).await;
+                let outcome = self.fetch_one(url, refresh, &fetcher, &endpoints).await;
                 (index, url.as_str(), outcome)
             });
         }
@@ -92,9 +87,9 @@ impl NativeFetcher {
                 Err(WebFetchFailure::Cancelled) => {
                     return Err(WebSearchError::new("E_CANCELLED", "web fetch cancelled"));
                 }
-                Err(WebFetchFailure::Message(error)) => failed.push(ExtractFailed {
+                Err(error) => failed.push(ExtractFailed {
                     url: url.to_owned(),
-                    error,
+                    error: error.to_string(),
                 }),
             }
         }
@@ -104,11 +99,11 @@ impl NativeFetcher {
     async fn fetch_one(
         &self,
         raw_url: &str,
-        query: Option<&str>,
+        refresh: bool,
         fetcher: &HttpFetcher<'_>,
         endpoints: &SiteEndpoints,
     ) -> Result<ExtractResult, WebFetchFailure> {
-        let url = Url::parse(raw_url)
+        let mut url = Url::parse(raw_url)
             .map_err(|error| WebFetchFailure::message(format!("invalid URL: {error}")))?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(WebFetchFailure::message(format!(
@@ -121,26 +116,45 @@ impl NativeFetcher {
                 "URLs with embedded credentials are not allowed",
             ));
         }
+        url.set_fragment(None);
+        let store = DocumentStore::new(&self.cache_dir, url.as_str());
+        let _guard = store.lock(fetcher.cancel).await?;
+        if !refresh && let Some(page) = store.load(url.as_str()).await? {
+            return Ok(page);
+        }
+        let mut result = self.fetch_document(&url, fetcher, endpoints).await?;
+        result.url = url.to_string();
+        result.raw_content = result.raw_content.trim().to_owned();
+        if result.raw_content.is_empty() {
+            return Err(WebFetchFailure::message("empty body"));
+        }
+        if result.title.is_none() {
+            result.title = result
+                .raw_content
+                .lines()
+                .find_map(|line| line.strip_prefix("# "))
+                .map(|title| title.trim().chars().take(200).collect());
+        }
+        store.save(&mut result).await?;
+        Ok(result)
+    }
 
-        if let Some(result) = sites::try_extract(&url, fetcher, endpoints, &self.cache_dir).await {
+    async fn fetch_document(
+        &self,
+        url: &Url,
+        fetcher: &HttpFetcher<'_>,
+        endpoints: &SiteEndpoints,
+    ) -> Result<ExtractResult, WebFetchFailure> {
+        if let Some(result) = sites::try_extract(url, fetcher, endpoints, &self.cache_dir).await {
             match result {
-                Ok(result) => {
-                    let result = post_process(result, query, self.max_chars);
-                    if !result.raw_content.is_empty() {
-                        return Ok(result);
-                    }
-                }
+                Ok(result) if !result.raw_content.trim().is_empty() => return Ok(result),
                 Err(WebFetchFailure::Cancelled) => return Err(WebFetchFailure::Cancelled),
-                Err(WebFetchFailure::Message(_)) => {}
+                _ => {}
             }
         }
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static(
-                "text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.8,*/*;q=0.5",
-            ),
+        // 优先协商 Markdown；不支持的服务仍可返回 HTML。
+        let headers = sites::headers(
+            "text/markdown,text/x-markdown;q=0.95,text/html;q=0.9,text/plain;q=0.8,*/*;q=0.5",
         );
         let response = fetcher.get(url.as_str(), &headers).await?;
         if !(200..300).contains(&response.status) {
@@ -149,78 +163,95 @@ impl NativeFetcher {
                 response.status
             )));
         }
-
         let essence = content_type_essence(response.content_type.as_deref());
         let decoded = decode_body(&response.bytes, response.content_type.as_deref());
-        let mut notes = Vec::new();
-        if response.truncated {
-            notes.push(format!("body truncated at {} bytes", self.max_bytes));
-        }
-
-        let text = match essence.as_deref() {
-            Some(kind) if kind == "text/html" || kind == "application/xhtml+xml" => {
-                html_to_markdown(&decoded).map_err(WebFetchFailure::message)?
+        let is_html = matches!(
+            essence.as_deref(),
+            Some("text/html" | "application/xhtml+xml")
+        ) || (essence.is_none() && decoded.trim_start().starts_with('<'));
+        let mut result = ExtractResult {
+            url: url.to_string(),
+            final_url: response.final_url,
+            title: None,
+            status: Some(response.status),
+            content_type: response.content_type,
+            method: "generic".into(),
+            notes: Vec::new(),
+            truncated: response.truncated,
+            artifact: None,
+            cached: false,
+            view_repeated: false,
+            raw_content: String::new(),
+        };
+        if is_html {
+            let page = super::html::render(&decoded)?;
+            let base = Url::parse(&result.final_url).expect("HTTP 最终 URL 已解析");
+            let mut candidates: Vec<Url> = page
+                .alternates
+                .iter()
+                .filter_map(|href| base.join(href).ok())
+                .filter(|url| {
+                    matches!(url.scheme(), "http" | "https")
+                        && url.username().is_empty()
+                        && url.password().is_none()
+                })
+                .take(2)
+                .collect();
+            if !base.path().ends_with(".md") {
+                let mut markdown = base.clone();
+                markdown.set_path(&format!("{}.md", base.path().trim_end_matches('/')));
+                if !candidates.contains(&markdown) {
+                    candidates.push(markdown);
+                }
             }
-            Some(kind) if is_text_type(kind) => decoded,
-            Some(kind) => {
+            for candidate in candidates {
+                match fetcher.get(candidate.as_str(), &headers).await {
+                    Ok(response)
+                        if (200..300).contains(&response.status)
+                            && matches!(
+                                content_type_essence(response.content_type.as_deref()).as_deref(),
+                                Some("text/markdown" | "text/x-markdown" | "text/plain")
+                            ) =>
+                    {
+                        let text = decode_body(&response.bytes, response.content_type.as_deref());
+                        if text.trim().is_empty() || text.trim_start().starts_with('<') {
+                            continue;
+                        }
+                        result.final_url = response.final_url;
+                        result.content_type = response.content_type;
+                        result.truncated = response.truncated;
+                        result.method = "markdown".into();
+                        result.title = page.title;
+                        result.raw_content = text;
+                        return Ok(mark_truncated(result));
+                    }
+                    Err(WebFetchFailure::Cancelled) => return Err(WebFetchFailure::Cancelled),
+                    _ => {}
+                }
+            }
+            result.title = page.title;
+            result.raw_content = page.text;
+        } else {
+            if let Some(kind) = essence.as_deref()
+                && !is_text_type(kind)
+            {
                 return Err(WebFetchFailure::message(format!(
                     "unsupported content type: {kind}"
                 )));
             }
-            None => {
-                if looks_binary(&response.bytes) {
-                    return Err(WebFetchFailure::message("binary content"));
-                }
-                if decoded.trim_start().starts_with('<') {
-                    html_to_markdown(&decoded).map_err(WebFetchFailure::message)?
-                } else {
-                    decoded
-                }
+            if essence.is_none() && looks_binary(&response.bytes) {
+                return Err(WebFetchFailure::message("binary content"));
             }
-        };
-
-        let result = post_process(
-            ExtractResult {
-                url: raw_url.to_owned(),
-                final_url: response.final_url,
-                title: None,
-                status: Some(response.status),
-                content_type: response.content_type,
-                method: "generic",
-                notes,
-                truncated: response.truncated,
-                raw_content: text,
-            },
-            query,
-            self.max_chars,
-        );
-        if result.raw_content.is_empty() {
-            return Err(WebFetchFailure::message("empty body"));
+            result.raw_content = decoded;
         }
-        Ok(result)
+        Ok(mark_truncated(result))
     }
 }
 
-fn post_process(mut result: ExtractResult, query: Option<&str>, max_chars: usize) -> ExtractResult {
-    // HTML 转换与站点 handler 都把页面标题放在首个一级标题；必须在 query 筛选前保存。
-    result.title = result
-        .raw_content
-        .lines()
-        .next()
-        .and_then(|line| line.strip_prefix("# "))
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-        .map(str::to_owned);
-    if let Some(query) = query {
-        result.raw_content = select_relevant_chunks(&result.raw_content, query);
+fn mark_truncated(mut result: ExtractResult) -> ExtractResult {
+    if result.truncated {
+        result.notes.push("Source incomplete: response or batch byte limit reached; the saved document contains only the received prefix.".into());
     }
-    if cap_chars(&mut result.raw_content, max_chars) {
-        result.truncated = true;
-        result
-            .notes
-            .push(format!("truncated after {max_chars} characters"));
-    }
-    result.raw_content = result.raw_content.trim().to_owned();
     result
 }
 
@@ -242,169 +273,13 @@ fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(4096).any(|byte| *byte == 0)
 }
 
-pub(super) fn html_to_markdown(html: &str) -> Result<String, String> {
-    let converter = htmd::HtmlToMarkdown::builder()
-        .skip_tags(vec!["script", "style", "noscript", "svg", "template"])
-        .build();
-    let title = extract_title(html);
-    let body = converter
-        .convert(&strip_title_tag(html))
-        .map_err(|error| format!("html conversion failed: {error}"))?;
-    let Some(title) = title else {
-        return Ok(body);
-    };
-    Ok(format!("# {title}\n\n{body}"))
-}
-
-/// 去掉 `<title>` 标签，避免 htmd 把页标题当正文再输出一遍。
-fn strip_title_tag(html: &str) -> String {
-    let lower = html.to_ascii_lowercase();
-    let Some(open) = lower.find("<title") else {
-        return html.to_owned();
-    };
-    let Some(open_end) = html[open..].find('>').map(|index| open + index + 1) else {
-        return html.to_owned();
-    };
-    let Some(close_end) = lower[open_end..]
-        .find("</title>")
-        .map(|index| open_end + index + "</title>".len())
-    else {
-        return html.to_owned();
-    };
-    let mut cleaned = String::with_capacity(html.len());
-    cleaned.push_str(&html[..open]);
-    cleaned.push_str(&html[close_end..]);
-    cleaned
-}
-
-/// 提取 `<title>` 文本；不处理嵌套标签，标题里只做空白折叠。
-fn extract_title(html: &str) -> Option<String> {
-    let lower = html.to_ascii_lowercase();
-    let open = lower.find("<title")?;
-    let open_end = html[open..].find('>')? + open;
-    let close = lower[open_end..].find("</title>")? + open_end;
-    let title = html[open_end + 1..close]
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    (!title.is_empty()).then(|| title.chars().take(200).collect())
-}
-
-/// 按空行切块并压到约 `CHUNK_CHARS` 字符；query 命中数最高的前 3 块按原文顺序拼接。
-pub(super) fn select_relevant_chunks(text: &str, query: &str) -> String {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .map(str::to_lowercase)
-        .filter(|term| !term.is_empty())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    if terms.is_empty() || text.chars().count() <= CHUNK_CHARS {
-        return text.to_owned();
-    }
-
-    let blocks = split_blocks(text, CHUNK_CHARS);
-    if blocks.len() <= CHUNKS_PER_SOURCE {
-        return text.to_owned();
-    }
-
-    let mut scored: Vec<(usize, usize)> = blocks
-        .iter()
-        .enumerate()
-        .map(|(index, block)| {
-            let lower = block.to_lowercase();
-            let score = terms
-                .iter()
-                .filter(|term| lower.contains(term.as_str()))
-                .count();
-            (index, score)
-        })
-        .collect();
-    scored.sort_by_key(|(index, score)| (std::cmp::Reverse(*score), *index));
-    let mut selected: Vec<usize> = scored
-        .iter()
-        .filter(|(_, score)| *score > 0)
-        .map(|(index, _)| *index)
-        .take(CHUNKS_PER_SOURCE)
-        .collect();
-    if selected.is_empty() {
-        selected = (0..blocks.len().min(CHUNKS_PER_SOURCE)).collect();
-    }
-    selected.sort_unstable();
-    selected
-        .iter()
-        .map(|index| blocks[*index].as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn split_blocks(text: &str, chunk_chars: usize) -> Vec<String> {
-    let mut blocks = Vec::new();
-    for paragraph in text.split("\n\n") {
-        let paragraph = paragraph.trim();
-        if paragraph.is_empty() {
-            continue;
-        }
-        let chars: Vec<char> = paragraph.chars().collect();
-        for chunk in chars.chunks(chunk_chars) {
-            let block: String = chunk.iter().collect();
-            let block = block.trim();
-            if !block.is_empty() {
-                blocks.push(block.to_owned());
-            }
-        }
-    }
-    blocks
-}
-
-/// 按字符截断并追加标记；返回是否真的截断。
-fn cap_chars(text: &mut String, max: usize) -> bool {
-    if text.chars().count() <= max {
-        return false;
-    }
-    let end = text
-        .char_indices()
-        .nth(max)
-        .map(|(index, _)| index)
-        .unwrap_or(text.len());
-    text.truncate(end);
-    text.push_str(&format!("\n\n[truncated after {max} characters]"));
-    true
+pub(super) fn html_to_markdown(html: &str) -> std::io::Result<String> {
+    super::html::render(html).map(|page| page.text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn preserves_title_before_query_selection_and_truncation() {
-        let page = ExtractResult {
-            url: "https://example.test".into(),
-            final_url: "https://example.test".into(),
-            title: None,
-            status: Some(200),
-            content_type: Some("text/markdown".into()),
-            method: "generic",
-            notes: Vec::new(),
-            truncated: false,
-            raw_content: format!(
-                "# 完整网页标题\n\n{}\n\nneedle 是需要的内容",
-                "无关段落\n\n".repeat(1000)
-            ),
-        };
-        let selected = post_process(page.clone(), Some("needle"), 100_000);
-        assert_eq!(selected.title.as_deref(), Some("完整网页标题"));
-        assert!(selected.raw_content.contains("needle"));
-        let truncated = post_process(page, None, 3);
-        assert_eq!(truncated.title.as_deref(), Some("完整网页标题"));
-        assert!(truncated.truncated);
-        assert!(!truncated.raw_content.contains("完整网页标题"));
-    }
 
     #[test]
     fn converts_html_and_strips_active_content() {
@@ -422,14 +297,6 @@ mod tests {
         assert!(markdown.contains("*   One"));
         assert!(!markdown.contains("alert(1)"));
         assert!(!markdown.contains(".x{}"));
-    }
-
-    #[test]
-    fn selects_relevant_blocks_and_keeps_order() {
-        let text = format!("{}\n\n{}", "alpha ".repeat(200), "needle beta ".repeat(120));
-        let selected = select_relevant_chunks(&text, "needle");
-        assert!(selected.contains("needle beta"));
-        assert!(!selected.contains("alpha alpha alpha"));
     }
 
     #[test]
@@ -469,7 +336,7 @@ mod tests {
             .extract(
                 &ExtractRequest {
                     urls: vec![format!("{}/page", server.uri())],
-                    query: None,
+                    refresh: false,
                 },
                 &CancellationToken::new(),
             )
@@ -550,7 +417,7 @@ mod tests {
                         "ftp://example.com/".into(),
                         "not a url".into(),
                     ],
-                    query: None,
+                    refresh: false,
                 },
                 &CancellationToken::new(),
             )
@@ -582,12 +449,124 @@ mod tests {
             .extract(
                 &ExtractRequest {
                     urls: vec![format!("{}/page", server.uri())],
-                    query: None,
+                    refresh: false,
                 },
                 &cancel,
             )
             .await
             .unwrap_err();
         assert_eq!(error.code, "E_CANCELLED");
+    }
+
+    #[tokio::test]
+    async fn document_cache_preserves_source_and_refresh_keeps_old_artifacts() {
+        let server = MockServer::builder().start().await;
+        let original = format!(
+            "# API\n\n## Parameters\n\n- `temperature: number`\n\n{}\nEND-OF-DOCUMENT\n",
+            "正文\n".repeat(100_000)
+        );
+        Mock::given(method("GET"))
+            .and(path("/page"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(original.clone(), "text/markdown"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+        let config = config(2_000_000, 200);
+        let fetcher =
+            NativeFetcher::with_endpoints(&config, SiteEndpoints::default(), cache.path());
+        let cancel = CancellationToken::new();
+        let request = ExtractRequest {
+            urls: vec![format!("{}/page", server.uri())],
+            refresh: false,
+        };
+        let (first, concurrent) = tokio::join!(
+            fetcher.extract(&request, &cancel),
+            fetcher.extract(&request, &cancel)
+        );
+        let first = first.unwrap();
+        let concurrent = concurrent.unwrap();
+        assert_eq!(first.results[0].artifact, concurrent.results[0].artifact);
+        assert_ne!(first.results[0].cached, concurrent.results[0].cached);
+        assert!(!first.results[0].truncated);
+        assert!(first.results[0].raw_content.ends_with("END-OF-DOCUMENT"));
+        let saved = first.results[0].artifact.as_ref().unwrap();
+        let saved_path = cache
+            .path()
+            .join(saved.strip_prefix("artifact://").unwrap());
+        assert_eq!(
+            tokio::fs::read_to_string(&saved_path).await.unwrap(),
+            original.trim()
+        );
+        let view = super::super::view::render(&first, Some("temperature"), config.max_chars);
+        assert!(view.contains(saved));
+        assert!(!view.contains("END-OF-DOCUMENT"));
+        server.verify().await;
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/page"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("# New\nnew source", "text/markdown"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let reloaded =
+            NativeFetcher::with_endpoints(&config, SiteEndpoints::default(), cache.path());
+        let cached = reloaded.extract(&request, &cancel).await.unwrap();
+        assert!(cached.results[0].cached);
+        assert_eq!(cached.results[0].artifact.as_ref(), Some(saved));
+        let refreshed = reloaded
+            .extract(
+                &ExtractRequest {
+                    refresh: true,
+                    ..request
+                },
+                &cancel,
+            )
+            .await
+            .unwrap();
+        assert_ne!(refreshed.results[0].artifact.as_ref(), Some(saved));
+        assert_eq!(refreshed.results[0].raw_content, "# New\nnew source");
+        assert_eq!(
+            tokio::fs::read_to_string(saved_path).await.unwrap(),
+            original.trim()
+        );
+    }
+
+    #[tokio::test]
+    async fn prefers_markdown_alternates_and_reports_real_source_truncation() {
+        let server = MockServer::builder().start().await;
+        Mock::given(method("GET")).and(path("/page"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "<title>API</title><link rel='alternate' type='text/markdown' href='/docs.md'><main>HTML fallback</main>", "text/html"))
+            .mount(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/docs.md"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("# API\nMarkdown body", "text/markdown"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+        let response = fetch_one(&server, cache.path(), 1024, 1).await;
+        assert_eq!(response.results[0].raw_content, "# API\nMarkdown body");
+        assert_eq!(response.results[0].method, "markdown");
+        assert!(!response.results[0].truncated);
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/page"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("1234567890", "text/plain"))
+            .mount(&server)
+            .await;
+        for (limit, truncated) in [(10, false), (5, true)] {
+            let cache = tempfile::tempdir().unwrap();
+            let response = fetch_one(&server, cache.path(), limit, 1).await;
+            assert_eq!(response.results[0].truncated, truncated);
+            assert_eq!(response.results[0].raw_content.len(), limit);
+        }
     }
 }

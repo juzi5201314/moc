@@ -3,10 +3,13 @@
 //! 搜索只有 Tavily 一个实现；抓取走本地 `native` 与 `sites` 站点 handler，
 //! 工具层只依赖本模块的类型与入口。
 
+mod documents;
+mod html;
 mod http;
 mod native;
 mod sites;
 mod tavily;
+pub(crate) mod view;
 
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -67,22 +70,28 @@ pub struct SearchResponse {
 #[derive(Debug, Clone)]
 pub struct ExtractRequest {
     pub urls: Vec<String>,
-    pub query: Option<String>,
+    pub refresh: bool,
 }
 
 /// 单页抓取结果；结果头由 `tools::websearch` 渲染给模型。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExtractResult {
     pub url: String,
     pub final_url: String,
-    /// query 筛选与正文截断前保留的网页标题。
+    /// 保存正文时提取的标题，不受展示选段影响。
     pub title: Option<String>,
     pub status: Option<u16>,
     pub content_type: Option<String>,
     /// generic / github / docs.rs / mdn / arxiv / npm / pypi
-    pub method: &'static str,
+    pub method: String,
     pub notes: Vec<String>,
     pub truncated: bool,
+    pub artifact: Option<String>,
+    #[serde(skip)]
+    pub cached: bool,
+    #[serde(skip)]
+    pub view_repeated: bool,
+    #[serde(skip)]
     pub raw_content: String,
 }
 

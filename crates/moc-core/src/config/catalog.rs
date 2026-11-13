@@ -682,8 +682,8 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
         "web_fetch.timeout_secs" => ("请求超时（秒）", "单次页面抓取的最长等待时间。"),
         "web_fetch.max_bytes" => ("响应字节上限", "单页原始响应的最大读取字节数；超出截断。"),
         "web_fetch.max_chars" => (
-            "正文字符上限",
-            "单页转换后 Markdown 的最大字符数；超出截断。",
+            "单页预览字符上限",
+            "只限制网页预览，不裁切已保存正文；多页共享 16 KiB 展示预算。",
         ),
         _ if path.starts_with("mcp.servers.") && key == "timeout_secs" => (
             "调用超时（秒）",
