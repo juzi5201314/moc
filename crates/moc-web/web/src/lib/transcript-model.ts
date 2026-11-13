@@ -623,6 +623,22 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       live.generationBlockIds = [];
       break;
     }
+    case "generation_retry": {
+      const live = ensureLive(view, update.prompt_id, now);
+      const ids = new Set(live.generationBlockIds);
+      // 仅撤销未提交的文本与思考，不删除独立落盘的工具、代理消息或历史内容。
+      view.blocks = view.blocks.filter(
+        (block) => !ids.has(block.id) || (block.kind !== "text" && block.kind !== "reasoning"),
+      );
+      live.textId = undefined;
+      live.textIndex = undefined;
+      live.reasoningId = undefined;
+      live.reasoningIndex = undefined;
+      live.usage = undefined;
+      live.generationBlockIds = [];
+      pushStatus(view, "warn", update.message);
+      break;
+    }
     case "assistant_delta": {
       const live = ensureLive(view, update.prompt_id, now);
       const delta = update.delta;

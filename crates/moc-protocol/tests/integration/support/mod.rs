@@ -1044,6 +1044,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::ToolBatchStarted { .. } => "tool_batch_started",
         SessionUpdate::PromptStarted { .. } => "prompt_started",
         SessionUpdate::GenerationStarted { .. } => "generation_started",
+        SessionUpdate::GenerationRetry { .. } => "generation_retry",
         SessionUpdate::GuardNotice { .. } => "guard_notice",
         SessionUpdate::PluginNotice { .. } => "plugin_notice",
         SessionUpdate::AssistantDelta { .. } => "assistant_delta",

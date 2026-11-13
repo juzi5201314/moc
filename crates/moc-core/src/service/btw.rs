@@ -98,71 +98,94 @@ pub(crate) async fn run(
         history_turns_used,
     };
     let updates = ctx.updates();
-    updates
-        .emit_btw(
-            params.session_id.clone(),
-            params.request_id,
-            BtwUpdate::Waiting,
-        )
-        .await
-        .map_err(protocol_to_rpc)?;
-    let _permit = match inner.provider_permit(&model, &cancel).await {
-        Ok(permit) => permit,
-        Err(crate::CoreError::Cancelled) => return Ok(result),
-        Err(error) => return Err(to_rpc(error)),
-    };
-    let streamed = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => return Ok(result),
-        response = inner.client.stream(&llm, &request) => response,
-    };
-    let mut stream = match streamed {
-        Ok(stream) => stream,
-        Err(moc_llm::LlmError::Guard(_)) => {
-            result.finish_reason = FinishReason::LoopDetected;
-            return Ok(result);
-        }
-        Err(error) => return Err(llm_error(error)),
-    };
-    updates
-        .emit_btw(
-            params.session_id.clone(),
-            params.request_id,
-            BtwUpdate::Generating,
-        )
-        .await
-        .map_err(protocol_to_rpc)?;
-    let response = loop {
-        tokio::select! {
+    let mut budget = moc_llm::retry::RetryBudget::default();
+    let response = 'attempts: loop {
+        updates
+            .emit_btw(
+                params.session_id.clone(),
+                params.request_id,
+                BtwUpdate::Waiting,
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
+        let permit = match inner.provider_permit(&model, &cancel).await {
+            Ok(permit) => permit,
+            Err(crate::CoreError::Cancelled) => return Ok(result),
+            Err(error) => return Err(to_rpc(error)),
+        };
+        let streamed = tokio::select! {
             biased;
-            _ = cancel.cancelled() => {
-                let mut response = stream.interrupt();
-                response.finish_reason = FinishReason::Cancelled;
-                break response;
+            _ = cancel.cancelled() => return Ok(result),
+            response = inner.client.stream_with_budget(&llm, &request, &mut budget) => response,
+        };
+        let mut stream = match streamed {
+            Ok(stream) => stream,
+            Err(moc_llm::LlmError::Guard(_)) => {
+                result.finish_reason = FinishReason::LoopDetected;
+                return Ok(result);
             }
-            event = stream.next_event() => match event {
-                Some(Ok(event)) => {
-                    let update = match event {
-                        StreamEvent::TextDelta { text, .. } => Some(BtwUpdate::TextDelta { text }),
-                        StreamEvent::ReasoningDelta { text, .. } => Some(BtwUpdate::ReasoningDelta { text }),
-                        StreamEvent::ToolCallStart { .. }
-                        | StreamEvent::ToolCallArgumentsDelta { .. }
-                        | StreamEvent::ToolCallSnapshot { .. }
-                        | StreamEvent::Done { finish_reason: FinishReason::ToolCalls } => {
-                            return Err(tools_unavailable());
+            Err(error) => return Err(llm_error(error)),
+        };
+        updates
+            .emit_btw(
+                params.session_id.clone(),
+                params.request_id,
+                BtwUpdate::Generating,
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
+        let response = loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    let mut response = stream.interrupt();
+                    response.finish_reason = FinishReason::Cancelled;
+                    break Ok(response);
+                }
+                event = stream.next_event() => match event {
+                    Some(Ok(event)) => {
+                        let update = match event {
+                            StreamEvent::TextDelta { text, .. } => Some(BtwUpdate::TextDelta { text }),
+                            StreamEvent::ReasoningDelta { text, .. } => Some(BtwUpdate::ReasoningDelta { text }),
+                            StreamEvent::ToolCallStart { .. }
+                            | StreamEvent::ToolCallArgumentsDelta { .. }
+                            | StreamEvent::ToolCallSnapshot { .. }
+                            | StreamEvent::Done { finish_reason: FinishReason::ToolCalls } => {
+                                return Err(tools_unavailable());
+                            }
+                            _ => None,
+                        };
+                        if let Some(update) = update {
+                            updates.emit_btw(params.session_id.clone(), params.request_id, update)
+                                .await.map_err(protocol_to_rpc)?;
                         }
-                        _ => None,
-                    };
-                    if let Some(update) = update {
-                        updates.emit_btw(params.session_id.clone(), params.request_id, update)
-                            .await.map_err(protocol_to_rpc)?;
                     }
+                    Some(Err(moc_llm::LlmError::Guard(_))) => {
+                        break Ok(stream.discard(FinishReason::LoopDetected));
+                    }
+                    Some(Err(error)) => break Err(error),
+                    None => break stream.finish().await,
                 }
-                Some(Err(moc_llm::LlmError::Guard(_))) => {
-                    break stream.discard(FinishReason::LoopDetected);
+            }
+        };
+        drop(permit);
+        match response {
+            Ok(response) => break 'attempts response,
+            Err(error) => {
+                let delay = budget.next_delay(&llm.retry, error).map_err(llm_error)?;
+                updates
+                    .emit_btw(
+                        params.session_id.clone(),
+                        params.request_id,
+                        BtwUpdate::Waiting,
+                    )
+                    .await
+                    .map_err(protocol_to_rpc)?;
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Ok(result),
+                    _ = tokio::time::sleep(delay) => {}
                 }
-                Some(Err(error)) => return Err(llm_error(error)),
-                None => break stream.finish().await.map_err(llm_error)?,
             }
         }
     };

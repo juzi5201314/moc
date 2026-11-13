@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: e78203fd198e8972
+// schema sha256: ec4f39a3e1e71fbe
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -658,6 +658,11 @@ export type SessionUpdate =
   | {
       prompt_id: string;
       type: "generation_started";
+    }
+  | {
+      message: string;
+      prompt_id: string;
+      type: "generation_retry";
     }
   | {
       command: BashCommand;
@@ -4966,6 +4971,11 @@ export interface SessionUpdateParams {
     | {
         prompt_id: string;
         type: "generation_started";
+      }
+    | {
+        message: string;
+        prompt_id: string;
+        type: "generation_retry";
       }
     | {
         command: BashCommand;

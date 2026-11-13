@@ -469,3 +469,34 @@ fn thinking_duration_is_stamped_per_response() {
         "正文开始即定稿第二段思考"
     );
 }
+
+#[test]
+fn automatic_retry_discards_only_current_preview() {
+    use crate::transcript::Block;
+    let mut app = app();
+    app.prompt_running = true;
+    app.push_block(Block::Assistant {
+        text: "已完成".into(),
+    });
+    app.start_generation();
+    app.push_block(Block::Assistant {
+        text: "失败正文".into(),
+    });
+    apply_update(
+        &mut app,
+        SessionUpdate::GenerationRetry {
+            prompt_id: "p".into(),
+            message: "等待重试".into(),
+        },
+    );
+    assert!(app.prompt_running);
+    let texts: Vec<_> = app
+        .blocks
+        .iter()
+        .filter_map(|entry| match &entry.block {
+            Block::Assistant { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["已完成"]);
+}

@@ -1426,7 +1426,12 @@ async fn thinking_signature_invalid_auto_strips_old_reasoning_and_retries() {
         .mount(&upstream)
         .await;
 
-    let h = Harness::new(&upstream.uri(), "openai_responses", "[compaction]\nenabled=false").await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_responses",
+        "[compaction]\nenabled=false",
+    )
+    .await;
     let id = h.session(SessionEngine::Standard).await;
 
     let first = h.prompt(&id, "第一轮").await;
@@ -1437,7 +1442,11 @@ async fn thinking_signature_invalid_auto_strips_old_reasoning_and_retries() {
     assert_eq!(second.message.text(), "剥离旧思考后重试成功");
 
     let requests = upstream.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 3, "应发送：第1轮、第2轮400失败、第2轮剥离后重试");
+    assert_eq!(
+        requests.len(),
+        3,
+        "应发送：第1轮、第2轮400失败、第2轮剥离后重试"
+    );
     let retry_body: Value = serde_json::from_slice(&requests[2].body).unwrap();
     let retry_input = retry_body["input"].as_array().unwrap();
     assert!(
@@ -1474,6 +1483,160 @@ async fn thinking_signature_invalid_auto_strips_old_reasoning_and_retries() {
                 })
         }),
         "会话历史展示不应被破坏"
+    );
+    h.close().await;
+}
+
+#[tokio::test]
+async fn automatic_retry_discards_failed_calls_and_shares_http_budget() {
+    for exhausted in [false, true] {
+        let upstream = MockServer::builder().start().await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let calls = count.clone();
+        Mock::given(method("POST")).respond_with(move |_: &wiremock::Request| {
+            let attempt = calls.fetch_add(1, Ordering::SeqCst);
+            match attempt {
+                0 => ResponseTemplate::new(200).set_body_raw(tool_stream(vec![("kept", "read", json!({"path":"kept.txt"}))]), "text/event-stream"),
+                1 => ResponseTemplate::new(503).set_body_json(json!({"error":{"message":"unavailable"}})),
+                2 => ResponseTemplate::new(200).set_body_raw(format!("data: {}\n\ndata: {}\n\n",
+                    json!({"choices":[{"index":0,"delta":{"content":"失败草稿","tool_calls":[{"index":0,"id":"discarded","type":"function","function":{"name":"write","arguments":"{\"path\":\"should-not-exist.txt\",\"content\":\"bad\"}"}}]}}],"usage":{"prompt_tokens":12,"completion_tokens":3}}),
+                    json!({"error":{"code":"rate_limit_exceeded","message":"exceeded token rate limit"}})), "text/event-stream"),
+                _ if exhausted => ResponseTemplate::new(200).set_body_raw("data: {\"error\":{\"message\":\"unknown upstream failure\"}}\n\n", "text/event-stream"),
+                _ => ResponseTemplate::new(200).set_body_raw(text_stream("重试完成"), "text/event-stream"),
+            }
+        }).mount(&upstream).await;
+        let extra = format!(
+            "[compaction]\nenabled=false\n[providers.retry]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\nretry={{max_attempts=3,initial_backoff_secs=0.001,max_backoff_secs=0.001,jitter=false}}\n[providers.retry.models.gpt-test]\ncontext_window=1000000\nmax_output_tokens=4096",
+            upstream.uri()
+        );
+        let h = Harness::with_roles(
+            &upstream.uri(),
+            "openai_chat",
+            "retry/gpt-test:off",
+            "none",
+            &extra,
+        )
+        .await;
+        std::fs::write(h.root.path().join("work/kept.txt"), "已完成的工具结果").unwrap();
+        let id = h.session(SessionEngine::Standard).await;
+        let result = h
+            .client
+            .call::<SessionPrompt>(PromptParams {
+                session_id: id.clone(),
+                input: vec![InputPart::Text {
+                    text: "执行".into(),
+                }],
+                mode: None,
+                agent_message: None,
+                goal_round: None,
+            })
+            .await;
+        if exhausted {
+            assert!(result.unwrap_err().to_string().contains("共尝试 3 次"));
+        } else {
+            let result = result.unwrap();
+            assert_eq!(result.message.text(), "重试完成");
+            assert!(result.usage.input_tokens >= 12);
+        }
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            4,
+            "前一工具轮次一次，失败生成共用三次预算"
+        );
+        assert!(!h.root.path().join("work/should-not-exist.txt").exists());
+        let loaded = h.load(&id).await;
+        assert!(
+            loaded
+                .entries
+                .iter()
+                .all(|entry| !entry.message.text().contains("失败草稿"))
+        );
+        assert_eq!(
+            loaded
+                .entries
+                .iter()
+                .flat_map(|entry| entry.message.tool_results())
+                .filter(|result| result.tool_call_id == "kept")
+                .count(),
+            1
+        );
+        assert!(
+            h.updates
+                .lock()
+                .iter()
+                .any(|update| matches!(update, SessionUpdate::GenerationRetry { .. }))
+        );
+        let requests = upstream.received_requests().await.unwrap();
+        for request in &requests[2..] {
+            assert!(!String::from_utf8_lossy(&request.body).contains("失败草稿"));
+        }
+        h.close().await;
+    }
+}
+
+#[tokio::test]
+async fn automatic_retry_wait_is_cancellable() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_raw(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"失败预览\"}}]}\n\ndata: {\"error\":{\"message\":\"unknown gateway error\"}}\n\n", "text/event-stream"))
+        .mount(&upstream).await;
+    let extra = format!(
+        "[compaction]\nenabled=false\n[providers.retry]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\nretry={{max_attempts=3,initial_backoff_secs=30,max_backoff_secs=30,jitter=false}}\n[providers.retry.models.gpt-test]\ncontext_window=1000000\nmax_output_tokens=4096",
+        upstream.uri()
+    );
+    let h = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "retry/gpt-test:off",
+        "none",
+        &extra,
+    )
+    .await;
+    let id = h.session(SessionEngine::Standard).await;
+    let mut events = h.events.subscribe();
+    let client = h.client.clone();
+    let sid = id.clone();
+    let prompt = tokio::spawn(async move {
+        client
+            .call::<SessionPrompt>(PromptParams {
+                session_id: sid,
+                input: vec![InputPart::Text {
+                    text: "执行".into(),
+                }],
+                mode: None,
+                agent_message: None,
+                goal_round: None,
+            })
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !matches!(
+            events.recv().await.unwrap(),
+            SessionUpdate::GenerationRetry { .. }
+        ) {}
+    })
+    .await
+    .expect("错误后应进入可取消退避");
+    h.client
+        .call::<SessionCancel>(SessionCancelParams {
+            session_id: id.clone(),
+        })
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), prompt)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.finish_reason, FinishReason::Cancelled);
+    assert!(result.message.text().is_empty());
+    assert_eq!(upstream.received_requests().await.unwrap().len(), 1);
+    assert!(
+        h.load(&id)
+            .await
+            .entries
+            .iter()
+            .all(|entry| !entry.message.text().contains("失败预览"))
     );
     h.close().await;
 }

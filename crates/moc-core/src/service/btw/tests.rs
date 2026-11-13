@@ -622,3 +622,48 @@ async fn stream_guard_discards_loop_without_touching_main_guard_or_retrying() {
     assert_eq!(h.unchanged_snapshot().await, before);
     h.close().await;
 }
+
+#[tokio::test]
+async fn automatic_retry_replaces_partial_btw_without_main_updates() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let upstream = MockServer::builder().start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    Mock::given(method("POST")).respond_with(move |_: &wiremock::Request| {
+        let body = if count.fetch_add(1, Ordering::SeqCst) == 0 {
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"失败草稿\"}}]}\n\ndata: {\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"token rate limit\"}}\n\n".to_owned()
+        } else { text_stream("恢复成功") };
+        ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
+    }).mount(&upstream).await;
+    let extra = format!(
+        "[providers.retry]\napi='openai_chat'\nbase_url='{}/v1'\nretry={{max_attempts=3,initial_backoff_secs=0.001,max_backoff_secs=0.001,jitter=false}}\n[providers.retry.models.model]\ncontext_window=100000\nmax_output_tokens=1024",
+        upstream.uri()
+    );
+    let mut h = Harness::new(&upstream.uri(), "openai_chat", &extra).await;
+    h.record.state.lock().await.model = "retry/model:off".into();
+    let before = h.unchanged_snapshot().await;
+    let result = h
+        .client
+        .call::<SessionBtw>(h.params("重试旁路"))
+        .await
+        .unwrap();
+    assert_eq!(result.text, "恢复成功");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let mut preview = String::new();
+    let mut reset_after_partial = false;
+    while let Ok(update) = h.updates.try_recv() {
+        match update.update {
+            BtwUpdate::Waiting => {
+                reset_after_partial |= preview == "失败草稿";
+                preview.clear();
+            }
+            BtwUpdate::TextDelta { text } => preview.push_str(&text),
+            _ => {}
+        }
+    }
+    assert!(reset_after_partial);
+    assert_eq!(preview, "恢复成功");
+    assert!(h.main_updates.lock().is_empty());
+    assert_eq!(h.unchanged_snapshot().await, before);
+    h.close().await;
+}

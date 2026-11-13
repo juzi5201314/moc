@@ -497,6 +497,12 @@ pub(crate) fn session_update(
         }
         MocUpdate::PlanSubmitted { plan } => vec![plan_submitted_update(plan)],
         MocUpdate::PlanUpdated { plan } => plan_status_update(plan).into_iter().collect(),
+        MocUpdate::GenerationRetry { message, .. } => vec![notice(
+            caps,
+            NoticeSeverity::Warning,
+            "自动重试",
+            format!("本次生成的先前输出作废，已完成的工具结果保留。{message}"),
+        )],
         MocUpdate::GuardNotice { message, .. } => {
             vec![notice(
                 caps,

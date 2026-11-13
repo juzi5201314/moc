@@ -199,7 +199,12 @@ impl BtwState {
             return;
         };
         match params.update {
-            BtwUpdate::Started | BtwUpdate::Waiting => turn.status = Status::Waiting,
+            BtwUpdate::Started => turn.status = Status::Waiting,
+            BtwUpdate::Waiting => {
+                turn.status = Status::Waiting;
+                turn.answer.clear();
+                turn.reasoning.clear();
+            }
             BtwUpdate::Generating => turn.status = Status::Generating,
             BtwUpdate::TextDelta { text } => turn.answer.push_str(&text),
             BtwUpdate::ReasoningDelta { text } => turn.reasoning.push_str(&text),

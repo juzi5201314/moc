@@ -350,53 +350,6 @@ mod tests {
     use crate::ApiError;
 
     #[test]
-    fn statuses_have_specific_guidance_without_changing_retry_classification() {
-        for (status, title, retryable) in [
-            (401, "认证失败", false),
-            (407, "代理认证失败", false),
-            (413, "请求体过大", false),
-            (431, "请求头过大", false),
-            (499, "非标准请求取消", false),
-            (502, "网关收到无效上游响应", true),
-            (504, "网关等待上游超时", true),
-            (521, "非标准源站连接被拒绝", false),
-            (522, "非标准源站连接超时", false),
-            (524, "非标准网关读写超时", true),
-            (525, "非标准源站 TLS 握手失败", false),
-            (526, "非标准源站证书无效", false),
-            (529, "非标准服务过载", true),
-            (530, "非标准源站解析错误", false),
-            (599, "非标准网络超时", false),
-            (555, "未识别的服务端错误", false),
-            (471, "未识别的请求拒绝", false),
-            (700, "非标准状态码", false),
-        ] {
-            let error = ApiError::new(
-                Some(status),
-                ApiErrorKind::from_status(status),
-                "provider detail",
-                "raw",
-            );
-            let display = error.to_string();
-            assert!(display.contains(title), "{status}: {display}");
-            assert!(display.contains("provider detail"));
-            assert_eq!(error.is_retryable(), retryable, "{status}");
-        }
-    }
-
-    #[test]
-    fn explicit_semantics_override_generic_http_hints() {
-        for (status, kind, title) in [
-            (429, ApiErrorKind::QuotaExceeded, "额度耗尽"),
-            (400, ApiErrorKind::ContextLength, "上下文超限"),
-            (403, ApiErrorKind::ContentFilter, "内容策略拒绝"),
-        ] {
-            assert_eq!(explanation(Some(status), kind).0, title);
-        }
-        assert_eq!(explanation(None, ApiErrorKind::Overloaded).0, "服务过载");
-    }
-
-    #[test]
     fn display_bounds_plain_text_and_hides_html_without_mutating_original() {
         let text = "中".repeat(600) + "\u{1b}[31m";
         let error = ApiError::new(

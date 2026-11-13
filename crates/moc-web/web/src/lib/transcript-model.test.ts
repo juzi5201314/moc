@@ -563,4 +563,42 @@ describe("applyUpdate", () => {
     expect(tool?.toolCallId).toBe("c1");
     expect(tool?.status).toBe("completed");
   });
+  it("自动重试只丢弃当前草稿并保持运行状态", () => {
+    const view = createView(INFO);
+    applyUpdate(view, { type: "prompt_started", prompt_id: "p", model: "m1", at_ms: 0 });
+    applyUpdate(view, { type: "generation_started", prompt_id: "p" });
+    applyUpdate(view, {
+      type: "assistant_delta",
+      prompt_id: "p",
+      delta: { type: "text", delta: "已完成" },
+    });
+    applyUpdate(view, { type: "generation_started", prompt_id: "p" });
+    applyUpdate(view, {
+      type: "assistant_delta",
+      prompt_id: "p",
+      delta: { type: "reasoning", delta: "失败思考" },
+    });
+    applyUpdate(view, {
+      type: "assistant_delta",
+      prompt_id: "p",
+      delta: { type: "text", delta: "失败正文" },
+    });
+    applyUpdate(view, { type: "generation_retry", prompt_id: "p", message: "等待重试" });
+    expect(view.running).toBe(true);
+    expect(
+      view.blocks.flatMap((block) =>
+        block.kind === "text" || block.kind === "reasoning" ? [block.text] : [],
+      ),
+    ).toEqual(["已完成"]);
+    applyUpdate(view, { type: "generation_started", prompt_id: "p" });
+    applyUpdate(view, {
+      type: "assistant_delta",
+      prompt_id: "p",
+      delta: { type: "text", delta: "新正文" },
+    });
+    expect(view.blocks.flatMap((block) => (block.kind === "text" ? [block.text] : []))).toEqual([
+      "已完成",
+      "新正文",
+    ]);
+  });
 });

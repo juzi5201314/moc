@@ -867,7 +867,7 @@
           "type": "object"
         },
         {
-          "description": "正在等待供应商并发名额。",
+          "description": "等待供应商名额或自动重试；清除本次请求尚未提交的正文与思考预览。",
           "properties": {
             "type": {
               "const": "waiting",
@@ -6032,6 +6032,27 @@
           "required": [
             "type",
             "prompt_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "丢弃当前生成的未提交预览，等待自动重试；已完成的工具和会话内容不受影响。",
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "prompt_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "generation_retry",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "prompt_id",
+            "message"
           ],
           "type": "object"
         },

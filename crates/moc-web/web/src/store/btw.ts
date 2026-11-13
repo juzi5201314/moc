@@ -131,7 +131,11 @@ rpc.on("session/btw_update", (params: BtwUpdateParams) => {
       const update = params.update;
       switch (update.type) {
         case "started":
+          turn.status = "waiting";
+          break;
         case "waiting":
+          turn.answer = "";
+          turn.reasoning = "";
           turn.status = "waiting";
           break;
         case "generating":

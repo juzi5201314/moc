@@ -56,6 +56,45 @@ impl RetryPolicy {
     }
 }
 
+/// 一次逻辑生成的重试预算；连接、错误响应体和流中恢复共享，不随重新建流重置。
+#[derive(Debug, Default)]
+pub struct RetryBudget {
+    attempts: u32,
+}
+
+impl RetryBudget {
+    pub(crate) fn begin_attempt(&mut self) {
+        self.attempts += 1;
+    }
+
+    /// 已发出的总请求数，含首次。
+    pub fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
+    /// 失败后的下一次等待；不可恢复或预算耗尽时保留最终错误。
+    pub fn next_delay(
+        &self,
+        policy: &RetryPolicy,
+        error: crate::LlmError,
+    ) -> Result<Duration, crate::LlmError> {
+        if !error.is_retryable() {
+            return Err(error);
+        }
+        let retry_after = error.api_error().and_then(|api| api.retry_after);
+        policy.delay(self.attempts, retry_after).ok_or_else(|| {
+            if self.attempts > 1 {
+                crate::LlmError::RetriesExhausted {
+                    attempts: self.attempts,
+                    last: Box::new(error),
+                }
+            } else {
+                error
+            }
+        })
+    }
+}
+
 /// 全抖动比例，取自系统时钟的亚秒部分：这里只需把重试风暴打散，
 /// 不需要密码学随机数，也就不引入随机数依赖。
 fn jitter_fraction() -> f64 {

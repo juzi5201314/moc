@@ -105,7 +105,7 @@ pub struct BtwCancelResult {
 pub enum BtwUpdate {
     /// 协议层已登记请求，可以安全地发定向取消。
     Started,
-    /// 正在等待供应商并发名额。
+    /// 等待供应商名额或自动重试；清除本次请求尚未提交的正文与思考预览。
     Waiting,
     /// 已拿到流式响应，开始生成。
     Generating,

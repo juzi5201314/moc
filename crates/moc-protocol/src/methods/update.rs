@@ -136,6 +136,8 @@ pub enum SessionUpdate {
     },
     /// 新一轮模型生成开始；前端据此限定失败预览的清除边界。
     GenerationStarted { prompt_id: String },
+    /// 丢弃当前生成的未提交预览，等待自动重试；已完成的工具和会话内容不受影响。
+    GenerationRetry { prompt_id: String, message: String },
     /// 用户手动执行的命令开始；后续仍以 `ToolFinished` 回填结果。
     BashStarted {
         tool_call_id: String,

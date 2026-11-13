@@ -51,25 +51,14 @@ pub enum LlmError {
 }
 
 impl LlmError {
-    /// 是否值得原样重放。
-    ///
-    /// 只有「请求未被上游完整处理」的错误返回真：
-    ///
-    /// - 传输层的连接失败与超时（请求尚未送达）；
-    /// - 上游明确标记为可重试的错误（限流、过载、5xx）。
-    ///
-    /// 响应体截断（`reqwest::Error::is_body`）不在此列：上游可能已经完成处理，
-    /// 重放会重复计费，恢复策略必须由调用方基于自身历史决定。流式请求开始读体后
-    /// 从不重试，同理。
+    /// 上游或传输失败是否值得重试；已经交付的流式内容须由调用方先撤销。
+    /// 本地编码、循环保护和耗尽的预算不能靠原样重放恢复。
     pub fn is_retryable(&self) -> bool {
         match self {
             LlmError::Transport(err) => err.is_retryable(),
             LlmError::Api(err) => err.is_retryable(),
-            LlmError::RetriesExhausted { .. }
-            | LlmError::Encode(_)
-            | LlmError::Decode { .. }
-            | LlmError::Stream(_)
-            | LlmError::Guard(_) => false,
+            LlmError::Decode { .. } | LlmError::Stream(_) => true,
+            LlmError::RetriesExhausted { .. } | LlmError::Encode(_) | LlmError::Guard(_) => false,
         }
     }
 
@@ -128,9 +117,9 @@ impl TransportError {
         self.kind
     }
 
-    /// 是否值得重放：请求尚未送达上游时才算。
+    /// 传输失败允许在预算内重试；无法保证上游未计费。
     pub fn is_retryable(&self) -> bool {
-        matches!(self.kind, TransportKind::Connect | TransportKind::Timeout)
+        true
     }
 
     /// 错误消息。
@@ -230,7 +219,11 @@ impl ApiError {
 
     /// 是否值得重放（额度耗尽不重试，等待不会改变结果）。
     pub fn is_retryable(&self) -> bool {
-        self.kind.is_retryable()
+        // 明确的 HTTP 拒绝不能被错误体里的笼统限流/服务错误覆盖。
+        !matches!(
+            self.status,
+            Some(400..=407 | 410..=417 | 422..=426 | 428 | 431 | 451 | 501 | 505 | 511)
+        ) && self.kind.is_retryable()
     }
 }
 
@@ -312,13 +305,14 @@ impl ApiErrorKind {
             402 => ApiErrorKind::Billing,
             403 => ApiErrorKind::Permission,
             404 => ApiErrorKind::NotFound,
+            408 => ApiErrorKind::Timeout,
             409 => ApiErrorKind::Conflict,
             413 => ApiErrorKind::RequestTooLarge,
             429 => ApiErrorKind::RateLimit,
-            500 => ApiErrorKind::ServerError,
-            502 | 503 => ApiErrorKind::ServerError,
-            504 | 524 => ApiErrorKind::Timeout,
+            504 | 524 | 598 | 599 => ApiErrorKind::Timeout,
             529 => ApiErrorKind::Overloaded,
+            501 | 505 => ApiErrorKind::InvalidRequest,
+            500..=599 => ApiErrorKind::ServerError,
             _ => ApiErrorKind::Unknown,
         }
     }
@@ -331,6 +325,8 @@ impl ApiErrorKind {
                 | ApiErrorKind::Overloaded
                 | ApiErrorKind::ServerError
                 | ApiErrorKind::Timeout
+                | ApiErrorKind::Unknown
+                | ApiErrorKind::Conflict
         )
     }
 
@@ -362,7 +358,7 @@ impl ApiErrorKind {
     pub(crate) fn refine(self, code: Option<&str>, message: &str) -> Self {
         let code_lower = code.unwrap_or_default().to_ascii_lowercase();
         let haystack = if message.is_empty() {
-            code_lower
+            code_lower.clone()
         } else {
             let mut buf = String::with_capacity(message.len() + code_lower.len() + 1);
             buf.push_str(&code_lower);
@@ -371,13 +367,25 @@ impl ApiErrorKind {
             buf
         };
 
-        const QUOTA: [&str; 2] = ["insufficient_quota", "enforced_spend_limit_reached"];
-        const CONTEXT: [&str; 6] = [
+        const QUOTA: [&str; 12] = [
+            "insufficient_quota",
+            "enforced_spend_limit_reached",
+            "quota_exceeded",
+            "insufficient_balance",
+            "insufficient balance",
+            "credit balance is too low",
+            "exceeded your current quota",
+            "billing_hard_limit_reached",
+            "insufficient_funds",
+            "insufficient funds",
+            "out of credits",
+            "余额不足",
+        ];
+        const CONTEXT: [&str; 5] = [
             "context length",
             "context_length",
             "context window",
             "maximum context",
-            "too many tokens",
             "prompt is too long",
         ];
         const FILTER: [&str; 4] = [
@@ -399,7 +407,55 @@ impl ApiErrorKind {
         if FILTER.iter().any(|needle| haystack.contains(needle)) {
             return ApiErrorKind::ContentFilter;
         }
-        self
+        // 具体业务代号优先；只在没有明确不可恢复分类时接受暂时性信号。
+        if let Ok(status @ 400..=599) = code_lower.parse::<u16>() {
+            let kind = Self::from_status(status);
+            if !ApiError::new(Some(status), kind, "", "").is_retryable() {
+                return if kind == Self::Unknown {
+                    Self::InvalidRequest
+                } else {
+                    kind
+                };
+            }
+        }
+        let coded = match code_lower.as_str() {
+            "invalid_api_key" | "authentication_error" | "unauthorized" => Some(Self::Auth),
+            "permission_denied" | "permission_error" | "access_denied" => Some(Self::Permission),
+            "billing_error" | "payment_required" => Some(Self::Billing),
+            "model_not_found" | "deploymentnotfound" | "not_found_error" => Some(Self::NotFound),
+            "invalid_request_error"
+            | "invalid_parameter"
+            | "unsupported_parameter"
+            | "unsupported_value" => Some(Self::InvalidRequest),
+            "request_too_large" => Some(Self::RequestTooLarge),
+            _ => None,
+        };
+        if let Some(kind) = coded {
+            return kind;
+        }
+        if !self.is_retryable() {
+            return self;
+        }
+        if [
+            "rate_limit",
+            "rate limit",
+            "too many requests",
+            "tokens per minute",
+        ]
+        .iter()
+        .any(|needle| haystack.contains(needle))
+        {
+            return Self::RateLimit;
+        }
+        if matches!(self, Self::Timeout | Self::RateLimit | Self::Overloaded) {
+            return self;
+        }
+        match code_lower.as_str() {
+            "overloaded_error" | "overloaded" => Self::Overloaded,
+            "server_error" | "internal_server_error" | "api_error" => Self::ServerError,
+            "timeout_error" | "request_timeout" => Self::Timeout,
+            _ => self,
+        }
     }
 }
 
@@ -462,12 +518,14 @@ mod tests {
     }
 
     #[test]
-    fn retryable_kinds_are_rate_limit_overload_and_5xx() {
+    fn retryable_kinds_exclude_only_explicit_permanent_failures() {
         let retryable = [
             ApiErrorKind::RateLimit,
             ApiErrorKind::Overloaded,
             ApiErrorKind::ServerError,
             ApiErrorKind::Timeout,
+            ApiErrorKind::Unknown,
+            ApiErrorKind::Conflict,
         ];
         for kind in retryable {
             assert!(kind.is_retryable(), "{kind} 应可重试");
@@ -483,11 +541,59 @@ mod tests {
             ApiErrorKind::InvalidRequest,
             ApiErrorKind::NotFound,
             ApiErrorKind::RequestTooLarge,
-            ApiErrorKind::Conflict,
-            ApiErrorKind::Unknown,
         ];
         for kind in terminal {
             assert!(!kind.is_retryable(), "{kind} 不应重试");
+        }
+    }
+
+    #[test]
+    fn retry_classification_preserves_permanent_evidence() {
+        for (code, message, expected) in [
+            (
+                Some("rate_limit_exceeded"),
+                "Your requests to gpt-6.1-sol in eastus2 have exceeded token rate limit.",
+                ApiErrorKind::RateLimit,
+            ),
+            (None, "exceeded token rate limit", ApiErrorKind::RateLimit),
+            (
+                Some("insufficient_quota"),
+                "rate limit exceeded",
+                ApiErrorKind::QuotaExceeded,
+            ),
+            (
+                None,
+                "Your credit balance is too low",
+                ApiErrorKind::QuotaExceeded,
+            ),
+            (Some("invalid_api_key"), "rejected", ApiErrorKind::Auth),
+            (Some("model_not_found"), "rejected", ApiErrorKind::NotFound),
+            (
+                Some("unsupported_parameter"),
+                "rejected",
+                ApiErrorKind::InvalidRequest,
+            ),
+            (
+                Some("new_gateway_failure"),
+                "try later",
+                ApiErrorKind::Unknown,
+            ),
+        ] {
+            assert_eq!(ApiErrorKind::Unknown.refine(code, message), expected);
+        }
+        for status in [
+            401, 402, 403, 404, 405, 407, 413, 422, 431, 451, 501, 505, 511,
+        ] {
+            assert!(
+                !ApiError::new(Some(status), ApiErrorKind::RateLimit, "rate limit", "")
+                    .is_retryable()
+            );
+        }
+        for status in [408, 409, 418, 429, 499, 500, 502, 520, 524, 555, 599] {
+            assert!(
+                ApiError::new(Some(status), ApiErrorKind::from_status(status), "", "")
+                    .is_retryable()
+            );
         }
     }
 

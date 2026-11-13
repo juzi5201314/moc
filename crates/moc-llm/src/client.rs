@@ -15,6 +15,7 @@ use futures_core::Stream;
 use crate::codec::{self, EncodedRequest};
 use crate::config::LlmConfig;
 use crate::error::{ApiError, ApiErrorKind, LlmError};
+use crate::retry::RetryBudget;
 use crate::stream::ChatStream;
 use crate::traffic::{record_rx, record_tx};
 use crate::types::{ChatRequest, ChatResponse};
@@ -75,53 +76,75 @@ impl Client {
         let started = Instant::now();
         let guard = req.options.stream_guard;
         let deadline_secs = req.options.connect_deadline_secs;
-        let body = tokio::time::timeout(Duration::from_secs(deadline_secs), async {
-            let response = self
-                .with_retry(cfg, || {
-                    self.execute(cfg, encoded, false, prepared.diagnostics)
-                })
-                .await?;
-            read_body(response).await
-        })
+        tokio::time::timeout(
+            Duration::from_secs(deadline_secs),
+            self.with_retry(cfg, &mut RetryBudget::default(), || async {
+                let response = self
+                    .execute(cfg, encoded, false, prepared.diagnostics)
+                    .await?;
+                let headers = response.headers().clone();
+                let body = read_body(response).await?;
+                let response = codec::decode_response(cfg, req, &body)
+                    .map_err(|error| response_metadata(error, &headers))?;
+                crate::guard::StreamGuard::new(guard).check_response(&response)?;
+                Ok(response)
+            }),
+        )
         .await
         .map_err(|_| deadline_error("非流式请求在", deadline_secs))
         .and_then(|result| result)
-        .map_err(|error| diagnose(error, prepared.diagnostics, started))?;
-        tracing::debug!(
-            status = 200,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            body_bytes = body.len(),
-            "收到完整响应"
-        );
-        let response = codec::decode_response(cfg, req, &body)?;
-        crate::guard::StreamGuard::new(guard).check_response(&response)?;
-        Ok(response)
+        .map_err(|error| diagnose(error, prepared.diagnostics, started))
     }
 
     /// 流式请求。
     ///
-    /// 只在**建立连接与首个响应状态**阶段重试；一旦开始读取响应体就不再重试，
-    /// 因为中途重放会产生重复计费与重复工具调用，恢复策略必须由调用方基于自身
-    /// 历史决定。
+    /// 首个有效内容前的错误自动重试；交付内容后由调用方撤销失败预览再恢复。
     pub async fn stream(&self, cfg: &LlmConfig, req: &ChatRequest) -> Result<ChatStream, LlmError> {
+        self.stream_with_budget(cfg, req, &mut RetryBudget::default())
+            .await
+    }
+
+    /// 与调用方的流中恢复共用预算，防止多层重试相乘。
+    pub async fn stream_with_budget(
+        &self,
+        cfg: &LlmConfig,
+        req: &ChatRequest,
+        budget: &mut RetryBudget,
+    ) -> Result<ChatStream, LlmError> {
         let prepared = self.prepare(cfg, req, true).await?;
         let encoded = &prepared.encoded;
         let started = Instant::now();
         let deadline_secs = req.options.connect_deadline_secs;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(deadline_secs);
-        let response = tokio::time::timeout_at(
+        tokio::time::timeout_at(
             deadline,
-            self.with_retry(cfg, || {
-                self.execute(cfg, encoded, true, prepared.diagnostics)
+            self.with_retry(cfg, budget, || async {
+                let response = self
+                    .execute(cfg, encoded, true, prepared.diagnostics)
+                    .await?;
+                let headers = response.headers().clone();
+                if headers
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.contains("application/json"))
+                {
+                    let body = read_body(response).await?;
+                    codec::decode_response(cfg, req, &body)
+                        .map_err(|error| response_metadata(error, &headers))?;
+                    return Err(LlmError::Stream("流式请求返回了非流式 JSON 响应".into()));
+                }
+                let body: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>> =
+                    Box::pin(CountingStream::new(response.bytes_stream()));
+                let mut stream = ChatStream::new(body, cfg, req);
+                stream.set_response_headers(&headers);
+                stream.prime().await?;
+                Ok(stream)
             }),
         )
         .await
         .map_err(|_| deadline_error("流式请求在", deadline_secs))
         .and_then(|result| result)
-        .map_err(|error| diagnose(error, prepared.diagnostics, started))?;
-        let body: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>> =
-            Box::pin(CountingStream::new(response.bytes_stream()));
-        Ok(ChatStream::new(body, cfg, req))
+        .map_err(|error| diagnose(error, prepared.diagnostics, started))
     }
 
     /// 查看将实际发送的请求；调用方应在阻塞线程中执行图片处理。
@@ -157,41 +180,30 @@ impl Client {
         .map_err(|error| LlmError::Encode(format!("图片请求准备失败：{error}")))?
     }
 
-    /// 重试循环：`send` 只在「请求未被上游完整处理」时被重复调用。
-    async fn with_retry<T, F, Fut>(&self, cfg: &LlmConfig, mut send: F) -> Result<T, LlmError>
+    /// 请求失败共享同一个预算；响应体解码也在重试边界内。
+    async fn with_retry<T, F, Fut>(
+        &self,
+        cfg: &LlmConfig,
+        budget: &mut RetryBudget,
+        mut send: F,
+    ) -> Result<T, LlmError>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<T, LlmError>>,
     {
-        let mut attempt = 1;
         loop {
+            budget.begin_attempt();
             match send().await {
                 Ok(value) => return Ok(value),
                 Err(error) => {
-                    if !error.is_retryable() {
-                        return Err(error);
-                    }
-                    let retry_after = error.api_error().and_then(|api| api.retry_after);
-                    let Some(delay) = cfg.retry.delay(attempt, retry_after) else {
-                        // 一次都没重放过（`max_attempts == 1`）时直接交还原始错误，
-                        // 不要用「重试耗尽」包装一个根本没发生重试的失败。
-                        return Err(if attempt > 1 {
-                            LlmError::RetriesExhausted {
-                                attempts: attempt,
-                                last: Box::new(error),
-                            }
-                        } else {
-                            error
-                        });
-                    };
+                    let delay = budget.next_delay(&cfg.retry, error.clone())?;
                     tracing::warn!(
-                        attempt,
+                        attempt = budget.attempts(),
                         delay_ms = delay.as_millis() as u64,
                         error = %error,
                         "请求失败，按退避策略重试"
                     );
                     tokio::time::sleep(delay).await;
-                    attempt += 1;
                 }
             }
         }
@@ -279,15 +291,18 @@ impl Client {
             diagnostics.elapsed_ms = started.elapsed().as_millis() as u64;
             let mut error = codec::decode_error(cfg, status.as_u16(), &headers, &body);
             error.request_diagnostics = Some(diagnostics);
-            error.gateway_id = headers
-                .get("cf-ray")
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned);
             return Err(LlmError::Api(Box::new(error)));
         }
         tracing::debug!(status = status.as_u16(), "收到响应头");
         Ok(response)
     }
+}
+
+fn response_metadata(mut error: LlmError, headers: &reqwest::header::HeaderMap) -> LlmError {
+    if let LlmError::Api(api) = &mut error {
+        codec::error_metadata(api, headers);
+    }
+    error
 }
 
 fn diagnose(

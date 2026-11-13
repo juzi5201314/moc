@@ -469,3 +469,96 @@ async fn transport_error_is_classified_and_retryable() {
         other => panic!("期望 RetriesExhausted，实际 {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn in_band_errors_retry_unless_permanent() {
+    for code in [
+        "rate_limit_exceeded",
+        "new_gateway_failure",
+        "insufficient_quota",
+        "invalid_api_key",
+        "model_not_found",
+        "unsupported_parameter",
+    ] {
+        for streaming in [false, true] {
+            let server = start().await;
+            mount(
+                &server,
+                "/v1/chat/completions",
+                200,
+                json!({"error":{"code":code,"message":"upstream rejected request"}}),
+                &[],
+                Some(1),
+                1,
+            )
+            .await;
+            Mock::given(method("POST")).respond_with(if streaming {
+                ResponseTemplate::new(200).set_body_raw(
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", "text/event-stream")
+            } else { ResponseTemplate::new(200).set_body_json(ok_body()) })
+                .with_priority(2).mount(&server).await;
+            let cfg = config(Protocol::OpenAiChat, &server, fast_retry(3));
+            let client = Client::new();
+            let result = if streaming {
+                match client.stream(&cfg, &request()).await {
+                    Ok(stream) => stream.finish().await,
+                    Err(error) => Err(error),
+                }
+            } else {
+                client.complete(&cfg, &request()).await
+            };
+            if matches!(code, "rate_limit_exceeded" | "new_gateway_failure") {
+                assert_eq!(result.unwrap().message.text(), "ok");
+                assert_eq!(request_count(&server).await, 2);
+            } else {
+                assert!(!result.unwrap_err().is_retryable(), "{code}");
+                assert_eq!(request_count(&server).await, 1);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn startup_sse_error_and_http_failure_share_budget() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    for protocol in [
+        Protocol::OpenAiChat,
+        Protocol::OpenAiResponses,
+        Protocol::AnthropicMessages,
+    ] {
+        let server = start().await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let calls = count.clone();
+        Mock::given(method("POST")).respond_with(move |_: &wiremock::Request| {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return ResponseTemplate::new(503).set_body_json(json!({"error":{"message":"unavailable"}}));
+            }
+            let frame = match protocol {
+                Protocol::OpenAiChat => "data: {\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"exceeded token rate limit\"}}\n\n",
+                Protocol::OpenAiResponses => "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"exceeded token rate limit\"}}}\n\n",
+                Protocol::AnthropicMessages => "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"exceeded token rate limit\"}}\n\n",
+            };
+            ResponseTemplate::new(200).insert_header("x-request-id", "retry-stream")
+                .insert_header("retry-after", "0").set_body_raw(frame, "text/event-stream")
+        }).mount(&server).await;
+        let cfg = config(protocol, &server, fast_retry(3));
+        let req = ChatRequest {
+            max_output_tokens: Some(64),
+            ..request()
+        };
+        let error = Client::new().stream(&cfg, &req).await.unwrap_err();
+        assert!(matches!(
+            &error,
+            moc_llm::LlmError::RetriesExhausted { attempts: 3, .. }
+        ));
+        assert_eq!(error.api_error().unwrap().kind, ApiErrorKind::RateLimit);
+        assert_eq!(
+            error.api_error().unwrap().request_id.as_deref(),
+            Some("retry-stream")
+        );
+        assert_eq!(request_count(&server).await, 3);
+    }
+}

@@ -404,6 +404,10 @@ pub struct ChatStream {
     /// 协议，决定中断时的修剪规则。
     protocol: Protocol,
     guard: StreamGuard,
+    /// 流内错误沿用握手响应的 Retry-After 和请求 ID。
+    retry_after: Option<std::time::Duration>,
+    request_id: Option<String>,
+    gateway_id: Option<String>,
 }
 
 impl ChatStream {
@@ -425,7 +429,59 @@ impl ChatStream {
             terminal_seen: false,
             protocol: cfg.protocol,
             guard: StreamGuard::new(req.options.stream_guard),
+            retry_after: None,
+            request_id: None,
+            gateway_id: None,
         }
+    }
+
+    /// 当前尝试已知的用量；失败时也需记账。
+    pub fn usage(&self) -> Usage {
+        self.accumulator.usage
+    }
+
+    pub(crate) fn set_response_headers(&mut self, headers: &reqwest::header::HeaderMap) {
+        let mut metadata = crate::ApiError::new(None, crate::ApiErrorKind::Unknown, "", "");
+        crate::codec::error_metadata(&mut metadata, headers);
+        self.retry_after = metadata.retry_after;
+        self.request_id = metadata.request_id;
+        self.gateway_id = metadata.gateway_id;
+    }
+
+    /// 初始化事件不算有效输出；内容仍留在队列中，调用方不会丢失首个增量。
+    pub(crate) async fn prime(&mut self) -> Result<(), LlmError> {
+        std::future::poll_fn(|cx| {
+            loop {
+                if self
+                    .queue
+                    .iter()
+                    .any(|event| event.as_ref().is_ok_and(StreamEvent::starts_output))
+                {
+                    return Poll::Ready(Ok(()));
+                }
+                if let Some(error) = &self.error {
+                    // 本地守卫交回流消费者，由会话层执行专用纠偏，不能混入传输重试。
+                    return Poll::Ready(if matches!(error, LlmError::Guard(_)) {
+                        Ok(())
+                    } else {
+                        Err(error.clone())
+                    });
+                }
+                if self.finished {
+                    return Poll::Ready(if self.terminal_seen {
+                        Ok(())
+                    } else {
+                        Err(LlmError::Stream(
+                            "上游响应在协议终态之前结束，本次响应不完整".into(),
+                        ))
+                    });
+                }
+                if self.pump(cx).is_pending() {
+                    return Poll::Pending;
+                }
+            }
+        })
+        .await
     }
 
     /// 取出下一个事件；流结束或出错后返回 `None`。
@@ -589,7 +645,14 @@ impl ChatStream {
         self.pending = pending;
     }
 
-    fn enqueue(&mut self, event: Result<StreamEvent, LlmError>) -> bool {
+    fn enqueue(&mut self, mut event: Result<StreamEvent, LlmError>) -> bool {
+        if let Err(LlmError::Api(api)) = &mut event {
+            api.retry_after = self.retry_after.or(api.retry_after);
+            if self.request_id.is_some() {
+                api.request_id.clone_from(&self.request_id);
+            }
+            api.gateway_id.clone_from(&self.gateway_id);
+        }
         if let Ok(stream_event) = &event
             && let Err(violation) = self.guard.observe(stream_event)
         {

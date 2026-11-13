@@ -163,6 +163,10 @@ impl Renderer {
             SessionUpdate::ToolProgress { .. } => {}
             SessionUpdate::ToolBatchStarted { .. } => {}
             SessionUpdate::GenerationStarted { .. } => state.calls.clear(),
+            SessionUpdate::GenerationRetry { message, .. } => {
+                state.calls.clear();
+                let _ = writeln!(out, "\n[自动重试：本次生成的先前输出作废。{message}]");
+            }
             SessionUpdate::GuardNotice {
                 message, terminal, ..
             } => {

@@ -170,7 +170,7 @@ fn in_band_error(cfg: &LlmConfig, value: &Value, body: &[u8]) -> Option<ApiError
             );
             (kind, fields)
         }
-        // OpenAI 两家没有错误类型表：按关键词细化，未命中即 `Unknown`。
+        // HTTP 200 的业务错误仍需按代号和消息分类。
         Protocol::OpenAiChat | Protocol::OpenAiResponses => {
             let fields = openai::parse_error_value(value)?;
             let kind = ApiErrorKind::Unknown.refine(fields.code.as_deref(), &fields.message);
@@ -213,6 +213,12 @@ pub(crate) fn decode_error(
         }
         None => ApiError::new(Some(status), kind, truncated(&raw, 512), raw),
     };
+    error_metadata(&mut error, headers);
+    error
+}
+
+/// HTTP 拒绝与 HTTP 200 内嵌错误共享响应头元信息。
+pub(crate) fn error_metadata(error: &mut ApiError, headers: &HeaderMap) {
     // 响应头里的请求 ID 更可靠，优先于错误体自带的那个。
     if let Some(from_headers) = request_id(headers) {
         error.request_id = Some(from_headers);
@@ -222,7 +228,10 @@ pub(crate) fn decode_error(
             .get("retry-after")
             .and_then(|value| value.to_str().ok()),
     );
-    error
+    error.gateway_id = headers
+        .get("cf-ray")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
 }
 
 /// 从响应头里取上游请求 ID。
@@ -619,17 +628,17 @@ mod tests {
         // HTTP 200 + 错误体：三家协议都必须报错，而不是解码成「成功但空回复」。
         let cases = [
             (
-                // 没有 HTTP 状态码时 OpenAI 风格错误只能按关键词细化，未命中即 Unknown。
+                // 没有 HTTP 状态码时仍按业务代号识别永久错误。
                 Protocol::OpenAiChat,
                 json!({"error": {"message": "bad temperature", "type": "invalid_request_error"}}),
-                ApiErrorKind::Unknown,
+                ApiErrorKind::InvalidRequest,
                 "bad temperature",
                 Some("invalid_request_error"),
             ),
             (
                 Protocol::OpenAiResponses,
                 json!({"error": {"message": "upstream exploded", "code": "server_error"}}),
-                ApiErrorKind::Unknown,
+                ApiErrorKind::ServerError,
                 "upstream exploded",
                 Some("server_error"),
             ),

@@ -205,6 +205,7 @@ pub(super) async fn run_prompt_locked(
     let mut yield_reminders = 0usize;
     let mut stream_overflows = 0usize;
     let mut stream_signature_recoveries = 0usize;
+    let mut retry_budget = moc_llm::retry::RetryBudget::default();
     let mut cycle_redirect = None;
     // 思维链重复时先纠偏再重试；只有反复命中才按循环终止。
     let mut thinking_redirect = None;
@@ -413,7 +414,7 @@ pub(super) async fn run_prompt_locked(
                     .await;
                     let streamed = tokio::select! {
                         _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'turns; }
-                        result = inner.client.stream(&model.llm, &request) => result,
+                        result = inner.client.stream_with_budget(&model.llm, &request, &mut retry_budget) => result,
                     };
                     // 错误恢复可能再次请求同一个供应商，必须先归还失败请求占用的并发名额。
                     if streamed.is_err() {
@@ -643,24 +644,12 @@ pub(super) async fn run_prompt_locked(
                                     break Err(StreamRecovery::StripReasoning(error));
                                 }
                                 Some(Err(error)) => {
-                                    crate::service::plugin_events::after_model_call(
-                                        &plugins,
-                                        &plugin_context,
-                                        &prompt_id,
-                                        attempt,
-                                        None,
-                                        None,
-                                        first_token_ms,
-                                        u64::try_from(request_started.elapsed().as_millis())
-                                            .unwrap_or(u64::MAX),
-                                        &[],
-                                        Some(&error.to_string()),
-                                    )
-                                    .await;
-                                    emit_fatal(&update, &params.session_id, &prompt_id, &error.to_string()).await?;
-                                    return Err(RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()));
+                                    let failed = stream.discard(FinishReason::Cancelled);
+                                    break Err(StreamRecovery::Retry(error, failed.usage));
                                 }
-                                None => match stream.finish().await {
+                                None => {
+                                    let failed_usage = stream.usage();
+                                    match stream.finish().await {
                                     Ok(response) => break Ok(response),
                                     Err(error) if error.api_error().is_some_and(|api|api.kind==moc_llm::ApiErrorKind::ContextLength) && project_config.compaction.enabled && stream_overflows < 2 => break Err(StreamRecovery::Overflow),
                                     Err(error)
@@ -671,23 +660,7 @@ pub(super) async fn run_prompt_locked(
                                     {
                                         break Err(StreamRecovery::StripReasoning(error));
                                     }
-                                    Err(error) => {
-                                        crate::service::plugin_events::after_model_call(
-                                            &plugins,
-                                            &plugin_context,
-                                            &prompt_id,
-                                            attempt,
-                                            None,
-                                            None,
-                                            first_token_ms,
-                                            u64::try_from(request_started.elapsed().as_millis())
-                                                .unwrap_or(u64::MAX),
-                                            &[],
-                                            Some(&error.to_string()),
-                                        )
-                                        .await;
-                                        emit_fatal(&update, &params.session_id, &prompt_id, &error.to_string()).await?;
-                                        return Err(RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()));
+                                    Err(error) => break Err(StreamRecovery::Retry(error, failed_usage)),
                                     }
                                 },
                         }
@@ -698,6 +671,71 @@ pub(super) async fn run_prompt_locked(
                 drop(request_permit);
                 let response = match response {
                     Ok(response) => response,
+                    Err(StreamRecovery::Retry(error, failed_usage)) => {
+                        usage.input_tokens =
+                            usage.input_tokens.saturating_add(failed_usage.input_tokens);
+                        usage.output_tokens = usage
+                            .output_tokens
+                            .saturating_add(failed_usage.output_tokens);
+                        usage.total_tokens =
+                            Some(usage.input_tokens.saturating_add(usage.output_tokens));
+                        let active_ms = u64::try_from(request_started.elapsed().as_millis())
+                            .unwrap_or(u64::MAX);
+                        crate::service::record_model_usage(
+                            &inner,
+                            &params.session_id,
+                            model.actual_selector(),
+                            failed_usage,
+                            active_ms,
+                            first_token_ms,
+                        )
+                        .await
+                        .map_err(to_rpc)?;
+                        crate::service::plugin_events::after_model_call(
+                            &plugins,
+                            &plugin_context,
+                            &prompt_id,
+                            attempt,
+                            None,
+                            Some(failed_usage),
+                            first_token_ms,
+                            active_ms,
+                            &[],
+                            Some(&error.to_string()),
+                        )
+                        .await;
+                        let message = error.to_string();
+                        let delay = match retry_budget.next_delay(&model.llm.retry, error) {
+                            Ok(delay) => delay,
+                            Err(error) => {
+                                emit_fatal(
+                                    &update,
+                                    &params.session_id,
+                                    &prompt_id,
+                                    &error.to_string(),
+                                )
+                                .await?;
+                                return Err(RpcError::new(
+                                    RpcErrorCode::InternalError.code(),
+                                    error.to_string(),
+                                ));
+                            }
+                        };
+                        update.emit(params.session_id.clone(), SessionUpdate::GenerationRetry {
+                            prompt_id: prompt_id.clone(),
+                            message: format!("本次生成失败，{:.1} 秒后自动重试（第 {}/{} 次尝试）。失败预览已丢弃。\n{message}",
+                                delay.as_secs_f64(), retry_budget.attempts() + 1, model.llm.retry.max_attempts),
+                        }).await.map_err(protocol_to_rpc)?;
+                        last_message = Message::default();
+                        tokio::select! {
+                            _ = cancel.cancelled() => {
+                                final_reason = FinishReason::Cancelled;
+                                break 'turns;
+                            }
+                            _ = tokio::time::sleep(delay) => {}
+                        }
+                        continue 'turns;
+                    }
                     Err(StreamRecovery::Overflow) => {
                         stream_overflows += 1;
                         let compact_report = compact::compact(
@@ -756,6 +794,7 @@ pub(super) async fn run_prompt_locked(
                         ));
                     }
                 };
+                retry_budget = moc_llm::retry::RetryBudget::default();
                 final_reason = if interrupted {
                     FinishReason::Cancelled
                 } else {
@@ -1037,6 +1076,7 @@ pub(super) async fn run_prompt_locked(
 enum StreamRecovery {
     Overflow,
     StripReasoning(moc_llm::LlmError),
+    Retry(moc_llm::LlmError, Usage),
 }
 
 async fn try_strip_old_reasoning(

@@ -255,6 +255,11 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
             app.register_tool_batch(batch_id, calls.into_iter().map(|call| call.tool_call_id));
         }
         SessionUpdate::GenerationStarted { .. } => app.start_generation(),
+        SessionUpdate::GenerationRetry { message, .. } => {
+            app.discard_generation();
+            app.push_note(message.clone(), false);
+            app.set_warning(message);
+        }
         SessionUpdate::GuardNotice {
             message, terminal, ..
         } => {
