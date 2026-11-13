@@ -289,6 +289,13 @@ pub enum Entry {
         parent_id: Option<String>,
         at_ms: u64,
     },
+    /// 旧思考内容剥离边界：此条之前（`transcript` 索引 `< reasoning_start`）的思考块与签名
+    /// 不再重放给上游，原始记录仍保留在会话日志与前端展示中。
+    ReasoningBoundary {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+    },
 }
 
 /// 非 header entry 的载荷；公共 ID 和 parent 链由 store 分配。
@@ -398,6 +405,7 @@ pub enum EntryPayload {
         content: String,
     },
     ResetBoundary,
+    ReasoningBoundary,
     /// 目标变更；`None` 载荷是清除墓碑。
     GoalChange {
         goal: Option<GoalSnapshot>,

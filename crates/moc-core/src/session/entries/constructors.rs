@@ -278,6 +278,11 @@ impl Entry {
                 parent_id,
                 at_ms,
             },
+            EntryPayload::ReasoningBoundary => Self::ReasoningBoundary {
+                id,
+                parent_id,
+                at_ms,
+            },
             EntryPayload::GoalChange { goal } => Self::GoalChange {
                 id,
                 parent_id,
@@ -307,6 +312,7 @@ impl Entry {
             | Self::Usage { id, .. }
             | Self::ClmContext { id, .. }
             | Self::ResetBoundary { id, .. }
+            | Self::ReasoningBoundary { id, .. }
             | Self::GoalChange { id, .. } => id,
         }
     }
@@ -332,6 +338,7 @@ impl Entry {
             | Self::Usage { parent_id, .. }
             | Self::ClmContext { parent_id, .. }
             | Self::ResetBoundary { parent_id, .. }
+            | Self::ReasoningBoundary { parent_id, .. }
             | Self::GoalChange { parent_id, .. } => parent_id.as_deref(),
         }
     }
@@ -356,6 +363,7 @@ impl Entry {
             | Self::Usage { at_ms, .. }
             | Self::ClmContext { at_ms, .. }
             | Self::ResetBoundary { at_ms, .. }
+            | Self::ReasoningBoundary { at_ms, .. }
             | Self::GoalChange { at_ms, .. } => *at_ms,
         }
     }

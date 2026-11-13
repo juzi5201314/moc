@@ -283,10 +283,19 @@ pub(crate) fn model_messages_traced(
     }
     messages.extend(synthetic);
     let start = visible_history_start(state);
-    for entry in &state.transcript[start..] {
+    for (index, entry) in state.transcript.iter().enumerate().skip(start) {
         let Some(message) = entry.context_message() else {
             continue;
         };
+        let (message, stripped_reasoning) =
+            if index < state.reasoning_start && message.role == Role::Assistant {
+                strip_reasoning(message)
+            } else {
+                (message, false)
+            };
+        if stripped_reasoning && !has_substantive_content(&message) {
+            continue;
+        }
         if let Some(sources) = sources.as_deref_mut() {
             let source = if entry.agent.is_some() {
                 "代理消息"
@@ -321,6 +330,59 @@ pub(crate) fn model_messages_traced(
         messages.push(repair_tool_history(message, model));
     }
     messages
+}
+
+/// 当前可见历史在 `reasoning_start` 之后是否还存在可剥离的旧思考块。
+pub(crate) fn has_unstripped_reasoning(state: &SessionState) -> bool {
+    let start = visible_history_start(state).max(state.reasoning_start);
+    state.transcript.get(start..).is_some_and(|entries| {
+        entries.iter().any(|entry| {
+            entry.in_context()
+                && entry.message.role == Role::Assistant
+                && entry.message.content.with_parts(|parts| {
+                    parts
+                        .iter()
+                        .any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_)))
+                })
+        })
+    })
+}
+
+fn strip_reasoning(message: Message) -> (Message, bool) {
+    let has_reasoning = message.content.with_parts(|parts| {
+        parts
+            .iter()
+            .any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_)))
+    });
+    if !has_reasoning {
+        return (message, false);
+    }
+    let filtered: Vec<_> = message
+        .content
+        .into_iter()
+        .filter(|part| !matches!(part, moc_llm::ContentPart::Reasoning(_)))
+        .collect();
+    (
+        Message {
+            role: message.role,
+            content: filtered.into(),
+        },
+        true,
+    )
+}
+
+fn has_substantive_content(message: &Message) -> bool {
+    message.content.with_parts(|parts| {
+        parts.iter().any(|part| {
+            matches!(
+                part,
+                moc_llm::ContentPart::Text(_)
+                    | moc_llm::ContentPart::Image { .. }
+                    | moc_llm::ContentPart::ToolCall(_)
+                    | moc_llm::ContentPart::ToolResult(_)
+            )
+        })
+    })
 }
 
 /// 可见历史的起点：重置边界优先于旧的压缩；没有保留边界说明那次压缩已经覆盖了此前的全部消息。
@@ -781,5 +843,142 @@ mod tests {
         assert_eq!(messages[0].text(), "system");
         assert!(messages[1].text().contains("整理后的实时上下文"));
         assert!(!messages[1].text().contains("原始用户请求"));
+    }
+
+    #[test]
+    fn reasoning_boundary_strips_prior_reasoning_and_keeps_transcript_intact() {
+        let header = Entry::header(
+            "ses_reasoning_boundary".into(),
+            "/tmp".into(),
+            "p/m".into(),
+            SessionEngine::Standard,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            "reasoning".into(),
+            1,
+        );
+        let mut state = SessionState::new(header).unwrap();
+        let u1 = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::user_text("第一问"),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+                goal: None,
+            },
+            state.last_entry_id.clone(),
+            2,
+        );
+        state.apply_entry(u1);
+        let a1 = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        moc_llm::ContentPart::Reasoning(moc_llm::ReasoningBlock::Item(Box::new(
+                            serde_json::json!({
+                                "id": "rs_old",
+                                "type": "reasoning",
+                                "encrypted_content": "secret_old"
+                            })
+                            .into(),
+                        ))),
+                        moc_llm::ContentPart::Text("第一轮正文".into()),
+                    ]
+                    .into(),
+                },
+                tool: None,
+                finish_reason: None,
+                agent: None,
+                goal: None,
+            },
+            state.last_entry_id.clone(),
+            3,
+        );
+        state.apply_entry(a1);
+        let a_only_reasoning = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![moc_llm::ContentPart::Reasoning(
+                        moc_llm::ReasoningBlock::text("纯思考占位"),
+                    )]
+                    .into(),
+                },
+                tool: None,
+                finish_reason: None,
+                agent: None,
+                goal: None,
+            },
+            state.last_entry_id.clone(),
+            4,
+        );
+        state.apply_entry(a_only_reasoning);
+        assert!(has_unstripped_reasoning(&state));
+
+        let boundary = Entry::from_payload(
+            EntryPayload::ReasoningBoundary,
+            state.last_entry_id.clone(),
+            5,
+        );
+        state.apply_entry(boundary);
+        assert!(!has_unstripped_reasoning(&state));
+
+        let u2 = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::user_text("第二问"),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+                goal: None,
+            },
+            state.last_entry_id.clone(),
+            6,
+        );
+        state.apply_entry(u2);
+        let a2 = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        moc_llm::ContentPart::Reasoning(moc_llm::ReasoningBlock::Item(Box::new(
+                            serde_json::json!({
+                                "id": "rs_new",
+                                "type": "reasoning",
+                                "encrypted_content": "secret_new"
+                            })
+                            .into(),
+                        ))),
+                        moc_llm::ContentPart::Text("新渠道正文".into()),
+                    ]
+                    .into(),
+                },
+                tool: None,
+                finish_reason: None,
+                agent: None,
+                goal: None,
+            },
+            state.last_entry_id.clone(),
+            7,
+        );
+        state.apply_entry(a2);
+        assert!(has_unstripped_reasoning(&state));
+
+        let messages = model_messages(&state, None, None);
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].text(), "第一问");
+        assert_eq!(messages[1].text(), "第一轮正文");
+        assert!(messages[1].content.with_parts(|parts| parts
+            .iter()
+            .all(|part| !matches!(part, moc_llm::ContentPart::Reasoning(_)))));
+        assert_eq!(messages[2].text(), "第二问");
+        assert_eq!(messages[3].text(), "新渠道正文");
+        assert!(messages[3].content.with_parts(|parts| parts
+            .iter()
+            .any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_)))));
+        // 原始 transcript 不受影响，前端仍能展示旧思考块。
+        assert!(state.transcript[1].message.content.with_parts(|parts| parts
+            .iter()
+            .any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_)))));
     }
 }

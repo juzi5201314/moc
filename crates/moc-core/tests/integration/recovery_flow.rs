@@ -1377,3 +1377,103 @@ async fn compaction_failure_keeps_entries_appended_by_the_failed_method() {
     );
     h.close().await;
 }
+
+#[tokio::test]
+async fn thinking_signature_invalid_auto_strips_old_reasoning_and_retries() {
+    let upstream = MockServer::builder().start().await;
+    let first_stream = format!(
+        "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: {}\n\n",
+        json!({"type":"response.created","response":{"id":"resp_1","model":"gpt-test"}}),
+        json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "id": "rs_0e67891c",
+                "type": "reasoning",
+                "summary": [],
+                "encrypted_content": "gAAAAAB_old_channel_secret"
+            }
+        }),
+        json!({"type":"response.output_text.delta","output_index":1,"delta":"第一轮回答"}),
+        json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"message"}]}})
+    );
+    let second_stream = responses_stream("剥离旧思考后重试成功");
+    let turn = AtomicUsize::new(0);
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(move |request: &wiremock::Request| {
+            let step = turn.fetch_add(1, Ordering::SeqCst);
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let has_reasoning_item = body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"));
+            if step == 0 {
+                return ResponseTemplate::new(200)
+                    .set_body_raw(first_stream.clone(), "text/event-stream");
+            }
+            if has_reasoning_item {
+                return ResponseTemplate::new(400).set_body_json(json!({
+                    "error": {
+                        "message": "The encrypted content for item rs_0e67891c could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
+                        "code": "thinking_signature_invalid"
+                    }
+                }));
+            }
+            ResponseTemplate::new(200).set_body_raw(second_stream.clone(), "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+
+    let h = Harness::new(&upstream.uri(), "openai_responses", "[compaction]\nenabled=false").await;
+    let id = h.session(SessionEngine::Standard).await;
+
+    let first = h.prompt(&id, "第一轮").await;
+    assert_eq!(first.message.text(), "第一轮回答");
+
+    let second = h.prompt(&id, "切换渠道后继续").await;
+    assert_eq!(second.finish_reason, FinishReason::Stop);
+    assert_eq!(second.message.text(), "剥离旧思考后重试成功");
+
+    let requests = upstream.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3, "应发送：第1轮、第2轮400失败、第2轮剥离后重试");
+    let retry_body: Value = serde_json::from_slice(&requests[2].body).unwrap();
+    let retry_input = retry_body["input"].as_array().unwrap();
+    assert!(
+        !retry_input
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning")),
+        "原地重试请求不得再携带旧 reasoning 加密项：{retry_input:?}"
+    );
+    assert!(
+        retry_input
+            .iter()
+            .any(|item| item.to_string().contains("第一轮回答")),
+        "剥离思考后仍应保留旧助手正文"
+    );
+
+    assert!(
+        h.updates.lock().iter().any(|update| matches!(
+            update,
+            SessionUpdate::GuardNotice { message, terminal: false, .. }
+                if message.contains("thinking_signature_invalid")
+        )),
+        "应向前端发出非终止提示"
+    );
+
+    // 原始 transcript 中仍保留第一轮的加密思考块，供 UI 正常显示。
+    let loaded = h.load(&id).await;
+    assert!(
+        loaded.entries.iter().any(|entry| {
+            entry.message.role == Role::Assistant
+                && entry.message.content.with_parts(|parts| {
+                    parts
+                        .iter()
+                        .any(|part| matches!(part, moc_protocol::ContentPart::Reasoning(_)))
+                })
+        }),
+        "会话历史展示不应被破坏"
+    );
+    h.close().await;
+}

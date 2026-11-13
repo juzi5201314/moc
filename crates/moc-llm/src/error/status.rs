@@ -19,6 +19,12 @@ pub(super) fn explanation(status: Option<u16>, kind: ApiErrorKind) -> (&'static 
                 "输入历史或输出预留超过模型上下文限制；请压缩历史或调整输出上限。这与 HTTP 请求体字节上限不同。",
             );
         }
+        ApiErrorKind::ThinkingSignatureInvalid => {
+            return (
+                "思考签名验证失败",
+                "历史加密思考内容与当前上游渠道或密钥来源不一致；剥离旧思考块后重试，或切回原渠道。",
+            );
+        }
         ApiErrorKind::ContentFilter => {
             return (
                 "内容策略拒绝",

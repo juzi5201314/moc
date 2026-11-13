@@ -125,6 +125,7 @@ pub struct SessionState {
     /// 与 transcript 索引同口径的上下文边界；回放/重写时重建。
     pub(crate) context_start: usize,
     pub(crate) reset_start: usize,
+    pub(crate) reasoning_start: usize,
     pub(crate) compact_end: usize,
     pub(crate) has_reset: bool,
     pub prompt_sequence: u64,
@@ -241,6 +242,7 @@ impl SessionState {
             first_kept_id: None,
             context_start: 0,
             reset_start: 0,
+            reasoning_start: 0,
             compact_end: 0,
             has_reset: false,
             clm_context: None,
@@ -378,6 +380,7 @@ impl SessionState {
                 self.has_reset = true;
                 self.reset_start = self.transcript.len();
                 self.context_start = self.reset_start;
+                self.reasoning_start = self.reset_start;
                 self.ptc_state.clear();
                 self.ptc_state_bytes = 0;
                 self.summary = None;
@@ -389,6 +392,9 @@ impl SessionState {
                 self.usage_at = 0;
                 // 历史被重置，旧提醒不再生效。
                 self.reminder_digests.clear();
+            }
+            Entry::ReasoningBoundary { .. } => {
+                self.reasoning_start = self.transcript.len();
             }
             Entry::ClmContext { content, .. } => {
                 self.clm_context = Some(content.clone());

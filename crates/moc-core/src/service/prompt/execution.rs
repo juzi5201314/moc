@@ -204,6 +204,7 @@ pub(super) async fn run_prompt_locked(
     let mut length_continues = 0usize;
     let mut yield_reminders = 0usize;
     let mut stream_overflows = 0usize;
+    let mut stream_signature_recoveries = 0usize;
     let mut cycle_redirect = None;
     // 思维链重复时先纠偏再重试；只有反复命中才按循环终止。
     let mut thinking_redirect = None;
@@ -300,7 +301,7 @@ pub(super) async fn run_prompt_locked(
                     let state = record.state.lock().await;
                     turn_inputs(&state, &system.messages, &model, &tools_available)
                 };
-                let context_tokens = inputs.context_tokens;
+                let mut context_tokens = inputs.context_tokens;
                 // 预火只改变 grok_build 压缩的输入来源；触发条件在函数内部判断。
                 compact::grok_build::prefire::maybe_prefire(
                     &inner,
@@ -373,6 +374,7 @@ pub(super) async fn run_prompt_locked(
                     },
                 );
                 let mut overflow_attempts = 0;
+                let mut signature_recoveries = 0usize;
                 // 请求耗时过长只发一条警告，生成阶段不设硬性时限。
                 let request_warning = RequestWarning::spawn(
                     &update,
@@ -504,6 +506,7 @@ pub(super) async fn run_prompt_locked(
                                 let state = record.state.lock().await;
                                 turn_inputs(&state, &system.messages, &model, &tools_available)
                             };
+                            context_tokens = inputs.context_tokens;
                             request = build_request(
                                 &model,
                                 &project_config,
@@ -517,6 +520,38 @@ pub(super) async fn run_prompt_locked(
                             );
                         }
                         Err(error) => {
+                            if signature_recoveries < 1
+                                && error.api_error().is_some_and(|api| {
+                                    api.kind == moc_llm::ApiErrorKind::ThinkingSignatureInvalid
+                                })
+                                && try_strip_old_reasoning(
+                                    &inner,
+                                    &update,
+                                    &record,
+                                    &params.session_id,
+                                    &prompt_id,
+                                )
+                                .await?
+                            {
+                                signature_recoveries += 1;
+                                inputs = {
+                                    let state = record.state.lock().await;
+                                    turn_inputs(&state, &system.messages, &model, &tools_available)
+                                };
+                                context_tokens = inputs.context_tokens;
+                                request = build_request(
+                                    &model,
+                                    &project_config,
+                                    std::mem::take(&mut inputs.messages),
+                                    tools_available.clone(),
+                                    &params.session_id,
+                                    CacheAnchors {
+                                        instruction_static: &system.static_prefix,
+                                        trailing_reminders: 0,
+                                    },
+                                );
+                                continue;
+                            }
                             crate::service::plugin_events::after_model_call(
                                 &plugins,
                                 &plugin_context,
@@ -551,17 +586,17 @@ pub(super) async fn run_prompt_locked(
                     .map_err(protocol_to_rpc)?;
                 let mut interrupted = false;
                 let mut connection_error = None;
-                let response = loop {
+                let response: Result<_, StreamRecovery> = loop {
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled() => {
                             interrupted = true;
-                            break Some(if guard.violation().is_some() { stream.discard(guard.reason()) } else { stream.interrupt() });
+                            break Ok(if guard.violation().is_some() { stream.discard(guard.reason()) } else { stream.interrupt() });
                         }
                         event = stream.next_event() => {
                             if guard.violation().is_some() {
                                 interrupted = true;
-                                break Some(stream.discard(guard.reason()));
+                                break Ok(stream.discard(guard.reason()));
                             }
                             match event {
                                 Some(Ok(event)) => {
@@ -574,7 +609,7 @@ pub(super) async fn run_prompt_locked(
                                     if let Err(error) = forward_event(&update, &params.session_id, &prompt_id, event).await {
                                         interrupted = true;
                                         connection_error = Some(protocol_to_rpc(error));
-                                        break Some(stream.interrupt());
+                                        break Ok(stream.interrupt());
                                     }
                                 }
                                 Some(Err(moc_llm::LlmError::Guard(violation)))
@@ -591,12 +626,21 @@ pub(super) async fn run_prompt_locked(
                                 Some(Err(moc_llm::LlmError::Guard(violation))) => {
                                     guard.stop(violation);
                                     interrupted = true;
-                                    break Some(stream.discard(guard.reason()));
+                                    break Ok(stream.discard(guard.reason()));
                                 }
                                 Some(Err(error)) if error.api_error().is_some_and(|api|api.kind==moc_llm::ApiErrorKind::ContextLength)
                                     && project_config.compaction.enabled && stream_overflows < 2 => {
                                     let _ = stream.interrupt();
-                                    break None;
+                                    break Err(StreamRecovery::Overflow);
+                                }
+                                Some(Err(error))
+                                    if error.api_error().is_some_and(|api| {
+                                        api.kind == moc_llm::ApiErrorKind::ThinkingSignatureInvalid
+                                    }) && first_token_ms.is_none()
+                                        && stream_signature_recoveries < 1 =>
+                                {
+                                    let _ = stream.interrupt();
+                                    break Err(StreamRecovery::StripReasoning(error));
                                 }
                                 Some(Err(error)) => {
                                     crate::service::plugin_events::after_model_call(
@@ -617,8 +661,16 @@ pub(super) async fn run_prompt_locked(
                                     return Err(RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()));
                                 }
                                 None => match stream.finish().await {
-                                    Ok(response) => break Some(response),
-                                    Err(error) if error.api_error().is_some_and(|api|api.kind==moc_llm::ApiErrorKind::ContextLength) && project_config.compaction.enabled && stream_overflows < 2 => break None,
+                                    Ok(response) => break Ok(response),
+                                    Err(error) if error.api_error().is_some_and(|api|api.kind==moc_llm::ApiErrorKind::ContextLength) && project_config.compaction.enabled && stream_overflows < 2 => break Err(StreamRecovery::Overflow),
+                                    Err(error)
+                                        if error.api_error().is_some_and(|api| {
+                                            api.kind == moc_llm::ApiErrorKind::ThinkingSignatureInvalid
+                                        }) && first_token_ms.is_none()
+                                            && stream_signature_recoveries < 1 =>
+                                    {
+                                        break Err(StreamRecovery::StripReasoning(error));
+                                    }
                                     Err(error) => {
                                         crate::service::plugin_events::after_model_call(
                                             &plugins,
@@ -644,28 +696,65 @@ pub(super) async fn run_prompt_locked(
                 };
                 drop(request_warning);
                 drop(request_permit);
-                let Some(response) = response else {
-                    stream_overflows += 1;
-                    let compact_report = compact::compact(
-                        &inner,
-                        ctx,
-                        &params.session_id,
-                        compact::CompactReason::Overflow,
-                        None,
-                        None,
-                        None,
-                    )
-                    .await
-                    .map_err(to_rpc)?;
-                    if !compact_report.created_headroom {
-                        final_reason = FinishReason::Length;
-                        break 'turns;
+                let response = match response {
+                    Ok(response) => response,
+                    Err(StreamRecovery::Overflow) => {
+                        stream_overflows += 1;
+                        let compact_report = compact::compact(
+                            &inner,
+                            ctx,
+                            &params.session_id,
+                            compact::CompactReason::Overflow,
+                            None,
+                            None,
+                            None,
+                        )
+                        .await
+                        .map_err(to_rpc)?;
+                        if !compact_report.created_headroom {
+                            final_reason = FinishReason::Length;
+                            break 'turns;
+                        }
+                        if !project_config.compaction.auto_continue {
+                            final_reason = FinishReason::Length;
+                            break 'turns;
+                        }
+                        continue 'turns;
                     }
-                    if !project_config.compaction.auto_continue {
-                        final_reason = FinishReason::Length;
-                        break 'turns;
+                    Err(StreamRecovery::StripReasoning(error)) => {
+                        stream_signature_recoveries += 1;
+                        if try_strip_old_reasoning(
+                            &inner,
+                            &update,
+                            &record,
+                            &params.session_id,
+                            &prompt_id,
+                        )
+                        .await?
+                        {
+                            continue 'turns;
+                        }
+                        crate::service::plugin_events::after_model_call(
+                            &plugins,
+                            &plugin_context,
+                            &prompt_id,
+                            attempt,
+                            None,
+                            None,
+                            first_token_ms,
+                            u64::try_from(request_started.elapsed().as_millis())
+                                .unwrap_or(u64::MAX),
+                            &[],
+                            Some(&error.to_string()),
+                        )
+                        .await;
+                        emit_fatal(&update, &params.session_id, &prompt_id, &error.to_string())
+                            .await?;
+                        return Err(RpcError::new(
+                            RpcErrorCode::InternalError.code(),
+                            error.to_string(),
+                        ));
                     }
-                    continue 'turns;
                 };
                 final_reason = if interrupted {
                     FinishReason::Cancelled
@@ -943,4 +1032,47 @@ pub(super) async fn run_prompt_locked(
         finish_reason: final_reason,
         usage,
     })
+}
+
+enum StreamRecovery {
+    Overflow,
+    StripReasoning(moc_llm::LlmError),
+}
+
+async fn try_strip_old_reasoning(
+    inner: &Arc<CoreInner>,
+    update: &moc_protocol::UpdateSink,
+    record: &Arc<crate::session::SessionRecord>,
+    session_id: &str,
+    prompt_id: &str,
+) -> Result<bool, RpcError> {
+    let can_strip = {
+        let state = record.state.lock().await;
+        compact::replay::has_unstripped_reasoning(&state)
+    };
+    if !can_strip {
+        return Ok(false);
+    }
+    inner
+        .sessions
+        .append(
+            session_id,
+            crate::session::entries::EntryPayload::ReasoningBoundary,
+        )
+        .await
+        .map_err(to_rpc)?;
+    update
+        .emit(
+            session_id.to_owned(),
+            SessionUpdate::GuardNotice {
+                prompt_id: prompt_id.to_owned(),
+                message:
+                    "上游拒绝历史加密思考内容（thinking_signature_invalid），已自动剥离旧思考块并原地重试"
+                        .into(),
+                terminal: false,
+            },
+        )
+        .await
+        .map_err(protocol_to_rpc)?;
+    Ok(true)
 }

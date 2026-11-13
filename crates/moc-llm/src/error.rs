@@ -280,6 +280,8 @@ pub enum ApiErrorKind {
     QuotaExceeded,
     /// 上下文超限（400/422 + 相关关键词）。
     ContextLength,
+    /// 历史加密思考内容或签名与当前上游渠道不匹配（如 `thinking_signature_invalid`）。
+    ThinkingSignatureInvalid,
     /// 内容被安全策略拦截。
     ContentFilter,
     /// 请求参数非法（400/422）。
@@ -341,6 +343,7 @@ impl ApiErrorKind {
             ApiErrorKind::RateLimit => "RateLimit",
             ApiErrorKind::QuotaExceeded => "QuotaExceeded",
             ApiErrorKind::ContextLength => "ContextLength",
+            ApiErrorKind::ThinkingSignatureInvalid => "ThinkingSignatureInvalid",
             ApiErrorKind::ContentFilter => "ContentFilter",
             ApiErrorKind::InvalidRequest => "InvalidRequest",
             ApiErrorKind::NotFound => "NotFound",
@@ -390,11 +393,33 @@ impl ApiErrorKind {
         if CONTEXT.iter().any(|needle| haystack.contains(needle)) {
             return ApiErrorKind::ContextLength;
         }
+        if is_thinking_signature_invalid(&haystack) {
+            return ApiErrorKind::ThinkingSignatureInvalid;
+        }
         if FILTER.iter().any(|needle| haystack.contains(needle)) {
             return ApiErrorKind::ContentFilter;
         }
         self
     }
+}
+
+fn is_thinking_signature_invalid(haystack: &str) -> bool {
+    if haystack.contains("thinking_signature_invalid")
+        || haystack.contains("encrypted content could not be decrypted")
+    {
+        return true;
+    }
+    if haystack.contains("encrypted content") && haystack.contains("could not be verified") {
+        return true;
+    }
+    if (haystack.contains("encrypted_content") || haystack.contains("reasoning.encrypted_content"))
+        && (haystack.contains("could not be verified")
+            || haystack.contains("could not be decrypted")
+            || haystack.contains("invalid"))
+    {
+        return true;
+    }
+    haystack.contains("invalid") && haystack.contains("signature") && haystack.contains("thinking")
 }
 
 impl fmt::Display for ApiErrorKind {
@@ -453,6 +478,7 @@ mod tests {
             ApiErrorKind::Billing,
             ApiErrorKind::QuotaExceeded,
             ApiErrorKind::ContextLength,
+            ApiErrorKind::ThinkingSignatureInvalid,
             ApiErrorKind::ContentFilter,
             ApiErrorKind::InvalidRequest,
             ApiErrorKind::NotFound,
@@ -492,6 +518,20 @@ mod tests {
         assert_eq!(
             ApiErrorKind::Unknown.refine(None, "enforced_spend_limit_reached"),
             ApiErrorKind::QuotaExceeded
+        );
+        assert_eq!(
+            ApiErrorKind::InvalidRequest.refine(
+                Some("thinking_signature_invalid"),
+                "The encrypted content for item rs_1 could not be verified. Reason: Encrypted content could not be decrypted or parsed."
+            ),
+            ApiErrorKind::ThinkingSignatureInvalid
+        );
+        assert_eq!(
+            ApiErrorKind::InvalidRequest.refine(
+                Some("invalid_request_error"),
+                "Invalid `signature` in `thinking` block"
+            ),
+            ApiErrorKind::ThinkingSignatureInvalid
         );
         assert_eq!(
             ApiErrorKind::InvalidRequest.refine(Some("bad_param"), "温度超范围"),
