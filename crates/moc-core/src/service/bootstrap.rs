@@ -259,6 +259,7 @@ impl Core {
         self.inner.runtimes.lock().await.clear();
         // 丢掉宿主句柄：插件线程收到退出信号后自己走 deactivate 并释放 Runtime。
         self.inner.plugin_hosts.lock().await.clear();
+        self.inner.sessions.clear_history_views();
     }
 
     /// 返回配置中的模型列表，供 CLI 展示与诊断。

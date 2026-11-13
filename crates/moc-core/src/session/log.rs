@@ -49,21 +49,42 @@ pub(crate) fn format(path: &Path) -> Format {
     }
 }
 
+/// 严格读取：回调失败或坏帧立即终止，调用方不得采纳失败读取的结果。
 pub(crate) fn for_each_line(
     path: &Path,
-    policy: Policy,
     on_line: &mut dyn FnMut(&[u8]) -> Result<(), CoreError>,
 ) -> Result<(), CoreError> {
+    visit_lines(path, Policy::Fail, &mut StrictLines(on_line))
+}
+
+/// 跳过坏帧的消费者只暂存本帧的结果；校验通过后提交，失败时丢弃。
+pub(crate) trait LineVisitor {
+    fn line(&mut self, line: &[u8]) -> Result<(), CoreError>;
+    fn finish_frame(&mut self, valid: bool);
+}
+
+struct StrictLines<'reader>(&'reader mut dyn FnMut(&[u8]) -> Result<(), CoreError>);
+
+impl LineVisitor for StrictLines<'_> {
+    fn line(&mut self, line: &[u8]) -> Result<(), CoreError> {
+        (self.0)(line)
+    }
+
+    fn finish_frame(&mut self, _valid: bool) {}
+}
+
+pub(crate) fn visit_lines(
+    path: &Path,
+    policy: Policy,
+    visitor: &mut dyn LineVisitor,
+) -> Result<(), CoreError> {
     match format(path) {
-        Format::Plain => for_each_plain_line(path, on_line),
-        Format::Zstd => for_each_zstd_line(path, policy, on_line),
+        Format::Plain => for_each_plain_line(path, visitor),
+        Format::Zstd => for_each_zstd_line(path, policy, visitor),
     }
 }
 
-fn for_each_plain_line(
-    path: &Path,
-    on_line: &mut dyn FnMut(&[u8]) -> Result<(), CoreError>,
-) -> Result<(), CoreError> {
+fn for_each_plain_line(path: &Path, visitor: &mut dyn LineVisitor) -> Result<(), CoreError> {
     let file = File::open(path)?;
     let mut reader = BufReader::with_capacity(READ_BUFFER, file);
     let mut line = Vec::new();
@@ -80,14 +101,15 @@ fn for_each_plain_line(
         if line.last() == Some(&b'\r') {
             line.pop();
         }
-        on_line(&line)?;
+        visitor.line(&line)?;
+        visitor.finish_frame(true);
     }
 }
 
 fn for_each_zstd_line(
     path: &Path,
     policy: Policy,
-    on_line: &mut dyn FnMut(&[u8]) -> Result<(), CoreError>,
+    visitor: &mut dyn LineVisitor,
 ) -> Result<(), CoreError> {
     let scan = scan_zstd(path)?;
     if scan.frames.is_empty() {
@@ -97,7 +119,16 @@ fn for_each_zstd_line(
     let mut context = zstd::zstd_safe::DCtx::create();
     let mut line = Vec::new();
     for (index, frame) in scan.frames.iter().enumerate() {
-        match decode_frame(&mut file, frame, &mut context, &mut line, path, on_line) {
+        let result = decode_frame(
+            &mut file,
+            frame,
+            &mut context,
+            &mut line,
+            path,
+            &mut |line| visitor.line(line),
+        );
+        visitor.finish_frame(result.is_ok());
+        match result {
             Ok(()) => {}
             // 回调自己的错误（比如 header 解析失败）不能被当成坏帧吞掉。
             Err(failure) if failure.handler => return Err(failure.error),
@@ -345,7 +376,7 @@ pub(crate) fn truncate_torn_tail(path: &Path) -> Result<bool, CoreError> {
 /// `history://transcript` 对外的路径：明文直接给出源文件，压缩会话给出解码镜像。
 pub(crate) fn history_view_path(paths: &SessionPaths) -> PathBuf {
     if paths.compressed() {
-        paths.sidecar.join("history").join("transcript.jsonl")
+        paths.history_cache_dir().join("transcript.jsonl")
     } else {
         paths.transcript.clone()
     }
@@ -383,9 +414,7 @@ pub(crate) fn refresh_history_view(paths: &SessionPaths) -> Result<bool, CoreErr
         fs::set_permissions(&mirror, permissions)?;
         return Ok(true);
     }
-    if let Some(parent) = mirror.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    paths.ensure_history_cache()?;
     let temp = mirror.with_extension(format!("jsonl.{}.tmp", crate::ids::entry_id()));
     let result = (|| -> Result<(), CoreError> {
         let mut options = OpenOptions::new();
@@ -398,7 +427,7 @@ pub(crate) fn refresh_history_view(paths: &SessionPaths) -> Result<bool, CoreErr
         let out = options.open(&temp)?;
         out.set_permissions(permissions)?;
         let mut out = BufWriter::with_capacity(READ_BUFFER, out);
-        for_each_line(source, Policy::Fail, &mut |line| {
+        for_each_line(source, &mut |line| {
             out.write_all(line)?;
             out.write_all(b"\n")?;
             Ok(())
@@ -445,12 +474,29 @@ mod tests {
     }
 
     fn collect(path: &Path, policy: Policy) -> Result<Vec<String>, CoreError> {
-        let mut lines = Vec::new();
-        for_each_line(path, policy, &mut |line| {
-            lines.push(String::from_utf8(line.to_vec()).expect("测试行是 UTF-8"));
-            Ok(())
-        })?;
-        Ok(lines)
+        #[derive(Default)]
+        struct Lines {
+            committed: Vec<String>,
+            pending: Vec<String>,
+        }
+        impl LineVisitor for Lines {
+            fn line(&mut self, line: &[u8]) -> Result<(), CoreError> {
+                self.pending
+                    .push(String::from_utf8(line.to_vec()).expect("测试行是 UTF-8"));
+                Ok(())
+            }
+
+            fn finish_frame(&mut self, valid: bool) {
+                if valid {
+                    self.committed.append(&mut self.pending);
+                } else {
+                    self.pending.clear();
+                }
+            }
+        }
+        let mut lines = Lines::default();
+        visit_lines(path, policy, &mut lines)?;
+        Ok(lines.committed)
     }
 
     #[test]
@@ -517,10 +563,10 @@ mod tests {
     #[test]
     fn history_mirror_refreshes_when_the_compressed_source_changes() {
         let directory = tempfile::tempdir().expect("临时目录");
-        let paths = SessionPaths {
-            transcript: directory.path().join("1_ses_1.jsonl.zst"),
-            sidecar: directory.path().join("ses_1"),
-        };
+        let paths = SessionPaths::new(
+            directory.path().join("1_ses_1.jsonl.zst"),
+            directory.path().join("ses_1"),
+        );
         assert!(
             !refresh_history_view(&paths).unwrap(),
             "源不存在时不生成镜像"
@@ -552,10 +598,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempfile::tempdir().expect("临时目录");
-        let paths = SessionPaths {
-            transcript: directory.path().join("1_ses_1.jsonl.zst"),
-            sidecar: directory.path().join("ses_1"),
-        };
+        let paths = SessionPaths::new(
+            directory.path().join("1_ses_1.jsonl.zst"),
+            directory.path().join("ses_1"),
+        );
         fs::write(&paths.transcript, frame("{\"secret\":1}\n")).expect("写入源");
         fs::set_permissions(&paths.transcript, fs::Permissions::from_mode(0o600))
             .expect("限制源权限");
@@ -576,12 +622,39 @@ mod tests {
     }
 
     #[test]
+    fn history_cache_clones_share_ownership_but_independent_readers_do_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("session.jsonl.zst");
+        let sidecar = directory.path().join("session");
+        fs::write(&source, frame("{\"secret\":1}\n")).unwrap();
+        let first = SessionPaths::new(source.clone(), sidecar.clone());
+        let clone = first.clone();
+        let second = SessionPaths::new(source.clone(), sidecar);
+        refresh_history_view(&first).unwrap();
+        refresh_history_view(&second).unwrap();
+        let first_mirror = history_view_path(&first);
+        let second_mirror = history_view_path(&second);
+
+        drop(first);
+        assert!(first_mirror.exists(), "克隆仍持有缓存");
+        drop(clone);
+        assert!(!first_mirror.exists(), "最后一个持有者释放明文缓存");
+        assert_eq!(
+            fs::read_to_string(&second_mirror).unwrap(),
+            "{\"secret\":1}\n"
+        );
+        drop(second);
+        assert!(!second_mirror.exists());
+        assert!(source.exists(), "缓存清理不能删除压缩源");
+    }
+
+    #[test]
     fn plaintext_sessions_need_no_mirror() {
         let directory = tempfile::tempdir().expect("临时目录");
-        let paths = SessionPaths {
-            transcript: directory.path().join("1_ses_1.jsonl"),
-            sidecar: directory.path().join("ses_1"),
-        };
+        let paths = SessionPaths::new(
+            directory.path().join("1_ses_1.jsonl"),
+            directory.path().join("ses_1"),
+        );
         assert_eq!(history_view_path(&paths), paths.transcript);
         assert!(!refresh_history_view(&paths).unwrap());
         fs::write(&paths.transcript, "{\"a\":1}\n").expect("写入明文");

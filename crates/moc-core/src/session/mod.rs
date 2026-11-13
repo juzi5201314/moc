@@ -2,6 +2,7 @@
 
 mod archive;
 pub mod entries;
+mod history_cache;
 pub mod lock;
 pub(crate) mod log;
 pub mod maintenance;
@@ -155,6 +156,13 @@ impl SessionTable {
             records: RwLock::new(HashMap::new()),
             loading: parking_lot::Mutex::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn clear_history_views(&self) {
+        for record in self.records.read().values() {
+            record.paths.clear_history_cache();
+        }
+        self.store.clear_history_views();
     }
 }
 

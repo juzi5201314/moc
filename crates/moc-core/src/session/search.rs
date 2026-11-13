@@ -7,7 +7,7 @@ use std::path::Path;
 use moc_protocol::methods::{SessionSearchHit, SessionSearchMatch};
 
 use super::SessionTable;
-use super::log::{self, Policy};
+use super::log::{self, LineVisitor, Policy};
 use crate::error::CoreError;
 
 /// 单个会话返回的命中上限：取时间最新的几条。
@@ -88,22 +88,49 @@ fn scan(path: &Path, needle: &str) -> Vec<SessionSearchMatch> {
     // 预筛的前提：搜索词不含会被 JSON 转义的字符（引号、反斜杠、控制字符），
     // 否则命中行的原始字节里没有它的逐字字节，只能逐行解析。
     let prefilter = !needle.chars().any(|c| c < ' ' || c == '"' || c == '\\');
-    let mut matches = Vec::new();
-    let result = log::for_each_line(path, Policy::SkipFrame, &mut |line| {
-        if prefilter && !raw_contains(line, needle) {
-            return Ok(());
-        }
-        collect(line, needle, &mut matches);
-        Ok(())
-    });
-    if let Err(error) = result {
+    let mut visitor = Search {
+        needle,
+        prefilter,
+        committed: Vec::new(),
+        pending: Vec::new(),
+    };
+    if let Err(error) = log::visit_lines(path, Policy::SkipFrame, &mut visitor) {
         tracing::warn!(path = %path.display(), %error, "session/search 跳过无法完整读取的 transcript");
     }
+    visitor.committed.reverse();
+    visitor.committed
+}
+
+struct Search<'query> {
+    needle: &'query str,
+    prefilter: bool,
+    committed: Vec<SessionSearchMatch>,
+    pending: Vec<SessionSearchMatch>,
+}
+
+impl LineVisitor for Search<'_> {
+    fn line(&mut self, line: &[u8]) -> Result<(), CoreError> {
+        if !self.prefilter || raw_contains(line, self.needle) {
+            collect(line, self.needle, &mut self.pending);
+            keep_latest(&mut self.pending);
+        }
+        Ok(())
+    }
+
+    fn finish_frame(&mut self, valid: bool) {
+        if valid {
+            self.committed.append(&mut self.pending);
+            keep_latest(&mut self.committed);
+        } else {
+            self.pending.clear();
+        }
+    }
+}
+
+fn keep_latest(matches: &mut Vec<SessionSearchMatch>) {
     if matches.len() > MATCHES_PER_SESSION {
         matches.drain(..matches.len() - MATCHES_PER_SESSION);
     }
-    matches.reverse();
-    matches
 }
 
 /// 原始行的小写预筛：needle 已小写，两边一致折叠后命中行必然包含它。
@@ -267,5 +294,25 @@ mod tests {
         assert_eq!(out.matches('a').count(), SNIPPET_RADIUS);
         assert_eq!(out.matches('b').count(), SNIPPET_RADIUS);
         assert!(out.contains("foo"));
+    }
+
+    #[test]
+    fn corrupt_multiline_frames_do_not_contribute_search_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.jsonl.zst");
+        let first = format!("{}\n", line("message", "User", "prefix foo"));
+        let bad = format!("{}\n", line("message", "Assistant", "corrupt foo")).repeat(256);
+        let last = format!("{}\n", line("message", "Assistant", "suffix foo"));
+        let mut bytes = log::compress_frame(first.as_bytes()).unwrap();
+        let mut frame = log::compress_frame(bad.as_bytes()).unwrap();
+        *frame.last_mut().unwrap() ^= 0xff;
+        bytes.extend(frame);
+        bytes.extend(log::compress_frame(last.as_bytes()).unwrap());
+        std::fs::write(&path, bytes).unwrap();
+
+        let matches = scan(&path, "foo");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].snippet, "suffix foo");
+        assert_eq!(matches[1].snippet, "prefix foo");
     }
 }

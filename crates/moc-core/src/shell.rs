@@ -292,7 +292,7 @@ fn is_executable(path: &Path) -> bool {
 }
 
 #[cfg(unix)]
-fn find_in_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+pub(crate) fn find_in_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
     let path = path?;
     std::env::split_paths(path)
         .map(|directory| directory.join(name))

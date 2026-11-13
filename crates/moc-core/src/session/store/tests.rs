@@ -202,6 +202,89 @@ async fn list_skips_corrupted_records_without_failing_the_whole_page() {
     assert!(listed.iter().any(|info| info.id == "ses_healthy0001"));
 }
 
+#[tokio::test]
+async fn listing_discards_all_metadata_from_a_corrupt_multiline_frame() {
+    use super::super::entries::EntryPayload;
+
+    let directory = tempfile::tempdir().expect("临时目录");
+    let store = SessionStore::new(directory.path());
+    let paths = store.paths_for_compressed(Path::new("/tmp/project"), "ses_badframe001", 1);
+    let header = Entry::header(
+        "ses_badframe001".into(),
+        "/tmp/project".into(),
+        "p/old".into(),
+        SessionEngine::Standard,
+        SessionPermission::Full,
+        SessionOrigin::root(),
+        "已提交标题".into(),
+        1,
+    );
+    let file = SessionFile::create_with_header(&paths.transcript, &header)
+        .await
+        .unwrap();
+    let message = Entry::from_payload(
+        EntryPayload::Message {
+            message: moc_llm::Message::user_text("已提交消息"),
+            tool: None,
+            finish_reason: None,
+            agent: None,
+            goal: None,
+        },
+        header.id().into(),
+        2,
+    );
+    file.append(&message, None).await.unwrap();
+    let mut parent = message.id().to_owned();
+    let mut entries = Vec::new();
+    for index in 0..256 {
+        let entry = Entry::from_payload(
+            EntryPayload::TitleChange {
+                title: format!("不应采纳-{index}-{}", "x".repeat(128)),
+            },
+            parent,
+            3 + index,
+        );
+        parent = entry.id().to_owned();
+        entries.push(entry);
+    }
+    let mut bad_frame = log::encode_zstd_entries(&entries).unwrap();
+    *bad_frame.last_mut().unwrap() ^= 0xff;
+    let mut bytes = std::fs::read(&paths.transcript).unwrap();
+    bytes.extend(bad_frame);
+    std::fs::write(&paths.transcript, bytes).unwrap();
+    file.append(
+        &Entry::from_payload(
+            EntryPayload::ModelChange {
+                model: "p/new".into(),
+            },
+            parent,
+            500,
+        ),
+        None,
+    )
+    .await
+    .unwrap();
+
+    // 旧进程可能已经把坏帧投影存入 v2；日志版本不变时也必须重新校验。
+    let mut poisoned = header.session_info(None).unwrap();
+    poisoned.title = "旧缓存采纳了坏帧标题".into();
+    let revision =
+        crate::hashline::SnapshotId::from_metadata(&std::fs::metadata(&paths.transcript).unwrap());
+    let obsolete = Listings::from([(paths.transcript.clone(), (revision, Some(poisoned)))]);
+    write_listing_cache(&directory.path().join(".session-list-v2.json"), &obsolete).unwrap();
+
+    let listed = store.list().await.unwrap();
+    let info = listed
+        .iter()
+        .find(|info| info.id == "ses_badframe001")
+        .unwrap();
+    assert_eq!(info.title, "已提交标题");
+    assert_eq!(info.model, "p/new");
+    assert_eq!(info.updated_at_ms, 500);
+    assert!(info.engine_locked);
+    assert!(store.read_entries(&paths).await.is_err());
+}
+
 /// 只有 header 和簿记条目（换模型/权限/引擎等）的 transcript 是「空会话」，
 /// 不出现在列表里；追加消息后正常入列。
 #[tokio::test]

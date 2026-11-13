@@ -112,7 +112,7 @@ impl SessionTable {
             tokio::task::spawn_blocking(move || {
                 let mut referenced = HashSet::new();
                 for path in scan_paths {
-                    log::for_each_line(&path, log::Policy::Fail, &mut |line| {
+                    log::for_each_line(&path, &mut |line| {
                         for found in matcher.find_overlapping_iter(line) {
                             referenced.insert(references[found.pattern().as_usize()].clone());
                         }

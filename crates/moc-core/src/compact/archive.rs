@@ -139,10 +139,10 @@ mod tests {
     #[tokio::test]
     async fn writes_index_and_segment_for_visible_history() {
         let root = tempdir().unwrap();
-        let paths = SessionPaths {
-            transcript: root.path().join("transcript.jsonl"),
-            sidecar: root.path().join("sidecar"),
-        };
+        let paths = SessionPaths::new(
+            root.path().join("transcript.jsonl"),
+            root.path().join("sidecar"),
+        );
         let header = crate::session::entries::Entry::header(
             "ses_archive123".into(),
             "/tmp".into(),

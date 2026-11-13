@@ -17,11 +17,13 @@ mod builtin_policy;
 pub(crate) use builtin_policy::{check as prefer_builtin_check, render as render_prefer_builtin};
 mod deny;
 pub(crate) use deny::denied_rule;
+mod exit;
+pub(crate) use exit::ProcessExit;
 mod group;
 pub(crate) use super::job_log::JobLog;
 pub(crate) use group::ProcessGroup;
 mod process;
-pub(crate) use process::{Process, ProcessExit};
+pub(crate) use process::Process;
 pub(crate) mod syntax;
 pub(crate) mod urlfs;
 
@@ -290,7 +292,6 @@ impl Tool for BashTool {
                         ctx.permission,
                         ctx.config.sandbox.on_denied,
                         ctx.config.sandbox.allow_unsandboxed,
-                        limits,
                     );
                     if foreground.slots_full
                         && let ToolOutput::File { suffix, .. } = &mut outcome.content
@@ -394,7 +395,6 @@ pub(crate) async fn run_manual(
             moc_protocol::SessionPermission::Full,
             crate::config::OnDenied::Ask,
             true,
-            None,
         )),
         _ = cancel.cancelled() => {
             process.group.kill()?;
@@ -418,16 +418,11 @@ fn exit_outcome(
     permission: moc_protocol::SessionPermission,
     on_denied: crate::config::OnDenied,
     allow_unsandboxed: bool,
-    limits: Option<crate::limits::BashLimits>,
 ) -> ToolOutcome {
-    let mut suffix = render_exit(
-        result.code.unwrap_or(-1),
-        result.timed_out,
-        result.killed,
-        timeout,
-    );
+    let code = result.code();
+    let mut suffix = render_exit(code.unwrap_or(0), result.timed_out, result.killed, timeout);
     if result.sandbox_denied
-        && result.code != Some(0)
+        && code != Some(0)
         && permission != moc_protocol::SessionPermission::Full
     {
         suffix.push_str(&format!(
@@ -444,28 +439,17 @@ fn exit_outcome(
             );
         }
     }
-    if result.limits_failed {
-        suffix.push_str(
-            "\n\n[limits: the resource scope could not be created, so the command did not run; disable tools.bash.limits or check `systemd --user`]",
-        );
-    } else if result.code == Some(137)
-        && cfg!(unix)
-        && limits.is_some_and(|limits| limits.memory_max_bytes > 0)
-    {
-        suffix.push_str(
-            "\n\n[limits: killed by the memory cap; raise tools.bash.limits.memory_max_bytes or lower build parallelism]",
-        );
-    }
+    result.append_diagnostics(&mut suffix);
     let mut outcome = ToolOutcome::success(ToolOutput::File {
         path: output_path,
         suffix,
     });
-    outcome.is_error = result.timed_out || result.killed || result.code != Some(0);
+    outcome.is_error = result.timed_out || result.killed || code != Some(0);
     outcome.error_code = if result.timed_out {
         Some("E_TIMEOUT".into())
     } else if result.killed {
         Some("E_KILLED".into())
-    } else if result.code != Some(0) {
+    } else if code != Some(0) {
         Some("E_BASH_EXIT".into())
     } else {
         None

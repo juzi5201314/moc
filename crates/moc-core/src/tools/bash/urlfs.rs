@@ -186,22 +186,36 @@ use std::path::{Path, PathBuf};
 /// 创建或刷新 urlfs 目录并返回其根路径。用相对链接，会话目录整体搬走后链接仍然有效。
 #[cfg(unix)]
 fn ensure_farm(paths: &SessionPaths, skills: &SkillIndex) -> std::io::Result<PathBuf> {
-    let farm = paths.sidecar.join("urlfs");
+    let compressed = paths.compressed();
+    if compressed {
+        paths.ensure_history_cache()?;
+    }
+    let farm = paths.urlfs_root();
     let artifact = farm.join("artifact");
     let history = farm.join("history");
     let skill = farm.join("skill");
     fs::create_dir_all(&artifact)?;
     fs::create_dir_all(&history)?;
     fs::create_dir_all(&skill)?;
-    link(&artifact.join("jobs"), Path::new("../../jobs"))?;
-    link(&artifact.join("artifacts"), Path::new("../../artifacts"))?;
-    link(&farm.join("local"), Path::new("../plans"))?;
-    link(&history.join("compaction"), Path::new("../../compaction"))?;
-    if paths.compressed() {
+    let sidecar = if compressed { "../../../.." } else { "../.." };
+    link(&artifact.join("jobs"), &Path::new(sidecar).join("jobs"))?;
+    link(
+        &artifact.join("artifacts"),
+        &Path::new(sidecar).join("artifacts"),
+    )?;
+    link(
+        &farm.join("local"),
+        &Path::new(if compressed { "../../.." } else { ".." }).join("plans"),
+    )?;
+    link(
+        &history.join("compaction"),
+        &Path::new(sidecar).join("compaction"),
+    )?;
+    if compressed {
         // 解码必须留到授权后的执行阶段；这里只建立可供权限提示显示的链接。
         link(
             &history.join("transcript"),
-            Path::new("../../history/transcript.jsonl"),
+            Path::new("../../transcript.jsonl"),
         )?;
     } else {
         // transcript 在会话目录下、sidecar 之外，所以要往上多走一层。
@@ -376,7 +390,7 @@ fn direct_target(
 
 #[cfg(windows)]
 fn unsupported_path(paths: &SessionPaths, scheme: &str, remainder: &str) -> PathBuf {
-    paths.sidecar.join("urlfs").join(scheme).join(remainder)
+    paths.urlfs_root().join(scheme).join(remainder)
 }
 
 #[cfg(windows)]
@@ -394,10 +408,7 @@ mod tests {
     use super::*;
 
     fn paths(root: &Path) -> SessionPaths {
-        SessionPaths {
-            transcript: root.join("ses_1.jsonl"),
-            sidecar: root.join("ses_1"),
-        }
+        SessionPaths::new(root.join("ses_1.jsonl"), root.join("ses_1"))
     }
 
     #[test]
@@ -489,10 +500,7 @@ mod windows_tests {
     use std::path::{Path, PathBuf};
 
     fn paths(root: &Path) -> SessionPaths {
-        SessionPaths {
-            transcript: root.join("ses_1.jsonl"),
-            sidecar: root.join("ses_1"),
-        }
+        SessionPaths::new(root.join("ses_1.jsonl"), root.join("ses_1"))
     }
 
     /// canonicalize 在 Windows 上返回 `\\?\` 前缀，覆盖 skill base_dir 的形态。
@@ -658,10 +666,7 @@ mod windows_tests {
     fn prepare_for_quotes_uris_for_each_shell() {
         let root = tempfile::tempdir().expect("临时目录");
         let base = root.path().join("session dir");
-        let paths = SessionPaths {
-            transcript: base.join("ses_1.jsonl"),
-            sidecar: base.join("ses_1"),
-        };
+        let paths = SessionPaths::new(base.join("ses_1.jsonl"), base.join("ses_1"));
         fs::create_dir_all(paths.jobs()).expect("jobs");
         let skills = SkillIndex::empty();
 
@@ -705,10 +710,7 @@ mod windows_tests {
     fn active_shell_can_read_rewritten_uri() {
         let root = tempfile::tempdir().expect("临时目录");
         let base = canonical_session_base(root.path());
-        let paths = SessionPaths {
-            transcript: base.join("ses_1.jsonl"),
-            sidecar: base.join("ses_1"),
-        };
+        let paths = SessionPaths::new(base.join("ses_1.jsonl"), base.join("ses_1"));
         fs::create_dir_all(paths.jobs()).expect("jobs");
         fs::write(paths.jobs().join("job_1.log"), "urlfs-ok\n").expect("日志");
         let Some(shell) = crate::shell::detect() else {
@@ -740,10 +742,7 @@ mod windows_tests {
     fn every_available_shell_can_read_rewritten_uri() {
         let root = tempfile::tempdir().expect("临时目录");
         let base = canonical_session_base(root.path());
-        let paths = SessionPaths {
-            transcript: base.join("ses_1.jsonl"),
-            sidecar: base.join("ses_1"),
-        };
+        let paths = SessionPaths::new(base.join("ses_1.jsonl"), base.join("ses_1"));
         fs::create_dir_all(paths.jobs()).expect("jobs");
         fs::write(paths.jobs().join("job_1.log"), "urlfs-ok\n").expect("日志");
         let skills = SkillIndex::empty();

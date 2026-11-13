@@ -524,7 +524,7 @@ impl Default for WorkspaceConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct SessionDocument {
     pub dir: String,
-    /// 新建会话是否使用 zstd 压缩；默认为关闭。
+    /// 新建会话是否使用 zstd 压缩；默认开启，已有会话保持原格式。
     pub compress: bool,
     pub retention: RetentionConfig,
 }
@@ -533,7 +533,7 @@ impl Default for SessionDocument {
     fn default() -> Self {
         Self {
             dir: "~/.moc/sessions".into(),
-            compress: false,
+            compress: true,
             retention: RetentionConfig::default(),
         }
     }

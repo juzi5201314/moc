@@ -39,8 +39,7 @@ const WORKFLOW_TOOLS: &[&str] = &[
 /// 收集全部上游请求体（模型断言与零泄漏字节比对用）。
 type Captures = Arc<Mutex<Vec<Value>>>;
 
-/// sidecar 目录惰性创建：按 transcript 文件名（`*_<session>.jsonl`）定位所在
-/// 目录，再拼 `<dir>/<session>` 作为 sidecar。
+/// sidecar 目录惰性创建：兼容明文与压缩 transcript，拼出同级会话目录。
 fn session_sidecar(root: &std::path::Path, session: &str) -> Option<std::path::PathBuf> {
     for entry in std::fs::read_dir(root).ok()? {
         let path = entry.ok()?.path();
@@ -51,12 +50,20 @@ fn session_sidecar(root: &std::path::Path, session: &str) -> Option<std::path::P
         } else if path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.ends_with(&format!("_{session}.jsonl")))
+            .is_some_and(|name| transcript_name_matches(name, session))
         {
             return Some(path.parent()?.join(session));
         }
     }
     None
+}
+
+fn transcript_name_matches(name: &str, session: &str) -> bool {
+    name.strip_suffix(".zst")
+        .unwrap_or(name)
+        .strip_suffix(".jsonl")
+        .and_then(|stem| stem.strip_suffix(session))
+        .is_some_and(|prefix| prefix.ends_with('_'))
 }
 
 async fn mount_router(upstream: &MockServer, captured: Captures) {
@@ -1187,7 +1194,7 @@ async fn amend_imports_then_seeds_from_divergence() {
         .find(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(&format!("_{child_id}.jsonl")))
+                .is_some_and(|name| transcript_name_matches(name, &child_id))
         })
         .expect("子会话 transcript 文件");
     let child_bytes_before = std::fs::read(&child_transcript).unwrap();
@@ -1347,16 +1354,29 @@ async fn amend_imports_then_seeds_from_divergence() {
         .find(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(&format!("_{new_child_id}.jsonl")))
+                .is_some_and(|name| transcript_name_matches(name, &new_child_id))
         })
         .expect("新子会话 transcript");
-    let new_text = std::fs::read_to_string(&new_transcript).unwrap();
+    let paths = moc_core::session::store::SessionPaths::new(new_transcript, new_child_dir);
+    let entries = moc_core::session::store::SessionStore::new(harness.root.path().join("sessions"))
+        .read_entries(&paths)
+        .await
+        .unwrap();
+    let contains = |needle: &str| {
+        entries.iter().any(|entry| match entry {
+            moc_core::session::entries::Entry::Message { message, .. } => {
+                message.content.with_parts(|parts| {
+                    parts.iter().any(|part| {
+                        matches!(part, moc_llm::ContentPart::Text(text) if text.contains(needle))
+                    })
+                })
+            }
+            _ => false,
+        })
+    };
+    assert!(contains("step one"), "新子会话应含导入的 ask 前缀");
     assert!(
-        new_text.contains("step one"),
-        "新子会话应含导入的 ask 前缀（step one）"
-    );
-    assert!(
-        !new_text.contains("step two"),
+        !contains("step two"),
         "新子会话不应含被替换 ask 之后的分叉内容"
     );
     harness.close().await;

@@ -195,7 +195,7 @@ max_scan_entries = 100000
 
 [session]
 dir = "~/.moc/sessions"
-compress = false
+compress = true
 
 [session.retention]
 enabled = true

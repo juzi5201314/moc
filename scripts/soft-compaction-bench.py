@@ -1620,6 +1620,7 @@ def build_overlay(selector: str, keep_recent: int, max_output: int) -> str:
     """生成基准覆盖模板；写入每组配置前用该组方法名替换 `{method}`。"""
     provider, _, model = selector.partition("/")
     model = model.split(":")[0]
+    # 基准直接分析 JSONL，显式固定实验输出格式，不依赖产品的会话压缩默认值。
     text = (
         "[models.roles]\n"
         f'default = "{selector}"\n\n'
@@ -1627,6 +1628,7 @@ def build_overlay(selector: str, keep_recent: int, max_output: int) -> str:
         "[context_files]\nenabled = false\n\n"
         "[skills]\nenabled = false\n\n"
         "[web_search]\nenabled = false\n\n"
+        "[session]\ncompress = false\n\n"
         "[compaction]\n"
         "auto = false\n"
         "auto_continue = false\n"

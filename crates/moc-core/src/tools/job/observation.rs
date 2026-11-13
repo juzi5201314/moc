@@ -43,14 +43,12 @@ impl JobManager {
         id: &str,
         lines: usize,
     ) -> Result<(JobInfo, String, PathBuf), ToolError> {
-        let (info, log) = {
-            let jobs = self.jobs.lock();
-            let job = jobs
-                .get(id)
-                .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("unknown job `{id}`")))?;
-            (job.info(), job.log.clone())
-        };
-        let (mut text, elided) = log
+        let jobs = self.jobs.lock();
+        let job = jobs
+            .get(id)
+            .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("unknown job `{id}`")))?;
+        let (mut text, elided) = job
+            .log
             .read_tail(lines)
             .map_err(|error| ToolError::new("E_JOB_LOG", error.to_string()))?;
         if elided {
@@ -59,7 +57,8 @@ impl JobManager {
                 "[output_elided=true; the middle of the output was dropped]\n",
             );
         }
-        Ok((info, text, log.path().to_owned()))
+        text.push_str(&job.diagnostics);
+        Ok((job.info(), text, job.log.path().to_owned()))
     }
 
     /// 模型侧的 `job output`：与 `output` 相同，但把游标推进到展示文本的末尾，
@@ -84,6 +83,7 @@ impl JobManager {
                 "[output_elided=true; the middle of the output was dropped]\n",
             );
         }
+        text.push_str(&job.diagnostics);
         Ok((job.info(), text, job.log.path().to_owned()))
     }
 
@@ -158,7 +158,9 @@ impl JobManager {
                             Step::Pending(job.info())
                         } else {
                             job.read_cursor = next;
-                            Step::Done(job.info(), text, skipped, reason)
+                            let (mut text, omitted) = truncate_to_lines(text, tail_lines);
+                            text.push_str(&job.diagnostics);
+                            Step::Done(job.info(), text, skipped + omitted, reason)
                         }
                     }
                     None => Step::Pending(job.info()),
@@ -184,13 +186,12 @@ impl JobManager {
                     });
                 }
             };
-            let (text, omitted) = truncate_to_lines(text, tail_lines);
             return Ok(WaitOutcome {
                 info,
                 reason,
                 text,
                 log_path: log.path().to_owned(),
-                skipped_bytes: skipped + omitted,
+                skipped_bytes: skipped,
             });
         }
     }

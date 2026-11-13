@@ -4,7 +4,7 @@
 //! swap 才能把匿名页换出并继续推进，无 swap 时自动跳过，避免进程无限期停等。
 
 use std::ffi::OsString;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 use serde::Deserialize;
 use uuid::Uuid;
@@ -109,8 +109,8 @@ pub struct Support {
 }
 
 pub fn support() -> Support {
-    static SUPPORT: OnceLock<Support> = OnceLock::new();
-    *SUPPORT.get_or_init(detect)
+    static SUPPORT: LazyLock<Support> = LazyLock::new(detect);
+    *SUPPORT
 }
 
 /// 把命令包装成受限执行；不可用或没有可施加的属性时原样返回。
@@ -127,6 +127,7 @@ pub(crate) fn wrap(
     }
     #[cfg(target_os = "linux")]
     {
+        let runner = runner().expect("资源限制探测已成功");
         let mut wrapped: Vec<OsString> = vec![
             "--user".into(),
             "--scope".into(),
@@ -135,11 +136,14 @@ pub(crate) fn wrap(
             "--unit".into(),
             short_unit_id().into(),
         ];
+        if runner.expand_environment_option {
+            wrapped.push("--expand-environment=no".into());
+        }
         wrapped.extend(properties(&limits.effective()));
         wrapped.push("--".into());
         wrapped.push(program);
         wrapped.extend(args);
-        ("systemd-run".into(), wrapped)
+        (runner.program.as_os_str().to_owned(), wrapped)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -252,7 +256,7 @@ fn short_unit_id() -> String {
 #[cfg(target_os = "linux")]
 fn detect() -> Support {
     let swap = swap_present();
-    let available = probe();
+    let available = runner().is_some();
     if !available {
         tracing::warn!("bash 资源限制不可用：systemd user manager 探测失败，命令将在无限制下执行");
     }
@@ -277,22 +281,62 @@ fn detect() -> Support {
 }
 
 #[cfg(target_os = "linux")]
-fn probe() -> bool {
+struct Runner {
+    program: std::path::PathBuf,
+    expand_environment_option: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn runner() -> Option<&'static Runner> {
+    static RUNNER: LazyLock<Option<Runner>> = LazyLock::new(|| {
+        // 探测与执行绑定宿主 PATH 中同一个绝对路径，不再由工具 env.PATH 选启动器。
+        let program =
+            crate::shell::find_in_path("systemd-run", std::env::var_os("PATH").as_deref())?
+                .canonicalize()
+                .ok()?;
+        let version = std::process::Command::new(&program)
+            .arg("--version")
+            .output()
+            .ok()?;
+        if !version.status.success() {
+            return None;
+        }
+        let version = std::str::from_utf8(&version.stdout)
+            .ok()?
+            .split_whitespace()
+            .nth(1)?
+            .parse::<u32>()
+            .ok()?;
+        // 254 起支持此选项；更早的 scope 本来就不展开环境变量。
+        let runner = Runner {
+            program,
+            expand_environment_option: version >= 254,
+        };
+        probe(&runner).then_some(runner)
+    });
+    RUNNER.as_ref()
+}
+
+#[cfg(target_os = "linux")]
+fn probe(runner: &Runner) -> bool {
     use std::process::Stdio;
 
-    std::process::Command::new("systemd-run")
-        .args([
-            "--user",
-            "--scope",
-            "--quiet",
-            "--collect",
-            "-p",
-            "CPUQuota=100%",
-            "-p",
-            "MemoryMax=67108864",
-            "--",
-            "true",
-        ])
+    let mut command = std::process::Command::new(&runner.program);
+    command.args([
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "-p",
+        "CPUQuota=100%",
+        "-p",
+        "MemoryMax=67108864",
+    ]);
+    if runner.expand_environment_option {
+        command.arg("--expand-environment=no");
+    }
+    command
+        .args(["--", "/bin/true"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

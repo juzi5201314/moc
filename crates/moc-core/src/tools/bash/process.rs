@@ -1,6 +1,6 @@
 //! 管道和 PTY 进程共用的完成句柄。转为后台任务只转移所有权，不会重置 monitored 超时。
 
-use super::{BashArgs, JobLog, ProcessGroup, ToolError};
+use super::{BashArgs, JobLog, ProcessExit, ProcessGroup, ToolError};
 use crate::limits::BashLimits;
 use crate::sandbox::{SandboxPolicy, WrappedCommand, wrap_command};
 use futures_util::future::BoxFuture;
@@ -17,17 +17,6 @@ use tokio_util::sync::CancellationToken;
 /// 子进程退出后等管道读完的时限。超时就放弃读取并回收任务，免得逃出进程组的子孙进程
 /// 一直占着 stdout，导致并发名额无法释放。
 const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
-
-pub(crate) struct ProcessExit {
-    pub code: Option<i32>,
-    pub timed_out: bool,
-    /// 由 JobManager 置位：任务是被显式终止的（用户或模型），不是自己退出的。
-    pub killed: bool,
-    /// stderr 命中沙盒拒绝签名；仅作提示，不改变退出码。
-    pub sandbox_denied: bool,
-    /// 资源范围没能建立（命令实际在无限制下执行）；仅作提示。
-    pub limits_failed: bool,
-}
 
 pub(crate) struct Process {
     pub pid: Option<u32>,
@@ -172,13 +161,16 @@ impl Process {
             log.finish()
                 .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
             let tail = log.read_tail(80).map(|(text, _)| text).unwrap_or_default();
-            Ok(ProcessExit {
-                code: status.code(),
+            Ok(ProcessExit::pipe(
+                status,
                 timed_out,
-                killed: false,
-                sandbox_denied: crate::sandbox::denial_in(&tail),
-                limits_failed: crate::limits::failure_in(&tail),
-            })
+                &tail,
+                limits.is_some_and(|limits| {
+                    cfg!(target_os = "linux")
+                        && limits.memory_max_bytes > 0
+                        && crate::limits::support().available
+                }),
+            ))
         });
         Ok(Self {
             pid,
@@ -372,18 +364,20 @@ fn run_pty(
         .join()
         .map_err(|_| std::io::Error::other("PTY output thread exited unexpectedly"))??;
     let status = waited?;
-    let code = status.exit_code().min(i32::MAX as u32) as i32;
     let tail = tail_log
         .read_tail(80)
         .map(|(text, _)| text)
         .unwrap_or_default();
-    Ok(ProcessExit {
-        code: Some(if status.success() { code } else { code.max(1) }),
+    Ok(ProcessExit::pty(
+        status,
         timed_out,
-        killed: false,
-        sandbox_denied: crate::sandbox::denial_in(&tail),
-        limits_failed: crate::limits::failure_in(&tail),
-    })
+        &tail,
+        limits.is_some_and(|limits| {
+            cfg!(target_os = "linux")
+                && limits.memory_max_bytes > 0
+                && crate::limits::support().available
+        }),
+    ))
 }
 
 #[cfg(all(test, unix))]
@@ -467,7 +461,7 @@ mod unix_tests {
         .await
         .expect("启动 workspace shell");
         let result = process.completion.await.expect("等待 workspace shell");
-        assert_eq!(result.code, Some(0));
+        assert_eq!(result.code(), Some(0));
         assert_eq!(
             fs::read_to_string(directory.path().join("workspace-marker"))
                 .expect("读取 workspace marker"),
@@ -489,7 +483,7 @@ mod unix_tests {
         .await
         .expect("启动 external shell");
         let result = process.completion.await.expect("等待 external shell");
-        assert_ne!(result.code, Some(0));
+        assert_ne!(result.code(), Some(0));
         assert!(result.sandbox_denied);
         assert!(!external.exists(), "沙盒不能写入工作区外");
     }
@@ -533,7 +527,7 @@ mod unix_tests {
         .await
         .expect("启动 deny shell");
         let result = process.completion.await.expect("等待 deny shell");
-        assert_ne!(result.code, Some(0), "deny_write 必须让写入失败");
+        assert_ne!(result.code(), Some(0), "deny_write 必须让写入失败");
         assert_eq!(
             fs::read_to_string(&denied).expect("读取 denied"),
             "keep",
@@ -580,7 +574,7 @@ mod unix_tests {
         .await
         .expect("启动 deny dir shell");
         let result = process.completion.await.expect("等待 deny dir shell");
-        assert_ne!(result.code, Some(0), "deny_write 目录必须让写入失败");
+        assert_ne!(result.code(), Some(0), "deny_write 目录必须让写入失败");
         assert!(!denied.join("new-file").exists(), "deny 目录不能写丢文件");
     }
 
@@ -624,7 +618,7 @@ mod unix_tests {
         .await
         .expect("启动 deny read shell");
         let result = process.completion.await.expect("等待 deny read shell");
-        assert_eq!(result.code, Some(0), "deny_read 目录必须为空");
+        assert_eq!(result.code(), Some(0), "deny_read 目录必须为空");
     }
 
     #[tokio::test]
@@ -666,7 +660,7 @@ mod unix_tests {
         if host_exists {
             let _ = fs::remove_file(&host_path);
         }
-        assert_eq!(result.code, Some(0));
+        assert_eq!(result.code(), Some(0));
         assert!(!host_exists, "overlay 写入不能落到宿主 HOME");
     }
 
@@ -698,7 +692,7 @@ mod unix_tests {
         let result = process.completion.await.expect("等待 workspace-only shell");
         let host_marker_still_there = marker.exists();
         let _ = fs::remove_file(&marker);
-        assert_ne!(result.code, Some(0), "workspace-only 不能读宿主 HOME");
+        assert_ne!(result.code(), Some(0), "workspace-only 不能读宿主 HOME");
         assert!(host_marker_still_there, "宿主文件不能被沙盒删除或改写");
     }
 
@@ -720,7 +714,7 @@ mod unix_tests {
             .await
             .expect("占着 stdout 的子孙进程不能让任务永远无法回收")
             .expect("等待 shell");
-        assert_eq!(result.code, Some(0));
+        assert_eq!(result.code(), Some(0));
     }
 
     #[tokio::test]
@@ -746,7 +740,7 @@ mod unix_tests {
         .await
         .expect("启动 shell");
         let result = process.completion.await.expect("等待 shell");
-        assert_eq!(result.code, Some(0));
+        assert_eq!(result.code(), Some(0));
         assert!(!marker.exists(), "BASH_ENV 不应被执行");
     }
 
@@ -776,7 +770,64 @@ mod unix_tests {
         .expect("启动受限 shell");
         let result = process.completion.await.expect("等待受限 shell");
         let (text, _) = log.read_tail(10).expect("读取输出");
-        assert_eq!(result.code, Some(0), "log: {text}");
+        assert_eq!(result.code(), Some(0), "log: {text}");
         assert!(text.contains("CORE_COUNT=1"), "实际输出：{text}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn limited_shell_preserves_variables_and_ignores_payload_launcher_paths() {
+        use std::collections::BTreeMap;
+        use std::os::unix::fs::PermissionsExt;
+
+        if !crate::limits::support().available {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("fake-launcher-ran");
+        let fake = directory.path().join("systemd-run");
+        fs::write(
+            &fake,
+            format!("#!/bin/sh\nprintf wrong > '{}'\nexit 0\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let limits = BashLimits {
+            cpu_cores: 1,
+            memory_high_bytes: 0,
+            memory_max_bytes: 0,
+            memory_swap_bytes: 0,
+        };
+        for pty in [false, true] {
+            for path in [directory.path().display().to_string(), String::new()] {
+                let mut args = bash_args(
+                    "v=hello; printf 'VALUE=%s\\n' \"${v}\"; printf 'CORE_COUNT='; /usr/bin/nproc",
+                );
+                args.pty = Some(pty);
+                args.env = Some(BTreeMap::from([("PATH".into(), path)]));
+                let log = test_log(
+                    directory
+                        .path()
+                        .join(format!("launcher-{pty}-{}.log", crate::ids::entry_id())),
+                )
+                .await;
+                let process = Process::spawn(
+                    args,
+                    directory.path().to_owned(),
+                    Some(Duration::from_secs(10)),
+                    log.clone(),
+                    policy(moc_protocol::SessionPermission::Full, directory.path()),
+                    Some(limits),
+                )
+                .await
+                .unwrap();
+                let result = process.completion.await.unwrap();
+                let (text, _) = log.read_tail(10).unwrap();
+                assert_eq!(result.code(), Some(0), "{text}");
+                assert!(text.contains("VALUE=hello"), "{text}");
+                assert!(text.contains("CORE_COUNT=1"), "{text}");
+                assert!(!marker.exists());
+            }
+        }
     }
 }

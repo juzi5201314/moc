@@ -125,6 +125,7 @@ impl JobManager {
             log_uri,
             status: JobStatus::Running,
             exit_code: None,
+            diagnostics: String::new(),
             lifecycle: spec.lifecycle,
             origin,
             stalled: false,
@@ -254,7 +255,7 @@ impl JobManager {
     }
 
     /// 进程结束：落定终态，回给前台等待者或作为后台完成通知送达模型。
-    pub(super) async fn settle(&self, ctx: &ToolCtx, id: &str, waited: ForegroundResult) {
+    pub(super) async fn settle(&self, ctx: &ToolCtx, id: &str, mut waited: ForegroundResult) {
         let (info, attached, announce, log) = {
             let mut jobs = self.jobs.lock();
             let job = jobs.get_mut(id).expect("worker 对应的任务一定已登记");
@@ -264,8 +265,12 @@ impl JobManager {
                 Ok(exit) if exit.timed_out => JobStatus::TimedOut,
                 Ok(_) | Err(_) => JobStatus::Exited,
             };
+            if let Ok(exit) = &mut waited {
+                exit.killed = killed;
+                exit.append_diagnostics(&mut job.diagnostics);
+            }
             job.exit_code = match &waited {
-                Ok(exit) if !killed && !exit.timed_out => exit.code,
+                Ok(exit) if !killed && !exit.timed_out => exit.code(),
                 _ => None,
             };
             job.duration_ms =
@@ -284,10 +289,6 @@ impl JobManager {
         }
         let closing = self.shutting_down.load(Ordering::Acquire);
         if let Some(attached) = attached {
-            let waited = waited.map(|mut exit| {
-                exit.killed = info.status == JobStatus::Killed;
-                exit
-            });
             // 等待者已被丢弃（提示被中止）时结果无人接收，属于正常收尾。
             let _ = attached.send(waited);
             if !closing {
@@ -300,7 +301,10 @@ impl JobManager {
         if closing {
             return;
         }
-        let notice = finished_notice(&info, &log);
+        let mut notice = finished_notice(&info, &log);
+        if let Ok(exit) = &waited {
+            exit.append_diagnostics(&mut notice);
+        }
         {
             let mut state = ctx.state.lock().await;
             let prefix = notice_prefix(id);

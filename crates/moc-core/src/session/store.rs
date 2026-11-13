@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
@@ -14,6 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::error::CoreError;
 
 use super::entries::Entry;
+use super::history_cache::HistoryCache;
 use super::log;
 
 /// 不超过该长度的记录直接在异步线程压缩：spawn_blocking 的调度开销比压缩本身还大。
@@ -26,9 +28,46 @@ const PLUGIN_STATE_MAX_BYTES: usize = 1024 * 1024;
 pub struct SessionPaths {
     pub transcript: PathBuf,
     pub sidecar: PathBuf,
+    history_cache: Arc<OnceLock<HistoryCache>>,
 }
 
 impl SessionPaths {
+    pub fn new(transcript: PathBuf, sidecar: PathBuf) -> Self {
+        Self {
+            transcript,
+            sidecar,
+            history_cache: Arc::new(OnceLock::new()),
+        }
+    }
+
+    fn history_cache(&self) -> &HistoryCache {
+        // 初始化依赖本会话的 sidecar；克隆必须共享同一个尚未初始化的缓存。
+        self.history_cache
+            .get_or_init(|| HistoryCache::new(&self.sidecar))
+    }
+
+    pub(crate) fn history_cache_dir(&self) -> &Path {
+        self.history_cache().directory()
+    }
+
+    pub(crate) fn ensure_history_cache(&self) -> std::io::Result<()> {
+        self.history_cache().ensure()
+    }
+
+    pub(crate) fn clear_history_cache(&self) {
+        if let Some(cache) = self.history_cache.get() {
+            cache.clear();
+        }
+    }
+
+    pub(crate) fn urlfs_root(&self) -> PathBuf {
+        if self.compressed() {
+            self.history_cache_dir().join("urlfs")
+        } else {
+            self.sidecar.join("urlfs")
+        }
+    }
+
     /// 会话日志是否使用 zstd 压缩；扩展名在会话创建时固定。
     pub fn compressed(&self) -> bool {
         self.transcript
@@ -81,9 +120,10 @@ pub struct SessionFile {
     revision: RwLock<crate::hashline::SnapshotId>,
 }
 
+mod listing;
 mod transcript;
+use listing::read_session_info;
 use transcript::read_entries_sync;
-use transcript::read_session_info;
 
 type Listings = HashMap<
     PathBuf,
@@ -92,7 +132,7 @@ type Listings = HashMap<
         Option<moc_protocol::SessionInfo>,
     ),
 >;
-const LISTING_CACHE: &str = ".session-list-v2.json";
+const LISTING_CACHE: &str = ".session-list-v3.json";
 const LISTING_CACHE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// 会话文件的发现、创建、读取和删除。
@@ -121,6 +161,12 @@ impl SessionStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(super) fn clear_history_views(&self) {
+        for paths in self.index.read().values() {
+            paths.clear_history_cache();
+        }
     }
 
     /// 只计算明文 transcript 和 sidecar 的路径，不访问磁盘。
@@ -176,15 +222,15 @@ impl SessionStore {
         created_at_ms: u64,
         compressed: bool,
     ) -> SessionPaths {
-        SessionPaths {
-            transcript: directory.join(format!(
+        SessionPaths::new(
+            directory.join(format!(
                 "{}_{}.jsonl{}",
                 timestamp_name(created_at_ms),
                 session_id,
                 if compressed { ".zst" } else { "" }
             )),
-            sidecar: directory.join(session_id),
-        }
+            directory.join(session_id),
+        )
     }
 
     /// 读取单个插件状态；文件缺失视为空，损坏只影响该插件调用。
@@ -270,10 +316,10 @@ impl SessionStore {
                 })
                 .is_some_and(|stem| stem.ends_with(&suffix));
             if matches {
-                let paths = SessionPaths {
-                    transcript: path.clone(),
-                    sidecar: path.parent().unwrap_or(&self.root).join(session_id),
-                };
+                let paths = SessionPaths::new(
+                    path.clone(),
+                    path.parent().unwrap_or(&self.root).join(session_id),
+                );
                 self.index
                     .write()
                     .insert(session_id.to_owned(), paths.clone());
@@ -391,9 +437,10 @@ impl SessionStore {
             .listing_loaded
             .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
-            // v1 缓存按「header 后有任意条目」判定，会把只含簿记条目的幽灵会话
-            // 永久列出来；语义收紧后旧文件作废。
-            let _ = tokio::fs::remove_file(self.root.join(".session-list-v1.json")).await;
+            // v1 会列出只有簿记的幽灵会话，v2 可能采纳 checksum 未通过的帧；旧投影作废。
+            for obsolete in [".session-list-v1.json", ".session-list-v2.json"] {
+                let _ = tokio::fs::remove_file(self.root.join(obsolete)).await;
+            }
             let path = self.root.join(LISTING_CACHE);
             let cached = tokio::task::spawn_blocking(move || read_listing_cache(&path))
                 .await
@@ -451,10 +498,10 @@ impl SessionStore {
             );
             self.index.write().insert(
                 info.id.clone(),
-                SessionPaths {
-                    transcript: path.clone(),
-                    sidecar: path.parent().unwrap_or(&self.root).join(&info.id),
-                },
+                SessionPaths::new(
+                    path.clone(),
+                    path.parent().unwrap_or(&self.root).join(&info.id),
+                ),
             );
             result.push(info);
         }

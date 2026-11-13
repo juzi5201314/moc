@@ -26,18 +26,19 @@ memory_swap_bytes = 4294967296 # 4 GiB swap 预算；0 = 不限制
 每条命令包装成一次 `systemd-run --user --scope`：
 
 ```
-systemd-run --user --scope --quiet --collect --unit=moc-bash-<uuid> \
+systemd-run --user --scope --quiet --collect --expand-environment=no --unit=moc-bash-<uuid> \
   -p CPUQuota=400% -p MemoryHigh=... -p MemoryMax=... -p MemorySwapMax=... \
   -- <shell> <args>
 ```
 
+启动器只从宿主 PATH 解析一次，探测与执行绑定同一个绝对路径；工具 `env.PATH` 只影响载荷，不会替换限流启动器。systemd 254 起显式传 `--expand-environment=no`，防止启动器先于 shell 展开 `${VARIABLE}`；更早版本的 scope 默认不展开，且不支持此选项。
+
 - `CPUQuota` 按核时间限速；`nproc` 与 Rust 的 `available_parallelism` 都会读取 cgroup 配额，
   因此 `cargo` 会自动把并发降到该核数，rustc 线程也随之减少，内存峰值大致按比例下降。
 - `MemoryHigh` 是“慢但不杀”的关键：超过后内核开始回收与节流，编译会明显变慢但继续推进。
-- `MemoryMax` 只是兜底，超过按 OOM 终止（退出码 137，结果里会给出提示）。
+- `MemoryMax` 限制驻留内存；是否触发 OOM 还受 swap 等条件影响。SIGKILL 或 shell 的退出码 137 会附上内存额度排查提示，但它们本身不证明 OOM；确认原因需检查系统/cgroup 日志。
 - `MemorySwapMax` 限制单条命令能占用的 swap，避免一个任务挤掉整机。
-- `--scope` 把载荷原地放进新 scope：退出码、PTY、stdin/stdout、进程组回收都保持原有语义，
-  只是多了一层 `systemd-run` 父子进程（超时或取消时整组一起杀）。
+- `--scope` 把载荷原地放进新 scope 后执行 shell，不保留额外的等待父进程；PTY、stdin/stdout 与进程组清理保持原语义。信号终止保留为信号，没有退出码，不显示伪造的 `exit -1` 或 PTY 占位码 `1`。
 - 每条命令一个独立 scope，额度不共享：并发的后台任务各自都有完整的配置额度。
 - 每次调用额外开销约 25–30 ms。
 
@@ -88,6 +89,8 @@ systemd-run --user --scope --quiet --collect --unit=moc-bash-<uuid> \
 `job output` 与转后台时的尾部预览也会推进这个游标，前端 RPC 读取日志不会影响它。
 跨读取块的 UTF-8 字符会等字节补齐后再展示；只收到残缺字符时继续等待，任务结束仍未补齐时输出替换字符。
 日志超出容量后只保留开头和尾部；定稿后的增量读取仍返回保留范围内的所有未读内容，容量丢弃与行数截断的省略量会在结果中提示。
+
+前台结果、后台完成通知、`job wait` 和 `job output` 共用信号及资源限制诊断。超时或主动取消优先显示对应原因，不误报为内存不足；scope 创建失败会明确说明命令没有执行。
 
 ### 并发名额
 

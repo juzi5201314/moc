@@ -176,10 +176,7 @@ mod tests {
     use crate::session::store::SessionPaths;
 
     fn paths(root: &Path) -> SessionPaths {
-        SessionPaths {
-            transcript: root.join("session.jsonl"),
-            sidecar: root.join("session"),
-        }
+        SessionPaths::new(root.join("session.jsonl"), root.join("session"))
     }
 
     #[tokio::test]

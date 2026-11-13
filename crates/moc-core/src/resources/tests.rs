@@ -1,10 +1,7 @@
 use super::*;
 
 fn test_paths(root: &Path) -> SessionPaths {
-    SessionPaths {
-        transcript: root.join("transcript.jsonl"),
-        sidecar: root.join("sidecar"),
-    }
+    SessionPaths::new(root.join("transcript.jsonl"), root.join("sidecar"))
 }
 
 fn context_of<'a>(
@@ -327,11 +324,9 @@ fn compressed_history_transcript_is_decoded_into_a_mirror() {
         ResourceRouter::resolve_context(&context, ResourceScheme::History, "history://transcript")
             .expect("transcript URI")
             .expect("transcript 是资源");
-    let mirror = paths.sidecar.join("history/transcript.jsonl");
-    assert_eq!(
-        transcript.backing,
-        ResourceBacking::File(mirror.canonicalize().unwrap())
-    );
+    let ResourceBacking::File(mirror) = transcript.backing else {
+        panic!("transcript 资源必须可读取");
+    };
     assert_eq!(
         fs::read_to_string(&mirror).expect("读取镜像"),
         "{\"a\":1}\n{\"a\":2}\n",

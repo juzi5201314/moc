@@ -20,27 +20,6 @@ fn provider_config(api_key: &str) -> String {
 }
 
 #[test]
-fn session_compression_defaults_off_and_can_be_enabled() {
-    let dir = tempfile::tempdir().expect("临时目录");
-    let home = dir.path().join("home");
-    let cwd = dir.path().join("work");
-    fs::create_dir_all(&home).expect("创建 home");
-    fs::create_dir_all(&cwd).expect("创建 cwd");
-    let config_path = home.join("config.toml");
-    fs::write(&config_path, provider_config("literal")).expect("写配置");
-    let config = ResolvedConfig::load(&core_config(&home, &cwd, vec![])).expect("默认配置可解析");
-    assert!(!config.session.compress, "会话压缩默认关闭");
-
-    fs::write(
-        &config_path,
-        format!("{}\n[session]\ncompress=true\n", provider_config("literal")),
-    )
-    .expect("写压缩配置");
-    let config = ResolvedConfig::load(&core_config(&home, &cwd, vec![])).expect("压缩配置可解析");
-    assert!(config.session.compress);
-}
-
-#[test]
 fn sandbox_paths_are_expanded_and_allow_paths_must_exist() {
     let dir = tempfile::tempdir().expect("临时目录");
     let home = dir.path().join("home");

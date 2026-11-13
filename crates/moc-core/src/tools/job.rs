@@ -55,6 +55,8 @@ struct Job {
     log_uri: String,
     status: JobStatus,
     exit_code: Option<i32>,
+    /// 信号与资源限制诊断不属于 stdout；终态通知和日志读取统一附上。
+    diagnostics: String,
     lifecycle: JobLifecycle,
     origin: JobOrigin,
     stalled: bool,
@@ -155,7 +157,9 @@ fn notice_prefix(id: &str) -> String {
 
 fn finished_notice(info: &JobInfo, log: &JobLog) -> String {
     let outcome = match info.status {
-        JobStatus::Exited => format!("exit {}", info.exit_code.unwrap_or(-1)),
+        JobStatus::Exited => info
+            .exit_code
+            .map_or_else(|| "no exit code".into(), |code| format!("exit {code}")),
         JobStatus::Killed => "killed".into(),
         JobStatus::TimedOut => "hard timeout".into(),
         JobStatus::Running | JobStatus::Killing => unreachable!("任务已经结束"),
