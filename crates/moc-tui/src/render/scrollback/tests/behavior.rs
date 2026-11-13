@@ -645,7 +645,33 @@ fn skill_descriptions_stay_on_one_line_in_single_and_grouped_calls() {
     );
     let full = render_entry(0, &app.blocks[0], &app, 80).lines;
     assert_eq!(full.len(), 1);
-    assert!(plain(&full[0]).contains("review  检查代码与复用边界"));
+    assert!(plain(&full[0]).contains("review · 检查代码与复用边界 · 1.2s"));
+    assert!(
+        full[0]
+            .spans
+            .iter()
+            .any(|span| span.content == "review" && span.style.fg == Some(app.theme.text_secondary)),
+        "skill 名用 text_secondary：{:?}",
+        full[0].spans
+    );
+    assert!(
+        full[0]
+            .spans
+            .iter()
+            .any(|span| span.content == "检查代码与复用边界"
+                && span.style.fg == Some(app.theme.gray)),
+        "skill 描述用 gray：{:?}",
+        full[0].spans
+    );
+    assert!(
+        full[0]
+            .spans
+            .iter()
+            .filter(|span| span.content == crate::render::labels::SEP)
+            .all(|span| span.style.fg == Some(app.theme.gray_dim)),
+        "分隔符用 gray_dim：{:?}",
+        full[0].spans
+    );
     for width in [10, 11, 12, 24] {
         let lines = render_entry(0, &app.blocks[0], &app, width).lines;
         assert_eq!(lines.len(), 1);
@@ -668,7 +694,7 @@ fn skill_descriptions_stay_on_one_line_in_single_and_grouped_calls() {
     let lines = render_entry(1, &app.blocks[1], &app, 28).lines;
     assert_eq!(lines.len(), 3);
     for line in &lines[1..] {
-        assert!(plain(line).contains("review  检查"));
+        assert!(plain(line).contains("review · 检查"));
         assert!(plain(line).ends_with("..."));
         assert!(line.width() <= 28);
     }

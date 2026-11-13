@@ -5,8 +5,8 @@ use super::super::wrap::clip_line;
 use super::super::wrap::str_width;
 use super::agent_tools::message_receipts;
 use super::agent_tools::wait_result;
-use super::outcome_word;
-use super::structured_tools::tool_count_text;
+use super::messages::outcome_label;
+use super::structured_tools::tool_count_spans;
 use super::tool_content::prefer_builtin_redirect;
 use super::tool_content::tool_is_error;
 use crate::theme::Theme;
@@ -58,7 +58,7 @@ pub(super) fn tool_title_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'
             Style::new().fg(if done == total {
                 theme.accent_success
             } else {
-                theme.gray_dim
+                theme.text_secondary
             }),
         )];
     }
@@ -66,9 +66,9 @@ pub(super) fn tool_title_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'
     // grep／find 的计数进尾列：非完整档没有正文，计数不能在转写里消失。
     if !tool_is_error(tool)
         && let Some(result) = tool.result.as_deref()
-        && let Some(text) = tool_count_text(tool, result)
+        && let Some(spans) = tool_count_spans(tool, result, theme)
     {
-        tail.push(Span::styled(text, Style::new().fg(theme.gray_dim)));
+        tail.extend(spans);
     }
     if let Some(ms) = tool.duration_ms {
         if !tail.is_empty() {
@@ -100,7 +100,11 @@ pub(super) fn tool_summary_budget(
         tool_title_tail(tool, theme)
     };
     let tail_width: usize = tail.iter().map(Span::width).sum();
-    let reserved = if tail_width > 0 { tail_width + 2 } else { 0 };
+    let reserved = if tail_width > 0 {
+        tail_width + str_width(labels::SEP)
+    } else {
+        0
+    };
     width.saturating_sub(TITLE_INDENT + usize::from(!nested) * 2 + str_width(name) + 1 + reserved)
 }
 
@@ -127,7 +131,7 @@ pub(super) fn title_summary(
         if fits || level != DetailLevel::Full {
             let flat = command.split_whitespace().collect::<Vec<_>>().join(" ");
             let line = clip_line(
-                Line::from(Span::styled(flat, Style::new().fg(theme.gray_dim))),
+                Line::from(Span::styled(flat, Style::new().fg(theme.gray_bright))),
                 budget,
             );
             return (line.spans, true);
@@ -140,7 +144,7 @@ pub(super) fn title_summary(
             return (
                 vec![Span::styled(
                     ".".repeat(budget),
-                    Style::new().fg(theme.gray_dim),
+                    Style::new().fg(theme.text_secondary),
                 )],
                 false,
             );
@@ -167,8 +171,10 @@ pub(super) fn read_shown_range(result: &str) -> Option<String> {
     })
 }
 
-/// 标题摘要与普通尾注统一用弱化色，改动计数保留增删语义色；
-/// 路径一律过 [`super::display_path`] 相对化。
+/// 标题摘要分段着色：核心标识（`skill` 名、`todo` 操作）用 [`Theme::text_secondary`]，
+/// 主参数摘要用 [`Theme::gray_bright`]，次要范围／描述／附注／未知参数用 [`Theme::gray`]，
+/// ` · ` 分隔符用 [`Theme::gray_dim`]，改动计数与投递结果保留语义色；路径一律过
+/// [`super::display_path`] 相对化。
 ///
 /// 产出未截断的 span 序列；截断由调用方用 [`clip_line`] 统一完成。
 pub(super) fn summary_spans(
@@ -179,6 +185,16 @@ pub(super) fn summary_spans(
 ) -> Vec<Span<'static>> {
     let styled =
         |text: String, color: ratatui::style::Color| Span::styled(text, Style::new().fg(color));
+    let push_joined = |items: Vec<&str>, color: ratatui::style::Color| -> Vec<Span<'static>> {
+        let mut spans = Vec::with_capacity(items.len().saturating_mul(2));
+        for (index, item) in items.into_iter().enumerate() {
+            if index > 0 {
+                spans.push(styled(labels::SEP.to_owned(), theme.gray_dim));
+            }
+            spans.push(styled(item.to_owned(), color));
+        }
+        spans
+    };
     let arg_str = |key: &str| {
         args.get(key)
             .and_then(Value::as_str)
@@ -201,7 +217,7 @@ pub(super) fn summary_spans(
     };
     match tool.name.as_str() {
         "edit" | "write" => {
-            let mut spans = vec![styled(path_str("path"), theme.gray_dim)];
+            let mut spans = vec![styled(path_str("path"), theme.gray_bright)];
             if let Some(diff) = &tool.diff {
                 let stats = diff::stats(diff);
                 // 空 diff 不渲染 +0/-0；截断时计数只是已交付的部分，
@@ -221,7 +237,7 @@ pub(super) fn summary_spans(
         }
         "bash" | "execute" => vec![styled(
             ui_description(args).unwrap_or_default().to_owned(),
-            theme.gray_dim,
+            theme.gray_bright,
         )],
         "read" => {
             // 分页 footer 是真实交付的范围，优先于请求的 offset/limit；与 web readRange 同规则。
@@ -247,63 +263,67 @@ pub(super) fn summary_spans(
                 format!(" {globs}")
             };
             vec![
-                styled(path_str("path"), theme.gray_dim),
-                styled(range, theme.gray_dim),
-                styled(globs, theme.gray_dim),
+                styled(path_str("path"), theme.gray_bright),
+                styled(range, theme.gray),
+                styled(globs, theme.gray),
             ]
         }
-        "grep" => vec![styled(arg_str("pattern"), theme.gray_dim)],
-        "find" => vec![styled(glob_str("glob"), theme.gray_dim)],
-        "web_fetch" => vec![styled(
-            args.get("urls")
+        "grep" => vec![styled(arg_str("pattern"), theme.gray_bright)],
+        "find" => vec![styled(glob_str("glob"), theme.gray_bright)],
+        "web_fetch" => {
+            let urls = args
+                .get("urls")
                 .and_then(Value::as_array)
-                .map_or_default(|urls| {
-                    urls.iter()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join(" · ")
-                }),
-            theme.gray_dim,
-        )],
-        "spawn_agent" => vec![styled(
-            args.get("tasks")
-                .and_then(Value::as_array)
-                .map(|tasks| {
-                    tasks
-                        .iter()
-                        .filter_map(|task| task.get("title").and_then(Value::as_str))
-                        .collect::<Vec<_>>()
-                        .join(" · ")
-                })
-                .unwrap_or_else(|| arg_str("title")),
-            theme.gray_dim,
-        )],
-        "yield" => vec![styled("交付报告".to_owned(), theme.gray_dim)],
+                .map(|urls| urls.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+                .unwrap_or_default();
+            push_joined(urls, theme.gray_bright)
+        }
+        "spawn_agent" => {
+            if let Some(tasks) = args.get("tasks").and_then(Value::as_array) {
+                let titles = tasks
+                    .iter()
+                    .filter_map(|task| task.get("title").and_then(Value::as_str))
+                    .collect::<Vec<_>>();
+                push_joined(titles, theme.gray_bright)
+            } else {
+                vec![styled(arg_str("title"), theme.gray_bright)]
+            }
+        }
+        "yield" => vec![styled("交付报告".to_owned(), theme.gray_bright)],
         "skill" => {
-            let mut summary = arg_str("name");
+            let name = arg_str("name");
+            let mut spans = Vec::new();
+            if !name.is_empty() {
+                spans.push(styled(name, theme.text_secondary));
+            }
             if let Some(description) = tool
                 .result
                 .as_deref()
                 .and_then(|result| result.lines().next())
                 .and_then(|line| line.strip_prefix("Skill description: "))
             {
-                summary.push_str("  ");
-                summary.push_str(description);
+                if !spans.is_empty() {
+                    spans.push(styled(labels::SEP.to_owned(), theme.gray_dim));
+                }
+                spans.push(styled(description.to_owned(), theme.gray));
             }
-            vec![styled(summary, theme.gray_dim)]
+            spans
         }
-        "clm_context" => vec![styled(arg_str("op"), theme.gray_dim)],
-        "stop_agent" => vec![styled(arg_str("agent_id"), theme.gray_dim)],
+        "clm_context" => vec![styled(arg_str("op"), theme.gray_bright)],
+        "stop_agent" => vec![styled(arg_str("agent_id"), theme.gray_bright)],
         "todo" => todo_summary_spans(args, theme),
-        "TodoReminder" => vec![styled("隐式提醒：同步待办进度".to_owned(), theme.gray_dim)],
+        "TodoReminder" => vec![styled(
+            "隐式提醒：同步待办进度".to_owned(),
+            theme.gray_bright,
+        )],
         "job" | "plan" | "exit_plan" => Vec::new(),
         "message_agent" | "sidekick" | "wait_agent" | "ask" => {
-            vec![styled(tool_summary(tool, args), theme.gray_dim)]
+            agent_summary_spans(tool, args, theme)
         }
         _ => {
             // 未知工具（MCP 等）：参数截断展示
             let text = tool.arguments.replace('\n', " ");
-            vec![styled(text.chars().take(60).collect(), theme.gray_dim)]
+            vec![styled(text.chars().take(60).collect(), theme.gray)]
         }
     }
 }
@@ -334,7 +354,7 @@ pub(super) fn todo_summary_spans(args: &Value, theme: &Theme) -> Vec<Span<'stati
             }
             .to_owned()
         });
-    let mut spans = vec![styled(op.clone(), theme.gray_dim)];
+    let mut spans = vec![styled(op.clone(), theme.text_secondary)];
     let arg_str = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or_default();
     match op.as_str() {
         "init" => {
@@ -353,16 +373,31 @@ pub(super) fn todo_summary_spans(args: &Value, theme: &Theme) -> Vec<Span<'stati
                 })
                 .or_else(|| args.get("items").and_then(Value::as_array).map(Vec::len));
             if let Some(count) = count {
-                spans.push(styled(format!(" {count} tasks"), theme.gray_dim));
+                spans.push(styled(
+                    format!(" {count} tasks"),
+                    if count > 0 {
+                        theme.text_secondary
+                    } else {
+                        theme.gray
+                    },
+                ));
             }
         }
         "append" => {
             let phase = arg_str("phase");
             if !phase.is_empty() {
-                spans.push(styled(format!(" {phase}"), theme.gray_dim));
+                spans.push(styled(format!(" {phase}"), theme.gray_bright));
             }
             if let Some(items) = args.get("items").and_then(Value::as_array) {
-                spans.push(styled(format!(" · {} items", items.len()), theme.gray_dim));
+                spans.push(styled(labels::SEP.to_owned(), theme.gray_dim));
+                spans.push(styled(
+                    format!("{} items", items.len()),
+                    if !items.is_empty() {
+                        theme.text_secondary
+                    } else {
+                        theme.gray
+                    },
+                ));
             }
         }
         // 目标 op 只留 op 词：start/done/drop/block/unblock 的目标都在快照树里
@@ -377,7 +412,7 @@ pub(super) fn todo_summary_spans(args: &Value, theme: &Theme) -> Vec<Span<'stati
                 }
             };
             if !target.is_empty() {
-                spans.push(styled(format!(" {target}"), theme.gray_dim));
+                spans.push(styled(format!(" {target}"), theme.gray_bright));
             }
         }
         _ => {}
@@ -391,8 +426,15 @@ pub(super) fn ui_description(args: &Value) -> Option<&str> {
     text.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
-/// 标题行的参数摘要：只覆盖产出单段文本的工具；分段着色的工具走 [`summary_spans`]。
-pub(super) fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
+/// 代理交互与询问类工具的分段着色标题摘要。
+fn agent_summary_spans(tool: &ToolCallBlock, args: &Value, theme: &Theme) -> Vec<Span<'static>> {
+    let styled =
+        |text: String, color: ratatui::style::Color| Span::styled(text, Style::new().fg(color));
+    let push_sep = |spans: &mut Vec<Span<'static>>| {
+        if !spans.is_empty() {
+            spans.push(styled(labels::SEP.to_owned(), theme.gray_dim));
+        }
+    };
     match tool.name.as_str() {
         "message_agent" => {
             use moc_protocol::methods::AgentMessageOutcome;
@@ -400,76 +442,90 @@ pub(super) fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
                 .get("target")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let mut summary = format!("▶ {target}");
+            let mut spans = vec![styled(format!("▶ {target}"), theme.gray_bright)];
             if let Some(receipts) = message_receipts(tool) {
                 if target == "all" {
-                    summary.push_str(&format!("{}{}", labels::SEP, labels::status::BROADCAST));
+                    push_sep(&mut spans);
+                    spans.push(styled(labels::status::BROADCAST.to_owned(), theme.gray));
                 }
                 let failed = receipts
                     .iter()
                     .filter(|receipt| receipt.outcome == AgentMessageOutcome::Failed)
                     .count();
+                push_sep(&mut spans);
                 match receipts.as_slice() {
                     [receipt] => {
-                        summary.push_str(&format!(
-                            "{}{}",
-                            labels::SEP,
-                            outcome_word(receipt.outcome)
+                        let (word, color) = outcome_label(receipt.outcome, theme);
+                        spans.push(styled(word.to_owned(), color));
+                    }
+                    receipts => {
+                        let delivered = receipts.len() - failed;
+                        spans.push(styled(
+                            format!("{delivered} {}", labels::status::DELIVERED),
+                            if delivered > 0 {
+                                theme.text_secondary
+                            } else {
+                                theme.gray
+                            },
                         ));
                     }
-                    receipts => summary.push_str(&format!(
-                        "{}{} {}",
-                        labels::SEP,
-                        receipts.len() - failed,
-                        labels::status::DELIVERED
-                    )),
                 }
                 if failed > 0 {
-                    summary.push_str(&format!(
-                        "{}{failed} {}",
-                        labels::SEP,
-                        labels::status::FAILED
+                    push_sep(&mut spans);
+                    spans.push(styled(
+                        format!("{failed} {}", labels::status::FAILED),
+                        theme.accent_error,
                     ));
                 }
             }
-            summary
+            spans
         }
         "sidekick" => {
             // 摘要只占一行：handoff 首行；mode 与后台执行（block=false）附注。
             let mode = args.get("mode").and_then(Value::as_str).unwrap_or("keep");
-            let mut summary = args
-                .get("message")
-                .and_then(Value::as_str)
-                .and_then(|text| text.lines().next())
-                .unwrap_or_default()
-                .to_owned();
-            if mode == "retry" {
-                summary = "重试".to_owned();
+            let first = if mode == "retry" {
+                "重试"
+            } else {
+                args.get("message")
+                    .and_then(Value::as_str)
+                    .and_then(|text| text.lines().next())
+                    .unwrap_or_default()
+            };
+            let mut spans = Vec::new();
+            if !first.is_empty() {
+                spans.push(styled(first.to_owned(), theme.gray_bright));
             }
+            let mut push_flag = |flag: &str| {
+                push_sep(&mut spans);
+                spans.push(styled(flag.to_owned(), theme.gray));
+            };
             if mode == "compact" {
-                summary.push_str(" · 压缩后");
+                push_flag("压缩后");
             } else if mode == "fresh" {
-                summary.push_str(" · 新会话");
+                push_flag("新会话");
             }
             if args.get("block").and_then(Value::as_bool) == Some(false) {
-                summary.push_str(" · 后台");
+                push_flag("后台");
             }
-            summary
+            spans
         }
         "wait_agent" => {
-            let mut summary = match args.get("agent_ids").and_then(Value::as_array) {
+            let main = match args.get("agent_ids").and_then(Value::as_array) {
                 Some(ids) if !ids.is_empty() => format!("等待 {} 个代理", ids.len()),
                 _ => "等待全部运行中代理".to_owned(),
             };
+            let mut spans = vec![styled(main, theme.gray_bright)];
             if let Some(result) = wait_result(tool) {
                 if result.messages_pending {
-                    summary.push_str(" · 有新消息");
+                    push_sep(&mut spans);
+                    spans.push(styled("有新消息".to_owned(), theme.gray));
                 }
                 if result.timed_out {
-                    summary.push_str(" · 超时");
+                    push_sep(&mut spans);
+                    spans.push(styled("超时".to_owned(), theme.accent_warning));
                 }
             }
-            summary
+            spans
         }
         "ask" => args
             .get("questions")
@@ -483,14 +539,20 @@ pub(super) fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
                     .and_then(Value::as_str)
                     .and_then(|text| text.lines().next())
                     .unwrap_or_default();
+                let mut spans = Vec::new();
                 if questions.len() > 1 {
-                    format!("共 {} 问 · {}", questions.len(), first)
-                } else {
-                    first.to_owned()
+                    spans.push(styled(format!("共 {} 问", questions.len()), theme.gray));
+                    if !first.is_empty() {
+                        push_sep(&mut spans);
+                    }
                 }
+                if !first.is_empty() {
+                    spans.push(styled(first.to_owned(), theme.gray_bright));
+                }
+                spans
             })
             .unwrap_or_default(),
-        _ => String::new(),
+        _ => Vec::new(),
     }
 }
 
@@ -515,11 +577,15 @@ pub(super) fn batch_member_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span
     tail
 }
 
-/// 成员摘要的列宽预算：让出行首缩进与行尾状态列（状态列前至少两格间距）。
+/// 成员摘要的列宽预算：让出行首缩进与行尾状态列（状态列前留 `labels::SEP` 间距）。
 ///
 /// `width` 是成员行在连线前缀之内的可用宽度。
 pub(super) fn batch_summary_budget(tail: &[Span<'_>], width: usize) -> usize {
     let tail_width: usize = tail.iter().map(Span::width).sum();
-    let reserved = if tail_width > 0 { tail_width + 2 } else { 0 };
+    let reserved = if tail_width > 0 {
+        tail_width + str_width(labels::SEP)
+    } else {
+        0
+    };
     width.saturating_sub(TITLE_INDENT + reserved)
 }

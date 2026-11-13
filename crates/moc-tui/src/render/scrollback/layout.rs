@@ -319,7 +319,7 @@ pub(super) fn render_tool_batch(
                 Style::new().fg(theme.accent_running),
             ));
         }
-        title.push(Span::raw("  "));
+        title.push(Span::styled(labels::SEP, Style::new().fg(theme.gray_dim)));
         title.extend(tail);
     }
     let mut lines = vec![clip_line(Line::from(title), head_width)];
@@ -346,10 +346,15 @@ pub(super) fn render_tool_batch(
             theme,
             app.cwd(),
         );
+        let has_summary = summary.iter().any(|span| !span.content.is_empty());
         let mut spans = vec![Span::raw(" ".repeat(TITLE_INDENT))];
-        spans.extend(summary);
+        if has_summary {
+            spans.extend(summary);
+        }
         if !tail.is_empty() {
-            spans.push(Span::raw("  "));
+            if has_summary {
+                spans.push(Span::styled(labels::SEP, Style::new().fg(theme.gray_dim)));
+            }
             spans.extend(tail);
         }
         let mut member_lines = vec![clip_line(Line::from(spans), width)];
@@ -441,7 +446,8 @@ pub(super) fn render_tool(
         name.to_owned(),
         Style::new().fg(bullet_color).add_modifier(Modifier::BOLD),
     ));
-    if !summary.is_empty() {
+    let has_summary = summary.iter().any(|span| !span.content.is_empty());
+    if has_summary {
         title.push(Span::raw(" "));
         title.extend(summary);
     }
@@ -453,7 +459,7 @@ pub(super) fn render_tool(
         ));
     }
     if !tail.is_empty() {
-        title.push(Span::raw("  "));
+        title.push(Span::styled(labels::SEP, Style::new().fg(theme.gray_dim)));
         title.extend(tail);
     }
     let mut lines = vec![clip_line(Line::from(title), width)];

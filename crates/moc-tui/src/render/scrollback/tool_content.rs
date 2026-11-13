@@ -508,7 +508,7 @@ pub(super) fn fixed_tool_rows(
                 {
                     theme.accent_warning
                 } else {
-                    theme.text_secondary
+                    theme.gray_bright
                 };
                 rows.extend(
                     wrap_text(&text, width)

@@ -46,6 +46,22 @@ fn tool_brief_preview_marks_omission() {
     let brief = render_entry(0, &app.blocks[0], &app, width).lines;
     // 标题（命令放得下，进标题）+ 结果尾 4 + 省略提示 1 + 留白 1
     assert_eq!(brief.len(), 7, "简略档行数固定");
+    assert!(
+        brief[0]
+            .spans
+            .iter()
+            .any(|span| span.content == "run" && span.style.fg == Some(app.theme.gray_bright)),
+        "标题参数摘要用亮灰：{:?}",
+        brief[0].spans
+    );
+    assert!(
+        brief[1]
+            .spans
+            .iter()
+            .any(|span| span.content == "line-196" && span.style.fg == Some(app.theme.gray_bright)),
+        "工具输出正文用亮灰：{:?}",
+        brief[1].spans
+    );
     let brief_text = text_of(&brief);
     assert!(
         brief_text.contains("⋯ 还有 196 行"),
@@ -215,8 +231,14 @@ fn grep_summary_reports_counts_and_warnings() {
         assert!(!plain(&lines[0]).contains("有提示"));
         let title = plain(&lines[0]);
         assert!(
-            title.contains("2 matches · 2 files"),
-            "{level:?} 档计数进标题尾列：{title}"
+            title.contains("alpha · 2 matches · 2 files · 5ms"),
+            "{level:?} 档计数与耗时用 · 分隔进标题尾列：{title}"
+        );
+        assert!(
+            lines[0].spans.iter().any(|span| span.content == "2 matches"
+                && span.style.fg == Some(app.theme.text_secondary)),
+            "非零匹配数用 text_secondary：{:?}",
+            lines[0].spans
         );
         assert!(
             !text_of(&lines).contains("alpha beta"),
@@ -225,7 +247,7 @@ fn grep_summary_reports_counts_and_warnings() {
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
 
-    // 零匹配同样给出计数行。
+    // 零匹配同样给出计数行，且零结果降为 gray。
     app.finish_tool_block(ToolCallFinish {
         id: "call_grep".into(),
         name: "grep".into(),
@@ -243,7 +265,15 @@ fn grep_summary_reports_counts_and_warnings() {
     });
     app.tool_detail = DetailLevel::Brief;
     let lines = render_entry(0, &app.blocks[0], &app, width).lines;
-    assert!(plain(&lines[0]).contains("0 matches · 0 files"));
+    assert!(plain(&lines[0]).contains("alpha · 0 matches · 0 files · 5ms"));
+    assert!(
+        lines[0]
+            .spans
+            .iter()
+            .any(|span| span.content == "0 matches" && span.style.fg == Some(app.theme.gray)),
+        "零匹配降为 gray：{:?}",
+        lines[0].spans
+    );
     assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
 }
 
@@ -294,8 +324,17 @@ fn find_summary_reports_file_count_and_warnings() {
         assert!(text_of(&lines).contains("Scan incomplete"));
         let title = plain(&lines[0]);
         assert!(
-            title.contains("3 files"),
-            "{level:?} 档计数进标题尾列：{title}"
+            title.contains("**/*.rs · 3 files · 5ms"),
+            "{level:?} 档计数与耗时用 · 分隔进标题尾列：{title}"
+        );
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|span| span.content == "3 files"
+                    && span.style.fg == Some(app.theme.text_secondary)),
+            "非零文件数用 text_secondary：{:?}",
+            lines[0].spans
         );
         assert!(
             !text_of(&lines).contains("src/a.rs"),
@@ -321,7 +360,15 @@ fn find_summary_reports_file_count_and_warnings() {
     });
     app.tool_detail = DetailLevel::Brief;
     let lines = render_entry(0, &app.blocks[0], &app, width).lines;
-    assert!(text_of(&lines).contains("0 files"));
+    assert!(plain(&lines[0]).contains("**/*.rs · 0 files · 5ms"));
+    assert!(
+        lines[0]
+            .spans
+            .iter()
+            .any(|span| span.content == "0 files" && span.style.fg == Some(app.theme.gray)),
+        "零文件降为 gray：{:?}",
+        lines[0].spans
+    );
     assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
 }
 
@@ -469,6 +516,8 @@ fn read_range_prefers_delivered_page() {
         "",
     );
     assert_eq!(range_of(&spans).as_deref(), Some(":1-210"));
+    assert_eq!(spans[0].style.fg, Some(theme.gray_bright));
+    assert_eq!(spans[1].style.fg, Some(theme.gray));
     // 没有结果时按请求范围推算；limit 含端点，末行是 offset+limit-1。
     let spans = summary_spans(&block(None), &args, &theme, "");
     assert_eq!(range_of(&spans).as_deref(), Some(":1-300"));
@@ -650,7 +699,10 @@ fn grep_brief_inlines_count_into_title_tail() {
     let lines = render_entry(0, &app.blocks[0], &app, 80).lines;
     assert_eq!(lines.len(), 2, "标题 + 空行");
     let title = plain(&lines[0]);
-    assert!(title.contains("matches ·"), "计数进标题尾列：{title}");
+    assert!(
+        title.contains("x · 2 matches · 2 files · 1.2s"),
+        "计数与耗时用 · 分隔进标题尾列：{title}"
+    );
     assert!(plain(&lines[1]).is_empty(), "第二行是空行");
     assert_eq!(estimate_entry_height_at(&app, 0, 80), lines.len());
 }

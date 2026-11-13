@@ -14,18 +14,34 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use serde_json::Value;
 
-/// grep／find 在隐藏、简略档的计数行文本；其它工具返回 `None`。
-pub(super) fn tool_count_text(tool: &ToolCallBlock, result: &str) -> Option<String> {
+/// grep／find 在隐藏、简略档的计数 span；其它工具返回 `None`。
+///
+/// 非零计数用 [`Theme::text_secondary`]，零结果退为 [`Theme::gray`]，分隔符用 [`Theme::gray_dim`]。
+pub(super) fn tool_count_spans(
+    tool: &ToolCallBlock,
+    result: &str,
+    theme: &Theme,
+) -> Option<Vec<Span<'static>>> {
+    let count_span = |count: usize, singular: &str, plural: &str| {
+        Span::styled(
+            format_count(count, singular, plural),
+            Style::new().fg(if count > 0 {
+                theme.text_secondary
+            } else {
+                theme.gray
+            }),
+        )
+    };
     match tool.name.as_str() {
         "grep" => {
             let (matches, files) = grep_counts(result);
-            Some(format!(
-                "{} · {}",
-                format_count(matches, "match", "matches"),
-                format_count(files, "file", "files")
-            ))
+            Some(vec![
+                count_span(matches, "match", "matches"),
+                Span::styled(labels::SEP.to_owned(), Style::new().fg(theme.gray_dim)),
+                count_span(files, "file", "files"),
+            ])
         }
-        "find" => Some(format_count(find_file_count(result), "file", "files")),
+        "find" => Some(vec![count_span(find_file_count(result), "file", "files")]),
         _ => None,
     }
 }
