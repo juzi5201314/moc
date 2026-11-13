@@ -109,9 +109,9 @@ impl Cache {
     }
 }
 
-/// 锁文件常驻，内核锁随句柄释放；覆盖整个手动操作以排除并行清理或重压。
+/// 锁文件常驻；操作结束时显式解锁，避免并发启动的子进程暂持继承句柄而延长租约。
 pub(crate) struct Writer {
-    _lock: File,
+    lock: File,
     home: PathBuf,
 }
 
@@ -131,7 +131,7 @@ impl Writer {
             fs4::TryLockError::Error(error) => CoreError::Io(error),
         })?;
         Ok(Self {
-            _lock: lock,
+            lock,
             home: home.to_owned(),
         })
     }
@@ -150,6 +150,14 @@ impl Writer {
             tracing::warn!(%error, "技能摘要缓存已发布，但目录同步失败");
         }
         Ok(())
+    }
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        if let Err(error) = fs4::FileExt::unlock(&self.lock) {
+            tracing::warn!(%error, "释放技能摘要缓存写租约失败");
+        }
     }
 }
 
@@ -224,5 +232,20 @@ mod tests {
         let loaded = Cache::load(dir.path()).unwrap();
         assert_eq!(loaded.entries.len(), 1);
         assert!(loaded.entries.contains_key(&other.join("SKILL.md")));
+    }
+    #[test]
+    fn writer_releases_lease_even_if_handle_is_duplicated() {
+        let home = tempfile::tempdir().unwrap();
+        let writer = Writer::acquire(home.path()).unwrap();
+        // fork 与复制描述符都会共享锁所属的打开文件描述；旁路句柄不能延长写租约。
+        let inherited = writer.lock.try_clone().unwrap();
+        drop(writer);
+        let next = Writer::acquire(home.path()).expect("前一次操作完成后立即允许下一次维护");
+        assert!(matches!(
+            Writer::acquire(home.path()),
+            Err(CoreError::Session(_))
+        ));
+        drop(next);
+        drop(inherited);
     }
 }

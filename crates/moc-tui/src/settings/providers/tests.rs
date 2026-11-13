@@ -1,4 +1,5 @@
 use super::*;
+use crate::settings::persistence::adopt;
 use moc_core::{Core, CoreConfig};
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -334,7 +335,7 @@ async fn create_discover_filter_add_and_edit_in_one_page() {
     panel.providers.draft = None;
     let pending_path = ["providers".into(), "new-provider".into(), "api_key".into()];
     panel.set_value(&pending_path, json!("newer-key"));
-    super::super::adopt(&mut app, &connection, saved, true);
+    adopt(&mut app, &connection, saved, true);
     assert_eq!(
         app.settings.as_ref().unwrap().value(&pending_path),
         Some(&json!("newer-key")),

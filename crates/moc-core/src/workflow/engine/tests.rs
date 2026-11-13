@@ -1,6 +1,8 @@
 //! 引擎单测：重放命中、hash 不一致、settle 顺序、amend 边界、终态竞争、停滞、并发钳制。
 
 use super::*;
+use crate::workflow::facade;
+use serde_json::Map;
 use serde_json::json;
 
 fn config(mode: RunMode) -> EngineConfig {

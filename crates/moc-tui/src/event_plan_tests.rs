@@ -1,4 +1,18 @@
 use super::*;
+use crate::event::commands::execute_command;
+use crate::event::modal_key::handle_modal_key;
+use crate::event::mouse::handle_mouse_with_connection;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
+use moc_protocol::InputPart;
+use moc_protocol::SessionLoad;
+use moc_protocol::SessionLoadParams;
+use moc_protocol::SessionModelOverflowAction;
+use moc_protocol::SessionNew;
+use moc_protocol::SessionNewParams;
+use moc_protocol::SessionPermission;
+use moc_protocol::SessionSetModel;
+use moc_protocol::SessionSetModelParams;
 use moc_protocol::{ConfigGet, ConfigGetParams, PlanInfo, PlanStatus};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};

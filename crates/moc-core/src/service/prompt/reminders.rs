@@ -1,0 +1,190 @@
+//! 每轮提示的动态提醒候选与持久化；保留一次性通知的消费顺序。
+
+use super::flush_reminders;
+use crate::service::CoreInner;
+use crate::service::protocol_to_rpc;
+use crate::system_prompt::engine_reminder;
+use crate::system_prompt::mode_reminder;
+use crate::system_prompt::reminder;
+use crate::system_prompt::reminder::Reminder;
+use crate::system_prompt::sandbox_contract;
+use moc_protocol::RpcError;
+use moc_protocol::methods::SessionUpdate;
+use std::sync::Arc;
+
+pub(super) struct Scope<'a> {
+    pub(super) inner: &'a Arc<CoreInner>,
+    pub(super) record: &'a Arc<crate::session::SessionRecord>,
+    pub(super) runtime: &'a Arc<crate::service::SessionRuntime>,
+    pub(super) update: &'a moc_protocol::UpdateSink,
+    pub(super) session_id: &'a str,
+    pub(super) prompt_id: &'a String,
+    pub(super) project_config: &'a crate::ResolvedConfig,
+    pub(super) tools_available: &'a [moc_llm::ToolDef],
+    pub(super) engine: moc_protocol::SessionEngine,
+    pub(super) mode: crate::service::mode::Mode,
+    pub(super) permission: moc_protocol::SessionPermission,
+    pub(super) roster: &'a Option<String>,
+    pub(super) mcp_index: &'a Option<String>,
+    pub(super) cycle_redirect: Option<String>,
+    pub(super) thinking_redirect: Option<String>,
+    pub(super) first_turn: bool,
+}
+
+pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError> {
+    let Scope {
+        inner,
+        record,
+        runtime,
+        update,
+        session_id,
+        prompt_id,
+        project_config,
+        tools_available,
+        engine,
+        mode,
+        permission,
+        roster,
+        mcp_index,
+        mut cycle_redirect,
+        mut thinking_redirect,
+        first_turn,
+    } = scope;
+    let mut candidates = Vec::new();
+    // todo 停滞提醒：仍有未完成项，且距上次 todo 变更已累计足够多次工具调用时注入一次。
+    // 每个提示最多 `reminders_max` 次；前端把它显示成一行工具样式的占位，没有参数和结果。
+    if project_config.tools.todo.enabled
+        && project_config.tools.todo.reminders
+        && mode != crate::service::mode::Mode::Plan
+        && tools_available.iter().any(|def| def.name == "todo")
+    {
+        let mut state = record.state.lock().await;
+        let open_items = state
+            .todos
+            .iter()
+            .flat_map(|phase| &phase.items)
+            .filter(|item| {
+                matches!(
+                    item.status,
+                    moc_protocol::TodoStatus::Pending | moc_protocol::TodoStatus::InProgress
+                )
+            })
+            .count();
+        let due = open_items > 0
+            && state.tool_calls_since_todo >= project_config.tools.todo.reminders_after
+            && state.todo_reminders_sent < project_config.tools.todo.reminders_max;
+        if due {
+            state.tool_calls_since_todo = 0;
+            state.todo_reminders_sent += 1;
+            drop(state);
+            candidates.push(Reminder::once(
+                reminder::key::TODO_STALL,
+                format!("{open_items} todo items still open. If you finished a task since the last todo update, mark it done now; otherwise keep working."),
+            ));
+            update
+                .emit(
+                    session_id.to_owned(),
+                    SessionUpdate::TodoReminder {
+                        prompt_id: prompt_id.clone(),
+                        open_items,
+                    },
+                )
+                .await
+                .map_err(protocol_to_rpc)?;
+        }
+    }
+    candidates.push(Reminder::durable(
+        reminder::key::ENGINE,
+        engine_reminder(engine),
+    ));
+    // 模式提醒独立成条目：plan 进出与 ask 到期都会改写或撤掉它。
+    match mode_reminder(mode) {
+        Some(text) => {
+            candidates.push(Reminder::durable(reminder::key::MODE, text));
+        }
+        None => candidates.push(Reminder::retract(
+            reminder::key::MODE,
+            "The earlier execution mode no longer applies: the workspace is writable under the current engine.",
+        )),
+    }
+    candidates.push(Reminder::durable(
+        reminder::key::SANDBOX,
+        sandbox_contract(permission, &project_config.sandbox),
+    ));
+    match &roster {
+        Some(roster) => {
+            candidates.push(Reminder::durable(reminder::key::ROSTER, roster.clone()));
+        }
+        // 清单消失时撤回旧条目：否则会话里会一直留着一份失效的可通信代理清单。
+        None => candidates.push(Reminder::retract(
+            reminder::key::ROSTER,
+            "The earlier agent roster no longer applies: this session currently has no parent agent or siblings to coordinate with.",
+        )),
+    }
+    // goal 上下文：有目标时注入，无目标（或已清除）时撤回旧条目。
+    let goal_view = {
+        let state = record.state.lock().await;
+        crate::goal::view(
+            state.goal.as_ref(),
+            state.goal_rounds_started,
+            runtime.goal_armed.is_armed(),
+        )
+    };
+    match &goal_view {
+        Some(goal) => candidates.push(Reminder::durable(
+            reminder::key::GOAL,
+            crate::goal::goal_context(goal),
+        )),
+        None => candidates.push(Reminder::retract(
+            reminder::key::GOAL,
+            "The earlier goal context no longer applies: this session has no goal.",
+        )),
+    }
+    // 动态目录不进入系统前缀，正文不变时由提醒摘要去重。
+    if let Some(index) = &mcp_index {
+        candidates.push(Reminder::durable(reminder::key::MCP_INDEX, index.clone()));
+    } else {
+        candidates.push(Reminder::retract(
+            reminder::key::MCP_INDEX,
+            "The earlier MCP index no longer applies. Discover currently available tools through catalog.search().",
+        ));
+    }
+    if let Some(detail) = cycle_redirect.take() {
+        candidates.push(Reminder::once(
+            reminder::key::CYCLE,
+            format!("<system-interrupt reason=\"tool_loop\">{detail}. Stop repeating it: gather new evidence or summarize and finish. Another no-progress loop ends this prompt.</system-interrupt>"),
+        ));
+    }
+    if let Some(detail) = thinking_redirect.take() {
+        candidates.push(Reminder::once(
+            reminder::key::THINKING,
+            format!("<system-interrupt reason=\"thinking_loop\">{detail}. Your reasoning is repeating instead of progressing: stop restating the same analysis and either act on what you already know or state the blocker and finish.</system-interrupt>"),
+        ));
+    }
+    // notice 是一次性事实，drain 之后就不可重复获取。
+    let notices = {
+        let mut state = record.state.lock().await;
+        runtime.jobs.mark_all_reported();
+        std::mem::take(&mut state.notices)
+    };
+    candidates.extend(
+        notices
+            .into_iter()
+            .map(|notice| Reminder::once(reminder::key::NOTICE, notice)),
+    );
+    {
+        let mut reminder_state = runtime.reminders.lock().await;
+        if first_turn {
+            reminder_state.render(&crate::system_prompt::reminder::local_time());
+        }
+        // 已注入过的本地时间每轮都作为候选：压缩清空去重表后要补回历史。
+        if let Some(text) = reminder_state.last_text() {
+            candidates.push(Reminder::durable(
+                reminder::key::LOCAL_TIME,
+                text.to_owned(),
+            ));
+        }
+    }
+    flush_reminders(&inner, session_id, &record, &candidates).await?;
+    Ok(candidates)
+}
