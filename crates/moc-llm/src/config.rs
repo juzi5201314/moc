@@ -343,6 +343,9 @@ impl LlmConfig {
                 }
             }
             Protocol::AnthropicMessages => {
+                if !reasoning.enabled {
+                    return None;
+                }
                 if self
                     .extra_body
                     .get("thinking")

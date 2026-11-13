@@ -236,7 +236,10 @@ impl Editor {
                 let mut items = Vec::new();
                 match editor.kind {
                     FieldKind::Secret => items.push(("f6", "显示/隐藏")),
-                    FieldKind::Integer | FieldKind::Number => items.push(("", "支持 200k、1m")),
+                    FieldKind::Integer
+                    | FieldKind::Number
+                    | FieldKind::SignedInteger
+                    | FieldKind::SignedNumber => items.push(("", "支持 200k、1m")),
                     _ => {}
                 }
                 items.extend([("enter", "应用"), ("esc", "取消")]);
@@ -297,7 +300,10 @@ impl TextEditor {
     }
 
     pub fn multiline(&self) -> bool {
-        matches!(self.kind, FieldKind::Multiline | FieldKind::Object)
+        matches!(
+            self.kind,
+            FieldKind::Multiline | FieldKind::Object | FieldKind::Json
+        )
     }
 
     fn key(&mut self, mods: KeyModifiers, code: KeyCode) -> Outcome {

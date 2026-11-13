@@ -20,7 +20,7 @@ pub fn model_template() -> Value {
             "echo_reasoning":"protocol","requires_reasoning_content_for_tool_calls":false,
             "requires_reasoning_content_for_all_assistant_turns":false,"requires_assistant_content_for_tool_calls":false,
             "thinking":{"toggle_field":null,"enabled_value":"enabled","disabled_value":"disabled",
-                "effort_field":"reasoning_effort","effort_map":{},"toggle_extra":{}},"extra_body":{}}})
+                "effort_field":"reasoning_effort","effort_map":{},"toggle_extra":{}},"extra_body":{},"headers":{}}})
 }
 
 /// 补齐可编辑的可选字段，仅用于页面展示，绝不回填进配置文件。
@@ -39,10 +39,18 @@ pub fn complete_view(value: &mut Value) {
         for provider in providers.values_mut() {
             let mut defaults = provider_template();
             merge_json(&mut defaults, std::mem::take(provider));
+            let provider_body = defaults["extra_body"].clone();
+            let provider_headers = defaults["headers"].clone();
             if let Some(models) = defaults.get_mut("models").and_then(Value::as_object_mut) {
                 for model in models.values_mut() {
                     let mut defaults = model_template();
                     merge_json(&mut defaults, std::mem::take(model));
+                    let mut body = provider_body.clone();
+                    merge_json(&mut body, defaults["compat"]["extra_body"].clone());
+                    defaults["compat"]["extra_body"] = body;
+                    let mut headers = provider_headers.clone();
+                    merge_json(&mut headers, defaults["compat"]["headers"].clone());
+                    defaults["compat"]["headers"] = headers;
                     *model = defaults;
                 }
             }
@@ -76,6 +84,7 @@ pub fn complete_view(value: &mut Value) {
 pub fn fields(effective: &Value) -> Vec<ConfigField> {
     let mut output = Vec::new();
     walk(effective, &mut Vec::new(), &mut output);
+    super::parameters::append_fields(effective, &mut output);
     output
 }
 
@@ -411,7 +420,16 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         path: path.clone(),
         tab: tab.into(),
         label: label.into(),
-        description: description.into(),
+        description: if path.first().is_some_and(|part| part == "providers") {
+            let start = if path.get(2).is_some_and(|part| part == "models") {
+                4
+            } else {
+                2
+            };
+            format!("`{}`：{description}", path[start..].join("."))
+        } else {
+            description.into()
+        },
         kind,
         advanced,
     });
@@ -497,19 +515,15 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "连接超时（秒）",
             "启动 MCP 服务并拉取工具列表的最长等待时间。",
         ),
-        "mcp.call_timeout_secs" => (
-            "调用超时（秒）",
-            "单次 MCP 工具调用的最长等待时间。",
-        ),
+        "mcp.call_timeout_secs" => ("调用超时（秒）", "单次 MCP 工具调用的最长等待时间。"),
         "mcp.max_concurrent_calls" => (
             "单服务并发上限",
             "同一 MCP server 同时执行工具调用的上限；1 表示串行。",
         ),
         "workflow.enabled" => ("启用 Workflow", "关闭后 /workflow 与相关调用不可用。"),
-        "workflow.max_concurrency_ceiling" => (
-            "并发执行上限",
-            "Workflow 同时运行的并发子任务数上限。",
-        ),
+        "workflow.max_concurrency_ceiling" => {
+            ("并发执行上限", "Workflow 同时运行的并发子任务数上限。")
+        }
         "workflow.world_run_timeout_ms" => (
             "脚本默认超时（毫秒）",
             "单次 Workflow 脚本运行的默认超时时间。",
@@ -539,10 +553,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "插件内存上限（字节）",
             "QuickJS 宿主为插件分配的最大堆内存。",
         ),
-        "plugins.load_timeout_ms" => (
-            "加载超时（毫秒）",
-            "初始化单个插件模块的最长等待时间。",
-        ),
+        "plugins.load_timeout_ms" => ("加载超时（毫秒）", "初始化单个插件模块的最长等待时间。"),
         "plugins.call_timeout_ms" => (
             "调用超时（毫秒）",
             "插件钩子或工具单次调用的超时时间；超时后本进程内禁用该插件。",
@@ -588,26 +599,21 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "强制拒绝写入",
             "逐行填写路径；优先级高于允许列表，工作区内同样生效。",
         ),
-        "tools.ptc.default_timeout_secs" => (
-            "默认脚本超时（秒）",
-            "单次 execute 脚本的默认超时时间。",
-        ),
+        "tools.ptc.default_timeout_secs" => {
+            ("默认脚本超时（秒）", "单次 execute 脚本的默认超时时间。")
+        }
         "tools.ptc.max_timeout_secs" => (
             "最大脚本超时（秒）",
             "单次 execute 脚本允许设置的最大超时秒数。",
         ),
-        "tools.ptc.memory_limit_bytes" => (
-            "沙盒内存上限（字节）",
-            "QuickJS 实例的最大堆内存限制。",
-        ),
+        "tools.ptc.memory_limit_bytes" => {
+            ("沙盒内存上限（字节）", "QuickJS 实例的最大堆内存限制。")
+        }
         "tools.ptc.max_output_bytes" => (
             "stdout 字节上限",
             "单次 execute 脚本标准输出的最大保留字节数。",
         ),
-        "tools.ptc.max_result_bytes" => (
-            "返回值字节上限",
-            "单次 execute 脚本返回值的最大字节数。",
-        ),
+        "tools.ptc.max_result_bytes" => ("返回值字节上限", "单次 execute 脚本返回值的最大字节数。"),
         "tools.ptc.max_pending_calls" => (
             "挂起调用上限",
             "单个脚本同时处于等待状态的宿主工具调用数上限。",
@@ -648,27 +654,21 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "Swap 预算（字节）",
             "单条命令最多可占用的 swap，0 表示不限（仅 Linux）。",
         ),
-        "tools.read.default_limit" => (
-            "默认读取行数",
-            "未指定 limit 时每次读取文件的默认行数。",
-        ),
+        "tools.read.default_limit" => ("默认读取行数", "未指定 limit 时每次读取文件的默认行数。"),
         "tools.read.max_bytes" => ("单次读取字节上限", "read 单次返回的最大字节数。"),
         "tools.read.line_max_bytes" => ("单行字节上限", "单行超过此字节数时截断显示。"),
         "tools.todo.enabled" => ("启用 Todo 工具", "允许模型维护任务清单与进度追踪。"),
         "tools.todo.reminders" => ("闲置提醒", "连续多轮未更新 Todo 时自动提醒模型。"),
-        "tools.todo.reminders_after" => (
-            "触发提醒轮数",
-            "连续多少次调用未更新清单后触发首次提醒。",
-        ),
+        "tools.todo.reminders_after" => {
+            ("触发提醒轮数", "连续多少次调用未更新清单后触发首次提醒。")
+        }
         "tools.todo.reminders_max" => ("最多提醒次数", "同一轮任务内最多触发提醒的次数。"),
-        "session.retention.enabled" => (
-            "自动清理过期数据",
-            "定期清理超过保留天数的临时产物与日志。",
-        ),
-        "compaction.threshold.mode" => (
-            "触发方式",
-            "按上下文占用百分比，或按固定 token 阈值触发。",
-        ),
+        "session.retention.enabled" => {
+            ("自动清理过期数据", "定期清理超过保留天数的临时产物与日志。")
+        }
+        "compaction.threshold.mode" => {
+            ("触发方式", "按上下文占用百分比，或按固定 token 阈值触发。")
+        }
         "compaction.threshold.value" => ("触发阈值", "百分比模式填 1–100，固定模式填 token 数。"),
         "web_search.enabled" => ("启用", "关闭后 web_search 工具不再向模型开放。"),
         "web_search.provider" => ("供应商", "网页搜索服务商。"),
@@ -676,7 +676,10 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "API Key",
             "Tavily API Key，仅用于 web_search；支持 env:变量名 或 !命令。",
         ),
-        "web_search.base_url" => ("Base URL", "自定义搜索 API 地址；留空使用官方 https://api.tavily.com。"),
+        "web_search.base_url" => (
+            "Base URL",
+            "自定义搜索 API 地址；留空使用官方 https://api.tavily.com。",
+        ),
         "web_search.timeout_secs" => ("请求超时（秒）", "单次搜索请求的最长等待时间。"),
         "web_fetch.enabled" => ("启用", "关闭后 web_fetch 工具不再向模型开放。"),
         "web_fetch.timeout_secs" => ("请求超时（秒）", "单次页面抓取的最长等待时间。"),
@@ -696,24 +699,39 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
         _ => match key {
             "enabled" => ("启用", "关闭后不再使用该功能。"),
             "api" => ("API 协议", "按供应商支持的协议格式选择。"),
-            "base_url" => ("Base URL", "服务端 API 地址；OpenAI 兼容接口通常自动补全 /v1。"),
+            "base_url" => (
+                "Base URL",
+                "服务端 API 地址；OpenAI 兼容接口通常自动补全 /v1。",
+            ),
             "api_key" => ("API Key", "直接填写密钥，或写 env:变量名 / !命令读取。"),
             "headers" => ("附加请求头", "JSON 格式的自定义 HTTP 请求头。"),
-            "extra_body" => ("Extra Body", "JSON 格式的附加请求体字段，用于兼容网关或透传参数。"),
+            "extra_body" => (
+                "扩展请求体（JSON）",
+                "编辑完整请求参数或供应商扩展；已列出的参数也可在下方单独编辑。模型逐层覆盖供应商默认值，对象合并、数组替换。",
+            ),
             "timeout_secs" => ("请求超时（秒）", "单次请求的最长等待时间；留空不限。"),
             "connect_timeout_secs" => (
                 "连接超时（秒）",
                 "建立网络连接的最长等待时间；留空用默认值。",
             ),
             "max_concurrency" => ("并发请求上限", "同时向该供应商发起的请求数；0 表示不限。"),
-            "cache" => ("Prompt Cache", "复用重复前缀以降低成本；默认自动。"),
+            "cache" => (
+                "提示缓存策略",
+                "auto 自动缓存，short 短缓存，long 长缓存；off 不发送缓存键、缓存选项或显式断点，上游仍可能自动缓存。",
+            ),
             "max_attempts" => ("最大尝试次数", "单次请求总尝试次数（含首次）。"),
             "initial_backoff_secs" => ("初始退避（秒）", "首次重试前的等待时间。"),
             "max_backoff_secs" => ("最大退避（秒）", "退避等待时间的上限。"),
             "jitter" => ("退避抖动", "为重试等待加入随机抖动，避免并发雪崩。"),
             "endpoint" => ("服务端点", "一般保持默认；Azure 需填写 api-version。"),
-            "context_window" => ("Context Window", "模型最大上下文 token 数，用于估算压缩时机。"),
-            "max_output_tokens" => ("Max Output Tokens", "模型单次回复的最大输出 token 数。"),
+            "context_window" => (
+                "Context Window",
+                "模型最大上下文 token 数，用于估算压缩时机。",
+            ),
+            "max_output_tokens" => (
+                "回复 token 上限",
+                "单次回复的输出上限；Chat 对应 `max_tokens` 或 `max_completion_tokens`，Responses 对应 `max_output_tokens`，Anthropic 对应 `max_tokens`（含思考预算）。",
+            ),
             "max_request_bytes" => (
                 "请求体字节上限",
                 "HTTP 请求体硬上限（默认 50 MiB，图片 Base64 合计另限 8 MiB）。",
@@ -721,7 +739,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "reasoning" => ("思考推理", "模型是否支持思维链推理。"),
             "thinking_levels" => (
                 "可选思考等级",
-                "支持预设等级或自定义等级；第一项为默认等级，off 始终可用。",
+                "支持预设或自定义等级；未配置 API 默认强度时使用第一项，off 始终可用，会话显式选择优先。",
             ),
             "input" => ("输入模态", "模型支持接收 text 或 text + image 多模态输入。"),
             "fast_mode" => (
@@ -764,12 +782,12 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "常驻任务日志上限",
                 "persistent 进程日志保留字节上限，超出时保留首尾各半。",
             ),
-            "cross_filesystems" => (
-                "跨文件系统扫描",
-                "grep/find 是否进入扫描根下的挂载点。",
-            ),
+            "cross_filesystems" => ("跨文件系统扫描", "grep/find 是否进入扫描根下的挂载点。"),
             "line_max_bytes" => ("单行字节上限", "单行超过该长度时截断并禁止整行编辑。"),
-            "max_edits" => ("单次编辑处数上限", "单次 edit 工具调用允许包含的修改处数上限。"),
+            "max_edits" => (
+                "单次编辑处数上限",
+                "单次 edit 工具调用允许包含的修改处数上限。",
+            ),
             "noop_loop_threshold" => (
                 "无效编辑提醒阈值",
                 "同一处编辑连续无变更达到此次数时提醒模型重新读取文件。",
@@ -784,12 +802,14 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "line_max_chars" => ("匹配行字符上限", "搜索结果单行最多显示的字符数。"),
             "context_before" => ("上文行数", "每处匹配上方附带的上下文行数。"),
             "context_after" => ("下文行数", "每处匹配下方附带的上下文行数。"),
-            "output_bytes" => ("输出字节上限", "单次搜索最多返回的字节数，超出后通过 skip 翻页。"),
-            "timeout_ms" => ("搜索超时（毫秒）", "单次搜索允许运行的最长时间。"),
-            "max_concurrent_calls" => (
-                "工具并发上限",
-                "单次工具批次中同时执行的只读工具数量上限。",
+            "output_bytes" => (
+                "输出字节上限",
+                "单次搜索最多返回的字节数，超出后通过 skip 翻页。",
             ),
+            "timeout_ms" => ("搜索超时（毫秒）", "单次搜索允许运行的最长时间。"),
+            "max_concurrent_calls" => {
+                ("工具并发上限", "单次工具批次中同时执行的只读工具数量上限。")
+            }
             "max_candidate_files" => ("扫描文件数上限", "搜索时最多遍历的候选文件总数。"),
             "limit" => ("默认返回条数", "find 未指定 limit 时的默认最大结果数。"),
             "max_running" => ("后台任务上限", "每个会话同时运行的后台任务数上限。"),
@@ -800,11 +820,15 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "moc：本地修剪 + 摘要；grok_build：9 段摘要；eocc：交接状态压缩（后两者忽略保留 token 与本地修剪参数）。",
             ),
             "keep_recent_tokens" => ("保留最近对话 (token)", "压缩后保留的最近对话预算。"),
-            "protect_recent_tool_tokens" => {
-                ("保护最近工具结果 (token)", "压缩时不清理最近该预算内的工具结果。")
-            }
+            "protect_recent_tool_tokens" => (
+                "保护最近工具结果 (token)",
+                "压缩时不清理最近该预算内的工具结果。",
+            ),
             "mid_prompt" => ("回合中途压缩", "长工具链执行期间也检查并触发压缩。"),
-            "auto" => ("自动压缩", "上下文接近上限时自动触发压缩；关闭后仅手动触发。"),
+            "auto" => (
+                "自动压缩",
+                "上下文接近上限时自动触发压缩；关闭后仅手动触发。",
+            ),
             "auto_continue" => ("压缩后自动继续", "自动压缩完成后继续当前回合执行。"),
             "soft_trim_chars" => (
                 "软修剪字符阈值",
@@ -825,10 +849,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "截断自动续写次数",
                 "回复因输出上限截断后自动续写的最大次数。",
             ),
-            "loop_detection" => (
-                "死循环检测",
-                "检测思考、正文与工具参数中出现的重复死循环。",
-            ),
+            "loop_detection" => ("死循环检测", "检测思考、正文与工具参数中出现的重复死循环。"),
             "connect_deadline_secs" => (
                 "连接与重试硬时限（秒）",
                 "流式请求收到响应头前或非流式全流程的硬超时（流式生成阶段不限时）。",
@@ -857,9 +878,18 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "逐行填写允许暴露的工具名，支持 * 通配；留空不限制。",
             ),
             "deny" => ("工具黑名单", "逐行填写禁用的工具名，支持 * 通配。"),
-            "supports_stop" => ("支持 stop 参数", "上游接口是否接受 stop 停止词参数。"),
-            "supports_prompt_cache_key" => ("支持 prompt_cache_key", "上游接口是否接受缓存键参数。"),
-            "max_output_tokens_field" => ("输出上限字段名", "上游接口使用的最大输出 token 字段名。"),
+            "supports_stop" => (
+                "支持停止序列",
+                "关闭后不发送 `stop` / `stop_sequences`，包括扩展请求体中的设置。",
+            ),
+            "supports_prompt_cache_key" => (
+                "支持提示缓存键",
+                "关闭后不发送 `prompt_cache_key`、`prompt_cache_options` 和 `prompt_cache_retention`。",
+            ),
+            "max_output_tokens_field" => (
+                "Chat 输出上限字段名",
+                "Chat 使用 `max_tokens` 或 `max_completion_tokens`；不影响 Responses 与 Anthropic。",
+            ),
             "reasoning_field" => ("Reasoning 字段名", "回传思考内容时使用的 JSON 字段名。"),
             "reasoning_field_aliases" => (
                 "Reasoning 响应别名",
@@ -885,10 +915,16 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "工具消息需携带 content",
                 "包含工具调用的历史消息强制携带非空 content 字段。",
             ),
-            "toggle_field" => ("思考开关字段名", "请求体中控制思考开关的字段名；留空不发送。"),
+            "toggle_field" => (
+                "思考开关字段名",
+                "请求体中控制思考开关的字段名；留空不发送。",
+            ),
             "enabled_value" => ("开启取值", "请求体中表示开启思考的字段值。"),
             "disabled_value" => ("关闭取值", "请求体中表示关闭思考的字段值。"),
-            "effort_field" => ("思考强度字段名", "请求体中控制思考强度的字段名；留空不发送。"),
+            "effort_field" => (
+                "思考强度字段名",
+                "请求体中控制思考强度的字段名；留空不发送。",
+            ),
             "effort_map" => (
                 "思考等级映射",
                 "将思考等级映射为上游接口接受的值；未配置项原样发送。",

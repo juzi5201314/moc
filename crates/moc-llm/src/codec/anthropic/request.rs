@@ -53,6 +53,12 @@ pub(in super::super) fn encode_inspected(
     }
 
     let mut body = cfg.extra_body.clone();
+    if !cfg.wire.supports_stop {
+        body.remove("stop_sequences");
+    }
+    if cfg.wire.tool_choice_dialect == ToolChoiceDialect::Unsupported {
+        body.remove("tool_choice");
+    }
     body.insert("model".into(), Value::String(cfg.model.clone()));
     body.insert("max_tokens".into(), Value::from(max_tokens));
     if let Some(system) = normalized.system_field() {
@@ -125,6 +131,16 @@ pub(super) fn encode_output_config(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    if req
+        .reasoning
+        .as_ref()
+        .is_some_and(|reasoning| !reasoning.enabled)
+    {
+        output_config.remove("effort");
+    }
+    if cfg.wire.response_format_dialect == crate::config::ResponseFormatDialect::Unsupported {
+        output_config.remove("format");
+    }
     if let Some(reasoning) = &req.reasoning
         && let Some(effort) = cfg.wire_effort(Some(reasoning))
     {
@@ -476,20 +492,30 @@ pub(super) fn encode_tool_choice(
         return None;
     }
     let disable_parallel = cfg.wire.parallel_tool_calls && matches!(parallel, Some(false));
-    if choice.is_none() && !disable_parallel {
+    if choice.is_none() && !disable_parallel && !cfg.extra_body.contains_key("tool_choice") {
         return None;
     }
     let mut object = match choice {
-        None | Some(ToolChoice::Auto) => json!({"type": "auto"}),
+        None => cfg
+            .extra_body
+            .get("tool_choice")
+            .cloned()
+            .unwrap_or_else(|| json!({"type":"auto"})),
+        Some(ToolChoice::Auto) => json!({"type": "auto"}),
         Some(ToolChoice::None) => json!({"type": "none"}),
         Some(ToolChoice::Required) => json!({"type": "any"}),
         Some(ToolChoice::Tool(name)) => json!({"type": "tool", "name": name}),
     };
-    if disable_parallel && !matches!(choice, Some(ToolChoice::None)) {
-        object
-            .as_object_mut()
-            .expect("tool_choice 由本模块构造成 JSON 对象")
-            .insert("disable_parallel_tool_use".into(), Value::Bool(true));
+    if let Some(object) = object.as_object_mut() {
+        object.entry("type").or_insert_with(|| json!("auto"));
+        if object.get("type").and_then(Value::as_str) == Some("none") {
+            object.remove("name");
+            object.remove("disable_parallel_tool_use");
+        } else if !cfg.wire.parallel_tool_calls {
+            object.remove("disable_parallel_tool_use");
+        } else if disable_parallel {
+            object.insert("disable_parallel_tool_use".into(), Value::Bool(true));
+        }
     }
     Some(object)
 }
@@ -505,17 +531,25 @@ pub(super) fn encode_thinking(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    if reasoning.enabled {
-        // 旧模型的 enabled + budget_tokens 由显式配置提供，不用 adaptive 覆盖它。
-        thinking.entry("type").or_insert_with(|| json!("adaptive"));
-    } else {
+    if !reasoning.enabled {
         thinking.clear();
         thinking.insert("type".into(), json!("disabled"));
-    }
-    if reasoning.enabled
-        && let Some(display) = reasoning.summary.and_then(display_value)
-    {
-        thinking.insert("display".into(), Value::String(display.into()));
+    } else {
+        thinking.entry("type").or_insert_with(|| json!("adaptive"));
+        match thinking.get("type").and_then(Value::as_str) {
+            Some("disabled" | "between_tools") => {
+                thinking.remove("budget_tokens");
+                thinking.remove("display");
+            }
+            _ => {
+                if thinking.get("type").and_then(Value::as_str) != Some("enabled") {
+                    thinking.remove("budget_tokens");
+                }
+                if let Some(display) = reasoning.summary.and_then(display_value) {
+                    thinking.insert("display".into(), Value::String(display.into()));
+                }
+            }
+        }
     }
     body.insert("thinking".into(), Value::Object(thinking));
 }

@@ -77,6 +77,14 @@ pub enum FieldKind {
     Multiline,
     Strings,
     Object,
+    /// 未设置、开启、关闭三态；未设置时不覆盖上层配置。
+    OptionalBool,
+    /// 有符号整数（如 seed）。
+    SignedInteger,
+    /// 有符号数值（如 frequency_penalty）。
+    SignedNumber,
+    /// 任意 JSON 值；用于字符串／对象联合类型和精确保留的数组。
+    Json,
     Choice(Vec<ChoiceOption>),
 }
 

@@ -6,6 +6,41 @@ use super::*;
 mod tests;
 
 pub const TAB: usize = 1;
+
+fn request_parameter(field: &ConfigField) -> bool {
+    field
+        .path
+        .iter()
+        .position(|part| matches!(part.as_str(), "extra_body" | "headers"))
+        .is_some_and(|index| index + 1 < field.path.len())
+}
+
+fn parameter_title(path: &[String]) -> &str {
+    match path.last().map_or("", String::as_str) {
+        "headers" => "API 请求头",
+        "extra_body" => "采样与通用请求参数",
+        "reasoning" => "思考与推理",
+        "thinking" => "思考模式与预算",
+        "text" => "回复详细程度",
+        "format" | "json_schema" => "结构化输出",
+        "response_format" => "输出格式",
+        "output_config" => "思考强度",
+        "metadata" => "请求元数据",
+        "prediction" => "预期输出",
+        "prompt" => "上游提示模板",
+        "prompt_cache_options" => "提示缓存",
+        "cache_control" => "自动缓存",
+        "stream_options" => "流式返回",
+        "tool_choice" => "工具调用策略",
+        "moderation" => "内容审核",
+        "input" => "输入审核策略",
+        "output" => "输出审核策略",
+        "image" => "上游图片处理",
+        "access_programs" => "访问计划",
+        "diagnostics" => "缓存诊断",
+        name => name,
+    }
+}
 pub const APIS: [(&str, &str); 3] = [
     ("openai_chat", "OpenAI Chat"),
     ("openai_responses", "OpenAI Responses"),
@@ -213,6 +248,9 @@ impl SettingsPanel {
                 && field.path.get(2).is_some_and(|p| p != "models")
         });
         for (index, field) in connection {
+            if request_parameter(field) {
+                continue;
+            }
             let primary = matches!(field.path[2].as_str(), "api" | "base_url" | "api_key");
             if primary || self.providers.more {
                 rows.push(Row {
@@ -222,6 +260,20 @@ impl SettingsPanel {
             }
         }
         action(&mut rows, ProviderAction::More);
+        self.parameter_rows(
+            &mut rows,
+            self.fields
+                .iter()
+                .enumerate()
+                .filter(|(_, field)| {
+                    field.path.starts_with(&["providers".into(), id.clone()])
+                        && field.path.get(2).is_some_and(|p| p != "models")
+                        && request_parameter(field)
+                })
+                .map(|(index, _)| index)
+                .collect(),
+            1,
+        );
         action(&mut rows, ProviderAction::Fetch);
         action(&mut rows, ProviderAction::Manual);
         if let Some(models) = self.effective["providers"][id]
@@ -259,12 +311,18 @@ impl SettingsPanel {
                             }
                         }
                     }
+                    let mut parameters = Vec::new();
                     for index in normal {
-                        rows.push(Row {
-                            depth: 2,
-                            kind: RowKind::Field(index),
-                        });
+                        if request_parameter(&self.fields[index]) {
+                            parameters.push(index);
+                        } else {
+                            rows.push(Row {
+                                depth: 2,
+                                kind: RowKind::Field(index),
+                            });
+                        }
                     }
+                    self.parameter_rows(&mut rows, parameters, 2);
                     if !adv.is_empty() {
                         let adv_key = format!("{key}/__advanced");
                         let mut adv_grouping = path.clone();
@@ -293,6 +351,40 @@ impl SettingsPanel {
             }
         }
         rows
+    }
+
+    /// 请求参数按原字段的父路径归组；与连接、高级协议兼容选项分开。
+    fn parameter_rows(&self, rows: &mut Vec<Row>, indices: Vec<usize>, depth: u8) {
+        let mut groups: Vec<(Vec<String>, Vec<usize>)> = Vec::new();
+        for index in indices {
+            let path = &self.fields[index].path;
+            let parent = &path[..path.len() - 1];
+            if let Some((_, indices)) = groups.iter_mut().find(|(path, _)| path == parent) {
+                indices.push(index);
+            } else {
+                groups.push((parent.to_vec(), vec![index]));
+            }
+        }
+        for (path, indices) in groups {
+            let key = path.join("/");
+            let expanded = self.is_expanded(&key, depth as usize);
+            rows.push(Row {
+                depth,
+                kind: RowKind::Group(Group {
+                    key,
+                    title: parameter_title(&path).into(),
+                    detail: format!("{} 项", indices.len()),
+                    grouping: path,
+                    path: None,
+                }),
+            });
+            if expanded {
+                rows.extend(indices.into_iter().map(|index| Row {
+                    depth: depth + 1,
+                    kind: RowKind::Field(index),
+                }));
+            }
+        }
     }
 
     pub fn visible_candidates(&self) -> Vec<usize> {
@@ -330,7 +422,7 @@ impl SettingsPanel {
         match action {
             ProviderAction::New => "+ 添加供应商".into(),
             ProviderAction::More => format!(
-                "{} 高级参数",
+                "{} 更多连接选项",
                 if self.providers.more { "▾" } else { "▸" }
             ),
             ProviderAction::Fetch => match &self.providers.discovery {
@@ -799,9 +891,11 @@ fn discovery_key(
     let visible = panel.visible_candidates();
     let last = visible.len().saturating_sub(1);
     if code == KeyCode::Enter {
-        let retry = panel.providers.discovery.as_ref().is_some_and(|d| {
-            d.pending.is_none() && d.error.is_some() && d.rows.is_empty()
-        });
+        let retry = panel
+            .providers
+            .discovery
+            .as_ref()
+            .is_some_and(|d| d.pending.is_none() && d.error.is_some() && d.rows.is_empty());
         if retry {
             panel.fetch(connection, &app.events);
         } else {
@@ -810,11 +904,7 @@ fn discovery_key(
         return;
     }
     if code == KeyCode::Char(' ') {
-        let cursor = panel
-            .providers
-            .discovery
-            .as_ref()
-            .map_or(0, |d| d.cursor);
+        let cursor = panel.providers.discovery.as_ref().map_or(0, |d| d.cursor);
         if let Some(&cand_idx) = visible.get(cursor) {
             panel.toggle_candidate(cand_idx);
             panel.error = None;

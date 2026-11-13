@@ -308,7 +308,12 @@ function ProviderDetail({
     (field) => field.path[0] === "providers" && field.path[1] === id && field.path[2] !== "models",
   );
   const primary = connection.filter((field) => PRIMARY[field.path[2]]);
-  const secondary = connection.filter((field) => !PRIMARY[field.path[2]]);
+  const parameters = connection.filter(
+    (field) => field.path.length > 3 && ["extra_body", "headers"].includes(field.path[2]),
+  );
+  const secondary = connection.filter(
+    (field) => !PRIMARY[field.path[2]] && !parameters.includes(field),
+  );
 
   const runDiscover = async () => {
     setDiscovered((state) => ({ ...state, busy: true, error: null }));
@@ -379,6 +384,15 @@ function ProviderDetail({
             {showMore && <FieldList fields={secondary} doc={doc} strip={2} />}
           </>
         )}
+      </section>
+
+      <section className="space-y-2">
+        <h4 className="text-xs font-medium text-text-tertiary">API 请求参数 · 供应商默认值</h4>
+        <p className="text-xs leading-5 text-muted-foreground">
+          按当前 API 格式列出文本、图片与函数调用参数；模型可单独覆盖。未设置的项使用 moc
+          或上游默认值，具体支持范围取决于模型与账号。
+        </p>
+        <FieldList fields={parameters} doc={doc} strip={2} />
       </section>
 
       <section className="space-y-2">

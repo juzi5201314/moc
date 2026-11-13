@@ -72,6 +72,32 @@ fn discovery(generation: u64, ids: &[&str]) -> Discovery {
 }
 
 #[test]
+fn api_parameters_are_visible_in_provider_and_model_groups_without_more_options() {
+    let mut panel = panel(json!({"providers":{"p":{"api":"openai_responses","models":{"m":{}}}}}));
+    assert!(!panel.providers.more);
+    let provider_group = "providers/p/extra_body/reasoning";
+    assert!(panel.rows.iter().any(|row| matches!(&row.kind, RowKind::Group(group) if group.key == provider_group && group.title == "思考与推理")));
+    panel.expanded.insert(provider_group.into());
+    panel.expanded.insert("providers/p/models/m".into());
+    panel
+        .expanded
+        .insert("providers/p/models/m/compat/extra_body/reasoning".into());
+    panel.rebuild_rows();
+    for prefix in [
+        vec!["providers", "p", "extra_body"],
+        vec!["providers", "p", "models", "m", "compat", "extra_body"],
+    ] {
+        let path: Vec<String> = prefix
+            .into_iter()
+            .chain(["reasoning", "summary"])
+            .map(str::to_owned)
+            .collect();
+        assert!(panel.rows.iter().any(
+            |row| matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == path)
+        ));
+    }
+}
+#[test]
 fn empty_provider_keeps_context_across_tabs_and_model_ids_are_literal() {
     let mut panel = panel(
         json!({"models": {"roles": {"default": "a/old"}}, "providers": {"a": {"models": {"old": {}}}, "z": {"models": {}}}}),

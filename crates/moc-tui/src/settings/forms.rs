@@ -6,7 +6,9 @@ pub(super) fn format_value(value: &Value, kind: &FieldKind) -> String {
         return String::new();
     }
     match kind {
-        FieldKind::Object => serde_json::to_string_pretty(value).expect("JSON 值"),
+        FieldKind::Object | FieldKind::Json => {
+            serde_json::to_string_pretty(value).expect("JSON 值")
+        }
         _ => value
             .as_str()
             .map_or_else(|| value.to_string(), str::to_owned),
@@ -23,7 +25,7 @@ pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Option<Value
         });
     }
     Ok(Some(match kind {
-        FieldKind::Integer => {
+        FieldKind::Integer | FieldKind::SignedInteger => {
             let s = trimmed.replace(',', "");
             let (multiplier, s) = if s.ends_with('k') || s.ends_with('K') {
                 (1_000u64, &s[..s.len() - 1])
@@ -32,16 +34,26 @@ pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Option<Value
             } else {
                 (1u64, s.as_str())
             };
-            let n = s
-                .trim()
-                .parse::<u64>()
-                .map_err(|_| anyhow::anyhow!("请输入有效整数（支持 200k、1m 或千分位）"))?;
-            let val = n
-                .checked_mul(multiplier)
-                .ok_or_else(|| anyhow::anyhow!("数值超出支持范围"))?;
-            json!(val)
+            if matches!(kind, FieldKind::SignedInteger) {
+                let n = s.trim().parse::<i64>().map_err(|_| {
+                    anyhow::anyhow!("请输入有效整数（支持负数、200k、1m 或千分位）")
+                })?;
+                json!(
+                    n.checked_mul(multiplier as i64)
+                        .ok_or_else(|| anyhow::anyhow!("数值超出支持范围"))?
+                )
+            } else {
+                let n = s
+                    .trim()
+                    .parse::<u64>()
+                    .map_err(|_| anyhow::anyhow!("请输入有效整数（支持 200k、1m 或千分位）"))?;
+                json!(
+                    n.checked_mul(multiplier)
+                        .ok_or_else(|| anyhow::anyhow!("数值超出支持范围"))?
+                )
+            }
         }
-        FieldKind::Number => {
+        FieldKind::Number | FieldKind::SignedNumber => {
             let s = trimmed.replace(',', "");
             let (multiplier, s) = if s.ends_with('k') || s.ends_with('K') {
                 (1_000.0f64, &s[..s.len() - 1])
@@ -55,13 +67,23 @@ pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Option<Value
                 .parse::<f64>()
                 .map_err(|_| anyhow::anyhow!("请输入有效数字"))?;
             let number = number * multiplier;
-            anyhow::ensure!(number.is_finite() && number >= 0.0, "请输入有限的非负数");
+            anyhow::ensure!(number.is_finite(), "请输入有限的数字");
+            anyhow::ensure!(
+                matches!(kind, FieldKind::SignedNumber) || number >= 0.0,
+                "请输入有限的非负数"
+            );
             json!(number)
         }
         FieldKind::Object => {
             let value: Value =
                 serde_json::from_str(text).map_err(|e| anyhow::anyhow!("JSON 格式有误：{e}"))?;
             anyhow::ensure!(value.is_object(), "请输入 JSON 对象");
+            value
+        }
+        FieldKind::Json => {
+            let value: Value =
+                serde_json::from_str(text).map_err(|e| anyhow::anyhow!("JSON 格式有误：{e}"))?;
+            anyhow::ensure!(!value.is_null(), "清空输入可恢复默认，不要填写 null");
             value
         }
         _ => json!(text),
@@ -488,7 +510,15 @@ fn apply_edit(
     let label = edit.title.as_str();
     match &edit.target {
         EditTarget::Field(path) => {
-            let value = parse(text, kind)?;
+            let value = if text.trim().is_empty()
+                && path
+                    .iter()
+                    .any(|p| matches!(p.as_str(), "extra_body" | "headers"))
+            {
+                None
+            } else {
+                parse(text, kind)?
+            };
             panel.commit(label, app, connection, |panel| {
                 panel.put(path, value);
                 Ok(Store::of(path))

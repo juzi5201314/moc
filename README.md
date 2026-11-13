@@ -85,6 +85,7 @@ moc --resume <id>             # 恢复历史会话
 - 项目覆盖：工作目录下 `.moc/config.toml`
 - 模型选择：`~/.moc/model-selection.toml`（Web、TUI 共用最近主动选择；恢复会话保持自身模型）
 - TUI 偏好：`~/.moc/tui.toml`（仅界面，不发送给模型）
+- API 参数：TUI 与 WebUI 共用按协议分组的配置入口，支持供应商默认值与模型覆盖，见 [API 请求参数配置](docs/api-parameters.md)
 
 ## 开发
 

@@ -190,10 +190,20 @@ pub(crate) fn build_request(
         reasoning: model.capabilities.reasoning.then(|| ReasoningConfig {
             enabled: model.thinking_level != crate::ThinkingLevel::Off,
             effort: model.thinking_level.effort(),
-            summary: Some(moc_llm::ReasoningSummary::Auto),
+            summary: Some(crate::config::parameters::summary(
+                model.llm.protocol,
+                &model.llm.extra_body,
+            )),
         }),
         response_format: None,
-        parallel_tool_calls: Some(model.llm.wire.parallel_tool_calls),
+        parallel_tool_calls: Some(
+            model
+                .llm
+                .extra_body
+                .get("parallel_tool_calls")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(model.llm.wire.parallel_tool_calls),
+        ),
         options: RequestOptions {
             echo_reasoning,
             cache: cache_options(model, message_count, anchors, session_id),
@@ -244,7 +254,15 @@ pub(crate) fn cache_options(
         (Vec::new(), Vec::new())
     };
     Some(CacheConfig {
-        key: (!anthropic).then(|| session_id.to_owned()),
+        key: (!anthropic).then(|| {
+            model
+                .llm
+                .extra_body
+                .get("prompt_cache_key")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(session_id)
+                .to_owned()
+        }),
         breakpoints,
         instruction_blocks,
         ttl: match (anthropic, model.cache) {
@@ -306,6 +324,112 @@ mod tests {
     use super::*;
     use moc_llm::ImageSource;
 
+    #[test]
+    fn configured_api_parameters_reach_requests_and_model_overrides_preserve_siblings() {
+        use serde_json::json;
+        for (api, provider_body, model_body, expected) in [
+            (
+                "openai_responses",
+                json!({"reasoning":{"summary":"detailed","context":"all_turns","effort":"medium"},"text":{"verbosity":"low"},"prompt_cache_key":"shared"}),
+                json!({"reasoning":{"mode":"pro"},"parallel_tool_calls":false}),
+                json!({"reasoning":{"summary":"detailed","context":"all_turns","mode":"pro","effort":"high"}}),
+            ),
+            (
+                "anthropic_messages",
+                json!({"thinking":{"type":"enabled","budget_tokens":2048,"display":"omitted"},"output_config":{"effort":"medium"},"metadata":{"user_id":"opaque"}}),
+                json!({"temperature":0.5,"top_k":20}),
+                json!({"thinking":{"type":"enabled","budget_tokens":2048,"display":"omitted"}}),
+            ),
+            (
+                "openai_chat",
+                json!({"reasoning_effort":"medium","frequency_penalty":-0.5,"tool_choice":"none","stream_options":{"include_usage":false}}),
+                json!({"seed":-42,"stop":["END"],"parallel_tool_calls":false}),
+                json!({"frequency_penalty":-0.5,"seed":-42,"stop":["END"],"tool_choice":"none","stream_options":{"include_usage":false}}),
+            ),
+        ] {
+            let directory = tempfile::tempdir().expect("临时目录");
+            let boot = crate::CoreConfig {
+                home: directory.path().join("home"),
+                cwd: directory.path().join("repo"),
+                ..Default::default()
+            };
+            std::fs::create_dir_all(&boot.home).expect("创建配置目录");
+            std::fs::create_dir_all(&boot.cwd).expect("创建工作区");
+            let view =
+                crate::config::editor::inspect(&boot, moc_protocol::ConfigScope::Global, &boot.cwd)
+                    .expect("读取配置");
+            let config = crate::config::editor::save(
+                &boot,
+                moc_protocol::ConfigScope::Global,
+                &boot.cwd,
+                json!({"providers":{"p":{"api":api,"base_url":"https://example.invalid","headers":{"X-Shared":"provider","x-provider":"keep"},"extra_body":provider_body,"models":{"m":{"reasoning":true,"compat":{"headers":{"x-shared":"model"},"extra_body":model_body}}}}}}),
+                &view.revision,
+            ).expect("保存参数");
+            assert_eq!(
+                config
+                    .resolve_model("p/m")
+                    .expect("默认模型")
+                    .thinking_level,
+                crate::ThinkingLevel::Medium
+            );
+            let model = config.resolve_model("p/m:high").expect("解析模型");
+            assert_eq!(model.llm.headers["x-shared"], "model");
+            assert_eq!(model.llm.headers["x-provider"], "keep");
+            let request = build_request(
+                &model,
+                &config,
+                vec![Message::user_text("问题")],
+                vec![moc_llm::ToolDef {
+                    name: "read".into(),
+                    description: Some("Read a file".into()),
+                    parameters: json!({"type":"object"}),
+                    strict: None,
+                }],
+                "session",
+                CacheAnchors::default(),
+            );
+            let body = moc_llm::inspect_request(&model.llm, &request, true)
+                .expect("编码请求")
+                .body;
+            for (key, value) in expected.as_object().expect("预期对象") {
+                assert_eq!(&body[key], value, "{api}: {key}");
+            }
+            if api == "openai_responses" {
+                assert_eq!(body["text"]["verbosity"], "low");
+                assert_eq!(body["prompt_cache_key"], "shared");
+            }
+            if api != "anthropic_messages" {
+                assert_eq!(body["parallel_tool_calls"], false);
+            }
+            let off_model = config.resolve_model("p/m:off").expect("关闭思考");
+            let off_request = build_request(
+                &off_model,
+                &config,
+                vec![Message::user_text("问题")],
+                Vec::new(),
+                "session",
+                CacheAnchors::default(),
+            );
+            let off = moc_llm::inspect_request(&off_model.llm, &off_request, true)
+                .expect("编码关闭思考的请求")
+                .body;
+            match api {
+                "openai_responses" => {
+                    assert_eq!(off["reasoning"]["effort"], "none");
+                    assert!(off["reasoning"].get("summary").is_none());
+                }
+                "anthropic_messages" => {
+                    assert_eq!(off["thinking"], json!({"type":"disabled"}));
+                    assert!(
+                        off.get("output_config")
+                            .and_then(|v| v.get("effort"))
+                            .is_none()
+                    );
+                }
+                _ => assert_eq!(off["reasoning_effort"], "none"),
+            }
+        }
+    }
     #[tokio::test]
     async fn unsupported_images_become_text_and_local_paths_become_base64() {
         let image = || InputPart::Image {

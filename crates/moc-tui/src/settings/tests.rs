@@ -183,6 +183,25 @@ fn test_parse_friendly_inputs() {
 
     assert_eq!(parse("1.5k", &FieldKind::Number), Some(json!(1500.0)));
     assert_eq!(parse("10,000.5", &FieldKind::Number), Some(json!(10000.5)));
+    assert_eq!(parse("-42", &FieldKind::SignedInteger), Some(json!(-42)));
+    assert_eq!(parse("-2k", &FieldKind::SignedInteger), Some(json!(-2000)));
+    assert_eq!(parse("-0.5", &FieldKind::SignedNumber), Some(json!(-0.5)));
+    assert!(forms::parse("-1", &FieldKind::Integer).is_err());
+    assert!(forms::parse("-1", &FieldKind::Number).is_err());
+    for value in [
+        json!("a,b\nEND"),
+        json!(["a,b", "\nEND"]),
+        json!({"type":"function","name":"read"}),
+    ] {
+        let text = forms::format_value(&value, &FieldKind::Json);
+        assert_eq!(parse(&text, &FieldKind::Json), Some(value));
+    }
+    let field = model_field("store", FieldKind::OptionalBool);
+    let Control::Select(picks) = controls::control(&field) else {
+        panic!("可选开关需三态选择");
+    };
+    assert_eq!(picks.len(), 3);
+    assert!(matches!(picks[0].action, controls::PickAction::Remove));
 
     // 留空：数值删除该项回到默认，文本写空串。
     assert_eq!(parse("   ", &FieldKind::Integer), None);

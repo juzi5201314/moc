@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: ec4f39a3e1e71fbe
+// schema sha256: 40f5a3a4bfea74bc
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -269,6 +269,18 @@ export type FieldKind =
     }
   | {
       type: "object";
+    }
+  | {
+      type: "optional_bool";
+    }
+  | {
+      type: "signed_integer";
+    }
+  | {
+      type: "signed_number";
+    }
+  | {
+      type: "json";
     }
   | {
       options: ChoiceOption[];

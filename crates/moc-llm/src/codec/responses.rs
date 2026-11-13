@@ -42,6 +42,17 @@ pub(super) fn encode_inspected(
     let breakpoints = cache_breakpoints(req, req.messages.len())?;
 
     let mut body = cfg.extra_body.clone();
+    if !cfg.wire.parallel_tool_calls {
+        body.remove("parallel_tool_calls");
+    }
+    if cfg.wire.tool_choice_dialect == ToolChoiceDialect::Unsupported {
+        body.remove("tool_choice");
+    }
+    if cfg.wire.response_format_dialect == ResponseFormatDialect::Unsupported
+        && let Some(text) = body.get_mut("text").and_then(Value::as_object_mut)
+    {
+        text.remove("format");
+    }
     body.insert("model".into(), Value::String(cfg.model.clone()));
     let input = encode_input(cfg, plan, req, &breakpoints, sources)?;
     body.insert("input".into(), Value::Array(input));
@@ -96,10 +107,14 @@ pub(super) fn encode_inspected(
             .as_ref()
             .and_then(|cache| cache.ttl)
             .unwrap_or(CacheTtl::ThirtyMinutes);
-        body.insert(
-            "prompt_cache_options".into(),
-            json!({"mode": "explicit", "ttl": ttl.as_str()}),
-        );
+        let mut options = body
+            .get("prompt_cache_options")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        options.insert("mode".into(), json!("explicit"));
+        options.insert("ttl".into(), json!(ttl.as_str()));
+        body.insert("prompt_cache_options".into(), Value::Object(options));
     }
     if let Some(store) = req.options.store {
         body.insert("store".into(), Value::Bool(store));

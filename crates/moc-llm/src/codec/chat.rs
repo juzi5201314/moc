@@ -48,6 +48,23 @@ pub(super) fn encode_inspected(
     let breakpoints = cache_breakpoints(req, req.messages.len())?;
 
     let mut body = cfg.extra_body.clone();
+    if !cfg.wire.supports_stop {
+        body.remove("stop");
+    }
+    if !cfg.wire.parallel_tool_calls {
+        body.remove("parallel_tool_calls");
+    }
+    if cfg.wire.tool_choice_dialect == ToolChoiceDialect::Unsupported {
+        body.remove("tool_choice");
+    }
+    if cfg.wire.tool_choice_dialect == ToolChoiceDialect::AnyForRequired
+        && body.get("tool_choice").and_then(Value::as_str) == Some("required")
+    {
+        body.insert("tool_choice".into(), json!("any"));
+    }
+    if cfg.wire.response_format_dialect == ResponseFormatDialect::Unsupported {
+        body.remove("response_format");
+    }
     body.insert("model".into(), Value::String(cfg.model.clone()));
     body.insert(
         "messages".into(),
@@ -100,10 +117,14 @@ pub(super) fn encode_inspected(
         }
         if !breakpoints.is_empty() {
             let ttl = cache.ttl.unwrap_or(CacheTtl::ThirtyMinutes);
-            body.insert(
-                "prompt_cache_options".into(),
-                json!({"mode": "explicit", "ttl": ttl.as_str()}),
-            );
+            let mut options = body
+                .get("prompt_cache_options")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            options.insert("mode".into(), json!("explicit"));
+            options.insert("ttl".into(), json!(ttl.as_str()));
+            body.insert("prompt_cache_options".into(), Value::Object(options));
         }
     }
     if let Some(store) = req.options.store {
@@ -116,7 +137,7 @@ pub(super) fn encode_inspected(
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        options.insert("include_usage".into(), Value::Bool(true));
+        options.entry("include_usage").or_insert(Value::Bool(true));
         body.insert("stream_options".into(), Value::Object(options));
     }
 

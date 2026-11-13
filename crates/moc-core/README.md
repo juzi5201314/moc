@@ -49,7 +49,7 @@ deny_write_paths = []
 
 计划模式的进入、退出和批准执行均不改变模型。计划期间手动切换的模型会继续保留。旧全局 `models.roles.default` 只在尚无模型记忆时迁移一次；旧 `default`、`plan` 配置读取时移除，保存设置时清除，项目配置不再覆盖日常模型选择。
 
-`base_url` 会自动补齐 `/v1`；末尾加 `#` 可跳过该处理。`api` 也支持 `openai_responses` 和 `anthropic_messages`。启用推理后，未配置 `thinking_levels` 时默认可选 `low`、`medium`、`high`、`xhigh`、`max`；列表第一项为默认等级，`off` 始终可用。也可写入自定义等级（小写字母、数字和 `-_.`，最长 32 个字符），请求时原样发送，或经 `compat.thinking.effort_map` 改写。Anthropic 使用 adaptive thinking 与 `output_config.effort`，不会发送旧式 `budget_tokens`。
+`base_url` 会自动补齐 `/v1`；末尾加 `#` 可跳过该处理。`api` 也支持 `openai_responses` 和 `anthropic_messages`。启用推理后，未配置 `thinking_levels` 时默认可选 `low`、`medium`、`high`、`xhigh`、`max`；未指定 API 默认强度时使用列表第一项，`off` 始终可用，会话显式选择优先。自定义等级使用小写字母、数字和 `-_.`，最长 32 个字符，可经 `compat.thinking.effort_map` 改写。Anthropic 默认使用 adaptive thinking，也可显式配置 enabled + budget_tokens。三协议参数入口与覆盖规则见 [API 请求参数配置](../../docs/api-parameters.md)。
 
 `[defaults.models]` 的键支持 glob 匹配，匹配结果按模式具体度合并，具体模型字段优先。例如 `"*-reasoner"` 会匹配 `provider/example-reasoner`；以上名称仅演示配置结构，不代表内置模型。模型的 `max_output_tokens` 是模型自身上限，不再受跨模型的全局输出上限截断。
 支持 `input = ["image"]` 的模型会接收所有图片输入形式。输入文本中的独立 `@path/to/image.png`、`@~/image.png` 标记会由 core 读取本地文件并转成 Base64；不再需要配置 `compat.image_url`。

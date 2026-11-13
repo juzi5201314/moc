@@ -1882,6 +1882,58 @@
           "type": "object"
         },
         {
+          "description": "未设置、开启、关闭三态；未设置时不覆盖上层配置。",
+          "properties": {
+            "type": {
+              "const": "optional_bool",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "有符号整数（如 seed）。",
+          "properties": {
+            "type": {
+              "const": "signed_integer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "有符号数值（如 frequency_penalty）。",
+          "properties": {
+            "type": {
+              "const": "signed_number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "任意 JSON 值；用于字符串／对象联合类型和精确保留的数组。",
+          "properties": {
+            "type": {
+              "const": "json",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "options": {
               "items": {

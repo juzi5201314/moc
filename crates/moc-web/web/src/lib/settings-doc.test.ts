@@ -33,6 +33,22 @@ describe("field parsing", () => {
     expect(parseField("   ", { type: "number" })).toEqual({ ok: true, value: undefined });
   });
 
+  it("按字段类型接受有符号数与任意 JSON 并精确回读", () => {
+    expect(parseField("-42", { type: "signed_integer" })).toEqual({ ok: true, value: -42 });
+    expect(parseField("-2k", { type: "signed_integer" })).toEqual({ ok: true, value: -2000 });
+    expect(parseField("-0.5", { type: "signed_number" })).toEqual({ ok: true, value: -0.5 });
+    expect(parseField("9007199254740993", { type: "signed_integer" }).ok).toBe(false);
+    expect(parseField("-1", { type: "integer" }).ok).toBe(false);
+    for (const value of ["a,b\nEND", ["a,b", "\nEND"], { type: "function", name: "read" }]) {
+      expect(parseField(formatField(value, { type: "json" }), { type: "json" })).toEqual({
+        ok: true,
+        value,
+      });
+    }
+    expect(parseField("", { type: "optional_bool" })).toEqual({ ok: true, value: undefined });
+    expect(parseField("false", { type: "optional_bool" })).toEqual({ ok: true, value: false });
+  });
+
   it("splits string lists and round-trips through formatField", () => {
     const parsed = parseField(" a, b ,,c ", { type: "strings" });
     expect(parsed).toEqual({ ok: true, value: ["a", "b", "c"] });

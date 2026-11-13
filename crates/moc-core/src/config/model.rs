@@ -221,6 +221,7 @@ pub(super) struct ModelCompat {
     pub requires_reasoning_content_for_all_assistant_turns: bool,
     pub requires_assistant_content_for_tool_calls: bool,
     pub thinking: ThinkingWire,
+    pub headers: BTreeMap<String, String>,
     pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -241,6 +242,7 @@ impl Default for ModelCompat {
             requires_reasoning_content_for_all_assistant_turns: false,
             requires_assistant_content_for_tool_calls: false,
             thinking: ThinkingWire::default(),
+            headers: BTreeMap::new(),
             extra_body: serde_json::Map::new(),
         }
     }
@@ -447,6 +449,11 @@ impl ResolvedProvider {
                 "供应商 {id} 的服务地址必须以 http:// 或 https:// 开头"
             )));
         }
+        super::parameters::validate(
+            api.protocol(),
+            &document.extra_body,
+            &format!("providers.{id}.extra_body"),
+        )?;
         // 上下文窗口为 0 会使压缩阈值饱和为 0，导致每一轮都触发压缩。
         for (model_id, model) in &document.models {
             if model.context_window == 0 {
@@ -464,6 +471,24 @@ impl ResolvedProvider {
             {
                 return Err(CoreError::Config(format!(
                     "providers.{id}.models.{model_id}.thinking_levels 必须包含至少一个非 off 等级"
+                )));
+            }
+            let body =
+                super::parameters::merge_body(&document.extra_body, &model.compat.extra_body);
+            super::parameters::validate(
+                api.protocol(),
+                &body,
+                &format!("providers.{id}.models.{model_id}.compat.extra_body"),
+            )?;
+            if model.reasoning
+                && let Some(level) =
+                    super::parameters::default_effort(api.protocol(), &body, &model.compat.thinking)
+                && level != ThinkingLevel::Off
+                && !effective_thinking_levels(model).contains(&level)
+            {
+                return Err(CoreError::Config(format!(
+                    "providers.{id}.models.{model_id} 的 API 默认思考强度 {} 不在 thinking_levels 中",
+                    level.as_str()
                 )));
             }
         }
@@ -498,10 +523,10 @@ impl ResolvedProvider {
         provider_id: &str,
         model_id: &str,
         model: &ModelDocument,
-        level: ThinkingLevel,
+        level: Option<ThinkingLevel>,
     ) -> ResolvedModel {
-        let mut extra_body = self.extra_body.clone();
-        extra_body.extend(model.compat.extra_body.clone());
+        let mut extra_body =
+            super::parameters::merge_body(&self.extra_body, &model.compat.extra_body);
         if self.cache == CachePolicy::Long
             && self.api.protocol() != Protocol::AnthropicMessages
             && model.compat.supports_prompt_cache_key
@@ -512,6 +537,47 @@ impl ResolvedProvider {
                 .or_insert_with(|| serde_json::json!("24h"));
         }
         let thinking_levels = effective_thinking_levels(model);
+        if self.cache == CachePolicy::Off || !model.compat.supports_prompt_cache_key {
+            for name in [
+                "prompt_cache_key",
+                "prompt_cache_options",
+                "prompt_cache_retention",
+            ] {
+                extra_body.remove(name);
+            }
+        }
+        if self.cache == CachePolicy::Off {
+            extra_body.remove("cache_control");
+        }
+        let level = level.unwrap_or_else(|| {
+            super::parameters::default_effort(
+                self.api.protocol(),
+                &extra_body,
+                &model.compat.thinking,
+            )
+            .unwrap_or_else(|| {
+                thinking_levels
+                    .first()
+                    .cloned()
+                    .unwrap_or(ThinkingLevel::Off)
+            })
+        });
+        if self.api.protocol() == Protocol::AnthropicMessages
+            && level != ThinkingLevel::Off
+            && let Some(thinking) = extra_body
+                .get_mut("thinking")
+                .and_then(serde_json::Value::as_object_mut)
+            && thinking.get("type").and_then(serde_json::Value::as_str) == Some("disabled")
+        {
+            thinking.insert("type".into(), serde_json::json!("adaptive"));
+        }
+        // HTTP 请求头不区分大小写；先供应商后模型，避免大小写变体打乱覆盖顺序。
+        let headers = self
+            .headers
+            .iter()
+            .chain(&model.compat.headers)
+            .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
+            .collect();
         let llm = LlmConfig {
             protocol: self.api.protocol(),
             base_url: self.base_url.clone(),
@@ -529,7 +595,7 @@ impl ResolvedProvider {
                 developer_role: model.compat.developer_role,
                 response_format_dialect: model.compat.response_format_dialect,
             },
-            headers: self.headers.clone(),
+            headers,
             extra_body,
             timeout_secs: self.timeout_secs,
             connect_timeout_secs: self.connect_timeout_secs,
@@ -652,19 +718,22 @@ pub(super) fn resolve_one(
             parsed.model_id
         ))
     })?;
-    let thinking_levels = effective_thinking_levels(model);
-    let default_level = thinking_levels
-        .first()
-        .cloned()
-        .unwrap_or(ThinkingLevel::Off);
-    let level = parsed.level.or(fallback_level).unwrap_or(default_level);
-    if model.reasoning && level != ThinkingLevel::Off && !thinking_levels.contains(&level) {
+    let resolved = provider.resolve_model(
+        parsed.provider_id,
+        parsed.model_id,
+        model,
+        parsed.level.or(fallback_level),
+    );
+    if model.reasoning
+        && resolved.thinking_level != ThinkingLevel::Off
+        && !resolved.thinking_levels.contains(&resolved.thinking_level)
+    {
         return Err(CoreError::Config(format!(
             "模型 {selector} 不支持思考等级 {}；可在模型的“可选思考等级”中调整",
-            level.as_str()
+            resolved.thinking_level.as_str()
         )));
     }
-    Ok(provider.resolve_model(parsed.provider_id, parsed.model_id, model, level))
+    Ok(resolved)
 }
 
 /// 解析一个可能带 Fusion 语法的 selector：普通写法直接走 [`resolve_one`]；
@@ -724,11 +793,7 @@ pub(super) fn all_models(providers: &BTreeMap<String, ResolvedProvider>) -> Vec<
     let mut result = Vec::new();
     for (provider_id, provider) in providers {
         for (model_id, model) in &provider.models {
-            let level = effective_thinking_levels(model)
-                .into_iter()
-                .next()
-                .unwrap_or(ThinkingLevel::Off);
-            result.push(provider.resolve_model(provider_id, model_id, model, level));
+            result.push(provider.resolve_model(provider_id, model_id, model, None));
         }
     }
     result

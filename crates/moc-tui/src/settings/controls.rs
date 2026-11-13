@@ -239,10 +239,27 @@ pub fn control(field: &ConfigField) -> Control {
         }
         _ => match &field.kind {
             FieldKind::Bool => Control::Toggle,
+            FieldKind::OptionalBool => Control::Select(vec![
+                Pick {
+                    label: "默认／继承".into(),
+                    action: PickAction::Remove,
+                },
+                Pick::set(json!(true), "开启（true）"),
+                Pick::set(json!(false), "关闭（false）"),
+            ]),
             FieldKind::Choice(options) => Control::Select(
-                options
-                    .iter()
-                    .map(|option| Pick::set(json!(option.value), option.label.clone()))
+                path.iter()
+                    .any(|part| part == "extra_body")
+                    .then(|| Pick {
+                        label: "默认／继承".into(),
+                        action: PickAction::Remove,
+                    })
+                    .into_iter()
+                    .chain(
+                        options
+                            .iter()
+                            .map(|option| Pick::set(json!(option.value), option.label.clone())),
+                    )
                     .collect(),
             ),
             FieldKind::Strings => Control::List(ListSpec {

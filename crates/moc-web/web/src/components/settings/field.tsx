@@ -26,7 +26,16 @@ const INHERIT = "__inherit__";
 export function fieldValues(doc: SettingsDocument, path: string[]) {
   const explicit = getPath(doc.document, path);
   const inherited = getPath(doc.inherited, path);
-  const fallback = inherited !== undefined ? inherited : getPath(doc.defaults, path);
+  const compat = path.indexOf("compat");
+  const providerDefault =
+    compat >= 0 && (path[compat + 1] === "extra_body" || path[compat + 1] === "headers")
+      ? getPath(doc.effective, [...path.slice(0, 2), ...path.slice(compat + 1)])
+      : undefined;
+  const fallback =
+    inherited ??
+    providerDefault ??
+    getPath(doc.defaults, path) ??
+    (explicit === undefined ? getPath(doc.effective, path) : undefined);
   return { explicit, fallback, effective: getPath(doc.effective, path) };
 }
 
@@ -71,7 +80,17 @@ export function SettingRow({
             )}
           </div>
           {description && (
-            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</p>
+            <p className="mt-0.5 break-words text-xs leading-5 text-muted-foreground">
+              {Array.from(description.matchAll(/`([^`]+)`|([^`]+)/g), (match) =>
+                match[1] ? (
+                  <code key={match.index} className="font-mono text-2xs">
+                    {match[1]}
+                  </code>
+                ) : (
+                  match[2]
+                ),
+              )}
+            </p>
           )}
         </div>
         <div className={cn("shrink-0", wide ? "w-full" : "w-[260px] max-w-[45%]")}>{children}</div>
@@ -95,7 +114,8 @@ function TextEditor({
 }) {
   const [draft, setDraft] = useState(explicitText);
   const [focused, setFocused] = useState(false);
-  const multiline = field.kind.type === "multiline" || field.kind.type === "object";
+  const multiline =
+    field.kind.type === "multiline" || field.kind.type === "object" || field.kind.type === "json";
 
   useEffect(() => {
     if (!focused) setDraft(explicitText);
@@ -133,7 +153,7 @@ function TextEditor({
         }}
         className={cn(
           "min-h-24 rounded-lg text-ui shadow-none",
-          field.kind.type === "object" && "font-mono text-xs",
+          (field.kind.type === "object" || field.kind.type === "json") && "font-mono text-xs",
         )}
       />
     );
@@ -154,7 +174,8 @@ function TextEditor({
       }}
       className={cn(
         "h-8 rounded-lg text-ui shadow-none",
-        (field.kind.type === "integer" || field.kind.type === "number") && "font-mono tabular-nums",
+        ["integer", "number", "signed_integer", "signed_number"].includes(field.kind.type) &&
+          "font-mono tabular-nums",
       )}
     />
   );
@@ -181,17 +202,28 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
         />
       </div>
     );
-  } else if (kind.type === "choice") {
+  } else if (kind.type === "choice" || kind.type === "optional_bool") {
+    const options =
+      kind.type === "choice"
+        ? kind.options
+        : [
+            { value: "true", label: "开启" },
+            { value: "false", label: "关闭" },
+          ];
     const current = overridden ? formatField(explicit, kind) : INHERIT;
     const fallbackText = formatField(fallback, kind);
-    const fallbackOption = kind.options.find((option) => option.value === fallbackText);
+    const fallbackOption = options.find((option) => option.value === fallbackText);
     editor = (
       <Select
         value={current}
         onValueChange={(value) =>
           void writeField(
             field.path,
-            value === INHERIT ? undefined : choiceValue(field.path, value),
+            value === INHERIT
+              ? undefined
+              : kind.type === "optional_bool"
+                ? value === "true"
+                : choiceValue(field.path, value),
           )
         }
       >
@@ -211,7 +243,7 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
                 ? `（${fallbackText}）`
                 : ""}
           </SelectItem>
-          {kind.options.map((option) => (
+          {options.map((option) => (
             <SelectItem key={option.value} value={option.value}>
               {choiceDisplay(option)}
             </SelectItem>
@@ -227,7 +259,7 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
           ? "已从上层配置继承"
           : "未设置"
         : fallbackText
-          ? kind.type === "object" || kind.type === "multiline"
+          ? kind.type === "object" || kind.type === "multiline" || kind.type === "json"
             ? fallbackText
             : `默认 ${fallbackText}`
           : "未设置";
@@ -248,7 +280,7 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
       title={field.path.join(".")}
       overridden={overridden}
       onReset={reset}
-      wide={kind.type === "multiline" || kind.type === "object"}
+      wide={kind.type === "multiline" || kind.type === "object" || kind.type === "json"}
       error={error}
     >
       {editor}
@@ -289,11 +321,36 @@ const GROUP_TITLES: Record<string, string> = {
   retry: "失败重试",
   compat: "协议兼容",
   "compat.thinking": "思考参数",
+  headers: "API 请求头",
+  extra_body: "采样与通用请求参数",
+  "extra_body.reasoning": "思考与推理",
+  "extra_body.thinking": "思考模式与预算",
+  "extra_body.text": "回复详细程度",
+  "extra_body.text.format": "结构化输出",
+  "extra_body.response_format": "输出格式",
+  "extra_body.response_format.json_schema": "输出 JSON Schema",
+  "extra_body.output_config": "思考强度",
+  "extra_body.output_config.format": "结构化输出",
+  "extra_body.metadata": "请求元数据",
+  "extra_body.prediction": "预期输出",
+  "extra_body.prompt": "上游提示模板",
+  "extra_body.prompt_cache_options": "提示缓存",
+  "extra_body.cache_control": "自动缓存",
+  "extra_body.stream_options": "流式返回",
+  "extra_body.tool_choice": "工具调用策略",
+  "extra_body.moderation": "内容审核",
+  "extra_body.moderation.policy.input": "输入审核策略",
+  "extra_body.moderation.policy.output": "输出审核策略",
+  "extra_body.image": "上游图片处理",
+  "extra_body.access_programs": "访问计划",
+  "extra_body.diagnostics": "缓存诊断",
 };
 
 /** 字段归组：去掉末段后的路径；同组相邻排列。 */
 function groupKey(path: string[], strip: number): string {
-  return path.slice(strip, -1).join(".");
+  const parent = path.slice(strip, -1);
+  if (parent[0] === "compat" && ["extra_body", "headers"].includes(parent[1])) parent.shift();
+  return parent.join(".");
 }
 
 export function FieldList({

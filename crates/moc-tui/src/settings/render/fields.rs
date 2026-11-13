@@ -83,7 +83,9 @@ pub(super) fn draw_fields(
             "没有匹配的设置项；按 / 修改搜索内容，或按 Esc 清空过滤。"
         } else {
             match TABS[panel.tab] {
-                "模型角色" => "暂无模型，请先到「供应商与模型」添加模型，或按 Ctrl+D 添加模型默认规则。",
+                "模型角色" => {
+                    "暂无模型，请先到「供应商与模型」添加模型，或按 Ctrl+D 添加模型默认规则。"
+                }
                 "供应商与模型" => "暂无供应商。",
                 "MCP" => "还没有 MCP 服务。按 A 添加。",
                 "插件" => "当前没有可配置的插件项。",
@@ -408,6 +410,15 @@ fn is_model_card(group: &Group) -> bool {
 
 pub(super) fn group_description(group: &Group) -> String {
     let path = group.grouping.as_slice();
+    if path
+        .iter()
+        .any(|part| matches!(part.as_str(), "extra_body" | "headers"))
+    {
+        return format!(
+            "{}：供应商提供默认值，模型可覆盖；未设置时使用 moc 或上游默认值，支持范围取决于模型与账号。",
+            group.title
+        );
+    }
     if path.last().is_some_and(|part| part == "__advanced") {
         return match path.first().map(String::as_str) {
             Some("providers") => "当前模型的高级覆盖参数。".into(),
