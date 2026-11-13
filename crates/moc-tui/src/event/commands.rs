@@ -201,7 +201,10 @@ pub(super) fn dispatch_command(
         },
         CommandId::Usage => refresh_usage(app, connection, true),
         CommandId::Monitor => app.modal = Some(Modal::Monitor),
-        CommandId::Doctor => app.push_note(crate::doctor::report(app), false),
+        CommandId::Doctor => app.push_note(
+            crate::doctor::report(app),
+            crate::transcript::NoteTone::Info,
+        ),
         CommandId::Help => app.modal = Some(Modal::Help { scroll: 0 }),
         CommandId::Context => open_context(app, connection),
         CommandId::Tools => open_tools(app, connection),
@@ -328,7 +331,7 @@ pub(super) fn dispatch_command(
 pub(super) fn show_features(app: &mut App) {
     app.push_note(
         moc_protocol::features::format_features(&app.features),
-        false,
+        crate::transcript::NoteTone::Info,
     );
 }
 

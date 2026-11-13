@@ -137,7 +137,16 @@ pub enum SessionUpdate {
     /// 新一轮模型生成开始；前端据此限定失败预览的清除边界。
     GenerationStarted { prompt_id: String },
     /// 丢弃当前生成的未提交预览，等待自动重试；已完成的工具和会话内容不受影响。
-    GenerationRetry { prompt_id: String, message: String },
+    ///
+    /// `message` 是面向人的完整说明（含尝试次数与失败原因）；`retry_in_ms` 是距下次
+    /// 尝试的等待毫秒数，需要倒数展示的前端按它本地计时，不必解析 `message`。
+    GenerationRetry {
+        prompt_id: String,
+        message: String,
+        /// 距下次重试的等待毫秒数；缺省视为 0（旧 core 未提供时立即倒数到零）。
+        #[serde(default)]
+        retry_in_ms: u64,
+    },
     /// 用户手动执行的命令开始；后续仍以 `ToolFinished` 回填结果。
     BashStarted {
         tool_call_id: String,
@@ -822,6 +831,14 @@ mod tests {
                 json!({ "type": "steering_applied", "id": 7, "text": "先保留原文件" }),
             ),
             (
+                SessionUpdate::GenerationRetry {
+                    prompt_id: "prompt_1".into(),
+                    message: "本次生成失败，2.5 秒后自动重试".into(),
+                    retry_in_ms: 2500,
+                },
+                json!({ "type": "generation_retry", "prompt_id": "prompt_1", "message": "本次生成失败，2.5 秒后自动重试", "retry_in_ms": 2500 }),
+            ),
+            (
                 SessionUpdate::Error {
                     prompt_id: "prompt_1".into(),
                     message: "失败".into(),
@@ -842,6 +859,15 @@ mod tests {
             let round_trip: SessionUpdate = serde_json::from_value(actual).expect("可反序列化");
             assert_eq!(round_trip, update);
         }
+        // 旧 core 的 generation_retry 没有 retry_in_ms：按缺省 0 接收。
+        let legacy: SessionUpdate = serde_json::from_value(
+            json!({ "type": "generation_retry", "prompt_id": "prompt_1", "message": "重试" }),
+        )
+        .expect("缺省字段兼容");
+        assert!(matches!(
+            legacy,
+            SessionUpdate::GenerationRetry { retry_in_ms: 0, .. }
+        ));
     }
 
     #[test]

@@ -723,8 +723,10 @@ pub(super) async fn run_prompt_locked(
                         };
                         update.emit(params.session_id.clone(), SessionUpdate::GenerationRetry {
                             prompt_id: prompt_id.clone(),
+                            // TUI 按「秒后自动重试」锚点定位秒数并替换成倒数；改措辞时同步 moc-tui。
                             message: format!("本次生成失败，{:.1} 秒后自动重试（第 {}/{} 次尝试）。失败预览已丢弃。\n{message}",
                                 delay.as_secs_f64(), retry_budget.attempts() + 1, model.llm.retry.max_attempts),
+                            retry_in_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
                         }).await.map_err(protocol_to_rpc)?;
                         last_message = Message::default();
                         tokio::select! {

@@ -13,6 +13,7 @@ use crate::event::cancel_prompt;
 use crate::modal::Modal;
 use crate::protocol::AppEvent;
 use crate::protocol::EmbeddedConnection;
+use crate::transcript::NoteTone;
 use crate::transcript::ToolCallFinish;
 use crate::transcript::ToolCallStart;
 use moc_protocol::InputPart;
@@ -254,10 +255,18 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
         } => {
             app.register_tool_batch(batch_id, calls.into_iter().map(|call| call.tool_call_id));
         }
-        SessionUpdate::GenerationStarted { .. } => app.start_generation(),
-        SessionUpdate::GenerationRetry { message, .. } => {
+        SessionUpdate::GenerationStarted { .. } => {
+            // 新一轮尝试开始：重试倒数便签定稿回 core 原文。
+            app.finish_retry_wait();
+            app.start_generation();
+        }
+        SessionUpdate::GenerationRetry {
+            message,
+            retry_in_ms,
+            ..
+        } => {
             app.discard_generation();
-            app.push_note(message.clone(), false);
+            app.start_retry_wait(message.clone(), retry_in_ms);
             app.set_warning(message);
         }
         SessionUpdate::GuardNotice {
@@ -266,7 +275,13 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
             if terminal {
                 app.discard_generation();
             }
-            app.push_note(message.clone(), terminal);
+            // 非终态是「已自动纠正/仍在等待」一类的干预提醒：不是失败，但值得留意。
+            let tone = if terminal {
+                NoteTone::Error
+            } else {
+                NoteTone::Warn
+            };
+            app.push_note(message.clone(), tone);
             app.set_warning(message);
         }
         // 插件失败即在本进程内停用：转写留下原因与恢复方式，状态栏给一行摘要。
@@ -275,7 +290,10 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
             code,
             message,
         } => {
-            app.push_note(plugin_notice_note(&plugin, &code, &message), true);
+            app.push_note(
+                plugin_notice_note(&plugin, &code, &message),
+                NoteTone::Error,
+            );
             app.set_warning(format!("插件 `{plugin}` 已停用（{code}）"));
         }
         SessionUpdate::AssistantDelta { delta, .. } => match delta {
@@ -448,10 +466,10 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
             full,
         } => app.finish_compaction(
             compaction_done_note(full, tokens_before, tokens_after),
-            false,
+            NoteTone::Info,
         ),
         SessionUpdate::ContextCompactionFailed { message } => {
-            app.finish_compaction(format!("上下文压缩失败：{message}"), true);
+            app.finish_compaction(format!("上下文压缩失败：{message}"), NoteTone::Error);
         }
         SessionUpdate::JobStarted { job } | SessionUpdate::JobUpdated { job } => {
             // 前台 bash 任务会同时发送 JobStarted 和 ToolStarted；
@@ -492,7 +510,14 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
                 let code = job
                     .exit_code
                     .map_or_else(String::new, |code| format!("（退出码 {code}）"));
-                app.push_note(format!("后台任务结束：{}{code}", job.command), false);
+                // 与 WebUI 同口径：只有干净退出（exit 0）算普通信息；
+                // 非零退出、被终止、超时都值得留意。
+                let tone = if job.exit_code == Some(0) {
+                    NoteTone::Info
+                } else {
+                    NoteTone::Warn
+                };
+                app.push_note(format!("后台任务结束：{}{code}", job.command), tone);
             }
         }
         SessionUpdate::WorkspaceChanged { .. } => {
@@ -521,14 +546,16 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::Error {
             message, retryable, ..
         } => {
-            // 请求失败了：这段没落库的流式预览不属于任何一次对话，撤掉。
+            // 请求失败了：这段没落库的流式预览不属于任何一次对话，撤掉；
+            // 在途的重试倒数同样定稿——错误便签才是这次失败的终态。
+            app.finish_retry_wait();
             app.discard_generation();
             app.push_note(
                 format!(
                     "错误：{message}{}",
                     if retryable { "（可以重试）" } else { "" }
                 ),
-                true,
+                NoteTone::Error,
             );
         }
         SessionUpdate::PromptRewound { replayed_tools } => {

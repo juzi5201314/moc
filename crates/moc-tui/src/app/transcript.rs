@@ -125,8 +125,8 @@ impl App {
     }
 
     /// 追加一条系统提示。
-    pub fn push_note(&mut self, text: String, error: bool) {
-        self.blocks.push(Entry::new(Block::Note { text, error }));
+    pub fn push_note(&mut self, text: String, tone: crate::transcript::NoteTone) {
+        self.blocks.push(Entry::new(Block::Note { text, tone }));
     }
 
     /// 隐式 todo 提醒：按工具样式插入一条占位块，让用户知道刚刚注入了一次提醒。

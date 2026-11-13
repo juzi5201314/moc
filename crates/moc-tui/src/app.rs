@@ -75,6 +75,28 @@ fn compaction_running_note(secs: u64) -> String {
     format!("{COMPACTION_RUNNING_PREFIX}…({secs}s)")
 }
 
+/// 一次模型生成失败后的等待重试：警告便签的秒数原地倒数。
+///
+/// 与 [`CompactionProgress`] 同款的进行中便签；`head`/`tail` 是秒数两侧的静态
+/// 片段，`message` 是 core 的完整原文（定稿时原样写回）。
+#[derive(Debug, Clone)]
+pub struct RetryWait {
+    /// 发起提示的会话；切到别的会话后不再更新它。
+    pub session_id: String,
+    /// 便签在 `blocks` 里的下标（历史分页前移时要同步平移）。
+    pub note_index: usize,
+    /// 下次尝试的截止时刻；按 core 下发的等待时长在本地推算。
+    pub deadline: std::time::Instant,
+    /// 已写进便签的剩余秒文本；只有它变了才重写便签。
+    pub shown: String,
+    /// 秒数前缀（含结尾的「，」）。
+    pub head: String,
+    /// 秒数之后的全部静态内容（「秒后自动重试…」+ 失败原因）。
+    pub tail: String,
+    /// core 下发的完整文案；等待结束定稿时写回便签。
+    pub message: String,
+}
+
 /// 转写区右缘滚动条上一帧的几何：点击与拖拽都按它换算滚动位置。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ScrollbackScrollbar {
@@ -264,6 +286,8 @@ pub struct App {
     pub prompt_started_at: Option<std::time::Instant>,
     /// 进行中的上下文压缩提示；`None` = 当前没有压缩在等模型。
     pub compaction_progress: Option<CompactionProgress>,
+    /// 等待自动重试的倒数便签；`None` = 当前不在重试等待中。
+    pub retry_wait: Option<RetryWait>,
     /// 当前 thinking block 开始时间（用于计算 duration_ms）。
     pub thinking_started_at: Option<std::time::Instant>,
     /// 本次模型响应是否已有思考块：usage 的 reasoning_tokens 只回填它，
@@ -576,6 +600,7 @@ impl App {
             cancel_requested: false,
             prompt_started_at: None,
             compaction_progress: None,
+            retry_wait: None,
             thinking_started_at: None,
             thinking_has_block: false,
             usage: Usage::default(),

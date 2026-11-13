@@ -393,6 +393,21 @@ impl ToolImage {
     }
 }
 
+/// 系统便签的强调档：普通信息、需留意的警告、失败。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteTone {
+    Info,
+    Warn,
+    Error,
+}
+
+impl NoteTone {
+    /// 成败二元到档位的桥：调用方只持有 `error` 布尔时用。
+    pub fn from_error(error: bool) -> Self {
+        if error { Self::Error } else { Self::Info }
+    }
+}
+
 /// 转写中的一个可渲染块。
 #[derive(Debug, Clone)]
 pub enum Block {
@@ -424,7 +439,7 @@ pub enum Block {
         body: String,
     },
     /// 系统提示（授权等待、错误、压缩等）。
-    Note { text: String, error: bool },
+    Note { text: String, tone: NoteTone },
 }
 
 impl Block {

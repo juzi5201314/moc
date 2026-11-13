@@ -290,7 +290,10 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         app.modal = None;
                     }
                     if let Some(error) = compaction_error {
-                        app.push_note(format!("上下文压缩失败：{error}"), true);
+                        app.push_note(
+                            format!("上下文压缩失败：{error}"),
+                            crate::transcript::NoteTone::Error,
+                        );
                     }
                     if let Some(notice) = notice {
                         app.set_notice(notice);

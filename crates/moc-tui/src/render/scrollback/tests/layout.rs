@@ -527,7 +527,7 @@ fn batch_members_share_one_generation_scan() {
             arguments: r#"{"path":"a.rs"}"#.into(),
         });
     }
-    app.push_note("独立块".into(), false);
+    app.push_note("独立块".into(), crate::transcript::NoteTone::Info);
     // 只有第二个成员继续变化：全批仍须使用同一个失效标记。
     app.tool_entry_mut("call_b").expect("批次成员").touch();
     let latest = app.blocks[1].generation;
@@ -897,7 +897,7 @@ fn user_and_note_estimates_match_render() {
     });
     app.push_block(Block::Note {
         text: "压缩完成".repeat(20),
-        error: false,
+        tone: crate::transcript::NoteTone::Info,
     });
     for width in [24u16, 60, 120] {
         for index in 0..app.blocks.len() {

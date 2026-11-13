@@ -123,7 +123,7 @@ pub(super) fn estimate_entry_height(
     match &entry.block {
         // 纯文本折行很便宜：直接复用渲染，估高与渲染恒等。
         Block::User { text } => user_message(text, entry.at_ms, width, app.theme).len(),
-        Block::Note { text, error } => note_block(text, *error, width, app.theme).len(),
+        Block::Note { text, tone } => note_block(text, *tone, width, app.theme).len(),
         Block::Assistant { text } => wrapped_rows(text, prose_width(width))
             .saturating_add(usize::from(entry.elapsed_ms.is_some()))
             .saturating_add(1),
@@ -251,7 +251,7 @@ pub(super) fn render_entry_single(
         Block::GoalRound { meta, body } => {
             EntryLines::plain(goal_round_block(meta, body, width, theme, level))
         }
-        Block::Note { text, error } => EntryLines::plain(note_block(text, *error, width, theme)),
+        Block::Note { text, tone } => EntryLines::plain(note_block(text, *tone, width, theme)),
     }
 }
 

@@ -501,7 +501,10 @@ pub(super) fn request_stop(app: &mut App, connection: &EmbeddedConnection) {
     if !app.cancel_requested {
         app.cancel_requested = true;
         if app.skills_compacting {
-            app.replace_skills_note("技能摘要处理中：正在取消，等待请求结束…".into(), false);
+            app.replace_skills_note(
+                "技能摘要处理中：正在取消，等待请求结束…".into(),
+                crate::transcript::NoteTone::Info,
+            );
         }
         app.set_notice("正在停止...");
         cancel_prompt(&connection.client, app);

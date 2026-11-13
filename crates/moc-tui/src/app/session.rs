@@ -96,6 +96,8 @@ impl App {
     ///
     /// `prompt_running` 不在其中：提示收尾要清它，切会话则按会话级在飞记账重算。
     pub(super) fn reset_prompt_state(&mut self) {
+        // 提示收尾或切会话：在途的重试倒数先定稿，不留悬挂状态。
+        self.finish_retry_wait();
         self.thinking_started_at = None;
         self.thinking_has_block = false;
         self.generation_start = None;
@@ -126,6 +128,9 @@ impl App {
         }
         if let Some(start) = &mut self.generation_start {
             *start += blocks.len();
+        }
+        if let Some(wait) = &mut self.retry_wait {
+            wait.note_index += blocks.len();
         }
         blocks.append(&mut self.blocks);
         self.blocks = blocks;

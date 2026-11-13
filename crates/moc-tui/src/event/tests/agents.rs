@@ -197,7 +197,10 @@ fn parent_error_preserves_delivered_agent_results() {
     );
     assert!(matches!(
         app.blocks.last().expect("保留错误反馈").block,
-        Block::Note { error: true, .. }
+        Block::Note {
+            tone: crate::transcript::NoteTone::Error,
+            ..
+        }
     ));
 }
 

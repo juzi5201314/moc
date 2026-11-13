@@ -70,11 +70,57 @@ fn foreground_job_updates_do_not_masquerade_as_background() {
         },
     );
     assert_eq!(tool_job_id(&app), None, "任务结束后摘除徽标");
-    let Some(Block::Note { text, error }) = app.blocks.last().map(|entry| &entry.block) else {
+    let Some(Block::Note { text, tone }) = app.blocks.last().map(|entry| &entry.block) else {
         panic!("后台任务结束应追加便签");
     };
-    assert!(!*error);
+    assert_eq!(*tone, crate::transcript::NoteTone::Info);
     assert_eq!(text, "后台任务结束：cargo build（退出码 0）");
+
+    // 非零退出的后台任务是警告便签。
+    apply_update(
+        &mut app,
+        SessionUpdate::JobFinished {
+            job: job(JobOrigin::AutoBackground, JobStatus::Exited, Some(1)),
+        },
+    );
+    let Some(Block::Note { tone, .. }) = app.blocks.last().map(|entry| &entry.block) else {
+        panic!("后台任务结束应追加便签");
+    };
+    assert_eq!(*tone, crate::transcript::NoteTone::Warn);
+}
+
+/// 循环守卫类提示：非终态（自动纠正/继续等待）是警告，终态（停止提示）是错误。
+#[test]
+fn guard_notice_tone_follows_terminal() {
+    use crate::transcript::Block;
+    use crate::transcript::NoteTone;
+
+    let mut app = app();
+    apply_update(
+        &mut app,
+        SessionUpdate::GuardNotice {
+            prompt_id: "prompt_1".into(),
+            message: "上游拒绝历史加密思考内容（thinking_signature_invalid），已自动剥离旧思考块并原地重试".into(),
+            terminal: false,
+        },
+    );
+    let Some(Block::Note { tone, .. }) = app.blocks.last().map(|entry| &entry.block) else {
+        panic!("守卫提示应追加便签");
+    };
+    assert_eq!(*tone, NoteTone::Warn);
+
+    apply_update(
+        &mut app,
+        SessionUpdate::GuardNotice {
+            prompt_id: "prompt_1".into(),
+            message: "已停止本次提示：检测到工具循环".into(),
+            terminal: true,
+        },
+    );
+    let Some(Block::Note { tone, .. }) = app.blocks.last().map(|entry| &entry.block) else {
+        panic!("守卫提示应追加便签");
+    };
+    assert_eq!(*tone, NoteTone::Error);
 }
 
 /// 上游改写折叠成告警文案：模型与推理强度各成一段、` ｜ ` 连接；再次不一致只替换。
@@ -147,12 +193,18 @@ fn compaction_note_ticks_then_replaces_in_place() {
         lock: None,
     });
     let note = |app: &App| match app.blocks.last().map(|entry| &entry.block) {
-        Some(Block::Note { text, error }) => (text.clone(), *error),
+        Some(Block::Note { text, tone }) => (text.clone(), *tone),
         other => panic!("压缩提示应为 Note：{other:?}"),
     };
 
     apply_update(&mut app, SessionUpdate::ContextCompactionStarted);
-    assert_eq!(note(&app), ("上下文压缩中…(0s)".into(), false));
+    assert_eq!(
+        note(&app),
+        (
+            "上下文压缩中…(0s)".into(),
+            crate::transcript::NoteTone::Info
+        )
+    );
 
     // 3 秒后同一条提示只改秒数。
     app.compaction_progress
@@ -160,7 +212,13 @@ fn compaction_note_ticks_then_replaces_in_place() {
         .expect("压缩在飞")
         .started_at -= std::time::Duration::from_secs(3);
     assert!(app.tick_compaction());
-    assert_eq!(note(&app), ("上下文压缩中…(3s)".into(), false));
+    assert_eq!(
+        note(&app),
+        (
+            "上下文压缩中…(3s)".into(),
+            crate::transcript::NoteTone::Info
+        )
+    );
     assert_eq!(app.blocks.len(), 1, "计时不应追加新块");
 
     apply_update(
@@ -174,7 +232,10 @@ fn compaction_note_ticks_then_replaces_in_place() {
     );
     assert_eq!(
         note(&app),
-        ("上下文已压缩：426.07k → 247.96k".into(), false)
+        (
+            "上下文已压缩：426.07k → 247.96k".into(),
+            crate::transcript::NoteTone::Info
+        )
     );
     assert_eq!(app.blocks.len(), 1, "完成时应原位替换");
     assert!(app.compaction_progress.is_none());
@@ -217,11 +278,11 @@ fn pruning_compaction_is_labelled_as_trim() {
             full: false,
         },
     );
-    let Some(Block::Note { text, error }) = app.blocks.last().map(|entry| &entry.block) else {
+    let Some(Block::Note { text, tone }) = app.blocks.last().map(|entry| &entry.block) else {
         panic!("裁剪提示应为 Note");
     };
     assert_eq!(text, "上下文已裁剪：426.07k → 247.96k（未生成摘要）");
-    assert!(!error);
+    assert_eq!(*tone, crate::transcript::NoteTone::Info);
     assert_eq!(app.blocks.len(), 1, "裁剪只留一条终态提示");
     assert!(app.compaction_progress.is_none());
 
@@ -277,11 +338,11 @@ fn failed_compaction_ends_the_running_note() {
             message: "上游不可用".into(),
         },
     );
-    let Some(Block::Note { text, error }) = app.blocks.last().map(|entry| &entry.block) else {
+    let Some(Block::Note { text, tone }) = app.blocks.last().map(|entry| &entry.block) else {
         panic!("失败提示应为 Note");
     };
     assert_eq!(text, "上下文压缩失败：上游不可用");
-    assert!(error);
+    assert_eq!(*tone, crate::transcript::NoteTone::Error);
     assert!(app.compaction_progress.is_none());
 }
 
@@ -324,7 +385,7 @@ async fn skills_compaction_updates_inline_without_modal_or_dismissal() {
         .join("\n");
     assert!(visible.contains("3920 → 900"));
     // 后续内容在同一滚动流追加，无需关闭状态块。
-    app.push_note("next".into(), false);
+    app.push_note("next".into(), crate::transcript::NoteTone::Info);
     assert_eq!(app.blocks.len(), 2);
     assert!(
         matches!(&app.blocks[0].block, Block::Note { text, .. } if text.contains("3920 → 900"))
@@ -472,8 +533,28 @@ fn thinking_duration_is_stamped_per_response() {
 
 #[test]
 fn automatic_retry_discards_only_current_preview() {
-    use crate::transcript::Block;
+    use crate::transcript::{Block, NoteTone};
+    use moc_protocol::{SessionEngine, SessionInfo};
     let mut app = app();
+    app.session = Some(SessionInfo {
+        id: "ses_retry".into(),
+        title: "重试".into(),
+        model: "test/model".into(),
+        permission: moc_protocol::SessionPermission::Full,
+        engine: SessionEngine::Standard,
+        autonomy: moc_protocol::SessionAutonomy::Default,
+        plan_active: false,
+        fast_mode: false,
+        engine_locked: false,
+        parent_session_id: None,
+        forked_from: None,
+        agent_preset: None,
+        delegation_depth: 0,
+        cwd: "/tmp".into(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        lock: None,
+    });
     app.prompt_running = true;
     app.push_block(Block::Assistant {
         text: "已完成".into(),
@@ -482,11 +563,13 @@ fn automatic_retry_discards_only_current_preview() {
     app.push_block(Block::Assistant {
         text: "失败正文".into(),
     });
+    let message = "本次生成失败，2.5 秒后自动重试（第 2/10 次尝试）。失败预览已丢弃。\n上游超时";
     apply_update(
         &mut app,
         SessionUpdate::GenerationRetry {
             prompt_id: "p".into(),
-            message: "等待重试".into(),
+            message: message.into(),
+            retry_in_ms: 2500,
         },
     );
     assert!(app.prompt_running);
@@ -498,5 +581,30 @@ fn automatic_retry_discards_only_current_preview() {
             _ => None,
         })
         .collect();
-    assert_eq!(texts, ["已完成"]);
+    assert_eq!(texts, ["已完成"], "只丢弃本次生成的预览");
+    let note = |app: &App| match app.blocks.last().map(|entry| &entry.block) {
+        Some(Block::Note { text, tone }) => (text.clone(), *tone),
+        other => panic!("重试提示应为 Note：{other:?}"),
+    };
+    // 重试便签是警告档：失败的这一次值得留意，但不是终态错误。
+    assert_eq!(note(&app), (message.to_owned(), NoteTone::Warn));
+
+    // 倒数按截止时刻刷新同一便签，不追加新块。
+    app.retry_wait.as_mut().expect("重试等待在飞").deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(1400);
+    assert!(app.tick_retry_wait());
+    let (text, tone) = note(&app);
+    assert_eq!(tone, NoteTone::Warn);
+    assert!(text.contains("1.4 秒后自动重试"), "{text}");
+    assert_eq!(app.blocks.len(), 2, "倒数刷新不应追加新块");
+
+    // 新一轮生成开始：便签定稿回 core 原文，倒数状态清掉。
+    apply_update(
+        &mut app,
+        SessionUpdate::GenerationStarted {
+            prompt_id: "p".into(),
+        },
+    );
+    assert_eq!(note(&app), (message.to_owned(), NoteTone::Warn));
+    assert!(app.retry_wait.is_none());
 }

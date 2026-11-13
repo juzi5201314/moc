@@ -442,7 +442,7 @@ fn rewind_drops_the_failed_tail_of_the_last_turn() {
     });
     app.push_block(crate::transcript::Block::Note {
         text: "错误：连接中断".into(),
-        error: true,
+        tone: crate::transcript::NoteTone::Error,
     });
 
     assert!(app.rewind_failed_turn(false));

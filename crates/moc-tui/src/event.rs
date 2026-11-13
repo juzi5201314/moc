@@ -13,6 +13,7 @@ use crate::render;
 use crate::terminal::TerminalGuard;
 use crate::theme::Theme;
 use crate::transcript::DetailLevel;
+use crate::transcript::NoteTone;
 
 /// TUI 启动参数（从 CLI 参数翻译而来）。
 #[derive(Debug, Clone, Default)]
@@ -214,6 +215,7 @@ async fn event_loop(
         let need_frame_wait = dirty && tokio::time::Instant::now() < next_frame;
         let activity_tick_enabled = app.prompt_running
             || app.compaction_progress.is_some()
+            || app.retry_wait.is_some()
             || matches!(app.modal, Some(Modal::Monitor));
         // 通知、告警与选区复制反馈到期时重绘；选区操作提示本身不计时。
         let notice_deadline = app.notice_deadline().map(tokio::time::Instant::from_std);
@@ -249,6 +251,9 @@ async fn event_loop(
                     dirty = true;
                 }
                 if app.tick_compaction() {
+                    dirty = true;
+                }
+                if app.tick_retry_wait() {
                     dirty = true;
                 }
             }
@@ -367,7 +372,7 @@ async fn event_loop(
                         } else {
                             text
                         };
-                        app.push_note(text, error);
+                        app.push_note(text, NoteTone::from_error(error));
                     }
                     Some(AppEvent::Usage {
                         request,
@@ -379,7 +384,7 @@ async fn event_loop(
                         let note = show.then(|| format_usage(&result, width));
                         app.apply_session_usage(request, result);
                         if let Some(note) = note {
-                            app.push_note(note, false);
+                            app.push_note(note, NoteTone::Info);
                         }
                     }
                     Some(AppEvent::Tools { request, result }) => {
@@ -513,7 +518,7 @@ async fn event_loop(
                     }
                     Some(AppEvent::GoalResult { goal, text }) => {
                         app.goal = goal;
-                        app.push_note(text, false);
+                        app.push_note(text, NoteTone::Info);
                     }
                     Some(AppEvent::OpenJobsModal(jobs)) => {
                         app.modal = Some(Modal::Jobs {

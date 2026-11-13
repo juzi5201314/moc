@@ -288,7 +288,7 @@ fn dock_render_is_nonmodal_and_responsive() {
     for (width, height) in [(140, 36), (80, 30), (38, 14)] {
         let mut app = app();
         app.prompt = PromptState::from_text("主草稿".into());
-        app.push_note("主转写".into(), false);
+        app.push_note("主转写".into(), crate::transcript::NoteTone::Info);
         app.queues
             .entry("a".into())
             .or_default()

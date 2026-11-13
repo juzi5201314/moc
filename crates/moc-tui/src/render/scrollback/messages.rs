@@ -462,17 +462,18 @@ pub(super) fn goal_round_block(
     lines
 }
 
-/// 系统提示：错误 `✘`、普通 `»` 落在块标记列，正文落在正文列。
+/// 系统提示：错误 `✘`、警告 `▲`、普通 `»` 落在块标记列，正文落在正文列。
 pub(super) fn note_block(
     text: &str,
-    error: bool,
+    tone: crate::transcript::NoteTone,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let (marker, color) = if error {
-        ("✘ ", theme.accent_error)
-    } else {
-        ("» ", theme.gray_bright)
+    use crate::transcript::NoteTone;
+    let (marker, color) = match tone {
+        NoteTone::Error => ("✘ ", theme.accent_error),
+        NoteTone::Warn => ("▲ ", theme.accent_warning),
+        NoteTone::Info => ("» ", theme.gray_bright),
     };
     let mut lines: Vec<Line<'static>> = wrap_text(text, prose_width(width))
         .into_iter()

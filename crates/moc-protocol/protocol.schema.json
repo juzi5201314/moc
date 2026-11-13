@@ -6088,13 +6088,20 @@
           "type": "object"
         },
         {
-          "description": "丢弃当前生成的未提交预览，等待自动重试；已完成的工具和会话内容不受影响。",
+          "description": "丢弃当前生成的未提交预览，等待自动重试；已完成的工具和会话内容不受影响。\n\n`message` 是面向人的完整说明（含尝试次数与失败原因）；`retry_in_ms` 是距下次\n尝试的等待毫秒数，需要倒数展示的前端按它本地计时，不必解析 `message`。",
           "properties": {
             "message": {
               "type": "string"
             },
             "prompt_id": {
               "type": "string"
+            },
+            "retry_in_ms": {
+              "default": 0,
+              "description": "距下次重试的等待毫秒数；缺省视为 0（旧 core 未提供时立即倒数到零）。",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
             },
             "type": {
               "const": "generation_retry",
