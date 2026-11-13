@@ -202,6 +202,8 @@ pub struct ToolCtx {
     pub plugins: Arc<moc_plugin::PluginHost>,
     /// 本次提示使用的模型选择器，供插件上下文读取。
     pub model: String,
+    /// 本次提示的模型是否接受图片输入；`read` 据此把图片文件读成图片结果。
+    pub accepts_image: bool,
     /// 当前正在执行的外层工具调用 ID；PTC 用它关联父子调用。
     pub tool_call_id: String,
     /// 本会话已加载的 skill 名。

@@ -1,7 +1,10 @@
-//! read 工具：展示目录和文本文件；文件头部带快照 tag，完整显示的行登记为可编辑。
+//! read 工具：展示目录、图片和文本文件；文件头部带快照 tag，完整显示的行登记为可编辑。
 
 use std::fs;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
+
+use base64::Engine as _;
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
@@ -28,7 +31,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "Read a text file, directory, or session resource URI; file output starts with [path#TAG] and numbers each line as N│text for edit and plan edits. With an explicit limit, a directory lists one level at a time and offset paginates."
+        "Read a text file, image, directory, or session resource URI; file output starts with [path#TAG] and numbers each line as N│text for edit and plan edits; png/jpeg/gif/webp/bmp files return the image itself when the model accepts image input. With an explicit limit, a directory lists one level at a time and offset paginates."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -82,6 +85,20 @@ impl Tool for ReadTool {
                     args.offset,
                     args.limit,
                 )?));
+            }
+            // 图片走二进制旁路：发送侧只保证 png/jpeg/gif/webp/bmp 可解码；
+            // 模型不支持图片时仍报 E_BINARY，附一句能力说明。
+            match sniff_image(&path) {
+                Some(media_type) if ctx.accepts_image => {
+                    return read_image(&path, &display, media_type);
+                }
+                Some(media_type) => {
+                    return Err(ToolError::new("E_BINARY", format!("{display}: E_BINARY"))
+                        .with_hint(format!(
+                            "this is a {media_type} image, but the current model does not support image input"
+                        )));
+                }
+                None => {}
             }
             let max_bytes = ctx.config.tools.output.max_file_bytes;
             let snapshot =
@@ -306,6 +323,65 @@ fn resolve_path(cwd: &Path, value: &str) -> Result<PathBuf, ToolError> {
         cwd.join(path)
     };
     fs::canonicalize(&joined).map_err(|error| map_read_error(value, error))
+}
+
+/// 与发送侧单图输入上限一致（moc-llm 预处理拒收更大的图片）。
+const MAX_IMAGE_FILE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// 嗅探文件头魔数；读不出来或格式不识时返回 `None`，让调用方走文本路径。
+fn sniff_image(path: &Path) -> Option<&'static str> {
+    let mut header = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(14)
+        .read_to_end(&mut header)
+        .ok()?;
+    image_media_type(&header)
+}
+
+/// 发送预处理可解码的图片格式（moc-llm 的 image 特性集）对应的魔数。
+/// BMP 的 "BM" 前缀只有两字节，附带校验保留字段为零，避免把碰巧以 BM
+/// 开头的二进制当成图片发出去。
+fn image_media_type(header: &[u8]) -> Option<&'static str> {
+    if header.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if header.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if header.starts_with(b"GIF87a") || header.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if header.starts_with(b"RIFF") && header.get(8..12).is_some_and(|b| b == b"WEBP") {
+        Some("image/webp")
+    } else if header.starts_with(b"BM") && header.get(6..10).is_some_and(|b| b == [0; 4]) {
+        Some("image/bmp")
+    } else {
+        None
+    }
+}
+
+/// 读取已确认格式的图片：超过发送侧单图输入上限直接报 E_TOO_LARGE。
+fn read_image(
+    path: &Path,
+    display: &str,
+    media_type: &'static str,
+) -> Result<ToolOutcome, ToolError> {
+    let metadata = fs::metadata(path).map_err(|error| map_read_error(display, error))?;
+    if metadata.len() > MAX_IMAGE_FILE_BYTES {
+        return Err(ToolError::new(
+            "E_TOO_LARGE",
+            format!(
+                "{display}: image is {} bytes and exceeds the 20 MiB image input limit; crop or downscale it first",
+                metadata.len()
+            ),
+        ));
+    }
+    let bytes = fs::read(path).map_err(|error| map_read_error(display, error))?;
+    let mut outcome =
+        ToolOutcome::success(format!("[{display}]\n{media_type}, {} bytes", bytes.len()));
+    outcome.images.push(moc_llm::ImageSource::Base64 {
+        media_type: media_type.to_owned(),
+        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+    });
+    Ok(outcome)
 }
 
 fn map_read_error(path: &str, error: std::io::Error) -> ToolError {
@@ -543,6 +619,47 @@ mod tests {
         assert_eq!(
             resolve_path(dir.path(), "missing").unwrap_err().code,
             "E_NOT_FOUND"
+        );
+    }
+
+    #[test]
+    fn image_magic_bytes_map_to_supported_media_types() {
+        for (header, expect) in [
+            (&b"\x89PNG\r\n\x1a\nrest"[..], Some("image/png")),
+            (&b"\xff\xd8\xff\xe0"[..], Some("image/jpeg")),
+            (&b"GIF87a"[..], Some("image/gif")),
+            (&b"GIF89a"[..], Some("image/gif")),
+            (&b"RIFF\x00\x00\x00\x00WEBP"[..], Some("image/webp")),
+            (
+                &b"BM\x00\x00\x00\x00\x00\x00\x00\x00"[..],
+                Some("image/bmp"),
+            ),
+            // BMP 魔数只有两字节；保留字段非零时不当图片处理。
+            (&b"BM\x00\x00\x00\x00\x01\x00\x00\x00"[..], None),
+            (&b"%PDF-1.4"[..], None),
+            (&b""[..], None),
+        ] {
+            assert_eq!(image_media_type(header), expect, "{header:?}");
+        }
+    }
+
+    #[test]
+    fn read_image_packages_bytes_as_model_visible_image() {
+        use base64::Engine as _;
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("shot.png");
+        let bytes = b"\x89PNG\r\n\x1a\nfake-png";
+        fs::write(&png, bytes).unwrap();
+        let outcome = read_image(&png, "shot.png", "image/png").unwrap();
+        let [moc_llm::ImageSource::Base64 { media_type, data }] = outcome.images.as_slice() else {
+            panic!("read_image must return exactly one image");
+        };
+        assert_eq!(media_type, "image/png");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap(),
+            bytes
         );
     }
 }

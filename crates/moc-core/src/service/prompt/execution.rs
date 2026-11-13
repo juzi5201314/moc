@@ -996,6 +996,7 @@ pub(super) async fn run_prompt_locked(
             skills: Arc::clone(&skills),
             plugins: Arc::clone(&plugins),
             model: model.selector.clone(),
+            accepts_image: model.capabilities.image,
             tool_call_id: String::new(),
             loaded_skills: Arc::clone(&runtime.loaded_skills),
             sandbox_support: inner.sandbox_support.clone(),
