@@ -74,9 +74,11 @@ impl SettingsPanel {
         }
         let filter = self.filter.to_lowercase();
         let searching = !filter.is_empty();
-        let mut rows = Vec::new();
-        let mut open: Vec<String> = Vec::new();
+        let mut tree = GroupNode::default();
         for (index, field) in self.fields.iter().enumerate() {
+            if field.path.len() >= 2 && field.path[0] == "models" && field.path[1] == "fusion" {
+                continue;
+            }
             if searching {
                 if !matches_filter(field, &filter) {
                     continue;
@@ -85,56 +87,103 @@ impl SettingsPanel {
                 continue;
             }
             let chain = self.group_chain(&field.path);
-            let common = chain
-                .iter()
-                .zip(&open)
-                .take_while(|(group, key)| group.0 == **key)
-                .count();
-            for (depth, group) in chain.iter().enumerate().skip(common) {
-                let detail = self.group_detail(&group.2);
-                rows.push(Row {
-                    depth: u8::try_from(depth).unwrap_or(u8::MAX),
-                    kind: RowKind::Group(Group {
-                        key: group.0.clone(),
-                        title: group.1.clone(),
-                        detail,
-                        grouping: group.2.clone(),
-                        path: group.3.clone(),
-                    }),
-                });
-            }
-            open = chain.iter().map(|group| group.0.clone()).collect();
-            let visible = searching
-                || chain
-                    .iter()
-                    .enumerate()
-                    .all(|(depth, group)| self.is_expanded(&group.0, depth));
-            if visible {
-                rows.push(Row {
-                    depth: u8::try_from(chain.len()).unwrap_or(u8::MAX),
-                    kind: RowKind::Field(index),
-                });
-            }
+            insert_into_tree(&mut tree, &chain, index, field.advanced);
         }
+        let mut rows = Vec::new();
+        self.emit_node(&tree, 0, searching, &mut rows);
         self.rows = rows;
         self.clamp_selected();
     }
 
+    fn emit_node(
+        &self,
+        node: &GroupNode,
+        depth: usize,
+        searching: bool,
+        rows: &mut Vec<Row>,
+    ) {
+        let child_depth = if let Some(group) = &node.group {
+            rows.push(Row {
+                depth: u8::try_from(depth).unwrap_or(u8::MAX),
+                kind: RowKind::Group(Group {
+                    key: group.0.clone(),
+                    title: group.1.clone(),
+                    detail: self.group_detail(&group.2),
+                    grouping: group.2.clone(),
+                    path: group.3.clone(),
+                }),
+            });
+            if !searching && !self.is_expanded(&group.0, depth) {
+                return;
+            }
+            depth + 1
+        } else {
+            depth
+        };
+        for &index in &node.fields {
+            rows.push(Row {
+                depth: u8::try_from(child_depth).unwrap_or(u8::MAX),
+                kind: RowKind::Field(index),
+            });
+        }
+        for child in &node.children {
+            self.emit_node(child, child_depth, searching, rows);
+        }
+        if !node.advanced_fields.is_empty() {
+            if searching {
+                for &index in &node.advanced_fields {
+                    rows.push(Row {
+                        depth: u8::try_from(child_depth).unwrap_or(u8::MAX),
+                        kind: RowKind::Field(index),
+                    });
+                }
+            } else {
+                let (adv_key, grouping) = match &node.group {
+                    Some(group) => {
+                        let mut grouping = group.2.clone();
+                        grouping.push("__advanced".into());
+                        (format!("{}/__advanced", group.0), grouping)
+                    }
+                    None => {
+                        let key = format!("__tab_{}/__advanced", self.tab);
+                        (key, vec![format!("__tab_{}", self.tab), "__advanced".into()])
+                    }
+                };
+                let expanded = self.is_expanded(&adv_key, child_depth);
+                rows.push(Row {
+                    depth: u8::try_from(child_depth).unwrap_or(u8::MAX),
+                    kind: RowKind::Group(Group {
+                        key: adv_key,
+                        title: "高级参数".into(),
+                        detail: format!("{} 项", node.advanced_fields.len()),
+                        grouping,
+                        path: None,
+                    }),
+                });
+                if expanded {
+                    for &index in &node.advanced_fields {
+                        rows.push(Row {
+                            depth: u8::try_from(child_depth + 1).unwrap_or(u8::MAX),
+                            kind: RowKind::Field(index),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) fn matches_tab(&self, field: &ConfigField) -> bool {
+        if field.path.len() >= 2 && field.path[0] == "models" && field.path[1] == "fusion" {
+            return false;
+        }
         let tab = TABS[self.tab];
-        if self.tab == 0 {
-            return field.tab == "模型"
-                && field.path.first().is_some_and(|root| root != "providers")
-                && (!field.advanced || self.advanced);
+        match tab {
+            "模型角色" => {
+                field.tab == "模型" && field.path.first().is_some_and(|root| root != "providers")
+            }
+            "Skills" => field.tab == "技能",
+            _ => field.tab == tab,
         }
-        // 插件字段由插件声明，设置页应始终可见，不能被核心“高级”开关隐藏。
-        if tab == "插件" {
-            return field.tab == tab;
-        }
-        if !field.advanced {
-            return field.tab == tab;
-        }
-        tab == "高级" || (self.advanced && field.tab == tab)
     }
 
     /// 字段所属分组链：`(分组键, 标题, 分组路径, 可删除路径)`。
@@ -179,10 +228,10 @@ impl SettingsPanel {
                 vec!["models".into(), "roles".into()],
                 None,
             )),
-            Some("models") if second == Some("fusion") => chain.push((
-                "models/fusion".into(),
-                "Fusion 组合".into(),
-                vec!["models".into(), "fusion".into()],
+            Some("agents") => chain.push((
+                "agents".into(),
+                "子代理".into(),
+                vec!["agents".into()],
                 None,
             )),
             Some("defaults") if path.len() >= 3 => {
@@ -196,6 +245,24 @@ impl SettingsPanel {
                     Some(vec!["defaults".into(), "models".into(), pattern.clone()]),
                 ));
             }
+            Some("context_files") => chain.push((
+                "context_files".into(),
+                "AGENTS.md".into(),
+                vec!["context_files".into()],
+                None,
+            )),
+            Some("system_prompt") => chain.push((
+                "system_prompt".into(),
+                "System Prompt".into(),
+                vec!["system_prompt".into()],
+                None,
+            )),
+            Some("skills") => chain.push((
+                "skills".into(),
+                "Skills".into(),
+                vec!["skills".into()],
+                None,
+            )),
             // 工具按子命令分组，避免同名设置（搜索超时、单文件上限）互相混淆。
             Some("tools") if path.len() >= 3 => {
                 let tool = path[1].clone();
@@ -218,23 +285,78 @@ impl SettingsPanel {
                     }
                 }
             }
-            Some("compaction") if path.len() >= 3 => {
-                let title = match second {
-                    Some("shake") => "本地修剪",
-                    _ => return chain,
-                };
-                let method = path[1].clone();
+            Some("web_search") => chain.push((
+                "web_search".into(),
+                "网络搜索".into(),
+                vec!["web_search".into()],
+                None,
+            )),
+            Some("web_fetch") => chain.push((
+                "web_fetch".into(),
+                "网页抓取".into(),
+                vec!["web_fetch".into()],
+                None,
+            )),
+            Some("workspace") => chain.push((
+                "workspace".into(),
+                "工作区".into(),
+                vec!["workspace".into()],
+                None,
+            )),
+            Some("sandbox") => chain.push((
+                "sandbox".into(),
+                "沙盒安全".into(),
+                vec!["sandbox".into()],
+                None,
+            )),
+            Some("compaction") => {
                 chain.push((
-                    format!("compaction/{method}"),
-                    title.into(),
-                    vec!["compaction".into(), method],
+                    "compaction".into(),
+                    "上下文压缩".into(),
+                    vec!["compaction".into()],
                     None,
                 ));
+                if second == Some("shake") && path.len() >= 3 {
+                    chain.push((
+                        "compaction/shake".into(),
+                        "本地修剪".into(),
+                        vec!["compaction".into(), "shake".into()],
+                        None,
+                    ));
+                }
             }
-            Some("session") if second == Some("retention") && path.len() >= 3 => chain.push((
-                "session/retention".into(),
-                "会话保留".into(),
-                vec!["session".into(), "retention".into()],
+            Some("session") => {
+                chain.push((
+                    "session".into(),
+                    "会话存储".into(),
+                    vec!["session".into()],
+                    None,
+                ));
+                if second == Some("retention") && path.len() >= 3 {
+                    chain.push((
+                        "session/retention".into(),
+                        "会话保留".into(),
+                        vec!["session".into(), "retention".into()],
+                        None,
+                    ));
+                }
+            }
+            Some("features") => chain.push((
+                "features".into(),
+                "实验特性".into(),
+                vec!["features".into()],
+                None,
+            )),
+            Some("limits") => chain.push((
+                "limits".into(),
+                "请求与循环限制".into(),
+                vec!["limits".into()],
+                None,
+            )),
+            Some("workflow") => chain.push((
+                "workflow".into(),
+                "Workflow".into(),
+                vec!["workflow".into()],
                 None,
             )),
             Some("mcp") if second == Some("servers") && path.len() >= 3 => {
@@ -248,6 +370,12 @@ impl SettingsPanel {
                     Some(vec!["mcp".into(), "servers".into(), name.clone()]),
                 ));
             }
+            Some("mcp") => chain.push((
+                "mcp".into(),
+                "MCP 服务".into(),
+                vec!["mcp".into()],
+                None,
+            )),
             Some("plugins") if path.len() >= 4 && second.is_some() => {
                 let plugin = path[1].clone();
                 chain.push((
@@ -257,6 +385,18 @@ impl SettingsPanel {
                     None,
                 ));
             }
+            Some("plugins") => chain.push((
+                "plugins".into(),
+                "插件系统".into(),
+                vec!["plugins".into()],
+                None,
+            )),
+            Some("tui") if second == Some("keybindings") => chain.push((
+                "tui/keybindings".into(),
+                "快捷键".into(),
+                vec!["tui".into(), "keybindings".into()],
+                None,
+            )),
             _ => {}
         }
         chain
@@ -282,9 +422,7 @@ impl SettingsPanel {
             [root, provider, models, model] if root == "providers" && models == "models" => {
                 self.model_summary(provider, model)
             }
-            [root, roles] if root == "models" && (roles == "roles" || roles == "fusion") => {
-                String::new()
-            }
+            [root, roles] if root == "models" && roles == "roles" => String::new(),
             [root, servers, _] if root == "mcp" && servers == "servers" => {
                 match self.value(group).map(server_address) {
                     Some(address) if !address.is_empty() => address,
@@ -328,7 +466,7 @@ impl SettingsPanel {
         if !self.filter.is_empty() {
             return true;
         }
-        if depth == 0 {
+        if depth == 0 && !key.ends_with("/__advanced") {
             !self.collapsed.contains(key)
         } else {
             self.expanded.contains(key)
@@ -337,7 +475,7 @@ impl SettingsPanel {
 
     pub(super) fn toggle_group(&mut self, key: &str, depth: u8) {
         let key = key.to_owned();
-        if depth == 0 {
+        if depth == 0 && !key.ends_with("/__advanced") {
             if !self.collapsed.remove(&key) {
                 self.collapsed.insert(key);
             }
@@ -349,14 +487,20 @@ impl SettingsPanel {
     }
 
     pub fn expand_all(&mut self) {
-        for row in &self.rows {
-            if let RowKind::Group(group) = &row.kind {
-                self.collapsed.remove(&group.key);
-                self.expanded.insert(group.key.clone());
+        for _ in 0..4 {
+            let mut changed = false;
+            for row in &self.rows {
+                if let RowKind::Group(group) = &row.kind {
+                    changed |= self.collapsed.remove(&group.key);
+                    changed |= self.expanded.insert(group.key.clone());
+                }
             }
+            if !changed {
+                break;
+            }
+            self.rebuild_rows();
         }
         self.scroll.reveal_selection = true;
-        self.rebuild_rows();
     }
 
     pub fn collapse_all(&mut self) {
@@ -422,5 +566,41 @@ impl SettingsPanel {
                 return;
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct GroupNode {
+    group: Option<GroupPath>,
+    fields: Vec<usize>,
+    advanced_fields: Vec<usize>,
+    children: Vec<GroupNode>,
+}
+
+fn insert_into_tree(
+    node: &mut GroupNode,
+    chain: &[GroupPath],
+    field_index: usize,
+    advanced: bool,
+) {
+    if let Some((head, tail)) = chain.split_first() {
+        let child = if let Some(pos) = node
+            .children
+            .iter()
+            .position(|child| child.group.as_ref().is_some_and(|group| group.0 == head.0))
+        {
+            &mut node.children[pos]
+        } else {
+            node.children.push(GroupNode {
+                group: Some(head.clone()),
+                ..Default::default()
+            });
+            node.children.last_mut().expect("刚插入节点")
+        };
+        insert_into_tree(child, tail, field_index, advanced);
+    } else if advanced {
+        node.advanced_fields.push(field_index);
+    } else {
+        node.fields.push(field_index);
     }
 }

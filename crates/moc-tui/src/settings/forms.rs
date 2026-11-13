@@ -118,14 +118,6 @@ fn edit_key(
     };
     let result = match edit.editor.key(mods, code) {
         Outcome::Stay => {
-            if matches!(edit.target, EditTarget::ModelFilter)
-                && let Editor::Text(editor) = &edit.editor
-                && let Some(discovery) = &mut panel.providers.discovery
-            {
-                discovery.query = editor.input.text.clone();
-                panel.rebuild_rows();
-                panel.select_action(ProviderAction::Search);
-            }
             panel.edit = Some(edit);
             return false;
         }
@@ -186,9 +178,18 @@ fn fields_key(
             // 如果搜索中光标停在某个字段上，顺带切到该字段所属的选项卡
             if let Some(RowKind::Field(idx)) = panel.row()
                 && let Some(field) = panel.fields.get(*idx)
-                && let Some(pos) = TABS.iter().position(|t| *t == field.tab)
             {
-                panel.tab = pos;
+                let target_tab = match field.tab.as_str() {
+                    "技能" => "Skills",
+                    "模型" if field.path.first().is_some_and(|root| root == "providers") => {
+                        "供应商与模型"
+                    }
+                    "模型" => "模型角色",
+                    other => other,
+                };
+                if let Some(pos) = TABS.iter().position(|t| *t == target_tab) {
+                    panel.tab = pos;
+                }
             }
             panel.filter.clear();
             panel.rebuild_rows();
@@ -197,7 +198,7 @@ fn fields_key(
         // 改动都是即时保存的，直接返回即可。
         return true;
     }
-    // 数字键 1-9, 0, - 直达前 11 个选项卡；插件页通过 [] 或 Tab 切换
+    // 数字键 1-9, 0, - 直达各选项卡；也可用 [] 或 Tab 切换
     let tab_jump = match code {
         KeyCode::Char('1') => Some(0),
         KeyCode::Char('2') => Some(1),
@@ -227,15 +228,6 @@ fn fields_key(
     if code == KeyCode::Char(']') {
         let next = (panel.tab + 1) % TABS.len();
         panel.select_tab(next);
-        return false;
-    }
-    if code == KeyCode::F(2) || code == KeyCode::Char('s') {
-        switch_scope(panel, app, connection);
-        return false;
-    }
-    if code == KeyCode::F(4) || code == KeyCode::Char('v') {
-        panel.advanced = !panel.advanced;
-        panel.rebuild_rows();
         return false;
     }
     if code == KeyCode::Char('e') {
@@ -411,19 +403,6 @@ fn delete_group(panel: &mut SettingsPanel) {
     };
 }
 
-/// F2：在全局配置与项目配置之间切换。
-fn switch_scope(panel: &mut SettingsPanel, app: &mut App, connection: &EmbeddedConnection) {
-    if app.saving_config() {
-        panel.message = Some("正在保存改动，请稍候再切换范围".into());
-        return;
-    }
-    let scope = match panel.scope {
-        ConfigScope::Global => ConfigScope::Project,
-        ConfigScope::Project => ConfigScope::Global,
-    };
-    panel.set_scope(scope, app, connection);
-}
-
 fn confirm_key(
     panel: &mut SettingsPanel,
     app: &mut App,
@@ -526,13 +505,6 @@ fn apply_edit(
                 panel.set_value(path, value);
                 Ok(Store::Core)
             })?;
-        }
-        EditTarget::ModelFilter => {
-            if let Some(discovery) = &mut panel.providers.discovery {
-                discovery.query = text.into();
-            }
-            panel.rebuild_rows();
-            panel.select_action(ProviderAction::Search);
         }
         EditTarget::Model(provider) => {
             let id = text.trim();

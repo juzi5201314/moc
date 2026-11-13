@@ -21,7 +21,6 @@ use crate::render::wrap::clip_line;
 use crate::render::wrap::str_width;
 use crate::settings::render::display_value;
 use crate::theme::Theme;
-use moc_protocol::ConfigScope;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -84,8 +83,8 @@ pub(super) fn draw_fields(
             "没有匹配的设置项；按 / 修改搜索内容，或按 Esc 清空过滤。"
         } else {
             match TABS[panel.tab] {
-                "供应商" => "还没有供应商。按 A 添加，填写服务地址与密钥后按 F 获取模型。",
-                "模型" => "还没有模型。按 A 填写模型 ID，或到“供应商”页按 F 获取。",
+                "模型角色" => "暂无模型，请先到「供应商与模型」添加模型，或按 Ctrl+D 添加模型默认规则。",
+                "供应商与模型" => "暂无供应商。",
                 "MCP" => "还没有 MCP 服务。按 A 添加。",
                 "插件" => "当前没有可配置的插件项。",
                 _ => "这一页暂时没有可配置项。",
@@ -102,7 +101,7 @@ pub(super) fn draw_fields(
         let hint = if !panel.filter.is_empty() {
             hints(&[("/", "重新搜索"), ("esc", "清空过滤")])
         } else {
-            hints(&[("1-9/[]", "切页"), ("esc", "返回")])
+            hints(&[("esc", "返回")])
         };
         return Footer {
             hint,
@@ -156,7 +155,6 @@ pub(super) fn draw_fields(
                         let matches = matches!(
                             (&edit.target, action),
                             (EditTarget::Model(_), ProviderAction::Manual)
-                                | (EditTarget::ModelFilter, ProviderAction::Search)
                         );
                         if matches && let Editor::Text(editor) = &edit.editor {
                             Some(editor)
@@ -165,12 +163,7 @@ pub(super) fn draw_fields(
                         }
                     });
                 if let Some(editor) = inline {
-                    let prompt = if *action == ProviderAction::Manual {
-                        "模型 ID："
-                    } else {
-                        "搜索："
-                    };
-                    let prefix = format!("{lead}{prompt}");
+                    let prefix = format!("{lead}模型 ID：");
                     let start = cells(str_width(&prefix)).min(row_area.width);
                     label(frame, row_area, &prefix, style);
                     let input_area = Rect::new(
@@ -202,13 +195,35 @@ pub(super) fn draw_fields(
                 } else {
                     "▸"
                 };
+                let is_advanced = group.grouping.last().is_some_and(|p| p == "__advanced");
+                let (title_style, detail_style) = if is_advanced {
+                    (
+                        if selected {
+                            style.add_modifier(Modifier::BOLD)
+                        } else {
+                            style.fg(theme.text_secondary)
+                        },
+                        style.fg(theme.gray),
+                    )
+                } else if is_model_card(group) {
+                    (
+                        style.fg(theme.accent_model).add_modifier(Modifier::BOLD),
+                        if selected {
+                            style.fg(theme.text_primary)
+                        } else {
+                            style.fg(theme.text_secondary)
+                        },
+                    )
+                } else {
+                    (style.add_modifier(Modifier::BOLD), style.fg(theme.gray))
+                };
                 label(
                     frame,
                     label_area,
                     &format!("{lead}{marker} {}", group.title),
-                    style.add_modifier(Modifier::BOLD),
+                    title_style,
                 );
-                label(frame, value_area, &group.detail, style.fg(theme.gray));
+                label(frame, value_area, &group.detail, detail_style);
             }
             RowKind::Field(index) => {
                 let field = &panel.fields[*index];
@@ -297,8 +312,7 @@ pub(super) fn draw_fields(
     );
     if let Some(edit) = panel.edit.as_ref().filter(|edit| !edit.popup) {
         let note = match &edit.target {
-            EditTarget::Model(_) => "模型 ID 原样保存，可包含 /",
-            EditTarget::ModelFilter => "实时过滤，已有勾选会保留",
+            EditTarget::Model(_) => "输入模型 ID（支持包含 /）",
             _ => "留空恢复默认",
         };
         let mut items = vec![("", note), ("tab", "下一项")];
@@ -310,8 +324,15 @@ pub(super) fn draw_fields(
     }
     // 提示条从左丢项：最可省的写在前面，Esc 恒在末尾。
     match panel.row() {
-        Some(RowKind::Action(_)) => Footer {
-            description: "模型操作只作用于当前供应商；新增模型后可直接展开编辑参数。".into(),
+        Some(RowKind::Action(action)) => Footer {
+            description: match action {
+                ProviderAction::More => "展开或收起超时、代理、默认头等高级连接参数。",
+                ProviderAction::Fetch => "打开模型选择弹窗，从供应商目录批量勾选添加。",
+                ProviderAction::Manual => "手动输入模型 ID 添加到当前供应商。",
+                ProviderAction::New => "创建新供应商配置。",
+                ProviderAction::Remove => "移除当前供应商及其模型列表。",
+            }
+            .into(),
             source: None,
             hint: hints(&[
                 ("tab", "切换焦点"),
@@ -321,15 +342,18 @@ pub(super) fn draw_fields(
             ]),
         },
         Some(RowKind::Group(group)) => {
-            let mut items = vec![
-                ("1-9/[]", "切页"),
-                ("e/c", "展收全部"),
-                ("←→/hl", "层级导航"),
-            ];
+            let mut items = Vec::new();
+            if TABS[panel.tab] == "MCP" {
+                items.push(("a", "添加服务"));
+            } else if TABS[panel.tab] == "会话" {
+                items.push(("m", "维护预览"));
+            } else if TABS[panel.tab] == "模型角色" {
+                items.push(("ctrl+d", "默认规则"));
+            }
             if group.path.is_some() {
                 items.push(("del", "删除"));
             }
-            items.extend([("enter/space", "展开收起"), ("esc", "返回")]);
+            items.extend([("enter/space", "展开/收起"), ("esc", "返回")]);
             Footer {
                 description: group_description(group),
                 source: None,
@@ -341,19 +365,24 @@ pub(super) fn draw_fields(
             let source = if field.path.first().is_some_and(|part| part == "tui") {
                 "界面偏好设置"
             } else if panel.explicit(&field.path) {
-                "● 已在本文件自定义"
-            } else if matches!(panel.scope, ConfigScope::Project) {
-                "○ 沿用全局配置或默认值"
+                "● 已自定义"
             } else {
-                "○ 使用系统默认值"
+                "○ 默认值"
             };
-            let items = [
-                ("1-9/[]", "切页"),
-                ("←/h", "跳至分组"),
+            let mut items = Vec::new();
+            if TABS[panel.tab] == "MCP" {
+                items.push(("a", "添加服务"));
+            } else if TABS[panel.tab] == "会话" {
+                items.push(("m", "维护预览"));
+            } else if TABS[panel.tab] == "模型角色" {
+                items.push(("ctrl+d", "默认规则"));
+            }
+            items.extend([
+                ("/", "搜索"),
                 ("r", "恢复默认"),
                 ("", controls::action_hint(&panel.controls[*index])),
                 ("esc", "返回"),
-            ];
+            ]);
             Footer {
                 description: field.description.clone(),
                 source: Some(source),
@@ -361,29 +390,68 @@ pub(super) fn draw_fields(
             }
         }
         None => Footer {
-            hint: hints(&[("1-9/[]", "切页"), ("esc", "返回")]),
+            hint: hints(&[("esc", "返回")]),
             ..Footer::default()
         },
     }
 }
 
+fn is_model_card(group: &Group) -> bool {
+    matches!(
+        group.grouping.as_slice(),
+        [p, _, m, _] if p == "providers" && m == "models"
+    ) || matches!(
+        group.grouping.as_slice(),
+        [d, m, _] if d == "defaults" && m == "models"
+    )
+}
+
 pub(super) fn group_description(group: &Group) -> String {
     let path = group.grouping.as_slice();
+    if path.last().is_some_and(|part| part == "__advanced") {
+        return match path.first().map(String::as_str) {
+            Some("providers") => "当前模型的高级覆盖参数。".into(),
+            _ => "当前分组的高级配置参数。".into(),
+        };
+    }
     match path.first().map(String::as_str) {
         Some("providers") if path.len() == 2 => format!("供应商“{}”的设置。", group.title),
         Some("providers") if group.detail.is_empty() => format!("模型“{}”的设置。", group.title),
         Some("providers") => format!("模型“{}”：{}。", group.title, group.detail),
         Some("models") if path.get(1).is_some_and(|part| part == "roles") => {
-            "会话使用的各类模型；候选来自已添加的模型。".into()
-        }
-        Some("models") => {
-            "主导模型负责规划与评审，执行模型负责实现与测试；两者都配置才生效。".into()
+            "各会话角色使用的模型，候选来自已配置模型。".into()
         }
         Some("defaults") => format!(
-            "名称匹配“{}”的模型默认设置。",
+            "匹配“{}”的模型默认参数。",
             path.get(2).map_or("", String::as_str)
         ),
+        Some("agents") => "子代理并发与默认参数。".into(),
+        Some("context_files") => "随请求加载的上下文规则文件。".into(),
+        Some("system_prompt") => "System Prompt 覆盖与追加规则。".into(),
+        Some("skills") => "Skills 目录扫描与加载规则。".into(),
+        Some("web_search") => "网络搜索接口与检索参数。".into(),
+        Some("web_fetch") => "网页抓取策略与截断限制。".into(),
+        Some("workspace") => "工作区与符号导航参数。".into(),
+        Some("tools") => match path.get(1).map(String::as_str) {
+            Some("ptc") => "PTC 代码执行沙盒限制。".into(),
+            _ => "基础工具开关与路径、输出限制。".into(),
+        },
+        Some("sandbox") => "命令与路径安全边界策略。".into(),
+        Some("compaction") if path.get(1).is_some_and(|p| p == "shake") => {
+            "上下文压缩前的自动裁剪参数。".into()
+        }
+        Some("compaction") => "上下文压缩阈值与策略。".into(),
+        Some("session") => "会话历史与持久化设置。".into(),
+        Some("workflow") => "Workflow 运行开关与并发限制。".into(),
+        Some("features") => "会话运行时功能开关。".into(),
+        Some("limits") => "工具输出、对话轮数与并发上限。".into(),
+        Some("tui") if path.get(1).is_some_and(|p| p == "keybindings") => {
+            "终端交互快捷键绑定。".into()
+        }
+        Some("tui") => "终端界面外观与交互偏好。".into(),
+        Some("mcp") if path.len() == 1 => "MCP 服务全局连接与发现设置。".into(),
         Some("mcp") => format!("MCP 服务“{}”。", group.title),
-        _ => format!("“{}”相关的设置。", group.title),
+        Some("plugins") if path.len() == 1 => "插件启用、沙盒与权限策略。".into(),
+        _ => format!("“{}”设置。", group.title),
     }
 }

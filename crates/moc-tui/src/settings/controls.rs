@@ -357,12 +357,12 @@ pub fn summary(control: &Control, value: &Value) -> Option<String> {
 /// 字段行的操作提示。
 pub fn action_hint(control: &Control) -> &'static str {
     match control {
-        Control::Toggle => "Space/Enter 切换开关",
-        Control::Select(_) => "Space 快速轮换 · Enter 弹窗选择",
-        Control::Model(_) => "Space/Enter 打开模型选择器（只列已配置的模型，可选思考等级）",
-        Control::List(spec) if spec.presets.is_empty() => "Enter 编辑列表（逐项增删）",
-        Control::List(_) => "Enter 打开勾选清单",
-        Control::Record(_) => "Enter 编辑键值",
-        Control::Input(_) => "Enter 编辑 · 留空恢复默认",
+        Control::Toggle => "Space/Enter 切换",
+        Control::Select(_) => "Space 切换 · Enter 选择",
+        Control::Model(_) => "Space/Enter 编辑",
+        Control::List(spec) if spec.presets.is_empty() => "Enter 编辑",
+        Control::List(_) => "Enter 选择",
+        Control::Record(_) => "Enter 编辑",
+        Control::Input(_) => "Enter 编辑",
     }
 }

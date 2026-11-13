@@ -31,21 +31,19 @@ pub const TABS: &[&str] = &[
     "模型角色",
     "供应商与模型",
     "指令",
-    "技能",
+    "Skills",
     "工具",
     "沙盒",
     "上下文",
     "会话",
     "MCP",
     "界面",
-    "高级",
     "插件",
 ];
 
 pub struct SettingsPanel {
     pub id: u64,
     pub cwd: String,
-    pub scope: ConfigScope,
     pub data: Option<SettingsDocument>,
     pub tui: Value,
     pub effective: Value,
@@ -56,7 +54,7 @@ pub struct SettingsPanel {
     pub rows: Vec<Row>,
     /// 用户折叠的顶层分组（顶层默认展开）。
     pub collapsed: BTreeSet<String>,
-    /// 用户展开的嵌套分组（嵌套默认折叠）。
+    /// 用户展开的嵌套分组（嵌套与高级参数分组默认折叠）。
     pub expanded: BTreeSet<String>,
     pub tab: usize,
     pub selected: usize,
@@ -65,7 +63,6 @@ pub struct SettingsPanel {
     pub scroll: ModelScroll,
     /// 保留坐标，在最终布局上计算悬停，避免滚动后沿用旧命中。
     pub pointer: Option<ratatui::layout::Position>,
-    pub advanced: bool,
     pub filter: String,
     /// 正在进行的编辑：行内单行输入或弹窗控件。
     pub edit: Option<EditState>,
@@ -80,8 +77,6 @@ pub struct SettingsPanel {
     pub history: History,
     /// 撤回／重做的提示语，写入完成后仍然保留。
     pub outcome: Option<String>,
-    /// 切换范围后才能套用的历史快照。
-    pub restore: Option<Restore>,
 }
 
 /// 请求类型：决定回执如何落到面板上。
@@ -119,22 +114,13 @@ impl Store {
     }
 }
 
-/// 一次改动的快照：撤回时整体恢复，含改动发生的范围。
+/// 一次改动的快照：撤回时整体恢复。
 #[derive(Clone)]
 pub struct Snapshot {
-    pub scope: ConfigScope,
     pub document: Value,
     pub tui: Value,
     /// 这次改动做了什么，用于选中项与提示文案。
     pub label: String,
-}
-
-/// 撤回／重做要套用的快照：改动发生在别的范围时，先切回去再套用。
-pub struct Restore {
-    pub entry: Snapshot,
-    pub message: String,
-    /// 这次是撤回（`true`）还是重做。
-    pub undo: bool,
 }
 
 /// 进程内的撤回与重做栈。
@@ -162,6 +148,7 @@ impl History {
     ///
     /// 撤回/重做因保存进行中而放弃时必须走这里：走 [`History::put`] 等于声明
     /// 「发生了一次新改动」，会顺手清空重做栈——撤回被放弃却把重做历史丢了。
+    #[cfg(test)]
     fn restore(&mut self, snapshot: Snapshot, undo: bool) {
         let stack = if undo { &mut self.undo } else { &mut self.redo };
         stack.push(snapshot);
@@ -223,7 +210,6 @@ pub enum EditTarget {
     Field(Vec<String>),
     /// 选中 Azure 端点后填写 `api_version`；路径指向 `providers.<p>.endpoint`。
     Azure(Vec<String>),
-    ModelFilter,
     Model(String),
     Mcp,
     ModelDefaults,
@@ -243,8 +229,8 @@ pub enum Hit {
     /// 新建供应商表单控件。
     ProviderInput(usize),
     ProviderAction(ProviderAction),
-    /// 工具栏按钮：等价于按下某个按键。
-    Key(KeyCode, KeyModifiers),
+    /// 获取模型弹窗里的第 N 个候选行。
+    DiscoveryItem(usize),
     /// 提示条/弹窗 footer 上的键位：等价于按下该键，编辑态下同样生效
     /// （提示条描述的正是当前编辑器接受的键）。
     Hint(KeyCode, KeyModifiers),
@@ -278,7 +264,6 @@ pub fn open(app: &mut App, connection: &EmbeddedConnection) {
     let mut panel = SettingsPanel {
         id: app.next_config_id,
         cwd: cwd.clone(),
-        scope: ConfigScope::Global,
         data: None,
         tui: tui.clone(),
         effective: json!({}),
@@ -292,7 +277,6 @@ pub fn open(app: &mut App, connection: &EmbeddedConnection) {
         offset: 0,
         scroll: Default::default(),
         pointer: None,
-        advanced: false,
         filter: String::new(),
         edit: None,
         error: None,
@@ -304,7 +288,6 @@ pub fn open(app: &mut App, connection: &EmbeddedConnection) {
         providers: Providers::default(),
         history: History::default(),
         outcome: None,
-        restore: None,
     };
     if !app.saving_config() {
         panel.ensure_loaded(app, connection);
@@ -319,14 +302,10 @@ mod navigation;
 
 impl SettingsPanel {}
 
-/// 走共用模型选择器的字段（`models.roles.*` 与 `models.fusion.*`）的名字；
-/// 其余路径返回 `None`。`models.fusion.*` 没有角色伪值，只用于识别字段类型。
+/// 走共用模型选择器的字段（`models.roles.*`）的名字；其余路径返回 `None`。
 fn model_role(path: &[String]) -> Option<&str> {
     match path {
-        [root, roles, role]
-            if root == "models"
-                && ((roles == "roles" && role == "explore") || roles == "fusion") =>
-        {
+        [root, roles, role] if root == "models" && roles == "roles" && role == "explore" => {
             Some(role)
         }
         _ => None,
@@ -358,6 +337,7 @@ fn matches_filter(field: &ConfigField, filter: &str) -> bool {
 /// 工具分组标题：配置键 → 用户能看懂的用途。
 fn tool_title(key: &str) -> Option<&'static str> {
     Some(match key {
+        "ptc" => "PTC 代码沙盒",
         "output" => "工具输出",
         "bash" => "命令执行",
         "read" => "读取文件",

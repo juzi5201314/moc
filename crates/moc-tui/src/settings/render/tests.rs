@@ -1,9 +1,8 @@
 use super::*;
 use crate::settings::controls::PickAction;
 use crate::settings::editors::SelectEditor;
-use crate::settings::interaction::scroll;
+use crate::settings::interaction::{hover, scroll};
 use crate::settings::{EditState, EditTarget, SettingsPanel, View};
-use moc_protocol::ConfigScope;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
@@ -17,7 +16,6 @@ fn select_popup_is_opaque_and_modal() {
     let mut panel = SettingsPanel {
         id: 1,
         cwd: "/tmp".into(),
-        scope: ConfigScope::Global,
         data: None,
         tui: json!({}),
         effective: json!({}),
@@ -31,7 +29,6 @@ fn select_popup_is_opaque_and_modal() {
         offset: 0,
         scroll: Default::default(),
         pointer: None,
-        advanced: false,
         filter: String::new(),
         edit: Some(EditState {
             target: EditTarget::Filter,
@@ -55,7 +52,6 @@ fn select_popup_is_opaque_and_modal() {
         providers: Providers::default(),
         history: Default::default(),
         outcome: None,
-        restore: None,
     };
 
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
@@ -108,7 +104,6 @@ fn loaded(tab: &str, document: Value, fields: Vec<ConfigField>) -> SettingsPanel
     let mut panel = SettingsPanel {
         id: 1,
         cwd: "/tmp".into(),
-        scope: ConfigScope::Global,
         data: Some(SettingsDocument {
             path: String::new(),
             revision: String::new(),
@@ -135,7 +130,6 @@ fn loaded(tab: &str, document: Value, fields: Vec<ConfigField>) -> SettingsPanel
         offset: 0,
         scroll: Default::default(),
         pointer: None,
-        advanced: false,
         filter: String::new(),
         edit: None,
         error: None,
@@ -147,7 +141,6 @@ fn loaded(tab: &str, document: Value, fields: Vec<ConfigField>) -> SettingsPanel
         providers: Providers::default(),
         history: Default::default(),
         outcome: None,
-        restore: None,
     };
     panel.rebuild();
     panel
@@ -202,55 +195,54 @@ fn select_group(panel: &mut SettingsPanel, key: &str) {
         .expect("分组行存在");
 }
 
-/// 不可删除的分组也要按自己的分组路径给说明，不能统统落到模型角色那句。
+/// 分组按路径给出准确说明；Fusion 不再出现在设置页面，工具与子页面正确分区。
 #[test]
 fn group_description_follows_grouping_path() {
     let mut panel = loaded("模型角色", models_config(), Vec::new());
-    select_group(&mut panel, "models/fusion");
-    let rows = screen(&mut panel, 120, 40);
     assert!(
-        locate(&rows, "会话使用的各类模型").is_none(),
-        "Fusion 分组不得显示模型角色说明"
+        !panel
+            .rows
+            .iter()
+            .any(|row| matches!(&row.kind, RowKind::Group(group) if group.key == "models/fusion")),
+        "Fusion 不应在设置面板中显示"
     );
-    assert!(locate(&rows, "执行模型负责实现与测试").is_some());
-
     select_group(&mut panel, "models/roles");
     let rows = screen(&mut panel, 120, 40);
-    assert!(locate(&rows, "会话使用的各类模型").is_some());
+    assert!(locate(&rows, "各会话角色使用的模型").is_some());
+
+    let mut tools = loaded(
+        "工具",
+        json!({}),
+        vec![ConfigField {
+            path: vec!["web_search".into(), "provider".into()],
+            tab: "工具".into(),
+            label: "搜索引擎".into(),
+            description: "测试用".into(),
+            kind: FieldKind::Text,
+            advanced: false,
+        }],
+    );
+    select_group(&mut tools, "web_search");
+    let rows = screen(&mut tools, 120, 40);
+    assert!(locate(&rows, "网络搜索接口与检索参数").is_some());
 }
 
-/// 工具栏放不下时换行，按钮一个都不能丢。
+/// 取消顶部快捷键芯片条，只在底部渲染简洁提示条。
 #[test]
-fn toolbar_wraps_instead_of_dropping_buttons() {
+fn top_toolbar_removed_and_bottom_hints_clean() {
     let mut panel = loaded("模型角色", models_config(), Vec::new());
-    screen(&mut panel, 80, 30);
-    let keys: Vec<(KeyCode, KeyModifiers)> = panel
-        .hits
-        .iter()
-        .filter_map(|(_, hit)| match hit {
-            Hit::Key(code, modifiers) => Some((*code, *modifiers)),
-            _ => None,
-        })
-        .collect();
-    for expected in [
-        (KeyCode::Char('c'), KeyModifiers::NONE),
-        (KeyCode::Char('d'), KeyModifiers::CONTROL),
-    ] {
-        assert!(
-            keys.contains(&expected),
-            "工具栏丢了 {expected:?}：{keys:?}"
-        );
-    }
-    panel.select_tab(crate::settings::providers::TAB);
-    screen(&mut panel, 80, 30);
-    for expected in ['n', 'a', 'f'] {
-        assert!(
-            panel.hits.iter().any(|(_, hit)| matches!(hit,
-                Hit::Key(KeyCode::Char(key), KeyModifiers::NONE) if *key == expected
-            )),
-            "统一页面丢了 {expected} 操作"
-        );
-    }
+    let rows = screen(&mut panel, 80, 30);
+    // 顶部第 0 行是标题“全局配置”，第 1 行是页签，紧接着就是正文而非工具芯片条。
+    assert!(locate(&rows, "全局配置").is_some());
+    assert!(locate(&rows, "作用域").is_none());
+    assert!(locate(&rows, "高级tab").is_none());
+    assert!(!rows.iter().any(|(text, _)| text.contains("F2") || text.contains("F4")));
+    assert!(
+        panel
+            .hits
+            .iter()
+            .any(|(_, hit)| matches!(hit, Hit::Hint(KeyCode::Esc, KeyModifiers::NONE)))
+    );
 }
 
 /// 底部提示条的单键项可点：命中区落在画出来的那段文字上，且是编辑态也生效的 `Hint`。
@@ -299,14 +291,22 @@ fn long_values_end_with_ellipsis_inside_margin() {
     );
 }
 
-/// 模型候选三种状态的前缀等宽，模型 ID 落在同一列。
+/// 获取模型弹窗中三种状态前缀等宽，模型 ID 落在同一列，且供应商详情里的模型 ID 卡片高亮加粗。
 #[test]
-fn model_candidates_align_ids() {
+fn model_candidates_align_ids_and_model_card_highlighted() {
+    let theme = Theme::global();
     let mut panel = loaded(
         "供应商与模型",
         json!({"providers": {"p": {"models": {"a1": {}}}}}),
         Vec::new(),
     );
+    let rows = screen(&mut panel, 100, 40);
+    let (y, x) = locate(&rows, "a1").expect("模型 ID 卡片行可见");
+    let buffer = buffer_of(&mut panel, 100, 40);
+    let cell = buffer.cell((x, u16::try_from(y).unwrap())).unwrap();
+    assert_eq!(cell.fg, theme.accent_model, "模型 ID 应使用强调色高亮");
+    assert!(cell.modifier.contains(ratatui::style::Modifier::BOLD));
+
     panel.providers.discovery = Some(crate::settings::providers::Discovery {
         generation: 1,
         rows: ["a1", "b2", "c3"]
@@ -318,15 +318,27 @@ fn model_candidates_align_ids() {
             .collect(),
         checked: BTreeSet::from(["b2".to_owned()]),
         query: String::new(),
+        cursor: 0,
+        offset: 0,
+        scroll: Default::default(),
         error: None,
         pending: None,
     });
-    panel.rebuild_rows();
-    panel.select_action(ProviderAction::Candidate(0));
     let rows = screen(&mut panel, 100, 40);
-    let column = |id| locate(&rows, id).expect("候选行可见").1;
-    assert_eq!(column("a1"), column("b2"));
-    assert_eq!(column("b2"), column("c3"));
+    let col_for = |idx: usize, id: &str| {
+        let y = panel
+            .hits
+            .iter()
+            .find_map(|(area, hit)| match hit {
+                Hit::DiscoveryItem(i) if *i == idx => Some(usize::from(area.y)),
+                _ => None,
+            })
+            .expect("候选行命中区存在");
+        let (text, columns) = &rows[y];
+        columns[text[..text.find(id).expect("候选行包含模型 ID")].chars().count()]
+    };
+    assert_eq!(col_for(0, "a1"), col_for(1, "b2"));
+    assert_eq!(col_for(1, "b2"), col_for(2, "c3"));
 }
 
 /// MCP 服务分组行右侧显示启动方式。
@@ -387,7 +399,7 @@ fn provider_workspace_and_draft_fit_narrow_terminals() {
 /// 字段树的滚动条与主界面同一字形，贴终端右缘。
 #[test]
 fn field_scrollbar_matches_main_screen() {
-    let mut panel = loaded("模型角色", models_config(), Vec::new());
+    let mut panel = loaded("界面", json!({}), flat_fields(20));
     let rows = screen(&mut panel, 80, 16);
     assert!(
         rows.iter().any(|(text, _)| text.ends_with('▐')),
@@ -555,4 +567,25 @@ fn test_format_number_commas() {
     assert_eq!(super::values::format_number(32000), "32,000");
     assert_eq!(super::values::format_number(200000), "200,000");
     assert_eq!(super::values::format_number(10000000), "10,000,000");
+}
+
+/// 鼠标移动触发焦点跟随，但不会拉回已手动滚动的视口。
+#[test]
+fn mouse_move_follows_row_without_snapping_viewport() {
+    let mut panel = loaded("界面", json!({}), flat_fields(20));
+    screen(&mut panel, 80, 16);
+    scroll(&mut panel, (10, 10).into(), 4);
+    let offset = panel.offset;
+    assert!(offset > 0);
+    let (target_index, area) = panel
+        .hits
+        .iter()
+        .find_map(|(area, hit)| match hit {
+            Hit::Row(index) if *index != panel.selected => Some((*index, *area)),
+            _ => None,
+        })
+        .expect("滚动后可见非当前行");
+    hover(&mut panel, (area.x, area.y).into());
+    assert_eq!(panel.selected, target_index);
+    assert_eq!(panel.offset, offset);
 }

@@ -12,7 +12,6 @@ fn panel(document: Value) -> SettingsPanel {
     let mut panel = SettingsPanel {
         id: 1,
         cwd: "/tmp".into(),
-        scope: ConfigScope::Global,
         data: Some(SettingsDocument {
             path: String::new(),
             revision: String::new(),
@@ -36,7 +35,6 @@ fn panel(document: Value) -> SettingsPanel {
         offset: 0,
         scroll: Default::default(),
         pointer: None,
-        advanced: false,
         filter: String::new(),
         edit: None,
         error: None,
@@ -48,7 +46,6 @@ fn panel(document: Value) -> SettingsPanel {
         providers: Providers::default(),
         history: History::default(),
         outcome: None,
-        restore: None,
     };
     panel.rebuild();
     panel
@@ -66,6 +63,9 @@ fn discovery(generation: u64, ids: &[&str]) -> Discovery {
             .collect(),
         checked: BTreeSet::new(),
         query: String::new(),
+        cursor: 0,
+        offset: 0,
+        scroll: Default::default(),
         error: None,
         pending: None,
     }
@@ -223,18 +223,18 @@ async fn create_discover_filter_add_and_edit_in_one_page() {
         assert_eq!(discovery.rows.len(), 3);
         assert_eq!(panel.tab, TAB);
     }
-    // 搜索实时过滤，多个搜索间保留按 ID 勾选的状态。
-    press(&mut app, KeyModifiers::NONE, KeyCode::Char('/'));
+    // 弹窗打开后直接键入过滤，多个搜索间保留按 ID 勾选的状态。
     for c in "fast".chars() {
         press(&mut app, KeyModifiers::NONE, KeyCode::Char(c));
     }
     assert_eq!(app.settings.as_ref().unwrap().visible_candidates(), vec![0]);
-    press(&mut app, KeyModifiers::NONE, KeyCode::Enter);
+    press(&mut app, KeyModifiers::CONTROL, KeyCode::Char('a'));
     let mut panel = app.settings.take().unwrap();
-    panel.provider_action(ProviderAction::SelectAll, &mut app, &connection);
-    panel.providers.discovery.as_mut().unwrap().query = "reason".into();
-    panel.provider_action(ProviderAction::SelectAll, &mut app, &connection);
-    panel.provider_action(ProviderAction::AddPicked, &mut app, &connection);
+    let d = panel.providers.discovery.as_mut().unwrap();
+    d.query = "reason".into();
+    d.cursor = 0;
+    panel.toggle_select_all_discovery();
+    panel.confirm_discovery(&mut app, &connection);
     assert_eq!(panel.tab, TAB);
     assert_eq!(panel.providers.selected.as_deref(), Some("new-provider"));
     let doc = &panel.data.as_ref().unwrap().document;

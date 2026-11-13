@@ -113,17 +113,59 @@ fn rank(key: &str) -> usize {
         "reasoning" => 3,
         "thinking_levels" => 4,
         "input" => 5,
+        // 会话、工作区与实验特性
+        "clm" => 0,
+        "ptc" => 1,
+        "max_concurrency_ceiling" => 1,
+        "world_run_timeout_ms" => 2,
+        "file_read_bytes" => 3,
+        "log_bytes" => 4,
+        "ask_max_repairs" => 5,
+        "watch" => 0,
+        "max_scan_entries" => 1,
+        "compress" => 0,
+        "dir" => 1,
+        "retention" => 2,
+        "artifacts_days" => 1,
+        "logs_days" => 2,
+        // 子代理与角色
         "explore" => 0,
-        // Fusion 组合：主导 → 执行
-        "lead" => 0,
-        "sidekick" => 1,
+        "max_depth" => 1,
+        // 上下文指令
         "user" => 1,
         "project" => 2,
         "max_tokens" => 3,
         "import_depth" => 4,
+        "override" => 0,
+        "append" => 1,
+        // MCP 与插件
         "user_config" => 1,
+        "project_config" => 2,
         "connect_timeout_secs" => 3,
         "call_timeout_secs" => 4,
+        "max_plugins" => 10,
+        "load_timeout_ms" => 11,
+        "max_prompt_chars" => 12,
+        // 网络搜索与抓取
+        "provider" => 1,
+        // PTC 沙盒
+        "default_timeout_secs" => 0,
+        "max_pending_calls" => 5,
+        "max_total_calls" => 6,
+        "max_concurrent_runs" => 7,
+        "host_idle_timeout_secs" => 8,
+        "max_state_bytes" => 9,
+        "memory_limit_bytes" => 10,
+        "max_result_bytes" => 11,
+        // Todo 工具
+        "reminders" => 1,
+        "reminders_after" => 2,
+        "reminders_max" => 3,
+        // Bash 资源与工具限制
+        "max_length_continues" => 0,
+        "loop_detection" => 1,
+        "connect_deadline_secs" => 2,
+        "request_warn_secs" => 3,
         // 技能来源
         "moc_user" => 1,
         "moc_project" => 2,
@@ -168,9 +210,6 @@ fn rank(key: &str) -> usize {
         "output_bytes" => 10,
         "head_bytes" => 0,
         "tail_bytes" => 1,
-        // 会话：压缩开关优先于存储目录与保留策略
-        "compress" => 0,
-        "dir" => 1,
         // 通用
         "enabled" => 0,
         "url" => 0,
@@ -219,9 +258,20 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
     let key = path.last().map(String::as_str).unwrap_or_default();
     let joined = path.join(".");
     let (label, description) = describe(&joined, key);
-    let advanced = path
-        .iter()
-        .any(|part| matches!(part.as_str(), "compat" | "shake"))
+    let advanced = path.iter().any(|part| part == "compat")
+        || (path.first().is_some_and(|part| part == "tools")
+            && path.get(1).is_some_and(|part| part == "ptc")
+            && !matches!(key, "default_timeout_secs" | "max_timeout_secs"))
+        || (path.first().is_some_and(|part| part == "workflow") && key != "enabled")
+        || (path.first().is_some_and(|part| part == "plugins")
+            && matches!(
+                key,
+                "max_plugins"
+                    | "memory_limit_bytes"
+                    | "load_timeout_ms"
+                    | "call_timeout_ms"
+                    | "max_prompt_chars"
+            ))
         || matches!(
             key,
             "noop_loop_threshold"
@@ -248,15 +298,15 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         "模型"
     } else {
         match path.first().map_or("", String::as_str) {
-            "tools" | "workspace" | "web_search" | "web_fetch" => "工具",
+            "tools" | "web_search" | "web_fetch" => "工具",
             "sandbox" => "沙盒",
             "compaction" | "limits" => "上下文",
             "context_files" | "system_prompt" => "指令",
-            "defaults" => "模型",
-            "session" => "会话",
+            "defaults" | "agents" => "模型",
             "skills" => "技能",
             "mcp" => "MCP",
-            _ => "高级",
+            "plugins" => "插件",
+            _ => "会话",
         }
     };
     let options: &[(&str, &str)] = match key {
@@ -294,9 +344,9 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
             &[("percent", "按上下文比例"), ("tokens", "按固定长度")]
         }
         "method" if path.first().is_some_and(|part| part == "compaction") => &[
-            ("moc", "Moc（本地修剪+摘要）"),
+            ("moc", "Moc（本地修剪 + 摘要）"),
             ("grok_build", "Grok Build"),
-            ("eocc", "EoCC（实验性：交接状态）"),
+            ("eocc", "EoCC（实验性交接状态）"),
         ],
         "default_mode" if path.first().is_some_and(|part| part == "sandbox") => {
             let support = crate::sandbox::detect();
@@ -369,380 +419,482 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
 
 fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
     match path {
+        "features.clm" => ("CLM 引擎", "启用实验性 CLM 会话引擎。"),
+        "features.ptc" => (
+            "PTC 代码沙盒",
+            "启用 PTC（Programmatic Tool Calling）模式：模型通过 execute 沙盒编排工具调用。",
+        ),
+        "agents.max_depth" => (
+            "最大嵌套深度",
+            "允许子代理嵌套委托的最大层数；1 表示仅主会话可派发子代理。",
+        ),
         "models.roles.explore" => (
-            "探索子代理模型",
-            "Explorer 固定角色的模型；inherit 沿用父模型，none 禁用此角色，省略等级时使用模型默认等级。",
+            "探索",
+            "Explore 角色使用的模型；inherit 沿用主模型，none 禁用。",
         ),
         "models.fusion.lead" => (
-            "Fusion 主导模型",
-            "负责规划、调查、评审与对话的前沿模型，格式 供应商/模型[:等级]；配好后模型选择器 `fusion` 即可用。",
+            "Fusion Lead 模型",
+            "负责规划、调查与评审的主导模型（格式：供应商/模型[:等级]）。",
         ),
         "models.fusion.sidekick" => (
-            "Fusion 执行模型",
-            "执行实现、构建与测试的高性价比模型，格式 供应商/模型[:等级]；与主导模型同时配置才生效。",
+            "Fusion Sidekick 模型",
+            "负责具体实现与测试的执行模型（格式：供应商/模型[:等级]）。",
         ),
-        "context_files.user" => ("用户指令", "加载用户目录下的 AGENTS.md。"),
-        "context_files.project" => ("项目指令", "加载工作区中的 AGENTS.md 及其引用的文件。"),
-        "context_files.enabled" => ("启用指令文件", "关闭后不再加载任何指令文件。"),
-        "skills.enabled" => ("启用技能", "关闭后不再加载任何技能。"),
+        "context_files.enabled" => ("启用 AGENTS.md", "关闭后不再自动加载 AGENTS.md。"),
+        "context_files.user" => (
+            "全局 AGENTS.md",
+            "加载用户全局目录（~/.moc/AGENTS.md 等）中的上下文文件。",
+        ),
+        "context_files.project" => (
+            "项目 AGENTS.md",
+            "加载工作区中的 AGENTS.md 及其 @引用的文件。",
+        ),
+        "context_files.max_tokens" => (
+            "AGENTS.md token 上限",
+            "所有 AGENTS.md 合计的最大 token 数，超出部分省略。",
+        ),
+        "context_files.import_depth" => (
+            "@引用展开层数",
+            "AGENTS.md 中 @文件引用的最大递归展开层数。",
+        ),
+        "system_prompt.override" => ("覆盖 System Prompt", "完全替换默认的 System Prompt。"),
+        "system_prompt.append" => (
+            "追加 System Prompt",
+            "在默认 System Prompt 末尾追加自定义指令。",
+        ),
+        "skills.enabled" => ("启用 Skills", "关闭后不再加载任何 Skill。"),
+        "skills.moc_user" => ("全局 moc Skills", "加载 ~/.moc/skills 中的 Skill。"),
+        "skills.moc_project" => (
+            "项目 moc Skills",
+            "加载工作区 .moc/skills 中的 Skill，同名优先。",
+        ),
+        "skills.agents_user" => ("全局共享 Skills", "加载 ~/.agents/skills 中的共享 Skill。"),
+        "skills.agents_project" => (
+            "项目共享 Skills",
+            "加载工作区 .agents/skills 中的共享 Skill。",
+        ),
+        "skills.dirs" => ("额外 Skills 目录", "逐行填写额外扫描的目录路径，支持 ~。"),
+        "skills.disable" => ("禁用的 Skills", "逐行填写要禁用的 Skill 名称。"),
+        "skills.catalog_budget_percent" => (
+            "目录预算比例 (%)",
+            "Skills 目录最多占用上下文窗口的百分比；0 表示仅使用下限。",
+        ),
+        "skills.catalog_budget_min_tokens" => (
+            "目录预算下限 (token)",
+            "按比例计算的预算低于此值时使用此下限。",
+        ),
+        "skills.description_max_chars" => (
+            "单个描述字符上限",
+            "每条 Skill 描述在目录中最多显示的字符数。",
+        ),
         "mcp.enabled" => ("启用 MCP", "关闭后不再连接任何 MCP 服务。"),
-        "compaction.enabled" => ("启用压缩", "关闭后不再自动压缩对话历史。"),
-        "sandbox.default_mode" => (
-            "默认沙盒模式",
-            "新会话的初始模式。full 不隔离；workspace 工作区可写、工作区外只读；workspace-only 工作区外不可读写。原生 Windows 仅支持 full。",
-        ),
-        "sandbox.network" => (
-            "允许沙盒网络",
-            "仅约束沙盒内 bash；关闭后 Linux 使用独立网络命名空间，macOS 拒绝所有网络。web_fetch、web_search 与 MCP 不受影响。",
-        ),
-        "sandbox.on_denied" => (
-            "越界处理",
-            "沙盒拒绝文件访问或命令升级时：ask 向用户申请一次或本会话授权；deny 直接拒绝且不弹窗。",
-        ),
-        "sandbox.allow_unsandboxed" => (
-            "允许沙盒外重试",
-            "允许模型在执行失败后申请以 full 在沙盒外重试一次；关闭后只能调整配置或使用允许路径。",
-        ),
-        "sandbox.overlay_home" => (
-            "HOME 写时复制",
-            "Linux 专属：把 $HOME 挂成会话级 copy-on-write 层，cargo/npm/uv 等写缓存不会失败也不会污染真实主目录，会话结束丢弃。关闭后 HOME 只读。",
-        ),
-        "sandbox.extra_read_paths" => (
-            "额外只读路径",
-            "逐行填写目录或文件；支持 ~，必须存在。工作区外仍可读，但不能写。",
-        ),
-        "sandbox.extra_write_paths" => (
-            "额外可写路径",
-            "逐行填写目录或文件；支持 ~，必须存在。写入会真实落盘；权限高于 HOME overlay。",
-        ),
-        "sandbox.deny_read_paths" => (
-            "强制拒绝读取",
-            "逐行填写路径；优先于允许列表，即使位于工作区内也会被拒绝。不存在的路径无法在 bash 沙盒中遮蔽。",
-        ),
-        "sandbox.deny_write_paths" => (
-            "强制拒绝写入",
-            "逐行填写路径；优先于允许列表，即使位于工作区内也无法写入。不存在的路径无法在 bash 沙盒中遮蔽。",
-        ),
-        "tools.bash.limits.enabled" => (
-            "限制 bash 资源",
-            "为模型发起的每条 bash 单独设置 CPU 与内存上限；手打的 !命令不受影响。默认关闭。",
-        ),
-        "tools.bash.limits.cpu_cores" => (
-            "CPU 核数上限",
-            "0 表示不限。Linux 通过 cgroup CPUQuota 限制，nproc 与 cargo 的并发会跟着降到该值；Windows 通过 Job Object 只做限速，不改变并发度。",
-        ),
-        "tools.bash.limits.memory_high_bytes" => (
-            "内存软限（字节）",
-            "超过后开始节流，进程明显变慢但尽量不失败；0 表示不节流。仅 Linux 生效，宿主没有 swap 时自动忽略。示例：8 GiB = 8589934592。",
-        ),
-        "tools.bash.limits.memory_max_bytes" => (
-            "内存硬顶（字节）",
-            "兜底上限，超过按 OOM 终止；0 表示不设，非 0 时不得小于软限。仅 Linux 生效。示例：12 GiB = 12884901888。",
-        ),
-        "tools.bash.limits.memory_swap_bytes" => (
-            "swap 预算（字节）",
-            "单条命令最多可占用的 swap；0 表示不限制。仅 Linux 生效。示例：4 GiB = 4294967296。",
-        ),
-        "compaction.threshold.mode" => (
-            "压缩触发方式",
-            "按上下文占用的比例触发，或按固定的内容长度触发。",
-        ),
-        "compaction.threshold.value" => ("压缩触发值", "按比例时填 1–100，按长度时填具体数值。"),
-        "web_search.enabled" => (
-            "启用",
-            "关闭后 web_search 工具不再向模型开放；不影响 web_fetch。",
-        ),
-        "web_search.provider" => ("供应商", "网页搜索服务供应商；空格键切换。"),
-        "web_search.api_key" => (
-            "API 密钥",
-            "Tavily 密钥，仅用于 web_search；可填 env:变量名 或 !命令。",
-        ),
-        "web_search.base_url" => ("接口地址", "留空使用官方 https://api.tavily.com。"),
-        "web_search.timeout_secs" => ("请求超时（秒）", "单次 Tavily 搜索请求的最长等待时间。"),
-        "web_fetch.enabled" => (
-            "启用",
-            "关闭后 web_fetch 工具不再向模型开放；不影响 web_search。",
-        ),
-        "web_fetch.timeout_secs" => (
-            "请求超时（秒）",
-            "单次页面抓取（含站点 API 调用）的最长等待时间。",
-        ),
-        "web_fetch.max_bytes" => (
-            "响应字节上限",
-            "单页原始响应的最大读取字节数；超出部分截断并标记。",
-        ),
-        "web_fetch.max_chars" => (
-            "正文字符上限",
-            "单页转换后 Markdown 的最大字符数；超出部分截断并标记。",
+        "mcp.user_config" => ("全局 MCP 配置", "加载 ~/.moc/mcp.json 等用户级 MCP 配置。"),
+        "mcp.project_config" => (
+            "项目 MCP 配置",
+            "加载工作区 .mcp.json、mcp.json 等项目级 MCP 配置；启用前请确认仓库可信。",
         ),
         "mcp.connect_timeout_secs" => (
             "连接超时（秒）",
-            "启动 MCP 服务并获取工具列表的最长等待时间。",
+            "启动 MCP 服务并拉取工具列表的最长等待时间。",
+        ),
+        "mcp.call_timeout_secs" => (
+            "调用超时（秒）",
+            "单次 MCP 工具调用的最长等待时间。",
+        ),
+        "mcp.max_concurrent_calls" => (
+            "单服务并发上限",
+            "同一 MCP server 同时执行工具调用的上限；1 表示串行。",
+        ),
+        "workflow.enabled" => ("启用 Workflow", "关闭后 /workflow 与相关调用不可用。"),
+        "workflow.max_concurrency_ceiling" => (
+            "并发执行上限",
+            "Workflow 同时运行的并发子任务数上限。",
+        ),
+        "workflow.world_run_timeout_ms" => (
+            "脚本默认超时（毫秒）",
+            "单次 Workflow 脚本运行的默认超时时间。",
+        ),
+        "workflow.file_read_bytes" => (
+            "读取文件上限（字节）",
+            "Workflow 内单次读取文件的最大字节数。",
+        ),
+        "workflow.log_bytes" => (
+            "单条日志上限（字节）",
+            "Workflow 输出单条日志的最大字节数。",
+        ),
+        "workflow.ask_max_repairs" => (
+            "Schema 修复重试上限",
+            "子任务结构化交付校验失败时的最大自动修复次数。",
+        ),
+        "plugins.enabled" => ("启用插件系统", "关闭后不再扫描与加载本地插件。"),
+        "plugins.user" => ("全局插件目录", "扫描 ~/.moc/plugins 中的本地插件。"),
+        "plugins.project" => (
+            "项目插件目录",
+            "扫描 .moc/plugins 中的项目插件（仅在可信仓库开启）。",
+        ),
+        "plugins.dirs" => ("额外插件目录", "逐行填写额外扫描的插件目录，支持 ~。"),
+        "plugins.disable" => ("禁用插件列表", "逐行填写要禁用的插件名称。"),
+        "plugins.max_plugins" => ("最大插件数", "允许同时加载的插件数量上限。"),
+        "plugins.memory_limit_bytes" => (
+            "插件内存上限（字节）",
+            "QuickJS 宿主为插件分配的最大堆内存。",
+        ),
+        "plugins.load_timeout_ms" => (
+            "加载超时（毫秒）",
+            "初始化单个插件模块的最长等待时间。",
+        ),
+        "plugins.call_timeout_ms" => (
+            "调用超时（毫秒）",
+            "插件钩子或工具单次调用的超时时间；超时后本进程内禁用该插件。",
+        ),
+        "plugins.max_prompt_chars" => (
+            "提示词贡献上限（字符）",
+            "所有插件向 System Prompt 注入文本的总字符上限。",
+        ),
+        "compaction.enabled" => ("启用自动压缩", "关闭后不再自动压缩对话历史。"),
+        "sandbox.default_mode" => (
+            "默认沙盒模式",
+            "新会话初始模式：full 无隔离；workspace 工作区可写、外部只读；workspace-only 仅工作区可读写。",
+        ),
+        "sandbox.network" => (
+            "允许沙盒网络",
+            "仅约束沙盒内 bash；web_fetch、web_search 与 MCP 不受影响。",
+        ),
+        "sandbox.on_denied" => (
+            "越界处理策略",
+            "沙盒拦截时：ask 弹窗申请授权；deny 直接拒绝。",
+        ),
+        "sandbox.allow_unsandboxed" => (
+            "允许沙盒外重试",
+            "允许模型在失败后申请以 full 模式在沙盒外重试一次。",
+        ),
+        "sandbox.overlay_home" => (
+            "HOME Copy-on-Write",
+            "Linux 专属：将 $HOME 挂为会话级写时复制层，缓存可写但不污染真实主目录。",
+        ),
+        "sandbox.extra_read_paths" => (
+            "额外只读路径",
+            "逐行填写允许读取的目录或文件；支持 ~，必须存在。",
+        ),
+        "sandbox.extra_write_paths" => (
+            "额外可写路径",
+            "逐行填写允许写入的目录或文件；支持 ~，必须存在，写入直接落盘。",
+        ),
+        "sandbox.deny_read_paths" => (
+            "强制拒绝读取",
+            "逐行填写路径；优先级高于允许列表，工作区内同样生效。",
+        ),
+        "sandbox.deny_write_paths" => (
+            "强制拒绝写入",
+            "逐行填写路径；优先级高于允许列表，工作区内同样生效。",
+        ),
+        "tools.ptc.default_timeout_secs" => (
+            "默认脚本超时（秒）",
+            "单次 execute 脚本的默认超时时间。",
+        ),
+        "tools.ptc.max_timeout_secs" => (
+            "最大脚本超时（秒）",
+            "单次 execute 脚本允许设置的最大超时秒数。",
+        ),
+        "tools.ptc.memory_limit_bytes" => (
+            "沙盒内存上限（字节）",
+            "QuickJS 实例的最大堆内存限制。",
+        ),
+        "tools.ptc.max_output_bytes" => (
+            "stdout 字节上限",
+            "单次 execute 脚本标准输出的最大保留字节数。",
+        ),
+        "tools.ptc.max_result_bytes" => (
+            "返回值字节上限",
+            "单次 execute 脚本返回值的最大字节数。",
+        ),
+        "tools.ptc.max_pending_calls" => (
+            "挂起调用上限",
+            "单个脚本同时处于等待状态的宿主工具调用数上限。",
+        ),
+        "tools.ptc.max_total_calls" => (
+            "累计调用上限",
+            "单个 execute 脚本允许发起的宿主工具调用总次数。",
+        ),
+        "tools.ptc.max_concurrent_runs" => (
+            "并行脚本上限",
+            "同一 Core 同时运行的 execute 脚本数量上限。",
+        ),
+        "tools.ptc.host_idle_timeout_secs" => (
+            "Host 空闲超时（秒）",
+            "PTC Host 无活跃脚本后自动回收的等待时间。",
+        ),
+        "tools.ptc.max_state_bytes" => (
+            "持久化状态上限（字节）",
+            "PTC 会话跨脚本持久化状态的最大字节数。",
+        ),
+        "tools.bash.limits.enabled" => (
+            "限制 Bash 资源",
+            "为模型发起的每条 bash 命令单独限制 CPU 与内存；手动 !命令不受影响。",
+        ),
+        "tools.bash.limits.cpu_cores" => (
+            "CPU 核数上限",
+            "0 表示不限；Linux 通过 cgroup CPUQuota 限核，Windows 通过 Job Object 限速。",
+        ),
+        "tools.bash.limits.memory_high_bytes" => (
+            "内存软限（字节）",
+            "超过后节流减速，0 表示不节流（仅 Linux，无 swap 时自动忽略）。",
+        ),
+        "tools.bash.limits.memory_max_bytes" => (
+            "内存硬顶（字节）",
+            "超过按 OOM 终止，0 表示不设，非 0 时须 ≥ 软限（仅 Linux）。",
+        ),
+        "tools.bash.limits.memory_swap_bytes" => (
+            "Swap 预算（字节）",
+            "单条命令最多可占用的 swap，0 表示不限（仅 Linux）。",
+        ),
+        "tools.read.default_limit" => (
+            "默认读取行数",
+            "未指定 limit 时每次读取文件的默认行数。",
+        ),
+        "tools.read.max_bytes" => ("单次读取字节上限", "read 单次返回的最大字节数。"),
+        "tools.read.line_max_bytes" => ("单行字节上限", "单行超过此字节数时截断显示。"),
+        "tools.todo.enabled" => ("启用 Todo 工具", "允许模型维护任务清单与进度追踪。"),
+        "tools.todo.reminders" => ("闲置提醒", "连续多轮未更新 Todo 时自动提醒模型。"),
+        "tools.todo.reminders_after" => (
+            "触发提醒轮数",
+            "连续多少次调用未更新清单后触发首次提醒。",
+        ),
+        "tools.todo.reminders_max" => ("最多提醒次数", "同一轮任务内最多触发提醒的次数。"),
+        "session.retention.enabled" => (
+            "自动清理过期数据",
+            "定期清理超过保留天数的临时产物与日志。",
+        ),
+        "compaction.threshold.mode" => (
+            "触发方式",
+            "按上下文占用百分比，或按固定 token 阈值触发。",
+        ),
+        "compaction.threshold.value" => ("触发阈值", "百分比模式填 1–100，固定模式填 token 数。"),
+        "web_search.enabled" => ("启用", "关闭后 web_search 工具不再向模型开放。"),
+        "web_search.provider" => ("供应商", "网页搜索服务商。"),
+        "web_search.api_key" => (
+            "API Key",
+            "Tavily API Key，仅用于 web_search；支持 env:变量名 或 !命令。",
+        ),
+        "web_search.base_url" => ("Base URL", "自定义搜索 API 地址；留空使用官方 https://api.tavily.com。"),
+        "web_search.timeout_secs" => ("请求超时（秒）", "单次搜索请求的最长等待时间。"),
+        "web_fetch.enabled" => ("启用", "关闭后 web_fetch 工具不再向模型开放。"),
+        "web_fetch.timeout_secs" => ("请求超时（秒）", "单次页面抓取的最长等待时间。"),
+        "web_fetch.max_bytes" => ("响应字节上限", "单页原始响应的最大读取字节数；超出截断。"),
+        "web_fetch.max_chars" => (
+            "正文字符上限",
+            "单页转换后 Markdown 的最大字符数；超出截断。",
         ),
         _ if path.starts_with("mcp.servers.") && key == "timeout_secs" => (
             "调用超时（秒）",
             "该服务单次工具调用的最长等待时间；留空用全局设置。",
         ),
+        _ if path.starts_with("mcp.servers.") && key == "max_concurrent_calls" => (
+            "单服务并发上限",
+            "该 MCP server 同时执行工具调用的上限；留空用全局设置。",
+        ),
         _ => match key {
             "enabled" => ("启用", "关闭后不再使用该功能。"),
-            "moc_user" => ("用户技能目录", "加载 ~/.moc/skills 里的技能。"),
-            "moc_project" => (
-                "项目技能目录",
-                "加载项目 .moc/skills 里的技能，同名技能优先。",
-            ),
-            "agents_user" => ("用户共享技能", "加载 ~/.agents/skills 里的共享技能。"),
-            "agents_project" => ("项目共享技能", "加载项目 .agents/skills 里的共享技能。"),
-            "user_config" => ("用户 MCP 配置", "加载 ~/.moc/mcp.json 里定义的 MCP 服务。"),
-            "api" => ("API 格式", "按供应商支持的协议选择；可在供应商文档中确认。"),
-            "base_url" => ("服务地址", "供应商接口地址；通常会自动补上 /v1。"),
-            "api_key" => ("API 密钥", "可直接填写，或写 env:变量名 从环境变量读取。"),
-            "headers" => ("附加请求头", "JSON 形式的自定义请求头，例如 User-Agent。"),
-            "extra_body" => ("附加请求体", "JSON 形式的额外请求字段，用于兼容网关。"),
-            "timeout_secs" => ("请求超时（秒）", "单次模型请求的最长等待时间；留空不限。"),
+            "api" => ("API 协议", "按供应商支持的协议格式选择。"),
+            "base_url" => ("Base URL", "服务端 API 地址；OpenAI 兼容接口通常自动补全 /v1。"),
+            "api_key" => ("API Key", "直接填写密钥，或写 env:变量名 / !命令读取。"),
+            "headers" => ("附加请求头", "JSON 格式的自定义 HTTP 请求头。"),
+            "extra_body" => ("Extra Body", "JSON 格式的附加请求体字段，用于兼容网关或透传参数。"),
+            "timeout_secs" => ("请求超时（秒）", "单次请求的最长等待时间；留空不限。"),
             "connect_timeout_secs" => (
                 "连接超时（秒）",
                 "建立网络连接的最长等待时间；留空用默认值。",
             ),
             "max_concurrency" => ("并发请求上限", "同时向该供应商发起的请求数；0 表示不限。"),
-            "cache" => ("提示缓存", "复用重复内容以降低费用；不确定就选自动。"),
-            "max_attempts" => ("尝试次数", "一次请求最多尝试几次，含第一次在内。"),
-            "initial_backoff_secs" => ("首次重试等待（秒）", "第一次重试前的等待时间。"),
-            "max_backoff_secs" => ("重试等待上限（秒）", "重试等待不会超过这个时间。"),
-            "jitter" => (
-                "重试随机浮动",
-                "给重试等待加入随机量，避免多个请求同时重试。",
-            ),
-            "endpoint" => ("服务端点", "一般不用改；Azure 服务需要填写接口版本。"),
-            "context_window" => (
-                "上下文长度",
-                "模型一次能记住的内容量，用于估算何时需要压缩对话。",
-            ),
-            "max_output_tokens" => ("回复长度上限", "模型单次回复的最大长度。"),
+            "cache" => ("Prompt Cache", "复用重复前缀以降低成本；默认自动。"),
+            "max_attempts" => ("最大尝试次数", "单次请求总尝试次数（含首次）。"),
+            "initial_backoff_secs" => ("初始退避（秒）", "首次重试前的等待时间。"),
+            "max_backoff_secs" => ("最大退避（秒）", "退避等待时间的上限。"),
+            "jitter" => ("退避抖动", "为重试等待加入随机抖动，避免并发雪崩。"),
+            "endpoint" => ("服务端点", "一般保持默认；Azure 需填写 api-version。"),
+            "context_window" => ("Context Window", "模型最大上下文 token 数，用于估算压缩时机。"),
+            "max_output_tokens" => ("Max Output Tokens", "模型单次回复的最大输出 token 数。"),
             "max_request_bytes" => (
                 "请求体字节上限",
-                "最终 HTTP 请求体的硬上限；图片先统一压缩并共享剩余额度，无法保留细节时明确报错，不静默删图。留空使用 50 MiB，图片 Base64 合计另限 8 MiB。",
+                "HTTP 请求体硬上限（默认 50 MiB，图片 Base64 合计另限 8 MiB）。",
             ),
-            "reasoning" => (
-                "支持思考推理",
-                "模型是否具备深度思考与推理能力（例如 o1、o3、DeepSeek-R1、Claude 3.7 Sonnet）。",
-            ),
+            "reasoning" => ("思考推理", "模型是否支持思维链推理。"),
             "thinking_levels" => (
                 "可选思考等级",
-                "勾选 low、medium、high、xhigh、max，也可添加自定义等级（小写字母、数字和 - _ .）；第一项为默认等级，off 始终可用；全部取消使用默认等级。",
+                "支持预设等级或自定义等级；第一项为默认等级，off 始终可用。",
             ),
-            "input" => (
-                "输入模态",
-                "模型支持接收的内容类型：仅文本 或 文本与图片/多模态。",
-            ),
+            "input" => ("输入模态", "模型支持接收 text 或 text + image 多模态输入。"),
             "fast_mode" => (
-                "支持 Fast Mode",
-                "开启后模型选择器显示 Fast Mode 开关；会话打开开关时请求体带 service_tier = \"fast\"。仅部分模型支持，默认关闭。",
+                "Fast Mode",
+                "开启后模型选择器显示 Fast Mode 开关（请求携带 service_tier = \"fast\"）。",
             ),
             "pricing" => (
-                "价格（每百万 token）",
-                "JSON：input/output 必填，cache_read/cache_write 可选，单位美元。",
+                "Pricing（每百万 token）",
+                "JSON：input/output 必填，cache_read/cache_write 可选，单位 USD。",
             ),
             "prefer_builtin" => (
                 "内置工具优先",
-                "开启后，只读/搜索/列目录/改工作区文件的 bash 命令会被拒绝并给出等价的 read/grep/find/edit/write 调用；过滤命令输出等正常用法不受影响。默认开启。",
+                "拒绝可由 read/grep/find/edit/write 等价完成的 bash 调用，过滤输出等正常命令不受影响。",
             ),
             "deny_patterns" => (
-                "危险命令规则",
-                "逐行填写正则表达式，命中的命令须向用户申请确认后才能执行，与沙盒模式无关。",
+                "高危命令正则",
+                "逐行填写正则表达式；命中的命令须先经用户确认方可执行。",
             ),
-            "head_bytes" => (
-                "超长输出保留开头",
-                "所有工具与 MCP 输出共用的开头字节预算；超出首尾总预算时归档完整结果。",
-            ),
-            "tail_bytes" => ("超长输出保留结尾", "工具输出过长时保留结尾的字节数。"),
+            "head_bytes" => ("超长输出保留开头", "输出截断时保留开头的字节预算。"),
+            "tail_bytes" => ("超长输出保留结尾", "输出截断时保留结尾的字节数。"),
             "max_file_bytes" => ("单文件大小上限", "工具处理单个文件的最大字节数。"),
             "foreground_after_secs" => (
-                "前台等待秒数",
-                "前台 monitored 命令超过该时间后自动转为后台；tools.job.enabled 关闭时保持前台。",
+                "前台转后台阈值（秒）",
+                "前台命令超过该时间后自动转为后台；tools.job.enabled 关闭时保持前台。",
             ),
             "monitored_timeout_secs" => (
-                "有限任务超时（秒）",
-                "monitored 命令的默认硬超时，必须不超过 max_timeout_secs。",
+                "命令默认超时（秒）",
+                "后台受控命令的默认超时上限（不可超过 max_timeout_secs）。",
             ),
             "stall_after_secs" => (
-                "无输出提醒（秒）",
-                "monitored 后台任务连续这么久没有新输出时，提醒模型它可能卡在网络、锁或等待输入上；每次停滞只提醒一次。",
+                "无输出停滞提醒（秒）",
+                "连续无新输出超过该时间后提醒模型检查状态；每次停滞仅提醒一次。",
             ),
-            "max_timeout_secs" => (
-                "命令超时上限（秒）",
-                "单条 monitored 命令允许设置的最大秒数。",
-            ),
+            "max_timeout_secs" => ("命令最大超时（秒）", "单条受控命令允许设置的最大超时秒数。"),
             "max_output_bytes" => (
-                "有限任务输出上限",
-                "monitored 命令日志保留的字节数；超过后保留开头与结尾各一半、丢弃中段，命令继续运行。",
+                "受控命令输出上限",
+                "命令日志保留字节上限，超出时保留首尾各半并丢弃中段。",
             ),
             "persistent_log_bytes" => (
-                "长期任务日志容量",
-                "persistent 任务日志保留的字节数；超过后保留开头与结尾各一半、丢弃中段，进程不受影响。",
+                "常驻任务日志上限",
+                "persistent 进程日志保留字节上限，超出时保留首尾各半。",
             ),
             "cross_filesystems" => (
                 "跨文件系统扫描",
-                "grep/find 是否递归进入扫描根下的挂载点；默认关闭。",
+                "grep/find 是否进入扫描根下的挂载点。",
             ),
-            "line_max_bytes" => ("单行长度上限", "超长行只显示提示，不能再直接编辑。"),
-            "max_edits" => ("单次编辑条数", "一次编辑最多包含的修改处数。"),
+            "line_max_bytes" => ("单行字节上限", "单行超过该长度时截断并禁止整行编辑。"),
+            "max_edits" => ("单次编辑处数上限", "单次 edit 工具调用允许包含的修改处数上限。"),
             "noop_loop_threshold" => (
-                "重复编辑提醒次数",
-                "同一处编辑连续多次没有变化时，提醒模型重新读取。",
+                "无效编辑提醒阈值",
+                "同一处编辑连续无变更达到此次数时提醒模型重新读取文件。",
             ),
             "hash_echo_min_hits" => (
-                "整文件写回保护",
-                "识别到写回内容带着工具标记时拒绝写入，避免污染源文件。",
+                "行号前缀误写保护",
+                "检测到写回内容疑似误带 read 行号前缀达到此次数时拒绝写入。",
             ),
-            "max_files" => ("搜索文件数上限", "一次搜索最多显示多少个文件。"),
-            "max_matches_per_file" => ("每个文件匹配上限", "单个文件最多返回多少处匹配。"),
-            "max_matches_total" => ("匹配总数上限", "一次搜索最多返回多少处匹配。"),
-            "line_max_chars" => ("搜索行长度上限", "搜索结果每行最多显示的字符数。"),
-            "context_before" => ("匹配前附带行数", "每处匹配上方附带的行数。"),
-            "context_after" => ("匹配后附带行数", "每处匹配下方附带的行数。"),
-            "output_bytes" => (
-                "搜索输出字节上限",
-                "一次搜索最多返回多少字节的结果；超出后用 skip 继续。",
-            ),
-            "timeout_ms" => ("搜索超时（毫秒）", "一次搜索允许运行的最长时间。"),
+            "max_files" => ("结果文件数上限", "单次 grep 最多返回的文件数。"),
+            "max_matches_per_file" => ("单文件匹配上限", "单个文件最多返回的匹配处数。"),
+            "max_matches_total" => ("总匹配上限", "单次 grep 最多返回的匹配总数。"),
+            "line_max_chars" => ("匹配行字符上限", "搜索结果单行最多显示的字符数。"),
+            "context_before" => ("上文行数", "每处匹配上方附带的上下文行数。"),
+            "context_after" => ("下文行数", "每处匹配下方附带的上下文行数。"),
+            "output_bytes" => ("输出字节上限", "单次搜索最多返回的字节数，超出后通过 skip 翻页。"),
+            "timeout_ms" => ("搜索超时（毫秒）", "单次搜索允许运行的最长时间。"),
             "max_concurrent_calls" => (
                 "工具并发上限",
-                "标准模式一次工具批次中同时执行的只读工具数量。",
+                "单次工具批次中同时执行的只读工具数量上限。",
             ),
-            "max_total_calls" => (
-                "脚本调用总上限",
-                "单个 execute 脚本最多发起的宿主调用次数。",
-            ),
-            "max_concurrent_runs" => ("脚本并发上限", "同一 Core 同时运行的 execute 脚本数量。"),
-            "host_idle_timeout_secs" => (
-                "Host 空闲回收时间（秒）",
-                "长期 PTC Host 没有活跃脚本时，等待多久后回收。",
-            ),
-            "max_candidate_files" => ("扫描文件上限", "搜索时最多检查多少个文件。"),
-            "limit" => ("结果数量", "未指定时返回的结果条数。"),
-            "max_running" => ("后台任务上限", "每个会话可同时运行的后台任务数量。"),
-            "max_wait_secs" => (
-                "job wait 最长阻塞（秒）",
-                "模型调用 job wait 单次最多等待的秒数。",
-            ),
-            "overflow" => ("超出上限时", "直接报错，或等待有空位再继续。"),
+            "max_candidate_files" => ("扫描文件数上限", "搜索时最多遍历的候选文件总数。"),
+            "limit" => ("默认返回条数", "find 未指定 limit 时的默认最大结果数。"),
+            "max_running" => ("后台任务上限", "每个会话同时运行的后台任务数上限。"),
+            "max_wait_secs" => ("job wait 超时（秒）", "单次 job wait 最长阻塞等待秒数。"),
+            "overflow" => ("超出并发策略", "超出后台任务上限时直接报错或排队等待。"),
             "method" => (
-                "压缩方式",
-                "moc：先本地修剪再摘要；grok_build：Grok Build 9 段摘要与两遍预火；eocc：NVIDIA 论文启发的有界任务原文与六段交接状态。后两者不使用保留最近对话、工具结果与 shake 参数；eocc 仅保留尚未完成的工具组。",
+                "压缩算法",
+                "moc：本地修剪 + 摘要；grok_build：9 段摘要；eocc：交接状态压缩（后两者忽略保留 token 与本地修剪参数）。",
             ),
-            "keep_recent_tokens" => ("保留最近对话", "压缩后保留的最近对话长度（token）。"),
+            "keep_recent_tokens" => ("保留最近对话 (token)", "压缩后保留的最近对话预算。"),
             "protect_recent_tool_tokens" => {
-                ("保留最近工具结果", "压缩时不清理最近这部分工具结果。")
+                ("保护最近工具结果 (token)", "压缩时不清理最近该预算内的工具结果。")
             }
-            "mid_prompt" => ("任务中途压缩", "长任务执行过程中也检查是否需要压缩。"),
-            "auto" => ("自动压缩", "上下文接近上限时自动压缩；关闭后仍可手动压缩。"),
-            "auto_continue" => ("压缩后继续", "自动压缩完成后继续当前任务。"),
+            "mid_prompt" => ("回合中途压缩", "长工具链执行期间也检查并触发压缩。"),
+            "auto" => ("自动压缩", "上下文接近上限时自动触发压缩；关闭后仅手动触发。"),
+            "auto_continue" => ("压缩后自动继续", "自动压缩完成后继续当前回合执行。"),
             "soft_trim_chars" => (
-                "旧结果修剪阈值",
-                "超过这个长度的旧工具结果会被首尾保留、中间省略。",
+                "软修剪字符阈值",
+                "超过该长度的旧工具结果将被保留首尾、折叠中间内容。",
             ),
-            "head_chars" => ("修剪保留开头", "修剪时保留开头的字符数。"),
-            "tail_chars" => ("修剪保留结尾", "修剪时保留结尾的字符数。"),
+            "head_chars" => ("软修剪保留开头", "软修剪时保留开头的字符数。"),
+            "tail_chars" => ("软修剪保留结尾", "软修剪时保留结尾的字符数。"),
             "hard_clear_prompts" => (
-                "清空旧结果提示数",
-                "超过这么多次提示之前的旧工具结果会被清空。",
+                "硬清理轮数阈值",
+                "距今超过该用户轮次的旧工具结果将被完全清空内容。",
             ),
-            "keep_last_prompts" => ("保护最近提示数", "最近这些次提示的工具结果不会被清空。"),
+            "keep_last_prompts" => ("保护最近轮数", "最近这些用户轮次内的工具结果不会被硬清理。"),
             "supersede_reads" => (
-                "丢弃过期的读取",
-                "同一文件被重新读取后，旧的读取内容不再保留。",
+                "去重旧文件读取",
+                "同一文件被重新读取后，自动清理更早的读取结果。",
             ),
             "max_length_continues" => (
-                "中断后继续次数",
-                "回复因长度上限中断后，自动接着生成的次数。",
+                "截断自动续写次数",
+                "回复因输出上限截断后自动续写的最大次数。",
             ),
             "loop_detection" => (
-                "循环检测",
-                "默认启用；检测思考、正文和工具参数里完全重复的内容。",
+                "死循环检测",
+                "检测思考、正文与工具参数中出现的重复死循环。",
             ),
             "connect_deadline_secs" => (
-                "连接与重试时限（秒）",
-                "流式请求收到响应头之前、非流式请求整个请求的硬时限；模型生成阶段不受限制。",
+                "连接与重试硬时限（秒）",
+                "流式请求收到响应头前或非流式全流程的硬超时（流式生成阶段不限时）。",
             ),
             "request_warn_secs" => (
-                "请求耗时警告（秒）",
-                "单次请求超过这么久仍未完成时发一条警告通知，不终止请求。",
+                "请求慢响应提醒（秒）",
+                "单次请求耗时超过该值时发出提醒通知，不中断请求。",
             ),
-            "override" => ("基础系统提示", "替换默认的身份与规则说明。"),
-            "append" => ("附加系统提示", "在系统提示末尾追加自己的长期要求。"),
-            "max_tokens" => (
-                "指令长度上限",
-                "所有指令文件合计的最大长度（token），超出部分省略。",
-            ),
-            "import_depth" => ("指令引用层数", "指令文件中 @文件 引用最多展开几层。"),
-            "watch" => ("工作区变更检测", "检测工具之外的文件改动并报告。"),
-            "max_scan_entries" => ("工作区扫描上限", "一次扫描最多检查多少个文件条目。"),
-            "url" => ("服务地址", "MCP 服务的完整地址。"),
+            "watch" => ("监听文件变更", "监测工作区内外部工具修改的文件并通知模型。"),
+            "max_scan_entries" => ("工作区扫描上限", "初始化文件索引时最多扫描的条目数。"),
+            "url" => ("服务 URL", "远程 MCP 服务的 HTTP 地址。"),
             "compress" => (
                 "压缩会话日志",
-                "新建会话以 zstd 压缩保存（.jsonl.zst）；已有会话保持原格式，读取时自动识别两种格式。",
+                "新会话以 zstd 格式保存（.jsonl.zst）；读取自动兼容未压缩历史。",
             ),
-            "dir" => ("会话存储目录", "会话和运行记录的保存位置；更改后重启生效。"),
-            "artifacts_days" => (
-                "临时产物保留天数",
-                "过期且没有被引用的临时产物会被清理；维护前先预览。",
-            ),
-            "logs_days" => ("任务日志保留天数", "过期且没有被引用的任务日志会被清理。"),
-            "call_timeout_secs" => ("调用超时（秒）", "一次 MCP 工具调用的最长等待时间。"),
-            "dirs" => ("额外技能目录", "逐行填写目录路径，支持 ~。"),
-            "disable" => ("禁用的技能", "逐行填写技能名，这些技能不会被加载。"),
-            "catalog_budget_percent" => (
-                "技能列表预算比例",
-                "技能目录最多占用模型上下文窗口的百分比；0 表示只用下限。",
-            ),
-            "catalog_budget_min_tokens" => (
-                "技能列表预算下限",
-                "按比例算出的预算低于此值时改用此值，单位 token。",
-            ),
-            "description_max_chars" => ("单个技能说明长度", "每条技能说明最多显示多少字符。"),
-            "command" => ("启动程序", "本地 MCP 服务要运行的可执行程序。"),
-            "args" => ("启动参数", "逐行填写，每行一个参数。"),
-            "env" => ("环境变量", "JSON 键值，追加到该服务的运行环境。"),
-            "cwd" => ("工作目录", "MCP 程序的运行目录。"),
-            "type" => ("连接方式", "stdio 为本地程序，http 为远程服务。"),
+            "dir" => ("会话存储目录", "会话历史与运行记录存储路径（重启生效）。"),
+            "artifacts_days" => ("临时产物保留天数", "超过该天数且无引用的产物可被清理。"),
+            "logs_days" => ("任务日志保留天数", "超过该天数且无引用的日志可被清理。"),
+            "command" => ("启动命令", "stdio 模式下运行的本地可执行程序。"),
+            "args" => ("启动参数", "逐行填写命令行参数。"),
+            "env" => ("环境变量", "JSON 键值对，附加到该进程的运行环境。"),
+            "cwd" => ("工作目录", "MCP 进程的工作目录。"),
+            "type" => ("传输方式", "stdio 为本地进程，http 为远程服务。"),
             "allow" => (
-                "允许的工具",
-                "逐行填写工具名，可用 * 通配；留空表示不限制。",
+                "工具白名单",
+                "逐行填写允许暴露的工具名，支持 * 通配；留空不限制。",
             ),
-            "deny" => ("禁止的工具", "逐行填写工具名，可用 * 通配。"),
-            "supports_stop" => ("支持停止词", "上游是否接受停止序列参数。"),
-            "supports_prompt_cache_key" => ("支持缓存键", "上游是否接受缓存标识参数。"),
-            "max_output_tokens_field" => ("输出上限字段名", "上游要求的字段名，二选一。"),
-            "reasoning_field" => ("思维链字段名", "回传思考内容时使用的字段名。"),
-            "reasoning_field_aliases" => ("思维链响应字段", "逐行填写上游返回思考内容时的字段名。"),
-            "tool_choice_dialect" => ("工具选择格式", "按网关支持情况选择标准、改写或不发送。"),
-            "parallel_tool_calls" => ("支持并行调用", "上游是否接受同时调用多个工具的请求。"),
+            "deny" => ("工具黑名单", "逐行填写禁用的工具名，支持 * 通配。"),
+            "supports_stop" => ("支持 stop 参数", "上游接口是否接受 stop 停止词参数。"),
+            "supports_prompt_cache_key" => ("支持 prompt_cache_key", "上游接口是否接受缓存键参数。"),
+            "max_output_tokens_field" => ("输出上限字段名", "上游接口使用的最大输出 token 字段名。"),
+            "reasoning_field" => ("Reasoning 字段名", "回传思考内容时使用的 JSON 字段名。"),
+            "reasoning_field_aliases" => (
+                "Reasoning 响应别名",
+                "逐行填写解析响应思考内容时识别的字段别名。",
+            ),
+            "tool_choice_dialect" => ("tool_choice 方言", "按网关兼容性选择标准、改写或不发送。"),
+            "parallel_tool_calls" => ("并行工具调用", "上游接口是否支持 parallel_tool_calls。"),
             "developer_role" => (
                 "支持 developer 角色",
-                "关闭后 developer 消息会转成 system 发送。",
+                "关闭后将 developer 消息降级为 system 角色发送。",
             ),
-            "response_format_dialect" => ("结构化输出", "上游不支持时选择不发送。"),
-            "echo_reasoning" => ("回传历史思考", "按协议默认、总是或从不回传历史思考内容。"),
+            "response_format_dialect" => ("response_format 方言", "结构化输出协议兼容模式。"),
+            "echo_reasoning" => ("回传历史思考", "多轮工具调用时是否按协议回传历史思考内容。"),
             "requires_reasoning_content_for_tool_calls" => (
-                "工具历史需思考字段",
-                "为工具调用历史补齐上游要求的思考字段。",
+                "工具消息需携带思考字段",
+                "发送工具调用历史时强制保留思考内容字段。",
             ),
-            "requires_reasoning_content_for_all_assistant_turns" => {
-                ("助手历史需思考字段", "所有助手历史都携带思考字段。")
-            }
-            "requires_assistant_content_for_tool_calls" => {
-                ("工具历史需正文", "工具调用消息必须带 content 字段。")
-            }
-            "toggle_field" => ("思考开关字段名", "请求中思考开关的字段名；留空不发送。"),
-            "enabled_value" => ("开启值", "表示开启思考的取值。"),
-            "disabled_value" => ("关闭值", "表示关闭思考的取值。"),
-            "effort_field" => ("强度字段名", "请求中思考强度的字段名；留空不发送。"),
+            "requires_reasoning_content_for_all_assistant_turns" => (
+                "全助手轮次需携带思考字段",
+                "所有历史助手消息都强制携带思考内容字段。",
+            ),
+            "requires_assistant_content_for_tool_calls" => (
+                "工具消息需携带 content",
+                "包含工具调用的历史消息强制携带非空 content 字段。",
+            ),
+            "toggle_field" => ("思考开关字段名", "请求体中控制思考开关的字段名；留空不发送。"),
+            "enabled_value" => ("开启取值", "请求体中表示开启思考的字段值。"),
+            "disabled_value" => ("关闭取值", "请求体中表示关闭思考的字段值。"),
+            "effort_field" => ("思考强度字段名", "请求体中控制思考强度的字段名；留空不发送。"),
             "effort_map" => (
-                "等级映射",
-                "把思考等级（含自定义等级）映射为上游接受的值；未映射的等级原样发送。",
+                "思考等级映射",
+                "将思考等级映射为上游接口接受的值；未配置项原样发送。",
             ),
-            "toggle_extra" => ("思考附加字段", "JSON：追加到思考对象内部的字段。"),
-            _ => (key, "自定义配置项；修改前请确认该服务接受的值。"),
+            "toggle_extra" => ("思考附加字段", "JSON：合并到思考开关对象中的附加字段。"),
+            _ => (key, "自定义配置项。"),
         },
     }
 }

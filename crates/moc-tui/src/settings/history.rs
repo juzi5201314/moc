@@ -1,10 +1,8 @@
 use super::Job;
-use super::Restore;
 use super::SettingsPanel;
 use super::Snapshot;
 use super::Store;
 use super::View;
-use super::providers::Providers;
 use crate::app::App;
 use crate::app::ConfigWrite;
 use crate::config::KeyMap;
@@ -19,7 +17,6 @@ impl SettingsPanel {
     /// 改动前状态的快照，撤回时整体恢复。
     pub(super) fn snapshot(&self, label: &str) -> Snapshot {
         Snapshot {
-            scope: self.scope,
             document: self
                 .data
                 .as_ref()
@@ -86,7 +83,7 @@ impl SettingsPanel {
         app.write_config(
             connection,
             ConfigWrite {
-                scope: self.scope,
+                scope: ConfigScope::Global,
                 cwd: self.cwd.clone(),
                 document: data.document.clone(),
                 revision: data.revision.clone(),
@@ -138,7 +135,7 @@ impl SettingsPanel {
         self.step(entry, false, app, connection);
     }
 
-    /// 套用一条历史快照；改动发生在别的范围时先切回去。
+    /// 套用一条历史快照。
     pub(super) fn step(
         &mut self,
         entry: Snapshot,
@@ -148,22 +145,6 @@ impl SettingsPanel {
     ) {
         let label = entry.label.clone();
         let verb = if undo { "已撤回" } else { "已重做" };
-        if entry.scope != self.scope {
-            if app.saving_config() {
-                self.history.restore(entry, undo);
-                self.message = Some("正在保存改动，请稍候".into());
-                return;
-            }
-            // 当前状态要等切过去读到磁盘内容才知道，那时再记进另一侧栈。
-            let scope = entry.scope;
-            self.restore = Some(Restore {
-                entry,
-                message: format!("{verb}：{label}"),
-                undo,
-            });
-            self.set_scope(scope, app, connection);
-            return;
-        }
         let current = self.snapshot(&label);
         self.history.put(current, !undo);
         self.apply_snapshot(entry, app, connection);
@@ -197,70 +178,22 @@ impl SettingsPanel {
         }
     }
 
-    /// 切换全局／项目范围：重新读取该范围的配置文件。
-    pub(super) fn set_scope(
-        &mut self,
-        scope: ConfigScope,
-        app: &mut App,
-        connection: &EmbeddedConnection,
-    ) {
-        if self.busy {
-            self.message = Some("正在读取设置，请稍候".into());
-            return;
-        }
-        self.scope = scope;
-        self.providers = Providers {
-            generation: self.providers.generation,
-            ..Default::default()
-        };
-        self.data = None;
-        self.collapsed.clear();
-        self.expanded.clear();
-        self.rows.clear();
-        self.selected = 0;
-        self.offset = 0;
-        self.scroll.reveal_selection = true;
-        self.edit = None;
-        self.request(
-            connection,
-            &app.events,
-            ConfigAction::Read {
-                scope,
-                cwd: self.cwd.clone(),
-            },
-            Job::Load,
-        );
-    }
-
     /// 读取、发现、维护等回执：并入面板视图。
     pub(super) fn handle_response(
         &mut self,
-        app: &mut App,
-        connection: &EmbeddedConnection,
+        _app: &mut App,
+        _connection: &EmbeddedConnection,
         result: anyhow::Result<ConfigReply>,
     ) {
         match result {
             Err(error) => {
-                self.restore = None;
                 self.message = None;
                 self.error = Some(error.to_string());
             }
             Ok(ConfigReply::Settings(data)) => {
                 self.data = Some(*data);
-                match self.restore.take() {
-                    // 撤回／重做发生在别的范围：切回来之后先记下磁盘状态，再套用快照。
-                    Some(restore) => {
-                        let current = self.snapshot(&restore.entry.label);
-                        self.history.put(current, !restore.undo);
-                        self.apply_snapshot(restore.entry, app, connection);
-                        self.message = Some(restore.message.clone());
-                        self.outcome = Some(restore.message);
-                    }
-                    None => {
-                        self.message = None;
-                        self.rebuild();
-                    }
-                }
+                self.message = None;
+                self.rebuild();
             }
             Ok(ConfigReply::Models(_)) => {}
             Ok(ConfigReply::Maintenance(report)) => {
@@ -282,7 +215,7 @@ impl SettingsPanel {
             connection,
             &app.events,
             ConfigAction::Read {
-                scope: self.scope,
+                scope: ConfigScope::Global,
                 cwd: self.cwd.clone(),
             },
             Job::Load,

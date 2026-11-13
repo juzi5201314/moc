@@ -410,8 +410,8 @@ pub(super) fn hover_modal_item(app: &mut App, index: usize) {
     }
 }
 
-/// 模型选择器：滚轮只滚动光标所在列表，悬停只记录坐标。
-/// 列表行先选中再点确认；详情行和下拉候选点中即执行。
+/// 模型选择器：滚轮只滚动光标所在列表；移动鼠标时焦点随指针切换而不改视口。
+/// 列表行点中确认，详情行和下拉候选点中即执行。
 pub(super) fn handle_model_picker_mouse(
     app: &mut App,
     connection: &EmbeddedConnection,
@@ -447,6 +447,45 @@ pub(super) fn handle_model_picker_mouse(
             && app.modal_card_area.contains(position)
         {
             detail.list_scroll.scroll_by(&mut picker.offset, delta);
+        }
+        return;
+    }
+    if mouse.kind == MouseEventKind::Moved {
+        if let Some(menu) = detail.menu.as_mut() {
+            if let Some((index, _)) = app
+                .modal_menu_hits
+                .iter()
+                .find(|(_, area)| area.contains(position))
+            {
+                menu.selected = *index;
+            }
+            return;
+        }
+        if let Some((row, _)) = app
+            .modal_detail_hits
+            .iter()
+            .find(|(_, area)| area.contains(position))
+        {
+            detail.focus = Some(*row);
+            return;
+        }
+        if app.modal_detail_area.contains(position) || app.modal_menu_area.contains(position) {
+            return;
+        }
+        if let Some((index, _)) = app
+            .modal_item_hits
+            .iter()
+            .find(|(_, area)| area.contains(position))
+        {
+            if picker.selected != *index {
+                let filtered = crate::modal::filtered_entries(entries, &picker.query);
+                level.change_entry(
+                    filtered.get(picker.selected).map(|(_, entry)| *entry),
+                    filtered.get(*index).map(|(_, entry)| *entry),
+                );
+                picker.selected = *index;
+            }
+            detail.focus = None;
         }
         return;
     }

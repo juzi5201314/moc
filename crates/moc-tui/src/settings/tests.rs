@@ -8,7 +8,6 @@ use crate::settings::editors::RecordEditor;
 #[test]
 fn restore_keeps_the_other_stack() {
     let snapshot = |label: &str| Snapshot {
-        scope: ConfigScope::Global,
         document: Value::Null,
         tui: Value::Null,
         label: label.into(),
@@ -68,7 +67,6 @@ async fn clicking_an_added_model_keeps_the_selection_empty() {
     app.settings = Some(SettingsPanel {
         id: 1,
         cwd: "/tmp".into(),
-        scope: ConfigScope::Global,
         data: None,
         tui: Value::Null,
         effective: serde_json::json!({
@@ -84,13 +82,12 @@ async fn clicking_an_added_model_keeps_the_selection_empty() {
         offset: 0,
         scroll: Default::default(),
         pointer: None,
-        advanced: false,
         filter: String::new(),
         edit: None,
         error: None,
         message: None,
         busy: false,
-        hits: vec![(Rect::new(10, 5, 20, 1), Hit::Row(0))],
+        hits: vec![(Rect::new(10, 5, 20, 1), Hit::DiscoveryItem(0))],
         pending: None,
         view: View::Fields,
         providers: Providers {
@@ -103,6 +100,9 @@ async fn clicking_an_added_model_keeps_the_selection_empty() {
                 }],
                 checked: BTreeSet::new(),
                 query: String::new(),
+                cursor: 0,
+                offset: 0,
+                scroll: Default::default(),
                 error: None,
                 pending: None,
             }),
@@ -110,7 +110,6 @@ async fn clicking_an_added_model_keeps_the_selection_empty() {
         },
         history: History::default(),
         outcome: None,
-        restore: None,
     });
 
     let panel = app.settings.as_mut().expect("设置页");
@@ -126,10 +125,6 @@ async fn clicking_an_added_model_keeps_the_selection_empty() {
         provider_template: json!({}),
         model_template: json!({}),
     });
-    panel.rows = vec![Row {
-        depth: 0,
-        kind: RowKind::Action(ProviderAction::Candidate(0)),
-    }];
     mouse(
         &mut app,
         &connection,
@@ -306,7 +301,7 @@ fn pricing_record_requires_input_and_output() {
     assert_eq!(value, Some(json!({"input": 2.5, "output": 10.0})));
 }
 
-/// 设置只保留探索模型和 Fusion 两侧的模型选择入口。
+/// 设置只保留探索角色的快捷模型选择器，Fusion 不在设置页提供入口。
 #[test]
 fn model_role_fields_carry_their_own_specials() {
     let path = |segments: [&str; 3]| segments.map(str::to_owned).to_vec();
@@ -316,13 +311,11 @@ fn model_role_fields_carry_their_own_specials() {
         model_role(&path(["models", "roles", "explore"])),
         Some("explore")
     );
-    assert_eq!(
-        model_role(&path(["models", "fusion", "lead"])),
-        Some("lead")
-    );
+    assert_eq!(model_role(&path(["models", "fusion", "lead"])), None);
     assert_eq!(model_role(&path(["providers", "test", "models"])), None);
     assert!(role_specials("default").is_empty());
     assert!(role_specials("plan").is_empty());
+    assert!(!TABS.contains(&"高级"));
 }
 
 #[test]
@@ -347,7 +340,6 @@ fn server_plugin_fields_survive_rebuild_with_defaults() {
     let mut panel = SettingsPanel {
         id: 1,
         cwd: String::new(),
-        scope: ConfigScope::Global,
         data: Some(SettingsDocument {
             path: String::new(),
             revision: String::new(),
@@ -375,7 +367,6 @@ fn server_plugin_fields_survive_rebuild_with_defaults() {
         offset: 0,
         scroll: Default::default(),
         pointer: None,
-        advanced: false,
         filter: String::new(),
         edit: None,
         error: None,
@@ -387,7 +378,6 @@ fn server_plugin_fields_survive_rebuild_with_defaults() {
         providers: Providers::default(),
         history: History::default(),
         outcome: None,
-        restore: None,
     };
     panel.rebuild();
 
@@ -424,7 +414,6 @@ fn rebuilding_does_not_infer_plugin_field_metadata() {
     let mut panel = SettingsPanel {
         id: 1,
         cwd: String::new(),
-        scope: ConfigScope::Global,
         data: Some(SettingsDocument {
             path: String::new(),
             revision: String::new(),
@@ -448,7 +437,6 @@ fn rebuilding_does_not_infer_plugin_field_metadata() {
         offset: 0,
         scroll: Default::default(),
         pointer: None,
-        advanced: false,
         filter: String::new(),
         edit: None,
         error: None,
@@ -460,7 +448,6 @@ fn rebuilding_does_not_infer_plugin_field_metadata() {
         providers: Providers::default(),
         history: History::default(),
         outcome: None,
-        restore: None,
     };
     panel.rebuild();
 
@@ -490,4 +477,99 @@ fn list_summaries_show_defaults_and_choices() {
         controls::summary(&controls::control(&field), &json!(["text", "image"])).as_deref(),
         Some("text、image")
     );
+}
+
+#[test]
+fn advanced_group_collapses_by_default_and_expands_on_filter() {
+    let basic = ConfigField {
+        path: vec!["limits".into(), "max_turns".into()],
+        tab: "会话".into(),
+        label: "最大轮数".into(),
+        description: "基础".into(),
+        kind: FieldKind::Number,
+        advanced: false,
+    };
+    let advanced = ConfigField {
+        path: vec!["limits".into(), "max_concurrency".into()],
+        tab: "会话".into(),
+        label: "最大并发".into(),
+        description: "高级".into(),
+        kind: FieldKind::Number,
+        advanced: true,
+    };
+    let mut panel = SettingsPanel {
+        id: 1,
+        cwd: String::new(),
+        data: Some(SettingsDocument {
+            path: String::new(),
+            revision: String::new(),
+            document: json!({}),
+            effective: json!({}),
+            inherited: json!({}),
+            defaults: Value::Null,
+            fields: vec![basic, advanced],
+            provider_template: Value::Null,
+            model_template: Value::Null,
+        }),
+        tui: Value::Null,
+        effective: Value::Null,
+        fields: Vec::new(),
+        controls: Vec::new(),
+        rows: Vec::new(),
+        collapsed: BTreeSet::new(),
+        expanded: BTreeSet::new(),
+        tab: TABS.iter().position(|tab| *tab == "会话").unwrap(),
+        selected: 0,
+        offset: 0,
+        scroll: Default::default(),
+        pointer: None,
+        filter: String::new(),
+        edit: None,
+        error: None,
+        message: None,
+        busy: false,
+        hits: Vec::new(),
+        pending: None,
+        view: View::Fields,
+        providers: Providers::default(),
+        history: History::default(),
+        outcome: None,
+    };
+    panel.rebuild();
+
+    let (adv_index, adv_depth, adv_key, adv_title) = panel
+        .rows
+        .iter()
+        .enumerate()
+        .find_map(|(index, row)| match &row.kind {
+            RowKind::Group(group) if group.key.ends_with("/__advanced") => {
+                Some((index, row.depth, group.key.clone(), group.title.clone()))
+            }
+            _ => None,
+        })
+        .expect("存在高级参数折叠行");
+    assert_eq!(adv_title, "高级参数");
+    assert!(!panel.expanded.contains(&adv_key), "高级参数分组默认折叠");
+    assert!(
+        !panel.rows.iter().any(|row| matches!(
+            &row.kind,
+            RowKind::Field(index) if panel.fields[*index].label == "最大并发"
+        )),
+        "折叠时隐藏高级字段"
+    );
+
+    panel.selected = adv_index;
+    panel.toggle_group(&adv_key, adv_depth);
+    assert!(panel.rows.iter().any(|row| matches!(
+        &row.kind,
+        RowKind::Field(index) if panel.fields[*index].label == "最大并发"
+    )));
+    panel.toggle_group(&adv_key, adv_depth);
+
+    panel.filter = "最大并发".into();
+    panel.rebuild();
+    assert!(panel.rows.iter().any(|row| matches!(
+        &row.kind,
+        RowKind::Field(index) if panel.fields[*index].label == "最大并发"
+    )));
 }

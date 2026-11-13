@@ -131,7 +131,7 @@ fn draw_hover(frame: &mut Frame, app: &App) {
     } else if over_detail {
         app.modal_detail_hits
             .iter()
-            .find(|(_, area)| area.contains(pointer))
+            .find(|(row, area)| area.contains(pointer) && detail.focus != Some(*row))
             .map(|(_, area)| area)
     } else {
         app.modal_item_hits

@@ -177,6 +177,28 @@ impl Editor {
         }
     }
 
+    /// 鼠标悬停第 `index` 行：焦点随指针移动，不滚动视口也不提交。
+    pub fn hover(&mut self, index: usize) {
+        match self {
+            Editor::Select(editor) => {
+                if index < editor.picks.len() {
+                    editor.selected = index;
+                }
+            }
+            Editor::List(editor) if editor.draft.is_none() => {
+                if index < editor.rows() {
+                    editor.cursor = index;
+                }
+            }
+            Editor::Record(editor) if editor.draft.is_none() => {
+                if index < editor.rows() {
+                    editor.cursor = index;
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// 点击第 `index` 行：移动光标，并返回等价的按键（单选即选中、清单即勾选）。
     pub fn click(&mut self, index: usize) -> Option<KeyCode> {
         match self {

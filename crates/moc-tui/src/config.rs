@@ -317,14 +317,14 @@ pub fn fields() -> Vec<ConfigField> {
     let descriptions = [
         (
             "thinking_detail",
-            "思考显示档位",
-            "启动时思考块的档位：隐藏只留耗时行，简略显示正文末尾预览，完整显示全部。",
+            "思考展示",
+            "hidden 仅显示耗时；brief 显示末尾预览；full 显示完整思考。",
             FieldKind::Choice(detail_options()),
         ),
         (
             "tool_detail",
-            "工具显示档位",
-            "隐藏时只留标题，简略按工具显示短预览；警告始终显示，完整结果需点击单条展开。",
+            "工具输出展示",
+            "hidden 仅显示标题；brief 显示简要预览；完整输出可点击展开。",
             FieldKind::Choice(vec![
                 ChoiceOption::new("hidden", "隐藏"),
                 ChoiceOption::new("brief", "简略"),
@@ -333,28 +333,28 @@ pub fn fields() -> Vec<ConfigField> {
         (
             "notify_complete",
             "完成时通知",
-            "窗口不在前台时，任务完成发送终端通知。",
+            "终端不在前台时，任务完成后发送桌面通知。",
             FieldKind::Bool,
         ),
         (
             "notify_waiting",
-            "需要你回答时通知",
-            "窗口不在前台时，需要你确认或回答时发送终端通知。",
+            "等待确认时通知",
+            "终端不在前台时，需要用户授权或回答时发送桌面通知。",
             FieldKind::Bool,
         ),
         (
             "active_submit",
-            "运行中按 Enter",
-            "任务运行中按 Enter：补充要求，或先停下再重新提问。",
+            "运行中提交行为",
+            "任务运行期间按 Enter：追加引导指令，或中断当前任务并重新提交。",
             FieldKind::Choice(vec![
-                ChoiceOption::new("steering", "补充要求"),
-                ChoiceOption::new("interrupt", "先停下再重新提问"),
+                ChoiceOption::new("steering", "追加引导"),
+                ChoiceOption::new("interrupt", "中断并重提"),
             ]),
         ),
         (
             "history_scope",
-            "输入历史范围",
-            "↑/↓ 召回的历史：全局共享，或只看当前项目目录；提交内容始终写入同一份历史。",
+            "输入历史作用域",
+            "↑/↓ 召回的输入历史范围：全局共享，或仅限当前项目。",
             FieldKind::Choice(vec![
                 ChoiceOption::new("global", "全局"),
                 ChoiceOption::new("project", "当前项目"),
@@ -363,7 +363,7 @@ pub fn fields() -> Vec<ConfigField> {
         (
             "statusline",
             "状态栏模板",
-            "自定义底部状态栏；留空使用默认样式。可用 {model} {status} {workdir} {branch} {context} {context_percent} {todo} {tokens_in} {tokens_out} {tok_s} {prompt_elapsed} {cost}。",
+            "可用占位符：{model} {status} {workdir} {branch} {context} {context_percent} {todo} {tokens_in} {tokens_out} {tok_s} {prompt_elapsed} {cost}。",
             FieldKind::Text,
         ),
     ];
@@ -381,8 +381,8 @@ pub fn fields() -> Vec<ConfigField> {
     output.extend(actions().iter().map(|(name, label, _)| ConfigField {
         path: vec!["tui".into(), "keybindings".into(), (*name).into()],
         tab: "界面".into(),
-        label: format!("快捷键 · {label}"),
-        description: "逐行填写按键，例如 ctrl+g、alt+enter、f2；留空表示禁用。".into(),
+        label: (*label).to_owned(),
+        description: "支持绑定多个快捷键（如 ctrl+g、alt+enter）；留空表示禁用。".into(),
         kind: FieldKind::Strings,
         advanced: false,
     }));

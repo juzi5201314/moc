@@ -33,44 +33,50 @@ async fn model_picker_scroll_and_hover_preserve_selection_and_details() {
     });
     let _ = draw_frame(&mut app, 140, 30);
     let visible = app.modal_item_hits.clone();
-    let (_, control) = app.modal_detail_hits[0];
-    for kind in [Moved, ScrollDown] {
-        handle_mouse_with_connection(
-            &mut app,
-            &connection,
-            mouse_event(kind, control.x, control.y),
-        );
-    }
+    let (control_row, control) = app.modal_detail_hits[0];
+    handle_mouse_with_connection(
+        &mut app,
+        &connection,
+        mouse_event(Moved, control.x, control.y),
+    );
+    handle_mouse_with_connection(
+        &mut app,
+        &connection,
+        mouse_event(ScrollDown, control.x, control.y),
+    );
     let _ = draw_frame(&mut app, 140, 30);
     assert_eq!(app.modal_item_hits, visible, "详情卡上的滚轮不滚动列表");
+    let Some(Modal::Model { detail, .. }) = &app.modal else {
+        panic!("选择器应保持打开")
+    };
+    assert_eq!(detail.focus, Some(control_row), "详情卡悬停聚焦对应控制行");
+
     let (_, row) = app.modal_item_hits[2];
-    for step in 0..8 {
+    for _ in 0..8 {
         handle_mouse_with_connection(&mut app, &connection, mouse_event(ScrollDown, row.x, row.y));
-        // 两次绘制之间交替滚轮与轻微移动，覆盖旧命中表仍在使用的情况。
-        handle_mouse_with_connection(
-            &mut app,
-            &connection,
-            mouse_event(Moved, row.x, row.y + step % 2),
-        );
         let _ = draw_frame(&mut app, 140, 30);
-        let Some(Modal::Model {
-            picker,
-            level,
-            detail,
-            ..
-        }) = &app.modal
-        else {
+        let Some(Modal::Model { picker, level, .. }) = &app.modal else {
             panic!("选择器应保持打开")
         };
-        assert_eq!(picker.selected, 0, "滚轮与悬停不能改选中项");
+        assert_eq!(picker.selected, 0, "纯滚轮不能改选中项");
         assert_eq!(level.manual.as_deref(), Some("low"));
-        assert_eq!(detail.focus, None);
         assert!(!picker.loading);
     }
     assert!(app.modal_item_hits[0].0 > 0, "选中项允许滚出视口");
     let visible = app.modal_item_hits.clone();
+    let (hover_index, hover_row) = app.modal_item_hits[2];
+    handle_mouse_with_connection(
+        &mut app,
+        &connection,
+        mouse_event(Moved, hover_row.x, hover_row.y),
+    );
     let _ = draw_frame(&mut app, 140, 30);
-    assert_eq!(app.modal_item_hits, visible, "重绘不能把视口拉回选中项");
+    assert_eq!(app.modal_item_hits, visible, "悬停切换焦点不拉回视口");
+    let Some(Modal::Model { picker, detail, .. }) = &app.modal else {
+        panic!("选择器应保持打开")
+    };
+    assert_eq!(picker.selected, hover_index, "焦点应跟随鼠标指针移动");
+    assert_eq!(detail.focus, None);
     handle_mouse_with_connection(&mut app, &connection, mouse_event(ScrollUp, row.x, row.y));
     let _ = draw_frame(&mut app, 140, 30);
     assert!(
@@ -78,6 +84,7 @@ async fn model_picker_scroll_and_hover_preserve_selection_and_details() {
         "向上滚轮反向滚动视口"
     );
 
+    handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Home);
     handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
     let _ = draw_frame(&mut app, 140, 30);
     assert!(
@@ -87,16 +94,14 @@ async fn model_picker_scroll_and_hover_preserve_selection_and_details() {
     let (index, row) = *app.modal_item_hits.last().unwrap();
     handle_mouse_with_connection(&mut app, &connection, mouse_event(Moved, row.x, row.y));
     let terminal = draw_frame(&mut app, 140, 30);
-    assert_eq!(
-        terminal.backend().buffer()[(row.x, row.y)].bg,
-        app.theme.bg_hover
-    );
-    handle_mouse_with_connection(&mut app, &connection, left_click(row.x, row.y));
     let Some(Modal::Model { picker, .. }) = &app.modal else {
         panic!("选择器应保持打开")
     };
-    assert_eq!(picker.selected, index);
-    assert!(!picker.loading, "悬停后首次点击只选中，不能误确认");
+    assert_eq!(picker.selected, index, "鼠标移动后列表焦点切到悬停行");
+    assert_eq!(
+        terminal.backend().buffer()[(row.x, row.y)].bg,
+        app.theme.bg_visual
+    );
 
     for ch in "model35".chars() {
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char(ch));
@@ -143,6 +148,7 @@ async fn model_picker_menu_scroll_preserves_draft_until_clicked() {
     let (_, row) = app.modal_menu_hits[2];
     for step in 0..5 {
         handle_mouse_with_connection(&mut app, &connection, mouse_event(ScrollDown, row.x, row.y));
+        let _ = draw_frame(&mut app, 140, 30);
         handle_mouse_with_connection(
             &mut app,
             &connection,
@@ -153,10 +159,16 @@ async fn model_picker_menu_scroll_preserves_draft_until_clicked() {
             panic!("选择器应保持打开")
         };
         assert_eq!(picker.selected, 0);
+        let hovered = app
+            .modal_menu_hits
+            .iter()
+            .find(|(_, area)| area.contains((row.x, row.y + step % 2).into()))
+            .map(|(index, _)| *index)
+            .unwrap();
         assert_eq!(
             detail.menu.as_ref().unwrap().selected,
-            0,
-            "下拉悬停不能改键盘选中项"
+            hovered,
+            "下拉悬停焦点应跟随鼠标指针"
         );
         assert!(detail.fusion.lead.is_empty(), "浏览不能改 Fusion 草稿");
     }
@@ -214,7 +226,10 @@ async fn model_picker_short_menu_can_scroll_to_last_level() {
     let Some(Modal::Model { detail, .. }) = &app.modal else {
         panic!("选择器应保持打开")
     };
-    assert_eq!(detail.menu.as_ref().unwrap().selected, 0);
+    assert_eq!(
+        detail.menu.as_ref().unwrap().selected,
+        app.modal_menu_hits[0].0
+    );
     connection.shutdown().await;
     core.shutdown().await;
 }

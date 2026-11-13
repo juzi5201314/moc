@@ -125,7 +125,6 @@ async fn startup_selects_then_remembers_model_and_resume_ignores_missing_prefere
 async fn config_model_role_picker_shares_the_searchable_picker() {
     use crate::settings::{History, RowKind, SettingsPanel, View};
     use moc_core::{Core, CoreConfig};
-    use moc_protocol::ConfigScope;
     use moc_protocol::methods::SettingsDocument;
     use serde_json::{Value, json};
     use std::collections::BTreeSet;
@@ -166,7 +165,6 @@ async fn config_model_role_picker_shares_the_searchable_picker() {
     app.settings = Some(SettingsPanel {
         id: 1,
         cwd: "/tmp".into(),
-        scope: ConfigScope::Global,
         data: Some(SettingsDocument {
             path: "config.toml".into(),
             revision: "0".into(),
@@ -193,7 +191,6 @@ async fn config_model_role_picker_shares_the_searchable_picker() {
         offset: 0,
         scroll: Default::default(),
         pointer: None,
-        advanced: true,
         filter: String::new(),
         edit: None,
         error: None,
@@ -205,7 +202,6 @@ async fn config_model_role_picker_shares_the_searchable_picker() {
         providers: Default::default(),
         history: History::default(),
         outcome: None,
-        restore: None,
     });
     {
         let panel = app.settings.as_mut().expect("设置面板");

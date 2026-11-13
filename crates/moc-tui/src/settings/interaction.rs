@@ -3,6 +3,7 @@ use super::RowKind;
 use super::SettingsPanel;
 use super::View;
 use super::forms;
+use super::providers::ProviderAction;
 use crate::app::App;
 use crate::protocol::EmbeddedConnection;
 use crossterm::event::KeyCode;
@@ -61,8 +62,12 @@ pub(super) fn scroll(panel: &mut SettingsPanel, point: ratatui::layout::Position
         }
         View::Confirm { .. } => return,
     }
-    // 供应商页按指针落在侧栏还是详情区分流；行内编辑只占一行，照常滚动。
+    // 供应商页按指针落在弹窗、侧栏还是详情区分流；行内编辑只占一行，照常滚动。
     if panel.provider_page() {
+        if let Some(discovery) = &mut panel.providers.discovery {
+            discovery.scroll.scroll_by(&mut discovery.offset, delta);
+            return;
+        }
         let sidebar = panel
             .hits
             .iter()
@@ -84,11 +89,54 @@ pub(super) fn scroll(panel: &mut SettingsPanel, point: ratatui::layout::Position
     panel.scroll.scroll_by(&mut panel.offset, delta);
 }
 
+/// 指针移动时让焦点跟随命中的列表行/侧栏项/弹窗项，不拉动手动滚动过的视口。
+pub(super) fn hover(panel: &mut SettingsPanel, pointer: ratatui::layout::Position) {
+    panel.pointer = Some(pointer);
+    let hit = panel
+        .hits
+        .iter()
+        .find(|(area, _)| area.contains(pointer))
+        .map(|(_, hit)| hit.clone());
+    if let Some(edit) = &mut panel.edit {
+        if edit.popup
+            && let Some(Hit::Item(index)) = hit
+        {
+            edit.editor.hover(index);
+        }
+    } else if panel.provider_page()
+        && let Some(discovery) = &mut panel.providers.discovery
+    {
+        if let Some(Hit::DiscoveryItem(index)) = hit {
+            discovery.cursor = index;
+        }
+    } else if matches!(panel.view, View::Fields) {
+        match hit {
+            Some(Hit::Row(index)) if index < panel.rows.len() => {
+                panel.providers.sidebar = false;
+                panel.selected = index;
+            }
+            Some(Hit::Provider(index)) => {
+                panel.providers.sidebar = true;
+                panel.providers.cursor = index;
+            }
+            Some(Hit::ProviderInput(index)) => {
+                if let Some(draft) = &mut panel.providers.draft
+                    && draft.pending.is_none()
+                {
+                    draft.focus = index;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) {
     let Some(panel) = &mut app.settings else {
         return;
     };
-    panel.pointer = Some((event.column, event.row).into());
+    let pointer = (event.column, event.row).into();
+    panel.pointer = Some(pointer);
     if matches!(
         event.kind,
         MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
@@ -98,23 +146,26 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
         } else {
             -3
         };
-        scroll(panel, (event.column, event.row).into(), delta);
+        scroll(panel, pointer, delta);
         return;
     }
-    if event.kind != MouseEventKind::Down(MouseButton::Left) {
+    if event.kind == MouseEventKind::Moved {
+        hover(panel, pointer);
         return;
     }
-    let clicked = (event.column, event.row).into();
     let hit = panel
         .hits
         .iter()
-        .find(|(area, _)| area.contains(clicked))
+        .find(|(area, _)| area.contains(pointer))
         .map(|(_, hit)| hit.clone());
+    if event.kind != MouseEventKind::Down(MouseButton::Left) {
+        return;
+    }
     if panel.edit.as_ref().is_some_and(|edit| !edit.popup)
         && match &hit {
             Some(Hit::Row(index)) => *index != panel.selected,
             Some(Hit::Provider(_) | Hit::Tab(_) | Hit::ProviderAction(_)) => true,
-            Some(Hit::Key(code, _)) => *code != KeyCode::Esc,
+            Some(Hit::Hint(code, _)) => *code != KeyCode::Esc,
             _ => false,
         }
     {
@@ -139,7 +190,7 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
                     handle_key(app, connection, KeyModifiers::NONE, code);
                 }
             }
-            Some(Hit::DismissPopup) | Some(Hit::Key(KeyCode::Esc, _)) => {
+            Some(Hit::DismissPopup) | Some(Hit::Hint(KeyCode::Esc, _)) => {
                 handle_key(app, connection, KeyModifiers::NONE, KeyCode::Esc);
             }
             Some(Hit::Hint(code, modifiers)) => handle_key(app, connection, modifiers, code),
@@ -147,6 +198,34 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
             Some(Hit::Scroll(offset)) => {
                 panel.offset = offset.min(panel.scroll.max_offset);
                 panel.scroll.reveal_selection = false;
+            }
+            _ => {}
+        }
+        return;
+    }
+    if panel.provider_page() && panel.providers.discovery.is_some() {
+        match hit {
+            Some(Hit::DiscoveryItem(index)) => {
+                if let Some(discovery) = &mut panel.providers.discovery {
+                    discovery.cursor = index;
+                }
+                if let Some(&cand_idx) = panel.visible_candidates().get(index) {
+                    panel.toggle_candidate(cand_idx);
+                    panel.error = None;
+                }
+            }
+            Some(Hit::DismissPopup) => {
+                panel.providers.discovery = None;
+                panel.error = None;
+                panel.rebuild_rows();
+                panel.select_action(ProviderAction::Fetch);
+            }
+            Some(Hit::Hint(code, modifiers)) => handle_key(app, connection, modifiers, code),
+            Some(Hit::Scroll(offset)) => {
+                if let Some(discovery) = &mut panel.providers.discovery {
+                    discovery.offset = offset.min(discovery.scroll.max_offset);
+                    discovery.scroll.reveal_selection = false;
+                }
             }
             _ => {}
         }
@@ -199,9 +278,7 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
             panel.provider_action(action, app, connection);
             app.settings = Some(panel);
         }
-        Hit::Key(code, modifiers) | Hit::Hint(code, modifiers) => {
-            handle_key(app, connection, modifiers, code)
-        }
+        Hit::Hint(code, modifiers) => handle_key(app, connection, modifiers, code),
         _ => {}
     }
 }

@@ -96,6 +96,9 @@ pub struct Discovery {
     pub rows: Vec<CatalogModel>,
     pub checked: BTreeSet<String>,
     pub query: String,
+    pub cursor: usize,
+    pub offset: usize,
+    pub scroll: ModelScroll,
     pub error: Option<String>,
     pub pending: Option<tokio::task::AbortHandle>,
 }
@@ -114,11 +117,6 @@ pub enum ProviderAction {
     More,
     Fetch,
     Manual,
-    Search,
-    SelectAll,
-    AddPicked,
-    CloseDiscovery,
-    Candidate(usize),
     Remove,
 }
 
@@ -226,17 +224,6 @@ impl SettingsPanel {
         action(&mut rows, ProviderAction::More);
         action(&mut rows, ProviderAction::Fetch);
         action(&mut rows, ProviderAction::Manual);
-        if let Some(discovery) = &self.providers.discovery {
-            action(&mut rows, ProviderAction::Search);
-            action(&mut rows, ProviderAction::AddPicked);
-            action(&mut rows, ProviderAction::SelectAll);
-            for index in self.visible_candidates() {
-                action(&mut rows, ProviderAction::Candidate(index));
-            }
-            if discovery.pending.is_none() {
-                action(&mut rows, ProviderAction::CloseDiscovery);
-            }
-        }
         if let Some(models) = self.effective["providers"][id]
             .get("models")
             .and_then(Value::as_object)
@@ -253,7 +240,7 @@ impl SettingsPanel {
                 rows.push(Row {
                     depth: 1,
                     kind: RowKind::Group(Group {
-                        key,
+                        key: key.clone(),
                         title: model.clone(),
                         detail: self.model_summary(id, model),
                         grouping: path.clone(),
@@ -261,12 +248,45 @@ impl SettingsPanel {
                     }),
                 });
                 if expanded {
+                    let mut normal = Vec::new();
+                    let mut adv = Vec::new();
                     for (index, field) in self.fields.iter().enumerate() {
-                        if field.path.starts_with(&path) && (!field.advanced || self.advanced) {
-                            rows.push(Row {
-                                depth: 2,
-                                kind: RowKind::Field(index),
-                            });
+                        if field.path.starts_with(&path) {
+                            if field.advanced {
+                                adv.push(index);
+                            } else {
+                                normal.push(index);
+                            }
+                        }
+                    }
+                    for index in normal {
+                        rows.push(Row {
+                            depth: 2,
+                            kind: RowKind::Field(index),
+                        });
+                    }
+                    if !adv.is_empty() {
+                        let adv_key = format!("{key}/__advanced");
+                        let mut adv_grouping = path.clone();
+                        adv_grouping.push("__advanced".into());
+                        let adv_expanded = self.is_expanded(&adv_key, 2);
+                        rows.push(Row {
+                            depth: 2,
+                            kind: RowKind::Group(Group {
+                                key: adv_key,
+                                title: "高级参数".into(),
+                                detail: format!("{} 项", adv.len()),
+                                grouping: adv_grouping,
+                                path: None,
+                            }),
+                        });
+                        if adv_expanded {
+                            for index in adv {
+                                rows.push(Row {
+                                    depth: 3,
+                                    kind: RowKind::Field(index),
+                                });
+                            }
                         }
                     }
                 }
@@ -292,7 +312,7 @@ impl SettingsPanel {
             .collect()
     }
 
-    fn candidate_added(&self, index: usize) -> bool {
+    pub(super) fn candidate_added(&self, index: usize) -> bool {
         let Some(discovery) = &self.providers.discovery else {
             return false;
         };
@@ -310,7 +330,7 @@ impl SettingsPanel {
         match action {
             ProviderAction::New => "+ 添加供应商".into(),
             ProviderAction::More => format!(
-                "{} 更多连接选项",
+                "{} 高级参数",
                 if self.providers.more { "▾" } else { "▸" }
             ),
             ProviderAction::Fetch => match &self.providers.discovery {
@@ -319,39 +339,7 @@ impl SettingsPanel {
                 _ => "从供应商获取模型".into(),
             },
             ProviderAction::Manual => "+ 手动添加模型 ID".into(),
-            ProviderAction::Search => format!(
-                "搜索模型：{}",
-                self.providers
-                    .discovery
-                    .as_ref()
-                    .map_or("", |d| d.query.as_str())
-            ),
-            ProviderAction::SelectAll => "全选 / 取消当前搜索结果".into(),
-            ProviderAction::AddPicked => format!(
-                "添加勾选的 {} 个模型",
-                self.providers
-                    .discovery
-                    .as_ref()
-                    .map_or(0, |d| d.checked.len())
-            ),
-            ProviderAction::CloseDiscovery => "收起获取结果".into(),
             ProviderAction::Remove => "删除供应商".into(),
-            ProviderAction::Candidate(index) => {
-                let discovery = self.providers.discovery.as_ref().expect("候选属于发现列表");
-                let model = &discovery.rows[*index];
-                let mark = if self.candidate_added(*index) {
-                    "已添加 "
-                } else if discovery.checked.contains(&model.id) {
-                    "☑      "
-                } else {
-                    "☐      "
-                };
-                if model.id == model.name {
-                    format!("{mark}{}", model.id)
-                } else {
-                    format!("{mark}{} · {}", model.id, model.name)
-                }
-            }
         }
     }
 
@@ -372,6 +360,77 @@ impl SettingsPanel {
         {
             self.selected = index;
             self.scroll.reveal_selection = true;
+        }
+    }
+
+    pub fn toggle_candidate(&mut self, index: usize) {
+        if self.candidate_added(index) {
+            return;
+        }
+        if let Some(discovery) = &mut self.providers.discovery
+            && let Some(model) = discovery.rows.get(index)
+            && !discovery.checked.remove(&model.id)
+        {
+            discovery.checked.insert(model.id.clone());
+        }
+    }
+
+    pub fn toggle_select_all_discovery(&mut self) {
+        let candidates: Vec<usize> = self
+            .visible_candidates()
+            .into_iter()
+            .filter(|index| !self.candidate_added(*index))
+            .collect();
+        if let Some(discovery) = &mut self.providers.discovery {
+            let all = !candidates.is_empty()
+                && candidates
+                    .iter()
+                    .all(|index| discovery.checked.contains(&discovery.rows[*index].id));
+            for index in candidates {
+                let id = discovery.rows[index].id.clone();
+                if all {
+                    discovery.checked.remove(&id);
+                } else {
+                    discovery.checked.insert(id);
+                }
+            }
+        }
+    }
+
+    pub fn confirm_discovery(&mut self, app: &mut App, connection: &EmbeddedConnection) {
+        let Some(provider) = self.providers.selected.clone() else {
+            return;
+        };
+        let ids: Vec<String> = self
+            .providers
+            .discovery
+            .as_ref()
+            .map(|d| {
+                d.checked
+                    .iter()
+                    .filter(|id| {
+                        self.effective["providers"][&provider]["models"]
+                            .get(id.as_str())
+                            .is_none()
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if ids.is_empty() {
+            self.error = Some("请先勾选需要添加的模型".into());
+            return;
+        }
+        let result = self.commit("添加勾选模型", app, connection, |panel| {
+            for id in &ids {
+                panel.insert_model(&provider, id)?;
+            }
+            Ok(Store::Core)
+        });
+        if result.is_ok() {
+            self.providers.discovery = None;
+            self.rebuild_rows();
+            self.open_model(&provider, &ids[0]);
         }
     }
 
@@ -401,100 +460,10 @@ impl SettingsPanel {
                     self.edit.as_mut().expect("刚打开输入").popup = false;
                 }
             }
-            ProviderAction::Search => {
-                let query = self
-                    .providers
-                    .discovery
-                    .as_ref()
-                    .map(|d| d.query.clone())
-                    .unwrap_or_default();
-                self.select_action(ProviderAction::Search);
-                self.begin_named(
-                    EditTarget::ModelFilter,
-                    "搜索模型",
-                    "按模型 ID 或名称过滤",
-                    &query,
-                );
-                self.edit.as_mut().expect("刚打开输入").popup = false;
-            }
-            ProviderAction::Candidate(index) => {
-                if self.candidate_added(index) {
-                    return;
-                }
-                if let Some(discovery) = &mut self.providers.discovery
-                    && let Some(model) = discovery.rows.get(index)
-                    && !discovery.checked.remove(&model.id)
-                {
-                    discovery.checked.insert(model.id.clone());
-                }
-            }
-            ProviderAction::SelectAll => {
-                let candidates: Vec<usize> = self
-                    .visible_candidates()
-                    .into_iter()
-                    .filter(|index| !self.candidate_added(*index))
-                    .collect();
-                if let Some(discovery) = &mut self.providers.discovery {
-                    let all = candidates
-                        .iter()
-                        .all(|index| discovery.checked.contains(&discovery.rows[*index].id));
-                    for index in candidates {
-                        let id = discovery.rows[index].id.clone();
-                        if all {
-                            discovery.checked.remove(&id);
-                        } else {
-                            discovery.checked.insert(id);
-                        }
-                    }
-                }
-            }
-            ProviderAction::AddPicked => {
-                let Some(provider) = self.providers.selected.clone() else {
-                    return;
-                };
-                let ids: Vec<String> = self
-                    .providers
-                    .discovery
-                    .as_ref()
-                    .map(|d| {
-                        d.checked
-                            .iter()
-                            .filter(|id| {
-                                self.effective["providers"][&provider]["models"]
-                                    .get(id.as_str())
-                                    .is_none()
-                            })
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if ids.is_empty() {
-                    self.error = Some("请先勾选需要添加的模型".into());
-                    return;
-                }
-                let result = self.commit("添加勾选模型", app, connection, |panel| {
-                    for id in &ids {
-                        panel.insert_model(&provider, id)?;
-                    }
-                    Ok(Store::Core)
-                });
-                if result.is_ok() {
-                    if let Some(discovery) = &mut self.providers.discovery {
-                        discovery.checked.clear();
-                    }
-                    self.rebuild_rows();
-                    self.open_model(&provider, &ids[0]);
-                }
-            }
-            ProviderAction::CloseDiscovery => {
-                self.providers.discovery = None;
-                self.rebuild_rows();
-                self.select_action(ProviderAction::Fetch);
-            }
             ProviderAction::Remove => {
                 if let Some(id) = &self.providers.selected {
                     self.view = View::Confirm {
-                        text: format!("删除供应商“{id}”及其在当前配置中的模型？Ctrl+Z 可以撤回。"),
+                        text: format!("删除供应商“{id}”及其中配置的模型？Ctrl+Z 可以撤回。"),
                         action: ConfirmAction::Remove(vec!["providers".into(), id.clone()]),
                     };
                 }
@@ -540,6 +509,9 @@ impl SettingsPanel {
             rows: Vec::new(),
             checked: BTreeSet::new(),
             query: String::new(),
+            cursor: 0,
+            offset: 0,
+            scroll: ModelScroll::default(),
             error: None,
             pending: Some(task.abort_handle()),
         });
@@ -556,7 +528,12 @@ impl SettingsPanel {
         }
         discovery.pending = None;
         match result {
-            Ok(ConfigReply::Models(rows)) => discovery.rows = rows,
+            Ok(ConfigReply::Models(rows)) => {
+                discovery.rows = rows;
+                discovery.cursor = 0;
+                discovery.offset = 0;
+                discovery.scroll.reveal_selection = true;
+            }
             Err(error) => discovery.error = Some(error.to_string()),
             Ok(_) => discovery.error = Some("获取模型返回了非模型响应".into()),
         }
@@ -595,7 +572,7 @@ impl SettingsPanel {
         set(&mut document, &["providers".into(), id.clone()], value);
         let snapshot = self.snapshot(&format!("添加供应商 {id}"));
         let write = ConfigWrite {
-            scope: self.scope,
+            scope: ConfigScope::Global,
             cwd: self.cwd.clone(),
             document,
             revision: data.revision.clone(),
@@ -698,6 +675,10 @@ pub fn key(
         }
         return true;
     }
+    if panel.providers.discovery.is_some() {
+        discovery_key(panel, app, connection, mods, code);
+        return true;
+    }
     if matches!(code, KeyCode::Tab | KeyCode::BackTab) {
         let previous = code == KeyCode::BackTab || mods.contains(KeyModifiers::SHIFT);
         let selected_before = panel.selected;
@@ -746,9 +727,6 @@ pub fn key(
     let action = match code {
         KeyCode::Char('a') if mods == KeyModifiers::NONE => Some(ProviderAction::Manual),
         KeyCode::Char('f') if mods == KeyModifiers::NONE => Some(ProviderAction::Fetch),
-        KeyCode::Char('/') if mods == KeyModifiers::NONE && panel.providers.discovery.is_some() => {
-            Some(ProviderAction::Search)
-        }
         _ => None,
     };
     if let Some(action) = action {
@@ -794,4 +772,92 @@ pub fn key(
         _ => return false,
     }
     true
+}
+
+fn discovery_key(
+    panel: &mut SettingsPanel,
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    mods: KeyModifiers,
+    code: KeyCode,
+) {
+    if code == KeyCode::Esc {
+        panel.providers.discovery = None;
+        panel.error = None;
+        panel.rebuild_rows();
+        panel.select_action(ProviderAction::Fetch);
+        return;
+    }
+    if code == KeyCode::F(5) {
+        panel.fetch(connection, &app.events);
+        return;
+    }
+    if code == KeyCode::Char('a') && mods == KeyModifiers::CONTROL {
+        panel.toggle_select_all_discovery();
+        return;
+    }
+    let visible = panel.visible_candidates();
+    let last = visible.len().saturating_sub(1);
+    if code == KeyCode::Enter {
+        let retry = panel.providers.discovery.as_ref().is_some_and(|d| {
+            d.pending.is_none() && d.error.is_some() && d.rows.is_empty()
+        });
+        if retry {
+            panel.fetch(connection, &app.events);
+        } else {
+            panel.confirm_discovery(app, connection);
+        }
+        return;
+    }
+    if code == KeyCode::Char(' ') {
+        let cursor = panel
+            .providers
+            .discovery
+            .as_ref()
+            .map_or(0, |d| d.cursor);
+        if let Some(&cand_idx) = visible.get(cursor) {
+            panel.toggle_candidate(cand_idx);
+            panel.error = None;
+        }
+        return;
+    }
+    let Some(discovery) = &mut panel.providers.discovery else {
+        return;
+    };
+    let cursor_before = discovery.cursor;
+    match code {
+        KeyCode::Up => discovery.cursor = discovery.cursor.saturating_sub(1),
+        KeyCode::Down => discovery.cursor = (discovery.cursor + 1).min(last),
+        KeyCode::PageUp => discovery.cursor = discovery.cursor.saturating_sub(10),
+        KeyCode::PageDown => discovery.cursor = (discovery.cursor + 10).min(last),
+        KeyCode::Home => discovery.cursor = 0,
+        KeyCode::End => discovery.cursor = last,
+        KeyCode::Backspace => {
+            discovery.query.pop();
+            discovery.cursor = 0;
+            discovery.offset = 0;
+            discovery.scroll.reveal_selection = true;
+            panel.error = None;
+        }
+        KeyCode::Char('u') if mods == KeyModifiers::CONTROL => {
+            discovery.query.clear();
+            discovery.cursor = 0;
+            discovery.offset = 0;
+            discovery.scroll.reveal_selection = true;
+            panel.error = None;
+        }
+        KeyCode::Char(c) if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            discovery.query.push(c);
+            discovery.cursor = 0;
+            discovery.offset = 0;
+            discovery.scroll.reveal_selection = true;
+            panel.error = None;
+        }
+        _ => {}
+    }
+    if let Some(discovery) = &mut panel.providers.discovery
+        && discovery.cursor != cursor_before
+    {
+        discovery.scroll.reveal_selection = true;
+    }
 }

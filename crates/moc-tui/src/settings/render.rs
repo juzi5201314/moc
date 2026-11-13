@@ -104,68 +104,6 @@ fn flow(
     y
 }
 
-/// 工具栏按钮：`(动作, 键位, 键码, 修饰键)`；键位写配置口径，经 [`labels::hints`] 规范。
-type Button = (&'static str, &'static str, KeyCode, KeyModifiers);
-
-fn toolbar(panel: &SettingsPanel) -> Vec<Button> {
-    const NONE: KeyModifiers = KeyModifiers::NONE;
-    const CTRL: KeyModifiers = KeyModifiers::CONTROL;
-    if panel.provider_page() && matches!(panel.view, View::Fields) {
-        if panel.providers.draft.is_some() {
-            return vec![
-                ("添加并获取", "ctrl+s", KeyCode::Char('s'), CTRL),
-                ("取消", "esc", KeyCode::Esc, NONE),
-            ];
-        }
-        return vec![
-            ("新建", "n", KeyCode::Char('n'), NONE),
-            ("获取模型", "f", KeyCode::Char('f'), NONE),
-            ("手动添加", "a", KeyCode::Char('a'), NONE),
-            ("高级参数", "f4", KeyCode::F(4), NONE),
-            ("范围", "f2", KeyCode::F(2), NONE),
-            ("删除供应商", "ctrl+x", KeyCode::Char('x'), CTRL),
-        ];
-    }
-    match &panel.view {
-        View::Fields => {
-            let mut buttons = vec![
-                ("撤回", "ctrl+z", KeyCode::Char('z'), CTRL),
-                ("重做", "ctrl+y", KeyCode::Char('y'), CTRL),
-                ("范围", "f2/s", KeyCode::F(2), NONE),
-                ("高级", "f4/v", KeyCode::F(4), NONE),
-                ("搜索", "/", KeyCode::Char('/'), NONE),
-            ];
-            if !panel.filter.is_empty() {
-                buttons.push(("清空过滤", "esc", KeyCode::Esc, NONE));
-            }
-            buttons.extend([
-                ("展开全部", "e", KeyCode::Char('e'), NONE),
-                ("折叠全部", "c", KeyCode::Char('c'), NONE),
-            ]);
-            match TABS[panel.tab] {
-                "模型角色" => buttons.push(("默认规则", "ctrl+d", KeyCode::Char('d'), CTRL)),
-                "MCP" => buttons.push(("添加服务", "a", KeyCode::Char('a'), NONE)),
-                "会话" => buttons.push(("维护预览", "m", KeyCode::Char('m'), NONE)),
-                _ => {}
-            }
-            buttons
-        }
-
-        View::Maintenance { report, .. } => {
-            let mut buttons = Vec::new();
-            if !report.applied {
-                buttons.push(("执行维护", "enter", KeyCode::Enter, NONE));
-            }
-            buttons.push(("返回", "esc", KeyCode::Esc, NONE));
-            buttons
-        }
-        View::Confirm { .. } => vec![
-            ("确认", "y/enter", KeyCode::Char('y'), NONE),
-            ("取消", "n/esc", KeyCode::Esc, NONE),
-        ],
-    }
-}
-
 /// 底部说明区：描述原文 + 来源状态（单独一行）+ 操作提示。
 #[derive(Default)]
 struct Footer {
@@ -200,11 +138,7 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
     }
     let width = usize::from(area.width);
     let mut hits = Vec::new();
-    let scope = match panel.scope {
-        ConfigScope::Global => "全局配置",
-        ConfigScope::Project => "项目配置",
-    };
-    let mut title = format!("设置{SEP}{scope}");
+    let mut title = format!("设置{SEP}全局配置");
     if !panel.rows.is_empty() {
         title.push_str(&format!("  {}/{}", panel.selected + 1, panel.rows.len()));
     }
@@ -262,23 +196,6 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
     } else {
         flow(frame, area, area.y + gap, tabs, &mut hits)
     };
-    let advanced = panel.advanced;
-    let buttons = toolbar(panel)
-        .into_iter()
-        .map(|(action, key, code, modifiers)| {
-            // 「高级」开着时反白，与选中的选项卡同一种强调。
-            let style = if advanced && code == KeyCode::F(4) {
-                Style::new()
-                    .fg(theme.accent_model)
-                    .bg(theme.bg_visual)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(theme.text_primary).bg(theme.bg_visual)
-            };
-            let text = format!(" {} ", labels::hints(&[(key, action)], usize::MAX));
-            (text, style, Hit::Key(code, modifiers))
-        });
-    let toolbar_end = flow(frame, area, tabs_end + gap, buttons, &mut hits);
     // 自下而上：消息行、提示行、空行、说明槽（固定高、内容贴底）、空行、正文。
     let bottom = area.bottom();
     let message_y = bottom - 1;
@@ -291,7 +208,7 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
         2
     };
     let desc_area = Rect::new(area.x, hint_y - 1 - desc_rows, area.width, desc_rows);
-    let body_y = toolbar_end + gap;
+    let body_y = tabs_end + gap;
     let body = Rect::new(
         area.x,
         body_y,
@@ -315,7 +232,10 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
                 theme,
             );
             paint_lines(frame, body, &lines);
-            Footer::default()
+            Footer {
+                hint: labels::hint_layout(&[("y/enter", "确认"), ("n/esc", "取消")], width),
+                ..Footer::default()
+            }
         }
     };
     let rows = usize::from(desc_rows);
@@ -350,6 +270,7 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
         let hit = key.at(hint_area.x, hint_area.y);
         (hit.area, Hit::Hint(hit.code, hit.modifiers))
     }));
+    draw_discovery_popup(frame, panel, theme, outer, &mut hits);
     draw_edit_popup(frame, panel, theme, outer, &mut hits);
     paint_hover(frame, panel, &hits, theme);
     // 失败红字、普通反馈中性色，与主界面 notice 同一套配色；都不铺底。
@@ -427,6 +348,11 @@ fn paint_hover(frame: &mut Frame, panel: &SettingsPanel, hits: &[(Rect, Hit)], t
             .draft
             .as_ref()
             .is_some_and(|draft| draft.focus != *index),
+        Hit::DiscoveryItem(index) => panel
+            .providers
+            .discovery
+            .as_ref()
+            .is_some_and(|discovery| discovery.cursor != *index),
         Hit::Item(index) => panel
             .edit
             .as_ref()
@@ -442,6 +368,7 @@ fn paint_hover(frame: &mut Frame, panel: &SettingsPanel, hits: &[(Rect, Hit)], t
 }
 
 mod providers;
+use providers::draw_discovery_popup;
 use providers::draw_maintenance;
 use providers::draw_providers;
 mod fields;

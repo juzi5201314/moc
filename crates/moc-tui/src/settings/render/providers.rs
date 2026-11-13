@@ -11,12 +11,18 @@ use super::scrollbar;
 use super::short_bytes;
 use crate::render::labels;
 use crate::render::modal::window_offset;
+use crate::render::overlay;
+use crate::render::wrap::clip_line;
+use crate::render::wrap::str_width;
+use crate::render::wrap::truncate;
 use crate::settings::providers::APIS;
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
 
 /// 供应商列表和详情共用一个页面，窄终端用可切换的单栏布局。
 pub(super) fn draw_providers(
@@ -80,7 +86,7 @@ pub(super) fn draw_providers(
     }
     if !wide && panel.providers.sidebar {
         return Footer {
-            description: "选择供应商后进入连接和模型配置；零模型供应商也可以直接添加。".into(),
+            description: "选择供应商后配置连接参数与模型列表。".into(),
             source: None,
             hint: labels::hint_layout(
                 &[("↑↓", "选择"), ("enter/tab", "打开"), ("esc", "返回")],
@@ -104,13 +110,14 @@ pub(super) fn draw_providers(
         label(
             frame,
             area,
-            "+ 添加供应商：填写连接参数后获取或手动添加模型",
+            "+ 添加供应商：配置连接参数后拉取或手动添加模型",
             Style::new().fg(theme.accent_model),
         );
         hits.push((area, Hit::ProviderAction(ProviderAction::New)));
         return Footer {
             description: "按 N 新建供应商。".into(),
-            ..Footer::default()
+            source: None,
+            hint: labels::hint_layout(&[("n", "新建"), ("esc", "返回")], usize::from(body.width)),
         };
     };
     label(
@@ -124,52 +131,23 @@ pub(super) fn draw_providers(
             .fg(theme.text_primary)
             .add_modifier(Modifier::BOLD),
     );
-    let mut content = Rect::new(
+    let content = Rect::new(
         detail.x,
         detail.y + 2,
         detail.width,
         detail.height.saturating_sub(2),
     );
-    let status = panel.providers.discovery.as_ref().and_then(|discovery| {
-        if let Some(error) = &discovery.error {
-            Some((
-                format!("获取失败：{error}；可重试或手动添加"),
-                theme.accent_error,
-            ))
-        } else if discovery.pending.is_some() {
-            Some((
-                "正在获取模型，连接参数仍可编辑…".into(),
-                theme.accent_running,
-            ))
-        } else if discovery.rows.is_empty() {
-            Some(("供应商未返回模型，可手动添加模型 ID。".into(), theme.gray))
-        } else if panel.visible_candidates().is_empty() {
-            Some(("没有匹配模型，请修改搜索内容。".into(), theme.gray))
-        } else {
-            None
-        }
-    });
-    if let Some((text, color)) = status {
-        label(
-            frame,
-            Rect {
-                height: 1,
-                ..content
-            },
-            &text,
-            Style::new().fg(color),
-        );
-        content.y += 1;
-        content.height = content.height.saturating_sub(1);
-    }
     let mut footer = draw_fields(frame, panel, theme, content, hits);
     if panel.edit.is_none() {
         footer.hint = labels::hint_layout(
             &[
-                ("[]", "切页"),
-                ("tab", "供应商/详情"),
+                ("n", "新建"),
+                ("f", "获取模型"),
+                ("a", "手动添加"),
+                ("ctrl+x", "删除"),
+                ("tab", "切换焦点"),
                 ("↑↓", "移动"),
-                ("enter/space", "编辑/勾选"),
+                ("enter/space", "编辑/操作"),
                 ("esc", "返回"),
             ],
             usize::from(body.width),
@@ -310,6 +288,7 @@ pub(super) fn draw_maintenance(
         body.height.saturating_sub(2),
     );
     let height = usize::from(list.height);
+    let applied = report.applied;
     let total = report.removed.len();
     let offset = (*offset).min(total.saturating_sub(height));
     for (row, path) in report.removed.iter().skip(offset).take(height).enumerate() {
@@ -327,14 +306,224 @@ pub(super) fn draw_maintenance(
     {
         *current = offset;
     }
-    // 执行与返回都在工具栏上；清单溢出时才提示可以滚动。
+    let mut items = Vec::new();
+    if !applied {
+        items.push(("enter", "执行维护"));
+    }
+    if total > height {
+        items.push(("↑↓", "浏览清单"));
+    }
+    items.push(("esc", "返回"));
     Footer {
-        description: "只清理过期且没有被会话引用的临时文件。".into(),
+        description: "只清理过期且未被会话引用的临时文件。".into(),
         source: None,
-        hint: if total > height {
-            labels::hint_layout(&[("↑↓", "浏览清单")], usize::from(body.width))
+        hint: labels::hint_layout(&items, usize::from(body.width)),
+    }
+}
+
+/// 模型获取与多选弹窗：独立卡片居中展示，支持实时输入搜索、勾选、全选与批量添加。
+pub(super) fn draw_discovery_popup(
+    frame: &mut Frame,
+    panel: &mut SettingsPanel,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<(Rect, Hit)>,
+) {
+    if !panel.provider_page() || panel.providers.discovery.is_none() || panel.edit.is_some() {
+        return;
+    }
+    let Some(provider_id) = panel.providers.selected.clone() else {
+        return;
+    };
+    hits.clear();
+    let card_width = overlay::card_width(area, 76);
+    let width = overlay::content_width(card_width);
+    let rows = overlay::max_body_rows(area, true).max(1);
+    let visible = panel.visible_candidates();
+    let added_flags: Vec<bool> = visible
+        .iter()
+        .map(|idx| panel.candidate_added(*idx))
+        .collect();
+    let (query, pending, error, total_rows, checked_count) = {
+        let d = panel.providers.discovery.as_ref().expect("发现列表存在");
+        (
+            d.query.clone(),
+            d.pending.is_some(),
+            d.error.clone(),
+            d.rows.len(),
+            d.checked.len(),
+        )
+    };
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut search_cursor_col: Option<usize> = None;
+    if rows >= 2 {
+        let badge = if checked_count > 0 {
+            format!("  已选 {checked_count}")
         } else {
-            Default::default()
-        },
+            String::new()
+        };
+        let query_w = width.saturating_sub(6 + str_width(&badge));
+        let query_span = if query.is_empty() {
+            search_cursor_col = Some(6);
+            Span::styled(
+                truncate("输入模型名或 ID 过滤", query_w).into_owned(),
+                Style::new().fg(theme.gray),
+            )
+        } else {
+            let (shown, col) = super::editor::tail(&query, query.len(), query_w.max(1));
+            search_cursor_col = Some(6 + col);
+            Span::styled(shown, Style::new().fg(theme.accent_running))
+        };
+        let mut spans = vec![
+            Span::styled("搜索：", Style::new().fg(theme.text_secondary)),
+            query_span,
+        ];
+        if !badge.is_empty() {
+            spans.push(Span::styled(badge, Style::new().fg(theme.accent_model)));
+        }
+        lines.push(clip_line(Line::from(spans), width));
+    }
+    let status = if pending {
+        Some(("正在获取模型列表…".to_owned(), theme.accent_running))
+    } else if let Some(err) = &error {
+        Some((format!("获取失败：{err}"), theme.accent_error))
+    } else if total_rows == 0 {
+        Some((
+            "供应商未返回模型，可关闭后手动添加。".to_owned(),
+            theme.gray,
+        ))
+    } else if visible.is_empty() {
+        Some((
+            "没有匹配的模型，按 Backspace 修改过滤词。".to_owned(),
+            theme.gray,
+        ))
+    } else {
+        None
+    };
+    if let Some((text, color)) = status {
+        if lines.len() < rows {
+            lines.push(clip_line(
+                Line::styled(text, Style::new().fg(color)),
+                width,
+            ));
+        }
+    } else if rows >= 3 {
+        lines.push(Line::default());
+    }
+    let header_rows = lines.len();
+    let list_rows = rows.saturating_sub(header_rows).max(1);
+    let start = {
+        let d = panel.providers.discovery.as_mut().expect("发现列表存在");
+        if visible.is_empty() {
+            d.cursor = 0;
+            d.offset = 0;
+            d.scroll.max_offset = 0;
+            d.scroll.reveal_selection = false;
+            0
+        } else {
+            d.cursor = d.cursor.min(visible.len() - 1);
+            super::editor::viewport(
+                &mut d.scroll,
+                &mut d.offset,
+                d.cursor,
+                list_rows,
+                visible.len(),
+            )
+        }
+    };
+    let mut row_hits: Vec<(usize, usize)> = Vec::new();
+    {
+        let d = panel.providers.discovery.as_ref().expect("发现列表存在");
+        for (vis_idx, &cand_idx) in visible
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(rows.saturating_sub(header_rows))
+        {
+            let model = &d.rows[cand_idx];
+            let added = added_flags[vis_idx];
+            let checked = !added && d.checked.contains(&model.id);
+            let focused = vis_idx == d.cursor;
+            let (mark, mark_style) = if added {
+                ("✓  ", Style::new().fg(theme.gray))
+            } else if checked {
+                (
+                    "☑  ",
+                    Style::new()
+                        .fg(theme.accent_model)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                ("☐  ", Style::new().fg(theme.gray))
+            };
+            let mut spans = vec![
+                Span::styled(mark, mark_style),
+                Span::styled(
+                    model.id.clone(),
+                    if added {
+                        Style::new().fg(theme.gray)
+                    } else {
+                        Style::new()
+                    },
+                ),
+            ];
+            if !model.name.is_empty() && model.name != model.id {
+                spans.push(Span::styled(
+                    format!(" · {}", model.name),
+                    Style::new().fg(theme.gray),
+                ));
+            }
+            if added {
+                spans.push(Span::styled(" (已添加)", Style::new().fg(theme.gray)));
+            }
+            let body_row = lines.len();
+            lines.push(super::editor::option_row(focused, spans, width, theme));
+            row_hits.push((body_row, vis_idx));
+        }
+    }
+    frame
+        .buffer_mut()
+        .set_style(area, Style::new().fg(theme.gray_dim).bg(theme.bg_dark));
+    let layout = overlay::Card {
+        title: format!("获取模型 · {provider_id}"),
+        body: lines,
+        footer: Some(overlay::footer(
+            &[
+                ("↑↓", "移动"),
+                ("space", "勾选"),
+                ("ctrl+a", "全选"),
+                ("enter", "添加所选"),
+                ("f5", "重试"),
+                ("esc", "关闭"),
+            ],
+            width,
+            theme,
+        )),
+    }
+    .render(frame, area, card_width, theme);
+    hits.extend(
+        layout
+            .keys
+            .iter()
+            .map(|key| (key.area, Hit::Hint(key.code, key.modifiers))),
+    );
+    for (body_row, vis_idx) in row_hits {
+        let y = layout.body.y + cells(body_row);
+        if y < layout.body.bottom() {
+            hits.push((
+                Rect::new(layout.body.x, y, layout.body.width, 1),
+                Hit::DiscoveryItem(vis_idx),
+            ));
+        }
+    }
+    super::editor::dismiss_around(layout.area, area, hits);
+    if let Some(col) = search_cursor_col
+        && layout.body.height > 0
+        && layout.body.width > 0
+    {
+        frame.set_cursor_position((
+            layout.body.x + cells(col).min(layout.body.width - 1),
+            layout.body.y,
+        ));
     }
 }
