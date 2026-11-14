@@ -1,5 +1,6 @@
 //! /config 的字段目录：字段说明与类型来自此处，值仍由配置 schema 校验。
 
+use moc_llm::Protocol;
 use moc_protocol::{ChoiceOption, ConfigField, FieldKind, SessionPermission};
 use serde_json::{Value, json};
 
@@ -83,7 +84,7 @@ pub fn complete_view(value: &mut Value) {
 
 pub fn fields(effective: &Value) -> Vec<ConfigField> {
     let mut output = Vec::new();
-    walk(effective, &mut Vec::new(), &mut output);
+    walk(effective, &mut Vec::new(), None, &mut output);
     super::parameters::append_fields(effective, &mut output);
     output
 }
@@ -232,10 +233,48 @@ fn rank(key: &str) -> usize {
     }
 }
 
-fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
+/// 只限制编码器不使用的协议兼容项；历史回传等通用行为仍保留。
+fn compat_field_applies(api: Option<Protocol>, key: &str) -> bool {
+    match key {
+        "max_output_tokens_field"
+        | "reasoning_field"
+        | "reasoning_field_aliases"
+        | "thinking"
+        | "developer_role" => api == Some(Protocol::OpenAiChat),
+        "supports_stop" => matches!(
+            api,
+            Some(Protocol::OpenAiChat | Protocol::AnthropicMessages)
+        ),
+        "supports_prompt_cache_key" => {
+            matches!(api, Some(Protocol::OpenAiChat | Protocol::OpenAiResponses))
+        }
+        _ => true,
+    }
+}
+
+fn walk(
+    value: &Value,
+    path: &mut Vec<String>,
+    api: Option<Protocol>,
+    output: &mut Vec<ConfigField>,
+) {
     // 动态插件配置由插件声明字段后补入；目录扫描阶段不猜测 api_key/provider 等语义。
     if path.first().is_some_and(|part| part == "plugins")
         && path.get(1).is_some_and(|name| super::is_plugin_key(name))
+    {
+        return;
+    }
+    let api = if path.len() == 2 && path[0] == "providers" {
+        value.get("api").and_then(super::parameters::protocol)
+    } else {
+        api
+    };
+    // 在兼容项的根部过滤整棵子树，不删除已存配置；无所属 API 的模型默认规则不受限。
+    if path.len() == 6
+        && path[0] == "providers"
+        && path[2] == "models"
+        && path[4] == "compat"
+        && !compat_field_applies(api, &path[5])
     {
         return;
     }
@@ -259,7 +298,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         keys.sort_by_key(|key| rank(key));
         for key in keys {
             path.push(key.clone());
-            walk(&values[key], path, output);
+            walk(&values[key], path, api, output);
             path.pop();
         }
         return;
@@ -336,6 +375,9 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
             ("max_tokens", "max_tokens"),
             ("max_completion_tokens", "max_completion_tokens"),
         ],
+        "tool_choice_dialect" if api.is_some_and(|api| api != Protocol::OpenAiChat) => {
+            &[("standard", "标准"), ("unsupported", "不发送")]
+        }
         "tool_choice_dialect" => &[
             ("standard", "标准"),
             ("any_for_required", "required 改写为 any"),
@@ -971,5 +1013,78 @@ mod tests {
             serde_json::from_value::<moc_llm::ReasoningEcho>(json!(option))
                 .unwrap_or_else(|error| panic!("候选值 {option} 不在 schema 内：{error}"));
         }
+    }
+
+    #[test]
+    fn provider_compat_fields_follow_api_without_removing_saved_values() {
+        for (api, chat, stop, cache) in [
+            ("openai_chat", true, true, true),
+            ("openai_responses", false, false, true),
+            ("anthropic_messages", false, true, false),
+        ] {
+            let mut effective = json!({"providers":{"p.with.dot":{
+                "api":api,"models":{"m.with.dot":{"compat":{
+                    "thinking":{"effort_field":"vendor_effort"}
+                }}}
+            }}});
+            complete_view(&mut effective);
+            let before = effective.clone();
+            let catalog = fields(&effective);
+            for (key, visible) in [
+                ("max_output_tokens_field", chat),
+                ("reasoning_field", chat),
+                ("reasoning_field_aliases", chat),
+                ("thinking", chat),
+                ("developer_role", chat),
+                ("supports_stop", stop),
+                ("supports_prompt_cache_key", cache),
+                ("tool_choice_dialect", true),
+                ("response_format_dialect", true),
+                ("parallel_tool_calls", true),
+                ("echo_reasoning", true),
+                ("requires_reasoning_content_for_tool_calls", true),
+                ("requires_reasoning_content_for_all_assistant_turns", true),
+                ("requires_assistant_content_for_tool_calls", true),
+                ("extra_body", true),
+                ("headers", true),
+            ] {
+                let prefix = [
+                    "providers",
+                    "p.with.dot",
+                    "models",
+                    "m.with.dot",
+                    "compat",
+                    key,
+                ]
+                .map(str::to_owned);
+                assert_eq!(
+                    catalog.iter().any(|field| field.path.starts_with(&prefix)),
+                    visible,
+                    "{api} 的 {key} 可见性"
+                );
+            }
+            let expected = if chat {
+                vec!["standard", "any_for_required", "unsupported"]
+            } else {
+                vec!["standard", "unsupported"]
+            };
+            assert_eq!(choice_options(&effective, "tool_choice_dialect"), expected);
+            assert_eq!(effective, before, "隐藏字段不得修改配置值");
+        }
+
+        let mut defaults = json!({"defaults":{"models":{"*":{}}}});
+        complete_view(&mut defaults);
+        assert!(
+            fields(&defaults).iter().any(|field| field.path
+                == [
+                    "defaults",
+                    "models",
+                    "*",
+                    "compat",
+                    "thinking",
+                    "effort_field"
+                ]),
+            "跨 API 的模型默认规则仍可编辑协议兼容项"
+        );
     }
 }

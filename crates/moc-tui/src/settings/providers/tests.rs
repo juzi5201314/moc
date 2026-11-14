@@ -141,13 +141,7 @@ fn secondary_connection_and_api_parameters_fold_under_more_and_model_advanced() 
         .insert("providers/p/models/m/compat/extra_body/reasoning".into());
     panel.rebuild_rows();
     for path in [
-        vec![
-            "providers",
-            "p",
-            "models",
-            "m",
-            "max_request_bytes",
-        ],
+        vec!["providers", "p", "models", "m", "max_request_bytes"],
         vec![
             "providers",
             "p",
@@ -165,6 +159,77 @@ fn secondary_connection_and_api_parameters_fold_under_more_and_model_advanced() 
         ));
     }
 }
+
+#[test]
+fn api_switch_replaces_stale_provider_fields_before_save_reply() {
+    let mut panel = panel(json!({"providers":{
+        "p":{"api":"openai_chat","models":{"m":{"compat":{
+            "thinking":{"effort_field":"vendor_effort"}
+        }}}},
+        "q":{"api":"openai_chat","models":{"m":{}}}
+    }}));
+    let data = panel.data.as_mut().unwrap();
+    data.fields = panel.fields.clone();
+    data.inherited = json!({"providers":{"p":{"api":"openai_chat"}}});
+    let api_path = ["providers", "p", "api"].map(str::to_owned);
+    for (api, effort) in [
+        (Some("openai_responses"), vec!["reasoning", "effort"]),
+        (Some("anthropic_messages"), vec!["output_config", "effort"]),
+        (None, vec!["reasoning_effort"]),
+    ] {
+        if let Some(api) = api {
+            panel.set_value(&api_path, json!(api));
+        } else {
+            panel.remove_value(&api_path);
+        }
+        panel.filter = "effort".into();
+        panel.rebuild();
+        for provider in ["p", "q"] {
+            let path = [
+                "providers",
+                provider,
+                "models",
+                "m",
+                "compat",
+                "thinking",
+                "effort_field",
+            ];
+            assert_eq!(
+                panel.fields.iter().any(|field| field.path == path),
+                provider == "q" || api.is_none(),
+                "仅更新切换 API 的供应商兼容项"
+            );
+        }
+        for scope in [
+            vec!["providers", "p", "extra_body"],
+            vec!["providers", "p", "models", "m", "compat", "extra_body"],
+        ] {
+            let path: Vec<String> = scope
+                .into_iter()
+                .chain(effort.iter().copied())
+                .map(str::to_owned)
+                .collect();
+            assert!(
+                panel.rows.iter().any(|row| {
+                    matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == path)
+                }),
+                "搜索结果应展示当前 API 的思考参数"
+            );
+        }
+        let old_path = ["providers", "p", "extra_body", "reasoning_effort"];
+        assert_eq!(
+            panel.fields.iter().any(|field| field.path == old_path),
+            api.is_none()
+        );
+    }
+    assert_eq!(
+        panel.data.as_ref().unwrap().document["providers"]["p"]["models"]["m"]["compat"]["thinking"]
+            ["effort_field"],
+        "vendor_effort",
+        "切换后恢复 API 不得丢失隐藏的显式配置"
+    );
+}
+
 #[test]
 fn empty_provider_keeps_context_across_tabs_and_model_ids_are_literal() {
     let mut panel = panel(

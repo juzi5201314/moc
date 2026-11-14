@@ -38,8 +38,14 @@ impl SettingsPanel {
         moc_core::config::catalog::complete_view(&mut self.effective);
         // 服务端目录包含插件声明的字段（即便插件尚未加载成功也能修复配置）；
         // 不能用本地值推断结果覆盖它，否则动态字段会丢失且描述/类型会漂移。
-        // 核心目录仍作增量补充，以便本次编辑刚新增的 provider/model 立即可见。
-        self.fields = data.fields.clone();
+        // 供应商目录按当前 API 重建，避免本地切换协议后旧字段与候选值继续残留。
+        // 其他目录仍增量补充，保留服务端插件声明的类型与说明。
+        self.fields = data
+            .fields
+            .iter()
+            .filter(|field| !field.path.first().is_some_and(|part| part == "providers"))
+            .cloned()
+            .collect();
         for field in moc_core::config::catalog::fields(&self.effective) {
             if !self
                 .fields
@@ -95,13 +101,7 @@ impl SettingsPanel {
         self.clamp_selected();
     }
 
-    fn emit_node(
-        &self,
-        node: &GroupNode,
-        depth: usize,
-        searching: bool,
-        rows: &mut Vec<Row>,
-    ) {
+    fn emit_node(&self, node: &GroupNode, depth: usize, searching: bool, rows: &mut Vec<Row>) {
         let child_depth = if let Some(group) = &node.group {
             rows.push(Row {
                 depth: u8::try_from(depth).unwrap_or(u8::MAX),
@@ -146,7 +146,10 @@ impl SettingsPanel {
                     }
                     None => {
                         let key = format!("__tab_{}/__advanced", self.tab);
-                        (key, vec![format!("__tab_{}", self.tab), "__advanced".into()])
+                        (
+                            key,
+                            vec![format!("__tab_{}", self.tab), "__advanced".into()],
+                        )
                     }
                 };
                 let expanded = self.is_expanded(&adv_key, child_depth);
@@ -370,12 +373,7 @@ impl SettingsPanel {
                     Some(vec!["mcp".into(), "servers".into(), name.clone()]),
                 ));
             }
-            Some("mcp") => chain.push((
-                "mcp".into(),
-                "MCP 服务".into(),
-                vec!["mcp".into()],
-                None,
-            )),
+            Some("mcp") => chain.push(("mcp".into(), "MCP 服务".into(), vec!["mcp".into()], None)),
             Some("plugins") if path.len() >= 4 && second.is_some() => {
                 let plugin = path[1].clone();
                 chain.push((
@@ -577,12 +575,7 @@ struct GroupNode {
     children: Vec<GroupNode>,
 }
 
-fn insert_into_tree(
-    node: &mut GroupNode,
-    chain: &[GroupPath],
-    field_index: usize,
-    advanced: bool,
-) {
+fn insert_into_tree(node: &mut GroupNode, chain: &[GroupPath], field_index: usize, advanced: bool) {
     if let Some((head, tail)) = chain.split_first() {
         let child = if let Some(pos) = node
             .children

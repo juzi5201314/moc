@@ -12,6 +12,14 @@ TUI 与 WebUI 的「供应商与模型」页面共用 core 的字段目录，按
 
 连接超时、请求超时、重试、并发、缓存策略、端点、模型 token 上限与协议兼容开关仍在同一页面。Chat 的 `max_tokens` / `max_completion_tokens` 通过「回复 token 上限」与「Chat 输出上限字段名」配置；Responses 的 `max_output_tokens` 和 Anthropic 的 `max_tokens` 使用相同的回复上限入口。
 
+协议兼容项也按 API 过滤，不展示当前编码器不使用的字段：
+
+- 仅 Chat 显示输出上限字段名、`developer` 角色、思考回传字段名／别名，以及 `compat.thinking` 的开关、强度字段名和等级映射。
+- 停止序列兼容开关只在 Chat／Anthropic 显示；提示缓存键兼容开关只在 Chat／Responses 显示。
+- `tool_choice` 的 `required` → `any` 改写选项仅在 Chat 显示；通用的历史回传、并行调用及结构化输出开关仍保留。
+
+切换 API 后，参数入口与候选值随之更新；TUI 在保存回执到达前也会更新本地目录，不混入旧协议的字段。隐藏不会删除已存配置，切回原 API 后仍可编辑原值。跨 API 的 `defaults.models` 规则不按单个供应商过滤；扩展请求体与请求头 JSON 编辑器仍保留完整原始内容。
+
 这里覆盖已实现的文本、图片与客户端函数调用流程，而不是启用上游的所有产品功能。会话生成的 `model`、`messages` / `input`、`system` / `instructions`、`tools`、`stream` 不提供静态覆盖入口；音频、服务端内置工具、后台任务、无输出的缓存预热、服务端会话／容器管理与自动压缩不在此范围内。Chat 旧版 `functions` / `function_call` 不替代 moc 使用的客户端工具协议。
 
 具体参数是否可用仍取决于模型、账号与网关。配置页给出字段类型及常见限制，不会向上游探测功能，也不会静默降级不受支持的参数。
@@ -69,4 +77,4 @@ OpenAI-Project = "your-project-id"
 - [OpenAI Responses](https://developers.openai.com/api/reference/resources/responses/methods/create)
 - [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create)
 
-维护字段时修改 `crates/moc-core/src/config/parameters.rs`；两套 UI 不各自维护 API 参数清单。协议字段类型变化后按项目生成流程更新 schema 与 Web 类型。
+维护请求参数时修改 `crates/moc-core/src/config/parameters.rs`，维护协议兼容项的可见范围时修改 `crates/moc-core/src/config/catalog.rs`；两套 UI 不各自维护 API 参数清单。协议字段类型变化后按项目生成流程更新 schema 与 Web 类型。
