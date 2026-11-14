@@ -680,3 +680,67 @@ async fn move_target_diff_is_complete() {
         .expect("目标 diff 必须包含搬运行");
     assert_eq!(moved_insert.new_no, Some(2501), "追加到第 2500 行之后");
 }
+
+/// 同一次调用里相距很远的编辑必须分段渲染：中间未改动的行不进 diff 文本，
+/// 也不登记成"已展示"。
+#[tokio::test]
+async fn distant_edits_render_separate_hunks_and_hide_the_gap() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let path = dir.path().join("sparse.txt");
+    let text = (0..1000)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(&path, &text).expect("写测试文件");
+    let snapshot = read_snapshot(&path, 1_000_000).expect("读取快照");
+    let mut served = ServedFile::new();
+    // 只展示两处改动附近的行：中间的大段从未展示给模型。
+    let tag = tag_text(served.serve(snapshot.epoch, &snapshot.lines, &[17..24, 814..821]));
+    let store = AnchorStore::new();
+    let output = apply_edit(
+        dir.path(),
+        &request(
+            "sparse.txt",
+            &tag,
+            vec![replace(21, 21, "first"), replace(818, 818, "second")],
+        ),
+        &served,
+        None,
+        &store,
+        32,
+        1_000_000,
+    )
+    .await
+    .expect("编辑成功");
+    let content = &output.content;
+    assert!(content.contains("- line 20"), "{content}");
+    assert!(content.contains("+ 21│first"), "{content}");
+    assert!(content.contains("- line 817"), "{content}");
+    assert!(content.contains("+ 818│second"), "{content}");
+    assert!(content.contains("[… lines 25-814 unchanged]"), "{content}");
+    assert!(
+        !content.contains("500│"),
+        "省略区不能进 diff 文本: {content}"
+    );
+
+    let header = content.lines().next().expect("diff 头部");
+    let new_tag = header
+        .rsplit('#')
+        .next()
+        .and_then(|tail| tail.strip_suffix(']'))
+        .expect("头部带新 tag");
+    let served = store.served(&path).expect("提交后的 served");
+    let error = apply_edit(
+        dir.path(),
+        &request("sparse.txt", new_tag, vec![replace(500, 500, "middle")]),
+        &served,
+        None,
+        &store,
+        32,
+        1_000_000,
+    )
+    .await
+    .expect_err("省略区里的行必须按未展示拒绝");
+    assert!(error.to_string().contains("E_UNSEEN"), "{error}");
+}

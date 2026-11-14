@@ -12,7 +12,9 @@ use crate::error::CoreError;
 use crate::hashline::{
     AnchorStore, FileSnapshot, ServedFile, TagError, numbered_line, parse_tag, tag_text,
 };
-use moc_protocol::{LineChange, ToolDiff, ToolFileDiff, build_hunks_from_changes};
+use moc_protocol::{
+    DiffHunk, DiffLineKind, LineChange, ToolDiff, ToolFileDiff, build_hunks_from_changes,
+};
 
 #[derive(Debug, Error)]
 pub enum EditError {
@@ -291,14 +293,9 @@ pub fn plan_edit(
     }
 
     let mut source_served = served.advanced(&moves, &source_lines);
-    let mut output = render_diff(
-        &source_path,
-        &source_snapshot,
-        &source_lines,
-        &mut source_served,
-    );
     // edit 的变更范围在规划阶段已经确定：直接按范围构造完整 hunk，
     // 不再对整份文件做 LCS，因此文件再大也不会把少量改动误判成截断。
+    // 模型文本与前端结构化 diff 共用同一份 hunk。
     let source_refs: Vec<&str> = source_snapshot.lines.iter().map(String::as_str).collect();
     let source_changes: Vec<LineChange<'_>> = edits
         .iter()
@@ -308,19 +305,18 @@ pub fn plan_edit(
             replacement: &edit.replacement,
         })
         .collect();
+    let source_hunks = build_hunks_from_changes(&source_refs, &source_changes);
+    let mut output = render_diff(
+        &source_path,
+        &source_hunks,
+        &source_lines,
+        &mut source_served,
+    );
     let mut files = vec![ToolFileDiff {
         path: source_path.display().to_string(),
-        hunks: build_hunks_from_changes(&source_refs, &source_changes),
+        hunks: source_hunks,
     }];
     let target = if let Some(mut target_plan) = target_plan {
-        let rendered = render_diff(
-            &target_plan.path,
-            &target_plan.snapshot,
-            &target_plan.lines,
-            &mut target_plan.served,
-        );
-        output.push('\n');
-        output.push_str(&rendered);
         let target_refs: Vec<&str> = target_plan
             .snapshot
             .lines
@@ -332,9 +328,18 @@ pub fn plan_edit(
             end: target_plan.insert_at,
             replacement: &target_plan.moved_lines,
         };
+        let target_hunks = build_hunks_from_changes(&target_refs, &[change]);
+        let rendered = render_diff(
+            &target_plan.path,
+            &target_hunks,
+            &target_plan.lines,
+            &mut target_plan.served,
+        );
+        output.push('\n');
+        output.push_str(&rendered);
         files.push(ToolFileDiff {
             path: target_plan.path.display().to_string(),
-            hunks: build_hunks_from_changes(&target_refs, &[change]),
+            hunks: target_hunks,
         });
         Some(EditPlanTarget {
             path: target_plan.path,
@@ -883,45 +888,70 @@ async fn cleanup_staged(first: PathBuf, second: Option<PathBuf>) {
 
 /// 渲染带新 tag 头部与当前行号的 diff 文本，并把展示窗口登记为已展示。
 ///
+/// 与给前端的结构化 diff 共用同一份 hunk：hunk 之间是未变化的省略区，
+/// 只登记 hunk 覆盖的新行窗口，省略区里的行不算"已展示"。
 /// 被删除的行只写原文、不带行号：它们已不可寻址。
 fn render_diff(
     path: &Path,
-    before: &FileSnapshot,
+    hunks: &[DiffHunk],
     after_lines: &[String],
     after_served: &mut ServedFile,
 ) -> String {
-    let prefix = before
-        .lines
-        .iter()
-        .zip(after_lines)
-        .take_while(|(left, right)| left == right)
-        .count();
-    let suffix = before.lines[prefix..]
-        .iter()
-        .rev()
-        .zip(after_lines[prefix..].iter().rev())
-        .take_while(|(left, right)| left == right)
-        .count();
-    let start = prefix.saturating_sub(2);
-    let old_end = before.lines.len() - suffix;
-    let new_end = after_lines.len() - suffix;
-    let end = (new_end + 2).min(after_lines.len());
     let epoch = after_served.epoch.expect("diff 渲染前必须已有快照纪元");
-    let window = start..end;
-    let tag = after_served.serve(epoch, after_lines, std::slice::from_ref(&window));
+    // 每个 hunk 登记它覆盖的新行窗口；纯删除 hunk 没有新行号，不产生窗口。
+    let windows: Vec<std::ops::Range<usize>> = hunks
+        .iter()
+        .filter_map(|hunk| {
+            let mut numbers = hunk.lines.iter().filter_map(|line| line.new_no);
+            let first = numbers.next()?;
+            let (mut min, mut max) = (first, first);
+            for number in numbers {
+                min = min.min(number);
+                max = max.max(number);
+            }
+            Some((min - 1) as usize..max as usize)
+        })
+        .collect();
+    let tag = after_served.serve(epoch, after_lines, &windows);
 
     let mut output = format!("[{}#{}]", path.display(), tag_text(tag));
-    for (index, line) in after_lines.iter().enumerate().take(prefix).skip(start) {
-        let _ = write!(output, "\n  {}", numbered_line(index + 1, line));
-    }
-    for line in &before.lines[prefix..old_end] {
-        let _ = write!(output, "\n- {line}");
-    }
-    for (index, line) in after_lines.iter().enumerate().take(new_end).skip(prefix) {
-        let _ = write!(output, "\n+ {}", numbered_line(index + 1, line));
-    }
-    for (index, line) in after_lines.iter().enumerate().take(end).skip(new_end) {
-        let _ = write!(output, "\n  {}", numbered_line(index + 1, line));
+    let mut previous_end: Option<u32> = None;
+    for (index, hunk) in hunks.iter().enumerate() {
+        let first_new = hunk.lines.iter().find_map(|line| line.new_no);
+        if index > 0
+            && let (Some(previous), Some(first)) = (previous_end, first_new)
+            && first > previous + 1
+        {
+            let _ = write!(
+                output,
+                "\n[… lines {}-{} unchanged]",
+                previous + 1,
+                first - 1
+            );
+        }
+        for line in &hunk.lines {
+            match line.kind {
+                DiffLineKind::Equal => {
+                    let new_no = line.new_no.expect("equal 行必有新行号");
+                    let _ = write!(output, "\n  {}", numbered_line(new_no as usize, &line.text));
+                }
+                DiffLineKind::Delete => {
+                    let _ = write!(output, "\n- {}", line.text);
+                }
+                DiffLineKind::Insert => {
+                    let new_no = line.new_no.expect("insert 行必有新行号");
+                    let _ = write!(output, "\n+ {}", numbered_line(new_no as usize, &line.text));
+                }
+            }
+        }
+        if let Some(last) = hunk
+            .lines
+            .iter()
+            .filter_map(|line| line.new_no)
+            .next_back()
+        {
+            previous_end = Some(last);
+        }
     }
     output
 }
