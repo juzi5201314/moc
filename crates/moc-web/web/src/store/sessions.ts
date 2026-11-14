@@ -56,6 +56,7 @@ export const useSessions = create<SessionsState>()((set, get) => ({
   },
 
   upsert: (info) => {
+    if (info.parent_session_id) return;
     const { list, extra } = get();
     if (list.some((session) => session.id === info.id)) {
       set({ list: list.map((session) => (session.id === info.id ? info : session)) });
@@ -73,11 +74,11 @@ export const useSessions = create<SessionsState>()((set, get) => ({
   setDraftSession: (draft) => set({ draftSession: draft }),
 }));
 
-/** 全部会话（list ∪ extra），按更新时间降序。 */
+/** 全部顶层会话（list ∪ extra），按更新时间降序。 */
 export function allSessions(state: Pick<SessionsState, "list" | "extra">): SessionInfo[] {
-  return [...Object.values(state.extra), ...state.list].sort(
-    (a, b) => b.updated_at_ms - a.updated_at_ms,
-  );
+  return [...Object.values(state.extra), ...state.list]
+    .filter((session) => !session.parent_session_id)
+    .sort((a, b) => b.updated_at_ms - a.updated_at_ms);
 }
 
 /**

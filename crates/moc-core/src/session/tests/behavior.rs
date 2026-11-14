@@ -105,12 +105,26 @@ async fn spawned_child_session_lives_inside_the_parent_directory() {
     assert_eq!(child_paths.sidecar, parent_paths.sidecar.join(&child.id));
     assert!(child_paths.transcript.exists(), "子代理日志已经落盘");
 
-    // 代理树由会话头恢复：列表同时收录两者，子代理仍带父链接。
+    // 全局会话列表与搜索只返回顶层会话，子代理不能泄露出去；
+    // 代理树仍可由内部 known() 与存储层从父会话目录恢复并保留父链接。
     let listed = table.list().await.expect("列出会话");
-    let child_info = listed
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, parent.id);
+    assert!(
+        table
+            .search("子", None, 10)
+            .await
+            .expect("搜索会话")
+            .0
+            .is_empty(),
+        "子代理正文不应出现在全局搜索里"
+    );
+
+    let known = table.known().await.expect("获取已知会话");
+    let child_info = known
         .iter()
         .find(|info| info.id == child.id)
-        .expect("子代理在列表里");
+        .expect("子代理仍在内部已知集合里");
     assert_eq!(
         child_info.parent_session_id.as_deref(),
         Some(parent.id.as_str())

@@ -11,6 +11,7 @@ pub fn filtered_sessions<'a>(
     sessions
         .iter()
         .enumerate()
+        .filter(|(_, session)| !session.is_subagent())
         .filter(|(_, session)| scope == SessionScope::All || session.cwd == cwd)
         .filter(|(_, session)| {
             query.is_empty()

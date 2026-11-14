@@ -216,7 +216,10 @@ impl SessionTable {
         }
     }
 
-    /// 磁盘上的日志是跨进程的唯一依据，不能用缓存状态覆盖外部更新。
+    /// 对外全局会话列表：只返回顶层会话，排除子代理。
+    ///
+    /// 磁盘上的日志是跨进程的唯一依据，不能用缓存状态覆盖外部更新；内部代理树构建
+    /// 请用 [`Self::known`]。
     pub async fn list(&self) -> Result<Vec<SessionInfo>, CoreError> {
         let records: Vec<_> = self.records.read().values().cloned().collect();
         for record in records {
@@ -235,7 +238,9 @@ impl SessionTable {
                 );
             }
         }
-        self.store.list().await
+        let mut sessions = self.store.list().await?;
+        sessions.retain(|info| !info.is_subagent());
+        Ok(sessions)
     }
 
     /// 已知会话：合并磁盘上的会话和内存里已加载的会话，内存记录优先。
