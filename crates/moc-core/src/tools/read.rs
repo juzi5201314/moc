@@ -365,7 +365,68 @@ fn resolve_path(cwd: &Path, value: &str) -> Result<PathBuf, ToolError> {
     } else {
         cwd.join(path)
     };
-    fs::canonicalize(&joined).map_err(|error| map_read_error(value, error))
+    fs::canonicalize(&joined).map_err(|error| {
+        let not_found = error.kind() == std::io::ErrorKind::NotFound;
+        let mapped = map_read_error(value, error);
+        match not_found.then(|| similar_entries(cwd, value)).flatten() {
+            Some(hint) => mapped.with_hint(hint),
+            None => mapped,
+        }
+    })
+}
+
+/// 路径不存在时给出同目录里词干相同的相近条目（最多 5 个，按名字排序）。
+///
+/// 词干取第一个 `.` 之前的部分且不区分大小写；展示路径沿用用户传入的
+/// 相对/绝对形式。只在报错路径上读一次目录。
+fn similar_entries(cwd: &Path, value: &str) -> Option<String> {
+    let joined = cwd.join(value);
+    let base = joined.ancestors().find(|candidate| candidate.is_dir())?;
+    let missing = joined.strip_prefix(base).ok()?;
+    let name = missing.components().next()?.as_os_str().to_str()?;
+    let stem = name.split('.').next()?;
+    if stem.is_empty() {
+        return None;
+    }
+    let mut entries: Vec<(String, bool)> = fs::read_dir(base)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let entry_name = entry.file_name().to_string_lossy().into_owned();
+            let entry_stem = entry_name.split('.').next()?;
+            let directory = entry.file_type().map(|kind| kind.is_dir()).unwrap_or_default();
+            entry_stem
+                .eq_ignore_ascii_case(stem)
+                .then_some((entry_name, directory))
+        })
+        .collect();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries.truncate(5);
+    if entries.is_empty() {
+        return None;
+    }
+    // 展示路径 = 用户传入路径中对应 base 的前缀 + 条目名。
+    let display_base: PathBuf = Path::new(value)
+        .components()
+        .take(
+            Path::new(value)
+                .components()
+                .count()
+                .saturating_sub(missing.components().count()),
+        )
+        .collect();
+    let candidates = entries
+        .iter()
+        .map(|(entry_name, directory)| {
+            let mut shown = display_base.join(entry_name).display().to_string();
+            if *directory {
+                shown.push('/');
+            }
+            shown
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("similar entries: {candidates}"))
 }
 
 /// 与发送侧单图输入上限一致（moc-llm 预处理拒收更大的图片）。
@@ -663,6 +724,22 @@ mod tests {
             resolve_path(dir.path(), "missing").unwrap_err().code,
             "E_NOT_FOUND"
         );
+    }
+
+    #[test]
+    fn not_found_error_suggests_same_stem_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("foo")).unwrap();
+        fs::write(dir.path().join("unrelated.rs"), "x").unwrap();
+        let error = resolve_path(dir.path(), "foo.rs").unwrap_err();
+        assert_eq!(error.code, "E_NOT_FOUND");
+        assert!(
+            error.to_string().contains("similar entries: foo/"),
+            "{error}"
+        );
+        // 词干没有命中时保持原报错，不附 hint。
+        let plain = resolve_path(dir.path(), "bar.txt").unwrap_err();
+        assert!(!plain.to_string().contains("similar entries"), "{plain}");
     }
 
     #[test]
