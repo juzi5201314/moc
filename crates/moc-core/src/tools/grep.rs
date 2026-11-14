@@ -32,6 +32,7 @@ struct GrepArgs {
     context_after: Option<usize>,
     skip: Option<usize>,
     offset: Option<u64>,
+    limit: Option<usize>,
     #[serde(default)]
     literal: bool,
     #[serde(default)]
@@ -103,6 +104,7 @@ impl Tool for GrepTool {
                     "context_after":{"type":"integer","minimum":0,"description":"Lines of context after each match; default 0"},
                     "skip":{"type":"integer","minimum":0,"description":"Matched files to skip, for paging"},
                     "offset":{"type":"integer","minimum":1,"description":"First line to match (1-based); requires one file or document URI. Use returned next parameters to resume"},
+                    "limit":{"type":"integer","minimum":1,"description":"Maximum matches to show (files with files_only); capped by the total match budget"},
                     "literal":{"type":"boolean","description":"Treat pattern as a literal string"},
                     "word":{"type":"boolean","description":"Match whole words only"},
                     "files_only":{"type":"boolean","description":"List matching file paths only"},
@@ -188,7 +190,21 @@ fn build_matcher(args: &GrepArgs) -> Result<grep_regex::RegexMatcher, ToolError>
         .fixed_strings(args.literal)
         .word(args.word)
         .build(&args.pattern)
-        .map_err(|error| ToolError::new("E_BAD_REGEX", error.to_string()))
+        .map_err(|error| {
+            let error = ToolError::new("E_BAD_REGEX", error.to_string());
+            if args.literal {
+                error
+            } else {
+                error.with_hint("escape regex metacharacters such as ( [ { or set literal=true")
+            }
+        })
+}
+
+/// 本次调用的总匹配预算：`limit` 参数在全局预算内生效。
+fn match_budget(args: &GrepArgs, config: &crate::config::GrepConfig) -> usize {
+    args.limit
+        .unwrap_or(config.max_matches_total)
+        .min(config.max_matches_total)
 }
 
 fn search_resource_text(
@@ -224,6 +240,13 @@ fn search_resource_namespace(
     }
     /// 一次命名空间扫描最多检查的文件数：命名空间可以无限大，工具输出必须有上限。
     const MAX_FILES: usize = 200;
+    let budget = match_budget(args, config);
+    // files_only 只列路径，每页文件数直接用总预算，不走 max_files 的分页档。
+    let file_cap = if args.files_only {
+        budget
+    } else {
+        config.max_files
+    };
     let mut output = SearchOutput::default();
     let mut notices = Vec::new();
     let mut scanned = 0usize;
@@ -254,12 +277,10 @@ fn search_resource_namespace(
             let Ok(bytes) = std::fs::read(&path) else {
                 continue;
             };
-            file_config.max_matches_total = config.max_matches_per_file.min(
-                config
-                    .max_matches_total
-                    .saturating_sub(output.matches)
-                    .max(1),
-            );
+            file_config.max_matches_total = config
+                .max_matches_per_file
+                .min(budget.saturating_sub(output.matches))
+                .max(1);
             let matches = collect_resource_matches(
                 &uri,
                 &String::from_utf8_lossy(&bytes),
@@ -273,8 +294,8 @@ fn search_resource_namespace(
             if matched_files <= args.skip.unwrap_or(0) {
                 continue;
             }
-            if shown_files >= config.max_files
-                || output.matches >= config.max_matches_total
+            if shown_files >= file_cap
+                || output.matches >= budget
                 || (!output.content.is_empty()
                     && output.content.len() + matches.content.len() + 1 > config.output_bytes)
             {
@@ -364,6 +385,7 @@ fn collect_resource_matches(
         return Ok(output);
     }
     let matcher = build_matcher(args)?;
+    let budget = match_budget(args, config);
     let lines: Vec<&str> = text.lines().collect();
     let mut matched = vec![false; lines.len()];
     let mut hits = Vec::new();
@@ -383,13 +405,13 @@ fn collect_resource_matches(
             }
             matched[index] = true;
             hits.push(index);
-            if hits.len() > config.max_matches_total {
+            if hits.len() > budget {
                 break;
             }
         }
     }
-    let truncated = hits.len() > config.max_matches_total;
-    hits.truncate(config.max_matches_total);
+    let truncated = hits.len() > budget;
+    hits.truncate(budget);
     output.matches = hits.len();
     let next_line = hits.last().map(|&index| index as u64 + 2);
     let selected = hits;
@@ -510,6 +532,8 @@ struct Search {
     cancel: CancellationToken,
     deadline: Instant,
     single_file: bool,
+    /// 本次调用的总匹配预算：`limit` 参数在全局预算内生效。
+    match_budget: usize,
 }
 
 impl Search {
@@ -542,6 +566,7 @@ impl Search {
             ));
         }
         let deadline = Instant::now() + Duration::from_millis(config.timeout_ms);
+        let match_budget = match_budget(&args, &config);
         Ok(Self {
             args,
             root,
@@ -552,6 +577,7 @@ impl Search {
             cancel,
             deadline,
             single_file,
+            match_budget,
         })
     }
 
@@ -645,9 +671,10 @@ impl Search {
                 if matched_files <= skip {
                     continue;
                 }
-                // files_only：每个命中文件只输出相对路径一行。
+                // files_only：每个命中文件只输出相对路径一行；每页文件数直接用
+                // 总匹配预算（limit 可调），不走 max_files 的分页档。
                 if self.args.files_only {
-                    if shown_files >= self.config.max_files {
+                    if shown_files >= self.match_budget {
                         limited = true;
                         break 'blocks;
                     }
@@ -666,13 +693,11 @@ impl Search {
                     shown_matches += 1;
                     continue;
                 }
-                if shown_files >= self.config.max_files
-                    || shown_matches >= self.config.max_matches_total
-                {
+                if shown_files >= self.config.max_files || shown_matches >= self.match_budget {
                     limited = true;
                     break 'blocks;
                 }
-                let allowance = self.config.max_matches_total - shown_matches;
+                let allowance = self.match_budget - shown_matches;
                 let count = result.matches.min(allowance);
                 let last_match = result
                     .rows
@@ -902,9 +927,12 @@ impl Sink for MatchSink<'_> {
             return Ok(false);
         }
         let limit = if self.search.single_file {
-            self.search.config.max_matches_total
+            self.search.match_budget
         } else {
-            self.search.config.max_matches_per_file
+            self.search
+                .config
+                .max_matches_per_file
+                .min(self.search.match_budget)
         };
         if self.result.matches >= limit {
             self.result.truncated = true;
@@ -1308,6 +1336,27 @@ mod pattern_mode_tests {
         let mut lines: Vec<&str> = output.lines().collect();
         lines.sort_unstable();
         assert_eq!(lines, ["a.txt", "c.txt"], "{output}");
+
+        // files_only 的每页上限是总匹配预算（默认 200），不再受 max_files(20) 约束。
+        for index in 0..25 {
+            std::fs::write(root.path().join(format!("many_{index:02}.txt")), "hit\n").unwrap();
+        }
+        let output = run(
+            root.path(),
+            serde_json::json!({"pattern":"hit","files_only":true}),
+        );
+        assert_eq!(output.lines().count(), 27, "{output}");
+        // limit 在总预算内截断结果，续页参数照旧。
+        let output = run(
+            root.path(),
+            serde_json::json!({"pattern":"hit","files_only":true,"limit":3}),
+        );
+        assert_eq!(
+            output.lines().filter(|line| !line.starts_with('[')).count(),
+            3,
+            "{output}"
+        );
+        assert!(output.contains("skip=3"), "{output}");
     }
 
     #[test]
