@@ -168,6 +168,30 @@ export function runSlash(
   }
 
   switch (command.name) {
+    case "debuginfo":
+    case "session": {
+      if (args) {
+        toast(`用法：/${command.name}`);
+        break;
+      }
+      const method = command.name === "debuginfo" ? "session/debug_info" : "session/inspect";
+      const note = (tone: "info" | "error", text: string) => {
+        useTranscript.getState().mutate(sessionId, (current) => {
+          current.blocks.push({
+            kind: "status",
+            id: crypto.randomUUID(),
+            tone,
+            text,
+            localCommand: true,
+          });
+        });
+      };
+      void rpc
+        .call<string>(method, { session_id: sessionId })
+        .then((text) => note("info", text))
+        .catch((error) => note("error", `/${command.name} 执行失败：${errorText(error)}`));
+      break;
+    }
     case "compact-skills": {
       const normalized = args.split(/\s+/).filter(Boolean).join(" ");
       const action: SkillsCompactAction | undefined = (

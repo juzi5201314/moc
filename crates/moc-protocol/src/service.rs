@@ -635,6 +635,24 @@ pub trait AgentService: Send + Sync + 'static {
         async { Err(crate::RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 
+    /// 返回用户侧工具统计便签，不包含模型用量或会话身份。
+    fn session_debug_info(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SessionDebugInfoParams,
+    ) -> impl Future<Output = Result<String, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 返回用户侧会话身份与存储便签，不包含工具或模型用量统计。
+    fn session_inspect(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SessionInspectParams,
+    ) -> impl Future<Output = Result<String, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
     /// 手动执行命令，不调用模型；与提示共享会话繁忙和取消边界。
     fn session_bash(
         &self,

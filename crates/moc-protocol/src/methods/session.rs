@@ -235,6 +235,11 @@ pub struct SessionContextContent;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionUsage;
 
+mod inspection;
+pub use inspection::{
+    SessionDebugInfo, SessionDebugInfoParams, SessionInspect, SessionInspectParams,
+};
+
 mod context;
 pub use context::ContextContentResult;
 pub use context::ContextContentSection;

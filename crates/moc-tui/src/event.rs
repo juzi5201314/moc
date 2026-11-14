@@ -374,6 +374,14 @@ async fn event_loop(
                         };
                         app.push_note(text, NoteTone::from_error(error));
                     }
+                    Some(AppEvent::CommandNote { session_id, result }) => {
+                        if app.session.as_ref().is_some_and(|session| session.id == session_id) {
+                            match result {
+                                Ok(text) => app.push_note(text, NoteTone::Info),
+                                Err(error) => app.push_note(error.to_string(), NoteTone::Error),
+                            }
+                        }
+                    }
                     Some(AppEvent::Usage {
                         request,
                         result,

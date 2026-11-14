@@ -642,6 +642,24 @@ impl<S: AgentService> ServerDispatch<S> {
                     .await?;
                 value_from(result)
             }
+            <crate::SessionDebugInfo as Method>::NAME => {
+                let params = params_from_value::<crate::SessionDebugInfo>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .session_debug_info(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <crate::SessionInspect as Method>::NAME => {
+                let params = params_from_value::<crate::SessionInspect>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .session_inspect(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
             <SessionBash as Method>::NAME => {
                 let params = params_from_value::<SessionBash>(params)?;
                 value_from(

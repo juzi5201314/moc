@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 4ed38302a1179d0b
+// schema sha256: 113175906f5ff5d7
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -3507,6 +3507,13 @@ export interface SessionContextReadParams {
   view_id: string;
 }
 /**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SessionDebugInfoParams".
+ */
+export interface SessionDebugInfoParams {
+  session_id: string;
+}
+/**
  * `session/delete` 的参数。
  *
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
@@ -3835,6 +3842,13 @@ export interface TodoItem {
   reason?: string | null;
   status: TodoStatus;
   task: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SessionInspectParams".
+ */
+export interface SessionInspectParams {
+  session_id: string;
 }
 /**
  * `session/list` 的参数：空对象。

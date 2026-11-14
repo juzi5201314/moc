@@ -7,6 +7,7 @@ Rust 编写的终端 AI 编码助手（Cargo workspace，edition 2024，Rust 1.8
 - 构建：`cargo build`（调试）/ `cargo build --release`（产物在 `target/release/moc`）
 - 测试：`cargo test --workspace --locked`（CI 同款）；迭代期跑单 crate：`cargo test -p <crate>`
 - 前端（`crates/moc-web/web/`）：`pnpm lint`（biome）/ `pnpm build`（tsc + vite）/ `pnpm test`（vitest）
+- 用户信息（TUI / Web / 行式 CLI）：`/debuginfo` 查看工具统计与压缩次数；`/session` 查看会话身份与存储。两者为独立只读 note，不接受参数，不重复 `/usage`，不写模型上下文。
 
 ## 环境要求
 

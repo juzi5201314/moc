@@ -69,6 +69,8 @@ moc --resume <id>             # 恢复历史会话
 | 切换模型与思考等级 | `Ctrl+P` 或 `/model`（`Tab` 或 `←→` 就地切换思考等级）；`/config` 的模型角色字段用同一个选择器 |
 | 查看上下文内容 | `/context`（顶部进度条点击打开占用明细） |
 | 查看实际可用工具 | `/tools`（TUI、WebUI 弹窗展示当前会话下一轮请求发送的工具） |
+| 查看工具调用统计与压缩次数 | `/debuginfo`（TUI、Web、行式 CLI） |
+| 查看当前会话身份与存储大小 | `/session`（TUI、Web、行式 CLI） |
 | 压缩技能目录 | `/compact-skills` 或 `/compact-skills compact`（仅缺失/失效缓存）、`/compact-skills force`（全部重压） |
 | 清理技能缓存 | `/compact-skills cleanup`（删除来源已不存在的记录）、`/compact-skills cleanup all`（全部清空） |
 | 切换思考显示档位 | `Ctrl+T` |

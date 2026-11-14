@@ -102,6 +102,11 @@ pub enum AppEvent {
         text: String,
         error: bool,
     },
+    /// 只读命令便签；带会话 ID，避免切换会话后把迟到回执写到别处。
+    CommandNote {
+        session_id: String,
+        result: Result<String, moc_protocol::RpcCallError>,
+    },
     /// 当前会话的模型调用用量。
     Usage {
         /// 发起刷新时取的请求序号，用于丢弃乱序或跨会话迟到的旧回执。

@@ -17,6 +17,8 @@ pub enum CommandId {
     New,
     Plugins,
     Usage,
+    DebugInfo,
+    Session,
     Doctor,
     Help,
     Context,
@@ -49,6 +51,34 @@ const AUTONOMY_CHOICES: &[&str] = &["default", "dont_ask", "unattended"];
 /// `needs_session`/`available_*` 是静态门控声明；依赖会话实时状态的更细判定
 /// （plan 激活、引擎锁、授权集）仍由处理器自查。
 pub const COMMANDS: &[CommandSpec<CommandId>] = &[
+    CommandSpec {
+        id: CommandId::DebugInfo,
+        name: "debuginfo",
+        aliases: &[],
+        usage: "",
+        description: "工具调用统计、成功率与上下文压缩次数",
+        group: CommandGroup::Ui,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Session,
+        name: "session",
+        aliases: &[],
+        usage: "",
+        description: "当前会话身份、文件路径与分类存储大小",
+        group: CommandGroup::Session,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
     CommandSpec {
         id: CommandId::New,
         name: "new",

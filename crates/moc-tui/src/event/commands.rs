@@ -200,6 +200,40 @@ pub(super) fn dispatch_command(
             _ => app.set_notice("用法：/plugins [reload]"),
         },
         CommandId::Usage => refresh_usage(app, connection, true),
+        CommandId::DebugInfo | CommandId::Session => {
+            let name = if id == CommandId::DebugInfo {
+                "debuginfo"
+            } else {
+                "session"
+            };
+            if !rest.trim().is_empty() {
+                app.set_notice(format!("用法：/{name}"));
+                return;
+            }
+            let Some(session_id) = session_id else {
+                return;
+            };
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            tokio::spawn(async move {
+                let result = if id == CommandId::DebugInfo {
+                    client
+                        .call::<moc_protocol::SessionDebugInfo>(
+                            moc_protocol::SessionDebugInfoParams {
+                                session_id: session_id.clone(),
+                            },
+                        )
+                        .await
+                } else {
+                    client
+                        .call::<moc_protocol::SessionInspect>(moc_protocol::SessionInspectParams {
+                            session_id: session_id.clone(),
+                        })
+                        .await
+                };
+                let _ = events.send(AppEvent::CommandNote { session_id, result });
+            });
+        }
         CommandId::Monitor => app.modal = Some(Modal::Monitor),
         CommandId::Doctor => app.push_note(
             crate::doctor::report(app),

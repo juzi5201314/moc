@@ -62,6 +62,8 @@ pub mod workspace;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub use session::{SessionDebugInfo, SessionDebugInfoParams, SessionInspect, SessionInspectParams};
+
 pub use agent::{
     AgentInfo, AgentList, AgentListParams, AgentListResult, AgentMessage, AgentMessageMeta,
     AgentMessageOutcome, AgentMessageParams, AgentMessageReceipt, AgentMessageResult,

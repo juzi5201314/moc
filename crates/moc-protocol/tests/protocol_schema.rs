@@ -159,6 +159,8 @@ fn register_all(
     client::<SessionSetFastMode>(generator, client_map);
     client::<SessionUnlock>(generator, client_map);
     client::<SessionUsage>(generator, client_map);
+    client::<SessionDebugInfo>(generator, client_map);
+    client::<SessionInspect>(generator, client_map);
     client::<SessionContext>(generator, client_map);
     client::<SessionContextRead>(generator, client_map);
     client::<SessionContextContent>(generator, client_map);

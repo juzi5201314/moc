@@ -28,6 +28,8 @@ pub enum CommandId {
     Compact,
     CompactSkills,
     Usage,
+    DebugInfo,
+    Session,
     Model,
     Plugins,
     Features,
@@ -41,6 +43,34 @@ const ENGINE_CHOICES: &[&str] = &["standard", "ptc", "clm"];
 
 /// REPL 内置命令表：同一批记录驱动 `run_command` 分派与 `/help` 文本。
 pub const COMMANDS: &[CommandSpec<CommandId>] = &[
+    CommandSpec {
+        id: CommandId::DebugInfo,
+        name: "debuginfo",
+        aliases: &[],
+        usage: "",
+        description: "工具调用统计、成功率与上下文压缩次数",
+        group: CommandGroup::Ui,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Session,
+        name: "session",
+        aliases: &[],
+        usage: "",
+        description: "当前会话身份、文件路径与分类存储大小",
+        group: CommandGroup::Session,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
     CommandSpec {
         id: CommandId::New,
         name: "new",

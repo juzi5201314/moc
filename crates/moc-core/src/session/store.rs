@@ -655,7 +655,7 @@ fn timestamp_name(at_ms: u64) -> String {
     )
 }
 
-fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
+pub(crate) fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let z = days_since_epoch + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let day_of_era = z - era * 146_097;

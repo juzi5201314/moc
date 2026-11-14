@@ -2,8 +2,8 @@
 
 use super::errors::{invalid_params, job_error, to_rpc, write_lease_error};
 use super::{
-    Core, bash, btw, config_api, context, history, management, mode, plugin_api, prompt,
-    resource_api, session_api, session_config, usage, workflow_api,
+    Core, bash, btw, config_api, context, debug_info, history, inspect, management, mode,
+    plugin_api, prompt, resource_api, session_api, session_config, usage, workflow_api,
 };
 use crate::compact;
 use moc_protocol::methods::{
@@ -795,6 +795,22 @@ impl AgentService for Core {
         params: SessionUsageParams,
     ) -> Result<SessionUsageResult, RpcError> {
         usage::session_usage(self, _ctx, params).await
+    }
+
+    async fn session_debug_info(
+        &self,
+        _ctx: RequestContext,
+        params: moc_protocol::SessionDebugInfoParams,
+    ) -> Result<String, RpcError> {
+        debug_info::report(&self.inner, &params.session_id).await
+    }
+
+    async fn session_inspect(
+        &self,
+        _ctx: RequestContext,
+        params: moc_protocol::SessionInspectParams,
+    ) -> Result<String, RpcError> {
+        inspect::report(&self.inner, &params.session_id).await
     }
 
     async fn session_bash(

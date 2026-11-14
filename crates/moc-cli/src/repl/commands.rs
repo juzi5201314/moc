@@ -307,6 +307,28 @@ pub(super) async fn run_command(
                 .await?;
             print_usage(&result);
         }
+        CommandId::DebugInfo => {
+            if !argument.is_empty() {
+                bail!("用法：/debuginfo");
+            }
+            let text = client
+                .call::<moc_protocol::SessionDebugInfo>(moc_protocol::SessionDebugInfoParams {
+                    session_id: session.id.clone(),
+                })
+                .await?;
+            println!("{text}");
+        }
+        CommandId::Session => {
+            if !argument.is_empty() {
+                bail!("用法：/session");
+            }
+            let text = client
+                .call::<moc_protocol::SessionInspect>(moc_protocol::SessionInspectParams {
+                    session_id: session.id.clone(),
+                })
+                .await?;
+            println!("{text}");
+        }
         CommandId::Model => {
             if argument.is_empty() {
                 bail!("用法：/model <selector>");

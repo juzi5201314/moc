@@ -4574,6 +4574,18 @@
       ],
       "type": "object"
     },
+    "SessionDebugInfoParams": {
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
     "SessionDeleteParams": {
       "additionalProperties": false,
       "description": "`session/delete` 的参数。",
@@ -4885,6 +4897,18 @@
         "cwd",
         "created_at_ms",
         "updated_at_ms"
+      ],
+      "type": "object"
+    },
+    "SessionInspectParams": {
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
       ],
       "type": "object"
     },
@@ -9140,6 +9164,15 @@
         },
         "type": "SessionContextRead"
       },
+      "session/debug_info": {
+        "params": {
+          "$ref": "#/$defs/SessionDebugInfoParams"
+        },
+        "result": {
+          "type": "string"
+        },
+        "type": "SessionDebugInfo"
+      },
       "session/delete": {
         "params": {
           "$ref": "#/$defs/SessionDeleteParams"
@@ -9166,6 +9199,15 @@
           "$ref": "#/$defs/SessionHistoryResult"
         },
         "type": "SessionHistory"
+      },
+      "session/inspect": {
+        "params": {
+          "$ref": "#/$defs/SessionInspectParams"
+        },
+        "result": {
+          "type": "string"
+        },
+        "type": "SessionInspect"
       },
       "session/list": {
         "params": {

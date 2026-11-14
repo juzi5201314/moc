@@ -177,6 +177,8 @@ async fn usage_descendants(
 }
 
 mod config_api;
+mod debug_info;
+mod inspect;
 mod plugin_api;
 mod resource_api;
 mod session_api;
