@@ -498,7 +498,7 @@ fn nested_same_name_children_merge_into_one_group() {
             id: id.into(),
             name: name.into(),
             parent_id: Some("p".into()),
-            arguments: String::new(),
+            arguments: arguments.into(),
             status: ToolStatus::Completed,
             result: moc_protocol::ToolResult {
                 tool_call_id: id.into(),

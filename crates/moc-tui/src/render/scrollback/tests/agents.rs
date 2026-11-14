@@ -248,7 +248,7 @@ fn sidekick_card_renders_model_result_and_mode() {
         id: "call_sk".into(),
         name: "sidekick".into(),
         parent_id: None,
-        arguments: String::new(),
+        arguments: r#"{"mode":"compact","message":"跑一轮验证"}"#.into(),
         status: ToolStatus::Completed,
         result: ToolResult {
             tool_call_id: "call_sk".into(),
