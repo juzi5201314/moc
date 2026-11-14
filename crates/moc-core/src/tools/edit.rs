@@ -40,7 +40,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &'static str {
-        "Edit previously read lines. Use the latest read/edit tag; untouched lines remain addressable through older tags. Successful edits return the new tag and line numbers. On rejection, use the current lines in the error instead of re-reading."
+        "Edit fully shown lines using a read/grep/edit tag. Untouched lines remain addressable through older tags. Successful edits return the new tag and line numbers. On rejection, use the current lines in the error; read any explicitly omitted ranges before retrying."
     }
 
     fn tier(&self) -> Tier {
@@ -125,16 +125,36 @@ pub(crate) fn preview_arguments(ctx: &ToolCtx, args: &Value) -> Option<moc_proto
 /// `edits` 数组元素的 schema；`edit` 与 `plan` 共用同一组写法。
 pub(crate) fn edits_items_schema() -> Value {
     serde_json::json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["op"],
-        "properties": {
-            "op": {"type":"string","enum":["replace","insert","delete"]},
-            "from": {"type":"integer","minimum":1,"description":"replace/delete: first line, inclusive."},
-            "to": {"type":"integer","minimum":1,"description":"replace/delete: last line, inclusive; equal to from for one line."},
-            "after": {"type":"integer","minimum":0,"description":"insert: line to insert after; 0 inserts at the top."},
-            "text": {"type":"string","description":"replace/insert: the new lines verbatim, no line-number prefixes."}
-        }
+        "anyOf": [
+            {
+                "type":"object", "additionalProperties":false,
+                "required":["op", "from", "to", "text"],
+                "properties": {
+                    "op":{"type":"string", "enum":["replace"]},
+                    "from":{"type":"integer", "minimum":1, "description":"First line, inclusive."},
+                    "to":{"type":"integer", "minimum":1, "description":"Last line, inclusive."},
+                    "text":{"type":"string", "description":"New lines verbatim, without line-number prefixes."}
+                }
+            },
+            {
+                "type":"object", "additionalProperties":false,
+                "required":["op", "after", "text"],
+                "properties": {
+                    "op":{"type":"string", "enum":["insert"]},
+                    "after":{"type":"integer", "minimum":0, "description":"Insert after this line; 0 inserts at the top."},
+                    "text":{"type":"string", "description":"New lines verbatim, without line-number prefixes."}
+                }
+            },
+            {
+                "type":"object", "additionalProperties":false,
+                "required":["op", "from", "to"],
+                "properties": {
+                    "op":{"type":"string", "enum":["delete"]},
+                    "from":{"type":"integer", "minimum":1, "description":"First line, inclusive."},
+                    "to":{"type":"integer", "minimum":1, "description":"Last line, inclusive."}
+                }
+            }
+        ]
     })
 }
 
@@ -143,7 +163,7 @@ fn edit_schema() -> Value {
         "type": "object",
         "properties": {
             "path": {"type":"string","description":"File to edit; the same path you read."},
-            "tag": {"type":"string","description":"4-hex tag from the [path#TAG] header of the latest read or edit output of this file; line numbers refer to that version."},
+            "tag": {"type":"string","description":"4-hex tag from the [path#TAG] header of read, grep or edit output; line numbers refer to that version."},
             "edits": {
                 "type":"array","minItems":1,
                 "description":"Edits applied together; all line numbers refer to `tag`, never shifted by earlier edits in the same call. The whole call is rejected if any one fails.",
@@ -240,7 +260,8 @@ pub(crate) fn error_outcome(
         append_current_lines(ctx, request, source_path, target_path, &mut content);
     }
     ToolOutcome {
-        content: content.into(),
+        // 回显已在行数与字节预算内裁切，不能再截断已登记为可编辑的正文。
+        content: super::ToolOutput::Verbatim(content),
         is_error: true,
         structured_content: None,
         error_code: Some(error_code),
@@ -267,6 +288,8 @@ fn append_current_lines(
         files.push((target, movement.target_tag.as_str(), target_hints(movement)));
     }
     let max_bytes = ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024);
+    let mut body_budget =
+        super::output::budget(&ctx.config.tools.output).saturating_sub(content.len());
     for (path, tag, hints) in files {
         let Ok(snapshot) = crate::hashline::served::read_snapshot(path, max_bytes) else {
             let _ = write!(
@@ -285,16 +308,35 @@ fn append_current_lines(
             let version = served.resolve(parse_tag(tag)?).ok()?;
             Some((served, version))
         });
-        let positions: Vec<usize> = hints
+        let map_position = |position| {
+            version
+                .and_then(|(served, version)| served.map_line(version, position))
+                .unwrap_or(position)
+                .min(len.saturating_sub(1))
+        };
+        let ranges: Vec<_> = hints
             .iter()
-            .map(|&hint| {
-                version
-                    .and_then(|(served, version)| served.map_line(version, hint))
-                    .unwrap_or(hint)
-                    .min(len.saturating_sub(1))
+            .map(|range| {
+                let start = map_position(range.start);
+                let end = map_position(range.end.saturating_sub(1));
+                start.min(end)..start.max(end).saturating_add(1).min(len)
             })
             .collect();
-        let windows = feedback_windows(&positions, len, FEEDBACK_MAX_LINES);
+        let requested = feedback_windows(&ranges, len, FEEDBACK_MAX_LINES);
+        let mut windows: Vec<std::ops::Range<usize>> = Vec::new();
+        for position in requested.into_iter().flatten() {
+            let bytes = snapshot.lines[position].len();
+            // 行号、换行及分段符预留固定上界；长行或预算之外的行不登记。
+            let cost = bytes.saturating_add(24);
+            if bytes > ctx.config.tools.read.line_max_bytes || cost > body_budget {
+                continue;
+            }
+            body_budget -= cost;
+            match windows.last_mut() {
+                Some(last) if position == last.end => last.end += 1,
+                _ => windows.push(position..position + 1),
+            }
+        }
         let current = ctx
             .anchors
             .record_served(path.to_path_buf(), &snapshot, &windows);
@@ -316,59 +358,96 @@ fn append_current_lines(
                 content.push_str(&numbered_line(position + 1, &snapshot.lines[position]));
             }
         }
+        for range in ranges {
+            let mut start = range.start;
+            for shown in &windows {
+                if shown.end <= start || shown.start >= range.end {
+                    continue;
+                }
+                if shown.start > start {
+                    append_missing_range(content, path, start..shown.start);
+                }
+                start = start.max(shown.end).min(range.end);
+            }
+            if start < range.end {
+                append_missing_range(content, path, start..range.end);
+            }
+        }
     }
 }
 
-/// 源文件附带内容围绕的 0 基位置（指请求 tag 的版本）：编辑范围与 move 源范围。
-fn source_hints(request: &EditRequest) -> Vec<usize> {
-    let mut hints = Vec::new();
+/// 源文件完整的 0 基半开区间，不能只保留端点，否则长替换会在回显中间挖洞。
+fn source_hints(request: &EditRequest) -> Vec<std::ops::Range<usize>> {
+    let mut hints =
+        Vec::with_capacity(request.edits.len() + usize::from(request.move_lines.is_some()));
     for op in &request.edits {
-        match op {
+        hints.push(match op {
             EditOp::Replace { from, to, .. } | EditOp::Delete { from, to } => {
-                hints.extend([from.saturating_sub(1), to.saturating_sub(1)]);
+                from.saturating_sub(1)..*to
             }
-            EditOp::Insert { after, .. } => hints.push(after.saturating_sub(1)),
-        }
+            EditOp::Insert { after, .. } => after.saturating_sub(1)..(*after).max(1),
+        });
     }
     if let Some(movement) = &request.move_lines {
-        hints.extend([
-            movement.from.saturating_sub(1),
-            movement.to.saturating_sub(1),
-        ]);
+        hints.push(movement.from.saturating_sub(1)..movement.to);
     }
     hints
 }
 
-/// 目标文件附带内容围绕的 0 基位置：move 的插入点。
-fn target_hints(movement: &MoveRequest) -> Vec<usize> {
-    movement
-        .after
-        .map(|after| vec![after.saturating_sub(1)])
-        .unwrap_or_default()
+/// 目标文件只需展示插入点；无 after 时由文件末尾确定。
+fn target_hints(movement: &MoveRequest) -> Vec<std::ops::Range<usize>> {
+    let after = movement.after.unwrap_or(usize::MAX);
+    vec![after.saturating_sub(1)..after.max(1)]
 }
 
-/// 回显窗口：每个提示取前 3 行到后 3 行并合并；整体跨度不超过 `max_lines`
-/// 时用首尾之间的一个连续窗口，否则保留各自的小窗口并按总行数截断。
-fn feedback_windows(hints: &[usize], len: usize, max_lines: usize) -> Vec<std::ops::Range<usize>> {
-    if hints.is_empty() {
-        let all = 0..len.min(max_lines);
-        return vec![all];
+fn append_missing_range(
+    content: &mut String,
+    path: &std::path::Path,
+    range: std::ops::Range<usize>,
+) {
+    let _ = write!(
+        content,
+        "\nRead omitted range before retrying: path={}, offset={}, limit={}.",
+        path.display(),
+        range.start + 1,
+        range.len()
+    );
+}
+
+/// 先保证操作区间完整，再用余量补上下文；无法容纳的部分由调用方明确列出。
+fn feedback_windows(
+    ranges: &[std::ops::Range<usize>],
+    len: usize,
+    max_lines: usize,
+) -> Vec<std::ops::Range<usize>> {
+    if ranges.is_empty() {
+        return vec![0..len.min(max_lines)];
     }
-    let mut sorted = hints.to_vec();
-    sorted.sort_unstable();
-    let mut windows: Vec<std::ops::Range<usize>> = Vec::new();
-    for hint in sorted {
-        let window = hint.saturating_sub(3)..(hint + 4).min(len);
-        match windows.last_mut() {
-            Some(last) if window.start <= last.end => last.end = last.end.max(window.end),
-            _ => windows.push(window),
+    let merge = |padding: usize| {
+        let mut sorted: Vec<_> = ranges
+            .iter()
+            .map(|range| {
+                range.start.saturating_sub(padding)..range.end.saturating_add(padding).min(len)
+            })
+            .collect();
+        sorted.sort_unstable_by_key(|range| range.start);
+        let mut windows: Vec<std::ops::Range<usize>> = Vec::new();
+        for window in sorted {
+            match windows.last_mut() {
+                Some(last) if window.start <= last.end => last.end = last.end.max(window.end),
+                _ => windows.push(window),
+            }
         }
-    }
+        windows
+    };
+    let mut windows = merge(3);
     let first = windows[0].start;
     let last = windows[windows.len() - 1].end;
     if last - first <= max_lines {
-        let span = first..last;
-        return vec![span];
+        return vec![first..last];
+    }
+    if windows.iter().map(std::ops::Range::len).sum::<usize>() > max_lines {
+        windows = merge(0);
     }
     let mut budget = max_lines;
     windows
@@ -411,10 +490,17 @@ mod tests {
     #[test]
     fn rejects_unknown_ops_and_fields() {
         for args in [
+            serde_json::json!({"path":"f","tag":"0000","edits":[{"op":"insert","after":1,"from":1,"to":1,"text":"x"}]}),
+            serde_json::json!({"path":"f","tag":"0000","edits":[{"op":"insert","text":"x"}]}),
             serde_json::json!({"path":"f","tag":"0000","edits":[{"op":"swap","from":1,"to":1}]}),
             serde_json::json!({"path":"f","tag":"0000","edits":[{"op":"delete","from":1,"to":1,"text":"x"}]}),
             serde_json::json!({"path":"f","tag":"0000","edits":[],"files":[]}),
         ] {
+            assert!(
+                !jsonschema::validator_for(&edit_schema())
+                    .unwrap()
+                    .is_valid(&args)
+            );
             let error = parse_requests(args).expect_err("应拒绝未知 op 或字段");
             assert_eq!(error.code, "E_BAD_PAYLOAD");
         }
@@ -428,5 +514,25 @@ mod tests {
         }))
         .expect_err("缺少 tag 必须拒绝");
         assert!(error.message.contains("tag"), "{}", error.message);
+    }
+
+    #[test]
+    fn feedback_keeps_each_sparse_edit_range_complete() {
+        let ranges = [54..55, 126..127, 478..480, 482..483, 487..493, 507..519];
+        let windows = feedback_windows(&ranges, 600, FEEDBACK_MAX_LINES);
+        assert!(windows.iter().map(std::ops::Range::len).sum::<usize>() <= FEEDBACK_MAX_LINES);
+        for range in ranges {
+            assert!(
+                range
+                    .clone()
+                    .all(|line| windows.iter().any(|window| window.contains(&line))),
+                "遗漏 {range:?}"
+            );
+        }
+        // 多个完整区间刚好占满预算时，先丢上下文而不是区间的中间行。
+        assert_eq!(
+            feedback_windows(&[0..100, 500..600], 600, 200),
+            [0..100, 500..600]
+        );
     }
 }

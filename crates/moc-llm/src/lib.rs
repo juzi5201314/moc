@@ -51,6 +51,8 @@
 //!   可以直接 push 进下一轮 [`ChatRequest::messages`]。
 //! - **中断可续**：[`ChatStream::interrupt`] 返回修剪过的部分响应，
 //!   保留可安全回灌的内容并丢弃半截工具调用。
+//! - **工具可选字段语义一致**：Responses 对未指定 `ToolDef::strict` 的工具显式发送
+//!   `strict: false`，防止上游自动规范化为所有属性必填；显式 `true` / `false` 原样保留。
 //!
 //! 流式协议约定：
 //!

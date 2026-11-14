@@ -324,6 +324,12 @@ async fn execute_tool(
             Err(error) => return Ok(error.into_outcome()),
         }
     }
+    ctx.anchors
+        .restore(&ctx.paths.sidecar)
+        .await
+        .map_err(|error| {
+            CoreError::Tool(format!("Could not restore editable snapshots: {error}"))
+        })?;
     let execution = match authorize(ctx, &call.id, name, &args).await? {
         Authorization::Allowed(execution) => execution,
         denied => return Ok(denied_outcome(denied)),
@@ -354,6 +360,11 @@ async fn execute_tool(
         // 写入事务必须完整提交，不能中途取消；进程类工具自己响应取消并回收进程组。
         execution.await
     };
+    ctx.anchors.flush().await.map_err(|error| {
+        CoreError::Tool(format!(
+            "Tool ran, but editable snapshots could not be saved: {error}"
+        ))
+    })?;
     match result {
         Ok(Ok(mut outcome)) => {
             if outcome.diff.is_some() {

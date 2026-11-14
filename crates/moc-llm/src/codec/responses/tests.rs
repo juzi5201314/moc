@@ -61,6 +61,28 @@ fn assistant_with_tools(calls: &[(&str, &str)]) -> Message {
 }
 
 #[test]
+fn tool_optional_fields_do_not_become_required_by_responses() {
+    for strict in [None, Some(false), Some(true)] {
+        let mut tool = ToolDef::new(
+            "edit",
+            json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"path":{"type":"string"}, "move":{"type":"object"}},
+                "required":["path"]
+            }),
+        );
+        tool.strict = strict;
+        let req = ChatRequest {
+            tools: vec![tool],
+            ..base_request()
+        };
+        let body = encode_body(&config(), &req, false);
+        assert_eq!(body["tools"][0]["strict"], strict.unwrap_or(false));
+        assert_eq!(body["tools"][0]["parameters"]["required"], json!(["path"]));
+    }
+}
+
+#[test]
 fn request_minimal_has_no_optional_fields() {
     let body = encode_body(&config(), &base_request(), false);
     // `include` 不是可选项：默认回传思维链时它保证加密 reasoning 可续跑。

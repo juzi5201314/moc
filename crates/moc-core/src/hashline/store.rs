@@ -1,12 +1,13 @@
 //! 每个会话的文件快照、tag 版本链与 undo 历史。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
 use crate::hashline::{content_hash, tag_of};
+mod persistence;
 
 /// 文件元数据及原始内容组成的快照纪元；任一变化都会使 served 记录失效。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -120,7 +121,7 @@ impl LineEnding {
 const MAX_VERSIONS: usize = 16;
 
 /// 版本链中的一个文件版本。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Version {
     hash: u64,
     tag: u16,
@@ -141,7 +142,7 @@ pub enum TagError {
 ///
 /// 只有成功 `read` 或 diff 展示给模型的行才可编辑；本会话自身的编辑把旧
 /// 版本保留在链上，旧 tag 的行号可沿位移表映射到当前坐标。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ServedFile {
     pub epoch: Option<SnapshotId>,
     /// 当前版本已展示行的位图。按 u64 字打包，n 行只占 n/8 字节，大文件也不按行分配。
@@ -305,6 +306,9 @@ pub struct AnchorStore {
     files: RwLock<HashMap<PathBuf, ServedFile>>,
     undo: RwLock<UndoHistory>,
     noop: Mutex<Option<(String, usize)>>,
+    dirty: Mutex<HashSet<PathBuf>>,
+    restored: tokio::sync::OnceCell<PathBuf>,
+    persistence: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -362,6 +366,9 @@ impl AnchorStore {
             files: RwLock::new(HashMap::new()),
             undo: RwLock::new(UndoHistory::default()),
             noop: Mutex::new(None),
+            dirty: Mutex::new(HashSet::new()),
+            restored: tokio::sync::OnceCell::new(),
+            persistence: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -376,15 +383,20 @@ impl AnchorStore {
         snapshot: &FileSnapshot,
         windows: &[std::ops::Range<usize>],
     ) -> u16 {
-        self.files
-            .write()
-            .entry(path)
-            .or_default()
-            .serve(snapshot.epoch, &snapshot.lines, windows)
+        let mut files = self.files.write();
+        let tag =
+            files
+                .entry(path.clone())
+                .or_default()
+                .serve(snapshot.epoch, &snapshot.lines, windows);
+        self.dirty.lock().insert(path);
+        tag
     }
 
     pub fn commit_edit(&self, path: PathBuf, served: ServedFile) {
-        self.files.write().insert(path, served);
+        let mut files = self.files.write();
+        files.insert(path.clone(), served);
+        self.dirty.lock().insert(path);
     }
 
     pub fn observe_edit(&self, payload: String, changed: bool) -> usize {
@@ -404,6 +416,7 @@ impl AnchorStore {
     pub fn invalidate(&self, path: &Path) {
         if let Some(served) = self.files.write().get_mut(path) {
             served.invalidate();
+            self.dirty.lock().insert(path.to_path_buf());
         }
     }
 

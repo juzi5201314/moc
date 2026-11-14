@@ -245,9 +245,8 @@ fn encode_tool_def(def: &ToolDef) -> Value {
         object.insert("description".into(), Value::String(description.clone()));
     }
     object.insert("parameters".into(), def.parameters.clone());
-    if let Some(strict) = def.strict {
-        object.insert("strict".into(), Value::Bool(strict));
-    }
+    // Responses 省略 strict 会尝试把可选字段变为必填；None 保持非严格语义。
+    object.insert("strict".into(), Value::Bool(def.strict.unwrap_or(false)));
     Value::Object(object)
 }
 

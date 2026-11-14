@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::output::ToolOutput;
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
+use crate::hashline::{AnchorStore, FileSnapshot, SnapshotId, tag_text};
 use crate::resources::{ResourceBacking, ResourceRouter};
 
 #[derive(Deserialize)]
@@ -47,7 +48,7 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &'static str {
-        "Search file contents with Rust regex. Returns matching lines without surrounding context unless context_before/context_after are set. Does not cross mounts below the root unless cross_filesystems=true."
+        "Search file contents with Rust regex. Local text results include [path#TAG] for editing fully shown lines; shortened lines and results without a tag are not editable. Returns no surrounding context unless context_before/context_after are set. Does not cross mounts unless cross_filesystems=true."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -117,7 +118,9 @@ impl Tool for GrepTool {
             let cancel = ctx.cancel.child_token();
             let _cancel_on_drop = cancel.clone().drop_guard();
             let search = Search::new(args, ctx.cwd.clone(), ctx.config.tools.grep.clone(), cancel)?;
-            let result = tokio::task::spawn_blocking(move || search.run())
+            let anchors = std::sync::Arc::clone(&ctx.anchors);
+            let max_edit_bytes = ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024);
+            let result = tokio::task::spawn_blocking(move || search.run(&anchors, max_edit_bytes))
                 .await
                 .map_err(|error| ToolError::new("E_GREP", error.to_string()))??;
             Ok(ToolOutcome::success(ToolOutput::Verbatim(result)))
@@ -458,7 +461,7 @@ impl Search {
         self.cancel.is_cancelled() || Instant::now() >= self.deadline
     }
 
-    fn run(&self) -> Result<String, ToolError> {
+    fn run(&self, anchors: &AnchorStore, max_edit_bytes: u64) -> Result<String, ToolError> {
         let mut walker = ignore::WalkBuilder::new(&self.root);
         let gitignore = self.args.gitignore.unwrap_or(true);
         walker
@@ -594,12 +597,26 @@ impl Search {
                     }
                     rows.push(row);
                 }
-                let group = render_group(&relative.display().to_string(), &rows);
+                // 只为即将展示的匹配文件取编辑快照；搜索时的文件身份必须仍然一致。
+                let snapshot = edit_snapshot(path, result.epoch, max_edit_bytes);
+                let relative = relative.display().to_string();
+                // tag 固定四位：先计算精确输出预算，确认整组可见后才登记并填入真实 tag。
+                let display = if snapshot.is_some() {
+                    format!("[{relative}#0000]")
+                } else {
+                    relative.clone()
+                };
+                let mut group = render_group(&display, &rows);
                 let needed = group.len() + usize::from(!output.is_empty());
                 // 整组判断，不切半个文件：预算封顶时的 skip 才是精确的。
                 if !output.is_empty() && output.len() + needed > self.config.output_bytes {
                     capped = true;
                     break 'blocks;
+                }
+                if let Some((path, snapshot)) = snapshot {
+                    let windows = editable_windows(&rows, &snapshot);
+                    let tag = anchors.record_served(path, &snapshot, &windows);
+                    group.replace_range(relative.len() + 2..relative.len() + 6, &tag_text(tag));
                 }
                 if !output.is_empty() {
                     output.push('\n');
@@ -657,12 +674,13 @@ impl Search {
         if self.stopped() {
             return Ok(sink);
         }
-        let metadata = std::fs::metadata(path)?;
+        let file = std::fs::File::open(path)?;
+        let metadata = file.metadata()?;
         if metadata.len() > self.config.max_file_bytes {
             sink.skipped = true;
             return Ok(sink);
         }
-        let file = std::fs::File::open(path)?;
+        let epoch = SnapshotId::from_metadata(&metadata);
         let mut searcher = SearcherBuilder::new()
             .line_number(true)
             .multi_line(false)
@@ -678,14 +696,47 @@ impl Search {
         use std::io::Read;
         searcher.search_reader(
             &self.matcher,
-            file.take(self.config.max_file_bytes),
+            (&file).take(self.config.max_file_bytes),
             MatchSink {
                 search: self,
                 result: &mut sink,
             },
         )?;
+        if SnapshotId::from_metadata(&file.metadata()?) == epoch {
+            sink.epoch = Some(epoch);
+        }
         Ok(sink)
     }
+}
+
+/// 搜索与 read 使用相同的快照身份；文件变化或超出编辑上限时只返回搜索预览。
+fn edit_snapshot(
+    path: &Path,
+    epoch: Option<SnapshotId>,
+    max_bytes: u64,
+) -> Option<(PathBuf, FileSnapshot)> {
+    let epoch = epoch?;
+    let path = std::fs::canonicalize(path).ok()?;
+    let snapshot = crate::hashline::served::read_snapshot(&path, max_bytes).ok()?;
+    let mut identity = snapshot.epoch;
+    identity.content_hash = 0;
+    (identity == epoch && std::str::from_utf8(&snapshot.bytes).is_ok()).then_some((path, snapshot))
+}
+
+/// 只登记完整且逐字匹配快照的行；长行预览、BOM 和不同换行坐标都不会误授权。
+fn editable_windows(rows: &[Row], snapshot: &FileSnapshot) -> Vec<std::ops::Range<usize>> {
+    let mut windows: Vec<std::ops::Range<usize>> = Vec::new();
+    for row in rows {
+        let position = row.number as usize - 1;
+        if snapshot.lines.get(position) != Some(&row.text) {
+            continue;
+        }
+        match windows.last_mut() {
+            Some(last) if position == last.end => last.end += 1,
+            _ => windows.push(position..position + 1),
+        }
+    }
+    windows
 }
 
 #[derive(Default)]
@@ -694,6 +745,7 @@ struct Matches {
     matches: usize,
     truncated: bool,
     skipped: bool,
+    epoch: Option<SnapshotId>,
 }
 struct Row {
     number: u64,
@@ -768,9 +820,62 @@ mod tests {
             CancellationToken::new(),
         )
         .unwrap()
-        .run()
+        .run(&AnchorStore::new(), 4 * 1024 * 1024)
         .unwrap()
     }
+    #[test]
+    fn only_emitted_complete_rows_become_editable() {
+        use crate::hashline::apply::{EditOp, EditRequest, plan_edit};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("a.txt");
+        std::fs::write(&path, format!("hit\n{}\nend\n", "x".repeat(100))).unwrap();
+        std::fs::write(root.path().join("b.txt"), "hit\n").unwrap();
+        let config = crate::config::GrepConfig {
+            line_max_chars: 16,
+            output_bytes: 1,
+            ..Default::default()
+        };
+        let search = Search::new(
+            serde_json::from_value(serde_json::json!({"pattern":"hit", "context_after":2}))
+                .unwrap(),
+            root.path().to_owned(),
+            config,
+            CancellationToken::new(),
+        )
+        .unwrap();
+        let anchors = AnchorStore::new();
+        let output = search.run(&anchors, 4096).unwrap();
+        let served = anchors.served(&path).unwrap();
+        let tag = tag_text(served.current_tag().unwrap());
+        assert!(output.contains(&format!("[a.txt#{tag}]")));
+        assert!(served.is_seen(0) && served.is_seen(2));
+        assert!(!served.is_seen(1));
+        assert!(anchors.served(&root.path().join("b.txt")).is_none());
+        let mut request = EditRequest {
+            path: "a.txt".into(),
+            tag,
+            move_lines: None,
+            edits: vec![EditOp::Replace {
+                from: 3,
+                to: 3,
+                text: "updated".into(),
+            }],
+        };
+        let plan = plan_edit(root.path(), &request, &served, None, 32, 4096).unwrap();
+        assert_eq!(plan.lines[2], "updated");
+        request.edits = vec![EditOp::Delete { from: 2, to: 2 }];
+        assert!(
+            plan_edit(root.path(), &request, &served, None, 32, 4096)
+                .unwrap_err()
+                .to_string()
+                .contains("E_UNSEEN")
+        );
+
+        let result = search.search_file(&path).unwrap();
+        std::fs::write(&path, "changed after search\n").unwrap();
+        assert!(edit_snapshot(&path, result.epoch, 4096).is_none());
+    }
+
     #[test]
     fn long_line_preview_keeps_the_match_visible() {
         let root = tempfile::tempdir().unwrap();
@@ -805,17 +910,19 @@ mod tests {
             serde_json::json!({"pattern":"hit"}),
             config.clone(),
         );
-        assert_eq!(
-            output,
-            "a.rs:1:hit hit hit hit\n[1 files, 1 matches shown; output capped at 40 bytes. Continue with skip=1; narrow the pattern if a single file hits its limit]"
-        );
+        assert!(output.contains("[a.rs#"));
+        assert!(!output.contains("[b.rs#"));
+        assert!(output.contains("skip=1"));
         // 第一个文件哪怕自己就超过预算也要照常输出，否则搜索永远没有进展。
         let tiny = crate::config::GrepConfig {
             output_bytes: 1,
             ..config
         };
         let output = run(root.path(), serde_json::json!({"pattern":"hit"}), tiny);
-        assert!(output.starts_with("a.rs:1:hit hit hit hit\n"), "{output}");
+        assert!(
+            output.contains("[a.rs#") && !output.contains("[b.rs#"),
+            "{output}"
+        );
         assert!(output.contains("output capped at 1 bytes"), "{output}");
     }
     #[test]
@@ -892,15 +999,15 @@ mod tests {
             serde_json::json!({"pattern":"hit"}),
             config.clone(),
         );
-        assert!(default.contains("visible.txt:1:hit"));
+        assert!(default.contains("[visible.txt#") && default.contains(":1:hit"));
         assert!(!default.contains(".env") && !default.contains(".git"));
         let included = run(
             root.path(),
             serde_json::json!({"pattern":"hit","hidden":true}),
             config,
         );
-        assert!(included.contains(".env:1:hit"));
-        assert!(included.contains(".git/objects/pack:1:hit"));
+        assert!(included.contains("[.env#"));
+        assert!(included.contains("[.git/objects/pack#"));
     }
 }
 
@@ -926,7 +1033,7 @@ mod absolute_scan_tests {
             CancellationToken::new(),
         )
         .expect("解析绝对扫描根")
-        .run()
+        .run(&AnchorStore::new(), 4 * 1024 * 1024)
         .expect("执行扫描");
         assert!(output.contains("incomplete"));
         assert!(!output.contains("No matches found"));

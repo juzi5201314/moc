@@ -143,7 +143,7 @@ pub fn plan_edit(
     if served.epoch != Some(source_snapshot.epoch) {
         let message = if served.epoch.is_none() {
             format!(
-                "{} has not been read in this session",
+                "{} has no editable snapshot available; read it to establish a current snapshot",
                 source_path.display()
             )
         } else {

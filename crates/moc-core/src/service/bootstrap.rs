@@ -281,12 +281,14 @@ impl Core {
             .anchors
             .latest_undo_path()
             .ok_or_else(|| anyhow::anyhow!("[E_NO_UNDO] 当前会话没有可撤销的编辑"))?;
-        Ok(crate::hashline::apply::undo(
+        let output = crate::hashline::apply::undo(
             &path,
             &runtime.anchors,
             config.tools.output.max_file_bytes,
         )
-        .await?)
+        .await?;
+        runtime.anchors.flush().await?;
+        Ok(output)
     }
     /// 把长操作挂在 Core 上运行，前端断开后也能完成进程回收和会话提交。
     pub(super) async fn run_operation<T: Send + 'static>(
