@@ -230,7 +230,21 @@ pub(super) async fn run_prompt_locked(
         &project_config,
         model.context_window,
     );
-    let context_files = inner.project_context_files(&params.session_id, &cwd).await;
+    let (context_files, context_warning) =
+        inner.prompt_context_files(&params.session_id, &cwd).await;
+    if let Some(message) = context_warning {
+        update
+            .emit(
+                params.session_id.clone(),
+                SessionUpdate::GuardNotice {
+                    prompt_id: prompt_id.clone(),
+                    message,
+                    terminal: false,
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
+    }
     let subagent_prompt = crate::agents::subagent_prompt(&inner, &params.session_id).await;
     let plugin_prompt = plugins.prompt_text(&plugin_context).await;
     let system = build(

@@ -296,3 +296,61 @@ async fn config_save_invalidates_the_session_instruction_cache() {
     );
     h.close().await;
 }
+
+#[tokio::test]
+async fn truncated_context_files_emit_guard_notice_once_per_load() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(text_stream("ok"), "text/event-stream"))
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nenabled=false").await;
+    std::fs::write(
+        h.root.path().join("work/AGENTS.md"),
+        "配置后指令：".to_string() + &"始终使用中文回答 ".repeat(80),
+    )
+    .expect("写超大指令文件");
+    let cwd = h.root.path().join("work").to_string_lossy().into_owned();
+    let reply = h
+        .client
+        .call::<ConfigManage>(ConfigAction::Read {
+            scope: ConfigScope::Global,
+            cwd: cwd.clone(),
+        })
+        .await
+        .expect("读取配置");
+    let ConfigReply::Settings(document) = reply else {
+        panic!("设置文档");
+    };
+    let mut edited = document.document.clone();
+    edited["context_files"] = serde_json::json!({"enabled": true, "max_tokens": 20});
+    h.client
+        .call::<ConfigManage>(ConfigAction::Save {
+            scope: ConfigScope::Global,
+            cwd,
+            document: edited,
+            revision: document.revision,
+        })
+        .await
+        .expect("保存配置");
+    let id = h.session(SessionEngine::Standard).await;
+    h.prompt(&id, "第一轮").await;
+    h.prompt(&id, "第二轮").await;
+    let notices: Vec<String> = h
+        .updates
+        .lock()
+        .iter()
+        .filter_map(|update| match update {
+            SessionUpdate::GuardNotice {
+                message,
+                terminal: false,
+                ..
+            } => Some(message.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.len(), 1, "同一会话缓存周期只应在 UI 提示一次：{notices:?}");
+    assert!(notices[0].contains("20 token"), "提示应包含预算上限：{notices:?}");
+    h.close().await;
+}

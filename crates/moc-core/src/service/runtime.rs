@@ -320,26 +320,68 @@ impl CoreInner {
         Ok(Arc::new(cloned))
     }
 
-    pub(crate) async fn project_context_files(
+    async fn cached_context_files(
         &self,
         session_id: &str,
         cwd: &Path,
-    ) -> Arc<Vec<crate::system_prompt::context_files::ContextFile>> {
+        take_warning: bool,
+    ) -> super::CachedContextFiles {
         let runtime = self.runtime(session_id).await;
-        if let Some(files) = runtime.context_files.lock().await.clone() {
-            return files;
+        let mut slot = runtime.context_files.lock().await;
+        if let Some(cached) = slot.as_mut() {
+            let warning = if take_warning {
+                cached.warning.take()
+            } else {
+                cached.warning.clone()
+            };
+            return super::CachedContextFiles {
+                files: Arc::clone(&cached.files),
+                warning,
+            };
         }
         let config = self.project_config(cwd).expect("project config is loaded");
-        let files = Arc::new(if config.context_files.enabled {
-            crate::system_prompt::context_files::load_context_files(
+        let report = if config.context_files.enabled {
+            crate::system_prompt::context_files::load_context_files_report(
                 cwd,
                 &config.home,
                 &config.context_files,
             )
         } else {
-            Vec::new()
+            crate::system_prompt::context_files::ContextFilesReport::default()
+        };
+        let files = Arc::new(report.files);
+        let stored_warning = if take_warning {
+            None
+        } else {
+            report.warning.clone()
+        };
+        *slot = Some(super::CachedContextFiles {
+            files: Arc::clone(&files),
+            warning: stored_warning,
         });
-        *runtime.context_files.lock().await = Some(Arc::clone(&files));
-        files
+        super::CachedContextFiles {
+            files,
+            warning: report.warning,
+        }
+    }
+
+    pub(crate) async fn project_context_files(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+    ) -> Arc<Vec<crate::system_prompt::context_files::ContextFile>> {
+        self.cached_context_files(session_id, cwd, false).await.files
+    }
+
+    pub(crate) async fn prompt_context_files(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+    ) -> (
+        Arc<Vec<crate::system_prompt::context_files::ContextFile>>,
+        Option<String>,
+    ) {
+        let cached = self.cached_context_files(session_id, cwd, true).await;
+        (cached.files, cached.warning)
     }
 }

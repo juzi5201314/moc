@@ -20,12 +20,19 @@ use crate::session::SessionTable;
 use crate::tools::{JobManager, ToolRegistry};
 use crate::workspace::watch::WorkspaceSnapshot;
 
+/// 会话期缓存的指令文件与尚未吐出的截断提醒。
+#[derive(Clone)]
+pub(crate) struct CachedContextFiles {
+    pub files: Arc<Vec<crate::system_prompt::context_files::ContextFile>>,
+    pub warning: Option<String>,
+}
+
 /// 已加载会话的运行时状态，只在内存里，不写入 JSONL。
 pub(crate) struct SessionRuntime {
     pub anchors: Arc<crate::hashline::AnchorStore>,
     pub jobs: Arc<JobManager>,
     pub workspace: Mutex<Option<WorkspaceSnapshot>>,
-    pub context_files: Mutex<Option<Arc<Vec<crate::system_prompt::context_files::ContextFile>>>>,
+    pub context_files: Mutex<Option<CachedContextFiles>>,
     pub reminders: tokio::sync::Mutex<crate::system_prompt::reminder::ReminderState>,
     pub loaded_skills: Arc<RwLock<crate::skills::LoadedSkills>>,
     pub steering: Mutex<management::Steering>,

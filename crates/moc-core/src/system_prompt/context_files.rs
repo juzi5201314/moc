@@ -23,12 +23,67 @@ pub struct ContextFile {
     pub scope: ContextFileScope,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContextFilesReport {
+    pub files: Vec<ContextFile>,
+    /// 触发体积上限或 token 预算截断/跳过时给前端用户的提示。
+    pub warning: Option<String>,
+}
+
+#[derive(Default)]
+struct LoadIssues {
+    oversized: Vec<PathBuf>,
+    import_budget_exceeded: bool,
+    token_budget: Option<(u64, usize)>,
+}
+
+impl LoadIssues {
+    fn into_warning(self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some((budget, omitted)) = self.token_budget {
+            parts.push(format!(
+                "AGENTS.md 超出 {budget} token 上限，已截断或省略 {omitted} 份文件（可在「设置 → 指令 → AGENTS.md token 上限」调高）"
+            ));
+        }
+        if !self.oversized.is_empty() {
+            let names: Vec<_> = self
+                .oversized
+                .iter()
+                .map(|path| {
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            parts.push(format!(
+                "{} 份指令文件超过 1 MiB 单文件上限已跳过：{}",
+                names.len(),
+                names.join("、")
+            ));
+        }
+        if self.import_budget_exceeded {
+            parts.push("AGENTS.md 中的 @ 导入累计超过 4 MiB 上限，部分导入已忽略".into());
+        }
+        (!parts.is_empty()).then(|| parts.join("；"))
+    }
+}
+
 /// 从仓库根（不在仓库里则从 cwd）逐级读到 cwd 的 AGENTS.md，最后拼上全局规则。
 pub fn load_context_files(
     cwd: &Path,
     moc_home: &Path,
     config: &crate::config::ContextFilesConfig,
 ) -> Vec<ContextFile> {
+    load_context_files_report(cwd, moc_home, config).files
+}
+
+/// 加载规则文件，并在发生单文件超限、`@` 导入超限或 token 预算截断时返回用户可见提示。
+pub fn load_context_files_report(
+    cwd: &Path,
+    moc_home: &Path,
+    config: &crate::config::ContextFilesConfig,
+) -> ContextFilesReport {
     let root = git_root(cwd).unwrap_or_else(|| cwd.to_owned());
     let import_root = canonical_or_owned(&root);
     let mut directories = Vec::new();
@@ -42,6 +97,7 @@ pub fn load_context_files(
     directories.reverse();
     let mut files = Vec::new();
     let mut visited = HashSet::new();
+    let mut issues = LoadIssues::default();
     if config.project {
         for directory in directories {
             push_file(
@@ -51,6 +107,7 @@ pub fn load_context_files(
                 config.import_depth,
                 &mut visited,
                 &mut files,
+                &mut issues,
             );
         }
     }
@@ -63,9 +120,14 @@ pub fn load_context_files(
             config.import_depth,
             &mut visited,
             &mut files,
+            &mut issues,
         );
     }
-    deduplicate_and_bound(files, project_files, config.max_tokens)
+    let files = deduplicate_and_bound(files, project_files, config.max_tokens, &mut issues);
+    ContextFilesReport {
+        files,
+        warning: issues.into_warning(),
+    }
 }
 
 fn canonical_or_owned(path: &Path) -> PathBuf {
@@ -105,6 +167,7 @@ fn push_file(
     max_depth: usize,
     visited: &mut HashSet<PathBuf>,
     output: &mut Vec<ContextFile>,
+    issues: &mut LoadIssues,
 ) {
     let Ok(path) = fs::canonicalize(&path) else {
         return;
@@ -112,14 +175,23 @@ fn push_file(
     if !visited.insert(path.clone()) {
         return;
     }
-    let Some(content) = read_bounded_text(&path) else {
+    let Some(content) = read_bounded_text(&path, issues) else {
         return;
     };
     if content.trim().is_empty() {
         return;
     }
     let mut budget = MAX_IMPORT_TOTAL_BYTES;
-    let expanded = expand_imports(&path, &content, root, 0, max_depth, visited, &mut budget);
+    let expanded = expand_imports(
+        &path,
+        &content,
+        root,
+        0,
+        max_depth,
+        visited,
+        &mut budget,
+        issues,
+    );
     output.push(ContextFile {
         path,
         content: expanded,
@@ -128,7 +200,7 @@ fn push_file(
 }
 
 /// 只读取大小在上限内的普通文件；目录、设备、FIFO 和超限文件跳过并告警。
-fn read_bounded_text(path: &Path) -> Option<String> {
+fn read_bounded_text(path: &Path, issues: &mut LoadIssues) -> Option<String> {
     let Ok(metadata) = fs::metadata(path) else {
         return None;
     };
@@ -137,6 +209,9 @@ fn read_bounded_text(path: &Path) -> Option<String> {
             path = %path.display(),
             "跳过不是普通文件或超出上限的指令文件"
         );
+        if metadata.is_file() {
+            issues.oversized.push(path.to_owned());
+        }
         return None;
     }
     let mut content = String::new();
@@ -146,9 +221,18 @@ fn read_bounded_text(path: &Path) -> Option<String> {
         .take(MAX_CONTEXT_FILE_BYTES + 1)
         .read_to_string(&mut content)
         .ok()?;
+    if content.len() as u64 > MAX_CONTEXT_FILE_BYTES {
+        tracing::warn!(
+            path = %path.display(),
+            "跳过超出上限的指令文件"
+        );
+        issues.oversized.push(path.to_owned());
+        return None;
+    }
     Some(content)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn expand_imports(
     source_path: &Path,
     content: &str,
@@ -157,6 +241,7 @@ fn expand_imports(
     max_depth: usize,
     visited: &mut HashSet<PathBuf>,
     budget: &mut usize,
+    issues: &mut LoadIssues,
 ) -> String {
     let mut result = String::with_capacity(content.len());
     let mut fenced = false;
@@ -186,7 +271,7 @@ fn expand_imports(
         if !visited.insert(canonical.clone()) {
             continue;
         }
-        let Some(imported) = read_bounded_text(&canonical) else {
+        let Some(imported) = read_bounded_text(&canonical, issues) else {
             result.push_str(line);
             continue;
         };
@@ -195,6 +280,7 @@ fn expand_imports(
                 tracing::warn!("@ 导入总量超过上限，后续导入被忽略");
                 *budget = 0;
             }
+            issues.import_budget_exceeded = true;
             result.push_str(line);
             continue;
         }
@@ -207,6 +293,7 @@ fn expand_imports(
             max_depth,
             visited,
             budget,
+            issues,
         );
         if !expanded.trim().is_empty() {
             result.push_str(&format!(
@@ -256,6 +343,7 @@ fn deduplicate_and_bound(
     files: Vec<ContextFile>,
     project_files: usize,
     budget: u64,
+    issues: &mut LoadIssues,
 ) -> Vec<ContextFile> {
     let files = drop_contained(files, project_files);
     let mut seen = HashSet::new();
@@ -283,12 +371,13 @@ fn deduplicate_and_bound(
             result.push(file);
         }
     }
-    if omitted > 0
-        && let Some(last) = result.last_mut()
-    {
-        last.content.push_str(&format!(
-            "\n[Instruction budget: {budget} tokens; {omitted} files were not fully injected]"
-        ));
+    if omitted > 0 {
+        issues.token_budget = Some((budget, omitted));
+        if let Some(last) = result.last_mut() {
+            last.content.push_str(&format!(
+                "\n[Instruction budget: {budget} tokens; {omitted} files were not fully injected]"
+            ));
+        }
     }
     result
 }
@@ -535,5 +624,25 @@ mod tests {
             Some(repository.clone()),
             "没有可用 git 命令时按 .git 标记向上查找"
         );
+    }
+
+    #[test]
+    fn report_surfaces_warning_when_budget_truncates_or_file_exceeds_limit() {
+        let root = tempfile::tempdir().expect("临时项目");
+        let home = tempfile::tempdir().expect("临时 home");
+        fs::create_dir_all(root.path().join(".git")).expect("仓库标记");
+        fs::write(root.path().join("AGENTS.md"), "rule line ".repeat(200)).expect("项目规则");
+        fs::write(home.path().join("AGENTS.md"), "big\n".repeat(400_000)).expect("超大全局规则");
+        let report = load_context_files_report(
+            root.path(),
+            home.path(),
+            &crate::config::ContextFilesConfig {
+                max_tokens: 40,
+                ..Default::default()
+            },
+        );
+        let warning = report.warning.expect("超限或截断时应生成用户提示");
+        assert!(warning.contains("40 token"), "应标出预算上限：{warning}");
+        assert!(warning.contains("1 MiB"), "应标出单文件字节上限：{warning}");
     }
 }
