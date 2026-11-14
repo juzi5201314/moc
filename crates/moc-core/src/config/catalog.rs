@@ -701,7 +701,10 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
         ),
         "tools.read.default_limit" => ("默认读取行数", "未指定 limit 时每次读取文件的默认行数。"),
         "tools.read.max_bytes" => ("单次读取字节上限", "read 单次返回的最大字节数。"),
-        "tools.read.line_max_bytes" => ("单行字节上限", "单行超过此字节数时截断显示。"),
+        "tools.read.line_max_bytes" => (
+            "单行字节上限",
+            "超过此字节数的行以占位符加只读预览显示，续读块按共享输出预算切分。",
+        ),
         "tools.todo.enabled" => ("启用 Todo 工具", "允许模型维护任务清单与进度追踪。"),
         "tools.todo.reminders" => ("闲置提醒", "连续多轮未更新 Todo 时自动提醒模型。"),
         "tools.todo.reminders_after" => {
@@ -828,7 +831,10 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "persistent 进程日志保留字节上限，超出时保留首尾各半。",
             ),
             "cross_filesystems" => ("跨文件系统扫描", "grep/find 是否进入扫描根下的挂载点。"),
-            "line_max_bytes" => ("单行字节上限", "单行超过该长度时截断并禁止整行编辑。"),
+            "line_max_bytes" => (
+                "单行字节上限",
+                "超过该长度的行显示占位符和只读预览、不可编辑，续读按共享输出预算分块。",
+            ),
             "max_edits" => (
                 "单次编辑处数上限",
                 "单次 edit 工具调用允许包含的修改处数上限。",

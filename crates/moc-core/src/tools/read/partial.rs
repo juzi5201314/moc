@@ -10,6 +10,7 @@ pub(super) fn read(
     line: &str,
     line_no: usize,
     start: usize,
+    chunk_bytes: usize,
     config: &ReadConfig,
 ) -> Result<ToolOutcome, ToolError> {
     if start > line.len() || !line.is_char_boundary(start) {
@@ -24,7 +25,7 @@ pub(super) fn read(
     );
     let mut next = json!({"path":path,"offset":line_no,"limit":1,"byte_offset":line.len()});
     let footer_budget = format!("\n[Continue with read {next}]\n").len();
-    let budget = config.line_max_bytes.min(
+    let budget = chunk_bytes.min(
         config
             .max_bytes
             .saturating_sub(header.len() + footer_budget),
@@ -36,7 +37,7 @@ pub(super) fn read(
     if end == start && start < line.len() {
         return Err(ToolError::new(
             "E_OUTPUT_LIMIT",
-            "read byte budget cannot fit one UTF-8 character and its continuation; increase tools.read.max_bytes or line_max_bytes",
+            "read byte budget cannot fit one UTF-8 character and its continuation; increase tools.read.max_bytes or tools.output head_bytes/tail_bytes",
         ));
     }
     let text = &line[start..end];
@@ -63,14 +64,13 @@ mod tests {
     fn unicode_line_round_trips_with_exact_continuations() {
         let line = "ab中🙂尾".repeat(1000);
         let config = ReadConfig {
-            line_max_bytes: 31,
             max_bytes: 512,
             ..Default::default()
         };
         let mut offset = 0;
         let mut reconstructed = String::new();
         loop {
-            let result = read("history://raw", &line, 9, offset, &config).unwrap();
+            let result = read("history://raw", &line, 9, offset, 31, &config).unwrap();
             let data = result.structured_content.unwrap();
             reconstructed.push_str(data["text"].as_str().unwrap());
             let Some(next) = data["next"]["byte_offset"].as_u64() else {
@@ -80,6 +80,14 @@ mod tests {
             offset = next as usize;
         }
         assert_eq!(reconstructed, line);
-        assert!(read("history://raw", &line, 9, 3, &config).is_err());
+        assert!(read("history://raw", &line, 9, 3, 31, &config).is_err());
+
+        // 共享输出预算下一块远大于 line_max_bytes(4KB)：20KB 的 ASCII 行一次读完。
+        let line = "x".repeat(20 * 1024);
+        let chunk = crate::tools::output::budget(&Default::default());
+        let result = read("file.txt", &line, 1, 0, chunk, &ReadConfig::default()).unwrap();
+        let data = result.structured_content.unwrap();
+        assert_eq!(data["text"].as_str().unwrap(), line);
+        assert!(data["next"].is_null());
     }
 }

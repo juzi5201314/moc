@@ -33,7 +33,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "Read files, images, directories or internal resources. history://transcript is a readable index; filter via /role/user or /tool/<name>, then read /entry/<id> for full text. Original JSONL: history://raw. Long lines: use offset=<line>, limit=1, byte_offset=0 and follow next. Complete local lines have [path#TAG] and N│text for editing."
+        "Read files, images, directories or internal resources. history://transcript is a readable index; filter via /role/user or /tool/<name>, then read /entry/<id> for full text. Original JSONL: history://raw. Long lines show a read-only preview; continue with the byte_offset in the notice and follow next. Complete local lines have [path#TAG] and N│text for editing."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -84,6 +84,7 @@ impl Tool for ReadTool {
                                 lines.get(start).copied().unwrap_or_default(),
                                 start + 1,
                                 byte_offset,
+                                super::output::budget(&ctx.config.tools.output),
                                 &ctx.config.tools.read,
                             );
                         }
@@ -142,6 +143,7 @@ impl Tool for ReadTool {
                     snapshot.lines.get(start).map_or("", String::as_str),
                     start + 1,
                     byte_offset,
+                    super::output::budget(&ctx.config.tools.output),
                     &ctx.config.tools.read,
                 );
             }
@@ -189,7 +191,7 @@ impl Tool for ReadTool {
             for (offset, line) in snapshot.lines[start..end].iter().enumerate() {
                 let position = start + offset;
                 let (mode, rendered_len) = if line.len() > max_line_bytes {
-                    let placeholder = placeholder_line(position + 1, line.len());
+                    let placeholder = placeholder_line(position + 1, line);
                     let mode = if anchored {
                         LineMode::AnchorPlaceholder
                     } else {
@@ -247,7 +249,7 @@ impl Tool for ReadTool {
                 let text = match mode {
                     LineMode::Anchor | LineMode::ReadOnly => numbered_line(position + 1, line),
                     LineMode::AnchorPlaceholder | LineMode::PlainPlaceholder => {
-                        placeholder_line(position + 1, line.len())
+                        placeholder_line(position + 1, line)
                     }
                     LineMode::Plain => line.clone(),
                 };
@@ -262,7 +264,7 @@ impl Tool for ReadTool {
             output.push_str(&page_footer(start + 1, shown_end, total, args.limit, limit));
             output.push_str(&notices);
             if has_uneditable_shown {
-                output.push_str("\n[Long lines omitted; use read with offset=<line>, limit=1, byte_offset=0, then follow structuredContent.next. Partial or omitted lines cannot authorize edits.]");
+                output.push_str("\n[Long lines omitted; each notice shows a read-only preview and the exact read arguments to continue; grep the path to locate text. Partial or omitted lines cannot authorize edits.]");
             }
             if !anchored {
                 ctx.anchors.invalidate(&path);
@@ -300,11 +302,19 @@ fn digits_of(value: usize) -> usize {
     })
 }
 
-/// 超长行的占位文本；不带 `N│` 前缀，避免被当成可编辑行。
-fn placeholder_line(line_no: usize, bytes: usize) -> String {
+/// 占位通知后附带的行首只读预览字节数；预览不登记为可编辑行。
+const PLACEHOLDER_PREVIEW_BYTES: usize = 512;
+
+/// 超长行的占位文本：通知后附只读预览；不带 `N│` 前缀，避免被当成可编辑行。
+fn placeholder_line(line_no: usize, line: &str) -> String {
+    let mut end = PLACEHOLDER_PREVIEW_BYTES.min(line.len());
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
     format!(
-        "[Line {line_no} is {} KB; content omitted; read with offset={line_no}, limit=1, byte_offset=0]",
-        bytes.div_ceil(1024)
+        "[Line {line_no} is {} KB; content omitted; read-only preview after this notice; continue with offset={line_no}, limit=1, byte_offset={end}, or grep this path to locate text] {}…",
+        line.len().div_ceil(1024),
+        &line[..end],
     )
 }
 

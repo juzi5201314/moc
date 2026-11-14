@@ -927,7 +927,15 @@ async fn oversized_read_line_does_not_block_later_anchors_or_replace_symlinks() 
                         .find(|message| message["tool_call_id"] == "read_link")
                         .unwrap();
                     let output = support::content::content_text(&result["content"]);
-                    assert!(output.contains("content omitted"));
+                    let notice = output
+                        .lines()
+                        .find(|line| line.contains("content omitted"))
+                        .expect("read 输出应有长行占位通知");
+                    assert!(notice.contains("byte_offset=512"));
+                    assert!(
+                        notice.contains(&format!("] {}…", "x".repeat(512))),
+                        "占位通知应附带行首 512 字节只读预览"
+                    );
                     let after: usize = output
                         .lines()
                         .find_map(|line| line.strip_suffix("│short"))
