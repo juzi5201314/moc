@@ -394,7 +394,7 @@ mod unix_tests {
             command: command.to_owned(),
             cwd: None,
             env: None,
-            timeout: Some(5),
+            timeout_secs: Some(5),
             lifecycle: Some(crate::tools::bash::BashLifecycle::Monitored),
             pty: Some(false),
             stdin: None,

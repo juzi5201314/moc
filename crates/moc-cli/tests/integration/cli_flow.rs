@@ -288,7 +288,7 @@ async fn sigint_cancels_a_running_shell_and_repl_still_accepts_quit() {
             call(
                 "shell",
                 "bash",
-                json!({"description":"Record the shell pid and sleep","command":"printf '%s' $$ > shell.pid; exec sleep 300","timeout":3600}),
+                json!({"description":"Record the shell pid and sleep","command":"printf '%s' $$ > shell.pid; exec sleep 300","timeout_secs":3600}),
             ),
             "text/event-stream",
         ))

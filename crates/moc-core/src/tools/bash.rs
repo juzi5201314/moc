@@ -47,7 +47,7 @@ struct BashArgs {
     command: String,
     cwd: Option<String>,
     env: Option<BTreeMap<String, String>>,
-    timeout: Option<u64>,
+    timeout_secs: Option<u64>,
     lifecycle: Option<BashLifecycle>,
     pty: Option<bool>,
     stdin: Option<String>,
@@ -73,23 +73,23 @@ fn resolve_timeout(
             "persistent lifecycle requires async=true",
         ));
     }
-    if lifecycle == BashLifecycle::Persistent && args.timeout.is_some() {
+    if lifecycle == BashLifecycle::Persistent && args.timeout_secs.is_some() {
         return Err(ToolError::new(
             "E_BAD_PAYLOAD",
-            "persistent lifecycle forbids timeout",
+            "persistent lifecycle forbids timeout_secs",
         ));
     }
-    if let Some(timeout) = args.timeout
+    if let Some(timeout) = args.timeout_secs
         && !(1..=3600).contains(&timeout)
     {
         return Err(ToolError::new(
             "E_BAD_PAYLOAD",
-            "timeout must be between 1 and 3600 seconds",
+            "timeout_secs must be between 1 and 3600 seconds",
         ));
     }
     Ok(match lifecycle {
         BashLifecycle::Monitored => Some(Duration::from_secs(
-            args.timeout
+            args.timeout_secs
                 .unwrap_or(config.monitored_timeout_secs)
                 .min(config.max_timeout_secs),
         )),
@@ -184,7 +184,7 @@ impl Tool for BashTool {
                     "command":{"type":"string"},
                     "cwd":{"type":"string"},
                     "env":{"type":"object","additionalProperties":{"type":"string"}},
-                    "timeout":{"type":"integer","minimum":1,"maximum":3600,"description":"Seconds before the process group is killed"},
+                    "timeout_secs":{"type":"integer","minimum":1,"maximum":3600,"description":"Seconds before the process group is killed"},
                     "lifecycle":{"type":"string","enum":["monitored","persistent"]},
                     "pty":{"type":"boolean"},
                     "stdin":{"type":"string"},
@@ -375,7 +375,7 @@ pub(crate) async fn run_manual(
         command,
         cwd: None,
         env: None,
-        timeout: Some(timeout.as_secs()),
+        timeout_secs: Some(timeout.as_secs()),
         lifecycle: Some(BashLifecycle::Monitored),
         pty: Some(false),
         stdin: None,
@@ -590,7 +590,7 @@ mod tests {
             command: "cargo build".into(),
             cwd: None,
             env: None,
-            timeout: None,
+            timeout_secs: None,
             lifecycle: None,
             pty: None,
             stdin: None,
@@ -648,11 +648,11 @@ mod lifecycle_tests {
             Some(Duration::from_secs(config.monitored_timeout_secs))
         );
         assert_eq!(
-            resolve(serde_json::json!({"command":"echo ok","timeout":1})).unwrap(),
+            resolve(serde_json::json!({"command":"echo ok","timeout_secs":1})).unwrap(),
             Some(Duration::from_secs(1))
         );
-        assert!(resolve(serde_json::json!({"command":"echo ok","timeout":0})).is_err());
-        assert!(resolve(serde_json::json!({"command":"echo ok","timeout":3601})).is_err());
+        assert!(resolve(serde_json::json!({"command":"echo ok","timeout_secs":0})).is_err());
+        assert!(resolve(serde_json::json!({"command":"echo ok","timeout_secs":3601})).is_err());
         assert_eq!(
             resolve(serde_json::json!({"command":"echo ok","async":true,"lifecycle":"persistent"}))
                 .unwrap(),
@@ -660,7 +660,7 @@ mod lifecycle_tests {
         );
         assert!(
             resolve(
-                serde_json::json!({"command":"echo ok","timeout":60,"async":true,"lifecycle":"persistent"})
+                serde_json::json!({"command":"echo ok","timeout_secs":60,"async":true,"lifecycle":"persistent"})
             )
             .is_err()
         );

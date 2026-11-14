@@ -559,7 +559,7 @@ async fn shell_jobs_stdin_and_pty_run_real_processes_and_reap_them() {
                         (
                             "pty",
                             "bash",
-                            json!({"description":"Print the PTY marker","command":"printf 'terminal-ok'","pty":true,"timeout":5}),
+                            json!({"description":"Print the PTY marker","command":"printf 'terminal-ok'","pty":true,"timeout_secs":5}),
                         ),
                     ])
                 }
@@ -799,8 +799,8 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
     Mock::given(method("POST")).respond_with(move |_: &wiremock::Request| {
         let response = match count.fetch_add(1, Ordering::SeqCst) {
             0 => tool_stream(vec![
-                ("pipe_start", "bash", json!({"description":"Start a piped job","command":"printf pipe-ready; exec sleep 60","async":true,"timeout":1})),
-                ("pty_start", "bash", json!({"description":"Start a PTY job","command":"printf pty-ready; exec sleep 60","async":true,"pty":true,"timeout":1})),
+                ("pipe_start", "bash", json!({"description":"Start a piped job","command":"printf pipe-ready; exec sleep 60","async":true,"timeout_secs":1})),
+                ("pty_start", "bash", json!({"description":"Start a PTY job","command":"printf pty-ready; exec sleep 60","async":true,"pty":true,"timeout_secs":1})),
             ]),
             1 => tool_stream(vec![
                 ("pipe_wait", "job", json!({"op":"wait","job_id":"job_1","timeout_secs":5})),
