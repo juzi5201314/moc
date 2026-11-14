@@ -73,7 +73,6 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\
-             [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n",
             upstream.uri(),
@@ -362,7 +361,6 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\
-             [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n",
             upstream.uri(),
@@ -554,7 +552,6 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\
-             [workspace]\nwatch=true\nmax_scan_entries=1000\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n",
             upstream.uri(),

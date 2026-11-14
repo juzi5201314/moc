@@ -120,7 +120,6 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\nreasoning=true\n\
              [session]\ndir={:?}\n\
-             [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n",
             upstream.uri(),

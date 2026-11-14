@@ -20,7 +20,7 @@ async fn closing_modal_resumes_queue_after_turn_finishes() {
         .await;
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("config.toml"), format!(
-        "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
         upstream.uri(),
     )).unwrap();
     let core = Core::new(CoreConfig {
@@ -106,7 +106,7 @@ async fn ask_command_queues_a_read_only_prompt() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();
     let core = Core::new(CoreConfig {

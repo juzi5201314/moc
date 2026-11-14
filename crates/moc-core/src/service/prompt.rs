@@ -15,7 +15,6 @@ mod reminders;
 pub(crate) mod request;
 mod stream;
 pub(crate) mod tools;
-mod workspace;
 
 mod retry;
 pub(crate) use retry::run_reask;

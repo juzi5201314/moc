@@ -355,12 +355,6 @@ export interface PermissionResolvedEvent {
   option: string | null;
 }
 
-export interface WorkspaceChangedEvent {
-  atMs: number;
-  violation: boolean;
-  changes: { path: string; kind: string }[];
-}
-
 export interface PlanDecidedEvent {
   atMs: number;
   planId: string;
@@ -445,7 +439,6 @@ export interface Hooks {
   beforeCompaction?(event: BeforeCompactionEvent, ctx: Session): void | Promise<void>;
   afterCompaction?(event: AfterCompactionEvent, ctx: Session): void | Promise<void>;
   permissionResolved?(event: PermissionResolvedEvent, ctx: Session): void | Promise<void>;
-  workspaceChanged?(event: WorkspaceChangedEvent, ctx: Session): void | Promise<void>;
   planDecided?(event: PlanDecidedEvent, ctx: Session): void | Promise<void>;
   agentFinished?(event: AgentFinishedEvent, ctx: Session): void | Promise<void>;
   jobFinished?(event: JobFinishedEvent, ctx: Session): void | Promise<void>;

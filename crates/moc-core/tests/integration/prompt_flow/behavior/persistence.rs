@@ -30,7 +30,6 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\
-             [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n",
             upstream.uri(),

@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 39001e520a3340ac
+// schema sha256: 9f5a7d5b50ebb3f3
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -956,11 +956,6 @@ export type SessionUpdate =
   | {
       job: JobInfo;
       type: "job_finished";
-    }
-  | {
-      changes: PathChange[];
-      type: "workspace_changed";
-      violation: boolean;
     }
   | {
       /**
@@ -2820,16 +2815,6 @@ export interface ModelUsageSummary {
    * 首 token 等待（TTFT）总时长，单位为毫秒；只统计上报了首 token 的请求。
    */
   ttft_ms?: number;
-}
-/**
- * 工作区路径变化。
- *
- * This interface was referenced by `ProtocolTypes`'s JSON-Schema
- * via the `definition` "PathChange".
- */
-export interface PathChange {
-  kind: string;
-  path: string;
 }
 /**
  * 一个可选答案。
@@ -5323,11 +5308,6 @@ export interface SessionUpdateParams {
     | {
         job: JobInfo;
         type: "job_finished";
-      }
-    | {
-        changes: PathChange[];
-        type: "workspace_changed";
-        violation: boolean;
       }
     | {
         /**

@@ -362,11 +362,6 @@ pub enum SessionUpdate {
     },
     /// 任务结束；`job.status` 为终态。
     JobFinished { job: super::job::JobInfo },
-    /// 工作区发生变化。
-    WorkspaceChanged {
-        violation: bool,
-        changes: Vec<PathChange>,
-    },
     /// 上游实际使用的模型或推理强度与本地请求不一致。
     ///
     /// 网关可能静默改写模型（降级 / 映射）或降低推理强度；每次上游请求完成后由
@@ -401,14 +396,6 @@ pub enum SessionUpdate {
     /// 同样看不到。`replayed_tools` 表示那批工具调用被留下了、正在原样重放——此时
     /// assistant 消息仍在会话里，前端不能把它的正文当成失败内容撤掉。
     PromptRewound { replayed_tools: bool },
-}
-
-/// 工作区路径变化。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PathChange {
-    pub path: String,
-    pub kind: String,
 }
 
 /// 一处「本地请求值 ≠ 上游回显值」。
@@ -765,16 +752,6 @@ mod tests {
                     tail: "Compiling moc".into(),
                 },
                 json!({ "type": "job_output", "job_id": "job_1", "tool_call_id": "call_1", "tail": "Compiling moc" }),
-            ),
-            (
-                SessionUpdate::WorkspaceChanged {
-                    violation: true,
-                    changes: vec![PathChange {
-                        path: "src/lib.rs".into(),
-                        kind: "modified".into(),
-                    }],
-                },
-                json!({ "type": "workspace_changed", "violation": true, "changes": [{ "path": "src/lib.rs", "kind": "modified" }] }),
             ),
             (
                 SessionUpdate::UpstreamMismatch {

@@ -190,7 +190,6 @@ max_tokens = 16000
 import_depth = 5
 
 [workspace]
-watch = true
 max_scan_entries = 100000
 
 [session]

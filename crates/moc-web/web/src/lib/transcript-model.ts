@@ -1010,15 +1010,6 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       }
       break;
     }
-    case "workspace_changed":
-      if (update.violation) {
-        pushStatus(
-          view,
-          "warn",
-          `工作区外的变更：${update.changes.map((change) => change.path).join("、")}`,
-        );
-      }
-      break;
     case "upstream_mismatch":
       view.mismatch = { fields: update.fields, atMs: now };
       break;

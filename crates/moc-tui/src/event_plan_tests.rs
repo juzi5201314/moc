@@ -68,13 +68,18 @@ impl PlanHarness {
             ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
         }).mount(&upstream).await;
         let root = tempfile::tempdir().expect("测试目录");
-        std::fs::write(root.path().join("config.toml"), format!(
-            "[models.roles]\ndefault='test/planner:off'\nplan='test/planner:off'\n\
+        std::fs::write(
+            root.path().join("config.toml"),
+            format!(
+                "[models.roles]\ndefault='test/planner:off'\nplan='test/planner:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\nretry={{max_attempts=1}}\n\
              [providers.test.models.planner]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [providers.test.models.executor]\ncontext_window=200000\nmax_output_tokens=4096\n\
-             [workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n[compaction]\nauto=false\n", upstream.uri()
-        )).expect("测试配置");
+             [context_files]\nenabled=false\n[skills]\nenabled=false\n[compaction]\nauto=false\n",
+                upstream.uri()
+            ),
+        )
+        .expect("测试配置");
         let core = Core::new(moc_core::CoreConfig {
             home: root.path().to_owned(),
             cwd: root.path().to_owned(),

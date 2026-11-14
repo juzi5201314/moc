@@ -18,7 +18,6 @@ use crate::config::ResolvedConfig;
 use crate::error::CoreError;
 use crate::session::SessionTable;
 use crate::tools::{JobManager, ToolRegistry};
-use crate::workspace::watch::WorkspaceSnapshot;
 
 /// 会话期缓存的指令文件与尚未吐出的截断提醒。
 #[derive(Clone)]
@@ -31,7 +30,6 @@ pub(crate) struct CachedContextFiles {
 pub(crate) struct SessionRuntime {
     pub anchors: Arc<crate::hashline::AnchorStore>,
     pub jobs: Arc<JobManager>,
-    pub workspace: Mutex<Option<WorkspaceSnapshot>>,
     pub context_files: Mutex<Option<CachedContextFiles>>,
     pub reminders: tokio::sync::Mutex<crate::system_prompt::reminder::ReminderState>,
     pub loaded_skills: Arc<RwLock<crate::skills::LoadedSkills>>,
@@ -223,16 +221,6 @@ async fn goal_with_armed(
         state.goal_rounds_started,
         runtime.goal_armed.is_armed(),
     )
-}
-
-pub(crate) async fn snapshot_workspace(
-    cwd: PathBuf,
-    max_entries: usize,
-) -> Result<WorkspaceSnapshot, CoreError> {
-    tokio::task::spawn_blocking(move || crate::workspace::watch::snapshot(&cwd, max_entries))
-        .await
-        .map_err(|error| CoreError::Session(format!("工作区快照任务失败：{error}")))?
-        .map_err(|error| CoreError::Session(error.to_string()))
 }
 
 #[cfg(test)]

@@ -200,7 +200,6 @@ PTC 签名对连字符或数字开头的名称使用方括号，例如 `tools["R
 | `beforeCompaction` | 压缩入口 | `reason(threshold\|overflow\|manual\|pre_approve\|switch), instructions, model` |
 | `afterCompaction` | 压缩终态 | `reason, ok, method, tokensBefore, tokensAfter, full, durationMs, error` |
 | `permissionResolved` | 权限答复后 | `promptId, requestId, option(或 null)` |
-| `workspaceChanged` | 工作区 diff 非空 | `violation, changes[]` |
 | `planDecided` | 计划批准 / 拒绝后 | `planId, action` |
 | `agentFinished` | 子代理终态 | `agentId, parentSessionId, status, finishReason, lastMessage` |
 | `jobFinished` | 后台任务结束 | `jobId, command, exitCode, logPath` |
@@ -213,7 +212,7 @@ PTC 签名对连字符或数字开头的名称使用方括号，例如 `tools["R
 - `beforeModelCall` / `afterModelCall`：请求的组装、token 预算与缓存断点归 core；每轮动态文本用 `prompt(ctx)`（系统提示片段）表达。响应是流式发出的，事后无法改写。
 - `beforeCompaction` / `afterCompaction`：压缩策略由阈值与 `compaction.method` 决定；注入 `instructions` 会让 moc 跳过 shake、直接生成摘要，语义变化太大。
 - `sessionEnd`：删除是用户的明确意图，插件不应否决。
-- `permissionResolved` / `workspaceChanged` / `planDecided` / `agentFinished` / `jobFinished` / `userCommand`：动作已经提交到 transcript 或前端，再改会导致两处不一致。
+- `permissionResolved` / `planDecided` / `agentFinished` / `jobFinished` / `userCommand`：动作已经提交到 transcript 或前端，再改会导致两处不一致。
 
 `sessionStart` 注入的消息会进入 transcript 与模型上下文；Web 前端创建会话后会拉取转写，因此立即可见；TUI 新建会话时不拉历史，注入内容在下次加载会话时显示。
 

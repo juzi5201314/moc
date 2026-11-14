@@ -59,7 +59,7 @@ impl Harness {
             "[models.roles]\ndefault='{default}'\nexplore='{default}'\nplan='{plan}'\n\
              [providers.test]\napi='{api}'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=1,max_backoff_secs=0.001}}\n\
              [providers.test.models.gpt-test]\ncontext_window=1000000\nmax_output_tokens=4096\n\
-             [workspace]\nwatch=false\n[context_files]\nenabled=false\n{extra}\n"
+             [context_files]\nenabled=false\n{extra}\n"
         )).unwrap();
         let core = Core::new_with_sandbox_support(
             CoreConfig {
@@ -113,7 +113,7 @@ impl Harness {
             "[models.roles]\ndefault='{default}'\nexplore='{default}'\nplan='{plan}'\n\
              [providers.test]\napi='{api}'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=1,max_backoff_secs=0.001}}\n\
              [providers.test.models.gpt-test]\ncontext_window=1000000\nmax_output_tokens=4096\n\
-             [workspace]\nwatch=false\n[context_files]\nenabled=false\n{extra}\n"
+             [context_files]\nenabled=false\n{extra}\n"
         )).unwrap();
         let core = Core::new_with_sandbox_support(
             CoreConfig {

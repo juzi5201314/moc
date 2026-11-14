@@ -6,7 +6,6 @@ use super::goal_with_armed;
 use super::mode;
 use super::plugin_events;
 use super::prompt;
-use super::snapshot_workspace;
 use crate::service::invalid_params;
 use crate::service::protocol_to_rpc;
 use crate::service::to_rpc;
@@ -121,12 +120,6 @@ pub(super) async fn session_new(
             .map_err(to_rpc)?;
     }
     info.permission = core.inner.effective_permission(info.permission);
-    if params.plan_active && config.workspace.watch {
-        let snapshot = snapshot_workspace(cwd, config.workspace.max_scan_entries)
-            .await
-            .map_err(to_rpc)?;
-        *core.inner.runtime(&info.id).await.workspace.lock().await = Some(snapshot);
-    }
     if let Some(host) = plugin_events::host_for(&core.inner, std::path::Path::new(&info.cwd)).await
     {
         let context = plugin_events::context_from_info(&info);

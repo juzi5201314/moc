@@ -2,7 +2,7 @@
 
 use crate::support;
 
-use crate::support::{Harness, content};
+use crate::support::Harness;
 
 fn text_stream(text: &str) -> String {
     format!(

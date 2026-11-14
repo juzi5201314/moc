@@ -3371,23 +3371,6 @@
       ],
       "type": "object"
     },
-    "PathChange": {
-      "additionalProperties": false,
-      "description": "工作区路径变化。",
-      "properties": {
-        "kind": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "path",
-        "kind"
-      ],
-      "type": "object"
-    },
     "PermissionOption": {
       "additionalProperties": false,
       "description": "一个可选答案。",
@@ -6905,30 +6888,6 @@
           "required": [
             "type",
             "job"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "工作区发生变化。",
-          "properties": {
-            "changes": {
-              "items": {
-                "$ref": "#/$defs/PathChange"
-              },
-              "type": "array"
-            },
-            "type": {
-              "const": "workspace_changed",
-              "type": "string"
-            },
-            "violation": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "type",
-            "violation",
-            "changes"
           ],
           "type": "object"
         },

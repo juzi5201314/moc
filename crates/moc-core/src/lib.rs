@@ -29,7 +29,6 @@ mod tips;
 pub mod tools;
 pub mod websearch;
 pub mod workflow;
-pub mod workspace;
 pub use service::{Core, CoreServer};
 
 pub use config::model::{ModelCapabilities, ResolvedModel, ThinkingLevel};

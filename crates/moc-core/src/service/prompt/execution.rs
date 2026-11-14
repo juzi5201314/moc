@@ -14,14 +14,11 @@ use super::tools::execute_tool_batch;
 use super::tools::persist_tool_result;
 use super::turn_inputs;
 use super::warnings::emit_fatal;
-use super::workspace::WorkspaceScope;
-use super::workspace::check_workspace;
 use crate::compact;
 use crate::compact::replay::model_messages;
 use crate::service::CoreInner;
 use crate::service::flush_plugin_notices;
 use crate::service::protocol_to_rpc;
-use crate::service::snapshot_workspace;
 use crate::service::to_rpc;
 use crate::session::store::now_ms;
 use crate::system_prompt::build;
@@ -107,12 +104,6 @@ pub(super) async fn run_prompt_locked(
         }
     }
 
-    if project_config.workspace.watch && runtime.workspace.lock().await.is_none() {
-        let baseline = snapshot_workspace(cwd.clone(), project_config.workspace.max_scan_entries)
-            .await
-            .map_err(to_rpc)?;
-        *runtime.workspace.lock().await = Some(baseline);
-    }
     // 重试没有新的用户正文：`beforePrompt` 仍触发，但 `text` 为空、`images` 为 0。
     let prompt_text = user_message.as_ref().map(Message::text).unwrap_or_default();
     crate::service::plugin_events::before_prompt(
@@ -1054,7 +1045,7 @@ pub(super) async fn run_prompt_locked(
             call_grants: crate::sandbox::SandboxGrants::default(),
             sandbox_scratch: runtime.sandbox_scratch.clone(),
         };
-        let batch = execute_tool_batch(&inner, &tool_ctx, &runtime, &record, &calls).await?;
+        let batch = execute_tool_batch(&inner, &tool_ctx, &record, &calls).await?;
         let control_end = batch.control_end;
         if !control_end && !cancel.is_cancelled() && project_config.limits.loop_detection {
             match tool_cycles.record(&batch.observations) {
@@ -1100,21 +1091,6 @@ pub(super) async fn run_prompt_locked(
         }
     }
 
-    check_workspace(
-        &update,
-        &runtime,
-        &record,
-        WorkspaceScope {
-            session_id: &params.session_id,
-            cwd: &cwd,
-            config: &project_config,
-            mode,
-            before_tools: None,
-        },
-        &plugins,
-        &plugin_context,
-    )
-    .await?;
     Ok(PromptResult {
         session_id: params.session_id,
         prompt_id,

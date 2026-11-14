@@ -4,8 +4,7 @@
 //! 那份比较，只有变化了才写一条新的进去。写进去的提醒成为历史的一部分，因此可以
 //! 被缓存，也不会在后续每个请求里重复付费。
 //!
-//! 后台任务完成和工作区变更通过会话 notice 告知模型（见 `tools/job.rs`、
-//! `service/prompt/workspace.rs`），这里不重复。
+//! 后台任务完成通过会话 notice 告知模型（见 `tools/job.rs`），这里不重复。
 
 use std::collections::BTreeMap;
 use std::process::Command;

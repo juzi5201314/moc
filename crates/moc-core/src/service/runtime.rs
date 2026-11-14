@@ -25,7 +25,6 @@ impl SessionRuntime {
         Self {
             anchors: Arc::new(crate::hashline::AnchorStore::new()),
             jobs: Arc::new(JobManager::new()),
-            workspace: Mutex::new(None),
             context_files: Mutex::new(None),
             reminders: tokio::sync::Mutex::new(
                 crate::system_prompt::reminder::ReminderState::default(),
@@ -370,7 +369,9 @@ impl CoreInner {
         session_id: &str,
         cwd: &Path,
     ) -> Arc<Vec<crate::system_prompt::context_files::ContextFile>> {
-        self.cached_context_files(session_id, cwd, false).await.files
+        self.cached_context_files(session_id, cwd, false)
+            .await
+            .files
     }
 
     pub(crate) async fn prompt_context_files(

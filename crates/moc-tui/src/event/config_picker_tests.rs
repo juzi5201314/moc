@@ -25,7 +25,7 @@ async fn startup_selects_then_remembers_model_and_resume_ignores_missing_prefere
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        format!("[providers.p]\napi='openai_chat'\nbase_url='{}/v1'\n[providers.p.models.m]\n[workspace]\nwatch=false\n[plugins]\nenabled=false\n", upstream.uri()),
+        format!("[providers.p]\napi='openai_chat'\nbase_url='{}/v1'\n[providers.p.models.m]\n[plugins]\nenabled=false\n", upstream.uri()),
     )
     .unwrap();
     let core = Core::new(moc_core::CoreConfig {
@@ -132,7 +132,7 @@ async fn config_model_role_picker_shares_the_searchable_picker() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();
     let core = Core::new(CoreConfig {
@@ -313,7 +313,7 @@ async fn session_fusion_pair_flows_through_slot_pickers() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();
     let core = Core::new(CoreConfig {
@@ -411,7 +411,7 @@ async fn session_fusion_pair_applies_and_closes() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();
     let core = Core::new(CoreConfig {
@@ -523,7 +523,7 @@ async fn session_level_pick_applies_inline_and_stays_open() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();
     let core = Core::new(CoreConfig {
@@ -641,7 +641,7 @@ async fn fast_mode_row_only_for_fast_models_and_session_target() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\nfast_mode=true\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\nfast_mode=true\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();
     let core = Core::new(CoreConfig {

@@ -337,19 +337,6 @@ impl Renderer {
                     job.log_uri
                 );
             }
-            SessionUpdate::WorkspaceChanged { violation, changes } => {
-                let label = if violation {
-                    "只读模式违规"
-                } else {
-                    "工作区外部变更"
-                };
-                let paths = changes
-                    .iter()
-                    .map(|change| format!("{} {}", change.kind, change.path))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = writeln!(out, "\n[{label}：{paths}]");
-            }
             SessionUpdate::UpstreamMismatch { fields, .. } => {
                 let detail = fields
                     .iter()

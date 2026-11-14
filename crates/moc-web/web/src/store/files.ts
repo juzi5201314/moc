@@ -577,7 +577,6 @@ function noteRefresh(sessionId: string): void {
 
 rpc.on("session/update", ({ session_id: sessionId, update }: SessionUpdateParams) => {
   if (
-    update.type === "workspace_changed" ||
     update.type === "job_finished" ||
     update.type === "prompt_finished" ||
     update.type === "plan_submitted" ||

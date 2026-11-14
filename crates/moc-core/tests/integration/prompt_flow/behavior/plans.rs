@@ -1,341 +1,86 @@
 use super::*;
 
 #[tokio::test]
-async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
+async fn external_workspace_changes_do_not_interrupt_or_enter_prompt_context() {
+    use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use serde_json::json;
-
-    let first = json!({
-        "id": "chatcmpl-plan-bash",
-        "model": "model",
-        "choices": [{"index": 0, "delta": {
-            "role": "assistant",
-            "tool_calls": [{"index": 0, "id": "call_bash", "type": "function", "function": {
-                "name": "bash",
-                "arguments": "{\"description\":\"Write a workspace violation\",\"command\":\"printf changed > violation.txt\"}",
-            }}],
-        }, "finish_reason": null}],
-    });
-    let response = format!(
-        "data: {first}\n\ndata: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n"
-    );
-    let final_response = concat!(
-        "data: {\"id\":\"chatcmpl-violation\",\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"I will stop.\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-        "data: [DONE]\n\n",
-    );
-    let responses = [response, final_response.to_owned()];
-    let response_index = Arc::new(AtomicUsize::new(0));
-    let response_counter = Arc::clone(&response_index);
-    let upstream = MockServer::builder().start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(move |_request: &wiremock::Request| {
-            let index = response_counter.fetch_add(1, Ordering::SeqCst);
-            ResponseTemplate::new(200).set_body_raw(responses[index].clone(), "text/event-stream")
-        })
-        .mount(&upstream)
-        .await;
-
-    let root = tempfile::tempdir().expect("temporary project root");
-    let home = root.path().join("home");
-    let cwd = root.path().join("workspace");
-    let sessions = root.path().join("sessions");
-    std::fs::create_dir_all(&home).expect("create home");
-    std::fs::create_dir_all(&cwd).expect("create workspace");
-    std::fs::write(
-        home.join("config.toml"),
-        format!(
-            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
-             [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
-             [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
-             [session]\ndir={:?}\n\
-             [workspace]\nwatch=true\nmax_scan_entries=1000\n\
-             [context_files]\nenabled=false\n\
-             [compaction]\nenabled=false\n",
-            upstream.uri(),
-            sessions.to_string_lossy(),
-        ),
-    ).expect("write config");
-
-    let core = Core::new(CoreConfig {
-        home,
-        cwd: cwd.clone(),
-        overlays: Vec::new(),
-        session_dir: None,
-        client: Client::new(),
-        ptc_worker: None,
-    })
-    .expect("construct core");
-    let (core_side, frontend_side) = transport::duplex(64 * 1024);
-    let server = Server::with_options((*core).clone(), ServerOptions::default());
-    let connection = server.spawn(core_side);
-    let updates = Arc::new(Mutex::new(Vec::new()));
-    let update_sink = Arc::clone(&updates);
-    let (client, _) = ClientBuilder::new(ClientInfo {
-        name: "moc-core-mode-test".into(),
-        version: "0.1.0".into(),
-        frontend: "test".into(),
-    })
-    .capabilities(ClientCapabilities {
-        permission_requests: true,
-        ask_requests: true,
-    })
-    .on_notification::<SessionUpdateMethod, _, _>(move |params, _ctx| {
-        update_sink.lock().push(params.update);
-        std::future::ready(())
-    })
-    .connect(frontend_side)
-    .await
-    .expect("connect embedded protocol client");
-
-    let session = client
-        .call::<SessionNew>(SessionNewParams {
-            cwd: None,
-            model: None,
-            title: None,
-            engine: SessionEngine::Standard,
-            plan_active: true,
-            fast_mode: false,
-        })
-        .await
-        .expect("create plan session");
-    let result = client
-        .call::<SessionPrompt>(PromptParams {
-            session_id: session.id.clone(),
-            input: vec![InputPart::Text {
-                text: "Inspect without changing files".into(),
-            }],
-            mode: None,
-            agent_message: None,
-            goal_round: None,
-        })
-        .await
-        .expect("run read-only plan prompt");
-    assert_eq!(result.message.text(), "I will stop.");
-    let loaded = client
-        .call::<SessionLoad>(SessionLoadParams {
-            omit_auxiliary: false,
-            session_id: session.id,
-            max_entries: None,
-            read_only: false,
-        })
-        .await
-        .expect("load plan session after shell");
-    let shell_result = loaded
-        .entries
-        .iter()
-        .find_map(|entry| {
-            entry.message.content.iter().find_map(|part| match part {
-                moc_llm::ContentPart::ToolResult(result) if result.tool_call_id == "call_bash" => {
-                    Some(result.content.clone())
-                }
-                _ => None,
+    for (plan_active, mode) in [(false, None), (true, None), (false, Some(PromptMode::Ask))] {
+        let upstream = MockServer::builder().start().await;
+        let h = Harness::new(&upstream.uri(), "openai_chat", "").await;
+        let cwd = h.root.path().join("work");
+        std::fs::write(cwd.join("target.txt"), "analysis-target").unwrap();
+        let external = cwd.join("unrelated-external-change.txt");
+        let changed_path = external.clone();
+        let counter = AtomicUsize::new(0);
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(move |_request: &wiremock::Request| {
+                let index = counter.fetch_add(1, Ordering::SeqCst);
+                // 在请求已发出、工具尚未执行时模拟其他会话修改，无需依赖时序等待。
+                std::fs::write(&changed_path, format!("external revision {index}")).unwrap();
+                let response = if index.is_multiple_of(2) {
+                    support::tool_stream(vec![("inspect", "read", json!({"path": "target.txt"}))])
+                } else {
+                    support::text_stream("分析完成")
+                };
+                ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
             })
-        })
-        .expect("persisted shell result");
-    assert!(
-        cwd.join("violation.txt").is_file(),
-        "bash tool result: {shell_result}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(cwd.join("violation.txt")).unwrap(),
-        "changed"
-    );
-
-    let violation = updates.lock().iter().any(|update| matches!(
-        update,
-        SessionUpdate::WorkspaceChanged { violation: true, changes }
-            if changes.iter().any(|change| change.path == "violation.txt" && change.kind == "added")
-    ));
-    assert!(violation, "plan-mode writes must be reported as violations");
-    let requests = upstream
-        .received_requests()
-        .await
-        .expect("capture model requests");
-    assert_eq!(requests.len(), 2);
-    let next_request: serde_json::Value =
-        serde_json::from_slice(&requests[1].body).expect("next request JSON");
-    let reminder = next_request["messages"].as_array().unwrap().last().unwrap();
-    assert_eq!(reminder["role"], "user");
-    let text = content::content_text(&reminder["content"]);
-    assert!(
-        text.contains("modified the workspace in read-only mode"),
-        "{text}"
-    );
-    assert!(text.contains("violation.txt"), "{text}");
-
-    core.shutdown().await;
-    drop(client);
-    drop(connection);
-    drop(server);
-}
-
-#[tokio::test]
-async fn transient_prompt_mode_is_read_only_and_not_persisted() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use serde_json::json;
-
-    // 上游先让我调用 bash 写文件，再收尾：用来观察本次提示是否被按只读模式约束。
-    let first = json!({
-        "id": "chatcmpl-ask-bash",
-        "model": "model",
-        "choices": [{"index": 0, "delta": {
-            "role": "assistant",
-            "tool_calls": [{"index": 0, "id": "call_bash", "type": "function", "function": {
-                "name": "bash",
-                "arguments": "{\"description\":\"Write a workspace violation\",\"command\":\"printf changed > violation.txt\"}",
-            }}],
-        }, "finish_reason": null}],
-    });
-    let response = format!(
-        "data: {first}\n\ndata: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n"
-    );
-    let final_response = concat!(
-        "data: {\"id\":\"chatcmpl-ask-done\",\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"I will stop.\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-        "data: [DONE]\n\n",
-    );
-    let responses = [response, final_response.to_owned()];
-    let response_index = Arc::new(AtomicUsize::new(0));
-    let response_counter = Arc::clone(&response_index);
-    let upstream = MockServer::builder().start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(move |_request: &wiremock::Request| {
-            let index = response_counter.fetch_add(1, Ordering::SeqCst);
-            ResponseTemplate::new(200).set_body_raw(responses[index].clone(), "text/event-stream")
-        })
-        .mount(&upstream)
-        .await;
-
-    let root = tempfile::tempdir().expect("temporary project root");
-    let home = root.path().join("home");
-    let cwd = root.path().join("workspace");
-    let sessions = root.path().join("sessions");
-    std::fs::create_dir_all(&home).expect("create home");
-    std::fs::create_dir_all(&cwd).expect("create workspace");
-    std::fs::write(
-        home.join("config.toml"),
-        format!(
-            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
-             [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
-             [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
-             [session]\ndir={:?}\n\
-             [workspace]\nwatch=true\nmax_scan_entries=1000\n\
-             [context_files]\nenabled=false\n\
-             [compaction]\nenabled=false\n",
-            upstream.uri(),
-            sessions.to_string_lossy(),
-        ),
-    )
-    .expect("write config");
-
-    let core = Core::new(CoreConfig {
-        home,
-        cwd: cwd.clone(),
-        overlays: Vec::new(),
-        session_dir: None,
-        client: Client::new(),
-        ptc_worker: None,
-    })
-    .expect("construct core");
-    let (core_side, frontend_side) = transport::duplex(64 * 1024);
-    let server = Server::with_options((*core).clone(), ServerOptions::default());
-    let connection = server.spawn(core_side);
-    let updates = Arc::new(Mutex::new(Vec::new()));
-    let update_sink = Arc::clone(&updates);
-    let (client, _) = ClientBuilder::new(ClientInfo {
-        name: "moc-core-ask-once-test".into(),
-        version: "0.1.0".into(),
-        frontend: "test".into(),
-    })
-    .capabilities(ClientCapabilities {
-        permission_requests: true,
-        ask_requests: true,
-    })
-    .on_notification::<SessionUpdateMethod, _, _>(move |params, _ctx| {
-        update_sink.lock().push(params.update);
-        std::future::ready(())
-    })
-    .connect(frontend_side)
-    .await
-    .expect("connect embedded protocol client");
-
-    let session = client
-        .call::<SessionNew>(SessionNewParams {
-            cwd: None,
-            model: None,
-            title: None,
-            engine: SessionEngine::Standard,
-            plan_active: false,
-            fast_mode: false,
-        })
-        .await
-        .expect("create standard session");
-    let result = client
-        .call::<SessionPrompt>(PromptParams {
-            session_id: session.id.clone(),
-            input: vec![InputPart::Text {
-                text: "看一下有没有遗留文件".into(),
-            }],
-            mode: Some(PromptMode::Ask),
-            agent_message: None,
-            goal_round: None,
-        })
-        .await
-        .expect("run ask-once prompt");
-    assert_eq!(result.message.text(), "I will stop.");
-
-    // 本次提示按只读约束：写操作被执行但必须被标记为违规，并注入到下一次请求的提醒里。
-    let violation = updates.lock().iter().any(|update| matches!(
-        update,
-        SessionUpdate::WorkspaceChanged { violation: true, changes }
-            if changes.iter().any(|change| change.path == "violation.txt" && change.kind == "added")
-    ));
-    assert!(violation, "提示级问答模式必须按只读判定工作区改动");
-
-    let requests = upstream
-        .received_requests()
-        .await
-        .expect("capture model requests");
-    let first_request: serde_json::Value =
-        serde_json::from_slice(&requests[0].body).expect("first request JSON");
-    let messages = first_request["messages"]
-        .as_array()
-        .expect("request messages");
-    assert!(
-        messages.iter().any(|message| {
-            content::content_text(&message["content"]).contains("Ask mode applies")
-        }),
-        "mode reminder missing from request messages"
-    );
-
-    // 覆盖不落地：既没有 EngineChanged 通知，重载后会话引擎仍是 Standard。
-    assert!(
-        !updates
-            .lock()
-            .iter()
-            .any(|update| matches!(update, SessionUpdate::EngineChanged { .. })),
-        "提示级覆盖不得广播为会话引擎变更"
-    );
-    let loaded = client
-        .call::<SessionLoad>(SessionLoadParams {
-            omit_auxiliary: false,
-            session_id: session.id,
-            max_entries: None,
-            read_only: false,
-        })
-        .await
-        .expect("load session after ask-once prompt");
-    assert_eq!(loaded.session.engine, SessionEngine::Standard);
-
-    core.shutdown().await;
-    drop(client);
-    drop(connection);
-    drop(server);
+            .mount(&upstream)
+            .await;
+        let session = if plan_active {
+            h.session_plan(SessionEngine::Standard).await
+        } else {
+            h.session(SessionEngine::Standard).await
+        };
+        for turn in 0..2 {
+            // 同时覆盖进入计划模式后与两次提示之间的外部修改。
+            std::fs::write(&external, format!("between prompts {turn}")).unwrap();
+            let result = h
+                .client
+                .call::<SessionPrompt>(PromptParams {
+                    session_id: session.clone(),
+                    input: vec![InputPart::Text {
+                        text: "分析 target.txt".into(),
+                    }],
+                    mode,
+                    agent_message: None,
+                    goal_round: None,
+                })
+                .await
+                .expect("外部修改不应中断提示");
+            assert_eq!(result.message.text(), "分析完成");
+            assert_eq!(result.finish_reason, moc_llm::FinishReason::Stop);
+        }
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 4);
+        for (index, request) in requests.iter().enumerate() {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let messages = body["messages"].to_string();
+            assert!(
+                !messages.contains("unrelated-external-change.txt"),
+                "其他会话的文件变化不应进入上下文：{messages}"
+            );
+            if !index.is_multiple_of(2) {
+                assert!(messages.contains("analysis-target"), "读取结果必须送达模型");
+            }
+        }
+        assert_eq!(
+            std::fs::read_to_string(external).unwrap(),
+            "external revision 3"
+        );
+        let loaded = h.load(&session).await;
+        assert_eq!(loaded.session.engine, SessionEngine::Standard);
+        assert_eq!(loaded.session.plan_active, plan_active);
+        assert!(
+            !h.updates
+                .lock()
+                .iter()
+                .any(|update| matches!(update, SessionUpdate::EngineChanged { .. })),
+            "提示级模式不得改变会话引擎"
+        );
+        h.core.shutdown().await;
+    }
 }
 
 /// 审阅批注 → 修订 → 新版提交：旧版被取代、批注保留、diff 指向上一版。

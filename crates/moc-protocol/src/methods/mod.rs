@@ -158,8 +158,8 @@ pub use skills::{
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus, parse_todos, render_todos};
 pub use update::{
-    AssistantDelta, PathChange, SessionUpdate, SessionUpdateMethod, SessionUpdateParams,
-    ToolBatchCall, ToolPreviewContent, ToolPreviewResolution, UpstreamField, UpstreamFieldMismatch,
+    AssistantDelta, SessionUpdate, SessionUpdateMethod, SessionUpdateParams, ToolBatchCall,
+    ToolPreviewContent, ToolPreviewResolution, UpstreamField, UpstreamFieldMismatch,
 };
 pub use web::{
     WebDetailLevel, WebDiffMode, WebState, WebStateDocument, WebStateGet, WebStateGetParams,

@@ -177,7 +177,6 @@ pub enum HookKind {
     AfterCompaction,
     PermissionRequested,
     PermissionResolved,
-    WorkspaceChanged,
     PlanDecided,
     AgentStarted,
     AgentFinished,
@@ -187,7 +186,7 @@ pub enum HookKind {
 
 impl HookKind {
     /// 全部钩子；描述符校验、错误信息与文档都以它为准。
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 19] = [
         Self::BeforeToolCall,
         Self::AfterToolCall,
         Self::BeforePrompt,
@@ -202,7 +201,6 @@ impl HookKind {
         Self::AfterCompaction,
         Self::PermissionRequested,
         Self::PermissionResolved,
-        Self::WorkspaceChanged,
         Self::PlanDecided,
         Self::AgentStarted,
         Self::AgentFinished,
@@ -227,7 +225,6 @@ impl HookKind {
             Self::AfterCompaction => "afterCompaction",
             Self::PermissionRequested => "permissionRequested",
             Self::PermissionResolved => "permissionResolved",
-            Self::WorkspaceChanged => "workspaceChanged",
             Self::PlanDecided => "planDecided",
             Self::AgentStarted => "agentStarted",
             Self::AgentFinished => "agentFinished",

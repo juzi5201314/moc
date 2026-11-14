@@ -131,7 +131,6 @@ fn rank(key: &str) -> usize {
         "file_read_bytes" => 3,
         "log_bytes" => 4,
         "ask_max_repairs" => 5,
-        "watch" => 0,
         "max_scan_entries" => 1,
         "compress" => 0,
         "dir" => 1,
@@ -910,8 +909,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "请求慢响应提醒（秒）",
                 "单次请求耗时超过该值时发出提醒通知，不中断请求。",
             ),
-            "watch" => ("监听文件变更", "监测工作区内外部工具修改的文件并通知模型。"),
-            "max_scan_entries" => ("工作区扫描上限", "初始化文件索引时最多扫描的条目数。"),
+            "max_scan_entries" => ("文件查找扫描上限", "find 工具单次查找最多扫描的条目数。"),
             "url" => ("服务 URL", "远程 MCP 服务的 HTTP 地址。"),
             "compress" => (
                 "压缩会话日志",

@@ -1,5 +1,3 @@
-use super::super::workspace::WorkspaceScope;
-use super::super::workspace::check_workspace;
 use super::CommittedTool;
 use super::PendingTool;
 use super::ToolBatchResult;
@@ -7,10 +5,8 @@ use super::commit_outcome;
 use super::note_protocol_fault;
 use super::run_step;
 use crate::service::CoreInner;
-use crate::service::SessionRuntime;
 use crate::service::flush_plugin_notices;
 use crate::service::protocol_to_rpc;
-use crate::service::snapshot_workspace;
 use crate::service::to_rpc;
 use crate::tools::ToolCtx;
 use crate::tools::ToolOutcome;
@@ -28,7 +24,6 @@ use std::time::Instant;
 pub(in super::super) async fn execute_tool_batch(
     inner: &CoreInner,
     tool_ctx: &ToolCtx,
-    runtime: &Arc<SessionRuntime>,
     record: &Arc<crate::session::SessionRecord>,
     calls: &[moc_llm::ToolCall],
 ) -> Result<ToolBatchResult, RpcError> {
@@ -37,7 +32,6 @@ pub(in super::super) async fn execute_tool_batch(
     debug_assert!(parallel_limit > 0);
     let session_id = tool_ctx.session_id.as_str();
     let prompt_id = tool_ctx.prompt_id.as_str();
-    let cwd = &tool_ctx.cwd;
     let update = tool_ctx.request.updates();
     let mut observations = Vec::with_capacity(calls.len());
     let progress_before = tool_ctx.guard.progress();
@@ -60,23 +54,6 @@ pub(in super::super) async fn execute_tool_batch(
             .await
             .map_err(protocol_to_rpc)?;
     }
-    // 只读模式不跟踪工作区写入；CLM 引擎走自己的实时上下文视图。
-    let tool_batch_before = if tool_ctx.mode == crate::service::mode::Mode::Default
-        && matches!(
-            tool_ctx.engine,
-            moc_protocol::methods::SessionEngine::Standard
-                | moc_protocol::methods::SessionEngine::Ptc
-        )
-        && config.workspace.watch
-    {
-        Some(
-            snapshot_workspace(cwd.clone(), config.workspace.max_scan_entries)
-                .await
-                .map_err(to_rpc)?,
-        )
-    } else {
-        None
-    };
     // 每一步在自身完成时就提交到磁盘：并行批次里先完成的工具不再等慢工具，
     // 崩溃最多丢失尚未完成的那一步。完整结果只在通知前端时短暂保留。
     let mut slots: Vec<Option<CommittedTool>> =
@@ -241,21 +218,6 @@ pub(in super::super) async fn execute_tool_batch(
         end_prompt |= end_turn;
     }
 
-    check_workspace(
-        &update,
-        runtime,
-        record,
-        WorkspaceScope {
-            session_id,
-            cwd,
-            config,
-            mode: tool_ctx.mode,
-            before_tools: tool_batch_before.as_ref(),
-        },
-        &tool_ctx.plugins,
-        &tool_ctx.plugin_call_context(),
-    )
-    .await?;
     // 批次里刚被停用的插件要立刻让模型与前端看到，不能等到下一次提示。
     flush_plugin_notices(&tool_ctx.plugins, &record.state, &update, session_id).await?;
     if let Some(error) = stop_reason {

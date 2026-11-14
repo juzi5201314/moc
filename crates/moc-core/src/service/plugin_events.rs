@@ -10,8 +10,7 @@ use std::sync::Arc;
 
 use moc_plugin::{CallContext, HookKind, PluginHost};
 use moc_protocol::methods::{
-    AgentInfo, AgentMessageMeta, PathChange, PermissionOption, SessionEngine, SessionInfo,
-    SessionPermission,
+    AgentInfo, AgentMessageMeta, PermissionOption, SessionEngine, SessionInfo, SessionPermission,
 };
 use serde_json::{Value, json};
 
@@ -411,25 +410,6 @@ pub(crate) async fn permission_resolved(
             "promptId": prompt_id,
             "requestId": request_id,
             "option": option,
-        }),
-    )
-    .await;
-}
-
-pub(crate) async fn workspace_changed(
-    host: &PluginHost,
-    context: &CallContext,
-    violation: bool,
-    changes: &[PathChange],
-) {
-    emit(
-        host,
-        HookKind::WorkspaceChanged,
-        context,
-        json!({
-            "atMs": crate::session::store::now_ms(),
-            "violation": violation,
-            "changes": changes,
         }),
     )
     .await;

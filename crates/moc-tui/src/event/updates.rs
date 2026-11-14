@@ -1,7 +1,6 @@
 //! 会话协议通知到界面状态的投影。
 
 use super::agents::load_subagents;
-use super::bootstrap::refresh_git_branch;
 use super::context::refresh_context;
 use super::plan::open_plan_review;
 use super::plan::request_plan_diff;
@@ -527,11 +526,6 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
                     NoteTone::Warn
                 };
                 app.push_note(format!("后台任务结束：{}{code}", job.command), tone);
-            }
-        }
-        SessionUpdate::WorkspaceChanged { .. } => {
-            if let Some(session) = app.session.as_ref() {
-                refresh_git_branch(app, &session.cwd);
             }
         }
         SessionUpdate::PermissionRequested { .. } => {}

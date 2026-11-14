@@ -54,7 +54,7 @@ async fn model_selection_is_shared_without_mode_resume_or_print_side_effects() {
 [providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n\
 [providers.p.models.a]\nreasoning=true\nthinking_levels=['low','high']\n\
 [providers.p.models.b]\n\
-[workspace]\nwatch=false\n[compaction]\nenabled=false\n\
+[compaction]\nenabled=false\n\
 [plugins]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();

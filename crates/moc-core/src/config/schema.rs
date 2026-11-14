@@ -507,14 +507,12 @@ impl Default for ContextFilesConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WorkspaceConfig {
-    pub watch: bool,
     pub max_scan_entries: usize,
 }
 
 impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
-            watch: true,
             max_scan_entries: 100_000,
         }
     }

@@ -38,7 +38,7 @@ impl Mode {
         }
     }
 
-    /// 只读模式：工作区改动一律按违规上报。
+    /// 当前执行模式是否限制工作区写入。
     pub fn read_only(self) -> bool {
         !matches!(self, Self::Default)
     }
@@ -64,7 +64,7 @@ impl From<PromptMode> for Mode {
 
 /// `session/plan_mode`：进入或退出 plan 模式。
 ///
-/// 切换计划模式并在进入时建立工作区基线；模式变化不改变会话模型。
+/// 切换计划模式，不改变会话模型。
 pub async fn plan_mode(
     inner: &CoreInner,
     ctx: RequestContext,
@@ -81,14 +81,7 @@ pub async fn plan_mode(
         .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
         .await
         .map_err(to_rpc)?;
-    let (cwd, was_active) = {
-        let state = record.state.lock().await;
-        (
-            std::path::PathBuf::from(state.session.cwd.clone()),
-            state.plan_active,
-        )
-    };
-    let config = inner.project_config(&cwd).map_err(to_rpc)?;
+    let was_active = record.state.lock().await.plan_active;
     let mut info = inner
         .sessions
         .set_plan_active(&params.session_id, params.active)
@@ -96,17 +89,6 @@ pub async fn plan_mode(
         .map_err(to_rpc)?;
     info.lock = None;
     info.permission = inner.effective_permission(info.permission);
-    if params.active && !was_active && config.workspace.watch {
-        let snapshot = super::snapshot_workspace(cwd, config.workspace.max_scan_entries)
-            .await
-            .map_err(to_rpc)?;
-        *inner
-            .runtime(&params.session_id)
-            .await
-            .workspace
-            .lock()
-            .await = Some(snapshot);
-    }
     emit_plan_change(&ctx, &params.session_id, params.active).await?;
     let state = record.state.lock().await.metadata();
     super::emit_session_config_changed(

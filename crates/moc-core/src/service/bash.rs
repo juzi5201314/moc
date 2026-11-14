@@ -63,8 +63,6 @@ pub(super) async fn run(
     )
     .await
     .unwrap_or_else(|error| error.into_outcome());
-    // 用户命令造成的工作区改动不能算到下一次 agent 提示头上，所以重新采集基线。
-    *inner.runtime(session_id).await.workspace.lock().await = None;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let artifacts = crate::resources::ArtifactStore::new(record.paths.clone());
     let mut is_error = outcome.is_error;

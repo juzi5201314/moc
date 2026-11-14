@@ -264,7 +264,8 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - `[tools.bash].allow_patterns` 已移除，旧配置中的该字段会触发未知字段错误；删除即可。非 full 命令不再有“批准后以 full 执行”的旁路。
 - 非 full 模式下一律先跑 OS 沙盒：`workspace` 以只读方式挂载宿主根，工作区、会话 scratch、`[sandbox].extra_write_paths` 可写，`$HOME` 在 Linux 上是会话级 copy-on-write 层；`workspace-only` 只挂载运行时只读系统路径、工作区、scratch 与合成 HOME，宿主 HOME 不存在。`[sandbox].network=false` 时 Linux 使用独立网络命名空间，macOS 拒绝网络。没有白名单旁路：命令失败后由模型带 `sandbox_permissions` + `justification` 申请更宽模式，用户可允许一次、本会话始终允许该命令/该前缀或拒绝；路径越界同理，可授权单次或本会话路径。授权只存在内存，切换模式或 `/permission clear` 即清空。`read` / `find` / `grep` 与 `write` / `edit` 共用同一套路径策略，执行阶段还会复校验一次。
 - `workspace` 仍可读宿主文件（除 `[sandbox].deny_read_paths`），不是保密边界；`workspace-only` 才隐藏宿主 HOME。MCP、`web_fetch`、`web_search` 与 PTC worker 在 core 进程执行，不受 OS 沙盒约束。
-- ask/plan 不注册 edit/write；bash 仍受当前会话 permission 控制。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
+- ask/plan 保留工具执行限制，禁止普通 edit/write；bash 仍受当前会话 permission 控制。core 不再自动扫描工作区或向模型广播外部文件变化，也不会将其他会话的修改判为只读违规；需要最新内容时显式读取目标文件。
+- 已移除 `[workspace].watch` 配置、`workspace_changed` 协议事件和 `workspaceChanged` 插件钩子；旧配置需删除 `watch`，外部客户端与插件需移除对应事件订阅。`[workspace].max_scan_entries` 保留，仅控制 `find` 工具的扫描上限。
 - 计划模式进入、退出、批准均不修改模型，也不保存或恢复旧模型。`session/new` 的 `plan_active` 只决定模式。
 - `plan` 保存/修订会话计划文件与 Draft entry（`markdown` 全量写草稿、`edits` 锚点增量修订，对已评审版可播种新草稿）；`exit_plan({})` 提交工作草稿触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作均沿用当前会话模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式。新会话执行将计划标记为 Approved，源会话仍保持计划模式，新会话继承当前模型开始 Normal 执行（独立会话，只在会话头记出身，不建立父子链接）。CLI 的 `/approve execute|compact|new|reject` 继续可用。
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。覆盖超过读写容量上限（`tools.output.max_file_bytes`，默认 100 MiB）的旧文件时不产出 diff、也不记录撤销，工具结果里会说明。撤销栈每个文件最多保留 8 份、全会话合计 64 MiB，超限淘汰最旧记录，被淘汰的快照不能恢复。

@@ -37,7 +37,7 @@ impl Harness {
             "[models.roles]\ndefault='test/model:off'\n\
              [providers.test]\napi='{api}'\nbase_url='{url}/v1'\nmax_concurrency=1\nretry={{max_attempts=1}}\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=1024\ninput=['text','image']\n\
-             [workspace]\nwatch=false\n[system_prompt]\nappend='Keep the append marker.'\n{extra}\n"
+             [system_prompt]\nappend='Keep the append marker.'\n{extra}\n"
         )).unwrap();
         let core = Core::new_with_sandbox_support(
             crate::CoreConfig {
