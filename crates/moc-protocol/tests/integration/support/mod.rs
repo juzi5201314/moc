@@ -1049,6 +1049,8 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::PluginNotice { .. } => "plugin_notice",
         SessionUpdate::AssistantDelta { .. } => "assistant_delta",
         SessionUpdate::BashStarted { .. } => "bash_started",
+        SessionUpdate::ToolPreview { .. } => "tool_preview",
+        SessionUpdate::ToolPreviewsResolved { .. } => "tool_previews_resolved",
         SessionUpdate::ToolStarted { .. } => "tool_started",
         SessionUpdate::ToolFinished { .. } => "tool_finished",
         SessionUpdate::PermissionRequested { .. } => "permission_requested",

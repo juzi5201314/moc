@@ -625,6 +625,7 @@ fn tool_result_images_keep_estimate_and_render_in_sync() {
         images: vec![ToolImage::for_test(key, "image/png", Some("AAAA"))],
         job_id: None,
         live_output: None,
+        preview: None,
     })));
 
     let width = 80u16;
@@ -685,6 +686,7 @@ fn paint_registers_tool_image_slots_within_the_viewport() {
         )],
         job_id: None,
         live_output: None,
+        preview: None,
     })));
 
     use ratatui::Terminal;

@@ -278,7 +278,7 @@ pub(super) fn render_tool_batch(
     let count = |pick: fn(&ToolCallBlock) -> bool| tools.iter().filter(|tool| pick(tool)).count();
     let done = count(|tool| tool.status == Some(ToolStatus::Completed));
     let failed = count(tool_is_error);
-    let running = count(|tool| tool.running);
+    let running = count(|tool| tool.running || tool.preview.is_some());
     let (bullet, bullet_color) = if running > 0 {
         ("▸", theme.accent_running)
     } else if failed == tools.len() {
@@ -413,7 +413,7 @@ pub(super) fn render_tool(
     let width = width.saturating_sub(3 * depth);
     let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
 
-    let (bullet, bullet_color) = match (tool.running, tool.status) {
+    let (bullet, bullet_color) = match (tool.running || tool.preview.is_some(), tool.status) {
         (true, _) => ("▸", theme.accent_running),
         (_, Some(moc_protocol::methods::ToolStatus::Completed)) => ("◆", theme.accent_tool),
         _ if prefer_builtin_redirect(tool) => ("→", theme.accent_warning),

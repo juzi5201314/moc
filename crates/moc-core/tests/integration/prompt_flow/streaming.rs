@@ -1,5 +1,96 @@
 use super::*;
 
+/// 上游暂停在参数中间时必须已有预览，且尚未创建文件或开始执行。
+#[tokio::test]
+async fn tool_preview_arrives_before_response_finishes() {
+    use serde_json::json;
+    use tokio::io::AsyncWriteExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let frame = |delta: serde_json::Value, reason: serde_json::Value| {
+        format!(
+            "data: {}\n\n",
+            json!({
+                "id":"preview-response", "choices":[{"index":0,"delta":delta,"finish_reason":reason}]
+            })
+        )
+    };
+    let prefix = frame(
+        json!({"tool_calls":[{"index":3,"id":"call_preview","type":"function","function":{"name":"write","arguments":"{\"path\":\"preview.txt\",\"content\":\"生成中"}}]}),
+        json!(null),
+    );
+    let suffix = frame(
+        json!({"tool_calls":[{"index":3,"function":{"arguments":"，完成\"}"}}]}),
+        json!(null),
+    ) + &frame(json!({}), json!("tool_calls"))
+        + "data: [DONE]\n\n";
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        support::steering::request(&mut socket).await;
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{prefix}", prefix.len()+suffix.len()).as_bytes()).await.unwrap();
+        gate.await.unwrap();
+        socket.write_all(suffix.as_bytes()).await.unwrap();
+        drop(socket);
+        let (mut socket, _) = listener.accept().await.unwrap();
+        support::steering::request(&mut socket).await;
+        let body = text_stream("完成");
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+    });
+    let h = Harness::new(&url, "openai_chat", "[compaction]\nenabled=false").await;
+    let session_id = h.session(SessionEngine::Standard).await;
+    let mut events = h.events.subscribe();
+    let client = h.client.clone();
+    let task = tokio::spawn(async move {
+        client
+            .call::<SessionPrompt>(PromptParams {
+                session_id,
+                input: vec![InputPart::Text {
+                    text: "写入测试文件".into(),
+                }],
+                mode: None,
+                agent_message: None,
+                goal_round: None,
+            })
+            .await
+            .unwrap()
+    });
+    let preview_id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            assert!(!matches!(event, SessionUpdate::ToolStarted { .. }));
+            if let SessionUpdate::ToolPreview {
+                preview_id,
+                preview,
+                ..
+            } = event
+            {
+                if preview.body == "生成中" {
+                    break preview_id;
+                }
+            }
+        }
+    })
+    .await
+    .expect("响应未结束时应收到解码后的预览");
+    let file = h.root.path().join("work/preview.txt");
+    assert!(!file.exists(), "生成预览不能提前执行写入");
+    release.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "生成中，完成");
+    let updates = h.updates.lock().clone();
+    let resolved = updates.iter().position(|event| matches!(event,
+        SessionUpdate::ToolPreviewsResolved { calls, .. } if calls.iter().any(|call| call.preview_id == preview_id && call.tool_call_id == "call_preview")
+    )).unwrap();
+    let started = updates.iter().position(|event| matches!(event, SessionUpdate::ToolStarted { tool_call_id, .. } if tool_call_id == "call_preview")).unwrap();
+    assert!(resolved < started);
+    server.await.unwrap();
+    h.close().await;
+}
+
 #[tokio::test]
 async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
     let upstream = MockServer::builder().start().await;

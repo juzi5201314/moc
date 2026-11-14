@@ -52,6 +52,56 @@ pub(super) fn tool_body(
     spawn_images: bool,
     command_in_title: bool,
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
+    if let Some(preview) = &tool.preview {
+        if level == DetailLevel::Hidden {
+            return (Vec::new(), Vec::new());
+        }
+        let limit = if level == DetailLevel::Full {
+            FULL_BODY_ROWS
+        } else if tool.name == "bash" {
+            4
+        } else {
+            6
+        };
+        let rows = clamp_rows(&preview.content.body, width, limit, BodyEdge::Tail);
+        let text = rows.rows.join("\n");
+        let language = preview.content.language.as_deref().or_else(|| {
+            std::path::Path::new(&preview.content.target)
+                .extension()?
+                .to_str()
+        });
+        let highlighted = super::super::highlight::highlight(language.unwrap_or("text"), &text);
+        let mut lines: Vec<Line<'static>> = highlighted
+            .lines
+            .iter()
+            .map(|parts| {
+                Line::from(
+                    parts
+                        .iter()
+                        .map(|part| {
+                            Span::styled(
+                                part.text.clone(),
+                                Style::new().fg(part
+                                    .fg
+                                    .map(super::super::highlight::rgb_to_color)
+                                    .unwrap_or(app.theme.text_secondary)),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        if preview.content.truncated || rows.dropped > 0 {
+            lines.insert(
+                0,
+                Line::from(Span::styled(
+                    "… 仅显示预览末尾",
+                    Style::new().fg(app.theme.gray_dim),
+                )),
+            );
+        }
+        return (lines, Vec::new());
+    }
     if !shows_tool_content(tool, level) {
         let mut lines = fixed_tool_rows(tool, args, width, app, true, level);
         if prefer_builtin_redirect(tool) {
@@ -532,7 +582,7 @@ pub(super) fn shows_tool_content(tool: &ToolCallBlock, level: DetailLevel) -> bo
     if level == DetailLevel::Hidden || !tool.has_body() {
         return false;
     }
-    if level == DetailLevel::Full {
+    if level == DetailLevel::Full || tool.preview.is_some() {
         return true;
     }
     match tool_body_policy(&tool.name) {

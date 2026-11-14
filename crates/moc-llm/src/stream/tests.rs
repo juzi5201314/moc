@@ -33,6 +33,42 @@ fn accumulate(protocol: Protocol, events: &[StreamEvent]) -> Accumulator {
     accumulator
 }
 
+#[test]
+fn preview_identities_keep_sparse_indices_and_final_snapshot_ids() {
+    let mut stream = stream_from_chunks(&config(Protocol::OpenAiChat), &request(), vec![]);
+    for event in [
+        StreamEvent::TextDelta {
+            index: 9,
+            text: "正文".into(),
+        },
+        StreamEvent::ToolCallArgumentsDelta {
+            index: 9,
+            json: "{}".into(),
+        },
+        StreamEvent::ToolCallStart {
+            index: 2,
+            id: "second".into(),
+            name: "read".into(),
+        },
+        StreamEvent::ToolCallStart {
+            index: 9,
+            id: "old".into(),
+            name: "bash".into(),
+        },
+        StreamEvent::ToolCallSnapshot {
+            index: 9,
+            id: Some("final".into()),
+            name: None,
+            arguments: None,
+        },
+    ] {
+        stream.accumulator.apply(&event);
+    }
+    let mut identities = stream.tool_call_identities();
+    identities.sort();
+    assert_eq!(identities, vec![(2, "second".into()), (9, "final".into())]);
+}
+
 mod anthropic;
 mod behavior;
 mod errors;

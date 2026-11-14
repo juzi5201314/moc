@@ -13,17 +13,16 @@
 //! | `ReasoningDelta { index, text }` | `Reasoning { delta: text }` |
 //! | `ReasoningSignature { index, signature }` | 丢弃（不透明，前端无法渲染；完整内容随 `prompt_finished.message` 给出） |
 //! | `ReasoningItem { index, item }` | 丢弃（同上） |
-//! | `ToolCallStart { index, id, name }` | 丢弃（调用块由 [`SessionUpdate::ToolStarted`] 建立，名字随它给出） |
-//! | `ToolCallArgumentsDelta { index, json }` | 丢弃（参数随 [`SessionUpdate::ToolStarted`] 的 `arguments` 一次性给出） |
+//! | 工具开始、参数增量、参数快照 | 投影为有限的 ToolPreview；不作为执行参数 |
 //! | `Usage(usage)` | `Usage { usage }` |
 //!
 //! `index` 是同一响应内内容块的位置，只在一次流内有效。
 //!
 //! # 工具调用参数
 //!
-//! 参数**只**经 [`SessionUpdate::ToolStarted`] / [`SessionUpdate::ToolFinished`] 的
-//! `arguments` 下发，内容是 core 实际执行的那一份；前端不必自己拼接增量，也就不存在
-//! 「增量与执行分叉」的形态。模型直发的调用与 `execute` 沙盒里的嵌套调用共用这两个
+//! 正式参数经 [`SessionUpdate::ToolStarted`] / [`SessionUpdate::ToolFinished`] 的
+//! `arguments` 下发并覆盖临时预览；前端不解析半截 JSON，也不执行预览内容。
+//! 模型直发的调用与 `execute` 沙盒里的嵌套调用共用这两个
 //! 更新：嵌套调用的 `parent_tool_call_id` 指向发起它的 `execute`，其余字段含义相同。
 //!
 //! # 兼容规则
@@ -71,6 +70,25 @@ pub struct ToolBatchCall {
     pub tool_call_id: String,
     /// 工具名。
     pub name: String,
+}
+
+/// 已解码的临时工具预览；正文与元数据有界，不代表工具已经执行。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolPreviewContent {
+    pub target: String,
+    pub summary: String,
+    pub body: String,
+    pub language: Option<String>,
+    pub truncated: bool,
+}
+
+/// 本轮临时身份到权威调用身份的映射。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolPreviewResolution {
+    pub preview_id: String,
+    pub tool_call_id: String,
 }
 
 /// 一条会话更新。
@@ -133,6 +151,19 @@ pub enum SessionUpdate {
         prompt_id: String,
         /// 增量内容。
         delta: AssistantDelta,
+    },
+    /// 模型仍在生成工具参数；同一 preview_id 的内容采用替换语义。
+    ToolPreview {
+        prompt_id: String,
+        preview_id: String,
+        tool_call_id: Option<String>,
+        name: Option<String>,
+        preview: ToolPreviewContent,
+    },
+    /// 当前生成结束；仅保留获确认的预览，空列表撤销全部未执行预览。
+    ToolPreviewsResolved {
+        prompt_id: String,
+        calls: Vec<ToolPreviewResolution>,
     },
     /// 新一轮模型生成开始；前端据此限定失败预览的清除边界。
     GenerationStarted { prompt_id: String },

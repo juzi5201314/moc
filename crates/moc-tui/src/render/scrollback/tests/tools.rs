@@ -1,5 +1,39 @@
 use super::*;
 
+#[test]
+fn tool_preview_execute_is_visible_in_brief_and_hidden_has_only_title() {
+    let (events, _) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(crate::theme::Theme::global(), events);
+    app.preview_tool(
+        "preview".into(),
+        Some("execute".into()),
+        moc_protocol::ToolPreviewContent {
+            summary: "检查代码".into(),
+            body: (0..10)
+                .map(|i| format!("const n{i} = {i};"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            language: Some("javascript".into()),
+            ..Default::default()
+        },
+    );
+    let text = |app: &App| {
+        render_entry(0, &app.blocks[0], app, 80)
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    };
+    app.tool_detail = DetailLevel::Brief;
+    let brief = text(&app);
+    assert!(brief.contains("生成中") && brief.contains("const n9"));
+    assert!(!brief.contains("const n0"));
+    app.tool_detail = DetailLevel::Hidden;
+    let hidden = text(&app);
+    assert!(hidden.contains("生成中") && !hidden.contains("const n9"));
+}
+
 /// 工具正文的简略预算：6 行内容 + 一行省略提示；完整档不截断。
 #[test]
 fn tool_brief_preview_marks_omission() {
@@ -497,6 +531,7 @@ fn read_range_prefers_delivered_page() {
         images: Vec::new(),
         job_id: None,
         live_output: None,
+        preview: None,
     };
     let args: Value = serde_json::json!({"offset": 1, "limit": 300, "path": "a.rs"});
     let range_of = |spans: &[Span]| {

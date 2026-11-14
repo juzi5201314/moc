@@ -572,6 +572,21 @@ function fixedSummary(tool: ToolBlock, warningsOnly = false): ReactNode {
  * 子调用、进度行与图片由调用方另行追加。
  */
 export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => void): ReactNode {
+  if (tool.preview) {
+    if (level === "hidden") return null;
+    const preview = tool.preview;
+    const all = preview.body.split("\n");
+    const limit = level === "full" ? all.length : tool.name === "bash" ? 4 : 6;
+    const lines = all.slice(-limit).map((text) => ({ text }));
+    return (
+      <div>
+        {(preview.truncated || all.length > limit) && (
+          <div className="px-3 py-0.5 text-2xs text-text-tertiary">… 仅显示预览末尾</div>
+        )}
+        <CodeView lines={lines} language={preview.language ?? languageOf(preview.target)} />
+      </div>
+    );
+  }
   if (level === "hidden") {
     const result = tool.result ?? "";
     if (tool.name === "bash" && result.startsWith(PREFER_BUILTIN_TAG)) {

@@ -1,9 +1,5 @@
-//! 把上游流事件转换成前端增量，只转发前端能渲染的文本类内容。
-//!
-//! 工具调用的名字和参数不在这里下发：上游增量要按内容块序号归组，而序号只在一次
-//! 流内有效，对应关系一旦错位，前端拿到的参数就和实际执行的不一样。参数由
-//! [`crate::service::prompt`] 在执行时随 `ToolStarted` / `ToolFinished` 一次性给出，
-//! 保证前端看到的就是实际执行的参数。
+//! 转发正文、思考与用量；工具生成预览由相邻 preview 模块按流内身份投影。
+//! 正式执行参数仍只来自 ToolStarted / ToolFinished。
 
 use moc_llm::StreamEvent;
 use moc_protocol::methods::{AssistantDelta, SessionUpdate};

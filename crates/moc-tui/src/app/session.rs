@@ -96,6 +96,7 @@ impl App {
     ///
     /// `prompt_running` 不在其中：提示收尾要清它，切会话则按会话级在飞记账重算。
     pub(super) fn reset_prompt_state(&mut self) {
+        self.resolve_tool_previews(Vec::new());
         // 提示收尾或切会话：在途的重试倒数先定稿，不留悬挂状态。
         self.finish_retry_wait();
         self.thinking_started_at = None;

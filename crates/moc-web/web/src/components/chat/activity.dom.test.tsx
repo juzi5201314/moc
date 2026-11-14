@@ -5,6 +5,38 @@ import type { ToolBlock } from "@/lib/transcript-model";
 import { usePrefs } from "@/store/prefs";
 import { ActivityGroup } from "./activity";
 
+it("execute 生成时简略可见，原位执行后保留单条展开", () => {
+  usePrefs.setState({ toolDetail: "brief" });
+  const code = Array.from({ length: 10 }, (_, i) => `const n${i} = ${i};`).join("\n");
+  const draft = tool("execute", {
+    status: "generating",
+    arguments: "",
+    preview: { target: "", summary: "检查代码", body: code, language: null, truncated: false },
+  });
+  const view = render(<ActivityGroup blocks={[draft]} live sessionId="preview" />);
+  expect(view.getByText("生成中")).toBeTruthy();
+  expect(view.container.textContent).toContain("const n9");
+  expect(view.container.textContent).not.toContain("const n0");
+  fireEvent.click(view.getByRole("button", { name: /检查代码/ }));
+  expect(view.container.textContent).toContain("const n0");
+  view.rerender(
+    <ActivityGroup
+      blocks={[
+        {
+          ...draft,
+          status: "running",
+          preview: undefined,
+          arguments: JSON.stringify({ code, description: "检查代码" }),
+        },
+      ]}
+      live
+      sessionId="preview"
+    />,
+  );
+  expect(view.queryByText("生成中")).toBeNull();
+  expect(view.container.textContent).toContain("const n0");
+});
+
 const originalDetail = usePrefs.getState().toolDetail;
 afterEach(() => usePrefs.setState({ toolDetail: originalDetail }));
 

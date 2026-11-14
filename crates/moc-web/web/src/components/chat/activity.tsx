@@ -325,6 +325,13 @@ function toolSuffix(
   statError?: boolean,
   now = Date.now(),
 ): ReactNode {
+  if (tool.preview) {
+    return (
+      <span className="text-2xs text-text-tertiary">
+        {tool.status === "queued" ? "待执行" : "生成中"}
+      </span>
+    );
+  }
   if (tool.status === "running") {
     const elapsed = tool.job?.started_at_ms ? now - tool.job.started_at_ms : undefined;
     return (
@@ -386,12 +393,13 @@ function ToolRow({
   const failed = toolFailed(tool);
   const interactive =
     toolExpandable(tool) &&
-    Boolean(tool.result || tool.liveOutput || tool.diff || tool.arguments.trim());
+    Boolean(tool.preview || tool.result || tool.liveOutput || tool.diff || tool.arguments.trim());
   const toggle = () => setLevel(toggledLevel(axis, level));
   const body = toolBody(tool, level, () => setLevel("full"));
   // read / edit / write 的目标路径可点击：在文件分页打开（read 带 offset 行号）。
   const targetClick = (() => {
-    if (tool.name !== "read" && tool.name !== "edit" && tool.name !== "write") return undefined;
+    if (tool.preview || (tool.name !== "read" && tool.name !== "edit" && tool.name !== "write"))
+      return undefined;
     const target = headline.target;
     if (!target) return undefined;
     return () => {
@@ -415,7 +423,7 @@ function ToolRow({
       );
   };
   // 已收场的提问可以重答：core 截回未回答状态后按原参数重放提问卡片。
-  const canReask = tool.name === "ask" && tool.status !== "running";
+  const canReask = tool.name === "ask" && !tool.preview && tool.status !== "running";
   const [reasking, setReasking] = useState(false);
   const reask = () => {
     if (reasking) return;
@@ -459,6 +467,7 @@ function ToolRow({
         scope={headline.scope}
         mono={headline.mono}
         failed={failed}
+        pulse={tool.status === "generating"}
         suffix={toolSuffix(tool, headline.stat, headline.statError, now)}
         inlineSuffix
         action={headerAction}
@@ -601,7 +610,7 @@ function ToolGroupRow({
 }) {
   const failedCount = tools.filter(toolFailed).length;
   const [open, setOpen] = useState(axis === "full" || failedCount > 0);
-  const running = tools.some((tool) => tool.status === "running");
+  const running = tools.some((tool) => tool.status === "running" || Boolean(tool.preview));
   const targets = tools
     .map((tool) => toolHeadline(tool).target.split(/[\\/]/).pop() ?? "")
     .filter(Boolean)

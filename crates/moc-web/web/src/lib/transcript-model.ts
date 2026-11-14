@@ -18,6 +18,8 @@ import type {
   SessionUpdate,
   TodoPhase,
   ToolDiff,
+  ToolPreviewContent,
+  ToolPreviewResolution,
   ToolProgressRow,
   ToolStatus,
   TranscriptChildCall,
@@ -26,7 +28,7 @@ import type {
   Usage,
 } from "@/protocol/types";
 
-export type ToolRunState = ToolStatus | "running";
+export type ToolRunState = ToolStatus | "running" | "generating" | "queued";
 
 export type ToolBlock = {
   kind: "tool";
@@ -46,6 +48,7 @@ export type ToolBlock = {
   batchId?: string;
   job?: JobInfo;
   liveOutput?: string;
+  preview?: ToolPreviewContent;
 };
 export type StatusTone = "info" | "warn" | "error";
 
@@ -600,6 +603,44 @@ function removeRewoundBlocks(view: SessionView, replayedTools: boolean): void {
   view.rewindable = null;
 }
 
+/** 权威正文覆盖时保留工具两侧的分段，避免把前段再次拼进最后一段。 */
+function reconcileGenerationText(
+  view: SessionView,
+  kind: "text" | "reasoning",
+  text: string,
+): boolean {
+  const ids = new Set(view.live?.generationBlockIds ?? []);
+  const blocks = view.blocks.filter(
+    (block): block is Extract<Block, { kind: "text" | "reasoning" }> =>
+      block.kind === kind && ids.has(block.id),
+  );
+  const last = blocks.at(-1);
+  if (!last) return false;
+  const prefix = blocks
+    .slice(0, -1)
+    .map((block) => block.text)
+    .join("");
+  if (text.startsWith(prefix)) last.text = text.slice(prefix.length);
+  else {
+    for (const block of blocks) block.text = "";
+    last.text = text;
+  }
+  return true;
+}
+
+/** 只处理模型直发的临时预览；已开始执行的工具及其子调用保持原位。 */
+function resolveToolPreviews(view: SessionView, calls: ToolPreviewResolution[] = []): void {
+  const mapping = new Map(calls.map((call) => [call.preview_id, call.tool_call_id]));
+  view.blocks = view.blocks.filter((block) => {
+    if (block.kind !== "tool" || !block.preview) return true;
+    const id = mapping.get(block.toolCallId);
+    if (!id) return false;
+    block.toolCallId = id;
+    block.status = "queued";
+    return true;
+  });
+}
+
 /** 把一条 `session/update` 折进视图；未知类型保持不变。`now` 便于测试注入。 */
 export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date.now()): void {
   switch (update.type) {
@@ -616,6 +657,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       view.mismatch = null;
       break;
     case "generation_started": {
+      resolveToolPreviews(view);
       closeReasoning(view, now);
       const live = ensureLive(view, update.prompt_id, now);
       live.reasoningId = undefined;
@@ -624,6 +666,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       break;
     }
     case "generation_retry": {
+      resolveToolPreviews(view);
       const live = ensureLive(view, update.prompt_id, now);
       const ids = new Set(live.generationBlockIds);
       // 仅撤销未提交的文本与思考，不删除独立落盘的工具、代理消息或历史内容。
@@ -675,14 +718,47 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       }
       break;
     }
+    case "tool_preview": {
+      const live = ensureLive(view, update.prompt_id, now);
+      let block = findTool(view.blocks, update.preview_id);
+      if (!block) {
+        closeReasoning(view, now);
+        live.textId = undefined;
+        live.textIndex = undefined;
+        live.reasoningId = undefined;
+        live.reasoningIndex = undefined;
+        block = newTool(nextId(view), update.preview_id, update.name ?? "工具", "");
+        view.blocks.push(block);
+        trackLiveBlock(view, block.id);
+      }
+      if (update.name) block.name = update.name;
+      block.status = "generating";
+      block.preview = update.preview;
+      break;
+    }
+    case "tool_previews_resolved":
+      resolveToolPreviews(view, update.calls);
+      break;
     case "tool_batch_started": {
       const live = ensureLive(view, update.prompt_id, now);
-      for (const call of update.calls) live.batchOf[call.tool_call_id] = update.batch_id;
+      for (const call of update.calls) {
+        live.batchOf[call.tool_call_id] = update.batch_id;
+        const block = findTool(view.blocks, call.tool_call_id);
+        if (block) block.batchId = update.batch_id;
+      }
       break;
     }
     case "tool_started": {
       closeReasoning(view, now);
-      if (findTool(view.blocks, update.tool_call_id)) break;
+      const existing = findTool(view.blocks, update.tool_call_id);
+      if (existing) {
+        existing.name = update.name;
+        existing.arguments = update.arguments;
+        existing.status = "running";
+        existing.preview = undefined;
+        existing.batchId = view.live?.batchOf[update.tool_call_id] ?? existing.batchId;
+        break;
+      }
       const block = newTool(
         nextId(view),
         update.tool_call_id,
@@ -724,6 +800,9 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         else view.blocks.push(block);
         trackLiveBlock(view, block.id);
       }
+      block.name = update.name;
+      block.arguments = update.arguments;
+      block.preview = undefined;
       block.status = update.status;
       block.result = update.result.content;
       block.isError = update.result.is_error;
@@ -769,22 +848,19 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       removeRewoundBlocks(view, update.replayed_tools);
       break;
     case "prompt_finished": {
+      resolveToolPreviews(view);
       closeReasoning(view, now);
       const live = view.live;
       // 最后一轮的正文与思考以权威 message 为准。
       const text = messageText(update.message);
       const reasoning = update.message.content.map(reasoningText).join("");
       if (live) {
-        const textBlock = liveBlock(view, "text");
-        if (textBlock?.kind === "text") textBlock.text = text;
-        else if (text) {
+        if (!reconcileGenerationText(view, "text", text) && text) {
           const id = nextId(view);
           view.blocks.push({ kind: "text", id, text });
           live.generationBlockIds.push(id);
         }
-        const reasoningBlock = liveBlock(view, "reasoning");
-        if (reasoningBlock?.kind === "reasoning" && reasoning) reasoningBlock.text = reasoning;
-        else if (reasoning) {
+        if (reasoning && !reconcileGenerationText(view, "reasoning", reasoning)) {
           const id = nextId(view);
           view.blocks.push({ kind: "reasoning", id, text: reasoning });
           live.generationBlockIds.push(id);
@@ -815,9 +891,11 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       break;
     }
     case "guard_notice":
+      if (update.terminal) resolveToolPreviews(view);
       pushPromptStatus(view, update.prompt_id, update.terminal ? "error" : "warn", update.message);
       break;
     case "error":
+      resolveToolPreviews(view);
       pushPromptStatus(view, update.prompt_id, "error", update.message, update.retryable);
       break;
     case "plugin_notice":
@@ -1003,6 +1081,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
 
 /** 断线时收尾：core 已经随连接取消了提示。 */
 export function interruptLive(view: SessionView): void {
+  resolveToolPreviews(view);
   if (!view.live && !view.running) return;
   for (const block of view.blocks) {
     if (block.kind === "tool" && block.status === "running") block.status = "cancelled";

@@ -35,6 +35,16 @@ pub(super) fn tool_title<'a>(tool: &'a ToolCallBlock, args: &Value) -> &'a str {
 /// todo 的 `done/total` 里 done 计「已关闭」（completed + abandoned），
 /// 全部关闭时给成功色。
 pub(super) fn tool_title_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'static>> {
+    if let Some(preview) = &tool.preview {
+        return vec![Span::styled(
+            if preview.queued {
+                "待执行"
+            } else {
+                "生成中"
+            },
+            Style::new().fg(theme.gray_dim),
+        )];
+    }
     if tool.name == "todo" {
         let Some(result) = tool.result.as_deref() else {
             return Vec::new();
@@ -121,6 +131,23 @@ pub(super) fn title_summary(
     theme: &Theme,
     cwd: &str,
 ) -> (Vec<Span<'static>>, bool) {
+    if let Some(preview) = &tool.preview {
+        let content = &preview.content;
+        let text = if content.target.is_empty() {
+            &content.summary
+        } else {
+            &content.target
+        };
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        return (
+            clip_line(
+                Line::from(Span::styled(flat, Style::new().fg(theme.gray_bright))),
+                budget,
+            )
+            .spans,
+            false,
+        );
+    }
     if tool.name == "bash" && ui_description(args).is_none() {
         let command = args
             .get("command")

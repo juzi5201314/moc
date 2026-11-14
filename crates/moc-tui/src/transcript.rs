@@ -209,6 +209,7 @@ impl Entry {
         let Block::Tool(tool) = &mut self.block else {
             return;
         };
+        tool.preview = None;
         tool.status = Some(status);
         tool.images = ToolImage::from_sources(result.images);
         tool.result = Some(result.content);
@@ -272,6 +273,13 @@ pub struct ToolCallFinish {
     pub diff: Option<ToolDiff>,
 }
 
+/// 未执行的工具预览；确认身份后保留内容直到正式执行开始。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolPreview {
+    pub content: moc_protocol::ToolPreviewContent,
+    pub queued: bool,
+}
+
 /// 一次工具调用在转写里的状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallBlock {
@@ -299,6 +307,8 @@ pub struct ToolCallBlock {
     pub progress: Option<Vec<moc_protocol::methods::ToolProgressRow>>,
     /// 后台 job ID（任务在后台存活期间挂着；前台命令与已结束任务为 `None`）。
     pub job_id: Option<String>,
+    /// 生成中/待执行的临时预览，不计入工具执行结果。
+    pub preview: Option<ToolPreview>,
     /// 实时输出（bash 前台任务的最新几行）。
     pub live_output: Option<String>,
     /// 结果携带的内联图片（含惰性缓存键，渲染期只查表）。
@@ -459,7 +469,8 @@ impl Block {
 impl ToolCallBlock {
     /// 工具是否有正文、媒体、通知或失败详情可供展示。
     pub fn has_body(&self) -> bool {
-        tool_body_policy(&self.name) != ToolBody::None
+        self.preview.is_some()
+            || tool_body_policy(&self.name) != ToolBody::None
             || !self.images.is_empty()
             || self.has_notices()
             || self
@@ -474,10 +485,12 @@ impl ToolCallBlock {
     }
 
     pub fn expandable(&self) -> bool {
-        !matches!(
-            tool_body_policy(&self.name),
-            ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
-        ) || !self.images.is_empty()
+        self.preview.is_some()
+            || !matches!(
+                tool_body_policy(&self.name),
+                ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
+            )
+            || !self.images.is_empty()
             || self.has_notices()
             || (self.name == "web_fetch" && self.result.is_some())
             || self

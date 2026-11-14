@@ -336,6 +336,7 @@ fn ask_answer_pairs_parses_headers_answers_and_sentinels() {
         images: Vec::new(),
         job_id: None,
         live_output: None,
+        preview: None,
     };
 
     let pairs = ask_answer_pairs(

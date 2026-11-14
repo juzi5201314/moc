@@ -26,6 +26,7 @@ fn tool() -> Block {
         images: Vec::new(),
         job_id: None,
         live_output: None,
+        preview: None,
     }))
 }
 

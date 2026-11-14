@@ -601,12 +601,23 @@ pub(super) async fn run_prompt_locked(
                     .map_err(protocol_to_rpc)?;
                 let mut interrupted = false;
                 let mut connection_error = None;
+                let mut previews = super::preview::Previews::default();
+                let mut preview_tick = tokio::time::interval(super::preview::INTERVAL);
+                preview_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut preview_identities = Vec::new();
                 let response: Result<_, StreamRecovery> = loop {
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled() => {
                             interrupted = true;
                             break Ok(if guard.violation().is_some() { stream.discard(guard.reason()) } else { stream.interrupt() });
+                        }
+                        _ = preview_tick.tick() => {
+                            if let Err(error) = previews.flush(&update, &params.session_id, &prompt_id).await {
+                                interrupted = true;
+                                connection_error = Some(protocol_to_rpc(error));
+                                break Ok(stream.interrupt());
+                            }
                         }
                         event = stream.next_event() => {
                             if guard.violation().is_some() {
@@ -621,7 +632,13 @@ pub(super) async fn run_prompt_locked(
                                                 as u64,
                                         );
                                     }
-                                    if let Err(error) = forward_event(&update, &params.session_id, &prompt_id, event).await {
+                                    let forwarded = async {
+                                        if previews.apply(&event) {
+                                            previews.flush(&update, &params.session_id, &prompt_id).await?;
+                                        }
+                                        forward_event(&update, &params.session_id, &prompt_id, event).await
+                                    }.await;
+                                    if let Err(error) = forwarded {
                                         interrupted = true;
                                         connection_error = Some(protocol_to_rpc(error));
                                         break Ok(stream.interrupt());
@@ -636,6 +653,7 @@ pub(super) async fn run_prompt_locked(
                                     thinking_redirects += 1;
                                     thinking_redirect = Some(violation.detail);
                                     let _ = stream.discard(FinishReason::Cancelled);
+                                    previews.resolve(&update, &params.session_id, &prompt_id, &[]).await.map_err(protocol_to_rpc)?;
                                     continue 'turns;
                                 }
                                 Some(Err(moc_llm::LlmError::Guard(violation))) => {
@@ -663,6 +681,7 @@ pub(super) async fn run_prompt_locked(
                                 }
                                 None => {
                                     let failed_usage = stream.usage();
+                                    preview_identities = stream.tool_call_identities();
                                     match stream.finish().await {
                                     Ok(response) => break Ok(response),
                                     Err(error) if error.api_error().is_some_and(|api|api.kind==moc_llm::ApiErrorKind::ContextLength) && project_config.compaction.enabled && stream_overflows < 2 => break Err(StreamRecovery::Overflow),
@@ -681,6 +700,17 @@ pub(super) async fn run_prompt_locked(
                         }
                     }
                 };
+                if connection_error.is_some() {
+                    previews = super::preview::Previews::default();
+                } else if response.is_err() || interrupted || guard.violation().is_some() {
+                    if let Err(error) = previews
+                        .resolve(&update, &params.session_id, &prompt_id, &[])
+                        .await
+                    {
+                        connection_error = Some(protocol_to_rpc(error));
+                        previews = super::preview::Previews::default();
+                    }
+                }
                 drop(request_warning);
                 drop(request_permit);
                 let response = match response {
@@ -905,6 +935,10 @@ pub(super) async fn run_prompt_locked(
                     state.usage_at = state.transcript.len();
                 }
 
+                previews
+                    .resolve(&update, &params.session_id, &prompt_id, &preview_identities)
+                    .await
+                    .map_err(protocol_to_rpc)?;
                 let calls: Vec<_> = response.message.tool_calls().cloned().collect();
                 if calls.is_empty() || interrupted {
                     if interrupted {

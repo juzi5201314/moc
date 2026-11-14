@@ -422,7 +422,9 @@ impl Renderer {
             | SessionUpdate::AgentResult { .. }
             | SessionUpdate::JobStarted { .. }
             | SessionUpdate::JobUpdated { .. }
-            | SessionUpdate::JobOutput { .. } => {}
+            | SessionUpdate::JobOutput { .. }
+            | SessionUpdate::ToolPreview { .. }
+            | SessionUpdate::ToolPreviewsResolved { .. } => {}
         }
     }
 }

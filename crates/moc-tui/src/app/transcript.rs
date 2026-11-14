@@ -38,10 +38,25 @@ impl App {
             parent_id,
             arguments,
         } = call;
+        let batch_id = self.tool_batches.remove(&id);
+        if let Some(entry) = self.tool_entry_mut(&id) {
+            if let Block::Tool(tool) = &mut entry.block {
+                tool.name = name;
+                tool.parent_id = parent_id;
+                tool.arguments = arguments;
+                tool.preview = None;
+                tool.running = true;
+                if batch_id.is_some() {
+                    tool.batch_id = batch_id;
+                }
+                entry.touch();
+            }
+            return;
+        }
         let index = self.blocks.len();
         self.blocks
             .push(Entry::new(Block::Tool(Box::new(ToolCallBlock {
-                batch_id: self.tool_batches.remove(&id),
+                batch_id,
                 id: id.clone(),
                 parent_id,
                 name,
@@ -54,6 +69,7 @@ impl App {
                 progress: None,
                 job_id: None,
                 live_output: None,
+                preview: None,
                 images: Vec::new(),
             }))));
         self.tool_indices.insert(id, index);
@@ -66,7 +82,14 @@ impl App {
         calls: impl IntoIterator<Item = String>,
     ) {
         for tool_call_id in calls {
-            self.tool_batches.insert(tool_call_id, batch_id.clone());
+            if let Some(entry) = self.tool_entry_mut(&tool_call_id) {
+                if let Block::Tool(tool) = &mut entry.block {
+                    tool.batch_id = Some(batch_id.clone());
+                }
+                entry.touch();
+            } else {
+                self.tool_batches.insert(tool_call_id, batch_id.clone());
+            }
         }
     }
 
@@ -87,6 +110,11 @@ impl App {
             diff,
         } = finish;
         if let Some(entry) = self.tool_entry_mut(&id) {
+            if let Block::Tool(tool) = &mut entry.block {
+                tool.name = name;
+                tool.arguments = arguments;
+                tool.parent_id = parent_id;
+            }
             entry.finish_tool(status, result, duration_ms, diff);
         } else {
             // 前端中途接入时没有配对的开始更新：补建终态块前同样先定稿思考流。
@@ -107,10 +135,87 @@ impl App {
                     progress: None,
                     job_id: None,
                     live_output: None,
+                    preview: None,
                     // 正常路径在 `Entry::finish_tool` 里填；这条兜底分支不能把图丢掉
                     images: crate::transcript::ToolImage::from_sources(result.images),
                 }))));
             self.tool_indices.insert(id, index);
+        }
+    }
+
+    /// 预览按临时身份更新；正式身份只在确认后替换。
+    pub fn preview_tool(
+        &mut self,
+        id: String,
+        name: Option<String>,
+        content: moc_protocol::ToolPreviewContent,
+    ) {
+        if self.tool_block(&id).is_none() {
+            self.start_tool_block(ToolCallStart {
+                id: id.clone(),
+                name: name.clone().unwrap_or_else(|| "工具".into()),
+                parent_id: None,
+                arguments: String::new(),
+            });
+        }
+        if let Some(entry) = self.tool_entry_mut(&id) {
+            if let Block::Tool(tool) = &mut entry.block {
+                if let Some(name) = name {
+                    tool.name = name;
+                }
+                tool.running = false;
+                tool.preview = Some(crate::transcript::ToolPreview {
+                    content,
+                    queued: false,
+                });
+            }
+            entry.touch();
+        }
+    }
+
+    /// 空映射撤销全部未执行预览；执行中的卡片不受影响。
+    pub fn resolve_tool_previews(&mut self, calls: Vec<moc_protocol::ToolPreviewResolution>) {
+        let mapping: std::collections::HashMap<_, _> = calls
+            .into_iter()
+            .map(|call| (call.preview_id, call.tool_call_id))
+            .collect();
+        let mut old_index = 0;
+        let mut removed_before_generation = 0;
+        let before = self.blocks.len();
+        self.blocks.retain_mut(|entry| {
+            let keep = if let Block::Tool(tool) = &mut entry.block {
+                if let Some(preview) = &mut tool.preview {
+                    if let Some(id) = mapping.get(&tool.id) {
+                        tool.id.clone_from(id);
+                        preview.queued = true;
+                        entry.touch();
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+            if !keep && self.generation_start.is_some_and(|start| old_index < start) {
+                removed_before_generation += 1;
+            }
+            old_index += 1;
+            keep
+        });
+        if let Some(start) = &mut self.generation_start {
+            *start -= removed_before_generation;
+        }
+        self.tool_indices.clear();
+        for (index, entry) in self.blocks.iter().enumerate() {
+            if let Block::Tool(tool) = &entry.block {
+                self.tool_indices.insert(tool.id.clone(), index);
+            }
+        }
+        if self.blocks.len() != before {
+            self.view_gen = self.view_gen.wrapping_add(1);
         }
     }
 
@@ -145,6 +250,7 @@ impl App {
             progress: None,
             job_id: None,
             live_output: None,
+            preview: None,
             images: Vec::new(),
         })));
     }
@@ -189,6 +295,7 @@ impl App {
     }
 
     pub fn start_generation(&mut self) {
+        self.resolve_tool_previews(Vec::new());
         // 新一轮生成开始：上一响应若没有正文/工具收尾，思考块在这里定稿。
         self.finish_thinking();
         self.thinking_has_block = false;
@@ -200,6 +307,7 @@ impl App {
     }
 
     pub fn discard_generation(&mut self) {
+        self.resolve_tool_previews(Vec::new());
         if let Some(start) = self.generation_start.take() {
             // 结果已独立落盘，不属于这次失败的模型生成；只扫描并移除临时尾部。
             self.blocks
@@ -276,6 +384,7 @@ impl App {
 
     /// 提示收尾：把耗时与结束时刻回填到最后一条助手块（`Worked for` 尾注）。
     pub fn finish_prompt(&mut self) {
+        self.resolve_tool_previews(Vec::new());
         self.finish_thinking();
         let elapsed = self.prompt_started_at.map(|at| at.elapsed());
         let was_cancel_requested = self.cancel_requested;

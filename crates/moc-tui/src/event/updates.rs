@@ -247,6 +247,15 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
             app.goal = goal;
         }
 
+        SessionUpdate::ToolPreview {
+            preview_id,
+            name,
+            preview,
+            ..
+        } => {
+            app.preview_tool(preview_id, name, preview);
+        }
+        SessionUpdate::ToolPreviewsResolved { calls, .. } => app.resolve_tool_previews(calls),
         SessionUpdate::ToolProgress {
             tool_call_id, rows, ..
         } => app.set_tool_progress(&tool_call_id, rows),

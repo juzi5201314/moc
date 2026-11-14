@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 113175906f5ff5d7
+// schema sha256: 39001e520a3340ac
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -666,6 +666,19 @@ export type SessionUpdate =
        */
       prompt_id: string;
       type: "assistant_delta";
+    }
+  | {
+      name?: string | null;
+      preview: ToolPreviewContent;
+      preview_id: string;
+      prompt_id: string;
+      tool_call_id?: string | null;
+      type: "tool_preview";
+    }
+  | {
+      calls: ToolPreviewResolution[];
+      prompt_id: string;
+      type: "tool_previews_resolved";
     }
   | {
       prompt_id: string;
@@ -4670,6 +4683,29 @@ export interface ToolBatchCall {
   tool_call_id: string;
 }
 /**
+ * 已解码的临时工具预览；正文与元数据有界，不代表工具已经执行。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ToolPreviewContent".
+ */
+export interface ToolPreviewContent {
+  body: string;
+  language?: string | null;
+  summary: string;
+  target: string;
+  truncated: boolean;
+}
+/**
+ * 本轮临时身份到权威调用身份的映射。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ToolPreviewResolution".
+ */
+export interface ToolPreviewResolution {
+  preview_id: string;
+  tool_call_id: string;
+}
+/**
  * 一条工具执行结果。
  */
 export interface ToolResult1 {
@@ -4997,6 +5033,19 @@ export interface SessionUpdateParams {
          */
         prompt_id: string;
         type: "assistant_delta";
+      }
+    | {
+        name?: string | null;
+        preview: ToolPreviewContent;
+        preview_id: string;
+        prompt_id: string;
+        tool_call_id?: string | null;
+        type: "tool_preview";
+      }
+    | {
+        calls: ToolPreviewResolution[];
+        prompt_id: string;
+        type: "tool_previews_resolved";
       }
     | {
         prompt_id: string;

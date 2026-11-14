@@ -437,6 +437,23 @@ impl ChatStream {
         self.accumulator.usage
     }
 
+    /// 已收工具块的权威身份；index 只在当前流内有效，不复制参数正文。
+    pub fn tool_call_identities(&self) -> Vec<(usize, String)> {
+        self.accumulator
+            .slots
+            .iter()
+            .filter_map(|((kind, index), slot)| {
+                if *kind != BlockKind::ToolCall {
+                    return None;
+                }
+                match &self.accumulator.blocks[*slot] {
+                    AccumulatedBlock::ToolCall { id, .. } => Some((*index, id.clone())),
+                    _ => unreachable!("工具索引只指向工具块"),
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn set_response_headers(&mut self, headers: &reqwest::header::HeaderMap) {
         let mut metadata = crate::ApiError::new(None, crate::ApiErrorKind::Unknown, "", "");
         crate::codec::error_metadata(&mut metadata, headers);

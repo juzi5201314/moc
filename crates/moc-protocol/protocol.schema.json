@@ -6095,6 +6095,67 @@
           "type": "object"
         },
         {
+          "description": "模型仍在生成工具参数；同一 preview_id 的内容采用替换语义。",
+          "properties": {
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "preview": {
+              "$ref": "#/$defs/ToolPreviewContent"
+            },
+            "preview_id": {
+              "type": "string"
+            },
+            "prompt_id": {
+              "type": "string"
+            },
+            "tool_call_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "tool_preview",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "prompt_id",
+            "preview_id",
+            "preview"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "当前生成结束；仅保留获确认的预览，空列表撤销全部未执行预览。",
+          "properties": {
+            "calls": {
+              "items": {
+                "$ref": "#/$defs/ToolPreviewResolution"
+              },
+              "type": "array"
+            },
+            "prompt_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_previews_resolved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "prompt_id",
+            "calls"
+          ],
+          "type": "object"
+        },
+        {
           "description": "新一轮模型生成开始；前端据此限定失败预览的清除边界。",
           "properties": {
             "prompt_id": {
@@ -7567,6 +7628,54 @@
       "required": [
         "path",
         "hunks"
+      ],
+      "type": "object"
+    },
+    "ToolPreviewContent": {
+      "additionalProperties": false,
+      "description": "已解码的临时工具预览；正文与元数据有界，不代表工具已经执行。",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target",
+        "summary",
+        "body",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "ToolPreviewResolution": {
+      "additionalProperties": false,
+      "description": "本轮临时身份到权威调用身份的映射。",
+      "properties": {
+        "preview_id": {
+          "type": "string"
+        },
+        "tool_call_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "preview_id",
+        "tool_call_id"
       ],
       "type": "object"
     },

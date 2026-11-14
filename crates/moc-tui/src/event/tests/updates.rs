@@ -1,5 +1,86 @@
 use super::*;
 
+#[test]
+fn tool_preview_promotes_in_place_and_cleans_only_unstarted_calls() {
+    use crate::transcript::{Block, DetailLevel};
+    use moc_protocol::{ToolPreviewContent, ToolPreviewResolution};
+    let mut app = app();
+    apply_update(
+        &mut app,
+        SessionUpdate::GenerationStarted {
+            prompt_id: "p".into(),
+        },
+    );
+    for id in ["preview_a", "preview_b"] {
+        apply_update(
+            &mut app,
+            SessionUpdate::ToolPreview {
+                prompt_id: "p".into(),
+                preview_id: id.into(),
+                tool_call_id: None,
+                name: Some("write".into()),
+                preview: ToolPreviewContent {
+                    target: "a.rs".into(),
+                    body: "未完成".into(),
+                    ..Default::default()
+                },
+            },
+        );
+    }
+    app.blocks[0].level_override = Some(DetailLevel::Full);
+    apply_update(
+        &mut app,
+        SessionUpdate::ToolPreviewsResolved {
+            prompt_id: "p".into(),
+            calls: vec![
+                ToolPreviewResolution {
+                    preview_id: "preview_a".into(),
+                    tool_call_id: "a".into(),
+                },
+                ToolPreviewResolution {
+                    preview_id: "preview_b".into(),
+                    tool_call_id: "b".into(),
+                },
+            ],
+        },
+    );
+    app.register_tool_batch("batch".into(), ["a".into(), "b".into()]);
+    apply_update(
+        &mut app,
+        SessionUpdate::ToolStarted {
+            prompt_id: "p".into(),
+            tool_call_id: "a".into(),
+            name: "write".into(),
+            parent_tool_call_id: None,
+            arguments: "{\"content\":\"权威内容\"}".into(),
+        },
+    );
+    assert_eq!(app.blocks.len(), 2);
+    assert_eq!(app.blocks[0].level_override, Some(DetailLevel::Full));
+    let tool = app.tool_block("a").unwrap();
+    assert!(tool.preview.is_none() && tool.running);
+    assert!(tool.arguments.contains("权威内容"));
+    assert_eq!(tool.batch_id.as_deref(), Some("batch"));
+    // 首项已提交 generation，也必须能撤销剩下的待执行预览。
+    apply_update(
+        &mut app,
+        SessionUpdate::GenerationRetry {
+            prompt_id: "p".into(),
+            message: "重试".into(),
+            retry_in_ms: 0,
+        },
+    );
+    assert!(app.tool_block("a").is_some());
+    assert!(app.tool_block("b").is_none());
+    assert_eq!(
+        app.blocks
+            .iter()
+            .filter(|entry| matches!(entry.block, Block::Tool(_)))
+            .count(),
+        1
+    );
+}
+
 /// 前台 bash 也登记为 job：其开始/结束更新不得挂「后台」徽标或推「后台任务结束」
 /// 便签——结果已随工具卡片落地。转后台后 origin 改写，徽标挂上、结束才提示。
 #[test]

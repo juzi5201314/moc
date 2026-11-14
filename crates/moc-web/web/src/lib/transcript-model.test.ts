@@ -7,7 +7,13 @@ import type {
   TranscriptChildCall,
   TranscriptEntry,
 } from "@/protocol/types";
-import { applyUpdate, createView, entriesToBlocks, type ToolBlock } from "./transcript-model";
+import {
+  applyUpdate,
+  createView,
+  entriesToBlocks,
+  interruptLive,
+  type ToolBlock,
+} from "./transcript-model";
 
 const INFO: SessionInfo = {
   id: "ses_1",
@@ -42,6 +48,106 @@ const DIFF: ToolDiff = {
   ],
   truncated: false,
 };
+
+describe("工具流式预览", () => {
+  const preview = (id: string): SessionUpdate => ({
+    type: "tool_preview",
+    prompt_id: "p",
+    preview_id: id,
+    tool_call_id: null,
+    name: "write",
+    preview: { target: "a.rs", summary: "", body: "生成中", language: null, truncated: false },
+  });
+  it("确认身份后原位转换，正式参数与 diff 覆盖预览", () => {
+    const view = createView(INFO);
+    applyUpdate(view, preview("first"));
+    applyUpdate(view, preview("second"));
+    const firstId = view.blocks[0].id;
+    applyUpdate(view, {
+      type: "tool_previews_resolved",
+      prompt_id: "p",
+      calls: [
+        { preview_id: "first", tool_call_id: "a" },
+        { preview_id: "second", tool_call_id: "b" },
+      ],
+    });
+    applyUpdate(view, {
+      type: "tool_batch_started",
+      prompt_id: "p",
+      batch_id: "batch",
+      calls: [
+        { tool_call_id: "a", name: "write" },
+        { tool_call_id: "b", name: "write" },
+      ],
+    });
+    applyUpdate(view, {
+      type: "tool_started",
+      prompt_id: "p",
+      tool_call_id: "a",
+      name: "write",
+      arguments: '{"content":"最终内容"}',
+    });
+    expect(view.blocks).toHaveLength(2);
+    expect(view.blocks[0]).toMatchObject({
+      id: firstId,
+      status: "running",
+      preview: undefined,
+      batchId: "batch",
+      arguments: '{"content":"最终内容"}',
+    });
+    applyUpdate(view, {
+      type: "tool_finished",
+      prompt_id: "p",
+      tool_call_id: "a",
+      name: "write",
+      arguments: '{"content":"最终内容"}',
+      status: "completed",
+      result: { tool_call_id: "a", content: "已写入", is_error: false },
+      diff: DIFF,
+    });
+    applyUpdate(view, {
+      type: "generation_retry",
+      prompt_id: "p",
+      message: "重试",
+      retry_in_ms: 0,
+    });
+    const tools = view.blocks.filter((block) => block.kind === "tool");
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({
+      id: firstId,
+      diff: DIFF,
+      preview: undefined,
+      status: "completed",
+    });
+  });
+  it("正文与预览交错时保持位置，断线清理预览", () => {
+    const view = createView(INFO);
+    const text = (delta: string): SessionUpdate => ({
+      type: "assistant_delta",
+      prompt_id: "p",
+      delta: { type: "text", delta },
+    });
+    applyUpdate(view, text("之前"));
+    applyUpdate(view, preview("draft"));
+    applyUpdate(view, text("之后"));
+    expect(view.blocks.map((block) => block.kind)).toEqual(["text", "tool", "text"]);
+    expect(view.blocks[0]).toMatchObject({ text: "之前" });
+    expect(view.blocks[2]).toMatchObject({ text: "之后" });
+    applyUpdate(view, {
+      type: "prompt_finished",
+      prompt_id: "p",
+      message: { role: "Assistant", content: [{ Text: "之前之后" }] },
+      finish_reason: "Stop",
+      usage: { input_tokens: 0, output_tokens: 0 },
+    });
+    expect(view.blocks.filter((block) => block.kind === "text").map((block) => block.text)).toEqual(
+      ["之前", "之后"],
+    );
+    applyUpdate(view, preview("another"));
+    interruptLive(view);
+    expect(view.blocks.some((block) => block.kind === "tool")).toBe(false);
+  });
+});
 
 describe("entriesToBlocks", () => {
   it("恢复 Responses 摘要并且不显示加密数据", () => {

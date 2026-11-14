@@ -74,6 +74,7 @@ export function toolFailed(tool: ToolBlock): boolean {
 }
 
 export function toolExpandable(tool: ToolBlock): boolean {
+  if (tool.preview) return true;
   const policy = bodyPolicy(tool.name);
   return (
     toolFailed(tool) ||
@@ -186,6 +187,11 @@ export type Headline = {
 };
 
 export function toolHeadline(tool: ToolBlock): Headline {
+  if (tool.preview)
+    return {
+      target: tool.preview.target || tool.preview.summary,
+      mono: Boolean(tool.preview.target),
+    };
   const args = parseArgs(tool.arguments);
   const result = tool.result;
   const failed = toolFailed(tool);
