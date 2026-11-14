@@ -180,6 +180,116 @@ impl PlanHarness {
 }
 
 #[tokio::test]
+async fn plan_command_submits_arguments_and_bare_command_only_toggles() {
+    let mut h = PlanHarness::new().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"计划答复\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            "text/event-stream",
+        ))
+        .with_priority(1)
+        .mount(&h._upstream)
+        .await;
+    let session_id = h.app.session.as_ref().unwrap().id.clone();
+    h.app.session = Some(
+        h.connection
+            .client
+            .call::<moc_protocol::SessionPlanMode>(moc_protocol::SessionPlanModeParams {
+                session_id: session_id.clone(),
+                active: false,
+            })
+            .await
+            .unwrap(),
+    );
+    h.updates();
+
+    let prompts = ["设计第一步\n再写第二步", "补充风险清单"];
+    for text in prompts {
+        h.app.prompt.insert_str_raw(&format!("/plan  {text}  "));
+        crate::event::keyboard::commit_prompt(&mut h.app, &h.connection);
+        assert!(h.app.prompt_running, "切换模式与提交提示之间也必须占住会话");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let event = h.events.recv().await.unwrap();
+                if let AppEvent::PromptReturned { result, .. } = &event {
+                    result.as_ref().expect("带参数的计划命令应完成提示");
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("提示回执");
+        h.updates();
+        crate::interaction::handle_event(&mut h.app, &h.connection, event);
+        assert!(h.app.session.as_ref().unwrap().plan_active);
+        assert!(!h.app.prompt_running);
+    }
+
+    for active in [false, true] {
+        execute_command(&mut h.app, &h.connection, "/plan".into());
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let update = h.connection.updates.recv().await.unwrap();
+                let changed = matches!(&update, crate::protocol::UiUpdate::Session(params)
+                    if matches!(params.update, moc_protocol::SessionUpdate::PlanModeChanged { active: value } if value == active));
+                apply_ui_update(&mut h.app, &h.connection, update);
+                if changed { break; }
+            }
+        }).await.expect("无参数命令应切换模式");
+        assert_eq!(h.app.session.as_ref().unwrap().plan_active, active);
+    }
+
+    let requests = h._upstream.received_requests().await.unwrap();
+    let bodies: Vec<serde_json::Value> = requests
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .filter(|body: &serde_json::Value| body["stream"] == true)
+        .collect();
+    assert_eq!(bodies.len(), prompts.len(), "无参数命令不应请求模型");
+    for (body, text) in bodies.iter().zip(prompts) {
+        assert!(
+            body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "exit_plan"),
+            "提示必须在计划模式下发出"
+        );
+        // 运行时提醒可能单独占据最后一条 user 消息；查找真正的用户输入。
+        assert!(
+            body["messages"].as_array().unwrap().iter().any(|message| {
+                message["role"] == "user" && message["content"].as_str() == Some(text)
+            }),
+            "提示词与内部换行必须完整传给模型"
+        );
+    }
+    h.close().await;
+}
+
+#[tokio::test]
+async fn plan_command_does_not_send_prompt_when_mode_change_fails() {
+    let mut h = PlanHarness::new().await;
+    h.app.session.as_mut().unwrap().id = "ses_missing".into();
+    execute_command(&mut h.app, &h.connection, "/plan 不应发出的提示".into());
+    let event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let event = h.events.recv().await.unwrap();
+            if let AppEvent::PromptReturned { result, .. } = &event {
+                assert!(result.is_err(), "切换失败必须回报，而不是继续请求模型");
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("失败回执");
+    crate::interaction::handle_event(&mut h.app, &h.connection, event);
+    assert!(!h.app.prompt_running);
+    assert!(h.app.inflight_prompts.is_empty());
+    assert!(h._upstream.received_requests().await.unwrap().is_empty());
+    h.close().await;
+}
+
+#[tokio::test]
 async fn plan_review_preserves_model_and_loaded_history() {
     let mut h = PlanHarness::new().await;
     let plan = h.write_and_review().await;

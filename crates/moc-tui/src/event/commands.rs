@@ -295,7 +295,7 @@ pub(super) fn dispatch_command(
         CommandId::ClmExperimental => set_engine(app, connection, SessionEngine::ClmExperimental),
         CommandId::Autonomy => set_autonomy(app, connection, rest),
         CommandId::Permission => set_permission(app, connection, rest),
-        CommandId::Plan => toggle_plan(app, connection),
+        CommandId::Plan => plan_command(app, connection, rest),
         CommandId::Goal => goal_command(app, connection, rest),
         CommandId::Ask => ask_once(app, connection, rest),
         CommandId::Retry => retry(app, connection),
@@ -387,25 +387,49 @@ pub(super) fn cycle_engine(app: &mut App, connection: &EmbeddedConnection) {
     set_engine(app, connection, engines[(index + 1) % engines.len()]);
 }
 
-/// `/plan`：切换 plan 模式；引擎不受影响，可在任意引擎上叠加。
-pub(super) fn toggle_plan(app: &mut App, connection: &EmbeddedConnection) {
+/// `/plan [提示词]`：无参数切换模式；带参数时进入计划模式后发送提示。
+pub(super) fn plan_command(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
     let Some(session) = app.session.as_ref() else {
         app.set_notice("当前没有活动会话");
         return;
     };
     let client = connection.client.clone();
     let session_id = session.id.clone();
-    let active = !session.plan_active;
+    let text = rest.trim();
+    let prompt = (!text.is_empty()).then(|| text.to_owned());
+    let active = prompt.is_some() || !session.plan_active;
     let events = app.events.clone();
+    if let Some(text) = &prompt {
+        // 模式切换和随后的提示共用在飞记账，避免中间窗口重复派发。
+        app.push_user(text.clone());
+        app.inflight_prompts.insert(session_id.clone());
+        app.prompt_running = true;
+    }
     tokio::spawn(async move {
-        match client
-            .call::<SessionPlanMode>(SessionPlanModeParams { session_id, active })
-            .await
-        {
-            Ok(_) => {}
-            Err(error) => {
+        let result = client
+            .call::<SessionPlanMode>(SessionPlanModeParams {
+                session_id: session_id.clone(),
+                active,
+            })
+            .await;
+        match (result, prompt) {
+            (Ok(_), Some(text)) => crate::queue::send_prompt(
+                &client,
+                session_id,
+                vec![moc_protocol::InputPart::Text { text }],
+                None,
+                events,
+            ),
+            (Err(error), Some(_)) => {
+                let _ = events.send(AppEvent::PromptReturned {
+                    session: session_id,
+                    result: Err(anyhow::anyhow!("切换计划状态失败：{error}")),
+                });
+            }
+            (Err(error), None) => {
                 let _ = events.send(AppEvent::Notice(format!("切换计划状态失败：{error}")));
             }
+            (Ok(_), None) => {}
         }
     });
 }
