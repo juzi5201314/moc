@@ -4,7 +4,7 @@
 
 import AnsiModule from "ansi-to-react";
 import { CheckIcon, CopyIcon } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { TodoPhases } from "@/components/common/todo-phases";
 import { DiffBody, DiffStat, diffStats } from "@/components/panels/diff-file";
@@ -145,14 +145,62 @@ function PlainOutput({
   );
 }
 
+const AncestorNotices = createContext<ReadonlySet<string>>(new Set());
+
+/** 只向子树传播原始通知身份，不改写工具结果；父结果更新会自然刷新子树。 */
+export function NoticeScope({ result, children }: { result?: string; children: ReactNode }) {
+  const inherited = useContext(AncestorNotices);
+  const notices = useMemo(
+    () => new Set([...inherited, ...toolNotices(result ?? "")]),
+    [inherited, result],
+  );
+  return <AncestorNotices.Provider value={notices}>{children}</AncestorNotices.Provider>;
+}
+
 function Notes({ notes }: { notes: string[] }) {
-  if (notes.length === 0) return null;
+  const inherited = useContext(AncestorNotices);
+  const [expanded, setExpanded] = useState(false);
+  const visible = [...new Set(notes)].filter((note) => !inherited.has(note));
+  const omitted = visible.filter(
+    (note) => note.trimStart().startsWith("[Line ") && note.includes("content omitted;"),
+  );
+  const ordinary = visible.filter(
+    (note) =>
+      !omitted.includes(note) &&
+      !note.startsWith("Lines shown as a size notice") &&
+      !note.startsWith("[Long lines omitted;"),
+  );
+  if (!omitted.length && !ordinary.length) return null;
   return (
     <div
       role="status"
-      className="mt-1 space-y-0.5 px-1 text-xs whitespace-pre-wrap text-warn [overflow-wrap:anywhere]"
+      className="mt-1 flex flex-col gap-0.5 px-1 text-xs whitespace-pre-wrap text-warn [overflow-wrap:anywhere]"
     >
-      {notes.map((note) => (
+      {omitted.length > 0 && (
+        <>
+          {/* 复用工具正文的轻量展开按钮，不为只读通知引入整套折叠容器。 */}
+          <button
+            type="button"
+            aria-expanded={expanded}
+            className="text-left"
+            onClick={() => setExpanded((open) => !open)}
+          >
+            {omitted.length} 行内容未完整显示；{expanded ? "收起" : "展开查看行号与续读方式"}
+          </button>
+          {expanded && (
+            <>
+              {omitted.map((note) => (
+                <div key={note}>{note.split(";", 1)[0].replace(/^\[/, "")}</div>
+              ))}
+              <div>
+                用 read 的 offset 指定行、limit=1、byte_offset=0 分片读取，并按 next
+                续读；省略内容不授权编辑。
+              </div>
+            </>
+          )}
+        </>
+      )}
+      {ordinary.map((note) => (
         <div key={note}>{note}</div>
       ))}
     </div>

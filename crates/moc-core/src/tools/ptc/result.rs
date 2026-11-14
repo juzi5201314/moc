@@ -83,13 +83,82 @@ pub(super) async fn script_result(
         return Err(oversized(result));
     }
     if outcome.is_error {
+        let code = outcome.error_code.as_deref().unwrap_or("E_TOOL");
+        let prefix = format!("[{code}] ");
         Err(ScriptError {
-            code: outcome.error_code.as_deref().unwrap_or("E_TOOL").into(),
-            message: result.content.clone(),
+            code: code.into(),
+            message: result
+                .content
+                .strip_prefix(&prefix)
+                .unwrap_or(&result.content)
+                .to_owned(),
             result: Some(Box::new(result)),
         })
     } else {
         Ok(result)
+    }
+}
+
+/// 仅在脚本失败后回访已提交的子调用；成功路径不复制或重复归档工具正文。
+pub(super) async fn recover_children(ctx: &ToolCtx, outcome: &mut ToolOutcome) {
+    let path = ctx
+        .paths
+        .artifacts()
+        .join(format!("{}-execute-results.txt", crate::ids::entry_id()));
+    let target = path.clone();
+    let transcript = ctx.paths.transcript.clone();
+    let parent = ctx.tool_call_id.clone();
+    let recovered =
+        tokio::task::spawn_blocking(move || -> Result<usize, crate::error::CoreError> {
+            use std::io::Write;
+            #[derive(serde::Deserialize)]
+            struct Record {
+                call: Option<moc_protocol::methods::session::TranscriptChildCall>,
+            }
+            std::fs::create_dir_all(target.parent().expect("归档有父目录"))?;
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
+            let mut output = std::io::BufWriter::new(file);
+            let mut count = 0;
+            crate::session::log::for_each_line(&transcript, &mut |line| {
+                if !line
+                    .windows(parent.len())
+                    .any(|part| part == parent.as_bytes())
+                {
+                    return Ok(());
+                }
+                let record: Record = serde_json::from_slice(line)
+                    .map_err(|error| crate::error::CoreError::Session(error.to_string()))?;
+                if let Some(call) = record.call
+                    && call.parent_tool_call_id == parent
+                {
+                    writeln!(
+                        output,
+                        "## {} — {} ({:?})\n\n{}\n",
+                        call.id, call.name, call.status, call.result
+                    )?;
+                    count += 1;
+                }
+                Ok(())
+            })?;
+            output.flush()?;
+            Ok(count)
+        })
+        .await;
+    let notice = match recovered {
+        Ok(Ok(count)) => match ctx.artifact_store().uri_for_path(&path) {
+            Ok(uri) => format!(
+                "\n{count} nested call results were preserved at {uri}. Read this artifact before retrying; do not repeat successful calls. The script failure did not roll back completed writes."
+            ),
+            Err(error) => format!("\nCould not expose nested call results: {error}"),
+        },
+        Ok(Err(error)) => format!("\nCould not preserve nested call results: {error}"),
+        Err(error) => format!("\nCould not preserve nested call results: {error}"),
+    };
+    if let ToolOutput::Text(text) = &mut outcome.content {
+        text.push_str(&notice);
     }
 }
 

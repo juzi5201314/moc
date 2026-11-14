@@ -133,6 +133,7 @@ impl TreeIndex {
     pub(super) const EMPTY: TreeLayout = TreeLayout {
         shape: None,
         gap: true,
+        notice_parent_generation: 0,
     };
 
     pub(super) fn sync(&mut self, blocks: &[Entry]) {
@@ -187,7 +188,16 @@ impl TreeIndex {
             });
             let gap =
                 !has_children[index] && shape.is_none_or(|shape| !shape.more && shape.rails == 0);
-            self.layouts[index] = TreeLayout { shape, gap };
+            let notice_parent_generation = tool
+                .parent_id
+                .as_deref()
+                .and_then(|id| index_of.get(id))
+                .map_or(0, |&parent| blocks[parent].generation);
+            self.layouts[index] = TreeLayout {
+                shape,
+                gap,
+                notice_parent_generation,
+            };
         }
     }
 

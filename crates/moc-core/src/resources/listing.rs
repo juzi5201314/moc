@@ -145,9 +145,20 @@ pub(super) fn list_history(
             uri: "history://transcript".to_owned(),
             name: "transcript".to_owned(),
             is_dir: false,
+            size: None,
+            modified_ms: metadata.modified().ok().and_then(to_ms),
+            description: Some(
+                "Readable history index; /role/user, /tool/<name>, /entry/<id> select records"
+                    .into(),
+            ),
+        });
+        entries.push(ListedEntry {
+            uri: "history://raw".into(),
+            name: "raw".into(),
+            is_dir: false,
             size: Some(metadata.len()),
             modified_ms: metadata.modified().ok().and_then(to_ms),
-            description: None,
+            description: Some("Original session JSONL".into()),
         });
     }
     entries.extend(

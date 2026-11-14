@@ -216,7 +216,7 @@ pub fn pieces(
         title: "tools",
         name: PIECE_EXECUTION_RUNTIME,
         scope: PieceScope::Static,
-        text: "execute evaluates JavaScript in a fresh QuickJS runtime. Call await tools.<name>(args); return the needed result. Tool results contain {content,structuredContent,isError,status,artifact}; prefer structuredContent, otherwise content. Failures reject with {code,message,result}. Await every call before returning; JavaScript globals do not persist. Standard mode also exposes core tools directly; PTC exposes only execute. Read capability docs with await tools.read({path:\"tool://capability\"}). Composition, MCP discovery, and named state: tool://execute.".to_owned(),
+        text: "execute runs JavaScript in a fresh QuickJS runtime. Call await tools.<name>(args); return needed results or use console.log/print. Logs precede the return value and share its output budget. Tool results contain {content,structuredContent,isError,status,artifact}: use content for text, structuredContent for metadata. Failures reject with {code,message,result}. Await every call; do not shadow tools/catalog/state. Globals do not persist. Standard exposes core tools directly: prefer them for simple calls; PTC exposes only execute. Discover schemas with catalog.describe(name) or read tool://<name>; never guess arguments. Composition, MCP discovery, and named state: tool://execute.".to_owned(),
     });
     // Fusion lead 的分工契约：只注入 Fusion 顶层会话，静态片段保持前缀连续。
     if model.fusion.is_some() && subagent.is_none() {

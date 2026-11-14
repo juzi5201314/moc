@@ -53,7 +53,7 @@ pub(super) fn tool_body(
     command_in_title: bool,
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
     if !shows_tool_content(tool, level) {
-        let mut lines = fixed_tool_rows(tool, args, width, app.theme, true);
+        let mut lines = fixed_tool_rows(tool, args, width, app, true, level);
         if prefer_builtin_redirect(tool) {
             let result = tool.result.as_deref().unwrap_or_default();
             let text = result.strip_prefix("[E_PREFER_BUILTIN] ").unwrap_or(result);
@@ -75,7 +75,7 @@ pub(super) fn tool_body(
             ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
         )
     {
-        let mut lines = fixed_tool_rows(tool, args, width, theme, false);
+        let mut lines = fixed_tool_rows(tool, args, width, app, false, level);
         let placements = tool_images(tool, app, width, spawn_images, &mut lines);
         return (lines, placements);
     }
@@ -234,13 +234,9 @@ pub(super) fn tool_body(
             .flat_map(|line| &line.spans)
             .map(|span| span.content.as_ref())
             .collect();
-        for notice in crate::transcript::tool_notices(tool.result.as_deref().unwrap_or_default()) {
-            if !shown.contains(notice) {
-                lines.extend(
-                    wrap_text(notice, width)
-                        .into_iter()
-                        .map(|row| text_row(row, theme.accent_warning)),
-                );
+        for notice in super::notices::rows(tool, app, width, level) {
+            if !shown.contains(&plain_text(&notice)) {
+                lines.push(notice);
             }
         }
     }
@@ -271,7 +267,7 @@ pub(super) fn tool_body_rows(
             ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
         )
     {
-        let mut rows = fixed_tool_rows(tool, args, width, app.theme, false);
+        let mut rows = fixed_tool_rows(tool, args, width, app, false, level);
         tool_images(tool, app, width, false, &mut rows);
         return rows.len();
     }
@@ -425,9 +421,11 @@ pub(super) fn fixed_tool_rows(
     tool: &ToolCallBlock,
     args: &Value,
     width: usize,
-    theme: &Theme,
+    app: &App,
     warnings_only: bool,
+    level: DetailLevel,
 ) -> Vec<Line<'static>> {
+    let theme = app.theme;
     let mut rows = Vec::new();
     let mut preview = |label: &str, text: &str| {
         rows.push(Line::from(Span::styled(
@@ -517,13 +515,7 @@ pub(super) fn fixed_tool_rows(
                 );
             }
         }
-        for notice in crate::transcript::tool_notices(result) {
-            rows.extend(
-                wrap_text(notice, width).into_iter().map(|row| {
-                    Line::from(Span::styled(row, Style::new().fg(theme.accent_warning)))
-                }),
-            );
-        }
+        rows.extend(super::notices::rows(tool, app, width, level));
     }
     rows
 }

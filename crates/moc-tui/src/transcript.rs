@@ -478,6 +478,7 @@ impl ToolCallBlock {
             tool_body_policy(&self.name),
             ToolBody::None | ToolBody::Summary | ToolBody::AgentPreview
         ) || !self.images.is_empty()
+            || self.has_notices()
             || (self.name == "web_fetch" && self.result.is_some())
             || self
                 .status
@@ -526,6 +527,8 @@ pub(crate) fn tool_notices(result: &str) -> impl Iterator<Item = &str> {
             || line.starts_with("[Invalid UTF-8 ")
             || (line.starts_with("[Line ") && line.contains("content omitted;"))
             || line.starts_with("Lines shown as a size notice")
+            || line.starts_with("[Long lines omitted;")
+            || line.starts_with("[Continue with read ")
             || line.starts_with("[limit ")
             || line.starts_with("[Scan incomplete")
             || line.starts_with("[skipped ")

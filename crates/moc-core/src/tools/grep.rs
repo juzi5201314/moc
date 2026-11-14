@@ -19,7 +19,7 @@ use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 use crate::hashline::{AnchorStore, FileSnapshot, SnapshotId, tag_text};
 use crate::resources::{ResourceBacking, ResourceRouter};
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GrepArgs {
     pattern: String,
@@ -31,6 +31,7 @@ struct GrepArgs {
     context_before: Option<usize>,
     context_after: Option<usize>,
     skip: Option<usize>,
+    offset: Option<u64>,
     #[serde(default)]
     literal: bool,
     #[serde(default)]
@@ -43,12 +44,43 @@ struct GrepArgs {
 
 pub struct GrepTool;
 
+/// 文件页与文件内续读分开记录；原生文本和 PTC 元数据共用同一份续读参数。
+#[derive(Default)]
+struct SearchOutput {
+    content: String,
+    next: Vec<Value>,
+    incomplete: bool,
+    matches: usize,
+}
+
+impl SearchOutput {
+    fn into_outcome(self) -> ToolOutcome {
+        let mut outcome = ToolOutcome::success(ToolOutput::Verbatim(self.content));
+        outcome.structured_content = Some(serde_json::json!({
+            "next": self.next,
+            "scan_incomplete": self.incomplete,
+        }));
+        outcome
+    }
+
+    fn continue_file(&mut self, path: &str, offset: u64, reason: &str) {
+        let next = serde_json::json!({"path": path, "offset": offset, "skip": 0});
+        push_notice(
+            &mut self.content,
+            &format!(
+                "[{reason} in {path}; continue with {next}, keeping the same pattern and options]"
+            ),
+        );
+        self.next.push(next);
+    }
+}
+
 impl Tool for GrepTool {
     fn name(&self) -> &'static str {
         "grep"
     }
     fn description(&self) -> &'static str {
-        "Search file contents with Rust regex. Local text results include [path#TAG] for editing fully shown lines; shortened lines and results without a tag are not editable. Returns no surrounding context unless context_before/context_after are set. Does not cross mounts unless cross_filesystems=true."
+        "Search file contents with Rust regex; skip pages files, offset resumes lines in one file. Single-file searches use the total match budget; multi-file searches cap each file for diversity. Local results include [path#TAG] for editing fully shown lines; shortened lines are not editable. Context defaults to zero. Does not cross mounts unless cross_filesystems=true."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -70,6 +102,7 @@ impl Tool for GrepTool {
                     "context_before":{"type":"integer","minimum":0,"description":"Lines of context before each match; default 0"},
                     "context_after":{"type":"integer","minimum":0,"description":"Lines of context after each match; default 0"},
                     "skip":{"type":"integer","minimum":0,"description":"Matched files to skip, for paging"},
+                    "offset":{"type":"integer","minimum":1,"description":"First line to match (1-based); requires one file or document URI. Use returned next parameters to resume"},
                     "literal":{"type":"boolean","description":"Treat pattern as a literal string"},
                     "word":{"type":"boolean","description":"Match whole words only"},
                     "files_only":{"type":"boolean","description":"List matching file paths only"},
@@ -86,7 +119,15 @@ impl Tool for GrepTool {
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
             let args: GrepArgs = serde_json::from_value(args)
-                .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+                .map_err(|error| ToolError::new("E_BAD_PAYLOAD", format!(
+                    "grep: {error}. Use skip for file pages and offset for lines within one file; read tool://grep for the schema."
+                )))?;
+            if args.offset == Some(0) {
+                return Err(ToolError::new(
+                    "E_ARGUMENT",
+                    "grep offset is a 1-based line number",
+                ));
+            }
             if let Some(path) = args.path.as_deref()
                 && let Some(resource) = ResourceRouter::resolve_read(ctx, path)
                     .await
@@ -97,23 +138,13 @@ impl Tool for GrepTool {
                         search_resource_file(&resource.uri, &path, &args, &ctx.config.tools.grep)?
                     }
                     ResourceBacking::Text(text) => {
-                        let output = collect_resource_matches(
-                            &resource.uri,
-                            &text,
-                            &args,
-                            &ctx.config.tools.grep,
-                        )?;
-                        if output.is_empty() {
-                            "No matches found".to_owned()
-                        } else {
-                            output
-                        }
+                        search_resource_text(&resource.uri, &text, &args, &ctx.config.tools.grep)?
                     }
                     ResourceBacking::Namespace { entries, .. } => {
                         search_resource_namespace(&entries, &args, &ctx.config.tools.grep)?
                     }
                 };
-                return Ok(ToolOutcome::success(ToolOutput::Verbatim(output)));
+                return Ok(output.into_outcome());
             }
             let cancel = ctx.cancel.child_token();
             let _cancel_on_drop = cancel.clone().drop_guard();
@@ -123,7 +154,7 @@ impl Tool for GrepTool {
             let result = tokio::task::spawn_blocking(move || search.run(&anchors, max_edit_bytes))
                 .await
                 .map_err(|error| ToolError::new("E_GREP", error.to_string()))??;
-            Ok(ToolOutcome::success(ToolOutput::Verbatim(result)))
+            Ok(result.into_outcome())
         })
     }
 }
@@ -133,7 +164,7 @@ fn search_resource_file(
     path: &Path,
     args: &GrepArgs,
     config: &crate::config::GrepConfig,
-) -> Result<String, ToolError> {
+) -> Result<SearchOutput, ToolError> {
     let metadata =
         std::fs::metadata(path).map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
     if metadata.len() > config.max_file_bytes {
@@ -165,13 +196,17 @@ fn search_resource_text(
     text: &str,
     args: &GrepArgs,
     config: &crate::config::GrepConfig,
-) -> Result<String, ToolError> {
-    let matches = collect_resource_matches(uri, text, args, config)?;
-    Ok(if matches.is_empty() {
-        "No matches found".to_owned()
-    } else {
-        matches
-    })
+) -> Result<SearchOutput, ToolError> {
+    let mut output = collect_resource_matches(uri, text, args, config)?;
+    if output.content.is_empty() {
+        output.content = if args.skip.unwrap_or(0) > 0 {
+            "No more matching files"
+        } else {
+            "No matches found"
+        }
+        .into();
+    }
+    Ok(output)
 }
 
 /// 在命名空间的各个目录里逐个文件匹配。命中行的前缀用「URI 前缀 + 相对路径」拼出，
@@ -180,13 +215,24 @@ fn search_resource_namespace(
     entries: &[(String, PathBuf)],
     args: &GrepArgs,
     config: &crate::config::GrepConfig,
-) -> Result<String, ToolError> {
+) -> Result<SearchOutput, ToolError> {
+    if args.offset.is_some() {
+        return Err(ToolError::new(
+            "E_ARGUMENT",
+            "grep offset requires one file, not a namespace",
+        ));
+    }
     /// 一次命名空间扫描最多检查的文件数：命名空间可以无限大，工具输出必须有上限。
     const MAX_FILES: usize = 200;
-    let mut output = String::new();
+    let mut output = SearchOutput::default();
     let mut notices = Vec::new();
     let mut scanned = 0usize;
+    let mut matched_files = 0usize;
+    let mut shown_files = 0usize;
     let mut stopped = false;
+    let mut file_args = args.clone();
+    file_args.skip = None;
+    let mut file_config = config.clone();
     'entries: for (prefix, directory) in entries {
         for (relative, path) in directory_files(directory) {
             if scanned >= MAX_FILES {
@@ -208,28 +254,56 @@ fn search_resource_namespace(
             let Ok(bytes) = std::fs::read(&path) else {
                 continue;
             };
-            let matches =
-                collect_resource_matches(&uri, &String::from_utf8_lossy(&bytes), args, config)?;
-            if matches.is_empty() {
+            file_config.max_matches_total = config.max_matches_per_file.min(
+                config
+                    .max_matches_total
+                    .saturating_sub(output.matches)
+                    .max(1),
+            );
+            let matches = collect_resource_matches(
+                &uri,
+                &String::from_utf8_lossy(&bytes),
+                &file_args,
+                &file_config,
+            )?;
+            if matches.content.is_empty() {
                 continue;
             }
-            if !output.is_empty() {
-                output.push('\n');
+            matched_files += 1;
+            if matched_files <= args.skip.unwrap_or(0) {
+                continue;
             }
-            output.push_str(&matches);
+            if shown_files >= config.max_files
+                || output.matches >= config.max_matches_total
+                || (!output.content.is_empty()
+                    && output.content.len() + matches.content.len() + 1 > config.output_bytes)
+            {
+                let skip = args.skip.unwrap_or(0) + shown_files;
+                push_notice(
+                    &mut output.content,
+                    &format!("[More matching files; continue with skip={skip}]"),
+                );
+                output.next.push(serde_json::json!({"skip": skip}));
+                break 'entries;
+            }
+            push_notice(&mut output.content, &matches.content);
+            output.next.extend(matches.next);
+            output.matches += matches.matches;
+            shown_files += 1;
         }
     }
-    if output.is_empty() {
-        output.push_str("No matches found");
+    if output.content.is_empty() {
+        output.content.push_str("No matches found");
     }
+    output.incomplete = stopped || !notices.is_empty();
     for notice in notices {
-        output.push('\n');
-        output.push_str(&notice);
+        push_notice(&mut output.content, &notice);
     }
     if stopped {
-        output.push_str(&format!(
-            "\n[namespace scan stopped after {MAX_FILES} files]"
-        ));
+        push_notice(
+            &mut output.content,
+            &format!("[namespace scan stopped after {MAX_FILES} files]"),
+        );
     }
     Ok(output)
 }
@@ -272,7 +346,7 @@ fn collect_resource_matches(
     text: &str,
     args: &GrepArgs,
     config: &crate::config::GrepConfig,
-) -> Result<String, ToolError> {
+) -> Result<SearchOutput, ToolError> {
     if args.pattern.is_empty() {
         return Err(ToolError::new("E_BAD_REGEX", "pattern must not be empty"));
     }
@@ -285,29 +359,40 @@ fn collect_resource_matches(
             ),
         ));
     }
+    let mut output = SearchOutput::default();
+    if args.skip.unwrap_or(0) > 0 {
+        return Ok(output);
+    }
     let matcher = build_matcher(args)?;
     let lines: Vec<&str> = text.lines().collect();
     let mut matched = vec![false; lines.len()];
     let mut hits = Vec::new();
+    let first = args.offset.unwrap_or(1).saturating_sub(1);
     for (index, line) in lines.iter().enumerate() {
+        if (index as u64) < first {
+            continue;
+        }
         if matcher
             .is_match(line.as_bytes())
             .map_err(|error| ToolError::new("E_GREP", error.to_string()))?
         {
+            if args.files_only {
+                output.content = uri.to_owned();
+                output.matches = 1;
+                return Ok(output);
+            }
             matched[index] = true;
             hits.push(index);
+            if hits.len() > config.max_matches_total {
+                break;
+            }
         }
     }
-    // files_only：命中只输出 URI 一行。
-    if args.files_only {
-        return Ok(if hits.is_empty() {
-            String::new()
-        } else {
-            uri.to_owned()
-        });
-    }
-    let skip = args.skip.unwrap_or(0);
-    let selected = hits.into_iter().skip(skip).take(config.max_matches_total);
+    let truncated = hits.len() > config.max_matches_total;
+    hits.truncate(config.max_matches_total);
+    output.matches = hits.len();
+    let next_line = hits.last().map(|&index| index as u64 + 2);
+    let selected = hits;
     let mut rows = std::collections::BTreeSet::new();
     for index in selected {
         let before = args.context_before.unwrap_or(config.context_before);
@@ -331,7 +416,11 @@ fn collect_resource_matches(
             matched: matched[index],
         })
         .collect();
-    Ok(render_group(uri, &rows))
+    output.content = render_group(uri, &rows);
+    if truncated && let Some(offset) = next_line {
+        output.continue_file(uri, offset, "Match budget reached");
+    }
+    Ok(output)
 }
 
 /// 命中在本行里的字节区间，用来把长行截断的窗口对准命中处。
@@ -420,6 +509,7 @@ struct Search {
     config: crate::config::GrepConfig,
     cancel: CancellationToken,
     deadline: Instant,
+    single_file: bool,
 }
 
 impl Search {
@@ -444,6 +534,13 @@ impl Search {
             .build()
             .map_err(|error| ToolError::new("E_BAD_GLOB", error.to_string()))?;
         let root = crate::tools::resolve_scan_root(&cwd, args.path.as_deref())?;
+        let single_file = root.is_file();
+        if args.offset.is_some() && !single_file {
+            return Err(ToolError::new(
+                "E_ARGUMENT",
+                "grep offset requires one file; narrow path first",
+            ));
+        }
         let deadline = Instant::now() + Duration::from_millis(config.timeout_ms);
         Ok(Self {
             args,
@@ -454,6 +551,7 @@ impl Search {
             config,
             cancel,
             deadline,
+            single_file,
         })
     }
 
@@ -461,7 +559,7 @@ impl Search {
         self.cancel.is_cancelled() || Instant::now() >= self.deadline
     }
 
-    fn run(&self, anchors: &AnchorStore, max_edit_bytes: u64) -> Result<String, ToolError> {
+    fn run(&self, anchors: &AnchorStore, max_edit_bytes: u64) -> Result<SearchOutput, ToolError> {
         let mut walker = ignore::WalkBuilder::new(&self.root);
         let gitignore = self.args.gitignore.unwrap_or(true);
         walker
@@ -512,6 +610,7 @@ impl Search {
         paths.sort_unstable();
         paths.dedup();
         let mut output = String::new();
+        let mut page = SearchOutput::default();
         let mut matched_files = 0usize;
         let mut shown_files = 0usize;
         let mut shown_matches = 0usize;
@@ -624,7 +723,9 @@ impl Search {
                 output.push_str(&group);
                 shown_files += 1;
                 shown_matches += count;
-                limited |= result.truncated || result.matches > count;
+                if result.truncated || result.matches > count {
+                    page.continue_file(&relative, last_match + 1, "Match budget reached");
+                }
             }
             if self.stopped() {
                 incomplete.store(true, Ordering::Relaxed);
@@ -638,7 +739,7 @@ impl Search {
             push_notice(
                 &mut output,
                 &format!(
-                    "[{shown_files} files, {shown_matches} matches shown; output capped at {} bytes. Continue with skip={}; narrow the pattern if a single file hits its limit]",
+                    "[{shown_files} files, {shown_matches} matches shown; output capped at {} bytes. More matching files: continue with skip={}]",
                     self.config.output_bytes,
                     skip + shown_files
                 ),
@@ -647,10 +748,14 @@ impl Search {
             push_notice(
                 &mut output,
                 &format!(
-                    "[{shown_files} files, {shown_matches} matches shown; limit reached. Continue with skip={}; narrow the pattern if a single file hits its limit]",
+                    "[{shown_files} files, {shown_matches} matches shown; file-page or total-match budget reached. More matching files: continue with skip={}]",
                     skip + shown_files
                 ),
             );
+        }
+        if capped || limited {
+            page.next
+                .push(serde_json::json!({"skip": skip + shown_files}));
         }
         if skipped_large_files > 0 {
             push_notice(
@@ -662,12 +767,18 @@ impl Search {
             );
         }
         if incomplete.load(Ordering::Relaxed) || self.stopped() {
+            page.incomplete = true;
             push_notice(
                 &mut output,
                 "[Scan incomplete (time limit, candidate-file limit, cancellation, unreadable path, or oversized file); results may be incomplete, so a miss does not prove absence. Narrow path or glob, or set cross_filesystems=true to include mounts below the root]",
             );
         }
-        Ok(output)
+        if !page.content.is_empty() {
+            push_notice(&mut output, &page.content);
+        }
+        page.content = output;
+        page.matches = shown_matches;
+        Ok(page)
     }
     fn search_file(&self, path: &Path) -> std::io::Result<Matches> {
         let mut sink = Matches::default();
@@ -782,12 +893,20 @@ impl Sink for MatchSink<'_> {
         if self.search.stopped() {
             return Ok(false);
         }
+        if line.line_number().unwrap_or(0) < self.search.args.offset.unwrap_or(1) {
+            return Ok(true);
+        }
         // files_only 只要知道命中过：首个命中后即停止读取。
         if self.search.args.files_only {
             self.result.matches += 1;
             return Ok(false);
         }
-        if self.result.matches >= self.search.config.max_matches_per_file {
+        let limit = if self.search.single_file {
+            self.search.config.max_matches_total
+        } else {
+            self.search.config.max_matches_per_file
+        };
+        if self.result.matches >= limit {
             self.result.truncated = true;
             return Ok(false);
         }
@@ -822,6 +941,101 @@ mod tests {
         .unwrap()
         .run(&AnchorStore::new(), 4 * 1024 * 1024)
         .unwrap()
+        .content
+    }
+
+    #[test]
+    fn single_file_and_resource_pages_resume_without_losing_matches() {
+        let root = tempfile::tempdir().unwrap();
+        let text = (1..=205).map(|n| format!("hit {n}\n")).collect::<String>();
+        std::fs::write(root.path().join("hits.txt"), &text).unwrap();
+        let config = crate::config::GrepConfig::default();
+        let args = serde_json::json!({"path":"hits.txt", "pattern":"hit"});
+        let page = Search::new(
+            serde_json::from_value(args.clone()).unwrap(),
+            root.path().to_owned(),
+            config.clone(),
+            CancellationToken::new(),
+        )
+        .unwrap()
+        .run(&AnchorStore::new(), 4 * 1024 * 1024)
+        .unwrap();
+        assert!(page.content.contains("200:hit 200"));
+        assert!(!page.content.contains("201:hit 201"));
+        assert_eq!(
+            page.next,
+            [serde_json::json!({"path":"hits.txt", "offset":201, "skip":0})]
+        );
+        let mut next = args;
+        next.as_object_mut()
+            .unwrap()
+            .extend(page.next[0].as_object().unwrap().clone());
+        let rest = Search::new(
+            serde_json::from_value(next).unwrap(),
+            root.path().to_owned(),
+            config.clone(),
+            CancellationToken::new(),
+        )
+        .unwrap()
+        .run(&AnchorStore::new(), 4 * 1024 * 1024)
+        .unwrap();
+        assert!(rest.content.contains("201:hit 201") && rest.content.contains("205:hit 205"));
+        assert!(!rest.content.contains("200:hit 200"));
+        assert!(rest.next.is_empty());
+
+        let uri = "artifact://artifacts/hits.txt";
+        let args: GrepArgs = serde_json::from_value(serde_json::json!({"pattern":"hit"})).unwrap();
+        let page = search_resource_text(uri, &text, &args, &config).unwrap();
+        let mut next = page.next[0].clone();
+        next["pattern"] = "hit".into();
+        let rest =
+            search_resource_text(uri, &text, &serde_json::from_value(next).unwrap(), &config)
+                .unwrap();
+        assert!(rest.content.contains("201:hit 201") && rest.content.contains("205:hit 205"));
+        assert!(rest.next.is_empty());
+    }
+
+    #[test]
+    fn directory_caps_name_each_file_and_file_pages_do_not_skip_matches() {
+        let root = tempfile::tempdir().unwrap();
+        let text = "hit\n".repeat(25);
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(root.path().join(name), &text).unwrap();
+        }
+        let config = crate::config::GrepConfig {
+            max_files: 1,
+            ..Default::default()
+        };
+        let page = Search::new(
+            serde_json::from_value(serde_json::json!({"pattern":"hit"})).unwrap(),
+            root.path().to_owned(),
+            config.clone(),
+            CancellationToken::new(),
+        )
+        .unwrap()
+        .run(&AnchorStore::new(), 4096)
+        .unwrap();
+        assert_eq!(
+            page.next,
+            [
+                serde_json::json!({"path":"a.txt","offset":21,"skip":0}),
+                serde_json::json!({"skip":1})
+            ]
+        );
+        let rest = Search::new(
+            serde_json::from_value(serde_json::json!({"pattern":"hit","skip":1})).unwrap(),
+            root.path().to_owned(),
+            config,
+            CancellationToken::new(),
+        )
+        .unwrap()
+        .run(&AnchorStore::new(), 4096)
+        .unwrap();
+        assert!(rest.content.contains("[b.txt#") && !rest.content.contains("[a.txt#"));
+        assert_eq!(
+            rest.next,
+            [serde_json::json!({"path":"b.txt","offset":21,"skip":0})]
+        );
     }
     #[test]
     fn only_emitted_complete_rows_become_editable() {
@@ -844,7 +1058,7 @@ mod tests {
         )
         .unwrap();
         let anchors = AnchorStore::new();
-        let output = search.run(&anchors, 4096).unwrap();
+        let output = search.run(&anchors, 4096).unwrap().content;
         let served = anchors.served(&path).unwrap();
         let tag = tag_text(served.current_tag().unwrap());
         assert!(output.contains(&format!("[a.txt#{tag}]")));
@@ -940,7 +1154,8 @@ mod tests {
             &args,
             &config,
         )
-        .unwrap();
+        .unwrap()
+        .content;
         assert_eq!(
             output,
             "skill://demo/SKILL.md\n  1-first\n  2:hit\n  3-last"
@@ -962,13 +1177,17 @@ mod tests {
         };
         let entries = vec![("artifact://jobs/".to_owned(), jobs.clone())];
         assert_eq!(
-            search_resource_namespace(&entries, &args, &small).unwrap(),
+            search_resource_namespace(&entries, &args, &small)
+                .unwrap()
+                .content,
             "No matches found\n[skipped artifact://jobs/big.log: 17 B exceeds the search limit]"
         );
         for index in 0..201 {
             std::fs::write(jobs.join(format!("job_{index}.log")), "alpha\n").unwrap();
         }
-        let output = search_resource_namespace(&entries, &args, &small).unwrap();
+        let output = search_resource_namespace(&entries, &args, &small)
+            .unwrap()
+            .content;
         assert!(
             output.ends_with("[namespace scan stopped after 200 files]"),
             "{output}"
@@ -1034,7 +1253,8 @@ mod absolute_scan_tests {
         )
         .expect("解析绝对扫描根")
         .run(&AnchorStore::new(), 4 * 1024 * 1024)
-        .expect("执行扫描");
+        .expect("执行扫描")
+        .content;
         assert!(output.contains("incomplete"));
         assert!(!output.contains("No matches found"));
     }
@@ -1100,7 +1320,8 @@ mod pattern_mode_tests {
             &args,
             &crate::config::GrepConfig::default(),
         )
-        .unwrap();
+        .unwrap()
+        .content;
         assert_eq!(output, "local://x.md");
     }
 }

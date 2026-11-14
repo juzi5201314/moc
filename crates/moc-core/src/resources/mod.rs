@@ -1,5 +1,6 @@
 //! MOC 内部资源 URI：统一解析、读取与输入补全。
 
+pub(crate) mod history;
 mod uri;
 
 pub use uri::{InternalUri, ResourceScheme};

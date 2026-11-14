@@ -180,16 +180,38 @@ pub(super) fn history_candidates(
     context: &ResourceContext<'_>,
     prefix: &str,
 ) -> Vec<ResourceCandidate> {
-    let transcript = "history://transcript";
     let mut values = Vec::new();
-    if transcript.starts_with(prefix) {
-        values.push(ResourceCandidate {
-            uri: transcript.into(),
-            label: "transcript".into(),
-            description: "current session JSONL transcript".into(),
-            kind: "file".into(),
-            append_space: true,
-        });
+    for (uri, description) in [
+        (
+            "history://transcript",
+            "readable session index with stable record links",
+        ),
+        (
+            "history://transcript/role/user",
+            "user messages, selected before paging",
+        ),
+        (
+            "history://transcript/role/assistant",
+            "assistant text without opaque reasoning",
+        ),
+        (
+            "history://transcript/tool/ask",
+            "ask results, selected before paging",
+        ),
+        (
+            "history://raw",
+            "original session JSONL; long lines support read byte_offset",
+        ),
+    ] {
+        if uri.starts_with(prefix) {
+            values.push(ResourceCandidate {
+                uri: uri.into(),
+                label: uri.into(),
+                description: description.into(),
+                kind: "file".into(),
+                append_space: true,
+            });
+        }
     }
     let index = "history://compaction/INDEX.md";
     if context.paths.compaction().join("INDEX.md").is_file() && index.starts_with(prefix) {

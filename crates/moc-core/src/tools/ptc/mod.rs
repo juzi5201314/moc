@@ -40,7 +40,7 @@ impl Tool for ExecuteTool {
         "execute"
     }
     fn description(&self) -> &str {
-        "Execute JavaScript to call tools and process results in an isolated QuickJS runtime; use await tools.<name>(args)."
+        "Run JavaScript with await tools.<name>(args); return needed results or use console.log/print. Standard mode also supports direct tool calls."
     }
     fn tier(&self) -> Tier {
         Tier::Exec
@@ -53,9 +53,9 @@ impl Tool for ExecuteTool {
             self.name(),
             schema(
                 serde_json::json!({
-                    "code": {"type": "string", "description": "JavaScript to execute"},
+                    "code": {"type": "string", "description": "JavaScript function body; await every host call. tools, catalog and state are host namespaces: do not shadow them. Use JSON strings for Markdown containing backticks."},
                     "description": {"type": "string", "description": DESCRIPTION_PARAM},
-                    "timeout_secs": {"type": "integer", "minimum": 1, "description": "Seconds before the script is stopped"}
+                    "timeout_secs": {"type": "integer", "minimum": 1, "description": "Execution deadline in seconds, excluding time waiting for user answers or permission decisions"}
                 }),
                 &["code", "description"],
             ),

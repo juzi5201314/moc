@@ -23,7 +23,7 @@ import {
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { MessageResponse } from "@/components/ai-elements/message";
-import { toolBody } from "@/components/chat/tool-views";
+import { NoticeScope, toolBody } from "@/components/chat/tool-views";
 import { DiffStat, diffStats } from "@/components/panels/diff-file";
 import { Button } from "@/components/ui/button";
 import { parseLinkTarget } from "@/lib/file-target";
@@ -476,9 +476,11 @@ function ToolRow({
       )}
       {tool.children.length > 0 && (
         <div className="ml-[13px] border-l border-border pl-2.5">
-          {tool.children.map((child) => (
-            <ToolRow key={`${child.id}:${axis}`} tool={child} axis={axis} sessionId={sessionId} />
-          ))}
+          <NoticeScope result={tool.result}>
+            {tool.children.map((child) => (
+              <ToolRow key={`${child.id}:${axis}`} tool={child} axis={axis} sessionId={sessionId} />
+            ))}
+          </NoticeScope>
         </div>
       )}
     </div>

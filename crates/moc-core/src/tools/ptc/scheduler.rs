@@ -22,6 +22,46 @@ use std::{
 
 type Work<'a> = BoxFuture<'a, (u32, Result<Value, ScriptError>, Option<ToolOutcome>)>;
 
+/// 只扣除用户提问/授权等待的并集；普通工具等待仍受整次 execute 期限约束。
+struct ExecutionClock {
+    deadline: tokio::time::Instant,
+    waiting: usize,
+    paused_at: Option<tokio::time::Instant>,
+    events: tokio::sync::mpsc::UnboundedReceiver<(bool, tokio::time::Instant)>,
+}
+
+impl ExecutionClock {
+    async fn wait<F: Future>(
+        &mut self,
+        future: F,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<F::Output, ToolOutcome> {
+        tokio::pin!(future);
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(ToolOutcome::failure("E_CANCELLED", "script cancelled")),
+                Some((started, at)) = self.events.recv() => {
+                    if started {
+                        if self.waiting == 0 { self.paused_at = Some(at); }
+                        self.waiting += 1;
+                    } else {
+                        debug_assert!(self.waiting > 0);
+                        self.waiting -= 1;
+                        if self.waiting == 0 {
+                            self.deadline += at - self.paused_at.take().expect("存在用户等待起点");
+                        }
+                    }
+                }
+                _ = tokio::time::sleep_until(self.deadline), if self.waiting == 0 => {
+                    return Err(ToolOutcome::failure("E_TIMEOUT", "script timed out"));
+                }
+                result = &mut future => return Ok(result),
+            }
+        }
+    }
+}
+
 fn parallel(ctx: &ToolCtx, operation: &Operation) -> bool {
     match operation {
         Operation::Store { .. } | Operation::Remove { .. } => false,
@@ -198,6 +238,17 @@ pub(super) async fn run(
 ) -> ToolOutcome {
     let mut child = ctx.clone();
     child.cancel = ctx.cancel.child_token();
+    let (interactions, events) = tokio::sync::mpsc::unbounded_channel();
+    child.request = ctx
+        .request
+        .with_cancel(child.cancel.clone())
+        .with_interaction_observer(interactions);
+    let mut clock = ExecutionClock {
+        deadline,
+        waiting: 0,
+        paused_at: None,
+        events,
+    };
     let config = &ctx.config.tools.ptc;
     let mut queue = VecDeque::<HostRequest>::new();
     let mut active = FuturesUnordered::<Work<'_>>::new();
@@ -207,15 +258,21 @@ pub(super) async fn run(
     let mut next_id = 0u64;
     let mut input = Vec::new();
     let mut images = Vec::new();
+    let mut recorded_tools = false;
     let mut outcome;
     'drive: loop {
-        let step = tokio::select! {
-            biased;
-            _ = ctx.cancel.cancelled() => { outcome = ToolOutcome::failure("E_CANCELLED", "script cancelled"); break; }
-            _ = tokio::time::sleep_until(deadline) => { outcome = ToolOutcome::failure("E_TIMEOUT", "script timed out"); break; }
-            step = guest.step(std::mem::take(&mut input)) => match step {
-                Ok(step) => step,
-                Err(err) => { outcome = err.into_outcome(); break; }
+        let step = match clock
+            .wait(guest.step(std::mem::take(&mut input)), &ctx.cancel)
+            .await
+        {
+            Ok(Ok(step)) => step,
+            Ok(Err(error)) => {
+                outcome = error.into_outcome();
+                break;
+            }
+            Err(error) => {
+                outcome = error;
+                break;
             }
         };
         for request in step.requests {
@@ -291,25 +348,30 @@ pub(super) async fn run(
             outcome = ToolOutcome::failure("E_PTC_PENDING", "the script has no completable event");
             break;
         }
-        let completed = tokio::select! {
-            biased;
-            _ = ctx.cancel.cancelled() => { outcome = ToolOutcome::failure("E_CANCELLED", "script cancelled"); break; }
-            _ = tokio::time::sleep_until(deadline) => { outcome = ToolOutcome::failure("E_TIMEOUT", "script timed out"); break; }
-            step = guest.receive() => {
-                outcome = match step {
+        let completed = clock.wait(async {
+            tokio::select! {
+                biased;
+                step = guest.receive() => Err(match step {
                     Ok(GuestStep { state: GuestState::Failed { error }, .. }) => ToolOutcome::failure(&error.code, error.message),
                     Ok(_) => ToolOutcome::failure("E_PTC_PROTOCOL", "unexpected execution step while waiting for host calls"),
                     Err(error) => error.into_outcome(),
-                };
+                }),
+                completed = active.next() => Ok(completed.expect("活动队列非空")),
+            }
+        }, &ctx.cancel).await;
+        let completed = match completed {
+            Ok(Ok(completed)) => completed,
+            Ok(Err(error)) | Err(error) => {
+                outcome = error;
                 break;
             }
-            completed = active.next() => completed.expect("活动队列非空"),
         };
         let (id, result, tool) = completed;
         if let Some(size) = pending.remove(&id) {
             pending_bytes -= size;
         }
         if let Some(mut tool) = tool {
+            recorded_tools = true;
             images.append(&mut tool.images);
             if tool.control == ToolControl::EndTurn {
                 outcome = tool;
@@ -331,15 +393,64 @@ pub(super) async fn run(
     while let Some(request) = queue.pop_front() {
         let (_, _, tool) = perform(&child, request, Some(code)).await;
         if let Some(mut tool) = tool {
+            recorded_tools = true;
             images.append(&mut tool.images);
         }
     }
     while let Some((_, _, tool)) = active.next().await {
         if let Some(mut tool) = tool {
+            recorded_tools = true;
             images.append(&mut tool.images);
         }
     }
     guest.shutdown().await;
+    if recorded_tools
+        && outcome.is_error
+        && !matches!(
+            outcome.error_code.as_deref(),
+            Some("E_CANCELLED" | "E_TURN_ENDED")
+        )
+    {
+        super::result::recover_children(ctx, &mut outcome).await;
+    }
     outcome.images.extend(images);
     outcome
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn only_interaction_union_extends_deadline_and_cancel_still_wins() {
+        let now = tokio::time::Instant::now();
+        let (tx, events) = tokio::sync::mpsc::unbounded_channel();
+        let mut clock = ExecutionClock {
+            deadline: now - Duration::from_secs(5),
+            waiting: 0,
+            paused_at: None,
+            events,
+        };
+        for (started, seconds) in [(true, 10), (true, 8), (false, 6), (false, 1)] {
+            tx.send((started, now - Duration::from_secs(seconds)))
+                .unwrap();
+        }
+        let cancel = tokio_util::sync::CancellationToken::new();
+        assert_eq!(clock.wait(std::future::ready(7), &cancel).await.unwrap(), 7);
+        assert_eq!(clock.deadline, now + Duration::from_secs(4));
+        clock.deadline = now - Duration::from_secs(1);
+        let error = clock
+            .wait(std::future::pending::<()>(), &cancel)
+            .await
+            .unwrap_err();
+        assert_eq!(error.error_code.as_deref(), Some("E_TIMEOUT"));
+        tx.send((true, now)).unwrap();
+        cancel.cancel();
+        let error = clock
+            .wait(std::future::pending::<()>(), &cancel)
+            .await
+            .unwrap_err();
+        assert_eq!(error.error_code.as_deref(), Some("E_CANCELLED"));
+    }
 }

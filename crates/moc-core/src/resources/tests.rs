@@ -227,7 +227,7 @@ fn history_root_lists_transcript_and_compaction_segments() {
     );
 
     let transcript =
-        ResourceRouter::resolve_context(&context, ResourceScheme::History, "history://transcript")
+        ResourceRouter::resolve_context(&context, ResourceScheme::History, "history://raw")
             .expect("transcript URI")
             .expect("transcript 是资源");
     assert_eq!(
@@ -321,7 +321,7 @@ fn compressed_history_transcript_is_decoded_into_a_mirror() {
     let context = context_of(&paths, root.path(), &skills, &sessions);
 
     let transcript =
-        ResourceRouter::resolve_context(&context, ResourceScheme::History, "history://transcript")
+        ResourceRouter::resolve_context(&context, ResourceScheme::History, "history://raw")
             .expect("transcript URI")
             .expect("transcript 是资源");
     let ResourceBacking::File(mirror) = transcript.backing else {

@@ -7,6 +7,9 @@
   let maxTotal = 0;
   let totalCalls = 0;
   let maxOutput = 0;
+  let source = '';
+  const output = [];
+  let outputBytes = 0;
   let root = {state:'pending'};
   const stringify = JSON.stringify;
   const parse = JSON.parse;
@@ -18,8 +21,22 @@
     return e;
   }
   function normalizedError(e) {
-    const message = String(e?.message ?? e);
-    return {code: typeof e?.code === 'string' ? e.code : /out of memory/i.test(message) ? 'E_MEMORY_LIMIT' : 'E_JS', message, result:e?.result ?? null};
+    let message = String(e?.message ?? e);
+    const code = typeof e?.code === 'string' ? e.code : /out of memory/i.test(message) ? 'E_MEMORY_LIMIT' : 'E_JS';
+    if (code === 'E_JS') {
+      // AsyncFunction 在脚本前插入两行；只展示用户代码的位置，不暴露宿主栈。
+      const location = /<input>:(\d+)(?::(\d+))?/.exec(String(e?.stack ?? ''));
+      if (location) {
+        const line = Math.max(1, Number(location[1]) - 2);
+        const text = source.split('\n')[line - 1] ?? '';
+        message += `\nexecute:${line}${location[2] ? ':' + location[2] : ''}\n${line} | ${text.slice(0, 240)}`;
+      }
+      if (/before initialization|uninitialized|redefinition of parameter/.test(message)) {
+        message += '\nDo not shadow host namespaces tools, catalog, or state with local variables.';
+      }
+    }
+    if (output.length) message += '\nOutput before failure:\n' + output.join('');
+    return {code, message, result:e?.result ?? null};
   }
   function bytes(s) {
     let n = 0;
@@ -45,6 +62,25 @@
     }
     seen.delete(value);
     return out;
+  }
+  function print(...values) {
+    const text = values.map(value => {
+      if (typeof value === 'string') return value;
+      if (value instanceof Error) return `${value.name}: ${value.message}`;
+      const seen = new Set();
+      return stringify(value, (_, item) => {
+        if (typeof item === 'bigint') return String(item);
+        if (item && typeof item === 'object') {
+          if (seen.has(item)) return '[Circular]';
+          seen.add(item);
+        }
+        return item;
+      }) ?? String(value);
+    }).join(' ') + '\n';
+    const size = bytes(text);
+    if (size > maxOutput - outputBytes) throw fail('E_OUTPUT_LIMIT', 'console output exceeds the output limit; print only needed fields');
+    outputBytes += size;
+    output.push(text);
   }
   function keyCheck(key) {
     if (typeof key !== 'string' || bytes(key) < 1 || bytes(key) > 128) throw fail('E_STATE_KEY', 'key must be 1..128 UTF-8 bytes');
@@ -94,18 +130,20 @@
     remove: async key => { keyCheck(key); return await submit({op:'remove',key}); },
     keys: () => submit({op:'keys'})
   });
-  Object.assign(globalThis, {tools,catalog,state});
+  Object.assign(globalThis, {tools,catalog,state,print,console:Object.freeze({log:print,info:print,warn:print,error:print,debug:print})});
   return Object.freeze({
-    start(code, count, total, output) {
+    start(code, count, total, outputLimit) {
       maxPending = count;
       maxTotal = total;
       totalCalls = 0;
-      maxOutput = output;
-      Promise.resolve().then(() => (new (async function(){}).constructor('tools','catalog','state',code))(tools,catalog,state))
+      maxOutput = outputLimit;
+      source = code;
+      Promise.resolve().then(() => (new (async function(){}).constructor(code))())
         .then(value => {
           const safe = json(value === undefined ? null : value, 'E_SERIALIZE');
-          if (bytes(stringify(safe)) > maxOutput) throw fail('E_OUTPUT_LIMIT','return value exceeds the output limit');
-          root = {state:'done',value:safe};
+          const text = value === undefined ? '' : typeof safe === 'string' ? safe : stringify(safe);
+          if (outputBytes + bytes(text) > maxOutput) throw fail('E_OUTPUT_LIMIT','return value and console output exceed the output limit');
+          root = {state:'done',value:outputBytes ? output.join('') + text : safe};
         }).catch(e => { root = {state:'failed',error:normalizedError(e)}; });
     },
     take() {

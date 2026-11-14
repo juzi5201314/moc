@@ -196,7 +196,8 @@ impl Drop for Guest {
 struct Route {
     steps: Steps,
     limit: usize,
-    expires: Instant,
+    expires: Option<Instant>,
+    timeout: Duration,
     cancelling: bool,
 }
 
@@ -339,9 +340,9 @@ async fn manage(
     loop {
         let expires = routes
             .values()
-            .map(|route| route.expires)
+            .filter_map(|route| route.expires)
             .min()
-            .unwrap_or(idle_at);
+            .or_else(|| routes.is_empty().then_some(idle_at));
         tokio::select! {
             request = requests.recv() => match request {
                 Some(Request::Start { id, request, steps, max_runs, idle: timeout }) => {
@@ -358,23 +359,26 @@ async fn manage(
                     }
                     idle = timeout;
                     idle_at = Instant::now() + idle;
-                    let expires = Instant::now() + Duration::from_millis(request.timeout_ms) + CANCEL_GRACE;
-                    routes.insert(id, Route { steps, expires, limit: request.max_message_bytes, cancelling: false });
+                    let timeout = Duration::from_millis(request.timeout_ms) + CANCEL_GRACE;
+                    let expires = Some(Instant::now() + timeout);
+                    routes.insert(id, Route { steps, expires, timeout, limit: request.max_message_bytes, cancelling: false });
                     if let Err(error) = process.as_ref().unwrap().send(&HostMessage::Start { execution_id: id, request }) {
                         fail(&mut process, &mut routes, error).await;
                     }
                 }
                 Some(Request::Complete { id, completions }) => {
-                    if routes.get(&id).is_some_and(|route| !route.cancelling)
-                        && let Err(error) = process.as_ref().unwrap().send(&HostMessage::Complete { execution_id: id, completions }) {
+                    if let Some(route) = routes.get_mut(&id) && !route.cancelling {
+                        route.expires = Some(Instant::now() + route.timeout);
+                        if let Err(error) = process.as_ref().unwrap().send(&HostMessage::Complete { execution_id: id, completions }) {
                             fail(&mut process, &mut routes, error).await;
                         }
+                    }
                 }
                 Some(Request::Cancel { id, code }) => {
                     if let Some(route) = routes.get_mut(&id)
                         && !route.cancelling {
                             route.cancelling = true;
-                            route.expires = route.expires.min(Instant::now() + CANCEL_GRACE);
+                            route.expires = Some(Instant::now() + CANCEL_GRACE);
                             if let Err(error) = process.as_ref().unwrap().send(&HostMessage::Cancel { execution_id: id, code }) {
                                 fail(&mut process, &mut routes, error).await;
                             }
@@ -416,7 +420,7 @@ async fn manage(
                                 }
                             } else {
                                 route.cancelling = true;
-                                route.expires = route.expires.min(Instant::now() + CANCEL_GRACE);
+                                route.expires = Some(Instant::now() + CANCEL_GRACE);
                                 if let Err(error) = process.as_ref().unwrap().send(&HostMessage::Cancel {
                                     execution_id,
                                     code: "E_OUTPUT_LIMIT".into(),
@@ -427,13 +431,16 @@ async fn manage(
                             continue;
                         }
                         let _ = route.steps.send(Ok(step));
+                        if !terminal && let Some(route) = routes.get_mut(&execution_id) && !route.cancelling {
+                            route.expires = None;
+                        }
                         if terminal { routes.remove(&execution_id); }
                         if routes.is_empty() { idle_at = Instant::now() + idle; }
                     }
                     Err(error) => fail(&mut process, &mut routes, error).await,
                 }
             },
-            _ = tokio::time::sleep_until(expires), if process.is_some() => {
+            _ = async { tokio::time::sleep_until(expires.expect("分支已检查期限")).await }, if process.is_some() && expires.is_some() => {
                 if routes.is_empty() {
                     if let Some(process) = process.take() { process.stop().await; }
                 } else {

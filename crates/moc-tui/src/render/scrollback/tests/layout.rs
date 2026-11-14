@@ -911,3 +911,90 @@ fn user_and_note_estimates_match_render() {
         }
     }
 }
+
+#[test]
+fn long_line_notices_group_expand_and_deduplicate_after_parent_finishes() {
+    use moc_protocol::methods::ToolStatus;
+    let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(crate::theme::Theme::global(), events);
+    let notices = (100..116)
+        .map(|n| {
+            format!(
+                "[Line {n} is 9 KB; content omitted; read with offset={n}, limit=1, byte_offset=0]"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.start_tool_block(ToolCallStart {
+        id: "parent".into(),
+        name: "execute".into(),
+        parent_id: None,
+        arguments: "{}".into(),
+    });
+    app.start_tool_block(ToolCallStart {
+        id: "child".into(),
+        name: "read".into(),
+        parent_id: Some("parent".into()),
+        arguments: "{}".into(),
+    });
+    let finish = |id: &str, name: &str, parent: Option<&str>| ToolCallFinish {
+        id: id.into(),
+        name: name.into(),
+        parent_id: parent.map(str::to_owned),
+        arguments: "{}".into(),
+        status: ToolStatus::Completed,
+        result: moc_protocol::ToolResult {
+            tool_call_id: id.into(),
+            content: notices.clone(),
+            is_error: false,
+            images: Vec::new(),
+        },
+        duration_ms: Some(1),
+        diff: None,
+    };
+    app.finish_tool_block(finish("child", "read", Some("parent")));
+    let child = app.tool_block("child").unwrap();
+    let compact = super::super::notices::rows(child, &app, 120, DetailLevel::Brief);
+    assert_eq!(compact.len(), 1, "16 条同类通知必须合并成一行");
+    let full = super::super::notices::rows(child, &app, 120, DetailLevel::Full)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        full.contains("Line 100") && full.contains("Line 115") && full.contains("byte_offset=0")
+    );
+    let mut view = ScrollbackView::new();
+    view.sync(&app, 120);
+    let before = view.cache[1].lines.iter().map(plain).collect::<Vec<_>>();
+    app.finish_tool_block(finish("parent", "execute", None));
+    view.sync(&app, 120);
+    assert!(
+        super::super::notices::rows(
+            app.tool_block("child").unwrap(),
+            &app,
+            120,
+            DetailLevel::Brief
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        super::super::notices::rows(
+            app.tool_block("parent").unwrap(),
+            &app,
+            120,
+            DetailLevel::Brief
+        )
+        .len(),
+        1
+    );
+    assert!(before.iter().any(|line| line.contains("16")));
+    assert!(
+        !view.cache[1]
+            .lines
+            .iter()
+            .map(plain)
+            .any(|line| line.contains("16")),
+        "父结果落地后不能沿用子块的旧通知缓存"
+    );
+}

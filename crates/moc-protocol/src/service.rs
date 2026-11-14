@@ -728,6 +728,7 @@ impl RequestContext {
             requester: Requester {
                 traffic,
                 cancel: cancel.clone(),
+                interactions: None,
             },
             cancel,
         }
@@ -742,9 +743,19 @@ impl RequestContext {
             requester: Requester {
                 traffic: Arc::clone(&self.requester.traffic),
                 cancel: cancel.clone(),
+                interactions: self.requester.interactions.clone(),
             },
             cancel,
         }
+    }
+
+    /// 仅观察本次上下文里的用户提问/授权等待；不改变线上协议或请求取消语义。
+    pub fn with_interaction_observer(
+        mut self,
+        observer: tokio::sync::mpsc::UnboundedSender<(bool, tokio::time::Instant)>,
+    ) -> Self {
+        self.requester.interactions = Some(observer);
+        self
     }
 
     /// 连接号；用于日志关联（前端侧恒为 `0`）。
@@ -872,6 +883,19 @@ impl UpdateSink {
 pub struct Requester {
     traffic: Arc<Traffic>,
     cancel: CancellationToken,
+    interactions: Option<tokio::sync::mpsc::UnboundedSender<(bool, tokio::time::Instant)>>,
+}
+
+struct InteractionWait<'a>(
+    Option<&'a tokio::sync::mpsc::UnboundedSender<(bool, tokio::time::Instant)>>,
+);
+
+impl Drop for InteractionWait<'_> {
+    fn drop(&mut self) {
+        if let Some(observer) = self.0 {
+            let _ = observer.send((false, tokio::time::Instant::now()));
+        }
+    }
 }
 
 impl Requester {
@@ -883,6 +907,16 @@ impl Requester {
         &self,
         params: M::Params,
     ) -> Result<M::Result, RpcCallError> {
+        let observer = self.interactions.as_ref().filter(|_| {
+            matches!(
+                M::NAME,
+                "session/request_ask" | "session/request_permission"
+            )
+        });
+        if let Some(observer) = observer {
+            let _ = observer.send((true, tokio::time::Instant::now()));
+        }
+        let _waiting = InteractionWait(observer);
         self.traffic
             .reverse_request::<M>(params, &self.cancel)
             .await

@@ -95,6 +95,8 @@ export function toolNotices(result: string): string[] {
       ) ||
       (line.startsWith("[Line ") && line.includes("content omitted;")) ||
       line.startsWith("Lines shown as a size notice") ||
+      line.startsWith("[Long lines omitted;") ||
+      line.startsWith("[Continue with read ") ||
       (line.startsWith("[") &&
         (line.includes(" matches shown; ") ||
           (line.includes(" files exceeded the ") && line.endsWith("were not searched]"))))

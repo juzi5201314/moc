@@ -373,7 +373,7 @@ pub(crate) fn truncate_torn_tail(path: &Path) -> Result<bool, CoreError> {
     Ok(true)
 }
 
-/// `history://transcript` 对外的路径：明文直接给出源文件，压缩会话给出解码镜像。
+/// 原始 JSONL 的只读路径：明文直接给出源文件，压缩会话给出解码镜像。
 pub(crate) fn history_view_path(paths: &SessionPaths) -> PathBuf {
     if paths.compressed() {
         paths.history_cache_dir().join("transcript.jsonl")
@@ -390,7 +390,21 @@ pub(crate) fn refresh_history_view(paths: &SessionPaths) -> Result<bool, CoreErr
     if !paths.compressed() {
         return Ok(paths.transcript.exists());
     }
-    let mirror = history_view_path(paths);
+    refresh_history_document(paths, &history_view_path(paths), |out| {
+        for_each_line(&paths.transcript, &mut |line| {
+            out.write_all(line)?;
+            out.write_all(b"\n")?;
+            Ok(())
+        })
+    })
+}
+
+/// 派生历史视图与原始解码镜像共用权限、失效、原子发布和错误清理逻辑。
+pub(crate) fn refresh_history_document(
+    paths: &SessionPaths,
+    mirror: &Path,
+    render: impl FnOnce(&mut dyn Write) -> Result<(), CoreError>,
+) -> Result<bool, CoreError> {
     let stamp_path = mirror.with_extension("stamp");
     let source = &paths.transcript;
     if !source.exists() {
@@ -427,11 +441,7 @@ pub(crate) fn refresh_history_view(paths: &SessionPaths) -> Result<bool, CoreErr
         let out = options.open(&temp)?;
         out.set_permissions(permissions)?;
         let mut out = BufWriter::with_capacity(READ_BUFFER, out);
-        for_each_line(source, &mut |line| {
-            out.write_all(line)?;
-            out.write_all(b"\n")?;
-            Ok(())
-        })?;
+        render(&mut out)?;
         out.flush()?;
         out.get_ref().sync_all()?;
         drop(out);

@@ -16,12 +16,14 @@ use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 use crate::hashline::{numbered_line, served::read_snapshot, tag_text};
 use crate::resources::{ResourceBacking, ResourceRouter};
 
+mod partial;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadArgs {
     path: String,
     offset: Option<i64>,
     limit: Option<usize>,
+    byte_offset: Option<usize>,
 }
 
 pub struct ReadTool;
@@ -31,7 +33,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "Read a text file, image, directory, or session resource URI; file output starts with [path#TAG] and numbers each line as N│text for edit and plan edits; png/jpeg/gif/webp/bmp files return the image itself when the model accepts image input. With an explicit limit, a directory lists one level at a time and offset paginates."
+        "Read files, images, directories or internal resources. history://transcript is a readable index; filter via /role/user or /tool/<name>, then read /entry/<id> for full text. Original JSONL: history://raw. Long lines: use offset=<line>, limit=1, byte_offset=0 and follow next. Complete local lines have [path#TAG] and N│text for editing."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -46,7 +48,8 @@ impl Tool for ReadTool {
                 serde_json::json!({
                     "path": {"type":"string","description":"File, directory, or session-internal URI"},
                     "offset": {"type":"integer","description":"1-based starting line; negative counts from the end (-50 = last 50 lines)"},
-                    "limit": {"type":"integer","minimum":1,"description":"Number of lines to read (default 300); oversized pages are truncated by a byte budget"}
+                    "limit": {"type":"integer","minimum":1,"description":"Number of lines to read (default 300); oversized pages are truncated by a byte budget"},
+                    "byte_offset": {"type":"integer","minimum":0,"description":"0-based UTF-8 byte offset within one line; requires limit=1. Returns a read-only chunk and exact next arguments"}
                 }),
                 &["path"],
             ),
@@ -60,6 +63,12 @@ impl Tool for ReadTool {
         Box::pin(async move {
             let args: ReadArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+            if args.byte_offset.is_some() && args.limit != Some(1) {
+                return Err(ToolError::new(
+                    "E_ARGUMENT",
+                    "byte_offset requires limit=1; offset selects the line",
+                ));
+            }
             let (path, display) = match ResourceRouter::resolve_read(ctx, &args.path)
                 .await
                 .map_err(|error| ToolError::new(error.code, error.message))?
@@ -67,6 +76,17 @@ impl Tool for ReadTool {
                 Some(resource) => match resource.backing {
                     ResourceBacking::File(path) => (path, resource.uri),
                     ResourceBacking::Text(listing) | ResourceBacking::Namespace { listing, .. } => {
+                        if let Some(byte_offset) = args.byte_offset {
+                            let lines: Vec<_> = listing.lines().collect();
+                            let start = page_start(args.offset, lines.len());
+                            return partial::read(
+                                &resource.uri,
+                                lines.get(start).copied().unwrap_or_default(),
+                                start + 1,
+                                byte_offset,
+                                &ctx.config.tools.read,
+                            );
+                        }
                         return Ok(ToolOutcome::success(render_text_resource(
                             &resource.uri,
                             &listing,
@@ -78,7 +98,14 @@ impl Tool for ReadTool {
                 },
                 None => (resolve_path(&ctx.cwd, &args.path)?, args.path.clone()),
             };
+            let resource = crate::resources::is_resource_uri(&display);
             if path.is_dir() {
+                if args.byte_offset.is_some() {
+                    return Err(ToolError::new(
+                        "E_ARGUMENT",
+                        "byte_offset requires a text file or document",
+                    ));
+                }
                 return Ok(ToolOutcome::success(list_directory(
                     &path,
                     &ctx.cwd,
@@ -109,16 +136,26 @@ impl Tool for ReadTool {
                 .max(1);
             let start = page_start(args.offset, snapshot.lines.len());
             let end = start.saturating_add(limit).min(snapshot.lines.len());
-            let anchored = snapshot.bytes.len() <= 4 * 1024 * 1024;
+            if let Some(byte_offset) = args.byte_offset {
+                return partial::read(
+                    &display,
+                    snapshot.lines.get(start).map_or("", String::as_str),
+                    start + 1,
+                    byte_offset,
+                    &ctx.config.tools.read,
+                );
+            }
+            let anchored = snapshot.bytes.len() <= 4 * 1024 * 1024
+                && (!resource || display.starts_with("local://"));
             // tag 固定 4 个字符：先按最终头部长度（含换行）预留预算，登记后再写入头部。
             let header_len = display.len() + if anchored { 8 } else { 3 };
             let mut notices = String::new();
-            if !anchored {
+            if !anchored && !resource {
                 notices.push_str(
-                    "\n[File exceeds the 4 MiB snapshot limit; line-number edits are unavailable; use bash or write.]",
+                    "\n[File exceeds the 4 MiB snapshot limit; line-number edits are unavailable; read in pages or rewrite the local file with write.]",
                 );
             }
-            if std::str::from_utf8(&snapshot.bytes).is_err() {
+            if !resource && std::str::from_utf8(&snapshot.bytes).is_err() {
                 notices.push_str(
                     "\n[Invalid UTF-8 shown as U+FFFD; editing rewrites the file as UTF-8]",
                 );
@@ -162,6 +199,8 @@ impl Tool for ReadTool {
                 } else if anchored {
                     let digits = digits_of(position + 1);
                     (LineMode::Anchor, digits + 3 + line.len())
+                } else if resource {
+                    (LineMode::ReadOnly, digits_of(position + 1) + 3 + line.len())
                 } else {
                     (LineMode::Plain, line.len())
                 };
@@ -169,7 +208,10 @@ impl Tool for ReadTool {
                     break;
                 }
                 rendered_bytes += rendered_len + 1;
-                has_uneditable_shown |= mode == LineMode::AnchorPlaceholder;
+                has_uneditable_shown |= matches!(
+                    mode,
+                    LineMode::AnchorPlaceholder | LineMode::PlainPlaceholder
+                );
                 selected.push(position);
                 modes.push(mode);
             }
@@ -203,7 +245,7 @@ impl Tool for ReadTool {
             for (position, mode) in selected.iter().copied().zip(modes.iter().copied()) {
                 let line = &snapshot.lines[position];
                 let text = match mode {
-                    LineMode::Anchor => numbered_line(position + 1, line),
+                    LineMode::Anchor | LineMode::ReadOnly => numbered_line(position + 1, line),
                     LineMode::AnchorPlaceholder | LineMode::PlainPlaceholder => {
                         placeholder_line(position + 1, line.len())
                     }
@@ -220,7 +262,7 @@ impl Tool for ReadTool {
             output.push_str(&page_footer(start + 1, shown_end, total, args.limit, limit));
             output.push_str(&notices);
             if has_uneditable_shown {
-                output.push_str("\nLines shown as a size notice instead of N│text are not editable; inspect them with bash or rewrite the file with write.");
+                output.push_str("\n[Long lines omitted; use read with offset=<line>, limit=1, byte_offset=0, then follow structuredContent.next. Partial or omitted lines cannot authorize edits.]");
             }
             if !anchored {
                 ctx.anchors.invalidate(&path);
@@ -246,6 +288,7 @@ fn page_byte_budget(limit: usize, output_budget: usize, max_bytes: usize) -> usi
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LineMode {
     Plain,
+    ReadOnly,
     Anchor,
     AnchorPlaceholder,
     PlainPlaceholder,
@@ -260,7 +303,7 @@ fn digits_of(value: usize) -> usize {
 /// 超长行的占位文本；不带 `N│` 前缀，避免被当成可编辑行。
 fn placeholder_line(line_no: usize, bytes: usize) -> String {
     format!(
-        "[Line {line_no} is {} KB and exceeds the limit; content omitted; use bash to inspect it]",
+        "[Line {line_no} is {} KB; content omitted; read with offset={line_no}, limit=1, byte_offset=0]",
         bytes.div_ceil(1024)
     )
 }

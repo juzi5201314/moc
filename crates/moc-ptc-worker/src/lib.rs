@@ -26,21 +26,29 @@ enum Command {
 
 #[derive(Clone)]
 struct Control {
-    reason: Arc<Mutex<Option<String>>>,
+    state: Arc<Mutex<ControlState>>,
+}
+
+struct ControlState {
+    reason: Option<String>,
     deadline: Instant,
 }
 
 impl Control {
     fn reason(&self) -> Option<String> {
-        self.reason
-            .lock()
-            .unwrap()
+        let state = self.state.lock().unwrap();
+        state
+            .reason
             .clone()
-            .or_else(|| (Instant::now() >= self.deadline).then(|| "E_TIMEOUT".to_owned()))
+            .or_else(|| (Instant::now() >= state.deadline).then(|| "E_TIMEOUT".to_owned()))
     }
 
     fn cancel(&self, code: String) {
-        self.reason.lock().unwrap().get_or_insert(code);
+        self.state.lock().unwrap().reason.get_or_insert(code);
+    }
+
+    fn resume_after(&self, waited: Duration) {
+        self.state.lock().unwrap().deadline += waited;
     }
 }
 
@@ -112,8 +120,10 @@ pub fn run<R: BufRead + Send + 'static, W: Write>(mut input: R, mut output: W) -
                     last_id = Some(execution_id);
                     let (commands, receiver) = mpsc::channel();
                     let control = Control {
-                        reason: Arc::new(Mutex::new(None)),
-                        deadline: Instant::now() + Duration::from_millis(request.timeout_ms),
+                        state: Arc::new(Mutex::new(ControlState {
+                            reason: None,
+                            deadline: Instant::now() + Duration::from_millis(request.timeout_ms),
+                        })),
                     };
                     let thread_control = control.clone();
                     let thread_events = events.clone();
@@ -263,8 +273,12 @@ fn execute(
         if !matches!(step.state, GuestState::Pending) {
             return Ok(step);
         }
+        // worker 只计 JS 执行时间；工具等待由 Core 计时，用户交互不会耗尽 JS 预算。
+        let waiting_since = Instant::now();
         emit(step)?;
-        match commands.recv_timeout(control.deadline.saturating_duration_since(Instant::now())) {
+        let command = commands.recv();
+        control.resume_after(waiting_since.elapsed());
+        match command {
             Ok(Command::Complete(completions)) => {
                 let values = match completions
                     .into_iter()
@@ -296,10 +310,7 @@ fn execute(
                 }
             }
             Ok(Command::Cancel) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                return Ok(failed("E_TIMEOUT", "script timed out"));
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(mpsc::RecvError) => {
                 return Ok(failed("E_CANCELLED", "宿主关闭了 execution"));
             }
         }

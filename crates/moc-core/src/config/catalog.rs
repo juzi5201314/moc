@@ -653,10 +653,13 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             ("沙盒内存上限（字节）", "QuickJS 实例的最大堆内存限制。")
         }
         "tools.ptc.max_output_bytes" => (
-            "stdout 字节上限",
-            "单次 execute 脚本标准输出的最大保留字节数。",
+            "脚本输出字节上限",
+            "单次 execute 的日志与返回值预算，也限制脚本源码和挂起请求字节数。",
         ),
-        "tools.ptc.max_result_bytes" => ("返回值字节上限", "单次 execute 脚本返回值的最大字节数。"),
+        "tools.ptc.max_result_bytes" => (
+            "子调用结果字节上限",
+            "单个宿主调用交给 execute 脚本读取的结果上限，超出时提供归档引用。",
+        ),
         "tools.ptc.max_pending_calls" => (
             "挂起调用上限",
             "单个脚本同时处于等待状态的宿主工具调用数上限。",
@@ -840,8 +843,14 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "检测到写回内容疑似误带 read 行号前缀达到此次数时拒绝写入。",
             ),
             "max_files" => ("结果文件数上限", "单次 grep 最多返回的文件数。"),
-            "max_matches_per_file" => ("单文件匹配上限", "单个文件最多返回的匹配处数。"),
-            "max_matches_total" => ("总匹配上限", "单次 grep 最多返回的匹配总数。"),
+            "max_matches_per_file" => (
+                "多文件搜索的每文件匹配上限",
+                "搜索目录时，每个文件最多返回的匹配处数；单独搜索一个文件采用总匹配上限。",
+            ),
+            "max_matches_total" => (
+                "总匹配上限",
+                "单次 grep 最多返回的匹配总数，也是单文件搜索的匹配上限。",
+            ),
             "line_max_chars" => ("匹配行字符上限", "搜索结果单行最多显示的字符数。"),
             "context_before" => ("上文行数", "每处匹配上方附带的上下文行数。"),
             "context_after" => ("下文行数", "每处匹配下方附带的上下文行数。"),

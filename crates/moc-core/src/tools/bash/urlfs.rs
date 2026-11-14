@@ -42,11 +42,17 @@ pub(crate) fn refresh_history(
     policy: &crate::sandbox::SandboxPolicy,
 ) -> Result<(), ToolError> {
     let mirror = crate::session::log::history_view_path(paths);
-    if policy.denies_read(&paths.transcript) || policy.denies_read(&mirror) {
+    let readable = crate::resources::history::Selection::Index.path(paths);
+    if policy.denies_read(&paths.transcript)
+        || policy.denies_read(&mirror)
+        || policy.denies_read(&readable)
+    {
         // 不把 echo/ls 等不读取正文的命令整体拒绝；实际读取由内核镜像遮蔽阻止。
         return Ok(());
     }
-    if let Err(error) = crate::session::log::refresh_history_view(paths) {
+    if let Err(error) = crate::session::log::refresh_history_view(paths)
+        .and_then(|_| crate::resources::history::Selection::Index.refresh(paths))
+    {
         #[cfg(unix)]
         tracing::warn!(%error, "刷新压缩 transcript 的解码镜像失败");
         #[cfg(not(unix))]
@@ -84,14 +90,16 @@ pub(crate) fn prepare_for(
         let Some(targets) = collect_targets(kind, command) else {
             return Ok(None);
         };
-        let history_view = paths.compressed()
-            && targets.iter().any(|target| {
-                let namespace = target.remainder.split('/').next().unwrap_or_default();
-                target.scheme == "history"
-                    && (namespace.is_empty()
-                        || namespace == "transcript"
-                        || namespace.contains(['*', '?', '[']))
-            });
+        if targets
+            .iter()
+            .any(|target| target.scheme == "history" && target.remainder.starts_with("transcript/"))
+        {
+            return Err(ToolError::new(
+                "E_URLFS",
+                "Filtered history views are read resources; use read with the history://transcript/... URI",
+            ));
+        }
+        let history_view = targets.iter().any(|target| target.scheme == "history");
         let rewrites = render_rewrites(kind, paths, skills, targets)?;
         // 从后往前替换：先改前面的词会让后面的字节偏移失效。
         let mut rewritten = command.to_owned();
@@ -211,12 +219,13 @@ fn ensure_farm(paths: &SessionPaths, skills: &SkillIndex) -> std::io::Result<Pat
         &history.join("compaction"),
         &Path::new(sidecar).join("compaction"),
     )?;
+    link(
+        &history.join("transcript"),
+        &crate::resources::history::Selection::Index.path(paths),
+    )?;
     if compressed {
         // 解码必须留到授权后的执行阶段；这里只建立可供权限提示显示的链接。
-        link(
-            &history.join("transcript"),
-            Path::new("../../transcript.jsonl"),
-        )?;
+        link(&history.join("raw"), Path::new("../../transcript.jsonl"))?;
     } else {
         // transcript 在会话目录下、sidecar 之外，所以要往上多走一层。
         let Some(name) = paths.transcript.file_name() else {
@@ -225,10 +234,7 @@ fn ensure_farm(paths: &SessionPaths, skills: &SkillIndex) -> std::io::Result<Pat
                 "transcript path has no file name",
             ));
         };
-        link(
-            &history.join("transcript"),
-            &Path::new("../../../").join(name),
-        )?;
+        link(&history.join("raw"), &Path::new("../../../").join(name))?;
     }
     sync_skill_links(&skill, skills)?;
     Ok(farm)
@@ -358,13 +364,10 @@ fn direct_target(
                 return Err(bare_namespace_error("history"));
             }
             if remainder == "transcript" {
-                if paths.compressed() {
-                    return Ok(crate::session::log::history_view_path(paths));
-                }
-                return Ok(paths.transcript.clone());
+                return Ok(crate::resources::history::Selection::Index.path(paths));
             }
-            if let Some(rest) = remainder.strip_prefix("transcript/") {
-                return Ok(paths.transcript.join(rest));
+            if remainder == "raw" {
+                return Ok(crate::session::log::history_view_path(paths));
             }
             if remainder == "compaction" {
                 return Ok(paths.compaction());

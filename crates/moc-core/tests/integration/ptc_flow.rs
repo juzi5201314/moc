@@ -404,3 +404,136 @@ async fn fetch_documents_are_reused_and_readable_through_execute() {
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     harness.close().await;
 }
+
+#[tokio::test]
+async fn execute_user_wait_outlives_deadline_and_keeps_answer() {
+    use moc_protocol::{ClientBuilder, methods::*, transport};
+    assert!(support::require_moc_bin("PTC 用户等待"));
+    let upstream = MockServer::builder().start().await;
+    let calls = AtomicUsize::new(0);
+    Mock::given(method("POST")).respond_with(move |_: &Request| {
+        let response = if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            support::tool_stream(vec![("wait_answer", "execute", json!({
+                "description":"等待用户决定后返回回答",
+                "timeout_secs":1,
+                "code":"const answer = await tools.ask({questions:[{id:'choice',question:'Choose',options:[{label:'Option A'},{label:'Option B'}]}]}); console.log('Answer received'); return answer.content;"
+            }))])
+        } else { support::text_stream("完成") };
+        ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+    }).mount(&upstream).await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    let (server_side, client_side) = transport::duplex(65536);
+    let connection = harness.server.spawn(server_side);
+    let (client, _) = ClientBuilder::new(ClientInfo {
+        name: "等待验收".into(),
+        version: "1".into(),
+        frontend: "test".into(),
+    })
+    .capabilities(ClientCapabilities {
+        permission_requests: false,
+        ask_requests: true,
+    })
+    .on_request::<SessionRequestAsk, _, _>(|params, _| async move {
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        Ok(AskResult {
+            answers: vec![AskAnswer {
+                id: params.questions[0].id.clone(),
+                selected: vec!["Option A".into()],
+                custom: None,
+            }],
+        })
+    })
+    .connect(client_side)
+    .await
+    .unwrap();
+    let session = client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            engine: SessionEngine::Ptc,
+            plan_active: false,
+            fast_mode: false,
+        })
+        .await
+        .unwrap();
+    client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: session.id.clone(),
+            input: vec![InputPart::Text {
+                text: "等待用户回答".into(),
+            }],
+            mode: None,
+            agent_message: None,
+            goal_round: None,
+        })
+        .await
+        .unwrap();
+    let loaded = harness.load(&session.id).await;
+    let result = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .find(|r| r.tool_call_id == "wait_answer")
+        .unwrap();
+    assert!(!result.is_error, "{}", result.content);
+    assert!(result.content.contains("Answer received\n") && result.content.contains("Option A"));
+    client.close().await;
+    connection.close();
+    connection.wait().await;
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn failed_execute_preserves_completed_reads_in_readable_artifact() {
+    assert!(support::require_moc_bin("PTC 失败恢复"));
+    let upstream = MockServer::builder().start().await;
+    let calls = AtomicUsize::new(0);
+    Mock::given(method("POST")).respond_with(move |request: &Request| {
+        let response = match calls.fetch_add(1, Ordering::SeqCst) {
+            0 => support::tool_stream(vec![("failed_batch", "execute", json!({
+                "description":"读取后触发参数错误",
+                "code":"await tools.read({path:'kept.txt'}); return await tools.grep({pattern:'hit',limit:80});"
+            }))]),
+            1 => {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let result = body["messages"].as_array().unwrap().iter().rev().find(|m| m["role"] == "tool").unwrap()["content"].as_str().unwrap();
+                let uri = result.split_whitespace().find(|word| word.starts_with("artifact://")).expect("失败结果必须能回读").trim_end_matches('.');
+                support::tool_stream(vec![("recover_batch", "execute", json!({
+                    "description":"读取已完成子调用结果",
+                    "code":format!("return (await tools.read({{path:{uri:?}}})).content;")
+                }))])
+            }
+            _ => support::text_stream("完成"),
+        };
+        ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+    }).mount(&upstream).await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    std::fs::write(
+        harness.root.path().join("work/kept.txt"),
+        "unique_read_evidence\n",
+    )
+    .unwrap();
+    let session = harness.session(moc_protocol::SessionEngine::Ptc).await;
+    harness.prompt(&session, "保留已完成结果").await;
+    let loaded = harness.load(&session).await;
+    let results: Vec<_> = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .collect();
+    let failed = results
+        .iter()
+        .find(|r| r.tool_call_id == "failed_batch")
+        .unwrap();
+    assert!(failed.is_error);
+    assert_eq!(failed.content.matches("[E_BAD_PAYLOAD]").count(), 1);
+    let recovered = results
+        .iter()
+        .find(|r| r.tool_call_id == "recover_batch")
+        .unwrap();
+    assert!(!recovered.is_error, "{}", recovered.content);
+    assert!(recovered.content.contains("unique_read_evidence"));
+    assert!(recovered.content.contains("unknown field `limit`"));
+    harness.close().await;
+}

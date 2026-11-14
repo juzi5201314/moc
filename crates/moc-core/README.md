@@ -117,6 +117,17 @@ TUI、Web 与行式 CLI 均支持：
 - `tools.job.max_running=4`：限制后台进程数量；`overflow="error"` 默认直接向模型返回超限错误，`"wait"` 等待空闲名额，可取消。前台命令不占后台名额。
 - `tools.output`：所有工具（包括 MCP）共用首尾输出预算（各 20 KiB）和读写文件容量上限（100 MiB），超出预算的完整文本自动归档；工具本身的分页、搜索和专项限制仍在各自分组。
 - `find` 与 `grep` 默认忽略隐藏项与 `.git/`：需要时显式传 `hidden=true`，两个工具语义一致。
+- `grep`：目录搜索默认每页 20 个文件、每文件 20 个匹配；单文件采用 `max_matches_total`（默认 200）作为匹配上限。`skip` 只跳过文件，`offset` 是单个文件或文档内的起始行（从 1 开始），不能用于目录。文件内部截断会给出具体路径和下一行，而不是错误地建议跳过整个文件；`structuredContent.next` 保存可覆盖到原查询的续读参数，`scan_incomplete=true` 表示扫描未完整完成，不能根据未命中断言不存在。文件内续读和下一页文件可能同时存在，需分别处理。
+- `read` 超长行不再建议交给 bash 或重写内部资源。用 `offset` 选行、`limit=1`、`byte_offset=0` 读取 UTF-8 安全片段；`structuredContent.text` 是原文片段，`next` 给出精确续读参数，末片为 `null`。片段及被省略行不登记为可编辑范围；普通完整本地行与计划锚点保持原语义。
+
+### 历史回查
+
+`history://transcript` 现在提供带稳定记录链接的可读索引，不再直接输出一行一个对象的原始 JSONL。索引仅预览正文；用 `history://transcript/entry/<id>` 取得该记录的可读正文／工具参数／结果，用 `history://transcript/role/user`、`/role/assistant`、`/role/tool` 或 `history://transcript/tool/<name>` 先筛选再分页。所有视图都支持 `read` 的 `offset`／`limit`，单行特别长时再用 `byte_offset` 续读。索引和正文视图不展示不透明思考载荷或二进制附件字段，原文仍完整保存在只读的 `history://raw`。
+
+这些视图是按源文件状态失效的私有派生缓存，不改写原始会话；明文和 zstd 会话共用同一投影。缓存沿用源文件权限，源或镜像被沙盒拒读时不能通过派生视图绕过。shell 的历史后备映射区分可读 `transcript` 与原始 `raw`；筛选视图只通过 `read` 访问。
+
+TUI/Web 将同次读取的长行省略合并为一条可展开摘要；父调用已经展示的相同通知不再重复出现在子调用，子调用独有的警告仍保留。展开后显示具体行号与有效的续读方式，完整原始工具结果不因展示去重而改写。
+
 
 ### 子代理
 
@@ -158,6 +169,12 @@ Explorer 沿用工具拒绝列表：禁用 `edit`、`write`、`spawn_agent`、`s
 ### 工具执行与编排（execute / PTC）
 
 `execute` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。Core 按需启动一个长期 `moc --ptc-worker` Host，多个逻辑 execution 通过 ID 复用同一进程；每次 execution 都创建全新的 QuickJS Runtime/Context，因此全局变量、Promise 和堆不会跨 execution 泄漏。Host 与 core 通过一行一条 JSON 的 RPC 推进脚本；工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。
+
+标准引擎下，简单读写搜索优先直接调用工具；`execute` 适合组合、筛选和聚合。脚本可 `return` 结果，也可用 `console.log` / `console.info` / `console.warn` / `console.error` / `console.debug` / `print` 输出：字符串保留换行，日志按顺序放在返回值前，并共享 `tools.ptc.max_output_bytes` 预算。没有日志时保持原有 JSON 返回语义；有日志时合并为文本。超出预算会报错，不吞掉输出。宿主命名空间 `tools`、`catalog`、`state` 不应被局部变量遮蔽；脚本异常附带用户代码位置及出错前已收集的日志。
+
+独立只读批次应使用 `Promise.allSettled`，避免一个失败遮住成功结果。脚本失败后，Core 从本轮已经提交的子调用日志生成结果归档，错误消息提供 `artifact://` 引用；先回读再决定重试，不能重放整个批次。已完成写入不会回滚。成功路径不额外复制或归档子调用正文。
+
+`timeout_secs` 计算脚本执行与普通工具等待，但扣除用户回答和授权决定的等待时间；重叠的交互等待只扣除一次，取消仍立即生效。worker 单独约束 JS 计算时间，等待宿主返回时暂停其计算预算；Core 仍负责限制没有用户交互的慢工具，不因此允许无限运行。该行为不依赖把默认超时简单调大，也不改变默认引擎或对外 JSON-RPC schema。
 
 MCP 在首次提示建立目录前并行等待各 server 的首次连接尝试，等待受 `connect_timeout_secs` 与取消约束；失败只影响该 server。目录在整条用户提示内固定，`catalog.servers()` 返回快照状态，工具列表变化在下一条提示生效。服务端使用说明不常驻：`catalog.servers()` 的 `instructionsUri` 指向 `tool://mcp/<server>`，通过 `read` 按需获取；说明与索引描述都作为不可信数据转义，不能闭合系统提醒标签。
 

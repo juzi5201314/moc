@@ -123,24 +123,37 @@ pub(super) fn resolve_history(
     let uri =
         InternalUri::parse(input).map_err(|error| ResourceError::new(error.code, error.message))?;
     let path = match (uri.authority(), uri.segments()) {
-        ("transcript", []) => {
+        ("transcript", _) | ("raw", []) => {
+            let selection = if uri.authority() == "transcript" {
+                Some(super::history::Selection::parse(&uri)?)
+            } else {
+                None
+            };
+            let target = selection.as_ref().map_or_else(
+                || crate::session::log::history_view_path(context.paths),
+                |selection| selection.path(context.paths),
+            );
             if policy.denies_read(&context.paths.transcript)
                 || policy.denies_read(&crate::session::log::history_view_path(context.paths))
+                || policy.denies_read(&target)
             {
                 return Err(ResourceError::new(
                     "E_SANDBOX_DENIED",
                     "transcript 源文件或镜像被禁止读取",
                 ));
             }
-            let exists = crate::session::log::refresh_history_view(context.paths)
-                .map_err(|error| ResourceError::new("E_HISTORY_READ", error.to_string()))?;
+            let exists = match selection {
+                Some(selection) => selection.refresh(context.paths),
+                None => crate::session::log::refresh_history_view(context.paths),
+            }
+            .map_err(|error| ResourceError::new("E_HISTORY_READ", error.to_string()))?;
             if !exists {
                 return Err(ResourceError::new(
                     "E_HISTORY_NOT_FOUND",
                     "transcript 尚未落盘",
                 ));
             }
-            fs::canonicalize(crate::session::log::history_view_path(context.paths))
+            fs::canonicalize(target)
                 .map_err(|error| ResourceError::new("E_HISTORY_NOT_FOUND", error.to_string()))?
         }
         ("compaction", []) => return Ok(history_namespace(input, Vec::new(), &compaction)),
@@ -153,7 +166,7 @@ pub(super) fn resolve_history(
         _ => {
             return Err(ResourceError::new(
                 "E_HISTORY_URI",
-                "history supports only history://transcript or history://compaction/INDEX.md",
+                "Use history://transcript, history://transcript/role/user, history://transcript/tool/<name>, history://transcript/entry/<id>, history://raw, or history://compaction/INDEX.md",
             ));
         }
     };

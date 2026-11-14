@@ -92,6 +92,7 @@ enum BatchKey<'a> {
 }
 
 mod index;
+mod notices;
 use index::block_layout;
 
 /// 嵌套工具块（`parent_id` 为 `Some` 的 PTC 子调用）的树形状。
@@ -117,6 +118,8 @@ struct TreeShape {
 struct TreeLayout {
     shape: Option<TreeShape>,
     gap: bool,
+    /// 父结果改变会影响子调用通知去重，必须使子块的高度和正文缓存一起失效。
+    notice_parent_generation: u64,
 }
 
 /// 嵌套工具块的树形状索引，与 `App::blocks` 对齐；非嵌套块 `shape` 为 `None`。

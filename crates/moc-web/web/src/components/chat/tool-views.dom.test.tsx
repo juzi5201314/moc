@@ -1,7 +1,7 @@
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 import { expect, it } from "vitest";
 import type { ToolBlock } from "@/lib/transcript-model";
-import { toolBody } from "./tool-views";
+import { NoticeScope, toolBody } from "./tool-views";
 
 const preferBuiltinResult =
   "[E_PREFER_BUILTIN] This bash command only reads, searches, lists, or edits workspace files; use built-in tools instead:\n" +
@@ -41,4 +41,37 @@ it("「内置工具优先」拒绝按建议而非失败展示，说明与建议�
 it("普通 bash 错误仍按失败渲染", () => {
   const { container } = render(<div>{toolBody(bashTool("sed: error"), "full", () => {})}</div>);
   expect(container.querySelector(".text-destructive")).not.toBeNull();
+});
+
+it("长行省略合并展示、可展开，父结果到达后子通知消失但独有警告保留", () => {
+  const result = Array.from(
+    { length: 16 },
+    (_, i) =>
+      `[Line ${100 + i} is 9 KB; content omitted; read with offset=${100 + i}, limit=1, byte_offset=0]`,
+  ).join("\n");
+  const tool: ToolBlock = {
+    ...bashTool(result),
+    name: "read",
+    status: "completed",
+    isError: false,
+  };
+  const unique = "[Scan incomplete (time limit)]";
+  const { container, getByRole, queryByRole, rerender } = render(
+    <NoticeScope>{toolBody(tool, "hidden", () => {})}</NoticeScope>,
+  );
+  expect(queryByRole("button", { expanded: false })).not.toBeNull();
+  expect(container.textContent).not.toContain("Line 100");
+  fireEvent.click(getByRole("button", { expanded: false }));
+  expect(getByRole("button", { expanded: true })).toBeTruthy();
+  expect(container.textContent).toContain("Line 100");
+  expect(container.textContent).toContain("Line 115");
+  expect(container.textContent).toContain("byte_offset=0");
+  rerender(
+    <NoticeScope result={result}>
+      {toolBody({ ...tool, result: `${result}\n${unique}` }, "hidden", () => {})}
+    </NoticeScope>,
+  );
+  expect(queryByRole("button")).toBeNull();
+  expect(container.textContent).not.toContain("Line 100");
+  expect(container.textContent).toContain(unique);
 });

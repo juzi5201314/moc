@@ -147,6 +147,37 @@ fn executes_arithmetic() {
     assert_eq!(steps.len(), 1);
     done(&steps[0], json!(6));
 }
+
+#[test]
+fn console_output_preserves_lines_results_and_failures() {
+    done(
+        &run_with(
+            start("console.log('first', {n:2}); print('second'); return 'last';"),
+            &[],
+        )[0],
+        json!("first {\"n\":2}\nsecond\nlast"),
+    );
+    done(
+        &run_with(start("print('only output');"), &[])[0],
+        json!("only output\n"),
+    );
+    let failed = run_with(start("print('before');\nthrow new Error('broken');"), &[]);
+    match &failed[0].state {
+        GuestState::Failed { error } => {
+            assert_eq!(error.code, "E_JS");
+            assert!(error.message.contains("execute:2"));
+            assert!(error.message.contains("before\n"));
+        }
+        state => panic!("预期脚本错误：{state:?}"),
+    }
+    let mut request = start("console.log('x'.repeat(128));");
+    request.max_output_bytes = 64;
+    failed_with(&run_with(request, &[])[0], "E_OUTPUT_LIMIT");
+    done(
+        &run_with(start("const tools = ['local']; return tools[0];"), &[])[0],
+        json!("local"),
+    );
+}
 #[test]
 fn round_trips_tool_result() {
     let completions = vec![HostCompletion {
@@ -258,15 +289,11 @@ fn total_call_budget_counts_tools_catalog_and_state() {
     failed_with(&host.receive().1, "E_CALL_LIMIT");
 }
 #[test]
-fn deadlines_interrupt_cpu_microtasks_and_tool_wait_without_killing_host() {
+fn deadlines_interrupt_cpu_and_microtasks_without_killing_host() {
     let host = Host::new();
-    for (index, code) in [
-        "while (true) {}",
-        "while (true) await Promise.resolve();",
-        "await tools.slow();",
-    ]
-    .into_iter()
-    .enumerate()
+    for (index, code) in ["while (true) {}", "while (true) await Promise.resolve();"]
+        .into_iter()
+        .enumerate()
     {
         let id = index as u64 + 1;
         let mut request = start(code);
@@ -284,6 +311,20 @@ fn deadlines_interrupt_cpu_microtasks_and_tool_wait_without_killing_host() {
     }
     host.start(4, start("return 7"));
     done(&host.receive().1, json!(7));
+}
+
+#[test]
+fn host_wait_does_not_consume_worker_compute_budget() {
+    let host = Host::new();
+    let mut request = start("return await tools.ask();");
+    request.timeout_ms = 100;
+    host.start(1, request);
+    let (_, pending) = host.receive();
+    assert!(matches!(pending.state, GuestState::Pending));
+    // 请求已经交给宿主；等待超过计算预算后仍可正常完成，而不是竞速断言。
+    thread::sleep(Duration::from_millis(200));
+    host.complete(1, 0, json!("answer"));
+    done(&host.receive().1, json!("answer"));
 }
 #[test]
 fn cancellation_is_local_even_during_sync_loop() {
