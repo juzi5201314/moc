@@ -566,9 +566,9 @@ fn advanced_group_collapses_by_default_and_expands_on_filter() {
             }
             _ => None,
         })
-        .expect("存在高级参数折叠行");
-    assert_eq!(adv_title, "高级参数");
-    assert!(!panel.expanded.contains(&adv_key), "高级参数分组默认折叠");
+        .expect("存在高级选项折叠行");
+    assert_eq!(adv_title, "高级选项");
+    assert!(!panel.expanded.contains(&adv_key), "高级选项分组默认折叠");
     assert!(
         !panel.rows.iter().any(|row| matches!(
             &row.kind,

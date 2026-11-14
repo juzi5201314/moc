@@ -154,7 +154,7 @@ impl SettingsPanel {
                     depth: u8::try_from(child_depth).unwrap_or(u8::MAX),
                     kind: RowKind::Group(Group {
                         key: adv_key,
-                        title: "高级参数".into(),
+                        title: "高级选项".into(),
                         detail: format!("{} 项", node.advanced_fields.len()),
                         grouping,
                         path: None,

@@ -182,13 +182,55 @@ pub(super) fn draw_fields(
                             y,
                         ));
                     }
-                } else {
+                } else if matches!(action, ProviderAction::More) {
+                    let count = format!("{} 项", panel.provider_more_count());
+                    let detail_style = if selected {
+                        style.fg(theme.gray_bright)
+                    } else {
+                        style.fg(theme.gray)
+                    };
                     label(
                         frame,
-                        row_area,
+                        label_area,
                         &format!("{lead}{}", panel.provider_action_text(action)),
-                        style.fg(theme.accent_model),
+                        style.fg(theme.accent_running).add_modifier(Modifier::BOLD),
                     );
+                    label(frame, value_area, &count, detail_style);
+                } else {
+                    let accent = match action {
+                        ProviderAction::Fetch => match &panel.providers.discovery {
+                            Some(discovery) if discovery.pending.is_some() => theme.accent_running,
+                            Some(discovery) if discovery.error.is_some() => theme.accent_error,
+                            _ => theme.accent_success,
+                        },
+                        ProviderAction::Manual => theme.accent_tool,
+                        ProviderAction::New => theme.accent_success,
+                        ProviderAction::Remove => theme.accent_error,
+                        ProviderAction::More => theme.accent_running,
+                    };
+                    let pill_bg = if selected {
+                        theme.bg_selection
+                    } else {
+                        theme.bg_highlight
+                    };
+                    let text_fg = if selected { theme.text_primary } else { accent };
+                    let button = format!(" {} ", panel.provider_action_text(action));
+                    let spans = vec![
+                        Span::styled(lead, style),
+                        Span::styled("│", Style::new().fg(accent).bg(pill_bg)),
+                        Span::styled(
+                            button,
+                            Style::new()
+                                .fg(text_fg)
+                                .bg(pill_bg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("│", Style::new().fg(accent).bg(pill_bg)),
+                    ];
+                    let line = clip_line(Line::from(spans), usize::from(row_area.width));
+                    frame
+                        .buffer_mut()
+                        .set_line(row_area.x, y, &line, row_area.width);
                 }
             }
             RowKind::Group(group) => {
@@ -198,14 +240,15 @@ pub(super) fn draw_fields(
                     "▸"
                 };
                 let is_advanced = group.grouping.last().is_some_and(|p| p == "__advanced");
+                let muted_detail = if selected {
+                    style.fg(theme.gray_bright)
+                } else {
+                    style.fg(theme.gray)
+                };
                 let (title_style, detail_style) = if is_advanced {
                     (
-                        if selected {
-                            style.add_modifier(Modifier::BOLD)
-                        } else {
-                            style.fg(theme.text_secondary)
-                        },
-                        style.fg(theme.gray),
+                        style.fg(theme.accent_running).add_modifier(Modifier::BOLD),
+                        muted_detail,
                     )
                 } else if is_model_card(group) {
                     (
@@ -217,7 +260,15 @@ pub(super) fn draw_fields(
                         },
                     )
                 } else {
-                    (style.add_modifier(Modifier::BOLD), style.fg(theme.gray))
+                    let level_color = match row.depth {
+                        0 => theme.accent_tool,
+                        1 => theme.accent_assistant,
+                        _ => theme.chart_7,
+                    };
+                    (
+                        style.fg(level_color).add_modifier(Modifier::BOLD),
+                        muted_detail,
+                    )
                 };
                 label(
                     frame,
@@ -235,14 +286,15 @@ pub(super) fn draw_fields(
                 } else {
                     style
                 };
-                let mut spans = vec![Span::styled(
-                    format!(
-                        "{lead}{}{}",
-                        if is_explicit { "● " } else { "  " },
-                        field.label
-                    ),
-                    label_style,
-                )];
+                let mut spans = vec![
+                    Span::styled(lead, style),
+                    if is_explicit {
+                        Span::styled("● ", style.fg(theme.accent_success))
+                    } else {
+                        Span::styled("  ", style)
+                    },
+                    Span::styled(field.label.clone(), label_style),
+                ];
                 // 搜索结果标出所在选项卡：独立的暗色徽标，不和标签同色。
                 if !panel.filter.is_empty() {
                     spans.push(Span::styled(
@@ -328,7 +380,7 @@ pub(super) fn draw_fields(
     match panel.row() {
         Some(RowKind::Action(action)) => Footer {
             description: match action {
-                ProviderAction::More => "展开或收起超时、代理、默认头等高级连接参数。",
+                ProviderAction::More => "展开或收起超时、重试、代理、请求头与默认请求参数。",
                 ProviderAction::Fetch => "打开模型选择弹窗，从供应商目录批量勾选添加。",
                 ProviderAction::Manual => "手动输入模型 ID 添加到当前供应商。",
                 ProviderAction::New => "创建新供应商配置。",

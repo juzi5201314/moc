@@ -72,26 +72,94 @@ fn discovery(generation: u64, ids: &[&str]) -> Discovery {
 }
 
 #[test]
-fn api_parameters_are_visible_in_provider_and_model_groups_without_more_options() {
+fn secondary_connection_and_api_parameters_fold_under_more_and_model_advanced() {
     let mut panel = panel(json!({"providers":{"p":{"api":"openai_responses","models":{"m":{}}}}}));
     assert!(!panel.providers.more);
+    let more_index = panel
+        .rows
+        .iter()
+        .position(|row| matches!(row.kind, RowKind::Action(ProviderAction::More)))
+        .expect("存在高级选项折叠行");
     let provider_group = "providers/p/extra_body/reasoning";
-    assert!(panel.rows.iter().any(|row| matches!(&row.kind, RowKind::Group(group) if group.key == provider_group && group.title == "思考与推理")));
+    assert!(
+        !panel
+            .rows
+            .iter()
+            .any(|row| matches!(&row.kind, RowKind::Group(group) if group.key == provider_group)),
+        "默认收起供应商高级请求参数"
+    );
+    assert!(
+        !panel.rows.iter().any(|row| {
+            matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "timeout_secs"])
+        }),
+        "默认收起供应商次要连接项"
+    );
+
+    panel.providers.more = true;
     panel.expanded.insert(provider_group.into());
+    panel.rebuild_rows();
+    let timeout_index = panel
+        .rows
+        .iter()
+        .position(|row| {
+            matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "timeout_secs"])
+        })
+        .expect("展开高级选项后显示超时配置");
+    let group_index = panel
+        .rows
+        .iter()
+        .position(|row| matches!(&row.kind, RowKind::Group(group) if group.key == provider_group))
+        .expect("展开高级选项后显示供应商请求参数组");
+    assert!(
+        timeout_index > more_index && group_index > more_index,
+        "高级选项必须在折叠标题下方而不是上方展开"
+    );
+    assert!(panel.rows.iter().any(|row| {
+        matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "extra_body", "reasoning", "summary"])
+    }));
+
     panel.expanded.insert("providers/p/models/m".into());
+    panel.rebuild_rows();
+    assert!(
+        !panel.rows.iter().any(|row| {
+            matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "models", "m", "max_request_bytes"])
+        }),
+        "模型请求体上限应收入模型高级选项"
+    );
+    assert!(
+        !panel.rows.iter().any(|row| {
+            matches!(&row.kind, RowKind::Group(group) if group.key == "providers/p/models/m/compat/extra_body/reasoning")
+        }),
+        "模型请求参数组应收入模型高级选项"
+    );
+
+    panel
+        .expanded
+        .insert("providers/p/models/m/__advanced".into());
     panel
         .expanded
         .insert("providers/p/models/m/compat/extra_body/reasoning".into());
     panel.rebuild_rows();
-    for prefix in [
-        vec!["providers", "p", "extra_body"],
-        vec!["providers", "p", "models", "m", "compat", "extra_body"],
+    for path in [
+        vec![
+            "providers",
+            "p",
+            "models",
+            "m",
+            "max_request_bytes",
+        ],
+        vec![
+            "providers",
+            "p",
+            "models",
+            "m",
+            "compat",
+            "extra_body",
+            "reasoning",
+            "summary",
+        ],
     ] {
-        let path: Vec<String> = prefix
-            .into_iter()
-            .chain(["reasoning", "summary"])
-            .map(str::to_owned)
-            .collect();
+        let path: Vec<String> = path.into_iter().map(str::to_owned).collect();
         assert!(panel.rows.iter().any(
             |row| matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == path)
         ));

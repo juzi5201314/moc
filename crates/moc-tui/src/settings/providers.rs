@@ -15,6 +15,12 @@ fn request_parameter(field: &ConfigField) -> bool {
         .is_some_and(|index| index + 1 < field.path.len())
 }
 
+fn is_provider_connection_field(id: &str, field: &ConfigField) -> bool {
+    field.path.first().is_some_and(|p| p == "providers")
+        && field.path.get(1).is_some_and(|p| p == id)
+        && field.path.get(2).is_some_and(|p| p != "models")
+}
+
 fn parameter_title(path: &[String]) -> &str {
     match path.last().map_or("", String::as_str) {
         "headers" => "API 请求头",
@@ -242,38 +248,32 @@ impl SettingsPanel {
                 kind: RowKind::Action(action),
             })
         };
-        let connection = self.fields.iter().enumerate().filter(|(_, field)| {
-            field.path.first().is_some_and(|p| p == "providers")
-                && field.path.get(1) == Some(id)
-                && field.path.get(2).is_some_and(|p| p != "models")
-        });
-        for (index, field) in connection {
-            if request_parameter(field) {
-                continue;
-            }
-            let primary = matches!(field.path[2].as_str(), "api" | "base_url" | "api_key");
-            if primary || self.providers.more {
-                rows.push(Row {
-                    depth: 0,
-                    kind: RowKind::Field(index),
-                });
+        let mut secondary = Vec::new();
+        let mut provider_params = Vec::new();
+        for (index, field) in self.fields.iter().enumerate() {
+            if is_provider_connection_field(id, field) {
+                if request_parameter(field) {
+                    provider_params.push(index);
+                } else if matches!(field.path[2].as_str(), "api" | "base_url" | "api_key") {
+                    rows.push(Row {
+                        depth: 0,
+                        kind: RowKind::Field(index),
+                    });
+                } else {
+                    secondary.push(index);
+                }
             }
         }
         action(&mut rows, ProviderAction::More);
-        self.parameter_rows(
-            &mut rows,
-            self.fields
-                .iter()
-                .enumerate()
-                .filter(|(_, field)| {
-                    field.path.starts_with(&["providers".into(), id.clone()])
-                        && field.path.get(2).is_some_and(|p| p != "models")
-                        && request_parameter(field)
-                })
-                .map(|(index, _)| index)
-                .collect(),
-            1,
-        );
+        if self.providers.more {
+            for index in secondary {
+                rows.push(Row {
+                    depth: 1,
+                    kind: RowKind::Field(index),
+                });
+            }
+            self.parameter_rows(&mut rows, provider_params, 1);
+        }
         action(&mut rows, ProviderAction::Fetch);
         action(&mut rows, ProviderAction::Manual);
         if let Some(models) = self.effective["providers"][id]
@@ -300,21 +300,16 @@ impl SettingsPanel {
                     }),
                 });
                 if expanded {
-                    let mut normal = Vec::new();
-                    let mut adv = Vec::new();
+                    let mut adv_fields = Vec::new();
+                    let mut adv_params = Vec::new();
                     for (index, field) in self.fields.iter().enumerate() {
-                        if field.path.starts_with(&path) {
-                            if field.advanced {
-                                adv.push(index);
-                            } else {
-                                normal.push(index);
-                            }
+                        if !field.path.starts_with(&path) {
+                            continue;
                         }
-                    }
-                    let mut parameters = Vec::new();
-                    for index in normal {
-                        if request_parameter(&self.fields[index]) {
-                            parameters.push(index);
+                        if request_parameter(field) {
+                            adv_params.push(index);
+                        } else if field.advanced {
+                            adv_fields.push(index);
                         } else {
                             rows.push(Row {
                                 depth: 2,
@@ -322,8 +317,8 @@ impl SettingsPanel {
                             });
                         }
                     }
-                    self.parameter_rows(&mut rows, parameters, 2);
-                    if !adv.is_empty() {
+                    let adv_count = adv_fields.len() + adv_params.len();
+                    if adv_count > 0 {
                         let adv_key = format!("{key}/__advanced");
                         let mut adv_grouping = path.clone();
                         adv_grouping.push("__advanced".into());
@@ -332,25 +327,40 @@ impl SettingsPanel {
                             depth: 2,
                             kind: RowKind::Group(Group {
                                 key: adv_key,
-                                title: "高级参数".into(),
-                                detail: format!("{} 项", adv.len()),
+                                title: "高级选项".into(),
+                                detail: format!("{adv_count} 项"),
                                 grouping: adv_grouping,
                                 path: None,
                             }),
                         });
                         if adv_expanded {
-                            for index in adv {
+                            for index in adv_fields {
                                 rows.push(Row {
                                     depth: 3,
                                     kind: RowKind::Field(index),
                                 });
                             }
+                            self.parameter_rows(&mut rows, adv_params, 3);
                         }
                     }
                 }
             }
         }
         rows
+    }
+
+    pub(super) fn provider_more_count(&self) -> usize {
+        let Some(id) = &self.providers.selected else {
+            return 0;
+        };
+        self.fields
+            .iter()
+            .filter(|field| {
+                is_provider_connection_field(id, field)
+                    && (request_parameter(field)
+                        || !matches!(field.path[2].as_str(), "api" | "base_url" | "api_key"))
+            })
+            .count()
     }
 
     /// 请求参数按原字段的父路径归组；与连接、高级协议兼容选项分开。
@@ -422,7 +432,7 @@ impl SettingsPanel {
         match action {
             ProviderAction::New => "+ 添加供应商".into(),
             ProviderAction::More => format!(
-                "{} 更多连接选项",
+                "{} 高级选项",
                 if self.providers.more { "▾" } else { "▸" }
             ),
             ProviderAction::Fetch => match &self.providers.discovery {

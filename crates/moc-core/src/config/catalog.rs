@@ -290,6 +290,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
                 | "catalog_budget_min_tokens"
                 | "description_max_chars"
                 | "line_max_bytes"
+                | "max_request_bytes"
                 | "output_bytes"
                 | "connect_deadline_secs"
                 | "request_warn_secs"

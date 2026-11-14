@@ -46,7 +46,7 @@ const API_FALLBACK: ChoiceOption[] = [
   { value: "anthropic_messages", label: "Anthropic Messages" },
 ];
 
-/** 连接参数里默认展开的字段；其余收进「更多连接选项」。 */
+/** 连接参数里默认展开的字段；其余收进「高级选项」。 */
 const PRIMARY: Record<string, true> = { api: true, base_url: true, api_key: true };
 
 function isObject(value: unknown): value is Json {
@@ -369,7 +369,7 @@ function ProviderDetail({
       <section className="space-y-2">
         <h4 className="text-xs font-medium text-text-tertiary">连接</h4>
         <FieldList fields={primary} doc={doc} strip={2} showGroups={false} />
-        {secondary.length > 0 && (
+        {(secondary.length > 0 || parameters.length > 0) && (
           <>
             <button
               type="button"
@@ -379,20 +379,29 @@ function ProviderDetail({
               <ChevronRightIcon
                 className={cn("size-3.5 transition-transform", showMore && "rotate-90")}
               />
-              更多连接选项（超时、请求头、重试…）
+              {`高级选项（${secondary.length + parameters.length}）`}
             </button>
-            {showMore && <FieldList fields={secondary} doc={doc} strip={2} />}
+            {showMore && (
+              <div className="space-y-4">
+                {secondary.length > 0 && (
+                  <FieldList fields={secondary} doc={doc} strip={2} includeAdvanced />
+                )}
+                {parameters.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-medium text-text-tertiary">
+                      API 请求参数 · 供应商默认值
+                    </h4>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      按当前 API 格式列出文本、图片与函数调用参数；模型可单独覆盖。未设置的项使用
+                      moc 或上游默认值，具体支持范围取决于模型与账号。
+                    </p>
+                    <FieldList fields={parameters} doc={doc} strip={2} includeAdvanced />
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
-      </section>
-
-      <section className="space-y-2">
-        <h4 className="text-xs font-medium text-text-tertiary">API 请求参数 · 供应商默认值</h4>
-        <p className="text-xs leading-5 text-muted-foreground">
-          按当前 API 格式列出文本、图片与函数调用参数；模型可单独覆盖。未设置的项使用 moc
-          或上游默认值，具体支持范围取决于模型与账号。
-        </p>
-        <FieldList fields={parameters} doc={doc} strip={2} />
       </section>
 
       <section className="space-y-2">

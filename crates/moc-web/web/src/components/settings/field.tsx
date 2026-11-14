@@ -358,15 +358,18 @@ export function FieldList({
   doc,
   strip = 0,
   showGroups = true,
+  includeAdvanced = false,
 }: {
   fields: ConfigField[];
   doc: SettingsDocument;
   /** 归组时忽略的前缀段数（例如供应商内字段去掉 `providers.<id>`）。 */
   strip?: number;
   showGroups?: boolean;
+  /** 由外层容器自行折叠高级项时直接渲染全部字段。 */
+  includeAdvanced?: boolean;
 }) {
   const [advanced, setAdvanced] = useState(false);
-  const basic = fields.filter((field) => !field.advanced);
+  const basic = includeAdvanced ? fields : fields.filter((field) => !field.advanced);
   const advancedCount = fields.length - basic.length;
   const visible = advanced ? fields : basic;
 

@@ -272,7 +272,7 @@ fn append(prefix: &[&str], params: &[Parameter], tab: &str, output: &mut Vec<Con
             label: (*label).into(),
             description: format!("`{name}`：{description}"),
             kind: kind.field(),
-            advanced: false,
+            advanced: true,
         });
     }
 }
@@ -417,7 +417,7 @@ mod tests {
                 .find(|field| field.path == path)
                 .expect("每个模型都有参数入口");
             assert!(field.description.contains(&format!("`{name}`")));
-            assert!(!field.advanced, "请求参数不应藏在协议兼容开关后");
+            assert!(field.advanced, "请求参数默认收纳到高级选项");
         }
         assert!(
             !fields
