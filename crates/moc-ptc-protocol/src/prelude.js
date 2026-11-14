@@ -34,6 +34,9 @@
       if (/before initialization|uninitialized|redefinition of parameter/.test(message)) {
         message += '\nDo not shadow host namespaces tools, catalog, or state with local variables.';
       }
+      if (/unexpected end of string|unterminated string/i.test(message)) {
+        message += '\nQuoted strings cannot span lines; use template literals or \\n escapes.';
+      }
     }
     if (output.length) message += '\nOutput before failure:\n' + output.join('');
     return {code, message, result:e?.result ?? null};
