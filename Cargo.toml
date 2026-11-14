@@ -65,6 +65,18 @@ debug = 1
 [profile.dev.package.zstd-sys]
 opt-level = 3
 
+# bash 危险命令正则规则的编译与匹配在 opt-level=0 下会耗费数倍 CPU。
+[profile.dev.package.grep-matcher]
+opt-level = 2
+[profile.dev.package.grep-regex]
+opt-level = 2
+[profile.dev.package.regex]
+opt-level = 2
+[profile.dev.package.regex-automata]
+opt-level = 2
+[profile.dev.package.regex-syntax]
+opt-level = 2
+
 [profile.test]
 debug = 1
 

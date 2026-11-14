@@ -842,16 +842,26 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
     };
     // deadline 回收由 JobFinished 事件佐证；wait 返回「终态」或「新输出」
     // 取决于完成通知送达的时点，两种结局都必须带出终态或增量文本。
-    let updates = h.updates.lock().clone();
-    for job_id in ["job_1", "job_2"] {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let updates = h.updates.lock().clone();
+        let ready = ["job_1", "job_2"].iter().all(|job_id| {
+            updates.iter().any(|update| {
+                matches!(
+                    update,
+                    SessionUpdate::JobFinished { job }
+                        if job.job_id == *job_id && job.status == JobStatus::TimedOut
+                )
+            })
+        });
+        if ready {
+            break;
+        }
         assert!(
-            updates.iter().any(|update| matches!(
-                update,
-                SessionUpdate::JobFinished { job }
-                    if job.job_id == job_id && job.status == JobStatus::TimedOut
-            )),
-            "{job_id} 应被 deadline 回收：{updates:?}"
+            tokio::time::Instant::now() < deadline,
+            "job_1/job_2 应被 deadline 回收：{updates:?}"
         );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     for (call, marker) in [("pipe_wait", "pipe-ready"), ("pty_wait", "pty-ready")] {
         let text = output(call);

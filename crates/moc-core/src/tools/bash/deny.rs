@@ -10,9 +10,12 @@
 //!
 //! 本模块只回答“命中了哪条规则”；命中后是申请还是拒绝由调用方决定。
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use grep_matcher::Matcher;
+use parking_lot::Mutex;
 
 use super::syntax;
 use crate::tools::ToolError;
@@ -112,16 +115,41 @@ const WRAPPER_VERBS: &[&str] = &[
     "firejail",
 ];
 
+fn compiled_matchers(patterns: &[String]) -> Result<Arc<Vec<grep_regex::RegexMatcher>>, ToolError> {
+    const MAX_CACHED_RULE_SETS: usize = 16;
+    static CACHE: OnceLock<Mutex<HashMap<Vec<String>, Arc<Vec<grep_regex::RegexMatcher>>>>> =
+        OnceLock::new();
+
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().get(patterns).cloned() {
+        return Ok(hit);
+    }
+    let compiled = patterns
+        .iter()
+        .map(|pattern| {
+            grep_regex::RegexMatcher::new(pattern).map_err(|error| {
+                ToolError::new(
+                    "E_CONFIG",
+                    format!("dangerous-command rule is invalid: {error}"),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let compiled = Arc::new(compiled);
+    let mut guard = cache.lock();
+    if guard.len() >= MAX_CACHED_RULE_SETS {
+        guard.clear();
+    }
+    Ok(Arc::clone(
+        guard.entry(patterns.to_vec()).or_insert(compiled),
+    ))
+}
+
 /// 返回命中规则的序号；引号内字面量且无可执行上下文时不算命中。
 pub(crate) fn denied_rule(patterns: &[String], command: &str) -> Result<Option<usize>, ToolError> {
+    let matchers = compiled_matchers(patterns)?;
     let literals = literal_spans(command);
-    for (index, pattern) in patterns.iter().enumerate() {
-        let matcher = grep_regex::RegexMatcher::new(pattern).map_err(|error| {
-            ToolError::new(
-                "E_CONFIG",
-                format!("dangerous-command rule is invalid: {error}"),
-            )
-        })?;
+    for (index, matcher) in matchers.iter().enumerate() {
         let mut offset = 0usize;
         while let Some(matched) = matcher.find_at(command.as_bytes(), offset).unwrap_or(None) {
             // 匹配可以覆盖字面量自身的定界字符（正则边界类会把包围文本的引号

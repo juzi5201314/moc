@@ -470,7 +470,7 @@ async fn grok_build_failure_classes_share_three_attempts() {
             "retrying/gpt-test:off",
             &format!(
                 "[compaction]\nmethod='grok_build'\nauto=false\n\
-                 [providers.retrying]\napi='openai_chat'\nbase_url='{}/v1'\nretry={{max_attempts=10}}\n\
+                 [providers.retrying]\napi='openai_chat'\nbase_url='{}/v1'\nretry={{max_attempts=10,initial_backoff_secs=0.001,max_backoff_secs=0.001,jitter=false}}\n\
                  [providers.retrying.models.gpt-test]\ncontext_window=1000000\nmax_output_tokens=4096\n",
                 upstream.uri()
             ),

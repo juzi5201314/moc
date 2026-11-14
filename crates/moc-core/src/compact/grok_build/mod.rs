@@ -34,14 +34,16 @@ const RETRY_DELAY_ENV: &str = "GROK_COMPACT_RETRY_MS";
 /// 整体替换历史时的续接前言；之后回放靠它识别出这是上一段会话的延续。
 const CONTINUATION_PREAMBLE: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.";
 
-fn retry_delay() -> Duration {
+fn retry_delay(model: &ResolvedModel) -> Duration {
     if cfg!(test) {
         return Duration::from_millis(1);
     }
+    let cap = Duration::from_secs_f64(model.llm.retry.max_backoff_secs.max(0.001));
     std::env::var(RETRY_DELAY_ENV)
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .map_or(RETRY_DELAY, Duration::from_millis)
+        .min(cap)
 }
 
 pub(crate) struct GrokBuildContext<'a> {
@@ -211,7 +213,7 @@ pub(crate) async fn compact(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(CoreError::Cancelled),
-            _ = tokio::time::sleep(retry_delay()) => {}
+            _ = tokio::time::sleep(retry_delay(model)) => {}
         }
     }
 }
