@@ -15,6 +15,17 @@ pub(super) fn format_value(value: &Value, kind: &FieldKind) -> String {
     }
 }
 
+/// 清空输入是否写成显式空串而不是删除该项：普通文本字段保留空值，
+/// 请求参数（可继承供应商默认）与其它类型留空即删键。
+pub(super) fn keeps_empty(kind: &FieldKind, path: &[String]) -> bool {
+    matches!(
+        kind,
+        FieldKind::Text | FieldKind::Secret | FieldKind::Multiline
+    ) && !path
+        .iter()
+        .any(|part| matches!(part.as_str(), "extra_body" | "headers"))
+}
+
 /// 文本框内容按字段类型解析；`None` 表示留空，删除该项回到默认值。
 pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Option<Value>> {
     let trimmed = text.trim();
@@ -510,11 +521,7 @@ fn apply_edit(
     let label = edit.title.as_str();
     match &edit.target {
         EditTarget::Field(path) => {
-            let value = if text.trim().is_empty()
-                && path
-                    .iter()
-                    .any(|p| matches!(p.as_str(), "extra_body" | "headers"))
-            {
+            let value = if text.trim().is_empty() && !keeps_empty(kind, path) {
                 None
             } else {
                 parse(text, kind)?

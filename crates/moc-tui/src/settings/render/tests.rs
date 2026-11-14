@@ -396,6 +396,39 @@ fn provider_workspace_and_draft_fit_narrow_terminals() {
     }
 }
 
+/// 供应商页会整体替换字段提示条，字段行必须单独露出恢复默认。
+#[test]
+fn provider_field_footer_exposes_reset() {
+    let mut panel = loaded(
+        "供应商与模型",
+        json!({"providers": {"p": {"api": "openai_chat", "base_url": "https://example.invalid", "models": {"m": {}}}}}),
+        Vec::new(),
+    );
+    panel.expanded.insert("providers/p/models/m".into());
+    panel.rebuild_rows();
+    let path: Vec<String> = ["providers", "p", "models", "m", "context_window"]
+        .map(str::to_owned)
+        .to_vec();
+    panel.select_path(&path);
+    assert_eq!(
+        panel.field().map(|field| &field.path),
+        Some(&path),
+        "字段行已选中"
+    );
+    let rows = screen(&mut panel, 120, 40);
+    assert!(
+        locate(&rows, "r 恢复默认").is_some(),
+        "字段行提示条应露出恢复默认"
+    );
+
+    panel.select_action(ProviderAction::More);
+    let rows = screen(&mut panel, 120, 40);
+    assert!(
+        locate(&rows, "r 恢复默认").is_none(),
+        "非字段行不显示恢复默认"
+    );
+}
+
 /// 字段树的滚动条与主界面同一字形，贴终端右缘。
 #[test]
 fn field_scrollbar_matches_main_screen() {

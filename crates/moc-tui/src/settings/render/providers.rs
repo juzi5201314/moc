@@ -139,19 +139,21 @@ pub(super) fn draw_providers(
     );
     let mut footer = draw_fields(frame, panel, theme, content, hits);
     if panel.edit.is_none() {
-        footer.hint = labels::hint_layout(
-            &[
-                ("n", "新建"),
-                ("f", "获取模型"),
-                ("a", "手动添加"),
-                ("ctrl+x", "删除"),
-                ("tab", "切换焦点"),
-                ("↑↓", "移动"),
-                ("enter/space", "编辑/操作"),
-                ("esc", "返回"),
-            ],
-            usize::from(body.width),
-        );
+        let mut items = vec![
+            ("n", "新建"),
+            ("f", "获取模型"),
+            ("a", "手动添加"),
+            ("ctrl+x", "删除供应商"),
+            ("tab", "切换焦点"),
+            ("↑↓", "移动"),
+            ("enter/space", "编辑/操作"),
+        ];
+        // 本页整体替换字段提示条；字段行要单独把恢复默认露出来，放在 Esc 前优先保留。
+        if panel.field().is_some() {
+            items.push(("r", "恢复默认"));
+        }
+        items.push(("esc", "返回"));
+        footer.hint = labels::hint_layout(&items, usize::from(body.width));
     }
     footer
 }

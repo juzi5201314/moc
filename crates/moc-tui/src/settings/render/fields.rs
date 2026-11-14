@@ -7,6 +7,7 @@ use super::super::TABS;
 use super::super::controls;
 use super::super::controls::Control;
 use super::super::editors::Editor;
+use super::super::forms;
 use super::super::providers::ProviderAction;
 use super::Footer;
 use super::cells;
@@ -365,8 +366,14 @@ pub(super) fn draw_fields(
         Some((hits, Hit::Scroll)),
     );
     if let Some(edit) = panel.edit.as_ref().filter(|edit| !edit.popup) {
-        let note = match &edit.target {
-            EditTarget::Model(_) => "输入模型 ID（支持包含 /）",
+        let note = match (&edit.target, &edit.editor) {
+            (EditTarget::Model(_), _) => "输入模型 ID（支持包含 /）",
+            // 普通文本字段留空写入空值；请求参数与数值、JSON 一样删键回默认。
+            (EditTarget::Field(path), Editor::Text(editor))
+                if forms::keeps_empty(&editor.kind, path) =>
+            {
+                "留空保存为空值"
+            }
             _ => "留空恢复默认",
         };
         let mut items = vec![("", note), ("tab", "下一项")];
