@@ -493,7 +493,7 @@ async fn failed_execute_preserves_completed_reads_in_readable_artifact() {
         let response = match calls.fetch_add(1, Ordering::SeqCst) {
             0 => support::tool_stream(vec![("failed_batch", "execute", json!({
                 "description":"读取后触发参数错误",
-                "code":"await tools.read({path:'kept.txt'}); return await tools.grep({pattern:'hit',limit:80});"
+                "code":"await tools.read({path:'kept.txt'}); return await tools.grep({pattern:'hit',bogus:80});"
             }))]),
             1 => {
                 let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
@@ -534,6 +534,6 @@ async fn failed_execute_preserves_completed_reads_in_readable_artifact() {
         .unwrap();
     assert!(!recovered.is_error, "{}", recovered.content);
     assert!(recovered.content.contains("unique_read_evidence"));
-    assert!(recovered.content.contains("unknown field `limit`"));
+    assert!(recovered.content.contains("unknown field `bogus`"));
     harness.close().await;
 }
