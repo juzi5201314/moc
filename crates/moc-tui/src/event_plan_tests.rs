@@ -83,6 +83,7 @@ impl PlanHarness {
         let core = Core::new(moc_core::CoreConfig {
             home: root.path().to_owned(),
             cwd: root.path().to_owned(),
+            user_home: Some(root.path().join("userhome")),
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),

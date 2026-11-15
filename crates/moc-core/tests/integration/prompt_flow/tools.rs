@@ -83,6 +83,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
     let core = Core::new(CoreConfig {
         home,
         cwd,
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),
@@ -371,6 +372,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
     let core = Core::new(CoreConfig {
         home,
         cwd: cwd.clone(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),
@@ -563,6 +565,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
     let core = Core::new(CoreConfig {
         home,
         cwd: cwd.clone(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),

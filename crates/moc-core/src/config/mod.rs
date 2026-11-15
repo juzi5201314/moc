@@ -97,6 +97,9 @@ pub struct ResolvedSandboxConfig {
 pub struct ResolvedConfig {
     pub home: PathBuf,
     pub cwd: PathBuf,
+    /// `.agents` 用户级约定（`~/.agents/mcp.json`、`~/.agents/skills`）的挂靠
+    /// 目录；来自 [`CoreConfig::user_home`]，未配置时取真实用户主目录。
+    pub user_home: Option<PathBuf>,
     pub roles: ModelRoles,
     /// `[models.fusion]` 的默认组合；两侧都为空表示未配置。
     pub fusion: FusionDefaults,
@@ -145,6 +148,7 @@ impl ResolvedConfig {
             base_raw,
             home,
             expand_home_path(&config.cwd),
+            config.user_home.clone().or_else(crate::paths::home_dir),
             config.overlays.clone(),
         )?;
         if let Some(selector) = legacy_model
@@ -171,6 +175,7 @@ impl ResolvedConfig {
             self.base_raw.clone(),
             self.home.clone(),
             cwd,
+            self.user_home.clone(),
             self.overlays.clone(),
         )
     }
@@ -208,6 +213,7 @@ impl ResolvedConfig {
         base_raw: Value,
         home: PathBuf,
         cwd: PathBuf,
+        user_home: Option<PathBuf>,
         overlays: Vec<PathBuf>,
     ) -> Result<Self, CoreError> {
         selection::remove_legacy_roles(&mut raw);
@@ -241,6 +247,7 @@ impl ResolvedConfig {
         Ok(Self {
             home,
             cwd,
+            user_home,
             roles: document.models.roles,
             fusion: document.models.fusion,
             tools: document.tools,
@@ -311,8 +318,8 @@ impl ResolvedConfig {
         .collect::<Result<Vec<_>, CoreError>>()?;
         let user_files = if self.mcp.user_config {
             let mut candidates = vec![moc_mcp::user_json_path(&self.home)];
-            if let Some(user_home) = crate::paths::home_dir() {
-                candidates.push(moc_mcp::agents_user_json_path(&user_home));
+            if let Some(user_home) = &self.user_home {
+                candidates.push(moc_mcp::agents_user_json_path(user_home));
             }
             candidates
                 .into_iter()

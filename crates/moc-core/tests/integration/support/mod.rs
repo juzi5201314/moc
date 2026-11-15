@@ -65,6 +65,8 @@ impl Harness {
             CoreConfig {
                 home,
                 cwd,
+                // .agents 用户级约定挂到隔离目录，不扫宿主机的 ~/.agents。
+                user_home: Some(root.path().join("userhome")),
                 overlays: vec![],
                 session_dir: Some(root.path().join("sessions")),
                 client: moc_llm::Client::new(),
@@ -119,6 +121,8 @@ impl Harness {
             CoreConfig {
                 home,
                 cwd,
+                // .agents 用户级约定挂到隔离目录，不扫宿主机的 ~/.agents。
+                user_home: Some(root.path().join("userhome")),
                 overlays: vec![],
                 session_dir: Some(root.path().join("sessions")),
                 client: moc_llm::Client::new(),

@@ -345,6 +345,7 @@ async fn create_discover_filter_add_and_edit_in_one_page() {
     let boot = CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),

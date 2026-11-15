@@ -489,6 +489,7 @@ mod tests {
         let core = crate::CoreConfig {
             home: home.clone(),
             cwd: cwd.clone(),
+            user_home: Some(directory.path().join("userhome")),
             overlays: Vec::new(),
             session_dir: None,
             client: moc_llm::Client::new(),

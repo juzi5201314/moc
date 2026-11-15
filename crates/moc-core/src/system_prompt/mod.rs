@@ -478,6 +478,7 @@ mod tests {
         let core = CoreConfig {
             home: home.to_owned(),
             cwd: cwd.to_owned(),
+            user_home: Some(home.join("userhome")),
             overlays: Vec::new(),
             session_dir: None,
             client: moc_llm::Client::new(),

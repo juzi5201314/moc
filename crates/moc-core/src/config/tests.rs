@@ -6,6 +6,7 @@ fn core_config(home: &Path, cwd: &Path, overlays: Vec<PathBuf>) -> CoreConfig {
     CoreConfig {
         home: home.to_owned(),
         cwd: cwd.to_owned(),
+        user_home: Some(home.join("userhome")),
         overlays,
         session_dir: None,
         client: moc_llm::Client::new(),

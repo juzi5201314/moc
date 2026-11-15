@@ -235,7 +235,7 @@ pub(crate) async fn run(
     let mut project_index = super::discovery::discover_index(
         cwd,
         &config.home,
-        crate::paths::home_dir().as_deref(),
+        config.user_home.as_deref(),
         &config.skills,
     );
     cache.apply(&mut project_index);
@@ -292,7 +292,7 @@ fn discover(
     let mut index = super::discovery::discover_index(
         cwd,
         &config.home,
-        crate::paths::home_dir().as_deref(),
+        config.user_home.as_deref(),
         &config.skills,
     );
     if workflows_active {

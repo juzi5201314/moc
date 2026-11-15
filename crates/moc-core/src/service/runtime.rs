@@ -292,7 +292,7 @@ impl CoreInner {
         let mut discovered = crate::skills::discovery::discover_index(
             cwd,
             &config.home,
-            crate::paths::home_dir().as_deref(),
+            config.user_home.as_deref(),
             &config.skills,
         );
         crate::skills::cache::Cache::load(&config.home)?.apply(&mut discovered);

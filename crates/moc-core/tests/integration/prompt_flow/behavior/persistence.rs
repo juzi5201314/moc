@@ -40,6 +40,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
     let core = Core::new(CoreConfig {
         home,
         cwd: cwd.clone(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),

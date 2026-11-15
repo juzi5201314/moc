@@ -145,6 +145,7 @@ pub fn save(
     let text =
         toml::to_string_pretty(&parsed).map_err(|error| CoreError::Config(error.to_string()))?;
     let (base, effective) = merged(boot, scope, cwd, parsed)?;
+    let user_home = boot.user_home.clone().or_else(crate::paths::home_dir);
     // 校验编辑目标本身，避免保存无效 TOML。
     if scope == ConfigScope::Project {
         let mut checked = base.clone();
@@ -154,6 +155,7 @@ pub fn save(
             base.clone(),
             home.clone(),
             cwd.to_owned(),
+            user_home.clone(),
             boot.overlays.clone(),
         )?;
     }
@@ -162,6 +164,7 @@ pub fn save(
         base.clone(),
         home.clone(),
         cwd.to_owned(),
+        user_home.clone(),
         boot.overlays.clone(),
     )?;
     // Core 基础配置只包含全局层；项目层仍按会话 cwd 单独解析。
@@ -174,6 +177,7 @@ pub fn save(
         base,
         home,
         boot.cwd.canonicalize()?,
+        user_home,
         boot.overlays.clone(),
     )?;
     if let Some(directory) = &boot.session_dir {

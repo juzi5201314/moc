@@ -14,6 +14,8 @@ fn workspace() -> (tempfile::TempDir, CoreConfig) {
     let boot = CoreConfig {
         home: root.path().join("home"),
         cwd: root.path().join("project"),
+        // .agents 用户级约定挂到隔离目录，不扫宿主机的 ~/.agents。
+        user_home: Some(root.path().join("userhome")),
         ..Default::default()
     };
     std::fs::create_dir_all(&boot.home).unwrap();

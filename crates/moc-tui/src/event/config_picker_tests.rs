@@ -138,6 +138,7 @@ async fn config_model_role_picker_shares_the_searchable_picker() {
     let core = Core::new(CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),
@@ -319,6 +320,7 @@ async fn session_fusion_pair_flows_through_slot_pickers() {
     let core = Core::new(CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),
@@ -417,6 +419,7 @@ async fn session_fusion_pair_applies_and_closes() {
     let core = Core::new(CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),
@@ -529,6 +532,7 @@ async fn session_level_pick_applies_inline_and_stays_open() {
     let core = Core::new(CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),
@@ -647,6 +651,7 @@ async fn fast_mode_row_only_for_fast_models_and_session_target() {
     let core = Core::new(CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),

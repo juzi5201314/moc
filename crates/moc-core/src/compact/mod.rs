@@ -870,6 +870,7 @@ mod tests {
         ResolvedConfig::load(&crate::CoreConfig {
             home: directory.path().join("home"),
             cwd: directory.path().to_owned(),
+            user_home: Some(directory.path().join("userhome")),
             overlays: Vec::new(),
             session_dir: None,
             client: moc_llm::Client::new(),

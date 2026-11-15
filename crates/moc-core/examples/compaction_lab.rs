@@ -567,6 +567,7 @@ async fn main() -> Result<()> {
     let core = Core::new(CoreConfig {
         home: spec.home.clone(),
         cwd: spec.cwd.clone(),
+        user_home: None,
         overlays: vec![],
         session_dir: Some(spec.session_dir.clone()),
         client: moc_llm::Client::new(),

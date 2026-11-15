@@ -313,6 +313,7 @@ async fn alt_m_cycles_the_session_engine() {
     let core = Core::new(CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),
@@ -409,6 +410,7 @@ async fn engine_menu_switches_the_session_engine() {
     let core = Core::new(CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),

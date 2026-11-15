@@ -131,6 +131,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
     let core = Core::new(CoreConfig {
         home,
         cwd: cwd.clone(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),

@@ -11,6 +11,7 @@ fn zero_leak_definitions_and_signatures() {
     let config = crate::config::ResolvedConfig::load(&crate::CoreConfig {
         home: home.path().to_path_buf(),
         cwd: cwd.path().to_path_buf(),
+        user_home: Some(home.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: None,
         client: moc_llm::Client::default(),

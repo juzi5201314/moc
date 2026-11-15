@@ -14,6 +14,7 @@ async fn ask_preview_keys_scroll_and_reset_on_focus_change() {
     let core = Core::new(CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),

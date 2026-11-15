@@ -52,6 +52,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
     let core = Core::new(CoreConfig {
         home,
         cwd,
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),

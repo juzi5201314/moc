@@ -42,6 +42,9 @@ pub struct CoreConfig {
     pub home: std::path::PathBuf,
     /// `session/new` 未指定工作目录时使用的进程当前目录。
     pub cwd: std::path::PathBuf,
+    /// `.agents` 用户级约定（`~/.agents/mcp.json`、`~/.agents/skills`）的挂靠
+    /// 目录。`None` 取真实用户主目录；测试注入隔离目录，避免扫到宿主机环境。
+    pub user_home: Option<std::path::PathBuf>,
     /// 按给定顺序合并的命令行配置覆盖层。
     pub overlays: Vec<std::path::PathBuf>,
     /// 会话存储目录覆盖，用于 CLI `--session-dir`。
@@ -69,6 +72,7 @@ impl Default for CoreConfig {
         Self {
             home,
             cwd,
+            user_home: None,
             overlays: Vec::new(),
             session_dir: None,
             client: moc_llm::Client::new(),

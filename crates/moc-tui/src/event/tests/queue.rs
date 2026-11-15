@@ -26,6 +26,7 @@ async fn closing_modal_resumes_queue_after_turn_finishes() {
     let core = Core::new(CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),
@@ -112,6 +113,7 @@ async fn ask_command_queues_a_read_only_prompt() {
     let core = Core::new(CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
+        user_home: Some(root.path().join("userhome")),
         overlays: Vec::new(),
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),
