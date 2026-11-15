@@ -236,7 +236,11 @@ fn top_toolbar_removed_and_bottom_hints_clean() {
     assert!(locate(&rows, "全局配置").is_some());
     assert!(locate(&rows, "作用域").is_none());
     assert!(locate(&rows, "高级tab").is_none());
-    assert!(!rows.iter().any(|(text, _)| text.contains("F2") || text.contains("F4")));
+    assert!(
+        !rows
+            .iter()
+            .any(|(text, _)| text.contains("F2") || text.contains("F4"))
+    );
     assert!(
         panel
             .hits
@@ -335,7 +339,9 @@ fn model_candidates_align_ids_and_model_card_highlighted() {
             })
             .expect("候选行命中区存在");
         let (text, columns) = &rows[y];
-        columns[text[..text.find(id).expect("候选行包含模型 ID")].chars().count()]
+        columns[text[..text.find(id).expect("候选行包含模型 ID")]
+            .chars()
+            .count()]
     };
     assert_eq!(col_for(0, "a1"), col_for(1, "b2"));
     assert_eq!(col_for(1, "b2"), col_for(2, "c3"));

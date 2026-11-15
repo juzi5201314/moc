@@ -431,10 +431,9 @@ impl SettingsPanel {
     pub fn provider_action_text(&self, action: &ProviderAction) -> String {
         match action {
             ProviderAction::New => "+ 添加供应商".into(),
-            ProviderAction::More => format!(
-                "{} 高级选项",
-                if self.providers.more { "▾" } else { "▸" }
-            ),
+            ProviderAction::More => {
+                format!("{} 高级选项", if self.providers.more { "▾" } else { "▸" })
+            }
             ProviderAction::Fetch => match &self.providers.discovery {
                 Some(discovery) if discovery.pending.is_some() => "正在获取模型…".into(),
                 Some(discovery) if discovery.error.is_some() => "重新获取模型".into(),

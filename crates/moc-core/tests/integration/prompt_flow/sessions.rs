@@ -302,10 +302,17 @@ async fn truncated_context_files_emit_guard_notice_once_per_load() {
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(text_stream("ok"), "text/event-stream"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(text_stream("ok"), "text/event-stream"),
+        )
         .mount(&upstream)
         .await;
-    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nenabled=false").await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nenabled=false",
+    )
+    .await;
     std::fs::write(
         h.root.path().join("work/AGENTS.md"),
         "配置后指令：".to_string() + &"始终使用中文回答 ".repeat(80),
@@ -350,7 +357,14 @@ async fn truncated_context_files_emit_guard_notice_once_per_load() {
             _ => None,
         })
         .collect();
-    assert_eq!(notices.len(), 1, "同一会话缓存周期只应在 UI 提示一次：{notices:?}");
-    assert!(notices[0].contains("20 token"), "提示应包含预算上限：{notices:?}");
+    assert_eq!(
+        notices.len(),
+        1,
+        "同一会话缓存周期只应在 UI 提示一次：{notices:?}"
+    );
+    assert!(
+        notices[0].contains("20 token"),
+        "提示应包含预算上限：{notices:?}"
+    );
     h.close().await;
 }

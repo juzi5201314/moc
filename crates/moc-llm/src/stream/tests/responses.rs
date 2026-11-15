@@ -185,7 +185,10 @@ async fn responses_text_survives_multi_message_and_mismatched_snapshots() {
     assert_eq!(multi.message.text(), "先查结论");
 
     // 兼容网关终态 content 为空或与已收增量不一致时，保留已收增量而不中止流
-    for done_text in [json!([]), json!([{"type":"output_text", "text":"改写后的正文"}])] {
+    for done_text in [
+        json!([]),
+        json!([{"type":"output_text", "text":"改写后的正文"}]),
+    ] {
         let item = json!({"type":"message", "role":"assistant", "content":done_text});
         let response = decode_frames(
             Protocol::OpenAiResponses,

@@ -404,10 +404,7 @@ pub(super) fn draw_discovery_popup(
     };
     if let Some((text, color)) = status {
         if lines.len() < rows {
-            lines.push(clip_line(
-                Line::styled(text, Style::new().fg(color)),
-                width,
-            ));
+            lines.push(clip_line(Line::styled(text, Style::new().fg(color)), width));
         }
     } else if rows >= 3 {
         lines.push(Line::default());

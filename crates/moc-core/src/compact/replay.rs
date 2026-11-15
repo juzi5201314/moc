@@ -968,17 +968,23 @@ mod tests {
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].text(), "第一问");
         assert_eq!(messages[1].text(), "第一轮正文");
-        assert!(messages[1].content.with_parts(|parts| parts
-            .iter()
-            .all(|part| !matches!(part, moc_llm::ContentPart::Reasoning(_)))));
+        assert!(messages[1].content.with_parts(|parts| {
+            parts
+                .iter()
+                .all(|part| !matches!(part, moc_llm::ContentPart::Reasoning(_)))
+        }));
         assert_eq!(messages[2].text(), "第二问");
         assert_eq!(messages[3].text(), "新渠道正文");
-        assert!(messages[3].content.with_parts(|parts| parts
-            .iter()
-            .any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_)))));
+        assert!(messages[3].content.with_parts(|parts| {
+            parts
+                .iter()
+                .any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_)))
+        }));
         // 原始 transcript 不受影响，前端仍能展示旧思考块。
-        assert!(state.transcript[1].message.content.with_parts(|parts| parts
-            .iter()
-            .any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_)))));
+        assert!(state.transcript[1].message.content.with_parts(|parts| {
+            parts
+                .iter()
+                .any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_)))
+        }));
     }
 }
