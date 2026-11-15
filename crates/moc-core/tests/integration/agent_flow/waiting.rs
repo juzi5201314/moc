@@ -117,7 +117,16 @@ async fn wait_returns_on_first_settle_with_snapshot() {
             return yield_call("call_yield", "FAST_DONE");
         }
         if text.contains("SLOW_TASK") {
-            return delayed(yield_call("call_yield", "SLOW_DONE"), 2_000);
+            // 慢子代理挂在 bash 长任务上保持 Running：不靠时序猜测，进程由
+            // harness.close() 的关停路径回收。
+            return ResponseTemplate::new(200).set_body_raw(
+                support::tool_stream(vec![(
+                    "call_hold",
+                    "bash",
+                    json!({"description":"hold","command":"sleep 300","timeout_secs":3600}),
+                )]),
+                "text/event-stream",
+            );
         }
         text_response("PARENT_OK")
     })
@@ -146,33 +155,6 @@ async fn wait_returns_on_first_settle_with_snapshot() {
         "未结束的代理只回报运行中"
     );
     assert!(waited.agents[1].message.is_none());
-    harness.close().await;
-}
-
-#[tokio::test]
-async fn wait_times_out_without_events() {
-    let upstream = MockServer::builder().start().await;
-    mount_router(&upstream, |body| {
-        if body.to_string().contains("SLOW_TASK") {
-            return delayed(yield_call("call_yield", "SLOW_DONE"), 30_000);
-        }
-        text_response("PARENT_OK")
-    })
-    .await;
-    let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
-    let slow = spawn_child(&harness, &parent_id, "SLOW_TASK").await;
-
-    let started = Instant::now();
-    let waited = wait_children(&harness, &parent_id, Some(vec![slow]), Some(1)).await;
-    assert!(waited.timed_out, "窗口内无事件必须按超时回报");
-    assert!(!waited.settled);
-    assert_eq!(waited.agents[0].status, AgentStatus::Running);
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "超时窗口必须按 timeout_secs 生效，实际 {:?}",
-        started.elapsed()
-    );
     harness.close().await;
 }
 

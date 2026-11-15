@@ -480,6 +480,42 @@ pub fn moc_test_bin() -> Option<std::path::PathBuf> {
     .clone()
 }
 
+/// 门控应答：匹配到的响应被掐在 wiremock 应答闭包里直到 [`Gate::open`]，
+/// 替代 `set_delay`/`sleep` 猜时序。open 后保持放行，可同时掐住多个响应。
+///
+/// `wait` 在 wiremock 自己的工作线程里走条件变量阻塞；60s 兜底保证测试忘
+/// 放行时只是变慢而不是死锁。
+#[derive(Clone, Default)]
+pub struct Gate {
+    state: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Gate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// 放行：正在等待与之后到达的响应都直接通过。
+    pub fn open(&self) {
+        let (lock, condvar) = &*self.state;
+        *lock.lock().expect("门闩未中毒") = true;
+        condvar.notify_all();
+    }
+    /// 供 respond_with 闭包调用：阻塞至 open 或 60s 兜底。
+    pub fn wait(&self) {
+        let (lock, condvar) = &*self.state;
+        let mut open = lock.lock().expect("门闩未中毒");
+        while !*open {
+            let (guard, timeout) = condvar
+                .wait_timeout(open, std::time::Duration::from_secs(60))
+                .expect("门闩未中毒");
+            open = guard;
+            if timeout.timed_out() {
+                break;
+            }
+        }
+    }
+}
+
 /// 需要 moc 二进制的测试入口守卫：解析不到时打印原因并跳过。
 pub fn require_moc_bin(suite: &str) -> bool {
     if moc_test_bin().is_none() {

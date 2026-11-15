@@ -275,7 +275,7 @@ async fn slow_host_bridge_respects_the_call_budget() {
         r#"import { tools } from "moc"; export default { tools: { read_through: { description: "读文件", parameters: { type: "object" }, run: () => tools.call("read", { path: "x" }) } } };"#,
     );
     let mut settings = settings();
-    settings.call_timeout = Duration::from_millis(200);
+    settings.call_timeout = Duration::from_millis(20);
     let host = PluginHost::start(temp.path(), temp.path(), &settings, &[]).await;
     let started = std::time::Instant::now();
     let error = host
@@ -283,7 +283,7 @@ async fn slow_host_bridge_respects_the_call_budget() {
             "read_through",
             serde_json::json!({"path": "x"}),
             &context(),
-            Arc::new(SlowBridge(Duration::from_secs(2))),
+            Arc::new(SlowBridge(Duration::from_secs(3600))),
         )
         .await
         .expect_err("必须超时");

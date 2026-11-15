@@ -34,6 +34,20 @@ impl Process {
         policy: SandboxPolicy,
         limits: Option<BashLimits>,
     ) -> Result<Self, ToolError> {
+        Self::spawn_with_drain_grace(args, cwd, timeout, log, policy, limits, PIPE_DRAIN_GRACE)
+            .await
+    }
+
+    /// 排空宽限按调用注入：测试构造短宽限的进程，不碰全局态，并行测试互不干扰。
+    pub(super) async fn spawn_with_drain_grace(
+        args: BashArgs,
+        cwd: PathBuf,
+        timeout: Option<Duration>,
+        log: JobLog,
+        policy: SandboxPolicy,
+        limits: Option<BashLimits>,
+        drain_grace: Duration,
+    ) -> Result<Self, ToolError> {
         if policy.mode != moc_protocol::SessionPermission::Full && cfg!(not(unix)) {
             return Err(ToolError::new(
                 "E_SANDBOX_UNAVAILABLE",
@@ -43,10 +57,11 @@ impl Process {
         if args.pty.unwrap_or(false) {
             Self::pty(args, cwd, timeout, log, policy, limits).await
         } else {
-            Self::pipe(args, cwd, timeout, log, policy, limits)
+            Self::pipe(args, cwd, timeout, log, policy, limits, drain_grace)
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn pipe(
         args: BashArgs,
         cwd: PathBuf,
@@ -54,6 +69,7 @@ impl Process {
         log: JobLog,
         policy: SandboxPolicy,
         limits: Option<BashLimits>,
+        drain_grace: Duration,
     ) -> Result<Self, ToolError> {
         let shell = crate::shell::detect().ok_or_else(|| {
             ToolError::new("E_BASH_SHELL", "no supported shell found on this platform")
@@ -147,7 +163,7 @@ impl Process {
                 }
             };
             drop(completion_group);
-            match tokio::time::timeout(PIPE_DRAIN_GRACE, &mut reader).await {
+            match tokio::time::timeout(drain_grace, &mut reader).await {
                 Ok(joined) => joined
                     .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?
                     .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?,
@@ -698,15 +714,17 @@ mod unix_tests {
 
     #[tokio::test]
     async fn lingering_grandchild_does_not_stall_completion() {
+        // 宽限缩到 10ms：孙子占着 stdout 时必须被放弃，而不是真实等 2s。
         let directory = tempfile::tempdir().expect("临时目录");
         let log = test_log(directory.path().join("drain.log")).await;
-        let process = Process::spawn(
+        let process = Process::spawn_with_drain_grace(
             bash_args("sleep 20 & echo done"),
             directory.path().to_owned(),
             Some(Duration::from_secs(60)),
             log,
             policy(moc_protocol::SessionPermission::Full, directory.path()),
             None,
+            Duration::from_millis(10),
         )
         .await
         .expect("启动 shell");

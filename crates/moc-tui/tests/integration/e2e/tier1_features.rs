@@ -1263,6 +1263,8 @@ fn test_f15_02_base64_encode_roundtrip() {
 
 #[tokio::test]
 async fn test_f15_03_copy_clipboard_fallback_error_mentions_platforms() {
+    // 剪贴板工具的存在性依赖宿主机环境；禁用通道后走确定性的「未找到工具」路径。
+    unsafe { std::env::set_var("MOC_CLIPBOARD_DISABLE", "1") };
     let res = moc_tui::clipboard::copy_text_to_clipboard("sample").await;
     if let Err(err) = res {
         let msg = format!("{err:#}");
@@ -1278,11 +1280,13 @@ async fn test_f15_03_copy_clipboard_fallback_error_mentions_platforms() {
 
 #[tokio::test]
 async fn test_f15_04_read_clipboard_text_does_not_panic() {
+    unsafe { std::env::set_var("MOC_CLIPBOARD_DISABLE", "1") };
     let _ = moc_tui::clipboard::read_clipboard_text().await;
 }
 
 #[tokio::test]
 async fn test_f15_05_copy_empty_text_handled_safely() {
+    unsafe { std::env::set_var("MOC_CLIPBOARD_DISABLE", "1") };
     let _ = moc_tui::clipboard::copy_text_to_clipboard("").await;
 }
 

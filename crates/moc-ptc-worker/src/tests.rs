@@ -317,12 +317,12 @@ fn deadlines_interrupt_cpu_and_microtasks_without_killing_host() {
 fn host_wait_does_not_consume_worker_compute_budget() {
     let host = Host::new();
     let mut request = start("return await tools.ask();");
-    request.timeout_ms = 100;
+    request.timeout_ms = 50;
     host.start(1, request);
     let (_, pending) = host.receive();
     assert!(matches!(pending.state, GuestState::Pending));
     // 请求已经交给宿主；等待超过计算预算后仍可正常完成，而不是竞速断言。
-    thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(60));
     host.complete(1, 0, json!("answer"));
     done(&host.receive().1, json!("answer"));
 }

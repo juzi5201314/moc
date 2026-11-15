@@ -4,7 +4,12 @@ use super::*;
 use serde_json::Value;
 
 fn host() -> PtcHost {
-    PtcHost::new(PtcWorkerCommand {
+    host_grace(super::CANCEL_GRACE)
+}
+
+/// 按实例构造指定取消宽限的 host；并行测试各自注入，互不干扰。
+fn host_grace(cancel_grace: Duration) -> PtcHost {
+    PtcHost::with_cancel_grace(PtcWorkerCommand {
         program: "/bin/sh".into(),
         args: vec!["-c".into(), r#"
 while IFS= read -r line; do
@@ -21,7 +26,7 @@ while IFS= read -r line; do
     esac
 done
 "#.into()],
-    })
+    }, cancel_grace)
 }
 fn request(code: &str) -> StartRequest {
     StartRequest {
@@ -111,7 +116,7 @@ async fn fatal_errors_fail_all_routes_and_restart_lazily() {
 
 #[tokio::test]
 async fn bounds_global_runs_and_kills_unresponsive_cancel() {
-    let host = host();
+    let host = host_grace(Duration::from_millis(10));
     let config = PtcConfig {
         max_concurrent_runs: 1,
         ..PtcConfig::default()
@@ -122,6 +127,7 @@ async fn bounds_global_runs_and_kills_unresponsive_cancel() {
     let mut rejected = host.start(request("pid"), &config).unwrap();
     assert_eq!(step(&mut rejected).await.unwrap_err().code, "E_QUEUE_LIMIT");
     pending.cancel("E_CANCELLED");
+    // 替身不响应 Cancel，10ms 宽限期到期后 receive 拿到 Host 故障。
     assert_eq!(
         receive(&mut pending).await.unwrap_err().code,
         "E_PTC_WORKER"
@@ -154,31 +160,43 @@ async fn oversized_route_does_not_kill_healthy_siblings() {
 #[tokio::test]
 async fn idle_reaps_only_without_active_execution() {
     let host = host();
+    // 空闲即回收：路由一旦清空，下一轮轮询立即触发 reap，无需真实等待。
     let config = PtcConfig {
-        host_idle_timeout_secs: 1,
+        host_idle_timeout_secs: 0,
         ..PtcConfig::default()
     };
-    let original = pid(&host, &config).await;
+    let first = pid(&host, &config).await;
+    // routes 每次清空都会以过期 deadline 重新布防 reap；yield 让定时器驱动器
+    // 走表点燃它。轮询到换进程为止，有界收敛。
+    let mut reaped = first;
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+        reaped = pid(&host, &config).await;
+        if reaped != first {
+            break;
+        }
+    }
+    assert_ne!(reaped, first, "空闲窗口必须回收旧进程");
+    // pending 在场时 routes 永不空：reap 分支不再布防，进程须保持稳定。
     let mut pending = host.start(request("hold"), &config).unwrap();
     step(&mut pending).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    assert_eq!(pid(&host, &config).await, original);
+    let active = pid(&host, &config).await;
+    assert_eq!(
+        pid(&host, &config).await,
+        active,
+        "活跃 execution 期间进程不得被回收"
+    );
     // 显式关闭会让所有 execution 失败，并等待子进程回收。
     host.shutdown().await;
     assert_eq!(
         receive(&mut pending).await.unwrap_err().code,
         "E_PTC_WORKER"
     );
-    let host = self::host();
-    let original = pid(&host, &config).await;
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    assert_ne!(pid(&host, &config).await, original);
-    host.shutdown().await;
 }
 
 #[tokio::test]
 async fn dropping_execution_triggers_cancel_without_killing_healthy_siblings_early() {
-    let host = host();
+    let host = host_grace(Duration::from_millis(10));
     let config = PtcConfig::default();
     let mut dropped = host.start(request("hold"), &config).unwrap();
     step(&mut dropped).await.unwrap();

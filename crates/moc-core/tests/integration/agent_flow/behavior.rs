@@ -217,7 +217,7 @@ async fn fusion_lead_hands_off_to_a_persistent_sidekick() {
             } else {
                 "SIDEKICK_REPORT"
             };
-            return delayed(sidekick_yield_call(report), 50);
+            return sidekick_yield_call(report);
         }
         if is_subagent_request(body) {
             return yield_call("call_yield", "CHILD_DONE");
@@ -533,9 +533,16 @@ async fn fusion_sidekick_busy_rejects_compact_fresh_and_retry() {
     let phases = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&phases);
     mount_router(&upstream, move |body| {
-        // sidekick 上游慢：handoff 派出后一直 Running。
+        // sidekick 挂在 bash 长任务上：handoff 派出后一直 Running，不靠上游延迟。
         if body["model"] == "gpt-cheap" {
-            return delayed(sidekick_yield_call("SK_REPORT"), 1_500);
+            return ResponseTemplate::new(200).set_body_raw(
+                support::tool_stream(vec![(
+                    "call_hold",
+                    "bash",
+                    json!({"description":"hold","command":"sleep 300","timeout_secs":3600}),
+                )]),
+                "text/event-stream",
+            );
         }
         let last = body["messages"]
             .as_array()

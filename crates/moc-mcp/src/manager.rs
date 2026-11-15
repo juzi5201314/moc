@@ -176,6 +176,9 @@ pub struct McpManager {
     notices_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<McpNotice>>>,
     tasks: tokio::sync::Mutex<tokio::task::JoinSet<()>>,
     policy: ReconnectPolicy,
+    /// 调用时限按实例注入；None 按各 server 的 `call_timeout_secs` 生效。
+    /// 测试构造毫秒级时限，不碰全局态，并行测试互不干扰。
+    call_timeout: Option<Duration>,
 }
 
 impl McpManager {
@@ -192,7 +195,7 @@ impl McpManager {
         shutdown: CancellationToken,
         connector_for: impl Fn(&ServerConfig) -> Connector,
     ) -> Arc<Self> {
-        Self::assemble(servers, shutdown, connector_for, ReconnectPolicy::default())
+        Self::assemble(servers, shutdown, connector_for, ReconnectPolicy::default(), None)
     }
 
     /// 以自定义重连参数构建；测试用毫秒级参数验证预算耗尽路径。
@@ -203,7 +206,24 @@ impl McpManager {
         connector_for: impl Fn(&ServerConfig) -> Connector,
         policy: ReconnectPolicy,
     ) -> Arc<Self> {
-        Self::assemble(servers, shutdown, connector_for, policy)
+        Self::assemble(servers, shutdown, connector_for, policy, None)
+    }
+
+    /// 以自定义调用时限构建；测试用毫秒级时限覆盖真实超时路径。
+    #[cfg(test)]
+    pub(crate) fn build_with_call_timeout(
+        servers: Vec<ServerConfig>,
+        shutdown: CancellationToken,
+        connector_for: impl Fn(&ServerConfig) -> Connector,
+        call_timeout: Duration,
+    ) -> Arc<Self> {
+        Self::assemble(
+            servers,
+            shutdown,
+            connector_for,
+            ReconnectPolicy::default(),
+            Some(call_timeout),
+        )
     }
 
     fn assemble(
@@ -211,6 +231,7 @@ impl McpManager {
         shutdown: CancellationToken,
         connector_for: impl Fn(&ServerConfig) -> Connector,
         policy: ReconnectPolicy,
+        call_timeout: Option<Duration>,
     ) -> Arc<Self> {
         let (notices, notices_rx) = mpsc::unbounded_channel();
         let mut slots = BTreeMap::new();
@@ -237,6 +258,7 @@ impl McpManager {
             notices_rx: tokio::sync::Mutex::new(Some(notices_rx)),
             tasks: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
             policy,
+            call_timeout,
         })
     }
 
@@ -393,7 +415,7 @@ impl McpManager {
                 status_of(slot)
             ))
         })?;
-        call_once(&peer, slot, info, args, cancel, &self.shutdown, input).await
+        call_once(&peer, slot, info, args, cancel, &self.shutdown, input, self.call_timeout).await
     }
 
     /// 关闭全部连接并等待监督任务退出。
@@ -548,6 +570,7 @@ async fn call_once(
     cancel: CancellationToken,
     shutdown: &CancellationToken,
     input: Option<&InputFulfiller>,
+    call_timeout: Option<Duration>,
 ) -> Result<ToolOutput, McpError> {
     let Some(arguments) = args.as_object().cloned() else {
         return Err(McpError::Tool(format!(
@@ -559,7 +582,7 @@ async fn call_once(
     params.name = info.name.clone().into();
     params.arguments = Some(arguments);
 
-    let timeout = Duration::from_secs(slot.config.call_timeout_secs);
+    let timeout = call_timeout.unwrap_or_else(|| Duration::from_secs(slot.config.call_timeout_secs));
     let fallback;
     let fulfiller = match input {
         Some(fulfiller) => fulfiller,

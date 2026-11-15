@@ -17,7 +17,6 @@ const CONNECT: u64 = 5;
 /// MRTR 测试里要逐字节回显的 state（含各种需要原样存活的字符）。
 const TRICKY_STATE: &str = "state {占} ~:/?#[]@!$&'()*+,;= 终";
 
-#[derive(Default)]
 struct TestState {
     /// 0：基础工具集；≥1：追加 `extra` 工具（供 list_changed 用例）。
     generation: AtomicUsize,
@@ -34,6 +33,29 @@ struct TestState {
     started: tokio::sync::Notify,
     cancelled: tokio::sync::Notify,
     effects: AtomicUsize,
+    /// `slow` 工具的放行闸：false 时在工具内排队，send(true) 全部放行。
+    slow_open: tokio::sync::watch::Sender<bool>,
+    /// `slow` 工具当前在飞数（watch 广播，测试事件同步，不丢通知）。
+    slow_inflight: tokio::sync::watch::Sender<usize>,
+}
+
+impl Default for TestState {
+    fn default() -> Self {
+        Self {
+            generation: AtomicUsize::new(0),
+            kill: tokio::sync::Notify::new(),
+            connect_count: AtomicUsize::new(0),
+            listed: tokio::sync::Notify::new(),
+            inflight: AtomicUsize::new(0),
+            max_inflight: AtomicUsize::new(0),
+            rounds: AtomicUsize::new(0),
+            started: tokio::sync::Notify::new(),
+            cancelled: tokio::sync::Notify::new(),
+            effects: AtomicUsize::new(0),
+            slow_open: tokio::sync::watch::channel(false).0,
+            slow_inflight: tokio::sync::watch::channel(0usize).0,
+        }
+    }
 }
 
 struct TestServer {
@@ -124,7 +146,14 @@ impl ServerHandler for TestServer {
                 self.state
                     .max_inflight
                     .fetch_max(inflight, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_millis(80)).await;
+                self.state.slow_inflight.send_replace(inflight);
+                // 门控放行：测试显式决定并发窗口，无需真实延迟。
+                let mut open = self.state.slow_open.subscribe();
+                while !*open.borrow_and_update() {
+                    if open.changed().await.is_err() {
+                        break;
+                    }
+                }
                 self.state.inflight.fetch_sub(1, Ordering::SeqCst);
                 Ok(CallToolResult::success(vec![ContentBlock::text("ok")]).into())
             }
@@ -308,7 +337,15 @@ async fn connected_tools(manager: &McpManager, timeout: Duration) -> Vec<Arc<Mcp
         if Instant::now() >= deadline {
             panic!("server 未在时限内连接并产出工具：{:?}", snapshot.statuses);
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// 等 `slow` 工具的在飞数达到 `expected`：watch 事件同步，不睡。
+async fn slow_inflight(state: &TestState, expected: usize) {
+    let mut rx = state.slow_inflight.subscribe();
+    while *rx.borrow_and_update() < expected {
+        rx.changed().await.expect("slow 通道存活");
     }
 }
 
@@ -395,10 +432,11 @@ async fn list_changed_notification_refreshes_tools() {
 #[tokio::test]
 async fn transport_death_triggers_reconnect() {
     let state = Arc::new(TestState::default());
-    let manager = McpManager::build(
+    let manager = McpManager::build_with_policy(
         vec![test_server("test", true)],
         CancellationToken::new(),
         |_| test_connector(state.clone()),
+        fast_policy(2, Duration::from_secs(30)),
     );
     manager.start().await;
     let tools = connected_tools(&manager, Duration::from_secs(5)).await;
@@ -449,13 +487,17 @@ async fn response_loss_never_replays_effects() {
 
 #[tokio::test]
 async fn timeout_cancellation_and_dropped_future_notify_server() {
+    // 真实超时路径：时限缩到 50ms，错误上报的仍是配置原值 Timeout(1)。
     for path in 0..3 {
         let state = Arc::new(TestState::default());
         let mut config = test_server("test", true);
         config.call_timeout_secs = 1;
-        let manager = McpManager::build(vec![config], CancellationToken::new(), |_| {
-            test_connector(Arc::clone(&state))
-        });
+        let manager = McpManager::build_with_call_timeout(
+            vec![config],
+            CancellationToken::new(),
+            |_| test_connector(Arc::clone(&state)),
+            Duration::from_millis(50),
+        );
         manager.start().await;
         manager.wait_ready(&CancellationToken::new()).await.unwrap();
         let mut info = (*manager.snapshot().await.tools[0]).clone();
@@ -513,7 +555,11 @@ async fn disabled_server_never_connects_and_reports_status() {
         |_| test_connector(state.clone()),
     );
     manager.start().await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // disabled 不应发起连接：让出若干轮，潜在线程若有误启动会在
+    // connector 首步就把 connect_count 自增，断言即可捕获。
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
     let snapshot = manager.snapshot().await;
     assert_eq!(snapshot.tools.len(), 0);
     assert!(matches!(
@@ -573,6 +619,9 @@ async fn same_server_calls_serialize_by_default() {
                 .await
         }));
     }
+    // 第一个 slow 拿到 slot 进入工具，其余仍在信号量外排队。
+    slow_inflight(&state, 1).await;
+    state.slow_open.send_replace(true);
     for call in calls {
         call.await.unwrap().unwrap();
     }
@@ -606,6 +655,9 @@ async fn raised_limit_allows_same_server_concurrency() {
                 .await
         }));
     }
+    // 两个 slow 并发进入工具，说明上限真的放到 2；放行后其余依次通过。
+    slow_inflight(&state, 2).await;
+    state.slow_open.send_replace(true);
     for call in calls {
         call.await.unwrap().unwrap();
     }

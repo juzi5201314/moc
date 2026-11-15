@@ -507,6 +507,9 @@ async fn subagent_requests_carry_no_workflow_tools() {
     let cap = Arc::clone(&captured);
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let seen: Arc<Mutex<std::collections::HashSet<String>>> = Default::default();
+    // 子会话请求到达即发信号：事件同步替代 200ms 轮询。
+    let child_seen = Arc::new(tokio::sync::Notify::new());
+    let hit = Arc::clone(&child_seen);
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(move |request: &Request| {
@@ -517,6 +520,7 @@ async fn subagent_requests_carry_no_workflow_tools() {
                 .map(|t| t.to_string().contains("\"yield\""))
                 .unwrap_or(false);
             if is_subagent {
+                hit.notify_one();
                 let key = body
                     .get("prompt_cache_key")
                     .and_then(|k| k.as_str())
@@ -561,19 +565,10 @@ async fn subagent_requests_carry_no_workflow_tools() {
         .await
         .expect("激活");
     harness.prompt(&session, "spawn one").await;
-    // 子会话首条请求是异步的：轮询等待其到达上游。
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    loop {
-        let found = captured.lock().iter().any(|b| {
-            b.get("tools")
-                .map(|t| t.to_string().contains("\"yield\""))
-                .unwrap_or(false)
-        });
-        if found || std::time::Instant::now() > deadline {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
+    // 子会话首条请求是异步的：事件等待其到达上游。
+    tokio::time::timeout(std::time::Duration::from_secs(15), child_seen.notified())
+        .await
+        .expect("子会话请求必须到达上游");
     let bodies = captured.lock().clone();
     // 子会话请求 = tools 表含 `yield` 的那批（主会话没有 yield 工具）。
     let child: Vec<&Value> = bodies

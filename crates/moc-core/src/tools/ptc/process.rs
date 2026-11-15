@@ -58,13 +58,18 @@ pub(crate) struct PtcHost {
 
 impl PtcHost {
     pub(crate) fn new(command: PtcWorkerCommand) -> Self {
+        Self::with_cancel_grace(command, CANCEL_GRACE)
+    }
+
+    /// 宽限期按实例注入：测试构造短宽限的 host，不碰全局态，并行测试互不干扰。
+    pub(crate) fn with_cancel_grace(command: PtcWorkerCommand, cancel_grace: Duration) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (done, _) = watch::channel(false);
         let shutdown = Arc::new(ShutdownState {
             requested: AtomicBool::new(false),
             done,
         });
-        tokio::spawn(manage(command, rx, Arc::clone(&shutdown)));
+        tokio::spawn(manage(command, rx, Arc::clone(&shutdown), cancel_grace));
         Self {
             tx,
             next_id: Mutex::new(0),
@@ -332,6 +337,7 @@ async fn manage(
     command: PtcWorkerCommand,
     mut requests: mpsc::UnboundedReceiver<Request>,
     shutdown: Arc<ShutdownState>,
+    cancel_grace: Duration,
 ) {
     let mut process: Option<Process> = None;
     let mut routes = HashMap::<u64, Route>::new();
@@ -359,7 +365,7 @@ async fn manage(
                     }
                     idle = timeout;
                     idle_at = Instant::now() + idle;
-                    let timeout = Duration::from_millis(request.timeout_ms) + CANCEL_GRACE;
+                    let timeout = Duration::from_millis(request.timeout_ms) + cancel_grace;
                     let expires = Some(Instant::now() + timeout);
                     routes.insert(id, Route { steps, expires, timeout, limit: request.max_message_bytes, cancelling: false });
                     if let Err(error) = process.as_ref().unwrap().send(&HostMessage::Start { execution_id: id, request }) {
@@ -378,7 +384,7 @@ async fn manage(
                     if let Some(route) = routes.get_mut(&id)
                         && !route.cancelling {
                             route.cancelling = true;
-                            route.expires = Some(Instant::now() + CANCEL_GRACE);
+                            route.expires = Some(Instant::now() + cancel_grace);
                             if let Err(error) = process.as_ref().unwrap().send(&HostMessage::Cancel { execution_id: id, code }) {
                                 fail(&mut process, &mut routes, error).await;
                             }
@@ -420,7 +426,7 @@ async fn manage(
                                 }
                             } else {
                                 route.cancelling = true;
-                                route.expires = Some(Instant::now() + CANCEL_GRACE);
+                                route.expires = Some(Instant::now() + cancel_grace);
                                 if let Err(error) = process.as_ref().unwrap().send(&HostMessage::Cancel {
                                     execution_id,
                                     code: "E_OUTPUT_LIMIT".into(),

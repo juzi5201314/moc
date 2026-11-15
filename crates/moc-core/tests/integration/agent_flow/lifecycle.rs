@@ -189,42 +189,47 @@ async fn batch_spawn_creates_agents_and_reports_per_item_errors() {
     assert_eq!(errors.len(), 1, "空任务必须记为单项错误：{result_json}");
     assert_eq!(errors[0]["index"], 2);
 
-    // wait 在首个 settle 即返回；轮询到两个都终态，保证第二个子代理的请求已发出。
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let listed = harness
+    // wait 在首个 settle 即返回；list 与 wait 交替到两个都终态，保证第二个
+    // 子代理的请求已发出。已全部终态时 AgentWait 无目标会报参数错，直接看名册。
+    let listed = {
+        let mut listed = harness
             .client
             .call::<AgentList>(AgentListParams {
                 session_id: parent_id.clone(),
             })
             .await
             .expect("list 成功");
-        assert_eq!(listed.agents.len(), 2, "批量必须建起两个代理");
-        eprintln!("AGENTS {:?}", listed.agents);
-        if listed.agents.iter().all(|agent| {
-            matches!(
-                agent.status,
-                AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Stopped
-            )
-        }) {
-            break;
+        for _ in 0..8 {
+            if listed.agents.iter().all(|agent| {
+                matches!(
+                    agent.status,
+                    AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Stopped
+                )
+            }) {
+                break;
+            }
+            let _ = wait_children(&harness, &parent_id, None, Some(10)).await;
+            listed = harness
+                .client
+                .call::<AgentList>(AgentListParams {
+                    session_id: parent_id.clone(),
+                })
+                .await
+                .expect("list 成功");
         }
-        assert!(Instant::now() < deadline, "批量子代理未在时限内完成");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+        listed
+    };
+    assert_eq!(listed.agents.len(), 2, "批量必须建起两个代理");
+    assert!(
+        listed.agents.iter().all(|agent| matches!(
+            agent.status,
+            AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Stopped
+        )),
+        "批量子代理必须全部到达终态：{:?}",
+        listed.agents
+    );
 
     let requests = upstream.received_requests().await.expect("上游请求");
-    for request in &requests {
-        let body: Value = serde_json::from_slice(&request.body).expect("请求 JSON");
-        eprintln!(
-            "REQ subagent={} shared={} sys={:.80}",
-            is_subagent_request(&body),
-            body.to_string().contains("SHARED_CONTEXT"),
-            body["messages"][0]["content"]
-                .as_str()
-                .unwrap_or("<nonstring>")
-        );
-    }
     let shared_count = requests
         .iter()
         .filter_map(|request| serde_json::from_slice::<Value>(&request.body).ok())
@@ -278,8 +283,16 @@ async fn rewinding_past_a_spawn_orphans_stops_and_hides_the_child() {
         // 子代理判定必须在任务名匹配之前：父会话第二轮请求的工具结果里也回显
         // 任务文本，先匹配任务名会把父请求错路由到延迟分支。
         if is_subagent_request(body) && body.to_string().contains("SLOW_CHILD_TASK") {
-            // 子代理迟迟不交付：回退发生时它仍在运行。
-            return delayed(yield_call("call_yield", "CHILD_DONE"), 30_000);
+            // 子代理挂在 bash 长任务上：回退发生时它仍在运行，孤儿停杀由
+            // 同一关停路径回收进程。
+            return ResponseTemplate::new(200).set_body_raw(
+                support::tool_stream(vec![(
+                    "call_hold",
+                    "bash",
+                    json!({"description":"hold","command":"sleep 300","timeout_secs":3600}),
+                )]),
+                "text/event-stream",
+            );
         }
         if is_subagent_request(body) {
             return yield_call("call_yield", "CHILD_DONE");
@@ -426,16 +439,20 @@ async fn rewinding_past_a_spawn_orphans_stops_and_hides_the_child() {
 #[tokio::test]
 async fn fusion_cancel_stops_a_background_sidekick() {
     let upstream = MockServer::builder().start().await;
-    mount_router(&upstream, |body| {
+    // 门控掐住 sidekick 的上游响应：wiremock 服务端被冻住的期间 lead 的后续
+    // 请求排不进处理，提示天然保持在飞，恰好覆盖「进行中取消」。
+    let gate = support::Gate::new();
+    let held = gate.clone();
+    mount_router(&upstream, move |body| {
         if body["model"] == "gpt-cheap" {
-            return delayed(sidekick_yield_call("SK_REPORT"), 3_000);
+            held.wait();
+            return sidekick_yield_call("SK_REPORT");
         }
         let last = body["messages"]
             .as_array()
             .and_then(|messages| messages.last());
         if last.is_some_and(|message| message["role"] == "tool") {
-            // 工具结果回来后 lead 拖延应答，把提示撑在运行中。
-            return delayed(text_response("LEAD_DONE"), 2_000);
+            return text_response("LEAD_DONE");
         }
         ResponseTemplate::new(200).set_body_raw(
             support::tool_stream(vec![(
@@ -449,6 +466,7 @@ async fn fusion_cancel_stops_a_background_sidekick() {
     .await;
     let harness = fusion_harness(&upstream).await;
     let lead_id = harness.session(moc_protocol::SessionEngine::Standard).await;
+    let mut events = harness.events.subscribe();
     let client = harness.client.clone();
     let session = lead_id.clone();
     let prompt = tokio::spawn(async move {
@@ -464,8 +482,20 @@ async fn fusion_cancel_stops_a_background_sidekick() {
             })
             .await
     });
-    // 等 sidekick 起来（block=false 立即返回，上游 3s）。
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // 等 sidekick 注册出来再取消；AgentStarted 事件是确定信号。
+    let sidekick_id = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let moc_protocol::methods::SessionUpdate::AgentStarted { agent } =
+                events.recv().await.expect("事件流开启")
+            {
+                if agent.preset.as_deref() == Some("sidekick") {
+                    break agent.id;
+                }
+            }
+        }
+    })
+    .await
+    .expect("sidekick 必须注册");
     let cancelled = harness
         .client
         .call::<SessionCancel>(SessionCancelParams {
@@ -476,29 +506,24 @@ async fn fusion_cancel_stops_a_background_sidekick() {
     assert!(cancelled.cancelled, "提示应确实被取消");
     let _ = prompt.await;
 
-    // 注册表里的 sidekick 状态必须落定 stopped。
-    let mut status = AgentStatus::Idle;
-    for _ in 0..40 {
-        let agents = harness
-            .client
-            .call::<AgentList>(AgentListParams {
-                session_id: lead_id.clone(),
-            })
-            .await
-            .expect("代理列表");
-        if let Some(agent) = agents
-            .agents
-            .iter()
-            .find(|agent| agent.preset.as_deref() == Some("sidekick"))
-        {
-            status = agent.status;
-            if status == AgentStatus::Stopped {
-                break;
+    // 注册表里的 sidekick 状态必须落定 stopped，状态推送是确定信号。
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let moc_protocol::methods::SessionUpdate::AgentStatusChanged {
+                agent_id,
+                status,
+                ..
+            } = events.recv().await.expect("事件流开启")
+            {
+                if agent_id == sidekick_id && status == AgentStatus::Stopped {
+                    break;
+                }
             }
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(status, AgentStatus::Stopped, "后台 sidekick 必须被停掉");
+    })
+    .await
+    .expect("后台 sidekick 必须被停掉");
+    gate.open();
     harness.close().await;
 }
 

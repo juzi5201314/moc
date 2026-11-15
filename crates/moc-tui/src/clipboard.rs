@@ -52,8 +52,17 @@ $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($data.Trim()
 Set-Clipboard -Value $text
 "#;
 
+/// 测试与自动化环境的逃生口：置位后所有剪贴板通道视为不可用，不探测、
+/// 不启动任何外部工具（避免 CI 上为不存在的工具白付子进程启动成本）。
+fn disabled() -> bool {
+    std::env::var_os("MOC_CLIPBOARD_DISABLE").is_some()
+}
+
 /// 尝试从系统剪贴板读取一张图片。
 pub async fn read_clipboard_image() -> Option<ClipboardImage> {
+    if disabled() {
+        return None;
+    }
     if is_wsl()
         && which("powershell.exe")
         && let Some(image) = read_windows_image().await
@@ -83,6 +92,9 @@ pub async fn read_clipboard_image() -> Option<ClipboardImage> {
 
 /// 尝试从系统剪贴板读取纯文本；空内容返回 `None`。
 pub async fn read_clipboard_text() -> Option<String> {
+    if disabled() {
+        return None;
+    }
     if is_wsl() && which("powershell.exe") {
         let output = run(
             "powershell.exe",
@@ -125,6 +137,9 @@ pub async fn read_clipboard_text() -> Option<String> {
 
 /// 复制文本到系统剪贴板（选择的复制通道；OSC52 由终端层另发）。
 pub async fn copy_text_to_clipboard(text: &str) -> anyhow::Result<()> {
+    if disabled() {
+        anyhow::bail!("未找到 powershell.exe / wl-copy / xclip / pbcopy，无法访问系统剪贴板")
+    }
     if is_wsl() && which("powershell.exe") {
         run(
             "powershell.exe",
@@ -170,6 +185,9 @@ pub async fn copy_text_to_clipboard(text: &str) -> anyhow::Result<()> {
 /// 文本复制会走到的本地通道（与 [`copy_text_to_clipboard`] 同序判定；
 /// OSC52 由终端层永远并写，不算在内）。`/doctor` 报告用。
 pub fn local_channel() -> Option<&'static str> {
+    if disabled() {
+        return None;
+    }
     if is_wsl() && which("powershell.exe") {
         return Some("powershell.exe");
     }

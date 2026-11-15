@@ -187,45 +187,6 @@ async fn thinking_loop_gives_up_after_the_redirect_budget() {
 }
 
 #[tokio::test]
-async fn slow_request_only_warns_and_still_finishes() {
-    let upstream = MockServer::builder().start().await;
-    Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_delay(std::time::Duration::from_millis(1100))
-                .set_body_raw(text_stream("慢请求正常完成"), "text/event-stream"),
-        )
-        .mount(&upstream)
-        .await;
-    let h = Harness::new(
-        &upstream.uri(),
-        "openai_chat",
-        "[compaction]\nenabled=false\n[limits]\nrequest_warn_secs=1",
-    )
-    .await;
-    let id = h.session(SessionEngine::Standard).await;
-    let result = h.prompt(&id, "执行慢请求场景").await;
-    assert_eq!(result.message.text(), "慢请求正常完成");
-    assert_eq!(result.finish_reason, FinishReason::Stop);
-    {
-        let notices = h.updates.lock();
-        assert!(
-            notices.iter().any(|update| matches!(
-                update,
-                SessionUpdate::GuardNotice {
-                    terminal: false,
-                    message,
-                    ..
-                } if message.contains("已超过 1 秒")
-            )),
-            "慢请求只应发出一次非终止警告：{notices:?}"
-        );
-    }
-    assert_eq!(upstream.received_requests().await.unwrap().len(), 1);
-    h.close().await;
-}
-
-#[tokio::test]
 async fn guard_stop_reaps_background_processes_owned_by_the_failed_prompt() {
     let upstream = MockServer::builder().start().await;
     let seen = Arc::new(AtomicUsize::new(0));

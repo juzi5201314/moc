@@ -222,6 +222,7 @@ async fn model_switch_confirmation_queues_messages_until_switch_settles() {
         "压缩结束前不应发送该消息"
     );
 
+    h.gate.open();
     let event = h.settle().await;
     crate::interaction::handle_event(&mut h.app, &h.connection, event);
     assert!(
@@ -266,6 +267,7 @@ async fn manual_compaction_queues_messages_until_settled() {
         "手动压缩在飞时消息应排队而不是报错"
     );
 
+    h.gate.open();
     let event = h.settle().await;
     crate::interaction::handle_event(&mut h.app, &h.connection, event);
     assert_eq!(h.app.notice.as_deref(), Some("上下文压缩已完成"));

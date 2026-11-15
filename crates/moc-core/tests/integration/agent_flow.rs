@@ -4,7 +4,7 @@ use crate::support;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::support::{Harness, transcript_entries};
 use moc_llm::Role;
@@ -126,10 +126,6 @@ fn sidekick_yield_call(report: &str) -> ResponseTemplate {
 
 fn text_response(text: &str) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_raw(support::text_stream(text), "text/event-stream")
-}
-
-fn delayed(template: ResponseTemplate, milliseconds: u64) -> ResponseTemplate {
-    template.set_delay(Duration::from_millis(milliseconds))
 }
 
 mod behavior;

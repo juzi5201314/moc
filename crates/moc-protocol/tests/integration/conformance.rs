@@ -17,8 +17,9 @@ use moc_protocol::{Id, PROTOCOL_VERSION, Response, RpcErrorCode, RpcMessage, Ser
 use serde_json::json;
 use tokio::sync::Notify;
 
-/// 两帧之间的静默窗口：用于「不该有字节」的断言。
-const SILENCE: Duration = Duration::from_millis(200);
+/// 两帧之间的静默窗口：用于「不该有字节」的断言。进程内对端的响应延迟在
+/// 微秒级，50ms 足够抓到任何会来的字节。
+const SILENCE: Duration = Duration::from_millis(50);
 
 #[tokio::test]
 async fn echoes_id_and_jsonrpc_version() {

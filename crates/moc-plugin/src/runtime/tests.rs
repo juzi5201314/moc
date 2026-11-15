@@ -311,8 +311,8 @@ async fn interrupting_stops_a_runaway_loop() {
             reply,
         })
         .unwrap();
-    // 模拟宿主超时：置中断标志。
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // 模拟宿主超时：置中断标志。flag 先于死循环的任何一次 handler 轮询
+    // 生效，不需要给调用留启动窗口。
     worker.interrupt();
     let error = tokio::time::timeout(Duration::from_secs(2), ready)
         .await

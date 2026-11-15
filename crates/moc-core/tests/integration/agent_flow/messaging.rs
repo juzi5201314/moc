@@ -3,7 +3,10 @@ use super::*;
 #[tokio::test]
 async fn message_routes_running_as_injected_and_idle_as_woken() {
     let upstream = MockServer::builder().start().await;
-    mount_router(&upstream, |body| {
+    // 门控掐住子代理首响：投递必然落在运行中窗口，不靠时序运气。
+    let gate = support::Gate::new();
+    let held = gate.clone();
+    mount_router(&upstream, move |body| {
         let text = body.to_string();
         // 历史里会同时带着旧任务与旧注入消息，命中顺序必须先看最新一条。
         if text.contains("WAKE_TEXT") {
@@ -13,7 +16,8 @@ async fn message_routes_running_as_injected_and_idle_as_woken() {
             return yield_call("call_yield", "INJECT_DONE");
         }
         if text.contains("SLOW_TASK") {
-            return delayed(yield_call("call_yield", "SLOW_DONE"), 800);
+            held.wait();
+            return yield_call("call_yield", "SLOW_DONE");
         }
         text_response("PARENT_OK")
     })
@@ -28,6 +32,7 @@ async fn message_routes_running_as_injected_and_idle_as_woken() {
     assert_eq!(first.receipts.len(), 1);
     assert_eq!(first.receipts[0].outcome, AgentMessageOutcome::Injected);
     assert_eq!(first.receipts[0].agent_id, child_id);
+    gate.open();
 
     let waited = wait_children(&harness, &parent_id, Some(vec![child_id.clone()]), Some(10)).await;
     assert!(waited.settled);
@@ -92,7 +97,15 @@ async fn broadcast_reaches_running_and_skips_idle() {
             return yield_call("call_yield", "FAST_DONE");
         }
         if text.contains("SLOW_A") || text.contains("SLOW_B") {
-            return delayed(yield_call("call_yield", "SLOW_DONE"), 1_500);
+            // 挂在 bash 长任务上保持运行中；harness.close() 的关停路径回收进程。
+            return ResponseTemplate::new(200).set_body_raw(
+                support::tool_stream(vec![(
+                    "call_hold",
+                    "bash",
+                    json!({"description":"hold","command":"sleep 300","timeout_secs":3600}),
+                )]),
+                "text/event-stream",
+            );
         }
         text_response("PARENT_OK")
     })
@@ -142,16 +155,15 @@ async fn child_message_wakes_parent_wait() {
             return yield_call("call_yield", "CHILD_DONE");
         }
         if text.contains("PINGER_TASK") {
-            return delayed(
-                ResponseTemplate::new(200).set_body_raw(
-                    support::tool_stream(vec![(
-                        "call_ping",
-                        "message_agent",
-                        json!({"target": "parent", "message": "CHILD_PING"}),
-                    )]),
-                    "text/event-stream",
-                ),
-                600,
+            // 消息先于或晚于 wait_agent 到达都合法：先到记为待收，晚到打断等待，
+            // 两种路径都以 messages_pending=true 收尾，不需要人为延迟。
+            return ResponseTemplate::new(200).set_body_raw(
+                support::tool_stream(vec![(
+                    "call_ping",
+                    "message_agent",
+                    json!({"target": "parent", "message": "CHILD_PING"}),
+                )]),
+                "text/event-stream",
             );
         }
         if text.contains("<agent-message") {
@@ -208,13 +220,16 @@ async fn child_message_wakes_parent_wait() {
 #[tokio::test]
 async fn injected_message_during_closing_window_is_answered() {
     let upstream = MockServer::builder().start().await;
-    mount_router(&upstream, |body| {
+    // 门控掐住子代理首响：注入必然落在首轮在飞窗口，收尾窗口交付由流程保证。
+    let gate = support::Gate::new();
+    let held = gate.clone();
+    mount_router(&upstream, move |body| {
         if body.to_string().contains("PARENT_LATE") {
             return yield_call("call_yield", "FINAL_REPORT");
         }
         if is_subagent_request(body) {
-            // 首轮延迟交付，给收尾窗口留投递时间。
-            return delayed(yield_call("call_yield", "FIRST_REPORT"), 800);
+            held.wait();
+            return yield_call("call_yield", "FIRST_REPORT");
         }
         text_response("PARENT_OK")
     })
@@ -223,11 +238,11 @@ async fn injected_message_during_closing_window_is_answered() {
     let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = spawn_child(&harness, &parent_id, "SLOW_TASK").await;
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
     let receipt = message_agent(&harness, &parent_id, &child_id, "PARENT_LATE")
         .await
         .expect("收尾窗口投递");
     assert_eq!(receipt.receipts[0].outcome, AgentMessageOutcome::Injected);
+    gate.open();
 
     let waited = wait_children(&harness, &parent_id, Some(vec![child_id]), Some(10)).await;
     assert!(waited.settled);

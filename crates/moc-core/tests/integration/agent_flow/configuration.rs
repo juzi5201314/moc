@@ -185,25 +185,27 @@ async fn nested_delegation_respects_max_depth() {
     assert!(waited.settled, "子代理完成委托并交付");
     assert_eq!(waited.agents[0].status, AgentStatus::Completed);
 
-    // depth-1 交付时孙代理可能还在跑；轮询到孙代理终态，保证它的请求已发出。
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let child_listed = harness
-            .client
-            .call::<AgentList>(AgentListParams {
-                session_id: child_id.clone(),
-            })
-            .await
-            .expect("子代理可列出自己的后代");
-        assert_eq!(child_listed.agents.len(), 1, "子代理名下必须有孙代理");
-        if matches!(
-            child_listed.agents[0].status,
-            AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Stopped
-        ) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "孙代理未在时限内完成");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    // depth-1 交付时孙代理可能还在跑；等到孙代理终态，保证它的请求已发出。
+    let child_listed = harness
+        .client
+        .call::<AgentList>(AgentListParams {
+            session_id: child_id.clone(),
+        })
+        .await
+        .expect("子代理可列出自己的后代");
+    assert_eq!(child_listed.agents.len(), 1, "子代理名下必须有孙代理");
+    if !matches!(
+        child_listed.agents[0].status,
+        AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Stopped
+    ) {
+        let grand = wait_children(
+            &harness,
+            &child_id,
+            Some(vec![child_listed.agents[0].id.clone()]),
+            Some(10),
+        )
+        .await;
+        assert!(grand.settled, "孙代理必须到达终态");
     }
 
     let requests = upstream.received_requests().await.expect("上游请求");

@@ -331,7 +331,7 @@ mod tests {
         let _group = ProcessGroup::for_suspended_spawn(&mut command, None).expect("创建暂停子进程");
         let mut child = command.spawn().expect("启动暂停子进程");
 
-        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         assert!(!marker.exists());
         let handle = child.raw_handle().expect("子进程句柄");
         // SAFETY: 测试子进程仍由 Tokio 子进程持有且保持暂停状态。

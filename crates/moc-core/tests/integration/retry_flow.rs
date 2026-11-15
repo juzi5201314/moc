@@ -56,8 +56,9 @@ async fn partial_then_complete(
             .write_all(format!("{:x}\r\n{body}\r\n0\r\n\r\n", body.len()).as_bytes())
             .await
             .unwrap();
-        // 留住两条连接，避免客户端在提示结束前看到 EOF。
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        // 留住两条连接，避免客户端在提示结束前看到 EOF：任务挂起不唤醒，
+        // 连接随测试 runtime 结束一并回收。
+        std::future::pending::<()>().await;
         drop(first);
     });
     (url, requests)
@@ -71,11 +72,6 @@ async fn read_headers(socket: &mut tokio::net::TcpStream) {
         assert!(read > 0, "对端在报文头完成前关闭了连接");
         used += read;
     }
-    let head = String::from_utf8_lossy(&buffer[..used]);
-    eprintln!(
-        "DEBUG 上游收到：{}",
-        head.lines().next().unwrap_or_default()
-    );
 }
 
 /// 取消发生在半截响应上：这一轮落库成待剪的失败回合，重试要把它整条撤掉。

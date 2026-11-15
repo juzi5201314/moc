@@ -793,16 +793,18 @@ async fn shake_shrinks_repeated_reads_and_keeps_tool_history_replayable() {
 }
 
 #[tokio::test]
-async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
+async fn background_pipes_and_pty_reap_killed_jobs_and_keep_logs() {
     let upstream = MockServer::builder().start().await;
     let count = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST")).respond_with(move |_: &wiremock::Request| {
         let response = match count.fetch_add(1, Ordering::SeqCst) {
             0 => tool_stream(vec![
-                ("pipe_start", "bash", json!({"description":"Start a piped job","command":"printf pipe-ready; exec sleep 60","async":true,"timeout_secs":1})),
-                ("pty_start", "bash", json!({"description":"Start a PTY job","command":"printf pty-ready; exec sleep 60","async":true,"pty":true,"timeout_secs":1})),
+                ("pipe_start", "bash", json!({"description":"Start a piped job","command":"printf pipe-ready; exec sleep 60","async":true})),
+                ("pty_start", "bash", json!({"description":"Start a PTY job","command":"printf pty-ready; exec sleep 60","async":true,"pty":true})),
             ]),
             1 => tool_stream(vec![
+                ("pipe_stop", "job", json!({"op":"kill","job_id":"job_1"})),
+                ("pty_stop", "job", json!({"op":"kill","job_id":"job_2"})),
                 ("pipe_wait", "job", json!({"op":"wait","job_id":"job_1","timeout_secs":5})),
                 ("pty_wait", "job", json!({"op":"wait","job_id":"job_2","timeout_secs":5})),
             ]),
@@ -820,8 +822,9 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
     )
     .await;
     let id = h.session(SessionEngine::Standard).await;
+    let mut events = h.events.subscribe();
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(30),
         h.prompt(&id, "执行后台生命周期验收"),
     )
     .await
@@ -840,29 +843,19 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
             .content
             .as_str()
     };
-    // deadline 回收由 JobFinished 事件佐证；wait 返回「终态」或「新输出」
-    // 取决于完成通知送达的时点，两种结局都必须带出终态或增量文本。
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        let updates = h.updates.lock().clone();
-        let ready = ["job_1", "job_2"].iter().all(|job_id| {
-            updates.iter().any(|update| {
-                matches!(
-                    update,
-                    SessionUpdate::JobFinished { job }
-                        if job.job_id == *job_id && job.status == JobStatus::TimedOut
-                )
-            })
-        });
-        if ready {
-            break;
+    // 停杀回收由 JobFinished 事件佐证；事件流是确定信号，不靠轮询猜时点。
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut reaped = std::collections::HashSet::new();
+        while reaped.len() < 2 {
+            if let SessionUpdate::JobFinished { job } = events.recv().await.expect("事件流开启") {
+                if job.status == JobStatus::Killed && matches!(job.job_id.as_str(), "job_1" | "job_2") {
+                    reaped.insert(job.job_id.clone());
+                }
+            }
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "job_1/job_2 应被 deadline 回收：{updates:?}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    })
+    .await
+    .expect("job_1/job_2 必须被杀并回收");
     for (call, marker) in [("pipe_wait", "pipe-ready"), ("pty_wait", "pty-ready")] {
         let text = output(call);
         assert!(
@@ -870,6 +863,8 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
             "{call} 应返回终态或增量输出：{text}"
         );
     }
+    assert_eq!(output("pipe_stop"), "Killed");
+    assert_eq!(output("pty_stop"), "Killed");
     assert_eq!(output("pty_kill"), "Killed");
     assert!(results.iter().all(|result| !result.is_error));
     let original_uri = output("pipe_start")

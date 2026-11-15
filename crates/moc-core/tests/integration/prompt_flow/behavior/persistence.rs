@@ -145,13 +145,20 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
 #[tokio::test]
 async fn unload_is_refused_while_a_prompt_is_in_flight() {
     let upstream = MockServer::builder().start().await;
+    // 门控掐住提示响应：请求已登记、提示在飞，不靠延迟猜窗口。
+    // 注意不能轮询 `received_requests` 做同步——respond 在 wiremock 的
+    // state 写锁内执行，Gate 阻塞期间读锁拿不到，测试会自己挂起。
+    let gate = support::Gate::new();
+    let held = gate.clone();
+    let arrived = std::sync::Arc::new(tokio::sync::Notify::new());
+    let hit = arrived.clone();
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_delay(std::time::Duration::from_millis(400))
-                .set_body_raw(text_stream("进行中"), "text/event-stream"),
-        )
+        .respond_with(move |_: &wiremock::Request| {
+            hit.notify_one();
+            held.wait();
+            ResponseTemplate::new(200).set_body_raw(text_stream("进行中"), "text/event-stream")
+        })
         .mount(&upstream)
         .await;
     let h = Harness::new(
@@ -176,18 +183,10 @@ async fn unload_is_refused_while_a_prompt_is_in_flight() {
             })
             .await
     });
-    // 上游已收到请求且响应被延迟：提示锁与运行态都在飞。
-    let mut waited = 0;
-    while upstream
-        .received_requests()
+    // 上游已收到请求且响应被掐住：提示锁与运行态都在飞。
+    tokio::time::timeout(std::time::Duration::from_secs(30), arrived.notified())
         .await
-        .map_or(0, |requests| requests.len())
-        == 0
-    {
-        assert!(waited < 200, "上游必须收到提示请求");
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        waited += 1;
-    }
+        .expect("上游必须收到提示请求");
     let refused = h
         .client
         .call::<SessionUnload>(SessionUnloadParams {
@@ -199,6 +198,7 @@ async fn unload_is_refused_while_a_prompt_is_in_flight() {
         Err(error) => error,
     };
     assert!(error.to_string().contains("SESSION_BUSY"), "{error}");
+    gate.open();
     assert_eq!(
         pending.await.unwrap().expect("提示正常完成").message.text(),
         "进行中"

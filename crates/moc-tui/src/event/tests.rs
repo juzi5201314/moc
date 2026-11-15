@@ -100,10 +100,40 @@ async fn app_with_core() -> (
     (core, connection, app, receiver, root)
 }
 
-/// 「切换并压缩 / 手动压缩」流程的测试内核：摘要响应延迟到 300ms，
+/// 门控压缩摘要响应：掐住 wiremock 应答直到 [`Hold::open`]，让压缩的在飞
+/// 窗口由测试显式决定，替代固定毫秒延迟。
+#[derive(Clone, Default)]
+struct Hold {
+    state: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Hold {
+    fn open(&self) {
+        let (lock, condvar) = &*self.state;
+        *lock.lock().expect("门闩未中毒") = true;
+        condvar.notify_all();
+    }
+    /// wiremock 应答闭包内调用：阻塞至 open；60s 兜底防忘放行时死锁。
+    fn wait(&self) {
+        let (lock, condvar) = &*self.state;
+        let mut open = lock.lock().expect("门闩未中毒");
+        while !*open {
+            let (guard, timeout) = condvar
+                .wait_timeout(open, std::time::Duration::from_secs(60))
+                .expect("门闩未中毒");
+            open = guard;
+            if timeout.timed_out() {
+                break;
+            }
+        }
+    }
+}
+
+/// 「切换并压缩 / 手动压缩」流程的测试内核：摘要响应由 [`Hold`] 掐住，
 /// 让压缩在飞期间有可观测窗口。
 struct SlowCompactionHarness {
     upstream: wiremock::MockServer,
+    gate: Hold,
     _root: tempfile::TempDir,
     core: std::sync::Arc<moc_core::Core>,
     connection: EmbeddedConnection,
@@ -121,9 +151,11 @@ impl SlowCompactionHarness {
         };
 
         let upstream = MockServer::builder().start().await;
+        let gate = Hold::default();
+        let held = gate.clone();
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(|request: &wiremock::Request| {
+            .respond_with(move |request: &wiremock::Request| {
                 let body: serde_json::Value =
                     serde_json::from_slice(&request.body).expect("请求 JSON");
                 if body["stream"] == true {
@@ -132,8 +164,8 @@ impl SlowCompactionHarness {
                         "text/event-stream",
                     )
                 } else {
+                    held.wait();
                     ResponseTemplate::new(200)
-                        .set_delay(std::time::Duration::from_millis(300))
                         .set_body_json(serde_json::json!({
                             "id": "summary",
                             "choices": [{
@@ -202,6 +234,7 @@ impl SlowCompactionHarness {
             .unwrap();
         Self {
             upstream,
+            gate,
             _root: root,
             core,
             connection,
