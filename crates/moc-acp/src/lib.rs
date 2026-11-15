@@ -6,6 +6,8 @@
 //! TUI、web 打开，反之亦然。
 #![forbid(unsafe_code)]
 
+rust_i18n::i18n!("../../locales", fallback = "zh");
+
 mod agent;
 mod backend;
 mod bridge;
@@ -204,7 +206,10 @@ pub async fn serve(core: Arc<Core>, options: AcpOptions) -> anyhow::Result<()> {
         }
     };
     if handshake.server.name != "moc-core" {
-        anyhow::bail!("连接到非 moc-core 服务：{}", handshake.server.name);
+        anyhow::bail!(
+            "{}",
+            rust_i18n::t!("acp.err.not_core", name = handshake.server.name)
+        );
     }
     bridge.attach_moc(client.clone());
     // config/get 只用于模型下拉与 usage 上下文；失败不阻断 ACP 启动。

@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use rust_i18n::t;
 use serde::Deserialize;
 
 use crate::error::{PluginError, Result};
@@ -36,13 +37,23 @@ impl Manifest {
         let text = std::fs::read_to_string(&file).map_err(|error| {
             PluginError::new(
                 "E_PLUGIN_MANIFEST",
-                format!("读取 {}: {error}", file.display()),
+                t!(
+                    "plugin.err.read_file",
+                    file = file.display().to_string(),
+                    error = error
+                )
+                .into_owned(),
             )
         })?;
         let manifest: Self = serde_json::from_str(&text).map_err(|error| {
             PluginError::new(
                 "E_PLUGIN_MANIFEST",
-                format!("解析 {}: {error}", file.display()),
+                t!(
+                    "plugin.err.parse_file",
+                    file = file.display().to_string(),
+                    error = error
+                )
+                .into_owned(),
             )
         })?;
         manifest.validate(dir)?;
@@ -58,10 +69,7 @@ impl Manifest {
         if !valid_name(&self.name) {
             return Err(PluginError::new(
                 "E_PLUGIN_MANIFEST",
-                format!(
-                    "插件名 `{}` 不合法：需为 1-64 位小写字母、数字或连字符，且以字母开头",
-                    self.name
-                ),
+                t!("plugin.err.plugin_name_invalid", name = self.name.as_str()).into_owned(),
             ));
         }
         let main = Path::new(&self.main);
@@ -79,14 +87,18 @@ impl Manifest {
         {
             return Err(PluginError::new(
                 "E_PLUGIN_MANIFEST",
-                format!("main `{}` 必须是插件目录内的 .js/.mjs 相对路径", self.main),
+                t!("plugin.err.main_path", main = self.main.as_str()).into_owned(),
             ));
         }
         let entry = dir.join(main);
         if !entry.is_file() {
             return Err(PluginError::new(
                 "E_PLUGIN_MANIFEST",
-                format!("入口文件不存在：{}", entry.display()),
+                t!(
+                    "plugin.err.entry_missing",
+                    file = entry.display().to_string()
+                )
+                .into_owned(),
             ));
         }
         Ok(())

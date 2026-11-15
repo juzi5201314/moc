@@ -1,5 +1,6 @@
 //! 会话生命周期与历史操作。
 
+use rust_i18n::t;
 use super::Core;
 use super::errors::write_lease_error;
 use super::goal_with_armed;
@@ -46,7 +47,7 @@ pub(super) async fn session_new(
         .map(PathBuf::from)
         .unwrap_or_else(|| core.inner.config().cwd.clone());
     let cwd = std::fs::canonicalize(&cwd)
-        .map_err(|error| invalid_params(format!("cwd 无效：{error}")))?;
+        .map_err(|error| invalid_params(t!("core.err.cwd_invalid", error = error).into_owned()))?;
     let config = core.inner.project_config(&cwd).map_err(to_rpc)?;
     if let Some(flag) = flag_for_engine(params.engine)
         && !config.feature_enabled(flag)

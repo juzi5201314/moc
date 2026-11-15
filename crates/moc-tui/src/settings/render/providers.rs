@@ -18,6 +18,7 @@ use crate::render::wrap::truncate;
 use crate::settings::providers::APIS;
 use crate::theme::Theme;
 use ratatui::Frame;
+use rust_i18n::t;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -61,7 +62,7 @@ pub(super) fn draw_providers(
                         .map_or(0, serde_json::Map::len);
                     format!("{id} · {count}")
                 }
-                None => "+ 添加供应商".into(),
+                None => t!("tui.providers.add").into_owned(),
             };
             let selected = panel.provider_selected(&ids, index);
             let style = if selected {
@@ -86,10 +87,14 @@ pub(super) fn draw_providers(
     }
     if !wide && panel.providers.sidebar {
         return Footer {
-            description: "选择供应商后配置连接参数与模型列表。".into(),
+            description: t!("tui.providers.pick_desc").into_owned(),
             source: None,
             hint: labels::hint_layout(
-                &[("↑↓", "选择"), ("enter/tab", "打开"), ("esc", "返回")],
+                &[
+                    ("↑↓", t!("tui.hint.choose").into_owned()),
+                    ("enter/tab", t!("tui.hint.open").into_owned()),
+                    ("esc", t!("tui.hint.back").into_owned()),
+                ],
                 usize::from(body.width),
             ),
         };
@@ -110,14 +115,20 @@ pub(super) fn draw_providers(
         label(
             frame,
             area,
-            "+ 添加供应商：配置连接参数后拉取或手动添加模型",
+            &t!("tui.providers.add_hint"),
             Style::new().fg(theme.accent_model),
         );
         hits.push((area, Hit::ProviderAction(ProviderAction::New)));
         return Footer {
-            description: "按 N 新建供应商。".into(),
+            description: t!("tui.providers.new_desc").into_owned(),
             source: None,
-            hint: labels::hint_layout(&[("n", "新建"), ("esc", "返回")], usize::from(body.width)),
+            hint: labels::hint_layout(
+                &[
+                    ("n", t!("tui.hint.new").into_owned()),
+                    ("esc", t!("tui.hint.back").into_owned()),
+                ],
+                usize::from(body.width),
+            ),
         };
     };
     label(
@@ -126,7 +137,7 @@ pub(super) fn draw_providers(
             height: 1,
             ..detail
         },
-        &format!("{id} · 连接与模型"),
+        &t!("tui.providers.title_fmt", id = id.as_str()),
         Style::new()
             .fg(theme.text_primary)
             .add_modifier(Modifier::BOLD),
@@ -139,20 +150,20 @@ pub(super) fn draw_providers(
     );
     let mut footer = draw_fields(frame, panel, theme, content, hits);
     if panel.edit.is_none() {
-        let mut items = vec![
-            ("n", "新建"),
-            ("f", "获取模型"),
-            ("a", "手动添加"),
-            ("ctrl+x", "删除供应商"),
-            ("tab", "切换焦点"),
-            ("↑↓", "移动"),
-            ("enter/space", "编辑/操作"),
+        let mut items: Vec<(&str, String)> = vec![
+            ("n", t!("tui.hint.new").into_owned()),
+            ("f", t!("tui.hint.fetch").into_owned()),
+            ("a", t!("tui.hint.add_manual").into_owned()),
+            ("ctrl+x", t!("tui.hint.remove_provider").into_owned()),
+            ("tab", t!("tui.hint.focus").into_owned()),
+            ("↑↓", t!("tui.hint.move").into_owned()),
+            ("enter/space", t!("tui.hint.edit_operate").into_owned()),
         ];
         // 本页整体替换字段提示条；字段行要单独把恢复默认露出来，放在 Esc 前优先保留。
         if panel.field().is_some() {
-            items.push(("r", "恢复默认"));
+            items.push(("r", t!("tui.hint.reset").into_owned()));
         }
-        items.push(("esc", "返回"));
+        items.push(("esc", t!("tui.hint.back").into_owned()));
         footer.hint = labels::hint_layout(&items, usize::from(body.width));
     }
     footer
@@ -169,7 +180,7 @@ pub(super) fn draw_provider_draft(
     label(
         frame,
         Rect { height: 1, ..body },
-        "添加供应商",
+        &t!("tui.providers.draft_title"),
         Style::new()
             .fg(theme.text_primary)
             .add_modifier(Modifier::BOLD),
@@ -197,14 +208,16 @@ pub(super) fn draw_provider_draft(
         } else {
             Style::new().fg(theme.text_secondary)
         };
-        let title = [
-            "标识",
-            "API 格式",
-            "服务地址",
-            "API 密钥",
-            "添加并获取模型",
-            "仅添加供应商",
-        ][index];
+        let title = t!(
+            [
+                "tui.providers.field_id",
+                "tui.providers.field_api",
+                "tui.providers.field_url",
+                "tui.providers.field_key",
+                "tui.providers.field_add_fetch",
+                "tui.providers.field_add_only",
+            ][index]
+        );
         label(
             frame,
             area,
@@ -234,19 +247,19 @@ pub(super) fn draw_provider_draft(
     }
     Footer {
         description: if draft.pending.is_some() {
-            "正在保存供应商…"
+            t!("tui.providers.saving")
         } else {
-            "地址示例：https://api.example.com/v1；本地服务无需密钥时可留空。"
+            t!("tui.providers.url_example")
         }
-        .into(),
+        .into_owned(),
         source: None,
         hint: labels::hint_layout(
             &[
-                ("tab/↑↓", "切换字段"),
-                ("←→", "切换协议"),
-                ("f6", "显示密钥"),
-                ("ctrl+s", "添加并获取"),
-                ("esc", "取消"),
+                ("tab/↑↓", t!("tui.hint.switch_field").into_owned()),
+                ("←→", t!("tui.hint.switch_api").into_owned()),
+                ("f6", t!("tui.hint.reveal_key").into_owned()),
+                ("ctrl+s", t!("tui.hint.add_fetch").into_owned()),
+                ("esc", t!("tui.hint.cancel").into_owned()),
             ],
             usize::from(body.width),
         ),
@@ -264,16 +277,16 @@ pub(super) fn draw_maintenance(
     let View::Maintenance { report, offset } = &panel.view else {
         return Footer::default();
     };
-    let summary = format!(
-        "{}清理 {} 个临时文件（{}），保留 {} 项。",
-        if report.applied {
-            "维护完成："
+    let summary = t!(
+        "tui.maint.summary",
+        prefix = if report.applied {
+            t!("tui.maint.done").into_owned()
         } else {
-            "预计"
+            t!("tui.maint.preview").into_owned()
         },
-        report.removed.len(),
-        short_bytes(report.bytes),
-        report.protected
+        count = report.removed.len(),
+        bytes = short_bytes(report.bytes),
+        protected = report.protected
     );
     label(
         frame,
@@ -297,7 +310,7 @@ pub(super) fn draw_maintenance(
         label(
             frame,
             Rect::new(list.x, list.y + cells(row), list.width, 1),
-            &format!("删除 {path}"),
+            &t!("tui.maint.delete_fmt", path = path.as_str()),
             Style::new().fg(theme.text_secondary),
         );
     }
@@ -310,14 +323,14 @@ pub(super) fn draw_maintenance(
     }
     let mut items = Vec::new();
     if !applied {
-        items.push(("enter", "执行维护"));
+        items.push(("enter", t!("tui.hint.run_maint").into_owned()));
     }
     if total > height {
-        items.push(("↑↓", "浏览清单"));
+        items.push(("↑↓", t!("tui.hint.browse").into_owned()));
     }
-    items.push(("esc", "返回"));
+    items.push(("esc", t!("tui.hint.back").into_owned()));
     Footer {
-        description: "只清理过期且未被会话引用的临时文件。".into(),
+        description: t!("tui.maint.desc").into_owned(),
         source: None,
         hint: labels::hint_layout(&items, usize::from(body.width)),
     }
@@ -360,7 +373,7 @@ pub(super) fn draw_discovery_popup(
     let mut search_cursor_col: Option<usize> = None;
     if rows >= 2 {
         let badge = if checked_count > 0 {
-            format!("  已选 {checked_count}")
+            t!("tui.providers.selected_fmt", count = checked_count).into_owned()
         } else {
             String::new()
         };
@@ -368,7 +381,7 @@ pub(super) fn draw_discovery_popup(
         let query_span = if query.is_empty() {
             search_cursor_col = Some(6);
             Span::styled(
-                truncate("输入模型名或 ID 过滤", query_w).into_owned(),
+                truncate(t!("tui.providers.filter_hint").into_owned(), query_w).into_owned(),
                 Style::new().fg(theme.gray),
             )
         } else {
@@ -377,7 +390,10 @@ pub(super) fn draw_discovery_popup(
             Span::styled(shown, Style::new().fg(theme.accent_running))
         };
         let mut spans = vec![
-            Span::styled("搜索：", Style::new().fg(theme.text_secondary)),
+            Span::styled(
+                t!("tui.providers.search_prefix").into_owned(),
+                Style::new().fg(theme.text_secondary),
+            ),
             query_span,
         ];
         if !badge.is_empty() {
@@ -386,19 +402,16 @@ pub(super) fn draw_discovery_popup(
         lines.push(clip_line(Line::from(spans), width));
     }
     let status = if pending {
-        Some(("正在获取模型列表…".to_owned(), theme.accent_running))
+        Some((t!("tui.providers.fetching").into_owned(), theme.accent_running))
     } else if let Some(err) = &error {
-        Some((format!("获取失败：{err}"), theme.accent_error))
+        Some((
+            t!("tui.providers.fetch_failed", err = err.as_str()).into_owned(),
+            theme.accent_error,
+        ))
     } else if total_rows == 0 {
-        Some((
-            "供应商未返回模型，可关闭后手动添加。".to_owned(),
-            theme.gray,
-        ))
+        Some((t!("tui.providers.no_models").into_owned(), theme.gray))
     } else if visible.is_empty() {
-        Some((
-            "没有匹配的模型，按 Backspace 修改过滤词。".to_owned(),
-            theme.gray,
-        ))
+        Some((t!("tui.providers.no_match").into_owned(), theme.gray))
     } else {
         None
     };
@@ -473,7 +486,10 @@ pub(super) fn draw_discovery_popup(
                 ));
             }
             if added {
-                spans.push(Span::styled(" (已添加)", Style::new().fg(theme.gray)));
+                spans.push(Span::styled(
+                    t!("tui.providers.added").into_owned(),
+                    Style::new().fg(theme.gray),
+                ));
             }
             let body_row = lines.len();
             lines.push(super::editor::option_row(focused, spans, width, theme));
@@ -484,16 +500,16 @@ pub(super) fn draw_discovery_popup(
         .buffer_mut()
         .set_style(area, Style::new().fg(theme.gray_dim).bg(theme.bg_dark));
     let layout = overlay::Card {
-        title: format!("获取模型 · {provider_id}"),
+        title: t!("tui.providers.fetch_title", id = provider_id.as_str()).into_owned(),
         body: lines,
         footer: Some(overlay::footer(
             &[
-                ("↑↓", "移动"),
-                ("space", "勾选"),
-                ("ctrl+a", "全选"),
-                ("enter", "添加所选"),
-                ("f5", "重试"),
-                ("esc", "关闭"),
+                ("↑↓", t!("tui.hint.move").into_owned()),
+                ("space", t!("tui.hint.check").into_owned()),
+                ("ctrl+a", t!("tui.hint.select_all").into_owned()),
+                ("enter", t!("tui.hint.add_selected").into_owned()),
+                ("f5", t!("tui.hint.retry").into_owned()),
+                ("esc", t!("tui.hint.close").into_owned()),
             ],
             width,
             theme,

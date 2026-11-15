@@ -4,6 +4,7 @@
 
 import { AgentsTab, UsageTab } from "@/components/panels/inspector-tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { useUi } from "@/store/ui";
 
@@ -27,6 +28,7 @@ export function ContextRing({
   used: number;
   window: number;
 }) {
+  const t = useT();
   const percent = Math.min(100, Math.round((used / windowSize) * 100));
   const size = 18;
   const stroke = 2;
@@ -37,7 +39,7 @@ export function ContextRing({
     <button
       type="button"
       className="flex size-7 items-center justify-center rounded-lg hover:bg-accent"
-      aria-label={`上下文已用 ${percent}%`}
+      aria-label={t("pop.context", { n: percent })}
       disabled={sessionId === "draft-session"}
       onClick={() => useUi.getState().set({ contextDialog: sessionId })}
     >
@@ -82,6 +84,7 @@ export function ContextRing({
 
 /** 费用 chip → 用量 Popover（原 UsageTab 收紧到 w-80）。 */
 export function UsagePopover({ sessionId, label }: { sessionId: string; label: string }) {
+  const t = useT();
   const controlled = useUi((state) => state.statusPopover);
   const open = controlled?.sessionId === sessionId && controlled.kind === "usage";
   const setOpen = (next: boolean) => popoverFor(sessionId, "usage").set(next);
@@ -91,7 +94,7 @@ export function UsagePopover({ sessionId, label }: { sessionId: string; label: s
         <button
           type="button"
           className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 font-mono tabular-nums transition-colors hover:text-foreground"
-          title="查看本会话用量"
+          title={t("pop.usage")}
         >
           {label}
         </button>
@@ -115,6 +118,7 @@ export function AgentsPopover({
   running: number;
   total: number;
 }) {
+  const t = useT();
   const controlled = useUi((state) => state.statusPopover);
   const open = controlled?.sessionId === sessionId && controlled.kind === "agents";
   const setOpen = (next: boolean) => popoverFor(sessionId, "agents").set(next);
@@ -124,10 +128,10 @@ export function AgentsPopover({
         <button
           type="button"
           className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 transition-colors hover:text-foreground"
-          title="查看子代理"
+          title={t("pop.agents")}
         >
           {running > 0 && <span className="size-1.5 animate-pulse rounded-full bg-brand" />}
-          {running > 0 ? `${running} 个子代理运行中` : `${total} 个子代理`}
+          {running > 0 ? t("pop.agents_running", { n: running }) : t("pop.agents_n", { n: total })}
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" align="end" sideOffset={8} className="w-96 p-0">

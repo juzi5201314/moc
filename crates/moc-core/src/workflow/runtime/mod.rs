@@ -11,6 +11,7 @@ pub mod tools;
 pub(crate) use driver::WorkflowDriver;
 pub use tools::WORKFLOW_TOOLS;
 
+use rust_i18n::t;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,7 +41,7 @@ pub(crate) fn worker_command(
         .boot
         .ptc_worker
         .as_ref()
-        .ok_or_else(|| CoreError::Session("workflow worker 未配置（ptc_worker）".into()))?;
+        .ok_or_else(|| CoreError::Session(t!("core.err.worker_not_configured").into_owned()))?;
     let mut args = worker.args.clone();
     let mut replaced = false;
     for arg in &mut args {
@@ -320,8 +321,9 @@ pub(crate) fn list_run_metas(dir: &Path) -> Vec<RunMeta> {
 
 pub(crate) fn read_run_meta(dir: &Path) -> Result<RunMeta, CoreError> {
     let data = std::fs::read(dir.join("run.json"))
-        .map_err(|e| CoreError::Session(format!("run.json 读取失败：{e}")))?;
-    serde_json::from_slice(&data).map_err(|e| CoreError::Session(format!("run.json 解析失败：{e}")))
+        .map_err(|e| CoreError::Session(t!("core.err.run_json_read", error = e).into_owned()))?;
+    serde_json::from_slice(&data)
+        .map_err(|e| CoreError::Session(t!("core.err.run_json_parse", error = e).into_owned()))
 }
 
 /// running 且无执行者的 run 就地降级为 stopped(interrupted) 并回写 run.json。

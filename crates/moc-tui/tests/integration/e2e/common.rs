@@ -20,6 +20,7 @@ pub fn create_test_terminal(
     width: u16,
     height: u16,
 ) -> (App, UnboundedReceiver<AppEvent>, Terminal<TestBackend>) {
+    rust_i18n::set_locale("zh");
     let (events_tx, events_rx) = unbounded_channel();
     let app = App::new(Theme::global(), events_tx);
     let terminal = Terminal::new(TestBackend::new(width, height)).expect("create test backend");
@@ -33,6 +34,7 @@ pub fn create_test_terminal_with_level(
     height: u16,
     level: ColorLevel,
 ) -> (App, UnboundedReceiver<AppEvent>, Terminal<TestBackend>) {
+    rust_i18n::set_locale("zh");
     let (events_tx, events_rx) = unbounded_channel();
     static TRUECOLOR_THEME: std::sync::LazyLock<Theme> =
         std::sync::LazyLock::new(|| Theme::resolved(ColorLevel::TrueColor));

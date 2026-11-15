@@ -7,6 +7,7 @@ mod workflow_scope;
 
 pub use preset::{AgentPreset, PresetRegistry, ToolPolicy};
 
+use rust_i18n::t;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -133,7 +134,7 @@ fn invalid(message: impl Into<String>) -> CoreError {
 fn validate_text(value: &str, label: &str) -> Result<String, CoreError> {
     let value = value.trim();
     if value.is_empty() {
-        return Err(invalid(format!("{label} 不能为空")));
+        return Err(invalid(t!("core.err.label_empty", label = label).into_owned()));
     }
     Ok(value.to_owned())
 }

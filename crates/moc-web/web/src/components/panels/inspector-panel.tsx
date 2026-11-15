@@ -6,6 +6,7 @@ import { lazy, Suspense, useMemo } from "react";
 import { IconButton } from "@/components/common/icon-button";
 import { FilesTab } from "@/components/files/files-tab";
 import { DiffFile } from "@/components/panels/diff-file";
+import { type MsgKey, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { ToolFileDiff } from "@/protocol/types";
 import { type InspectorTab, useLayout } from "@/store/layout";
@@ -18,14 +19,15 @@ const TerminalTab = lazy(() =>
   import("@/components/terminal/terminal-tab").then((module) => ({ default: module.TerminalTab })),
 );
 
-const TABS: { id: InspectorTab; label: string }[] = [
-  { id: "files", label: "文件" },
-  { id: "terminal", label: "终端" },
-  { id: "changes", label: "变更" },
-  { id: "btw", label: "旁路" },
+const TABS: { id: InspectorTab; label: MsgKey }[] = [
+  { id: "files", label: "insp.files" },
+  { id: "terminal", label: "insp.terminal" },
+  { id: "changes", label: "insp.changes" },
+  { id: "btw", label: "insp.btw" },
 ];
 
 export function InspectorPanel({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const tab = useLayout((state) => state.inspectorTab);
   const view = useTranscript((state) => state.bySession[sessionId]);
 
@@ -52,7 +54,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {item.label}
+                {t(item.label)}
                 {count > 0 && (
                   <span className="min-w-4 rounded-full bg-foreground/10 px-1 text-center text-2xs leading-4 tabular-nums text-muted-foreground">
                     {count}
@@ -63,7 +65,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
           })}
         </div>
         <IconButton
-          label="关闭面板"
+          label={t("insp.close")}
           shortcut="Alt R"
           size="sm"
           onClick={() => useLayout.getState().toggleRightbar(false)}
@@ -78,7 +80,9 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
       >
         {tab === "files" && <FilesTab key={sessionId} sessionId={sessionId} />}
         {tab === "terminal" && (
-          <Suspense fallback={<p className="px-4 py-6 text-xs text-text-tertiary">加载终端…</p>}>
+          <Suspense
+            fallback={<p className="px-4 py-6 text-xs text-text-tertiary">{t("insp.term_load")}</p>}
+          >
             <TerminalTab key={sessionId} sessionId={sessionId} />
           </Suspense>
         )}
@@ -93,6 +97,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
 
 /** 同一文件的多次编辑合成一张卡片，hunk 按编辑先后排列。 */
 function ChangesTab({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const diffs = useTranscript((state) => state.bySession[sessionId]?.diffs);
   const diffMode = usePrefs((state) => state.diffMode);
   const files = useMemo(() => {
@@ -108,19 +113,19 @@ function ChangesTab({ sessionId }: { sessionId: string }) {
   }, [diffs]);
 
   if (files.length === 0) {
-    return (
-      <PanelEmpty title="还没有文件变更" hint="模型通过编辑工具修改的文件会按文件汇总在这里。" />
-    );
+    return <PanelEmpty title={t("insp.no_changes")} hint={t("insp.no_changes_hint")} />;
   }
   return (
     <div className="flex flex-col">
       <div className="flex h-10 items-center justify-between px-4">
-        <span className="text-xs font-medium text-muted-foreground">{files.length} 个文件</span>
+        <span className="text-xs font-medium text-muted-foreground">
+          {t("cp.files_n", { n: files.length })}
+        </span>
         <div className="flex items-center rounded-md bg-muted p-0.5">
           {(["unified", "split"] as const).map((mode) => (
             <IconButton
               key={mode}
-              label={mode === "unified" ? "统一视图" : "并排视图"}
+              label={mode === "unified" ? t("insp.unified") : t("insp.split")}
               size="xs"
               active={diffMode === mode}
               onClick={() => usePrefs.getState().set({ diffMode: mode })}

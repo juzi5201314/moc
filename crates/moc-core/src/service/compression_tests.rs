@@ -24,7 +24,7 @@ async fn project_compression_is_selected_per_creation_and_after_config_save() {
             .unwrap();
         }
         std::fs::write(home.join("config.toml"), format!(
-            "[models.roles]\ndefault='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n[providers.p.models.m]\n[session]\ncompress={global}\n"
+            "language='zh'\n[models.roles]\ndefault='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n[providers.p.models.m]\n[session]\ncompress={global}\n"
         )).unwrap();
         let core = Core::new_with_sandbox_support(
             CoreConfig {

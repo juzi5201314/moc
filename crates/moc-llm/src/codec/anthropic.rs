@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rust_i18n::t;
 use serde_json::{Value, json};
 
 use crate::error::LlmError;
@@ -105,9 +106,9 @@ impl Normalized {
             .expect("线上消息由本模块构造成内容块数组");
         let len = content.len();
         let Some(target) = content.get_mut(block) else {
-            return Err(LlmError::Encode(format!(
-                "线上消息只有 {len} 个内容块，缓存断点块下标 {block} 越界"
-            )));
+            return Err(LlmError::Encode(
+                t!("llm.err.cache_block_oob", len = len, block = block).into_owned(),
+            ));
         };
         target
             .as_object_mut()
@@ -143,9 +144,9 @@ impl Normalized {
                 line,
                 first_block + block.unwrap_or(blocks - 1),
             ),
-            None => Err(LlmError::Encode(format!(
-                "缓存断点下标 {message} 没有对应的指令消息"
-            ))),
+            None => Err(LlmError::Encode(
+                t!("llm.err.cache_no_instr", message = message).into_owned(),
+            )),
         }
     }
 
@@ -165,15 +166,19 @@ impl Normalized {
         };
         if self.system_is_empty() {
             return Err(LlmError::Encode(
-                "Anthropic 缓存断点需要非空系统提示才能落位（系统提示为空）".into(),
+                t!("llm.err.anthropic_cache_system").into_owned(),
             ));
         }
         let target = block.unwrap_or(blocks.len() - 1);
         let Some(target_block) = blocks.get_mut(target) else {
-            return Err(LlmError::Encode(format!(
-                "系统提示只有 {} 个内容块，缓存断点块下标 {target} 越界",
-                blocks.len()
-            )));
+            return Err(LlmError::Encode(
+                t!(
+                    "llm.err.system_block_oob",
+                    len = blocks.len(),
+                    target = target
+                )
+                .into_owned(),
+            ));
         };
         target_block
             .as_object_mut()

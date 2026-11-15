@@ -5,6 +5,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
+use rust_i18n::t;
 
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -15,7 +16,9 @@ struct Selection {
 pub fn load(home: &Path) -> Result<Option<String>, CoreError> {
     let text = super::editor::contents(&home.join("model-selection.toml"))?;
     let selection: Selection = toml::from_str(&text)
-        .map_err(|error| CoreError::Config(format!("模型选择记录无效：{error}")))?;
+        .map_err(|error| {
+            CoreError::Config(t!("core.err.selection_invalid", error = error).into_owned())
+        })?;
     Ok(selection.model)
 }
 

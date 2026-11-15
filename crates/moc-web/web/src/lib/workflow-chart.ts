@@ -1,6 +1,8 @@
 // chart artifact → Mermaid 文本：line/bar 走 `xychart-beta`，scatter 走
 // `quadrantChart`（按数据范围归一化，标题注明实际轴范围）。baseline 画成常值 series。
 
+import { t } from "@/lib/i18n";
+
 export type ChartField = { field?: string; label?: string; unit?: string };
 
 export type ChartSpecLite = {
@@ -83,7 +85,7 @@ export function chartToMermaid(spec: ChartSpecLite, items: unknown[]): string | 
 
   // xychart-beta：line/bar；baseline = 常值 series。
   const kind = type === "bar" ? "bar" : "line";
-  const title = `${spec.title ?? "chart"}${spec.scale === "log" ? " (y 轴按线性绘制)" : ""}`;
+  const title = `${spec.title ?? "chart"}${spec.scale === "log" ? t("chart.linear_axis") : ""}`;
   const ys = series.flatMap((s) => s.points.map((p) => p.y));
   if (baseline !== undefined) ys.push(baseline);
   const lo = Math.min(0, Math.min(...ys));

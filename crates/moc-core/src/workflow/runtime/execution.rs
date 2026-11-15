@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::RunHandle;
 use super::WorkflowManager;
 use super::driver;
@@ -46,7 +47,7 @@ impl WorkflowManager {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| CoreError::Session(format!("workflow worker 启动失败：{e}")))?;
+            .map_err(|e| CoreError::Session(t!("core.err.worker_start", error = e).into_owned()))?;
         let mut stdin = child
             .stdin
             .take()
@@ -107,7 +108,7 @@ impl WorkflowManager {
                     max_total_calls: cfg.max_total_calls,
                 },
             })
-            .map_err(|_| CoreError::Session("worker 通道已关闭".into()))?;
+            .map_err(|_| CoreError::Session(t!("core.err.worker_chan_closed").into_owned()))?;
         drop(compiled);
         let meta_plan = meta.plan.clone();
         drop(meta);
@@ -125,7 +126,11 @@ impl WorkflowManager {
             let line = match line {
                 Ok(Some(line)) => line,
                 Ok(None) => break,
-                Err(e) => return Err(CoreError::Session(format!("worker 输出读取失败：{e}"))),
+                Err(e) => {
+                    return Err(CoreError::Session(
+                        t!("core.err.worker_read", error = e).into_owned(),
+                    ));
+                }
             };
             let message: WorkflowGuestMessage = match serde_json::from_str(&line) {
                 Ok(m) => m,
@@ -154,9 +159,12 @@ impl WorkflowManager {
             let detail = if stderr.is_empty() {
                 String::new()
             } else {
-                format!("：stderr: {stderr}")
+                t!("core.err.worker_exited_stderr", stderr = stderr).into_owned()
             };
-            self.fail_run(handle, &format!("workflow worker 未达终态即退出{detail}"));
+            self.fail_run(
+                handle,
+                &t!("core.err.worker_exited", detail = detail).into_owned(),
+            );
         }
         let _ = handle.to_worker.send(WorkflowHostMessage::Shutdown);
         let _ = child.kill().await;

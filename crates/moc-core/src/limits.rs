@@ -3,6 +3,7 @@
 //! 参数全部来自 `[tools.bash.limits]`；0 表示该项不限。Linux 的 `memory.high` 依赖宿主
 //! swap 才能把匿名页换出并继续推进，无 swap 时自动跳过，避免进程无限期停等。
 
+use rust_i18n::t;
 use std::ffi::OsString;
 use std::sync::LazyLock;
 
@@ -70,7 +71,7 @@ impl BashLimitsConfig {
             ("memory_max_bytes", self.memory_max_bytes),
         ] {
             if value != 0 && value < 64 * MIB {
-                return Err(format!("tools.bash.limits.{field}: 必须为 0 或至少 64 MiB"));
+                return Err(t!("core.err.limits_min", field = field).into_owned());
             }
         }
         if self.memory_high_bytes != 0
@@ -430,6 +431,7 @@ mod tests {
 
     #[test]
     fn validation_names_the_field_and_rejects_empty_or_inverted_limits() {
+        rust_i18n::set_locale("zh");
         let mut config = BashLimitsConfig {
             enabled: true,
             ..Default::default()

@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::Activity;
 use super::SPINNER_FRAMES;
 use super::StatuslineData;
@@ -57,16 +59,18 @@ pub(super) fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
         let title = app
             .session
             .as_ref()
-            .map_or_else(|| "子代理".to_owned(), |session| session.title.clone());
+            .map_or_else(|| t!("tui.subagent.title").into_owned(), |session| {
+                session.title.clone()
+            });
         spans.push(Span::styled(
-            "  ▸ 子代理 ".to_owned(),
+            t!("tui.subagent.header").into_owned(),
             Style::new().fg(theme.accent_tool),
         ));
         spans.push(Span::styled(
             wrap::truncate(title, 24).into_owned(),
             Style::new().fg(theme.text_primary),
         ));
-        let back = labels::hints(&[("esc", "返回")], usize::MAX);
+        let back = labels::hints(&[("esc", t!("tui.hint.back"))], usize::MAX);
         // 「Esc 返回」可点：与空输入框按 Esc 同样返回主会话。
         let used: usize = spans
             .iter()
@@ -292,13 +296,13 @@ pub(super) fn activity(app: &App) -> Option<Activity> {
     }
     if app.cancel_requested {
         return Some(Activity {
-            label: "Stopping",
+            label: t!("tui.status.stopping"),
             color: app.theme.accent_warning,
         });
     }
     if app.skills_compacting {
         return Some(Activity {
-            label: "Working",
+            label: t!("tui.status.working"),
             color: app.theme.accent_running,
         });
     }
@@ -308,7 +312,7 @@ pub(super) fn activity(app: &App) -> Option<Activity> {
         .is_some_and(|modal| matches!(modal, Modal::Permission { .. } | Modal::Ask { .. }))
     {
         return Some(Activity {
-            label: "Waiting",
+            label: t!("tui.status.waiting"),
             color: app.theme.accent_warning,
         });
     }
@@ -319,14 +323,14 @@ pub(super) fn activity(app: &App) -> Option<Activity> {
         .any(|entry| matches!(&entry.block, TranscriptBlock::Tool(tool) if tool.running))
     {
         return Some(Activity {
-            label: "Running",
+            label: t!("tui.status.running"),
             color: app.theme.accent_running,
         });
     }
     let label = match app.blocks.last().map(|entry| &entry.block) {
-        Some(TranscriptBlock::Thinking { .. }) => "Thinking",
-        Some(TranscriptBlock::Assistant { .. }) => "Responding",
-        _ => "Working",
+        Some(TranscriptBlock::Thinking { .. }) => t!("tui.status.thinking"),
+        Some(TranscriptBlock::Assistant { .. }) => t!("tui.status.responding"),
+        _ => t!("tui.status.working"),
     };
     Some(Activity {
         label,
@@ -366,7 +370,7 @@ pub fn terminal_title(app: &App) -> String {
         .as_ref()
         .is_some_and(|modal| matches!(modal, Modal::Permission { .. } | Modal::Ask { .. }))
     {
-        format!("● {base} · 需人工")
+        t!("tui.status.needs_human_fmt", base = base.as_str()).into_owned()
     } else if app.prompt_running {
         format!("{} {base}", spinner_frame(app))
     } else {
@@ -383,7 +387,10 @@ pub(super) fn statusline_builtin(app: &App, width: usize) -> (Line<'static>, usi
     let data = statusline_data(app);
     let mut spans: Vec<Span<'static>> = Vec::new();
     if app.read_only {
-        spans.push(Span::styled("只读", Style::new().fg(theme.accent_warning)));
+        spans.push(Span::styled(
+            t!("tui.status.read_only").into_owned(),
+            Style::new().fg(theme.accent_warning),
+        ));
         spans.push(Span::styled(" · ", Style::new().fg(theme.gray)));
     }
     if let Some(activity) = activity(app) {

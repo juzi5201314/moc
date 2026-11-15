@@ -307,7 +307,7 @@ async fn alt_m_cycles_the_session_engine() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "language='zh'\n[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();
     let core = Core::new(CoreConfig {
@@ -404,7 +404,7 @@ async fn engine_menu_switches_the_session_engine() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "language='zh'\n[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();
     let core = Core::new(CoreConfig {

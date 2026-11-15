@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
+use rust_i18n::t;
 use rquickjs::{Ctx, Module, Result as JsResult};
 
 use crate::error::{PluginError, Result};
@@ -66,11 +67,14 @@ impl Loader for PluginLoader {
         if !path.starts_with(&self.root) {
             return Err(rquickjs::Error::new_loading_message(
                 name,
-                "模块路径不在插件目录内",
+                t!("plugin.err.outside_dir").into_owned(),
             ));
         }
         let source = std::fs::read(path).map_err(|error| {
-            rquickjs::Error::new_loading_message(name, format!("读取模块失败：{error}"))
+            rquickjs::Error::new_loading_message(
+                name,
+                t!("plugin.err.module_read", error = error).into_owned(),
+            )
         })?;
         Module::declare(ctx.clone(), name, source)
     }
@@ -88,16 +92,19 @@ fn resolve(root: &Path, base: &str, name: &str) -> Result<String> {
     } else {
         return Err(PluginError::new(
             "E_PLUGIN_IMPORT",
-            format!("`{name}` 不是相对路径；插件不能导入 npm 依赖或 node: 内建模块"),
+            t!("plugin.err.not_relative", name = name).into_owned(),
         ));
     };
     let real = candidate.canonicalize().map_err(|error| {
-        PluginError::new("E_PLUGIN_IMPORT", format!("解析 `{name}` 失败：{error}"))
+        PluginError::new(
+            "E_PLUGIN_IMPORT",
+            t!("plugin.err.resolve_failed", name = name, error = error).into_owned(),
+        )
     })?;
     if !real.starts_with(root) {
         return Err(PluginError::new(
             "E_PLUGIN_IMPORT",
-            format!("`{name}` 指向插件目录之外"),
+            t!("plugin.err.outside_plugin", name = name).into_owned(),
         ));
     }
     if !matches!(
@@ -106,7 +113,7 @@ fn resolve(root: &Path, base: &str, name: &str) -> Result<String> {
     ) {
         return Err(PluginError::new(
             "E_PLUGIN_IMPORT",
-            format!("`{name}` 只支持 .js/.mjs 模块"),
+            t!("plugin.err.module_ext", name = name).into_owned(),
         ));
     }
     Ok(real.to_string_lossy().into_owned())

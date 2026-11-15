@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::SessionTable;
 use super::entries::EntryPayload;
 use super::lock;
@@ -24,7 +25,7 @@ impl SessionTable {
         let record = self.get(session_id).await?;
         let title = sanitize_title(&params.title);
         if title.is_empty() {
-            return Err(CoreError::Session("INVALID_PARAMS: 标题不能为空".into()));
+            return Err(CoreError::Session(t!("core.err.title_empty").into_owned()));
         }
         self.append(session_id, EntryPayload::TitleChange { title })
             .await?;

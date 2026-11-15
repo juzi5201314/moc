@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { relativeTime } from "@/lib/format";
+import { t, useT } from "@/lib/i18n";
 import { useSessionSearch } from "@/lib/use-session-search";
 import { cn } from "@/lib/utils";
 import { ErrorCode, type RpcError } from "@/protocol/errors";
@@ -60,22 +61,29 @@ function connectionTip(
   server: InitializeResult | null,
 ): string {
   if (status === "online") {
-    return `已连接 ${server?.server.name ?? "moc-core"} ${server?.server.version ?? ""}`;
+    return t("sb.online", {
+      name: server?.server.name ?? "moc-core",
+      version: server?.server.version ?? "",
+    });
   }
   if (handshakeError) {
     if (handshakeError.code === ErrorCode.UnsupportedProtocolVersion) {
       const serverVersion = (handshakeError.data as { server_version?: string } | undefined)
         ?.server_version;
-      return `协议主版本不兼容（服务端 ${serverVersion ?? "未知"}，前端 ${PROTOCOL_VERSION}），请刷新页面`;
+      return t("conn.version_mismatch", {
+        server: serverVersion ?? t("sb.unknown"),
+        client: PROTOCOL_VERSION,
+      });
     }
-    return `握手失败：${handshakeError.message}`;
+    return t("sb.handshake_failed", { error: handshakeError.message });
   }
-  if (status === "connecting") return "正在连接…";
-  return everOnline ? "连接已断开，正在重试" : "无法连接到服务器";
+  if (status === "connecting") return t("term.connecting");
+  return everOnline ? t("sb.reconnecting") : t("sb.offline");
 }
 
 /** workflow 入口：待审批优先开审批窗，否则开 run 列表。 */
 function WorkflowNavRow() {
+  const t = useT();
   const badges = useWorkflow(useShallow(selectWorkflowBadges));
   const active = useTabs((state) => state.active);
   if (badges.approvals === 0 && badges.runs === 0) return null;
@@ -85,8 +93,10 @@ function WorkflowNavRow() {
       label="workflow"
       hint={
         <span className="text-ui text-muted-foreground">
-          {badges.approvals > 0 ? `${badges.approvals}审` : ""}
-          {badges.runs > 0 ? `${badges.approvals > 0 ? "·" : ""}${badges.runs}跑` : ""}
+          {badges.approvals > 0 ? t("sb.badge_approval", { n: badges.approvals }) : ""}
+          {badges.runs > 0
+            ? `${badges.approvals > 0 ? "·" : ""}${t("sb.badge_run", { n: badges.runs })}`
+            : ""}
         </span>
       }
       onClick={() => {
@@ -98,7 +108,7 @@ function WorkflowNavRow() {
           if (active) {
             void workflowRuns(active)
               .then((runs) => useWorkflow.setState({ runList: runs }))
-              .catch((error) => toast.error(`获取 run 列表失败：${error}`));
+              .catch((error) => toast.error(t("slash.runs_failed", { error: String(error) })));
           }
         }
       }}
@@ -150,6 +160,7 @@ function NavRow({
 }
 
 export function WorkspaceSidebar() {
+  const t = useT();
   const list = useSessions((state) => state.list);
   const extra = useSessions((state) => state.extra);
   const workspaces = usePrefs((state) => state.workspaces);
@@ -204,7 +215,7 @@ export function WorkspaceSidebar() {
           <span className="text-sm font-semibold tracking-tight">moc</span>
         </div>
         <IconButton
-          label="收起侧栏"
+          label={t("layout.close_sidebar")}
           shortcut="Ctrl B"
           onClick={() => useLayout.getState().toggleSidebar()}
         >
@@ -215,7 +226,7 @@ export function WorkspaceSidebar() {
       <div className="shrink-0 space-y-px px-2">
         <NavRow
           icon={<SquarePenIcon />}
-          label="新会话"
+          label={t("hd.new")}
           hint={<Kbd>Alt N</Kbd>}
           onClick={() => createQuickSession()}
         />
@@ -229,12 +240,12 @@ export function WorkspaceSidebar() {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => event.key === "Escape" && closeSearch()}
-              placeholder="筛选会话与目录"
+              placeholder={t("sb.filter_ph")}
               className="min-w-0 flex-1 bg-transparent text-ui outline-none"
             />
             <button
               type="button"
-              aria-label="关闭筛选"
+              aria-label={t("sb.filter_close")}
               onClick={closeSearch}
               className="text-muted-foreground hover:text-foreground"
             >
@@ -244,17 +255,21 @@ export function WorkspaceSidebar() {
         ) : (
           <NavRow
             icon={<SearchIcon />}
-            label="搜索"
+            label={t("common.search")}
             hint={<Kbd>Ctrl K</Kbd>}
             onClick={() => setSearching(true)}
           />
         )}
-        <NavRow icon={<PuzzleIcon />} label="插件" onClick={() => openSettings("plugins")} />
+        <NavRow
+          icon={<PuzzleIcon />}
+          label={t("sd.plugins")}
+          onClick={() => openSettings("plugins")}
+        />
       </div>
 
       <div className="mt-4 flex h-7 shrink-0 items-center justify-between pr-2 pl-4">
-        <span className="text-xs font-medium text-text-tertiary">工作区</span>
-        <IconButton label="添加工作区目录" size="xs" onClick={addWorkspace}>
+        <span className="text-xs font-medium text-text-tertiary">{t("sb.workspaces")}</span>
+        <IconButton label={t("sb.add_workspace")} size="xs" onClick={addWorkspace}>
           <FolderPlusIcon />
         </IconButton>
       </div>
@@ -263,14 +278,14 @@ export function WorkspaceSidebar() {
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-2">
         {groups.length === 0 && shownContent.length === 0 ? (
           <div className="px-2 py-8 text-center text-xs leading-5 text-text-tertiary">
-            {query ? "没有匹配的会话" : "添加一个工作区目录开始"}
+            {query ? t("sb.no_match") : t("sb.empty")}
           </div>
         ) : (
           <>
             {shownContent.length > 0 && (
               <div className="mb-1">
                 <div className="flex h-7 items-center px-2 text-xs font-medium text-text-tertiary">
-                  内容匹配
+                  {t("sb.content_hits")}
                 </div>
                 {shownContent.map((hit) => (
                   <button
@@ -282,7 +297,7 @@ export function WorkspaceSidebar() {
                       "h-auto flex-col items-start gap-0 py-1.5 pl-[26px] text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
                     )}
                   >
-                    <span className="w-full truncate">{hit.session.title || "未命名会话"}</span>
+                    <span className="w-full truncate">{hit.session.title || t("hd.untitled")}</span>
                     <span className="w-full truncate text-xs text-text-tertiary">
                       {hit.matches[0]?.snippet}
                     </span>
@@ -325,7 +340,7 @@ export function WorkspaceSidebar() {
                     </button>
                     <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/ws:opacity-100 has-[[data-state=open]]:opacity-100">
                       <IconButton
-                        label="在此目录新建会话"
+                        label={t("sb.new_here")}
                         size="xs"
                         onClick={() => createQuickSession(group.cwd)}
                       >
@@ -349,7 +364,7 @@ export function WorkspaceSidebar() {
                               : "text-muted-foreground hover:bg-sidebar-accent",
                           )}
                         >
-                          <span className="truncate italic">新会话</span>
+                          <span className="truncate italic">{t("hd.new")}</span>
                         </button>
                       )}
                       {visible.map((session) => (
@@ -368,7 +383,7 @@ export function WorkspaceSidebar() {
                             "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
                           )}
                         >
-                          显示更多（{hidden}）
+                          {t("sb.more", { n: hidden })}
                         </button>
                       )}
                       {expanded[group.cwd] &&
@@ -384,11 +399,13 @@ export function WorkspaceSidebar() {
                               "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
                             )}
                           >
-                            收起
+                            {t("th.collapse")}
                           </button>
                         )}
                       {!hasDraft && group.sessions.length === 0 && (
-                        <div className="py-1.5 pl-[26px] text-xs text-text-tertiary">暂无会话</div>
+                        <div className="py-1.5 pl-[26px] text-xs text-text-tertiary">
+                          {t("sb.no_sessions")}
+                        </div>
                       )}
                     </div>
                   )}
@@ -406,7 +423,7 @@ export function WorkspaceSidebar() {
           className={cn(ROW, "flex-1 text-sidebar-foreground/85 hover:bg-sidebar-accent")}
         >
           <SettingsIcon className="size-4 text-muted-foreground" />
-          <span>设置</span>
+          <span>{t("sb.settings")}</span>
         </button>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -433,12 +450,13 @@ export function WorkspaceSidebar() {
 }
 
 function WorkspaceMenu({ cwd, removable }: { cwd: string; removable: boolean }) {
+  const t = useT();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          aria-label="工作区操作"
+          aria-label={t("sb.ws_actions")}
           className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <MoreHorizontalIcon className="size-3.5" />
@@ -448,11 +466,11 @@ function WorkspaceMenu({ cwd, removable }: { cwd: string; removable: boolean }) 
         <DropdownMenuItem
           onSelect={() => {
             void navigator.clipboard.writeText(cwd);
-            toast.success("已复制路径");
+            toast.success(t("sb.path_copied"));
           }}
         >
           <CopyIcon />
-          复制路径
+          {t("sb.copy_path")}
         </DropdownMenuItem>
         {removable && (
           <DropdownMenuItem
@@ -460,7 +478,7 @@ function WorkspaceMenu({ cwd, removable }: { cwd: string; removable: boolean }) 
             onSelect={() => usePrefs.getState().removeWorkspace(cwd)}
           >
             <XIcon />
-            从列表移除
+            {t("sb.remove_ws")}
           </DropdownMenuItem>
         )}
       </DropdownMenuContent>
@@ -469,17 +487,22 @@ function WorkspaceMenu({ cwd, removable }: { cwd: string; removable: boolean }) 
 }
 
 function SessionRow({ session, active }: { session: SessionInfo; active: boolean }) {
+  const t = useT();
   const running = useTranscript((state) => Boolean(state.activity[session.id]?.running));
   const attention = useTranscript((state) => attentionCount(state, session.id) > 0);
   const [renaming, setRenaming] = useState<string | null>(null);
-  const title = session.title || "未命名会话";
+  const title = session.title || t("hd.untitled");
 
   const commitRename = () => {
     const next = renaming?.trim();
     setRenaming(null);
     if (next && next !== title) {
       renameSession(session.id, next).catch((error: unknown) =>
-        toast.error(`重命名失败：${error instanceof Error ? error.message : String(error)}`),
+        toast.error(
+          t("hd.rename_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        ),
       );
     }
   };
@@ -535,7 +558,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
               <span className="size-1 rounded-full bg-brand" />
             </span>
           ) : attention ? (
-            <span className="size-1.5 rounded-full bg-warn" title="等待你的操作" />
+            <span className="size-1.5 rounded-full bg-warn" title={t("sb.attention")} />
           ) : (
             <span className="text-2xs tabular-nums text-text-tertiary">
               {relativeTime(session.updated_at_ms)}
@@ -547,7 +570,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                aria-label="会话操作"
+                aria-label={t("sb.session_actions")}
                 className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 <MoreHorizontalIcon className="size-3.5" />
@@ -556,16 +579,16 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
             <DropdownMenuContent align="start" className="w-44">
               <DropdownMenuItem onSelect={() => setRenaming(title)}>
                 <PencilIcon />
-                重命名
+                {t("hd.rename")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 onSelect={() => {
                   void navigator.clipboard.writeText(session.id);
-                  toast.success("已复制会话 ID");
+                  toast.success(t("hd.id_copied"));
                 }}
               >
                 <CopyIcon />
-                复制会话 ID
+                {t("hd.copy_id")}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -573,7 +596,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
                 onSelect={() => useUi.getState().set({ confirmDelete: { id: session.id, title } })}
               >
                 <Trash2Icon />
-                删除
+                {t("common.delete")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

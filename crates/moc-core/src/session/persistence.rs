@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::SessionRecord;
 use super::SessionTable;
 use super::archive;
@@ -73,7 +74,7 @@ impl SessionTable {
             let _append = record.append_lock.lock().await;
             let _lease = if result_lease {
                 Some(record.lease.lock().clone().ok_or_else(|| {
-                    CoreError::Session("SESSION_LOCKED: 子代理结果提交前父会话写租约已释放".into())
+                    CoreError::Session(t!("core.err.lease_released").into_owned())
                 })?)
             } else {
                 None

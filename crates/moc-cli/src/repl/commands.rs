@@ -50,6 +50,7 @@ use moc_protocol::methods::SessionSetPermissionParams;
 use moc_protocol::methods::SessionUsage;
 use moc_protocol::methods::SessionUsageParams;
 use moc_protocol::methods::prompt::PromptMode;
+use rust_i18n::t;
 use std::io::Write;
 
 pub(super) async fn run_command(
@@ -78,9 +79,12 @@ pub(super) async fn run_command(
         && !features.enabled(flag)
     {
         eprintln!(
-            "/{} 依赖的特性 {} 已禁用（见 /features）",
-            spec.name,
-            flag.spec().key
+            "{}",
+            t!(
+                "cli.cmd.flag_disabled",
+                name = spec.name,
+                flag = flag.spec().key
+            )
         );
         return Ok(CommandResult::Continue);
     }
@@ -95,9 +99,9 @@ pub(super) async fn run_command(
             println!(
                 "{}",
                 if result.cancelled {
-                    "提示取消请求已发送"
+                    t!("cli.cmd.cancelled")
                 } else {
-                    "当前没有进行中的提示"
+                    t!("cli.cmd.no_prompt_running")
                 }
             );
         }
@@ -108,7 +112,7 @@ pub(super) async fn run_command(
         CommandId::Plugins => match argument {
             "" => print_plugins(client, &session.id).await?,
             "reload" => reload_plugins(client, &session.id).await?,
-            _ => bail!("用法：/plugins [reload]"),
+            _ => bail!("{}", t!("cli.cmd.usage_plugins")),
         },
         CommandId::New => {
             *session = client
@@ -121,7 +125,7 @@ pub(super) async fn run_command(
                     fast_mode: session.fast_mode,
                 })
                 .await?;
-            println!("新会话：{}", session.id);
+            println!("{}", t!("cli.cmd.new_session", id = session.id));
         }
         CommandId::Sessions => {
             let result = client.call::<SessionList>(SessionListParams {}).await?;
@@ -130,7 +134,7 @@ pub(super) async fn run_command(
         CommandId::Engine => {
             let next = parse_engine(argument)?;
             if session.engine_locked {
-                bail!("会话引擎已锁定；换引擎请新建会话");
+                bail!("{}", t!("cli.cmd.engine_locked"));
             }
             *session = client
                 .call::<SessionSetEngine>(SessionSetEngineParams {
@@ -139,12 +143,12 @@ pub(super) async fn run_command(
                 })
                 .await?;
             if next == SessionEngine::ClmExperimental {
-                println!("CLM 实验引擎已启用；本会话首次请求后引擎锁定");
+                println!("{}", t!("cli.cmd.clm_enabled"));
             }
         }
         CommandId::ClmExperimental => {
             if session.engine_locked {
-                bail!("会话引擎已锁定；换引擎请新建会话");
+                bail!("{}", t!("cli.cmd.engine_locked"));
             }
             *session = client
                 .call::<SessionSetEngine>(SessionSetEngineParams {
@@ -152,7 +156,7 @@ pub(super) async fn run_command(
                     engine: SessionEngine::ClmExperimental,
                 })
                 .await?;
-            println!("CLM 实验引擎已启用；本会话首次请求后引擎锁定");
+            println!("{}", t!("cli.cmd.clm_enabled"));
         }
         CommandId::Autonomy => {
             let autonomy = match argument {
@@ -164,7 +168,7 @@ pub(super) async fn run_command(
                 "default" => SessionAutonomy::Default,
                 "dont_ask" => SessionAutonomy::DontAsk,
                 "unattended" => SessionAutonomy::Unattended,
-                _ => bail!("用法：/autonomy [default|dont_ask|unattended]"),
+                _ => bail!("{}", t!("cli.cmd.usage_autonomy")),
             };
             *session = client
                 .call::<SessionSetAutonomy>(SessionSetAutonomyParams {
@@ -180,7 +184,7 @@ pub(super) async fn run_command(
                 "workspace" => SessionPermission::Workspace,
                 "workspace-only" | "workspace_only" => SessionPermission::WorkspaceOnly,
                 "clear" => session.permission,
-                _ => bail!("用法：/permission <full|workspace|workspace-only|clear>"),
+                _ => bail!("{}", t!("cli.cmd.usage_permission")),
             };
             *session = client
                 .call::<SessionSetPermission>(SessionSetPermissionParams {
@@ -190,9 +194,12 @@ pub(super) async fn run_command(
                 })
                 .await?;
             if clear {
-                println!("已清空本会话的沙盒授权");
+                println!("{}", t!("cli.cmd.grants_cleared"));
             } else {
-                println!("权限已切换为 {}", session.permission.as_str());
+                println!(
+                    "{}",
+                    t!("cli.cmd.permission_set", mode = session.permission.as_str())
+                );
             }
         }
         CommandId::Plan => {
@@ -207,7 +214,18 @@ pub(super) async fn run_command(
                     active,
                 })
                 .await?;
-            println!("计划状态：{}", if active { "开启" } else { "关闭" });
+            println!(
+                "{}",
+                t!(
+                    "cli.cmd.plan_state",
+                    state = if active {
+                        t!("common.on")
+                    } else {
+                        t!("common.off")
+                    }
+                    .as_ref()
+                )
+            );
             if !argument.is_empty() {
                 send_prompt(client, &session.id, argument.to_owned(), None).await?;
             }
@@ -219,7 +237,7 @@ pub(super) async fn run_command(
                 "clear" => GoalAction::Unset,
                 "pause" => GoalAction::Pause,
                 "resume" => GoalAction::Resume,
-                "edit" => bail!("用法：/goal edit <objective>"),
+                "edit" => bail!("{}", t!("cli.cmd.usage_goal_edit")),
                 _ => match argument.strip_prefix("edit") {
                     Some(rest) if rest.starts_with(char::is_whitespace) => GoalAction::Edit {
                         objective: rest.trim().to_owned(),
@@ -239,7 +257,7 @@ pub(super) async fn run_command(
         }
         CommandId::Ask => {
             if argument.is_empty() {
-                bail!("用法：/ask <问题>");
+                bail!("{}", t!("cli.cmd.usage_ask"));
             }
             send_prompt(
                 client,
@@ -261,7 +279,7 @@ pub(super) async fn run_command(
                     action,
                 });
             tokio::pin!(pending);
-            eprintln!("Working：正在维护技能摘要，Ctrl+C 取消");
+            eprintln!("{}", t!("cli.cmd.skills_working"));
             let result = loop {
                 tokio::select! {
                     result = &mut pending => break result?,
@@ -270,14 +288,14 @@ pub(super) async fn run_command(
                         client.call::<moc_protocol::SkillsCancel>(moc_protocol::EmptyParams {}).await?;
                     }
                     line = read_line(input) => {
-                        if line?.is_some() { eprintln!("技能摘要操作尚未完成，输入未发送也未排队"); }
+                        if line?.is_some() { eprintln!("{}", t!("cli.cmd.skills_busy")); }
                         else { client.call::<moc_protocol::SkillsCancel>(moc_protocol::EmptyParams {}).await?; break pending.await?; }
                     }
                 }
             };
             println!("{}", result.message);
             for warning in result.warnings {
-                eprintln!("警告：{warning}");
+                eprintln!("{}", t!("cli.cmd.warning", msg = warning));
             }
         }
         CommandId::Compact => {
@@ -289,13 +307,22 @@ pub(super) async fn run_command(
                 .await?;
             if result.full {
                 println!(
-                    "上下文压缩：{}，{} → {} token",
-                    result.method, result.tokens_before, result.tokens_after
+                    "{}",
+                    t!(
+                        "cli.cmd.compacted",
+                        method = result.method,
+                        before = result.tokens_before,
+                        after = result.tokens_after
+                    )
                 );
             } else {
                 println!(
-                    "上下文裁剪：{} → {} token（未生成摘要）",
-                    result.tokens_before, result.tokens_after
+                    "{}",
+                    t!(
+                        "cli.cmd.trimmed",
+                        before = result.tokens_before,
+                        after = result.tokens_after
+                    )
                 );
             }
         }
@@ -309,7 +336,7 @@ pub(super) async fn run_command(
         }
         CommandId::DebugInfo => {
             if !argument.is_empty() {
-                bail!("用法：/debuginfo");
+                bail!("{}", t!("cli.cmd.usage_debuginfo"));
             }
             let text = client
                 .call::<moc_protocol::SessionDebugInfo>(moc_protocol::SessionDebugInfoParams {
@@ -320,7 +347,7 @@ pub(super) async fn run_command(
         }
         CommandId::Session => {
             if !argument.is_empty() {
-                bail!("用法：/session");
+                bail!("{}", t!("cli.cmd.usage_session"));
             }
             let text = client
                 .call::<moc_protocol::SessionInspect>(moc_protocol::SessionInspectParams {
@@ -331,7 +358,7 @@ pub(super) async fn run_command(
         }
         CommandId::Model => {
             if argument.is_empty() {
-                bail!("用法：/model <selector>");
+                bail!("{}", t!("cli.cmd.usage_model"));
             }
             let mut result = client
                 .call::<SessionSetModel>(SessionSetModelParams {
@@ -342,18 +369,24 @@ pub(super) async fn run_command(
                 .await?;
             if let Some(overflow) = &result.overflow {
                 println!(
-                    "{}；切换会先用 {} 压缩上下文（压缩后不超过 {} token）",
-                    capacity_notice(overflow, argument),
-                    argument,
-                    overflow.target_tokens
+                    "{}",
+                    t!(
+                        "cli.cmd.model_compact_notice",
+                        notice = capacity_notice(overflow, argument),
+                        model = argument,
+                        target = overflow.target_tokens
+                    )
                 );
-                print!("是否切换到 {argument} 并压缩？[y/N] ");
+                print!("{}", t!("cli.cmd.model_confirm", model = argument));
                 std::io::stdout().flush()?;
                 let confirmed = read_line(input)
                     .await?
                     .is_some_and(|line| matches!(line.trim(), "y" | "Y" | "yes" | "YES"));
                 if !confirmed {
-                    println!("已取消切换，模型仍为 {}", session.model);
+                    println!(
+                        "{}",
+                        t!("cli.cmd.model_cancelled", model = session.model)
+                    );
                     return Ok(CommandResult::Continue);
                 }
                 result = client
@@ -366,8 +399,11 @@ pub(super) async fn run_command(
             }
             *session = result.session;
             match result.compaction_error {
-                Some(error) => eprintln!("已切换到 {}，但上下文压缩失败：{error}", session.model),
-                None => println!("模型已切换为 {}", session.model),
+                Some(error) => eprintln!(
+                    "{}: {error}",
+                    t!("cli.cmd.model_compact_failed", model = session.model)
+                ),
+                None => println!("{}", t!("cli.cmd.model_switched", model = session.model)),
             }
         }
         CommandId::Retry => {
@@ -446,8 +482,12 @@ pub(super) async fn reload_plugins(client: &ClientHandle, session_id: &str) -> a
         .filter(|plugin| plugin.error.is_some())
         .count();
     println!(
-        "插件已重载：{} 个可用 / {disabled} 个仍不可用",
-        result.plugins.len() - disabled
+        "{}",
+        t!(
+            "cli.cmd.plugins_reloaded",
+            ok = result.plugins.len() - disabled,
+            disabled = disabled
+        )
     );
     print_plugin_list(&result.plugins);
     Ok(())
@@ -456,12 +496,10 @@ pub(super) async fn reload_plugins(client: &ClientHandle, session_id: &str) -> a
 /// 打印插件清单：一行标题，随后每个插件的来源、目录、工具与命令。
 pub(super) fn print_plugin_list(plugins: &[PluginInfo]) {
     if plugins.is_empty() {
-        println!(
-            "当前工作区没有插件。把插件放进 .moc/plugins/<name>/（或 $MOC_HOME/plugins）即可自动启用。"
-        );
+        println!("{}", t!("cli.cmd.no_plugins"));
         return;
     }
-    println!("已加载 {} 个插件：", plugins.len());
+    println!("{}", t!("cli.cmd.plugins_loaded", n = plugins.len()));
     for plugin in plugins {
         let version = plugin
             .version
@@ -469,25 +507,36 @@ pub(super) fn print_plugin_list(plugins: &[PluginInfo]) {
             .map(|version| format!(" v{version}"))
             .unwrap_or_default();
         println!(
-            "- {}{version}（{}）{}",
-            plugin.name,
-            plugin.source,
-            plugin.description.as_deref().unwrap_or_default()
+            "{}",
+            t!(
+                "cli.cmd.plugin_row",
+                name = plugin.name,
+                version = version,
+                source = plugin.source,
+                desc = plugin.description.as_deref().unwrap_or_default()
+            )
         );
         println!("  {}", plugin.dir);
         if let Some(error) = &plugin.error {
-            println!("  不可用：{error}");
+            println!("{}", t!("cli.cmd.plugin_unavailable", error = error));
             continue;
         }
         for tool in &plugin.tools {
-            println!("  工具 {} [{}]", tool.name, tool.modes.join(","));
+            println!(
+                "{}",
+                t!(
+                    "cli.cmd.plugin_tool",
+                    name = tool.name,
+                    modes = tool.modes.join(",")
+                )
+            );
         }
         for command in &plugin.commands {
-            println!("  命令 /{}", command.name);
+            println!("{}", t!("cli.cmd.plugin_command", name = command.name));
         }
     }
 }
 
 pub(super) fn print_unknown_command(name: &str) {
-    eprintln!("未知命令 `/{name}`；输入 /help 查看命令。");
+    eprintln!("{}", t!("cli.cmd.unknown", name = name));
 }

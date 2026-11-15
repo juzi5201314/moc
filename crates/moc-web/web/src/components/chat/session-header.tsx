@@ -27,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useT } from "@/lib/i18n";
 import { useGitBranch } from "@/lib/use-git-branch";
 import { useNarrow } from "@/lib/use-narrow";
 import { useLayout } from "@/store/layout";
@@ -47,6 +48,7 @@ function errorText(error: unknown): string {
 
 /** 侧栏收起时，顶栏左侧补上展开与新建入口。 */
 export function SidebarReveal() {
+  const t = useT();
   const collapsed = useLayout((state) => state.sidebarCollapsed);
   const overlay = useLayout((state) => state.sidebarOverlay);
   const narrow = useNarrow();
@@ -54,13 +56,13 @@ export function SidebarReveal() {
   return (
     <div className="flex items-center gap-0.5">
       <IconButton
-        label="展开侧栏"
+        label={t("hd.sidebar")}
         shortcut="Ctrl B"
         onClick={() => useLayout.getState().toggleSidebar()}
       >
         <PanelLeftOpenIcon />
       </IconButton>
-      <IconButton label="新会话" shortcut="Alt N" onClick={() => createQuickSession()}>
+      <IconButton label={t("hd.new")} shortcut="Alt N" onClick={() => createQuickSession()}>
         <SquarePenIcon />
       </IconButton>
     </div>
@@ -68,12 +70,13 @@ export function SidebarReveal() {
 }
 
 export function InspectorToggle({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const open = useLayout((state) => state.rightbarOpen);
   const pending = useTranscript((state) => attentionCount(state, sessionId));
   return (
     <div className="relative">
       <IconButton
-        label={open ? "收起检查面板" : "打开检查面板"}
+        label={open ? t("hd.inspector_close") : t("hd.inspector_open")}
         shortcut="Alt R"
         active={open}
         onClick={() => useLayout.getState().toggleRightbar()}
@@ -88,13 +91,14 @@ export function InspectorToggle({ sessionId }: { sessionId: string }) {
 }
 
 export function SessionHeader({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const view = useTranscript((state) => state.bySession[sessionId]);
   const branch = useGitBranch(view?.info.cwd);
   const [editing, setEditing] = useState<string | null>(null);
   const [compacting, setCompacting] = useState(false);
 
   if (!view) return null;
-  const title = view.info.title || "未命名会话";
+  const title = view.info.title || t("hd.untitled");
   const isDraft = sessionId === "draft-session";
 
   const commitTitle = () => {
@@ -102,7 +106,7 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
     setEditing(null);
     if (next && next !== title && !isDraft) {
       renameSession(sessionId, next).catch((error) =>
-        toast.error(`重命名失败：${errorText(error)}`),
+        toast.error(t("hd.rename_failed", { error: errorText(error) })),
       );
     }
   };
@@ -112,10 +116,13 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
     try {
       const result = await compactSession(sessionId);
       toast.success(
-        `上下文已压缩：${result.tokens_before.toLocaleString()} → ${result.tokens_after.toLocaleString()} tokens`,
+        t("slash.compacted", {
+          before: result.tokens_before.toLocaleString(),
+          after: result.tokens_after.toLocaleString(),
+        }),
       );
     } catch (error) {
-      toast.error(`压缩失败：${errorText(error)}`);
+      toast.error(t("slash.compact_failed", { error: errorText(error) }));
     } finally {
       setCompacting(false);
     }
@@ -145,7 +152,7 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
             type="button"
             onDoubleClick={() => !isDraft && setEditing(title)}
             className="min-w-0 truncate rounded-md px-1 text-sm font-medium text-foreground"
-            title={isDraft ? title : `${title}（双击重命名）`}
+            title={isDraft ? title : t("hd.rename_hint", { title })}
           >
             {title}
           </button>
@@ -157,7 +164,7 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
             <span className="truncate">{workspaceName(view.info.cwd)}</span>
           </span>
           {branch && (
-            <span className="flex min-w-0 items-center gap-1" title={`分支 ${branch}`}>
+            <span className="flex min-w-0 items-center gap-1" title={t("hd.branch", { branch })}>
               <GitBranchIcon className="size-3.5 shrink-0" />
               <span className="max-w-[160px] truncate font-mono text-xs">{branch}</span>
             </span>
@@ -169,13 +176,18 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
             <TooltipTrigger asChild>
               <span className="flex shrink-0 items-center gap-1 rounded-md bg-warn/12 px-1.5 py-0.5 text-2xs font-medium text-warn">
                 <LockIcon className="size-3" />
-                只读{view.holder ? ` · ${view.holder.frontend}` : ""}
+                {view.holder
+                  ? t("hd.readonly_by", { frontend: view.holder.frontend })
+                  : t("hd.readonly")}
               </span>
             </TooltipTrigger>
             <TooltipContent>
               {view.holder
-                ? `写租约由 ${view.holder.process_name ?? view.holder.frontend}（pid ${view.holder.pid}）持有`
-                : "只读打开：可以查看历史，不能发送提示"}
+                ? t("hd.lease_by", {
+                    name: view.holder.process_name ?? view.holder.frontend,
+                    pid: view.holder.pid,
+                  })
+                : t("hd.readonly_tip")}
             </TooltipContent>
           </Tooltip>
         )}
@@ -184,7 +196,7 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
       <div className="flex shrink-0 items-center gap-0.5">
         {!isDraft && (
           <IconButton
-            label="后台任务"
+            label={t("hd.jobs")}
             onClick={() => useUi.getState().set({ jobsSession: sessionId })}
           >
             <ListTodoIcon />
@@ -197,53 +209,55 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
             className="h-7 text-xs"
             onClick={() =>
               reacquire(sessionId).catch((error) =>
-                toast.error(`获取写权限失败：${errorText(error)}`),
+                toast.error(t("cb.acquire_failed", { error: errorText(error) })),
               )
             }
           >
             <UnlockIcon className="size-3.5" />
-            获取写权限
+            {t("cb.acquire")}
           </Button>
         )}
         {!isDraft && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <IconButton label="更多操作">
+              <IconButton label={t("hd.more")}>
                 <MoreHorizontalIcon />
               </IconButton>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52">
               <DropdownMenuItem onSelect={() => setEditing(title)}>
                 <PencilIcon />
-                重命名
+                {t("hd.rename")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 disabled={view.readOnly || view.running || compacting}
                 onSelect={() => void compact()}
               >
                 <MinimizeIcon />
-                压缩上下文
+                {t("hd.compact")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 onSelect={() => {
                   void navigator.clipboard.writeText(sessionId);
-                  toast.success("已复制会话 ID");
+                  toast.success(t("hd.id_copied"));
                 }}
               >
                 <CopyIcon />
-                复制会话 ID
+                {t("hd.copy_id")}
               </DropdownMenuItem>
               {!view.readOnly && (
                 <DropdownMenuItem
                   disabled={view.running}
                   onSelect={() =>
                     releaseSession(sessionId)
-                      .then(() => toast.success("已释放写租约，其他进程可以接管"))
-                      .catch((error) => toast.error(`释放失败：${errorText(error)}`))
+                      .then(() => toast.success(t("hd.lease_released")))
+                      .catch((error) =>
+                        toast.error(t("hd.release_failed", { error: errorText(error) })),
+                      )
                   }
                 >
                   <UnlockIcon />
-                  释放写租约
+                  {t("hd.release_lease")}
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
@@ -252,7 +266,7 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
                 onSelect={() => useUi.getState().set({ confirmDelete: { id: sessionId, title } })}
               >
                 <Trash2Icon />
-                删除会话
+                {t("hd.delete")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

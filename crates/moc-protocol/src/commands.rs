@@ -42,14 +42,15 @@ pub enum CommandGroup {
 
 impl CommandGroup {
     /// 帮助/清单里的组标题。
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> std::borrow::Cow<'static, str> {
+        use rust_i18n::t;
         match self {
-            Self::Session => "会话",
-            Self::Mode => "模式与引擎",
-            Self::Context => "上下文",
-            Self::Agents => "子代理与任务",
-            Self::Plugins => "插件",
-            Self::Ui => "界面",
+            Self::Session => t!("commands.group.session"),
+            Self::Mode => t!("commands.group.mode"),
+            Self::Context => t!("commands.group.context"),
+            Self::Agents => t!("commands.group.agents"),
+            Self::Plugins => t!("commands.group.plugins"),
+            Self::Ui => t!("commands.group.ui"),
         }
     }
 
@@ -87,13 +88,14 @@ pub enum DynamicArg {
 /// 命令元数据的可序列化视图：发给非 Rust 前端（WebUI）时剥离 `id` 与
 /// `args`（id 是各前端内部分派键，`args` 引用前端自供的动态候选），
 /// `flag` 展开为 `config.get` 特性表里的键名，前端按 `features[flag]` 判开关。
+/// `usage`/`description` 在边界翻译为当前 locale 文案（JSON 形状不变，仍是 string）。
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandMeta {
     pub name: &'static str,
     pub aliases: &'static [&'static str],
-    pub usage: &'static str,
-    pub description: &'static str,
+    pub usage: std::borrow::Cow<'static, str>,
+    pub description: std::borrow::Cow<'static, str>,
     /// [`CommandGroup::key`] 的机器键。
     pub group: &'static str,
     pub needs_session: bool,
@@ -112,8 +114,10 @@ pub struct CommandSpec<I> {
     pub name: &'static str,
     /// 别名；同样参与补全与分派（如 `settings → config`、`exit → quit`）。
     pub aliases: &'static [&'static str],
-    /// 参数用法提示（如 `"[reload]"`、`"<问题>"`）；`""` 表示无参数。
+    /// 参数用法提示：locale key（含中文占位的）或字面值（纯英文如 `"[reload]"`），
+    /// 经 [`usage_text`] 解析；`""` 表示无参数。
     pub usage: &'static str,
+    /// 一句话说明，存 locale key（如 `cli.commands.help.desc`），展示边界经 `t!` 翻译。
     pub description: &'static str,
     pub group: CommandGroup,
     /// 需要活动会话。
@@ -132,14 +136,33 @@ pub struct CommandSpec<I> {
     pub flag: Option<FeatureFlag>,
 }
 
+/// `usage` 可能是 locale key 也可能是字面值：命中 catalog 取当前 locale 文案，否则原样。
+pub fn usage_text(usage: &'static str) -> std::borrow::Cow<'static, str> {
+    if usage.is_empty() {
+        std::borrow::Cow::Borrowed(usage)
+    } else {
+        try_translate(usage).unwrap_or(std::borrow::Cow::Borrowed(usage))
+    }
+}
+
+/// `description` 一律是 locale key；等价于 `t!`，但键来自运行时数据。
+pub fn description_text(key: &'static str) -> std::borrow::Cow<'static, str> {
+    try_translate(key).unwrap_or(std::borrow::Cow::Borrowed(key))
+}
+
+/// 本 crate catalog 的缺键探测（返回 `None` 而不是 `t!` 的 `locale.key` 兜底串）。
+pub fn try_translate(key: &str) -> Option<std::borrow::Cow<'static, str>> {
+    crate::_rust_i18n_try_translate(&rust_i18n::locale(), key)
+}
+
 impl<I> CommandSpec<I> {
     /// 跨线元数据视图（见 [`CommandMeta`]）。
     pub fn meta(&self) -> CommandMeta {
         CommandMeta {
             name: self.name,
             aliases: self.aliases,
-            usage: self.usage,
-            description: self.description,
+            usage: usage_text(self.usage),
+            description: description_text(self.description),
             group: self.group.key(),
             needs_session: self.needs_session,
             available_during_task: self.available_during_task,
@@ -299,7 +322,7 @@ impl<I: 'static> CommandRegistry<I> {
                 names.into_iter().map(move |name| CommandCandidate {
                     value: format!("/{name}"),
                     label: format!("/{name}"),
-                    description: spec.description.to_owned(),
+                    description: description_text(spec.description).into_owned(),
                     append_space: true,
                     source: CommandSource::Builtin,
                 })
@@ -313,7 +336,7 @@ impl<I: 'static> CommandRegistry<I> {
                     value: format!("/{}", command.name),
                     label: format!("/{}", command.name),
                     description: if command.description.is_empty() {
-                        "插件命令".to_owned()
+                        rust_i18n::t!("commands.plugin_fallback").into_owned()
                     } else {
                         command.description.clone()
                     },

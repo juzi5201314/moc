@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::super::EncodedRequest;
 use super::super::common_headers;
 use super::super::echo;
@@ -44,7 +46,7 @@ pub(in super::super) fn encode_inspected(
 ) -> Result<EncodedRequest<Value>, LlmError> {
     let max_tokens = req
         .max_output_tokens
-        .ok_or_else(|| LlmError::Encode("Anthropic 协议的 max_output_tokens 是必填项".into()))?;
+        .ok_or_else(|| LlmError::Encode(t!("llm.err.anthropic_max_tokens").into_owned()))?;
     let plan = echo::plan(cfg, req);
     let mut normalized = normalize(cfg, req, plan)?;
     let cache = apply_cache(req, &mut normalized)?;
@@ -155,7 +157,7 @@ pub(super) fn encode_output_config(
             }
             ResponseFormat::JsonObject => {
                 return Err(LlmError::Encode(
-                    "Anthropic 不支持 json_object 响应格式，请提供 JsonSchema".into(),
+                    t!("llm.err.anthropic_json_object").into_owned(),
                 ));
             }
             // format 只接受 type + schema，普通文本省略该字段。
@@ -387,7 +389,7 @@ pub(super) fn encode_assistant_blocks(
                     }
                     ReasoningBlock::Item(_) => {
                         return Err(LlmError::Encode(
-                            "Anthropic 协议不支持 Responses 的 reasoning item".into(),
+                            t!("llm.err.anthropic_reasoning_item").into_owned(),
                         ));
                     }
                 }
@@ -402,10 +404,14 @@ pub(super) fn encode_assistant_blocks(
 pub(super) fn encode_tool_call(call: &ToolCall) -> Result<Value, LlmError> {
     let input = call.arguments_json()?;
     if !input.is_object() {
-        return Err(LlmError::Encode(format!(
-            "工具调用 {} 的参数必须是 JSON 对象，收到 {}",
-            call.name, call.arguments
-        )));
+        return Err(LlmError::Encode(
+            t!(
+                "llm.err.tool_args_object",
+                name = call.name.as_str(),
+                value = call.arguments
+            )
+            .into_owned(),
+        ));
     }
     Ok(json!({
         "type": "tool_use",
@@ -580,9 +586,7 @@ pub(super) fn apply_cache(
         Some(CacheTtl::FiveMinutes) => Some("5m"),
         Some(CacheTtl::OneHour) => Some("1h"),
         Some(CacheTtl::ThirtyMinutes) => {
-            return Err(LlmError::Encode(
-                "Anthropic 的缓存 TTL 只支持 5m 与 1h".into(),
-            ));
+            return Err(LlmError::Encode(t!("llm.err.anthropic_cache_ttl").into_owned()));
         }
     };
     let mut cache_control = Map::new();
@@ -620,9 +624,9 @@ pub(super) fn apply_cache(
                 }
                 Some(Placement::System { .. }) => system_breakpoint = true,
                 None => {
-                    return Err(LlmError::Encode(format!(
-                        "缓存断点下标 {index} 没有对应的线上内容块"
-                    )));
+                    return Err(LlmError::Encode(
+                        t!("llm.err.cache_no_block", index = index).into_owned(),
+                    ));
                 }
             }
         }
@@ -652,5 +656,5 @@ pub(super) fn unsupported_part(role: Role, part: &ContentPart) -> LlmError {
         ContentPart::ToolCall(_) => "ToolCall",
         ContentPart::ToolResult(_) => "ToolResult",
     };
-    LlmError::Encode(format!("{role} 消息不允许出现 {kind} 内容块"))
+    LlmError::Encode(t!("llm.err.role_block_kind", role = role, kind = kind).into_owned())
 }

@@ -2,6 +2,7 @@
 // 窄窗口下侧栏与检查面板都改成浮层，主舞台保持完整宽度。
 
 import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { useT } from "@/lib/i18n";
 import { useNarrow } from "@/lib/use-narrow";
 import { cn } from "@/lib/utils";
 import { useLayout } from "@/store/layout";
@@ -67,6 +68,7 @@ function ResizeHandle({
 }
 
 export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
+  const t = useT();
   const narrow = useNarrow();
   const sidebarCollapsed = useLayout((state) => state.sidebarCollapsed);
   const sidebarOverlay = useLayout((state) => state.sidebarOverlay);
@@ -90,7 +92,7 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
           <>
             <button
               type="button"
-              aria-label="关闭侧栏"
+              aria-label={t("layout.close_sidebar")}
               className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px] animate-in fade-in-0"
               onClick={() => setSidebarOverlay(false)}
             />
@@ -132,7 +134,7 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
             <>
               <button
                 type="button"
-                aria-label="关闭检查面板"
+                aria-label={t("layout.close_inspector")}
                 className="absolute inset-0 z-30 bg-black/20 animate-in fade-in-0"
                 onClick={() => toggleRightbar(false)}
               />

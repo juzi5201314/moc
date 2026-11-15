@@ -15,17 +15,19 @@ use crate::transcript::ToolCallBlock;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use rust_i18n::t;
 use serde_json::Value;
+use std::borrow::Cow;
 
 /// 工具标题名：自定义标题（`IRC`、`Sidekick`、`! bash`）统一在此决定。
-pub(super) fn tool_title<'a>(tool: &'a ToolCallBlock, args: &Value) -> &'a str {
+pub(super) fn tool_title<'a>(tool: &'a ToolCallBlock, args: &Value) -> Cow<'a, str> {
     match tool.name.as_str() {
-        "message_agent" => labels::title::IRC,
-        "sidekick" => labels::title::SIDEKICK,
+        "message_agent" => labels::title::IRC.into(),
+        "sidekick" => labels::title::SIDEKICK.into(),
         _ => match args.get("exclude_from_context").and_then(Value::as_bool) {
-            Some(true) => "!! bash · 不进入上下文",
-            Some(false) => "! bash",
-            None => &tool.name,
+            Some(true) => t!("tui.tool.bash_excluded").into_owned().into(),
+            Some(false) => "! bash".into(),
+            None => tool.name.as_str().into(),
         },
     }
 }
@@ -38,10 +40,11 @@ pub(super) fn tool_title_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'
     if let Some(preview) = &tool.preview {
         return vec![Span::styled(
             if preview.queued {
-                "待执行"
+                t!("tui.tool.queued")
             } else {
-                "生成中"
-            },
+                t!("tui.tool.generating")
+            }
+            .into_owned(),
             Style::new().fg(theme.gray_dim),
         )];
     }
@@ -316,7 +319,7 @@ pub(super) fn summary_spans(
                 vec![styled(arg_str("title"), theme.gray_bright)]
             }
         }
-        "yield" => vec![styled("交付报告".to_owned(), theme.gray_bright)],
+        "yield" => vec![styled(t!("tui.tool.yield_report").into_owned(), theme.gray_bright)],
         "skill" => {
             let name = arg_str("name");
             let mut spans = Vec::new();
@@ -340,7 +343,7 @@ pub(super) fn summary_spans(
         "stop_agent" => vec![styled(arg_str("agent_id"), theme.gray_bright)],
         "todo" => todo_summary_spans(args, theme),
         "TodoReminder" => vec![styled(
-            "隐式提醒：同步待办进度".to_owned(),
+            t!("tui.tool.todo_reminder").into_owned(),
             theme.gray_bright,
         )],
         "job" | "plan" | "exit_plan" => Vec::new(),
@@ -511,12 +514,13 @@ fn agent_summary_spans(tool: &ToolCallBlock, args: &Value, theme: &Theme) -> Vec
             // 摘要只占一行：handoff 首行；mode 与后台执行（block=false）附注。
             let mode = args.get("mode").and_then(Value::as_str).unwrap_or("keep");
             let first = if mode == "retry" {
-                "重试"
+                t!("tui.hint.retry").into_owned()
             } else {
                 args.get("message")
                     .and_then(Value::as_str)
                     .and_then(|text| text.lines().next())
                     .unwrap_or_default()
+                    .to_owned()
             };
             let mut spans = Vec::new();
             if !first.is_empty() {
@@ -527,29 +531,34 @@ fn agent_summary_spans(tool: &ToolCallBlock, args: &Value, theme: &Theme) -> Vec
                 spans.push(styled(flag.to_owned(), theme.gray));
             };
             if mode == "compact" {
-                push_flag("压缩后");
+                push_flag(t!("tui.tool.flag_compact").as_ref());
             } else if mode == "fresh" {
-                push_flag("新会话");
+                push_flag(t!("tui.tool.flag_fresh").as_ref());
             }
             if args.get("block").and_then(Value::as_bool) == Some(false) {
-                push_flag("后台");
+                push_flag(t!("tui.tool.flag_background").as_ref());
             }
             spans
         }
         "wait_agent" => {
             let main = match args.get("agent_ids").and_then(Value::as_array) {
-                Some(ids) if !ids.is_empty() => format!("等待 {} 个代理", ids.len()),
-                _ => "等待全部运行中代理".to_owned(),
+                Some(ids) if !ids.is_empty() => {
+                    t!("tui.tool.wait_count_fmt", count = ids.len()).into_owned()
+                }
+                _ => t!("tui.tool.wait_all").into_owned(),
             };
             let mut spans = vec![styled(main, theme.gray_bright)];
             if let Some(result) = wait_result(tool) {
                 if result.messages_pending {
                     push_sep(&mut spans);
-                    spans.push(styled("有新消息".to_owned(), theme.gray));
+                    spans.push(styled(t!("tui.tool.new_messages").into_owned(), theme.gray));
                 }
                 if result.timed_out {
                     push_sep(&mut spans);
-                    spans.push(styled("超时".to_owned(), theme.accent_warning));
+                    spans.push(styled(
+                        t!("tui.tool.timed_out").into_owned(),
+                        theme.accent_warning,
+                    ));
                 }
             }
             spans
@@ -568,7 +577,10 @@ fn agent_summary_spans(tool: &ToolCallBlock, args: &Value, theme: &Theme) -> Vec
                     .unwrap_or_default();
                 let mut spans = Vec::new();
                 if questions.len() > 1 {
-                    spans.push(styled(format!("共 {} 问", questions.len()), theme.gray));
+                    spans.push(styled(
+                        t!("tui.tool.question_count_fmt", count = questions.len()).into_owned(),
+                        theme.gray,
+                    ));
                     if !first.is_empty() {
                         push_sep(&mut spans);
                     }

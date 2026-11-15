@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::AgentRuntime;
 use super::SpawnProfile;
 use super::SpawnSpec;
@@ -172,7 +173,7 @@ pub(super) async fn resolve_profile(
 /// spawn 参数里的 `output_schema` 必须是合法的 JSON Schema 对象。
 pub(super) fn validate_output_schema(schema: &serde_json::Value) -> Result<(), CoreError> {
     jsonschema::validator_for(schema)
-        .map_err(|error| invalid(format!("output_schema 不是合法的 JSON Schema：{error}")))?;
+        .map_err(|error| invalid(t!("core.err.output_schema_bad", error = error).into_owned()))?;
     Ok(())
 }
 

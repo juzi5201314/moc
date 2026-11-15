@@ -20,6 +20,7 @@ use crate::modal::{Modal, RewindState};
 use crate::render::labels::KeyHit;
 use crate::render::wrap::{str_width, wrap_text};
 use crate::theme::Theme;
+use rust_i18n::t;
 
 /// 计算回退模态区域：宽屏下占据约 92% 宽、88% 高，留出舒适的边缘。
 fn modal_area(area: Rect) -> Rect {
@@ -86,7 +87,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         .border_style(Style::new().fg(theme.accent_user))
         .style(Style::new().bg(theme.bg_base))
         .title(Span::styled(
-            " ⏪ 会话消息回退 (Rewind) ",
+            t!("tui.rewind.title"),
             Style::new()
                 .fg(theme.accent_user)
                 .add_modifier(Modifier::BOLD),
@@ -108,7 +109,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         .session
         .as_ref()
         .map(|s| s.title.clone())
-        .unwrap_or_else(|| "未命名会话".to_string());
+        .unwrap_or_else(|| t!("tui.rewind.untitled").into_owned());
 
     // 垂直切分：顶部说明(2)、主内容区、底部 Dock(2)
     let header_height = if inner.height >= 16 { 2 } else { 1 };
@@ -179,21 +180,21 @@ fn draw_header(
     let mut lines = Vec::new();
     let mut row1 = vec![
         Span::styled(
-            "会话回退向导",
+            t!("tui.rewind.wizard"),
             Style::new()
                 .fg(theme.text_primary)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" · ", Style::new().fg(theme.gray_dim)),
         Span::styled(
-            format!("当前会话：「{session_title}」"),
+            t!("tui.rewind.session_fmt", title = session_title).into_owned(),
             Style::new().fg(theme.text_secondary),
         ),
     ];
     if total_nodes > 0 {
         row1.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
         row1.push(Span::styled(
-            format!("共 {total_nodes} 个历史节点"),
+            t!("tui.rewind.nodes_fmt", count = total_nodes).into_owned(),
             Style::new()
                 .fg(theme.accent_model)
                 .add_modifier(Modifier::BOLD),
@@ -204,7 +205,7 @@ fn draw_header(
     if area.height >= 2 {
         lines.push(Line::from(Span::styled(
             crate::render::wrap::truncate(
-                "确认后该条用户消息回到输入框重新编辑，之后的对话将被丢弃。",
+                t!("tui.rewind.guide"),
                 usize::from(area.width),
             )
             .into_owned(),
@@ -220,7 +221,7 @@ fn draw_body(frame: &mut Frame, state: &mut RewindState, area: Rect, theme: &The
         let text = vec![
             Line::from(""),
             Line::from(Span::styled(
-                "正在加载会话消息历史，请稍候…",
+                t!("tui.rewind.loading"),
                 Style::new().fg(theme.accent_running),
             )),
         ];
@@ -232,13 +233,13 @@ fn draw_body(frame: &mut Frame, state: &mut RewindState, area: Rect, theme: &The
         let text = vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!("❌ 加载失败：{error}"),
+                t!("tui.rewind.load_failed_fmt", err = error.as_str()).into_owned(),
                 Style::new()
                     .fg(theme.accent_error)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                "按 Enter 重试，或按 Esc 关闭窗口",
+                t!("tui.rewind.retry_hint"),
                 Style::new().fg(theme.gray_dim),
             )),
         ];
@@ -250,7 +251,7 @@ fn draw_body(frame: &mut Frame, state: &mut RewindState, area: Rect, theme: &The
         let text = vec![
             Line::from(""),
             Line::from(Span::styled(
-                "当前会话暂无可以回退的消息记录",
+                t!("tui.rewind.empty"),
                 Style::new().fg(theme.gray),
             )),
         ];
@@ -289,7 +290,7 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
         .border_set(ratatui::symbols::border::ROUNDED)
         .border_style(Style::new().fg(theme.border))
         .title(Span::styled(
-            " 节点时间线 (Timeline) ",
+            t!("tui.rewind.timeline_title"),
             Style::new()
                 .fg(theme.text_secondary)
                 .add_modifier(Modifier::BOLD),
@@ -306,11 +307,11 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
         let text = vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!("未找到匹配「{}」的节点", state.query),
+                t!("tui.rewind.no_match_fmt", query = state.query.as_str()).into_owned(),
                 Style::new().fg(theme.gray),
             )),
             Line::from(Span::styled(
-                "按 Esc 清空过滤条件",
+                t!("tui.rewind.clear_filter"),
                 Style::new().fg(theme.gray_dim),
             )),
         ];
@@ -352,7 +353,7 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
             if item.future {
                 (
                     "❯ ⏩ ",
-                    "[前滚目标]",
+                    t!("tui.rewind.tag_redo_target"),
                     Style::new()
                         .fg(theme.accent_model)
                         .add_modifier(Modifier::BOLD),
@@ -360,7 +361,7 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
             } else {
                 (
                     "❯ ⏪ ",
-                    "[回退目标]",
+                    t!("tui.rewind.tag_rewind_target"),
                     Style::new()
                         .fg(theme.accent_user)
                         .add_modifier(Modifier::BOLD),
@@ -368,14 +369,30 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
             }
         } else if item.future {
             if is_kept {
-                ("  ↪  ", "[将接回]", Style::new().fg(theme.accent_success))
+                (
+                    "  ↪  ",
+                    t!("tui.rewind.tag_rejoin"),
+                    Style::new().fg(theme.accent_success),
+                )
             } else {
-                ("  ⏩  ", "[已回退]", Style::new().fg(theme.gray_dim))
+                (
+                    "  ⏩  ",
+                    t!("tui.rewind.tag_rewound"),
+                    Style::new().fg(theme.gray_dim),
+                )
             }
         } else if is_kept {
-            ("  ✓  ", "[保留]", Style::new().fg(theme.accent_success))
+            (
+                "  ✓  ",
+                t!("tui.rewind.tag_kept"),
+                Style::new().fg(theme.accent_success),
+            )
         } else {
-            ("  ✗  ", "[丢弃]", Style::new().fg(theme.gray_dim))
+            (
+                "  ✗  ",
+                t!("tui.rewind.tag_dropped"),
+                Style::new().fg(theme.gray_dim),
+            )
         };
 
         let index_str = format!("[{}/{}] ", match_idx + 1, total_items);
@@ -516,7 +533,7 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
         .border_set(ratatui::symbols::border::ROUNDED)
         .border_style(Style::new().fg(theme.border))
         .title(Span::styled(
-            " 回退影响与内容详情 ",
+            t!("tui.rewind.detail_title"),
             Style::new()
                 .fg(theme.text_secondary)
                 .add_modifier(Modifier::BOLD),
@@ -573,24 +590,24 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "前滚到此处 (Redo to here)",
+                t!("tui.rewind.redo_here"),
                 Style::new()
                     .fg(theme.accent_model)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
         banner_lines.push(Line::from(Span::styled(
-            format!("• 将把已回退的历史向前接回，恢复该节点及之前共 {restored_count} 条"),
+            t!("tui.rewind.redo_restored_fmt", count = restored_count).into_owned(),
             Style::new().fg(theme.text_primary),
         )));
         if dropped_count > 0 {
             banner_lines.push(Line::from(Span::styled(
-                format!("• 该节点之后仍有 {dropped_count} 条保持回退状态，可继续前滚"),
+                t!("tui.rewind.redo_remaining_fmt", count = dropped_count).into_owned(),
                 Style::new().fg(theme.accent_warning),
             )));
         } else {
             banner_lines.push(Line::from(Span::styled(
-                "• 已回退的内容将全部接回，恢复到回退前的最新状态",
+                t!("tui.rewind.redo_all_restored"),
                 Style::new().fg(theme.accent_success),
             )));
         }
@@ -603,24 +620,24 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "回退到此处 (Rewind to here)",
+                t!("tui.rewind.rewind_here"),
                 Style::new()
                     .fg(theme.accent_user)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
         banner_lines.push(Line::from(Span::styled(
-            "• 该用户提问将完整恢复到底部输入框，供您修改后重新发送",
+            t!("tui.rewind.rewind_restore"),
             Style::new().fg(theme.text_primary),
         )));
         if dropped_count > 0 {
             banner_lines.push(Line::from(Span::styled(
-                format!("• 下方共 {dropped_count} 条对话记录将被丢弃（不再计入会话历史）"),
+                t!("tui.rewind.dropped_fmt", count = dropped_count).into_owned(),
                 Style::new().fg(theme.accent_warning),
             )));
         } else {
             banner_lines.push(Line::from(Span::styled(
-                "• 当前节点已经是最新消息，下方无多余对话丢弃",
+                t!("tui.rewind.at_latest"),
                 Style::new().fg(theme.accent_success),
             )));
         }
@@ -633,24 +650,24 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "从此处继续 (Continue from here)",
+                t!("tui.rewind.continue_here"),
                 Style::new()
                     .fg(theme.accent_model)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
         banner_lines.push(Line::from(Span::styled(
-            "• 会话历史将截断至该回复节点，您可以继续向模型提问",
+            t!("tui.rewind.continue_truncate"),
             Style::new().fg(theme.text_primary),
         )));
         if dropped_count > 0 {
             banner_lines.push(Line::from(Span::styled(
-                format!("• 下方共 {dropped_count} 条对话记录将被丢弃（不再计入会话历史）"),
+                t!("tui.rewind.dropped_fmt", count = dropped_count).into_owned(),
                 Style::new().fg(theme.accent_warning),
             )));
         } else {
             banner_lines.push(Line::from(Span::styled(
-                "• 当前节点已经是最新消息，下方无多余对话丢弃",
+                t!("tui.rewind.at_latest"),
                 Style::new().fg(theme.accent_success),
             )));
         }
@@ -673,7 +690,10 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
 
     let mut detail_lines = Vec::new();
     let meta_spans = vec![
-        Span::styled("节点信息：", Style::new().fg(theme.gray_dim)),
+        Span::styled(
+            t!("tui.rewind.meta_node"),
+            Style::new().fg(theme.gray_dim),
+        ),
         Span::styled(
             format!("{} · ", current_item.role_label()),
             if current_item.is_user {
@@ -686,12 +706,15 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
                     .add_modifier(Modifier::BOLD)
             },
         ),
-        Span::styled("记录时间：", Style::new().fg(theme.gray_dim)),
+        Span::styled(
+            t!("tui.rewind.meta_time"),
+            Style::new().fg(theme.gray_dim),
+        ),
         Span::styled(
             format!("{} · ", format_clock(current_item.at_ms)),
             Style::new().fg(theme.text_secondary),
         ),
-        Span::styled("条目ID：", Style::new().fg(theme.gray_dim)),
+        Span::styled(t!("tui.rewind.meta_id"), Style::new().fg(theme.gray_dim)),
         Span::styled(
             crate::render::wrap::truncate(current_item.entry_id.as_str(), 14).into_owned(),
             Style::new().fg(theme.gray_dim),
@@ -701,9 +724,12 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
 
     if !current_item.tool_calls.is_empty() {
         detail_lines.push(Line::from(vec![
-            Span::styled("调用工具：", Style::new().fg(theme.gray_dim)),
             Span::styled(
-                current_item.tool_calls.join("、"),
+                t!("tui.rewind.meta_tools"),
+                Style::new().fg(theme.gray_dim),
+            ),
+            Span::styled(
+                current_item.tool_calls.join(&t!("tui.values.list_sep")),
                 Style::new().fg(theme.text_primary),
             ),
         ]));
@@ -711,7 +737,7 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
 
     detail_lines.push(Line::from(""));
     detail_lines.push(Line::from(Span::styled(
-        "消息正文预览：",
+        t!("tui.rewind.body_preview"),
         Style::new()
             .fg(theme.text_primary)
             .add_modifier(Modifier::BOLD),
@@ -739,7 +765,7 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
     if total_body_lines > scroll + text_lines_available && text_lines_available > 0 {
         let remaining = total_body_lines.saturating_sub(scroll + text_lines_available);
         detail_lines.push(Line::from(Span::styled(
-            format!("  ▼ （还有 {remaining} 行内容 · 按 PgUp/PgDn 或滚轮滚动预览）"),
+            t!("tui.rewind.more_fmt", count = remaining).into_owned(),
             Style::new().fg(theme.accent_model),
         )));
     }
@@ -775,7 +801,7 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
 
     // 回退徽标
     let badge = Span::styled(
-        " ⏪ 回退 ",
+        t!("tui.rewind.badge"),
         Style::new()
             .bg(theme.accent_user)
             .fg(theme.bg_base)
@@ -794,13 +820,18 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
         segments.push((
             vec![
                 Span::styled(
-                    format!("过滤: \"{}\"", state.query),
+                    t!("tui.rewind.filter_fmt", query = state.query.as_str()).into_owned(),
                     Style::new()
                         .fg(theme.accent_warning)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" (匹配 {}/{})", matches.len(), state.items.len()),
+                    t!(
+                        "tui.rewind.match_fmt",
+                        matched = matches.len(),
+                        total = state.items.len()
+                    )
+                    .into_owned(),
                     Style::new().fg(theme.text_secondary),
                 ),
             ],
@@ -809,7 +840,7 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
         ));
         segments.push((
             vec![Span::styled(
-                "↑↓ 切换匹配",
+                t!("tui.rewind.switch_match").into_owned(),
                 Style::new().fg(theme.text_primary),
             )],
             None,
@@ -817,7 +848,7 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
         ));
         segments.push((
             vec![Span::styled(
-                "Esc 清除过滤",
+                t!("tui.rewind.esc_clear").into_owned(),
                 Style::new().fg(theme.gray_dim),
             )],
             Some(KeyCode::Esc),
@@ -843,7 +874,7 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
         }
         segments.push((
             vec![Span::styled(
-                "↑↓/jk 逐条选择",
+                t!("tui.rewind.select_each").into_owned(),
                 Style::new().fg(theme.text_primary),
             )],
             None,
@@ -851,7 +882,7 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
         ));
         segments.push((
             vec![Span::styled(
-                "←→/hl 仅跳用户提问",
+                t!("tui.rewind.jump_user").into_owned(),
                 Style::new().fg(theme.accent_user),
             )],
             None,
@@ -859,7 +890,7 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
         ));
         segments.push((
             vec![Span::styled(
-                "f 或 / 搜索",
+                t!("tui.rewind.search_key").into_owned(),
                 Style::new().fg(theme.text_secondary),
             )],
             Some(KeyCode::Char('f')),
@@ -876,7 +907,7 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
         }) {
             segments.push((
                 vec![Span::styled(
-                    "R 重新作答",
+                    t!("tui.rewind.redo_answer").into_owned(),
                     Style::new().fg(theme.accent_model),
                 )],
                 Some(KeyCode::Char('r')),
@@ -884,7 +915,10 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
             ));
         }
         segments.push((
-            vec![Span::styled("Esc 取消", Style::new().fg(theme.gray_dim))],
+            vec![Span::styled(
+                t!("tui.rewind.esc_cancel").into_owned(),
+                Style::new().fg(theme.gray_dim),
+            )],
             Some(KeyCode::Esc),
             u8::MAX,
         ));
@@ -932,10 +966,11 @@ fn enter_hint_span<'a>(state: &RewindState, theme: &Theme) -> Span<'a> {
     let is_redo = state.selected_item_ref().is_some_and(|item| item.future);
     Span::styled(
         if is_redo {
-            "Enter 前滚到此处"
+            t!("tui.rewind.enter_redo")
         } else {
-            "Enter 回退到此处"
-        },
+            t!("tui.rewind.enter_rewind")
+        }
+        .into_owned(),
         Style::new()
             .fg(if is_redo {
                 theme.accent_model

@@ -46,7 +46,7 @@ async fn clicking_an_added_model_keeps_the_selection_empty() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "language='zh'\n[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();
     let core = Core::new(CoreConfig {
@@ -340,6 +340,7 @@ fn model_role_fields_carry_their_own_specials() {
 
 #[test]
 fn server_plugin_fields_survive_rebuild_with_defaults() {
+    rust_i18n::set_locale("zh");
     let path = vec![
         "plugins".into(),
         "foo".into(),
@@ -382,7 +383,7 @@ fn server_plugin_fields_survive_rebuild_with_defaults() {
         rows: Vec::new(),
         collapsed: BTreeSet::new(),
         expanded: BTreeSet::new(),
-        tab: TABS.iter().position(|tab| *tab == "插件").unwrap(),
+        tab: TABS.iter().position(|tab| *tab == "plugins").unwrap(),
         selected: 0,
         offset: 0,
         scroll: Default::default(),
@@ -417,6 +418,7 @@ fn server_plugin_fields_survive_rebuild_with_defaults() {
 
 #[test]
 fn rebuilding_does_not_infer_plugin_field_metadata() {
+    rust_i18n::set_locale("zh");
     let path = vec![
         "plugins".into(),
         "foo".into(),
@@ -452,7 +454,7 @@ fn rebuilding_does_not_infer_plugin_field_metadata() {
         rows: Vec::new(),
         collapsed: BTreeSet::new(),
         expanded: BTreeSet::new(),
-        tab: TABS.iter().position(|tab| *tab == "插件").unwrap(),
+        tab: TABS.iter().position(|tab| *tab == "plugins").unwrap(),
         selected: 0,
         offset: 0,
         scroll: Default::default(),
@@ -501,6 +503,7 @@ fn list_summaries_show_defaults_and_choices() {
 
 #[test]
 fn advanced_group_collapses_by_default_and_expands_on_filter() {
+    rust_i18n::set_locale("zh");
     let basic = ConfigField {
         path: vec!["limits".into(), "max_turns".into()],
         tab: "会话".into(),
@@ -538,7 +541,7 @@ fn advanced_group_collapses_by_default_and_expands_on_filter() {
         rows: Vec::new(),
         collapsed: BTreeSet::new(),
         expanded: BTreeSet::new(),
-        tab: TABS.iter().position(|tab| *tab == "会话").unwrap(),
+        tab: TABS.iter().position(|tab| *tab == "context").unwrap(),
         selected: 0,
         offset: 0,
         scroll: Default::default(),

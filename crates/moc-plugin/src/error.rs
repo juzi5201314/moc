@@ -1,5 +1,7 @@
 //! 插件错误的统一形状：稳定错误码 + 给人看的消息。
 
+use rust_i18n::t;
+
 /// 宿主认识的错误码。插件自己抛出的异常若带 `code`，归一化到这一组里的某一个，
 /// 否则落到 `E_PLUGIN`——错误码是给上层分支判断用的，不能是任意字符串。
 ///
@@ -69,9 +71,12 @@ impl PluginError {
     pub fn disabled(plugin: &str, first: &PluginError) -> Self {
         Self::new(
             "E_PLUGIN_DISABLED",
-            format!(
-                "插件 `{plugin}` 已在本进程内禁用（首次失败：{first}）；修复后运行 /plugins reload 或重启 moc"
-            ),
+            t!(
+                "plugin.err.disabled",
+                plugin = plugin,
+                first = first.to_string()
+            )
+            .into_owned(),
         )
     }
 

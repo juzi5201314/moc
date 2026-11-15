@@ -12,6 +12,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use moc_protocol::methods::SessionLockInfo;
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
@@ -127,7 +128,9 @@ fn write_record(file: &mut File, record: &LockRecord) -> Result<(), CoreError> {
     file.set_len(0)?;
     file.seek(SeekFrom::Start(0))?;
     serde_json::to_writer(&mut *file, record)
-        .map_err(|error| CoreError::Session(format!("写入会话锁失败: {error}")))?;
+        .map_err(|error| {
+            CoreError::Session(t!("core.err.session_lock_write", error = error).into_owned())
+        })?;
     file.write_all(b"\n")?;
     file.sync_all()?;
     Ok(())
@@ -135,11 +138,15 @@ fn write_record(file: &mut File, record: &LockRecord) -> Result<(), CoreError> {
 
 fn conflict(holder: Option<SessionLockInfo>) -> CoreError {
     match holder {
-        Some(info) => CoreError::Session(format!(
-            "SESSION_LOCKED: pid {} ({}) 正在使用会话",
-            info.pid, info.frontend
-        )),
-        None => CoreError::Session("SESSION_LOCKED: 会话正被其它进程使用".into()),
+        Some(info) => CoreError::Session(
+            t!(
+                "core.err.session_locked_pid",
+                pid = info.pid,
+                frontend = info.frontend
+            )
+            .into_owned(),
+        ),
+        None => CoreError::Session(t!("core.err.session_locked").into_owned()),
     }
 }
 

@@ -1,5 +1,6 @@
 //! ACP agent 侧：方法处理器注册与 stdio 连接驱动。
 
+use rust_i18n::t;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -416,7 +417,11 @@ impl<B: Backend> Bridge<B> {
                     info
                 }
             }
-            other => return Err(acp::Error::invalid_params().data(format!("未知会话模式 {other}"))),
+            other => {
+                return Err(
+                    acp::Error::invalid_params().data(t!("acp.err.unknown_mode", mode = other))
+                );
+            }
         };
         self.track_session(&info);
         Ok(SetSessionModeResponse::new())
@@ -428,12 +433,12 @@ impl<B: Backend> Bridge<B> {
         req: SetSessionConfigOptionRequest,
     ) -> Result<SetSessionConfigOptionResponse, acp::Error> {
         if req.config_id.0.as_ref() != CONFIG_MODEL {
-            return Err(
-                acp::Error::invalid_params().data(format!("不支持的配置项 {}", req.config_id.0))
-            );
+            return Err(acp::Error::invalid_params().data(
+                t!("acp.err.unsupported_config", id = req.config_id.0.as_ref()),
+            ));
         }
         let Some(selector) = req.value.as_value_id() else {
-            return Err(acp::Error::invalid_params().data("model 选项需要 value id"));
+            return Err(acp::Error::invalid_params().data(t!("acp.err.need_value_id")));
         };
         let session_id = req.session_id.0.to_string();
         let result = self
@@ -502,7 +507,7 @@ fn rpc_err(error: &RpcCallError, session_id: Option<&str>) -> acp::Error {
             _ => acp::Error::new(e.code, e.message.clone()),
         },
         RpcCallError::Cancelled => acp::Error::request_cancelled(),
-        RpcCallError::Closed => acp::Error::internal_error().data("与 core 的连接已关闭"),
+        RpcCallError::Closed => acp::Error::internal_error().data(t!("acp.err.core_closed")),
         _ => acp::Error::internal_error().data(error.to_string()),
     }
 }

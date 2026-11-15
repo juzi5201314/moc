@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::super::PROSE_INDENT;
 use super::super::TITLE_INDENT;
 use super::super::labels;
@@ -179,7 +181,7 @@ pub(super) fn estimate_tool_height(
     let nested = layout.shape.is_some();
     let depth = layout.shape.map_or(0, |shape| usize::from(shape.depth));
     let width = width.saturating_sub(3 * depth);
-    let budget = tool_summary_budget(tool_title(tool, &args), tool, app.theme, width, nested);
+    let budget = tool_summary_budget(&tool_title(tool, &args), tool, app.theme, width, nested);
     let (_, in_title) = title_summary(tool, &args, budget, level, app.theme, app.cwd());
     let indent = if nested { TITLE_INDENT } else { PROSE_INDENT };
     let body = tool_body_rows(
@@ -421,6 +423,7 @@ pub(super) fn render_tool(
         (_, None) => ("◆", theme.accent_tool),
     };
     let name = tool_title(tool, &args);
+    let name = name.as_ref();
     // 子调用没有 bullet，失败标记挪到尾列的 ✘（与批次成员同一套尾列）。
     let tail = if nested {
         batch_member_tail(tool, theme)
@@ -454,7 +457,7 @@ pub(super) fn render_tool(
     // 后台任务标记（job_id 只在任务于后台存活期间挂着）
     if let Some(job_id) = &tool.job_id {
         title.push(Span::styled(
-            format!(" · 后台 {job_id}"),
+            t!("tui.tool.bg_fmt", job = job_id.as_str()).into_owned(),
             Style::new().fg(theme.gray_dim),
         ));
     }

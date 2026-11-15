@@ -7,6 +7,7 @@ use moc_llm::{
     Auth, Effort, EndpointStyle, LlmConfig, MaxTokensField, Protocol, ReasoningEcho,
     ResponseFormatDialect, RetryPolicy, ThinkingWire, ToolChoiceDialect, WireConfig,
 };
+use rust_i18n::t;
 use serde::Deserialize;
 
 use crate::error::CoreError;
@@ -442,12 +443,12 @@ impl ResolvedProvider {
     pub(super) fn from_document(id: &str, document: ProviderDocument) -> Result<Self, CoreError> {
         let api = document
             .api
-            .ok_or_else(|| CoreError::Config(format!("供应商 {id} 没有选择 API 格式")))?;
+            .ok_or_else(|| CoreError::Config(t!("core.err.provider_no_api", id = id).into_owned()))?;
         if !(document.base_url.starts_with("https://") || document.base_url.starts_with("http://"))
         {
-            return Err(CoreError::Config(format!(
-                "供应商 {id} 的服务地址必须以 http:// 或 https:// 开头"
-            )));
+            return Err(CoreError::Config(
+                t!("core.err.provider_base_url", id = id).into_owned(),
+            ));
         }
         super::parameters::validate(
             api.protocol(),
@@ -673,10 +674,12 @@ impl<'a> ModelSelector<'a> {
             (value, None)
         };
         let (provider_id, model_id) = path.split_once('/').ok_or_else(|| {
-            CoreError::Config(format!("模型写法“{value}”不正确，应为 供应商/模型"))
+            CoreError::Config(t!("core.err.model_fmt_bad", value = value).into_owned())
         })?;
         if provider_id.is_empty() || model_id.is_empty() {
-            return Err(CoreError::Config(format!("模型写法“{value}”不完整")));
+            return Err(CoreError::Config(
+                t!("core.err.model_fmt_incomplete", value = value).into_owned(),
+            ));
         }
         Ok(Self {
             provider_id,
@@ -801,7 +804,7 @@ pub(super) fn all_models(providers: &BTreeMap<String, ResolvedProvider>) -> Vec<
 
 fn shell_command(command: &str) -> Result<Command, CoreError> {
     let shell = crate::shell::detect()
-        .ok_or_else(|| CoreError::Config("没有可用的 shell，无法解析以 ! 开头的密钥命令".into()))?;
+        .ok_or_else(|| CoreError::Config(t!("core.err.no_shell_keys").into_owned()))?;
     let mut process = Command::new(&shell.program);
     crate::shell::apply_arguments(&mut process, shell, command);
     Ok(process)
@@ -816,25 +819,34 @@ pub(crate) fn resolve_secret(label: &str, spec: &str) -> Result<Option<String>, 
     }
     let value = if let Some(name) = spec.strip_prefix("env:") {
         std::env::var(name)
-            .map_err(|_| CoreError::Config(format!("{label} 环境变量 {name} 不存在")))?
+            .map_err(|_| {
+                CoreError::Config(t!("core.err.env_missing", label = label, name = name).into_owned())
+            })?
     } else if let Some(command) = spec.strip_prefix('!') {
         let output = shell_command(command)?
             .output()
-            .map_err(|error| CoreError::Config(format!("{label} 命令无法启动: {error}")))?;
+            .map_err(|error| {
+                CoreError::Config(t!("core.err.cmd_start", label = label, error = error).into_owned())
+            })?;
         if !output.status.success() {
-            return Err(CoreError::Config(format!(
-                "{label} 命令以状态 {} 失败",
-                output.status
-            )));
+            return Err(CoreError::Config(
+                t!("core.err.cmd_status", label = label, status = output.status).into_owned(),
+            ));
         }
         String::from_utf8(output.stdout)
-            .map_err(|error| CoreError::Config(format!("{label} 命令输出不是 UTF-8: {error}")))?
+            .map_err(|error| {
+                CoreError::Config(
+                    t!("core.err.cmd_not_utf8", label = label, error = error).into_owned(),
+                )
+            })?
     } else {
         spec.to_owned()
     };
     let value = value.trim().to_owned();
     if value.is_empty() {
-        return Err(CoreError::Config(format!("{label} 解析为空")));
+        return Err(CoreError::Config(
+            t!("core.err.parse_empty", label = label).into_owned(),
+        ));
     }
     Ok(Some(value))
 }
@@ -855,13 +867,18 @@ pub(super) fn validate_models(
     ] {
         if !selector.is_empty() {
             resolve_one(providers, selector, None).map_err(|error| {
-                CoreError::Config(format!("{label} 无法解析：{}", error.detail()))
+                CoreError::Config(
+                    t!("core.err.label_unparsable", label = label, detail = error.detail())
+                        .into_owned(),
+                )
             })?;
         }
     }
     if !matches!(catalog.roles.explore.as_str(), ROLE_INHERIT | "none") {
         resolve_selector(providers, &catalog.fusion, &catalog.roles.explore).map_err(|error| {
-            CoreError::Config(format!("探索子代理模型无法解析：{}", error.detail()))
+            CoreError::Config(
+                t!("core.err.explore_agent_unparsable", detail = error.detail()).into_owned(),
+            )
         })?;
     }
     Ok(())

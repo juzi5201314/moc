@@ -6,6 +6,7 @@
 import { toast } from "sonner";
 import { create } from "zustand";
 import type { FileTarget } from "@/lib/file-target";
+import { t } from "@/lib/i18n";
 import { uploadFile } from "@/lib/web-api";
 import { rpc } from "@/protocol/client";
 import { ErrorCode } from "@/protocol/errors";
@@ -409,7 +410,7 @@ export async function saveFile(
     if (conflict) {
       patchFileTab(sessionId, key, { diskConflict: true });
     } else {
-      toast.error(`保存失败：${errorText(error)}`);
+      toast.error(t("files.save_failed", { error: errorText(error) }));
     }
     return false;
   }
@@ -479,7 +480,7 @@ export async function commitNaming(sessionId: string, root: FileRoot, name: stri
       openFile(sessionId, { kind: "fs", path: result.path });
     }
   } catch (error) {
-    toast.error(`操作失败：${errorText(error)}`);
+    toast.error(t("files.op_failed", { error: errorText(error) }));
   }
   cancelNaming(sessionId);
 }
@@ -502,9 +503,9 @@ export async function confirmDelete(sessionId: string, root: FileRoot): Promise<
     await rpc.call("fs/delete", { path: deleting.key });
     if (root.kind === "workspace") void loadDir(sessionId, root, parentPath(deleting.key));
     // 已打开的标签标为已删除状态（留标签，展示错误）。
-    patchFileTab(sessionId, `fs:${deleting.key}`, { error: "文件已删除" });
+    patchFileTab(sessionId, `fs:${deleting.key}`, { error: t("files.deleted") });
   } catch (error) {
-    toast.error(`删除失败：${errorText(error)}`);
+    toast.error(t("files.delete_failed", { error: errorText(error) }));
   }
 }
 
@@ -528,7 +529,7 @@ export async function uploadFiles(
         return;
       }
     } catch (error) {
-      toast.error(`上传 ${file.name} 失败：${errorText(error)}`);
+      toast.error(t("files.upload_failed", { name: file.name, error: errorText(error) }));
     }
   }
   if (root.kind === "workspace") void loadDir(sessionId, root, dir);
@@ -543,7 +544,7 @@ export async function confirmUpload(sessionId: string, root: FileRoot): Promise<
   try {
     await uploadFile(`${pending.dir}/${file.name}`, file, true);
   } catch (error) {
-    toast.error(`上传 ${file.name} 失败：${errorText(error)}`);
+    toast.error(t("files.upload_failed", { name: file.name, error: errorText(error) }));
   }
   await uploadFiles(sessionId, root, pending.dir, pending.files.slice(pending.index + 1));
 }

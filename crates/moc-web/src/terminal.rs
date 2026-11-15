@@ -15,6 +15,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, State};
+use rust_i18n::t;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
@@ -311,7 +312,10 @@ pub struct ListQuery {
 pub async fn list(State(state): State<AppState>, Query(query): Query<ListQuery>) -> Response {
     let cwd = match canonical_dir(&query.cwd) {
         Some(cwd) => cwd,
-        None => return (StatusCode::BAD_REQUEST, "cwd 不是已存在的绝对目录").into_response(),
+        None => {
+            return (StatusCode::BAD_REQUEST, t!("web.err.cwd_invalid").into_owned())
+                .into_response();
+        }
     };
     let inner = state.terminals.inner.lock().expect("终端表锁");
     Json(
@@ -339,13 +343,17 @@ pub async fn create(
     Json(body): Json<CreateBody>,
 ) -> Response {
     if !origin_allowed(&headers) {
-        return (StatusCode::FORBIDDEN, "跨站请求被拒绝").into_response();
+        return (StatusCode::FORBIDDEN, t!("web.err.csrf_denied").into_owned()).into_response();
     }
     let Some(cwd) = canonical_dir(&body.cwd) else {
-        return (StatusCode::BAD_REQUEST, "cwd 不是已存在的绝对目录").into_response();
+        return (StatusCode::BAD_REQUEST, t!("web.err.cwd_invalid").into_owned()).into_response();
     };
     let Some(permit) = state.terminals.reserve() else {
-        return (StatusCode::TOO_MANY_REQUESTS, "终端数已达上限").into_response();
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            t!("web.err.terminal_limit").into_owned(),
+        )
+            .into_response();
     };
     let id = {
         let mut inner = state.terminals.inner.lock().expect("终端表锁");
@@ -367,12 +375,14 @@ pub async fn create(
     .await
     {
         Ok(Ok(info)) => Json(info).into_response(),
-        Ok(Err(error)) => {
-            (StatusCode::BAD_REQUEST, format!("无法启动终端：{error}")).into_response()
-        }
+        Ok(Err(error)) => (
+            StatusCode::BAD_REQUEST,
+            t!("web.err.terminal_spawn", error = error).into_owned(),
+        )
+            .into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("无法启动终端：{error}"),
+            t!("web.err.terminal_spawn", error = error).into_owned(),
         )
             .into_response(),
     }
@@ -385,7 +395,7 @@ pub async fn remove(
     headers: HeaderMap,
 ) -> Response {
     if !origin_allowed(&headers) {
-        return (StatusCode::FORBIDDEN, "跨站请求被拒绝").into_response();
+        return (StatusCode::FORBIDDEN, t!("web.err.csrf_denied").into_owned()).into_response();
     }
     let removed = state
         .terminals
@@ -399,7 +409,8 @@ pub async fn remove(
             terminal.kill();
             StatusCode::NO_CONTENT.into_response()
         }
-        None => (StatusCode::NOT_FOUND, "终端不存在").into_response(),
+        None => (StatusCode::NOT_FOUND, t!("web.err.terminal_not_found").into_owned())
+            .into_response(),
     }
 }
 
@@ -413,7 +424,7 @@ pub async fn attach(
     headers: HeaderMap,
 ) -> Response {
     if !origin_allowed(&headers) {
-        return (StatusCode::FORBIDDEN, "跨站 WebSocket 被拒绝").into_response();
+        return (StatusCode::FORBIDDEN, t!("web.err.ws_denied").into_owned()).into_response();
     }
     let terminal = state
         .terminals
@@ -424,7 +435,11 @@ pub async fn attach(
         .get(&id)
         .map(|(terminal, _)| Arc::clone(terminal));
     let Some(terminal) = terminal else {
-        return (StatusCode::NOT_FOUND, "终端不存在").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            t!("web.err.terminal_not_found").into_owned(),
+        )
+            .into_response();
     };
     ws.on_upgrade(move |socket| serve(socket, terminal))
 }

@@ -3,6 +3,7 @@ use super::RewindItem;
 use super::RewindState;
 use moc_protocol::Role;
 use moc_protocol::methods::TranscriptEntry;
+use rust_i18n::t;
 
 impl RewindState {
     pub fn set_entries(&mut self, entries: Vec<TranscriptEntry>, future: Vec<TranscriptEntry>) {
@@ -57,12 +58,16 @@ impl RewindState {
                     .unwrap_or("")
                     .trim();
                 if first_line.is_empty() {
-                    "（用户提问）".to_string()
+                    t!("tui.rewind.user_prompt").into_owned()
                 } else {
                     first_line.to_string()
                 }
             } else if !tool_calls.is_empty() {
-                format!("调用工具：{}", tool_calls.join("、"))
+                t!(
+                    "tui.rewind.tools_called_fmt",
+                    names = tool_calls.join(&t!("tui.values.list_sep"))
+                )
+                .into_owned()
             } else {
                 let first_line = text
                     .lines()
@@ -71,9 +76,9 @@ impl RewindState {
                     .trim();
                 if first_line.is_empty() {
                     if entry.message.role == Role::Tool {
-                        "工具结果返回".to_string()
+                        t!("tui.rewind.tool_result").into_owned()
                     } else {
-                        "（模型回复）".to_string()
+                        t!("tui.rewind.model_reply").into_owned()
                     }
                 } else {
                     first_line.to_string()
@@ -83,12 +88,21 @@ impl RewindState {
             let full_text = if !text.trim().is_empty() {
                 text
             } else if !tool_calls.is_empty() {
-                let mut s = format!("调用工具：{}\n", tool_calls.join("、"));
+                let mut s = format!(
+                    "{}\n",
+                    t!(
+                        "tui.rewind.tools_called_fmt",
+                        names = tool_calls.join(&t!("tui.values.list_sep"))
+                    )
+                );
                 for call in entry.message.tool_calls() {
-                    s.push_str(&format!(
-                        "\n• 工具 [{}] 参数：\n{}\n",
-                        call.name, call.arguments
-                    ));
+                    s.push_str(
+                        &t!(
+                            "tui.rewind.tool_args_fmt",
+                            name = call.name.as_str(),
+                            args = call.arguments.to_string()
+                        ),
+                    );
                 }
                 s
             } else {

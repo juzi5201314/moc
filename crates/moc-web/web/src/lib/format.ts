@@ -1,14 +1,16 @@
 // 展示用的小型格式化函数：相对时间、耗时、token 数。
 
-/** 「刚刚 / 41分钟 / 3小时 / 1天 / 2天」。与 DSH 保持完全一致。 */
+import { currentLocale, t } from "@/lib/i18n";
+
+/** 「刚刚 / 41分钟 / 3小时 / 1天 / 2天」（en: `just now / 41m / 3h / 1d / 2mo`）。 */
 export function relativeTime(atMs: number, now = Date.now()): string {
   const diff = Math.max(0, now - atMs);
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}分钟`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}小时`;
-  if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)}天`;
-  if (diff < 365 * 86_400_000) return `${Math.floor(diff / (30 * 86_400_000))}月`;
-  return `${Math.floor(diff / (365 * 86_400_000))}年`;
+  if (diff < 60_000) return t("rel.now");
+  if (diff < 3_600_000) return t("rel.min", { n: Math.floor(diff / 60_000) });
+  if (diff < 86_400_000) return t("rel.hour", { n: Math.floor(diff / 3_600_000) });
+  if (diff < 30 * 86_400_000) return t("rel.day", { n: Math.floor(diff / 86_400_000) });
+  if (diff < 365 * 86_400_000) return t("rel.month", { n: Math.floor(diff / (30 * 86_400_000)) });
+  return t("rel.year", { n: Math.floor(diff / (365 * 86_400_000)) });
 }
 
 /** 毫秒 → `850ms` / `3.2s` / `2m05s`。 */
@@ -29,7 +31,10 @@ export function formatTokens(count: number): string {
 }
 
 export function clockTime(atMs: number): string {
-  return new Date(atMs).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  return new Date(atMs).toLocaleTimeString(currentLocale() === "zh" ? "zh-CN" : "en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 export type DiffLineItem = { kind: "equal" | "insert" | "delete"; text: string };

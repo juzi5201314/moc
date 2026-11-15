@@ -1,4 +1,5 @@
 use super::short_bytes;
+use rust_i18n::t;
 use crate::settings::render::ELLIPSIS;
 use moc_protocol::ConfigField;
 use moc_protocol::FieldKind;
@@ -22,15 +23,14 @@ pub(crate) fn format_number(value: u64) -> String {
 /// 没有专属控件摘要的值（文本、数值、模型、对象）的展示形式。
 pub(in super::super) fn display_value(value: &Value, field: &ConfigField) -> String {
     if value.is_null() {
-        return "未设置".into();
+        return t!("tui.values.unset").into_owned();
     }
     if matches!(field.kind, FieldKind::Secret) {
         return if value.as_str().is_some_and(|text| !text.is_empty()) {
-            "••••••"
+            "••••••".into()
         } else {
-            "未设置"
-        }
-        .into();
+            t!("tui.values.unset").into_owned()
+        };
     }
     // 字节预算按 KB/MB 显示，避免一串数字看不出量级。
     if let Some(bytes) = value.as_u64()
@@ -63,25 +63,27 @@ pub(in super::super) fn display_value(value: &Value, field: &ConfigField) -> Str
         return format_number(num);
     }
     match value {
-        Value::Bool(true) => "● 开启".into(),
-        Value::Bool(false) => "○ 关闭".into(),
-        Value::String(text) if text.is_empty() => "未设置".into(),
+        Value::Bool(true) => t!("tui.values.on").into_owned(),
+        Value::Bool(false) => t!("tui.values.off").into_owned(),
+        Value::String(text) if text.is_empty() => t!("tui.values.unset").into_owned(),
         // 多行文本只露首行，并注明总行数，免得被当成值就这一行。
         Value::String(text) => match text.lines().count() {
             0 | 1 => text.trim_end().to_owned(),
-            count => format!(
-                "{}{ELLIPSIS}（共 {count} 行）",
-                text.lines().next().unwrap_or_default()
-            ),
+            count => t!(
+                "tui.values.multiline_fmt",
+                first = format!("{}{ELLIPSIS}", text.lines().next().unwrap_or_default()),
+                count = count
+            )
+            .into_owned(),
         },
-        Value::Object(values) if values.is_empty() => "无".into(),
-        Value::Object(values) => format!("{{ {} 项 }}", values.len()),
-        Value::Array(values) if values.is_empty() => "无".into(),
+        Value::Object(values) if values.is_empty() => t!("tui.values.none").into_owned(),
+        Value::Object(values) => t!("tui.values.obj_fmt", count = values.len()).into_owned(),
+        Value::Array(values) if values.is_empty() => t!("tui.values.none").into_owned(),
         Value::Array(values) => values
             .iter()
             .map(|value| value.as_str().unwrap_or_default())
             .collect::<Vec<_>>()
-            .join("、"),
+            .join(&t!("tui.values.list_sep")),
         // 整数值的浮点（20.0）与整数同样显示，免得同一页混排 `20.0` 与 `10`。
         Value::Number(number)
             if number.as_f64().is_some_and(|value| value.fract() == 0.0)

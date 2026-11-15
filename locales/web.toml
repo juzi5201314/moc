@@ -1,0 +1,69 @@
+_version = 2
+
+[web.commands]
+debuginfo.desc = { zh = "工具调用统计、成功率与上下文压缩次数", en = "Tool-call stats, success rate and context-compaction counts" }
+session.desc = { zh = "当前会话身份、文件路径与分类存储大小", en = "Current session identity, file path and per-category storage size" }
+new.desc = { zh = "新建会话", en = "Start a new session" }
+resume.desc = { zh = "搜索并切换到历史会话", en = "Search and switch to a previous session" }
+close.desc = { zh = "卸载当前会话并释放跨进程写租约", en = "Unload the current session and release the cross-process write lease" }
+plan.usage = { zh = "[提示]", en = "[hint]" }
+plan.desc = { zh = "进入或退出计划状态，可附带提示", en = "Enter or exit plan mode, optionally with a hint" }
+confirm_plan.desc = { zh = "计划状态下重新审阅已写入的待审计划", en = "Re-review the pending plan written in plan mode" }
+goal.desc = { zh = "查看或设置会话目标；目标存在时每轮提示结束自动续跑，直到达成或叫停", en = "View or set the session goal; while set, each prompt auto-continues until it is met or stopped" }
+autonomy.desc = { zh = "切换自主程度，无参数时循环", en = "Switch autonomy level; cycles without arguments" }
+permission.usage = { zh = "[<模式>|clear]", en = "[<mode>|clear]" }
+permission.desc = { zh = "切换命令权限模式，或清空本会话沙盒授权", en = "Switch the command permission mode, or clear this session's sandbox grants" }
+ask.usage = { zh = "<问题>", en = "<question>" }
+ask.desc = { zh = "只读问答：本条提示不改动文件", en = "Read-only Q&A: this prompt does not modify files" }
+retry.desc = { zh = "接着当前上下文重新生成", en = "Regenerate from the current context" }
+compact_skills.desc = { zh = "手动压缩技能目录或清理摘要缓存，不写会话历史", en = "Manually compact the skills directory or clear summary caches; does not write session history" }
+compact.desc = { zh = "压缩当前上下文", en = "Compact the current context" }
+model.desc = { zh = "切换模型与思考强度", en = "Switch model and thinking effort" }
+engine.desc = { zh = "循环切换会话引擎（仅空白会话可切）", en = "Cycle the session engine (blank sessions only)" }
+clm_experimental.desc = { zh = "切换 CLM 实验引擎；启用后本会话固定使用 CLM", en = "Toggle the experimental CLM engine; once enabled this session is pinned to CLM" }
+btw.usage = { zh = "<问题>", en = "<question>" }
+btw.desc = { zh = "旁路提问，不进入主对话上下文", en = "Ask aside without entering the main conversation context" }
+tools.desc = { zh = "查看下一轮请求实际发送的工具", en = "Show the tools actually sent in the next request" }
+context.desc = { zh = "查看上下文占用", en = "Show context usage" }
+usage.desc = { zh = "查看本会话用量", en = "Show usage for this session" }
+settings.desc = { zh = "打开设置", en = "Open settings" }
+agents.desc = { zh = "查看当前会话的子代理", en = "List this session's subagents" }
+jobs.desc = { zh = "查看和管理后台任务", en = "View and manage background jobs" }
+workflow.usage = { zh = "[指令]", en = "[instructions]" }
+workflow.desc = { zh = "激活 workflow 功能，可附带指令", en = "Activate the workflow feature, optionally with instructions" }
+workflows.desc = { zh = "查看 workflow run 列表", en = "List workflow runs" }
+plugins.desc = { zh = "查看插件：来源、工具与斜杠命令", en = "Inspect plugins: sources, tools and slash commands" }
+features.desc = { zh = "特性开关一览：阶段、状态与上下文成本", en = "Feature flags overview: stages, states and context cost" }
+help.desc = { zh = "快捷键一览", en = "Keyboard shortcuts" }
+doctor.desc = { zh = "环境诊断：连接、服务端与平台能力", en = "Environment diagnostics: connectivity, server and platform capabilities" }
+monitor.desc = { zh = "进程资源监控：内存/CPU/磁盘/网络近 10 分钟折线", en = "Process resource monitor: memory/CPU/disk/network trends over the last 10 minutes" }
+
+[web.err]
+cwd_invalid = { zh = "cwd 不是已存在的绝对目录", en = "cwd is not an existing absolute directory" }
+csrf_denied = { zh = "跨站请求被拒绝", en = "Cross-site request rejected" }
+write_denied = { zh = "跨站写入被拒绝", en = "Cross-site write rejected" }
+terminal_limit = { zh = "终端数已达上限", en = "Terminal count limit reached" }
+terminal_spawn = { zh = "无法启动终端：%{error}", en = "Failed to start terminal: %{error}" }
+terminal_not_found = { zh = "终端不存在", en = "Terminal not found" }
+ws_denied = { zh = "跨站 WebSocket 被拒绝", en = "Cross-site WebSocket rejected" }
+file_open = { zh = "无法打开文件：%{path}：%{error}", en = "Cannot open file %{path}: %{error}" }
+file_stat = { zh = "无法读取文件信息", en = "Cannot read file metadata" }
+not_regular = { zh = "不是普通文件", en = "Not a regular file" }
+filename_invalid = { zh = "文件名无法用于下载：%{error}", en = "Filename cannot be used for download: %{error}" }
+target_exists = { zh = "目标已存在", en = "Target already exists" }
+not_regular_path = { zh = "不是普通文件路径", en = "Not a regular file path" }
+staging_create = { zh = "无法创建暂存文件：%{error}", en = "Cannot create staging file: %{error}" }
+body_read = { zh = "读取请求体失败：%{error}", en = "Failed to read request body: %{error}" }
+upload_too_large = { zh = "文件超过上传上限", en = "File exceeds the upload limit" }
+write_failed = { zh = "写入失败：%{error}", en = "Write failed: %{error}" }
+publish_failed = { zh = "发布文件失败：%{error}", en = "Failed to publish file: %{error}" }
+io_broken = { zh = "连接中断", en = "Connection interrupted" }
+session_required = { zh = "需要会话", en = "A session is required" }
+bind_failed = { zh = "无法监听 127.0.0.1:%{port}；端口被占用或权限不足", en = "Cannot listen on 127.0.0.1:%{port}; the port is taken or permission is insufficient" }
+port_fallback = { zh = "端口 %{port} 已被占用，改用随机端口 %{addr}", en = "Port %{port} is taken; falling back to a random port %{addr}" }
+started = { zh = "moc web 已启动：%{url}", en = "moc web is running: %{url}" }
+opened = { zh = "已在浏览器中打开；如未弹出，请手动访问上面的地址", en = "Opened in the browser; if nothing popped up, visit the address above manually" }
+stop_hint = { zh = "按 Ctrl+C 停止服务", en = "Press Ctrl+C to stop the server" }
+not_found = { zh = "资源不存在", en = "Resource not found" }
+unauthorized = { zh = "缺少或错误的访问令牌", en = "Missing or invalid access token" }
+serve_failed = { zh = "Web 服务运行失败：%{error}", en = "Web server failed: %{error}" }

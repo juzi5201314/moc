@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -154,7 +156,10 @@ pub(super) fn artifact_lines(
                 out.push(Line::from(Span::styled(format!("    {cells}"), dim)));
             }
             if order.is_empty() {
-                out.push(Line::from(Span::styled("    （无数据）", dim)));
+                out.push(Line::from(Span::styled(
+                    t!("tui.wf.no_data").into_owned(),
+                    dim,
+                )));
             }
         }
         "metrics" => {
@@ -320,7 +325,10 @@ pub(super) fn chart_artifact_lines(
         )));
     }
     if series.iter().all(|(_, p)| p.is_empty()) {
-        out.push(Line::from(Span::styled("    （无数据点）", dim)));
+        out.push(Line::from(Span::styled(
+            t!("tui.wf.no_points").into_owned(),
+            dim,
+        )));
     }
     if let Some(v) = spec
         .get("baseline")

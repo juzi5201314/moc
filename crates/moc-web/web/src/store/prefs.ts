@@ -8,6 +8,7 @@
 
 import { toast } from "sonner";
 import { create } from "zustand";
+import { t } from "@/lib/i18n";
 import { clientListeners, rpc } from "@/protocol/client";
 import type { WebDetailLevel, WebState, WebStateDocument } from "@/protocol/types";
 
@@ -108,7 +109,7 @@ function adopt(doc: WebStateDocument): void {
   if (doc.revision === revision) return;
   if (dirty) {
     dirty = false;
-    toast.info("另一窗口更新了偏好，本地未保存的改动已被覆盖");
+    toast.info(t("prefs.overwritten"));
   }
   apply(doc);
   channel?.postMessage(doc);
@@ -135,7 +136,7 @@ async function sync(): Promise<void> {
   } catch (error) {
     // 冲突或掉线：以服务端为准重读，乐观改动随之作废。
     await read();
-    toast.error(`偏好保存失败：${errorText(error)}`);
+    toast.error(t("prefs.save_failed", { error: errorText(error) }));
   }
 }
 
@@ -208,7 +209,7 @@ async function read(): Promise<void> {
     else doc = await migrate(doc);
     adopt(doc);
   } catch (error) {
-    toast.error(`加载 web 偏好失败：${errorText(error)}`);
+    toast.error(t("prefs.load_failed", { error: errorText(error) }));
   }
 }
 

@@ -1,11 +1,12 @@
 use super::App;
-use super::COMPACTION_RUNNING_PREFIX;
+use super::compaction_running_prefix;
 use super::CompactionProgress;
 use super::RetryWait;
 use super::compaction_running_note;
 use crate::transcript::Block;
 use crate::transcript::Entry;
 use crate::transcript::NoteTone;
+use rust_i18n::t;
 
 impl App {
     pub fn start_skills_compaction(&mut self, action: moc_protocol::SkillsCompactAction) {
@@ -15,11 +16,14 @@ impl App {
         self.cancel_requested = false;
         let operation = match action {
             moc_protocol::SkillsCompactAction::Missing
-            | moc_protocol::SkillsCompactAction::Force => "检查技能与缓存，准备压缩 skills…",
-            moc_protocol::SkillsCompactAction::Cleanup => "清理已不存在的技能缓存…",
-            moc_protocol::SkillsCompactAction::Clear => "清空技能摘要缓存…",
+            | moc_protocol::SkillsCompactAction::Force => t!("tui.skills.op_prepare"),
+            moc_protocol::SkillsCompactAction::Cleanup => t!("tui.skills.op_cleanup"),
+            moc_protocol::SkillsCompactAction::Clear => t!("tui.skills.op_clear"),
         };
-        self.push_note(format!("技能摘要处理中：{operation}"), NoteTone::Info);
+        self.push_note(
+            t!("tui.skills.working_fmt", op = operation).into_owned(),
+            NoteTone::Info,
+        );
         self.scroll_offset = 0;
     }
 
@@ -28,10 +32,20 @@ impl App {
             return;
         }
         let stage = match progress.phase {
-            moc_protocol::SkillsProgressPhase::Generating => "正在压缩 skills",
-            moc_protocol::SkillsProgressPhase::Committing => "正在原子提交缓存",
+            moc_protocol::SkillsProgressPhase::Generating => t!("tui.skills.phase_generate"),
+            moc_protocol::SkillsProgressPhase::Committing => t!("tui.skills.phase_commit"),
         };
-        self.replace_skills_note(format!("技能摘要处理中：{stage}\n已生成并校验 {} / {} 个 · 缓存跳过 {} 个\n进度按批次更新；全部成功后才发布缓存。", progress.completed, progress.total, progress.skipped), NoteTone::Info);
+        self.replace_skills_note(
+            t!(
+                "tui.skills.progress_fmt",
+                stage = stage,
+                done = progress.completed,
+                total = progress.total,
+                skipped = progress.skipped
+            )
+            .into_owned(),
+            NoteTone::Info,
+        );
     }
 
     pub fn finish_skills_compaction(
@@ -52,7 +66,7 @@ impl App {
                 (text, NoteTone::Info)
             }
             Err(error) => (
-                format!("技能摘要操作未完成：{error:#}\n本次操作没有发布缓存。"),
+                t!("tui.skills.failed_fmt", err = format!("{error:#}")).into_owned(),
                 NoteTone::Error,
             ),
         };
@@ -62,7 +76,7 @@ impl App {
     /// 与上下文压缩提示相同，按进行中前缀原位替换，不影响更早的命令结果。
     pub fn replace_skills_note(&mut self, text: String, tone: NoteTone) {
         if let Some(entry) = self.blocks.iter_mut().rev().find(|entry| {
-            matches!(&entry.block, Block::Note { text, .. } if text.starts_with("技能摘要处理中："))
+            matches!(&entry.block, Block::Note { text, .. } if text.starts_with(t!("tui.skills.working_prefix").as_ref()))
         }) {
             entry.block = Block::Note { text, tone };
             entry.touch();
@@ -116,7 +130,7 @@ impl App {
     /// 用终态文案替换最近一条进行中提示；找不到时追加，不留下两条。
     pub(super) fn replace_compaction_note(&mut self, text: String, tone: NoteTone) {
         let existing = self.blocks.iter_mut().rev().find(|entry| {
-            matches!(&entry.block, Block::Note { text, .. } if text.starts_with(COMPACTION_RUNNING_PREFIX))
+            matches!(&entry.block, Block::Note { text, .. } if text.starts_with(compaction_running_prefix().as_ref()))
         });
         match existing {
             Some(entry) => {
@@ -210,10 +224,17 @@ impl App {
 
 /// 把重试文案切成秒数两侧的静态片段：`{head}{:.1} {tail}`。
 ///
-/// core 的措辞是「本次生成失败，N.N 秒后自动重试（第 A/M 次尝试）。失败预览已丢弃。…」，
-/// 秒数是文案里唯一随时间变化的部分；锚点缺失返回 `None`，调用方按静态便签处理。
+/// 锚点从 `core.err.retry_notice` 的当前 locale 模板推导：模板里 `%{secs}` 前的字面
+/// 前缀是消息头，其后第一个占位符前的字面量是秒数终止标记。任一缺失返回 `None`，
+/// 调用方按静态便签处理。
 fn retry_note_parts(message: &str) -> Option<(String, String)> {
-    let (left, right) = message.split_once("秒后自动重试")?;
-    let (prefix, _) = left.rsplit_once('，')?;
-    Some((format!("{prefix}，"), format!("秒后自动重试{right}")))
+    let template = moc_protocol::commands::try_translate("core.err.retry_notice")?;
+    let (before, after) = template.split_once("%{secs}")?;
+    let rest = message.strip_prefix(before)?;
+    let marker = after.split("%{").next()?;
+    let pos = rest.find(marker)?;
+    Some((
+        before.to_owned(),
+        rest[pos..].trim_start().to_owned(),
+    ))
 }

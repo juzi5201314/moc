@@ -1,4 +1,6 @@
 //! 历史页读取：小页直返，大页在私有文件重组，避免完整 JSON 字符串与消息同时常驻。
+use rust_i18n::t;
+
 use moc_protocol::methods::{
     SessionHistory, SessionHistoryParams, SessionHistoryResult, SessionLoadPageParams,
     SessionLoadPageResult,
@@ -48,7 +50,7 @@ impl HistoryClient for ClientHandle {
             ref transfer_id, ..
         } = result
         else {
-            return Err(failed("历史传输未返回页面"));
+            return Err(failed(t!("tui.err.hist_no_page").into_owned()));
         };
         let mut release = Release {
             client: self.clone(),
@@ -68,16 +70,16 @@ impl HistoryClient for ClientHandle {
                 next_offset,
             } = result
             else {
-                return Err(failed("历史传输中途改变结果类型"));
+                return Err(failed(t!("tui.err.hist_type_changed").into_owned()));
             };
             let next = offset
                 .checked_add(data.len() as u64)
-                .ok_or_else(|| failed("历史块偏移溢出"))?;
+                .ok_or_else(|| failed(t!("tui.err.hist_offset_overflow").into_owned()))?;
             if release.id.as_ref() != Some(&transfer_id)
                 || offset != expected
                 || next_offset.is_some_and(|value| value != next || value <= offset)
             {
-                return Err(failed("历史块不连续"));
+                return Err(failed(t!("tui.err.hist_gap").into_owned()));
             }
             file.write_all(data.as_bytes()).await.map_err(failed)?;
             let Some(offset) = next_offset else {
@@ -111,7 +113,7 @@ impl HistoryClient for ClientHandle {
 fn failed(error: impl std::fmt::Display) -> RpcCallError {
     RpcError::new(
         RpcErrorCode::InternalError.code(),
-        format!("历史页读取失败：{error}"),
+        t!("tui.err.hist_read_fmt", err = error.to_string()).into_owned(),
     )
     .into()
 }

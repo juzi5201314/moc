@@ -1,5 +1,7 @@
 //! 长期 PTC Host：统一路由 execution，每次执行创建并销毁独立的 QuickJS Runtime。
 
+rust_i18n::i18n!("../../locales", fallback = "zh");
+
 mod workflow;
 pub use workflow::{run_workflow, run_workflow_stdio};
 
@@ -8,6 +10,7 @@ use moc_ptc_protocol::wire::{
     StartRequest,
 };
 use rquickjs::{Context, Function, Object, Persistent, Runtime};
+use rust_i18n::t;
 use std::{
     collections::HashMap,
     io::{BufRead, Read, Write},
@@ -85,7 +88,7 @@ pub fn run<R: BufRead + Send + 'static, W: Write>(mut input: R, mut output: W) -
                         return Ok(());
                     }
                     if count > MAX_FRAME_BYTES || !line.ends_with(b"\n") {
-                        return Err("PTC 输入帧超限或不完整".into());
+                        return Err(t!("ptc.err.input_frame").into_owned().into());
                     }
                     let message: HostMessage = serde_json::from_slice(&line)?;
                     let shutdown = matches!(message, HostMessage::Shutdown);
@@ -115,7 +118,7 @@ pub fn run<R: BufRead + Send + 'static, W: Write>(mut input: R, mut output: W) -
                         continue;
                     }
                     if last_id.is_some_and(|last| execution_id <= last) {
-                        return Err("PTC execution ID 必须递增且唯一".into());
+                        return Err(t!("ptc.err.exec_id_order").into_owned().into());
                     }
                     last_id = Some(execution_id);
                     let (commands, receiver) = mpsc::channel();
@@ -139,10 +142,13 @@ pub fn run<R: BufRead + Send + 'static, W: Write>(mut input: R, mut output: W) -
                             let mut step =
                                 result.unwrap_or_else(|error| failed("E_JS", error.to_string()));
                             if let Some(reason) = thread_control.reason() {
-                                step = failed(&reason, "PTC execution 已中断");
+                                step = failed(&reason, t!("ptc.err.interrupted").into_owned());
                             }
                             if serde_json::to_vec(&step).map_or(true, |bytes| bytes.len() > limit) {
-                                step = failed("E_OUTPUT_LIMIT", "PTC execution 输出超限");
+                                step = failed(
+                                    "E_OUTPUT_LIMIT",
+                                    t!("ptc.err.output_limit").into_owned(),
+                                );
                             }
                             let _ = thread_events.send(Event::Step(execution_id, step));
                         })?;
@@ -163,7 +169,7 @@ pub fn run<R: BufRead + Send + 'static, W: Write>(mut input: R, mut output: W) -
                         // 超时终态可能与 Core 的 completion 交错，已退出线程的消息可以丢弃。
                         let _ = execution.commands.send(Command::Complete(completions));
                     } else if last_id.is_none_or(|last| execution_id > last) {
-                        return Err("未知的 PTC execution ID".into());
+                        return Err(t!("ptc.err.unknown_exec").into_owned().into());
                     }
                 }
                 Event::Input(HostMessage::Cancel { execution_id, code }) => {
@@ -171,7 +177,7 @@ pub fn run<R: BufRead + Send + 'static, W: Write>(mut input: R, mut output: W) -
                         execution.control.cancel(code);
                         let _ = execution.commands.send(Command::Cancel);
                     } else if last_id.is_none_or(|last| execution_id > last) {
-                        return Err("未知的 PTC execution ID".into());
+                        return Err(t!("ptc.err.unknown_exec").into_owned().into());
                     }
                 }
                 Event::Input(HostMessage::Shutdown) | Event::Closed => {
@@ -190,11 +196,11 @@ pub fn run<R: BufRead + Send + 'static, W: Write>(mut input: R, mut output: W) -
                         execution
                             .join
                             .join()
-                            .map_err(|_| "PTC execution 线程异常退出")?;
+                            .map_err(|_| t!("ptc.err.thread_panic").into_owned())?;
                     }
                     let line = serde_json::to_vec(&GuestMessage::Step { execution_id, step })?;
                     if line.len() + 1 > MAX_FRAME_BYTES {
-                        return Err("PTC 输出帧超限".into());
+                        return Err(t!("ptc.err.output_frame").into_owned().into());
                     }
                     output.write_all(&line)?;
                     output.write_all(b"\n")?;
@@ -248,15 +254,19 @@ fn execute(
     })?;
     loop {
         if let Some(reason) = control.reason() {
-            return Ok(failed(&reason, "PTC execution 已中断"));
+            return Ok(failed(&reason, t!("ptc.err.interrupted").into_owned()));
         }
         while runtime.is_job_pending() {
             if let Some(reason) = control.reason() {
-                return Ok(failed(&reason, "PTC execution 已中断"));
+                return Ok(failed(&reason, t!("ptc.err.interrupted").into_owned()));
             }
-            runtime
-                .execute_pending_job()
-                .map_err(|error| format!("PTC Promise job 失败：{error:?}"))?;
+            runtime.execute_pending_job().map_err(|error| {
+                t!(
+                    "ptc.err.promise_job",
+                    error = format!("{error:?}")
+                )
+                .into_owned()
+            })?;
         }
         let step = context.with(|ctx| -> Result<GuestStep> {
             let object = object.clone().restore(&ctx)?;
@@ -268,7 +278,10 @@ fn execute(
             })
         })?;
         if serde_json::to_vec(&step)?.len() > start.max_message_bytes {
-            return Ok(failed("E_OUTPUT_LIMIT", "PTC execution 输出超限"));
+            return Ok(failed(
+                "E_OUTPUT_LIMIT",
+                t!("ptc.err.output_limit").into_owned(),
+            ));
         }
         if !matches!(step.state, GuestState::Pending) {
             return Ok(step);
@@ -311,7 +324,7 @@ fn execute(
             }
             Ok(Command::Cancel) => {}
             Err(mpsc::RecvError) => {
-                return Ok(failed("E_CANCELLED", "宿主关闭了 execution"));
+                return Ok(failed("E_CANCELLED", t!("ptc.err.host_closed").into_owned()));
             }
         }
     }

@@ -6,79 +6,90 @@
 use crate::app::App;
 use crate::render::graphics::GraphicsProto;
 use crate::theme::ColorLevel;
+use rust_i18n::t;
 
 /// 汇总当前终端能力：每行一项，可行的修复建议随附在对应行内。
 pub fn report(app: &App) -> String {
-    let mut lines = vec!["终端能力诊断".to_owned()];
+    let mut lines = vec![t!("tui.doctor.title").into_owned()];
 
     let under_tmux = std::env::var_os("TMUX").is_some();
     let env = |key: &str| std::env::var(key).unwrap_or_else(|_| "—".into());
-    lines.push(format!(
-        "环境：TERM={} TERM_PROGRAM={} COLORTERM={}{}",
-        env("TERM"),
-        env("TERM_PROGRAM"),
-        env("COLORTERM"),
-        if under_tmux { " tmux" } else { "" },
-    ));
+    lines.push(
+        t!(
+            "tui.doctor.env",
+            term = env("TERM"),
+            term_program = env("TERM_PROGRAM"),
+            colorterm = env("COLORTERM"),
+            tmux = if under_tmux { " tmux" } else { "" }
+        )
+        .into_owned(),
+    );
 
-    lines.push(format!(
-        "色彩：{}",
-        match crate::theme::detect_color_level() {
-            ColorLevel::TrueColor => "truecolor（24-bit）",
-            ColorLevel::Ansi256 => "256 色",
-            ColorLevel::Basic => "16 色（COLORTERM=truecolor 可启用真彩色）",
-            ColorLevel::None => "无色彩支持（NO_COLOR 或 TERM 缺失）",
+    lines.push(
+        t!(
+            "tui.doctor.color",
+            level = match crate::theme::detect_color_level() {
+                ColorLevel::TrueColor => t!("tui.doctor.color_true"),
+                ColorLevel::Ansi256 => t!("tui.doctor.color_256"),
+                ColorLevel::Basic => t!("tui.doctor.color_basic"),
+                ColorLevel::None => t!("tui.doctor.color_none"),
+            }
+            .as_ref()
+        )
+        .into_owned(),
+    );
+
+    lines.push(
+        if app.keyboard_enhanced {
+            t!("tui.doctor.kbd_kitty")
+        } else {
+            t!("tui.doctor.kbd_plain")
         }
-    ));
+        .into_owned(),
+    );
 
-    lines.push(if app.keyboard_enhanced {
-        "键盘：kitty 消歧义协议已协商".to_owned()
-    } else {
-        "键盘：未协商增强协议（Ctrl+M / Ctrl+I 等组合会退化为 Enter / Tab）".to_owned()
-    });
-
-    lines.push(if app.sync_output {
-        "同步输出：开启（DEC 2026，帧原子更新；仍撕裂可 MOC_FULL_REPAINT=1 排障）".to_owned()
-    } else if under_tmux {
-        "同步输出：关闭（tmux<3.7 / tmux-CC 不透传 2026，已降级；外层支持可 MOC_SYNC_OUTPUT=1 强制）"
-            .to_owned()
-    } else {
-        "同步输出：关闭（终端未应答 DECRQM；慢连接下可能帧撕裂，确认支持可 MOC_SYNC_OUTPUT=1）"
-            .to_owned()
-    });
+    lines.push(
+        if app.sync_output {
+            t!("tui.doctor.sync_on")
+        } else if under_tmux {
+            t!("tui.doctor.sync_tmux")
+        } else {
+            t!("tui.doctor.sync_off")
+        }
+        .into_owned(),
+    );
 
     match app.graphics {
         Some(support) => {
-            lines.push(format!(
-                "图形：{}（单元格 {}×{}px）",
-                proto_name(support.proto),
-                support.cell.w,
-                support.cell.h
-            ));
+            lines.push(
+                t!(
+                    "tui.doctor.graphics_fmt",
+                    proto = proto_name(support.proto),
+                    w = support.cell.w,
+                    h = support.cell.h
+                )
+                .into_owned(),
+            );
             if !crate::render::graphics::cell_supported(support.cell) {
-                lines.push("  建议：单元格像素过小，图表与图片入口不启用".to_owned());
+                lines.push(t!("tui.doctor.graphics_small").into_owned());
             }
         }
         None if under_tmux => {
-            lines.push(
-                "图形：无（tmux 吞应答已跳过探测；可 MOC_CHART_GRAPHICS=kitty|sixel|iterm2 强制）"
-                    .to_owned(),
-            );
+            lines.push(t!("tui.doctor.graphics_tmux").into_owned());
         }
         None => {
-            lines.push("图形：无（未探测到 kitty/sixel/iTerm2；图表按字符绘制）".to_owned());
+            lines.push(t!("tui.doctor.graphics_none").into_owned());
         }
     }
 
     match crate::clipboard::local_channel() {
-        Some(channel) => lines.push(format!("剪贴板：{channel} + OSC52（双通道并写）")),
-        None => lines.push(
-            "剪贴板：仅 OSC52（未找到 powershell.exe / wl-copy / xclip / pbcopy；建议安装 wl-clipboard 或 xclip）"
-                .to_owned(),
+        Some(channel) => lines.push(
+            t!("tui.doctor.clipboard_fmt", channel = channel).into_owned(),
         ),
+        None => lines.push(t!("tui.doctor.clipboard_osc52").into_owned()),
     }
 
-    lines.push("通知：OSC 9（终端不支持时静默忽略）".to_owned());
+    lines.push(t!("tui.doctor.notify").into_owned());
 
     let modes = app
         .sandbox_modes
@@ -86,10 +97,13 @@ pub fn report(app: &App) -> String {
         .map(|mode| mode.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    lines.push(format!(
-        "沙盒：{}",
-        if modes.is_empty() { "—" } else { &modes }
-    ));
+    lines.push(
+        t!(
+            "tui.doctor.sandbox_fmt",
+            modes = if modes.is_empty() { "—" } else { &modes }
+        )
+        .into_owned(),
+    );
 
     lines.join("\n")
 }
@@ -109,6 +123,7 @@ mod tests {
     /// 报告覆盖全部诊断分区；具体取值随环境变，不锁死。
     #[test]
     fn report_covers_every_section() {
+        rust_i18n::set_locale("zh");
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let app = App::new(crate::theme::Theme::global(), events);
         let text = report(&app);

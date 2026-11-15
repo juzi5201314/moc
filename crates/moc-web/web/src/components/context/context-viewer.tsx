@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { toast } from "sonner";
 import { PlanMarkdown } from "@/components/plan/plan-markdown";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 import { compactTokens } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import type { ContextNode } from "@/protocol/types";
@@ -20,6 +21,7 @@ export function ContextViewer({
   sessionId: string;
   onBackChange?: (back: (() => void) | null) => void;
 }) {
+  const t = useT();
   const snapshot = useContextView(sessionId);
   const compactDisabled = useTranscript(
     (state) => !!state.bySession[sessionId]?.running || !!state.bySession[sessionId]?.readOnly,
@@ -87,20 +89,22 @@ export function ContextViewer({
     >
       <div className="flex min-h-14 items-center gap-2 px-5 pt-3 pb-2 pr-12">
         {node && (
-          <Button variant="ghost" size="icon-sm" aria-label="返回上一级" onClick={back}>
+          <Button variant="ghost" size="icon-sm" aria-label={t("cv.back")} onClick={back}>
             <ArrowLeftIcon className="size-4" />
           </Button>
         )}
-        <h2 className="min-w-0 flex-1 truncate text-sm font-medium">{node?.name ?? "上下文"}</h2>
+        <h2 className="min-w-0 flex-1 truncate text-sm font-medium">
+          {node?.name ?? t("cv.title")}
+        </h2>
         <Button
           variant="ghost"
           size="sm"
           disabled={snapshot.loading}
           onClick={refresh}
-          aria-label={snapshot.stale ? "有更新，刷新上下文" : "刷新上下文"}
+          aria-label={snapshot.stale ? t("cv.refresh_stale") : t("cv.refresh")}
         >
           <RefreshCwIcon className={cn("size-3.5", snapshot.loading && "animate-spin")} />
-          {snapshot.stale && <span className="text-xs">有更新</span>}
+          {snapshot.stale && <span className="text-xs">{t("cv.stale")}</span>}
         </Button>
       </div>
       {!node && snapshot.view && (
@@ -132,7 +136,7 @@ export function ContextViewer({
             {node.source ?? compactTokens(node.tokens)}
           </span>
           <Button size="sm" variant="ghost" onClick={() => setRaw((value) => !value)}>
-            {raw ? "阅读" : "原文"}
+            {raw ? t("cv.read") : t("cv.raw")}
           </Button>
           <Button
             size="sm"
@@ -142,7 +146,7 @@ export function ContextViewer({
               setCopying(true);
               try {
                 await snapshot.copy(node);
-                toast.success("已复制完整原文");
+                toast.success(t("cv.copied"));
               } catch (error) {
                 toast.error(error instanceof Error ? error.message : String(error));
               } finally {
@@ -151,7 +155,7 @@ export function ContextViewer({
             }}
           >
             <CopyIcon className="size-3.5" />
-            复制原文
+            {t("cv.copy")}
           </Button>
         </div>
       )}
@@ -159,7 +163,9 @@ export function ContextViewer({
         ref={scroll}
         className={cn("min-h-0 overflow-y-auto overscroll-contain px-5 pb-5", node && "flex-1")}
       >
-        {snapshot.loading && <p className="py-5 text-sm text-muted-foreground">正在读取上下文…</p>}
+        {snapshot.loading && (
+          <p className="py-5 text-sm text-muted-foreground">{t("cv.loading")}</p>
+        )}
         {(snapshot.error || snapshot.view?.error) && (
           <p role="alert" className="py-3 text-sm text-destructive">
             {snapshot.error ?? snapshot.view?.error}
@@ -173,12 +179,12 @@ export function ContextViewer({
               size="sm"
               onClick={() => node && void snapshot.load(node, page.cursor, page.previous)}
             >
-              重试
+              {t("common.retry")}
             </Button>
           </div>
         )}
         {node && (!page || page.loading) && (
-          <p className="py-4 text-sm text-muted-foreground">正在读取…</p>
+          <p className="py-4 text-sm text-muted-foreground">{t("cv.reading")}</p>
         )}
         {!body &&
           rows.map((row) => {
@@ -229,7 +235,7 @@ export function ContextViewer({
             );
           })}
         {node && !body && page?.result && rows.length === 0 && (
-          <p className="py-6 text-sm text-muted-foreground">暂无内容</p>
+          <p className="py-6 text-sm text-muted-foreground">{t("cv.empty")}</p>
         )}
         {body &&
           page?.result?.text &&
@@ -252,13 +258,13 @@ export function ContextViewer({
             disabled={compactDisabled}
             onClick={() => {
               void compactSession(sessionId)
-                .then(() => toast.success("上下文已压缩，点击刷新查看新快照"))
+                .then(() => toast.success(t("cv.compacted")))
                 .catch((error) =>
                   toast.error(error instanceof Error ? error.message : String(error)),
                 );
             }}
           >
-            压缩
+            {t("cv.compact")}
           </Button>
         </div>
       )}
@@ -273,7 +279,7 @@ export function ContextViewer({
               if (cursor !== undefined) paginate(cursor, page.previous.slice(0, -1));
             }}
           >
-            上一页
+            {t("cv.prev")}
           </Button>
           <Button
             size="sm"
@@ -284,7 +290,7 @@ export function ContextViewer({
                 paginate(page.result.next_cursor, [...page.previous, page.cursor]);
             }}
           >
-            下一页
+            {t("cv.next")}
           </Button>
         </div>
       )}

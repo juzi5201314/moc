@@ -15,6 +15,7 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { IconButton } from "@/components/common/icon-button";
 import { Button } from "@/components/ui/button";
 import { formatDuration, relativeTime } from "@/lib/format";
+import { type MsgKey, useT } from "@/lib/i18n";
 import { modelName } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
@@ -74,12 +75,13 @@ export function PanelEmpty({ title, hint }: { title: string; hint?: string }) {
 }
 
 function PanelError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const t = useT();
   return (
     <div className="m-3 space-y-2 rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-xs text-destructive">
       <p className="break-words whitespace-pre-wrap">{message}</p>
       <Button size="xs" variant="outline" onClick={onRetry} className="h-6">
         <RefreshCwIcon />
-        重试
+        {t("common.retry")}
       </Button>
     </div>
   );
@@ -95,8 +97,9 @@ function SectionBar({ title, children }: { title: ReactNode; children?: ReactNod
 }
 
 function RefreshButton({ loading, onClick }: { loading: boolean; onClick: () => void }) {
+  const t = useT();
   return (
-    <IconButton label="刷新" size="xs" onClick={onClick} disabled={loading}>
+    <IconButton label={t("it.refresh")} size="xs" onClick={onClick} disabled={loading}>
       {loading ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
     </IconButton>
   );
@@ -104,16 +107,17 @@ function RefreshButton({ loading, onClick }: { loading: boolean; onClick: () => 
 
 // ---------- 子代理 ----------
 
-const AGENT_STATUS: Record<AgentStatus, { label: string; dot: string }> = {
-  queued: { label: "排队中", dot: "bg-warn" },
-  running: { label: "运行中", dot: "bg-brand animate-pulse" },
-  idle: { label: "空闲", dot: "bg-text-tertiary" },
-  completed: { label: "已完成", dot: "bg-success" },
-  stopped: { label: "已停止", dot: "bg-text-tertiary" },
-  failed: { label: "失败", dot: "bg-destructive" },
+const AGENT_STATUS: Record<AgentStatus, { label: MsgKey; dot: string }> = {
+  queued: { label: "ag.queued", dot: "bg-warn" },
+  running: { label: "ag.running", dot: "bg-brand animate-pulse" },
+  idle: { label: "ag.idle", dot: "bg-text-tertiary" },
+  completed: { label: "ag.completed", dot: "bg-success" },
+  stopped: { label: "ag.stopped", dot: "bg-text-tertiary" },
+  failed: { label: "ag.failed", dot: "bg-destructive" },
 };
 
 export function AgentsTab({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const live = useTranscript((state) => state.bySession[sessionId]?.agents);
   const readOnly = useTranscript((state) => Boolean(state.bySession[sessionId]?.readOnly));
   const isDraft = sessionId === "draft-session";
@@ -145,7 +149,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
       setTask(null);
       reload();
     } catch (spawnError) {
-      toast.error(`启动子代理失败：${errorText(spawnError)}`);
+      toast.error(t("it.spawn_failed", { error: errorText(spawnError) }));
     } finally {
       setBusy(null);
     }
@@ -157,7 +161,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
       await rpc.call("agent/stop", { session_id: sessionId, agent_id: agentId });
       reload();
     } catch (stopError) {
-      toast.error(`停止失败：${errorText(stopError)}`);
+      toast.error(t("cb.stop_failed", { error: errorText(stopError) }));
     } finally {
       setBusy(null);
     }
@@ -165,10 +169,10 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="flex flex-col">
-      <SectionBar title={`子代理 · ${agents.length}`}>
+      <SectionBar title={t("it.agents_n", { n: agents.length })}>
         {!isDraft && !readOnly && (
           <IconButton
-            label="手动启动子代理"
+            label={t("it.spawn")}
             size="xs"
             disabled={loading || roles.length === 0}
             onClick={() => setTask((value) => (value === null ? "" : null))}
@@ -182,9 +186,9 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
       {task !== null && (
         <div className="mx-3 mb-3 rounded-xl bg-muted p-2 ring-1 ring-inset ring-border-subtle">
           <label className="flex items-center gap-2 px-1.5 pb-2 text-xs text-muted-foreground">
-            固定角色
+            {t("it.role")}
             <select
-              aria-label="子代理角色"
+              aria-label={t("it.role_aria")}
               value={selectedRole?.name ?? ""}
               onChange={(event) => setRoleName(event.target.value)}
               disabled={roles.length === 0 || busy === "spawn"}
@@ -198,7 +202,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
             </select>
           </label>
           <p className="px-1.5 pb-2 text-xs text-muted-foreground">
-            {selectedRole?.description ?? "没有启用的子代理角色"}
+            {selectedRole?.description ?? t("it.no_roles")}
           </p>
           <textarea
             // biome-ignore lint/a11y/noAutofocus: 点开即输入
@@ -210,12 +214,12 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
               if (event.key === "Escape") setTask(null);
             }}
             rows={3}
-            placeholder="交给子代理的任务，Ctrl+Enter 启动"
+            placeholder={t("it.task_ph")}
             className="w-full resize-none bg-transparent px-1.5 py-1 text-ui outline-none placeholder:text-text-tertiary"
           />
           <div className="flex justify-end gap-1.5">
             <Button size="xs" variant="ghost" onClick={() => setTask(null)}>
-              取消
+              {t("common.cancel")}
             </Button>
             <Button
               size="xs"
@@ -223,7 +227,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
               onClick={() => void spawn()}
             >
               {busy === "spawn" && <Loader2Icon className="animate-spin" />}
-              启动
+              {t("it.start")}
             </Button>
           </div>
         </div>
@@ -232,12 +236,8 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
       {error && <PanelError message={error} onRetry={reload} />}
       {agents.length === 0 && !loading && !error ? (
         <PanelEmpty
-          title="还没有子代理"
-          hint={
-            roles.length === 0
-              ? "没有启用的固定角色，无法创建子代理。"
-              : "模型派出的子任务会出现在这里，可以点开只读查看过程。"
-          }
+          title={t("it.no_agents")}
+          hint={roles.length === 0 ? t("it.no_roles_hint") : t("it.no_agents_hint")}
         />
       ) : (
         <ul className="space-y-px px-2 pb-3">
@@ -256,7 +256,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
                     <span className="min-w-0 flex-1 truncate text-ui text-foreground">
                       {agent.title || agent.id}
                     </span>
-                    <span className="shrink-0 text-2xs text-text-tertiary">{status.label}</span>
+                    <span className="shrink-0 text-2xs text-text-tertiary">{t(status.label)}</span>
                   </span>
                   {agent.last_message && (
                     <span className="line-clamp-2 pl-3.5 text-xs leading-5 text-muted-foreground">
@@ -269,7 +269,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
                 </button>
                 {active && !readOnly && (
                   <IconButton
-                    label="停止"
+                    label={t("keys.stop")}
                     size="xs"
                     disabled={busy === agent.id}
                     onClick={() => void stop(agent.id)}
@@ -305,33 +305,43 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function UsageCard({ summary, title }: { summary: ModelUsageSummary; title: string }) {
+  const t = useT();
   const tokens = (value: number | undefined) => (value ? value.toLocaleString() : "0");
   return (
     <section className="space-y-2">
       <div className="flex items-baseline justify-between gap-2">
         <span className="min-w-0 truncate text-ui font-medium">{title}</span>
-        <span className="shrink-0 text-2xs text-text-tertiary">{summary.calls} 次请求</span>
+        <span className="shrink-0 text-2xs text-text-tertiary">
+          {t("it.calls", { n: summary.calls })}
+        </span>
       </div>
       <div className="grid grid-cols-2 gap-1.5">
-        <Metric label="输入" value={tokens(summary.input_tokens)} />
-        <Metric label="输出" value={tokens(summary.output_tokens)} />
-        <Metric label="缓存命中" value={tokens(summary.cached_input_tokens ?? undefined)} />
-        <Metric label="缓存写入" value={tokens(summary.cache_creation_input_tokens ?? undefined)} />
-        <Metric label="推理" value={tokens(summary.reasoning_tokens ?? undefined)} />
+        <Metric label={t("mp.input")} value={tokens(summary.input_tokens)} />
+        <Metric label={t("mp.output")} value={tokens(summary.output_tokens)} />
         <Metric
-          label="平均首字"
+          label={t("mp.cache_read")}
+          value={tokens(summary.cached_input_tokens ?? undefined)}
+        />
+        <Metric
+          label={t("mp.cache_write")}
+          value={tokens(summary.cache_creation_input_tokens ?? undefined)}
+        />
+        <Metric label={t("it.reasoning")} value={tokens(summary.reasoning_tokens ?? undefined)} />
+        <Metric
+          label={t("it.ttft")}
           value={
             summary.ttft_calls ? formatDuration((summary.ttft_ms ?? 0) / summary.ttft_calls) : "—"
           }
         />
-        <Metric label="生成耗时" value={formatDuration(summary.gen_ms ?? 0)} />
-        <Metric label="活跃耗时" value={formatDuration(summary.active_ms)} />
+        <Metric label={t("it.gen_ms")} value={formatDuration(summary.gen_ms ?? 0)} />
+        <Metric label={t("it.active_ms")} value={formatDuration(summary.active_ms)} />
       </div>
     </section>
   );
 }
 
 export function UsageTab({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const isDraft = sessionId === "draft-session";
   const running = useTranscript((state) => state.bySession[sessionId]?.running);
   const { data, error, loading, reload } = useFetch(`${sessionId}:${String(running)}`, () =>
@@ -340,20 +350,20 @@ export function UsageTab({ sessionId }: { sessionId: string }) {
       : rpc.call<SessionUsageResult>("session/usage", { session_id: sessionId }),
   );
 
-  if (isDraft) return <PanelEmpty title="发送第一条消息后可查看用量" />;
+  if (isDraft) return <PanelEmpty title={t("it.usage_draft")} />;
   if (error) return <PanelError message={error} onRetry={reload} />;
-  if (!data) return <PanelEmpty title="正在读取用量…" />;
+  if (!data) return <PanelEmpty title={t("it.usage_loading")} />;
 
   return (
     <div className="flex flex-col">
-      <SectionBar title="会话用量">
+      <SectionBar title={t("it.usage_title")}>
         <span className="mr-1 font-mono text-2xs text-text-tertiary">
-          工具耗时 {formatDuration(data.tool_ms ?? 0)}
+          {t("it.tool_ms", { n: formatDuration(data.tool_ms ?? 0) })}
         </span>
         <RefreshButton loading={loading} onClick={reload} />
       </SectionBar>
       <div className="space-y-5 px-4 pb-4">
-        <UsageCard summary={data.total} title="合计" />
+        <UsageCard summary={data.total} title={t("it.total")} />
         {data.models.length > 1 &&
           data.models.map((summary) => (
             <UsageCard
@@ -364,7 +374,7 @@ export function UsageTab({ sessionId }: { sessionId: string }) {
                 (summary.source === "sidekick"
                   ? " (sidekick)"
                   : summary.source === "subagent"
-                    ? " (子代理)"
+                    ? t("it.src_subagent")
                     : "")
               }
             />
@@ -377,6 +387,7 @@ export function UsageTab({ sessionId }: { sessionId: string }) {
 // ---------- 旁路问答 ----------
 
 export function BtwTab({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const thread = useBtw((state) => state.threads[sessionId]);
   const focus = useUi((state) => state.focusBtw);
   const [question, setQuestion] = useState("");
@@ -397,30 +408,31 @@ export function BtwTab({ sessionId }: { sessionId: string }) {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [turns.length, lastAnswer]);
 
-  if (isDraft) return <PanelEmpty title="发送第一条消息后可使用旁路问答" />;
+  if (isDraft) return <PanelEmpty title={t("it.btw_draft")} />;
 
   const ask = () => {
     const text = question.trim();
     if (!text) return;
     if (useBtw.getState().ask(sessionId, text)) setQuestion("");
-    else toast("上一个问题还在回答中");
+    else toast(t("btw.busy"));
   };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <SectionBar title="旁路问答 · 不进入主对话">
+      <SectionBar title={t("it.btw_title")}>
         {turns.length > 0 && (
-          <IconButton label="清空" size="xs" onClick={() => useBtw.getState().clear(sessionId)}>
+          <IconButton
+            label={t("common.clear")}
+            size="xs"
+            onClick={() => useBtw.getState().clear(sessionId)}
+          >
             <Trash2Icon />
           </IconButton>
         )}
       </SectionBar>
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pb-4">
         {turns.length === 0 && (
-          <PanelEmpty
-            title="随手问一句"
-            hint="基于当前对话上下文回答，不打断主任务，也不会写进会话历史。"
-          />
+          <PanelEmpty title={t("it.btw_empty")} hint={t("it.btw_empty_hint")} />
         )}
         {turns.map((turn) => (
           <div key={turn.requestId} className="space-y-2">
@@ -436,13 +448,15 @@ export function BtwTab({ sessionId }: { sessionId: string }) {
               </MessageResponse>
             ) : turn.status === "waiting" || turn.status === "generating" ? (
               <Shimmer as="span" className="text-ui">
-                思考中…
+                {`${t("verb.thinking_ing")}…`}
               </Shimmer>
             ) : null}
             {turn.status === "failed" && (
-              <p className="text-xs text-destructive">{turn.error ?? "回答失败"}</p>
+              <p className="text-xs text-destructive">{turn.error ?? t("it.answer_failed")}</p>
             )}
-            {turn.status === "cancelled" && <p className="text-xs text-text-tertiary">已取消</p>}
+            {turn.status === "cancelled" && (
+              <p className="text-xs text-text-tertiary">{t("act.cancelled")}</p>
+            )}
           </div>
         ))}
         <div ref={endRef} />
@@ -460,11 +474,15 @@ export function BtwTab({ sessionId }: { sessionId: string }) {
                 ask();
               }
             }}
-            placeholder="问点什么…"
+            placeholder={t("it.btw_ph")}
             className="max-h-32 min-h-7 flex-1 resize-none bg-transparent px-1.5 py-1 text-ui leading-5 outline-none placeholder:text-text-tertiary"
           />
           {inflight ? (
-            <IconButton label="停止" size="sm" onClick={() => useBtw.getState().cancel(sessionId)}>
+            <IconButton
+              label={t("keys.stop")}
+              size="sm"
+              onClick={() => useBtw.getState().cancel(sessionId)}
+            >
               <SquareIcon className="size-3 fill-current" />
             </IconButton>
           ) : (
@@ -473,7 +491,7 @@ export function BtwTab({ sessionId }: { sessionId: string }) {
               onClick={ask}
               disabled={!question.trim()}
               className="flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground text-background disabled:opacity-25"
-              aria-label="提问"
+              aria-label={t("it.ask")}
             >
               <ArrowUpIcon className="size-3.5" strokeWidth={2.4} />
             </button>

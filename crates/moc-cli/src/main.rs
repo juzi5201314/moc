@@ -1,6 +1,13 @@
+// bin crate 单独持有一份 catalog（t! 宏按 crate root 解析）。
+rust_i18n::i18n!("../../locales", fallback = "zh");
+
 use clap::Parser;
+use rust_i18n::t;
 
 fn main() -> anyhow::Result<()> {
+    // 先用系统语言探测兜底：配置加载前的错误（含配置本身的错误）也能本地化；
+    // Core::new 加载配置后再按 language 字段覆盖。
+    moc_core::i18n::init("auto");
     let mut argv: Vec<String> = std::env::args().collect();
     // PTC worker 与 CLI 共用同一个可执行文件，但仍在独立子进程中运行。
     if argv.get(1).is_some_and(|arg| arg == "--ptc-worker") {
@@ -12,13 +19,11 @@ fn main() -> anyhow::Result<()> {
     }
     if argv.get(1).is_some_and(|arg| arg == "update") {
         if argv.len() > 3 {
-            anyhow::bail!("用法: moc update [版本]");
+            anyhow::bail!("{}", t!("cli.update.usage"));
         }
         let version = argv.get(2).cloned();
         if matches!(version.as_deref(), Some("-h" | "--help")) {
-            println!(
-                "用法: moc update [版本]\n\n省略版本时更新到最新正式版；例如: moc update v2.2.1-rc.2"
-            );
+            println!("{}", t!("cli.update.help"));
             return Ok(());
         }
         return tokio::runtime::Builder::new_multi_thread()

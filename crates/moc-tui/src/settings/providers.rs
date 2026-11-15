@@ -21,31 +21,32 @@ fn is_provider_connection_field(id: &str, field: &ConfigField) -> bool {
         && field.path.get(2).is_some_and(|p| p != "models")
 }
 
-fn parameter_title(path: &[String]) -> &str {
+fn parameter_title(path: &[String]) -> String {
     match path.last().map_or("", String::as_str) {
-        "headers" => "API 请求头",
-        "extra_body" => "采样与通用请求参数",
-        "reasoning" => "思考与推理",
-        "thinking" => "思考模式与预算",
-        "text" => "回复详细程度",
-        "format" | "json_schema" => "结构化输出",
-        "response_format" => "输出格式",
-        "output_config" => "思考强度",
-        "metadata" => "请求元数据",
-        "prediction" => "预期输出",
-        "prompt" => "上游提示模板",
-        "prompt_cache_options" => "提示缓存",
-        "cache_control" => "自动缓存",
-        "stream_options" => "流式返回",
-        "tool_choice" => "工具调用策略",
-        "moderation" => "内容审核",
-        "input" => "输入审核策略",
-        "output" => "输出审核策略",
-        "image" => "上游图片处理",
-        "access_programs" => "访问计划",
-        "diagnostics" => "缓存诊断",
-        name => name,
+        "headers" => t!("tui.param.headers"),
+        "extra_body" => t!("tui.param.extra_body"),
+        "reasoning" => t!("tui.param.reasoning"),
+        "thinking" => t!("tui.param.thinking"),
+        "text" => t!("tui.param.text"),
+        "format" | "json_schema" => t!("tui.param.format"),
+        "response_format" => t!("tui.param.response_format"),
+        "output_config" => t!("tui.param.output_config"),
+        "metadata" => t!("tui.param.metadata"),
+        "prediction" => t!("tui.param.prediction"),
+        "prompt" => t!("tui.param.prompt"),
+        "prompt_cache_options" => t!("tui.param.prompt_cache_options"),
+        "cache_control" => t!("tui.param.cache_control"),
+        "stream_options" => t!("tui.param.stream_options"),
+        "tool_choice" => t!("tui.param.tool_choice"),
+        "moderation" => t!("tui.param.moderation"),
+        "input" => t!("tui.param.input"),
+        "output" => t!("tui.param.output"),
+        "image" => t!("tui.param.image"),
+        "access_programs" => t!("tui.param.access_programs"),
+        "diagnostics" => t!("tui.param.diagnostics"),
+        name => return name.to_owned(),
     }
+    .into_owned()
 }
 pub const APIS: [(&str, &str); 3] = [
     ("openai_chat", "OpenAI Chat"),
@@ -114,14 +115,14 @@ impl ProviderDraft {
                 && id
                     .bytes()
                     .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c)),
-            "供应商标识只能使用字母、数字、- 和 _"
+            "{}", t!("tui.err.provider_id_invalid")
         );
         anyhow::ensure!(
             panel.effective["providers"].get(id).is_none(),
-            "供应商 {id} 已存在"
+            "{}", t!("tui.err.provider_exists", id = id)
         );
         let url = self.url.input.text.trim();
-        anyhow::ensure!(!url.is_empty(), "请填写服务地址");
+        anyhow::ensure!(!url.is_empty(), "{}", t!("tui.err.url_required"));
         Ok((
             id.into(),
             json!({
@@ -327,8 +328,9 @@ impl SettingsPanel {
                             depth: 2,
                             kind: RowKind::Group(Group {
                                 key: adv_key,
-                                title: "高级选项".into(),
-                                detail: format!("{adv_count} 项"),
+                                title: t!("tui.settings.advanced_title").into_owned(),
+                                detail: t!("tui.settings.item_count", count = adv_count)
+                                    .into_owned(),
                                 grouping: adv_grouping,
                                 path: None,
                             }),
@@ -382,8 +384,9 @@ impl SettingsPanel {
                 depth,
                 kind: RowKind::Group(Group {
                     key,
-                    title: parameter_title(&path).into(),
-                    detail: format!("{} 项", indices.len()),
+                    title: parameter_title(&path),
+                    detail: t!("tui.settings.item_count", count = indices.len())
+                        .into_owned(),
                     grouping: path,
                     path: None,
                 }),
@@ -430,17 +433,23 @@ impl SettingsPanel {
 
     pub fn provider_action_text(&self, action: &ProviderAction) -> String {
         match action {
-            ProviderAction::New => "+ 添加供应商".into(),
-            ProviderAction::More => {
-                format!("{} 高级选项", if self.providers.more { "▾" } else { "▸" })
-            }
+            ProviderAction::New => t!("tui.providers.add").into_owned(),
+            ProviderAction::More => t!(
+                "tui.providers.more_fmt",
+                mark = if self.providers.more { "▾" } else { "▸" }
+            )
+            .into_owned(),
             ProviderAction::Fetch => match &self.providers.discovery {
-                Some(discovery) if discovery.pending.is_some() => "正在获取模型…".into(),
-                Some(discovery) if discovery.error.is_some() => "重新获取模型".into(),
-                _ => "从供应商获取模型".into(),
+                Some(discovery) if discovery.pending.is_some() => {
+                    t!("tui.providers.fetching_short").into_owned()
+                }
+                Some(discovery) if discovery.error.is_some() => {
+                    t!("tui.providers.refetch").into_owned()
+                }
+                _ => t!("tui.providers.fetch").into_owned(),
             },
-            ProviderAction::Manual => "+ 手动添加模型 ID".into(),
-            ProviderAction::Remove => "删除供应商".into(),
+            ProviderAction::Manual => t!("tui.providers.manual").into_owned(),
+            ProviderAction::Remove => t!("tui.providers.remove").into_owned(),
         }
     }
 
@@ -519,10 +528,10 @@ impl SettingsPanel {
             })
             .unwrap_or_default();
         if ids.is_empty() {
-            self.error = Some("请先勾选需要添加的模型".into());
+            self.error = Some(t!("tui.err.check_models").into_owned());
             return;
         }
-        let result = self.commit("添加勾选模型", app, connection, |panel| {
+        let result = self.commit(&t!("tui.snap.add_models"), app, connection, |panel| {
             for id in &ids {
                 panel.insert_model(&provider, id)?;
             }
@@ -554,8 +563,8 @@ impl SettingsPanel {
                     self.select_action(ProviderAction::Manual);
                     self.begin_named(
                         EditTarget::Model(id.clone()),
-                        &format!("为 {id} 添加模型"),
-                        "模型 ID 原样保存，可包含 /",
+                        &t!("tui.providers.add_model_title", id = id),
+                        &t!("tui.providers.model_id_note"),
                         "",
                     );
                     self.edit.as_mut().expect("刚打开输入").popup = false;
@@ -564,7 +573,7 @@ impl SettingsPanel {
             ProviderAction::Remove => {
                 if let Some(id) = &self.providers.selected {
                     self.view = View::Confirm {
-                        text: format!("删除供应商“{id}”及其中配置的模型？Ctrl+Z 可以撤回。"),
+                        text: t!("tui.providers.remove_confirm", id = id).into_owned(),
                         action: ConfirmAction::Remove(vec!["providers".into(), id.clone()]),
                     };
                 }
@@ -578,7 +587,7 @@ impl SettingsPanel {
         events: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
     ) {
         let Some(id) = self.providers.selected.clone() else {
-            self.error = Some("请先添加供应商并填写连接参数".into());
+            self.error = Some(t!("tui.err.need_provider").into_owned());
             return;
         };
         let provider = self.effective["providers"][&id].clone();
@@ -586,7 +595,7 @@ impl SettingsPanel {
             .as_str()
             .is_some_and(|url| !url.trim().is_empty())
         {
-            self.error = Some("请先填写服务地址".into());
+            self.error = Some(t!("tui.err.url_required").into_owned());
             return;
         }
         self.providers.generation += 1;
@@ -636,7 +645,7 @@ impl SettingsPanel {
                 discovery.scroll.reveal_selection = true;
             }
             Err(error) => discovery.error = Some(error.to_string()),
-            Ok(_) => discovery.error = Some("获取模型返回了非模型响应".into()),
+            Ok(_) => discovery.error = Some(t!("tui.err.bad_models_reply").into_owned()),
         }
         self.rebuild_rows();
     }
@@ -655,7 +664,7 @@ impl SettingsPanel {
 
     fn submit_provider(&mut self, app: &mut App, connection: &EmbeddedConnection, discover: bool) {
         if app.saving_config() {
-            self.error = Some("正在保存配置，请稍候".into());
+            self.error = Some(t!("tui.err.saving_wait").into_owned());
             return;
         }
         let Some(draft) = &self.providers.draft else {
@@ -671,7 +680,7 @@ impl SettingsPanel {
         let Some(data) = &self.data else { return };
         let mut document = data.document.clone();
         set(&mut document, &["providers".into(), id.clone()], value);
-        let snapshot = self.snapshot(&format!("添加供应商 {id}"));
+        let snapshot = self.snapshot(&t!("tui.snap.add_provider", id = id));
         let write = ConfigWrite {
             scope: ConfigScope::Global,
             cwd: self.cwd.clone(),

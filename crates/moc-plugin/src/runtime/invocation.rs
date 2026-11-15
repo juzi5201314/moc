@@ -9,6 +9,7 @@ use rquickjs::Ctx;
 use rquickjs::Function;
 use rquickjs::Object;
 use rquickjs::Value as JsValue;
+use rust_i18n::t;
 use serde_json::Value;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -78,11 +79,16 @@ pub(super) fn dispatch<'js>(
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
-                .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", "工具调用缺少 name"))?;
+                .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", t!("plugin.err.call_missing_name")))?;
             let function = functions
                 .tools
                 .get(name)
-                .ok_or_else(|| PluginError::new("E_PLUGIN_TOOL", format!("工具 `{name}` 未注册")))?
+                .ok_or_else(|| {
+                    PluginError::new(
+                        "E_PLUGIN_TOOL",
+                        t!("plugin.err.tool_unregistered", name = name).into_owned(),
+                    )
+                })?
                 .clone()
                 .restore(ctx)
                 .map_err(|error| js_error(ctx, error))?;
@@ -99,12 +105,15 @@ pub(super) fn dispatch<'js>(
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
-                .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", "命令调用缺少 name"))?;
+                .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", t!("plugin.err.command_missing_name")))?;
             let function = functions
                 .commands
                 .get(name)
                 .ok_or_else(|| {
-                    PluginError::new("E_PLUGIN_COMMAND", format!("命令 `{name}` 未注册"))
+                    PluginError::new(
+                        "E_PLUGIN_COMMAND",
+                        t!("plugin.err.command_unregistered", name = name).into_owned(),
+                    )
                 })?
                 .clone()
                 .restore(ctx)
@@ -124,10 +133,13 @@ pub(super) fn dispatch<'js>(
             let hooks: JsValue = export.get("hooks").map_err(|error| js_error(ctx, error))?;
             let hooks = hooks
                 .into_object()
-                .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", "模块没有导出 hooks"))?;
+                .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", t!("plugin.err.no_hooks")))?;
             let name = kind.js_name();
             let function = optional_function(ctx, &hooks, name)?.ok_or_else(|| {
-                PluginError::new("E_PLUGIN_STATE", format!("钩子 `{name}` 不存在"))
+                PluginError::new(
+                    "E_PLUGIN_STATE",
+                    t!("plugin.err.hook_missing", name = name).into_owned(),
+                )
             })?;
             let event: JsValue = ctx
                 .json_parse(payload.to_string())
@@ -140,7 +152,7 @@ pub(super) fn dispatch<'js>(
         CallOp::Prompt => {
             let export = export_object(ctx, functions)?;
             let function = optional_function(ctx, &export, "prompt")?
-                .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", "模块没有导出 prompt"))?;
+                .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", t!("plugin.err.no_prompt")))?;
             let result: JsValue = function
                 .call::<_, JsValue>((context_value()?,))
                 .map_err(|error| js_error(ctx, error))?;
@@ -169,7 +181,12 @@ pub(super) fn optional_function<'js>(
     value
         .into_function()
         .map(Some)
-        .ok_or_else(|| PluginError::new("E_PLUGIN_DESCRIPTOR", format!("`{key}` 必须是函数")))
+        .ok_or_else(|| {
+            PluginError::new(
+                "E_PLUGIN_DESCRIPTOR",
+                t!("plugin.err.field_fn", key = key).into_owned(),
+            )
+        })
 }
 
 /// 把插件函数的返回值转成 JSON；返回 Promise 时先驱动 QuickJS 的任务队列直到落定。
@@ -187,7 +204,7 @@ pub(super) fn settle<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Value> 
         Ok(resolved) => js_to_json(ctx, resolved),
         Err(rquickjs::Error::WouldBlock) => Err(PluginError::new(
             "E_PLUGIN_STATE",
-            "函数返回的 Promise 没有落定：插件里没有定时器或事件循环，Promise 必须能自行完成",
+            t!("plugin.err.promise_unsettled").into_owned(),
         )),
         Err(error) => Err(js_error(ctx, error)),
     }
@@ -229,7 +246,7 @@ pub(super) fn caught<'js>(ctx: &Ctx<'js>, error: CaughtError<'js>) -> PluginErro
             let message = exception
                 .message()
                 .filter(|message| !message.is_empty())
-                .unwrap_or_else(|| "插件脚本抛出异常".to_owned());
+                .unwrap_or_else(|| t!("plugin.err.threw_exception").into_owned());
             let code = exception
                 .as_object()
                 .get::<_, Option<String>>("code")
@@ -253,7 +270,7 @@ pub(super) fn caught<'js>(ctx: &Ctx<'js>, error: CaughtError<'js>) -> PluginErro
                         .ok()
                         .flatten()
                         .and_then(|text| text.to_string().ok())
-                        .unwrap_or_else(|| "插件抛出了无法序列化的值".to_owned())
+                        .unwrap_or_else(|| t!("plugin.err.threw_unserializable").into_owned())
                 };
                 PluginError::new("E_PLUGIN", message)
             }
@@ -273,7 +290,7 @@ pub(super) fn thrown_object(value: &rquickjs::Value<'_>) -> Option<PluginError> 
         .get::<_, Option<String>>("message")
         .ok()
         .flatten()
-        .unwrap_or_else(|| "插件抛出了错误对象".to_owned());
+        .unwrap_or_else(|| t!("plugin.err.threw_error_object").into_owned());
     Some(PluginError::new(PluginError::known_code(&code), message))
 }
 

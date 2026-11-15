@@ -5,6 +5,7 @@ edition = "2024"
 authors = ["soeur@soeur.dev@gmail.com"]
 
 [dependencies]
+rust-i18n.workspace = true
 moc-llm = { path = "../moc-llm" }
 tokio.workspace = true
 tokio-util.workspace = true

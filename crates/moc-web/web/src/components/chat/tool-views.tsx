@@ -9,6 +9,7 @@ import { MessageResponse } from "@/components/ai-elements/message";
 import { TodoPhases } from "@/components/common/todo-phases";
 import { DiffBody, DiffStat, diffStats } from "@/components/panels/diff-file";
 import { highlight } from "@/lib/highlight";
+import { t, useT } from "@/lib/i18n";
 import {
   agentPreviews,
   BRIEF_BODY_ROWS,
@@ -38,12 +39,13 @@ import type { ToolDiff } from "@/protocol/types";
 const ansiExports = AnsiModule as unknown as { default?: typeof AnsiModule };
 const Ansi = ansiExports.default ?? AnsiModule;
 
-export function CopyButton({ text, label = "复制" }: { text: string; label?: string }) {
+export function CopyButton({ text, label }: { text: string; label?: string }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
-      aria-label={label}
+      aria-label={label ?? t("common.copy")}
       onClick={(event) => {
         event.stopPropagation();
         void navigator.clipboard.writeText(text);
@@ -59,13 +61,14 @@ export function CopyButton({ text, label = "复制" }: { text: string; label?: s
 
 /** 「⋯ 还有 N 行」：简略档省略提示，点击切到完整档。 */
 function MoreLines({ hidden, onExpand }: { hidden: number; onExpand: () => void }) {
+  const t = useT();
   return (
     <button
       type="button"
       onClick={onExpand}
       className="block px-3 py-0.5 text-left font-sans text-2xs text-text-tertiary transition-colors hover:text-foreground"
     >
-      ⋯ 还有 {hidden} 行
+      {t("tv.more", { n: hidden })}
     </button>
   );
 }
@@ -158,6 +161,7 @@ export function NoticeScope({ result, children }: { result?: string; children: R
 }
 
 function Notes({ notes }: { notes: string[] }) {
+  const t = useT();
   const inherited = useContext(AncestorNotices);
   const [expanded, setExpanded] = useState(false);
   const visible = [...new Set(notes)].filter((note) => !inherited.has(note));
@@ -185,17 +189,16 @@ function Notes({ notes }: { notes: string[] }) {
             className="text-left"
             onClick={() => setExpanded((open) => !open)}
           >
-            {omitted.length} 行内容未完整显示；{expanded ? "收起" : "展开查看行号与续读方式"}
+            {expanded
+              ? t("tv.omitted_hide", { n: omitted.length })
+              : t("tv.omitted_show", { n: omitted.length })}
           </button>
           {expanded && (
             <>
               {omitted.map((note) => (
                 <div key={note}>{note.split(";", 1)[0].replace(/^\[/, "")}</div>
               ))}
-              <div>
-                用 read 的 offset 指定行、limit=1、byte_offset=0 分片读取，并按 next
-                续读；省略内容不授权编辑。
-              </div>
+              <div>{t("tv.read_hint")}</div>
             </>
           )}
         </>
@@ -221,6 +224,7 @@ function TerminalCard({
   error?: boolean;
   running?: boolean;
 }) {
+  const t = useT();
   return (
     <div className={CARD}>
       <div className="group/cmd flex items-start gap-2 px-3 py-2">
@@ -229,7 +233,7 @@ function TerminalCard({
           {command}
         </pre>
         <span className="opacity-0 transition-opacity group-hover/cmd:opacity-100">
-          <CopyButton text={command} label="复制命令" />
+          <CopyButton text={command} label={t("tv.copy_cmd")} />
         </span>
       </div>
       {(output || running) && (
@@ -307,6 +311,7 @@ function PreferBuiltinView({
   showCommand: boolean;
   result: string;
 }) {
+  const t = useT();
   const lines = result.replace(/^\[E_PREFER_BUILTIN\] ?/, "").split("\n");
   return (
     <div className={CARD}>
@@ -317,7 +322,7 @@ function PreferBuiltinView({
             {command}
           </pre>
           <span className="opacity-0 transition-opacity group-hover/cmd:opacity-100">
-            <CopyButton text={command} label="复制命令" />
+            <CopyButton text={command} label={t("tv.copy_cmd")} />
           </span>
         </div>
       )}
@@ -360,6 +365,7 @@ function DiffCard({
   level: DetailLevel;
   onExpand: () => void;
 }) {
+  const t = useT();
   if (level !== "full") {
     const preview = previewDiff(diff, BRIEF_BODY_ROWS);
     return (
@@ -394,9 +400,7 @@ function DiffCard({
           <DiffBody file={file} maxHeight={420} />
         </div>
       ))}
-      {diff.truncated && (
-        <div className="px-1 text-2xs text-text-tertiary">⋯ 其余改动超出 diff 上限，未显示</div>
-      )}
+      {diff.truncated && <div className="px-1 text-2xs text-text-tertiary">{t("tv.diff_cap")}</div>}
     </div>
   );
 }
@@ -534,17 +538,17 @@ function fixedSummary(tool: ToolBlock, warningsOnly = false): ReactNode {
           <span className="text-muted-foreground">{page.title || page.url}</span>
           {page.tokens !== undefined && (
             <span className="ml-2 tabular-nums text-text-tertiary">
-              约 {page.tokens.toLocaleString()} tokens
+              {t("tv.tokens", { n: page.tokens.toLocaleString() })}
             </span>
           )}
           {page.truncated && (
             <div role="status" className="text-warn">
-              警告：内容已截断
+              {t("tv.truncated")}
             </div>
           )}
           {page.error && (
             <div role="status" className="text-destructive">
-              抓取失败：{page.error}
+              {t("tv.fetch_failed", { error: page.error })}
             </div>
           )}
         </div>
@@ -558,7 +562,9 @@ function fixedSummary(tool: ToolBlock, warningsOnly = false): ReactNode {
             <div className="moc-tool-preview max-h-[3.75rem] overflow-hidden text-xs [--moc-prose-size:12px] [--moc-prose-leading:20px] [--moc-prose-color:var(--muted-foreground)]">
               <MessageResponse>{head.lines.join("\n")}</MessageResponse>
             </div>
-            {preview.text && <div className="mt-0.5 text-2xs text-text-tertiary">仅显示开头</div>}
+            {preview.text && (
+              <div className="mt-0.5 text-2xs text-text-tertiary">{t("tv.head_only")}</div>
+            )}
           </div>
         );
       })}
@@ -581,7 +587,7 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
     return (
       <div>
         {(preview.truncated || all.length > limit) && (
-          <div className="px-3 py-0.5 text-2xs text-text-tertiary">… 仅显示预览末尾</div>
+          <div className="px-3 py-0.5 text-2xs text-text-tertiary">{t("tv.tail_only")}</div>
         )}
         <CodeView lines={lines} language={preview.language ?? languageOf(preview.target)} />
       </div>

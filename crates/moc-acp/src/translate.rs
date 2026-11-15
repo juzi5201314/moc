@@ -1,5 +1,6 @@
 //! moc 协议 DTO 与 ACP schema 之间的纯转换：不发起任何调用，只负责形状映射。
 
+use rust_i18n::t;
 use std::path::PathBuf;
 
 use agent_client_protocol::schema::v1::{
@@ -65,13 +66,13 @@ pub(crate) fn mode_state(proj: &SessionProjection) -> SessionModeState {
     SessionModeState::new(
         proj.mode_id(),
         vec![
-            SessionMode::new(MODE_DEFAULT, "默认").description("所有确认都等用户本人回答"),
-            SessionMode::new(MODE_DONT_ASK, "免询问")
-                .description("问题由代理代答：有推荐项选推荐项"),
-            SessionMode::new(MODE_UNATTENDED, "无人值守")
-                .description("在免询问之上，计划提交自动批准「压缩并执行」"),
-            SessionMode::new(MODE_PLAN, "计划")
-                .description("先产出实施计划，批准后才允许写入与执行"),
+            SessionMode::new(MODE_DEFAULT, t!("acp.mode.default"))
+                .description(t!("acp.mode.default_desc")),
+            SessionMode::new(MODE_DONT_ASK, t!("acp.mode.dont_ask"))
+                .description(t!("acp.mode.dont_ask_desc")),
+            SessionMode::new(MODE_UNATTENDED, t!("acp.mode.unattended"))
+                .description(t!("acp.mode.unattended_desc")),
+            SessionMode::new(MODE_PLAN, t!("acp.mode.plan")).description(t!("acp.mode.plan_desc")),
         ],
     )
 }
@@ -86,7 +87,9 @@ pub(crate) fn model_option(models: &[ModelInfo], current: &str) -> Option<Sessio
         .map(|m| {
             let option = SessionConfigSelectOption::new(m.id.clone(), m.display_name.clone());
             match m.context_window {
-                Some(window) => option.description(format!("{} tokens 上下文", window)),
+                Some(window) => {
+                    option.description(t!("acp.model.context", window = window).into_owned())
+                }
                 None => option,
             }
         })
@@ -94,12 +97,12 @@ pub(crate) fn model_option(models: &[ModelInfo], current: &str) -> Option<Sessio
     Some(
         SessionConfigOption::select(
             CONFIG_MODEL,
-            "模型",
+            t!("acp.model.label"),
             current.to_owned(),
             SessionConfigSelectOptions::Ungrouped(options),
         )
         .category(SessionConfigOptionCategory::Model)
-        .description("本次会话使用的模型"),
+        .description(t!("acp.model.desc")),
     )
 }
 
@@ -346,7 +349,8 @@ pub(crate) fn todo_plan(phases: &[TodoPhase]) -> Plan {
                     if item.status == TodoStatus::Blocked
                         && let Some(reason) = &item.reason
                     {
-                        content = format!("{content}（阻塞：{reason}）");
+                        content = t!("acp.plan.blocked", content = content, reason = reason.as_str())
+                            .into_owned();
                     }
                     PlanEntry::new(content, PlanEntryPriority::Medium, status)
                 })
@@ -358,9 +362,9 @@ pub(crate) fn todo_plan(phases: &[TodoPhase]) -> Plan {
 /// `PlanUpdated` 的终端状态提示；批注/修订中间态不回显（噪音）。
 fn plan_status_update(plan: &PlanInfo) -> Option<SessionUpdate> {
     let text = match plan.status {
-        PlanStatus::Approved => format!("计划「{}」已批准", plan.title),
-        PlanStatus::Rejected => format!("计划「{}」已拒绝", plan.title),
-        PlanStatus::Superseded => format!("计划「{}」已被新版本取代", plan.title),
+        PlanStatus::Approved => t!("acp.plan.approved", title = plan.title).into_owned(),
+        PlanStatus::Rejected => t!("acp.plan.rejected", title = plan.title).into_owned(),
+        PlanStatus::Superseded => t!("acp.plan.superseded", title = plan.title).into_owned(),
         _ => return None,
     };
     Some(agent_chunk(text))
@@ -410,10 +414,13 @@ fn mismatch_text(fields: &[UpstreamFieldMismatch]) -> String {
     fields
         .iter()
         .map(|f| {
-            format!(
-                "- {:?}：请求 {}，上游实际 {}",
-                f.field, f.requested, f.reported
+            t!(
+                "acp.plan.mismatch_row",
+                field = format!("{:?}", f.field),
+                requested = f.requested,
+                reported = f.reported
             )
+            .into_owned()
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -500,14 +507,14 @@ pub(crate) fn session_update(
         MocUpdate::GenerationRetry { message, .. } => vec![notice(
             caps,
             NoticeSeverity::Warning,
-            "自动重试",
-            format!("本次生成的先前输出作废，已完成的工具结果保留。{message}"),
+            t!("acp.notice.retry_title").into_owned(),
+            t!("acp.notice.retry_body", message = message.as_str()).into_owned(),
         )],
         MocUpdate::GuardNotice { message, .. } => {
             vec![notice(
                 caps,
                 NoticeSeverity::Warning,
-                "循环守卫",
+                t!("acp.notice.guard_title").into_owned(),
                 message.clone(),
             )]
         }
@@ -518,29 +525,35 @@ pub(crate) fn session_update(
         } => vec![notice(
             caps,
             NoticeSeverity::Error,
-            format!("插件 {plugin} 已停用"),
-            format!("{code}：{message}"),
+            t!("acp.notice.plugin_disabled", plugin = plugin.as_str()).into_owned(),
+            t!("acp.notice.code_message", code = code.as_str(), message = message.as_str())
+                .into_owned(),
         )],
         MocUpdate::UpstreamMismatch { fields, .. } => vec![notice(
             caps,
             NoticeSeverity::Warning,
-            "上游与请求不一致",
+            t!("acp.notice.mismatch_title").into_owned(),
             mismatch_text(fields),
         )],
         MocUpdate::ContextCompactionStarted => {
-            vec![thought_chunk("正在压缩上下文…")]
+            vec![thought_chunk(t!("acp.notice.compacting").into_owned())]
         }
         MocUpdate::ContextCompacted {
             tokens_before,
             tokens_after,
             ..
-        } => vec![thought_chunk(format!(
-            "上下文压缩完成：{tokens_before} → {tokens_after} tokens"
-        ))],
+        } => vec![thought_chunk(
+            t!(
+                "acp.notice.compacted",
+                before = tokens_before,
+                after = tokens_after
+            )
+            .into_owned(),
+        )],
         MocUpdate::ContextCompactionFailed { message } => vec![notice(
             caps,
             NoticeSeverity::Warning,
-            "上下文压缩失败",
+            t!("acp.notice.compact_failed").into_owned(),
             message.clone(),
         )],
         MocUpdate::AgentMessage { meta, body } => {
@@ -556,7 +569,7 @@ pub(crate) fn session_update(
             vec![notice(
                 caps,
                 NoticeSeverity::Error,
-                "提示错误",
+                t!("acp.notice.error_title").into_owned(),
                 message.clone(),
             )]
         }
@@ -586,26 +599,26 @@ pub(crate) fn input_part(block: &ContentBlock) -> Result<InputPart, acp::Error> 
         ContentBlock::ResourceLink(link) => Ok(InputPart::Text {
             text: match &link.description {
                 Some(description) => {
-                    format!("资源：{}（{}）\n{}", link.name, link.uri, description)
+                    format!("resource: {} ({})\n{}", link.name, link.uri, description)
                 }
-                None => format!("资源：{}（{}）", link.name, link.uri),
+                None => format!("resource: {} ({})", link.name, link.uri),
             },
         }),
         ContentBlock::Resource(resource) => match &resource.resource {
             EmbeddedResourceResource::TextResourceContents(text) => Ok(InputPart::Text {
                 text: format!(
-                    "资源：{}（{}）\n\n{}",
+                    "resource: {} ({})\n\n{}",
                     text.uri,
                     text.mime_type.as_deref().unwrap_or("text"),
                     text.text
                 ),
             }),
             EmbeddedResourceResource::BlobResourceContents(_) => {
-                Err(acp::Error::invalid_params().data("不支持二进制嵌入资源；请以文本或图片发送"))
+                Err(acp::Error::invalid_params().data(t!("acp.err.blob_unsupported")))
             }
-            _ => Err(acp::Error::invalid_params().data("不支持该类型的嵌入资源")),
+            _ => Err(acp::Error::invalid_params().data(t!("acp.err.resource_unsupported"))),
         },
-        _ => Err(acp::Error::invalid_params().data("不支持该类型的内容块")),
+        _ => Err(acp::Error::invalid_params().data(t!("acp.err.content_unsupported"))),
     }
 }
 
@@ -826,6 +839,7 @@ mod tests {
 
     #[test]
     fn todos_become_plan() {
+        rust_i18n::set_locale("zh");
         let phases: Vec<TodoPhase> = serde_json::from_value(json!([{
             "phase": "实现", "items": [
                 {"status": "completed", "task": "建骨架"},

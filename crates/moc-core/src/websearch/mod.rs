@@ -11,6 +11,7 @@ mod sites;
 mod tavily;
 pub(crate) mod view;
 
+use rust_i18n::t;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -176,7 +177,7 @@ pub fn create_provider(
         ))),
         other => Err(ToolError::new(
             "E_TOOL_DISABLED",
-            format!("未知 web_search 供应商: {other}"),
+            t!("core.err.websearch_unknown", name = other).into_owned(),
         )),
     }
 }

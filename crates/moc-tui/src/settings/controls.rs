@@ -3,6 +3,8 @@
 //! 能枚举的都给控件：开关、单选、模型选择器、勾选清单、键值表；文本框只留给
 //! 真正自由的内容（地址、密钥、命令、正则、提示词、数值）。
 
+use rust_i18n::t;
+
 use super::*;
 
 /// 一个字段的编辑方式。
@@ -12,7 +14,7 @@ pub enum Control {
     /// 单选弹窗：Space 原地轮换，Enter 打开列表。
     Select(Vec<Pick>),
     /// 共用模型选择器，只列已配置的模型；`specials` 是角色伪值。
-    Model(&'static [(&'static str, &'static str)]),
+    Model(Vec<(&'static str, String)>),
     /// 勾选清单 / 自由列表（字符串数组）。
     List(ListSpec),
     /// 键值表（对象）。
@@ -86,8 +88,12 @@ impl Entry {
     /// 规范化并校验一条自定义项。
     pub fn validate(self, text: &str) -> anyhow::Result<String> {
         let text = text.trim();
-        anyhow::ensure!(!text.is_empty(), "内容不能为空");
-        anyhow::ensure!(!text.contains('\n'), "每项只能占一行");
+        anyhow::ensure!(!text.is_empty(), "{}", t!("tui.ctrl.empty_content"));
+        anyhow::ensure!(
+            !text.contains('\n'),
+            "{}",
+            t!("tui.ctrl.one_per_line")
+        );
         match self {
             Entry::Text | Entry::Key => Ok(text.to_owned()),
             Entry::Level => {
@@ -96,7 +102,8 @@ impl Entry {
                     .map_err(|error: moc_core::CoreError| anyhow::anyhow!(error.detail()))?;
                 anyhow::ensure!(
                     level != moc_core::ThinkingLevel::Off,
-                    "off 始终可用，不需要加入列表"
+                    "{}",
+                    t!("tui.ctrl.off_always")
                 );
                 Ok(level.as_str().to_owned())
             }
@@ -110,7 +117,7 @@ pub enum Empty {
     Array,
     /// 删除该项，回到 `defaults` 列出的默认集合。
     Default(Vec<String>),
-    /// 不允许为空。
+    /// 不允许为空；存 locale 键。
     Reject(&'static str),
 }
 
@@ -128,18 +135,28 @@ pub struct RecordSpec {
 
 /// 内置思考等级与说明；与 core 未配置 `thinking_levels` 时的默认集合一致。
 const LEVELS: [(&str, &str); 5] = [
-    ("low", "低"),
-    ("medium", "中"),
-    ("high", "高"),
-    ("xhigh", "超高"),
-    ("max", "最高"),
+    ("low", "tui.level.low"),
+    ("medium", "tui.level.medium"),
+    ("high", "tui.level.high"),
+    ("xhigh", "tui.level.xhigh"),
+    ("max", "tui.level.max"),
 ];
 
+/// `(值, 说明)` 表；说明列存 locale 键，构造时翻译。
 fn pairs(items: &[(&str, &str)]) -> Vec<(String, String)> {
     items
         .iter()
-        .map(|(value, note)| ((*value).to_owned(), (*note).to_owned()))
+        .map(|(value, note)| ((*value).to_owned(), translate(note)))
         .collect()
+}
+
+/// 说明列：非空时按 locale 键翻译，空串留空（占位行）。
+fn translate(note: &str) -> String {
+    if note.is_empty() {
+        String::new()
+    } else {
+        t!(note).into_owned()
+    }
 }
 
 /// 字段的基础控件：只看路径与字段类型，不依赖运行时状态。
@@ -170,17 +187,20 @@ pub fn control(field: &ConfigField) -> Control {
             ),
         }),
         "input" if model => Control::List(ListSpec {
-            presets: pairs(&[("text", "文本"), ("image", "图片")]),
+            presets: pairs(&[
+                ("text", "tui.ctrl.input_text"),
+                ("image", "tui.ctrl.input_image"),
+            ]),
             custom: None,
             ordered: false,
-            empty: Empty::Reject("至少保留一种输入模态"),
+            empty: Empty::Reject("tui.ctrl.keep_one_modality"),
         }),
         "pricing" if model => Control::Record(RecordSpec {
             keys: pairs(&[
-                ("input", "输入"),
-                ("output", "输出"),
-                ("cache_read", "缓存命中"),
-                ("cache_write", "缓存写入"),
+                ("input", "tui.ctrl.price_input"),
+                ("output", "tui.ctrl.price_output"),
+                ("cache_read", "tui.ctrl.price_cache_read"),
+                ("cache_write", "tui.ctrl.price_cache_write"),
             ]),
             custom: false,
             number: true,
@@ -188,13 +208,13 @@ pub fn control(field: &ConfigField) -> Control {
         }),
         "effort_map" if compat => Control::Record(RecordSpec {
             keys: pairs(&[
-                ("none", "关闭"),
-                ("minimal", "最小"),
-                ("low", "低"),
-                ("medium", "中"),
-                ("high", "高"),
-                ("xhigh", "超高"),
-                ("max", "最高"),
+                ("none", "tui.level.off"),
+                ("minimal", "tui.level.minimal"),
+                ("low", "tui.level.low"),
+                ("medium", "tui.level.medium"),
+                ("high", "tui.level.high"),
+                ("xhigh", "tui.level.xhigh"),
+                ("max", "tui.level.max"),
             ]),
             custom: false,
             number: false,
@@ -207,7 +227,7 @@ pub fn control(field: &ConfigField) -> Control {
             empty: Empty::Array,
         }),
         "endpoint" if path.len() == 3 && path[0] == "providers" => Control::Select(vec![
-            Pick::set(json!("Default"), "默认"),
+            Pick::set(json!("Default"), t!("tui.ctrl.default").into_owned()),
             Pick {
                 label: "Azure OpenAI".into(),
                 action: PickAction::Azure,
@@ -223,11 +243,11 @@ pub fn control(field: &ConfigField) -> Control {
         }
         "type" if server => Control::Select(vec![
             Pick {
-                label: "按配置自动判断".into(),
+                label: t!("tui.ctrl.auto_detect").into_owned(),
                 action: PickAction::Remove,
             },
-            Pick::set(json!("stdio"), "stdio（本地程序）"),
-            Pick::set(json!("http"), "http（远程服务）"),
+            Pick::set(json!("stdio"), t!("tui.ctrl.stdio").into_owned()),
+            Pick::set(json!("http"), t!("tui.ctrl.http").into_owned()),
         ]),
         _ if path.len() == 3 && path[0] == "tui" && path[1] == "keybindings" => {
             Control::List(ListSpec {
@@ -241,17 +261,17 @@ pub fn control(field: &ConfigField) -> Control {
             FieldKind::Bool => Control::Toggle,
             FieldKind::OptionalBool => Control::Select(vec![
                 Pick {
-                    label: "默认／继承".into(),
+                    label: t!("tui.ctrl.default_inherit").into_owned(),
                     action: PickAction::Remove,
                 },
-                Pick::set(json!(true), "开启（true）"),
-                Pick::set(json!(false), "关闭（false）"),
+                Pick::set(json!(true), t!("tui.ctrl.on_true").into_owned()),
+                Pick::set(json!(false), t!("tui.ctrl.off_false").into_owned()),
             ]),
             FieldKind::Choice(options) => Control::Select(
                 path.iter()
                     .any(|part| part == "extra_body")
                     .then(|| Pick {
-                        label: "默认／继承".into(),
+                        label: t!("tui.ctrl.default_inherit").into_owned(),
                         action: PickAction::Remove,
                     })
                     .into_iter()
@@ -304,7 +324,8 @@ pub fn resolve(field: &ConfigField, panel: &SettingsPanel, app: &App) -> Control
                     .filter_map(Value::as_str)
                 {
                     if !spec.keys.iter().any(|(key, _)| key == level) {
-                        spec.keys.push((level.to_owned(), "自定义等级".into()));
+                        spec.keys
+                            .push((level.to_owned(), t!("tui.ctrl.custom_level").into_owned()));
                     }
                 }
             }
@@ -329,13 +350,13 @@ pub fn summary(control: &Control, value: &Value) -> Option<String> {
                     _ => format!("‹ {} ›", pick.label),
                 }
             }
-            None if value.is_null() => "未设置".into(),
+            None if value.is_null() => t!("tui.ctrl.unset").into_owned(),
             None => value
                 .as_str()
                 .map_or_else(|| value.to_string(), str::to_owned),
         }),
         Control::List(spec) => Some(match value.as_array() {
-            Some(items) if items.is_empty() => "无".into(),
+            Some(items) if items.is_empty() => t!("tui.ctrl.none").into_owned(),
             Some(items) => {
                 let items: Vec<String> = items
                     .iter()
@@ -345,12 +366,16 @@ pub fn summary(control: &Control, value: &Value) -> Option<String> {
                 if matches!(spec.custom, Some(Entry::Key)) {
                     crate::render::labels::keys(&items)
                 } else {
-                    items.join("、")
+                    items.join(&t!("tui.ctrl.list_sep"))
                 }
             }
             None => match &spec.empty {
-                Empty::Default(levels) => format!("默认（{}）", levels.join("、")),
-                _ => "未设置".into(),
+                Empty::Default(levels) => t!(
+                    "tui.ctrl.default_list",
+                    items = levels.join(&t!("tui.ctrl.list_sep"))
+                )
+                .into_owned(),
+                _ => t!("tui.ctrl.unset").into_owned(),
             },
         }),
         Control::Record(_) => Some(match value.as_object() {
@@ -364,22 +389,23 @@ pub fn summary(control: &Control, value: &Value) -> Option<String> {
                 })
                 .collect::<Vec<_>>()
                 .join(" · "),
-            Some(_) => "无".into(),
-            None => "未设置".into(),
+            Some(_) => t!("tui.ctrl.none").into_owned(),
+            None => t!("tui.ctrl.unset").into_owned(),
         }),
         Control::Toggle | Control::Model(_) | Control::Input(_) => None,
     }
 }
 
 /// 字段行的操作提示。
-pub fn action_hint(control: &Control) -> &'static str {
+pub fn action_hint(control: &Control) -> String {
     match control {
-        Control::Toggle => "Space/Enter 切换",
-        Control::Select(_) => "Space 切换 · Enter 选择",
-        Control::Model(_) => "Space/Enter 编辑",
-        Control::List(spec) if spec.presets.is_empty() => "Enter 编辑",
-        Control::List(_) => "Enter 选择",
-        Control::Record(_) => "Enter 编辑",
-        Control::Input(_) => "Enter 编辑",
+        Control::Toggle => t!("tui.ctrl.hint_toggle"),
+        Control::Select(_) => t!("tui.ctrl.hint_select"),
+        Control::Model(_) => t!("tui.ctrl.hint_edit"),
+        Control::List(spec) if spec.presets.is_empty() => t!("tui.ctrl.hint_edit_enter"),
+        Control::List(_) => t!("tui.ctrl.hint_choose"),
+        Control::Record(_) => t!("tui.ctrl.hint_edit_enter"),
+        Control::Input(_) => t!("tui.ctrl.hint_edit_enter"),
     }
+    .into_owned()
 }

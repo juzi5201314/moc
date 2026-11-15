@@ -1,5 +1,7 @@
 //! 会话与模型切换确认的键盘交互。
 
+use rust_i18n::t;
+
 use super::Actions;
 use crate::app::App;
 use crate::event::load_display_session;
@@ -120,8 +122,10 @@ pub(super) fn handle(
                                 ));
                             }
                             Err(error) => {
-                                let _ = events
-                                    .send(AppEvent::PickerError(format!("加载会话失败：{error}")));
+                                let _ = events.send(AppEvent::PickerError(
+                                    t!("tui.event.session_load_failed_fmt", err = error.to_string())
+                                        .into_owned(),
+                                ));
                             }
                         }
                     });
@@ -165,7 +169,10 @@ pub(super) fn handle(
                             notice: None,
                             result: outcome
                                 .map(|result| result.compaction_error)
-                                .map_err(|error| format!("切换模型失败：{error}")),
+                                .map_err(|error| {
+                                    t!("tui.event.model_switch_failed_fmt", err = error.to_string())
+                                        .into_owned()
+                                }),
                         });
                     });
                 }

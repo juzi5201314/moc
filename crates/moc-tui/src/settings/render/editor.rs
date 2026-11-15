@@ -18,6 +18,7 @@ use crate::render::wrap::fit_line;
 use crate::render::wrap::str_width;
 use crate::render::wrap::wrap_text;
 use crate::theme::Theme;
+use rust_i18n::t;
 use crate::widgets::prompt::PromptState;
 use moc_protocol::FieldKind;
 use ratatui::Frame;
@@ -251,7 +252,7 @@ pub(super) fn list_draft(
     theme: &Theme,
 ) -> (Line<'static>, Option<usize>) {
     if capture {
-        let line = Line::from(format!("❯ {mark}请按下要绑定的键…")).style(
+        let line = Line::from(t!("tui.editor.capture_fmt", mark = mark).into_owned()).style(
             Style::new()
                 .fg(theme.accent_running)
                 .bg(theme.bg_visual)
@@ -314,12 +315,12 @@ pub(super) fn list_body(
             continue;
         }
         let mut note = if item.note.is_empty() && checklist && !item.preset {
-            "自定义".to_owned()
+            t!("tui.editor.custom").into_owned()
         } else {
             item.note.clone()
         };
         if default == Some(index) {
-            note.push_str("（默认）");
+            note.push_str(&t!("tui.editor.default_mark"));
         }
         let mark_style = if item.checked {
             Style::new().fg(theme.accent_model)
@@ -348,11 +349,11 @@ pub(super) fn list_body(
             }
             None => {
                 let text = match entry {
-                    Entry::Level => "+ 添加自定义等级",
-                    Entry::Key => "+ 添加按键",
-                    Entry::Text => "+ 添加一项",
+                    Entry::Level => t!("tui.editor.add_level"),
+                    Entry::Key => t!("tui.editor.add_key_item"),
+                    Entry::Text => t!("tui.editor.add_item"),
                 };
-                let spans = vec![Span::raw(text)];
+                let spans = vec![Span::raw(text.into_owned())];
                 lines.push((
                     option_row(editor.cursor == index, spans, width, theme),
                     Some(index),
@@ -362,7 +363,10 @@ pub(super) fn list_body(
     }
     if lines.is_empty() {
         lines.push((
-            Line::styled("  没有可选项", Style::new().fg(theme.gray)),
+            Line::styled(
+                t!("tui.editor.no_options").into_owned(),
+                Style::new().fg(theme.gray),
+            ),
             None,
         ));
     }
@@ -404,9 +408,15 @@ pub(super) fn record_body(
         let value = if !row.value.trim().is_empty() {
             Span::raw(row.value.clone())
         } else if partial && editor.spec.required.iter().any(|name| *name == row.key) {
-            Span::styled("必填", Style::new().fg(theme.accent_warning))
+            Span::styled(
+                t!("tui.editor.required").into_owned(),
+                Style::new().fg(theme.accent_warning),
+            )
         } else {
-            Span::styled("未设置", Style::new().fg(theme.gray))
+            Span::styled(
+                t!("tui.values.unset").into_owned(),
+                Style::new().fg(theme.gray),
+            )
         };
         let mut spans = vec![Span::raw(key), Span::raw("  "), value];
         if !row.note.is_empty() {
@@ -424,12 +434,13 @@ pub(super) fn record_body(
         let index = editor.rows.len();
         match editor.draft.as_ref().filter(|draft| draft.index.is_none()) {
             Some(draft) => {
-                let (line, column) = draft_row("键名：", &draft.input, width, theme);
+                let (line, column) =
+                    draft_row(&t!("tui.editor.key_name"), &draft.input, width, theme);
                 cursor = Some((index, column));
                 lines.push((line, None));
             }
             None => {
-                let spans = vec![Span::raw("+ 添加键")];
+                let spans = vec![Span::raw(t!("tui.editor.add_key").into_owned())];
                 lines.push((
                     option_row(editor.cursor == index, spans, width, theme),
                     Some(index),

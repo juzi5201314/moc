@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use reqwest::header::HeaderMap;
+use rust_i18n::t;
 use serde_json::Value;
 
 use crate::config::{Auth, LlmConfig, Protocol};
@@ -38,7 +39,11 @@ pub(crate) struct EncodedRequest<B = bytes::Bytes> {
 impl EncodedRequest<Value> {
     fn into_wire(self, protocol: &str) -> Result<EncodedRequest, LlmError> {
         let body = serde_json::to_vec(&self.body)
-            .map_err(|error| LlmError::Encode(format!("{protocol} 请求体序列化失败: {error}")))?;
+            .map_err(|error| {
+                LlmError::Encode(
+                    t!("llm.err.body_serialize", protocol = protocol, error = error).into_owned(),
+                )
+            })?;
         Ok(EncodedRequest {
             url: self.url,
             headers: self.headers,
@@ -134,7 +139,7 @@ pub(crate) fn decode_response(
     body: &[u8],
 ) -> Result<ChatResponse, LlmError> {
     let value: Value = serde_json::from_slice(body).map_err(|err| LlmError::Decode {
-        message: format!("响应体不是合法 JSON: {err}"),
+        message: t!("llm.err.body_not_json", err = err).into_owned(),
         body: Some(String::from_utf8_lossy(body).into_owned().into_boxed_str()),
     })?;
     if let Some(error) = in_band_error(cfg, &value, body) {
@@ -339,7 +344,9 @@ pub(crate) fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError
                 .content
                 .tool_result_ids()
                 .next()
-                .ok_or_else(|| LlmError::Encode("工具结果消息缺少 ToolResult 内容块".into()))?;
+                .ok_or_else(|| {
+                    LlmError::Encode(t!("llm.err.missing_toolresult").into_owned())
+                })?;
             if !pending.remove(result) {
                 return Err(stray_result_error(result));
             }
@@ -362,18 +369,16 @@ pub(crate) fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError
                     .collect();
                 (join_names(&calls), join_names(&missing))
             });
-            return Err(LlmError::Encode(format!(
-                "assistant 消息中的工具调用 [{names}] 缺少对应的工具结果消息（缺失: {missing}）"
-            )));
+            return Err(LlmError::Encode(
+                t!("llm.err.tool_call_unmatched", names = names, missing = missing).into_owned(),
+            ));
         }
     }
     Ok(())
 }
 
 fn stray_result_error(tool_call_id: &str) -> LlmError {
-    LlmError::Encode(format!(
-        "工具结果消息的 tool_call_id \"{tool_call_id}\" 不在前一条 assistant 消息的工具调用中"
-    ))
+    LlmError::Encode(t!("llm.err.tool_result_orphan", tool_call_id = tool_call_id).into_owned())
 }
 
 fn join_names(calls: &[&ToolCall]) -> String {
@@ -499,6 +504,7 @@ mod tests {
 
     #[test]
     fn missing_tool_result_reports_missing_names() {
+        rust_i18n::set_locale("zh");
         let messages = vec![
             Message::user_text("天气"),
             assistant_with_calls(&[("call_1", "get_weather"), ("call_2", "get_date")]),
@@ -521,6 +527,7 @@ mod tests {
 
     #[test]
     fn stray_tool_result_is_rejected() {
+        rust_i18n::set_locale("zh");
         let messages = vec![
             Message::user_text("天气"),
             assistant_with_calls(&[("call_1", "get_weather")]),
@@ -546,6 +553,7 @@ mod tests {
 
     #[test]
     fn tool_message_without_result_block_is_rejected() {
+        rust_i18n::set_locale("zh");
         let messages = vec![
             assistant_with_calls(&[("call_1", "get_weather")]),
             Message {

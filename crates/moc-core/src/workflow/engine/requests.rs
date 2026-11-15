@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::DriverOutcome;
 use super::DriverRequest;
 use super::Engine;
@@ -84,7 +85,7 @@ impl Engine {
                         request_id,
                         outcome: DriverOutcome::Failed {
                             code: "E_ARTIFACT".into(),
-                            message: format!("artifact.{member} 缺 id"),
+                            message: t!("core.err.artifact_no_id", member = member).into_owned(),
                         },
                     });
                     return;

@@ -11,6 +11,7 @@ use crate::protocol::EmbeddedConnection;
 use moc_protocol::ConfigAction;
 use moc_protocol::ConfigReply;
 use moc_protocol::ConfigScope;
+use rust_i18n::t;
 use serde_json::Value;
 
 impl SettingsPanel {
@@ -39,8 +40,9 @@ impl SettingsPanel {
         apply: impl FnOnce(&mut Self) -> anyhow::Result<Store>,
     ) -> anyhow::Result<()> {
         if self.data.is_none() {
-            self.error = Some("设置还没读取完，请稍候".into());
-            anyhow::bail!("设置还没读取完，请稍候");
+            let wait = t!("tui.hist.not_loaded").into_owned();
+            self.error = Some(wait.clone());
+            anyhow::bail!("{wait}");
         }
         let restore = self.snapshot(label);
         let store = match apply(self) {
@@ -69,7 +71,7 @@ impl SettingsPanel {
             }
             Store::Tui => {
                 self.outcome = None;
-                self.message = Some("界面设置已保存并生效".into());
+                self.message = Some(t!("tui.hist.prefs_saved").into_owned());
             }
         }
         Ok(())
@@ -101,7 +103,7 @@ impl SettingsPanel {
         let keys = KeyMap::compile(&preferences)?;
         app.tui_store
             .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("界面设置存储尚未初始化"))?
+            .ok_or_else(|| anyhow::anyhow!("{}", t!("tui.hist.store_not_init")))?
             .save(&preferences)?;
         app.thinking_detail = preferences.thinking_detail;
         app.tool_detail = preferences.tool_detail;
@@ -120,7 +122,7 @@ impl SettingsPanel {
     /// Ctrl+Z：撤回最近一次改动。
     pub(super) fn undo(&mut self, app: &mut App, connection: &EmbeddedConnection) {
         let Some(entry) = self.history.undo.pop() else {
-            self.message = Some("没有可以撤回的改动".into());
+            self.message = Some(t!("tui.hist.no_undo").into_owned());
             return;
         };
         self.step(entry, true, app, connection);
@@ -129,7 +131,7 @@ impl SettingsPanel {
     /// Ctrl+Y 或 Ctrl+Shift+Z：重做刚刚撤回的改动。
     pub(super) fn redo(&mut self, app: &mut App, connection: &EmbeddedConnection) {
         let Some(entry) = self.history.redo.pop() else {
-            self.message = Some("没有可以重做的改动".into());
+            self.message = Some(t!("tui.hist.no_redo").into_owned());
             return;
         };
         self.step(entry, false, app, connection);
@@ -144,11 +146,15 @@ impl SettingsPanel {
         connection: &EmbeddedConnection,
     ) {
         let label = entry.label.clone();
-        let verb = if undo { "已撤回" } else { "已重做" };
+        let key = if undo {
+            "tui.hist.undid_fmt"
+        } else {
+            "tui.hist.redid_fmt"
+        };
         let current = self.snapshot(&label);
         self.history.put(current, !undo);
         self.apply_snapshot(entry, app, connection);
-        self.message = Some(format!("{verb}：{label}"));
+        self.message = Some(t!(key, label = label).into_owned());
         self.outcome = self.message.clone();
     }
 

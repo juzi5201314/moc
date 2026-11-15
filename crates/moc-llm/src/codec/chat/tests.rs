@@ -364,6 +364,7 @@ fn image_url_and_base64() {
 
 #[test]
 fn cache_key_and_breakpoints() {
+    rust_i18n::set_locale("zh");
     let req = ChatRequest {
         messages: vec![Message::system("系统"), Message::user_text("hi")],
         options: RequestOptions {

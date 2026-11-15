@@ -4,11 +4,13 @@
 
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
+import { useT } from "@/lib/i18n";
 import type { PtyInfo } from "@/lib/web-api";
 import { ptyWsUrl } from "@/lib/web-api";
 import { useTerminals } from "@/store/terminal";
 
 export default function XtermView({ terminal }: { terminal: PtyInfo }) {
+  const t = useT();
   const hostRef = useRef<HTMLDivElement>(null);
   // 登录 shell（zshrc/p10k 等）要几秒才吐第一个字节；期间给个占位免得看起来像坏了。
   const [starting, setStarting] = useState(true);
@@ -90,7 +92,9 @@ export default function XtermView({ terminal }: { terminal: PtyInfo }) {
                   },
                 };
               });
-              term?.writeln(`\r\n\x1b[2m进程已退出${code !== null ? ` (${code})` : ""}\x1b[0m`);
+              term?.writeln(
+                `\r\n\x1b[2m${t("term.exited_line")}${code !== null ? ` (${code})` : ""}\x1b[0m`,
+              );
             }
           } catch {
             // 非 JSON text 帧按纯文本忽略
@@ -174,13 +178,13 @@ export default function XtermView({ terminal }: { terminal: PtyInfo }) {
       ws?.close();
       term?.dispose();
     };
-  }, [terminal.id, terminal.cwd]);
+  }, [terminal.id, terminal.cwd, t]);
 
   return (
     <div className="relative h-full min-h-0 px-3 py-2">
       <div ref={hostRef} className="h-full min-h-0 [&_.xterm]:h-full" />
       {starting && (
-        <p className="absolute top-4 left-6 text-xs text-text-tertiary">正在连接终端…</p>
+        <p className="absolute top-4 left-6 text-xs text-text-tertiary">{t("term.connecting")}</p>
       )}
     </div>
   );

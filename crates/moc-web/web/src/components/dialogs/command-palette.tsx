@@ -26,6 +26,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { relativeTime } from "@/lib/format";
+import { type MsgKey, useT } from "@/lib/i18n";
 import { cyclePlan } from "@/lib/shortcuts";
 import { SEARCH_MIN_CHARS, useSessionSearch } from "@/lib/use-session-search";
 import { useLayout } from "@/store/layout";
@@ -36,11 +37,11 @@ import { useTabs } from "@/store/tabs";
 import { useTranscript } from "@/store/transcript";
 import { openSettings, type SettingsSection, useUi } from "@/store/ui";
 
-const SETTINGS_ENTRIES: { section: SettingsSection; label: string; icon: ReactNode }[] = [
-  { section: "providers", label: "供应商与模型", icon: <CpuIcon /> },
-  { section: "roles", label: "模型角色", icon: <BoxesIcon /> },
-  { section: "general", label: "通用设置", icon: <SettingsIcon /> },
-  { section: "shortcuts", label: "快捷键", icon: <KeyboardIcon /> },
+const SETTINGS_ENTRIES: { section: SettingsSection; label: MsgKey; icon: ReactNode }[] = [
+  { section: "providers", label: "sd.providers", icon: <CpuIcon /> },
+  { section: "roles", label: "sd.roles", icon: <BoxesIcon /> },
+  { section: "general", label: "pal.general", icon: <SettingsIcon /> },
+  { section: "shortcuts", label: "sd.shortcuts", icon: <KeyboardIcon /> },
 ];
 
 /** 标题/目录命中一次最多挂载的会话行数；超出的提示继续输入。 */
@@ -98,6 +99,7 @@ type ActionEntry = {
 };
 
 export function CommandPalette() {
+  const t = useT();
   const palette = useUi((state) => state.palette);
   const list = useSessions((state) => state.list);
   const extra = useSessions((state) => state.extra);
@@ -116,7 +118,7 @@ export function CommandPalette() {
   const actions: ActionEntry[] = [
     {
       icon: <PlusIcon />,
-      label: "新建会话",
+      label: t("hd.new"),
       hint: activeInfo ? workspaceName(activeInfo.cwd) : undefined,
       keys: "Alt N",
       onSelect: () => createQuickSession(activeInfo?.cwd),
@@ -125,13 +127,13 @@ export function CommandPalette() {
       ? [
           {
             icon: <CpuIcon />,
-            label: "切换模型",
+            label: t("pal.model"),
             keys: "Alt P",
             onSelect: () => useUi.getState().set({ modelPicker: activeId }),
           },
           {
             icon: <ListChecksIcon />,
-            label: activeInfo?.plan_active ? "退出计划状态" : "进入计划状态",
+            label: activeInfo?.plan_active ? t("pal.plan_off") : t("pal.plan_on"),
             keys: "Alt J",
             onSelect: cyclePlan,
           },
@@ -139,24 +141,26 @@ export function CommandPalette() {
       : []),
     {
       icon: <PanelLeftIcon />,
-      label: "展开 / 收起侧栏",
+      label: t("pal.toggle_sidebar"),
       keys: "Ctrl B",
       onSelect: () => useLayout.getState().toggleSidebar(),
     },
     {
       icon: <PanelRightIcon />,
-      label: "展开 / 收起检查面板",
+      label: t("pal.toggle_inspector"),
       keys: "Alt R",
       onSelect: () => useLayout.getState().toggleRightbar(),
     },
     {
       icon: theme === "dark" ? <SunIcon /> : <MoonIcon />,
-      label: theme === "dark" ? "切换到浅色主题" : "切换到深色主题",
+      label: theme === "dark" ? t("pal.theme_light") : t("pal.theme_dark"),
       onSelect: () => usePrefs.getState().set({ theme: theme === "dark" ? "light" : "dark" }),
     },
   ];
   const shownActions = actions.filter((action) => match(action.label));
-  const shownSettings = SETTINGS_ENTRIES.filter((entry) => match(`设置 ${entry.label}`));
+  const shownSettings = SETTINGS_ENTRIES.filter((entry) =>
+    match(`${t("sb.settings")} ${t(entry.label)}`),
+  );
 
   const { shownSessions, hiddenSessions, titleMatchedIds } = useMemo(() => {
     const matched = needle
@@ -182,20 +186,20 @@ export function CommandPalette() {
         // 面板外的 query 状态不会随 Dialog 卸载，关闭时手动清空。
         if (!open) setQuery("");
       }}
-      title="命令面板"
-      description="搜索动作、设置或会话"
+      title={t("pal.title")}
+      description={t("pal.desc")}
       showCloseButton={false}
       className="top-[18%] translate-y-0 gap-0 rounded-2xl sm:max-w-[560px]"
       commandProps={{ shouldFilter: false }}
     >
-      <CommandInput placeholder="搜索动作、设置或会话…" value={query} onValueChange={setQuery} />
+      <CommandInput placeholder={t("pal.ph")} value={query} onValueChange={setQuery} />
       <CommandList className="max-h-[min(420px,60vh)] px-1.5 pb-1.5">
         <CommandEmpty className="py-10 text-center text-sm text-text-tertiary">
-          没有匹配项
+          {t("pal.empty")}
         </CommandEmpty>
 
         {shownActions.length > 0 && (
-          <CommandGroup heading="动作">
+          <CommandGroup heading={t("pal.actions")}>
             {shownActions.map((action) => (
               <Item
                 key={action.label}
@@ -210,13 +214,13 @@ export function CommandPalette() {
         )}
 
         {shownSettings.length > 0 && (
-          <CommandGroup heading="设置">
+          <CommandGroup heading={t("sb.settings")}>
             {shownSettings.map((entry) => (
               <Item
                 key={entry.section}
-                value={`设置 ${entry.label}`}
+                value={`${t("sb.settings")} ${t(entry.label)}`}
                 icon={entry.icon}
-                label={entry.label}
+                label={t(entry.label)}
                 onSelect={() => openSettings(entry.section)}
               />
             ))}
@@ -224,31 +228,31 @@ export function CommandPalette() {
         )}
 
         {shownSessions.length > 0 && (
-          <CommandGroup heading="会话">
+          <CommandGroup heading={t("pal.sessions")}>
             {shownSessions.map((session) => (
               <Item
                 key={session.id}
-                value={`${session.title || "未命名会话"} ${session.cwd} ${session.id}`}
+                value={`${session.title || t("hd.untitled")} ${session.cwd} ${session.id}`}
                 icon={<MessageSquareIcon />}
-                label={session.title || "未命名会话"}
+                label={session.title || t("hd.untitled")}
                 hint={`${workspaceName(session.cwd)} · ${relativeTime(session.updated_at_ms)}`}
                 onSelect={() => void openSession(session.id)}
               />
             ))}
             {hiddenSessions > 0 && (
               <div className="px-2.5 pb-1 text-xs text-text-tertiary">
-                还有 {hiddenSessions} 个匹配会话，继续输入可缩小范围
+                {t("pal.more_hint", { n: hiddenSessions })}
               </div>
             )}
           </CommandGroup>
         )}
 
         {needle.length >= SEARCH_MIN_CHARS && shownContent.length > 0 && (
-          <CommandGroup heading="内容匹配">
+          <CommandGroup heading={t("sb.content_hits")}>
             {shownContent.map((hit) => (
               <CommandItem
                 key={hit.session.id}
-                value={`内容匹配 ${hit.session.id}`}
+                value={`${t("sb.content_hits")} ${hit.session.id}`}
                 onSelect={() => {
                   useUi.getState().set({ palette: false });
                   void openSession(hit.session.id);
@@ -257,7 +261,7 @@ export function CommandPalette() {
               >
                 <MessageSquareIcon className="mt-0.5 self-start" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate">{hit.session.title || "未命名会话"}</span>
+                  <span className="block truncate">{hit.session.title || t("hd.untitled")}</span>
                   <span className="block truncate text-xs text-text-tertiary">
                     {hit.matches[0]?.snippet}
                   </span>

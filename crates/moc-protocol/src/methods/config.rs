@@ -50,6 +50,10 @@ pub struct ConfigGetResult {
     /// 特性开关快照（`[features]` 覆盖合成后的有效状态）；旧报文没有时按注册表默认。
     #[serde(default)]
     pub features: FeatureStates,
+    /// `[general] language` 原始值（`""`/`auto`/`zh`/`en`）；`auto` 的解析由前端自己定
+    /// （Web 按 navigator.language，TUI 按进程环境）。旧报文没有时按 `auto` 处理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Fusion 组合的两侧模型，均为规范 `供应商/模型:等级` selector。
@@ -170,6 +174,7 @@ mod tests {
                 sidekick: "deepseek-flash:off".into(),
             }),
             features: FeatureStates::defaults(),
+            language: Some("zh".into()),
         };
         assert_eq!(
             serde_json::to_value(&result).expect("可序列化"),
@@ -180,7 +185,8 @@ mod tests {
                 "default_agent": "build",
                 "cwd": "/home/soeur/project/moc",
                 "fusion": {"lead": "deepseek-flash:max", "sidekick": "deepseek-flash:off"},
-                "features": {"clm": true, "ptc": true, "workflow": true, "plugins": true, "mcp": true, "skills": true, "web_search": true, "web_fetch": true}
+                "features": {"clm": true, "ptc": true, "workflow": true, "plugins": true, "mcp": true, "skills": true, "web_search": true, "web_fetch": true},
+                "language": "zh"
             })
         );
         let round_trip: ConfigGetResult =

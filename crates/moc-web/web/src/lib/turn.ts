@@ -3,6 +3,7 @@
 // 计划卡与告警各自成段；完成后的轮次只露出最后一段正文，其余收进「处理过程」。
 
 import { firstChangedBlock } from "@/lib/block-changes";
+import { currentLocale, type MsgKey, t } from "@/lib/i18n";
 import type { Block } from "@/lib/transcript-model";
 
 type UserBlock = Extract<Block, { kind: "user" }>;
@@ -206,67 +207,67 @@ export function activityKind(block: Block): ActivityKind | null {
 }
 
 /** 活动行首的动作名（进行式去掉「正在」前缀的形态）。 */
-const ROW_VERB: Record<ActivityKind, string> = {
-  thinking: "思考",
-  commands: "运行命令",
-  code: "运行代码",
-  read: "读取文件",
-  readImage: "读取图片",
-  write: "写入文件",
-  edit: "编辑文件",
-  search: "搜索代码",
-  webSearch: "搜索网页",
-  webFetch: "访问网页",
-  subagents: "协调子智能体",
-  plan: "更新计划",
-  questions: "提问",
-  tools: "调用工具",
-  showcase: "展示过程",
+const ROW_VERB: Record<ActivityKind, MsgKey> = {
+  thinking: "verb.thinking",
+  commands: "verb.commands",
+  code: "verb.code",
+  read: "verb.read",
+  readImage: "verb.readImage",
+  write: "verb.write",
+  edit: "verb.edit",
+  search: "verb.search",
+  webSearch: "verb.webSearch",
+  webFetch: "verb.webFetch",
+  subagents: "verb.subagents",
+  plan: "verb.plan",
+  questions: "verb.questions",
+  tools: "verb.tools",
+  showcase: "verb.showcase",
 };
 
 /** 单个活动块的动作名。 */
 export function activityVerb(block: Block): string | null {
-  if (block.kind === "status") return "状态更新";
+  if (block.kind === "status") return t("verb.status");
   const kind = activityKind(block);
-  return kind ? ROW_VERB[kind] : null;
+  return kind ? t(ROW_VERB[kind]) : null;
 }
 
 /** 分组标题的完成式文案。 */
-const DONE_TITLE: Record<ActivityKind, string> = {
-  thinking: "已完成分析",
-  commands: "执行了命令",
-  code: "运行了代码",
-  read: "已读取文件",
-  readImage: "已读取图片",
-  write: "已写入文件",
-  edit: "修改了文件",
-  search: "已搜索代码",
-  webSearch: "已搜索网页",
-  webFetch: "已访问网页",
-  subagents: "已协调子智能体",
-  plan: "更新了计划",
-  questions: "向用户提出了问题",
-  tools: "已调用工具",
-  showcase: "已调用工具",
+const DONE_TITLE: Record<ActivityKind, MsgKey> = {
+  thinking: "done.thinking",
+  commands: "done.commands",
+  code: "done.code",
+  read: "done.read",
+  readImage: "done.readImage",
+  write: "done.write",
+  edit: "done.edit",
+  search: "done.search",
+  webSearch: "done.webSearch",
+  webFetch: "done.webFetch",
+  subagents: "done.subagents",
+  plan: "done.plan",
+  questions: "done.questions",
+  tools: "done.tools",
+  showcase: "done.tools",
 };
 
 /** 分组标题的进行式文案。 */
-const PRESENT_TITLE: Record<ActivityKind, string> = {
-  thinking: "正在分析请求",
-  commands: "正在运行命令",
-  code: "正在运行代码",
-  read: "正在读取文件",
-  readImage: "正在读取图片",
-  write: "正在写入文件",
-  edit: "正在编辑文件",
-  search: "正在搜索代码",
-  webSearch: "正在搜索网页",
-  webFetch: "正在访问网页",
-  subagents: "正在协调子智能体",
-  plan: "正在更新计划",
-  questions: "等待你的操作",
-  tools: "正在调用工具",
-  showcase: "正在调用工具",
+const PRESENT_TITLE: Record<ActivityKind, MsgKey> = {
+  thinking: "doing.thinking",
+  commands: "doing.commands",
+  code: "doing.code",
+  read: "doing.read",
+  readImage: "doing.readImage",
+  write: "doing.write",
+  edit: "doing.edit",
+  search: "doing.search",
+  webSearch: "doing.webSearch",
+  webFetch: "doing.webFetch",
+  subagents: "doing.subagents",
+  plan: "doing.plan",
+  questions: "doing.questions",
+  tools: "doing.tools",
+  showcase: "doing.tools",
 };
 
 /**
@@ -280,9 +281,9 @@ export function summarizeActivity(blocks: Block[], done = true): string {
   if (!done) {
     for (let index = blocks.length - 1; index >= 0; index--) {
       const kind = activityKind(blocks[index]);
-      if (kind && kind !== "thinking") return titles[kind === "showcase" ? "tools" : kind];
+      if (kind && kind !== "thinking") return t(titles[kind === "showcase" ? "tools" : kind]);
     }
-    return titles.thinking;
+    return t(titles.thinking);
   }
   const counts = new Map<ActivityKind, number>();
   for (const block of blocks) {
@@ -294,25 +295,28 @@ export function summarizeActivity(blocks: Block[], done = true): string {
   const labels = [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 3)
-    .map(([kind]) => titles[kind]);
+    .map(([kind]) => t(titles[kind]));
   const first = labels[0];
-  if (!first) return titles.thinking;
+  if (!first) return t(titles.thinking);
   const second = labels[1];
   if (!second) return first;
   if (labels.length === 2) {
-    const stripped = first.startsWith("已") && second.startsWith("已") ? second.slice(1) : second;
-    return `${first}并${stripped}`;
+    const stripped =
+      currentLocale() === "zh" && first.startsWith("已") && second.startsWith("已")
+        ? second.slice(1)
+        : second;
+    return t("act.pair", { a: first, b: stripped });
   }
-  const title = labels.join("，");
-  return counts.size > 3 ? `${title}等` : title;
+  const title = labels.join(t("act.sep"));
+  return counts.size > 3 ? t("act.more", { list: title }) : title;
 }
 
-/** 用时：`23秒` / `12分17秒`——总秒数向下取整。 */
+/** 用时：`23秒`/`23s` / `12分17秒`/`12m 17s`——总秒数向下取整。 */
 export function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return minutes > 0 ? `${minutes}分${seconds}秒` : `${seconds}秒`;
+  return minutes > 0 ? t("dur.minsec", { m: minutes, s: seconds }) : t("dur.sec", { s: seconds });
 }
 
 /**

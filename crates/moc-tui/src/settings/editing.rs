@@ -22,6 +22,7 @@ use crate::config::TuiConfig;
 use crate::protocol::AppEvent;
 use crate::protocol::EmbeddedConnection;
 use moc_protocol::ConfigAction;
+use rust_i18n::t;
 use moc_protocol::ConfigManage;
 use moc_protocol::FieldKind;
 use serde_json::Value;
@@ -111,13 +112,13 @@ impl SettingsPanel {
             // 共用的可搜索模型选择器：只列已配置的模型，可同时挑思考等级。
             Control::Model(specials) => {
                 if app.models.is_empty() {
-                    self.error = Some("还没有已配置的模型；请先在“供应商与模型”页添加模型".into());
+                    self.error = Some(t!("tui.err.no_models").into_owned());
                 } else {
                     app.open_config_model_picker(
                         field.path,
                         field.label,
                         forms::format_value(&value, &FieldKind::Text),
-                        specials,
+                        &specials,
                     );
                 }
                 return;
@@ -211,34 +212,38 @@ impl SettingsPanel {
             .to_owned();
         self.begin_named(
             EditTarget::Azure(path),
-            "Azure 接口版本",
-            "填写 api-version，例如 2024-10-21",
+            &t!("tui.form.azure_title"),
+            &t!("tui.form.azure_hint"),
             &current,
         );
     }
 
     pub(super) fn add(&mut self) {
         match TABS[self.tab] {
-            "MCP" => self.begin_named(
+            "mcp" => self.begin_named(
                 EditTarget::Mcp,
-                "添加 MCP 服务",
-                "填写服务标识，例如 filesystem",
+                &t!("tui.form.add_mcp_title"),
+                &t!("tui.form.add_mcp_hint"),
                 "",
             ),
-            _ => self.error = Some("请到“供应商与模型”或“MCP”页添加条目".into()),
+            _ => self.error = Some(t!("tui.form.add_hint_wrong_tab").into_owned()),
         }
     }
 
     /// 登记可选模型；会话模型由用户在模型选择器中选择。
     pub(super) fn insert_model(&mut self, provider: &str, id: &str) -> anyhow::Result<()> {
-        anyhow::ensure!(!id.trim().is_empty(), "模型 ID 不能为空");
+        anyhow::ensure!(!id.trim().is_empty(), "{}", t!("tui.err.model_id_empty"));
         let path = vec![
             "providers".into(),
             provider.into(),
             "models".into(),
             id.into(),
         ];
-        anyhow::ensure!(self.value(&path).is_none(), "模型 {provider}/{id} 已存在");
+        anyhow::ensure!(
+            self.value(&path).is_none(),
+            "{}",
+            t!("tui.err.model_exists", id = format!("{provider}/{id}"))
+        );
         self.set_value(&path, json!({}));
         Ok(())
     }

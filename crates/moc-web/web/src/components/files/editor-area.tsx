@@ -30,6 +30,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { rawFileUrl } from "@/lib/web-api";
 import type { PlanAction, PlanInfo, SessionEngine } from "@/protocol/types";
@@ -68,6 +69,7 @@ export function EditorArea({
   workspaceRoot: FileRoot | null;
   stacked: boolean;
 }) {
+  const t = useT();
   const files = useFiles((state) => state.bySession[sessionId]);
   const tabs = files?.tabs ?? [];
   const active = tabs.find((tab) => targetKey(tab.target) === files?.active);
@@ -78,7 +80,7 @@ export function EditorArea({
       <div className="flex h-9 shrink-0 items-center overflow-x-auto px-1 [scrollbar-width:none]">
         {stacked && (
           <IconButton
-            label="返回文件树"
+            label={t("fe.back_tree")}
             size="sm"
             onClick={() => setStackedView(sessionId, "tree")}
           >
@@ -110,7 +112,7 @@ export function EditorArea({
               {dirty && <span className="size-1.5 rounded-full bg-brand" />}
               <button
                 type="button"
-                aria-label="关闭"
+                aria-label={t("common.close")}
                 onClick={(event) => {
                   event.stopPropagation();
                   closeTab(sessionId, key);
@@ -145,6 +147,7 @@ function FileView({
   tab: OpenFile;
   workspaceRoot: FileRoot | null;
 }) {
+  const t = useT();
   const key = targetKey(tab.target);
   const dirty = tab.draft !== undefined && tab.draft !== tab.content;
   const [wrap, setWrap] = useState(false);
@@ -189,26 +192,26 @@ function FileView({
             }
             className="shrink-0 text-xs text-brand hover:underline"
           >
-            有新版本 v{newer.version}
+            {t("fe.newer", { v: newer.version ?? "?" })}
           </button>
         )}
         {dirty && !isResource && (
           <Button size="xs" className="h-6" onClick={() => void saveFile(sessionId, key)}>
             <SaveIcon className="size-3.5" />
-            保存
+            {t("common.save")}
           </Button>
         )}
-        <IconButton label="复制路径" size="xs" onClick={copyPath}>
+        <IconButton label={t("sb.copy_path")} size="xs" onClick={copyPath}>
           <CopyIcon />
         </IconButton>
         {!isResource && (
-          <IconButton label="下载" size="xs" onClick={download}>
+          <IconButton label={t("fe.download")} size="xs" onClick={download}>
             <DownloadIcon />
           </IconButton>
         )}
         {isMarkdown && (
           <IconButton
-            label={markdownPreview ? "查看源码" : "预览 Markdown"}
+            label={markdownPreview ? t("fe.view_source") : t("fe.view_md")}
             size="xs"
             active={!markdownPreview}
             onClick={() => setMarkdownPreview((value) => !value)}
@@ -216,27 +219,27 @@ function FileView({
             {markdownPreview ? <CodeIcon /> : <EyeIcon />}
           </IconButton>
         )}
-        <IconButton label="自动换行" size="xs" active={wrap} onClick={() => setWrap((v) => !v)}>
+        <IconButton label={t("fe.wrap")} size="xs" active={wrap} onClick={() => setWrap((v) => !v)}>
           <WrapTextIcon />
         </IconButton>
       </div>
 
       {tab.diskConflict && (
         <div className="mx-3 mb-1 flex items-center gap-2 rounded-lg bg-warn/10 px-3 py-1.5 text-xs text-warn">
-          <span className="min-w-0 flex-1">文件已在磁盘上被修改</span>
+          <span className="min-w-0 flex-1">{t("fe.disk_changed")}</span>
           <button
             type="button"
             className="underline"
             onClick={() => void reloadFromDisk(sessionId, key)}
           >
-            载入磁盘版本
+            {t("fe.reload")}
           </button>
           <button
             type="button"
             className="underline"
             onClick={() => void saveFile(sessionId, key, true)}
           >
-            覆盖保存
+            {t("fe.overwrite")}
           </button>
         </div>
       )}
@@ -271,8 +274,10 @@ function ContentView({
   markdownPreview: boolean;
   isResource: boolean;
 }) {
+  const t = useT();
   const key = targetKey(tab.target);
-  if (tab.loading) return <p className="px-4 py-6 text-xs text-text-tertiary">读取中…</p>;
+  if (tab.loading)
+    return <p className="px-4 py-6 text-xs text-text-tertiary">{t("common.loading")}</p>;
   if (tab.error) return <p className="px-4 py-6 text-xs text-destructive">{tab.error}</p>;
 
   const target = tab.target;
@@ -330,7 +335,7 @@ function ContentView({
     return (
       <div className="flex h-full flex-col">
         <div className="mx-3 mt-2 flex items-center gap-2 rounded-lg bg-muted px-3 py-1.5 text-xs text-muted-foreground">
-          <span className="min-w-0 flex-1">文件过大，只显示前 1 MiB</span>
+          <span className="min-w-0 flex-1">{t("fe.too_large")}</span>
           {tab.target.kind === "fs" && (
             <button
               type="button"
@@ -339,7 +344,7 @@ function ContentView({
                 tab.target.kind === "fs" && window.open(rawFileUrl(tab.target.path, true), "_blank")
               }
             >
-              下载
+              {t("fe.download")}
             </button>
           )}
         </div>
@@ -357,7 +362,9 @@ function ContentView({
     );
   }
   return (
-    <Suspense fallback={<p className="px-4 py-6 text-xs text-text-tertiary">加载编辑器…</p>}>
+    <Suspense
+      fallback={<p className="px-4 py-6 text-xs text-text-tertiary">{t("fe.loading_editor")}</p>}
+    >
       <CodeEditor
         fileName={tabTitle(tab)}
         content={tab.draft ?? text}
@@ -376,15 +383,18 @@ function MediaWrap({ children }: { children: React.ReactNode }) {
 }
 
 function BinaryCard({ size, onOpen, pdf }: { size: number; onOpen?: () => void; pdf?: boolean }) {
+  const t = useT();
   return (
     <div className="flex h-full items-center justify-center p-6">
       <div className="flex flex-col items-center gap-2 rounded-xl bg-muted px-6 py-5 text-center">
         <FileIcon className="size-5 text-text-tertiary" />
-        <p className="text-ui text-muted-foreground">二进制文件 · {formatBytes(size)}</p>
+        <p className="text-ui text-muted-foreground">
+          {t("fe.binary", { size: formatBytes(size) })}
+        </p>
         {pdf && (
           <Button size="xs" variant="outline" className="h-7" onClick={onOpen}>
             <ExternalLinkIcon className="size-3.5" />
-            在新标签页打开
+            {t("fe.open_tab")}
           </Button>
         )}
       </div>
@@ -426,6 +436,7 @@ function PlanPane({ sessionId, plan }: { sessionId: string; plan: PlanInfo }) {
 
 /** 关闭未保存标签的确认框。 */
 function CloseConfirm({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const closing = useFiles((state) => state.bySession[sessionId]?.closing);
   const dismiss = () =>
     useFiles.setState((state) => {
@@ -438,11 +449,11 @@ function CloseConfirm({ sessionId }: { sessionId: string }) {
     <AlertDialog open={closing !== undefined} onOpenChange={(open) => !open && dismiss()}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>关闭 {closing?.title}？</AlertDialogTitle>
-          <AlertDialogDescription>有未保存的修改。</AlertDialogDescription>
+          <AlertDialogTitle>{t("fe.close_q", { title: closing?.title ?? "" })}</AlertDialogTitle>
+          <AlertDialogDescription>{t("fe.unsaved")}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
           <AlertDialogAction
             onClick={() => {
               const key = closing?.key;
@@ -450,7 +461,7 @@ function CloseConfirm({ sessionId }: { sessionId: string }) {
               if (key) closeTab(sessionId, key, true);
             }}
           >
-            不保存
+            {t("fe.discard")}
           </AlertDialogAction>
           <AlertDialogAction
             onClick={() => {
@@ -464,7 +475,7 @@ function CloseConfirm({ sessionId }: { sessionId: string }) {
               }
             }}
           >
-            保存
+            {t("common.save")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

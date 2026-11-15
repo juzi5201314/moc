@@ -1,0 +1,21 @@
+_version = 2
+
+[ptc.err]
+input_frame = { zh = "PTC 输入帧超限或不完整", en = "PTC input frame exceeds the limit or is incomplete" }
+exec_id_order = { zh = "PTC execution ID 必须递增且唯一", en = "PTC execution IDs must be increasing and unique" }
+interrupted = { zh = "PTC execution 已中断", en = "PTC execution interrupted" }
+output_limit = { zh = "PTC execution 输出超限", en = "PTC execution output exceeds the limit" }
+unknown_exec = { zh = "未知的 PTC execution ID", en = "Unknown PTC execution ID" }
+thread_panic = { zh = "PTC execution 线程异常退出", en = "PTC execution thread exited abnormally" }
+output_frame = { zh = "PTC 输出帧超限", en = "PTC output frame exceeds the limit" }
+promise_job = { zh = "PTC Promise job 失败：%{error}", en = "PTC Promise job failed: %{error}" }
+host_closed = { zh = "宿主关闭了 execution", en = "The host closed the execution" }
+
+[ptc.wf]
+input_frame = { zh = "workflow 输入帧超限或不完整", en = "workflow input frame exceeds the limit or is incomplete" }
+interrupted = { zh = "workflow run 已中断", en = "workflow run interrupted" }
+output_limit = { zh = "workflow run 输出超限", en = "workflow run output exceeds the limit" }
+output_frame = { zh = "workflow 输出帧超限", en = "workflow output frame exceeds the limit" }
+thread_panic = { zh = "workflow run 线程异常退出", en = "workflow run thread exited abnormally" }
+promise_job = { zh = "workflow Promise job 失败：%{error}", en = "workflow Promise job failed: %{error}" }
+host_closed = { zh = "宿主关闭了 workflow run", en = "The host closed the workflow run" }

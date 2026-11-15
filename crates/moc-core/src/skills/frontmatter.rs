@@ -3,6 +3,7 @@
 //! 解码刻意宽松：坏 YAML 或缺失必填字段交由上层决定跳过并告警，
 //! 不在本层 `deny_unknown_fields`——社区 skill 常带各家扩展键。
 
+use rust_i18n::t;
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
@@ -79,9 +80,16 @@ pub struct ParsedSkill {
     pub body: String,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("SKILL.md frontmatter 无效：{0}")]
+#[derive(Debug)]
 pub struct FrontmatterError(pub String);
+
+impl std::fmt::Display for FrontmatterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", t!("core.err.frontmatter_invalid", detail = &self.0))
+    }
+}
+
+impl std::error::Error for FrontmatterError {}
 
 /// 解析 SKILL.md 文本。
 ///
@@ -110,11 +118,11 @@ pub fn parse(text: &str) -> Result<ParsedSkill, FrontmatterError> {
             (yaml, after)
         }
         None => {
-            return Err(FrontmatterError("frontmatter 缺少闭合的 `---` 行".into()));
+            return Err(FrontmatterError(t!("core.err.frontmatter_unclosed").into_owned()));
         }
     };
     let frontmatter: SkillFrontmatter = serde_yaml::from_str(yaml)
-        .map_err(|error| FrontmatterError(format!("YAML 解析失败：{error}")))?;
+        .map_err(|error| FrontmatterError(t!("core.err.frontmatter_yaml", error = error).into_owned()))?;
     Ok(ParsedSkill {
         frontmatter,
         body: body.to_owned(),

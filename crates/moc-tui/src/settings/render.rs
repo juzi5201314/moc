@@ -108,7 +108,7 @@ fn flow(
 #[derive(Default)]
 struct Footer {
     description: String,
-    source: Option<&'static str>,
+    source: Option<String>,
     /// 提示条文字与其中可点击的键位（列区间相对提示条起点）。
     hint: (String, Vec<labels::HintKey>),
 }
@@ -131,26 +131,32 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
         label(
             frame,
             area,
-            &labels::hints(&[("", "终端过小；请放大窗口"), ("esc", "返回")], usize::MAX),
+            &labels::hints(
+                &[
+                    ("", t!("tui.hint.too_small").into_owned()),
+                    ("esc", t!("tui.hint.back").into_owned()),
+                ],
+                usize::MAX,
+            ),
             Style::new().fg(theme.text_primary),
         );
         return;
     }
     let width = usize::from(area.width);
     let mut hits = Vec::new();
-    let mut title = format!("设置{SEP}全局配置");
+    let mut title = t!("tui.set.title", sep = SEP).into_owned();
     if !panel.rows.is_empty() {
         title.push_str(&format!("  {}/{}", panel.selected + 1, panel.rows.len()));
     }
     // 保存优先：同一时刻只报一件事。
     if saving {
-        title.push_str(&format!("{SEP}正在保存…"));
+        title.push_str(&t!("tui.set.saving", sep = SEP));
     } else if panel.busy {
-        title.push_str(&format!("{SEP}正在处理…"));
+        title.push_str(&t!("tui.set.busy", sep = SEP));
     }
     if !panel.filter.is_empty() {
         let filter = truncate(panel.filter.as_str(), 24);
-        title.push_str(&format!("{SEP}过滤：{filter}"));
+        title.push_str(&t!("tui.set.filter_fmt", sep = SEP, filter = filter));
     }
     label(
         frame,
@@ -233,7 +239,13 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
             );
             paint_lines(frame, body, &lines);
             Footer {
-                hint: labels::hint_layout(&[("y/enter", "确认"), ("n/esc", "取消")], width),
+                hint: labels::hint_layout(
+                    &[
+                        ("y/enter", t!("tui.hint.confirm").into_owned()),
+                        ("n/esc", t!("tui.hint.cancel").into_owned()),
+                    ],
+                    width,
+                ),
                 ..Footer::default()
             }
         }

@@ -6,10 +6,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useT } from "@/lib/i18n";
 import { rpc } from "@/protocol/client";
 import type { ToolDefinition } from "@/protocol/types";
 
 export function ToolsDialog({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+  const t = useT();
   const [tools, setTools] = useState<ToolDefinition[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,20 +34,23 @@ export function ToolsDialog({ sessionId, onClose }: { sessionId: string; onClose
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>可用工具{tools ? ` · ${tools.length}` : ""}</DialogTitle>
-          <DialogDescription>按当前会话状态，下一轮请求将发送以下工具定义。</DialogDescription>
+          <DialogTitle>
+            {t("td.title")}
+            {tools ? ` · ${tools.length}` : ""}
+          </DialogTitle>
+          <DialogDescription>{t("td.desc")}</DialogDescription>
         </DialogHeader>
         <div className="min-h-0 overflow-y-auto">
           {error ? (
             <p role="alert" className="text-sm text-destructive">
-              读取失败：{error}
+              {t("dr.fetch_failed", { error })}
             </p>
           ) : tools === null ? (
             <p role="status" className="text-sm text-muted-foreground">
-              正在读取工具…
+              {t("td.reading")}
             </p>
           ) : tools.length === 0 ? (
-            <p className="text-sm text-muted-foreground">当前请求不发送任何工具。</p>
+            <p className="text-sm text-muted-foreground">{t("td.empty")}</p>
           ) : (
             <dl className="flex flex-col gap-4">
               {tools.map((tool) => (

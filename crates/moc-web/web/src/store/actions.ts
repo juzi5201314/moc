@@ -4,6 +4,7 @@
 // 所以本端发起的提示一律等 RPC 返回再续发队列或自动批准计划，否则会撞上 SESSION_BUSY。
 
 import { toast } from "sonner";
+import { t } from "@/lib/i18n";
 import { rpc } from "@/protocol/client";
 import { RpcError } from "@/protocol/errors";
 import type {
@@ -69,11 +70,11 @@ async function ownPrompt(sessionId: string, call: () => Promise<unknown>): Promi
 async function autoApprove(sessionId: string, planId: string): Promise<void> {
   try {
     await approvePlan(sessionId, planId, "execute_compacted");
-    toast("无人值守：已自动批准计划", { description: "压缩上下文后开始执行" });
+    toast(t("act.auto_approved"), { description: t("act.auto_approved_desc") });
   } catch (error) {
     useTranscript
       .getState()
-      .localStatus(sessionId, "error", `计划自动批准失败：${errorText(error)}`);
+      .localStatus(sessionId, "error", t("act.auto_approve_failed", { error: errorText(error) }));
     dispatchNext(sessionId);
   }
 }
@@ -120,7 +121,7 @@ async function materialize(sessionId: string): Promise<string> {
     if (result.status === "rejected") {
       useTranscript
         .getState()
-        .localStatus(info.id, "warn", `会话选项未能应用：${errorText(result.reason)}`);
+        .localStatus(info.id, "warn", t("act.options_failed", { error: errorText(result.reason) }));
     }
   }
   // 草稿升格时只迁移本地显示块，不把命令结果加入发送给模型的 input。
@@ -153,7 +154,7 @@ export async function sendPrompt(
   options: SendOptions = {},
 ): Promise<void> {
   if (useUi.getState().skillsWorking) {
-    toast("正在维护技能摘要，消息未发送");
+    toast(t("act.skills_busy_send"));
     return;
   }
   if (input.length === 0) return;
@@ -161,7 +162,9 @@ export async function sendPrompt(
   try {
     target = await materialize(sessionId);
   } catch (error) {
-    useTranscript.getState().localStatus(sessionId, "error", `创建会话失败：${errorText(error)}`);
+    useTranscript
+      .getState()
+      .localStatus(sessionId, "error", t("act.create_failed", { error: errorText(error) }));
     return;
   }
 
@@ -178,7 +181,9 @@ export async function sendPrompt(
         ...(options.mode ? { mode: options.mode } : {}),
       });
     } catch (error) {
-      useTranscript.getState().localStatus(target, "error", `发送失败：${errorText(error)}`);
+      useTranscript
+        .getState()
+        .localStatus(target, "error", t("act.send_failed", { error: errorText(error) }));
       return;
     }
     await afterPrompt(target);
@@ -188,14 +193,16 @@ export async function sendPrompt(
 /** 接着现有上下文继续跑：不追加用户消息，上一轮没跑完时 core 会先剪掉半截回合。 */
 export async function retrySession(sessionId: string): Promise<void> {
   if (useUi.getState().skillsWorking) {
-    toast("正在维护技能摘要，请等待完成或取消");
+    toast(t("act.skills_busy_retry"));
     return;
   }
   await ownPrompt(sessionId, async () => {
     try {
       await rpc.call<PromptResult>("session/retry", { session_id: sessionId });
     } catch (error) {
-      useTranscript.getState().localStatus(sessionId, "error", `重试失败：${errorText(error)}`);
+      useTranscript
+        .getState()
+        .localStatus(sessionId, "error", t("act.retry_failed", { error: errorText(error) }));
       return;
     }
     await afterPrompt(sessionId);
@@ -219,7 +226,9 @@ export async function reanswerAsk(sessionId: string, toolCallId: string): Promis
       await reopenWith(sessionId, result);
       await rpc.call<PromptResult>("session/retry", { session_id: sessionId });
     } catch (error) {
-      useTranscript.getState().localStatus(sessionId, "error", `重新作答失败：${errorText(error)}`);
+      useTranscript
+        .getState()
+        .localStatus(sessionId, "error", t("act.reask_failed", { error: errorText(error) }));
       return;
     }
     await afterPrompt(sessionId);
@@ -239,7 +248,9 @@ export async function runBash(
   try {
     target = await materialize(sessionId);
   } catch (error) {
-    useTranscript.getState().localStatus(sessionId, "error", `创建会话失败：${errorText(error)}`);
+    useTranscript
+      .getState()
+      .localStatus(sessionId, "error", t("act.create_failed", { error: errorText(error) }));
     return;
   }
   try {
@@ -248,7 +259,9 @@ export async function runBash(
       command: { command, exclude_from_context: excludeFromContext },
     });
   } catch (error) {
-    useTranscript.getState().localStatus(target, "error", `命令执行失败：${errorText(error)}`);
+    useTranscript
+      .getState()
+      .localStatus(target, "error", t("act.bash_failed", { error: errorText(error) }));
   }
   void useSessions
     .getState()

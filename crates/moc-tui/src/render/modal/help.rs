@@ -12,6 +12,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use rust_i18n::t;
 
 /// 快捷键一览：通用键位、输入与编辑、旁路交互三组，组标题加粗着色；
 /// 末尾一行指路斜杠命令（输入 `/` 即见全表，不占本表篇幅）。
@@ -31,48 +32,57 @@ pub(super) fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, us
     let fixed_keys =
         |list: &[&str]| labels::keys(&list.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>());
     let mut sections = vec![HelpSection {
-        title: "会话与通用".to_owned(),
+        title: t!("tui.help.sec_general").into_owned(),
         rows: vec![
-            (get_key("model"), "选择模型".to_owned()),
-            (get_key("engine"), "切换会话引擎".to_owned()),
-            (get_key("config"), "打开设置".to_owned()),
-            (get_key("agents"), "唤出子代理侧栏".to_owned()),
-            (get_key("resume"), "恢复会话".to_owned()),
-            (get_key("thinking"), "切换思考显示档位".to_owned()),
-            (get_key("thinking_level"), "切换思考等级".to_owned()),
-            (get_key("tools"), "切换工具显示档位".to_owned()),
-            (get_key("help"), "快捷键一览".to_owned()),
+            (get_key("model"), t!("tui.help.model").into_owned()),
+            (get_key("engine"), t!("tui.help.engine").into_owned()),
+            (get_key("config"), t!("tui.help.config").into_owned()),
+            (get_key("agents"), t!("tui.help.agents").into_owned()),
+            (get_key("resume"), t!("tui.help.resume").into_owned()),
+            (get_key("thinking"), t!("tui.help.thinking").into_owned()),
+            (
+                get_key("thinking_level"),
+                t!("tui.help.thinking_level").into_owned(),
+            ),
+            (get_key("tools"), t!("tui.help.tools").into_owned()),
+            (get_key("help"), t!("tui.help.help").into_owned()),
         ],
     }];
     sections.push(HelpSection {
-        title: "输入与编辑".to_owned(),
+        title: t!("tui.help.sec_input").into_owned(),
         rows: vec![
-            (get_key("send"), "发送消息".to_owned()),
-            (get_key("queue"), "排队发送".to_owned()),
-            (get_key("newline"), "插入换行".to_owned()),
-            (get_key("cancel"), "停止当前生成 / 退出".to_owned()),
-            (get_key("focus"), "切换输入焦点".to_owned()),
-            (get_key("clear"), "清空输入".to_owned()),
-            (get_key("line_start"), "移动到行首".to_owned()),
-            (get_key("line_end"), "移动到行尾".to_owned()),
-            (get_key("delete_word"), "删除前一词".to_owned()),
-            (get_key("delete_to_end"), "删除至行尾".to_owned()),
-            (get_key("paste_image"), "粘贴图片或文本".to_owned()),
-            (get_key("queue_edit"), "编辑排队中的消息".to_owned()),
+            (get_key("send"), t!("tui.help.send").into_owned()),
+            (get_key("queue"), t!("tui.help.queue").into_owned()),
+            (get_key("newline"), t!("tui.help.newline").into_owned()),
+            (get_key("cancel"), t!("tui.help.cancel").into_owned()),
+            (get_key("focus"), t!("tui.help.focus").into_owned()),
+            (get_key("clear"), t!("tui.help.clear").into_owned()),
+            (get_key("line_start"), t!("tui.help.line_start").into_owned()),
+            (get_key("line_end"), t!("tui.help.line_end").into_owned()),
+            (get_key("delete_word"), t!("tui.help.delete_word").into_owned()),
+            (
+                get_key("delete_to_end"),
+                t!("tui.help.delete_to_end").into_owned(),
+            ),
+            (get_key("paste_image"), t!("tui.help.paste_image").into_owned()),
+            (get_key("queue_edit"), t!("tui.help.queue_edit").into_owned()),
         ],
     });
     sections.push(HelpSection {
-        title: "旁路交互 (BTW)".to_owned(),
+        title: t!("tui.help.sec_btw").into_owned(),
         rows: vec![
             (
                 fixed_keys(&["alt+b", "tab"]),
-                "旁路展开与焦点切换".to_owned(),
+                t!("tui.help.btw_focus").into_owned(),
             ),
             (
                 fixed_keys(&["esc", "ctrl+c"]),
-                "收起旁路 / 取消生成".to_owned(),
+                t!("tui.help.btw_cancel").into_owned(),
             ),
-            (fixed_keys(&["c", "x"]), "复制回答 / 清空旁路".to_owned()),
+            (
+                fixed_keys(&["c", "x"]),
+                t!("tui.help.btw_copy").into_owned(),
+            ),
         ],
     });
     let sections = sections;
@@ -149,7 +159,7 @@ pub(super) fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, us
     // 末尾指路斜杠命令：输入 `/` 即见全表，不放进本表。
     lines.push(Line::from(String::new()));
     lines.push(Line::from(Span::styled(
-        "输入 / 查看全部斜杠命令",
+        t!("tui.help.slash_hint").into_owned(),
         Style::new().fg(theme.gray_dim),
     )));
     // 极窄终端连单列都放不下时截断，卡片不二次折行。

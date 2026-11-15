@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { type MsgKey, useT } from "@/lib/i18n";
 import {
   appendSuggestion,
   type PlanLineRange,
@@ -62,23 +63,23 @@ type Props = {
   onAction: (plan: PlanInfo, action: PlanAction, executionEngine?: SessionEngine) => void;
 };
 
-const EXECUTION_ENGINES: { id: SessionEngine; label: string }[] = [
-  { id: "standard", label: "标准" },
-  { id: "ptc", label: "PTC" },
-  { id: "clm_experimental", label: "CLM 实验" },
+const EXECUTION_ENGINES: { id: SessionEngine; label: MsgKey }[] = [
+  { id: "standard", label: "engine.standard" },
+  { id: "ptc", label: "engine.ptc" },
+  { id: "clm_experimental", label: "engine.clm" },
 ];
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const STATUS_LABEL: Record<PlanInfo["status"], string> = {
-  draft: "起草中",
-  submitted: "待审阅",
-  revised: "等待修订",
-  superseded: "已被取代",
-  approved: "已批准",
-  rejected: "已拒绝",
+const STATUS_LABEL: Record<PlanInfo["status"], MsgKey> = {
+  draft: "pr.st_draft",
+  submitted: "pr.st_submitted",
+  revised: "pr.st_revised",
+  superseded: "pr.st_superseded",
+  approved: "pr.st_approved",
+  rejected: "pr.st_rejected",
 };
 
 const STATUS_CLASS: Record<PlanInfo["status"], string> = {
@@ -91,6 +92,7 @@ const STATUS_CLASS: Record<PlanInfo["status"], string> = {
 };
 
 export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Props) {
+  const t = useT();
   const annotatable = plan.status === "submitted";
   const [tab, setTab] = useState<"diff" | "plan">(plan.previous_plan_id ? "diff" : "plan");
   const [diff, setDiff] = useState<ToolDiff | null>(null);
@@ -180,7 +182,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
     if (!editor) return;
     const body = editor.body.trimEnd();
     if (body.trim().length === 0) {
-      setSubmitError("批注正文不能为空");
+      setSubmitError(t("pr.body_empty"));
       return;
     }
     const annotation: PlanAnnotation = {
@@ -210,7 +212,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
         annotations: drafts,
       });
       setDrafts([]);
-      setNotice("批注已提交，等待模型修订");
+      setNotice(t("pr.submitted_notice"));
       await sendPrompt(sessionId, [{ type: "text", text: result.prompt }]);
     } catch (error) {
       setSubmitError(errorMessage(error));
@@ -227,7 +229,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
         <div className="flex items-start justify-between gap-3">
           <h3 className="min-w-0 flex-1 text-sm font-medium text-foreground">{plan.title}</h3>
           <span className={cn("shrink-0 text-xs", STATUS_CLASS[plan.status])}>
-            v{plan.version} · {STATUS_LABEL[plan.status]}
+            v{plan.version} · {t(STATUS_LABEL[plan.status])}
           </span>
         </div>
         <p className="truncate font-mono text-2xs text-text-tertiary" title={plan.path}>
@@ -235,7 +237,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
         </p>
         {plan.previous_plan_id && (
           <p className="truncate text-2xs text-text-tertiary">
-            对比上一版 <span className="font-mono">{plan.previous_plan_id}</span>
+            {t("pr.vs_prev")} <span className="font-mono">{plan.previous_plan_id}</span>
           </p>
         )}
       </header>
@@ -246,13 +248,13 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
           disabled={!plan.previous_plan_id}
           onClick={() => setTab("diff")}
         >
-          本版改动
+          {t("pr.tab_diff")}
         </TabButton>
         <TabButton active={tab === "plan"} onClick={() => setTab("plan")}>
-          完整计划
+          {t("pr.tab_plan")}
         </TabButton>
         <span className="ml-auto text-xs text-text-tertiary">
-          {drafts.length > 0 ? `${drafts.length} 条待提交` : "无未提交批注"}
+          {drafts.length > 0 ? t("pr.pending_n", { n: drafts.length }) : t("pr.no_pending")}
         </span>
       </div>
 
@@ -262,10 +264,10 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
         ) : diff === null ? (
           <p className="flex items-center gap-1.5 text-muted-foreground">
             <Loader2Icon className="size-3.5 animate-spin" />
-            正在加载本版改动…
+            {t("pr.loading_diff")}
           </p>
         ) : diff.files.length === 0 ? (
-          <p className="text-muted-foreground">本版没有文本改动。</p>
+          <p className="text-muted-foreground">{t("pr.no_diff")}</p>
         ) : (
           <div className="overflow-hidden rounded-xl ring-1 ring-inset ring-border-subtle">
             {diff.files.map((file) => (
@@ -278,7 +280,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
           {selection && annotatable && (
             <div className="sticky top-0 z-10 flex items-center justify-between gap-2 rounded-lg bg-popover py-1 pr-1 pl-3 shadow-[var(--elevation-popover)]">
               <span className="min-w-0 truncate text-muted-foreground">
-                选中第 {selection.startLine}-{selection.endLine} 行
+                {t("pr.selected", { s: selection.startLine, e: selection.endLine })}
               </span>
               <div className="flex shrink-0 items-center gap-0.5">
                 <Button
@@ -290,9 +292,9 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
                   }}
                 >
                   <MessageSquarePlusIcon />
-                  批注
+                  {t("pr.annotate")}
                 </Button>
-                <IconButton size="xs" label="取消选区" onClick={() => setSelection(null)}>
+                <IconButton size="xs" label={t("pr.clear_sel")} onClick={() => setSelection(null)}>
                   <XIcon />
                 </IconButton>
               </div>
@@ -313,10 +315,8 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
       {editor && (
         <div className="space-y-2.5 rounded-xl bg-card p-3 shadow-[var(--elevation-composer)]">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>
-              批注第 {editor.startLine}-{editor.endLine} 行
-            </span>
-            <IconButton size="xs" label="关闭批注编辑器" onClick={() => setEditor(null)}>
+            <span>{t("pr.editing", { s: editor.startLine, e: editor.endLine })}</span>
+            <IconButton size="xs" label={t("pr.close_editor")} onClick={() => setEditor(null)}>
               <XIcon />
             </IconButton>
           </div>
@@ -334,7 +334,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
               }
             }}
             rows={4}
-            placeholder="写下意见；可用 ```suggestion 围栏给出替换文本"
+            placeholder={t("pr.body_ph")}
             className="resize-y rounded-lg px-2.5 py-2 text-ui shadow-none placeholder:text-text-tertiary md:text-ui"
           />
           <div className="flex items-center justify-between gap-2">
@@ -347,10 +347,10 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
                 setEditor({ ...editor, body: appendSuggestion(editor.body, replacement) });
               }}
             >
-              插入建议改法
+              {t("pr.insert_suggestion")}
             </Button>
             <Button size="xs" onClick={saveEditor}>
-              保存批注
+              {t("pr.save")}
             </Button>
           </div>
         </div>
@@ -389,7 +389,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
             <ChevronRightIcon
               className={cn("size-3.5 transition-transform", showSubmitted && "rotate-90")}
             />
-            已提交的 {submitted.length} 条批注
+            {t("pr.submitted_n", { n: submitted.length })}
           </button>
           {showSubmitted && (
             <ul className="space-y-2">
@@ -419,7 +419,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
               onClick={() => onAction(plan, "reject")}
               disabled={busy || submitting}
             >
-              拒绝
+              {t("wfa.reject")}
             </Button>
             <Button
               size="sm"
@@ -427,10 +427,13 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
               className="text-ui"
               onClick={() => void submit()}
               disabled={busy || submitting || drafts.length === 0}
-              title={drafts.length === 0 ? "先写批注再提交" : `提交 ${drafts.length} 条批注`}
+              title={
+                drafts.length === 0 ? t("pr.submit_hint") : t("pr.submit_n", { n: drafts.length })
+              }
             >
               {submitting && <Loader2Icon className="animate-spin" />}
-              提交修改意见{drafts.length > 0 ? `（${drafts.length}）` : ""}
+              {t("pr.submit")}
+              {drafts.length > 0 ? `（${drafts.length}）` : ""}
             </Button>
             <Button
               size="sm"
@@ -439,7 +442,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
               disabled={busy || submitting}
             >
               {busy && <Loader2Icon className="animate-spin" />}
-              批准并执行
+              {t("pr.approve_run")}
             </Button>
           </div>
           <div className="flex items-center justify-end gap-1.5">
@@ -450,7 +453,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
             >
               <SelectTrigger
                 size="sm"
-                title="新会话执行的引擎"
+                title={t("pr.engine_title")}
                 className="gap-1 px-2.5 text-ui shadow-none"
               >
                 <SelectValue />
@@ -458,7 +461,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
               <SelectContent align="end">
                 {EXECUTION_ENGINES.map((engine) => (
                   <SelectItem key={engine.id} value={engine.id}>
-                    {engine.label}
+                    {t(engine.label)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -470,12 +473,12 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
               onClick={() => onAction(plan, "execute_new_session", executionEngine)}
               disabled={busy || submitting}
             >
-              在新会话执行
+              {t("pr.run_new")}
             </Button>
           </div>
           {suggestionCount > 0 && (
             <p className="text-right text-2xs text-text-tertiary">
-              其中 {suggestionCount} 条带建议改法
+              {t("pr.suggestion_n", { n: suggestionCount })}
             </p>
           )}
         </div>
@@ -537,22 +540,23 @@ function AnnotationCard({
   onEdit?: () => void;
   onRemove?: () => void;
 }) {
+  const t = useT();
   const parsed = splitSuggestion(annotation.body);
   return (
     <li className="rounded-xl bg-card p-3 ring-1 ring-inset ring-border-subtle">
       <div className="flex h-5 items-center justify-between gap-2 text-2xs text-text-tertiary">
         <span className="font-mono">
-          第 {annotation.start_line}-{annotation.end_line} 行
+          {t("pr.lines", { s: annotation.start_line, e: annotation.end_line })}
         </span>
         {(onEdit || onRemove) && (
           <span className="-mr-1 flex items-center">
             {onEdit && (
-              <IconButton size="xs" label="编辑批注" onClick={onEdit}>
+              <IconButton size="xs" label={t("pr.edit")} onClick={onEdit}>
                 <PencilIcon className="size-3" />
               </IconButton>
             )}
             {onRemove && (
-              <IconButton size="xs" label="删除批注" onClick={onRemove}>
+              <IconButton size="xs" label={t("pr.remove")} onClick={onRemove}>
                 <Trash2Icon className="size-3" />
               </IconButton>
             )}

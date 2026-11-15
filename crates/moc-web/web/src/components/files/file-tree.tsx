@@ -28,6 +28,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { type MsgKey, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import { useComposer } from "@/store/composer";
@@ -59,12 +60,12 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const NS_LABEL: Record<string, string> = {
-  "local://": "计划",
-  "artifact://jobs": "任务日志",
-  "artifact://artifacts": "工具归档",
-  "history://": "历史",
-  "skill://": "技能",
+const NS_LABEL: Record<string, MsgKey> = {
+  "local://": "ft.ns_plan",
+  "artifact://jobs": "ft.ns_jobs",
+  "artifact://artifacts": "ft.ns_artifacts",
+  "history://": "ft.ns_history",
+  "skill://": "ft.ns_skill",
 };
 
 const TEXT_EXTS: Record<string, typeof FileIcon> = {
@@ -97,6 +98,7 @@ function Row({
   sessionRoot: boolean;
   children?: React.ReactNode;
 }) {
+  const t = useT();
   const files = useFiles((state) => state.bySession[sessionKey]);
   const open = Boolean(files?.expanded[node.key]);
   const naming = files?.naming;
@@ -104,7 +106,8 @@ function Row({
   const isDir = node.kind === "dir";
   const Icon = isDir ? (open ? FolderOpenIcon : FolderIcon) : fileIcon(node.name);
   const isNsRoot = sessionRoot && depth === 0;
-  const label = isNsRoot ? (NS_LABEL[node.key] ?? node.name) : node.name;
+  const nsKey = isNsRoot ? NS_LABEL[node.key] : undefined;
+  const label = nsKey ? t(nsKey) : node.name;
 
   return (
     // biome-ignore lint/a11y/useFocusableInteractive: 键盘导航在树容器上集中处理，行不单独聚焦
@@ -190,6 +193,7 @@ export function FileTree({
   workspaceRoot: FileRoot | null;
 }) {
   sessionKey = sessionId;
+  const t = useT();
   const files = useFiles((state) => state.bySession[sessionId]);
   const root = files?.root ?? "workspace";
   const diffs = useTranscript((state) => state.bySession[sessionId]?.diffs);
@@ -333,7 +337,7 @@ export function FileTree({
       void loadDir(sessionId, fileRoot, parentPath(from));
       void loadDir(sessionId, fileRoot, parentPath(to));
     } catch (error) {
-      toast.error(`移动失败：${errorText(error)}`);
+      toast.error(t("ft.move_failed", { error: errorText(error) }));
     }
   };
 
@@ -358,24 +362,24 @@ export function FileTree({
       return (
         <ContextMenuContent>
           <ContextMenuItem onSelect={() => openFile(sessionId, targetOf(node), { pin: true })}>
-            打开
+            {t("wsp.open")}
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => quote(node)}>引用到输入框</ContextMenuItem>
-          <ContextMenuItem onSelect={() => copy(node.key)}>复制 URI</ContextMenuItem>
+          <ContextMenuItem onSelect={() => quote(node)}>{t("ft.quote")}</ContextMenuItem>
+          <ContextMenuItem onSelect={() => copy(node.key)}>{t("ft.copy_uri")}</ContextMenuItem>
         </ContextMenuContent>
       );
     }
     return (
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => openFile(sessionId, targetOf(node), { pin: true })}>
-          打开
+          {t("wsp.open")}
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => void openTerminal(dirFor(node))}>
-          在终端中打开
+          {t("ft.open_terminal")}
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => quote(node)}>引用到输入框</ContextMenuItem>
+        <ContextMenuItem onSelect={() => quote(node)}>{t("ft.quote")}</ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => copy(node.key)}>复制路径</ContextMenuItem>
+        <ContextMenuItem onSelect={() => copy(node.key)}>{t("sb.copy_path")}</ContextMenuItem>
         <ContextMenuItem
           onSelect={() =>
             copy(
@@ -385,11 +389,11 @@ export function FileTree({
             )
           }
         >
-          复制相对路径
+          {t("ft.copy_rel")}
         </ContextMenuItem>
         {node.kind === "file" && (
           <ContextMenuItem onSelect={() => window.open(downloadUrl(node.key), "_blank")}>
-            下载
+            {t("fe.download")}
           </ContextMenuItem>
         )}
         <ContextMenuSeparator />
@@ -403,7 +407,7 @@ export function FileTree({
             })
           }
         >
-          重命名
+          {t("ft.rename")}
         </ContextMenuItem>
         {node.kind === "dir" && (
           <>
@@ -412,14 +416,14 @@ export function FileTree({
                 startNaming(sessionId, { parentKey: node.key, name: "", kind: "new-file" })
               }
             >
-              新建文件
+              {t("ft.new_file")}
             </ContextMenuItem>
             <ContextMenuItem
               onSelect={() =>
                 startNaming(sessionId, { parentKey: node.key, name: "", kind: "new-dir" })
               }
             >
-              新建文件夹
+              {t("ft.new_dir")}
             </ContextMenuItem>
           </>
         )}
@@ -428,7 +432,7 @@ export function FileTree({
           className="text-destructive"
           onSelect={() => askDelete(sessionId, node.key, node.name)}
         >
-          删除
+          {t("common.delete")}
         </ContextMenuItem>
       </ContextMenuContent>
     );
@@ -536,7 +540,7 @@ export function FileTree({
         </div>
       )}
       {files?.loading[rootKey] && !tree ? (
-        <p className="px-4 py-6 text-xs text-text-tertiary">读取目录…</p>
+        <p className="px-4 py-6 text-xs text-text-tertiary">{t("ft.reading")}</p>
       ) : tree?.error ? (
         <p className="px-4 py-6 text-xs text-destructive">{tree.error}</p>
       ) : (
@@ -572,6 +576,7 @@ function downloadUrl(path: string): string {
 }
 
 function UploadDialog({ sessionId, fileRoot }: { sessionId: string; fileRoot: FileRoot }) {
+  const t = useT();
   const pending = useFiles((state) => state.bySession[sessionId]?.uploadConfirm);
   return (
     <AlertDialog
@@ -580,13 +585,13 @@ function UploadDialog({ sessionId, fileRoot }: { sessionId: string; fileRoot: Fi
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>覆盖 {pending?.name}？</AlertDialogTitle>
-          <AlertDialogDescription>目标位置已有同名文件，上传会替换它。</AlertDialogDescription>
+          <AlertDialogTitle>{t("ft.overwrite_q", { name: pending?.name ?? "" })}</AlertDialogTitle>
+          <AlertDialogDescription>{t("ft.overwrite_desc")}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
           <AlertDialogAction onClick={() => void confirmUpload(sessionId, fileRoot)}>
-            覆盖上传
+            {t("ft.overwrite_ok")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -595,6 +600,7 @@ function UploadDialog({ sessionId, fileRoot }: { sessionId: string; fileRoot: Fi
 }
 
 function DeleteDialog({ sessionId, fileRoot }: { sessionId: string; fileRoot: FileRoot }) {
+  const t = useT();
   const deleting = useFiles((state) => state.bySession[sessionId]?.deleting);
   return (
     <AlertDialog
@@ -603,13 +609,13 @@ function DeleteDialog({ sessionId, fileRoot }: { sessionId: string; fileRoot: Fi
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>删除 {deleting?.name}？</AlertDialogTitle>
-          <AlertDialogDescription>会移到系统回收站，可以从回收站找回。</AlertDialogDescription>
+          <AlertDialogTitle>{t("ft.delete_q", { name: deleting?.name ?? "" })}</AlertDialogTitle>
+          <AlertDialogDescription>{t("ft.delete_desc")}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
           <AlertDialogAction onClick={() => void confirmDelete(sessionId, fileRoot)}>
-            移到回收站
+            {t("ft.delete_ok")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

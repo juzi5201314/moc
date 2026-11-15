@@ -4,6 +4,7 @@
 // 再通过可分块的历史读取取得展示转写、todo、目标与计划版本。
 
 import { toast } from "sonner";
+import { t } from "@/lib/i18n";
 import { attachEntryIds, entriesToBlocks } from "@/lib/transcript-model";
 import { clientListeners, rpc } from "@/protocol/client";
 import { ErrorCode, RpcError } from "@/protocol/errors";
@@ -389,7 +390,7 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
   const now = Date.now();
   const draftInfo: SessionInfo = {
     id: "draft-session",
-    title: "新会话",
+    title: t("session.new_title"),
     cwd,
     model: model ?? "",
     engine: "standard",
@@ -415,7 +416,7 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
       .getState()
       .refreshConfig()
       .catch((error: unknown) => {
-        toast.error(`读取最近模型失败：${String(error)}`);
+        toast.error(t("session.model_read_failed", { error: String(error) }));
       });
   }
   return draftInfo;
@@ -542,7 +543,7 @@ export async function compactSkills(sessionId: string, action: SkillsCompactActi
     useUi.getState().skillsWorking ||
     Object.values(useTranscript.getState().bySession).some((view) => view.running)
   ) {
-    throw new Error("前台正在运行，暂时不能维护技能摘要");
+    throw new Error(t("skills.busy"));
   }
   const draft = sessionId === "draft-session" ? useSessions.getState().draftSession : null;
   useUi.getState().set({ skillsWorking: sessionId });
@@ -555,9 +556,7 @@ export async function compactSkills(sessionId: string, action: SkillsCompactActi
       tone: "info",
       localCommand: true,
       text:
-        action === "cleanup" || action === "clear"
-          ? "正在清理技能摘要缓存…"
-          : "正在检查技能与缓存，准备压缩 skills…",
+        action === "cleanup" || action === "clear" ? t("skills.cleaning") : t("skills.preparing"),
     });
   });
   const updateStatus = (text: string, tone: "info" | "error" = "info") => {
@@ -570,10 +569,14 @@ export async function compactSkills(sessionId: string, action: SkillsCompactActi
     });
   };
   const unsubscribe = rpc.on("skills/progress", (progress) => {
-    const stage =
-      progress.phase === "committing" ? "正在原子提交缓存…" : "正在使用当前模型压缩 skills…";
+    const stage = progress.phase === "committing" ? t("skills.committing") : t("skills.compacting");
     updateStatus(
-      `${stage}\n已生成并校验 ${progress.completed} / ${progress.total} 个 · 缓存跳过 ${progress.skipped} 个\n进度按批次更新；全部成功后才发布缓存。`,
+      t("skills.progress", {
+        stage,
+        done: progress.completed,
+        total: progress.total,
+        skipped: progress.skipped,
+      }),
     );
   });
   try {
@@ -587,7 +590,9 @@ export async function compactSkills(sessionId: string, action: SkillsCompactActi
     if (sessionId !== "draft-session") void refreshSideData(sessionId);
   } catch (error) {
     updateStatus(
-      `技能摘要操作未完成：${error instanceof Error ? error.message : String(error)}\n本次操作没有发布缓存。`,
+      t("skills.failed", {
+        error: error instanceof Error ? error.message : String(error),
+      }),
       "error",
     );
   } finally {

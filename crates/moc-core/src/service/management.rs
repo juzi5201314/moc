@@ -10,6 +10,7 @@ use moc_protocol::{
     SteerResult, UnsteerParams, UnsteerResult, UpdateSink, WebStateDocument, WebStateSaveParams,
     WebStateUpdated,
 };
+use rust_i18n::t;
 use std::{collections::VecDeque, path::Path, sync::Arc};
 
 /// 一条已接受、但还没在安全边界写入会话的补充消息。
@@ -43,7 +44,9 @@ pub(super) async fn steer(
         .skills_compacting
         .load(std::sync::atomic::Ordering::Acquire)
     {
-        return Err(CoreError::Session("SESSION_BUSY: 正在维护技能摘要".into()));
+        return Err(CoreError::Session(
+            t!("core.err.skills_maintaining_busy").into_owned(),
+        ));
     }
     let snapshot = record.state.lock().await.metadata();
     let config = inner.project_config(Path::new(&snapshot.session.cwd))?;
@@ -55,7 +58,7 @@ pub(super) async fn steer(
     )
     .await?;
     if message.content.is_empty() {
-        return Err(CoreError::Config("补充消息不能为空".into()));
+        return Err(CoreError::Config(t!("core.err.message_empty").into_owned()));
     }
     let runtime = inner.runtime(&params.session_id).await;
     if !runtime.steering.lock().await.accepting {
@@ -94,7 +97,7 @@ pub(super) async fn steer(
         .await;
         if let Some(text) = rewrite.text {
             if text.trim().is_empty() {
-                return Err(CoreError::Config("补充消息不能为空".into()));
+                return Err(CoreError::Config(t!("core.err.message_empty").into_owned()));
             }
             message = crate::service::plugin_events::rewrite_message_text(message, text);
         }

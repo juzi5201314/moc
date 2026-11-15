@@ -1,5 +1,6 @@
 //! Core 级长期 PTC Host：单一 actor 持有子进程和路由，避免旧读任务误伤重启后的进程。
 
+use rust_i18n::t;
 use super::ToolError;
 use crate::{PtcWorkerCommand, config::PtcConfig};
 use moc_ptc_protocol::wire::{
@@ -225,7 +226,7 @@ impl Process {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|error| worker_error(format!("启动 PTC Host 失败：{error}")))?;
+            .map_err(|error| worker_error(t!("core.err.ptc_host_start", error = error).into_owned()))?;
         let mut stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         let mut stderr = child.stderr.take().expect("piped stderr");
@@ -303,7 +304,7 @@ async fn read_frame(process: &mut Process) -> Result<GuestMessage, ToolError> {
         process.output.consume(count);
         if complete {
             let result = serde_json::from_slice(&process.buffer)
-                .map_err(|error| worker_error(format!("PTC Host 协议错误：{error}")));
+                .map_err(|error| worker_error(t!("core.err.ptc_host_protocol", error = error).into_owned()));
             process.buffer.clear();
             return result;
         }

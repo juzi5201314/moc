@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::App;
 use crate::transcript::Block;
 use crate::transcript::DetailLevel;
@@ -24,7 +26,7 @@ impl App {
         let width = usize::from(self.scrollback_area.width)
             .saturating_sub(crate::render::PROSE_INDENT)
             .max(8);
-        let prepared: Result<moc_core::chart::ChartSpec, &'static str> = {
+        let prepared: Result<moc_core::chart::ChartSpec, String> = {
             let Some(entry_block) = self.blocks.get(entry) else {
                 return;
             };
@@ -43,12 +45,12 @@ impl App {
                 },
             );
             match rendered.raw.get(table) {
-                None => Err("表格内容已变化，请重试"),
+                None => Err(t!("tui.err.table_changed").into_owned()),
                 Some(raw) => {
                     let analysis = moc_core::chart::analyze(raw);
                     moc_core::chart::plan(&analysis)
                         .map(|plan| moc_core::chart::build(&analysis, &plan))
-                        .ok_or("这张表无法图表化")
+                        .ok_or_else(|| t!("tui.err.table_not_chartable").into_owned())
                 }
             }
         };

@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::OutputMode;
 use crate::workflow::engine::DriverOutcome;
 use crate::workflow::facade;
@@ -65,7 +66,7 @@ pub(super) async fn run_capped(
         Err(e) => {
             return DriverOutcome::Failed {
                 code: "E_WORLD".into(),
-                message: format!("world.run 启动失败：{e}"),
+                message: t!("core.err.world_run_start", error = e).into_owned(),
             };
         }
     };
@@ -117,7 +118,7 @@ pub(super) async fn run_capped(
                 let _ = child.start_kill();
                 return DriverOutcome::Failed {
                     code: "E_WORLD_TIMEOUT".into(),
-                    message: format!("world.run 超过 {timeout_ms}ms"),
+                    message: t!("core.err.world_run_timeout", ms = timeout_ms).into_owned(),
                 };
             }
         };
@@ -126,7 +127,7 @@ pub(super) async fn run_capped(
         Some(Err(e)) => {
             return DriverOutcome::Failed {
                 code: "E_WORLD".into(),
-                message: format!("world.run 等待失败：{e}"),
+                message: t!("core.err.world_run_wait", error = e).into_owned(),
             };
         }
         None => unreachable!("collect 循环退出时三项必齐"),
@@ -136,7 +137,7 @@ pub(super) async fn run_capped(
         _ => {
             return DriverOutcome::Failed {
                 code: "E_WORLD".into(),
-                message: format!("world.run 输出流超过 {cap} 字节"),
+                message: t!("core.err.world_run_cap", cap = cap).into_owned(),
             };
         }
     };
@@ -234,7 +235,7 @@ pub(super) async fn git_stdout(
         .await
         .map_err(|e| DriverOutcome::Failed {
             code: "E_GIT".into(),
-            message: format!("git 执行失败：{e}"),
+            message: t!("core.err.git_failed", error = e).into_owned(),
         })?;
     if !out.status.success() {
         return Err(DriverOutcome::Failed {

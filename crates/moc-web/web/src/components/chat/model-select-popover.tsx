@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { t, useT } from "@/lib/i18n";
 import {
   compactTokens,
   fusionSelector,
@@ -53,18 +54,21 @@ async function apply(sessionId: string, selector: string): Promise<void> {
   try {
     const result = await setSessionModel(sessionId, selector);
     if (result?.compaction_error) {
-      toast.error(`模型已切换，但上下文压缩失败：${result.compaction_error}`);
+      toast.error(t("mp.compact_failed", { error: result.compaction_error }));
     } else if (result?.overflow) {
       const { tokens, context_window } = result.overflow;
       toast(
-        `当前上下文 ${compactTokens(tokens)} 超出目标模型容量 ${compactTokens(context_window)}`,
+        t("mp.overflow", {
+          tokens: compactTokens(tokens),
+          window: compactTokens(context_window),
+        }),
         {
-          description: "下一次请求前会自动压缩上下文。",
+          description: t("mp.overflow_hint"),
         },
       );
     }
   } catch (error) {
-    toast.error(`切换模型失败：${errorText(error)}`);
+    toast.error(t("mp.switch_failed", { error: errorText(error) }));
   }
 }
 
@@ -98,14 +102,15 @@ function LevelSelect({
   levels: string[];
   onChange: (level: string) => void;
 }) {
+  const t = useT();
   return (
     <Select value={value} onValueChange={onChange}>
       <SelectTrigger
         size="sm"
-        aria-label="思考强度"
+        aria-label={t("mp.level")}
         className="h-7 gap-1 border-0 bg-transparent px-2 text-ui text-foreground shadow-none hover:bg-accent dark:bg-transparent dark:hover:bg-accent [&_svg]:size-3.5"
       >
-        <SelectValue placeholder="默认" />
+        <SelectValue placeholder={t("mp.default")} />
       </SelectTrigger>
       <SelectContent position="popper" align="end" className="min-w-32">
         {levels.map((level) => (
@@ -134,10 +139,11 @@ function FastModeRow({
 
 /** 价格格：只画配置了的单价，模型没配 pricing 时整段不出现。 */
 function PriceGrid({ pricing }: { pricing: ModelPricing }) {
-  const cells: [string, number][] = [["输入", pricing.input]];
-  if (pricing.cache_read != null) cells.push(["缓存命中", pricing.cache_read]);
-  if (pricing.cache_write != null) cells.push(["缓存写入", pricing.cache_write]);
-  cells.push(["输出", pricing.output]);
+  const t = useT();
+  const cells: [string, number][] = [[t("mp.input"), pricing.input]];
+  if (pricing.cache_read != null) cells.push([t("mp.cache_read"), pricing.cache_read]);
+  if (pricing.cache_write != null) cells.push([t("mp.cache_write"), pricing.cache_write]);
+  cells.push([t("mp.output"), pricing.output]);
   return (
     <div
       className={cn(
@@ -173,12 +179,13 @@ function ModelCard({
   onLevel: (level: string) => void;
   onFast: (next: boolean) => void;
 }) {
+  const t = useT();
   const levels = model.thinking_levels ?? [];
   const meta = [
     providerOf(model.id),
-    model.context_window ? `${compactTokens(model.context_window)} 上下文` : "",
-    model.max_output_tokens ? `${compactTokens(model.max_output_tokens)} 输出` : "",
-    model.inputs?.includes("image") ? "支持图片" : "",
+    model.context_window ? t("mp.ctx", { n: compactTokens(model.context_window) }) : "",
+    model.max_output_tokens ? t("mp.out", { n: compactTokens(model.max_output_tokens) }) : "",
+    model.inputs?.includes("image") ? t("mp.images") : "",
   ].filter(Boolean);
   return (
     <>
@@ -189,7 +196,7 @@ function ModelCard({
       {(reasoningLevels(model).length > 0 || model.fast_mode) && (
         <div className="px-4 pb-2">
           {reasoningLevels(model).length > 0 && (
-            <CardRow label="思考强度">
+            <CardRow label={t("mp.level")}>
               <LevelSelect value={level} levels={levels} onChange={onLevel} />
             </CardRow>
           )}
@@ -215,6 +222,7 @@ function FusionSlotRow({
   models: ModelInfo[];
   onChange: (selector: string) => void;
 }) {
+  const t = useT();
   const parsed = parseSelector(value, models);
   const efforts = reasoningLevels(parsed.model);
   return (
@@ -232,7 +240,7 @@ function FusionSlotRow({
         }}
       >
         <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 rounded-lg text-ui shadow-none">
-          <SelectValue placeholder="未选择" />
+          <SelectValue placeholder={t("mp.unselected")} />
         </SelectTrigger>
         <SelectContent>
           {groupByProvider(models).map(([provider, list]) => (
@@ -255,9 +263,9 @@ function FusionSlotRow({
           <SelectTrigger
             size="sm"
             className="h-8 w-[84px] shrink-0 rounded-lg text-ui shadow-none"
-            aria-label="思考强度"
+            aria-label={t("mp.level")}
           >
-            <SelectValue placeholder="强度" />
+            <SelectValue placeholder={t("mp.level_short")} />
           </SelectTrigger>
           <SelectContent>
             {efforts.map((level) => (
@@ -289,15 +297,14 @@ function FusionCard({
   onApply: () => void;
   onFast: (next: boolean) => void;
 }) {
+  const t = useT();
   const lead = parseSelector(draft.lead, models).model;
   const ready = Boolean(draft.lead && draft.sidekick);
   return (
     <>
       <div className="px-4 pt-3.5 pb-2">
         <div className="text-sm font-medium text-foreground">Fusion</div>
-        <div className="mt-1 text-xs text-text-tertiary">
-          前沿模型负责规划、调查与评审，高性价比模型执行实现与验证
-        </div>
+        <div className="mt-1 text-xs text-text-tertiary">{t("mp.fusion_desc")}</div>
       </div>
       <div className="flex flex-col gap-2 px-4 pt-1 pb-2">
         <FusionSlotRow
@@ -321,7 +328,7 @@ function FusionCard({
           disabled={!ready || fusionSelector(draft.lead, draft.sidekick) === current}
           onClick={onApply}
         >
-          应用
+          {t("mp.apply")}
         </Button>
       </div>
     </>
@@ -330,6 +337,7 @@ function FusionCard({
 
 /** 弹层内容：每次打开都重新挂载，草稿与高亮项随之按当前会话初始化。 */
 function PickerPanel({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+  const t = useT();
   const models = useConnection(selectModels);
   const fallback = useConnection((state) => state.config?.default_model ?? "");
   const fusionDefaults = useConnection((state) => state.config?.fusion);
@@ -372,7 +380,7 @@ function PickerPanel({ sessionId, onClose }: { sessionId: string; onClose: () =>
 
   const toggleFast = (next: boolean) => {
     setSessionFastMode(sessionId, next).catch((error) =>
-      toast.error(`切换 Fast Mode 失败：${errorText(error)}`),
+      toast.error(t("mp.fast_failed", { error: errorText(error) })),
     );
   };
 
@@ -394,15 +402,15 @@ function PickerPanel({ sessionId, onClose }: { sessionId: string; onClose: () =>
               : 0;
           }}
         >
-          <CommandInput placeholder="搜索模型" className="h-10 text-ui" />
+          <CommandInput placeholder={t("mp.search")} className="h-10 text-ui" />
           <CommandList className="max-h-80 p-1">
             <CommandEmpty className="py-8 text-center text-xs text-text-tertiary">
-              {models.length === 0 ? "还没有配置模型" : "没有匹配的模型"}
+              {models.length === 0 ? t("mp.empty") : t("mp.no_match")}
             </CommandEmpty>
-            <CommandGroup heading="组合" className="p-0 pb-1">
+            <CommandGroup heading={t("mp.group_combo")} className="p-0 pb-1">
               <CommandItem
                 value={FUSION_VALUE}
-                keywords={["lead", "sidekick", "组合"]}
+                keywords={["lead", "sidekick", t("mp.fusion_kw")]}
                 onSelect={applyFusion}
                 className="gap-3 rounded-lg px-2 py-1.5"
               >
@@ -456,7 +464,7 @@ function PickerPanel({ sessionId, onClose }: { sessionId: string; onClose: () =>
           className="flex h-9 w-full items-center gap-2 border-t border-border-subtle px-3 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <Settings2Icon className="size-3.5" />
-          管理供应商与模型
+          {t("mp.manage")}
         </button>
       </div>
 
@@ -488,6 +496,7 @@ function PickerPanel({ sessionId, onClose }: { sessionId: string; onClose: () =>
 }
 
 export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabled?: boolean }) {
+  const t = useT();
   const open = useUi((state) => state.modelPicker === sessionId);
   const models = useConnection(selectModels);
   const fallback = useConnection((state) => state.config?.default_model ?? "");
@@ -495,7 +504,7 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
 
   const fusion = parseFusion(selector);
   const parsed = parseSelector(selector, models);
-  const label = fusion ? "Fusion" : modelName(parsed.id) || "默认模型";
+  const label = fusion ? "Fusion" : modelName(parsed.id) || t("mp.default_model");
 
   const setOpen = (next: boolean) => {
     useUi.getState().set({ modelPicker: next ? sessionId : null });
@@ -508,7 +517,7 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
           type="button"
           disabled={disabled}
           className="inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-foreground"
-          aria-label="选择模型"
+          aria-label={t("mp.pick")}
         >
           <span className="max-w-[180px] truncate">{label}</span>
           {fusion ? (

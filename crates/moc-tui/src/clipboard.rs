@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use base64::Engine as _;
+use rust_i18n::t;
 use tokio::process::Command;
 
 /// 一次成功的图片读取：MIME + 原始字节。
@@ -138,7 +139,7 @@ pub async fn read_clipboard_text() -> Option<String> {
 /// 复制文本到系统剪贴板（选择的复制通道；OSC52 由终端层另发）。
 pub async fn copy_text_to_clipboard(text: &str) -> anyhow::Result<()> {
     if disabled() {
-        anyhow::bail!("未找到 powershell.exe / wl-copy / xclip / pbcopy，无法访问系统剪贴板")
+        anyhow::bail!("{}", t!("tui.err.no_clipboard_tool"))
     }
     if is_wsl() && which("powershell.exe") {
         run(
@@ -153,13 +154,13 @@ pub async fn copy_text_to_clipboard(text: &str) -> anyhow::Result<()> {
             WINDOWS_TIMEOUT,
         )
         .await
-        .context("写入 Windows 剪贴板失败")?;
+        .context(t!("tui.err.clipboard_write_win"))?;
         return Ok(());
     }
     if std::env::var_os("WAYLAND_DISPLAY").is_some() && which("wl-copy") {
         run("wl-copy", &[], Some(text.as_bytes()), LOCAL_TIMEOUT)
             .await
-            .context("启动 wl-copy 失败")?;
+            .context(t!("tui.err.wl_copy_spawn"))?;
         return Ok(());
     }
     if std::env::var_os("DISPLAY").is_some() && which("xclip") {
@@ -170,16 +171,16 @@ pub async fn copy_text_to_clipboard(text: &str) -> anyhow::Result<()> {
             LOCAL_TIMEOUT,
         )
         .await
-        .context("启动 xclip 失败")?;
+        .context(t!("tui.err.xclip_spawn"))?;
         return Ok(());
     }
     if which("pbcopy") {
         run("pbcopy", &[], Some(text.as_bytes()), LOCAL_TIMEOUT)
             .await
-            .context("启动 pbcopy 失败")?;
+            .context(t!("tui.err.pbcopy_spawn"))?;
         return Ok(());
     }
-    anyhow::bail!("未找到 powershell.exe / wl-copy / xclip / pbcopy，无法访问系统剪贴板")
+    anyhow::bail!("{}", t!("tui.err.no_clipboard_tool"))
 }
 
 /// 文本复制会走到的本地通道（与 [`copy_text_to_clipboard`] 同序判定；

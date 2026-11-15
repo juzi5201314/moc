@@ -1,5 +1,7 @@
 //! 插件目录刷新与状态展示。
 
+use rust_i18n::t;
+
 use crate::app::App;
 use crate::protocol::AppEvent;
 use crate::protocol::EmbeddedConnection;
@@ -27,13 +29,17 @@ pub(super) fn refresh_plugins(
                 .call::<PluginReload>(PluginReloadParams { session_id })
                 .await
                 .map(|result| result.plugins)
-                .map_err(|error| format!("重载插件失败：{error}"))
+                .map_err(|error| {
+                    t!("tui.plugins.reload_failed_fmt", err = error.to_string()).into_owned()
+                })
         } else {
             client
                 .call::<PluginList>(PluginListParams { session_id })
                 .await
                 .map(|result| result.plugins)
-                .map_err(|error| format!("读取插件失败：{error}"))
+                .map_err(|error| {
+                    t!("tui.plugins.list_failed_fmt", err = error.to_string()).into_owned()
+                })
         };
         match outcome {
             Ok(plugins) => {
@@ -69,30 +75,32 @@ pub(super) fn refresh_plugins(
 /// `/plugins` 的正文：首行是总数，随后每个插件一行来源与目录，再列出它注册的工具和命令。
 pub(super) fn format_plugins(plugins: &[moc_protocol::methods::PluginInfo]) -> String {
     if plugins.is_empty() {
-        return "当前工作区没有插件。把插件放进 .moc/plugins/<name>/（或 $MOC_HOME/plugins）即可自动启用。"
-            .into();
+        return t!("tui.plugins.empty_hint").into_owned();
     }
-    format!(
-        "已加载 {} 个插件：\n{}",
-        plugins.len(),
-        format_plugin_lines(plugins)
+    t!(
+        "tui.plugins.loaded_fmt",
+        n = plugins.len(),
+        lines = format_plugin_lines(plugins)
     )
+    .into_owned()
 }
 
 /// `/plugins reload` 的正文：重载结果的可用计数，后接每个插件的明细。
 pub(super) fn reload_plugins_note(plugins: &[moc_protocol::methods::PluginInfo]) -> String {
     if plugins.is_empty() {
-        return "插件已重载：当前工作区没有插件".into();
+        return t!("tui.plugins.reloaded_empty").into_owned();
     }
     let disabled = plugins
         .iter()
         .filter(|plugin| plugin.error.is_some())
         .count();
-    format!(
-        "插件已重载：{} 个可用 / {disabled} 个仍不可用\n{}",
-        plugins.len() - disabled,
-        format_plugin_lines(plugins)
+    t!(
+        "tui.plugins.reloaded_fmt",
+        ok = plugins.len() - disabled,
+        disabled = disabled,
+        lines = format_plugin_lines(plugins)
     )
+    .into_owned()
 }
 
 /// 插件明细：来源、目录、不可用原因，以及它注册的工具与命令。
@@ -104,22 +112,33 @@ pub(super) fn format_plugin_lines(plugins: &[moc_protocol::methods::PluginInfo])
             .as_deref()
             .map(|version| format!(" v{version}"))
             .unwrap_or_default();
-        lines.push(format!(
-            "- {}{version}（{}）{}",
-            plugin.name,
-            plugin.source,
-            plugin.description.as_deref().unwrap_or_default()
-        ));
+        lines.push(
+            t!(
+                "tui.plugins.line_fmt",
+                name = plugin.name.as_str(),
+                version = version.as_str(),
+                source = plugin.source.as_str(),
+                desc = plugin.description.as_deref().unwrap_or_default()
+            )
+            .into_owned(),
+        );
         lines.push(format!("  {}", plugin.dir));
         if let Some(error) = &plugin.error {
-            lines.push(format!("  不可用：{error}"));
+            lines.push(t!("tui.plugins.disabled_fmt", err = error.as_str()).into_owned());
             continue;
         }
         for tool in &plugin.tools {
-            lines.push(format!("  工具 {} [{}]", tool.name, tool.modes.join(",")));
+            lines.push(
+                t!(
+                    "tui.plugins.tool_fmt",
+                    name = tool.name.as_str(),
+                    modes = tool.modes.join(",")
+                )
+                .into_owned(),
+            );
         }
         for command in &plugin.commands {
-            lines.push(format!("  命令 /{}", command.name));
+            lines.push(t!("tui.plugins.cmd_fmt", name = command.name.as_str()).into_owned());
         }
     }
     lines.join("\n")
@@ -127,5 +146,11 @@ pub(super) fn format_plugin_lines(plugins: &[moc_protocol::methods::PluginInfo])
 
 /// 插件停用提示：保留失败原因（可能是多行 JS 调用栈）与恢复方式。
 pub(super) fn plugin_notice_note(plugin: &str, code: &str, message: &str) -> String {
-    format!("插件 `{plugin}` 已停用（{code}）：{message}\n修复后 /plugins reload 可重载")
+    t!(
+        "tui.plugins.notice_fmt",
+        plugin = plugin,
+        code = code,
+        message = message
+    )
+    .into_owned()
 }

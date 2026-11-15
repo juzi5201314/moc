@@ -6,6 +6,7 @@ use crate::protocol::EmbeddedConnection;
 use crate::render::wrap::str_width;
 use moc_protocol::SessionUsage;
 use moc_protocol::SessionUsageParams;
+use rust_i18n::t;
 
 /// 刷新会话累计用量：状态栏与 `/usage` 读同一份 core replay 出的统计。
 ///
@@ -30,7 +31,9 @@ pub(super) fn refresh_usage(app: &mut App, connection: &EmbeddedConnection, show
                 });
             }
             Err(error) if show => {
-                let _ = events.send(AppEvent::Notice(format!("读取用量失败：{error}")));
+                let _ = events.send(AppEvent::Notice(
+                    t!("tui.usage.load_failed_fmt", err = error.to_string()).into_owned(),
+                ));
             }
             Err(_) => {}
         }
@@ -69,38 +72,45 @@ pub(super) fn usage_summary(result: &moc_protocol::SessionUsageResult) -> Vec<St
     if total.calls == 0 {
         return Vec::new();
     }
-    let mut rows: Vec<(&str, String)> = Vec::with_capacity(4);
+    let mut rows: Vec<(String, String)> = Vec::with_capacity(4);
     let split = if total.gen_ms > 0 {
         let waiting = total.active_ms.saturating_sub(total.gen_ms);
-        format!(
-            "（生成 {} · 网络等待 {}）",
-            format_active(total.gen_ms),
-            format_active(waiting)
+        t!(
+            "tui.usage.split_fmt",
+            gen = format_active(total.gen_ms),
+            wait = format_active(waiting)
         )
+        .into_owned()
     } else {
         String::new()
     };
     rows.push((
-        "模型用时",
+        t!("tui.usage.model_time").into_owned(),
         format!("{}{split}", format_active(total.active_ms)),
     ));
     if result.tool_ms > 0 {
-        rows.push(("工具调用用时", format_active(result.tool_ms)));
+        rows.push((
+            t!("tui.usage.tool_time").into_owned(),
+            format_active(result.tool_ms),
+        ));
     }
     if let Some(ttft) = average_ttft(total) {
-        rows.push(("首 token 平均（TTFT）", format_active(ttft)));
+        rows.push((t!("tui.usage.ttft").into_owned(), format_active(ttft)));
     }
     if let Some(tps) = usage_tps(total) {
-        rows.push(("输出速度", format!("{tps:.1} tok/s")));
+        rows.push((
+            t!("tui.usage.tps").into_owned(),
+            format!("{tps:.1} tok/s"),
+        ));
     }
     let label_width = rows
         .iter()
         .map(|(label, _)| str_width(label))
         .max()
         .unwrap_or(0);
-    let mut lines = vec!["会话统计".to_owned()];
+    let mut lines = vec![t!("tui.usage.title").into_owned()];
     lines.extend(rows.into_iter().map(|(label, value)| {
-        let pad = label_width.saturating_sub(str_width(label));
+        let pad = label_width.saturating_sub(str_width(&label));
         format!("  {label}{}{value}", " ".repeat(pad + 2))
     }));
     lines
@@ -111,16 +121,16 @@ pub(super) fn usage_table(
     result: &moc_protocol::SessionUsageResult,
     max_width: usize,
 ) -> Vec<String> {
-    const COLUMNS: [&str; 9] = [
-        "模型",
-        "调用",
-        "输入",
-        "输出",
-        "缓存率",
-        "思考",
-        "生成",
-        "TTFT",
-        "TPS",
+    let columns: [String; 9] = [
+        t!("tui.usage.col_model").into_owned(),
+        t!("tui.usage.col_calls").into_owned(),
+        t!("tui.usage.col_input").into_owned(),
+        t!("tui.usage.col_output").into_owned(),
+        t!("tui.usage.col_cache").into_owned(),
+        t!("tui.usage.col_thinking").into_owned(),
+        t!("tui.usage.col_gen").into_owned(),
+        "TTFT".to_owned(),
+        "TPS".to_owned(),
     ];
     // 窄终端按顺序丢列：思考 → 缓存率 → TTFT（会话统计里还有平均 TTFT）。
     const DROP_ORDER: [usize; 3] = [5, 4, 7];
@@ -134,23 +144,25 @@ pub(super) fn usage_table(
             // 后代会话的用量行标出来源：Fusion sidekick 与普通子代理。
             let label = match summary.source {
                 moc_protocol::methods::UsageSource::Sidekick => format!("{label} (sidekick)"),
-                moc_protocol::methods::UsageSource::Subagent => format!("{label} (子代理)"),
+                moc_protocol::methods::UsageSource::Subagent => {
+                    t!("tui.usage.subagent_fmt", label = label.as_str()).into_owned()
+                }
                 moc_protocol::methods::UsageSource::Session => label,
             };
             usage_row(summary, &label)
         })
         .collect();
-    rows.push(usage_row(&result.total, "合计"));
+    rows.push(usage_row(&result.total, &t!("tui.usage.total")));
 
-    let mut widths = COLUMNS.map(str_width);
+    let mut widths: [usize; 9] = std::array::from_fn(|index| str_width(&columns[index]));
     for row in &rows {
         for (index, cell) in row.iter().enumerate() {
             widths[index] = widths[index].max(str_width(cell));
         }
     }
-    let mut hidden = [false; COLUMNS.len()];
+    let mut hidden = [false; 9];
     for _ in 0..DROP_ORDER.len() {
-        let fixed: usize = (1..COLUMNS.len())
+        let fixed: usize = (1..columns.len())
             .filter(|index| !hidden[*index])
             .map(|index| widths[index] + 2)
             .sum();
@@ -162,7 +174,7 @@ pub(super) fn usage_table(
         };
         hidden[index] = true;
     }
-    let visible: Vec<usize> = (0..COLUMNS.len()).filter(|index| !hidden[*index]).collect();
+    let visible: Vec<usize> = (0..columns.len()).filter(|index| !hidden[*index]).collect();
     // 模型列吃掉剩余预算，其余列按内容宽定宽。
     let fixed: usize = visible
         .iter()
@@ -172,7 +184,7 @@ pub(super) fn usage_table(
         .sum();
     widths[0] = widths[0]
         .min(max_width.saturating_sub(fixed))
-        .max(str_width(COLUMNS[0]));
+        .max(str_width(&columns[0]));
     for row in &mut rows {
         row[0] = crate::render::wrap::truncate(row[0].clone(), widths[0]).into_owned();
     }
@@ -194,7 +206,7 @@ pub(super) fn usage_table(
             .collect::<Vec<_>>()
             .join("  ")
     };
-    let header_cells = COLUMNS.map(str::to_owned);
+    let header_cells = columns.clone();
     let header = line(&header_cells);
     let rule = "─".repeat(str_width(&header));
     let mut lines = vec![header, rule.clone()];
@@ -225,7 +237,7 @@ pub(super) fn usage_row(summary: &moc_protocol::ModelUsageSummary, label: &str) 
         format!("{cache_rate:.1}%"),
         summary
             .reasoning_tokens
-            .map_or_else(|| "未知".to_owned(), crate::render::format_tokens),
+            .map_or_else(|| t!("tui.usage.unknown").into_owned(), crate::render::format_tokens),
         if summary.gen_ms > 0 {
             format_active(summary.gen_ms)
         } else {

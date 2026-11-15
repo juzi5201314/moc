@@ -1,5 +1,7 @@
 //! 工作流通知与面板入口。
 
+use rust_i18n::t;
+
 use crate::app::App;
 use crate::modal::Modal;
 use crate::protocol::AppEvent;
@@ -115,7 +117,7 @@ pub(super) fn apply_workflow_update(
                     .holes
                     .push(serde_json::json!({"name": name, "prompt": prompt}));
             }
-            app.set_notice(format!("workflow hole 打开：{name}"));
+            app.set_notice(t!("tui.event.hole_opened_fmt", name = name.as_str()).into_owned());
         }
         E::HoleFilled { name } => {
             if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
@@ -152,7 +154,7 @@ pub(super) fn take_next_approval(
 /// 打开 workflow run 列表：`session/workflow_runs` → `AppEvent::OpenWorkflowRuns`。
 pub(super) fn open_workflow_runs(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session").into_owned());
         return;
     };
     let client = connection.client.clone();
@@ -168,7 +170,9 @@ pub(super) fn open_workflow_runs(app: &mut App, connection: &EmbeddedConnection)
                 let _ = events.send(AppEvent::OpenWorkflowRuns(result.runs));
             }
             Err(error) => {
-                let _ = events.send(AppEvent::Notice(format!("获取 run 列表失败：{error}")));
+                let _ = events.send(AppEvent::Notice(
+                    t!("tui.event.runs_failed_fmt", err = error.to_string()).into_owned(),
+                ));
             }
         }
     });

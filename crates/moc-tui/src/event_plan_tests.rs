@@ -71,7 +71,7 @@ impl PlanHarness {
         std::fs::write(
             root.path().join("config.toml"),
             format!(
-                "[models.roles]\ndefault='test/planner:off'\nplan='test/planner:off'\n\
+                "language='zh'\n[models.roles]\ndefault='test/planner:off'\nplan='test/planner:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\nretry={{max_attempts=1}}\n\
              [providers.test.models.planner]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [providers.test.models.executor]\ncontext_window=200000\nmax_output_tokens=4096\n\

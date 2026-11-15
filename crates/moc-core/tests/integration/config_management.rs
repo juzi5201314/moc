@@ -462,6 +462,7 @@ fn unknown_method_is_rejected() {
 
 #[test]
 fn web_search_base_url_round_trips_through_editor() {
+    moc_core::i18n::init("zh");
     let (_root, boot) = workspace();
     let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();
     let web_search_field = |name: &str| {
@@ -506,6 +507,7 @@ fn web_search_base_url_round_trips_through_editor() {
 
 #[test]
 fn web_fetch_fields_are_in_tool_tab_and_round_trip() {
+    moc_core::i18n::init("zh");
     let (_root, boot) = workspace();
     let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();
     let web_fetch_field = |name: &str| {

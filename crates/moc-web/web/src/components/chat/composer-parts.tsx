@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AUTONOMY } from "@/lib/autonomy";
+import { type MsgKey, useT } from "@/lib/i18n";
 import { sessionCost } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
@@ -131,6 +132,7 @@ function formatCost(value: number): string {
  * 右侧依次是本会话改动、后台子代理与会话费用，各自有值才出现。
  */
 export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos: TodoItem[] }) {
+  const t = useT();
   const view = useTranscript((state) => state.bySession[sessionId]);
   const running = Boolean(view?.running);
   const [open, setOpen] = useState(false);
@@ -178,7 +180,7 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
               aria-expanded={open}
             >
               <ListChecksIcon className="size-3.5 shrink-0" />
-              <span className="shrink-0 font-medium text-foreground">任务</span>
+              <span className="shrink-0 font-medium text-foreground">{t("cp.tasks")}</span>
               <span className="shrink-0 tabular-nums text-text-tertiary">
                 {done}/{todos.length}
               </span>
@@ -204,9 +206,9 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
             type="button"
             onClick={() => inspect("changes")}
             className={STAT}
-            title="查看本会话改动"
+            title={t("cp.changes")}
           >
-            <span>{changes.files} 个文件</span>
+            <span>{t("cp.files_n", { n: changes.files })}</span>
             <DiffStat added={changes.added} removed={changes.removed} />
           </button>
         )}
@@ -259,6 +261,7 @@ export function PendingList({
   items: PendingItem[];
   onRemove: (item: PendingItem) => void;
 }) {
+  const t = useT();
   return (
     <ul className="space-y-0.5 px-1 pb-1">
       {items.map((item) => {
@@ -274,12 +277,18 @@ export function PendingList({
                 item.kind === "steer" ? "bg-brand/10 text-brand" : "bg-card text-muted-foreground",
               )}
             >
-              {item.kind === "steer" ? "补充" : item.mode === "ask" ? "问答" : "排队"}
+              {item.kind === "steer"
+                ? t("q.steer")
+                : item.mode === "ask"
+                  ? t("q.ask")
+                  : t("q.queue")}
             </span>
             <span className="min-w-0 flex-1 truncate text-foreground/90">
-              {item.text || "图片"}
+              {item.text || t("q.image")}
               {item.images.length > 0 && (
-                <span className="text-text-tertiary"> · {item.images.length} 张图片</span>
+                <span className="text-text-tertiary">
+                  {t("q.images_n", { n: item.images.length })}
+                </span>
               )}
             </span>
             <button
@@ -287,8 +296,8 @@ export function PendingList({
               onClick={() => onRemove(item)}
               disabled={locked}
               className="flex size-5 shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-accent hover:text-foreground disabled:opacity-40"
-              aria-label={item.kind === "steer" ? "撤回补充" : "移出队列"}
-              title={item.kind === "steer" ? "撤回补充" : "移出队列"}
+              aria-label={item.kind === "steer" ? t("q.unsteer") : t("q.dequeue")}
+              title={item.kind === "steer" ? t("q.unsteer") : t("q.dequeue")}
             >
               <XIcon className="size-3.5" />
             </button>
@@ -303,37 +312,38 @@ export function PendingList({
 
 const PERMISSIONS: {
   id: SessionPermission;
-  label: string;
-  description: string;
+  label: MsgKey;
+  description: MsgKey;
   icon: typeof ShieldIcon;
 }[] = [
   {
     id: "full",
-    label: "完全访问",
-    description: "不设沙盒边界，命令可读写整台机器",
+    label: "perm.full",
+    description: "perm.full_desc",
     icon: ShieldAlertIcon,
   },
   {
     id: "workspace",
-    label: "工作区可写",
-    description: "宿主只读，只能写工作区与临时目录",
+    label: "perm.workspace",
+    description: "perm.workspace_desc",
     icon: ShieldCheckIcon,
   },
   {
     id: "workspace_only",
-    label: "仅限工作区",
-    description: "工作区外的宿主路径不可读也不可写",
+    label: "perm.workspace_only",
+    description: "perm.workspace_only_desc",
     icon: LockIcon,
   },
 ];
 
-const ENGINES: { id: SessionEngine; label: string; description: string }[] = [
-  { id: "standard", label: "标准", description: "模型直接调用工具" },
-  { id: "ptc", label: "PTC", description: "模型只写代码，工具经代码沙盒调用" },
-  { id: "clm_experimental", label: "CLM（实验）", description: "模型自主维护实时上下文" },
+const ENGINES: { id: SessionEngine; label: MsgKey; description: MsgKey }[] = [
+  { id: "standard", label: "engine.standard", description: "engine.standard_desc" },
+  { id: "ptc", label: "engine.ptc", description: "engine.ptc_desc" },
+  { id: "clm_experimental", label: "engine.clm", description: "engine.clm_desc" },
 ];
 
 export function SessionOptions({ sessionId, disabled }: { sessionId: string; disabled?: boolean }) {
+  const t = useT();
   const info = useTranscript((state) => state.bySession[sessionId]?.info);
   const draft = useSessions((state) => state.draftSession);
   const isDraft = sessionId === "draft-session";
@@ -345,61 +355,62 @@ export function SessionOptions({ sessionId, disabled }: { sessionId: string; dis
   const Icon = current?.icon ?? ShieldIcon;
 
   const run = (action: Promise<void>) =>
-    void action.catch((error) => toast.error(`切换失败：${errorText(error)}`));
+    void action.catch((error) => toast.error(t("sc.switch_failed", { error: errorText(error) })));
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          disabled={disabled}
-          className={CHIP}
-          aria-label="会话权限、自主程度与引擎"
-        >
+        <button type="button" disabled={disabled} className={CHIP} aria-label={t("cp.options")}>
           <Icon className="size-3.5 shrink-0" />
-          <span className="truncate">{current?.label ?? "默认权限"}</span>
+          <span className="truncate">{current ? t(current.label) : t("cp.perm_default")}</span>
           {autonomy.id !== "default" && (
-            <span className="truncate text-text-tertiary">· {autonomy.label}</span>
+            <span className="truncate text-text-tertiary">· {t(autonomy.label)}</span>
           )}
-          {engine.id !== "standard" && <span className="text-text-tertiary">· {engine.label}</span>}
+          {engine.id !== "standard" && (
+            <span className="text-text-tertiary">· {t(engine.label)}</span>
+          )}
           <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-72 p-1">
         <DropdownMenuLabel className="px-2 py-1.5 text-2xs font-medium text-text-tertiary">
-          命令权限
+          {t("cp.perm_title")}
         </DropdownMenuLabel>
         {PERMISSIONS.map((item) => (
           <OptionItem
             key={item.id}
             icon={<item.icon className="size-4" />}
-            label={item.label}
-            description={item.description}
+            label={t(item.label)}
+            description={t(item.description)}
             selected={item.id === permission}
             onSelect={() => run(setSessionPermission(sessionId, item.id))}
           />
         ))}
         <DropdownMenuSeparator />
-        <OptionGroup title="自主程度" value={autonomy.label}>
+        <OptionGroup title={t("cp.autonomy")} value={t(autonomy.label)}>
           {AUTONOMY.map((item) => (
             <OptionItem
               key={item.id}
-              label={item.label}
-              description={item.description}
+              label={t(item.label)}
+              description={t(item.description)}
               selected={item.id === autonomy.id}
               onSelect={() => run(setSessionAutonomy(sessionId, item.id))}
             />
           ))}
         </OptionGroup>
         <OptionGroup
-          title="会话引擎"
-          value={info?.engine_locked ? `${engine.label} · 已锁定` : engine.label}
+          title={t("cp.engine")}
+          value={
+            info?.engine_locked
+              ? t("cp.engine_locked", { label: t(engine.label) })
+              : t(engine.label)
+          }
         >
           {ENGINES.map((item) => (
             <OptionItem
               key={item.id}
-              label={item.label}
-              description={item.description}
+              label={t(item.label)}
+              description={t(item.description)}
               selected={item.id === engine.id}
               disabled={info?.engine_locked && item.id !== engine.id}
               onSelect={() => run(setSessionEngine(sessionId, item.id))}
@@ -407,7 +418,7 @@ export function SessionOptions({ sessionId, disabled }: { sessionId: string; dis
           ))}
           {info?.engine_locked && (
             <p className="px-2 pt-1 pb-1.5 text-2xs text-text-tertiary">
-              首条消息后引擎已锁定；换引擎请新建会话
+              {t("cp.engine_locked_hint")}
             </p>
           )}
         </OptionGroup>
@@ -473,6 +484,7 @@ function OptionItem({
 // ---------- 计划开关 ----------
 
 export function PlanToggle({ sessionId, disabled }: { sessionId: string; disabled?: boolean }) {
+  const t = useT();
   const active = useTranscript((state) => Boolean(state.bySession[sessionId]?.info.plan_active));
   return (
     <Tooltip>
@@ -483,7 +495,7 @@ export function PlanToggle({ sessionId, disabled }: { sessionId: string; disable
           aria-pressed={active}
           onClick={() =>
             void togglePlanMode(sessionId, !active).catch((error) =>
-              toast.error(`切换计划状态失败：${errorText(error)}`),
+              toast.error(t("slash.plan_failed", { error: errorText(error) })),
             )
           }
           className={cn(
@@ -492,11 +504,11 @@ export function PlanToggle({ sessionId, disabled }: { sessionId: string; disable
           )}
         >
           <ListChecksIcon className="size-3.5" />
-          <span>计划</span>
+          <span>{t("cp.plan")}</span>
         </button>
       </TooltipTrigger>
       <TooltipContent side="top">
-        {active ? "退出计划状态" : "先写计划，审阅通过再动手"} · Alt+J
+        {active ? t("cp.plan_exit") : t("cp.plan_enter")} · Alt+J
       </TooltipContent>
     </Tooltip>
   );

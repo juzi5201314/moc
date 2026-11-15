@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::SessionTable;
 use super::archive;
 use super::cache_budget::serialized_bytes;
@@ -124,7 +125,9 @@ impl SessionTable {
             let end = match before_entry_id.as_deref() {
                 Some(id) => state
                     .transcript_position(id)
-                    .ok_or_else(|| CoreError::Session(format!("transcript 消息不存在：{id}")))?,
+                    .ok_or_else(|| {
+                        CoreError::Session(t!("core.err.transcript_msg_missing", id = id).into_owned())
+                    })?,
                 None => state.transcript.len(),
             };
             let limit = usize::try_from(max_entries)
@@ -236,7 +239,9 @@ impl SessionTable {
                             redo_tip_entry_id = tail.message_tip.clone();
                             let end = match &page.before_entry_id {
                                 Some(id) => tail.position(id).ok_or_else(|| {
-                                    CoreError::Session(format!("前滚消息不存在：{id}"))
+                                    CoreError::Session(
+                                        t!("core.err.rollforward_msg_missing", id = id).into_owned(),
+                                    )
                                 })?,
                                 None => tail.len(),
                             };

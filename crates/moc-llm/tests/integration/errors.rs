@@ -89,6 +89,7 @@ fn request() -> ChatRequest {
 
 #[tokio::test]
 async fn image_524_reports_exact_body_and_obeys_timeout_retry_policy() {
+    rust_i18n::set_locale("zh");
     use base64::Engine as _;
     use moc_llm::{ContentPart, ImageSource, Role};
     let server = start().await;
@@ -156,6 +157,7 @@ async fn image_524_reports_exact_body_and_obeys_timeout_retry_policy() {
 
 #[tokio::test]
 async fn request_budget_rejection_never_reaches_the_gateway() {
+    rust_i18n::set_locale("zh");
     let server = start().await;
     let mut req = request();
     req.options.max_request_bytes = Some(1);

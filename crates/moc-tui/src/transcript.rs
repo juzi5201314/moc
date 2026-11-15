@@ -41,11 +41,11 @@ impl DetailLevel {
     }
 
     /// 档位的中文名（切换提示用）。
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::Hidden => "隐藏",
-            Self::Brief => "简略",
-            Self::Full => "完整",
+            Self::Hidden => rust_i18n::t!("tui.detail.hidden"),
+            Self::Brief => rust_i18n::t!("tui.detail.brief"),
+            Self::Full => rust_i18n::t!("tui.detail.full"),
         }
     }
 }

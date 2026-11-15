@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use moc_core::Core;
 use moc_protocol::SessionEngine;
+use rust_i18n::t;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::app::{App, Focus};
@@ -44,7 +45,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     let (events, mut event_rx) = unbounded_channel::<AppEvent>();
     let mut connection = connect_embedded(Arc::clone(&core), events.clone())
         .await
-        .context("连接后台服务失败")?;
+        .context(t!("tui.err.connect_backend"))?;
 
     let mut app = App::new(theme, events.clone());
     app.sandbox_modes = connection.sandbox_modes.clone();
@@ -285,7 +286,7 @@ async fn event_loop(
                         if app.session.as_ref().is_some_and(|session| session.id == session_id) {
                             app.btw.expanded = false;
                             if app.focus == Focus::Btw { app.focus = Focus::Prompt; }
-                            app.set_notice("会话已卸载，写租约已释放；旁路内存已清空");
+                            app.set_notice(t!("tui.event.session_unloaded").into_owned());
                         }
                     }
                     Some(event @ (AppEvent::SettingsResponse {..} | AppEvent::ConfigurationLoaded(_)
@@ -321,15 +322,15 @@ async fn event_loop(
                     Some(AppEvent::ClipboardPaste(payload)) => match payload {
                         Some(ClipboardPayload::Image { media_type, data }) => {
                             app.prompt.insert_image(media_type, data);
-                            app.set_notice("已附加剪贴板图片");
+                            app.set_notice(t!("tui.event.image_attached").into_owned());
                         }
                         Some(ClipboardPayload::Text(text)) => app.prompt.insert_text(&text),
                         None => {
-                            app.set_notice("剪贴板中没有可粘贴的图片或文本");
+                            app.set_notice(t!("tui.event.clipboard_empty").into_owned());
                         }
                     },
                     Some(AppEvent::Permission { params, reply }) => {
-                        if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify("有操作等待你的确认"); }
+                        if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify(t!("tui.event.notify_permission").as_ref()); }
                         app.modal = Some(Modal::Permission {
                             params,
                             selected: 0,
@@ -339,7 +340,7 @@ async fn event_loop(
                         app.focus = crate::app::Focus::Prompt;
                     }
                     Some(AppEvent::Ask { params, reply }) => {
-                        if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify("有问题等待你的回答"); }
+                        if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify(t!("tui.event.notify_ask").as_ref()); }
                         let per_question = params.questions.len();
                         // 高亮默认落在推荐项上；勾选集永远从空开始——
                         // 推荐只是徽章提示，答案必须由用户亲自勾选。
@@ -368,7 +369,7 @@ async fn event_loop(
                     }
                     Some(AppEvent::PluginOutput { name, text, error }) => {
                         let text = if text.trim().is_empty() {
-                            format!("插件命令 /{name} 没有输出")
+                            t!("tui.event.plugin_no_output_fmt", name = name.as_str()).into_owned()
                         } else {
                             text
                         };
@@ -422,9 +423,12 @@ async fn event_loop(
                                 Ok(text) => {
                                     write_osc52(&text);
                                     tokio::spawn(async move { let _ = crate::clipboard::copy_text_to_clipboard(&text).await; });
-                                    app.set_notice("已复制完整原文");
+                                    app.set_notice(t!("tui.event.copied_full").into_owned());
                                 }
-                                Err(error) => app.set_notice(format!("复制失败：{error}")),
+                                Err(error) => app.set_notice(
+                                    t!("tui.event.copy_failed_fmt", err = error.to_string())
+                                        .into_owned(),
+                                ),
                             }
                         }
                     }
@@ -461,14 +465,20 @@ async fn event_loop(
                             app.subagent_generation = app.subagent_generation.wrapping_add(1);
                             app.sync_subagent_sidebar();
                         }
-                        Err(error) => app.set_error_notice(format!("读取子代理列表失败：{error}")),
+                        Err(error) => app.set_error_notice(
+                            t!("tui.event.subagent_list_failed_fmt", err = error.to_string())
+                                .into_owned(),
+                        ),
                     },
                     Some(AppEvent::FocusLoaded { returning, result }) => {
                         apply_focus_loaded(app, connection, returning, result);
                     }
                     Some(AppEvent::SubagentOperation(result)) => match result {
                         Ok(notice) => app.set_notice(notice.message),
-                        Err(error) => app.set_error_notice(format!("子代理操作失败：{error}")),
+                        Err(error) => app.set_error_notice(
+                            t!("tui.event.subagent_op_failed_fmt", err = error.to_string())
+                                .into_owned(),
+                        ),
                     },
                     Some(AppEvent::ImagePrepared { key, result }) => {
                         app.images.complete(key.clone(), result);
@@ -639,8 +649,10 @@ async fn event_loop(
                         if read_only {
                             let holder = lock_holder
                                 .map(|lock| format!("{} (pid {})", lock.frontend, lock.pid))
-                                .unwrap_or_else(|| "另一个 moc 进程".into());
-                            app.set_notice(format!("会话被 {holder} 占用，已只读打开"));
+                                .unwrap_or_else(|| t!("tui.event.other_process").into_owned());
+                            app.set_notice(
+                                t!("tui.event.locked_readonly_fmt", holder = holder).into_owned(),
+                            );
                         }
                         // 恢复会话的 todo 快照：HUD 立刻可见，不必等下一次 TodoChanged。
                         app.todos = todos;

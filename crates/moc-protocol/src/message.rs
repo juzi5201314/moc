@@ -497,6 +497,7 @@ mod tests {
 
     #[test]
     fn response_wire_shapes() {
+        rust_i18n::set_locale("zh");
         let ok = RpcMessage::Response(Response::result(
             Id::Number(1),
             json!({ "cancelled": true }),

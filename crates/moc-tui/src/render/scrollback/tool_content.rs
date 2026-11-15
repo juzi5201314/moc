@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::super::diff;
 use super::super::image::ImagePlacement;
 use super::super::image::ImageState;
@@ -95,7 +97,7 @@ pub(super) fn tool_body(
             lines.insert(
                 0,
                 Line::from(Span::styled(
-                    "… 仅显示预览末尾",
+                    t!("tui.tool.preview_tail").into_owned(),
                     Style::new().fg(app.theme.gray_dim),
                 )),
             );
@@ -417,14 +419,16 @@ pub(super) fn tool_images(
     let note = |text: String| Line::from(Span::styled(text, Style::new().fg(theme.gray_dim)));
     for image in &tool.images[..shown] {
         let Some(graphics) = app.graphics else {
-            lines.push(note(format!("[图片 {}]", image.media_type)));
+            lines.push(note(
+                t!("tui.tool.image_fmt", kind = image.media_type.as_ref()).into_owned(),
+            ));
             continue;
         };
         let state = if spawn_images {
             match image.spec_factory() {
                 Some(make) => app.images.state(&image.key, make),
                 // 超出显示上限的图在落地时已丢弃载荷：不该走到这里
-                None => ImageState::Failed("图片载荷已丢弃".into()),
+                None => ImageState::Failed(t!("tui.tool.image_dropped").into_owned().into()),
             }
         } else {
             match app.images.peek(&image.key) {
@@ -435,7 +439,9 @@ pub(super) fn tool_images(
         match state {
             ImageState::Ready(prepared) => {
                 let Some(layout) = image_layout(prepared.size(), graphics.cell, max_cols) else {
-                    lines.push(note(format!("[图片 {}]", image.media_type)));
+                    lines.push(note(
+                        t!("tui.tool.image_fmt", kind = image.media_type.as_ref()).into_owned(),
+                    ));
                     continue;
                 };
                 let row = lines.len();
@@ -452,16 +458,21 @@ pub(super) fn tool_images(
                     key: image.key.clone(),
                 });
             }
-            ImageState::Pending => lines.push(note("图片解码中…".to_owned())),
-            ImageState::Failed(reason) => lines.push(note(format!("图片无法显示：{reason}"))),
+            ImageState::Pending => lines.push(note(t!("tui.tool.image_decoding").into_owned())),
+            ImageState::Failed(reason) => lines.push(note(
+                t!("tui.tool.image_failed_fmt", err = reason.as_ref()).into_owned(),
+            )),
         }
     }
     if tool.images.len() > shown {
-        lines.push(note(format!(
-            "{} 还有 {} 张图片",
-            labels::OMITTED,
-            tool.images.len() - shown
-        )));
+        lines.push(note(
+            t!(
+                "tui.tool.more_images_fmt",
+                omitted = labels::OMITTED,
+                count = tool.images.len() - shown
+            )
+            .into_owned(),
+        ));
     }
     placements
 }
@@ -492,7 +503,7 @@ pub(super) fn fixed_tool_rows(
         rows.extend(content.by_ref().take(AGENT_MESSAGE_PREVIEW_ROWS));
         if omitted > 0 || content.next().is_some() {
             rows.push(Line::from(Span::styled(
-                "⋯ 仅显示开头",
+                t!("tui.tool.preview_head").into_owned(),
                 Style::new().fg(theme.gray_dim),
             )));
         }
@@ -503,19 +514,20 @@ pub(super) fn fixed_tool_rows(
                 preview(
                     task.get("title")
                         .and_then(Value::as_str)
-                        .unwrap_or("子代理任务"),
+                        .map_or_else(|| t!("tui.tool.subagent_task").into_owned(), str::to_owned)
+                        .as_str(),
                     task.get("task").and_then(Value::as_str).unwrap_or_default(),
                 );
             }
         } else {
             preview(
-                "子代理任务",
+                t!("tui.tool.subagent_task").as_ref(),
                 args.get("task").and_then(Value::as_str).unwrap_or_default(),
             );
         }
     } else if tool.name == "yield" && !warnings_only {
         preview(
-            "交付报告",
+            t!("tui.tool.yield_report").as_ref(),
             args.get("report")
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
@@ -539,17 +551,19 @@ pub(super) fn fixed_tool_rows(
                 let url = page.get("url").and_then(Value::as_str).unwrap_or_default();
                 let title = page.get("title").and_then(Value::as_str).unwrap_or(url);
                 let text = if let Some(error) = page.get("error").and_then(Value::as_str) {
-                    format!("抓取失败：{url} — {error}")
+                    t!("tui.tool.fetch_failed_fmt", url = url, err = error).into_owned()
                 } else {
-                    format!(
-                        "{title} · 约 {} tokens{}",
-                        page.get("tokens").and_then(Value::as_u64).unwrap_or(0),
-                        if page.get("truncated").and_then(Value::as_bool) == Some(true) {
-                            " · 警告：内容已截断"
+                    t!(
+                        "tui.tool.fetch_tokens_fmt",
+                        title = title,
+                        tokens = page.get("tokens").and_then(Value::as_u64).unwrap_or(0),
+                        warn = if page.get("truncated").and_then(Value::as_bool) == Some(true) {
+                            t!("tui.tool.truncated_warn")
                         } else {
-                            ""
+                            "".into()
                         }
                     )
+                    .into_owned()
                 };
                 let color = if page.get("error").is_some()
                     || page.get("truncated").and_then(Value::as_bool) == Some(true)

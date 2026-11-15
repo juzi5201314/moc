@@ -47,20 +47,20 @@ pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Option<Value
             };
             if matches!(kind, FieldKind::SignedInteger) {
                 let n = s.trim().parse::<i64>().map_err(|_| {
-                    anyhow::anyhow!("请输入有效整数（支持负数、200k、1m 或千分位）")
+                    anyhow::anyhow!("{}", t!("tui.form.bad_signed_int"))
                 })?;
                 json!(
                     n.checked_mul(multiplier as i64)
-                        .ok_or_else(|| anyhow::anyhow!("数值超出支持范围"))?
+                        .ok_or_else(|| anyhow::anyhow!("{}", t!("tui.form.out_of_range")))?
                 )
             } else {
                 let n = s
                     .trim()
                     .parse::<u64>()
-                    .map_err(|_| anyhow::anyhow!("请输入有效整数（支持 200k、1m 或千分位）"))?;
+                    .map_err(|_| anyhow::anyhow!("{}", t!("tui.form.bad_int")))?;
                 json!(
                     n.checked_mul(multiplier)
-                        .ok_or_else(|| anyhow::anyhow!("数值超出支持范围"))?
+                        .ok_or_else(|| anyhow::anyhow!("{}", t!("tui.form.out_of_range")))?
                 )
             }
         }
@@ -76,25 +76,26 @@ pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Option<Value
             let number = s
                 .trim()
                 .parse::<f64>()
-                .map_err(|_| anyhow::anyhow!("请输入有效数字"))?;
+                .map_err(|_| anyhow::anyhow!("{}", t!("tui.form.bad_number")))?;
             let number = number * multiplier;
-            anyhow::ensure!(number.is_finite(), "请输入有限的数字");
+            anyhow::ensure!(number.is_finite(), "{}", t!("tui.form.finite"));
             anyhow::ensure!(
                 matches!(kind, FieldKind::SignedNumber) || number >= 0.0,
-                "请输入有限的非负数"
+                "{}",
+                t!("tui.form.non_negative")
             );
             json!(number)
         }
         FieldKind::Object => {
-            let value: Value =
-                serde_json::from_str(text).map_err(|e| anyhow::anyhow!("JSON 格式有误：{e}"))?;
-            anyhow::ensure!(value.is_object(), "请输入 JSON 对象");
+            let value: Value = serde_json::from_str(text)
+                .map_err(|e| anyhow::anyhow!("{}", t!("tui.form.bad_json", err = e.to_string())))?;
+            anyhow::ensure!(value.is_object(), "{}", t!("tui.form.json_object"));
             value
         }
         FieldKind::Json => {
-            let value: Value =
-                serde_json::from_str(text).map_err(|e| anyhow::anyhow!("JSON 格式有误：{e}"))?;
-            anyhow::ensure!(!value.is_null(), "清空输入可恢复默认，不要填写 null");
+            let value: Value = serde_json::from_str(text)
+                .map_err(|e| anyhow::anyhow!("{}", t!("tui.form.bad_json", err = e.to_string())))?;
+            anyhow::ensure!(!value.is_null(), "{}", t!("tui.form.no_null"));
             value
         }
         _ => json!(text),
@@ -212,14 +213,7 @@ fn fields_key(
             if let Some(RowKind::Field(idx)) = panel.row()
                 && let Some(field) = panel.fields.get(*idx)
             {
-                let target_tab = match field.tab.as_str() {
-                    "技能" => "Skills",
-                    "模型" if field.path.first().is_some_and(|root| root == "providers") => {
-                        "供应商与模型"
-                    }
-                    "模型" => "模型角色",
-                    other => other,
-                };
+                let target_tab = super::tab_of(&field.path);
                 if let Some(pos) = TABS.iter().position(|t| *t == target_tab) {
                     panel.tab = pos;
                 }
@@ -310,7 +304,7 @@ fn fields_key(
         KeyCode::PageDown => panel.selected = (panel.selected + 10).min(last),
         KeyCode::Home | KeyCode::Char('g') => panel.selected = 0,
         KeyCode::End | KeyCode::Char('G') => panel.selected = last,
-        KeyCode::Char('m') if TABS[panel.tab] == "会话" => panel.request(
+        KeyCode::Char('m') if TABS[panel.tab] == "session" => panel.request(
             connection,
             &app.events,
             ConfigAction::Maintenance { apply: false },
@@ -328,16 +322,16 @@ fn fields_key(
         KeyCode::Char('a') => panel.add(),
         KeyCode::Char('d') if mods == KeyModifiers::CONTROL => panel.begin_named(
             EditTarget::ModelDefaults,
-            "添加模型默认设置",
-            "填写模型名匹配，例如 gpt-*",
+            &t!("tui.form.add_defaults_title"),
+            &t!("tui.form.add_defaults_hint"),
             "",
         ),
         KeyCode::Char('/') => {
             let current = panel.filter.clone();
             panel.begin_named(
                 EditTarget::Filter,
-                "搜索设置项",
-                "输入名称或关键字，留空显示全部",
+                &t!("tui.form.search_title"),
+                &t!("tui.form.search_hint"),
                 &current,
             )
         }
@@ -413,7 +407,7 @@ fn reset_field(panel: &mut SettingsPanel, app: &mut App, connection: &EmbeddedCo
     let Some(field) = panel.field().cloned() else {
         return;
     };
-    let label = format!("恢复默认：{}", field.label);
+    let label = t!("tui.form.reset_fmt", label = field.label).into_owned();
     let path = field.path.clone();
     let _ = panel.commit(&label, app, connection, |panel| {
         panel.remove_value(&path);
@@ -427,11 +421,11 @@ fn delete_group(panel: &mut SettingsPanel) {
         return;
     };
     let Some(path) = group.path.clone() else {
-        panel.error = Some("这一组不能整组删除；可逐项按 R 恢复默认值".into());
+        panel.error = Some(t!("tui.form.group_no_delete").into_owned());
         return;
     };
     panel.view = View::Confirm {
-        text: format!("删除“{}”？按 Ctrl+Z 可以撤回。", group.title),
+        text: t!("tui.form.delete_fmt", title = group.title).into_owned(),
         action: ConfirmAction::Remove(path),
     };
 }
@@ -454,7 +448,11 @@ fn confirm_key(
     }
     match action {
         ConfirmAction::Remove(path) => {
-            let label = format!("删除 {}", path.last().cloned().unwrap_or_default());
+            let label = t!(
+                "tui.form.delete_item_fmt",
+                name = path.last().cloned().unwrap_or_default()
+            )
+            .into_owned();
             let _ = panel.commit(&label, app, connection, |panel| {
                 panel.remove_value(&path);
                 Ok(Store::of(&path))
@@ -475,10 +473,7 @@ fn maintenance_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
     }
     if code == KeyCode::Enter && !report.applied {
         panel.view = View::Confirm {
-            text: format!(
-                "执行维护？预计清理 {} 个临时文件；被会话引用的文件不会处理。",
-                report.removed.len()
-            ),
+            text: t!("tui.form.maint_confirm", count = report.removed.len()).into_owned(),
             action: ConfirmAction::Run(ConfigAction::Maintenance { apply: true }),
         };
         return false;
@@ -535,17 +530,18 @@ fn apply_edit(
             let version = text.trim();
             anyhow::ensure!(
                 !version.is_empty() && !version.contains(char::is_whitespace),
-                "接口版本不能为空，也不能包含空白，例如 2024-10-21"
+                "{}",
+                t!("tui.form.azure_version")
             );
             let value = json!({ "Azure": { "api_version": version } });
-            panel.commit("服务端点：Azure OpenAI", app, connection, |panel| {
+            panel.commit(&t!("tui.snap.azure_endpoint"), app, connection, |panel| {
                 panel.set_value(path, value);
                 Ok(Store::Core)
             })?;
         }
         EditTarget::Model(provider) => {
             let id = text.trim();
-            anyhow::ensure!(!id.is_empty(), "模型 ID 不能为空");
+            anyhow::ensure!(!id.is_empty(), "{}", t!("tui.err.model_id_empty"));
             panel.commit(label, app, connection, |panel| {
                 panel.insert_model(provider, id)?;
                 Ok(Store::Core)
@@ -556,17 +552,17 @@ fn apply_edit(
             let name = text.trim().to_owned();
             moc_mcp_name(&name)?;
             let path = vec!["mcp".into(), "servers".into(), name];
-            anyhow::ensure!(panel.value(&path).is_none(), "同名 MCP 服务已存在");
+            anyhow::ensure!(panel.value(&path).is_none(), "{}", t!("tui.err.mcp_exists"));
             let target = path.clone();
             panel.commit(label, app, connection, |panel| {
                 panel.set_value(&target, json!({"type":"stdio","command":"","args":[],"env":{},"headers":{},"enabled":true,"tools":{"allow":[],"deny":[]}}));
                 Ok(Store::Core)
             })?;
-            panel.message = Some("已添加 MCP 服务，请填写启动程序或地址".into());
+            panel.message = Some(t!("tui.form.mcp_added").into_owned());
         }
         EditTarget::ModelDefaults => {
             let pattern = text.trim().to_owned();
-            anyhow::ensure!(!pattern.is_empty(), "模型名匹配不能为空");
+            anyhow::ensure!(!pattern.is_empty(), "{}", t!("tui.err.pattern_empty"));
             let path = vec!["defaults".into(), "models".into(), pattern];
             let target = path.clone();
             panel.commit(label, app, connection, |panel| {
@@ -598,7 +594,8 @@ fn moc_mcp_name(name: &str) -> anyhow::Result<()> {
             && name
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte)),
-        "MCP 名使用字母、数字、-、_，不能含 __"
+        "{}",
+        t!("tui.err.mcp_name")
     );
     Ok(())
 }

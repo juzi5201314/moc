@@ -1,5 +1,6 @@
 use super::cache_budget::serialized_bytes;
 use crate::error::CoreError;
+use rust_i18n::t;
 use moc_llm::ContentPart;
 use moc_llm::Message;
 use moc_llm::ReasoningBlock;
@@ -38,7 +39,7 @@ pub(super) fn page_plans(
     } else {
         Some(
             u32::try_from(start)
-                .map_err(|_| CoreError::Session("计划数超过分页游标范围".into()))?,
+                .map_err(|_| CoreError::Session(t!("core.err.plans_cursor").into_owned()))?,
         )
     };
     Ok((plans[start..end].to_vec(), before))

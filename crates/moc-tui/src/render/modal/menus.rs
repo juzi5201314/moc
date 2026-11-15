@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use crate::app::App;
 use crate::render::labels;
 use crate::render::labels::KeyHit;
@@ -110,7 +112,11 @@ pub fn draw_completion_menu(
         )));
     }
     let footer = overlay::footer(
-        &[("↑↓", "选择"), ("tab/enter", "确认"), ("esc", "关闭")],
+        &[
+            ("↑↓", t!("tui.hint.choose")),
+            ("tab/enter", t!("tui.hint.confirm")),
+            ("esc", t!("tui.hint.close")),
+        ],
         content_width,
         theme,
     );
@@ -169,7 +175,7 @@ pub(super) fn draw_legend_menu<T: crate::app::LegendItem + PartialEq>(
     let description = menu
         .items
         .get(selected)
-        .map_or("", crate::app::LegendItem::description);
+        .map_or(std::borrow::Cow::Borrowed(""), crate::app::LegendItem::description);
     let frame_area = frame.area();
     // 正文宽 = ❯ + 标签；外宽再加两侧内边距与边框。
     let width = u16::try_from(label_width + 6)
@@ -223,7 +229,7 @@ pub(super) fn draw_legend_menu<T: crate::app::LegendItem + PartialEq>(
         Style::new().bg(theme.bg_base).fg(theme.text_primary),
     );
     frame.render_widget(Paragraph::new(lines).block(overlay::panel(theme)), area);
-    draw_legend_tip(frame, theme, area, selected, description);
+    draw_legend_tip(frame, theme, area, selected, &description);
 }
 
 /// 高亮项的一句说明：贴菜单侧边的小提示框，文本行与高亮条目行垂直对齐。

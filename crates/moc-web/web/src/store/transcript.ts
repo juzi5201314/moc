@@ -6,6 +6,7 @@
 import { enablePatches, produceWithPatches } from "immer";
 import { create } from "zustand";
 import { recordBlockChange } from "@/lib/block-changes";
+import { t } from "@/lib/i18n";
 import {
   appendLocalStatus,
   appendLocalUser,
@@ -259,7 +260,7 @@ rpc.onRequest("session/request_permission", (params) => {
       ];
     }),
   );
-  notifyBackground("moc 需要授权", params.title);
+  notifyBackground(t("notify.permission"), params.title);
   return promise;
 });
 
@@ -272,7 +273,7 @@ rpc.onRequest("session/request_ask", (params) => {
       state.asks[params.session_id] = [...(state.asks[params.session_id] ?? []), params];
     }),
   );
-  notifyBackground("moc 有问题需要回答", params.questions[0]?.question ?? "");
+  notifyBackground(t("notify.ask"), params.questions[0]?.question ?? "");
   return promise;
 });
 

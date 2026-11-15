@@ -11,6 +11,7 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
+use rust_i18n::t;
 
 /// 整行或整块被略去时的引导符（`⋯ 还有 3 行`）。
 pub const OMITTED: &str = "⋯";
@@ -21,12 +22,12 @@ pub const RATE_UNIT: &str = "tok/s";
 
 /// 「⋯ 还有 N 行」：行级省略提示。
 pub fn more_lines(count: usize) -> String {
-    format!("{OMITTED} 还有 {count} 行")
+    t!("tui.labels.more_lines", omitted = OMITTED, count = count).into_owned()
 }
 
 /// 「⋯ 还有 N 条」：列表项省略提示。
 pub fn more_items(count: usize) -> String {
-    format!("{OMITTED} 还有 {count} 条")
+    t!("tui.labels.more_items", omitted = OMITTED, count = count).into_owned()
 }
 
 /// 块标题。
@@ -134,7 +135,7 @@ pub fn keys(bindings: &[String]) -> String {
 /// 键写配置口径（`enter`、`ctrl+s`、`pgup/pgdn`、`↑↓`），逐段经 [`key`] 规范；
 /// 键为空时只显示动作（`输入搜索`）。放不下 `width` 时**从左往右**丢项，最后一项
 /// 恒保留（再放不下才截断）：调用方把最可省的项写在前面、关闭/确认写在末尾。
-pub fn hints(items: &[(&str, &str)], width: usize) -> String {
+pub fn hints<K: AsRef<str>, A: AsRef<str>>(items: &[(K, A)], width: usize) -> String {
     hint_layout(items, width).0
 }
 
@@ -170,12 +171,16 @@ impl HintKey {
 ///
 /// 只有单一按键的项可点：`↑↓`、`1-9`、`pgup/pgdn`、`e/c` 这类多键或多义的项点了
 /// 不知道该按哪个，保持纯文字；截断后不完整的项也不登记。
-pub fn hint_layout(items: &[(&str, &str)], width: usize) -> (String, Vec<HintKey>) {
+pub fn hint_layout<K: AsRef<str>, A: AsRef<str>>(
+    items: &[(K, A)],
+    width: usize,
+) -> (String, Vec<HintKey>) {
     let shown: Vec<String> = items
         .iter()
         .map(|(binding, action)| {
+            let (binding, action) = (binding.as_ref(), action.as_ref());
             if binding.is_empty() {
-                (*action).to_owned()
+                action.to_owned()
             } else {
                 let binding = binding.split('/').map(key).collect::<Vec<_>>().join("/");
                 format!("{binding} {action}")
@@ -190,7 +195,10 @@ pub fn hint_layout(items: &[(&str, &str)], width: usize) -> (String, Vec<HintKey
     let limit = super::wrap::str_width(&text);
     let mut keys = Vec::new();
     let mut column = 0usize;
-    for (item, (binding, _)) in shown[start..].iter().zip(&items[start..]) {
+    for (item, binding) in shown[start..]
+        .iter()
+        .zip(items[start..].iter().map(|(k, _)| k.as_ref()))
+    {
         let item_width = super::wrap::str_width(item);
         if column + item_width <= limit
             && let Some((modifiers, code)) = hint_key(binding)

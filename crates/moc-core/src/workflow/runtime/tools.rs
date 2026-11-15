@@ -1,6 +1,7 @@
 //! workflow 工具：仅会话激活后进入 catalog（激活不造工具，只放行执行与可见性）。
 //! 路由纪律写进描述：仅当用户点名 workflow/工作流 时调用，且先加载 workflow-authoring skill。
 
+use rust_i18n::t;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -575,7 +576,7 @@ async fn eval_loop(
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| ToolError::new("E_HOST", format!("worker 启动失败：{e}")))?;
+        .map_err(|e| ToolError::new("E_HOST", t!("core.err.worker_spawn", error = e).into_owned()))?;
     let mut stdin = child
         .stdin
         .take()

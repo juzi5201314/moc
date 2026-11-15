@@ -8,6 +8,7 @@ use super::wrap::str_width;
 use crate::app::App;
 use crate::app::Focus;
 use ratatui::Frame;
+use rust_i18n::t;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -326,18 +327,18 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
     let (left_key, mut left_tip, left_color) = if selecting {
         (
             Cow::Borrowed("Ctrl+C"),
-            "复制 · Esc 取消",
+            t!("tui.prompt.copy_cancel"),
             theme.gray_bright,
         )
     } else if copy_feedback {
-        (Cow::Borrowed(""), "已复制", theme.gray_bright)
+        (Cow::Borrowed(""), t!("tui.prompt.copied"), theme.gray_bright)
     } else if app.prompt_running {
         (
             Cow::Borrowed("Esc"),
             if app.cancel_requested {
-                "正在停止"
+                t!("tui.prompt.stopping")
             } else {
-                "停止"
+                t!("tui.prompt.stop")
             },
             if app.cancel_requested {
                 theme.accent_warning
@@ -352,17 +353,18 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
             .get("help")
             .and_then(|keys| keys.first())
             .map_or_else(|| "—".to_owned(), |binding| labels::key(binding));
-        (Cow::Owned(help_key), "快捷键", theme.gray_dim)
+        (Cow::Owned(help_key), t!("tui.prompt.keys"), theme.gray_dim)
     };
     let left_key = left_key.as_ref();
     let show_cancel =
-        selecting && str_width(left_key) + 1 + str_width(left_tip) + right_width + 8 <= inner;
+        selecting && str_width(left_key) + 1 + str_width(&left_tip) + right_width + 8 <= inner;
     if selecting && !show_cancel {
-        left_tip = "复制";
+        left_tip = t!("tui.prompt.copy");
     }
     // 左端布局：`␣key tip`（胶囊存在时接 ` · capsule`），末尾再补一格空白，
     // 与右侧的留白对称；分隔点只画在提示与胶囊之间，不留孤点。
-    let tips_width = str_width(left_key) + usize::from(!left_key.is_empty()) + str_width(left_tip);
+    let tips_width =
+        str_width(left_key) + usize::from(!left_key.is_empty()) + str_width(&left_tip);
     let show_tips = tips_width + 4 + right_width + 4 <= inner;
 
     let buffer = frame.buffer_mut();
@@ -376,10 +378,10 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
             buffer.set_string(x, y, " ", Style::new());
             x += 1;
         }
-        buffer.set_string(x, y, left_tip, Style::new().fg(left_color));
-        x += cell_width(left_tip);
+        buffer.set_string(x, y, &left_tip, Style::new().fg(left_color));
+        x += cell_width(&left_tip);
         if selecting {
-            let copy_width = cell_width(left_key) + 1 + cell_width("复制");
+            let copy_width = cell_width(left_key) + 1 + cell_width(&t!("tui.prompt.copy"));
             app.key_hits.push(labels::KeyHit {
                 area: Rect::new(end_x, y, copy_width, 1),
                 modifiers: crossterm::event::KeyModifiers::CONTROL,
@@ -390,7 +392,7 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
                     area: Rect::new(
                         end_x + copy_width + cell_width(labels::SEP),
                         y,
-                        cell_width("Esc 取消"),
+                        cell_width(&t!("tui.prompt.cancel_hint")),
                         1,
                     ),
                     modifiers: crossterm::event::KeyModifiers::NONE,
@@ -412,9 +414,9 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
         app.workflow.queued_approvals.len() + usize::from(app.workflow.parked_approval.is_some());
     if runs_n + approvals_n > 0 {
         let capsule = if approvals_n > 0 {
-            format!("⚙{runs_n}跑·{approvals_n}审")
+            t!("tui.prompt.capsule_fmt", runs = runs_n, approvals = approvals_n).into_owned()
         } else {
-            format!("⚙{runs_n}跑")
+            t!("tui.prompt.capsule_runs_fmt", runs = runs_n).into_owned()
         };
         let cap_cells = cell_width(&capsule);
         // 有提示时胶囊跟在分隔点之后，没有提示就直接占左端。

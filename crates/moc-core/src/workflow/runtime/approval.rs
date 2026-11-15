@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::WorkflowManager;
 use crate::error::CoreError;
 use crate::workflow::compile::CompiledWorkflow;
@@ -93,7 +94,7 @@ impl WorkflowManager {
         std::fs::create_dir_all(&dir).map_err(|e| {
             vec![Diagnostic {
                 code: "E_IO",
-                message: format!("run 目录创建失败：{e}"),
+                message: t!("core.err.run_dir_create2", error = e).into_owned(),
                 line: 0,
                 col: 0,
             }]
@@ -101,7 +102,7 @@ impl WorkflowManager {
         std::fs::write(dir.join("script.ts"), source).map_err(|e| {
             vec![Diagnostic {
                 code: "E_IO",
-                message: format!("草稿脚本写入失败：{e}"),
+                message: t!("core.err.draft_write", error = e).into_owned(),
                 line: 0,
                 col: 0,
             }]

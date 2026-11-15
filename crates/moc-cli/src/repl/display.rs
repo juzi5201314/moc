@@ -3,13 +3,14 @@ use moc_protocol::methods::ModelSwitchOverflow;
 use moc_protocol::methods::SessionAutonomy;
 use moc_protocol::methods::SessionEngine;
 use moc_protocol::methods::SessionInfo;
+use rust_i18n::t;
 
 pub(super) fn parse_engine(engine: &str) -> anyhow::Result<SessionEngine> {
     match engine {
         "standard" => Ok(SessionEngine::Standard),
         "ptc" => Ok(SessionEngine::Ptc),
         "clm" | "clm-experimental" => Ok(SessionEngine::ClmExperimental),
-        _ => bail!("引擎必须是 standard、ptc 或 clm；计划状态用 /plan，单条只读问答用 /ask <问题>"),
+        _ => bail!("{}", t!("cli.display.bad_engine")),
     }
 }
 
@@ -32,18 +33,25 @@ pub(super) fn state_label(session: &SessionInfo) -> String {
     label
 }
 
-/// 容量缺口的中文描述；token 按原值输出，与 REPL 其它统计一致。
+/// 容量缺口的描述文本；token 按原值输出，与 REPL 其它统计一致。
 pub(super) fn capacity_notice(overflow: &ModelSwitchOverflow, selector: &str) -> String {
     if overflow.tokens > overflow.context_window {
-        format!(
-            "当前上下文 {} token 超过 {} 的窗口 {} token",
-            overflow.tokens, selector, overflow.context_window
+        t!(
+            "cli.display.over_window",
+            tokens = overflow.tokens,
+            selector = selector,
+            window = overflow.context_window
         )
+        .into_owned()
     } else {
-        format!(
-            "当前上下文 {} token 超过 {} 的压缩触发线 {} token（窗口 {} token）",
-            overflow.tokens, selector, overflow.threshold, overflow.context_window
+        t!(
+            "cli.display.over_threshold",
+            tokens = overflow.tokens,
+            selector = selector,
+            threshold = overflow.threshold,
+            window = overflow.context_window
         )
+        .into_owned()
     }
 }
 
@@ -71,13 +79,16 @@ pub(super) fn print_usage(result: &moc_protocol::SessionUsageResult) {
         };
         let reasoning = summary
             .reasoning_tokens
-            .map_or_else(|| "未知".to_owned(), |tokens| tokens.to_string());
+            .map_or_else(|| t!("cli.display.unknown").into_owned(), |tokens| {
+                tokens.to_string()
+            });
         let split = if summary.gen_ms > 0 {
-            format!(
-                "（生成 {}，网络等待 {}）",
-                format_duration(summary.gen_ms),
-                format_duration(summary.active_ms.saturating_sub(summary.gen_ms))
+            t!(
+                "cli.display.time_split",
+                gen = format_duration(summary.gen_ms),
+                net = format_duration(summary.active_ms.saturating_sub(summary.gen_ms))
             )
+            .into_owned()
         } else {
             String::new()
         };
@@ -88,22 +99,34 @@ pub(super) fn print_usage(result: &moc_protocol::SessionUsageResult) {
             moc_protocol::methods::UsageSource::Sidekick => {
                 format!("{} (sidekick)", summary.model)
             }
-            moc_protocol::methods::UsageSource::Subagent => format!("{} (子代理)", summary.model),
+            moc_protocol::methods::UsageSource::Subagent => {
+                t!("cli.display.subagent_model", model = summary.model.as_str()).into_owned()
+            }
             moc_protocol::methods::UsageSource::Session => summary.model.clone(),
         };
         println!(
-            "模型 {}：调用 {} 次，输入 {}，输出 {}，缓存命中 {} ({cache_rate:.1}%)，缓存写入 {}，思考 {}，用时 {}{split}，首 token 平均 {ttft}，TPS {tps}",
-            model_label,
-            summary.calls,
-            summary.input_tokens,
-            summary.output_tokens,
-            cache,
-            summary.cache_creation_input_tokens.unwrap_or(0),
-            reasoning,
-            format_duration(summary.active_ms),
+            "{}",
+            t!(
+                "cli.display.usage_row",
+                model = model_label,
+                calls = summary.calls,
+                input = summary.input_tokens,
+                output = summary.output_tokens,
+                cache_hit = cache,
+                cache_rate = format!("{cache_rate:.1}"),
+                cache_write = summary.cache_creation_input_tokens.unwrap_or(0),
+                reasoning = reasoning,
+                duration = format_duration(summary.active_ms),
+                split = split,
+                ttft = ttft,
+                tps = tps
+            )
         );
     }
-    println!("工具调用用时 {}", format_duration(result.tool_ms));
+    println!(
+        "{}",
+        t!("cli.display.tool_ms", ms = format_duration(result.tool_ms))
+    );
 }
 
 pub(super) fn average_ttft(summary: &moc_protocol::ModelUsageSummary) -> Option<u64> {
@@ -136,26 +159,42 @@ pub(super) fn format_duration(active_ms: u64) -> String {
 /// `/goal` 回执的渲染文本：目标原文、相位、已跑轮次与续跑状态。
 pub(super) fn render_goal(goal: Option<&moc_protocol::methods::GoalView>) -> String {
     let Some(goal) = goal else {
-        return "当前没有目标；/goal <objective> 创建\n".to_owned();
+        return t!("cli.display.no_goal").into_owned();
     };
     let phase = match goal.phase {
-        moc_protocol::methods::GoalPhase::Active => "进行中",
-        moc_protocol::methods::GoalPhase::Paused => "已暂停",
-        moc_protocol::methods::GoalPhase::Blocked => "已阻塞",
-        moc_protocol::methods::GoalPhase::Complete => "已完成",
+        moc_protocol::methods::GoalPhase::Active => t!("cli.display.goal_active"),
+        moc_protocol::methods::GoalPhase::Paused => t!("cli.display.goal_paused"),
+        moc_protocol::methods::GoalPhase::Blocked => t!("cli.display.goal_blocked"),
+        moc_protocol::methods::GoalPhase::Complete => t!("cli.display.goal_complete"),
     };
-    let mut text = format!("目标：{}\n状态：{phase}\n", goal.objective);
+    let mut text = t!(
+        "cli.display.goal_head",
+        objective = goal.objective,
+        phase = phase.as_ref()
+    )
+    .into_owned();
     if let Some(reason) = &goal.blocked_reason {
-        text.push_str(&format!("阻塞：{}: {}\n", reason.code, reason.message));
+        text.push_str(
+            &t!(
+                "cli.display.goal_blocked_by",
+                code = reason.code,
+                message = reason.message
+            )
+            .into_owned(),
+        );
     }
-    text.push_str(&format!(
-        "轮次：{}\n续跑：{}\n命令：/goal edit <objective> | /goal pause | /goal resume | /goal clear\n",
-        goal.rounds_started,
-        if goal.armed {
-            "自动"
-        } else {
-            "已停（/goal resume 恢复）"
-        }
-    ));
+    text.push_str(
+        &t!(
+            "cli.display.goal_tail",
+            rounds = goal.rounds_started,
+            armed = if goal.armed {
+                t!("cli.display.goal_armed")
+            } else {
+                t!("cli.display.goal_disarmed")
+            }
+            .as_ref()
+        )
+        .into_owned(),
+    );
     text
 }

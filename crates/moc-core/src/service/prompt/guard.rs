@@ -290,6 +290,7 @@ mod tests {
 
     #[test]
     fn first_violation_wins_and_stop_cancels_both_tokens() {
+        rust_i18n::set_locale("zh");
         let guard = PromptGuard::new(CancellationToken::new(), None);
         assert_eq!(guard.reason(), FinishReason::Cancelled);
         guard.stop(LoopViolation::new(LoopChannel::Tool, "重复".into()));
@@ -299,7 +300,7 @@ mod tests {
         guard.stop(LoopViolation::new(LoopChannel::Text, "后到".into()));
         assert_eq!(
             guard.violation().map(|violation| violation.channel),
-            Some("工具")
+            Some("工具".into())
         );
     }
 

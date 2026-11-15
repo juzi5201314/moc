@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { type MsgKey, useT } from "@/lib/i18n";
 import { choiceDisplay, choiceValue, formatField, getPath, parseField } from "@/lib/settings-doc";
 import { cn } from "@/lib/utils";
 import type { ConfigField, SettingsDocument } from "@/protocol/types";
@@ -59,6 +60,7 @@ export function SettingRow({
   error?: string | null;
   children: ReactNode;
 }) {
+  const t = useT();
   const scope = useSettings((state) => state.scope);
   return (
     <div className="group/row py-3.5">
@@ -66,14 +68,16 @@ export function SettingRow({
         <div className="min-w-0 flex-1" title={title}>
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             <span className="truncate">{label}</span>
-            {overridden && scope === "project" && <Badge variant="brand">项目覆盖</Badge>}
+            {overridden && scope === "project" && (
+              <Badge variant="brand">{t("sf.scope_override")}</Badge>
+            )}
             {overridden && onReset && (
               <button
                 type="button"
                 onClick={onReset}
                 className="shrink-0 rounded p-0.5 text-text-tertiary opacity-0 transition-opacity group-hover/row:opacity-100 hover:text-foreground focus-visible:opacity-100"
-                title="恢复默认（删除此项）"
-                aria-label="恢复默认"
+                title={t("sf.reset_hint")}
+                aria-label={t("sf.reset")}
               >
                 <RotateCcwIcon className="size-3" />
               </button>
@@ -182,6 +186,7 @@ function TextEditor({
 }
 
 export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocument }) {
+  const t = useT();
   const [error, setError] = useState<string | null>(null);
   const { explicit, fallback } = fieldValues(doc, field.path);
   const overridden = explicit !== undefined;
@@ -207,8 +212,8 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
       kind.type === "choice"
         ? kind.options
         : [
-            { value: "true", label: "开启" },
-            { value: "false", label: "关闭" },
+            { value: "true", label: t("common.on") },
+            { value: "false", label: t("common.off") },
           ];
     const current = overridden ? formatField(explicit, kind) : INHERIT;
     const fallbackText = formatField(fallback, kind);
@@ -236,11 +241,11 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
         </SelectTrigger>
         <SelectContent>
           <SelectItem value={INHERIT}>
-            默认
+            {t("common.default")}
             {fallbackOption
-              ? `（${fallbackOption.label}）`
+              ? t("sf.inherit_of", { label: fallbackOption.label })
               : fallbackText
-                ? `（${fallbackText}）`
+                ? t("sf.inherit_of", { label: fallbackText })
                 : ""}
           </SelectItem>
           {options.map((option) => (
@@ -256,13 +261,13 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
     const placeholder =
       kind.type === "secret"
         ? fallback
-          ? "已从上层配置继承"
-          : "未设置"
+          ? t("sf.inherited_ph")
+          : t("sf.unset")
         : fallbackText
           ? kind.type === "object" || kind.type === "multiline" || kind.type === "json"
             ? fallbackText
-            : `默认 ${fallbackText}`
-          : "未设置";
+            : t("sf.default_of", { value: fallbackText })
+          : t("sf.unset");
     editor = (
       <TextEditor
         field={field}
@@ -288,62 +293,62 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
   );
 }
 
-const GROUP_TITLES: Record<string, string> = {
-  compaction: "上下文压缩",
-  agents: "子代理",
-  plugins: "插件",
-  mcp: "MCP",
-  skills: "技能",
-  sandbox: "沙盒",
-  session: "会话存储",
-  tools: "通用",
-  "compaction.threshold": "触发条件",
-  "compaction.shake": "旧结果修剪",
-  limits: "请求与循环",
-  "tools.bash": "Bash",
-  "tools.bash.limits": "Bash 资源限制",
-  "tools.edit": "编辑",
-  "tools.find": "文件查找",
-  "tools.grep": "内容搜索",
-  "tools.job": "后台任务",
-  "tools.output": "工具输出",
-  "tools.ptc": "PTC 代码沙盒",
-  "tools.read": "读取",
-  "tools.todo": "任务清单",
-  "tools.write": "写入",
-  web_fetch: "网页抓取",
-  web_search: "网页搜索",
-  workspace: "工作区",
-  "session.retention": "保留策略",
-  context_files: "指令文件",
-  system_prompt: "系统提示",
-  "plugins.limits": "插件限制",
-  retry: "失败重试",
-  compat: "协议兼容",
-  "compat.thinking": "思考参数",
-  headers: "API 请求头",
-  extra_body: "采样与通用请求参数",
-  "extra_body.reasoning": "思考与推理",
-  "extra_body.thinking": "思考模式与预算",
-  "extra_body.text": "回复详细程度",
-  "extra_body.text.format": "结构化输出",
-  "extra_body.response_format": "输出格式",
-  "extra_body.response_format.json_schema": "输出 JSON Schema",
-  "extra_body.output_config": "思考强度",
-  "extra_body.output_config.format": "结构化输出",
-  "extra_body.metadata": "请求元数据",
-  "extra_body.prediction": "预期输出",
-  "extra_body.prompt": "上游提示模板",
-  "extra_body.prompt_cache_options": "提示缓存",
-  "extra_body.cache_control": "自动缓存",
-  "extra_body.stream_options": "流式返回",
-  "extra_body.tool_choice": "工具调用策略",
-  "extra_body.moderation": "内容审核",
-  "extra_body.moderation.policy.input": "输入审核策略",
-  "extra_body.moderation.policy.output": "输出审核策略",
-  "extra_body.image": "上游图片处理",
-  "extra_body.access_programs": "访问计划",
-  "extra_body.diagnostics": "缓存诊断",
+const GROUP_TITLES: Record<string, MsgKey> = {
+  compaction: "sg.compaction",
+  agents: "sg.agents",
+  plugins: "sg.plugins",
+  mcp: "sg.mcp",
+  skills: "sg.skills",
+  sandbox: "sg.sandbox",
+  session: "sg.session",
+  tools: "sg.tools",
+  "compaction.threshold": "sg.compaction_threshold",
+  "compaction.shake": "sg.compaction_shake",
+  limits: "sg.limits",
+  "tools.bash": "sg.tools_bash",
+  "tools.bash.limits": "sg.tools_bash_limits",
+  "tools.edit": "sg.tools_edit",
+  "tools.find": "sg.tools_find",
+  "tools.grep": "sg.tools_grep",
+  "tools.job": "sg.tools_job",
+  "tools.output": "sg.tools_output",
+  "tools.ptc": "sg.tools_ptc",
+  "tools.read": "sg.tools_read",
+  "tools.todo": "sg.tools_todo",
+  "tools.write": "sg.tools_write",
+  web_fetch: "sg.web_fetch",
+  web_search: "sg.web_search",
+  workspace: "sg.workspace",
+  "session.retention": "sg.session_retention",
+  context_files: "sg.context_files",
+  system_prompt: "sg.system_prompt",
+  "plugins.limits": "sg.plugins_limits",
+  retry: "sg.retry",
+  compat: "sg.compat",
+  "compat.thinking": "sg.compat_thinking",
+  headers: "sg.headers",
+  extra_body: "sg.extra_body",
+  "extra_body.reasoning": "sg.eb_reasoning",
+  "extra_body.thinking": "sg.eb_thinking",
+  "extra_body.text": "sg.eb_text",
+  "extra_body.text.format": "sg.eb_text_format",
+  "extra_body.response_format": "sg.eb_response_format",
+  "extra_body.response_format.json_schema": "sg.eb_response_format_json",
+  "extra_body.output_config": "sg.eb_output_config",
+  "extra_body.output_config.format": "sg.eb_output_config_format",
+  "extra_body.metadata": "sg.eb_metadata",
+  "extra_body.prediction": "sg.eb_prediction",
+  "extra_body.prompt": "sg.eb_prompt",
+  "extra_body.prompt_cache_options": "sg.eb_prompt_cache",
+  "extra_body.cache_control": "sg.eb_cache_control",
+  "extra_body.stream_options": "sg.eb_stream_options",
+  "extra_body.tool_choice": "sg.eb_tool_choice",
+  "extra_body.moderation": "sg.eb_moderation",
+  "extra_body.moderation.policy.input": "sg.eb_mod_input",
+  "extra_body.moderation.policy.output": "sg.eb_mod_output",
+  "extra_body.image": "sg.eb_image",
+  "extra_body.access_programs": "sg.eb_access_programs",
+  "extra_body.diagnostics": "sg.eb_diagnostics",
 };
 
 /** 字段归组：去掉末段后的路径；同组相邻排列。 */
@@ -368,6 +373,7 @@ export function FieldList({
   /** 由外层容器自行折叠高级项时直接渲染全部字段。 */
   includeAdvanced?: boolean;
 }) {
+  const t = useT();
   const [advanced, setAdvanced] = useState(false);
   const basic = includeAdvanced ? fields : fields.filter((field) => !field.advanced);
   const advancedCount = fields.length - basic.length;
@@ -390,7 +396,7 @@ export function FieldList({
         <section key={group.key || "_"}>
           {showGroups && groups.length > 1 && group.key && (
             <h3 className="mb-1 text-xs font-medium text-text-tertiary">
-              {GROUP_TITLES[group.key] ?? group.key.split(".").at(-1)}
+              {GROUP_TITLES[group.key] ? t(GROUP_TITLES[group.key]) : group.key.split(".").at(-1)}
             </h3>
           )}
           <div className="divide-y divide-border-subtle rounded-xl bg-card px-4 ring-1 ring-inset ring-border-subtle">
@@ -406,7 +412,7 @@ export function FieldList({
           onClick={() => setAdvanced((value) => !value)}
           className="text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
-          {advanced ? "隐藏高级选项" : `显示高级选项（${advancedCount}）`}
+          {advanced ? t("sf.advanced_hide") : t("sf.advanced_show", { n: advancedCount })}
         </button>
       )}
     </div>

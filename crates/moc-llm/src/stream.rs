@@ -10,6 +10,8 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use rust_i18n::t;
+
 use bytes::Bytes;
 use futures_core::Stream;
 
@@ -485,9 +487,7 @@ impl ChatStream {
                     return Poll::Ready(if self.terminal_seen {
                         Ok(())
                     } else {
-                        Err(LlmError::Stream(
-                            "上游响应在协议终态之前结束，本次响应不完整".into(),
-                        ))
+                        Err(LlmError::Stream(t!("llm.err.incomplete").into_owned()))
                     });
                 }
                 if self.pump(cx).is_pending() {
@@ -512,7 +512,7 @@ impl ChatStream {
         match self.error {
             Some(error) => Err(error),
             None if !self.terminal_seen => Err(LlmError::Stream(
-                "上游响应在协议终态之前结束，本次响应不完整".into(),
+                t!("llm.err.incomplete").into_owned(),
             )),
             None => Ok(self.accumulator.fold(self.protocol, false)),
         }
@@ -559,7 +559,9 @@ impl ChatStream {
                 Poll::Ready(())
             }
             Poll::Ready(Some(Err(err))) => {
-                self.stop_with(LlmError::Stream(format!("读取响应体失败: {err}")));
+                self.stop_with(LlmError::Stream(
+                    t!("llm.err.read_body_failed", err = err).into_owned(),
+                ));
                 Poll::Ready(())
             }
             Poll::Ready(None) => {

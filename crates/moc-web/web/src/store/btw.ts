@@ -2,6 +2,7 @@
 
 import { produce } from "immer";
 import { create } from "zustand";
+import { t } from "@/lib/i18n";
 import { rpc } from "@/protocol/client";
 import { ErrorCode, RpcError } from "@/protocol/errors";
 import type { BtwExchange, BtwResult, BtwUpdateParams, FinishReason } from "@/protocol/types";
@@ -82,7 +83,7 @@ export const useBtw = create<BtwState>()((set, get) => {
                 : result.finish_reason === "Stop"
                   ? "done"
                   : "failed";
-              if (turn.status === "failed") turn.error = "输出未完整结束";
+              if (turn.status === "failed") turn.error = t("btw.incomplete");
             }
             if (draft.inflight === requestId) draft.inflight = null;
           });
@@ -94,7 +95,7 @@ export const useBtw = create<BtwState>()((set, get) => {
             const turn = draft.turns.find((item) => item.requestId === requestId);
             if (turn) {
               turn.status = "failed";
-              turn.error = busy ? "已有一条旁路请求在进行" : message;
+              turn.error = busy ? t("btw.busy") : message;
             }
             if (draft.inflight === requestId) draft.inflight = null;
           });

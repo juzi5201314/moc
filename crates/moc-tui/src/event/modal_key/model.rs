@@ -1,5 +1,7 @@
 //! 模型选择的键盘交互。
 
+use rust_i18n::t;
+
 use super::Actions;
 use crate::app::App;
 use crate::event::apply_fusion_pick;
@@ -187,7 +189,8 @@ pub(super) fn handle(
                                 return false;
                             }
                             if detail.fusion.lead.is_empty() || detail.fusion.sidekick.is_empty() {
-                                picker.error = Some("请先选择 Lead 与 Sidekick".into());
+                                picker.error =
+                                    Some(t!("tui.event.pick_lead_sidekick").into_owned());
                             } else if apply_fusion_pick(
                                 picker,
                                 &detail.fusion,

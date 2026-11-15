@@ -8,6 +8,7 @@
 use moc_protocol::methods::{DiffLineKind, ToolDiff, ToolFileDiff};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use rust_i18n::t;
 
 use super::highlight;
 use crate::theme::Theme;
@@ -58,7 +59,7 @@ pub fn render_diff(
     // 截断提示描述的是整份 diff，不能按文件重复打印。
     if diff.truncated {
         lines.push(Line::from(Span::styled(
-            "⋯ 其余改动超出 diff 上限，未显示".to_owned(),
+            t!("tui.diff.truncated").into_owned(),
             Style::new().fg(theme.accent_warning),
         )));
     }
@@ -131,7 +132,12 @@ fn render_file(file: &ToolFileDiff, width: usize, theme: &Theme, out: &mut Vec<L
             let previous = previous_last_old.unwrap_or(0);
             let gap = first_old.saturating_sub(previous).saturating_sub(1);
             out.push(Line::from(Span::styled(
-                format!("{}⋯ {} 行未变", " ".repeat(gutter_width + 1), gap),
+                t!(
+                    "tui.diff.unchanged_fmt",
+                    pad = " ".repeat(gutter_width + 1),
+                    count = gap
+                )
+                .into_owned(),
                 Style::new().fg(theme.gray_dim),
             )));
         }

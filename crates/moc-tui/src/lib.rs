@@ -10,6 +10,8 @@
 
 #![forbid(unsafe_code)]
 
+rust_i18n::i18n!("../../locales", fallback = "zh");
+
 pub mod app;
 pub mod btw;
 pub mod clipboard;

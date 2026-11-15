@@ -1,4 +1,5 @@
 //! 来源目录：只保留模型实际编码的内容；隐藏策略在正文进入快照之前执行。
+use rust_i18n::t;
 use super::{Snapshot, view::View};
 use crate::compact;
 use crate::compact::replay::ContextOrigin;
@@ -29,15 +30,19 @@ pub(super) fn build(
             add_text(
                 &mut view,
                 piece.title,
-                "规则加载说明".into(),
+                t!("core.outline.rules_note").into_owned(),
                 None,
                 "markdown",
                 format!("{}\n</repo-rules>", &piece.text[..first_file]),
             );
             for file in snapshot.context_files.iter() {
                 let scope = match file.scope {
-                    crate::system_prompt::context_files::ContextFileScope::Project => "项目",
-                    crate::system_prompt::context_files::ContextFileScope::Global => "全局",
+                    crate::system_prompt::context_files::ContextFileScope::Project => {
+                        t!("core.outline.scope_project")
+                    }
+                    crate::system_prompt::context_files::ContextFileScope::Global => {
+                        t!("core.outline.scope_global")
+                    }
                 };
                 let file_name = file.path.file_name().unwrap_or_default().to_string_lossy();
                 let newline = if file.content.ends_with('\n') {
@@ -75,12 +80,12 @@ pub(super) fn build(
                 .pointer("/function/name")
                 .or_else(|| tool.get("name"))
                 .and_then(Value::as_str)
-                .unwrap_or("工具定义");
+                .unwrap_or_else(|| t!("core.outline.tool_def").into_owned().leak());
             add_text(
                 &mut view,
                 "tools",
                 name.into(),
-                Some("工具定义与参数 schema".into()),
+                Some(t!("core.outline.tool_def_schema").into_owned()),
                 "json",
                 serde_json::to_string_pretty(tool).expect("JSON 值总能序列化"),
             );
@@ -107,7 +112,7 @@ pub(super) fn build(
             kind: "markdown".into(),
             source: Some(source.label.clone()),
             tokens: compact::messages_tokens(std::slice::from_ref(message)),
-            hidden: hidden.map(str::to_owned),
+            hidden: hidden.as_ref().map(|h| h.to_string()),
             ..Default::default()
         };
         let text = if hidden.is_some() {
@@ -154,7 +159,7 @@ pub(super) fn build(
                 }
             }
             if body.is_empty() {
-                meta.hidden = Some("当前请求未包含可读正文".into());
+                meta.hidden = Some(t!("core.outline.no_readable").into_owned());
                 None
             } else {
                 Some(body)
@@ -187,7 +192,7 @@ fn add_text(
     );
 }
 
-fn hidden_reason(message: &Message, origin: ContextOrigin) -> Option<&'static str> {
+fn hidden_reason(message: &Message, origin: ContextOrigin) -> Option<std::borrow::Cow<'static, str>> {
     if message.role == Role::Tool
         || origin == ContextOrigin::Tool
         || message
@@ -195,7 +200,7 @@ fn hidden_reason(message: &Message, origin: ContextOrigin) -> Option<&'static st
             .iter()
             .any(|part| matches!(part, ContentPart::ToolResult(_)))
     {
-        return Some("工具输出已隐藏");
+        return Some(t!("core.outline.tool_hidden"));
     }
     if origin == ContextOrigin::User {
         let mut chars = 0;
@@ -205,7 +210,7 @@ fn hidden_reason(message: &Message, origin: ContextOrigin) -> Option<&'static st
                 chars += text.chars().take(2001).count();
                 lines += text.lines().take(81).count();
                 if chars > 2000 || lines > 80 {
-                    return Some("用户输入超过 2,000 字符或 80 行，正文已隐藏");
+                    return Some(t!("core.outline.user_hidden"));
                 }
             }
         }

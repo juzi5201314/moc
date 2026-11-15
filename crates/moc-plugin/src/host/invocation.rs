@@ -13,6 +13,7 @@ use crate::runtime::CallOp;
 use crate::runtime::CallRequest;
 use crate::runtime::HostOperation;
 use crate::runtime::HostRequest;
+use rust_i18n::t;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,13 +32,16 @@ impl PluginHost {
             .get(name)
             .map(|(index, declaration)| (*index, declaration.parameters.clone()))
             .ok_or_else(|| {
-                PluginError::new("E_PLUGIN_TOOL", format!("插件工具 `{name}` 不存在"))
+                PluginError::new(
+                    "E_PLUGIN_TOOL",
+                    t!("plugin.err.tool_not_found", name = name).into_owned(),
+                )
             })?;
         // 文档承诺 `run` 收到的是按 schema 校验过的对象：在跨线程之前就把错误回给模型。
         crate::schema::validate(&parameters, &args).map_err(|error| {
             PluginError::new(
                 "E_PLUGIN_ARGUMENTS",
-                format!("工具 `{name}` 的参数不符合 schema：{error}"),
+                t!("plugin.err.args_schema", name = name, error = error).into_owned(),
             )
         })?;
         let value = self
@@ -65,7 +69,10 @@ impl PluginHost {
             .get(name)
             .map(|(index, _)| *index)
             .ok_or_else(|| {
-                PluginError::new("E_PLUGIN_COMMAND", format!("插件命令 `/{name}` 不存在"))
+                PluginError::new(
+                    "E_PLUGIN_COMMAND",
+                    t!("plugin.err.command_not_found", name = name).into_owned(),
+                )
             })?;
         let value = self
             .invoke(
@@ -135,7 +142,12 @@ impl PluginHost {
                 ),
             )
             .await
-            .unwrap_or_else(|_| Err(PluginError::new("E_PLUGIN_TIMEOUT", "读取插件配置超时")));
+            .unwrap_or_else(|_| {
+                Err(PluginError::new(
+                    "E_PLUGIN_TIMEOUT",
+                    t!("plugin.err.config_read_timeout"),
+                ))
+            });
             if let Err(error) = validation {
                 return Err(self.fail(index, error));
             }
@@ -144,7 +156,7 @@ impl PluginHost {
         if timeout.is_zero() {
             return Err(self.fail(
                 index,
-                PluginError::new("E_PLUGIN_TIMEOUT", "插件调用预算已耗尽"),
+                PluginError::new("E_PLUGIN_TIMEOUT", t!("plugin.err.budget_exhausted")),
             ));
         }
         let (host_tx, mut host_rx) = {
@@ -158,7 +170,7 @@ impl PluginHost {
             let Some(worker) = worker.as_ref() else {
                 return Err(PluginError::new(
                     "E_PLUGIN_CRASH",
-                    format!("插件 `{}` 没有运行中的线程", plugin.name),
+                    t!("plugin.err.thread_not_running", name = plugin.name.as_str()).into_owned(),
                 ));
             };
             worker.call(CallRequest {
@@ -192,7 +204,8 @@ impl PluginHost {
                             index,
                             PluginError::new(
                                 "E_PLUGIN_CRASH",
-                                format!("插件 `{}` 的线程已退出", plugin.name),
+                                t!("plugin.err.thread_gone", name = plugin.name.as_str())
+                                    .into_owned(),
                             ),
                         )),
                     };
@@ -204,10 +217,12 @@ impl PluginHost {
                         // deadline 抛了错：这条路径不算插件跑飞，不毒化它。
                         Err(PluginError::new(
                             "E_PLUGIN_TIMEOUT",
-                            format!(
-                                "插件 `{}` 等待宿主工具超过 {elapsed} ms；本次调用失败",
-                                plugin.name
-                            ),
+                            t!(
+                                "plugin.err.waiting_host_tool",
+                                name = plugin.name.as_str(),
+                                elapsed = elapsed
+                            )
+                            .into_owned(),
                         ))
                     } else {
                         if let Some(worker) = plugin.worker.lock().as_ref() {
@@ -217,10 +232,12 @@ impl PluginHost {
                             index,
                             PluginError::new(
                                 "E_PLUGIN_TIMEOUT",
-                                format!(
-                                    "插件 `{}` 超过 {elapsed} ms 未返回；本进程内不再调用",
-                                    plugin.name
-                                ),
+                                t!(
+                                    "plugin.err.plugin_timed_out",
+                                    name = plugin.name.as_str(),
+                                    elapsed = elapsed
+                                )
+                                .into_owned(),
                             ),
                         ))
                     };
@@ -244,12 +261,12 @@ impl PluginHost {
                     host_task = Some(tokio::spawn(async move {
                         match operation {
                             HostOperation::Tool { name, args } => {
-                                let bridge = bridge.ok_or_else(|| PluginError::new("E_PLUGIN_TOOLS_UNAVAILABLE", "工具桥不可用"))?;
+                                let bridge = bridge.ok_or_else(|| PluginError::new("E_PLUGIN_TOOLS_UNAVAILABLE", t!("plugin.err.tools_bridge_unavailable")))?;
                                 let result = bridge.call_tool(name, args).await?;
                                 Ok(serde_json::json!({"content":result.content,"structuredContent":result.structured,"isError":result.is_error}))
                             }
                             HostOperation::Persistence(op) => {
-                                let bridge = persistence.ok_or_else(|| PluginError::new("E_PLUGIN_STATE", "持久化桥不可用"))?;
+                                let bridge = persistence.ok_or_else(|| PluginError::new("E_PLUGIN_STATE", t!("plugin.err.persistence_unavailable")))?;
                                 request_persistence(bridge.as_ref(), &name, &path, context.as_ref(), &fields, op).await
                             }
                         }

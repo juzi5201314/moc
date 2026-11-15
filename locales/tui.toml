@@ -1,0 +1,1112 @@
+_version = 2
+
+[tui.notify]
+format = { zh = "MOC：%{message}", en = "MOC: %{message}" }
+
+[tui.tab]
+ui = { zh = "界面", en = "UI" }
+
+[tui.keys]
+send = { zh = "发送消息", en = "Send message" }
+queue = { zh = "排队发送", en = "Queue message" }
+newline = { zh = "插入换行", en = "Insert newline" }
+cancel = { zh = "停止当前生成 / 退出", en = "Stop generation / quit" }
+help = { zh = "快捷键一览", en = "Shortcut list" }
+thinking = { zh = "切换思考显示档位", en = "Cycle thinking detail" }
+tools = { zh = "切换工具显示档位", en = "Cycle tool detail" }
+paste_image = { zh = "粘贴图片或文本", en = "Paste image or text" }
+model = { zh = "选择模型", en = "Pick model" }
+resume = { zh = "恢复会话", en = "Resume session" }
+engine = { zh = "切换会话引擎", en = "Cycle session engine" }
+thinking_level = { zh = "切换思考等级", en = "Cycle thinking level" }
+focus = { zh = "切换输入焦点", en = "Switch input focus" }
+clear = { zh = "清空输入", en = "Clear input" }
+line_start = { zh = "移动到行首", en = "Go to line start" }
+line_end = { zh = "移动到行尾", en = "Go to line end" }
+delete_word = { zh = "删除前一词", en = "Delete previous word" }
+delete_to_end = { zh = "删除至行尾", en = "Delete to line end" }
+config = { zh = "打开设置", en = "Open settings" }
+agents = { zh = "唤出子代理侧栏", en = "Toggle subagent sidebar" }
+sidebar = { zh = "显示/隐藏子代理侧栏", en = "Show/hide subagent sidebar" }
+queue_edit = { zh = "编辑排队中的消息", en = "Edit queued message" }
+
+[tui.settings]
+thinking_detail = { zh = "思考展示", en = "Thinking display" }
+thinking_detail_desc = { zh = "hidden 仅显示耗时；brief 显示末尾预览；full 显示完整思考。", en = "hidden: duration only; brief: trailing preview; full: complete thinking." }
+tool_detail = { zh = "工具输出展示", en = "Tool output display" }
+tool_detail_desc = { zh = "hidden 仅显示标题；brief 显示简要预览；完整输出可点击展开。", en = "hidden: title only; brief: short preview; full output expands on click." }
+notify_complete = { zh = "完成时通知", en = "Notify on completion" }
+notify_complete_desc = { zh = "终端不在前台时，任务完成后发送桌面通知。", en = "Send a desktop notification when a task finishes while the terminal is unfocused." }
+notify_waiting = { zh = "等待确认时通知", en = "Notify on pending confirmation" }
+notify_waiting_desc = { zh = "终端不在前台时，需要用户授权或回答时发送桌面通知。", en = "Send a desktop notification when authorization or an answer is needed while unfocused." }
+active_submit = { zh = "运行中提交行为", en = "Submit while running" }
+active_submit_desc = { zh = "任务运行期间按 Enter：追加引导指令，或中断当前任务并重新提交。", en = "Enter while a task runs: append steering, or interrupt and resubmit." }
+history_scope = { zh = "输入历史作用域", en = "Input history scope" }
+history_scope_desc = { zh = "↑/↓ 召回的输入历史范围：全局共享，或仅限当前项目。", en = "Scope of ↑/↓ input-history recall: global, or current project only." }
+statusline = { zh = "状态栏模板", en = "Status line template" }
+statusline_desc = { zh = "可用占位符：{model} {status} {workdir} {branch} {context} {context_percent} {todo} {tokens_in} {tokens_out} {tok_s} {prompt_elapsed} {cost}。", en = "Placeholders: {model} {status} {workdir} {branch} {context} {context_percent} {todo} {tokens_in} {tokens_out} {tok_s} {prompt_elapsed} {cost}." }
+keybinding_desc = { zh = "支持绑定多个快捷键（如 ctrl+g、alt+enter）；留空表示禁用。", en = "Multiple shortcuts allowed (e.g. ctrl+g, alt+enter); empty disables the action." }
+opt_hidden = { zh = "隐藏", en = "hidden" }
+opt_brief = { zh = "简略", en = "brief" }
+role_inherit = { zh = "沿用父会话当前模型", en = "Inherit the parent session's model" }
+role_none = { zh = "禁用 Explorer 子代理", en = "Disable the Explorer subagent" }
+opt_full = { zh = "完整", en = "full" }
+opt_steering = { zh = "追加引导", en = "Append steering" }
+opt_interrupt = { zh = "中断并重提", en = "Interrupt & resubmit" }
+opt_global = { zh = "全局", en = "Global" }
+opt_project = { zh = "当前项目", en = "Current project" }
+loading = { zh = "正在读取设置…", en = "Loading settings…" }
+no_match = { zh = "没有匹配的设置项；按 / 修改搜索内容，或按 Esc 清空过滤。", en = "No matching settings; press / to edit the search, or Esc to clear the filter." }
+empty_models = { zh = "暂无模型，请先到「供应商与模型」添加模型，或按 Ctrl+D 添加模型默认规则。", en = "No models yet — add one under “Providers & Models”, or press Ctrl+D for model default rules." }
+empty_providers = { zh = "暂无供应商。", en = "No providers yet." }
+empty_mcp = { zh = "还没有 MCP 服务。按 A 添加。", en = "No MCP servers yet. Press A to add one." }
+empty_plugins = { zh = "当前没有可配置的插件项。", en = "No configurable plugin items." }
+empty_page = { zh = "这一页暂时没有可配置项。", en = "Nothing configurable on this page yet." }
+model_id_prefix = { zh = "模型 ID：", en = "Model ID: " }
+model_id_hint = { zh = "输入模型 ID（支持包含 /）", en = "Enter a model ID (may contain /)" }
+item_count = { zh = "%{count} 项", en = "%{count} items" }
+toggle_on = { zh = "● 开启", en = "● on" }
+toggle_off = { zh = "○ 关闭", en = "○ off" }
+keep_empty = { zh = "留空保存为空值", en = "Empty saves as empty value" }
+empty_default = { zh = "留空恢复默认", en = "Empty restores the default" }
+act_more = { zh = "展开或收起超时、重试、代理、请求头与默认请求参数。", en = "Expand or collapse timeout, retry, proxy, headers, and default request params." }
+act_fetch = { zh = "打开模型选择弹窗，从供应商目录批量勾选添加。", en = "Open the model picker to batch-add from the provider catalog." }
+act_manual = { zh = "手动输入模型 ID 添加到当前供应商。", en = "Manually enter a model ID to add to this provider." }
+act_new = { zh = "创建新供应商配置。", en = "Create a new provider config." }
+act_remove = { zh = "移除当前供应商及其模型列表。", en = "Remove this provider and its model list." }
+src_ui = { zh = "界面偏好设置", en = "UI preference" }
+src_custom = { zh = "● 已自定义", en = "● customized" }
+src_default = { zh = "○ 默认值", en = "○ default" }
+advanced_title = { zh = "高级选项", en = "Advanced" }
+
+[tui.err]
+unknown_action = { zh = "未知键位动作：%{action}", en = "Unknown key action: %{action}" }
+duplicate_key = { zh = "按键 %{key} 重复绑定，请先清除原动作中的绑定", en = "Key %{key} is already bound; clear it from the other action first" }
+unknown_modifier = { zh = "未知修饰键：%{part}", en = "Unknown modifier: %{part}" }
+unreadable_key = { zh = "无法识别按键 %{text}；例如 ctrl+g、alt+enter、f2", en = "Unrecognized key %{text}; e.g. ctrl+g, alt+enter, f2" }
+settings_modified = { zh = "设置文件已被其他窗口修改；请重新打开设置页再保存，当前修改不会丢失", en = "Settings file was modified by another window; reopen settings and save again — your changes are kept" }
+provider_id_invalid = { zh = "供应商标识只能使用字母、数字、- 和 _", en = "Provider IDs may only contain letters, digits, - and _" }
+provider_exists = { zh = "供应商 %{id} 已存在", en = "Provider %{id} already exists" }
+url_required = { zh = "请填写服务地址", en = "Please enter the service URL" }
+check_models = { zh = "请先勾选需要添加的模型", en = "Select the models to add first" }
+need_provider = { zh = "请先添加供应商并填写连接参数", en = "Add a provider and fill in its connection parameters first" }
+bad_models_reply = { zh = "获取模型返回了非模型响应", en = "The model fetch returned a non-model response" }
+saving_wait = { zh = "正在保存配置，请稍候", en = "Saving config, please wait" }
+no_models = { zh = "还没有已配置的模型；请先在“供应商与模型”页添加模型", en = "No configured models yet — add one on the “Providers & Models” page first" }
+model_id_empty = { zh = "模型 ID 不能为空", en = "Model ID can't be empty" }
+mcp_exists = { zh = "同名 MCP 服务已存在", en = "An MCP server with this name already exists" }
+connect_backend = { zh = "连接后台服务失败", en = "Failed to connect to the backend" }
+pattern_empty = { zh = "模型名匹配不能为空", en = "Model pattern can't be empty" }
+mcp_name = { zh = "MCP 名使用字母、数字、-、_，不能含 __", en = "MCP names use letters, digits, - and _, and can't contain __" }
+model_exists = { zh = "模型 %{id} 已存在", en = "Model %{id} already exists" }
+fmt = { zh = "错误：%{err}", en = "Error: %{err}" }
+no_clipboard_tool = { zh = "未找到 powershell.exe / wl-copy / xclip / pbcopy，无法访问系统剪贴板", en = "No powershell.exe / wl-copy / xclip / pbcopy found; system clipboard unavailable" }
+clipboard_write_win = { zh = "写入 Windows 剪贴板失败", en = "Failed to write to the Windows clipboard" }
+wl_copy_spawn = { zh = "启动 wl-copy 失败", en = "Failed to launch wl-copy" }
+xclip_spawn = { zh = "启动 xclip 失败", en = "Failed to launch xclip" }
+pbcopy_spawn = { zh = "启动 pbcopy 失败", en = "Failed to launch pbcopy" }
+handshake = { zh = "内嵌连接握手失败", en = "Embedded connection handshake failed" }
+builtin_unavail_fmt = { zh = "内置服务不可用：%{name}", en = "Builtin service unavailable: %{name}" }
+raw_mode = { zh = "启用 raw mode 失败", en = "Failed to enable raw mode" }
+alt_screen = { zh = "切换备用屏/鼠标捕获失败", en = "Failed to enter alternate screen / mouse capture" }
+term_buf = { zh = "初始化终端缓冲失败", en = "Failed to initialize the terminal buffer" }
+clear_screen = { zh = "清屏失败", en = "Failed to clear the screen" }
+term_rebuild = { zh = "重建终端双缓冲失败", en = "Failed to rebuild the terminal buffer" }
+hist_no_page = { zh = "历史传输未返回页面", en = "History transfer returned no page" }
+hist_type_changed = { zh = "历史传输中途改变结果类型", en = "History transfer changed result type mid-stream" }
+hist_offset_overflow = { zh = "历史块偏移溢出", en = "History chunk offset overflow" }
+hist_gap = { zh = "历史块不连续", en = "History chunks are not contiguous" }
+hist_read_fmt = { zh = "历史页读取失败：%{err}", en = "Failed to read history page: %{err}" }
+table_changed = { zh = "表格内容已变化，请重试", en = "Table content changed; please retry" }
+table_not_chartable = { zh = "这张表无法图表化", en = "This table can't be charted" }
+
+[tui.tabs]
+models = { zh = "模型角色", en = "Model Roles" }
+providers = { zh = "供应商与模型", en = "Providers & Models" }
+instructions = { zh = "指令", en = "Instructions" }
+skills = { zh = "Skills", en = "Skills" }
+tools = { zh = "工具", en = "Tools" }
+sandbox = { zh = "沙盒", en = "Sandbox" }
+context = { zh = "上下文", en = "Context" }
+session = { zh = "会话", en = "Session" }
+mcp = { zh = "MCP", en = "MCP" }
+ui = { zh = "界面", en = "UI" }
+plugins = { zh = "插件", en = "Plugins" }
+
+[tui.tools]
+ptc = { zh = "PTC 代码沙盒", en = "PTC code sandbox" }
+output = { zh = "工具输出", en = "Tool output" }
+bash = { zh = "命令执行", en = "Command execution" }
+read = { zh = "读取文件", en = "Read files" }
+edit = { zh = "编辑文件", en = "Edit files" }
+write = { zh = "写入文件", en = "Write files" }
+grep = { zh = "搜索内容", en = "Search content" }
+find = { zh = "查找文件", en = "Find files" }
+todo = { zh = "任务清单", en = "Todo list" }
+job = { zh = "后台任务", en = "Background jobs" }
+limits = { zh = "资源限制", en = "Resource limits" }
+
+[tui.mcp]
+local = { zh = "本地程序：%{command}", en = "Local program: %{command}" }
+remote = { zh = "远程服务：%{url}", en = "Remote service: %{url}" }
+
+[tui.level]
+off = { zh = "关闭", en = "off" }
+minimal = { zh = "最小", en = "minimal" }
+low = { zh = "低", en = "low" }
+medium = { zh = "中", en = "medium" }
+high = { zh = "高", en = "high" }
+xhigh = { zh = "超高", en = "xhigh" }
+max = { zh = "最高", en = "max" }
+
+[tui.ctrl]
+empty_content = { zh = "内容不能为空", en = "Content must not be empty" }
+one_per_line = { zh = "每项只能占一行", en = "Each item must be a single line" }
+off_always = { zh = "off 始终可用，不需要加入列表", en = "off is always available; no need to list it" }
+keep_one_modality = { zh = "至少保留一种输入模态", en = "Keep at least one input modality" }
+default = { zh = "默认", en = "default" }
+default_inherit = { zh = "默认／继承", en = "default/inherit" }
+auto_detect = { zh = "按配置自动判断", en = "Auto-detect from config" }
+stdio = { zh = "stdio（本地程序）", en = "stdio (local program)" }
+http = { zh = "http（远程服务）", en = "http (remote service)" }
+on_true = { zh = "开启（true）", en = "on (true)" }
+off_false = { zh = "关闭（false）", en = "off (false)" }
+input_text = { zh = "文本", en = "text" }
+input_image = { zh = "图片", en = "image" }
+price_input = { zh = "输入", en = "input" }
+price_output = { zh = "输出", en = "output" }
+price_cache_read = { zh = "缓存命中", en = "cache hit" }
+price_cache_write = { zh = "缓存写入", en = "cache write" }
+custom_level = { zh = "自定义等级", en = "custom level" }
+unset = { zh = "未设置", en = "unset" }
+none = { zh = "无", en = "none" }
+default_list = { zh = "默认（%{items}）", en = "default (%{items})" }
+list_sep = { zh = "、", en = ", " }
+hint_toggle = { zh = "Space/Enter 切换", en = "Space/Enter toggle" }
+hint_select = { zh = "Space 切换 · Enter 选择", en = "Space cycle · Enter choose" }
+hint_edit = { zh = "Space/Enter 编辑", en = "Space/Enter edit" }
+hint_edit_enter = { zh = "Enter 编辑", en = "Enter edit" }
+hint_choose = { zh = "Enter 选择", en = "Enter choose" }
+bad_key = { zh = "这个键无法写进配置，请换一个", en = "This key can't be written to the config; try another" }
+already_in_list = { zh = "“%{value}”已在列表中", en = "“%{value}” is already in the list" }
+required_missing = { zh = "还需要填写：%{keys}", en = "Still required: %{keys}" }
+key_empty = { zh = "键名不能为空，也不能换行", en = "Key must be a single non-empty line" }
+key_exists = { zh = "键 %{key} 已存在", en = "Key %{key} already exists" }
+role_inherit = { zh = "沿用父会话当前模型", en = "Inherit the parent session's model" }
+role_none = { zh = "禁用 Explorer 子代理", en = "Disable the Explorer subagent" }
+
+[tui.hist]
+not_loaded = { zh = "设置还没读取完，请稍候", en = "Settings haven't finished loading; please wait" }
+prefs_saved = { zh = "界面设置已保存并生效", en = "UI preferences saved and applied" }
+store_not_init = { zh = "界面设置存储尚未初始化", en = "UI preferences store isn't initialized yet" }
+no_undo = { zh = "没有可以撤回的改动", en = "Nothing to undo" }
+no_redo = { zh = "没有可以重做的改动", en = "Nothing to redo" }
+undid_fmt = { zh = "已撤回：%{label}", en = "Undone: %{label}" }
+redid_fmt = { zh = "已重做：%{label}", en = "Redone: %{label}" }
+
+[tui.persist]
+save_failed = { zh = "配置保存失败：%{err}", en = "Failed to save config: %{err}" }
+saved = { zh = "已保存并生效", en = "Saved and applied" }
+models_refresh_failed = { zh = "刷新模型信息失败：%{err}", en = "Failed to refresh model info: %{err}" }
+
+[tui.values]
+unset = { zh = "未设置", en = "not set" }
+on = { zh = "● 开启", en = "● on" }
+off = { zh = "○ 关闭", en = "○ off" }
+none = { zh = "无", en = "none" }
+multiline_fmt = { zh = "%{first}（共 %{count} 行）", en = "%{first} (%{count} lines total)" }
+obj_fmt = { zh = "{ %{count} 项 }", en = "{ %{count} entries }" }
+list_sep = { zh = "、", en = ", " }
+
+[tui.editor]
+capture_fmt = { zh = "❯ %{mark}请按下要绑定的键…", en = "❯ %{mark}Press the key to bind…" }
+custom = { zh = "自定义", en = "custom" }
+default_mark = { zh = "（默认）", en = " (default)" }
+add_level = { zh = "+ 添加自定义等级", en = "+ Add custom level" }
+add_key_item = { zh = "+ 添加按键", en = "+ Add key" }
+add_item = { zh = "+ 添加一项", en = "+ Add item" }
+no_options = { zh = "  没有可选项", en = "  No options" }
+required = { zh = "必填", en = "required" }
+key_name = { zh = "键名：", en = "Key: " }
+add_key = { zh = "+ 添加键", en = "+ Add key" }
+
+[tui.set]
+title = { zh = "设置%{sep}全局配置", en = "Settings%{sep}Global config" }
+saving = { zh = "%{sep}正在保存…", en = "%{sep}Saving…" }
+busy = { zh = "%{sep}正在处理…", en = "%{sep}Working…" }
+filter_fmt = { zh = "%{sep}过滤：%{filter}", en = "%{sep}Filter: %{filter}" }
+
+[tui.common]
+no_session = { zh = "当前没有活动会话", en = "No active session" }
+
+[tui.cmd]
+skills_busy = { zh = "正在维护技能摘要；请等待完成或按 Esc 取消", en = "Skills summary maintenance is running; wait for it to finish or press Esc to cancel" }
+flag_disabled_fmt = { zh = "/%{cmd} 依赖的特性 %{flag} 已禁用（见 /features）", en = "/%{cmd} depends on feature %{flag}, which is disabled (see /features)" }
+focused_fmt = { zh = "聚焦子代理时不能执行 /%{cmd}", en = "Can't run /%{cmd} while a subagent is focused" }
+busy_fmt = { zh = "正在运行中，暂时不能执行 /%{cmd}", en = "Can't run /%{cmd} while a task is running" }
+plugin_failed_fmt = { zh = "插件命令执行失败：%{err}", en = "Plugin command failed: %{err}" }
+unknown_fmt = { zh = "未知命令：%{name}", en = "Unknown command: %{name}" }
+unload_failed_fmt = { zh = "卸载会话失败：%{err}", en = "Failed to unload session: %{err}" }
+new_failed_fmt = { zh = "新建会话失败：%{err}", en = "Failed to create session: %{err}" }
+plugins_usage = { zh = "用法：/plugins [reload]", en = "Usage: /plugins [reload]" }
+usage_fmt = { zh = "用法：/%{name}", en = "Usage: /%{name}" }
+compact_done = { zh = "上下文压缩已完成", en = "Context compaction finished" }
+compact_failed_fmt = { zh = "上下文压缩失败：%{err}", en = "Context compaction failed: %{err}" }
+workflow_activated = { zh = "workflow 已激活", en = "Workflow activated" }
+workflow_failed_fmt = { zh = "workflow 激活失败：%{err}", en = "Failed to activate workflow: %{err}" }
+jobs_failed_fmt = { zh = "获取任务列表失败：%{err}", en = "Failed to fetch job list: %{err}" }
+engine_locked = { zh = "会话引擎已锁定；换引擎请新建会话", en = "Session engine is locked; start a new session to switch" }
+engine_failed_fmt = { zh = "切换引擎失败：%{err}", en = "Failed to switch engine: %{err}" }
+plan_failed_fmt = { zh = "切换计划状态失败：%{err}", en = "Failed to toggle plan mode: %{err}" }
+goal_edit_usage = { zh = "用法：/goal edit <objective>", en = "Usage: /goal edit <objective>" }
+goal_none = { zh = "当前没有目标；/goal <objective> 创建", en = "No goal set; create one with /goal <objective>" }
+goal_blocked_fmt = { zh = "\n阻塞：%{code}: %{message}\n", en = "\nBlocked: %{code}: %{message}\n" }
+goal_armed_auto = { zh = "自动", en = "auto" }
+goal_armed_off = { zh = "已停（/goal resume 恢复）", en = "stopped (resume with /goal resume)" }
+goal_note_fmt = { zh = "目标：%{objective}\n状态：%{phase}%{blocked}轮次：%{rounds}\n续跑：%{armed}", en = "Goal: %{objective}\nStatus: %{phase}%{blocked}Rounds: %{rounds}\nResume: %{armed}" }
+goal_cmds = { zh = "\n命令：/goal edit <objective>｜/goal pause｜/goal resume｜/goal clear", en = "\nCommands: /goal edit <objective> | /goal pause | /goal resume | /goal clear" }
+goal_failed_fmt = { zh = "目标操作失败：%{err}", en = "Goal operation failed: %{err}" }
+ask_usage = { zh = "用法：/ask <问题>", en = "Usage: /ask <question>" }
+retry_busy = { zh = "正在运行中，暂时不能重试", en = "Can't retry while a task is running" }
+autonomy_usage = { zh = "用法：/autonomy [default|dont_ask|unattended]", en = "Usage: /autonomy [default|dont_ask|unattended]" }
+autonomy_failed_fmt = { zh = "切换自主程度失败：%{err}", en = "Failed to switch autonomy: %{err}" }
+perm_current_fmt = { zh = "当前权限：%{current}；可用模式：%{available}；/permission clear 清空本会话沙盒授权", en = "Current permission: %{current}; available modes: %{available}; /permission clear revokes this session's sandbox grants" }
+perm_usage_fmt = { zh = "用法：/permission <%{modes}|clear>", en = "Usage: /permission <%{modes}|clear>" }
+perm_unsupported_fmt = { zh = "当前平台不支持 %{mode}；可用模式：%{available}", en = "%{mode} isn't supported on this platform; available modes: %{available}" }
+perm_cleared = { zh = "已清空本会话的沙盒授权", en = "Sandbox grants for this session cleared" }
+perm_failed_fmt = { zh = "切换权限失败：%{err}", en = "Failed to switch permission: %{err}" }
+sessions_failed_fmt = { zh = "加载会话列表失败：%{err}", en = "Failed to load session list: %{err}" }
+
+[tui.hint]
+apply = { zh = "应用", en = "apply" }
+cancel = { zh = "取消", en = "cancel" }
+ok = { zh = "确定", en = "ok" }
+save = { zh = "保存", en = "save" }
+reveal = { zh = "显示/隐藏", en = "show/hide" }
+suffix_units = { zh = "支持 200k、1m", en = "supports 200k, 1m" }
+choose = { zh = "选择", en = "choose" }
+press_key = { zh = "按下要绑定的键", en = "press the key to bind" }
+move = { zh = "移动", en = "move" }
+reorder = { zh = "调整顺序", en = "reorder" }
+check = { zh = "勾选", en = "check" }
+modify = { zh = "修改", en = "modify" }
+add = { zh = "添加", en = "add" }
+add_key = { zh = "添加键", en = "add key" }
+remove = { zh = "移除", en = "remove" }
+clear = { zh = "清除", en = "clear" }
+edit = { zh = "编辑", en = "edit" }
+back = { zh = "返回", en = "back" }
+too_small = { zh = "终端过小；请放大窗口", en = "Terminal too small; enlarge the window" }
+search = { zh = "搜索", en = "search" }
+reset = { zh = "恢复默认", en = "reset to default" }
+delete = { zh = "删除", en = "delete" }
+expand = { zh = "展开/收起", en = "expand/collapse" }
+focus = { zh = "切换焦点", en = "switch focus" }
+operate = { zh = "操作", en = "operate" }
+next_field = { zh = "下一项", en = "next field" }
+add_server = { zh = "添加服务", en = "add server" }
+maintenance = { zh = "维护预览", en = "maintenance preview" }
+default_rules = { zh = "默认规则", en = "default rules" }
+research = { zh = "重新搜索", en = "search again" }
+clear_filter = { zh = "清空过滤", en = "clear filter" }
+confirm = { zh = "确认", en = "confirm" }
+close = { zh = "关闭", en = "close" }
+pick = { zh = "直选", en = "pick" }
+deny = { zh = "按拒绝处理", en = "treat as deny" }
+retry = { zh = "重试", en = "retry" }
+scroll = { zh = "滚动", en = "scroll" }
+type_search = { zh = "输入搜索", en = "type to search" }
+paging = { zh = "翻页", en = "page" }
+switch_scope = { zh = "切换范围", en = "switch scope" }
+restore = { zh = "恢复", en = "restore" }
+view_all = { zh = "查看全部", en = "view all" }
+kill_task = { zh = "杀任务", en = "kill task" }
+submit_deny = { zh = "提交拒绝", en = "submit denial" }
+cancel_input = { zh = "取消输入", en = "cancel input" }
+choose_role = { zh = "选择 role", en = "select role" }
+pick_model = { zh = "选模型", en = "pick model" }
+approve = { zh = "批准", en = "approve" }
+reject = { zh = "拒绝", en = "reject" }
+minimize = { zh = "最小化", en = "minimize" }
+change_model = { zh = "改模型", en = "change model" }
+stop = { zh = "停止", en = "stop" }
+resume = { zh = "续跑", en = "resume" }
+open_panel = { zh = "打开面板", en = "open panel" }
+switch_engine = { zh = "换引擎", en = "switch engine" }
+annotate = { zh = "批注", en = "annotate" }
+view_plan = { zh = "看计划", en = "view plan" }
+view_diff = { zh = "看改动", en = "view diff" }
+suggest = { zh = "建议改法", en = "suggest edit" }
+select_lines = { zh = "选行", en = "select lines" }
+back_to_read = { zh = "返回阅读", en = "back to read" }
+send = { zh = "发送", en = "send" }
+collapse = { zh = "收起", en = "collapse" }
+switch = { zh = "切换", en = "switch" }
+expand_row = { zh = "展开", en = "expand" }
+level = { zh = "等级", en = "level" }
+details = { zh = "详情", en = "details" }
+insert_suggest = { zh = "插入建议改法", en = "insert suggestion" }
+copy = { zh = "复制", en = "copy" }
+view = { zh = "查看", en = "view" }
+refresh = { zh = "刷新", en = "refresh" }
+next_page = { zh = "下页", en = "next page" }
+prev_page = { zh = "上页", en = "prev page" }
+raw = { zh = "原文", en = "raw" }
+read = { zh = "阅读", en = "read" }
+skip = { zh = "跳过", en = "skip" }
+next_question = { zh = "换题", en = "next question" }
+collapse_card = { zh = "折叠问题卡", en = "collapse card" }
+expand_answer = { zh = "展开作答", en = "expand to answer" }
+submit = { zh = "确认提交", en = "submit" }
+click_expand = { zh = "点击展开", en = "click to expand" }
+main_input = { zh = "主输入", en = "main input" }
+new = { zh = "新建", en = "new" }
+open = { zh = "打开", en = "open" }
+fetch = { zh = "获取模型", en = "fetch models" }
+add_manual = { zh = "手动添加", en = "add manually" }
+add_fetch = { zh = "添加并获取模型", en = "add & fetch models" }
+add_selected = { zh = "添加所选", en = "add selected" }
+remove_provider = { zh = "删除供应商", en = "remove provider" }
+edit_operate = { zh = "编辑/操作", en = "edit/operate" }
+switch_field = { zh = "切换字段", en = "switch field" }
+switch_api = { zh = "切换 API", en = "switch API" }
+reveal_key = { zh = "显示密钥", en = "reveal key" }
+run_maint = { zh = "运行维护", en = "run maintenance" }
+browse = { zh = "浏览", en = "browse" }
+select_all = { zh = "全选", en = "select all" }
+
+[tui.modal]
+search_label = { zh = "搜索：", en = "Search: " }
+ctx_over_window_fmt = { zh = "当前上下文 %{tokens} 超过 %{selector} 的窗口 %{window}", en = "Current context %{tokens} exceeds %{selector}'s window %{window}" }
+ctx_over_threshold_fmt = { zh = "当前上下文 %{tokens} 超过 %{selector} 的压缩触发线 %{threshold}（窗口 %{window}）", en = "Current context %{tokens} exceeds %{selector}'s compaction threshold %{threshold} (window %{window})" }
+switch_compact_fmt = { zh = "确认后先切换到 %{selector}，再由它压缩上下文（压缩后不超过 %{target}）", en = "After confirming, switch to %{selector} first, then let it compact the context (to under %{target})" }
+switching = { zh = "正在切换并压缩…", en = "Switching and compacting…" }
+switch_and_compact = { zh = "切换并压缩", en = "Switch and compact" }
+no_jobs = { zh = "当前没有后台任务", en = "No background jobs" }
+kill_confirm = { zh = "[按 x 或点击确认杀掉]", en = "[press x or click to confirm kill]" }
+no_runs = { zh = "没有 workflow run", en = "No workflow runs" }
+loading_sessions = { zh = "正在加载会话…", en = "Loading sessions…" }
+no_sessions_here = { zh = "当前目录没有会话", en = "No sessions in this directory" }
+no_match_sessions = { zh = "没有匹配的会话", en = "No matching sessions" }
+tools_intro = { zh = "按当前会话状态，下一轮请求将发送以下工具定义。", en = "With the current session state, the next request will send these tool definitions." }
+tools_read_failed_fmt = { zh = "读取失败：%{err}", en = "Failed to read tools: %{err}" }
+tools_none = { zh = "当前请求不发送任何工具。", en = "No tools are sent for this request." }
+tools_loading = { zh = "正在读取工具…", en = "Loading tools…" }
+no_match_models = { zh = "没有匹配的模型", en = "No matching models" }
+switching_model = { zh = "正在切换模型…", en = "Switching model…" }
+monitor_note = { zh = "10min 窗口 · 1Hz 采样 · 随进程退出清空", en = "10min window · 1Hz sampling · cleared on exit" }
+
+[tui.labels]
+more_lines = { zh = "%{omitted} 还有 %{count} 行", en = "%{omitted} %{count} more lines" }
+more_items = { zh = "%{omitted} 还有 %{count} 条", en = "%{omitted} %{count} more items" }
+
+[tui.group]
+extra_body = { zh = "%{title}：供应商提供默认值，模型可覆盖；未设置时使用 moc 或上游默认值，支持范围取决于模型与账号。", en = "%{title}: provider defaults, overridable per model; unset falls back to moc or upstream defaults — support depends on the model and account." }
+advanced_model = { zh = "当前模型的高级覆盖参数。", en = "Advanced overrides for this model." }
+advanced = { zh = "当前分组的高级配置参数。", en = "Advanced parameters for this group." }
+provider = { zh = "供应商“%{title}”的设置。", en = "Settings for provider “%{title}”." }
+model = { zh = "模型“%{title}”的设置。", en = "Settings for model “%{title}”." }
+model_detail = { zh = "模型“%{title}”：%{detail}。", en = "Model “%{title}”: %{detail}." }
+roles = { zh = "各会话角色使用的模型，候选来自已配置模型。", en = "Models used per session role; candidates come from configured models." }
+defaults = { zh = "匹配“%{pattern}”的模型默认参数。", en = "Default parameters for models matching “%{pattern}”." }
+agents = { zh = "子代理并发与默认参数。", en = "Subagent concurrency and default parameters." }
+context_files = { zh = "随请求加载的上下文规则文件。", en = "Context rule files loaded with each request." }
+system_prompt = { zh = "System Prompt 覆盖与追加规则。", en = "System prompt overrides and appended rules." }
+skills = { zh = "Skills 目录扫描与加载规则。", en = "Skills directory scanning and loading rules." }
+web_search = { zh = "网络搜索接口与检索参数。", en = "Web search API and retrieval parameters." }
+web_fetch = { zh = "网页抓取策略与截断限制。", en = "Page fetch policy and truncation limits." }
+workspace = { zh = "工作区与符号导航参数。", en = "Workspace and symbol navigation parameters." }
+tools_ptc = { zh = "PTC 代码执行沙盒限制。", en = "PTC code-execution sandbox limits." }
+tools = { zh = "基础工具开关与路径、输出限制。", en = "Basic tool toggles, paths, and output limits." }
+sandbox = { zh = "命令与路径安全边界策略。", en = "Safety boundary policy for commands and paths." }
+shake = { zh = "上下文压缩前的自动裁剪参数。", en = "Auto-trim parameters applied before compaction." }
+compaction = { zh = "上下文压缩阈值与策略。", en = "Context compaction thresholds and policy." }
+session = { zh = "会话历史与持久化设置。", en = "Session history and persistence settings." }
+workflow = { zh = "Workflow 运行开关与并发限制。", en = "Workflow toggles and concurrency limits." }
+features = { zh = "会话运行时功能开关。", en = "Session runtime feature toggles." }
+limits = { zh = "工具输出、对话轮数与并发上限。", en = "Limits for tool output, conversation rounds, and concurrency." }
+keybindings = { zh = "终端交互快捷键绑定。", en = "Terminal interaction key bindings." }
+tui = { zh = "终端界面外观与交互偏好。", en = "Terminal UI appearance and interaction preferences." }
+mcp = { zh = "MCP 服务全局连接与发现设置。", en = "Global MCP connection and discovery settings." }
+mcp_one = { zh = "MCP 服务“%{title}”。", en = "MCP server “%{title}”." }
+plugins = { zh = "插件启用、沙盒与权限策略。", en = "Plugin enablement, sandbox, and permission policy." }
+generic = { zh = "“%{title}”设置。", en = "“%{title}” settings." }
+
+[tui.providers]
+add = { zh = "+ 添加供应商", en = "+ Add provider" }
+add_hint = { zh = "+ 添加供应商：配置连接参数后拉取或手动添加模型", en = "+ Add provider: configure connection, then fetch or add models manually" }
+pick_desc = { zh = "选择供应商后配置连接参数与模型列表。", en = "Pick a provider to configure its connection and model list." }
+new_desc = { zh = "按 N 新建供应商。", en = "Press N to create a provider." }
+title_fmt = { zh = "%{id} · 连接与模型", en = "%{id} · Connection & models" }
+draft_title = { zh = "添加供应商", en = "Add provider" }
+field_id = { zh = "标识", en = "ID" }
+field_api = { zh = "API 格式", en = "API format" }
+field_url = { zh = "服务地址", en = "Service URL" }
+field_key = { zh = "API 密钥", en = "API key" }
+field_add_fetch = { zh = "添加并获取模型", en = "Add & fetch models" }
+field_add_only = { zh = "仅添加供应商", en = "Add provider only" }
+saving = { zh = "正在保存供应商…", en = "Saving provider…" }
+url_example = { zh = "地址示例：https://api.example.com/v1；本地服务无需密钥时可留空。", en = "URL example: https://api.example.com/v1; leave the key empty for local services that need none." }
+selected_fmt = { zh = "  已选 %{count}", en = "  %{count} selected" }
+filter_hint = { zh = "输入模型名或 ID 过滤", en = "Type a model name or ID to filter" }
+search_prefix = { zh = "搜索：", en = "Search: " }
+fetching = { zh = "正在获取模型列表…", en = "Fetching model list…" }
+fetch_failed = { zh = "获取失败：%{err}", en = "Fetch failed: %{err}" }
+no_models = { zh = "供应商未返回模型，可关闭后手动添加。", en = "The provider returned no models; close and add them manually." }
+no_match = { zh = "没有匹配的模型，按 Backspace 修改过滤词。", en = "No matching models; press Backspace to edit the filter." }
+added = { zh = " (已添加)", en = " (added)" }
+fetch_title = { zh = "获取模型 · %{id}", en = "Fetch models · %{id}" }
+more_fmt = { zh = "%{mark} 高级选项", en = "%{mark} Advanced" }
+fetching_short = { zh = "正在获取模型…", en = "Fetching models…" }
+refetch = { zh = "重新获取模型", en = "Refetch models" }
+fetch = { zh = "从供应商获取模型", en = "Fetch models from provider" }
+manual = { zh = "+ 手动添加模型 ID", en = "+ Add model ID manually" }
+remove = { zh = "删除供应商", en = "Remove provider" }
+add_model_title = { zh = "为 %{id} 添加模型", en = "Add a model to %{id}" }
+model_id_note = { zh = "模型 ID 原样保存，可包含 /", en = "The model ID is stored verbatim and may contain /" }
+remove_confirm = { zh = "删除供应商“%{id}”及其中配置的模型？Ctrl+Z 可以撤回。", en = "Remove provider “%{id}” and its configured models? Ctrl+Z undoes." }
+
+[tui.maint]
+summary = { zh = "%{prefix}清理 %{count} 个临时文件（%{bytes}），保留 %{protected} 项。", en = "%{prefix} clean %{count} temporary files (%{bytes}), keeping %{protected}." }
+done = { zh = "维护完成：", en = "Maintenance done:" }
+preview = { zh = "预计", en = "Will" }
+delete_fmt = { zh = "删除 %{path}", en = "Delete %{path}" }
+desc = { zh = "只清理过期且未被会话引用的临时文件。", en = "Only expired temp files not referenced by any session are cleaned." }
+
+[tui.param]
+headers = { zh = "API 请求头", en = "API headers" }
+extra_body = { zh = "采样与通用请求参数", en = "Sampling & request params" }
+reasoning = { zh = "思考与推理", en = "Reasoning" }
+thinking = { zh = "思考模式与预算", en = "Thinking mode & budget" }
+text = { zh = "回复详细程度", en = "Response verbosity" }
+format = { zh = "结构化输出", en = "Structured output" }
+response_format = { zh = "输出格式", en = "Output format" }
+output_config = { zh = "思考强度", en = "Thinking effort" }
+metadata = { zh = "请求元数据", en = "Request metadata" }
+prediction = { zh = "预期输出", en = "Predicted output" }
+prompt = { zh = "上游提示模板", en = "Upstream prompt template" }
+prompt_cache_options = { zh = "提示缓存", en = "Prompt caching" }
+cache_control = { zh = "自动缓存", en = "Auto caching" }
+stream_options = { zh = "流式返回", en = "Streaming" }
+tool_choice = { zh = "工具调用策略", en = "Tool choice policy" }
+moderation = { zh = "内容审核", en = "Moderation" }
+input = { zh = "输入审核策略", en = "Input moderation policy" }
+output = { zh = "输出审核策略", en = "Output moderation policy" }
+image = { zh = "上游图片处理", en = "Upstream image handling" }
+access_programs = { zh = "访问计划", en = "Access programs" }
+diagnostics = { zh = "缓存诊断", en = "Cache diagnostics" }
+
+[tui.snap]
+add_models = { zh = "添加勾选模型", en = "Add selected models" }
+add_provider = { zh = "添加供应商 %{id}", en = "Add provider %{id}" }
+azure_endpoint = { zh = "服务端点：Azure OpenAI", en = "Endpoint: Azure OpenAI" }
+
+[tui.image_err]
+base64 = { zh = "base64 解码失败：%{err}", en = "base64 decode failed: %{err}" }
+format = { zh = "无法识别图片格式：%{err}", en = "Unrecognized image format: %{err}" }
+image = { zh = "图片解码失败：%{err}", en = "Image decode failed: %{err}" }
+read = { zh = "读不到 %{path}：%{err}", en = "Cannot read %{path}: %{err}" }
+not_file = { zh = "%{path} 不是普通文件", en = "%{path} is not a regular file" }
+too_large = { zh = "%{path} 超过 %{mb} MB", en = "%{path} exceeds %{mb} MB" }
+too_large_inline = { zh = "内联图片 %{len} 字节，超过 %{mb} MB 上限", en = "Inline image of %{len} bytes exceeds the %{mb} MB limit" }
+svg = { zh = "SVG 解析失败：%{err}", en = "SVG parse failed: %{err}" }
+svg_size = { zh = "SVG 尺寸无效", en = "Invalid SVG size" }
+svg_too_large = { zh = "SVG 固有尺寸 %{w}×%{h} 超过 %{max}px", en = "SVG intrinsic size %{w}×%{h} exceeds %{max}px" }
+empty_svg = { zh = "SVG 内容为空", en = "SVG content is empty" }
+
+[tui.commands]
+debuginfo.desc = { zh = "工具调用统计、成功率与上下文压缩次数", en = "Tool call stats, success rates, and compaction count" }
+session.desc = { zh = "当前会话身份、文件路径与分类存储大小", en = "Current session identity, file paths, and storage breakdown" }
+new.desc = { zh = "新建会话", en = "Start a new session" }
+resume.desc = { zh = "恢复历史会话", en = "Resume a past session" }
+close.desc = { zh = "卸载当前会话并释放跨进程写租约", en = "Unload the session and release the cross-process write lease" }
+quit.desc = { zh = "退出 moc", en = "Quit moc" }
+plan.usage = { zh = "[提示词]", en = "[prompt]" }
+plan.desc = { zh = "进入／退出计划模式；带提示词时进入并发送", en = "Enter/exit plan mode; with a prompt, enters and sends it" }
+goal.desc = { zh = "查看或设置会话目标；目标存在时每轮提示结束自动续跑，直到达成或叫停", en = "Show or set the session goal; while set, each turn auto-continues until reached or stopped" }
+confirm_plan.desc = { zh = "计划模式下重新审阅已写入的待审计划", en = "Re-review the pending plan in plan mode" }
+model.desc = { zh = "切换模型", en = "Switch model" }
+engine.desc = { zh = "切换会话引擎（仅空白会话可切）", en = "Switch session engine (empty sessions only)" }
+clm.desc = { zh = "切换 CLM 实验引擎；启用后本会话固定使用 CLM", en = "Switch to the experimental CLM engine; once enabled the session stays on CLM" }
+autonomy.desc = { zh = "切换自主程度", en = "Switch autonomy level" }
+permission.usage = { zh = "[<模式>|clear]", en = "[<mode>|clear]" }
+permission.desc = { zh = "切换权限模式，或清空本会话沙盒授权", en = "Switch permission mode, or clear this session's sandbox grants" }
+ask.usage = { zh = "<问题>", en = "<question>" }
+ask.desc = { zh = "本条消息按问答模式处理（只读）", en = "Handle this message as a read-only Q&A" }
+retry.desc = { zh = "接着现有上下文继续跑（不追加用户消息）", en = "Continue with the current context (no new user message)" }
+compact_skills.desc = { zh = "手动压缩技能目录或清理摘要缓存，不写会话历史", en = "Manually compact the skills catalog or clean the summary cache; does not write session history" }
+compact.usage = { zh = "[指令]", en = "[instruction]" }
+compact.desc = { zh = "手动压缩上下文", en = "Manually compact the context" }
+tools.desc = { zh = "查看下一轮请求实际发送的工具", en = "Show the tools actually sent in the next request" }
+context.desc = { zh = "查看上下文占用与来源正文", en = "Show context usage and source content" }
+usage.desc = { zh = "查看当前会话模型用量", en = "Show current session model usage" }
+agents.desc = { zh = "子代理侧栏：唤出、聚焦、查看", en = "Subagent sidebar: summon, focus, inspect" }
+jobs.desc = { zh = "后台任务列表", en = "Background job list" }
+workflow.usage = { zh = "[指令]", en = "[instruction]" }
+workflow.desc = { zh = "激活 workflow（可附指令）", en = "Activate a workflow (optional instruction)" }
+workflows.desc = { zh = "workflow run 列表", en = "Workflow run list" }
+plugins.desc = { zh = "查看插件：来源、工具与斜杠命令", en = "Inspect plugins: origins, tools, and slash commands" }
+btw.usage = { zh = "[问题]", en = "[question]" }
+btw.desc = { zh = "旁路问答：带问题继续线程；不带问题重开面板", en = "Side-thread Q&A: with a question, continues the thread; without, reopens the panel" }
+config.desc = { zh = "打开设置：模型、供应商、界面等", en = "Open settings: models, providers, UI, etc." }
+features.desc = { zh = "特性开关一览：阶段、状态与上下文成本", en = "Feature flags: stage, state, and context cost" }
+help.desc = { zh = "快捷键一览", en = "Keyboard shortcut reference" }
+doctor.desc = { zh = "终端能力诊断：探测结果与修复建议", en = "Terminal capability diagnostics: probe results and fixes" }
+monitor.desc = { zh = "进程资源监控：内存/CPU/磁盘/网络近 10 分钟折线", en = "Process resource monitor: memory/CPU/disk/network over the last 10 minutes" }
+
+[tui.skills]
+op_prepare = { zh = "检查技能与缓存，准备压缩 skills…", en = "Checking skills and cache, preparing compaction…" }
+op_cleanup = { zh = "清理已不存在的技能缓存…", en = "Cleaning caches of removed skills…" }
+op_clear = { zh = "清空技能摘要缓存…", en = "Clearing the skills summary cache…" }
+working_fmt = { zh = "技能摘要处理中：%{op}", en = "Skills summary: %{op}" }
+working_prefix = { zh = "技能摘要处理中：", en = "Skills summary: " }
+phase_generate = { zh = "正在压缩 skills", en = "Compacting skills" }
+phase_commit = { zh = "正在原子提交缓存", en = "Committing cache atomically" }
+progress_fmt = { zh = "技能摘要处理中：%{stage}\n已生成并校验 %{done} / %{total} 个 · 缓存跳过 %{skipped} 个\n进度按批次更新；全部成功后才发布缓存。", en = "Skills summary: %{stage}\n%{done} / %{total} generated and verified · %{skipped} cache-skipped\nProgress updates per batch; the cache is published only if all succeed." }
+failed_fmt = { zh = "技能摘要操作未完成：%{err}\n本次操作没有发布缓存。", en = "Skills operation did not finish: %{err}\nNo cache was published." }
+
+[tui.compaction]
+running_prefix = { zh = "上下文压缩中", en = "Compacting context" }
+running_fmt = { zh = "上下文压缩中…(%{secs}s)", en = "Compacting context… (%{secs}s)" }
+
+[tui.nav]
+models_roles = { zh = "模型角色", en = "Model roles" }
+agents = { zh = "子代理", en = "Subagents" }
+default_fmt = { zh = "默认 %{pattern}", en = "Default %{pattern}" }
+web_search = { zh = "网络搜索", en = "Web search" }
+web_fetch = { zh = "网页抓取", en = "Web fetch" }
+workspace = { zh = "工作区", en = "Workspace" }
+sandbox = { zh = "沙盒安全", en = "Sandbox safety" }
+compaction = { zh = "上下文压缩", en = "Context compaction" }
+shake = { zh = "本地修剪", en = "Local trimming" }
+session = { zh = "会话存储", en = "Session storage" }
+retention = { zh = "会话保留", en = "Session retention" }
+features = { zh = "实验特性", en = "Experimental features" }
+limits = { zh = "请求与循环限制", en = "Request & loop limits" }
+mcp = { zh = "MCP 服务", en = "MCP servers" }
+plugins = { zh = "插件系统", en = "Plugin system" }
+keybindings = { zh = "快捷键", en = "Key bindings" }
+models_count = { zh = "%{count} 个模型", en = "%{count} models" }
+no_models = { zh = "尚未添加模型", en = "No models added yet" }
+model_defaults = { zh = "模型默认值", en = "Model defaults" }
+ctx_fmt = { zh = "上下文 %{v}", en = "Context %{v}" }
+out_fmt = { zh = "回复 %{v}", en = "Output %{v}" }
+thinking = { zh = "支持思考", en = "Thinking" }
+sep = { zh = " · ", en = " · " }
+
+[tui.queue]
+skills_busy = { zh = "正在维护技能摘要，完成或取消后才能发送消息", en = "Skills summary maintenance is running; messages can be sent after it finishes or is cancelled" }
+read_only = { zh = "会话只读：另一个 moc 进程正在写入，关闭它或退出后才能操作", en = "Session is read-only: another moc process is writing; close it or quit to continue" }
+no_images = { zh = "Bash 命令不支持图片，请移除图片后执行", en = "Bash commands don't support images; remove them first" }
+too_late = { zh = "消息已进入本轮上下文，无法撤回", en = "The message already entered this turn's context and can't be withdrawn" }
+image = { zh = "[图片]", en = "[image]" }
+draft_queued = { zh = "输入框正在编辑其他消息，撤回的草稿已排回待发送", en = "The input box is editing another message; the withdrawn draft was requeued" }
+edit_first = { zh = "请先发送或排队当前正在编辑的消息", en = "Send or queue the message you're editing first" }
+breakdown_fmt = { zh = " · 插队 %{s} / 队列 %{q}", en = " · steering %{s} / queue %{q}" }
+title_fmt = { zh = "待发送 %{total}%{breakdown} · 点击/× 撤回", en = "Pending %{total}%{breakdown} · click/× to withdraw" }
+steer = { zh = "插队", en = "steer" }
+queued = { zh = "队列", en = "queue" }
+
+[tui.doctor]
+title = { zh = "终端能力诊断", en = "Terminal capability diagnostics" }
+env = { zh = "环境：TERM=%{term} TERM_PROGRAM=%{term_program} COLORTERM=%{colorterm}%{tmux}", en = "Environment: TERM=%{term} TERM_PROGRAM=%{term_program} COLORTERM=%{colorterm}%{tmux}" }
+color = { zh = "色彩：%{level}", en = "Color: %{level}" }
+color_true = { zh = "truecolor（24-bit）", en = "truecolor (24-bit)" }
+color_256 = { zh = "256 色", en = "256 colors" }
+color_basic = { zh = "16 色（COLORTERM=truecolor 可启用真彩色）", en = "16 colors (set COLORTERM=truecolor for true color)" }
+color_none = { zh = "无色彩支持（NO_COLOR 或 TERM 缺失）", en = "No color support (NO_COLOR set or TERM missing)" }
+kbd_kitty = { zh = "键盘：kitty 消歧义协议已协商", en = "Keyboard: kitty disambiguation protocol negotiated" }
+kbd_plain = { zh = "键盘：未协商增强协议（Ctrl+M / Ctrl+I 等组合会退化为 Enter / Tab）", en = "Keyboard: enhancement protocol not negotiated (Ctrl+M / Ctrl+I degrade to Enter / Tab)" }
+sync_on = { zh = "同步输出：开启（DEC 2026，帧原子更新；仍撕裂可 MOC_FULL_REPAINT=1 排障）", en = "Sync output: on (DEC 2026, atomic frame updates; if tearing persists try MOC_FULL_REPAINT=1)" }
+sync_tmux = { zh = "同步输出：关闭（tmux<3.7 / tmux-CC 不透传 2026，已降级；外层支持可 MOC_SYNC_OUTPUT=1 强制）", en = "Sync output: off (tmux<3.7 / tmux-CC don't pass 2026 through, degraded; force with MOC_SYNC_OUTPUT=1 if supported)" }
+sync_off = { zh = "同步输出：关闭（终端未应答 DECRQM；慢连接下可能帧撕裂，确认支持可 MOC_SYNC_OUTPUT=1）", en = "Sync output: off (terminal didn't answer DECRQM; frames may tear on slow links, force with MOC_SYNC_OUTPUT=1 if supported)" }
+graphics_fmt = { zh = "图形：%{proto}（单元格 %{w}×%{h}px）", en = "Graphics: %{proto} (cell %{w}×%{h}px)" }
+graphics_small = { zh = "  建议：单元格像素过小，图表与图片入口不启用", en = "  Note: cell pixels too small; chart and image entries stay disabled" }
+graphics_tmux = { zh = "图形：无（tmux 吞应答已跳过探测；可 MOC_CHART_GRAPHICS=kitty|sixel|iterm2 强制）", en = "Graphics: none (tmux swallowed the probe reply; force with MOC_CHART_GRAPHICS=kitty|sixel|iterm2)" }
+graphics_none = { zh = "图形：无（未探测到 kitty/sixel/iTerm2；图表按字符绘制）", en = "Graphics: none (no kitty/sixel/iTerm2 detected; charts render as text)" }
+clipboard_fmt = { zh = "剪贴板：%{channel} + OSC52（双通道并写）", en = "Clipboard: %{channel} + OSC52 (dual-channel writes)" }
+clipboard_osc52 = { zh = "剪贴板：仅 OSC52（未找到 powershell.exe / wl-copy / xclip / pbcopy；建议安装 wl-clipboard 或 xclip）", en = "Clipboard: OSC52 only (powershell.exe / wl-copy / xclip / pbcopy not found; install wl-clipboard or xclip)" }
+notify = { zh = "通知：OSC 9（终端不支持时静默忽略）", en = "Notifications: OSC 9 (silently ignored if unsupported)" }
+sandbox_fmt = { zh = "沙盒：%{modes}", en = "Sandbox: %{modes}" }
+
+[tui.form]
+bad_signed_int = { zh = "请输入有效整数（支持负数、200k、1m 或千分位）", en = "Enter a valid integer (negatives, 200k, 1m, or thousands separators allowed)" }
+bad_int = { zh = "请输入有效整数（支持 200k、1m 或千分位）", en = "Enter a valid integer (200k, 1m, or thousands separators allowed)" }
+out_of_range = { zh = "数值超出支持范围", en = "Value out of supported range" }
+bad_number = { zh = "请输入有效数字", en = "Enter a valid number" }
+finite = { zh = "请输入有限的数字", en = "Enter a finite number" }
+non_negative = { zh = "请输入有限的非负数", en = "Enter a finite non-negative number" }
+bad_json = { zh = "JSON 格式有误：%{err}", en = "Invalid JSON: %{err}" }
+json_object = { zh = "请输入 JSON 对象", en = "Enter a JSON object" }
+no_null = { zh = "清空输入可恢复默认，不要填写 null", en = "Clear the input to restore the default; don't enter null" }
+add_defaults_title = { zh = "添加模型默认设置", en = "Add model defaults" }
+add_defaults_hint = { zh = "填写模型名匹配，例如 gpt-*", en = "Enter a model pattern, e.g. gpt-*" }
+search_title = { zh = "搜索设置项", en = "Search settings" }
+search_hint = { zh = "输入名称或关键字，留空显示全部", en = "Type a name or keyword; empty shows everything" }
+reset_fmt = { zh = "恢复默认：%{label}", en = "Reset to default: %{label}" }
+group_no_delete = { zh = "这一组不能整组删除；可逐项按 R 恢复默认值", en = "This group can't be deleted as a whole; press R on each item to restore defaults" }
+delete_fmt = { zh = "删除“%{title}”？按 Ctrl+Z 可以撤回。", en = "Delete “%{title}”? Ctrl+Z undoes." }
+delete_item_fmt = { zh = "删除 %{name}", en = "Delete %{name}" }
+maint_confirm = { zh = "执行维护？预计清理 %{count} 个临时文件；被会话引用的文件不会处理。", en = "Run maintenance? It will clean about %{count} temporary files; files referenced by sessions are kept." }
+azure_version = { zh = "接口版本不能为空，也不能包含空白，例如 2024-10-21", en = "API version can't be empty or contain whitespace, e.g. 2024-10-21" }
+azure_title = { zh = "Azure 接口版本", en = "Azure API version" }
+azure_hint = { zh = "填写 api-version，例如 2024-10-21", en = "Enter api-version, e.g. 2024-10-21" }
+add_mcp_title = { zh = "添加 MCP 服务", en = "Add MCP server" }
+add_mcp_hint = { zh = "填写服务标识，例如 filesystem", en = "Enter the server ID, e.g. filesystem" }
+add_hint_wrong_tab = { zh = "请到“供应商与模型”或“MCP”页添加条目", en = "Go to the “Providers & Models” or “MCP” tab to add entries" }
+mcp_added = { zh = "已添加 MCP 服务，请填写启动程序或地址", en = "MCP server added; fill in the command or address" }
+
+[tui.title]
+confirm_answers = { zh = "确认回答", en = "Confirm answers" }
+ask = { zh = "提问", en = "Question" }
+model = { zh = "选择模型", en = "Select model" }
+rewind = { zh = "消息回退", en = "Rewind messages" }
+sessions_folder = { zh = "恢复会话（当前目录）", en = "Resume session (this folder)" }
+sessions_all = { zh = "恢复会话（全部目录）", en = "Resume session (all folders)" }
+plan = { zh = "计划审批", en = "Plan review" }
+help = { zh = "快捷键", en = "Shortcuts" }
+tools_fmt = { zh = "可用工具 · %{count}", en = "Available tools · %{count}" }
+tools = { zh = "可用工具", en = "Available tools" }
+context = { zh = "上下文", en = "Context" }
+jobs = { zh = "后台任务", en = "Background jobs" }
+switch_model = { zh = "切换模型：需要压缩上下文", en = "Switch model: context compaction required" }
+wf_amend = { zh = "workflow 审批：amend", en = "Workflow approval: amend" }
+wf_hole = { zh = "workflow 审批：hole 填充", en = "Workflow approval: hole fill" }
+wf_approval = { zh = "workflow 审批", en = "Workflow approval" }
+wf_run_fmt = { zh = "run 面板：%{title}", en = "Run panel: %{title}" }
+wf_runs = { zh = "workflow run 列表", en = "workflow runs" }
+monitor = { zh = "进程监控", en = "Process monitor" }
+
+[tui.role]
+user = { zh = "用户提问", en = "User message" }
+assistant = { zh = "模型回复", en = "Assistant reply" }
+tool = { zh = "工具结果", en = "Tool result" }
+reminder = { zh = "运行时提醒", en = "Runtime reminder" }
+system = { zh = "系统消息", en = "System message" }
+
+[tui.rewind]
+title = { zh = " ⏪ 会话消息回退 (Rewind) ", en = " ⏪ Rewind Messages " }
+untitled = { zh = "未命名会话", en = "Untitled session" }
+wizard = { zh = "会话回退向导", en = "Session rewind wizard" }
+session_fmt = { zh = "当前会话：「%{title}」", en = "Session: “%{title}”" }
+nodes_fmt = { zh = "共 %{count} 个历史节点", en = "%{count} history nodes" }
+guide = { zh = "确认后该条用户消息回到输入框重新编辑，之后的对话将被丢弃。", en = "After confirming, that user message returns to the input box for editing; the conversation after it is discarded." }
+loading = { zh = "正在加载会话消息历史，请稍候…", en = "Loading message history, please wait…" }
+load_failed_fmt = { zh = "❌ 加载失败：%{err}", en = "❌ Failed to load: %{err}" }
+retry_hint = { zh = "按 Enter 重试，或按 Esc 关闭窗口", en = "Press Enter to retry, or Esc to close" }
+empty = { zh = "当前会话暂无可以回退的消息记录", en = "No rewindable messages in this session" }
+timeline_title = { zh = " 节点时间线 (Timeline) ", en = " Timeline " }
+no_match_fmt = { zh = "未找到匹配「%{query}」的节点", en = "No nodes matching “%{query}”" }
+clear_filter = { zh = "按 Esc 清空过滤条件", en = "Press Esc to clear the filter" }
+tag_redo_target = { zh = "[前滚目标]", en = "[redo target]" }
+tag_rewind_target = { zh = "[回退目标]", en = "[rewind target]" }
+tag_rejoin = { zh = "[将接回]", en = "[rejoining]" }
+tag_rewound = { zh = "[已回退]", en = "[rewound]" }
+tag_kept = { zh = "[保留]", en = "[kept]" }
+tag_dropped = { zh = "[丢弃]", en = "[dropped]" }
+detail_title = { zh = " 回退影响与内容详情 ", en = " Impact & Preview " }
+redo_here = { zh = "前滚到此处 (Redo to here)", en = "Redo to here" }
+redo_restored_fmt = { zh = "• 将把已回退的历史向前接回，恢复该节点及之前共 %{count} 条", en = "• Rejoins rewound history forward, restoring this node and %{count} entries before it" }
+redo_remaining_fmt = { zh = "• 该节点之后仍有 %{count} 条保持回退状态，可继续前滚", en = "• %{count} entries after this node stay rewound; you can keep redoing" }
+redo_all_restored = { zh = "• 已回退的内容将全部接回，恢复到回退前的最新状态", en = "• All rewound content rejoins, restoring the latest state" }
+rewind_here = { zh = "回退到此处 (Rewind to here)", en = "Rewind to here" }
+rewind_restore = { zh = "• 该用户提问将完整恢复到底部输入框，供您修改后重新发送", en = "• This user prompt returns intact to the input box; edit and resend it" }
+dropped_fmt = { zh = "• 下方共 %{count} 条对话记录将被丢弃（不再计入会话历史）", en = "• %{count} entries below will be discarded (removed from session history)" }
+at_latest = { zh = "• 当前节点已经是最新消息，下方无多余对话丢弃", en = "• This node is already the latest; nothing below is discarded" }
+continue_here = { zh = "从此处继续 (Continue from here)", en = "Continue from here" }
+continue_truncate = { zh = "• 会话历史将截断至该回复节点，您可以继续向模型提问", en = "• Session history truncates at this reply node; you can keep asking the model" }
+meta_node = { zh = "节点信息：", en = "Node: " }
+meta_time = { zh = "记录时间：", en = "Time: " }
+meta_id = { zh = "条目ID：", en = "Entry ID: " }
+meta_tools = { zh = "调用工具：", en = "Tools: " }
+body_preview = { zh = "消息正文预览：", en = "Message preview:" }
+more_fmt = { zh = "  ▼ （还有 %{count} 行内容 · 按 PgUp/PgDn 或滚轮滚动预览）", en = "  ▼ (%{count} more lines · PgUp/PgDn or wheel to scroll)" }
+badge = { zh = " ⏪ 回退 ", en = " ⏪ Rewind " }
+filter_fmt = { zh = "过滤: \"%{query}\"", en = "Filter: \"%{query}\"" }
+match_fmt = { zh = " (匹配 %{matched}/%{total})", en = " (matched %{matched}/%{total})" }
+switch_match = { zh = "↑↓ 切换匹配", en = "↑↓ switch match" }
+esc_clear = { zh = "Esc 清除过滤", en = "Esc clear filter" }
+select_each = { zh = "↑↓/jk 逐条选择", en = "↑↓/jk select" }
+jump_user = { zh = "←→/hl 仅跳用户提问", en = "←→/hl jump to prompts" }
+search_key = { zh = "f 或 / 搜索", en = "f or / search" }
+redo_answer = { zh = "R 重新作答", en = "R re-answer" }
+esc_cancel = { zh = "Esc 取消", en = "Esc cancel" }
+enter_redo = { zh = "Enter 前滚到此处", en = "Enter redo to here" }
+enter_rewind = { zh = "Enter 回退到此处", en = "Enter rewind to here" }
+user_prompt = { zh = "（用户提问）", en = "(user prompt)" }
+tools_called_fmt = { zh = "调用工具：%{names}", en = "Tools called: %{names}" }
+tool_result = { zh = "工具结果返回", en = "Tool result" }
+model_reply = { zh = "（模型回复）", en = "(assistant reply)" }
+tool_args_fmt = { zh = "\n• 工具 [%{name}] 参数：\n%{args}\n", en = "\n• Tool [%{name}] arguments:\n%{args}\n" }
+redo = { zh = "前滚", en = "redo" }
+undo = { zh = "回退", en = "rewind" }
+redone = { zh = "已向前滚到该节点", en = "Redone to this node" }
+undone = { zh = "会话已回退", en = "Session rewound" }
+retried = { zh = "已重新作答，正在继续", en = "Re-answered; continuing" }
+op_failed_fmt = { zh = "消息%{op}失败：%{err}", en = "Failed to %{op} message: %{err}" }
+retry_failed_fmt = { zh = "重新作答失败：%{err}", en = "Re-answer failed: %{err}" }
+redo_cursor_missing = { zh = "前滚分页未返回可继续的游标", en = "Redo pagination returned no continuation cursor" }
+none = { zh = "当前会话没有可回退的消息", en = "No rewindable messages in this session" }
+no_prompt = { zh = "选中的条目没有可重新作答的提问", en = "The selected entry has no prompt to re-answer" }
+
+[tui.plan]
+not_annotatable = { zh = "当前版本不可批注", en = "This version can't be annotated" }
+annotation_empty = { zh = "批注正文不能为空", en = "Annotation body can't be empty" }
+run_here = { zh = "执行（当前会话）", en = "Run (this session)" }
+run_compact = { zh = "压缩当前会话后执行", en = "Compact this session, then run" }
+run_new_fmt = { zh = "在新会话执行（%{engine}）", en = "Run in a new session (%{engine})" }
+resume = { zh = "继续计划", en = "Resume plan" }
+note_draft = { zh = "计划仍在起草中。", en = "The plan is still being drafted." }
+note_revised = { zh = "已提交修改意见，等待模型修订。", en = "Feedback submitted; waiting for the model to revise." }
+note_superseded = { zh = "已被新版本取代。", en = "Superseded by a newer version." }
+note_approved = { zh = "计划已批准。", en = "Plan approved." }
+note_rejected = { zh = "计划已拒绝。", en = "Plan rejected." }
+diff_ver_fmt = { zh = " · 对比 v%{ver}", en = " · vs v%{ver}" }
+annot_count_fmt = { zh = " · %{drafts} 条待提交 / %{submitted} 条已提交", en = " · %{drafts} pending / %{submitted} submitted" }
+diff_load_failed_fmt = { zh = "无法加载改动：%{err}", en = "Failed to load changes: %{err}" }
+no_text_changes = { zh = "本版没有文本改动。", en = "No text changes in this version." }
+diff_loading = { zh = "正在加载本版改动…", en = "Loading changes for this version…" }
+submitting = { zh = "正在提交…", en = "Submitting…" }
+annotation_body_hint = { zh = "批注正文（可用 ```suggestion 围栏给出替换文本）", en = "Annotation body (use ```suggestion fences for replacement text)" }
+annotation_title_fmt = { zh = "批注%{sep}第 %{start}-%{end} 行", en = "Annotate%{sep}lines %{start}-%{end}" }
+not_plan_mode = { zh = "只有计划状态可以重新审阅计划", en = "Only a session in plan mode can reopen plan review" }
+left_plan_mode = { zh = "会话已离开计划状态", en = "The session has left plan mode" }
+no_pending_plan = { zh = "当前会话没有已写入的待审计划", en = "This session has no submitted plan to review" }
+invalid_entity = { zh = "待审计划的正文或实体 URI 无效", en = "The submitted plan's body or entity URI is invalid" }
+session_changed = { zh = "当前会话已变化，不能打开该计划", en = "The session changed; can't open that plan" }
+review_failed_fmt = { zh = "无法审阅计划：%{err}", en = "Failed to review plan: %{err}" }
+approve_failed_fmt = { zh = "计划审批失败：%{err}", en = "Plan approval failed: %{err}" }
+annotate_failed_fmt = { zh = "提交批注失败：%{err}", en = "Failed to submit annotation: %{err}" }
+exec_load_failed_fmt = { zh = "计划已批准，但加载执行会话失败：%{err}；可通过 /resume 恢复", en = "Plan approved, but loading the execution session failed: %{err}; use /resume to recover" }
+
+[tui.help]
+sec_general = { zh = "会话与通用", en = "Session & General" }
+model = { zh = "选择模型", en = "Pick a model" }
+engine = { zh = "切换会话引擎", en = "Switch session engine" }
+config = { zh = "打开设置", en = "Open settings" }
+agents = { zh = "唤出子代理侧栏", en = "Toggle the subagent sidebar" }
+resume = { zh = "恢复会话", en = "Resume a session" }
+thinking = { zh = "切换思考显示档位", en = "Cycle thinking display" }
+thinking_level = { zh = "切换思考等级", en = "Cycle thinking level" }
+tools = { zh = "切换工具显示档位", en = "Cycle tool display" }
+help = { zh = "快捷键一览", en = "Keybinding help" }
+sec_input = { zh = "输入与编辑", en = "Input & Editing" }
+send = { zh = "发送消息", en = "Send message" }
+queue = { zh = "排队发送", en = "Queue message" }
+newline = { zh = "插入换行", en = "Insert newline" }
+cancel = { zh = "停止当前生成 / 退出", en = "Stop generation / quit" }
+focus = { zh = "切换输入焦点", en = "Switch input focus" }
+clear = { zh = "清空输入", en = "Clear input" }
+line_start = { zh = "移动到行首", en = "Go to line start" }
+line_end = { zh = "移动到行尾", en = "Go to line end" }
+delete_word = { zh = "删除前一词", en = "Delete previous word" }
+delete_to_end = { zh = "删除至行尾", en = "Delete to line end" }
+paste_image = { zh = "粘贴图片或文本", en = "Paste image or text" }
+queue_edit = { zh = "编辑排队中的消息", en = "Edit queued message" }
+sec_btw = { zh = "旁路交互 (BTW)", en = "Side channel (BTW)" }
+btw_focus = { zh = "旁路展开与焦点切换", en = "Expand side channel / switch focus" }
+btw_cancel = { zh = "收起旁路 / 取消生成", en = "Collapse side channel / cancel" }
+btw_copy = { zh = "复制回答 / 清空旁路", en = "Copy answer / clear side channel" }
+slash_hint = { zh = "输入 / 查看全部斜杠命令", en = "Type / to see all slash commands" }
+
+[tui.picker]
+group_mode = { zh = "模式", en = "Modes" }
+group_inherit = { zh = "继承", en = "Inherit" }
+group_recent = { zh = "最近使用", en = "Recent" }
+fusion_desc = { zh = "前沿模型负责规划、调查与评审，高性价比模型执行实现与验证", en = "A frontier model plans, researches and reviews while a cost-effective model implements and verifies" }
+thinking_level = { zh = "思考等级", en = "Thinking level" }
+thinking_side = { zh = "  思考", en = "  thinking" }
+fast_on = { zh = "● 开", en = "● on" }
+fast_off = { zh = "○ 关", en = "○ off" }
+unselected = { zh = "未选择", en = "Not selected" }
+fusion_name = { zh = "fusion lead sidekick 组合", en = "fusion lead+sidekick combo" }
+
+[tui.ask]
+confirm_answers = { zh = "确认回答", en = "Confirm answers" }
+question = { zh = "提问", en = "Question" }
+confirm = { zh = "确认", en = "Confirm" }
+answered_fmt = { zh = "已答 %{answered}/%{total} · ", en = "%{answered}/%{total} answered · " }
+question_fmt = { zh = "问题 %{current}/%{total} · ", en = "Question %{current}/%{total} · " }
+recommended = { zh = "（推荐）", en = " (recommended)" }
+custom_fmt = { zh = " %{marker} ✎ 自定义：%{text}", en = " %{marker} ✎ Custom: %{text}" }
+scroll_status_fmt = { zh = "%{omitted} %{from}-%{to}/%{total} 行%{sep}%{hints}", en = "%{omitted} lines %{from}-%{to}/%{total}%{sep}%{hints}" }
+more_items_fmt = { zh = "   %{arrow} 还有 %{count} 项", en = "   %{arrow} %{count} more items" }
+unanswered = { zh = "未回答", en = "Unanswered" }
+timeout_unanswered = { zh = "超时未回答", en = "Timed out without an answer" }
+answer = { zh = "回答", en = "Answer" }
+
+[tui.ctx]
+title = { zh = "上下文", en = "Context" }
+stale = { zh = "有更新 · r 刷新", en = "Updated · r refresh" }
+loading_root = { zh = "正在读取上下文…", en = "Loading context…" }
+loading = { zh = "正在读取…", en = "Loading…" }
+empty = { zh = "暂无内容", en = "Nothing here yet" }
+node_error_fmt = { zh = "%{err} · n 重试", en = "%{err} · n retry" }
+
+[tui.usage]
+load_failed_fmt = { zh = "读取用量失败：%{err}", en = "Failed to load usage: %{err}" }
+title = { zh = "会话统计", en = "Session stats" }
+model_time = { zh = "模型用时", en = "Model time" }
+tool_time = { zh = "工具调用用时", en = "Tool time" }
+ttft = { zh = "首 token 平均（TTFT）", en = "Avg TTFT" }
+tps = { zh = "输出速度", en = "Output speed" }
+split_fmt = { zh = "（生成 %{gen} · 网络等待 %{wait}）", en = " (generation %{gen} · network wait %{wait})" }
+col_model = { zh = "模型", en = "model" }
+col_calls = { zh = "调用", en = "calls" }
+col_input = { zh = "输入", en = "input" }
+col_output = { zh = "输出", en = "output" }
+col_cache = { zh = "缓存率", en = "cache" }
+col_thinking = { zh = "思考", en = "thinking" }
+col_gen = { zh = "生成", en = "gen" }
+subagent_fmt = { zh = "%{label} (子代理)", en = "%{label} (subagent)" }
+total = { zh = "合计", en = "total" }
+unknown = { zh = "未知", en = "unknown" }
+
+[tui.btw]
+finish_reason_fmt = { zh = "结束原因：%{reason}", en = "Finish reason: %{reason}" }
+text_only = { zh = "旁路问答仅支持文本，请移除图片后发送", en = "Side-channel questions are text-only; remove images before sending" }
+still_running = { zh = "旁路问答仍在运行，草稿已保留；先等待或在面板按 Ctrl+C", en = "A side-channel question is still running; your draft is kept — wait or press Ctrl+C in the panel" }
+cancel_failed_fmt = { zh = "取消旁路问答失败：%{err}", en = "Failed to cancel side-channel question: %{err}" }
+copied = { zh = "已复制旁路回答", en = "Side-channel answer copied" }
+empty_thread = { zh = "空线程", en = "empty thread" }
+head_fmt = { zh = "▸ BTW%{sep}%{status}%{sep}%{turns} 轮%{sep}", en = "▸ BTW%{sep}%{status}%{sep}%{turns} turns%{sep}" }
+title_fmt = { zh = "BTW%{sep}%{status}%{sep}%{turns} 轮", en = "BTW%{sep}%{status}%{sep}%{turns} turns" }
+intro = { zh = "在主输入使用 /btw 问题开始；后续 /btw 问题沿用本线程。仅内存，不调用工具，不写主上下文或历史。", en = "Start with /btw <question> in the main input; later /btw questions reuse this thread. Memory-only — no tools, nothing written to context or history." }
+you_fmt = { zh = "你 › %{question}", en = "you › %{question}" }
+turn_footer_fmt = { zh = "%{status} · 回放 %{turns} 轮", en = "%{status} · %{turns} turns replayed" }
+turn_usage_fmt = { zh = " · 输入 %{input} / 输出 %{output} token", en = " · %{input} in / %{output} out tokens" }
+
+[tui.tool]
+bash_excluded = { zh = "!! bash · 不进入上下文", en = "!! bash · excluded from context" }
+queued = { zh = "待执行", en = "queued" }
+generating = { zh = "生成中", en = "generating" }
+yield_report = { zh = "交付报告", en = "Final report" }
+todo_reminder = { zh = "隐式提醒：同步待办进度", en = "Implicit reminder: sync todo progress" }
+flag_compact = { zh = "压缩后", en = "post-compact" }
+flag_fresh = { zh = "新会话", en = "fresh session" }
+flag_background = { zh = "后台", en = "background" }
+wait_count_fmt = { zh = "等待 %{count} 个代理", en = "Waiting for %{count} agents" }
+wait_all = { zh = "等待全部运行中代理", en = "Waiting for all running agents" }
+new_messages = { zh = "有新消息", en = "new messages" }
+timed_out = { zh = "超时", en = "timed out" }
+question_count_fmt = { zh = "共 %{count} 问", en = "%{count} questions" }
+preview_tail = { zh = "… 仅显示预览末尾", en = "… preview tail only" }
+preview_head = { zh = "⋯ 仅显示开头", en = "⋯ beginning only" }
+image_fmt = { zh = "[图片 %{kind}]", en = "[image %{kind}]" }
+image_dropped = { zh = "图片载荷已丢弃", en = "image payload dropped" }
+image_decoding = { zh = "图片解码中…", en = "Decoding image…" }
+image_failed_fmt = { zh = "图片无法显示：%{err}", en = "Cannot display image: %{err}" }
+more_images_fmt = { zh = "%{omitted} 还有 %{count} 张图片", en = "%{omitted} %{count} more images" }
+subagent_task = { zh = "子代理任务", en = "Subagent task" }
+fetch_failed_fmt = { zh = "抓取失败：%{url} — %{err}", en = "Fetch failed: %{url} — %{err}" }
+fetch_tokens_fmt = { zh = "%{title} · 约 %{tokens} tokens%{warn}", en = "%{title} · ~%{tokens} tokens%{warn}" }
+truncated_warn = { zh = " · 警告：内容已截断", en = " · warning: content truncated" }
+result_fmt = { zh = "结果 %{status}", en = "Result %{status}" }
+changes_fmt = { zh = "改动 %{n} 个文件", en = "%{n} files changed" }
+verify_base = { zh = "验证", en = "checks" }
+verify_passed_fmt = { zh = " %{n} 通过", en = " %{n} passed" }
+verify_failed_fmt = { zh = " %{n} 失败", en = " %{n} failed" }
+verify_notrun_fmt = { zh = " %{n} 未跑", en = " %{n} skipped" }
+omitted_fmt = { zh = "⋯ 已省略 %{n} 项", en = "⋯ %{n} items omitted" }
+bg_fmt = { zh = " · 后台 %{job}", en = " · bg %{job}" }
+fallback_name = { zh = "工具", en = "tool" }
+match_one = { zh = "match", en = "match" }
+match_many = { zh = "matches", en = "matches" }
+file_one = { zh = "file", en = "file" }
+file_many = { zh = "files", en = "files" }
+result_label = { zh = "结果", en = "result" }
+result_prefix = { zh = "结果：", en = "result: " }
+
+[tui.diff]
+truncated = { zh = "⋯ 其余改动超出 diff 上限，未显示", en = "⋯ remaining changes exceed the diff limit, not shown" }
+unchanged_fmt = { zh = "%{pad}⋯ %{count} 行未变", en = "%{pad}⋯ %{count} unchanged lines" }
+
+[tui.md]
+chart = { zh = "▸ 可视化图表", en = "▸ Show chart" }
+hide_chart = { zh = "▾ 隐藏图表", en = "▾ Hide chart" }
+ref_links = { zh = "参考链接：", en = "References:" }
+more_links_fmt = { zh = "▸ 还有 %{count} 条链接", en = "▸ %{count} more links" }
+collapse_links = { zh = "▾ 收起链接", en = "▾ Collapse links" }
+
+[tui.subagent]
+title = { zh = "子代理", en = "Subagents" }
+header = { zh = "  ▸ 子代理 ", en = "  ▸ Subagent " }
+result = { zh = "子代理结果 ", en = "Subagent result " }
+goal = { zh = "目标 ", en = "goal " }
+round_fmt = { zh = "第 %{round} 轮%{sep}", en = "round %{round}%{sep}" }
+auto = { zh = "自动", en = "auto" }
+running_fmt = { zh = " · %{count} running", en = " · %{count} running" }
+
+[tui.todo]
+title_inline = { zh = "任务 ", en = "Tasks " }
+title_card = { zh = " ◆ 任务 ", en = " ◆ Tasks " }
+more_fmt = { zh = "… 还有 %{count} 行", en = "… %{count} more lines" }
+drag_hint = { zh = " 拖动 · 点击折叠 ", en = " drag · click to fold " }
+
+[tui.event]
+unattended_approved = { zh = "unattended：已自动批准计划（压缩并执行）", en = "unattended: plan auto-approved (compact & execute)" }
+compacted_fmt = { zh = "上下文已压缩：%{before} → %{after}", en = "Context compacted: %{before} → %{after}" }
+trimmed_fmt = { zh = "上下文已裁剪：%{before} → %{after}（未生成摘要）", en = "Context trimmed: %{before} → %{after} (no summary generated)" }
+plugin_disabled_fmt = { zh = "插件 `%{plugin}` 已停用（%{code}）", en = "Plugin `%{plugin}` disabled (%{code})" }
+thinking_truncated = { zh = "\n\n[思考内容过长，已停止在界面展开]\n", en = "\n\n[thinking too long; expansion stopped]\n" }
+clm_enabled = { zh = "CLM 实验引擎已启用：模型将维护实时上下文；本会话首次请求后锁定引擎", en = "CLM experimental engine enabled: the model maintains live context; the engine locks after this session's first request" }
+exit_code_fmt = { zh = "（退出码 %{code}）", en = " (exit code %{code})" }
+job_done_fmt = { zh = "后台任务结束：%{cmd}%{code}", en = "Background job finished: %{cmd}%{code}" }
+error_fmt = { zh = "错误：%{message}%{retryable}", en = "Error: %{message}%{retryable}" }
+retryable = { zh = "（可以重试）", en = " (retryable)" }
+session_unloaded = { zh = "会话已卸载，写租约已释放；旁路内存已清空", en = "Session unloaded; write lease released and side-channel memory cleared" }
+image_attached = { zh = "已附加剪贴板图片", en = "Clipboard image attached" }
+clipboard_empty = { zh = "剪贴板中没有可粘贴的图片或文本", en = "No image or text to paste in the clipboard" }
+notify_permission = { zh = "有操作等待你的确认", en = "An action is waiting for your confirmation" }
+notify_ask = { zh = "有问题等待你的回答", en = "A question is waiting for your answer" }
+plugin_no_output_fmt = { zh = "插件命令 /%{name} 没有输出", en = "Plugin command /%{name} produced no output" }
+copied_full = { zh = "已复制完整原文", en = "Full text copied" }
+copy_failed_fmt = { zh = "复制失败：%{err}", en = "Copy failed: %{err}" }
+subagent_list_failed_fmt = { zh = "读取子代理列表失败：%{err}", en = "Failed to list subagents: %{err}" }
+subagent_op_failed_fmt = { zh = "子代理操作失败：%{err}", en = "Subagent operation failed: %{err}" }
+other_process = { zh = "另一个 moc 进程", en = "another moc process" }
+locked_readonly_fmt = { zh = "会话被 %{holder} 占用，已只读打开", en = "Session is held by %{holder}; opened read-only" }
+no_subagents = { zh = "当前没有子代理", en = "No subagents" }
+stopping_quit = { zh = "正在停止... 再次按 Ctrl+C 退出", en = "Stopping... press Ctrl+C again to quit" }
+ctrl_c_clear = { zh = "再次按 Ctrl+C 清空输入", en = "Press Ctrl+C again to clear input" }
+ctrl_c_quit = { zh = "再次按 Ctrl+C 退出", en = "Press Ctrl+C again to quit" }
+esc_clear = { zh = "再次按 Esc 清空输入", en = "Press Esc again to clear input" }
+esc_rewind = { zh = "再次按 Esc 打开消息回退", en = "Press Esc again to open rewind" }
+skills_compacting = { zh = "正在维护技能摘要；输入已保留，完成或取消后才能发送", en = "Skills summary maintenance is running; input is kept and can be sent once it finishes or is canceled" }
+slash_no_images = { zh = "斜杠命令不支持图片，请移除图片后执行", en = "Slash commands don't accept images; remove the image and retry" }
+skills_cancel_wait = { zh = "技能摘要处理中：正在取消，等待请求结束…", en = "Skills summary: canceling, waiting for the request to end…" }
+stopping = { zh = "正在停止...", en = "Stopping..." }
+thinking_display_fmt = { zh = "思考显示：%{label}", en = "Thinking display: %{label}" }
+tool_display_fmt = { zh = "工具显示：%{label}", en = "Tool display: %{label}" }
+pick_model_once = { zh = "请选择本次使用的模型，之后会自动记住", en = "Pick a model for this session; it will be remembered" }
+no_restorable = { zh = "当前目录没有可恢复的会话", en = "No resumable session in this directory" }
+boot_failed_fmt = { zh = "会话启动失败：%{err}", en = "Failed to start session: %{err}" }
+stopped_fmt = { zh = "停止请求已处理：%{n}", en = "Stop request handled: %{n}" }
+agent_load_failed_fmt = { zh = "加载代理会话失败：%{err}", en = "Failed to load agent session: %{err}" }
+create_failed_fmt = { zh = "创建会话失败：%{err}", en = "Failed to create session: %{err}" }
+model_switch_failed_fmt = { zh = "切换模型失败：%{err}", en = "Failed to switch model: %{err}" }
+thinking_level_fmt = { zh = "思考等级：%{level}", en = "Thinking level: %{level}" }
+thinking_failed_fmt = { zh = "切换思考等级失败：%{err}", en = "Failed to switch thinking level: %{err}" }
+fast_mode_failed_fmt = { zh = "切换 Fast Mode 失败：%{err}", en = "Failed to switch Fast Mode: %{err}" }
+ctx_failed_fmt = { zh = "读取上下文占用失败：%{err}", en = "Failed to read context usage: %{err}" }
+hole_opened_fmt = { zh = "workflow hole 打开：%{name}", en = "Workflow hole opened: %{name}" }
+runs_failed_fmt = { zh = "获取 run 列表失败：%{err}", en = "Failed to fetch run list: %{err}" }
+denied_unauthorized = { zh = "未授权，已按拒绝处理", en = "Not authorized; treated as denied" }
+session_load_failed_fmt = { zh = "加载会话失败：%{err}", en = "Failed to load session: %{err}" }
+pick_lead_sidekick = { zh = "请先选择 Lead 与 Sidekick", en = "Pick a Lead and a Sidekick first" }
+option_copied = { zh = "已复制选项", en = "Option copied" }
+wf_approve_failed_fmt = { zh = "workflow 审批回传失败：%{err}", en = "Failed to submit workflow approval: %{err}" }
+wf_stop_failed_fmt = { zh = "workflow 停止失败：%{err}", en = "Failed to stop workflow: %{err}" }
+wf_resume_failed_fmt = { zh = "workflow 续跑失败：%{err}", en = "Failed to resume workflow: %{err}" }
+wf_run_failed_fmt = { zh = "读取 run 失败：%{err}", en = "Failed to load run: %{err}" }
+role_model_failed_fmt = { zh = "role 模型热改失败：%{err}", en = "Failed to hot-swap role model: %{err}" }
+artifact_failed_fmt = { zh = "读取 artifact 失败：%{err}", en = "Failed to load artifact: %{err}" }
+no_model_hint = { zh = "请先用 /model 选择模型；没有候选时到 /config 添加供应商", en = "Pick a model with /model first; if none are listed, add a provider in /config" }
+clm_notice = { zh = "CLM 实验模式已启用：模型将维护实时上下文", en = "CLM experimental mode enabled: the model maintains live context" }
+no_models_hint = { zh = "没有可用的模型，请先在设置中添加", en = "No models available; add one in settings first" }
+engine_locked_notice = { zh = "会话引擎已锁定；换引擎请新建会话", en = "Session engine is locked; start a new session to switch" }
+no_perm_modes = { zh = "当前平台没有可切换的权限模式", en = "No switchable permission modes on this platform" }
+recent_save_failed_fmt = { zh = "模型已生效，但最近使用记录保存失败：%{err}", en = "Model applied, but saving recent history failed: %{err}" }
+stopped = { zh = "已停止", en = "Stopped" }
+
+[tui.steer]
+model_saved_failed_fmt = { zh = "模型已保存，但会话创建失败：%{err}", en = "Model saved, but session creation failed: %{err}" }
+deliver_failed_fmt = { zh = "未能完成：%{err}；已排队的消息仍保留，可编辑后重发", en = "Couldn't finish: %{err}; queued messages are kept — edit and resend" }
+image_placeholder = { zh = "[图片]", en = "[image]" }
+no_withdraw_id = { zh = "内核未返回撤回 ID，消息已加入且无法撤回", en = "The kernel returned no withdrawal ID; the message was appended and can't be withdrawn" }
+undelivered_draft = { zh = "补充消息未送达，草稿已恢复", en = "The steering message wasn't delivered; draft restored" }
+queued_instead = { zh = "补充消息未进入当前提示，已排到待发送", en = "The steering message didn't reach the current prompt; queued for sending" }
+withdrawn_undelivered_fmt = { zh = "撤回完成：消息未送达（%{err}）", en = "Withdrawn: message undelivered (%{err})" }
+requeued_fmt = { zh = "未能送达，已排到待发送：%{err}", en = "Undelivered; queued for sending: %{err}" }
+withdrawn = { zh = "已撤回待发送的补充消息", en = "Withdrew the queued steering message" }
+already_in_context = { zh = "消息已进入本轮上下文，无法撤回", en = "The message already entered this turn's context; can't withdraw" }
+withdraw_failed_fmt = { zh = "撤回失败：%{err}", en = "Withdrawal failed: %{err}" }
+compact_failed_fmt = { zh = "上下文压缩失败：%{err}", en = "Context compaction failed: %{err}" }
+
+[tui.prompt]
+copy = { zh = "复制", en = "copy" }
+copied = { zh = "已复制", en = "copied" }
+copy_cancel = { zh = "复制 · Esc 取消", en = "copy · Esc cancel" }
+cancel_hint = { zh = "Esc 取消", en = "Esc cancel" }
+stop = { zh = "停止", en = "stop" }
+stopping = { zh = "正在停止", en = "stopping" }
+keys = { zh = "快捷键", en = "keys" }
+capsule_fmt = { zh = "⚙%{runs}跑·%{approvals}审", en = "⚙%{runs}run·%{approvals}review" }
+capsule_runs_fmt = { zh = "⚙%{runs}跑", en = "⚙%{runs}run" }
+
+[tui.plugins]
+empty_hint = { zh = "当前工作区没有插件。把插件放进 .moc/plugins/<name>/（或 $MOC_HOME/plugins）即可自动启用。", en = "No plugins in this workspace. Drop one into .moc/plugins/<name>/ (or $MOC_HOME/plugins) to enable it." }
+loaded_fmt = { zh = "已加载 %{n} 个插件：\n%{lines}", en = "%{n} plugins loaded:\n%{lines}" }
+reloaded_empty = { zh = "插件已重载：当前工作区没有插件", en = "Plugins reloaded: no plugins in this workspace" }
+reloaded_fmt = { zh = "插件已重载：%{ok} 个可用 / %{disabled} 个仍不可用\n%{lines}", en = "Plugins reloaded: %{ok} available / %{disabled} still unavailable\n%{lines}" }
+line_fmt = { zh = "- %{name}%{version}（%{source}）%{desc}", en = "- %{name}%{version} (%{source}) %{desc}" }
+disabled_fmt = { zh = "  不可用：%{err}", en = "  unavailable: %{err}" }
+tool_fmt = { zh = "  工具 %{name} [%{modes}]", en = "  tool %{name} [%{modes}]" }
+cmd_fmt = { zh = "  命令 /%{name}", en = "  command /%{name}" }
+notice_fmt = { zh = "插件 `%{plugin}` 已停用（%{code}）：%{message}\n修复后 /plugins reload 可重载", en = "Plugin `%{plugin}` disabled (%{code}): %{message}\nRun /plugins reload after fixing" }
+reload_failed_fmt = { zh = "重载插件失败：%{err}", en = "Failed to reload plugins: %{err}" }
+list_failed_fmt = { zh = "读取插件失败：%{err}", en = "Failed to list plugins: %{err}" }
+
+[tui.detail]
+hidden = { zh = "隐藏", en = "hidden" }
+brief = { zh = "简略", en = "brief" }
+full = { zh = "完整", en = "full" }
+
+[tui.scroll]
+incomplete_fmt = { zh = "%{count} 行内容未完整显示%{hint}", en = "%{count} lines not fully shown%{hint}" }
+expand_hint = { zh = "；展开查看行号与续读方式", en = "; expand for line numbers and how to read on" }
+read_hint = { zh = "用 read 的 offset 指定行、limit=1、byte_offset=0 分片读取，并按 next 续读；省略内容不授权编辑。", en = "Read slices with read's offset, limit=1, byte_offset=0 and continue via next; omitted content does not authorize edits." }
+
+[tui.wf]
+orchestration = { zh = "编排", en = "orchestration" }
+hole_fill_label = { zh = "新增命令", en = "new commands" }
+run_cmds_label = { zh = "world.run 命令集", en = "world.run commands" }
+amend_note = { zh = "  （amend：增量修改既有 run）", en = "  (amend: incremental changes to the existing run)" }
+script = { zh = "脚本", en = "script" }
+reject_fmt = { zh = "拒绝反馈：%{feedback}▌", en = "Rejection feedback: %{feedback}▌" }
+view_fmt = { zh = "查看：%{title}  （Esc/o 返回）", en = "View: %{title}  (Esc/o back)" }
+status_fmt = { zh = "状态：%{status}", en = "Status: %{status}" }
+usage_fmt = { zh = "用量：%{spent} tokens%{cost}", en = "Usage: %{spent} tokens%{cost}" }
+no_data = { zh = "    （无数据）", en = "    (no data)" }
+no_points = { zh = "    （无数据点）", en = "    (no data points)" }
+
+[tui.menu]
+engine_standard = { zh = "默认引擎：模型直接调用工具", en = "Default engine: the model calls tools directly" }
+engine_ptc = { zh = "模型只调用 execute，全部工具经代码沙盒触达", en = "The model only calls execute; all tools go through the code sandbox" }
+engine_clm = { zh = "模型自主维护实时上下文（实验）", en = "The model maintains live context itself (experimental)" }
+perm_full = { zh = "宿主全部可读写，无沙盒边界", en = "Full host read-write access, no sandbox boundary" }
+perm_workspace = { zh = "工作区可写，宿主其余路径只读", en = "Workspace is writable; the rest of the host is read-only" }
+perm_workspace_only = { zh = "仅工作区与临时目录可见，隔离最强", en = "Only the workspace and temp dirs are visible; strongest isolation" }
+
+[tui.monitor]
+too_narrow = { zh = "终端太窄", en = "Terminal too narrow" }
+sampling = { zh = "正在采样…", en = "Sampling…" }
+memory = { zh = "内存", en = "mem" }
+disk_down = { zh = "磁盘↓", en = "disk↓" }
+disk_up = { zh = "磁盘↑", en = "disk↑" }
+net_down = { zh = "网络↓", en = "net↓" }
+net_up = { zh = "网络↑", en = "net↑" }
+avg_peak_fmt = { zh = "均值 %{avg}  峰值 %{peak}", en = "avg %{avg}  peak %{peak}" }
+avg_peak_pct_fmt = { zh = "均值 %{avg}%  峰值 %{peak}%", en = "avg %{avg}%  peak %{peak}%" }
+total_fmt = { zh = "总计 %{total}", en = "total %{total}" }
+
+[tui.status]
+needs_human_fmt = { zh = "● %{base} · 需人工", en = "● %{base} · needs you" }
+read_only = { zh = "只读", en = "read-only" }
+stopping = { zh = "停止中", en = "Stopping" }
+working = { zh = "处理中", en = "Working" }
+waiting = { zh = "等待中", en = "Waiting" }
+running = { zh = "运行中", en = "Running" }
+thinking = { zh = "思考中", en = "Thinking" }
+responding = { zh = "回复中", en = "Responding" }
+
+[tui.key]
+kill_selected = { zh = "x x/点击已选", en = "x x/click item" }
+
+[tui.complete]
+args_fmt = { zh = "/%{name} 参数", en = "/%{name} args" }
+
+[tui.chart]
+scale = { zh = "色阶", en = "scale" }
+scale_log = { zh = "色阶（对数）", en = "scale (log)" }
+log_note = { zh = "对数刻度", en = "log scale" }

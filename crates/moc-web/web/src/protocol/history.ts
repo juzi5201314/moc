@@ -1,4 +1,5 @@
 // 大历史页按字节块重组；与普通 RPC 一样只在完整结果就绪后交给 store。
+import { t } from "@/lib/i18n";
 import type { RpcClient } from "./rpc";
 import type { SessionLoadPageResult } from "./types";
 
@@ -27,7 +28,7 @@ export async function loadHistoryPage(
     signal?.throwIfAborted();
     return result.page;
   }
-  if (result.type !== "chunk") throw new Error("历史传输未返回页面");
+  if (result.type !== "chunk") throw new Error(t("hist.no_page"));
   const id = result.transfer_id;
   const parts: string[] = [];
   const encoder = new TextEncoder();
@@ -41,7 +42,7 @@ export async function loadHistoryPage(
         result.offset !== offset ||
         (result.next_offset !== null && (result.next_offset !== next || next <= offset))
       ) {
-        throw new Error("历史块不连续");
+        throw new Error(t("hist.gap"));
       }
       parts.push(result.data);
       if (result.next_offset === null) {
@@ -56,7 +57,7 @@ export async function loadHistoryPage(
         offset,
       });
     }
-    throw new Error("历史传输中途改变结果类型");
+    throw new Error(t("hist.type_changed"));
   } finally {
     parts.length = 0;
     await client

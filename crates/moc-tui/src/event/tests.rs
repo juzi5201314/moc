@@ -66,7 +66,7 @@ async fn app_with_core() -> (
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\ncontext_window=200000\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "language='zh'\n[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\ncontext_window=200000\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();
     let core = Core::new(CoreConfig {
@@ -180,7 +180,7 @@ impl SlowCompactionHarness {
             .await;
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("config.toml"), format!(
-            "[models.roles]\ndefault='test/model:off'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\ncontext_window=100000\n[providers.test.models.tiny]\ncontext_window=1000\nmax_output_tokens=4096\n[compaction]\nauto=false\nmethod='moc'\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+            "language='zh'\n[models.roles]\ndefault='test/model:off'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\ncontext_window=100000\n[providers.test.models.tiny]\ncontext_window=1000\nmax_output_tokens=4096\n[compaction]\nauto=false\nmethod='moc'\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
             upstream.uri(),
         )).unwrap();
         let core = Core::new(CoreConfig {
@@ -348,7 +348,7 @@ async fn setup_test_app_keeping_root() -> (
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("config.toml"),
-        "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "language='zh'\n[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
     )
     .unwrap();
     let core = Core::new(CoreConfig {

@@ -1,4 +1,5 @@
 //! 完整历史页的冻结传输；大 JSON 写入私有临时文件，线上每块大小固定。
+use rust_i18n::t;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -47,7 +48,7 @@ impl Transfers {
         self.entries
             .get(&(connection, id.to_owned()))
             .cloned()
-            .ok_or_else(|| invalid("历史传输已关闭或过期，请重新读取"))
+            .ok_or_else(|| invalid(&t!("core.history.closed")))
     }
     fn close(&mut self, connection: u64, id: String) {
         self.entries.remove(&(connection, id));
@@ -99,10 +100,10 @@ fn freeze(page: &SessionLoadPageResult) -> Result<Option<Transfer>, RpcError> {
 impl Transfer {
     fn read(&mut self, id: String, offset: u64) -> Result<SessionHistoryResult, RpcError> {
         if self.touched.elapsed() >= TTL {
-            return Err(invalid("历史传输已过期，请重新读取"));
+            return Err(invalid(&t!("core.history.expired")));
         }
         if offset > self.len {
-            return Err(invalid("历史块偏移越界"));
+            return Err(invalid(&t!("core.history.offset_oob")));
         }
         self.file.seek(SeekFrom::Start(offset)).map_err(io_error)?;
         let mut bytes = vec![0; (self.len - offset).min(CHUNK as u64) as usize];
@@ -110,7 +111,7 @@ impl Transfer {
         match std::str::from_utf8(&bytes) {
             Ok(_) => {}
             Err(error) if error.error_len().is_none() => bytes.truncate(error.valid_up_to()),
-            Err(_) => return Err(invalid("历史块偏移必须位于 UTF-8 边界")),
+            Err(_) => return Err(invalid(&t!("core.history.offset_utf8"))),
         }
         let next = offset + bytes.len() as u64;
         self.touched = Instant::now();
@@ -134,10 +135,7 @@ pub(super) async fn handle(
             let slot = Arc::clone(&core.inner.history_transfers.lock().slots)
                 .try_acquire_owned()
                 .map_err(|_| {
-                    RpcError::new(
-                        RpcErrorCode::SessionBusy.code(),
-                        "历史传输繁忙，请在当前读取完成后重试",
-                    )
+                    RpcError::new(RpcErrorCode::SessionBusy.code(), t!("core.history.busy"))
                 })?;
             let page = core.session_load_page(ctx.clone(), page).await?;
             let prepared = tokio::task::spawn_blocking(move || {
@@ -160,7 +158,7 @@ pub(super) async fn handle(
             .map_err(io_error)??;
             let (chunk, transfer) = prepared;
             if ctx.cancel().is_cancelled() {
-                return Err(invalid("历史读取已取消"));
+                return Err(invalid(&t!("core.history.cancelled")));
             }
             let Some((id, transfer)) = transfer else {
                 return Ok(chunk);
@@ -237,7 +235,7 @@ fn invalid(message: &str) -> RpcError {
 fn io_error(error: impl std::fmt::Display) -> RpcError {
     RpcError::new(
         RpcErrorCode::InternalError.code(),
-        format!("历史传输失败：{error}"),
+        t!("core.err.history_transfer", error = error).into_owned(),
     )
 }
 

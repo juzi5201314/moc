@@ -3,6 +3,7 @@ use super::PlanAnnotationEditor;
 use super::PlanPane;
 use super::PlanReviewState;
 use super::truncate_chars;
+use rust_i18n::t;
 
 impl PlanReviewState {
     pub fn new(
@@ -67,7 +68,7 @@ impl PlanReviewState {
     /// 打开编辑器：选区落在已有草稿上就编辑它，否则新建一条。
     pub fn open_editor(&mut self) {
         if !self.can_annotate() {
-            self.error = Some("当前版本不可批注".into());
+            self.error = Some(t!("tui.plan.not_annotatable").into_owned());
             return;
         }
         let lines = self.source_lines();
@@ -110,7 +111,7 @@ impl PlanReviewState {
         };
         let body = editor.body.text.trim_end().to_owned();
         if body.trim().is_empty() {
-            self.error = Some("批注正文不能为空".into());
+            self.error = Some(t!("tui.plan.annotation_empty").into_owned());
             return;
         }
         let draft = PlanAnnotationDraft {

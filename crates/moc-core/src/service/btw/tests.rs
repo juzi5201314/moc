@@ -34,7 +34,7 @@ impl Harness {
         std::fs::create_dir_all(&cwd).unwrap();
         std::fs::write(cwd.join("AGENTS.md"), "Keep the repository rule marker.").unwrap();
         std::fs::write(home.join("config.toml"), format!(
-            "[models.roles]\ndefault='test/model:off'\n\
+            "language='zh'\n[models.roles]\ndefault='test/model:off'\n\
              [providers.test]\napi='{api}'\nbase_url='{url}/v1'\nmax_concurrency=1\nretry={{max_attempts=1}}\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=1024\ninput=['text','image']\n\
              [system_prompt]\nappend='Keep the append marker.'\n{extra}\n"

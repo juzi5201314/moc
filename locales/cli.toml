@@ -1,0 +1,281 @@
+_version = 2
+
+# moc-cli 用户面文案：clap 帮助、行式输出、update 命令。
+
+[cli.update]
+usage = { zh = "用法: moc update [版本]", en = "Usage: moc update [version]" }
+help = { zh = "用法: moc update [版本]\n\n省略版本时更新到最新正式版；例如: moc update v2.2.1-rc.2", en = "Usage: moc update [version]\n\nOmit the version to update to the latest stable release; e.g. moc update v2.2.1-rc.2" }
+no_exe = { zh = "无法定位 moc 可执行文件", en = "Cannot locate the moc executable" }
+no_http_client = { zh = "无法创建 HTTP 客户端", en = "Failed to create the HTTP client" }
+latest = { zh = "已经是最新版本（v%{v}）", en = "Already on the latest version (v%{v})" }
+unsupported = { zh = "版本 %{tag} 不支持当前平台（%{platform}）", en = "Release %{tag} has no build for this platform (%{platform})" }
+no_checksum = { zh = "版本 %{tag} 缺少 %{file} 校验文件", en = "Release %{tag} is missing the %{file} checksum" }
+downloading = { zh = "正在更新到 %{tag} ...", en = "Updating to %{tag} ..." }
+done = { zh = "已更新到 %{tag}（原版本 v%{v}），重新运行 moc 生效", en = "Updated to %{tag} (was v%{v}); restart moc to take effect" }
+gh_unreachable = { zh = "无法访问 GitHub Releases", en = "Cannot reach GitHub Releases" }
+gh_failed = { zh = "GitHub Releases 请求失败", en = "GitHub Releases request failed" }
+gh_parse = { zh = "无法解析 Release 数据", en = "Failed to parse release data" }
+empty_version = { zh = "版本号不能为空", en = "Version must not be empty" }
+not_found = { zh = "未找到版本 %{input}", en = "Version %{input} not found" }
+bad_api_url = { zh = "无效的 GitHub API 地址", en = "Invalid GitHub API URL" }
+bad_checksum_utf8 = { zh = "校验文件不是 UTF-8 文本", en = "Checksum file is not UTF-8 text" }
+download_failed = { zh = "下载 %{url} 失败", en = "Failed to download %{url}" }
+read_failed = { zh = "读取 %{url} 失败", en = "Failed to read %{url}" }
+no_dir = { zh = "无法确定 moc 所在目录", en = "Cannot determine moc's directory" }
+create_failed = { zh = "无法创建 %{path}", en = "Failed to create %{path}" }
+write_failed = { zh = "无法写入 %{path}", en = "Failed to write %{path}" }
+chmod_failed = { zh = "无法设置 %{path} 的权限", en = "Failed to set permissions on %{path}" }
+replace_failed = { zh = "无法替换 moc 可执行文件", en = "Failed to replace the moc executable" }
+unsupported_self_update = { zh = "当前平台不支持自更新", en = "Self-update is not supported on this platform" }
+bad_tag = { zh = "无法解析版本号 %{tag}", en = "Cannot parse version %{tag}" }
+bad_current = { zh = "当前版本号无效", en = "Current version is invalid" }
+empty_checksum = { zh = "校验文件为空", en = "Checksum file is empty" }
+bad_checksum = { zh = "校验文件格式无效", en = "Checksum file format is invalid" }
+verify_failed = { zh = "下载的二进制校验失败（期望 %{expected}，实际 %{actual}）", en = "Downloaded binary failed checksum (expected %{expected}, got %{actual})" }
+
+[cli.args]
+about = { zh = "MOC 编码代理", en = "MOC coding agent" }
+prompt = { zh = "启动时发送的提示词。", en = "Prompt to send on startup." }
+model = { zh = "覆盖会话模型 selector。", en = "Override the session model selector." }
+engine = { zh = "新会话的引擎（模型与工具的交互形态；跑过首条提示后锁定）。", en = "Engine for the new session (how the model interacts with tools; locked after the first prompt)." }
+plan = { zh = "新会话直接进入 plan 模式（可与任意引擎共存）。", en = "Start the new session in plan mode (works with any engine)." }
+cwd = { zh = "会话工作目录。", en = "Working directory for the session." }
+config = { zh = "追加配置覆盖层，可重复。", en = "Additional config overlay; repeatable." }
+resume = { zh = "恢复指定会话；不带 ID 时恢复当前目录下最近会话。", en = "Resume a session; without an ID resumes the latest session in the current directory." }
+continue = { zh = "继续当前目录下最近会话。", en = "Continue the latest session in the current directory." }
+list = { zh = "列出已保存会话。", en = "List saved sessions." }
+models = { zh = "列出可用模型 selector。", en = "List available model selectors." }
+print = { zh = "单次提示模式：可从 stdin 读取提示词，只打印最终答案。", en = "One-shot mode: reads the prompt from stdin, prints only the final answer." }
+repl = { zh = "强制使用行式 REPL（默认进入 TUI；无 TTY 时自动降级 REPL）。", en = "Force the line-mode REPL (TUI by default; auto-degrades without a TTY)." }
+hide_thinking = { zh = "行式／--print 输出不打印思维链增量（TUI 用 --detail）。", en = "Don't print reasoning deltas in line/--print output (TUI uses --detail)." }
+detail = { zh = "启动时的显示档位（full 只展开思考，工具仍为简略）。", en = "Display level at startup (full expands thinking only; tools stay brief)." }
+session_dir = { zh = "覆盖会话存储目录。", en = "Override the session storage directory." }
+port = { zh = "moc web 的监听端口；缺省优先 7432，被占用时改用随机端口。只绑定 127.0.0.1。", en = "Port for moc web; defaults to 7432, falling back to a random port. Binds 127.0.0.1 only." }
+token = { zh = "moc web 的访问令牌；缺省随机生成并打印在启动信息里。", en = "Access token for moc web; randomly generated and printed at startup by default." }
+no_open = { zh = "moc web 启动后不自动打开浏览器。", en = "Don't open a browser when moc web starts." }
+
+[cli.repl]
+no_prompt = { zh = "--print 未收到提示词或 stdin 输入", en = "--print received no prompt or stdin input" }
+signal_exit = { zh = "收到 %{signal}，正在退出", en = "Received %{signal}, exiting" }
+core_init_failed = { zh = "初始化 MOC core 失败", en = "Failed to initialize MOC core" }
+no_cwd = { zh = "无法打开工作目录 %{path}", en = "Cannot open working directory %{path}" }
+no_exe = { zh = "无法定位 moc 可执行文件", en = "Cannot locate the moc executable" }
+prompt_word = { zh = "提示词", en = "prompt" }
+web_opts = { zh = "web 选项", en = "web options" }
+acp_bad_args = { zh = "moc acp 不支持这些参数: %{args}", en = "moc acp does not support these arguments: %{args}" }
+notify_slot = { zh = "通知 client 槽位", en = "notify client slot" }
+not_moc_service = { zh = "连接到非 moc-core 服务", en = "connected to a non moc-core service" }
+no_resumable = { zh = "当前目录没有可恢复的会话", en = "No resumable session in the current directory" }
+ctx_warn = { zh = "警告：%{msg}；可用 /compact 立即压缩", en = "Warning: %{msg}; use /compact to compact now" }
+prompt_aborted = { zh = "提示已由保护机制终止", en = "Prompt terminated by a guard" }
+request_failed = { zh = "请求失败", en = "Request failed" }
+session_word = { zh = "会话", en = "Session" }
+command_failed = { zh = "命令失败", en = "Command failed" }
+arg_sep = { zh = "、", en = ", " }
+banner = { zh = "会话 %{id} · %{model} · %{state} · %{cwd} · permission=%{permission}", en = "Session %{id} · %{model} · %{state} · %{cwd} · permission=%{permission}" }
+
+[cli.help]
+group_fmt = { zh = "%{group}：", en = "%{group}:" }
+disabled = { zh = "%{desc}（特性已禁用）", en = "%{desc} (feature disabled)" }
+alias_of = { zh = "%{desc}（/%{name} 的别名）", en = "%{desc} (alias of /%{name})" }
+
+[cli.commands.debuginfo]
+desc = { zh = "工具调用统计、成功率与上下文压缩次数", en = "Tool-call stats, success rates and context-compaction counts" }
+
+[cli.commands.session]
+desc = { zh = "当前会话身份、文件路径与分类存储大小", en = "Current session identity, file path and per-kind storage sizes" }
+
+[cli.commands.new]
+desc = { zh = "创建新会话", en = "Create a new session" }
+
+[cli.commands.sessions]
+desc = { zh = "列出会话", en = "List sessions" }
+
+[cli.commands.cancel]
+desc = { zh = "取消当前提示（运行中按 Ctrl+C）", en = "Cancel the current prompt (Ctrl+C while running)" }
+
+[cli.commands.quit]
+desc = { zh = "退出", en = "Quit" }
+
+[cli.commands.engine]
+desc = { zh = "切换会话引擎（跑过首条提示后引擎锁定）", en = "Switch session engine (locked after the first prompt)" }
+
+[cli.commands.clm_experimental]
+desc = { zh = "启用 CLM 实验引擎；首次请求后引擎锁定", en = "Enable the CLM experimental engine; locked after the first request" }
+
+[cli.commands.autonomy]
+desc = { zh = "切换自主程度；无参数时循环", en = "Switch autonomy level; cycles when called without arguments" }
+
+[cli.commands.permission]
+desc = { zh = "切换命令权限或清空本会话沙盒授权", en = "Switch command permission or clear this session's sandbox grants" }
+
+[cli.commands.plan]
+usage = { zh = "[提示词]", en = "[prompt]" }
+desc = { zh = "进入/退出计划模式；带提示词时进入并发送", en = "Enter/exit plan mode; enters and sends when given a prompt" }
+
+[cli.commands.goal]
+desc = { zh = "查看或设置会话目标；目标存在时每轮提示结束自动续跑，直到达成或叫停", en = "View or set the session goal; while set, each prompt auto-continues until reached or stopped" }
+
+[cli.commands.approve]
+usage = { zh = "<execute|compact|new [引擎]|reject>", en = "<execute|compact|new [engine]|reject>" }
+desc = { zh = "处理已提交的计划", en = "Handle a submitted plan" }
+
+[cli.commands.ask]
+usage = { zh = "<问题>", en = "<question>" }
+desc = { zh = "仅本条消息按问答模式（只读）处理", en = "Handle only this message as Q&A (read-only)" }
+
+[cli.commands.retry]
+desc = { zh = "接着现有上下文继续跑（不追加用户消息，仅空闲时可用）", en = "Continue with the existing context (no new user message; only while idle)" }
+
+[cli.commands.compact_skills]
+desc = { zh = "手动压缩技能目录或清理摘要缓存，不写会话历史", en = "Manually compact the skills catalog or clear the summary cache; does not write session history" }
+
+[cli.commands.compact]
+desc = { zh = "压缩当前上下文", en = "Compact the current context" }
+
+[cli.commands.usage]
+desc = { zh = "查看当前会话模型用量", en = "Show model usage of the current session" }
+
+[cli.commands.model]
+desc = { zh = "切换模型（装不下当前上下文时先询问再压缩）", en = "Switch model (asks before compacting when the context no longer fits)" }
+
+[cli.commands.agents]
+desc = { zh = "列出当前会话的直接子代理（创建、交流、停止都在 TUI）", en = "List direct subagents of the current session (create/talk/stop live in the TUI)" }
+
+[cli.commands.plugins]
+desc = { zh = "查看已加载的插件；reload 重载插件宿主并重新发现", en = "Show loaded plugins; reload restarts the plugin host and rediscovers" }
+
+[cli.commands.help]
+desc = { zh = "显示本帮助", en = "Show this help" }
+
+[cli.commands.features]
+desc = { zh = "特性开关一览：阶段、状态与上下文成本", en = "Feature flags at a glance: stage, state and context cost" }
+
+# ---- 行式 REPL 命令回执与用法错误 ----
+
+[common]
+on = { zh = "开启", en = "on" }
+off = { zh = "关闭", en = "off" }
+
+[cli.cmd]
+flag_disabled = { zh = "/%{name} 依赖的特性 %{flag} 已禁用（见 /features）", en = "/%{name} requires feature %{flag}, which is disabled (see /features)" }
+cancelled = { zh = "提示取消请求已发送", en = "Prompt cancellation sent" }
+no_prompt_running = { zh = "当前没有进行中的提示", en = "No prompt is running" }
+usage_plugins = { zh = "用法：/plugins [reload]", en = "Usage: /plugins [reload]" }
+new_session = { zh = "新会话：%{id}", en = "New session: %{id}" }
+engine_locked = { zh = "会话引擎已锁定；换引擎请新建会话", en = "Session engine is locked; start a new session to switch" }
+clm_enabled = { zh = "CLM 实验引擎已启用；本会话首次请求后引擎锁定", en = "CLM experimental engine enabled; the engine locks after this session's first request" }
+usage_autonomy = { zh = "用法：/autonomy [default|dont_ask|unattended]", en = "Usage: /autonomy [default|dont_ask|unattended]" }
+usage_permission = { zh = "用法：/permission <full|workspace|workspace-only|clear>", en = "Usage: /permission <full|workspace|workspace-only|clear>" }
+grants_cleared = { zh = "已清空本会话的沙盒授权", en = "Cleared this session's sandbox grants" }
+permission_set = { zh = "权限已切换为 %{mode}", en = "Permission switched to %{mode}" }
+plan_state = { zh = "计划状态：%{state}", en = "Plan mode: %{state}" }
+usage_goal_edit = { zh = "用法：/goal edit <objective>", en = "Usage: /goal edit <objective>" }
+usage_ask = { zh = "用法：/ask <问题>", en = "Usage: /ask <question>" }
+skills_working = { zh = "Working：正在维护技能摘要，Ctrl+C 取消", en = "Working: maintaining skills summaries, Ctrl+C to cancel" }
+skills_busy = { zh = "技能摘要操作尚未完成，输入未发送也未排队", en = "The skills operation hasn't finished; input was neither sent nor queued" }
+warning = { zh = "警告：%{msg}", en = "Warning: %{msg}" }
+compacted = { zh = "上下文压缩：%{method}，%{before} → %{after} token", en = "Context compacted: %{method}, %{before} → %{after} tokens" }
+trimmed = { zh = "上下文裁剪：%{before} → %{after} token（未生成摘要）", en = "Context trimmed: %{before} → %{after} tokens (no summary generated)" }
+usage_debuginfo = { zh = "用法：/debuginfo", en = "Usage: /debuginfo" }
+usage_session = { zh = "用法：/session", en = "Usage: /session" }
+usage_model = { zh = "用法：/model <selector>", en = "Usage: /model <selector>" }
+usage_approve = { zh = "用法：/approve <execute|compact|new [引擎]|reject>", en = "Usage: /approve <execute|compact|new [engine]|reject>" }
+model_compact_notice = { zh = "%{notice}；切换会先用 %{model} 压缩上下文（压缩后不超过 %{target} token）", en = "%{notice}; switching compacts the context with %{model} first (down to %{target} tokens)" }
+model_confirm = { zh = "是否切换到 %{model} 并压缩？[y/N] ", en = "Switch to %{model} and compact? [y/N] " }
+model_cancelled = { zh = "已取消切换，模型仍为 %{model}", en = "Switch cancelled; model stays %{model}" }
+model_compact_failed = { zh = "已切换到 %{model}，但上下文压缩失败", en = "Switched to %{model}, but context compaction failed" }
+model_switched = { zh = "模型已切换为 %{model}", en = "Model switched to %{model}" }
+plugins_reloaded = { zh = "插件已重载：%{ok} 个可用 / %{disabled} 个仍不可用", en = "Plugins reloaded: %{ok} available / %{disabled} still unavailable" }
+no_plugins = { zh = "当前工作区没有插件。把插件放进 .moc/plugins/<name>/（或 $MOC_HOME/plugins）即可自动启用。", en = "No plugins in this workspace. Drop plugins into .moc/plugins/<name>/ (or $MOC_HOME/plugins) to enable them automatically." }
+plugins_loaded = { zh = "已加载 %{n} 个插件：", en = "%{n} plugin(s) loaded:" }
+plugin_row = { zh = "- %{name}%{version}（%{source}）%{desc}", en = "- %{name}%{version} (%{source}) %{desc}" }
+plugin_unavailable = { zh = "  不可用：%{error}", en = "  unavailable: %{error}" }
+plugin_tool = { zh = "  工具 %{name} [%{modes}]", en = "  tool %{name} [%{modes}]" }
+plugin_command = { zh = "  命令 /%{name}", en = "  command /%{name}" }
+unknown = { zh = "未知命令 `/%{name}`；输入 /help 查看命令。", en = "Unknown command `/%{name}`; type /help to list commands." }
+
+# ---- 行式输出渲染（SessionUpdate → bracket 行）----
+
+[cli.render]
+agent_started = { zh = "\n[子代理已创建：%{title} · %{id}]", en = "\n[Subagent created: %{title} · %{id}]" }
+agent_status = { zh = "\n[子代理 %{id}：%{status}]", en = "\n[Subagent %{id}: %{status}]" }
+workflow_approval = { zh = "\n[workflow 审批 %{id}]", en = "\n[workflow approval %{id}]" }
+workflow_resolved = { zh = "[workflow 审批：%{decision}]", en = "[workflow approval: %{decision}]" }
+approved = { zh = "已批准", en = "approved" }
+rejected = { zh = "已拒绝", en = "rejected" }
+workflow_status = { zh = "[workflow %{run}：%{label}]", en = "[workflow %{run}: %{label}]" }
+workflow_phase = { zh = "[workflow %{run} phase → %{phase}]", en = "[workflow %{run} phase → %{phase}]" }
+hole_opened = { zh = "[workflow %{run} hole 打开：%{name}]", en = "[workflow %{run} hole opened: %{name}]" }
+hole_filled = { zh = "[workflow %{run} hole 已填：%{name}]", en = "[workflow %{run} hole filled: %{name}]" }
+agent_message = { zh = "\n[代理消息 ◀ %{from}：%{body}]", en = "\n[Agent message ◀ %{from}: %{body}]" }
+retry = { zh = "\n[自动重试：本次生成的先前输出作废。%{message}]", en = "\n[Auto-retry: previous output of this generation discarded. %{message}]" }
+guard = { zh = "\n[保护机制：%{message}]", en = "\n[Guard: %{message}]" }
+plugin_disabled = { zh = "\n[插件停用：%{plugin}（%{code}）%{message}]", en = "\n[Plugin disabled: %{plugin} (%{code}) %{message}]" }
+usage = { zh = "\n[用量：输入 %{input}，输出 %{output} token]", en = "\n[Usage: %{input} input, %{output} output tokens]" }
+todo = { zh = "\n[todo：%{done}/%{total} 项完成]", en = "\n[todo: %{done}/%{total} done]" }
+todo_reminder = { zh = "\n[TodoReminder：%{open} 项待办仍未关闭]", en = "\n[TodoReminder: %{open} open items remain]" }
+plan_submitted = { zh = "\n[计划已提交（v%{version}）：%{title} (%{id})，%{path}]", en = "\n[Plan submitted (v%{version}): %{title} (%{id}), %{path}]" }
+plan_status = { zh = "\n[计划状态：%{title} (%{id}) → %{status}]", en = "\n[Plan status: %{title} (%{id}) → %{status}]" }
+compacting = { zh = "\n[上下文压缩中…]", en = "\n[Compacting context…]" }
+compacted = { zh = "\n[上下文压缩：%{method}，%{before} → %{after} token]", en = "\n[Context compacted: %{method}, %{before} → %{after} tokens]" }
+trimmed = { zh = "\n[上下文裁剪：%{before} → %{after} token（未生成摘要）]", en = "\n[Context trimmed: %{before} → %{after} tokens (no summary generated)]" }
+compact_failed = { zh = "\n[上下文压缩失败：%{message}]", en = "\n[Context compaction failed: %{message}]" }
+job_finished = { zh = "\n[后台任务 %{id} 结束：%{command} %{status}%{code}，日志 %{log}]", en = "\n[Job %{id} finished: %{command} %{status}%{code}, log %{log}]" }
+field_model = { zh = "模型", en = "model" }
+field_effort = { zh = "推理强度", en = "thinking effort" }
+mismatch_field = { zh = "%{label} %{requested} → %{reported}", en = "%{label} %{requested} → %{reported}" }
+upstream_mismatch = { zh = "\n[警告：上游实际配置与请求不一致：%{detail}]", en = "\n[Warning: upstream effective config differs from request: %{detail}]" }
+error = { zh = "\n[错误：%{message}]", en = "\n[Error: %{message}]" }
+engine = { zh = "\n[引擎：%{engine}]", en = "\n[Engine: %{engine}]" }
+autonomy = { zh = "\n[自主程度：%{autonomy}]", en = "\n[Autonomy: %{autonomy}]" }
+fast_mode = { zh = "\n[Fast Mode：%{state}]", en = "\n[Fast Mode: %{state}]" }
+plan_mode = { zh = "\n[计划状态：%{state}]", en = "\n[Plan mode: %{state}]" }
+model = { zh = "\n[模型：%{model}]", en = "\n[Model: %{model}]" }
+permission = { zh = "\n[权限：%{permission}]", en = "\n[Permission: %{permission}]" }
+title = { zh = "\n[会话标题：%{title}]", en = "\n[Session title: %{title}]" }
+permission_wait = { zh = "\n[等待工具授权：%{id}]", en = "\n[Awaiting tool permission: %{id}]" }
+goal_cleared = { zh = "\n[目标已清除]", en = "\n[Goal cleared]" }
+goal = { zh = "\n[目标：%{objective} · 轮次 %{rounds}]", en = "\n[Goal: %{objective} · round %{rounds}]" }
+goal_round = { zh = "\n[目标续跑：第 %{round} 轮]", en = "\n[Goal continuation: round %{round}]" }
+approve_prompt = { zh = "审批 [y/n/<role=模型>]：", en = "Approve [y/n/<role=model>]: " }
+override_recorded = { zh = "已记录覆盖；再输入 y 批准。", en = "Override recorded; enter y to approve." }
+
+[cli.render.plan]
+draft = { zh = "起草中", en = "draft" }
+submitted = { zh = "待审阅", en = "submitted" }
+revised = { zh = "等待修订", en = "awaiting revision" }
+superseded = { zh = "已被取代", en = "superseded" }
+approved = { zh = "已批准", en = "approved" }
+rejected = { zh = "已拒绝", en = "rejected" }
+
+# ---- 行式统计与状态文本 ----
+
+[cli.display]
+bad_engine = { zh = "引擎必须是 standard、ptc 或 clm；计划状态用 /plan，单条只读问答用 /ask <问题>", en = "Engine must be standard, ptc or clm; use /plan for plan mode and /ask <question> for one-shot Q&A" }
+over_window = { zh = "当前上下文 %{tokens} token 超过 %{selector} 的窗口 %{window} token", en = "Current context of %{tokens} tokens exceeds %{selector}'s window of %{window} tokens" }
+over_threshold = { zh = "当前上下文 %{tokens} token 超过 %{selector} 的压缩触发线 %{threshold} token（窗口 %{window} token）", en = "Current context of %{tokens} tokens exceeds %{selector}'s compaction threshold of %{threshold} tokens (window %{window} tokens)" }
+unknown = { zh = "未知", en = "unknown" }
+time_split = { zh = "（生成 %{gen}，网络等待 %{net}）", en = " (generating %{gen}, network wait %{net})" }
+subagent_model = { zh = "%{model} (子代理)", en = "%{model} (subagent)" }
+usage_row = { zh = "模型 %{model}：调用 %{calls} 次，输入 %{input}，输出 %{output}，缓存命中 %{cache_hit} (%{cache_rate}%)，缓存写入 %{cache_write}，思考 %{reasoning}，用时 %{duration}%{split}，首 token 平均 %{ttft}，TPS %{tps}", en = "Model %{model}: %{calls} calls, %{input} in, %{output} out, cache hit %{cache_hit} (%{cache_rate}%), cache write %{cache_write}, reasoning %{reasoning}, %{duration}%{split}, avg TTFT %{ttft}, TPS %{tps}" }
+tool_ms = { zh = "工具调用用时 %{ms}", en = "Tool-call time %{ms}" }
+no_goal = { zh = "当前没有目标；/goal <objective> 创建\n", en = "No goal; create one with /goal <objective>\n" }
+goal_active = { zh = "进行中", en = "active" }
+goal_paused = { zh = "已暂停", en = "paused" }
+goal_blocked = { zh = "已阻塞", en = "blocked" }
+goal_complete = { zh = "已完成", en = "complete" }
+goal_head = { zh = "目标：%{objective}\n状态：%{phase}\n", en = "Goal: %{objective}\nStatus: %{phase}\n" }
+goal_blocked_by = { zh = "阻塞：%{code}: %{message}\n", en = "Blocked: %{code}: %{message}\n" }
+goal_tail = { zh = "轮次：%{rounds}\n续跑：%{armed}\n命令：/goal edit <objective> | /goal pause | /goal resume | /goal clear\n", en = "Rounds: %{rounds}\nContinuation: %{armed}\nCommands: /goal edit <objective> | /goal pause | /goal resume | /goal clear\n" }
+goal_armed = { zh = "自动", en = "auto" }
+goal_disarmed = { zh = "已停（/goal resume 恢复）", en = "stopped (/goal resume to resume)" }
+
+# ---- 审批与问答交互 ----
+
+[cli.inter]
+no_plan = { zh = "当前会话没有等待批准的计划", en = "No plan is awaiting approval in this session" }
+choose = { zh = "选择 [默认拒绝]：", en = "Choose [default: reject]: " }
+recommended = { zh = " (推荐)", en = " (recommended)" }
+input_number = { zh = "输入编号%{multi}或自定义内容：", en = "Enter a number%{multi} or custom text: " }
+multi_hint = { zh = "（可用逗号多选）", en = " (comma-separated for multiple)" }

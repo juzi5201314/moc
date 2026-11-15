@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use rust_i18n::t;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
@@ -245,17 +246,30 @@ impl SessionStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(BTreeMap::new());
             }
-            Err(error) => return Err(CoreError::Session(format!("读取插件状态失败：{error}"))),
+            Err(error) => {
+                return Err(CoreError::Session(
+                    t!("core.err.plugin_state_read", error = error).into_owned(),
+                ));
+            }
         };
         let mut bytes = Vec::new();
         file.take((PLUGIN_STATE_MAX_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .await?;
         if bytes.len() > PLUGIN_STATE_MAX_BYTES {
-            return Err(CoreError::Session("插件状态文件超过 1 MiB 限制".into()));
+            return Err(CoreError::Session(
+                t!("core.err.plugin_state_too_big").into_owned(),
+            ));
         }
         serde_json::from_slice(&bytes).map_err(|error| {
-            CoreError::Session(format!("插件状态文件损坏（{}）：{error}", path.display()))
+            CoreError::Session(
+                t!(
+                    "core.err.plugin_state_corrupt",
+                    path = path.display().to_string(),
+                    error = error
+                )
+                .into_owned(),
+            )
         })
     }
 
@@ -268,16 +282,23 @@ impl SessionStore {
     ) -> Result<(), CoreError> {
         let path = paths.plugin_state(plugin);
         let bytes = serde_json::to_vec(state)
-            .map_err(|error| CoreError::Session(format!("序列化插件状态失败：{error}")))?;
+            .map_err(|error| {
+                CoreError::Session(t!("core.err.plugin_state_serialize", error = error).into_owned())
+            })?;
         if bytes.len() > PLUGIN_STATE_MAX_BYTES {
-            return Err(CoreError::Session(format!(
-                "插件状态超过 {} MiB 限制",
-                PLUGIN_STATE_MAX_BYTES / (1024 * 1024)
-            )));
+            return Err(CoreError::Session(
+                t!(
+                    "core.err.plugin_state_write_big",
+                    mib = PLUGIN_STATE_MAX_BYTES / (1024 * 1024)
+                )
+                .into_owned(),
+            ));
         }
         let parent = path
             .parent()
-            .ok_or_else(|| CoreError::Session("插件状态路径缺少父目录".into()))?;
+            .ok_or_else(|| {
+                CoreError::Session(t!("core.err.plugin_state_no_parent").into_owned())
+            })?;
         fs::create_dir_all(parent).await?;
         let temp = parent.join(format!(".{plugin}.tmp-{}", crate::ids::entry_id()));
         let result = async {

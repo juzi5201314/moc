@@ -3,6 +3,7 @@
 
 import { toast } from "sonner";
 import { create } from "zustand";
+import { t } from "@/lib/i18n";
 import type { PtyInfo } from "@/lib/web-api";
 import { createPty, deletePty, listPty } from "@/lib/web-api";
 import { useLayout } from "./layout";
@@ -42,7 +43,7 @@ export async function refreshTerminals(cwd: string, autoCreate = false): Promise
     });
     return items;
   } catch (error) {
-    toast.error(`获取终端失败：${errorText(error)}`);
+    toast.error(t("term.list_failed", { error: errorText(error) }));
     return [];
   }
 }
@@ -62,7 +63,7 @@ export async function spawnTerminal(cwd: string): Promise<PtyInfo | null> {
     });
     return item;
   } catch (error) {
-    toast.error(`创建终端失败：${errorText(error)}`);
+    toast.error(t("term.create_failed", { error: errorText(error) }));
     return null;
   }
 }
@@ -72,7 +73,7 @@ export async function closeTerminal(cwd: string, id: number): Promise<void> {
   try {
     await deletePty(id);
   } catch (error) {
-    toast.error(`关闭终端失败：${errorText(error)}`);
+    toast.error(t("term.close_failed", { error: errorText(error) }));
   }
   useTerminals.setState((state) => {
     const current = state.byCwd[cwd];

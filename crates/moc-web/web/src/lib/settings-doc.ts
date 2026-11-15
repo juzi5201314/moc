@@ -1,6 +1,7 @@
 // 设置文档的纯函数：按 path 段读写 document、字段文本 ↔ 值的转换。
 // 解析规则对齐 moc-tui `settings/forms.rs` 的 `parse`（数值支持 k/m 与千分位）。
 
+import { t } from "@/lib/i18n";
 import type { FieldKind } from "@/protocol/types";
 
 type Json = Record<string, unknown>;
@@ -69,9 +70,9 @@ export function parseField(text: string, kind: FieldKind): ParseResult {
     case "integer": {
       const { base, multiplier } = parseScaled(trimmed);
       if (!(kind.type === "signed_integer" ? /^-?\d+$/ : /^\d+$/).test(base))
-        return { ok: false, error: "请输入有效整数（支持 200k、1m 或千分位）" };
+        return { ok: false, error: t("set.err_int") };
       const value = Number(base) * multiplier;
-      if (!Number.isSafeInteger(value)) return { ok: false, error: "数值超出支持范围" };
+      if (!Number.isSafeInteger(value)) return { ok: false, error: t("set.err_range") };
       return { ok: true, value };
     }
     case "signed_number":
@@ -81,7 +82,7 @@ export function parseField(text: string, kind: FieldKind): ParseResult {
       if (!base || !Number.isFinite(value) || (kind.type === "number" && value < 0)) {
         return {
           ok: false,
-          error: kind.type === "number" ? "请输入有限的非负数" : "请输入有限的数字",
+          error: t(kind.type === "number" ? "set.err_nonneg" : "set.err_num"),
         };
       }
       return { ok: true, value };
@@ -103,12 +104,12 @@ export function parseField(text: string, kind: FieldKind): ParseResult {
         ) {
           return {
             ok: false,
-            error: kind.type === "object" ? "需要 JSON 对象" : "清空输入可恢复默认，不要填写 null",
+            error: t(kind.type === "object" ? "set.err_obj" : "set.err_null"),
           };
         }
         return { ok: true, value };
       } catch (error) {
-        return { ok: false, error: `JSON 格式有误：${String(error)}` };
+        return { ok: false, error: t("set.err_json", { error: String(error) }) };
       }
     default:
       return { ok: true, value: text };

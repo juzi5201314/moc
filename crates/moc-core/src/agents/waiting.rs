@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::AgentRegistry;
 use super::WAIT_DEFAULT_WINDOW_SECS;
 use super::WAIT_PROGRESS_INTERVAL;
@@ -157,7 +158,9 @@ pub(super) async fn resolve_wait_targets(
                     .iter()
                     .find(|entry| entry.session.id == *id)
                     .map(|entry| entry.session.clone())
-                    .ok_or_else(|| invalid(format!("目标 {id} 不是调用方的直接子代理")))
+                    .ok_or_else(|| {
+                        invalid(t!("core.err.not_direct_child", id = id).into_owned())
+                    })
             })
             .collect(),
         None => {

@@ -8,6 +8,7 @@ use super::editor::{contents, revision, write_atomic};
 use crate::CoreError;
 use crate::session::lock::SessionLockGuard;
 use moc_protocol::{WebState, WebStateDocument, WebStateSaveParams};
+use rust_i18n::t;
 use std::path::Path;
 
 const FILE_NAME: &str = "web.toml";
@@ -19,7 +20,8 @@ pub fn load(home: &Path) -> Result<WebStateDocument, CoreError> {
     let state: WebState = if text.trim().is_empty() {
         WebState::default()
     } else {
-        parse(&text).map_err(|error| CoreError::Config(format!("web.toml 格式有误：{error}")))?
+        parse(&text)
+            .map_err(|error| CoreError::Config(t!("core.err.web_toml_invalid", error = error).into_owned()))?
     };
     Ok(WebStateDocument {
         revision: revision(&text),
@@ -49,11 +51,13 @@ pub fn save(home: &Path, params: WebStateSaveParams) -> Result<WebStateDocument,
     let text = contents(&path)?;
     if revision(&text) != params.revision {
         return Err(CoreError::Config(
-            "web.toml 已被其他窗口修改，请刷新后重试".into(),
+            t!("core.err.web_toml_conflict").into_owned(),
         ));
     }
     let text = toml::to_string_pretty(&params.state)
-        .map_err(|error| CoreError::Config(format!("web.toml 无法序列化：{error}")))?;
+        .map_err(|error| {
+            CoreError::Config(t!("core.err.web_toml_serialize", error = error).into_owned())
+        })?;
     write_atomic(&path, &text)?;
     Ok(WebStateDocument {
         revision: revision(&text),

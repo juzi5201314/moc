@@ -6,6 +6,7 @@
 
 import { useEffect } from "react";
 import { toast } from "sonner";
+import { type MsgKey, t } from "@/lib/i18n";
 import { LEVEL_LABEL, NEXT_LEVEL } from "@/lib/tool-view";
 import type { SessionEngine } from "@/protocol/types";
 import { useConnection } from "@/store/connection";
@@ -16,28 +17,28 @@ import { useTabs } from "@/store/tabs";
 import { useTranscript } from "@/store/transcript";
 import { openSettings, requestComposerFocus, useUi } from "@/store/ui";
 
-export const SHORTCUTS: { keys: string; label: string }[] = [
-  { keys: "Ctrl K", label: "命令面板" },
-  { keys: "Alt N", label: "新会话" },
-  { keys: "Ctrl B", label: "展开 / 收起侧栏" },
-  { keys: "Alt R", label: "展开 / 收起检查面板" },
-  { keys: "Ctrl `", label: "打开 / 收起终端分页" },
-  { keys: "Alt P", label: "切换模型" },
-  { keys: "Alt M", label: "切换会话引擎（首条消息前）" },
-  { keys: "Alt J", label: "进入 / 退出计划状态" },
-  { keys: "Ctrl O", label: "切换工具显示档位（隐藏 / 简略）" },
-  { keys: "Ctrl /", label: "查看快捷键" },
-  { keys: "Enter", label: "发送；生成中按偏好补充或中断" },
-  { keys: "Ctrl Enter", label: "生成中排队发送" },
-  { keys: "Shift Enter", label: "换行" },
-  { keys: "Esc", label: "生成中且输入为空时停止" },
+export const SHORTCUTS: { keys: string; label: MsgKey }[] = [
+  { keys: "Ctrl K", label: "keys.palette" },
+  { keys: "Alt N", label: "keys.new" },
+  { keys: "Ctrl B", label: "keys.sidebar" },
+  { keys: "Alt R", label: "keys.inspector" },
+  { keys: "Ctrl `", label: "keys.terminal" },
+  { keys: "Alt P", label: "keys.model" },
+  { keys: "Alt M", label: "keys.engine" },
+  { keys: "Alt J", label: "keys.plan" },
+  { keys: "Ctrl O", label: "keys.detail" },
+  { keys: "Ctrl /", label: "keys.help" },
+  { keys: "Enter", label: "keys.send" },
+  { keys: "Ctrl Enter", label: "keys.queue" },
+  { keys: "Shift Enter", label: "keys.newline" },
+  { keys: "Esc", label: "keys.stop" },
 ];
 
 const ENGINE_CYCLE: SessionEngine[] = ["standard", "ptc", "clm_experimental"];
-const ENGINE_LABEL: Record<SessionEngine, string> = {
-  standard: "标准",
-  ptc: "PTC",
-  clm_experimental: "CLM（实验）",
+const ENGINE_LABEL: Record<SessionEngine, MsgKey> = {
+  standard: "engine.standard",
+  ptc: "engine.ptc",
+  clm_experimental: "engine.clm",
 };
 // 引擎与特性 flag 的对应（与 core 的 flag_for_engine 同一张事实）。
 const ENGINE_FLAG: Partial<Record<SessionEngine, string>> = {
@@ -59,12 +60,12 @@ function activeView() {
 export function applySessionEngine(sessionId: string, engine: SessionEngine): void {
   const view = useTranscript.getState().bySession[sessionId];
   if (view?.info.engine_locked) {
-    toast("会话引擎已锁定；换引擎请新建会话");
+    toast(t("sc.engine_locked"));
     return;
   }
   void setSessionEngine(sessionId, engine)
-    .then(() => toast(`引擎：${ENGINE_LABEL[engine]}`))
-    .catch((error) => toast.error(`切换失败：${errorText(error)}`));
+    .then(() => toast(t("sc.engine_set", { label: t(ENGINE_LABEL[engine]) })))
+    .catch((error) => toast.error(t("sc.switch_failed", { error: errorText(error) })));
 }
 
 /** 循环到下一个特性可用的引擎；flag 关闭的引擎跳过（与 TUI `/engine` 一致）。 */
@@ -88,8 +89,8 @@ export function cyclePlan(): void {
   if (!target) return;
   const next = !target.view.info.plan_active;
   togglePlanMode(target.id, next)
-    .then(() => toast(next ? "已进入计划状态" : "已退出计划状态"))
-    .catch((error) => toast.error(`切换失败：${errorText(error)}`));
+    .then(() => toast(next ? t("slash.plan_on") : t("slash.plan_off")))
+    .catch((error) => toast.error(t("sc.switch_failed", { error: errorText(error) })));
 }
 
 /** 返回 true 表示已处理（调用方 preventDefault）。 */
@@ -146,7 +147,7 @@ function handleCtrl(code: string): boolean {
     case "KeyO": {
       const toolDetail = NEXT_LEVEL[usePrefs.getState().toolDetail];
       usePrefs.getState().set({ toolDetail });
-      toast(`工具显示：${LEVEL_LABEL[toolDetail]}`);
+      toast(t("sc.tool_level", { label: t(LEVEL_LABEL[toolDetail]) }));
       return true;
     }
     default:

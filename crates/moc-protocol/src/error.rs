@@ -18,6 +18,7 @@
 
 use std::io;
 
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -45,12 +46,12 @@ impl RpcError {
         match RpcErrorCode::from_code(code) {
             Some(known) => Self {
                 code,
-                message: known.default_message().to_owned(),
+                message: known.default_message().into_owned(),
                 data: None,
             },
             None => Self {
                 code,
-                message: "未分类的协议错误".to_owned(),
+                message: t!("protocol.err.unclassified").into_owned(),
                 data: None,
             },
         }
@@ -165,22 +166,22 @@ impl RpcErrorCode {
     }
 
     /// 默认消息。
-    pub const fn default_message(self) -> &'static str {
+    pub fn default_message(self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::ParseError => "报文不是合法 JSON",
-            Self::InvalidRequest => "报文结构非法",
-            Self::MethodNotFound => "未知方法",
-            Self::InvalidParams => "参数非法",
-            Self::InternalError => "服务端内部错误",
-            Self::ServerBusy => "服务端并发请求已达上限",
-            Self::RequestCancelled => "请求已被取消",
-            Self::ServerNotInitialized => "连接尚未完成 initialize",
-            Self::UnsupportedProtocolVersion => "协议主版本不兼容",
-            Self::SessionNotFound => "会话不存在",
-            Self::SessionBusy => "该会话已有进行中的提示",
-            Self::NotSupported => "服务端不支持该操作",
-            Self::SessionLocked => "会话被其它进程锁定，只读",
-            Self::FileConflict => "目标内容已被修改",
+            Self::ParseError => t!("protocol.err.parse"),
+            Self::InvalidRequest => t!("protocol.err.invalid_request"),
+            Self::MethodNotFound => t!("protocol.err.method_not_found"),
+            Self::InvalidParams => t!("protocol.err.invalid_params"),
+            Self::InternalError => t!("protocol.err.internal"),
+            Self::ServerBusy => t!("protocol.err.server_busy"),
+            Self::RequestCancelled => t!("protocol.err.cancelled"),
+            Self::ServerNotInitialized => t!("protocol.err.not_initialized"),
+            Self::UnsupportedProtocolVersion => t!("protocol.err.version_mismatch"),
+            Self::SessionNotFound => t!("protocol.err.session_not_found"),
+            Self::SessionBusy => t!("protocol.err.session_busy"),
+            Self::NotSupported => t!("protocol.err.not_supported"),
+            Self::SessionLocked => t!("protocol.err.session_locked"),
+            Self::FileConflict => t!("protocol.err.file_conflict"),
         }
     }
 }
@@ -189,17 +190,14 @@ impl RpcErrorCode {
 ///
 /// 全部变体都是**致命**的：分帧一旦错位就无法重新同步（报文体长度不可信），
 /// 唯一的处置是关闭连接。
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FrameError {
     /// 头部块超过 8 KiB 仍未结束。
-    #[error("分帧头部超过 8 KiB")]
     HeaderTooLarge,
     /// `Content-Length` 头存在但取值不可用。
-    #[error("Content-Length 非法：{0}")]
     InvalidContentLength(String),
     /// 报文长度超过连接配置的 `max_frame_bytes`。
-    #[error("报文长度 {len} 超过上限 {max}")]
     TooLarge {
         /// 声明或实际长度。
         len: usize,
@@ -207,12 +205,28 @@ pub enum FrameError {
         max: usize,
     },
     /// `Content-Length` 取值不是十进制数字。
-    #[error("Content-Length 不是十进制数字")]
     NonNumericLength,
     /// 报文体之外出现无法解释的字节，分帧已错位。
-    #[error("报文前出现非分帧字节，连接无法重新同步")]
     UnexpectedPrefix,
 }
+
+impl std::fmt::Display for FrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HeaderTooLarge => write!(f, "{}", t!("protocol.err.frame_header")),
+            Self::InvalidContentLength(v) => {
+                write!(f, "{}", t!("protocol.err.frame_bad_length", value = v))
+            }
+            Self::TooLarge { len, max } => {
+                write!(f, "{}", t!("protocol.err.frame_too_large", len = len, max = max))
+            }
+            Self::NonNumericLength => write!(f, "{}", t!("protocol.err.frame_non_numeric")),
+            Self::UnexpectedPrefix => write!(f, "{}", t!("protocol.err.frame_prefix")),
+        }
+    }
+}
+
+impl std::error::Error for FrameError {}
 
 /// 连接 I/O 失败的分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,11 +258,10 @@ impl IoKind {
 /// 这些失败说明连接本身不可用或本端实现有 bug，不应该伪装成对端能理解的 RPC 错误。
 /// 对端**违约**（发来非法 JSON）不算本地失败：报文边界是清楚的，协议层回 `-32700`
 /// 后继续读，因此这里没有对应变体。
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ProtocolError {
     /// 连接读写失败。
-    #[error("连接 I/O 失败（{kind:?}）：{message}")]
     Io {
         /// 失败分类。
         kind: IoKind,
@@ -256,17 +269,54 @@ pub enum ProtocolError {
         message: String,
     },
     /// 分帧失败，连接必须关闭。
-    #[error("分帧失败：{0}")]
-    Frame(#[from] FrameError),
+    Frame(FrameError),
     /// 本地报文序列化失败（本端实现 bug）。
-    #[error("本地报文序列化失败：{0}")]
     Encode(String),
     /// 连接已关闭。
-    #[error("连接已关闭")]
     ConnectionClosed,
     /// `ClientBuilder` 对同一方法注册了两次处理器。
-    #[error("重复注册方法处理器：{0}")]
     DuplicateHandler(&'static str),
+}
+
+impl std::fmt::Display for ProtocolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io { kind, message } => write!(
+                f,
+                "{}",
+                t!(
+                    "protocol.err.io",
+                    kind = format!("{kind:?}"),
+                    message = message
+                )
+            ),
+            Self::Frame(error) => {
+                write!(f, "{}", t!("protocol.err.frame", error = error.to_string()))
+            }
+            Self::Encode(message) => {
+                write!(f, "{}", t!("protocol.err.encode", error = message))
+            }
+            Self::ConnectionClosed => write!(f, "{}", t!("protocol.err.closed")),
+            Self::DuplicateHandler(method) => {
+                write!(f, "{}", t!("protocol.err.dup_handler", method = *method))
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProtocolError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Frame(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<FrameError> for ProtocolError {
+    fn from(error: FrameError) -> Self {
+        Self::Frame(error)
+    }
 }
 
 impl From<io::Error> for ProtocolError {
@@ -282,18 +332,40 @@ impl From<io::Error> for ProtocolError {
 ///
 /// 与 [`ProtocolError`] 的分工：`call` / 反向请求只需要「对端拒绝」「被取消」「连接没了」
 /// 三种判断，不需要知道底层是分帧错了还是 I/O 断了。
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum RpcCallError {
     /// 对端回了 `error` 对象（含 `-32601` 这类可预期拒绝）。
-    #[error(transparent)]
-    Rpc(#[from] RpcError),
+    Rpc(RpcError),
     /// 请求被取消：反向请求在提示取消或连接关闭时触发。
-    #[error("请求已被取消")]
     Cancelled,
     /// 连接已死，请求未送达或结果丢失。
-    #[error("连接已关闭")]
     Closed,
+}
+
+impl std::fmt::Display for RpcCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rpc(error) => error.fmt(f),
+            Self::Cancelled => write!(f, "{}", t!("protocol.err.call_cancelled")),
+            Self::Closed => write!(f, "{}", t!("protocol.err.call_closed")),
+        }
+    }
+}
+
+impl std::error::Error for RpcCallError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Rpc(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<RpcError> for RpcCallError {
+    fn from(error: RpcError) -> Self {
+        Self::Rpc(error)
+    }
 }
 
 impl RpcCallError {
@@ -317,15 +389,51 @@ impl RpcCallError {
 }
 
 /// `connect()` 的失败类型：既可能是连接建立/握手传输失败，也可能是 initialize 被拒。
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum ConnectError {
     /// 连接建立或分帧失败。
-    #[error("连接建立失败：{0}")]
-    Protocol(#[from] ProtocolError),
+    Protocol(ProtocolError),
     /// 服务端返回了 RPC 错误（典型是 `-32003` 版本不兼容）。
-    #[error("initialize 失败：{0}")]
-    Rpc(#[from] RpcError),
+    Rpc(RpcError),
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Protocol(error) => write!(
+                f,
+                "{}",
+                t!("protocol.err.connect_failed", error = error.to_string())
+            ),
+            Self::Rpc(error) => write!(
+                f,
+                "{}",
+                t!("protocol.err.init_failed", error = error.to_string())
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ConnectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Protocol(error) => Some(error),
+            Self::Rpc(error) => Some(error),
+        }
+    }
+}
+
+impl From<ProtocolError> for ConnectError {
+    fn from(error: ProtocolError) -> Self {
+        Self::Protocol(error)
+    }
+}
+
+impl From<RpcError> for ConnectError {
+    fn from(error: RpcError) -> Self {
+        Self::Rpc(error)
+    }
 }
 
 #[cfg(test)]
@@ -371,6 +479,7 @@ mod tests {
 
     #[test]
     fn error_object_shape_is_strict() {
+        rust_i18n::set_locale("zh");
         // data 省略时不出现在线上形状里
         let error = RpcError::of(RpcErrorCode::MethodNotFound);
         assert_eq!(
@@ -396,6 +505,7 @@ mod tests {
 
     #[test]
     fn from_code_uses_default_message_for_known_and_generic_for_unknown() {
+        rust_i18n::set_locale("zh");
         assert_eq!(
             RpcError::from_code(-32015).message,
             "会话被其它进程锁定，只读"

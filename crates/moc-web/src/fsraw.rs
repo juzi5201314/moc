@@ -5,6 +5,7 @@ use axum::extract::{Query, Request};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
+use rust_i18n::t;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 
@@ -30,16 +31,22 @@ pub async fn read(Query(query): Query<RawQuery>) -> Response {
         Err(error) => {
             return (
                 StatusCode::NOT_FOUND,
-                format!("无法打开文件：{}：{error}", path.display()),
+                t!(
+                    "web.err.file_open",
+                    path = path.display().to_string(),
+                    error = error
+                )
+                .into_owned(),
             )
                 .into_response();
         }
     };
     let Ok(metadata) = file.metadata().await else {
-        return (StatusCode::NOT_FOUND, "无法读取文件信息").into_response();
+        return (StatusCode::NOT_FOUND, t!("web.err.file_stat").into_owned()).into_response();
     };
     if !metadata.is_file() {
-        return (StatusCode::BAD_REQUEST, "不是普通文件").into_response();
+        return (StatusCode::BAD_REQUEST, t!("web.err.not_regular").into_owned())
+            .into_response();
     }
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -56,7 +63,7 @@ pub async fn read(Query(query): Query<RawQuery>) -> Response {
             Err(error) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    format!("文件名无法用于下载：{error}"),
+                    t!("web.err.filename_invalid", error = error).into_owned(),
                 )
                     .into_response();
             }
@@ -82,7 +89,11 @@ pub async fn write(
     request: Request,
 ) -> Response {
     if !origin_allowed(&headers) {
-        return (StatusCode::FORBIDDEN, "跨站写入被拒绝").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            t!("web.err.write_denied").into_owned(),
+        )
+            .into_response();
     }
     let path = match expand(&query.path) {
         Ok(path) => path,
@@ -105,7 +116,7 @@ async fn upload_to(
 ) -> Response {
     let exists = path.symlink_metadata().is_ok();
     if exists && !overwrite {
-        return (StatusCode::CONFLICT, "目标已存在").into_response();
+        return (StatusCode::CONFLICT, t!("web.err.target_exists").into_owned()).into_response();
     }
     // 覆盖已有链接时沿用原接口语义，替换链接指向的普通文件。
     let target = if exists {
@@ -117,7 +128,11 @@ async fn upload_to(
         path.to_owned()
     };
     let Some(parent) = target.parent().map(std::path::Path::to_owned) else {
-        return (StatusCode::BAD_REQUEST, "不是普通文件路径").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            t!("web.err.not_regular_path").into_owned(),
+        )
+            .into_response();
     };
     let staged = tokio::task::spawn_blocking(move || tempfile::NamedTempFile::new_in(parent)).await;
     let temporary = match staged {
@@ -125,7 +140,7 @@ async fn upload_to(
         Ok(Err(error)) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("无法创建暂存文件：{error}"),
+                t!("web.err.staging_create", error = error).into_owned(),
             )
                 .into_response();
         }
@@ -139,7 +154,11 @@ async fn upload_to(
     match tokio::fs::metadata(&target).await {
         Ok(metadata) => {
             if !metadata.is_file() {
-                return (StatusCode::BAD_REQUEST, "不是普通文件").into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    t!("web.err.not_regular").into_owned(),
+                )
+                    .into_response();
             }
             if let Err(error) = file.set_permissions(metadata.permissions()).await {
                 return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
@@ -154,20 +173,35 @@ async fn upload_to(
         let bytes = match chunk {
             Ok(bytes) => bytes,
             Err(error) => {
-                return (StatusCode::BAD_REQUEST, format!("读取请求体失败：{error}"))
+                return (
+                    StatusCode::BAD_REQUEST,
+                    t!("web.err.body_read", error = error).into_owned(),
+                )
                     .into_response();
             }
         };
         received += bytes.len() as u64;
         if received > max_bytes {
-            return (StatusCode::PAYLOAD_TOO_LARGE, "文件超过上传上限").into_response();
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                t!("web.err.upload_too_large").into_owned(),
+            )
+                .into_response();
         }
         if let Err(error) = file.write_all(&bytes).await {
-            return (StatusCode::BAD_REQUEST, format!("写入失败：{error}")).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                t!("web.err.write_failed", error = error).into_owned(),
+            )
+                .into_response();
         }
     }
     if let Err(error) = file.sync_all().await {
-        return (StatusCode::BAD_REQUEST, format!("写入失败：{error}")).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            t!("web.err.write_failed", error = error).into_owned(),
+        )
+            .into_response();
     }
     drop(file);
     // 不覆盖发布不能使用 exists + rename；persist_noclobber 在发布时原子拒绝竞争者。
@@ -182,10 +216,15 @@ async fn upload_to(
     match published {
         Ok(Ok(())) => {}
         Ok(Err(error)) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            return (StatusCode::CONFLICT, "目标已存在").into_response();
+            return (StatusCode::CONFLICT, t!("web.err.target_exists").into_owned())
+                .into_response();
         }
         Ok(Err(error)) => {
-            return (StatusCode::BAD_REQUEST, format!("发布文件失败：{error}")).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                t!("web.err.publish_failed", error = error).into_owned(),
+            )
+                .into_response();
         }
         Err(error) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();

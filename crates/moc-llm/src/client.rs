@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_core::Stream;
+use rust_i18n::t;
 
 use crate::codec::{self, EncodedRequest};
 use crate::config::LlmConfig;
@@ -91,7 +92,7 @@ impl Client {
             }),
         )
         .await
-        .map_err(|_| deadline_error("非流式请求在", deadline_secs))
+        .map_err(|_| deadline_error("nonstream", deadline_secs))
         .and_then(|result| result)
         .map_err(|error| diagnose(error, prepared.diagnostics, started))
     }
@@ -131,7 +132,7 @@ impl Client {
                     let body = read_body(response).await?;
                     codec::decode_response(cfg, req, &body)
                         .map_err(|error| response_metadata(error, &headers))?;
-                    return Err(LlmError::Stream("流式请求返回了非流式 JSON 响应".into()));
+                    return Err(LlmError::Stream(t!("llm.err.stream_json").into_owned()));
                 }
                 let body: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>> =
                     Box::pin(CountingStream::new(response.bytes_stream()));
@@ -142,7 +143,7 @@ impl Client {
             }),
         )
         .await
-        .map_err(|_| deadline_error("流式请求在", deadline_secs))
+        .map_err(|_| deadline_error("stream", deadline_secs))
         .and_then(|result| result)
         .map_err(|error| diagnose(error, prepared.diagnostics, started))
     }
@@ -177,7 +178,9 @@ impl Client {
             crate::images::prepare(&inner.images, &cfg, &req, stream)
         })
         .await
-        .map_err(|error| LlmError::Encode(format!("图片请求准备失败：{error}")))?
+        .map_err(|error| {
+            LlmError::Encode(t!("llm.err.image_prepare", error = error).into_owned())
+        })?
     }
 
     /// 请求失败共享同一个预算；响应体解码也在重试边界内。
@@ -214,7 +217,9 @@ impl Client {
             return Ok(self.default_http()?.post(url));
         };
         let timeout = Duration::try_from_secs_f64(seconds)
-            .map_err(|error| LlmError::Encode(format!("连接超时配置无效：{error}")))?;
+            .map_err(|error| {
+                LlmError::Encode(t!("llm.err.timeout_cfg", error = error).into_owned())
+            })?;
         if self.inner.options.connect_timeout == Some(timeout) {
             return Ok(self.default_http()?.post(url));
         }
@@ -272,7 +277,7 @@ impl Client {
                         LlmError::Api(Box::new(ApiError::new(
                             None,
                             ApiErrorKind::Timeout,
-                            format!("上游在 {secs} 秒内没有返回响应头"),
+                            t!("llm.err.no_headers", secs = secs).into_owned(),
                             "",
                         )))
                     })??
@@ -353,11 +358,11 @@ async fn error_body(mut response: reqwest::Response) -> Vec<u8> {
 }
 
 /// 连接与重试时限到点：请求未完成，恢复策略交给调用方。
-fn deadline_error(subject: &str, secs: u64) -> LlmError {
+fn deadline_error(slug: &str, secs: u64) -> LlmError {
     LlmError::Api(Box::new(ApiError::new(
         None,
         ApiErrorKind::Timeout,
-        format!("{subject} {secs} 秒连接与重试时限内没有完成"),
+        t!(format!("llm.err.{slug}_deadline"), secs = secs).into_owned(),
         "",
     )))
 }
@@ -371,7 +376,9 @@ async fn read_body(response: reqwest::Response) -> Result<Vec<u8>, LlmError> {
             record_rx(bytes.len() as u64);
             bytes.to_vec()
         })
-        .map_err(|error| LlmError::Stream(format!("读取响应体失败: {error}")))
+        .map_err(|error| {
+            LlmError::Stream(t!("llm.err.read_body_failed", err = error).into_owned())
+        })
 }
 
 /// `bytes_stream` 的计数包装：每交付一个 chunk 计入进程级 RX 计数器。

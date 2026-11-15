@@ -3,6 +3,7 @@
 //! 插件工具在哪些会话模式可见由插件自己声明（`modes`）；
 //! 能力边界仍由 `moc.tools.call()` 的只读白名单决定，见 [`ReadOnlyBridge`]。
 
+use rust_i18n::t;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -104,7 +105,12 @@ impl Tool for PluginTool {
                 .map_err(|error| {
                     ToolError::new(
                         error.code,
-                        format!("插件 `{}`: {}", self.plugin, error.message),
+                        t!(
+                            "core.err.plugin_call_error",
+                            plugin = self.plugin,
+                            message = error.message
+                        )
+                        .into_owned(),
                     )
                 })?;
             let mut outcome = ToolOutcome::success(result.content);
@@ -159,14 +165,19 @@ impl moc_plugin::HostBridge for ReadOnlyBridge {
             if !host_tool_allowed(&name) {
                 return Err(moc_plugin::PluginError::new(
                     "E_PLUGIN_TOOLS_UNAVAILABLE",
-                    format!("插件只能调用 {}，`{name}` 不在此列", HOST_TOOLS.join("/")),
+                    t!(
+                        "core.err.plugin_host_only",
+                        tools = HOST_TOOLS.join("/"),
+                        name = name
+                    )
+                    .into_owned(),
                 ));
             }
             // 当前模式不可见时同样落到这条错误里，插件不需要区分两种原因。
             if self.ctx.catalog.get(&name).is_none() {
                 return Err(moc_plugin::PluginError::new(
                     "E_PLUGIN_TOOLS_UNAVAILABLE",
-                    format!("工具 `{name}` 当前模式不可见"),
+                    t!("core.err.tool_not_visible", name = name).into_owned(),
                 ));
             }
             let call = moc_llm::ToolCall::new(

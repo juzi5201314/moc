@@ -11,6 +11,7 @@ use crate::types::ReasoningBlock;
 use crate::types::Role;
 use crate::types::ToolCall;
 use crate::types::Usage;
+use rust_i18n::t;
 use serde_json::Value;
 
 /// 非流式响应解码。
@@ -46,7 +47,7 @@ pub(crate) fn decode_response(
                     id: string_at(block, "/id"),
                     name: string_at(block, "/name"),
                     arguments: serde_json::to_string(&input).map_err(|err| LlmError::Decode {
-                        message: format!("工具调用参数序列化失败: {err}"),
+                        message: t!("llm.err.tool_args_serialize", err = err).into_owned(),
                         body: None,
                     })?,
                 }));

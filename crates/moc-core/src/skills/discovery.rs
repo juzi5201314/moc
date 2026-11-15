@@ -10,6 +10,7 @@
 //! 同名冲突取 rank 最小者并告警；SKILL.md 真实路径去重防 symlink 双载
 //! （skills.sh 等安装器以 symlink 方式分发）。
 
+use rust_i18n::t;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -67,23 +68,31 @@ pub fn discover_index(
             roots.push((
                 100 + depth,
                 dir.join(".moc").join("skills"),
-                format!("项目 .moc/skills（{}）", dir.display()),
+                t!("core.err.skills_src_moc", dir = dir.display().to_string()).into_owned(),
             ));
         }
         if config.agents_project {
             roots.push((
                 200 + depth,
                 dir.join(".agents").join("skills"),
-                format!("项目 .agents/skills（{}）", dir.display()),
+                t!("core.err.skills_src_agents", dir = dir.display().to_string()).into_owned(),
             ));
         }
     }
     for dir in &config.dirs {
         let expanded = crate::config::expand_user_path(dir);
-        roots.push((300, expanded, format!("配置 dirs（{dir}）")));
+        roots.push((
+            300,
+            expanded,
+            t!("core.err.skills_src_dirs", dir = dir).into_owned(),
+        ));
     }
     if config.moc_user {
-        roots.push((400, home.join("skills"), "用户 .moc/skills".into()));
+        roots.push((
+            400,
+            home.join("skills"),
+            t!("core.err.skills_src_user").into_owned(),
+        ));
     }
     if config.agents_user
         && let Some(user_home) = user_home
@@ -91,7 +100,7 @@ pub fn discover_index(
         roots.push((
             500,
             user_home.join(".agents").join("skills"),
-            "用户 ~/.agents/skills".into(),
+            t!("core.err.skills_src_global").into_owned(),
         ));
     }
     roots.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));

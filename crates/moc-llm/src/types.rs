@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -305,7 +306,9 @@ impl ToolCall {
     /// 把 `arguments` 解析为 JSON；参数不完整或非法时返回 [`LlmError::Encode`]。
     pub fn arguments_json(&self) -> Result<serde_json::Value, LlmError> {
         serde_json::from_str(&self.arguments).map_err(|err| {
-            LlmError::Encode(format!("工具调用 {} 的参数不是合法 JSON: {err}", self.name))
+            LlmError::Encode(
+                t!("llm.err.tool_args_json", name = self.name.as_str(), err = err).into_owned(),
+            )
         })
     }
 }

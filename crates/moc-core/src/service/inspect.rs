@@ -1,5 +1,6 @@
 //! `/session` 的身份和文件大小汇总；只读取元数据，不扫描工作区或解压历史。
 
+use rust_i18n::t;
 use super::{CoreInner, to_rpc};
 use crate::session::store::SessionPaths;
 use moc_protocol::{RpcError, SessionInfo};
@@ -33,16 +34,17 @@ impl Space {
     }
 
     fn describe(&self) -> String {
-        format!(
-            "{} 个文件 · {}{}",
-            self.files,
-            size(self.bytes),
-            if self.incomplete {
-                "（统计不完整）"
+        t!(
+            "core.inspect.space_fmt",
+            files = self.files,
+            size = size(self.bytes),
+            incomplete = if self.incomplete {
+                t!("core.inspect.space_incomplete").into_owned()
             } else {
-                ""
+                String::new()
             }
         )
+        .into_owned()
     }
 }
 
@@ -69,7 +71,7 @@ fn render(info: &SessionInfo, paths: &SessionPaths) -> Result<String, crate::Cor
         let path = sidecar.join(name);
         if !inventory.groups.iter().any(|group| group.path == path) {
             inventory.groups.push(Group {
-                label: group_label(name).to_owned(),
+                label: group_label(name),
                 path,
                 space: Space {
                     incomplete: inventory.own.incomplete,
@@ -85,79 +87,116 @@ fn render(info: &SessionInfo, paths: &SessionPaths) -> Result<String, crate::Cor
                 bytes: metadata.len(),
                 incomplete: false,
             },
-            "",
+            "".into(),
         ),
         Ok(_) => (
             Space {
                 incomplete: true,
                 ..Space::default()
             },
-            "非普通文件，未计入",
+            t!("core.inspect.log_not_file"),
         ),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => (Space::default(), "尚未落盘"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            (Space::default(), t!("core.inspect.log_not_written"))
+        }
         Err(_) => (
             Space {
                 incomplete: true,
                 ..Space::default()
             },
-            "无法读取大小",
+            t!("core.inspect.log_unreadable"),
         ),
     };
     inventory.own.merge(&log);
     inventory
         .groups
         .sort_unstable_by(|left, right| left.path.cmp(&right.path));
-    let mut text = format!(
-        "会话信息\nID：{}\n标题：{}\n工作目录：{}\n创建时间：{}\n最近更新：{}\n",
-        info.id,
-        info.title,
-        info.cwd,
-        timestamp(info.created_at_ms),
-        timestamp(info.updated_at_ms)
-    );
+    let mut text = t!(
+        "core.inspect.header",
+        id = info.id,
+        title = info.title,
+        cwd = info.cwd,
+        created = timestamp(info.created_at_ms),
+        updated = timestamp(info.updated_at_ms)
+    )
+    .into_owned();
     if let Some(parent) = &info.parent_session_id {
-        let _ = writeln!(text, "父会话：{parent}");
+        let _ = writeln!(text, "{}", t!("core.inspect.parent", id = parent));
     }
     if let Some(source) = &info.forked_from {
-        let _ = writeln!(text, "分叉来源：{source}");
+        let _ = writeln!(text, "{}", t!("core.inspect.forked", id = source));
     }
-    let _ = writeln!(text, "\n会话文件：{}", transcript.display());
     let _ = writeln!(
         text,
-        "文件大小：{}{}{}",
-        size(log.bytes),
-        if log_state.is_empty() { "" } else { " · " },
-        log_state
+        "{}",
+        t!("core.inspect.file_line", path = transcript.display().to_string())
     );
     let _ = writeln!(
         text,
-        "格式：{}",
-        if paths.compressed() {
-            "JSONL · zstd 压缩"
-        } else {
-            "JSONL · 未压缩"
-        }
+        "{}",
+        t!(
+            "core.inspect.size_line",
+            size = size(log.bytes),
+            sep = if log_state.is_empty() { "" } else { " · " },
+            state = log_state.as_ref()
+        )
     );
-    let _ = writeln!(text, "附属目录：{}", sidecar.display());
+    let _ = writeln!(
+        text,
+        "{}",
+        t!(
+            "core.inspect.format_line",
+            format = if paths.compressed() {
+                t!("core.inspect.fmt_zst")
+            } else {
+                t!("core.inspect.fmt_plain")
+            }
+            .as_ref()
+        )
+    );
+    let _ = writeln!(
+        text,
+        "{}",
+        t!("core.inspect.sidecar_line", path = sidecar.display().to_string())
+    );
     for group in &inventory.groups {
         let _ = writeln!(
             text,
-            "\n{}：{}\n  {}",
-            group.label,
-            group.space.describe(),
-            group.path.display()
+            "{}",
+            t!(
+                "core.inspect.group_line",
+                label = group.label,
+                space = group.space.describe(),
+                path = group.path.display().to_string()
+            )
         );
     }
-    let _ = writeln!(text, "\n自身持久数据：{}", inventory.own.describe());
+    let _ = writeln!(
+        text,
+        "{}",
+        t!("core.inspect.own_line", desc = inventory.own.describe())
+    );
     if inventory.children.files != 0 || inventory.children.incomplete {
-        let _ = writeln!(text, "子会话持久数据：{}", inventory.children.describe());
-        let _ = writeln!(text, "  {} 下的子会话日志与目录", sidecar.display());
+        let _ = writeln!(
+            text,
+            "{}",
+            t!("core.inspect.children_line", desc = inventory.children.describe())
+        );
+        let _ = writeln!(
+            text,
+            "{}",
+            t!("core.inspect.children_hint", path = sidecar.display().to_string())
+        );
     }
     if inventory.cache.files != 0 || inventory.cache.incomplete {
-        let _ = writeln!(text, "临时缓存合计：{}", inventory.cache.describe());
-        let _ = writeln!(text, "  会话及子会话附属目录中的 history/、urlfs/");
+        let _ = writeln!(
+            text,
+            "{}",
+            t!("core.inspect.cache_line", desc = inventory.cache.describe())
+        );
+        let _ = writeln!(text, "{}", t!("core.inspect.cache_hint"));
     }
-    text.push_str("文件大小合计不含临时缓存，不跟随符号链接。");
+    text.push_str(&t!("core.inspect.footer"));
     Ok(text)
 }
 
@@ -230,7 +269,7 @@ fn sidecar_inventory(root: &Path, child: bool, inventory: &mut Inventory) {
         }
         if !child && !child_log {
             inventory.groups.push(Group {
-                label: group_label(&name).to_owned(),
+                label: group_label(&name),
                 path,
                 space,
             });
@@ -238,18 +277,19 @@ fn sidecar_inventory(root: &Path, child: bool, inventory: &mut Inventory) {
     }
 }
 
-fn group_label(name: &str) -> &str {
+fn group_label(name: &str) -> String {
     match name {
-        "plans" => "计划文件 · local://",
-        "artifacts" => "工具产物 · artifact://artifacts/",
-        "jobs" => "任务输出 · artifact://jobs/",
-        "compaction" => "压缩数据",
-        "workflows" => "工作流数据",
-        "plugins" => "插件状态",
-        "history" => "历史临时缓存",
-        "urlfs" => "URI 映射缓存",
-        _ => name,
+        "plans" => t!("core.inspect.group.plans"),
+        "artifacts" => t!("core.inspect.group.artifacts"),
+        "jobs" => t!("core.inspect.group.jobs"),
+        "compaction" => t!("core.inspect.group.compaction"),
+        "workflows" => t!("core.inspect.group.workflows"),
+        "plugins" => t!("core.inspect.group.plugins"),
+        "history" => t!("core.inspect.group.history"),
+        "urlfs" => t!("core.inspect.group.urlfs"),
+        _ => name.into(),
     }
+    .into_owned()
 }
 
 fn measure(root: &Path) -> Space {

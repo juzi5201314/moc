@@ -115,7 +115,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/model:high'\nexplore='test/model:high'\nplan='test/model:high'\n\
+            "language='zh'\n[models.roles]\ndefault='test/model:high'\nexplore='test/model:high'\nplan='test/model:high'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\nreasoning=true\n\
              [session]\ndir={:?}\n\

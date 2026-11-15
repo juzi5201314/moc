@@ -1,5 +1,7 @@
 //! 子代理名册与会话焦点切换。
 
+use rust_i18n::t;
+
 use super::bootstrap::refresh_git_branch;
 use super::context::refresh_context;
 use super::usage::refresh_usage;
@@ -37,7 +39,7 @@ pub(super) fn open_subagents(app: &mut App, connection: &EmbeddedConnection) {
     app.subagent_sidebar = Some(true);
     load_subagents(app, connection);
     if app.subagents.is_empty() {
-        app.set_notice("当前没有子代理");
+        app.set_notice(t!("tui.event.no_subagents").into_owned());
     }
 }
 
@@ -59,7 +61,7 @@ pub(super) fn stop_agent_operation(app: &App, connection: &EmbeddedConnection, a
             .await
             .map(|result| crate::subagent::AgentOperationNotice {
                 target: agent_id,
-                message: format!("停止请求已处理：{}", result.stopped),
+                message: t!("tui.event.stopped_fmt", n = result.stopped).into_owned(),
             })
             .map_err(anyhow::Error::from);
         let _ = events.send(AppEvent::SubagentOperation(result));
@@ -173,7 +175,9 @@ pub(super) fn apply_focus_loaded(
         Err(error) => {
             app.focus_restore = None;
             app.focused = None;
-            app.set_error_notice(format!("加载代理会话失败：{error}"));
+            app.set_error_notice(
+                t!("tui.event.agent_load_failed_fmt", err = error.to_string()).into_owned(),
+            );
             return;
         }
     };

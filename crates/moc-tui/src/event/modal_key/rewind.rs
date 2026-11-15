@@ -1,5 +1,7 @@
 //! 回退选择的键盘交互。
 
+use rust_i18n::t;
+
 use super::Actions;
 use crate::app::App;
 use crate::event::load_mutation_page;
@@ -53,11 +55,11 @@ pub(super) fn handle(
                     (KeyCode::Enter, KeyModifiers::NONE) if !state.loading => {
                         let is_redo = state.selected_item_ref().is_some_and(|item| item.future);
                         let Some(selected) = state.selected().cloned() else {
-                            state.error = Some("当前会话没有可回退的消息".into());
+                            state.error = Some(t!("tui.rewind.none").into_owned());
                             return false;
                         };
                         let Some(session_id) = session_id.clone() else {
-                            state.error = Some("当前没有活动会话".into());
+                            state.error = Some(t!("tui.common.no_session").into_owned());
                             return false;
                         };
                         state.loading = true;
@@ -124,11 +126,11 @@ pub(super) fn handle(
                                 })?
                             });
                             let Some(tool_call_id) = reask_call else {
-                                state.error = Some("选中的条目没有可重新作答的提问".into());
+                                state.error = Some(t!("tui.rewind.no_prompt").into_owned());
                                 return false;
                             };
                             let Some(session_id) = session_id.clone() else {
-                                state.error = Some("当前没有活动会话".into());
+                                state.error = Some(t!("tui.common.no_session").into_owned());
                                 return false;
                             };
                             // 先关模态：重放的提问卡片要在主界面弹出作答。
@@ -160,11 +162,11 @@ pub(super) fn handle(
                         if !state.loading {
                             let is_redo = state.selected_item_ref().is_some_and(|item| item.future);
                             let Some(selected) = state.selected().cloned() else {
-                                state.error = Some("当前会话没有可回退的消息".into());
+                                state.error = Some(t!("tui.rewind.none").into_owned());
                                 return false;
                             };
                             let Some(session_id) = session_id.clone() else {
-                                state.error = Some("当前没有活动会话".into());
+                                state.error = Some(t!("tui.common.no_session").into_owned());
                                 return false;
                             };
                             state.loading = true;

@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::WorkflowApprovalState;
 use super::WorkflowRunState;
 use super::artifacts::artifact_lines;
@@ -222,7 +224,10 @@ pub fn approval_lines(
     let dim = Style::new().fg(theme.gray_dim);
     let mut lines = Vec::new();
     let mut hits: Vec<(usize, usize)> = Vec::new();
-    lines.push(Line::from(Span::styled("编排", dim)));
+    lines.push(Line::from(Span::styled(
+        t!("tui.wf.orchestration").into_owned(),
+        dim,
+    )));
     lines.extend(graph_lines(
         &state.request.plan,
         &|_| ("pending".into(), String::new()),
@@ -326,8 +331,8 @@ pub fn approval_lines(
             .unwrap_or_default(),
     };
     let label = match state.request.kind {
-        moc_protocol::methods::WorkflowApprovalKind::HoleFill => "新增命令",
-        _ => "world.run 命令集",
+        moc_protocol::methods::WorkflowApprovalKind::HoleFill => t!("tui.wf.hole_fill_label"),
+        _ => t!("tui.wf.run_cmds_label"),
     };
     lines.push(Line::from(Span::styled(label, dim)));
     for command in commands {
@@ -341,7 +346,7 @@ pub fn approval_lines(
         moc_protocol::methods::WorkflowApprovalKind::Amend
     ) {
         lines.push(Line::from(Span::styled(
-            "  （amend：增量修改既有 run）",
+            t!("tui.wf.amend_note").into_owned(),
             dim,
         )));
     }
@@ -352,7 +357,10 @@ pub fn approval_lines(
     ) && !state.request.script.is_empty()
     {
         lines.push(Line::from(String::new()));
-        lines.push(Line::from(Span::styled("脚本", dim)));
+        lines.push(Line::from(Span::styled(
+            t!("tui.wf.script").into_owned(),
+            dim,
+        )));
         let start = state.command_scroll;
         for highlighted in crate::render::highlight::highlight("ts", &state.request.script)
             .lines
@@ -376,7 +384,7 @@ pub fn approval_lines(
     if let Some(feedback) = &state.feedback {
         lines.push(Line::from(String::new()));
         lines.push(Line::from(Span::styled(
-            format!("拒绝反馈：{feedback}▌"),
+            t!("tui.wf.reject_fmt", feedback = feedback.as_str()).into_owned(),
             Style::new().fg(theme.accent_error),
         )));
     }
@@ -395,17 +403,20 @@ pub fn run_lines(
     // artifact 全文查看态：整幅替换成内容（markdown 渲染、文本按行）。
     if let Some((title, view)) = &state.artifact_view {
         lines.push(Line::from(Span::styled(
-            format!("查看：{title}  （Esc/o 返回）"),
+            t!("tui.wf.view_fmt", title = title.as_str()).into_owned(),
             Style::new().fg(theme.accent_model),
         )));
         lines.extend(view.iter().cloned());
         return (lines, hits);
     }
     lines.push(Line::from(Span::styled(
-        format!("状态：{}", status_label(state.status)),
+        t!("tui.wf.status_fmt", status = status_label(state.status).as_str()).into_owned(),
         phase_style(&status_label(state.status), theme),
     )));
-    lines.push(Line::from(Span::styled("编排", dim)));
+    lines.push(Line::from(Span::styled(
+        t!("tui.wf.orchestration").into_owned(),
+        dim,
+    )));
     lines.extend(graph_lines(
         &state.plan,
         &|id| {
@@ -446,7 +457,12 @@ pub fn run_lines(
         && spent > 0
     {
         lines.push(Line::from(Span::styled(
-            format!("用量：{spent} tokens{}", cost_label(&state.usage)),
+            t!(
+                "tui.wf.usage_fmt",
+                spent = spent,
+                cost = cost_label(&state.usage).as_str()
+            )
+            .into_owned(),
             dim,
         )));
     }

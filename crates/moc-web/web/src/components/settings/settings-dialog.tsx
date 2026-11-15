@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { type MsgKey, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { ConfigField, ConfigScope, SettingsDocument } from "@/protocol/types";
 import { useConnection } from "@/store/connection";
@@ -40,46 +41,50 @@ import { loadSettings, useSettings } from "./settings-store";
 
 type SectionMeta = {
   id: SettingsSection;
-  label: string;
-  description: string;
+  label: MsgKey;
+  description: MsgKey;
   icon: ReactNode;
   /** 只读 core 配置的分区；`fields` 选出本分区展示的字段。 */
   fields?: (field: ConfigField) => boolean;
 };
 
-const byTab = (tab: string) => (field: ConfigField) => field.tab === tab;
+// `field.tab` 是本地化文本不能比较；按 path 前缀分派（与 TUI 同规则）。
+const byPath =
+  (...roots: string[]) =>
+  (field: ConfigField) =>
+    roots.includes(field.path[0]);
 
-const NAV: { group: string; items: SectionMeta[] }[] = [
+const NAV: { group: MsgKey; items: SectionMeta[] }[] = [
   {
-    group: "应用",
+    group: "sd.group_app",
     items: [
       {
         id: "general",
-        label: "通用",
-        description: "外观、交互与通知；保存在 web.toml，对所有浏览器生效。",
+        label: "sd.general",
+        description: "sd.general_desc",
         icon: <Settings2Icon />,
       },
       {
         id: "shortcuts",
-        label: "快捷键",
-        description: "全局快捷键与输入框按键。",
+        label: "sd.shortcuts",
+        description: "sd.shortcuts_desc",
         icon: <CommandIcon />,
       },
     ],
   },
   {
-    group: "模型",
+    group: "sd.group_models",
     items: [
       {
         id: "providers",
-        label: "供应商与模型",
-        description: "接入模型服务，拉取模型列表，按模型编辑上下文长度、思考与输入模态。",
+        label: "sd.providers",
+        description: "sd.providers_desc",
         icon: <ServerIcon />,
       },
       {
         id: "roles",
-        label: "模型角色",
-        description: "Explorer 固定角色的模型与启用状态，以及 Fusion 双模型配置。",
+        label: "sd.roles",
+        description: "sd.roles_desc",
         icon: <SparklesIcon />,
         fields: (field) =>
           field.path[0] === "models" && (field.path[1] === "roles" || field.path[1] === "fusion"),
@@ -87,75 +92,76 @@ const NAV: { group: string; items: SectionMeta[] }[] = [
     ],
   },
   {
-    group: "Agent",
+    group: "sd.group_agent",
     items: [
       {
         id: "instructions",
-        label: "指令",
-        description: "AGENTS.md 等指令文件与系统提示。",
+        label: "sd.instructions",
+        description: "sd.instructions_desc",
         icon: <FileTextIcon />,
-        fields: byTab("指令"),
+        fields: byPath("context_files", "system_prompt"),
       },
       {
         id: "skills",
-        label: "技能",
-        description: "技能目录的发现与预算。",
+        label: "sd.skills",
+        description: "sd.skills_desc",
         icon: <LayersIcon />,
-        fields: byTab("技能"),
+        fields: byPath("skills"),
       },
       {
         id: "tools",
-        label: "工具",
-        description: "内置工具的超时、输出与资源上限。",
+        label: "sd.tools",
+        description: "sd.tools_desc",
         icon: <WrenchIcon />,
-        fields: byTab("工具"),
+        fields: byPath("tools", "web_search", "web_fetch"),
       },
       {
         id: "sandbox",
-        label: "沙盒",
-        description: "命令执行的默认隔离级别与路径授权。",
+        label: "sd.sandbox",
+        description: "sd.sandbox_desc",
         icon: <ShieldIcon />,
-        fields: byTab("沙盒"),
+        fields: byPath("sandbox"),
       },
       {
         id: "context",
-        label: "上下文",
-        description: "压缩策略与请求限制。",
+        label: "sd.context",
+        description: "sd.context_desc",
         icon: <CpuIcon />,
-        fields: byTab("上下文"),
+        fields: byPath("compaction", "limits"),
       },
     ],
   },
   {
-    group: "扩展与系统",
+    group: "sd.group_ext",
     items: [
       {
         id: "mcp",
-        label: "MCP",
-        description: "MCP 服务器的加载与调用限制。",
+        label: "sd.mcp",
+        description: "sd.mcp_desc",
         icon: <PlugIcon />,
-        fields: byTab("MCP"),
+        fields: byPath("mcp"),
       },
       {
         id: "plugins",
-        label: "插件",
-        description: "当前工作区加载的插件，以及插件宿主的限制。",
+        label: "sd.plugins",
+        description: "sd.plugins_desc",
         icon: <BlocksIcon />,
         fields: (field) => field.path[0] === "plugins",
       },
       {
         id: "session",
-        label: "会话存储",
-        description: "会话日志的位置、压缩与保留。",
+        label: "sd.session",
+        description: "sd.session_desc",
         icon: <HardDriveIcon />,
-        fields: byTab("会话"),
+        fields: byPath("session"),
       },
       {
         id: "advanced",
-        label: "高级",
-        description: "不常调整的选项。",
+        label: "sd.advanced",
+        description: "sd.advanced_desc",
         icon: <SlidersHorizontalIcon />,
-        fields: (field) => field.tab === "高级" && field.path[0] !== "plugins",
+        fields: (field) =>
+          field.advanced && field.path[0] !== "plugins" && field.path[0] !== "providers",
       },
     ],
   },
@@ -165,6 +171,7 @@ const SECTIONS = NAV.flatMap((group) => group.items);
 const LOCAL_SECTIONS: Partial<Record<SettingsSection, true>> = { general: true, shortcuts: true };
 
 function SaveStatus() {
+  const t = useT();
   const saving = useSettings((state) => state.saving);
   const savedAt = useSettings((state) => state.savedAt);
   const [recent, setRecent] = useState(false);
@@ -178,7 +185,7 @@ function SaveStatus() {
     return (
       <span className="flex items-center gap-1.5 text-xs text-text-tertiary">
         <Loader2Icon className="size-3.5 animate-spin" />
-        保存中
+        {t("sd.saving")}
       </span>
     );
   }
@@ -186,12 +193,13 @@ function SaveStatus() {
   return (
     <span className="flex items-center gap-1 text-xs text-success">
       <CheckIcon className="size-3.5" />
-      已保存
+      {t("sd.saved")}
     </span>
   );
 }
 
 function ScopeSwitch({ doc }: { doc?: SettingsDocument }) {
+  const t = useT();
   const scope = useSettings((state) => state.scope);
   return (
     <div className="flex items-center gap-2">
@@ -208,7 +216,7 @@ function ScopeSwitch({ doc }: { doc?: SettingsDocument }) {
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
-            {item === "global" ? "全局" : "当前项目"}
+            {item === "global" ? t("sd.scope_global") : t("sd.scope_project")}
           </button>
         ))}
       </div>
@@ -225,6 +233,7 @@ function ScopeSwitch({ doc }: { doc?: SettingsDocument }) {
 }
 
 function SearchResults({ query, doc }: { query: string; doc: SettingsDocument }) {
+  const t = useT();
   const needle = query.trim().toLowerCase();
   const groups = useMemo(() => {
     const result: { section: SectionMeta; fields: ConfigField[] }[] = [];
@@ -245,14 +254,14 @@ function SearchResults({ query, doc }: { query: string; doc: SettingsDocument })
 
   if (groups.length === 0) {
     return (
-      <p className="py-16 text-center text-ui text-text-tertiary">没有匹配「{query}」的设置项</p>
+      <p className="py-16 text-center text-ui text-text-tertiary">{t("sd.no_match", { query })}</p>
     );
   }
   return (
     <div className="space-y-7">
       {groups.map(({ section, fields }) => (
         <section key={section.id} className="space-y-2">
-          <h3 className="text-ui font-semibold">{section.label}</h3>
+          <h3 className="text-ui font-semibold">{t(section.label)}</h3>
           <FieldList fields={fields} doc={doc} />
         </section>
       ))}
@@ -261,6 +270,7 @@ function SearchResults({ query, doc }: { query: string; doc: SettingsDocument })
 }
 
 export function SettingsDialog() {
+  const t = useT();
   const settings = useUi((state) => state.settings);
   const [section, setSection] = useState<SettingsSection>("general");
   const [query, setQuery] = useState("");
@@ -294,13 +304,13 @@ export function SettingsDialog() {
     if (error)
       return (
         <p className="rounded-lg bg-destructive/5 px-3 py-2 text-ui text-destructive">
-          读取配置失败：{error}
+          {t("sd.load_failed", { error })}
         </p>
       );
     if (!doc) {
       return (
         <div className="flex justify-center py-16 text-text-tertiary">
-          {loading ? <Loader2Icon className="size-5 animate-spin" /> : "尚未连接"}
+          {loading ? <Loader2Icon className="size-5 animate-spin" /> : t("sd.not_connected")}
         </div>
       );
     }
@@ -314,7 +324,7 @@ export function SettingsDialog() {
         {fields.length > 0 ? (
           <FieldList fields={fields} doc={doc} />
         ) : (
-          <p className="py-10 text-center text-ui text-text-tertiary">这个分区没有可编辑的项。</p>
+          <p className="py-10 text-center text-ui text-text-tertiary">{t("sd.empty")}</p>
         )}
         {section === "session" && <MaintenanceCard />}
       </div>
@@ -334,7 +344,7 @@ export function SettingsDialog() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索设置"
+                placeholder={t("sd.search_ph")}
                 className="min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-text-tertiary"
               />
             </label>
@@ -343,7 +353,7 @@ export function SettingsDialog() {
             {NAV.map((group) => (
               <div key={group.group}>
                 <div className="px-2.5 pb-1 text-2xs font-medium text-text-tertiary">
-                  {group.group}
+                  {t(group.group)}
                 </div>
                 {group.items.map((item) => (
                   <button
@@ -361,7 +371,7 @@ export function SettingsDialog() {
                     )}
                   >
                     <span className="text-text-tertiary">{item.icon}</span>
-                    {item.label}
+                    {t(item.label)}
                   </button>
                 ))}
               </div>
@@ -372,9 +382,13 @@ export function SettingsDialog() {
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex shrink-0 items-start justify-between gap-4 border-b border-border-subtle px-7 pt-5 pb-4 pr-14">
             <div className="min-w-0">
-              <DialogTitle>{query ? "搜索结果" : meta.label}</DialogTitle>
+              <DialogTitle>{query ? t("sd.search_title") : t(meta.label)}</DialogTitle>
               <DialogDescription className="mt-1 text-xs leading-5">
-                {query ? `在${scope === "global" ? "全局" : "项目"}配置中搜索` : meta.description}
+                {query
+                  ? t("sd.search_scope", {
+                      scope: t(scope === "global" ? "sd.scope_global" : "sd.scope_project_short"),
+                    })
+                  : t(meta.description)}
               </DialogDescription>
             </div>
             <div className="flex shrink-0 items-center gap-3 pt-0.5">

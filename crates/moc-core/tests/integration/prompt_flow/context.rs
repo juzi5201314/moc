@@ -37,7 +37,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/glm:off'\nexplore='test/glm:off'\nplan='test/glm:off'\n\
+            "language='zh'\n[models.roles]\ndefault='test/glm:off'\nexplore='test/glm:off'\nplan='test/glm:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [providers.test.models.ds]\ncontext_window=100000\nmax_output_tokens=4096\n\

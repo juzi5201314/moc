@@ -10,6 +10,7 @@ import { createContext, type ReactNode, useContext, useMemo } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { useT } from "@/lib/i18n";
 import { type PlanLineRange, rangeFromSelection } from "@/lib/plan-annotation";
 import { cn } from "@/lib/utils";
 import type { PlanAnnotation } from "@/protocol/types";
@@ -48,6 +49,7 @@ function Annotated({
   className,
   ...props
 }: BlockProps & { tag: ElementType }) {
+  const t = useT();
   const { covered, onAnnotate } = useContext(AnnotateContext);
   const range = sourceRange(node);
   const annotated =
@@ -67,8 +69,8 @@ function Annotated({
       {onAnnotate && range && (
         <button
           type="button"
-          aria-label={`在第 ${range.startLine}-${range.endLine} 行批注`}
-          title={`批注第 ${range.startLine}-${range.endLine} 行`}
+          aria-label={t("pm.aria", { start: range.startLine, end: range.endLine })}
+          title={t("pm.title", { start: range.startLine, end: range.endLine })}
           onClick={(event: MouseEvent<HTMLButtonElement>) => {
             event.preventDefault();
             event.stopPropagation();

@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::SessionTable;
 use super::TranscriptEntryId;
 use super::entries;
@@ -220,7 +221,9 @@ impl SessionTable {
                     )
                 })
                 .ok_or_else(|| {
-                    CoreError::Session(format!("INVALID_PARAMS: 工具调用不存在：{tool_call_id}"))
+                    CoreError::Session(
+                        t!("core.err.rewind_tool_call", id = tool_call_id).into_owned(),
+                    )
                 })?;
             let Some(TranscriptEntry { message, .. }) = state.entries[pos_call].message_entry()
             else {

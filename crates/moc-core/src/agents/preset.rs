@@ -4,6 +4,7 @@
 //! 注册 custom；内置 Explorer 与 custom 经角色目录统一筛选，Fusion 使用专用入口。
 //! 模型没有注册角色或覆盖角色定义的接口。
 
+use rust_i18n::t;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -135,7 +136,9 @@ impl PresetRegistry {
             )));
         }
         if self.presets.contains_key(&preset.name) {
-            return Err(invalid(format!("agent preset `{}` 已注册", preset.name)));
+            return Err(invalid(
+                t!("core.err.preset_registered", name = preset.name).into_owned(),
+            ));
         }
         self.presets.insert(preset.name.clone(), preset);
         Ok(())

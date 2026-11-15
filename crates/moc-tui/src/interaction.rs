@@ -1,6 +1,8 @@
 //! 将异步管理操作的回执投影到 UI：配置、投递与模型切换回执；队列以 RPC 收尾而非
 //! PromptFinished 通知为边界。
 
+use rust_i18n::t;
+
 use crate::{
     app::App,
     modal::Modal,
@@ -48,9 +50,10 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                             ));
                         }
                         Err(error) => {
-                            let _ = events.send(AppEvent::Notice(format!(
-                                "模型已保存，但会话创建失败：{error}"
-                            )));
+                            let _ = events.send(AppEvent::Notice(
+                                t!("tui.steer.model_saved_failed_fmt", err = error.to_string())
+                                    .into_owned(),
+                            ));
                         }
                     }
                 });
@@ -82,9 +85,9 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                 match result {
                     Ok(()) => crate::queue::dispatch(app, connection),
                     Err(_) if interrupted => crate::queue::dispatch(app, connection),
-                    Err(error) => app.set_error_notice(format!(
-                        "未能完成：{error}；已排队的消息仍保留，可编辑后重发"
-                    )),
+                    Err(error) => app.set_error_notice(
+                        t!("tui.steer.deliver_failed_fmt", err = error.to_string()).into_owned(),
+                    ),
                 }
             }
         }
@@ -105,14 +108,14 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         if let Some(pending) = crate::queue::take_steer(app, &session, prompt_id) {
                             if current {
                                 let body = if pending.display_text.is_empty() {
-                                    "[图片]".to_owned()
+                                    t!("tui.steer.image_placeholder").into_owned()
                                 } else {
                                     pending.display_text
                                 };
                                 app.push_user(body);
                             }
                             if pending.withdrawal.is_some() {
-                                app.set_notice("内核未返回撤回 ID，消息已加入且无法撤回");
+                                app.set_notice(t!("tui.steer.no_withdraw_id").into_owned());
                             }
                         }
                         crate::queue::dispatch(app, connection);
@@ -127,7 +130,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         let withdrawn = crate::queue::take_steer(app, &session, prompt_id)
                             .is_some_and(|pending| pending.withdrawal.is_some());
                         if withdrawn {
-                            app.set_notice("消息已进入本轮上下文，无法撤回");
+                            app.set_notice(t!("tui.steer.already_in_context").into_owned());
                         }
                         crate::queue::dispatch(app, connection);
                         return;
@@ -161,12 +164,12 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                             } else {
                                 app.queues.entry(session).or_default().push_front(prompt);
                             }
-                            app.set_error_notice("补充消息未送达，草稿已恢复");
+                            app.set_error_notice(t!("tui.steer.undelivered_draft").into_owned());
                         }
                     } else {
                         // UI 发送与提示关闭相遇：消息没有进入当前提示，转为下一条正常请求。
                         app.queues.entry(session).or_default().push_front(prompt);
-                        app.set_notice("补充消息未进入当前提示，已排到待发送");
+                        app.set_notice(t!("tui.steer.queued_instead").into_owned());
                     }
                     crate::queue::dispatch(app, connection);
                 }
@@ -186,11 +189,16 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                             } else {
                                 app.queues.entry(session).or_default().push_front(prompt);
                             }
-                            app.set_error_notice(format!("撤回完成：消息未送达（{error}）"));
+                            app.set_error_notice(
+                                t!("tui.steer.withdrawn_undelivered_fmt", err = error.to_string())
+                                    .into_owned(),
+                            );
                         }
                     } else {
                         app.queues.entry(session).or_default().push_front(prompt);
-                        app.set_error_notice(format!("未能送达，已排到待发送：{error}"));
+                        app.set_error_notice(
+                            t!("tui.steer.requeued_fmt", err = error.to_string()).into_owned(),
+                        );
                     }
                     crate::queue::dispatch(app, connection);
                 }
@@ -223,18 +231,20 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                             app.queues.entry(session).or_default().push_front(prompt);
                         }
                     }
-                    app.set_notice("已撤回待发送的补充消息");
+                    app.set_notice(t!("tui.steer.withdrawn").into_owned());
                     crate::queue::dispatch(app, connection);
                 }
                 Ok(false) => {
                     // steering 已被 drain：等 SteeringApplied 到达后由它移入转写。
-                    app.set_notice("消息已进入本轮上下文，无法撤回");
+                    app.set_notice(t!("tui.steer.already_in_context").into_owned());
                 }
                 Err(error) => {
                     if let Some(pending) = crate::queue::steer_mut(app, &session, prompt_id) {
                         pending.withdrawal = None;
                     }
-                    app.set_error_notice(format!("撤回失败：{error}"));
+                    app.set_error_notice(
+                        t!("tui.steer.withdraw_failed_fmt", err = error.to_string()).into_owned(),
+                    );
                 }
             }
         }
@@ -291,7 +301,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                     }
                     if let Some(error) = compaction_error {
                         app.push_note(
-                            format!("上下文压缩失败：{error}"),
+                            t!("tui.steer.compact_failed_fmt", err = error.as_str()).into_owned(),
                             crate::transcript::NoteTone::Error,
                         );
                     }

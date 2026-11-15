@@ -5,6 +5,7 @@
 
 use std::future::Future;
 use std::path::Path;
+use rust_i18n::t;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -241,18 +242,24 @@ pub(super) fn validate_changes(
         }
         let entry = after
             .and_then(Value::as_object)
-            .ok_or_else(|| CoreError::Config(format!("插件 `{name}` 的配置项必须是表")))?;
+            .ok_or_else(|| {
+                CoreError::Config(t!("core.err.plugin_cfg_must_table", name = name).into_owned())
+            })?;
         if entry.keys().any(|key| key != "config") {
-            return Err(CoreError::Config(format!(
-                "插件 `{name}` 的条目只接受 config 表"
-            )));
+            return Err(CoreError::Config(
+                t!("core.err.plugin_entry_only_config", name = name).into_owned(),
+            ));
         }
         let Some(values) = entry.get("config").filter(|v| !v.is_null()) else {
             continue;
         };
         let values = values
             .as_object()
-            .ok_or_else(|| CoreError::Config(format!("插件 `{name}` 的 config 必须是表")))?;
+            .ok_or_else(|| {
+                CoreError::Config(
+                    t!("core.err.plugin_config_must_table", name = name).into_owned(),
+                )
+            })?;
         for (key, value) in values {
             if value.is_null() {
                 continue;
@@ -260,9 +267,21 @@ pub(super) fn validate_changes(
             let declaration = declarations
                 .iter()
                 .find(|d| &d.key == key)
-                .ok_or_else(|| CoreError::Config(format!("插件 `{name}` 未注册配置项 `{key}`")))?;
+                .ok_or_else(|| {
+                    CoreError::Config(
+                        t!("core.err.plugin_cfg_unregistered", name = name, key = key).into_owned(),
+                    )
+                })?;
             declaration.validate(value).map_err(|error| {
-                CoreError::Config(format!("插件 `{name}` 配置 `{key}`：{error}"))
+                CoreError::Config(
+                    t!(
+                        "core.err.plugin_cfg_error",
+                        name = name,
+                        key = key,
+                        error = error
+                    )
+                    .into_owned(),
+                )
             })?;
         }
     }

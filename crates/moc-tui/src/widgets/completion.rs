@@ -6,6 +6,7 @@
 use std::ops::Range;
 
 use moc_protocol::ResourceCandidate;
+use rust_i18n::t;
 use moc_protocol::commands::{ArgCompletion, CommandCandidate, CommandSpec, DynamicArg};
 use ratatui::layout::Rect;
 
@@ -67,7 +68,7 @@ fn arg_candidates(app: &App, name: &str, args: &str) -> Option<Vec<CompletionCan
             .map(|value| CompletionCandidate {
                 label: value.clone(),
                 value,
-                description: format!("/{} 参数", spec.name),
+                description: t!("tui.complete.args_fmt", name = spec.name).into_owned(),
                 append_space: false,
                 source: CompletionSource::Slash,
             })

@@ -16,6 +16,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+use rust_i18n::t;
 
 fn modal_area(area: Rect, detail: bool, rows: usize) -> Rect {
     let width = if detail {
@@ -53,18 +54,18 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = state
         .current
         .as_ref()
-        .map_or("上下文", |node| node.name.as_str());
+        .map_or(t!("tui.ctx.title").into_owned(), |node| node.name.clone());
     let panel = overlay::panel(theme).title(overlay::title_span(
-        title,
+        &title,
         usize::from(area.width.saturating_sub(4)),
         theme,
     ));
     let inner = panel.inner(area);
     frame.render_widget(panel, area);
     let status = if state.stale {
-        "有更新 · r 刷新"
+        t!("tui.ctx.stale").into_owned()
     } else {
-        ""
+        String::new()
     };
     let source = state
         .current
@@ -76,7 +77,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(
                 super::wrap::truncate(
                     source,
-                    usize::from(inner.width).saturating_sub(str_width(status) + 2),
+                    usize::from(inner.width).saturating_sub(str_width(&status) + 2),
                 )
                 .into_owned(),
                 Style::new().fg(theme.gray),
@@ -152,40 +153,47 @@ fn draw_footer(
     state: &ContextContentState,
     theme: &Theme,
 ) -> Vec<KeyHit> {
-    let mut keys = Vec::new();
+    let mut keys: Vec<(&str, std::borrow::Cow<'_, str>)> = Vec::new();
     if let Some(node) = &state.current {
         if state
             .pages
             .get(&node.id)
             .is_some_and(|page| page.next_cursor.is_some())
         {
-            keys.push(("n", "下页"));
+            keys.push(("n", t!("tui.hint.next_page")));
         }
         if state
             .previous
             .get(&node.id)
             .is_some_and(|pages| !pages.is_empty())
         {
-            keys.push(("p", "上页"));
+            keys.push(("p", t!("tui.hint.prev_page")));
         }
         if state.is_body() {
             keys.extend([
-                ("v", if state.raw { "阅读" } else { "原文" }),
-                ("y", "复制"),
+                (
+                    "v",
+                    if state.raw {
+                        t!("tui.hint.read")
+                    } else {
+                        t!("tui.hint.raw")
+                    },
+                ),
+                ("y", t!("tui.hint.copy")),
             ]);
         }
     }
     if !state.is_body() {
-        keys.push(("enter", "查看"));
+        keys.push(("enter", t!("tui.hint.view")));
     }
     keys.extend([
-        ("r", "刷新"),
+        ("r", t!("tui.hint.refresh")),
         (
             "esc",
             if state.current.is_some() {
-                "返回"
+                t!("tui.hint.back")
             } else {
-                "关闭"
+                t!("tui.hint.close")
             },
         ),
     ]);
@@ -210,16 +218,16 @@ fn build_layout(state: &ContextContentState, width: usize, theme: &Theme) -> Con
                 .map(|line| Line::styled(line, Style::new().fg(theme.accent_error))),
         );
     } else if state.content.is_none() {
-        lines.push(Line::raw("正在读取上下文…"));
+        lines.push(Line::raw(t!("tui.ctx.loading_root").into_owned()));
     } else if let Some(node) = &state.current {
         if let Some(error) = state.node_errors.get(&node.id) {
             lines.extend(
-                wrap_text(&format!("{error} · n 重试"), width)
+                wrap_text(&t!("tui.ctx.node_error_fmt", err = error.as_str()), width)
                     .into_iter()
                     .map(Line::raw),
             );
         } else if state.pending.contains(&node.id) {
-            lines.push(Line::raw("正在读取…"));
+            lines.push(Line::raw(t!("tui.ctx.loading").into_owned()));
         } else if let Some(page) = state.pages.get(&node.id) {
             if let Some(text) = &page.text {
                 if state.raw {
@@ -261,7 +269,7 @@ fn build_layout(state: &ContextContentState, width: usize, theme: &Theme) -> Con
                     lines.push(Line::default());
                 }
                 if page.children.is_empty() {
-                    lines.push(Line::raw("暂无内容"));
+                    lines.push(Line::raw(t!("tui.ctx.empty").into_owned()));
                 }
             }
         }

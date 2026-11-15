@@ -33,6 +33,7 @@ import {
 } from "@/components/ai-elements/attachments";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { t, useT } from "@/lib/i18n";
 import { leadSelector, parseSelector } from "@/lib/models";
 import { fromMeta, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
 import { cn } from "@/lib/utils";
@@ -86,7 +87,7 @@ function readImage(file: File): Promise<ComposerAttachment> {
     }
     resolve({
       id: nanoid(),
-      name: file.name || "粘贴的图片",
+      name: file.name || t("cb.pasted_image"),
       source: { Base64: { media_type: match[1], data: match[2] } },
     });
   };
@@ -139,6 +140,7 @@ type ComposerBarProps = {
 };
 
 export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
+  const t = useT();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [cursor, setCursor] = useState(0);
@@ -216,7 +218,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       ? null
       : slashItems.length > 0
         ? {
-            heading: "命令",
+            heading: t("cb.cmds"),
             items: slashItems.map((command) => ({
               key: `/${command.name}`,
               title: `/${command.name}`,
@@ -228,7 +230,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           }
         : resourceItems.length > 0
           ? {
-              heading: "资源",
+              heading: t("cb.resources"),
               items: resourceItems.map((candidate) => {
                 const Icon = RESOURCE_ICON[candidate.kind] ?? FileTextIcon;
                 return {
@@ -294,7 +296,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
 
   const pick = (index: number) => {
     if (!menu) return;
-    if (menu.heading === "命令") {
+    if (menu.heading === t("cb.cmds")) {
       const command = slashItems[index];
       if (!command) return;
       if (command.usage) setText(`/${command.name} `, command.name.length + 2);
@@ -312,10 +314,10 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
 
   const addFiles = async (files: File[]) => {
     const supported = files.filter((file) => file.type.startsWith("image/"));
-    if (supported.length < files.length) toast.error("只支持图片附件");
+    if (supported.length < files.length) toast.error(t("cb.images_only"));
     if (supported.length === 0) return;
     if (!acceptsImages) {
-      toast.error("当前模型不支持图片输入");
+      toast.error(t("cb.no_image_input"));
       return;
     }
     setReading(true);
@@ -325,7 +327,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         if (result.status === "fulfilled") useComposer.getState().addImage(sessionId, result.value);
       }
       const failed = results.filter((result) => result.status === "rejected").length;
-      if (failed > 0) toast.error(`${failed} 张图片读取失败`);
+      if (failed > 0) toast.error(t("cb.read_failed", { n: failed }));
     } finally {
       setReading(false);
     }
@@ -360,7 +362,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       const command = trimmed.slice(exclude ? 2 : 1).trim();
       if (!command) return;
       if (running) {
-        toast("正在生成，命令请稍后再执行");
+        toast(t("cb.bash_busy"));
         return;
       }
       useComposer.getState().clearDraft(sessionId);
@@ -391,7 +393,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       if (!forceQueue) {
         void rpc
           .call("session/cancel", { session_id: sessionId })
-          .catch((error) => toast.error(`中断失败，消息仍在队列中：${errorText(error)}`));
+          .catch((error) => toast.error(t("cb.interrupt_failed", { error: errorText(error) })));
       }
       return;
     }
@@ -402,7 +404,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         if (!result.accepted) {
           composer.updatePending(sessionId, item.key, { kind: "queue" });
           dispatchNext(sessionId);
-          toast("本轮已不能补充，消息转入队列");
+          toast(t("cb.steer_queued"));
         } else if (result.id != null) {
           composer.updatePending(sessionId, item.key, { steerId: result.id });
         }
@@ -415,7 +417,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           if (!current?.text && !current?.images.length)
             composer.restore(sessionId, { text: trimmed, images });
         }
-        toast.error(`补充发送失败：${errorText(error)}`);
+        toast.error(t("cb.steer_failed", { error: errorText(error) }));
       });
   };
 
@@ -425,7 +427,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         skillsWorking ? "skills/cancel" : "session/cancel",
         skillsWorking ? {} : { session_id: sessionId },
       )
-      .catch((error) => toast.error(`停止失败：${errorText(error)}`));
+      .catch((error) => toast.error(t("cb.stop_failed", { error: errorText(error) })));
 
   const removePending = async (item: PendingItem) => {
     if (item.kind === "queue") {
@@ -439,9 +441,9 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         id: item.steerId,
       });
       if (result.removed) useComposer.getState().removePending(sessionId, item.key);
-      else toast("补充已进入上下文，无法撤回");
+      else toast(t("cb.unsteer_late"));
     } catch (error) {
-      toast.error(`撤回失败：${errorText(error)}`);
+      toast.error(t("cb.unsteer_failed", { error: errorText(error) }));
     }
   };
 
@@ -486,9 +488,11 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         <div className="flex min-h-14 items-center gap-3 rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground ring-1 ring-inset ring-border-subtle">
           <LockIcon className="size-4 shrink-0" />
           <span className="min-w-0 flex-1">
-            只读打开
-            {holder ? `：会话正由 ${holder.frontend}（pid ${holder.pid}）写入` : ""}
-            ，可以查看但不能发送。
+            {t("cb.readonly", {
+              held: holder
+                ? t("cb.readonly_by", { frontend: holder.frontend, pid: holder.pid })
+                : "",
+            })}
           </span>
           {!info?.parent_session_id && (
             <Button
@@ -497,11 +501,11 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               className="h-7 rounded-lg"
               onClick={() =>
                 void reacquire(sessionId).catch((error) =>
-                  toast.error(`获取写权限失败：${errorText(error)}`),
+                  toast.error(t("cb.acquire_failed", { error: errorText(error) })),
                 )
               }
             >
-              获取写权限
+              {t("cb.acquire")}
             </Button>
           )}
         </div>
@@ -510,14 +514,14 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   }
 
   const placeholder = skillsWorking
-    ? "正在维护技能摘要，完成或取消后才能发送"
+    ? t("cb.skills_busy")
     : running
       ? runningEnter === "interrupt"
-        ? "回车中断当前生成并发送，Ctrl+Enter 排队"
-        : "回车补充到当前轮，Ctrl+Enter 排队"
+        ? t("cb.ph_interrupt")
+        : t("cb.ph_steer")
       : inline
-        ? "描述任务，/ 查看命令，! 执行命令"
-        : "继续对话，/ 查看命令，! 执行命令";
+        ? t("cb.ph_draft")
+        : t("cb.ph_cont");
 
   return (
     <ComposerDock inline={inline}>
@@ -568,9 +572,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
             {bashMode && (
               <div className="flex items-center gap-1.5 px-4 pt-2.5 text-xs font-medium text-warn">
                 <TerminalIcon className="size-3.5" />
-                {text.startsWith("!!")
-                  ? "执行命令 · 输出不进入上下文"
-                  : "执行命令 · 输出写入上下文"}
+                {text.startsWith("!!") ? t("cb.bash_exclude") : t("cb.bash_include")}
               </div>
             )}
 
@@ -590,7 +592,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     onRemove={() => useComposer.getState().removeImage(sessionId, image.id)}
                   >
                     <AttachmentPreview />
-                    <AttachmentRemove label={`移除 ${image.name}`} />
+                    <AttachmentRemove label={t("cb.remove_image", { name: image.name })} />
                   </Attachment>
                 ))}
               </Attachments>
@@ -608,7 +610,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               onKeyDown={onKeyDown}
               onPaste={onPaste}
               placeholder={placeholder}
-              aria-label="输入消息"
+              aria-label={t("cb.input")}
               className={cn(
                 "block w-full resize-none bg-transparent px-5 pt-4 pb-1 text-chat leading-6 text-foreground outline-none placeholder:text-text-tertiary",
                 bashMode && "font-mono text-sm",
@@ -637,7 +639,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     onClick={() => fileInputRef.current?.click()}
                     disabled={!acceptsImages || reading}
                     className={cn(CHIP, "w-8 justify-center px-0")}
-                    aria-label="添加图片"
+                    aria-label={t("cb.add_image")}
                   >
                     {acceptsImages ? (
                       <PaperclipIcon className="size-4" />
@@ -647,7 +649,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="top">
-                  {acceptsImages ? "添加图片，也可以直接粘贴或拖入" : "当前模型不支持图片输入"}
+                  {acceptsImages ? t("cb.add_image_hint") : t("cb.no_image_input")}
                 </TooltipContent>
               </Tooltip>
               <SessionOptions sessionId={sessionId} />
@@ -669,12 +671,12 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                         type="button"
                         onClick={stop}
                         className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-transform active:scale-95"
-                        aria-label="停止生成"
+                        aria-label={t("cb.stop_gen")}
                       >
                         <SquareIcon className="size-3 fill-current" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="top">停止 · Esc</TooltipContent>
+                    <TooltipContent side="top">{t("cb.stop_esc")}</TooltipContent>
                   </Tooltip>
                 ) : (
                   <button
@@ -682,7 +684,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     onClick={() => send()}
                     disabled={!canSend}
                     className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-[transform,background-color] active:scale-95 disabled:bg-text-tertiary/60 disabled:text-card"
-                    aria-label={running ? "补充到当前轮" : "发送"}
+                    aria-label={running ? t("cb.steer_send") : t("cb.send")}
                   >
                     <ArrowUpIcon className="size-4" strokeWidth={2.4} />
                   </button>

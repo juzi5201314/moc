@@ -68,11 +68,13 @@ pub struct CompactionProgress {
 }
 
 /// 进行中提示的前缀；完成时按它找回同一条提示原位替换。
-const COMPACTION_RUNNING_PREFIX: &str = "上下文压缩中";
+fn compaction_running_prefix() -> std::borrow::Cow<'static, str> {
+    rust_i18n::t!("tui.compaction.running_prefix")
+}
 
 /// 进行中提示的文案。
 fn compaction_running_note(secs: u64) -> String {
-    format!("{COMPACTION_RUNNING_PREFIX}…({secs}s)")
+    rust_i18n::t!("tui.compaction.running_fmt", secs = secs).into_owned()
 }
 
 /// 一次模型生成失败后的等待重试：警告便签的秒数原地倒数。
@@ -906,7 +908,7 @@ pub trait LegendItem {
     /// 菜单里显示的名字（与图例用词一致）。
     fn label(&self) -> &'static str;
     /// 侧边提示框对高亮项的一句话说明。
-    fn description(&self) -> &'static str;
+    fn description(&self) -> std::borrow::Cow<'static, str>;
 }
 
 /// 点击状态图例后就地弹出的选择菜单（引擎、权限共用）。

@@ -6,9 +6,10 @@ import "katex/dist/katex.min.css";
 import "streamdown/styles.css";
 import "./index.css";
 import { App } from "./App";
+import { t } from "./lib/i18n";
 
 const root = document.getElementById("root");
-if (!root) throw new Error("index.html 缺少 #root");
+if (!root) throw new Error(t("main.no_root"));
 
 createRoot(root).render(
   <StrictMode>

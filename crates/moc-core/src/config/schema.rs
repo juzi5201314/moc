@@ -6,11 +6,14 @@ use serde::Deserialize;
 
 use super::model::ModelCatalog;
 use crate::error::CoreError;
+use rust_i18n::t;
 use moc_protocol::SessionPermission;
 
 #[derive(Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct ConfigDocument {
+    /// 用户界面语言：auto 跟随系统环境，或显式 zh/en。
+    pub language: String,
     pub models: ModelCatalog,
     pub providers: BTreeMap<String, super::model::ProviderDocument>,
     pub tools: ToolsConfig,
@@ -364,14 +367,14 @@ impl Default for WebFetchConfig {
 pub(super) fn validate_web_fetch(config: &WebFetchConfig) -> Result<(), CoreError> {
     if config.timeout_secs == 0 {
         return Err(CoreError::Config(
-            "web_fetch.timeout_secs: 必须大于 0".into(),
+            t!("core.err.webfetch_timeout").into_owned(),
         ));
     }
     if config.max_bytes == 0 {
-        return Err(CoreError::Config("web_fetch.max_bytes: 必须大于 0".into()));
+        return Err(CoreError::Config(t!("core.err.webfetch_max_bytes").into_owned()));
     }
     if config.max_chars == 0 {
-        return Err(CoreError::Config("web_fetch.max_chars: 必须大于 0".into()));
+        return Err(CoreError::Config(t!("core.err.webfetch_max_chars").into_owned()));
     }
     Ok(())
 }
@@ -469,7 +472,7 @@ pub(super) fn validate_limits(config: &LimitsConfig) -> Result<(), CoreError> {
 
 pub(super) fn validate_agents(config: &AgentsConfig) -> Result<(), CoreError> {
     if config.max_depth == 0 {
-        return Err(CoreError::Config("agents：max_depth 必须大于 0".into()));
+        return Err(CoreError::Config(t!("core.err.agents_max_depth").into_owned()));
     }
     Ok(())
 }

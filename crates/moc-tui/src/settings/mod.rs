@@ -16,6 +16,7 @@ use crate::{
 };
 use controls::Control;
 use crossterm::event::{KeyCode, KeyModifiers};
+use rust_i18n::t;
 use editors::{Editor, Outcome, TextEditor};
 use moc_protocol::{
     CatalogModel, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope, FieldKind,
@@ -26,20 +27,42 @@ use std::collections::BTreeSet;
 
 pub use render::draw;
 
-/// 选项卡名称；字段归属由 core 的字段目录给出。
+/// 选项卡 ID（locale 键后缀）；字段归属按路径推断，与 core 字段目录一致。
 pub const TABS: &[&str] = &[
-    "模型角色",
-    "供应商与模型",
-    "指令",
-    "Skills",
-    "工具",
-    "沙盒",
-    "上下文",
-    "会话",
-    "MCP",
-    "界面",
-    "插件",
+    "models",
+    "providers",
+    "instructions",
+    "skills",
+    "tools",
+    "sandbox",
+    "context",
+    "session",
+    "mcp",
+    "ui",
+    "plugins",
 ];
+
+/// 字段路径所属的选项卡 ID；分派规则与 core `catalog` 的 tab 分配一致。
+fn tab_of(path: &[String]) -> &'static str {
+    match path.first().map(String::as_str) {
+        Some("providers") => "providers",
+        Some("tools" | "web_search" | "web_fetch") => "tools",
+        Some("sandbox") => "sandbox",
+        Some("compaction" | "limits") => "context",
+        Some("context_files" | "system_prompt") => "instructions",
+        Some("defaults" | "agents" | "models") => "models",
+        Some("skills") => "skills",
+        Some("mcp") => "mcp",
+        Some("plugins") => "plugins",
+        Some("tui") => "ui",
+        _ => "session",
+    }
+}
+
+/// 选项卡的本地化显示名。
+pub fn tab_label(tab: &str) -> std::borrow::Cow<'static, str> {
+    rust_i18n::t!(format!("tui.tabs.{tab}")).into_owned().into()
+}
 
 pub struct SettingsPanel {
     pub id: u64,
@@ -313,13 +336,13 @@ fn model_role(path: &[String]) -> Option<&str> {
 }
 
 /// Explorer 可继承父模型或彻底禁用；Fusion 选择不受影响。
-fn role_specials(role: &str) -> &'static [(&'static str, &'static str)] {
+fn role_specials(role: &str) -> Vec<(&'static str, String)> {
     match role {
-        "explore" => &[
-            ("inherit", "沿用父会话当前模型"),
-            ("none", "禁用 Explorer 子代理"),
+        "explore" => vec![
+            ("inherit", t!("tui.settings.role_inherit").into_owned()),
+            ("none", t!("tui.settings.role_none").into_owned()),
         ],
-        _ => &[],
+        _ => vec![],
     }
 }
 
@@ -335,26 +358,27 @@ fn matches_filter(field: &ConfigField, filter: &str) -> bool {
 }
 
 /// 工具分组标题：配置键 → 用户能看懂的用途。
-fn tool_title(key: &str) -> Option<&'static str> {
-    Some(match key {
-        "ptc" => "PTC 代码沙盒",
-        "output" => "工具输出",
-        "bash" => "命令执行",
-        "read" => "读取文件",
-        "edit" => "编辑文件",
-        "write" => "写入文件",
-        "grep" => "搜索内容",
-        "find" => "查找文件",
-        "todo" => "任务清单",
-        "job" => "后台任务",
+fn tool_title(key: &str) -> Option<String> {
+    let key = match key {
+        "ptc" => "ptc",
+        "output" => "output",
+        "bash" => "bash",
+        "read" => "read",
+        "edit" => "edit",
+        "write" => "write",
+        "grep" => "grep",
+        "find" => "find",
+        "todo" => "todo",
+        "job" => "job",
         _ => return None,
-    })
+    };
+    Some(t!(format!("tui.tools.{key}")).into_owned())
 }
 
 /// 工具内的二级分组；目前只有 bash 的资源限制需要和超时、日志等字段分开。
-fn tool_subgroup_title(key: &str) -> Option<&'static str> {
+fn tool_subgroup_title(key: &str) -> Option<String> {
     match key {
-        "limits" => Some("资源限制"),
+        "limits" => Some(t!("tui.tools.limits").into_owned()),
         _ => None,
     }
 }
@@ -366,14 +390,14 @@ fn server_address(server: &Value) -> String {
         .and_then(Value::as_str)
         .filter(|command| !command.is_empty())
     {
-        return format!("本地程序：{command}");
+        return t!("tui.mcp.local", command = command).into_owned();
     }
     match server
         .get("url")
         .and_then(Value::as_str)
         .filter(|url| !url.is_empty())
     {
-        Some(url) => format!("远程服务：{url}"),
+        Some(url) => t!("tui.mcp.remote", url = url).into_owned(),
         None => String::new(),
     }
 }

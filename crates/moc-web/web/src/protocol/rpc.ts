@@ -4,6 +4,7 @@
 // - 通知里不认识的 `type` 整条丢弃（协议兼容规则），不报错、不断连接。
 // - 断线后指数退避重连；每次连上都重新 initialize。
 
+import { t } from "@/lib/i18n";
 import { ErrorCode, RpcError } from "./errors";
 import {
   type AskParams,
@@ -102,7 +103,7 @@ export class RpcClient {
   call<T>(method: string, params: unknown = {}): Promise<T> {
     const socket = this.socket;
     if (!socket || socket.readyState !== SOCKET_OPEN) {
-      return Promise.reject(new RpcError(ErrorCode.ConnectionClosed, "连接已关闭"));
+      return Promise.reject(new RpcError(ErrorCode.ConnectionClosed, t("rpc.closed")));
     }
     const id = this.nextId++;
     const { promise, resolve, reject } = Promise.withResolvers<T>();
@@ -201,7 +202,7 @@ export class RpcClient {
 
   private failPending(): void {
     for (const pending of this.pending.values()) {
-      pending.reject(new RpcError(ErrorCode.ConnectionClosed, "连接已关闭"));
+      pending.reject(new RpcError(ErrorCode.ConnectionClosed, t("rpc.closed")));
     }
     this.pending.clear();
   }
@@ -234,7 +235,11 @@ export class RpcClient {
       this.pending.delete(message.id as number);
       if (message.error) {
         pending.reject(
-          new RpcError(message.error.code, message.error.message ?? "请求失败", message.error.data),
+          new RpcError(
+            message.error.code,
+            message.error.message ?? t("rpc.failed"),
+            message.error.data,
+          ),
         );
       } else {
         pending.resolve(message.result);
@@ -266,7 +271,10 @@ export class RpcClient {
       this.send({
         jsonrpc: "2.0",
         id,
-        error: { code: ErrorCode.MethodNotFound, message: `未实现的方法：${method}` },
+        error: {
+          code: ErrorCode.MethodNotFound,
+          message: t("rpc.no_method", { method }),
+        },
       });
       return;
     }

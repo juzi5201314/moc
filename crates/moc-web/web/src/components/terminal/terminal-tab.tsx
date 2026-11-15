@@ -4,6 +4,7 @@ import { PlusIcon, XIcon } from "lucide-react";
 import { lazy, Suspense, useEffect } from "react";
 import { IconButton } from "@/components/common/icon-button";
 import { PanelEmpty } from "@/components/panels/inspector-tabs";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { useSessions } from "@/store/sessions";
 import {
@@ -18,6 +19,7 @@ import { useTranscript } from "@/store/transcript";
 const XtermView = lazy(() => import("./xterm-view"));
 
 export function TerminalTab({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const isDraft = sessionId === "draft-session";
   const draft = useSessions((state) => state.draftSession);
   const cwd = useTranscript((state) =>
@@ -30,7 +32,7 @@ export function TerminalTab({ sessionId }: { sessionId: string }) {
     if (cwd) void refreshTerminals(cwd, true);
   }, [cwd]);
 
-  if (!cwd) return <PanelEmpty title="工作区路径还没就绪" />;
+  if (!cwd) return <PanelEmpty title={t("term.no_cwd")} />;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -38,13 +40,13 @@ export function TerminalTab({ sessionId }: { sessionId: string }) {
         {items.map((item) => (
           <TerminalChip key={item.id} cwd={cwd} item={item} active={state?.active === item.id} />
         ))}
-        <IconButton label="新建终端" size="xs" onClick={() => void spawnTerminal(cwd)}>
+        <IconButton label={t("term.new")} size="xs" onClick={() => void spawnTerminal(cwd)}>
           <PlusIcon />
         </IconButton>
       </div>
       <div className="min-h-0 flex-1">
         {items.length === 0 ? (
-          <PanelEmpty title="还没有终端" hint="点上方 + 新建一个。" />
+          <PanelEmpty title={t("term.empty")} hint={t("term.empty_hint")} />
         ) : (
           items.map((item) => (
             <div
@@ -53,7 +55,9 @@ export function TerminalTab({ sessionId }: { sessionId: string }) {
             >
               {state?.active === item.id && (
                 <Suspense
-                  fallback={<p className="px-4 py-6 text-xs text-text-tertiary">加载终端…</p>}
+                  fallback={
+                    <p className="px-4 py-6 text-xs text-text-tertiary">{t("term.loading")}</p>
+                  }
                 >
                   <XtermView terminal={item} />
                 </Suspense>
@@ -75,6 +79,7 @@ function TerminalChip({
   item: import("@/lib/web-api").PtyInfo;
   active: boolean;
 }) {
+  const t = useT();
   const basename = item.shell.split("/").filter(Boolean).at(-1) ?? item.shell;
   const relative =
     item.cwd !== cwd && item.cwd.startsWith(cwd) ? ` · ${item.cwd.slice(cwd.length + 1)}` : "";
@@ -94,12 +99,13 @@ function TerminalChip({
       </span>
       {item.exited && (
         <span className="text-2xs text-text-tertiary">
-          已退出{item.exit_code !== null ? ` (${item.exit_code})` : ""}
+          {t("term.exited")}
+          {item.exit_code !== null ? ` (${item.exit_code})` : ""}
         </span>
       )}
       <button
         type="button"
-        aria-label="关闭终端"
+        aria-label={t("term.close")}
         onClick={(event) => {
           event.stopPropagation();
           void closeTerminal(cwd, item.id);

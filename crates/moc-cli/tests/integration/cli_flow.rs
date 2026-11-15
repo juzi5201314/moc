@@ -33,6 +33,8 @@ impl Project {
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_moc"));
         command
             .env("MOC_HOME", &self.home)
+            // 断言按中文文案匹配，locale 不受 CI 环境影响。
+            .env("LC_ALL", "zh_CN.UTF-8")
             .args(["--cwd"])
             .arg(&self.cwd)
             .arg("--session-dir")

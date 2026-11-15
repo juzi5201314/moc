@@ -19,34 +19,104 @@ const MAX_DECODE_ALLOC: u64 = 64 << 20;
 
 /// 解码失败的原因。每一条都会原样显示在转写区的占位行上，
 /// 因此文案本身就是错误信息的全部。
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum DecodeError {
-    #[error("base64 解码失败：{0}")]
-    Base64(#[from] base64::DecodeError),
-    #[error("无法识别图片格式：{0}")]
-    Format(#[from] std::io::Error),
-    #[error("图片解码失败：{0}")]
-    Image(#[from] image::ImageError),
-    #[error("读不到 {}：{source}", path.display())]
+    Base64(base64::DecodeError),
+    Format(std::io::Error),
+    Image(image::ImageError),
     Read {
         path: PathBuf,
-        #[source]
         source: std::io::Error,
     },
-    #[error("{} 不是普通文件", path.display())]
     NotFile { path: PathBuf },
-    #[error("{} 超过 {} MB", path.display(), MAX_FILE_BYTES >> 20)]
     TooLarge { path: PathBuf },
-    #[error("内联图片 {len} 字节，超过 {} MB 上限", MAX_FILE_BYTES >> 20)]
     TooLargeInline { len: u64 },
-    #[error("SVG 解析失败：{0}")]
-    Svg(#[from] resvg::usvg::Error),
-    #[error("SVG 尺寸无效")]
+    Svg(resvg::usvg::Error),
     SvgSize,
-    #[error("SVG 固有尺寸 {w}×{h} 超过 {MAX_IMAGE_SIDE}px")]
     SvgTooLarge { w: u64, h: u64 },
-    #[error("SVG 内容为空")]
     EmptySvg,
+}
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use rust_i18n::t;
+        match self {
+            Self::Base64(e) => {
+                write!(f, "{}", t!("tui.image_err.base64", err = e.to_string()))
+            }
+            Self::Format(e) => {
+                write!(f, "{}", t!("tui.image_err.format", err = e.to_string()))
+            }
+            Self::Image(e) => {
+                write!(f, "{}", t!("tui.image_err.image", err = e.to_string()))
+            }
+            Self::Read { path, source } => write!(
+                f,
+                "{}",
+                t!("tui.image_err.read", path = path.display().to_string(), err = source.to_string())
+            ),
+            Self::NotFile { path } => {
+                write!(f, "{}", t!("tui.image_err.not_file", path = path.display().to_string()))
+            }
+            Self::TooLarge { path } => write!(
+                f,
+                "{}",
+                t!("tui.image_err.too_large", path = path.display().to_string(), mb = MAX_FILE_BYTES >> 20)
+            ),
+            Self::TooLargeInline { len } => write!(
+                f,
+                "{}",
+                t!("tui.image_err.too_large_inline", len = len, mb = MAX_FILE_BYTES >> 20)
+            ),
+            Self::Svg(e) => {
+                write!(f, "{}", t!("tui.image_err.svg", err = e.to_string()))
+            }
+            Self::SvgSize => write!(f, "{}", t!("tui.image_err.svg_size")),
+            Self::SvgTooLarge { w, h } => write!(
+                f,
+                "{}",
+                t!("tui.image_err.svg_too_large", w = w, h = h, max = MAX_IMAGE_SIDE)
+            ),
+            Self::EmptySvg => write!(f, "{}", t!("tui.image_err.empty_svg")),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Base64(e) => Some(e),
+            Self::Format(e) => Some(e),
+            Self::Image(e) => Some(e),
+            Self::Read { source, .. } => Some(source),
+            Self::Svg(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<base64::DecodeError> for DecodeError {
+    fn from(e: base64::DecodeError) -> Self {
+        Self::Base64(e)
+    }
+}
+
+impl From<std::io::Error> for DecodeError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Format(e)
+    }
+}
+
+impl From<image::ImageError> for DecodeError {
+    fn from(e: image::ImageError) -> Self {
+        Self::Image(e)
+    }
+}
+
+impl From<resvg::usvg::Error> for DecodeError {
+    fn from(e: resvg::usvg::Error) -> Self {
+        Self::Svg(e)
+    }
 }
 
 /// 解码一张图。

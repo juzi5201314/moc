@@ -30,6 +30,7 @@ use moc_protocol::SessionSetPermission;
 use moc_protocol::SessionSetPermissionParams;
 use moc_protocol::commands::CommandRef;
 use moc_protocol::commands::CommandSpec;
+use rust_i18n::t;
 
 /// `execute_command` 的解析结果：先把借用 `app.commands` 的部分取出成自有值，
 /// 分派阶段才能对 `app` 做可变操作。
@@ -41,7 +42,7 @@ pub(super) enum ResolvedCommand {
 
 pub(super) fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String) {
     if app.skills_compacting && !matches!(line.trim(), "/quit" | "/exit") {
-        app.set_notice("正在维护技能摘要；请等待完成或按 Esc 取消");
+        app.set_notice(t!("tui.cmd.skills_busy"));
         return;
     }
     let (name, rest) = line
@@ -58,23 +59,23 @@ pub(super) fn execute_command(app: &mut App, connection: &EmbeddedConnection, li
             if let Some(flag) = spec.flag
                 && !app.features.enabled(flag)
             {
-                app.set_notice(format!(
-                    "/{} 依赖的特性 {} 已禁用（见 /features）",
-                    spec.name,
-                    flag.spec().key
+                app.set_notice(t!(
+                    "tui.cmd.flag_disabled_fmt",
+                    cmd = spec.name,
+                    flag = flag.spec().key
                 ));
                 return;
             }
             if spec.needs_session && app.session.is_none() {
-                app.set_notice("当前没有活动会话");
+                app.set_notice(t!("tui.common.no_session"));
                 return;
             }
             if !spec.available_in_side && app.focused.is_some() {
-                app.set_notice(format!("聚焦子代理时不能执行 /{}", spec.name));
+                app.set_notice(t!("tui.cmd.focused_fmt", cmd = spec.name));
                 return;
             }
             if !spec.available_during_task && app.busy() {
-                app.set_notice(format!("正在运行中，暂时不能执行 /{}", spec.name));
+                app.set_notice(t!("tui.cmd.busy_fmt", cmd = spec.name));
                 return;
             }
             dispatch_command(app, connection, spec.id, rest);
@@ -82,7 +83,7 @@ pub(super) fn execute_command(app: &mut App, connection: &EmbeddedConnection, li
         ResolvedCommand::Plugin(command) => {
             // 插件命令兜底：名字由 `plugin/list` 提供，执行结果写进转写。
             let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
-                app.set_notice("当前没有活动会话");
+                app.set_notice(t!("tui.common.no_session"));
                 return;
             };
             let client = connection.client.clone();
@@ -108,7 +109,8 @@ pub(super) fn execute_command(app: &mut App, connection: &EmbeddedConnection, li
                     Err(error) => {
                         let _ = events.send(AppEvent::PluginOutput {
                             name,
-                            text: format!("插件命令执行失败：{error}"),
+                            text: t!("tui.cmd.plugin_failed_fmt", err = error.to_string())
+                                .into_owned(),
                             error: true,
                         });
                     }
@@ -116,7 +118,7 @@ pub(super) fn execute_command(app: &mut App, connection: &EmbeddedConnection, li
             });
         }
         ResolvedCommand::Unknown => {
-            app.set_notice(format!("未知命令：{name}"));
+            app.set_notice(t!("tui.cmd.unknown_fmt", name = name.to_owned()));
         }
     }
 }
@@ -134,7 +136,7 @@ pub(super) fn dispatch_command(
         CommandId::ConfirmPlan => confirm_plan(app, connection),
         CommandId::Close => {
             let Some(session_id) = session_id else {
-                app.set_notice("当前没有活动会话");
+                app.set_notice(t!("tui.common.no_session"));
                 return;
             };
             let client = connection.client.clone();
@@ -150,7 +152,9 @@ pub(super) fn dispatch_command(
                         let _ = events.send(AppEvent::SessionClosed { session_id });
                     }
                     Err(error) => {
-                        let _ = events.send(AppEvent::Notice(format!("卸载会话失败：{error}")));
+                        let _ = events.send(AppEvent::Notice(
+                            t!("tui.cmd.unload_failed_fmt", err = error.to_string()).into_owned(),
+                        ));
                     }
                 }
             });
@@ -189,7 +193,9 @@ pub(super) fn dispatch_command(
                         ));
                     }
                     Err(error) => {
-                        let _ = events.send(AppEvent::Notice(format!("新建会话失败：{error}")));
+                        let _ = events.send(AppEvent::Notice(
+                            t!("tui.cmd.new_failed_fmt", err = error.to_string()).into_owned(),
+                        ));
                     }
                 }
             });
@@ -197,7 +203,7 @@ pub(super) fn dispatch_command(
         CommandId::Plugins => match rest.trim() {
             "" => refresh_plugins(app, connection, true, false),
             "reload" => refresh_plugins(app, connection, true, true),
-            _ => app.set_notice("用法：/plugins [reload]"),
+            _ => app.set_notice(t!("tui.cmd.plugins_usage")),
         },
         CommandId::Usage => refresh_usage(app, connection, true),
         CommandId::DebugInfo | CommandId::Session => {
@@ -207,7 +213,7 @@ pub(super) fn dispatch_command(
                 "session"
             };
             if !rest.trim().is_empty() {
-                app.set_notice(format!("用法：/{name}"));
+                app.set_notice(t!("tui.cmd.usage_fmt", name = name));
                 return;
             }
             let Some(session_id) = session_id else {
@@ -284,10 +290,10 @@ pub(super) fn dispatch_command(
                     .await;
                 let _ = events.send(AppEvent::SessionControlSettled {
                     session_id,
-                    notice: Some("上下文压缩已完成".into()),
-                    result: outcome
-                        .map(|_| None)
-                        .map_err(|error| format!("上下文压缩失败：{error}")),
+                    notice: Some(t!("tui.cmd.compact_done").into_owned()),
+                    result: outcome.map(|_| None).map_err(|error| {
+                        t!("tui.cmd.compact_failed_fmt", err = error.to_string()).into_owned()
+                    }),
                 });
             });
         }
@@ -315,7 +321,9 @@ pub(super) fn dispatch_command(
                     .await
                 {
                     Ok(_) => {
-                        let _ = events.send(AppEvent::Notice("workflow 已激活".into()));
+                        let _ = events.send(AppEvent::Notice(
+                            t!("tui.cmd.workflow_activated").into_owned(),
+                        ));
                         // 附带的指令作为下一条提示发送，让模型直接开写。
                         if !prompt_text.trim().is_empty() {
                             crate::queue::send_prompt(
@@ -328,8 +336,9 @@ pub(super) fn dispatch_command(
                         }
                     }
                     Err(error) => {
-                        let _ =
-                            events.send(AppEvent::Notice(format!("workflow 激活失败：{error}")));
+                        let _ = events.send(AppEvent::Notice(
+                            t!("tui.cmd.workflow_failed_fmt", err = error.to_string()).into_owned(),
+                        ));
                     }
                 }
             });
@@ -351,7 +360,9 @@ pub(super) fn dispatch_command(
                         let _ = events.send(AppEvent::OpenJobsModal(result.jobs));
                     }
                     Err(error) => {
-                        let _ = events.send(AppEvent::Notice(format!("获取任务列表失败：{error}")));
+                        let _ = events.send(AppEvent::Notice(
+                            t!("tui.cmd.jobs_failed_fmt", err = error.to_string()).into_owned(),
+                        ));
                     }
                 }
             });
@@ -372,11 +383,11 @@ pub(super) fn show_features(app: &mut App) {
 /// 循环切换引擎：按特性 flag 过滤后的清单循环。会话跑过第一条提示后引擎锁定。
 pub(super) fn cycle_engine(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session) = app.session.as_ref() else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session"));
         return;
     };
     if session.engine_locked {
-        app.set_notice("会话引擎已锁定；换引擎请新建会话");
+        app.set_notice(t!("tui.cmd.engine_locked"));
         return;
     }
     let engines: Vec<SessionEngine> = app.engines().collect();
@@ -390,7 +401,7 @@ pub(super) fn cycle_engine(app: &mut App, connection: &EmbeddedConnection) {
 /// `/plan [提示词]`：无参数切换模式；带参数时进入计划模式后发送提示。
 pub(super) fn plan_command(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
     let Some(session) = app.session.as_ref() else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session"));
         return;
     };
     let client = connection.client.clone();
@@ -423,11 +434,16 @@ pub(super) fn plan_command(app: &mut App, connection: &EmbeddedConnection, rest:
             (Err(error), Some(_)) => {
                 let _ = events.send(AppEvent::PromptReturned {
                     session: session_id,
-                    result: Err(anyhow::anyhow!("切换计划状态失败：{error}")),
+                    result: Err(anyhow::anyhow!(
+                        "{}",
+                        t!("tui.cmd.plan_failed_fmt", err = error.to_string())
+                    )),
                 });
             }
             (Err(error), None) => {
-                let _ = events.send(AppEvent::Notice(format!("切换计划状态失败：{error}")));
+                let _ = events.send(AppEvent::Notice(
+                    t!("tui.cmd.plan_failed_fmt", err = error.to_string()).into_owned(),
+                ));
             }
             (Ok(_), None) => {}
         }
@@ -444,7 +460,7 @@ pub(super) fn parse_goal_action(rest: &str) -> Result<moc_protocol::methods::Goa
         "clear" => Ok(GoalAction::Unset),
         "pause" => Ok(GoalAction::Pause),
         "resume" => Ok(GoalAction::Resume),
-        "edit" => Err("用法：/goal edit <objective>".to_owned()),
+        "edit" => Err(t!("tui.cmd.goal_edit_usage").into_owned()),
         _ => match rest.strip_prefix("edit") {
             Some(after) if after.starts_with(char::is_whitespace) => Ok(GoalAction::Edit {
                 objective: after.trim().to_owned(),
@@ -459,7 +475,7 @@ pub(super) fn parse_goal_action(rest: &str) -> Result<moc_protocol::methods::Goa
 /// `/goal` 回执写进转写的渲染文本。
 pub(super) fn render_goal_note(goal: Option<&moc_protocol::methods::GoalView>) -> String {
     let Some(goal) = goal else {
-        return "当前没有目标；/goal <objective> 创建".to_owned();
+        return t!("tui.cmd.goal_none").into_owned();
     };
     let phase = match goal.phase {
         moc_protocol::methods::GoalPhase::Active => crate::render::labels::status::ACTIVE,
@@ -467,28 +483,39 @@ pub(super) fn render_goal_note(goal: Option<&moc_protocol::methods::GoalView>) -
         moc_protocol::methods::GoalPhase::Blocked => crate::render::labels::status::BLOCKED,
         moc_protocol::methods::GoalPhase::Complete => crate::render::labels::status::DONE,
     };
-    let mut text = format!(
-        "目标：{}\n状态：{phase}{}轮次：{}\n续跑：{}",
-        goal.objective,
-        goal.blocked_reason
-            .as_ref()
-            .map(|reason| format!("\n阻塞：{}: {}\n", reason.code, reason.message))
-            .unwrap_or_default(),
-        goal.rounds_started,
-        if goal.armed {
-            "自动"
-        } else {
-            "已停（/goal resume 恢复）"
-        }
-    );
-    text.push_str("\n命令：/goal edit <objective>｜/goal pause｜/goal resume｜/goal clear");
+    let blocked = goal
+        .blocked_reason
+        .as_ref()
+        .map(|reason| {
+            t!(
+                "tui.cmd.goal_blocked_fmt",
+                code = reason.code.as_str(),
+                message = reason.message.as_str()
+            )
+        })
+        .unwrap_or_default();
+    let armed = if goal.armed {
+        t!("tui.cmd.goal_armed_auto")
+    } else {
+        t!("tui.cmd.goal_armed_off")
+    };
+    let mut text = t!(
+        "tui.cmd.goal_note_fmt",
+        objective = goal.objective.as_str(),
+        phase = phase,
+        blocked = blocked,
+        rounds = goal.rounds_started,
+        armed = armed
+    )
+    .into_owned();
+    text.push_str(&t!("tui.cmd.goal_cmds"));
     text
 }
 
 /// `/goal`：查看或变更会话目标；`GoalChanged` 更新随后会把 `app.goal` 同步到权威值。
 pub(super) fn goal_command(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
     let Some(session) = app.session.as_ref() else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session"));
         return;
     };
     let action = match parse_goal_action(rest) {
@@ -516,7 +543,9 @@ pub(super) fn goal_command(app: &mut App, connection: &EmbeddedConnection, rest:
                 });
             }
             Err(error) => {
-                let _ = events.send(AppEvent::Notice(format!("目标操作失败：{error}")));
+                let _ = events.send(AppEvent::Notice(
+                    t!("tui.cmd.goal_failed_fmt", err = error.to_string()).into_owned(),
+                ));
             }
         }
     });
@@ -528,11 +557,11 @@ pub(super) fn goal_command(app: &mut App, connection: &EmbeddedConnection, rest:
 pub(super) fn ask_once(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
     let text = rest.trim();
     if text.is_empty() {
-        app.set_notice("用法：/ask <问题>");
+        app.set_notice(t!("tui.cmd.ask_usage"));
         return;
     }
     if app.session.is_none() {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session"));
         return;
     }
     crate::queue::submit_with_mode(
@@ -546,11 +575,11 @@ pub(super) fn ask_once(app: &mut App, connection: &EmbeddedConnection, rest: &st
 /// `/retry`：不追加任何用户消息，按现有上下文重新请求一次；只有空闲时可用。
 pub(super) fn retry(app: &mut App, connection: &EmbeddedConnection) {
     if app.read_only {
-        app.set_notice("会话只读：另一个 moc 进程正在写入，关闭它或退出后才能操作");
+        app.set_notice(t!("tui.queue.read_only"));
         return;
     }
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session"));
         return;
     };
     // 重试复用同一条提示通道：正在生成或有压缩等会话操作时互斥，避免撞成 SessionBusy。
@@ -558,7 +587,7 @@ pub(super) fn retry(app: &mut App, connection: &EmbeddedConnection) {
         || app.inflight_prompts.contains(&session_id)
         || app.inflight_session_ops.contains(&session_id)
     {
-        app.set_notice("正在运行中，暂时不能重试");
+        app.set_notice(t!("tui.cmd.retry_busy"));
         return;
     }
     app.inflight_prompts.insert(session_id.clone());
@@ -569,11 +598,11 @@ pub(super) fn retry(app: &mut App, connection: &EmbeddedConnection) {
 /// 请求 core 切换会话引擎（引擎循环与就地菜单共用）。
 pub(super) fn set_engine(app: &mut App, connection: &EmbeddedConnection, engine: SessionEngine) {
     let Some(session) = app.session.as_ref() else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session"));
         return;
     };
     if session.engine_locked {
-        app.set_notice("会话引擎已锁定；换引擎请新建会话");
+        app.set_notice(t!("tui.cmd.engine_locked"));
         return;
     }
     let client = connection.client.clone();
@@ -586,7 +615,9 @@ pub(super) fn set_engine(app: &mut App, connection: &EmbeddedConnection, engine:
         {
             Ok(_) => {}
             Err(error) => {
-                let _ = events.send(AppEvent::Notice(format!("切换引擎失败：{error}")));
+                let _ = events.send(AppEvent::Notice(
+                    t!("tui.cmd.engine_failed_fmt", err = error.to_string()).into_owned(),
+                ));
             }
         }
     });
@@ -596,7 +627,7 @@ pub(super) fn set_engine(app: &mut App, connection: &EmbeddedConnection, engine:
 pub(super) fn set_autonomy(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
     use moc_protocol::SessionAutonomy;
     let Some(session) = app.session.as_ref() else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session"));
         return;
     };
     let autonomy = match rest.trim() {
@@ -609,7 +640,7 @@ pub(super) fn set_autonomy(app: &mut App, connection: &EmbeddedConnection, rest:
         "dont_ask" => SessionAutonomy::DontAsk,
         "unattended" => SessionAutonomy::Unattended,
         _ => {
-            app.set_notice("用法：/autonomy [default|dont_ask|unattended]");
+            app.set_notice(t!("tui.cmd.autonomy_usage"));
             return;
         }
     };
@@ -624,7 +655,9 @@ pub(super) fn set_autonomy(app: &mut App, connection: &EmbeddedConnection, rest:
             })
             .await
         {
-            let _ = events.send(AppEvent::Notice(format!("切换自主程度失败：{error}")));
+            let _ = events.send(AppEvent::Notice(
+                t!("tui.cmd.autonomy_failed_fmt", err = error.to_string()).into_owned(),
+            ));
         }
     });
 }
@@ -644,14 +677,16 @@ pub(super) fn set_permission(app: &mut App, connection: &EmbeddedConnection, res
                 .as_ref()
                 .map(|session| session.permission.as_str())
                 .unwrap_or("none");
-            app.set_notice(format!(
-                "当前权限：{current}；可用模式：{available}；/permission clear 清空本会话沙盒授权"
+            app.set_notice(t!(
+                "tui.cmd.perm_current_fmt",
+                current = current,
+                available = available
             ));
             return;
         }
         "clear" => {
             let Some(session) = app.session.as_ref() else {
-                app.set_notice("当前没有活动会话");
+                app.set_notice(t!("tui.common.no_session"));
                 return;
             };
             (session.permission, true)
@@ -660,9 +695,9 @@ pub(super) fn set_permission(app: &mut App, connection: &EmbeddedConnection, res
         "workspace" => (SessionPermission::Workspace, false),
         "workspace-only" | "workspace_only" => (SessionPermission::WorkspaceOnly, false),
         _ => {
-            app.set_notice(format!(
-                "用法：/permission <{}|clear>",
-                available.replace(", ", "|")
+            app.set_notice(t!(
+                "tui.cmd.perm_usage_fmt",
+                modes = available.replace(", ", "|")
             ));
             return;
         }
@@ -684,14 +719,15 @@ pub(super) fn apply_permission(
             .map(|mode| mode.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        app.set_notice(format!(
-            "当前平台不支持 {}；可用模式：{available}",
-            permission.as_str()
+        app.set_notice(t!(
+            "tui.cmd.perm_unsupported_fmt",
+            mode = permission.as_str(),
+            available = available
         ));
         return;
     }
     let Some(session) = app.session.as_ref() else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session"));
         return;
     };
     let client = connection.client.clone();
@@ -707,11 +743,13 @@ pub(super) fn apply_permission(
             .await
         {
             Ok(_) if clear_grants => {
-                let _ = events.send(AppEvent::Notice("已清空本会话的沙盒授权".into()));
+                let _ = events.send(AppEvent::Notice(t!("tui.cmd.perm_cleared").into_owned()));
             }
             Ok(_) => {}
             Err(error) => {
-                let _ = events.send(AppEvent::Notice(format!("切换权限失败：{error}")));
+                let _ = events.send(AppEvent::Notice(
+                    t!("tui.cmd.perm_failed_fmt", err = error.to_string()).into_owned(),
+                ));
             }
         }
     });
@@ -728,7 +766,9 @@ pub(super) fn open_session_picker(app: &mut App, connection: &EmbeddedConnection
                 let _ = events.send(AppEvent::Sessions(list.sessions));
             }
             Err(error) => {
-                let _ = events.send(AppEvent::PickerError(format!("加载会话列表失败：{error}")));
+                let _ = events.send(AppEvent::PickerError(
+                    t!("tui.cmd.sessions_failed_fmt", err = error.to_string()).into_owned(),
+                ));
             }
         }
     });

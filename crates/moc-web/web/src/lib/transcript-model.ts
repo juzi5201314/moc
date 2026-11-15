@@ -1,6 +1,7 @@
 // 转写模型：把 transcript 条目与 session/update 折叠成可渲染的块序列。
 // 全部是纯函数（配合 immer 的 draft 直接修改），不碰网络与 DOM，便于单测。
 
+import { type MsgKey, t } from "@/lib/i18n";
 import type {
   AgentInfo,
   AgentResultMeta,
@@ -386,7 +387,7 @@ export function entriesToBlocks(
           const result = part.ToolResult;
           let block = tools.get(result.tool_call_id);
           if (!block) {
-            block = newTool(nextId(), result.tool_call_id, "工具结果", "");
+            block = newTool(nextId(), result.tool_call_id, t("tm.tool_result"), "");
             blocks.push(block);
           }
           block.result = result.content;
@@ -406,7 +407,7 @@ export function entriesToBlocks(
               kind: "plan",
               id: nextId(),
               planId,
-              title: "计划",
+              title: t("tm.plan"),
               path,
               version: Number(version),
             });
@@ -727,7 +728,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         live.textIndex = undefined;
         live.reasoningId = undefined;
         live.reasoningIndex = undefined;
-        block = newTool(nextId(view), update.preview_id, update.name ?? "工具", "");
+        block = newTool(nextId(view), update.preview_id, update.name ?? t("tm.tool"), "");
         view.blocks.push(block);
         trackLiveBlock(view, block.id);
       }
@@ -900,7 +901,15 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       break;
     case "plugin_notice":
       view.pluginNotice = { plugin: update.plugin, code: update.code, message: update.message };
-      pushStatus(view, "warn", `插件 ${update.plugin} 已停用（${update.code}）：${update.message}`);
+      pushStatus(
+        view,
+        "warn",
+        t("tm.plugin_disabled", {
+          plugin: update.plugin,
+          code: update.code,
+          message: update.message,
+        }),
+      );
       break;
     case "title_changed":
       view.info.title = update.title;
@@ -930,7 +939,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       view.todos = update.phases;
       break;
     case "todo_reminder":
-      pushStatus(view, "info", `提醒：还有 ${update.open_items} 项待办未完成`);
+      pushStatus(view, "info", t("tm.todo_reminder", { n: update.open_items }));
       break;
     case "plan_submitted": {
       const plan = update.plan;
@@ -957,7 +966,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
     }
     case "context_compaction_started": {
       const id = nextId(view);
-      view.blocks.push({ kind: "status", id, tone: "info", text: "正在压缩上下文…" });
+      view.blocks.push({ kind: "status", id, tone: "info", text: t("tm.compacting") });
       view.compactingId = id;
       break;
     }
@@ -965,8 +974,12 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
     case "context_compaction_failed": {
       const text =
         update.type === "context_compacted"
-          ? `上下文已压缩（${update.method}）：${update.tokens_before} → ${update.tokens_after} tokens`
-          : `上下文压缩失败：${update.message}`;
+          ? t("tm.compacted", {
+              method: update.method,
+              before: update.tokens_before,
+              after: update.tokens_after,
+            })
+          : t("tm.compact_failed", { error: update.message });
       const tone: StatusTone = update.type === "context_compacted" ? "info" : "error";
       const block = view.blocks.find((item) => item.id === view.compactingId);
       if (block?.kind === "status") {
@@ -1005,7 +1018,10 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         pushStatus(
           view,
           job.exit_code === 0 ? "info" : "warn",
-          `后台任务结束：${job.command}（退出码 ${job.exit_code ?? "未知"}）`,
+          t("tm.job_done", {
+            cmd: job.command,
+            code: job.exit_code ?? t("tm.code_unknown"),
+          }),
         );
       }
       break;
@@ -1079,7 +1095,7 @@ export function interruptLive(view: SessionView): void {
   }
   view.live = null;
   view.running = false;
-  pushStatus(view, "warn", "连接中断，本次生成已停止");
+  pushStatus(view, "warn", t("tm.interrupted"));
 }
 
 export function appendLocalUser(view: SessionView, text: string, images: ImageSource[]): void {
@@ -1093,17 +1109,15 @@ export function appendLocalStatus(view: SessionView, tone: StatusTone, text: str
 export function finishLabel(reason: FinishReason | undefined): string {
   if (!reason) return "";
   if (typeof reason === "object") return reason.Other;
-  const labels: Record<string, string> = {
-    Stop: "",
-    StopSequence: "",
-    ToolCalls: "",
-    Length: "截断",
-    Cancelled: "已取消",
-    Interrupted: "已中断",
-    LoopDetected: "循环中止",
-    ContentFilter: "被拦截",
-    Refusal: "已拒绝",
-    PauseTurn: "暂停",
+  const labels: Record<string, MsgKey> = {
+    Length: "finish.Length",
+    Cancelled: "finish.Cancelled",
+    Interrupted: "finish.Interrupted",
+    LoopDetected: "finish.LoopDetected",
+    ContentFilter: "finish.ContentFilter",
+    Refusal: "finish.Refusal",
+    PauseTurn: "finish.PauseTurn",
   };
-  return labels[reason] ?? reason;
+  const key = labels[reason];
+  return key ? t(key) : ["Stop", "StopSequence", "ToolCalls"].includes(reason) ? "" : reason;
 }

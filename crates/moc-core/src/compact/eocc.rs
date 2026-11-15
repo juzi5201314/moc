@@ -6,6 +6,7 @@ use moc_protocol::CompactResult;
 
 use super::grok_build::{fit, reminder};
 use super::sample::{PromptSkeleton, Sampler};
+use rust_i18n::t;
 use super::{
     Checkpoint, HistoryArchive, SoftInput, guard, message_tokens, messages_tokens, replay,
 };
@@ -184,7 +185,9 @@ pub(crate) async fn compact(input: SoftInput<'_>) -> Result<CompactResult, CoreE
         .map(|message| replay::repair_tool_history(message, Some(model)))
         .collect();
     if history.is_empty() && state.summary.is_none() {
-        return Err(CoreError::ContextOverflow("EoCC：没有可压缩的历史".into()));
+        return Err(CoreError::ContextOverflow(
+            t!("core.err.eocc_nothing").into_owned(),
+        ));
     }
     // 长度终止恢复可能发生在工具执行前；不能销毁尚未返回结果的调用所有者。
     let kept = super::tail::retained_start(&history, 0);

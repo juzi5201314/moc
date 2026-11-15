@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::MONITOR_CUR_W;
 use super::MONITOR_LABEL_W;
 use super::MONITOR_STATS_W;
@@ -16,11 +18,17 @@ pub(super) fn monitor_lines(width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let dim = Style::new().fg(theme.gray_dim);
     let spark_cols = width.saturating_sub(MONITOR_LABEL_W + MONITOR_CUR_W + MONITOR_STATS_W + 3);
     if spark_cols < 4 {
-        return vec![Line::from(Span::styled("终端太窄", dim))];
+        return vec![Line::from(Span::styled(
+            t!("tui.monitor.too_narrow").into_owned(),
+            dim,
+        ))];
     }
     let samples = moc_core::procstats::samples();
     if samples.len() < 2 {
-        return vec![Line::from(Span::styled("正在采样…", dim))];
+        return vec![Line::from(Span::styled(
+            t!("tui.monitor.sampling").into_owned(),
+            dim,
+        ))];
     }
     let now = Instant::now();
     let window = Duration::from_secs(moc_core::procstats::WINDOW_SECS);
@@ -68,22 +76,23 @@ pub(super) fn monitor_lines(width: usize, theme: &Theme) -> Vec<Line<'static>> {
             color,
             format!("{}/s", format_bytes(current as u64)),
             &points,
-            format!("total {}", format_bytes(total)),
+            t!("tui.monitor.total_fmt", total = format_bytes(total)).into_owned(),
         )
     };
 
     let rss = instant(|s| s.rss_bytes as f64);
     let (avg, peak) = summary(&rss);
     let mut lines = vec![row(
-        "内存",
+        t!("tui.monitor.memory").as_ref(),
         theme.chart_1,
         format_bytes(latest.rss_bytes),
         &rss,
-        format!(
-            "avg {}  peak {}",
-            format_bytes(avg as u64),
-            format_bytes(peak as u64)
-        ),
+        t!(
+            "tui.monitor.avg_peak_fmt",
+            avg = format_bytes(avg as u64),
+            peak = format_bytes(peak as u64)
+        )
+        .into_owned(),
     )];
     let cpu = instant(|s| f64::from(s.cpu_pct));
     let (avg, peak) = summary(&cpu);
@@ -92,30 +101,35 @@ pub(super) fn monitor_lines(width: usize, theme: &Theme) -> Vec<Line<'static>> {
         theme.chart_2,
         format!("{:.0}%", latest.cpu_pct),
         &cpu,
-        format!("avg {avg:.0}%  peak {peak:.0}%"),
+        t!(
+            "tui.monitor.avg_peak_pct_fmt",
+            avg = format!("{avg:.0}"),
+            peak = format!("{peak:.0}")
+        )
+        .into_owned(),
     ));
     lines.push(Line::default());
     lines.push(rate_line(
-        "磁盘↓",
+        t!("tui.monitor.disk_down").as_ref(),
         theme.chart_3,
         |s| s.disk_read_bytes,
         latest.disk_read_bytes,
     ));
     lines.push(rate_line(
-        "磁盘↑",
+        t!("tui.monitor.disk_up").as_ref(),
         theme.chart_3,
         |s| s.disk_write_bytes,
         latest.disk_write_bytes,
     ));
     lines.push(Line::default());
     lines.push(rate_line(
-        "网络↓",
+        t!("tui.monitor.net_down").as_ref(),
         theme.chart_4,
         |s| s.net_rx_bytes,
         latest.net_rx_bytes,
     ));
     lines.push(rate_line(
-        "网络↑",
+        t!("tui.monitor.net_up").as_ref(),
         theme.chart_4,
         |s| s.net_tx_bytes,
         latest.net_tx_bytes,

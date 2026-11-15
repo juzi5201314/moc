@@ -16,17 +16,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { t, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type { JobInfo, JobOutputResult, JobResult } from "@/protocol/types";
 import { refreshJobs, useTranscript } from "@/store/transcript";
 
 function statusLabel(job: JobInfo): string {
-  if (job.status === "running") return job.stalled ? "无输出" : "运行中";
-  if (job.status === "killing") return "正在终止";
-  if (job.status === "timed_out") return "超时";
-  if (job.status === "killed") return "已终止";
-  return job.exit_code === 0 ? "已完成" : `退出 ${job.exit_code ?? "?"}`;
+  if (job.status === "running") return job.stalled ? t("job.stalled") : t("ag.running");
+  if (job.status === "killing") return t("job.killing");
+  if (job.status === "timed_out") return t("job.timed_out");
+  if (job.status === "killed") return t("job.killed");
+  return job.exit_code === 0 ? t("ag.completed") : t("job.exited", { code: job.exit_code ?? "?" });
 }
 
 function statusClass(job: JobInfo): string {
@@ -50,6 +51,7 @@ export function JobsDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const t = useT();
   const jobs = useTranscript((state) => Object.values(state.bySession[sessionId]?.jobs ?? {}));
   const [selected, setSelected] = useState<JobInfo | null>(null);
   const [output, setOutput] = useState<string | null>(null);
@@ -58,11 +60,13 @@ export function JobsDialog({
   useEffect(() => {
     if (!open) return;
     void refreshJobs(sessionId).catch((error) =>
-      toast.error(`加载任务失败：${error instanceof Error ? error.message : String(error)}`),
+      toast.error(
+        t("job.load_failed", { error: error instanceof Error ? error.message : String(error) }),
+      ),
     );
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [open, sessionId]);
+  }, [open, sessionId, t]);
 
   const loadOutput = (job: JobInfo) => {
     setSelected(job);
@@ -75,16 +79,20 @@ export function JobsDialog({
       })
       .then((result) => setOutput(result.text))
       .catch((error) =>
-        toast.error(`读取日志失败：${error instanceof Error ? error.message : String(error)}`),
+        toast.error(
+          t("job.log_failed", { error: error instanceof Error ? error.message : String(error) }),
+        ),
       );
   };
 
   const kill = (job: JobInfo) => {
     void rpc
       .call<JobResult>("job/kill", { session_id: sessionId, job_id: job.job_id })
-      .then(() => toast.success(`已终止 ${job.job_id}`))
+      .then(() => toast.success(t("job.killed_id", { id: job.job_id })))
       .catch((error) =>
-        toast.error(`终止任务失败：${error instanceof Error ? error.message : String(error)}`),
+        toast.error(
+          t("job.kill_failed", { error: error instanceof Error ? error.message : String(error) }),
+        ),
       );
   };
 
@@ -94,16 +102,14 @@ export function JobsDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ListTodoIcon className="size-4 text-brand" />
-            后台任务
+            {t("job.title")}
           </DialogTitle>
-          <DialogDescription>
-            当前会话的后台与前台 shell 任务。运行中的任务会实时更新。
-          </DialogDescription>
+          <DialogDescription>{t("job.desc")}</DialogDescription>
         </DialogHeader>
         <div className="max-h-[min(56vh,480px)] space-y-1 overflow-auto pr-1">
           {jobs.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border-subtle px-4 py-8 text-center text-sm text-muted-foreground">
-              暂无任务
+              {t("job.empty")}
             </div>
           ) : (
             jobs.map((job) => (
@@ -131,7 +137,7 @@ export function JobsDialog({
                     type="button"
                     variant="ghost"
                     size="icon-xs"
-                    title="终止任务"
+                    title={t("job.kill")}
                     onClick={(event) => {
                       event.stopPropagation();
                       kill(job);
@@ -147,18 +153,20 @@ export function JobsDialog({
         {selected && (
           <div className="space-y-2 border-t border-border-subtle pt-3">
             <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-              <span className="truncate font-mono">{selected.job_id} · 日志尾部</span>
+              <span className="truncate font-mono">
+                {selected.job_id} · {t("job.log_tail")}
+              </span>
               <div className="flex items-center gap-1">
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon-xs"
-                  title="复制日志"
+                  title={t("job.copy_log")}
                   disabled={output === null}
                   onClick={() => {
                     if (output !== null) {
                       void navigator.clipboard.writeText(output);
-                      toast.success("已复制日志");
+                      toast.success(t("job.log_copied"));
                     }
                   }}
                 >
@@ -168,7 +176,7 @@ export function JobsDialog({
                   type="button"
                   variant="ghost"
                   size="icon-xs"
-                  title="打开完整日志"
+                  title={t("job.open_log")}
                   onClick={() => window.open(selected.log_uri, "_blank", "noopener,noreferrer")}
                 >
                   <ExternalLinkIcon className="size-3.5" />

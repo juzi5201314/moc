@@ -1,5 +1,7 @@
 //! 终端键盘路由与输入提交。
 
+use rust_i18n::t;
+
 use super::agents::leave_focus;
 use super::agents::open_subagents;
 use super::agents::stop_agent_operation;
@@ -179,7 +181,7 @@ pub(super) fn handle_key(
         }
         Some("sidebar") => {
             if app.subagents.is_empty() {
-                app.set_notice("当前没有子代理");
+                app.set_notice(t!("tui.event.no_subagents").into_owned());
             } else {
                 let visible = app.subagent_sidebar_visible();
                 app.subagent_sidebar = Some(!visible);
@@ -290,7 +292,7 @@ pub(super) fn handle_key(
                 } else {
                     app.ctrl_c_pending = Some((CtrlCPending::Quit, std::time::Instant::now()));
                     app.cancel_requested = true;
-                    app.set_notice("正在停止... 再次按 Ctrl+C 退出");
+                    app.set_notice(t!("tui.event.stopping_quit").into_owned());
                     cancel_prompt(&connection.client, app);
                 }
             } else if !app.prompt_text().is_empty() {
@@ -302,23 +304,29 @@ pub(super) fn handle_key(
                 } else {
                     app.ctrl_c_pending =
                         Some((CtrlCPending::ClearPrompt, std::time::Instant::now()));
-                    app.set_notice("再次按 Ctrl+C 清空输入");
+                    app.set_notice(t!("tui.event.ctrl_c_clear").into_owned());
                 }
             } else if app.take_ctrl_c_pending(CtrlCPending::Quit) {
                 app.should_quit = true;
             } else {
                 app.ctrl_c_pending = Some((CtrlCPending::Quit, std::time::Instant::now()));
-                app.set_notice("再次按 Ctrl+C 退出");
+                app.set_notice(t!("tui.event.ctrl_c_quit").into_owned());
             }
         }
         (KeyCode::Char('h'), KeyModifiers::CONTROL) => app.modal = Some(Modal::Help { scroll: 0 }),
         (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
             app.cycle_thinking_detail();
-            app.set_notice(format!("思考显示：{}", app.thinking_detail.label()));
+            app.set_notice(
+                t!("tui.event.thinking_display_fmt", label = app.thinking_detail.label().as_ref())
+                    .into_owned(),
+            );
         }
         (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
             app.cycle_tool_detail();
-            app.set_notice(format!("工具显示：{}", app.tool_detail.label()));
+            app.set_notice(
+                t!("tui.event.tool_display_fmt", label = app.tool_detail.label().as_ref())
+                    .into_owned(),
+            );
         }
         (KeyCode::Char('v'), KeyModifiers::CONTROL) => spawn_clipboard_paste(app.events.clone()),
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => app.open_model_picker(),
@@ -360,14 +368,14 @@ pub(super) fn handle_key(
                     app.clear_pending = false;
                 } else {
                     app.clear_pending = true;
-                    app.set_notice("再次按 Esc 清空输入");
+                    app.set_notice(t!("tui.event.esc_clear").into_owned());
                 }
             } else if app.focus == Focus::Prompt && app.clear_pending {
                 app.clear_pending = false;
                 open_rewind(app, connection);
             } else if app.focus == Focus::Prompt {
                 app.clear_pending = true;
-                app.set_notice("再次按 Esc 打开消息回退");
+                app.set_notice(t!("tui.event.esc_rewind").into_owned());
             }
         }
         (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
@@ -454,7 +462,7 @@ pub(super) fn handle_key(
 /// 提交输入：补全确认 > 斜杠命令 > Bash 命令或普通发送。
 pub(super) fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
     if app.skills_compacting {
-        app.set_notice("正在维护技能摘要；输入已保留，完成或取消后才能发送");
+        app.set_notice(t!("tui.event.skills_compacting").into_owned());
         return;
     }
     if accept_completion(app) {
@@ -471,7 +479,7 @@ pub(super) fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
     // 只有已注册的命令才分流；绝对路径和其他斜杠文本按普通消息发送。
     if app.prompt_text().starts_with('/') && app.commands.resolve(name).is_some() {
         if app.prompt.has_attached_images() {
-            app.set_notice("斜杠命令不支持图片，请移除图片后执行");
+            app.set_notice(t!("tui.event.slash_no_images").into_owned());
             return;
         }
         let (line, history) = app.prompt.take_committed_text();
@@ -502,11 +510,11 @@ pub(super) fn request_stop(app: &mut App, connection: &EmbeddedConnection) {
         app.cancel_requested = true;
         if app.skills_compacting {
             app.replace_skills_note(
-                "技能摘要处理中：正在取消，等待请求结束…".into(),
+                t!("tui.event.skills_cancel_wait").into_owned(),
                 crate::transcript::NoteTone::Info,
             );
         }
-        app.set_notice("正在停止...");
+        app.set_notice(t!("tui.event.stopping").into_owned());
         cancel_prompt(&connection.client, app);
     }
 }

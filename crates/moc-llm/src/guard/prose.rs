@@ -1,6 +1,8 @@
 //! 有界中英文段落指纹；代码与结构化内容不进入相似度窗口。
 
 use std::collections::VecDeque;
+
+use rust_i18n::t;
 use xxhash_rust::xxh3::xxh3_64;
 
 use super::{SEGMENT_CHARS, SEGMENT_WINDOW};
@@ -109,12 +111,10 @@ impl Prose {
         debug_assert!(self.window.len() <= SEGMENT_WINDOW);
         self.count += 1;
         if self.count >= 10 && !new_anchor && cluster >= 6 {
-            return Some(format!(
-                "近期段落中出现 {cluster} 段高度相似且没有新引用的内容"
-            ));
+            return Some(t!("llm.err.prose_similar", cluster = cluster).into_owned());
         }
         if self.detect_stale && self.stale_run >= 12 {
-            return Some("连续 12 段复用已有词汇，未增加具体信息".into());
+            return Some(t!("llm.err.prose_repeated").into_owned());
         }
         None
     }

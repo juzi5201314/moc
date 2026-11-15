@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::super::StreamDecoder;
 use super::super::sse::SseEvent;
 use super::AnthropicStreamDecoder;
@@ -215,9 +217,9 @@ impl StreamDecoder for AnthropicStreamDecoder {
             Ok(value) => self.decode_payload(&value, out),
             Err(err) => {
                 self.terminated = true;
-                out.push(Err(LlmError::Stream(format!(
-                    "Anthropic 流数据不是合法 JSON: {err}"
-                ))));
+                out.push(Err(LlmError::Stream(
+                    t!("llm.err.anthropic_stream_json", err = err).into_owned(),
+                )));
             }
         }
     }

@@ -93,7 +93,11 @@ impl Footer {
 }
 
 /// [`super::labels::hints`] 排版、`gray_dim` 着色的提示行；单键项可点击。
-pub fn footer(items: &[(&str, &str)], width: usize, theme: &Theme) -> Footer {
+pub fn footer<K: AsRef<str>, A: AsRef<str>>(
+    items: &[(K, A)],
+    width: usize,
+    theme: &Theme,
+) -> Footer {
     let (text, keys) = super::labels::hint_layout(items, width);
     Footer {
         line: Line::from(Span::styled(text, Style::new().fg(theme.gray_dim))),

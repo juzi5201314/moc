@@ -28,6 +28,7 @@ import { DiffStat, diffStats } from "@/components/panels/diff-file";
 import { Button } from "@/components/ui/button";
 import { parseLinkTarget } from "@/lib/file-target";
 import { formatDuration } from "@/lib/format";
+import { t, useT } from "@/lib/i18n";
 import {
   BRIEF_BODY_ROWS,
   BRIEF_THINKING_ROWS,
@@ -281,6 +282,7 @@ function ReasoningRow({
   axis: DetailLevel;
   live: boolean;
 }) {
+  const t = useT();
   const [level, setLevel] = useState(axis);
   const streaming = live && block.durationMs === undefined;
   const hasText = block.text.trim().length > 0;
@@ -296,7 +298,7 @@ function ReasoningRow({
     <div>
       <RowHeader
         icon={<BrainIcon />}
-        verb={streaming ? "思考中" : "思考"}
+        verb={streaming ? t("verb.thinking_ing") : t("verb.thinking")}
         target={body || level === "hidden" ? undefined : activitySnippet(block, 160)}
         pulse={streaming}
         interactive={hasText}
@@ -328,7 +330,7 @@ function toolSuffix(
   if (tool.preview) {
     return (
       <span className="text-2xs text-text-tertiary">
-        {tool.status === "queued" ? "待执行" : "生成中"}
+        {tool.status === "queued" ? t("act.queued") : t("act.generating")}
       </span>
     );
   }
@@ -337,7 +339,7 @@ function toolSuffix(
     return (
       <>
         {tool.awaitingPermission ? (
-          <span className="text-2xs text-warn">等待授权</span>
+          <span className="text-2xs text-warn">{t("act.wait_auth")}</span>
         ) : (
           <Loader2Icon className="size-3 animate-spin text-text-tertiary" />
         )}
@@ -345,9 +347,10 @@ function toolSuffix(
       </>
     );
   }
-  if (tool.status === "denied") return <span className="text-2xs text-warn">已拒绝</span>;
+  if (tool.status === "denied")
+    return <span className="text-2xs text-warn">{t("act.denied")}</span>;
   if (tool.status === "cancelled")
-    return <span className="text-2xs text-text-tertiary">已取消</span>;
+    return <span className="text-2xs text-text-tertiary">{t("act.cancelled")}</span>;
   const files = tool.diff?.files ?? [];
   const total = files.reduce(
     (sum, file) => {
@@ -387,6 +390,7 @@ function ToolRow({
   /** 仅顶层行钉住标题；嵌套子工具与合并组成员由各自的组头承载折叠入口。 */
   sticky?: boolean;
 }) {
+  const t = useT();
   const [level, setLevel] = useState(axis);
   const now = useNow(tool.status === "running" && Boolean(tool.job));
   const headline = toolHeadline(tool);
@@ -419,7 +423,11 @@ function ToolRow({
     void rpc
       .call<JobResult>("job/background", { session_id: sessionId, job_id: tool.job.job_id })
       .catch((error) =>
-        toast.error(`转后台失败：${error instanceof Error ? error.message : String(error)}`),
+        toast.error(
+          t("act.bg_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        ),
       );
   };
   // 已收场的提问可以重答：core 截回未回答状态后按原参数重放提问卡片。
@@ -441,7 +449,7 @@ function ToolRow({
         background();
       }}
     >
-      转后台
+      {t("act.to_bg")}
     </Button>
   ) : canReask ? (
     <Button
@@ -455,14 +463,14 @@ function ToolRow({
         reask();
       }}
     >
-      重新作答
+      {t("act.reask")}
     </Button>
   ) : undefined;
   return (
     <div>
       <RowHeader
         icon={iconFor(tool)}
-        verb={headline.verb ?? activityVerb(tool) ?? "调用工具"}
+        verb={headline.verb ?? activityVerb(tool) ?? t("verb.tools")}
         target={headline.target}
         scope={headline.scope}
         mono={headline.mono}
@@ -508,6 +516,7 @@ function argOffset(tool: ToolBlock): number | undefined {
 
 /** 子代理进度行与工具返回的图片。 */
 function ToolExtras({ tool }: { tool: ToolBlock }) {
+  const t = useT();
   return (
     <>
       {tool.progress && tool.progress.length > 0 && (
@@ -546,7 +555,7 @@ function ToolExtras({ tool }: { tool: ToolBlock }) {
             >
               <img
                 src={imageSrc(image)}
-                alt="工具返回的图片"
+                alt={t("act.tool_image")}
                 className="max-h-48 max-w-[240px] object-contain"
               />
             </a>
@@ -559,11 +568,11 @@ function ToolExtras({ tool }: { tool: ToolBlock }) {
 
 /** 合并行的动作文案：`读取 4 个文件`。 */
 const GROUP_VERB: Record<string, (n: number) => string> = {
-  read: (n) => `读取 ${n} 个文件`,
-  grep: (n) => `搜索代码 ${n} 次`,
-  find: (n) => `查找文件 ${n} 次`,
-  web_search: (n) => `搜索网页 ${n} 次`,
-  web_fetch: (n) => `访问 ${n} 个网页`,
+  read: (n) => t("grp.read", { n }),
+  grep: (n) => t("grp.grep", { n }),
+  find: (n) => t("grp.find", { n }),
+  web_search: (n) => t("grp.web_search", { n }),
+  web_fetch: (n) => t("grp.web_fetch", { n }),
 };
 
 /** 合并行尾注：同类计数求和。 */
@@ -608,6 +617,7 @@ function ToolGroupRow({
   axis: DetailLevel;
   sessionId: string;
 }) {
+  const t = useT();
   const failedCount = tools.filter(toolFailed).length;
   const [open, setOpen] = useState(axis === "full" || failedCount > 0);
   const running = tools.some((tool) => tool.status === "running" || Boolean(tool.preview));
@@ -616,7 +626,8 @@ function ToolGroupRow({
     .filter(Boolean)
     .join("  ");
   const verb =
-    GROUP_VERB[name]?.(tools.length) ?? `${activityVerb(tools[0]) ?? "调用工具"} ×${tools.length}`;
+    GROUP_VERB[name]?.(tools.length) ??
+    t("grp.times", { verb: activityVerb(tools[0]) ?? t("verb.tools"), n: tools.length });
   const stat = groupStat(name, tools);
   return (
     <div>
@@ -637,7 +648,9 @@ function ToolGroupRow({
           ) : (
             <>
               {failedCount > 0 && (
-                <span className="text-2xs text-destructive">{failedCount} 失败</span>
+                <span className="text-2xs text-destructive">
+                  {t("grp.failed", { n: failedCount })}
+                </span>
               )}
               {stat && <span className="text-2xs tabular-nums text-text-tertiary">{stat}</span>}
             </>
@@ -695,6 +708,7 @@ function AgentReportRow({
   block: Extract<Block, { kind: "agent-message" | "agent-result" }>;
   axis: DetailLevel;
 }) {
+  const t = useT();
   const [level, setLevel] = useState(axis);
   const head = headLines(block.body, BRIEF_BODY_ROWS);
   const lines = level === "full" ? block.body : head.lines.join("\n");
@@ -703,7 +717,7 @@ function AgentReportRow({
     <div>
       <RowHeader
         icon={<BotIcon />}
-        verb={result ? "子代理结果" : "子代理消息"}
+        verb={result ? t("act.agent_result") : t("act.agent_msg")}
         target={result ? block.meta.title : block.from}
         failed={result && block.meta.status === "failed"}
         emphasized={result}
@@ -728,7 +742,7 @@ function AgentReportRow({
                 onClick={() => setLevel("full")}
                 className="mt-1 block text-2xs text-text-tertiary hover:text-foreground"
               >
-                ⋯ 还有 {head.hidden} 行
+                {t("act.more_lines", { n: head.hidden })}
               </button>
             )}
           </div>
@@ -745,6 +759,7 @@ function GoalRoundRow({
   block: Extract<Block, { kind: "goal-round" }>;
   axis: DetailLevel;
 }) {
+  const t = useT();
   const [level, setLevel] = useState(axis);
   const head = headLines(block.body, BRIEF_BODY_ROWS);
   const lines = level === "full" ? block.body : head.lines.join("\n");
@@ -752,7 +767,7 @@ function GoalRoundRow({
     <div>
       <RowHeader
         icon={<BotIcon />}
-        verb={`目标续跑 · 第 ${block.round} 轮`}
+        verb={t("act.goal_round", { n: block.round })}
         interactive
         open={level === "full"}
         sticky
@@ -768,7 +783,7 @@ function GoalRoundRow({
                 onClick={() => setLevel("full")}
                 className="mt-1 block text-2xs text-text-tertiary hover:text-foreground"
               >
-                ⋯ 还有 {head.hidden} 行
+                {t("act.more_lines", { n: head.hidden })}
               </button>
             )}
           </div>
@@ -788,6 +803,7 @@ export function ActivityGroup({
   live: boolean;
   sessionId: string;
 }) {
+  const t = useT();
   const thinking = usePrefs((state) => state.thinkingDetail);
   const tools = usePrefs((state) => state.toolDetail);
   const items = useMemo(() => groupActivity(blocks), [blocks]);
@@ -845,7 +861,7 @@ export function ActivityGroup({
               <RowHeader
                 key={block.id}
                 icon={<InfoIcon />}
-                verb="状态更新"
+                verb={t("verb.status")}
                 target={block.text}
                 interactive={false}
                 open={false}

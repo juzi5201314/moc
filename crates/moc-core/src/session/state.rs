@@ -6,6 +6,7 @@ use moc_protocol::methods::{
 };
 
 use crate::error::CoreError;
+use rust_i18n::t;
 
 use super::entries::Entry;
 use super::entries::PtcStateChange;
@@ -186,7 +187,9 @@ impl SessionState {
     /// 重放 JSONL，并校验 parent 链是否连续。
     pub fn from_entries(entries: Vec<Entry>) -> Result<Self, CoreError> {
         let Some(first) = entries.first() else {
-            return Err(CoreError::Session("transcript 缺少 header".into()));
+            return Err(CoreError::Session(
+                t!("core.err.transcript_no_header").into_owned(),
+            ));
         };
         let Entry::Header {
             version,
@@ -197,16 +200,18 @@ impl SessionState {
             ..
         } = first
         else {
-            return Err(CoreError::Session("transcript 第一条不是 header".into()));
+            return Err(CoreError::Session(
+                t!("core.err.transcript_first_not_header").into_owned(),
+            ));
         };
         if *version != 1 {
-            return Err(CoreError::Session(format!(
-                "不支持 transcript 版本 {version}"
-            )));
+            return Err(CoreError::Session(
+                t!("core.err.transcript_version", version = version).into_owned(),
+            ));
         }
         let session = first
             .session_info(None)
-            .ok_or_else(|| CoreError::Session("header 无法生成 session info".into()))?;
+            .ok_or_else(|| CoreError::Session(t!("core.err.header_no_info").into_owned()))?;
         let mut state = Self {
             session,
             entries: Arc::new(Vec::with_capacity(entries.len())),

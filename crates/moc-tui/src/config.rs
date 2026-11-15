@@ -1,6 +1,7 @@
 //! 前端偏好只保存在 tui.toml，不进入 core 配置或模型上下文。
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use rust_i18n::t;
 use moc_protocol::{ChoiceOption, ConfigField, FieldKind};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -61,28 +62,28 @@ impl Default for TuiConfig {
 /// 保持动作语义稳定，物理按键可以全部改写；配置页面自身的导航键保持可恢复。
 pub(crate) fn actions() -> &'static [(&'static str, &'static str, &'static [&'static str])] {
     &[
-        ("send", "发送消息", &["enter"]),
-        ("queue", "排队发送", &["ctrl+enter"]),
-        ("newline", "插入换行", &["shift+enter", "alt+enter"]),
-        ("cancel", "停止当前生成 / 退出", &["ctrl+c"]),
-        ("help", "快捷键一览", &["ctrl+h"]),
-        ("thinking", "切换思考显示档位", &["ctrl+t"]),
-        ("tools", "切换工具显示档位", &["ctrl+o"]),
-        ("paste_image", "粘贴图片或文本", &["ctrl+v"]),
-        ("model", "选择模型", &["ctrl+p"]),
-        ("resume", "恢复会话", &["ctrl+r"]),
-        ("engine", "切换会话引擎", &["alt+m", "ctrl+m"]),
-        ("thinking_level", "切换思考等级", &["shift+tab"]),
-        ("focus", "切换输入焦点", &["tab"]),
-        ("clear", "清空输入", &["ctrl+u"]),
-        ("line_start", "移动到行首", &["home", "ctrl+a"]),
-        ("line_end", "移动到行尾", &["end", "ctrl+e"]),
-        ("delete_word", "删除前一词", &["ctrl+w"]),
-        ("delete_to_end", "删除至行尾", &["ctrl+k"]),
-        ("config", "打开设置", &["ctrl+g"]),
-        ("agents", "唤出子代理侧栏", &["ctrl+n"]),
-        ("sidebar", "显示/隐藏子代理侧栏", &["alt+a"]),
-        ("queue_edit", "编辑排队中的消息", &["alt+up"]),
+        ("send", "tui.keys.send", &["enter"]),
+        ("queue", "tui.keys.queue", &["ctrl+enter"]),
+        ("newline", "tui.keys.newline", &["shift+enter", "alt+enter"]),
+        ("cancel", "tui.keys.cancel", &["ctrl+c"]),
+        ("help", "tui.keys.help", &["ctrl+h"]),
+        ("thinking", "tui.keys.thinking", &["ctrl+t"]),
+        ("tools", "tui.keys.tools", &["ctrl+o"]),
+        ("paste_image", "tui.keys.paste_image", &["ctrl+v"]),
+        ("model", "tui.keys.model", &["ctrl+p"]),
+        ("resume", "tui.keys.resume", &["ctrl+r"]),
+        ("engine", "tui.keys.engine", &["alt+m", "ctrl+m"]),
+        ("thinking_level", "tui.keys.thinking_level", &["shift+tab"]),
+        ("focus", "tui.keys.focus", &["tab"]),
+        ("clear", "tui.keys.clear", &["ctrl+u"]),
+        ("line_start", "tui.keys.line_start", &["home", "ctrl+a"]),
+        ("line_end", "tui.keys.line_end", &["end", "ctrl+e"]),
+        ("delete_word", "tui.keys.delete_word", &["ctrl+w"]),
+        ("delete_to_end", "tui.keys.delete_to_end", &["ctrl+k"]),
+        ("config", "tui.keys.config", &["ctrl+g"]),
+        ("agents", "tui.keys.agents", &["ctrl+n"]),
+        ("sidebar", "tui.keys.sidebar", &["alt+a"]),
+        ("queue_edit", "tui.keys.queue_edit", &["alt+up"]),
     ]
 }
 
@@ -96,7 +97,8 @@ impl KeyMap {
         for (action, keys) in &config.keybindings {
             anyhow::ensure!(
                 actions().iter().any(|(name, _, _)| name == action),
-                "未知键位动作：{action}"
+                "{}",
+                t!("tui.err.unknown_action", action = action.as_str())
             );
             for key in keys {
                 let (modifiers, code) = parse_key(key)?;
@@ -105,7 +107,8 @@ impl KeyMap {
                         .iter()
                         .any(|(other_mods, other_code, _, _, _)| *other_mods == modifiers
                             && *other_code == code),
-                    "按键 {key} 重复绑定，请先清除原动作中的绑定"
+                    "{}",
+                    t!("tui.err.duplicate_key", key = key.as_str())
                 );
                 let (target_modifiers, target_code) = canonical(action).expect("已校验动作");
                 bindings.push((
@@ -179,7 +182,7 @@ pub fn parse_key(text: &str) -> anyhow::Result<(KeyModifiers, KeyCode)> {
             "alt" => KeyModifiers::ALT,
             "shift" => KeyModifiers::SHIFT,
             "super" => KeyModifiers::SUPER,
-            _ => anyhow::bail!("未知修饰键：{part}"),
+            _ => anyhow::bail!("{}", t!("tui.err.unknown_modifier", part = part)),
         };
     }
     let code = match key {
@@ -201,7 +204,7 @@ pub fn parse_key(text: &str) -> anyhow::Result<(KeyModifiers, KeyCode)> {
             KeyCode::F(key[1..].parse()?)
         }
         key if key.chars().count() == 1 => KeyCode::Char(key.chars().next().expect("单字符")),
-        _ => anyhow::bail!("无法识别按键 {text}；例如 ctrl+g、alt+enter、f2"),
+        _ => anyhow::bail!("{}", t!("tui.err.unreadable_key", text = text)),
     };
     Ok(normalize(modifiers, code))
 }
@@ -272,7 +275,8 @@ impl TuiStore {
         )?;
         anyhow::ensure!(
             read_optional(&self.path)? == self.original,
-            "设置文件已被其他窗口修改；请重新打开设置页再保存，当前修改不会丢失"
+            "{}",
+            t!("tui.err.settings_modified")
         );
         let text = toml::to_string_pretty(config)?;
         let temp = parent.join(format!(".tui-{}.tmp", std::process::id()));
@@ -307,9 +311,9 @@ fn read_optional(path: &Path) -> anyhow::Result<String> {
 /// 思考块保留三档显示；工具只使用前两个全局预设。
 fn detail_options() -> Vec<ChoiceOption> {
     vec![
-        ChoiceOption::new("hidden", "隐藏"),
-        ChoiceOption::new("brief", "简略"),
-        ChoiceOption::new("full", "完整"),
+        ChoiceOption::new("hidden", &t!("tui.settings.opt_hidden")),
+        ChoiceOption::new("brief", &t!("tui.settings.opt_brief")),
+        ChoiceOption::new("full", &t!("tui.settings.opt_full")),
     ]
 }
 
@@ -317,53 +321,53 @@ pub fn fields() -> Vec<ConfigField> {
     let descriptions = [
         (
             "thinking_detail",
-            "思考展示",
-            "hidden 仅显示耗时；brief 显示末尾预览；full 显示完整思考。",
+            t!("tui.settings.thinking_detail"),
+            t!("tui.settings.thinking_detail_desc"),
             FieldKind::Choice(detail_options()),
         ),
         (
             "tool_detail",
-            "工具输出展示",
-            "hidden 仅显示标题；brief 显示简要预览；完整输出可点击展开。",
+            t!("tui.settings.tool_detail"),
+            t!("tui.settings.tool_detail_desc"),
             FieldKind::Choice(vec![
-                ChoiceOption::new("hidden", "隐藏"),
-                ChoiceOption::new("brief", "简略"),
+                ChoiceOption::new("hidden", &t!("tui.settings.opt_hidden")),
+                ChoiceOption::new("brief", &t!("tui.settings.opt_brief")),
             ]),
         ),
         (
             "notify_complete",
-            "完成时通知",
-            "终端不在前台时，任务完成后发送桌面通知。",
+            t!("tui.settings.notify_complete"),
+            t!("tui.settings.notify_complete_desc"),
             FieldKind::Bool,
         ),
         (
             "notify_waiting",
-            "等待确认时通知",
-            "终端不在前台时，需要用户授权或回答时发送桌面通知。",
+            t!("tui.settings.notify_waiting"),
+            t!("tui.settings.notify_waiting_desc"),
             FieldKind::Bool,
         ),
         (
             "active_submit",
-            "运行中提交行为",
-            "任务运行期间按 Enter：追加引导指令，或中断当前任务并重新提交。",
+            t!("tui.settings.active_submit"),
+            t!("tui.settings.active_submit_desc"),
             FieldKind::Choice(vec![
-                ChoiceOption::new("steering", "追加引导"),
-                ChoiceOption::new("interrupt", "中断并重提"),
+                ChoiceOption::new("steering", &t!("tui.settings.opt_steering")),
+                ChoiceOption::new("interrupt", &t!("tui.settings.opt_interrupt")),
             ]),
         ),
         (
             "history_scope",
-            "输入历史作用域",
-            "↑/↓ 召回的输入历史范围：全局共享，或仅限当前项目。",
+            t!("tui.settings.history_scope"),
+            t!("tui.settings.history_scope_desc"),
             FieldKind::Choice(vec![
-                ChoiceOption::new("global", "全局"),
-                ChoiceOption::new("project", "当前项目"),
+                ChoiceOption::new("global", &t!("tui.settings.opt_global")),
+                ChoiceOption::new("project", &t!("tui.settings.opt_project")),
             ]),
         ),
         (
             "statusline",
-            "状态栏模板",
-            "可用占位符：{model} {status} {workdir} {branch} {context} {context_percent} {todo} {tokens_in} {tokens_out} {tok_s} {prompt_elapsed} {cost}。",
+            t!("tui.settings.statusline"),
+            t!("tui.settings.statusline_desc"),
             FieldKind::Text,
         ),
     ];
@@ -371,18 +375,18 @@ pub fn fields() -> Vec<ConfigField> {
         .into_iter()
         .map(|(key, label, description, kind)| ConfigField {
             path: vec!["tui".into(), key.into()],
-            tab: "界面".into(),
-            label: label.into(),
-            description: description.into(),
+            tab: t!("tui.tab.ui").into_owned(),
+            label: label.into_owned(),
+            description: description.into_owned(),
             kind,
             advanced: false,
         })
         .collect();
     output.extend(actions().iter().map(|(name, label, _)| ConfigField {
         path: vec!["tui".into(), "keybindings".into(), (*name).into()],
-        tab: "界面".into(),
-        label: (*label).to_owned(),
-        description: "支持绑定多个快捷键（如 ctrl+g、alt+enter）；留空表示禁用。".into(),
+        tab: t!("tui.tab.ui").into_owned(),
+        label: t!(*label).into_owned(),
+        description: t!("tui.settings.keybinding_desc").into_owned(),
         kind: FieldKind::Strings,
         advanced: false,
     }));
@@ -397,7 +401,11 @@ pub fn notify(message: &str) {
             .chars()
             .filter(|character| !character.is_control())
             .collect();
-        let _ = write!(stdout, "\x1b]9;MOC：{message}\x1b\\");
+        let _ = write!(
+            stdout,
+            "\x1b]9;{}\x1b\\",
+            t!("tui.notify.format", message = message.as_str())
+        );
         let _ = stdout.flush();
     }
 }

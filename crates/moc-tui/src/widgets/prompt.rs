@@ -8,6 +8,7 @@
 //! [`PromptState::archived_images`]，召回时按占位 id 换发新 id 挂回。
 
 use moc_protocol::ImageSource;
+use rust_i18n::t;
 use moc_protocol::methods::InputPart;
 use unicode_width::UnicodeWidthChar;
 
@@ -562,7 +563,7 @@ impl PromptState {
                 .find(|(fingerprint, chip)| *fingerprint == entry_fingerprint && chip.id == id)
                 .map(|(_, chip)| (chip.media_type.clone(), chip.data.clone()));
             let Some((media_type, data)) = chip else {
-                out.push_str("[图片]");
+                out.push_str(&t!("tui.steer.image_placeholder"));
                 continue;
             };
             let new_id = self.chip_id();

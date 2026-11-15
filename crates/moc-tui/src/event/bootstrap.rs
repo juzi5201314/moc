@@ -1,5 +1,7 @@
 //! 终端日志、初始会话与环境加载。
 
+use rust_i18n::t;
+
 use super::TuiOptions;
 use super::agents::load_subagents_for_parent;
 use crate::app::App;
@@ -73,7 +75,7 @@ pub(super) async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOp
         app.fusion_defaults = config.fusion.clone();
         app.features = config.features;
         if opts.resume.is_none() && config.default_model.is_none() && opts.model.is_none() {
-            app.set_notice("请选择本次使用的模型，之后会自动记住");
+            app.set_notice(t!("tui.event.pick_model_once").into_owned());
             if !app.models.is_empty() {
                 app.open_model_picker();
             }
@@ -102,7 +104,7 @@ pub(super) async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOp
                             .into_iter()
                             .find(|session| session.cwd == config.cwd)
                             .map(|session| session.id)
-                            .context("当前目录没有可恢复的会话")?
+                            .context(t!("tui.event.no_restorable"))?
                     }
                 };
                 let loaded = client
@@ -139,7 +141,9 @@ pub(super) async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOp
             );
         }
         Ok(None) => {}
-        Err(error) => app.set_error_notice(format!("会话启动失败：{error}")),
+        Err(error) => app.set_error_notice(
+            t!("tui.event.boot_failed_fmt", err = error.to_string()).into_owned(),
+        ),
     }
 }
 

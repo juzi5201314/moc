@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use rust_i18n::t;
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -40,7 +41,7 @@ impl Updater {
     fn new() -> Result<Self> {
         Self::with_api(
             format!("https://api.github.com/repos/{REPO}"),
-            std::env::current_exe().context("无法定位 moc 可执行文件")?,
+            std::env::current_exe().context(t!("cli.update.no_exe").to_string())?,
         )
     }
 
@@ -49,7 +50,7 @@ impl Updater {
             .user_agent(USER_AGENT)
             .timeout(Duration::from_secs(300))
             .build()
-            .context("无法创建 HTTP 客户端")?;
+            .context(t!("cli.update.no_http_client").to_string())?;
         Ok(Self {
             client,
             api_base,
@@ -61,20 +62,21 @@ impl Updater {
         let release = match requested.as_deref() {
             Some(input) => {
                 let release = self.fetch_requested(input).await?;
-                let current = Version::parse(CURRENT_VERSION).expect("Cargo 版本号必须合法");
+                let current =
+                    Version::parse(CURRENT_VERSION).expect("Cargo version must be valid");
                 if parse_tag(&release.tag_name).as_ref() == Some(&current) {
-                    println!("已经是最新版本（v{CURRENT_VERSION}）");
+                    println!("{}", t!("cli.update.latest", v = CURRENT_VERSION));
                     return Ok(());
                 }
                 release
             }
             None => {
                 let Some(release) = self.fetch_latest().await? else {
-                    println!("已经是最新版本（v{CURRENT_VERSION}）");
+                    println!("{}", t!("cli.update.latest", v = CURRENT_VERSION));
                     return Ok(());
                 };
                 if !is_newer(&release.tag_name, CURRENT_VERSION)? {
-                    println!("已经是最新版本（v{CURRENT_VERSION}）");
+                    println!("{}", t!("cli.update.latest", v = CURRENT_VERSION));
                     return Ok(());
                 }
                 release
@@ -84,17 +86,23 @@ impl Updater {
         let tag = release.tag_name.as_str();
         let Some(asset_name) = asset_file_name(tag) else {
             println!(
-                "版本 {tag} 不支持当前平台（{}-{}）",
-                std::env::consts::OS,
-                std::env::consts::ARCH
+                "{}",
+                t!(
+                    "cli.update.unsupported",
+                    tag = tag,
+                    platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+                )
             );
             return Ok(());
         };
         let Some(asset) = release.assets.iter().find(|asset| asset.name == asset_name) else {
             println!(
-                "版本 {tag} 不支持当前平台（{}-{}）",
-                std::env::consts::OS,
-                std::env::consts::ARCH
+                "{}",
+                t!(
+                    "cli.update.unsupported",
+                    tag = tag,
+                    platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+                )
             );
             return Ok(());
         };
@@ -104,10 +112,13 @@ impl Updater {
             .iter()
             .find(|asset| asset.name == checksum_name)
         else {
-            bail!("版本 {tag} 缺少 {checksum_name} 校验文件");
+            bail!(
+                "{}",
+                t!("cli.update.no_checksum", tag = tag, file = checksum_name)
+            );
         };
 
-        println!("正在更新到 {tag} ...");
+        println!("{}", t!("cli.update.downloading", tag = tag));
         let checksum = self
             .download_text(&checksum_asset.browser_download_url)
             .await?;
@@ -116,7 +127,10 @@ impl Updater {
         verify_sha256(&bytes, &expected)?;
         self.install(&bytes)?;
 
-        println!("已更新到 {tag}（原版本 v{CURRENT_VERSION}），重新运行 moc 生效");
+        println!(
+            "{}",
+            t!("cli.update.done", tag = tag, v = CURRENT_VERSION)
+        );
         Ok(())
     }
 
@@ -128,24 +142,24 @@ impl Updater {
             .header("Accept", "application/vnd.github+json")
             .send()
             .await
-            .context("无法访问 GitHub Releases")?;
+            .context(t!("cli.update.gh_unreachable").to_string())?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
         let response = response
             .error_for_status()
-            .context("GitHub Releases 请求失败")?;
+            .context(t!("cli.update.gh_failed").to_string())?;
         response
             .json()
             .await
-            .context("无法解析 Release 数据")
+            .context(t!("cli.update.gh_parse").to_string())
             .map(Some)
     }
 
     async fn fetch_requested(&self, input: &str) -> Result<Release> {
         let input = input.trim();
         if input.is_empty() {
-            bail!("版本号不能为空");
+            bail!("{}", t!("cli.update.empty_version"));
         }
         let mut candidates = vec![input.to_owned()];
         match input.strip_prefix('v') {
@@ -158,7 +172,7 @@ impl Updater {
                 return Ok(release);
             }
         }
-        bail!("未找到版本 {input}")
+        bail!("{}", t!("cli.update.not_found", input = input))
     }
 
     async fn fetch_tag(&self, tag: &str) -> Result<Option<Release>> {
@@ -169,25 +183,26 @@ impl Updater {
             .header("Accept", "application/vnd.github+json")
             .send()
             .await
-            .context("无法访问 GitHub Releases")?;
+            .context(t!("cli.update.gh_unreachable").to_string())?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
         let response = response
             .error_for_status()
-            .context("GitHub Releases 请求失败")?;
+            .context(t!("cli.update.gh_failed").to_string())?;
         response
             .json()
             .await
-            .context("无法解析 Release 数据")
+            .context(t!("cli.update.gh_parse").to_string())
             .map(Some)
     }
 
     fn release_url(&self, tag: Option<&str>) -> Result<reqwest::Url> {
-        let mut url = reqwest::Url::parse(&self.api_base).context("无效的 GitHub API 地址")?;
+        let mut url = reqwest::Url::parse(&self.api_base)
+            .context(t!("cli.update.bad_api_url").to_string())?;
         let mut segments = url
             .path_segments_mut()
-            .map_err(|_| anyhow!("无效的 GitHub API 地址"))?;
+            .map_err(|_| anyhow!("{}", t!("cli.update.bad_api_url")))?;
         segments.push("releases");
         match tag {
             Some(tag) => {
@@ -204,7 +219,7 @@ impl Updater {
 
     async fn download_text(&self, url: &str) -> Result<String> {
         let bytes = self.download_bytes(url).await?;
-        String::from_utf8(bytes).context("校验文件不是 UTF-8 文本")
+        String::from_utf8(bytes).context(t!("cli.update.bad_checksum_utf8").to_string())
     }
 
     async fn download_bytes(&self, url: &str) -> Result<Vec<u8>> {
@@ -213,10 +228,10 @@ impl Updater {
             .get(url)
             .send()
             .await
-            .with_context(|| format!("下载 {url} 失败"))?;
+            .with_context(|| t!("cli.update.download_failed", url = url).into_owned())?;
         let response = response
             .error_for_status()
-            .with_context(|| format!("下载 {url} 失败"))?;
+            .with_context(|| t!("cli.update.download_failed", url = url).into_owned())?;
         response
             .bytes()
             .await
@@ -224,11 +239,14 @@ impl Updater {
                 moc_llm::record_rx(bytes.len() as u64);
                 bytes.to_vec()
             })
-            .with_context(|| format!("读取 {url} 失败"))
+            .with_context(|| t!("cli.update.read_failed", url = url).into_owned())
     }
 
     fn install(&self, bytes: &[u8]) -> Result<()> {
-        let dir = self.exe.parent().context("无法确定 moc 所在目录")?;
+        let dir = self
+            .exe
+            .parent()
+            .context(t!("cli.update.no_dir").to_string())?;
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -238,11 +256,17 @@ impl Updater {
             .create_new(true)
             .write(true)
             .open(&tmp)
-            .with_context(|| format!("无法创建 {}", tmp.display()))?;
+            .with_context(|| {
+                t!("cli.update.create_failed", path = tmp.display().to_string()).into_owned()
+            })?;
         file.write_all(bytes)
-            .with_context(|| format!("无法写入 {}", tmp.display()))?;
+            .with_context(|| {
+                t!("cli.update.write_failed", path = tmp.display().to_string()).into_owned()
+            })?;
         file.sync_all()
-            .with_context(|| format!("无法写入 {}", tmp.display()))?;
+            .with_context(|| {
+                t!("cli.update.write_failed", path = tmp.display().to_string()).into_owned()
+            })?;
         drop(file);
 
         #[cfg(unix)]
@@ -252,12 +276,14 @@ impl Updater {
                 .map(|meta| meta.permissions().mode())
                 .unwrap_or(0o755);
             std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
-                .with_context(|| format!("无法设置 {} 的权限", tmp.display()))?;
+                .with_context(|| {
+                    t!("cli.update.chmod_failed", path = tmp.display().to_string()).into_owned()
+                })?;
         }
 
         if let Err(err) = replace_file(&tmp, &self.exe) {
             let _ = std::fs::remove_file(&tmp);
-            return Err(err).context("无法替换 moc 可执行文件");
+            return Err(err).context(t!("cli.update.replace_failed").to_string());
         }
         Ok(())
     }
@@ -312,7 +338,7 @@ fn replace_file(tmp: &Path, exe: &Path) -> std::io::Result<()> {
 fn replace_file(_tmp: &Path, _exe: &Path) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "当前平台不支持自更新",
+        t!("cli.update.unsupported_self_update").to_string(),
     ))
 }
 
@@ -335,15 +361,20 @@ fn parse_tag(tag: &str) -> Option<Version> {
 }
 
 fn is_newer(tag: &str, current: &str) -> Result<bool> {
-    let latest = parse_tag(tag).with_context(|| format!("无法解析版本号 {tag}"))?;
-    let current = Version::parse(current).context("当前版本号无效")?;
+    let latest = parse_tag(tag)
+        .with_context(|| t!("cli.update.bad_tag", tag = tag).into_owned())?;
+    let current =
+        Version::parse(current).context(t!("cli.update.bad_current").to_string())?;
     Ok(latest > current)
 }
 
 fn parse_checksum(text: &str) -> Result<String> {
-    let hash = text.split_whitespace().next().context("校验文件为空")?;
+    let hash = text
+        .split_whitespace()
+        .next()
+        .context(t!("cli.update.empty_checksum").to_string())?;
     if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("校验文件格式无效");
+        bail!("{}", t!("cli.update.bad_checksum"));
     }
     Ok(hash.to_ascii_lowercase())
 }
@@ -351,7 +382,14 @@ fn parse_checksum(text: &str) -> Result<String> {
 fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
     let actual = format!("{:x}", Sha256::digest(bytes));
     if actual != expected {
-        bail!("下载的二进制校验失败（期望 {expected}，实际 {actual}）");
+        bail!(
+            "{}",
+            t!(
+                "cli.update.verify_failed",
+                expected = expected,
+                actual = actual
+            )
+        );
     }
     Ok(())
 }

@@ -5,6 +5,7 @@ use super::{
 };
 use crate::{CoreConfig, CoreError};
 use moc_protocol::{ConfigScope, SettingsDocument};
+use rust_i18n::t;
 use serde_json::{Value as Json, json};
 use std::path::{Path, PathBuf};
 
@@ -27,13 +28,14 @@ pub(crate) fn revision(text: &str) -> String {
     format!("{:032x}", xxhash_rust::xxh3::xxh3_128(text.as_bytes()))
 }
 fn parse(text: &str) -> Result<toml::Value, CoreError> {
-    toml::from_str(text).map_err(|error| CoreError::Config(format!("配置文件格式有误：{error}")))
+    toml::from_str(text)
+        .map_err(|error| CoreError::Config(t!("core.err.config_toml_invalid", error = error).into_owned()))
 }
 
 pub(crate) fn write_atomic(target: &Path, text: &str) -> Result<(), CoreError> {
     let parent = target
         .parent()
-        .ok_or_else(|| CoreError::Config("配置路径缺少父目录".into()))?;
+        .ok_or_else(|| CoreError::Config(t!("core.err.config_no_parent").into_owned()))?;
     let temp = parent.join(format!(".config-{}.tmp", crate::ids::entry_id()));
     let result = (|| {
         use std::io::Write;
@@ -199,14 +201,16 @@ pub fn patch_plugin(
     value: Option<Json>,
 ) -> Result<(), CoreError> {
     if !is_plugin_key(plugin) {
-        return Err(CoreError::Config(format!("插件名 `{plugin}` 不合法")));
+        return Err(CoreError::Config(
+            t!("core.err.plugin_name_invalid", name = plugin).into_owned(),
+        ));
     }
     if key.is_empty() || key.len() > 256 {
-        return Err(CoreError::Config("插件配置键长度必须为 1..256 字节".into()));
+        return Err(CoreError::Config(t!("core.err.plugin_key_len").into_owned()));
     }
     let parent = config_path
         .parent()
-        .ok_or_else(|| CoreError::Config("插件配置路径缺少父目录".into()))?;
+        .ok_or_else(|| CoreError::Config(t!("core.err.plugin_cfg_no_parent").into_owned()))?;
     std::fs::create_dir_all(parent)?;
     let _guard = crate::session::lock::SessionLockGuard::acquire(
         parent.join("config.lock"),
@@ -220,13 +224,13 @@ pub fn patch_plugin(
     };
     let root = document
         .as_table_mut()
-        .ok_or_else(|| CoreError::Config("配置根必须是 TOML 表".into()))?;
+        .ok_or_else(|| CoreError::Config(t!("core.err.config_root_table").into_owned()))?;
     let plugins_empty = {
         let plugins = root
             .entry("plugins")
             .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
             .as_table_mut()
-            .ok_or_else(|| CoreError::Config("配置中的 plugins 必须是表".into()))?;
+            .ok_or_else(|| CoreError::Config(t!("core.err.plugins_must_table").into_owned()))?;
         let plugin_entry = plugins
             .entry(plugin.to_owned())
             .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
@@ -249,7 +253,9 @@ pub fn patch_plugin(
                 config.insert(
                     key.to_owned(),
                     toml::Value::try_from(value).map_err(|error| {
-                        CoreError::Config(format!("插件配置值无法写入 TOML：{error}"))
+                        CoreError::Config(
+                            t!("core.err.plugin_cfg_write", error = error).into_owned(),
+                        )
                     })?,
                 );
             }
@@ -277,7 +283,9 @@ pub fn patch_plugin(
     super::selection::remove_legacy_roles(&mut document);
     super::remove_deprecated_retention_keys(&mut document);
     let output = toml::to_string_pretty(&document)
-        .map_err(|error| CoreError::Config(format!("配置序列化失败：{error}")))?;
+        .map_err(|error| {
+            CoreError::Config(t!("core.err.config_serialize", error = error).into_owned())
+        })?;
     write_atomic(config_path, &output)
 }
 

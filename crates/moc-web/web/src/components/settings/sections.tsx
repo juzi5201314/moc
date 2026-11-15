@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useT } from "@/lib/i18n";
 import { groupByProvider, modelName, parseSelector } from "@/lib/models";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { type DetailLevel, LEVEL_LABEL } from "@/lib/tool-view";
@@ -103,6 +104,7 @@ function Segmented<T extends string>({
 // ---------- 通用 ----------
 
 export function GeneralSection() {
+  const t = useT();
   const prefs = usePrefs();
   const server = useConnection((state) => state.server);
   const cwd = useConnection((state) => state.config?.cwd);
@@ -113,7 +115,7 @@ export function GeneralSection() {
       return;
     }
     if (typeof Notification === "undefined") {
-      toast.error("当前浏览器不支持桌面通知");
+      toast.error(t("ss.notify_unsupported"));
       return;
     }
     const permission =
@@ -121,7 +123,7 @@ export function GeneralSection() {
         ? await Notification.requestPermission()
         : Notification.permission;
     if (permission !== "granted") {
-      toast.error("浏览器拒绝了通知权限，请在站点设置里允许");
+      toast.error(t("ss.notify_denied"));
       return;
     }
     prefs.set({ notify: true });
@@ -130,46 +132,52 @@ export function GeneralSection() {
   return (
     <div className="space-y-6">
       <section className="space-y-2">
-        <h3 className="text-xs font-medium text-text-tertiary">外观</h3>
+        <h3 className="text-xs font-medium text-text-tertiary">{t("ss.appearance")}</h3>
         <Card>
-          <SettingRow label="主题" description="跟随系统，或固定浅色 / 深色。">
+          <SettingRow label={t("ss.theme")} description={t("ss.theme_desc")}>
             <Segmented<Theme>
               value={prefs.theme}
               onChange={(theme) => prefs.set({ theme })}
               options={[
-                { value: "system", label: "系统", icon: <MonitorIcon className="size-3.5" /> },
-                { value: "light", label: "浅色", icon: <SunIcon className="size-3.5" /> },
-                { value: "dark", label: "深色", icon: <MoonIcon className="size-3.5" /> },
+                {
+                  value: "system",
+                  label: t("ss.theme_system"),
+                  icon: <MonitorIcon className="size-3.5" />,
+                },
+                {
+                  value: "light",
+                  label: t("ss.theme_light"),
+                  icon: <SunIcon className="size-3.5" />,
+                },
+                {
+                  value: "dark",
+                  label: t("ss.theme_dark"),
+                  icon: <MoonIcon className="size-3.5" />,
+                },
               ]}
             />
           </SettingRow>
-          <SettingRow
-            label="思考显示"
-            description="隐藏只留耗时行；简略在生成中露出末尾几行，结束后收成一行；完整显示全文。"
-          >
+          <SettingRow label={t("ss.thinking")} description={t("ss.thinking_desc")}>
             <Segmented<DetailLevel>
               value={prefs.thinkingDetail}
               onChange={(thinkingDetail) => prefs.set({ thinkingDetail })}
-              options={DETAIL_OPTIONS}
+              options={DETAIL_OPTIONS.map((option) => ({ ...option, label: t(option.label) }))}
             />
           </SettingRow>
-          <SettingRow
-            label="工具显示"
-            description="隐藏时只留标题，简略按工具给少量预览；警告始终显示。Ctrl+O 切换两档，完整结果需点击单条工具展开。"
-          >
+          <SettingRow label={t("ss.tool_display")} description={t("ss.tool_display_desc")}>
             <Segmented<DetailLevel>
               value={prefs.toolDetail}
               onChange={(toolDetail) => prefs.set({ toolDetail })}
-              options={TOOL_DETAIL_OPTIONS}
+              options={TOOL_DETAIL_OPTIONS.map((option) => ({ ...option, label: t(option.label) }))}
             />
           </SettingRow>
-          <SettingRow label="差异视图" description="文件变更的展示方式。">
+          <SettingRow label={t("ss.diff")} description={t("ss.diff_desc")}>
             <Segmented
               value={prefs.diffMode}
               onChange={(diffMode) => prefs.set({ diffMode })}
               options={[
-                { value: "unified", label: "统一" },
-                { value: "split", label: "并排" },
+                { value: "unified", label: t("ss.diff_unified") },
+                { value: "split", label: t("ss.diff_split") },
               ]}
             />
           </SettingRow>
@@ -177,25 +185,19 @@ export function GeneralSection() {
       </section>
 
       <section className="space-y-2">
-        <h3 className="text-xs font-medium text-text-tertiary">交互</h3>
+        <h3 className="text-xs font-medium text-text-tertiary">{t("ss.interaction")}</h3>
         <Card>
-          <SettingRow
-            label="生成中按回车"
-            description="补充：把消息并入当前这一轮；中断：停下当前生成，再把消息作为下一轮发送。"
-          >
+          <SettingRow label={t("ss.running_enter")} description={t("ss.running_enter_desc")}>
             <Segmented
               value={prefs.runningEnter}
               onChange={(runningEnter) => prefs.set({ runningEnter })}
               options={[
-                { value: "steer", label: "补充" },
-                { value: "interrupt", label: "中断" },
+                { value: "steer", label: t("q.steer") },
+                { value: "interrupt", label: t("ss.interrupt") },
               ]}
             />
           </SettingRow>
-          <SettingRow
-            label="桌面通知"
-            description="页面在后台时，有授权请求或提问需要处理会弹出系统通知。"
-          >
+          <SettingRow label={t("ss.notify")} description={t("ss.notify_desc")}>
             <div className="flex justify-end">
               <Switch
                 checked={prefs.notify}
@@ -204,20 +206,20 @@ export function GeneralSection() {
             </div>
           </SettingRow>
         </Card>
-        <p className="px-1 text-xs text-text-tertiary">
-          以上偏好保存在 web.toml，对所有连接到此 moc 的浏览器生效。
-        </p>
+        <p className="px-1 text-xs text-text-tertiary">{t("ss.prefs_note")}</p>
       </section>
 
       <section className="space-y-2">
-        <h3 className="text-xs font-medium text-text-tertiary">关于</h3>
+        <h3 className="text-xs font-medium text-text-tertiary">{t("ss.about")}</h3>
         <Card className="py-1">
           <InfoRow
-            label="服务"
-            value={server ? `${server.server.name} ${server.server.version}` : "未连接"}
+            label={t("ss.server")}
+            value={
+              server ? `${server.server.name} ${server.server.version}` : t("sd.not_connected")
+            }
           />
-          <InfoRow label="协议版本" value={server?.protocol_version ?? "—"} />
-          <InfoRow label="Core 工作目录" value={cwd ?? "—"} mono />
+          <InfoRow label={t("ss.protocol")} value={server?.protocol_version ?? "—"} />
+          <InfoRow label={t("ss.cwd")} value={cwd ?? "—"} mono />
         </Card>
       </section>
     </div>
@@ -241,11 +243,12 @@ function InfoRow({ label, value, mono }: { label: string; value: string; mono?: 
 // ---------- 快捷键 ----------
 
 export function ShortcutsSection() {
+  const t = useT();
   return (
     <Card className="py-1">
       {SHORTCUTS.map((item) => (
         <div key={item.keys} className="flex items-center justify-between py-2.5 text-ui">
-          <span className="text-foreground">{item.label}</span>
+          <span className="text-foreground">{t(item.label)}</span>
           <span className="flex gap-1">
             {item.keys.split(" ").map((key) => (
               <Kbd key={key} className="h-5 min-w-5 px-1.5 text-2xs">
@@ -263,6 +266,7 @@ export function ShortcutsSection() {
 
 /** 模型 selector 编辑器：模型下拉 + 思考强度下拉，写成 `provider/model[:level]`。 */
 function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDocument }) {
+  const t = useT();
   const models = useConnection(selectModels);
   const { explicit, fallback } = fieldValues(doc, field.path);
   const selector = typeof explicit === "string" ? explicit : "";
@@ -273,10 +277,10 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
   const explorer = field.path[1] === "roles" && field.path[2] === "explore";
   const unknown = selector && !parsed.model && !inherited && !(explorer && selector === "none");
 
-  let fallbackLabel = "默认";
-  if (fallbackText === "inherit") fallbackLabel = "默认（沿用父会话当前模型）";
-  else if (explorer && fallbackText === "none") fallbackLabel = "默认（禁用 Explorer 子代理）";
-  else if (fallbackText) fallbackLabel = `默认（${modelName(fallbackText)}）`;
+  let fallbackLabel = t("common.default");
+  if (fallbackText === "inherit") fallbackLabel = t("ss.inherit_parent");
+  else if (explorer && fallbackText === "none") fallbackLabel = t("ss.inherit_none_explorer");
+  else if (fallbackText) fallbackLabel = t("ss.default_model", { model: modelName(fallbackText) });
 
   const write = (id: string, level?: string) =>
     void writeField(field.path, id ? (level ? `${id}:${level}` : id) : undefined);
@@ -301,11 +305,13 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
             <SelectItem value={INHERIT}>{fallbackLabel}</SelectItem>
             {explorer && (
               <>
-                <SelectItem value="inherit">沿用父会话当前模型</SelectItem>
-                <SelectItem value="none">禁用 Explorer 子代理</SelectItem>
+                <SelectItem value="inherit">{t("ss.use_parent")}</SelectItem>
+                <SelectItem value="none">{t("ss.disable_explorer")}</SelectItem>
               </>
             )}
-            {unknown && <SelectItem value={parsed.id}>{parsed.id}（未找到）</SelectItem>}
+            {unknown && (
+              <SelectItem value={parsed.id}>{t("ss.not_found", { id: parsed.id })}</SelectItem>
+            )}
             {groupByProvider(models).map(([provider, list]) => (
               <SelectGroup key={provider}>
                 <SelectLabel className="text-2xs">{provider}</SelectLabel>
@@ -326,12 +332,12 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
             <SelectTrigger
               size="sm"
               className="h-8 w-[84px] shrink-0 rounded-lg text-ui shadow-none"
-              aria-label="思考强度"
+              aria-label={t("mp.level")}
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={INHERIT}>默认</SelectItem>
+              <SelectItem value={INHERIT}>{t("common.default")}</SelectItem>
               {levels.map((level) => (
                 <SelectItem key={level} value={level}>
                   {level}
@@ -362,6 +368,7 @@ export function RolesSection({ doc }: { doc: SettingsDocument }) {
 // ---------- 插件 ----------
 
 export function PluginsOverview() {
+  const t = useT();
   const active = useTabs((state) => state.active);
   // 草稿会话在 core 里不存在：传空 id，由 core 按自身工作目录发现插件。
   const sessionId = active && active !== "draft-session" ? active : "";
@@ -380,7 +387,7 @@ export function PluginsOverview() {
       }
       const result = await rpc.call<PluginListResult>("plugin/list", { session_id: sessionId });
       setPlugins(result.plugins);
-      if (reload) toast.success("插件已重新加载");
+      if (reload) toast.success(t("slash.plugins_reloaded"));
     } catch (loadError) {
       setError(errorText(loadError));
     } finally {
@@ -396,16 +403,18 @@ export function PluginsOverview() {
   return (
     <section className="space-y-2">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-medium text-text-tertiary">已加载 · {plugins?.length ?? 0}</h3>
+        <h3 className="text-xs font-medium text-text-tertiary">
+          {t("ss.plugins_loaded", { n: plugins?.length ?? 0 })}
+        </h3>
         <Button size="xs" variant="outline" disabled={busy} onClick={() => void load(true)}>
           {busy ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
-          重新加载
+          {t("ss.reload")}
         </Button>
       </div>
       {error && <p className="text-xs text-destructive">{error}</p>}
       <Card>
         {plugins?.length === 0 && (
-          <p className="py-6 text-center text-ui text-text-tertiary">当前工作区没有发现插件。</p>
+          <p className="py-6 text-center text-ui text-text-tertiary">{t("ss.no_plugins")}</p>
         )}
         {plugins?.map((plugin) => (
           <div key={`${plugin.source}:${plugin.name}`} className="space-y-1.5 py-3">
@@ -463,6 +472,7 @@ export function PluginsOverview() {
 // ---------- 会话存储维护 ----------
 
 export function MaintenanceCard() {
+  const t = useT();
   const [report, setReport] = useState<MaintenanceReport | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -471,14 +481,17 @@ export function MaintenanceCard() {
     try {
       const action: ConfigAction = { action: "maintenance", apply };
       const reply = await rpc.call<ConfigReply>("config/manage", action);
-      if (reply.kind !== "maintenance") throw new Error("config/manage 返回了非 maintenance 响应");
+      if (reply.kind !== "maintenance") throw new Error(t("ss.maint_bad_reply"));
       setReport(reply.data);
       if (apply)
         toast.success(
-          `已清理 ${reply.data.removed.length} 项，释放 ${formatBytes(reply.data.bytes)}`,
+          t("ss.maint_done", {
+            n: reply.data.removed.length,
+            bytes: formatBytes(reply.data.bytes),
+          }),
         );
     } catch (error) {
-      toast.error(`清理失败：${errorText(error)}`);
+      toast.error(t("ss.maint_failed", { error: errorText(error) }));
     } finally {
       setBusy(false);
     }
@@ -487,17 +500,21 @@ export function MaintenanceCard() {
   return (
     <Card>
       <SettingRow
-        label="清理过期数据"
+        label={t("ss.maint_label")}
         description={
           report && !report.applied
-            ? `可清理 ${report.removed.length} 项（${formatBytes(report.bytes)}），${report.protected} 项受保护不会删除。`
-            : "按上面的保留天数删除过期的临时产物与任务日志；先检查再清理。"
+            ? t("ss.maint_preview", {
+                n: report.removed.length,
+                bytes: formatBytes(report.bytes),
+                protected: report.protected,
+              })
+            : t("ss.maint_desc")
         }
       >
         <div className="flex justify-end gap-1.5">
           <Button size="xs" variant="outline" disabled={busy} onClick={() => void run(false)}>
             {busy && !report && <Loader2Icon className="animate-spin" />}
-            检查
+            {t("ss.maint_check")}
           </Button>
           <Button
             size="xs"
@@ -505,7 +522,7 @@ export function MaintenanceCard() {
             disabled={busy || !report || report.applied || report.removed.length === 0}
             onClick={() => void run(true)}
           >
-            清理
+            {t("ss.maint_run")}
           </Button>
         </div>
       </SettingRow>

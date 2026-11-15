@@ -2,6 +2,7 @@
 //!
 //! 编辑器只处理按键与草稿，产出 [`Outcome`]；写入配置、撤回栈与错误提示由 forms 负责。
 
+use rust_i18n::t;
 use super::controls::{Empty, Entry, ListSpec, Pick, PickAction, RecordSpec, current_pick};
 use super::*;
 use crate::widgets::prompt::edit_input;
@@ -225,62 +226,75 @@ impl Editor {
     }
 
     /// 底部操作提示：`(键, 动作)`，最可省的在前。
-    pub fn hints(&self) -> Vec<(&'static str, &'static str)> {
+    pub fn hints(&self) -> Vec<(&'static str, String)> {
+        let h = |key| t!(key).into_owned();
         match self {
             Editor::Text(editor) if editor.multiline() => {
-                vec![("ctrl+s", "应用"), ("esc", "取消")]
+                vec![("ctrl+s", h("tui.hint.apply")), ("esc", h("tui.hint.cancel"))]
             }
             Editor::Text(editor) => {
                 let mut items = Vec::new();
                 match editor.kind {
-                    FieldKind::Secret => items.push(("f6", "显示/隐藏")),
+                    FieldKind::Secret => items.push(("f6", h("tui.hint.reveal"))),
                     FieldKind::Integer
                     | FieldKind::Number
                     | FieldKind::SignedInteger
-                    | FieldKind::SignedNumber => items.push(("", "支持 200k、1m")),
+                    | FieldKind::SignedNumber => items.push(("", h("tui.hint.suffix_units"))),
                     _ => {}
                 }
-                items.extend([("enter", "应用"), ("esc", "取消")]);
+                items.extend([("enter", h("tui.hint.apply")), ("esc", h("tui.hint.cancel"))]);
                 items
             }
-            Editor::Select(_) => vec![("↑↓", "选择"), ("enter", "应用"), ("esc", "取消")],
+            Editor::Select(_) => vec![
+                ("↑↓", h("tui.hint.choose")),
+                ("enter", h("tui.hint.apply")),
+                ("esc", h("tui.hint.cancel")),
+            ],
             Editor::List(editor) => match &editor.draft {
                 Some(_) if matches!(editor.spec.custom, Some(Entry::Key)) => {
-                    vec![("", "按下要绑定的键"), ("esc", "取消")]
+                    vec![("", h("tui.hint.press_key")), ("esc", h("tui.hint.cancel"))]
                 }
-                Some(_) => vec![("enter", "确定"), ("esc", "取消")],
+                Some(_) => vec![("enter", h("tui.hint.ok")), ("esc", h("tui.hint.cancel"))],
                 None => {
-                    let mut items = vec![("↑↓", "移动")];
+                    let mut items = vec![("↑↓", h("tui.hint.move"))];
                     if editor.spec.ordered {
-                        items.push(("shift+↑↓", "调整顺序"));
+                        items.push(("shift+↑↓", h("tui.hint.reorder")));
                     }
                     if editor.checklist() {
-                        items.push(("space", "勾选"));
+                        items.push(("space", h("tui.hint.check")));
                     } else {
-                        items.push(("space", "修改"));
+                        items.push(("space", h("tui.hint.modify")));
                     }
                     if editor.spec.custom.is_some() {
-                        items.push(("a", "添加"));
+                        items.push(("a", h("tui.hint.add")));
                     }
-                    items.push(("del", "移除"));
+                    items.push(("del", h("tui.hint.remove")));
                     // 光标在「添加」行时 Enter 是添加，保存只能用 Ctrl+S。
                     if editor.cursor < editor.items.len() {
-                        items.push(("enter", "应用"));
+                        items.push(("enter", h("tui.hint.apply")));
                     } else {
-                        items.push(("ctrl+s", "应用"));
+                        items.push(("ctrl+s", h("tui.hint.apply")));
                     }
-                    items.push(("esc", "取消"));
+                    items.push(("esc", h("tui.hint.cancel")));
                     items
                 }
             },
             Editor::Record(editor) => match &editor.draft {
-                Some(_) => vec![("enter", "确定"), ("ctrl+s", "保存"), ("esc", "取消")],
+                Some(_) => vec![
+                    ("enter", h("tui.hint.ok")),
+                    ("ctrl+s", h("tui.hint.save")),
+                    ("esc", h("tui.hint.cancel")),
+                ],
                 None => {
-                    let mut items = vec![("↑↓", "移动"), ("enter", "编辑")];
+                    let mut items = vec![("↑↓", h("tui.hint.move")), ("enter", h("tui.hint.edit"))];
                     if editor.spec.custom {
-                        items.push(("a", "添加键"));
+                        items.push(("a", h("tui.hint.add_key")));
                     }
-                    items.extend([("del", "清除"), ("ctrl+s", "保存"), ("esc", "取消")]);
+                    items.extend([
+                        ("del", h("tui.hint.clear")),
+                        ("ctrl+s", h("tui.hint.save")),
+                        ("esc", h("tui.hint.cancel")),
+                    ]);
                     items
                 }
             },
@@ -438,7 +452,7 @@ impl ListEditor {
             return match &self.spec.empty {
                 Empty::Array => Ok(Some(json!([]))),
                 Empty::Default(_) => Ok(None),
-                Empty::Reject(message) => Err(anyhow::anyhow!(*message)),
+                Empty::Reject(message) => Err(anyhow::anyhow!("{}", t!(*message))),
             };
         }
         Ok(Some(json!(chosen)))
@@ -547,7 +561,7 @@ impl ListEditor {
                 Some(text) => text,
                 // 单独按下修饰键：继续等完整的组合键。
                 None if matches!(code, KeyCode::Modifier(_)) => return Outcome::Stay,
-                None => return Outcome::Error("这个键无法写进配置，请换一个".into()),
+                None => return Outcome::Error(t!("tui.ctrl.bad_key").into_owned()),
             },
             Entry::Text | Entry::Level => {
                 let draft = self.draft.as_mut().expect("已在草稿态");
@@ -576,7 +590,8 @@ impl ListEditor {
                 let item = &mut self.items[found];
                 anyhow::ensure!(
                     editing.is_none() && item.preset && !item.checked,
-                    "“{value}”已在列表中"
+                    "{}",
+                    t!("tui.ctrl.already_in_list", value = value.as_str())
                 );
                 item.checked = true;
                 self.cursor = found;
@@ -688,7 +703,11 @@ impl RecordEditor {
             .copied()
             .filter(|key| !object.contains_key(*key))
             .collect();
-        anyhow::ensure!(missing.is_empty(), "还需要填写：{}", missing.join("、"));
+        anyhow::ensure!(
+            missing.is_empty(),
+            "{}",
+            t!("tui.ctrl.required_missing", keys = missing.join(&t!("tui.ctrl.list_sep")))
+        );
         Ok(Some(Value::Object(object)))
     }
 
@@ -764,11 +783,13 @@ impl RecordEditor {
             None => {
                 anyhow::ensure!(
                     !text.is_empty() && !text.contains('\n'),
-                    "键名不能为空，也不能换行"
+                    "{}",
+                    t!("tui.ctrl.key_empty")
                 );
                 anyhow::ensure!(
                     !self.rows.iter().any(|row| row.key == text),
-                    "键 {text} 已存在"
+                    "{}",
+                    t!("tui.ctrl.key_exists", key = text.as_str())
                 );
                 self.rows.push(RecordRow {
                     key: text,

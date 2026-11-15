@@ -3,6 +3,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { PanelEmpty } from "@/components/panels/inspector-tabs";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { useFiles } from "@/store/files";
 import { useLayout } from "@/store/layout";
@@ -15,6 +16,7 @@ import { FilesToolbar } from "./files-toolbar";
 const WIDE_LAYOUT = 640;
 
 export function FilesTab({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const isDraft = sessionId === "draft-session";
   const files = useFiles((state) => state.bySession[sessionId]);
   const root = files?.root ?? "workspace";
@@ -49,9 +51,9 @@ export function FilesTab({ sessionId }: { sessionId: string }) {
     <div ref={containerRef} className="flex h-full min-h-0 w-full flex-col">
       <FilesToolbar sessionId={sessionId} workspaceRoot={workspaceRoot} />
       {isDraft && root === "session" ? (
-        <PanelEmpty title="发送第一条消息后可浏览会话空间" />
+        <PanelEmpty title={t("ft.draft_hint")} />
       ) : !cwd && root === "workspace" ? (
-        <PanelEmpty title="工作区路径还没就绪" />
+        <PanelEmpty title={t("ft.no_cwd")} />
       ) : wide ? (
         <div className="flex min-h-0 flex-1">
           <div className="min-w-0 shrink-0 overflow-y-auto" style={{ width: treeWidth }}>
@@ -62,7 +64,7 @@ export function FilesTab({ sessionId }: { sessionId: string }) {
             {hasTabs ? (
               <EditorArea sessionId={sessionId} workspaceRoot={workspaceRoot} stacked={false} />
             ) : (
-              <PanelEmpty title="还没有打开的文件" hint="从左侧树里挑一个文件。" />
+              <PanelEmpty title={t("ft.no_files")} hint={t("ft.pick_hint")} />
             )}
           </div>
         </div>

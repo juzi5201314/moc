@@ -4,6 +4,7 @@
 //! 同一份恢复序列；顺序与启用相反，保证终端状态无残留。
 
 use anyhow::Context;
+use rust_i18n::t;
 use crossterm::cursor::MoveTo;
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
@@ -40,7 +41,7 @@ pub struct TerminalGuard {
 impl TerminalGuard {
     /// 进入交互模式：raw mode + 备用屏 + 鼠标 + bracketed paste + 键盘协议。
     pub fn enter() -> anyhow::Result<Self> {
-        enable_raw_mode().context("启用 raw mode 失败")?;
+        enable_raw_mode().context(t!("tui.err.raw_mode"))?;
         // 协商必须在输入线程启动前完成：crossterm 写 `CSI ? u` + `CSI c`
         // 并读取应答（终端不回话时最多等 2 秒），期间键入的按键仍留在
         // 事件队列里，不会被吞掉。
@@ -56,7 +57,7 @@ impl TerminalGuard {
             PushKeyboardEnhancementFlags(KEYBOARD_FLAGS)
         ) {
             let _ = disable_raw_mode();
-            return Err(error).context("切换备用屏/鼠标捕获失败");
+            return Err(error).context(t!("tui.err.alt_screen"));
         }
         let terminal = match Terminal::new(CrosstermBackend::new(stdout)) {
             Ok(terminal) => terminal,
@@ -71,7 +72,7 @@ impl TerminalGuard {
                     LeaveAlternateScreen
                 );
                 let _ = disable_raw_mode();
-                return Err(error).context("初始化终端缓冲失败");
+                return Err(error).context(t!("tui.err.term_buf"));
             }
         };
         Ok(Self {
@@ -136,9 +137,10 @@ impl TerminalGuard {
     /// clear 序列，再换一个双缓冲全空的新 Terminal，下一帧必然写满全屏。
     pub fn reset_screen(&mut self) -> anyhow::Result<()> {
         let mut stdout = std::io::stdout();
-        crossterm::execute!(stdout, Clear(ClearType::All), MoveTo(0, 0)).context("清屏失败")?;
+        crossterm::execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))
+            .context(t!("tui.err.clear_screen"))?;
         self.terminal =
-            Terminal::new(CrosstermBackend::new(stdout)).context("重建终端双缓冲失败")?;
+            Terminal::new(CrosstermBackend::new(stdout)).context(t!("tui.err.term_rebuild"))?;
         Ok(())
     }
 

@@ -15,6 +15,7 @@ use moc_protocol::{
     SessionRetry, SessionRetryParams, SessionSteer, SessionUnsteer, SteerParams, UnsteerParams,
     methods::PromptMode,
 };
+use rust_i18n::t;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub struct QueuedPrompt {
@@ -48,7 +49,7 @@ pub struct PendingSteer {
 
 pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
     if app.skills_compacting {
-        app.set_notice("正在维护技能摘要，完成或取消后才能发送消息");
+        app.set_notice(t!("tui.queue.skills_busy"));
         return;
     }
     if crate::btw::submit(app, connection) {
@@ -58,11 +59,11 @@ pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
         return;
     }
     if app.read_only {
-        app.set_notice("会话只读：另一个 moc 进程正在写入，关闭它或退出后才能操作");
+        app.set_notice(t!("tui.queue.read_only"));
         return;
     }
     if app.prompt.is_bash_command() && app.prompt.has_attached_images() {
-        app.set_notice("Bash 命令不支持图片，请移除图片后执行");
+        app.set_notice(t!("tui.queue.no_images"));
         return;
     }
     // 先确认会话存在，再动输入框：被拒绝的草稿要原样留在用户手里。
@@ -386,7 +387,7 @@ pub fn steering_applied(app: &mut App, session: &str, id: u64, text: &str, curre
     match pending {
         Some(entry) => {
             if entry.withdrawal.is_some() {
-                app.set_notice("消息已进入本轮上下文，无法撤回");
+                app.set_notice(t!("tui.queue.too_late"));
             }
             if current {
                 let body = if entry.display_text.is_empty() {
@@ -395,7 +396,7 @@ pub fn steering_applied(app: &mut App, session: &str, id: u64, text: &str, curre
                     entry.display_text
                 };
                 app.push_user(if body.is_empty() {
-                    "[图片]".to_owned()
+                    t!("tui.queue.image").into_owned()
                 } else {
                     body
                 });
@@ -403,7 +404,7 @@ pub fn steering_applied(app: &mut App, session: &str, id: u64, text: &str, curre
         }
         None if current => {
             let body = if text.is_empty() {
-                "[图片]".to_owned()
+                t!("tui.queue.image").into_owned()
             } else {
                 text.to_owned()
             };
@@ -416,7 +417,7 @@ pub fn steering_applied(app: &mut App, session: &str, id: u64, text: &str, curre
 /// 把撤回的草稿恢复到输入框；输入框已有待编辑草稿时排回队列，避免覆盖。
 pub fn restore_or_requeue(app: &mut App, session: &str, prompt: QueuedPrompt) {
     if app.prompt_stash.is_some() {
-        app.set_notice("输入框正在编辑其他消息，撤回的草稿已排回待发送");
+        app.set_notice(t!("tui.queue.draft_queued"));
         app.queues
             .entry(session.to_owned())
             .or_default()
@@ -435,7 +436,7 @@ pub fn edit(app: &mut App, connection: &EmbeddedConnection, id: u64) {
         return;
     };
     if app.prompt_stash.is_some() {
-        app.set_notice("请先发送或排队当前正在编辑的消息");
+        app.set_notice(t!("tui.queue.edit_first"));
         return;
     }
     if let Some(pending) = app.steers.get_mut(&session).and_then(|entries| {
@@ -569,11 +570,11 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     );
     // 插队和队列都非零时才分列计数，只有一种就只看总数。
     let breakdown = if !steers.is_empty() && queue_len > 0 {
-        format!(" · 插队 {} / 队列 {queue_len}", steers.len())
+        t!("tui.queue.breakdown_fmt", s = steers.len(), q = queue_len).into_owned()
     } else {
         String::new()
     };
-    let title = format!("待发送 {total}{breakdown} · 点击/× 撤回");
+    let title = t!("tui.queue.title_fmt", total = total, breakdown = breakdown).into_owned();
     let panel = overlay::panel(theme).title(overlay::title_span(
         &title,
         usize::from(area.width.saturating_sub(4)),
@@ -584,18 +585,27 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     frame.render_widget(panel, area);
     let text_width = usize::from(inner.width.saturating_sub(2));
 
-    let mut rows: Vec<(u64, &'static str, usize, String)> = Vec::with_capacity(total);
+    let mut rows: Vec<(u64, bool, usize, String)> = Vec::with_capacity(total);
     for (index, pending) in steers.iter().enumerate() {
-        let text = pending.display_text.lines().next().unwrap_or("[图片]");
-        rows.push((pending.id, "插队", index + 1, text.to_owned()));
+        let text = pending
+            .display_text
+            .lines()
+            .next()
+            .map_or_else(|| t!("tui.queue.image").into_owned(), str::to_owned);
+        rows.push((pending.id, true, index + 1, text));
     }
     if let Some(queue) = app.queues.get(&session.id) {
         for (index, prompt) in queue.iter().enumerate() {
-            let text = prompt.draft.text.lines().next().unwrap_or("[图片]");
-            rows.push((prompt.id, "队列", index + 1, text.to_owned()));
+            let text = prompt
+                .draft
+                .text
+                .lines()
+                .next()
+                .map_or_else(|| t!("tui.queue.image").into_owned(), str::to_owned);
+            rows.push((prompt.id, false, index + 1, text));
         }
     }
-    for (row_index, (id, kind, number, text)) in rows
+    for (row_index, (id, is_steer, number, text)) in rows
         .into_iter()
         .skip(app.queue_offset)
         .take(visible)
@@ -607,14 +617,17 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             inner.width.saturating_sub(2),
             1,
         );
-        let label = if kind == "插队" {
-            Style::new().fg(theme.accent_running)
+        let (kind, label) = if is_steer {
+            (
+                t!("tui.queue.steer"),
+                Style::new().fg(theme.accent_running),
+            )
         } else {
-            Style::new().fg(theme.text_primary)
+            (t!("tui.queue.queued"), Style::new().fg(theme.text_primary))
         };
         let body = wrap::truncate(
             format!("{number}. {text}"),
-            text_width.saturating_sub(wrap::str_width(kind) + 1),
+            text_width.saturating_sub(wrap::str_width(&kind) + 1),
         )
         .into_owned();
         frame.render_widget(

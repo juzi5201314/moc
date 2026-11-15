@@ -1,6 +1,7 @@
 //! 当前上下文的只读组装；正文视图复用实际发送的回放、预算与协议编码。
 mod outline;
 mod view;
+use rust_i18n::t;
 use super::{CoreInner, to_rpc};
 use crate::{
     compact,
@@ -156,7 +157,7 @@ fn build_view(
     view.bound_text(view::TEXT_CACHE_BYTES).map_err(|error| {
         RpcError::new(
             moc_protocol::RpcErrorCode::InternalError.code(),
-            format!("保存上下文快照失败：{error}"),
+            t!("core.err.ctx_snapshot_save", error = error).into_owned(),
         )
     })?;
     Ok(view)

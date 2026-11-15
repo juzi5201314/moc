@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { WorkflowModelSelect } from "@/components/workflow/workflow-model-select";
+import { type MsgKey, t, useT } from "@/lib/i18n";
 import { type ChartSpecLite, chartToMermaid } from "@/lib/workflow-chart";
 import type { WorkflowRunStatus } from "@/protocol/types";
 import { useTranscript } from "@/store/transcript";
@@ -39,17 +40,18 @@ const WorkflowGraph = lazy(() =>
   })),
 );
 
-const STATUS_LABEL: Record<string, string> = {
-  pending: "等待",
-  running: "运行中",
-  completed: "已完成",
-  errored: "失败",
-  stopped: "已停止",
+const STATUS_LABEL: Record<string, MsgKey> = {
+  pending: "wfr.pending",
+  running: "ag.running",
+  completed: "ag.completed",
+  errored: "wfr.errored",
+  stopped: "wfr.stopped",
 };
 
 function statusText(status: WorkflowRunStatus | null): string {
   if (!status) return "…";
-  return STATUS_LABEL[status.state] ?? status.state;
+  const key = STATUS_LABEL[status.state];
+  return key ? t(key) : status.state;
 }
 
 /** report item 的 dot path 取值（"a.b" → item.a.b）。 */
@@ -101,7 +103,7 @@ function ArtifactBlock({
             : JSON.stringify(result.content, null, 2),
         ),
       )
-      .catch((error) => toast.error(`读取 artifact 失败：${error}`));
+      .catch((error) => toast.error(t("wfr.artifact_failed", { error: String(error) })));
   };
 
   return (
@@ -137,7 +139,7 @@ function ArtifactBlock({
             onClick={() => load(version)}
             className="h-7 px-2 text-ui"
           >
-            查看内容
+            {t("wfr.view")}
           </Button>
         ) : member === "markdown" ? (
           <Streamdown plugins={streamdownPlugins} controls={streamdownControls}>
@@ -246,9 +248,10 @@ function BoardArtifact({ spec, items }: { spec: Record<string, unknown>; items: 
 }
 
 function ChartArtifact({ spec, items }: { spec: Record<string, unknown>; items: unknown[] }) {
+  const t = useT();
   // 经现有 Streamdown/Mermaid 管线渲染（xychart-beta / quadrantChart）。
   const source = chartToMermaid(spec as ChartSpecLite, items);
-  if (!source) return <div className="text-ui text-text-tertiary">（无数据点）</div>;
+  if (!source) return <div className="text-ui text-text-tertiary">{t("wfr.no_data")}</div>;
   return (
     <Streamdown plugins={streamdownPlugins} controls={streamdownControls}>
       {`\`\`\`mermaid
@@ -259,6 +262,7 @@ ${source}
 }
 
 export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const readOnly = useTranscript((s) => s.bySession[sessionId]?.readOnly ?? true);
   const runsOpen = useWorkflow((s) => s.runsOpen);
   const panelRun = useWorkflow((s) => s.panelRun);
@@ -270,7 +274,9 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
     setBusy(true);
     void fn()
       .catch((error) =>
-        toast.error(`${label}失败：${error instanceof Error ? error.message : error}`),
+        toast.error(
+          t("wfr.act_failed", { label, error: error instanceof Error ? error.message : error }),
+        ),
       )
       .finally(() => setBusy(false));
   };
@@ -283,13 +289,15 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
             <DialogTitle>workflow runs</DialogTitle>
           </DialogHeader>
           <div className="max-h-[60vh] space-y-1 overflow-y-auto">
-            {runList.length === 0 && <div className="text-ui text-muted-foreground">没有 run</div>}
+            {runList.length === 0 && (
+              <div className="text-ui text-muted-foreground">{t("wfr.no_runs")}</div>
+            )}
             {runList.map((run) => (
               <button
                 key={run.run_id}
                 type="button"
                 className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-ui hover:bg-accent"
-                onClick={() => act(() => openWorkflowRun(sessionId, run.run_id), "打开 run")}
+                onClick={() => act(() => openWorkflowRun(sessionId, run.run_id), t("wfr.open"))}
               >
                 <Badge variant="secondary">{statusText(run.status)}</Badge>
                 <span className="min-w-0 flex-1 truncate">{run.title ?? run.run_id}</span>
@@ -356,7 +364,7 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
                   if (!selector) return;
                   act(
                     () => workflowSetRoleModel(sessionId, view.run_id, role.role_id, selector),
-                    "role 模型热改",
+                    t("wfr.hot_swap"),
                   );
                 }}
               />
@@ -428,18 +436,18 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
             <Button
               variant="ghost"
               disabled={readOnly || busy}
-              onClick={() => act(() => workflowResume(sessionId, view.run_id), "续跑")}
+              onClick={() => act(() => workflowResume(sessionId, view.run_id), t("wfr.resume"))}
             >
-              续跑
+              {t("wfr.resume")}
             </Button>
           )}
           {stoppable && (
             <Button
               variant="destructive"
               disabled={readOnly || busy}
-              onClick={() => act(() => workflowStop(sessionId, view.run_id), "停止")}
+              onClick={() => act(() => workflowStop(sessionId, view.run_id), t("wfr.stop"))}
             >
-              停止
+              {t("wfr.stop")}
             </Button>
           )}
         </div>

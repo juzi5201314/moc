@@ -13,6 +13,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { useT } from "@/lib/i18n";
 import { groupByProvider, modelName, parseSelector, reasoningLevels } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { selectModels, useConnection } from "@/store/connection";
@@ -25,6 +26,7 @@ export type WorkflowModelSelectProps = {
 };
 
 export function WorkflowModelSelect({ value, onSelect, disabled }: WorkflowModelSelectProps) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const models = useConnection(selectModels);
   const parsed = parseSelector(value, models);
@@ -43,10 +45,10 @@ export function WorkflowModelSelect({ value, onSelect, disabled }: WorkflowModel
       </PopoverTrigger>
       <PopoverContent className="w-[300px] p-0" align="start">
         <Command>
-          <CommandInput placeholder="搜索模型" />
+          <CommandInput placeholder={t("mp.search")} />
           <CommandList>
-            <CommandEmpty>没有匹配的模型</CommandEmpty>
-            <CommandGroup heading="继承">
+            <CommandEmpty>{t("mp.no_match")}</CommandEmpty>
+            <CommandGroup heading={t("wfm.inherit")}>
               <CommandItem
                 value="inherit"
                 onSelect={() => {
@@ -55,7 +57,7 @@ export function WorkflowModelSelect({ value, onSelect, disabled }: WorkflowModel
                 }}
               >
                 <CheckIcon className={cn("size-4", !value ? "opacity-100" : "opacity-0")} />
-                默认（继承）
+                {t("wfm.inherit_item")}
               </CommandItem>
             </CommandGroup>
             {groupByProvider(models).map(([provider, list]) => (
@@ -80,7 +82,7 @@ export function WorkflowModelSelect({ value, onSelect, disabled }: WorkflowModel
               </CommandGroup>
             ))}
             {levels.length > 0 && (
-              <CommandGroup heading="思考强度">
+              <CommandGroup heading={t("mp.level")}>
                 {levels.map((level) => (
                   <CommandItem
                     key={level}

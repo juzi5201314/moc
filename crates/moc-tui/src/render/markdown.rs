@@ -14,6 +14,7 @@ use moc_core::chart::RawTable;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use rust_i18n::t;
 
 use super::graphics::GraphicsSupport;
 use super::image::{ImagePlacement, ImageStore};
@@ -23,8 +24,8 @@ use crate::theme::Theme;
 use crate::transcript::TableChartState;
 
 /// 表格入口的两种形态：展开图表 / 隐藏图表。
-const ENTRY_CHART: &str = "▸ 可视化图表";
-const ENTRY_HIDE: &str = "▾ 隐藏图表";
+const ENTRY_CHART: &str = "tui.md.chart";
+const ENTRY_HIDE: &str = "tui.md.hide_chart";
 
 /// 参考链接直接展示的上限：超出时收进可点入口，点击后全量列出。
 const LINKS_SHOWN: usize = 5;
@@ -319,7 +320,7 @@ impl<'a> MdRenderer<'a> {
         if !links.is_empty() {
             self.ensure_block_gap();
             self.out.push(Line::from(Span::styled(
-                "参考链接：",
+                t!("tui.md.ref_links").into_owned(),
                 Style::new()
                     .fg(self.theme.gray_dim)
                     .add_modifier(Modifier::BOLD),
@@ -364,9 +365,9 @@ impl<'a> MdRenderer<'a> {
             }
             if links.len() > LINKS_SHOWN {
                 let label = if folded {
-                    format!("▸ 还有 {} 条链接", links.len() - shown)
+                    t!("tui.md.more_links_fmt", count = links.len() - shown).into_owned()
                 } else {
-                    "▾ 收起链接".to_owned()
+                    t!("tui.md.collapse_links").into_owned()
                 };
                 let row = self.out.len();
                 let width = str_width(&label);
@@ -396,8 +397,8 @@ impl<'a> MdRenderer<'a> {
         // 落定第 k 个入口会让它之后的每一行下移一行：插入行号与图表占位行都按
         // 同一份偏移修正，绘制与命中才不会错位。
         for (order, (table, row, shown)) in kept.iter().enumerate() {
-            let label = if *shown { ENTRY_HIDE } else { ENTRY_CHART };
-            let label_width = str_width(label);
+            let label = t!(if *shown { ENTRY_HIDE } else { ENTRY_CHART });
+            let label_width = str_width(&label);
             let line = Line::from(vec![Span::styled(
                 (*label).to_owned(),
                 Style::new()

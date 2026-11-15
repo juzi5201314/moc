@@ -1,5 +1,7 @@
 //! 引擎、权限菜单与模型选择显示。
 
+use rust_i18n::t;
+
 use super::{App, LegendItem, LegendMenu, engine_label};
 use moc_protocol::methods::{SessionEngine, SessionPermission};
 
@@ -8,11 +10,11 @@ impl LegendItem for SessionEngine {
         engine_label(*self)
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> std::borrow::Cow<'static, str> {
         match self {
-            SessionEngine::Standard => "默认引擎：模型直接调用工具",
-            SessionEngine::Ptc => "模型只调用 execute，全部工具经代码沙盒触达",
-            SessionEngine::ClmExperimental => "模型自主维护实时上下文（实验）",
+            SessionEngine::Standard => t!("tui.menu.engine_standard"),
+            SessionEngine::Ptc => t!("tui.menu.engine_ptc"),
+            SessionEngine::ClmExperimental => t!("tui.menu.engine_clm"),
         }
     }
 }
@@ -22,11 +24,11 @@ impl LegendItem for SessionPermission {
         self.as_str()
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> std::borrow::Cow<'static, str> {
         match self {
-            SessionPermission::Full => "宿主全部可读写，无沙盒边界",
-            SessionPermission::Workspace => "工作区可写，宿主其余路径只读",
-            SessionPermission::WorkspaceOnly => "仅工作区与临时目录可见，隔离最强",
+            SessionPermission::Full => t!("tui.menu.perm_full"),
+            SessionPermission::Workspace => t!("tui.menu.perm_workspace"),
+            SessionPermission::WorkspaceOnly => t!("tui.menu.perm_workspace_only"),
         }
     }
 }

@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::CoreInner;
 use super::plugin_events;
 use crate::service::protocol_to_rpc;
@@ -98,7 +99,7 @@ pub(super) fn plugin_infos(host: &moc_plugin::PluginHost) -> Vec<PluginInfo> {
 
 /// 插件失败提醒的前缀；`plugin_reload` 按同一前缀撤掉过时的提醒。
 pub(super) fn plugin_notice_prefix(plugin: &str) -> String {
-    format!("插件 `{plugin}`：")
+    t!("core.err.plugin_prefix", plugin = plugin).into_owned()
 }
 
 /// 把宿主积压的插件失败通知送进会话提醒与前端。

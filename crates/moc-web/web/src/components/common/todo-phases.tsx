@@ -2,16 +2,17 @@
 
 import { BanIcon, CheckCircle2Icon, CircleIcon, CircleSlashIcon, Loader2Icon } from "lucide-react";
 import { Fragment } from "react";
+import { type MsgKey, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { TodoPhase, TodoStatus } from "@/protocol/types";
 
-const TODO_ICON: Record<TodoStatus, { icon: typeof CircleIcon; className: string; label: string }> =
+const TODO_ICON: Record<TodoStatus, { icon: typeof CircleIcon; className: string; label: MsgKey }> =
   {
-    completed: { icon: CheckCircle2Icon, className: "text-success", label: "已完成" },
-    in_progress: { icon: Loader2Icon, className: "animate-spin text-brand", label: "进行中" },
-    pending: { icon: CircleIcon, className: "text-text-tertiary", label: "待办" },
-    blocked: { icon: BanIcon, className: "text-warn", label: "受阻" },
-    abandoned: { icon: CircleSlashIcon, className: "text-text-tertiary", label: "已放弃" },
+    completed: { icon: CheckCircle2Icon, className: "text-success", label: "todo.done" },
+    in_progress: { icon: Loader2Icon, className: "animate-spin text-brand", label: "todo.running" },
+    pending: { icon: CircleIcon, className: "text-text-tertiary", label: "todo.pending" },
+    blocked: { icon: BanIcon, className: "text-warn", label: "todo.blocked" },
+    abandoned: { icon: CircleSlashIcon, className: "text-text-tertiary", label: "todo.abandoned" },
   };
 
 export function TodoPhases({
@@ -23,6 +24,7 @@ export function TodoPhases({
   brief?: boolean;
   className?: string;
 }) {
+  const t = useT();
   const total = phases.reduce((count, phase) => count + phase.items.length, 0);
   const omitted = brief ? Math.max(0, total - 5) : 0;
   let offset = 0;
@@ -37,7 +39,9 @@ export function TodoPhases({
           // biome-ignore lint/suspicious/noArrayIndexKey: todo 由 core 整表替换，位置即身份，阶段名可重复
           <section key={phaseIndex}>
             <div className="mb-1 flex items-baseline justify-between gap-2 px-2">
-              <h3 className="min-w-0 truncate text-sm font-medium">{phase.phase || "任务"}</h3>
+              <h3 className="min-w-0 truncate text-sm font-medium">
+                {phase.phase || t("todo.default_phase")}
+              </h3>
               <span className="shrink-0 text-2xs tabular-nums text-text-tertiary">
                 {done}/{phase.items.length}
               </span>
@@ -53,7 +57,7 @@ export function TodoPhases({
                   // biome-ignore lint/suspicious/noArrayIndexKey: todo 快照按位置标识任务
                   <Fragment key={index}>
                     <li className="flex gap-2.5 rounded-lg px-2 py-1.5">
-                      <span className="flex h-5 shrink-0 items-center" title={meta.label}>
+                      <span className="flex h-5 shrink-0 items-center" title={t(meta.label)}>
                         <Icon className={cn("size-3.5", meta.className)} />
                       </span>
                       <span className="min-w-0 flex-1 text-sm leading-5">
@@ -72,7 +76,7 @@ export function TodoPhases({
                     </li>
                     {omitted > 0 && position === 2 && (
                       <li className="px-2 py-1.5 text-xs text-text-tertiary">
-                        ⋯ 已省略 {omitted} 项
+                        {t("todo.omitted", { count: omitted })}
                       </li>
                     )}
                   </Fragment>

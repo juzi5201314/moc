@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use rust_i18n::t;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -354,7 +355,7 @@ pub(crate) fn encode_zstd_entries(entries: &[Entry]) -> Result<Vec<u8>, CoreErro
     encoder.include_checksum(true)?;
     for entry in entries {
         serde_json::to_writer(&mut encoder, entry).map_err(|error| {
-            CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
+            CoreError::Session(t!("core.err.transcript_serialize", error = error).into_owned())
         })?;
         encoder.write_all(b"\n")?;
     }

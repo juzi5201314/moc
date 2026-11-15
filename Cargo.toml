@@ -54,6 +54,8 @@ zstd = "0.13"
 rustix = { version = "1", features = ["event"] }
 # 插件运行时：与 PTC worker 共用同一份 QuickJS 构建（原生 C，无 WASM）；loader 提供 ESM 解析。
 rquickjs = { version = "=0.14.0", features = ["loader"] }
+# 用户面文案本地化：TOML catalog（locales/ 目录，_version = 2）编译期内嵌
+rust-i18n = "4.2.4"
 
 # 测试/开发构建只需要行号，不需要完整 DWARF：
 # 完整调试信息会让单个集成测试二进制达到 0.4–0.65GB，

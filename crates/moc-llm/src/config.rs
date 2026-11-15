@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use anyhow::Context;
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
 use crate::retry::RetryPolicy;
@@ -76,9 +77,10 @@ impl Auth {
     ///
     /// 环境变量缺失或为空白时返回带上下文的错误。
     pub fn from_env(var: &str) -> anyhow::Result<Auth> {
-        let value = std::env::var(var).with_context(|| format!("读取环境变量 {var} 失败"))?;
+        let value = std::env::var(var)
+            .with_context(|| t!("llm.err.env_read", var = var).into_owned())?;
         if value.trim().is_empty() {
-            anyhow::bail!("环境变量 {var} 为空");
+            anyhow::bail!("{}", t!("llm.err.env_empty", var = var));
         }
         Ok(Auth::Bearer(value))
     }
@@ -486,6 +488,7 @@ mod tests {
 
     #[test]
     fn auth_from_env_reports_missing_variable_with_context() {
+        rust_i18n::set_locale("zh");
         let err = Auth::from_env("MOC_LLM_TEST_MISSING_KEY_7f3a").unwrap_err();
         let text = format!("{err:#}");
         assert!(text.contains("MOC_LLM_TEST_MISSING_KEY_7f3a"), "{text}");

@@ -3,6 +3,9 @@
 //! [`moc_protocol`] 是稳定的前端 JSON-RPC 边界，[`moc_llm`] 负责兼容上游协议；
 //! 本 crate 管理会话状态、工具和上下文的生命周期。
 
+// 本地化 catalog 编译期内嵌；i18n! 必须展开在 crate 根，`t!` 才能经 crate::_rust_i18n_t 解析。
+rust_i18n::i18n!("../../locales", fallback = "zh");
+
 pub(crate) mod agents;
 pub mod chart;
 pub mod clm;
@@ -11,6 +14,7 @@ mod concurrency;
 pub mod config;
 mod error;
 pub mod fs;
+pub mod i18n;
 pub(crate) mod goal;
 pub mod hashline;
 pub mod ids;

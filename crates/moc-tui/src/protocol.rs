@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
+use rust_i18n::t;
 use moc_core::Core;
 use moc_protocol::{
     ClientBuilder, ClientHandle, ClientInfo, ClientRequestContext, RpcError, RpcErrorCode,
@@ -352,11 +353,11 @@ pub async fn connect_embedded(
     let (client, handshake) = builder
         .connect(frontend_side)
         .await
-        .context("内嵌连接握手失败")?;
+        .context(t!("tui.err.handshake"))?;
     anyhow::ensure!(
         handshake.server.name == "moc-core",
-        "内置服务不可用：{}",
-        handshake.server.name
+        "{}",
+        t!("tui.err.builtin_unavail_fmt", name = handshake.server.name.as_str())
     );
     Ok(EmbeddedConnection {
         client,

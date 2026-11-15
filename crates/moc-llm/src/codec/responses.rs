@@ -6,6 +6,7 @@
 
 use std::collections::BTreeSet;
 
+use rust_i18n::t;
 use serde_json::{Map, Value, json};
 
 use super::echo::{self, ReasoningEchoPlan};
@@ -156,17 +157,21 @@ fn cache_breakpoints(req: &ChatRequest, message_count: usize) -> Result<BTreeSet
     if let Some(ttl) = cache.ttl
         && ttl != CacheTtl::ThirtyMinutes
     {
-        return Err(LlmError::Encode(format!(
-            "Responses 协议的显式缓存只支持 30m，收到 {}",
-            ttl.as_str()
-        )));
+        return Err(LlmError::Encode(
+            t!("llm.err.resp_cache_ttl", value = ttl.as_str()).into_owned(),
+        ));
     }
     let mut breakpoints = BTreeSet::new();
     for &index in &cache.breakpoints {
         if index >= message_count {
-            return Err(LlmError::Encode(format!(
-                "缓存断点下标 {index} 超出消息范围（共 {message_count} 条）"
-            )));
+            return Err(LlmError::Encode(
+                t!(
+                    "llm.err.cache_index_range",
+                    index = index,
+                    message_count = message_count
+                )
+                .into_owned(),
+            ));
         }
         breakpoints.insert(index);
     }
@@ -319,9 +324,9 @@ fn encode_message_item(
         Role::Developer | Role::Custom => ("developer", "input_text"),
         Role::User => ("user", "input_text"),
         other => {
-            return Err(LlmError::Encode(format!(
-                "{other} 消息不能编码为 Responses 的 message item"
-            )));
+            return Err(LlmError::Encode(
+                t!("llm.err.resp_item_kind", role = other).into_owned(),
+            ));
         }
     };
     let mut blocks = Vec::with_capacity(message.content.len());
@@ -408,7 +413,7 @@ fn encode_assistant_items(
 
     if breakpoint {
         let position = last_text.ok_or_else(|| {
-            LlmError::Encode("Responses 的缓存断点只能落在 assistant 消息的文本内容块上".into())
+            LlmError::Encode(t!("llm.err.resp_cache_assistant").into_owned())
         })?;
         let blocks = items[position]
             .get_mut("content")
@@ -446,12 +451,10 @@ fn encode_tool_result(
     breakpoint: bool,
 ) -> Result<Vec<Value>, LlmError> {
     let Some(result) = message.tool_results().next() else {
-        return Err(LlmError::Encode("tool 消息缺少 ToolResult 内容块".into()));
+        return Err(LlmError::Encode(t!("llm.err.tool_missing_result").into_owned()));
     };
     if breakpoint {
-        return Err(LlmError::Encode(
-            "Responses 的缓存断点只能落在文本内容块上".into(),
-        ));
+        return Err(LlmError::Encode(t!("llm.err.resp_cache_text").into_owned()));
     }
     let mut items = vec![json!({
         "type": "function_call_output",
@@ -482,14 +485,12 @@ fn encode_tool_result(
 fn attach_breakpoint(blocks: &mut [Value], text_type: &str) -> Result<(), LlmError> {
     let last = blocks
         .last_mut()
-        .ok_or_else(|| LlmError::Encode("缓存断点落在空消息上".into()))?;
+        .ok_or_else(|| LlmError::Encode(t!("llm.err.cache_empty_msg").into_owned()))?;
     let object = last
         .as_object_mut()
         .expect("内容块由本模块构造成 JSON 对象");
     if object.get("type").and_then(Value::as_str) != Some(text_type) {
-        return Err(LlmError::Encode(
-            "Responses 的缓存断点只能落在文本内容块上".into(),
-        ));
+        return Err(LlmError::Encode(t!("llm.err.resp_cache_text").into_owned()));
     }
     object.insert(
         "prompt_cache_breakpoint".into(),
@@ -507,7 +508,7 @@ fn unsupported_part(role: Role, part: &ContentPart) -> LlmError {
         ContentPart::ToolCall(_) => "ToolCall",
         ContentPart::ToolResult(_) => "ToolResult",
     };
-    LlmError::Encode(format!("{role} 消息不允许出现 {kind} 内容块"))
+    LlmError::Encode(t!("llm.err.role_block_kind", role = role, kind = kind).into_owned())
 }
 
 /// 非流式响应解码。
@@ -623,10 +624,11 @@ fn failed_error(response: &Value) -> LlmError {
     let code = error
         .and_then(|error| error.get("code"))
         .and_then(Value::as_str);
+    let fallback = t!("llm.err.resp_failed").into_owned();
     let message = error
         .and_then(|error| error.get("message"))
         .and_then(Value::as_str)
-        .unwrap_or("Responses 请求失败");
+        .unwrap_or(&fallback);
     let mut api_error = ApiError::new(
         None,
         ApiErrorKind::Unknown.refine(code, message),
@@ -822,10 +824,11 @@ impl ResponsesStreamDecoder {
             "error" => {
                 self.terminated = true;
                 let code = value.get("code").and_then(Value::as_str);
+                let fallback = t!("llm.err.resp_stream_error").into_owned();
                 let message = value
                     .get("message")
                     .and_then(Value::as_str)
-                    .unwrap_or("Responses 流错误");
+                    .unwrap_or(&fallback);
                 let mut error = ApiError::new(
                     None,
                     ApiErrorKind::Unknown.refine(code, message),
@@ -854,9 +857,9 @@ impl StreamDecoder for ResponsesStreamDecoder {
             Ok(value) => self.decode_payload(&value, out),
             Err(err) => {
                 self.terminated = true;
-                out.push(Err(LlmError::Stream(format!(
-                    "Responses 流数据不是合法 JSON: {err}"
-                ))));
+                out.push(Err(LlmError::Stream(
+                    t!("llm.err.resp_stream_json", err = err).into_owned(),
+                )));
             }
         }
     }

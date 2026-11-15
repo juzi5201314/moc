@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::AgentEntry;
 use super::AgentInbox;
 use super::BROADCAST_TARGET;
@@ -84,7 +85,9 @@ pub(super) fn resolve_targets(
         Some(entry) => Ok(vec![MessageTarget {
             session: entry.session.clone(),
         }]),
-        None => Err(invalid(format!("目标 {target} 不是可投递的代理"))),
+        None => Err(invalid(
+            t!("core.err.target_not_deliverable", target = target).into_owned(),
+        )),
     }
 }
 
@@ -397,11 +400,11 @@ pub(crate) async fn record_yield(
     let result = match (&schema, result) {
         (Some(schema), Some(result)) => {
             let validator = jsonschema::validator_for(schema)
-                .map_err(|error| invalid(format!("output_schema 非法：{error}")))?;
+                .map_err(|error| invalid(t!("core.err.output_schema_bad2", error = error).into_owned()))?;
             if let Err(error) = validator.validate(&result) {
-                return Err(invalid(format!(
-                    "yield 的 result 不满足 output_schema：{error}"
-                )));
+                return Err(invalid(
+                    t!("core.err.yield_schema", error = error).into_owned(),
+                ));
             }
             Some(result)
         }

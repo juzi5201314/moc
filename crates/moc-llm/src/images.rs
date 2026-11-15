@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
+use rust_i18n::t;
 use sha2::{Digest, Sha256};
 
 use crate::codec::{self, EncodedRequest};
@@ -40,22 +41,25 @@ impl std::fmt::Display for RequestDiagnostics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "请求体 {} 字节（{:.1} KiB），图片 {} 张（历史 {} 张），图片 Base64 {} → {} 字节，非图片部分 {} 字节，本地请求上限 {} 字节，等待 {:.1} 秒",
-            self.body_bytes,
-            self.body_bytes as f64 / 1024.0,
-            self.images,
-            self.history_images,
-            self.original_image_bytes,
-            self.image_bytes,
-            self.body_bytes.saturating_sub(self.image_bytes),
-            self.max_request_bytes,
-            self.elapsed_ms as f64 / 1000.0
+            "{}",
+            t!(
+                "llm.img.diagnostics",
+                bytes = self.body_bytes,
+                kib = format!("{:.1}", self.body_bytes as f64 / 1024.0),
+                images = self.images,
+                history = self.history_images,
+                b64_before = self.original_image_bytes,
+                b64_after = self.image_bytes,
+                other = self.body_bytes.saturating_sub(self.image_bytes),
+                limit = self.max_request_bytes,
+                wait = format!("{:.1}", self.elapsed_ms as f64 / 1000.0)
+            )
         )?;
         if self.remote_images > 0 {
             write!(
                 f,
-                "；其中 {} 张是远端 URL，其下载体积无法从请求体判断",
-                self.remote_images
+                "{}",
+                t!("llm.img.remote_note", count = self.remote_images)
             )?;
         }
         Ok(())
@@ -224,9 +228,18 @@ pub(crate) fn prepare(
             }
             let cap = caps[index].min(MAX_IMAGE_BYTES);
             index += 1;
-            cache.normalize(source, cap).map_err(|error| LlmError::Encode(format!(
-                "图片请求体预算不足，未发送：{} 张图片（历史 {} 张）共享 {} 字节 Base64 预算，文本/工具/封套约 {} 字节；第 {} 张无法在保留细节的策略下压入预算。请分批处理、裁剪关注区域、压缩历史，或按网关实际限制调整模型 max_request_bytes。{error}",
-                diagnostics.images, diagnostics.history_images, budget, overhead, index)))
+            cache.normalize(source, cap).map_err(|error| LlmError::Encode(
+                t!(
+                    "llm.img.budget_short",
+                    count = diagnostics.images,
+                    history = diagnostics.history_images,
+                    budget = budget,
+                    other = overhead,
+                    index = index,
+                    error = error
+                )
+                .into_owned(),
+            ))
         })?;
         encoded = codec::encode(cfg, &req, stream)?;
     }
@@ -242,10 +255,14 @@ pub(crate) fn prepare(
         });
     }
     if encoded.body.len() > max_bytes || diagnostics.image_bytes > MAX_REQUEST_IMAGE_BYTES {
-        return Err(LlmError::Encode(format!(
-            "请求体超限，未发送：{diagnostics}；图片 Base64 总预算 {} 字节。请分批处理图片、压缩历史或按网关限制调整模型 max_request_bytes。",
-            MAX_REQUEST_IMAGE_BYTES
-        )));
+        return Err(LlmError::Encode(
+            t!(
+                "llm.img.over_limit",
+                diagnostics = diagnostics.to_string(),
+                budget = MAX_REQUEST_IMAGE_BYTES
+            )
+            .into_owned(),
+        ));
     }
     Ok(PreparedRequest {
         encoded,
@@ -260,7 +277,7 @@ fn inline(source: &ImageSource) -> Result<Option<(&str, &str)>, LlmError> {
         ImageSource::Url(url) if url.starts_with("data:") => {
             let (media, data) = url[5..]
                 .split_once(";base64,")
-                .ok_or_else(|| image_error("data URL 必须使用 Base64"))?;
+                .ok_or_else(|| image_error(t!("llm.img.data_url_base64")))?;
             Ok(Some((media, data)))
         }
         ImageSource::Url(_) => Ok(None),
@@ -275,7 +292,7 @@ fn inline_len(source: &ImageSource) -> usize {
 }
 
 fn image_error(message: impl std::fmt::Display) -> LlmError {
-    LlmError::Encode(format!("图片预处理失败，未发送：{message}"))
+    LlmError::Encode(t!("llm.img.preprocess", message = message).into_owned())
 }
 
 fn dimensions(width: u32, height: u32) -> (u32, u32) {
@@ -294,7 +311,7 @@ fn normalize(source: &ImageSource, budget: usize) -> Result<ImageSource, LlmErro
         return Ok(source.clone());
     };
     if data.len() > MAX_INPUT_BYTES.div_ceil(3) * 4 {
-        return Err(image_error("单张输入超过 20 MiB，请先裁剪或缩放"));
+        return Err(image_error(t!("llm.img.image_too_large")));
     }
     let bytes = STANDARD.decode(data).map_err(image_error)?;
     let mut reader = ImageReader::new(Cursor::new(&bytes))
@@ -302,14 +319,14 @@ fn normalize(source: &ImageSource, budget: usize) -> Result<ImageSource, LlmErro
         .map_err(image_error)?;
     let format = reader
         .format()
-        .ok_or_else(|| image_error("无法识别图片格式"))?;
+        .ok_or_else(|| image_error(t!("llm.img.unrecognized")))?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
     let mut decoder = reader.into_decoder().map_err(image_error)?;
     let (width, height) = decoder.dimensions();
     if u64::from(width) * u64::from(height) > MAX_INPUT_PIXELS {
-        return Err(image_error("解码像素超过 6400 万，请先裁剪或缩放"));
+        return Err(image_error(t!("llm.img.pixels_cap")));
     }
     let orientation = decoder.orientation().map_err(image_error)?;
     let mut image = DynamicImage::from_decoder(decoder).map_err(image_error)?;
@@ -354,12 +371,12 @@ fn normalize(source: &ImageSource, budget: usize) -> Result<ImageSource, LlmErro
     }
     let (bytes, media) = best;
     if bytes.len() > budget {
-        return Err(image_error(format!(
-            "{}×{} 图片需要 {} 字节，分配到 {} 字节；已达到预览尺寸/质量下限，请裁剪关注区域或分批处理",
-            final_dimensions.0,
-            final_dimensions.1,
-            bytes.len(),
-            budget
+        return Err(image_error(t!(
+            "llm.img.fit_note",
+            w = final_dimensions.0,
+            h = final_dimensions.1,
+            need = bytes.len(),
+            have = budget
         )));
     }
     Ok(ImageSource::Base64 {

@@ -9,6 +9,7 @@ use moc_ptc_protocol::{
     },
 };
 use rquickjs::{Context, Function, Object, Persistent, Runtime};
+use rust_i18n::t;
 use std::{
     io::{BufRead, Read, Write},
     sync::{Arc, Mutex, mpsc},
@@ -64,7 +65,7 @@ pub fn run_workflow<R: BufRead + Send + 'static, W: Write>(
                         return Ok(());
                     }
                     if count > MAX_FRAME_BYTES || !line.ends_with(b"\n") {
-                        return Err("workflow 输入帧超限或不完整".into());
+                        return Err(t!("ptc.wf.input_frame").into_owned().into());
                     }
                     let message: WorkflowHostMessage = serde_json::from_slice(&line)?;
                     let shutdown = matches!(message, WorkflowHostMessage::Shutdown);
@@ -104,10 +105,13 @@ pub fn run_workflow<R: BufRead + Send + 'static, W: Write>(
                             let mut step =
                                 result.unwrap_or_else(|error| failed("E_JS", error.to_string()));
                             if let Some(reason) = thread_control.reason() {
-                                step = failed(&reason, "workflow run 已中断");
+                                step = failed(&reason, t!("ptc.wf.interrupted").into_owned());
                             }
                             if serde_json::to_vec(&step).map_or(true, |bytes| bytes.len() > limit) {
-                                step = failed("E_OUTPUT_LIMIT", "workflow run 输出超限");
+                                step = failed(
+                                    "E_OUTPUT_LIMIT",
+                                    t!("ptc.wf.output_limit").into_owned(),
+                                );
                             }
                             let _ = thread_events.send(Event::Step(step));
                         },
@@ -135,14 +139,14 @@ pub fn run_workflow<R: BufRead + Send + 'static, W: Write>(
                     let terminal = !matches!(step.state, GuestState::Pending);
                     let line = serde_json::to_vec(&WorkflowGuestMessage::Step { step })?;
                     if line.len() + 1 > MAX_FRAME_BYTES {
-                        return Err("workflow 输出帧超限".into());
+                        return Err(t!("ptc.wf.output_frame").into_owned().into());
                     }
                     output.write_all(&line)?;
                     output.write_all(b"\n")?;
                     output.flush()?;
                     if terminal {
                         if let Some(join) = execution.take() {
-                            join.join().map_err(|_| "workflow run 线程异常退出")?;
+                            join.join().map_err(|_| t!("ptc.wf.thread_panic").into_owned())?;
                         }
                         if stopping {
                             return Ok(());
@@ -209,15 +213,15 @@ fn execute(
     })?;
     loop {
         if let Some(reason) = control.reason() {
-            return Ok(failed(&reason, "workflow run 已中断"));
+            return Ok(failed(&reason, t!("ptc.wf.interrupted").into_owned()));
         }
         while runtime.is_job_pending() {
             if let Some(reason) = control.reason() {
-                return Ok(failed(&reason, "workflow run 已中断"));
+                return Ok(failed(&reason, t!("ptc.wf.interrupted").into_owned()));
             }
-            runtime
-                .execute_pending_job()
-                .map_err(|error| format!("workflow Promise job 失败：{error:?}"))?;
+            runtime.execute_pending_job().map_err(|error| {
+                t!("ptc.wf.promise_job", error = format!("{error:?}")).into_owned()
+            })?;
         }
         let step = context.with(|ctx| -> Result<WorkflowGuestStep> {
             let object = object.clone().restore(&ctx)?;
@@ -232,7 +236,10 @@ fn execute(
             })
         })?;
         if serde_json::to_vec(&step)?.len() > start.max_message_bytes {
-            return Ok(failed("E_OUTPUT_LIMIT", "workflow run 输出超限"));
+            return Ok(failed(
+                "E_OUTPUT_LIMIT",
+                t!("ptc.wf.output_limit").into_owned(),
+            ));
         }
         if !matches!(step.state, GuestState::Pending) {
             return Ok(step);
@@ -295,7 +302,9 @@ fn execute(
                 }
             }
             Ok(Command::Cancel) => {}
-            Err(mpsc::RecvError) => return Ok(failed("E_CANCELLED", "宿主关闭了 workflow run")),
+            Err(mpsc::RecvError) => {
+                return Ok(failed("E_CANCELLED", t!("ptc.wf.host_closed").into_owned()));
+            }
         }
     }
 }

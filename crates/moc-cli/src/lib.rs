@@ -4,6 +4,9 @@
 
 #![forbid(unsafe_code)]
 
+// 与 moc-core 共用 workspace 根的 locales/ catalog（zh 为源语言兼回退）。
+rust_i18n::i18n!("../../locales", fallback = "zh");
+
 pub mod args;
 mod commands;
 mod render;

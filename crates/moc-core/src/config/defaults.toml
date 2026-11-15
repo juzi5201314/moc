@@ -1,5 +1,8 @@
 # moc-core 默认配置。用户配置按表递归覆盖，数组与标量整体替换。
 
+# 用户界面语言：auto 跟随系统环境（LC_ALL/LANG），可显式 zh/en
+language = "auto"
+
 # 特性开关覆盖：只接受注册表自有键（clm、ptc）。workflow/plugins/mcp/skills/
 # web_search/web_fetch 等特性由各自配置段的 enabled 控制（见 /features 一览），
 # 误写进本段会被校验拒绝并提示正确路径。

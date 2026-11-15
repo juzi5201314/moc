@@ -13,6 +13,7 @@ use moc_protocol::methods::{
 
 use ratatui::layout::Rect;
 use ratatui::text::Line;
+use rust_i18n::t;
 
 /// 可搜索列表模态的状态。
 #[derive(Debug, Clone, Default)]
@@ -440,13 +441,13 @@ pub struct RewindItem {
 }
 
 impl RewindItem {
-    pub fn role_label(&self) -> &'static str {
+    pub fn role_label(&self) -> std::borrow::Cow<'static, str> {
         match self.role {
-            Role::User => "用户提问",
-            Role::Assistant => "模型回复",
-            Role::Tool => "工具结果",
-            Role::Custom => "运行时提醒",
-            Role::System | Role::Developer => "系统消息",
+            Role::User => t!("tui.role.user"),
+            Role::Assistant => t!("tui.role.assistant"),
+            Role::Tool => t!("tui.role.tool"),
+            Role::Custom => t!("tui.role.reminder"),
+            Role::System | Role::Developer => t!("tui.role.system"),
         }
     }
 }
@@ -721,43 +722,49 @@ impl Modal {
             } => {
                 if *question >= params.questions.len() {
                     // 越过最后一问是确认页，不再是任何一问的标题。
-                    "确认回答".into()
+                    t!("tui.title.confirm_answers").into_owned()
                 } else {
                     params
                         .questions
                         .get(*question)
                         .and_then(|question| question.header.clone())
-                        .unwrap_or_else(|| "提问".into())
+                        .unwrap_or_else(|| t!("tui.title.ask").into_owned())
                 }
             }
-            Modal::Model { .. } => "选择模型".into(),
-            Modal::Rewind { .. } => "消息回退".into(),
+            Modal::Model { .. } => t!("tui.title.model").into_owned(),
+            Modal::Rewind { .. } => t!("tui.title.rewind").into_owned(),
             Modal::Sessions { scope, .. } => match scope {
-                SessionScope::Folder => "恢复会话（当前目录）".into(),
-                SessionScope::All => "恢复会话（全部目录）".into(),
+                SessionScope::Folder => t!("tui.title.sessions_folder").into_owned(),
+                SessionScope::All => t!("tui.title.sessions_all").into_owned(),
             },
-            Modal::Plan { .. } => "计划审批".into(),
-            Modal::Help { .. } => "快捷键".into(),
+            Modal::Plan { .. } => t!("tui.title.plan").into_owned(),
+            Modal::Help { .. } => t!("tui.title.help").into_owned(),
             Modal::Tools { tools, .. } => match tools {
-                Some(tools) => format!("可用工具 · {}", tools.len()),
-                None => "可用工具".into(),
+                Some(tools) => t!("tui.title.tools_fmt", count = tools.len()).into_owned(),
+                None => t!("tui.title.tools").into_owned(),
             },
             Modal::ContextContent { state } => state
                 .current
                 .as_ref()
-                .map_or_else(|| "上下文".into(), |node| node.name.clone()),
-            Modal::Jobs { .. } => "后台任务".into(),
-            Modal::SwitchModel { .. } => "切换模型：需要压缩上下文".into(),
+                .map_or_else(|| t!("tui.title.context").into_owned(), |node| {
+                    node.name.clone()
+                }),
+            Modal::Jobs { .. } => t!("tui.title.jobs").into_owned(),
+            Modal::SwitchModel { .. } => t!("tui.title.switch_model").into_owned(),
             Modal::WorkflowApproval { state } => match state.request.kind {
-                moc_protocol::methods::WorkflowApprovalKind::Amend => "workflow 审批：amend".into(),
-                moc_protocol::methods::WorkflowApprovalKind::HoleFill => {
-                    "workflow 审批：hole 填充".into()
+                moc_protocol::methods::WorkflowApprovalKind::Amend => {
+                    t!("tui.title.wf_amend").into_owned()
                 }
-                _ => "workflow 审批".into(),
+                moc_protocol::methods::WorkflowApprovalKind::HoleFill => {
+                    t!("tui.title.wf_hole").into_owned()
+                }
+                _ => t!("tui.title.wf_approval").into_owned(),
             },
-            Modal::WorkflowRuns { .. } => "workflow runs".into(),
-            Modal::WorkflowRun { state } => format!("run 面板：{}", state.title),
-            Modal::Monitor => "进程监控".into(),
+            Modal::WorkflowRuns { .. } => t!("tui.title.wf_runs").into_owned(),
+            Modal::WorkflowRun { state } => {
+                t!("tui.title.wf_run_fmt", title = state.title.as_str()).into_owned()
+            }
+            Modal::Monitor => t!("tui.title.monitor").into_owned(),
         }
     }
 

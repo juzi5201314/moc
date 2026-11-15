@@ -1,5 +1,7 @@
 //! 模型选择与思考等级切换。
 
+use rust_i18n::t;
+
 use crate::app::App;
 use crate::protocol::AppEvent;
 use crate::protocol::EmbeddedConnection;
@@ -69,7 +71,9 @@ pub(super) fn request_session_model(
                     ));
                 }
                 Err(error) => {
-                    let _ = events.send(AppEvent::Notice(format!("创建会话失败：{error}")));
+                    let _ = events.send(AppEvent::Notice(
+                        t!("tui.event.create_failed_fmt", err = error.to_string()).into_owned(),
+                    ));
                 }
             }
         });
@@ -103,7 +107,9 @@ pub(super) fn request_session_model(
             Err(error) => AppEvent::SessionControlSettled {
                 session_id,
                 notice: None,
-                result: Err(format!("切换模型失败：{error}")),
+                result: Err(
+                    t!("tui.event.model_switch_failed_fmt", err = error.to_string()).into_owned(),
+                ),
             },
         });
     });
@@ -112,7 +118,7 @@ pub(super) fn request_session_model(
 /// 按当前模型声明的思考等级循环切换。
 pub(super) fn cycle_thinking_level(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session) = app.session.as_ref() else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session").into_owned());
         return;
     };
     // Fusion 会话切换的是 lead 侧的思考等级，sidekick 侧原样保留。
@@ -164,13 +170,15 @@ pub(super) fn cycle_thinking_level(app: &mut App, connection: &EmbeddedConnectio
         let _ = events.send(match outcome {
             Ok(_) => AppEvent::SessionControlSettled {
                 session_id,
-                notice: Some(format!("思考等级：{next}")),
+                notice: Some(t!("tui.event.thinking_level_fmt", level = next).into_owned()),
                 result: Ok(None),
             },
             Err(error) => AppEvent::SessionControlSettled {
                 session_id,
                 notice: None,
-                result: Err(format!("切换思考等级失败：{error}")),
+                result: Err(
+                    t!("tui.event.thinking_failed_fmt", err = error.to_string()).into_owned(),
+                ),
             },
         });
     });
@@ -179,7 +187,7 @@ pub(super) fn cycle_thinking_level(app: &mut App, connection: &EmbeddedConnectio
 /// 请求 core 切换会话 Fast Mode；生效后由 `SessionUpdate::FastModeChanged` 写回。
 pub(super) fn set_fast_mode(app: &mut App, connection: &EmbeddedConnection, enabled: bool) {
     let Some(session) = app.session.as_ref() else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session").into_owned());
         return;
     };
     let client = connection.client.clone();
@@ -193,7 +201,9 @@ pub(super) fn set_fast_mode(app: &mut App, connection: &EmbeddedConnection, enab
             })
             .await
         {
-            let _ = events.send(AppEvent::Notice(format!("切换 Fast Mode 失败：{error}")));
+            let _ = events.send(AppEvent::Notice(
+                t!("tui.event.fast_mode_failed_fmt", err = error.to_string()).into_owned(),
+            ));
         }
     });
 }

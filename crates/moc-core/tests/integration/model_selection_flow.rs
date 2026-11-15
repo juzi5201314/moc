@@ -50,7 +50,7 @@ async fn model_selection_is_shared_without_mode_resume_or_print_side_effects() {
     std::fs::create_dir_all(&cwd).unwrap();
     std::fs::write(
         home.join("config.toml"),
-        "\
+        "language='zh'\n\
 [providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n\
 [providers.p.models.a]\nreasoning=true\nthinking_levels=['low','high']\n\
 [providers.p.models.b]\n\

@@ -156,7 +156,7 @@ async fn input_bang_commands_render_results_and_remain_out_of_agent_context_when
     use crate::transcript::Block;
     use moc_core::{Core, CoreConfig};
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("config.toml"), "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:1/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n").unwrap();
+    std::fs::write(root.path().join("config.toml"), "language='zh'\n[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:1/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n").unwrap();
     let core = Core::new(CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),

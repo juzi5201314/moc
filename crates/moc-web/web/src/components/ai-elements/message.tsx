@@ -24,6 +24,7 @@ import {
   resolveAnchorTarget,
   splitLineRef,
 } from "@/lib/file-target";
+import { useT } from "@/lib/i18n";
 import { codePlugin, mermaidPlugin } from "@/lib/streamdown-plugins";
 import { useIsDark } from "@/lib/use-dark";
 import { openFile } from "@/store/files";
@@ -236,10 +237,11 @@ export type MessageBranchPreviousProps = ComponentProps<typeof Button>;
 
 export const MessageBranchPrevious = ({ children, ...props }: MessageBranchPreviousProps) => {
   const { goToPrevious, totalBranches } = useMessageBranch();
+  const t = useT();
 
   return (
     <Button
-      aria-label="Previous branch"
+      aria-label={t("msg.prev_branch")}
       disabled={totalBranches <= 1}
       onClick={goToPrevious}
       size="icon-sm"
@@ -256,10 +258,11 @@ export type MessageBranchNextProps = ComponentProps<typeof Button>;
 
 export const MessageBranchNext = ({ children, ...props }: MessageBranchNextProps) => {
   const { goToNext, totalBranches } = useMessageBranch();
+  const t = useT();
 
   return (
     <Button
-      aria-label="Next branch"
+      aria-label={t("msg.next_branch")}
       disabled={totalBranches <= 1}
       onClick={goToNext}
       size="icon-sm"

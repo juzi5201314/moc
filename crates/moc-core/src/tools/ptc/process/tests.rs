@@ -170,7 +170,7 @@ async fn idle_reaps_only_without_active_execution() {
     // 走表点燃它。轮询到换进程为止，有界收敛。
     let mut reaped = first;
     for _ in 0..50 {
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
         reaped = pid(&host, &config).await;
         if reaped != first {
             break;

@@ -6,6 +6,7 @@
 //! 新增实验特性 = 加一个 `FeatureFlag` 成员和一行 `FEATURES` 记录，而不是散落
 //! 各处的 ad-hoc `enabled` 判定。
 
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
 use crate::SessionEngine;
@@ -88,7 +89,7 @@ pub struct FeatureSpec {
     /// 序列化后估得）。`None` 表示成本随环境动态变化（MCP 工具数、插件提示词、
     /// skills 目录、CLM 实时上下文都不是常量）。
     pub context_tokens: Option<u32>,
-    /// 一句话说明（开关控制什么、成本花在哪）。
+    /// 一句话说明（开关控制什么、成本花在哪），存 locale key。
     pub summary: &'static str,
 }
 
@@ -103,7 +104,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         // clm_context 工具声明 + 每轮注入的 CLM 实时上下文块（随会话增长，上限
         // MAX_CONTEXT_BYTES）。
         context_tokens: None,
-        summary: "CLM 实验引擎：模型自主维护实时工作上下文",
+        summary: "features.item.clm",
     },
     FeatureSpec {
         flag: FeatureFlag::Ptc,
@@ -113,7 +114,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
         // <tool-declarations> 段：全部内置工具的 TS 签名（实测 ≈980 token）。
         context_tokens: Some(1_000),
-        summary: "PTC 引擎：模型只调 execute，工具经代码沙盒触达",
+        summary: "features.item.ptc",
     },
     FeatureSpec {
         flag: FeatureFlag::Workflow,
@@ -124,7 +125,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         // 会话激活后才注入：9 个 workflow 工具声明 ≈855 token + workflow-authoring
         // skill 目录行 ≈29 token；未激活时成本为 0（零泄漏）。
         context_tokens: Some(900),
-        summary: "动态 workflow：模型以 TypeScript 脚本编排多阶段协作",
+        summary: "features.item.workflow",
     },
     FeatureSpec {
         flag: FeatureFlag::Plugins,
@@ -135,7 +136,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         // 每个插件的提示词贡献之和受 plugins.max_prompt_chars 钳制；工具 schema
         // 随已加载插件数变化。
         context_tokens: None,
-        summary: "插件宿主：插件工具、斜杠命令、钩子与提示词贡献",
+        summary: "features.item.plugins",
     },
     FeatureSpec {
         flag: FeatureFlag::Mcp,
@@ -145,7 +146,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
         // 每个已连接服务器的工具 schema 与 <mcp-servers> 目录；数量由配置决定。
         context_tokens: None,
-        summary: "MCP 服务器：外部工具经 mcp__* 桥接进入工具表",
+        summary: "features.item.mcp",
     },
     FeatureSpec {
         flag: FeatureFlag::Skills,
@@ -155,7 +156,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
         // <skills> 目录按 catalog_budget_* 预算注入；skill 工具本体声明固定。
         context_tokens: None,
-        summary: "skills 目录注入与 skill 工具（渐进披露）",
+        summary: "features.item.skills",
     },
     FeatureSpec {
         flag: FeatureFlag::WebSearch,
@@ -165,7 +166,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
         // 工具 schema 实测 ≈130 token（含参数说明）。
         context_tokens: Some(150),
-        summary: "web_search 工具（需配置供应商）",
+        summary: "features.item.web_search",
     },
     FeatureSpec {
         flag: FeatureFlag::WebFetch,
@@ -174,7 +175,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: FlagStage::Stable,
         default_enabled: true,
         context_tokens: Some(150),
-        summary: "web_fetch 工具",
+        summary: "features.item.web_fetch",
     },
 ];
 
@@ -209,26 +210,30 @@ pub fn features_owned_keys() -> impl Iterator<Item = &'static str> {
 /// TUI 与 CLI REPL 共用同一份格式。
 pub fn format_features(states: &FeatureStates) -> String {
     use std::fmt::Write;
-    let mut text = String::from("特性开关（生效值 = [features] 覆盖或原配置段）：\n");
+    let mut text = t!("features.header").into_owned();
+    text.push('\n');
     for spec in FEATURES {
         let enabled = states.enabled(spec.flag);
         let cost = spec
             .context_tokens
             .map(|tokens| format!("~{tokens} tok"))
-            .unwrap_or_else(|| "随环境".to_owned());
+            .unwrap_or_else(|| t!("features.cost_dynamic").into_owned());
         let toggle = match spec.toggle {
             FlagToggle::Features => format!("[features] {}", spec.key),
             FlagToggle::Existing(path) => path.to_owned(),
         };
         let _ = writeln!(
             text,
-            "  {:<12} {:<12} {} {:<8} {}（{}）",
-            spec.key,
-            spec.stage.label(),
-            if enabled { "开" } else { "关" },
-            cost,
-            spec.summary,
-            toggle,
+            "{}",
+            t!(
+                "features.row",
+                key = spec.key,
+                stage = spec.stage.label(),
+                state = if enabled { t!("features.on") } else { t!("features.off") },
+                cost = cost,
+                summary = t!(spec.summary),
+                toggle = toggle
+            )
         );
     }
     text

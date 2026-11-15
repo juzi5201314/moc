@@ -21,17 +21,19 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use rust_i18n::t;
 
 /// 待审阅计划的动作列表；「在新会话执行」带上所选目标引擎。
 pub(super) fn plan_action_label(state: &PlanReviewState, index: usize) -> String {
     match index {
-        0 => "执行（当前会话）".to_owned(),
-        1 => "压缩当前会话后执行".to_owned(),
-        2 => format!(
-            "在新会话执行（{}）",
-            crate::app::engine_label(state.execution_engine)
-        ),
-        _ => "继续计划".to_owned(),
+        0 => t!("tui.plan.run_here").into_owned(),
+        1 => t!("tui.plan.run_compact").into_owned(),
+        2 => t!(
+            "tui.plan.run_new_fmt",
+            engine = crate::app::engine_label(state.execution_engine)
+        )
+        .into_owned(),
+        _ => t!("tui.plan.resume").into_owned(),
     }
 }
 
@@ -49,14 +51,14 @@ pub(super) fn plan_status_label(theme: &Theme, status: PlanStatus) -> (&'static 
 }
 
 /// 非待审阅版本的说明行。
-pub(super) fn plan_status_note(status: PlanStatus) -> &'static str {
+pub(super) fn plan_status_note(status: PlanStatus) -> std::borrow::Cow<'static, str> {
     match status {
-        PlanStatus::Draft => "计划仍在起草中。",
-        PlanStatus::Revised => "已提交修改意见，等待模型修订。",
-        PlanStatus::Superseded => "已被新版本取代。",
-        PlanStatus::Approved => "计划已批准。",
-        PlanStatus::Rejected => "计划已拒绝。",
-        PlanStatus::Submitted => "",
+        PlanStatus::Draft => t!("tui.plan.note_draft"),
+        PlanStatus::Revised => t!("tui.plan.note_revised"),
+        PlanStatus::Superseded => t!("tui.plan.note_superseded"),
+        PlanStatus::Approved => t!("tui.plan.note_approved"),
+        PlanStatus::Rejected => t!("tui.plan.note_rejected"),
+        PlanStatus::Submitted => "".into(),
     }
 }
 
@@ -123,13 +125,15 @@ pub(super) fn plan_lines(
     ));
     let mut location = state.path.clone();
     if state.previous_plan_id.is_some() {
-        location.push_str(&format!(" · 对比 v{}", state.version.saturating_sub(1)));
+        location.push_str(
+            &t!("tui.plan.diff_ver_fmt", ver = state.version.saturating_sub(1)),
+        );
     }
     if !state.drafts.is_empty() || !state.submitted.is_empty() {
-        location.push_str(&format!(
-            " · {} 条待提交 / {} 条已提交",
-            state.drafts.len(),
-            state.submitted.len()
+        location.push_str(&t!(
+            "tui.plan.annot_count_fmt",
+            drafts = state.drafts.len(),
+            submitted = state.submitted.len()
         ));
     }
     lines.push(Line::from(Span::styled(
@@ -143,14 +147,18 @@ pub(super) fn plan_lines(
             if state.show_diff && state.previous_plan_id.is_some() {
                 if let Some(error) = &state.diff_error {
                     lines.push(Line::from(Span::styled(
-                        truncate(format!("无法加载改动：{error}"), width).into_owned(),
+                        truncate(
+                            t!("tui.plan.diff_load_failed_fmt", err = error.as_str()),
+                            width,
+                        )
+                        .into_owned(),
                         Style::new().fg(theme.accent_error),
                     )));
                 } else if let Some(diff) = &state.diff {
                     let rendered = crate::render::diff::render_diff(diff, width, theme, usize::MAX);
                     if rendered.is_empty() {
                         lines.push(Line::from(Span::styled(
-                            "本版没有文本改动。",
+                            t!("tui.plan.no_text_changes"),
                             Style::new().fg(theme.gray),
                         )));
                     } else {
@@ -165,7 +173,7 @@ pub(super) fn plan_lines(
                     }
                 } else {
                     lines.push(Line::from(Span::styled(
-                        "正在加载本版改动…",
+                        t!("tui.plan.diff_loading"),
                         Style::new().fg(theme.accent_running),
                     )));
                 }
@@ -196,38 +204,38 @@ pub(super) fn plan_lines(
     }
 
     // 提示条从左丢项：引擎/模型/批注等次要键先让位，滚动与确认/关闭恒在。
-    let mut items: Vec<(&str, &str)> = Vec::with_capacity(8);
+    let mut items: Vec<(&str, std::borrow::Cow<'_, str>)> = Vec::with_capacity(8);
     match state.pane {
         PlanPane::Read => {
             let submitted = state.status == PlanStatus::Submitted;
             if submitted {
-                items.push(("m", "换引擎"));
+                items.push(("m", t!("tui.hint.switch_engine")));
             }
-            items.push(("a", "批注"));
+            items.push(("a", t!("tui.hint.annotate")));
             if state.previous_plan_id.is_some() {
                 items.push((
                     "d",
                     if state.show_diff {
-                        "看计划"
+                        t!("tui.hint.view_plan")
                     } else {
-                        "看改动"
+                        t!("tui.hint.view_diff")
                     },
                 ));
             }
-            items.push(("↑↓/pgup/pgdn", "滚动"));
+            items.push(("↑↓/pgup/pgdn", t!("tui.hint.scroll")));
             if submitted {
-                items.extend([("←→/tab", "选择"), ("enter", "确认")]);
+                items.extend([("←→/tab", t!("tui.hint.choose")), ("enter", t!("tui.hint.confirm"))]);
             }
-            items.push(("esc", "关闭"));
+            items.push(("esc", t!("tui.hint.close")));
         }
         PlanPane::Annotate => items.extend([
-            ("ctrl+g", "建议改法"),
-            ("x", "删除"),
-            ("v", "选行"),
-            ("↑↓", "移动"),
-            ("c", "批注"),
-            ("a/esc", "返回阅读"),
-            ("s", "发送"),
+            ("ctrl+g", t!("tui.hint.suggest")),
+            ("x", t!("tui.hint.delete")),
+            ("v", t!("tui.hint.select_lines")),
+            ("↑↓", t!("tui.hint.move")),
+            ("c", t!("tui.hint.annotate")),
+            ("a/esc", t!("tui.hint.back_to_read")),
+            ("s", t!("tui.hint.send")),
         ]),
     }
     let footer = overlay::footer(&items, width, theme);
@@ -251,19 +259,19 @@ pub(super) fn plan_lines(
         }
     } else if state.status != PlanStatus::Submitted {
         lines.push(Line::from(Span::styled(
-            truncate(plan_status_note(state.status), width).into_owned(),
+            truncate(plan_status_note(state.status).into_owned(), width).into_owned(),
             Style::new().fg(theme.gray),
         )));
     }
 
     if let Some(error) = &state.error {
         lines.push(Line::from(Span::styled(
-            truncate(format!("错误：{error}"), width).into_owned(),
+            truncate(t!("tui.err.fmt", err = error.as_str()), width).into_owned(),
             Style::new().fg(theme.accent_error),
         )));
     } else if state.submitting {
         lines.push(Line::from(Span::styled(
-            "正在提交…",
+            t!("tui.plan.submitting"),
             Style::new().fg(theme.accent_running),
         )));
     }
@@ -399,11 +407,7 @@ pub(super) fn draw_plan_editor(
         )));
     }
     lines.push(Line::from(Span::styled(
-        truncate(
-            "批注正文（可用 ```suggestion 围栏给出替换文本）",
-            inner_width,
-        )
-        .into_owned(),
+        truncate(t!("tui.plan.annotation_body_hint"), inner_width).into_owned(),
         Style::new().fg(theme.text_secondary),
     )));
     for row in wrapped.lines.iter().skip(start).take(body_space) {
@@ -415,18 +419,19 @@ pub(super) fn draw_plan_editor(
     lines.truncate(capacity);
     let label_rows = quote_rows.len() + 1;
     let layout = overlay::Card {
-        title: format!(
-            "批注{}第 {}-{} 行",
-            labels::SEP,
-            editor.start_line,
-            editor.end_line
-        ),
+        title: t!(
+            "tui.plan.annotation_title_fmt",
+            sep = labels::SEP,
+            start = editor.start_line,
+            end = editor.end_line
+        )
+        .into_owned(),
         body: lines,
         footer: Some(overlay::footer(
             &[
-                ("ctrl+g", "插入建议改法"),
-                ("esc", "取消"),
-                ("ctrl+s", "保存"),
+                ("ctrl+g", t!("tui.hint.insert_suggest")),
+                ("esc", t!("tui.hint.cancel")),
+                ("ctrl+s", t!("tui.hint.save")),
             ],
             inner_width,
             theme,

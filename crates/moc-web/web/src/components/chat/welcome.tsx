@@ -15,6 +15,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { t, useT } from "@/lib/i18n";
 import { useGitBranch } from "@/lib/use-git-branch";
 import { cn } from "@/lib/utils";
 import { setDraftCwd } from "@/store/lifecycle";
@@ -27,13 +28,14 @@ import { InspectorToggle, SidebarReveal } from "./session-header";
 
 function greeting(): string {
   const hour = new Date().getHours();
-  if (hour < 6) return "夜深了，还在忙什么？";
-  if (hour < 12) return "早上好，今天做点什么？";
-  if (hour < 18) return "下午好，想一起完成什么？";
-  return "晚上好，接着做点什么？";
+  if (hour < 6) return t("wel.late");
+  if (hour < 12) return t("wel.morning");
+  if (hour < 18) return t("wel.afternoon");
+  return t("wel.evening");
 }
 
 function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const cwd = useTranscript((state) => state.bySession[sessionId]?.info.cwd ?? "");
   const branch = useGitBranch(cwd || undefined);
   const workspaces = usePrefs((state) => state.workspaces);
@@ -69,14 +71,14 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
           >
             <FolderOpenIcon className="size-3.5 shrink-0" />
             <span className="max-w-[min(48vw,360px)] truncate font-medium text-foreground">
-              {cwd ? workspaceName(cwd) : "选择工作目录"}
+              {cwd ? workspaceName(cwd) : t("wel.pick_dir")}
             </span>
             {isDraft && <ChevronDownIcon className="size-3 shrink-0 opacity-60" />}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="center" className="w-80 p-1">
           <DropdownMenuLabel className="px-2 py-1.5 text-2xs font-medium text-text-tertiary">
-            工作目录
+            {t("wel.dirs")}
           </DropdownMenuLabel>
           <div className="max-h-72 overflow-y-auto">
             {dirs.map((dir) => (
@@ -96,7 +98,7 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
           {dirs.length > 0 && <DropdownMenuSeparator />}
           <DropdownMenuItem onSelect={addDirectory} className="gap-2.5 rounded-lg px-2 py-1.5">
             <FolderPlusIcon className="size-4" />
-            <span className="text-ui">打开其他目录…</span>
+            <span className="text-ui">{t("wel.open_other")}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

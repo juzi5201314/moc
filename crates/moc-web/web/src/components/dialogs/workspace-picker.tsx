@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { t, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import { RpcError } from "@/protocol/errors";
@@ -31,7 +32,7 @@ import { useUi } from "@/store/ui";
 
 /** 目录路径的展示名：主目录显示为「主目录」，其余取最后一段。 */
 function dirLabel(path: string, home?: string): string {
-  if (home && path === home) return "主目录";
+  if (home && path === home) return t("wsp.home");
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
@@ -40,6 +41,7 @@ function errorMessage(error: unknown): string {
 }
 
 export function WorkspacePicker() {
+  const t = useT();
   const picker = useUi((state) => state.folderPicker);
   const set = useUi((state) => state.set);
 
@@ -119,13 +121,13 @@ export function WorkspacePicker() {
     }
   };
 
-  const label = listing ? dirLabel(listing.path, listing.home ?? undefined) : "目录";
+  const label = listing ? dirLabel(listing.path, listing.home ?? undefined) : t("wsp.dir");
 
   return (
     <Dialog open={picker.open} onOpenChange={(open) => !open && close()}>
       <DialogContent className="gap-3 sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle className="text-base font-semibold">选择工作区目录</DialogTitle>
+          <DialogTitle className="text-base font-semibold">{t("wsp.title")}</DialogTitle>
         </DialogHeader>
 
         {/* 当前目录：常驻显示，点铅笔改成手输路径 */}
@@ -150,7 +152,7 @@ export function WorkspacePicker() {
                 }
                 if (event.key === "Escape") setPathDraft(null);
               }}
-              placeholder="输入绝对路径或 ~/ 开头的路径"
+              placeholder={t("wsp.path_ph")}
               className="h-7 font-mono text-xs"
             />
           )}
@@ -160,8 +162,8 @@ export function WorkspacePicker() {
               type="button"
               variant="ghost"
               size="icon-xs"
-              aria-label="上一级目录"
-              title="上一级目录"
+              aria-label={t("wsp.up")}
+              title={t("wsp.up")}
               disabled={!listing?.parent}
               onClick={() => listing?.parent && void load(listing.parent, showHidden)}
             >
@@ -171,8 +173,8 @@ export function WorkspacePicker() {
               type="button"
               variant="ghost"
               size="icon-xs"
-              aria-label={pathDraft === null ? "手动输入路径" : "取消手动输入"}
-              title={pathDraft === null ? "手动输入路径" : "取消手动输入"}
+              aria-label={pathDraft === null ? t("wsp.manual") : t("wsp.manual_off")}
+              title={pathDraft === null ? t("wsp.manual") : t("wsp.manual_off")}
               onClick={() =>
                 setPathDraft((draft) => (draft === null ? (listing?.path ?? "") : null))
               }
@@ -198,7 +200,7 @@ export function WorkspacePicker() {
                   }
                   if (event.key === "Escape") setNewName(null);
                 }}
-                placeholder="新建文件夹名称"
+                placeholder={t("wsp.new_ph")}
                 className="h-7 text-ui"
               />
             </div>
@@ -209,7 +211,7 @@ export function WorkspacePicker() {
               <Loader2Icon className="size-4 animate-spin" />
             </div>
           ) : listing && listing.entries.length === 0 && newName === null ? (
-            <p className="py-10 text-center text-xs text-muted-foreground">没有子目录</p>
+            <p className="py-10 text-center text-xs text-muted-foreground">{t("wsp.empty")}</p>
           ) : (
             listing?.entries.map((entry) => (
               <button
@@ -243,7 +245,7 @@ export function WorkspacePicker() {
               onClick={() => setNewName("")}
             >
               <PlusIcon className="size-3.5" />
-              新建文件夹
+              {t("wsp.new")}
             </Button>
             <Button
               type="button"
@@ -253,12 +255,12 @@ export function WorkspacePicker() {
               className={cn("text-xs", showHidden ? "text-foreground" : "text-muted-foreground")}
               onClick={toggleHidden}
             >
-              显示隐藏文件
+              {t("wsp.hidden")}
             </Button>
           </div>
           <div className="flex items-center gap-2">
             <Button type="button" variant="outline" size="sm" className="text-xs" onClick={close}>
-              取消
+              {t("common.cancel")}
             </Button>
             <Button
               type="button"
@@ -267,7 +269,7 @@ export function WorkspacePicker() {
               disabled={!listing || loading}
               onClick={confirm}
             >
-              打开
+              {t("wsp.open")}
             </Button>
           </div>
         </DialogFooter>

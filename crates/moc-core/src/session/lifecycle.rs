@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::SessionRecord;
 use super::SessionTable;
 use super::cache_budget::state_cache_bytes;
@@ -41,7 +42,7 @@ impl SessionTable {
         let title = title
             .map(sanitize_title)
             .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| "新会话".into());
+            .unwrap_or_else(|| t!("core.session.new_title").into_owned());
         let origin_parent = origin.parent_session_id.clone();
         let header = Entry::header(
             session_id.clone(),
@@ -132,16 +133,22 @@ impl SessionTable {
         let file = self.store.open(&paths).await?;
         let state = self.store.read_state(&paths).await?;
         if state.session.id != session_id {
-            return Err(CoreError::Session(format!(
-                "transcript session_id {} 与文件名 {session_id} 不匹配",
-                state.session.id
-            )));
+            return Err(CoreError::Session(
+                t!(
+                    "core.err.transcript_id_mismatch",
+                    id = state.session.id,
+                    name = session_id
+                )
+                .into_owned(),
+            ));
         }
         let header = state
             .entries
             .first()
             .map(StoredEntry::to_entry)
-            .ok_or_else(|| CoreError::Session("transcript 缺少会话头部".into()))?;
+            .ok_or_else(|| {
+                CoreError::Session(t!("core.err.transcript_no_session_header").into_owned())
+            })?;
         let orphaned_agents = load_orphans(&paths).await;
         let (state, cache_bytes) = tokio::task::spawn_blocking(move || {
             let bytes = state_cache_bytes(&state);

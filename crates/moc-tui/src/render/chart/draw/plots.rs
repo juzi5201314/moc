@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::super::text;
 use super::GAP;
 use super::HEAT_STEPS;
@@ -131,8 +133,12 @@ impl Painter<'_> {
         // 第 0 行：顶部色标（低值 → 渐变 → 高值），不再占用数据行。
         let low = format_value(min_v, reference.factor, &reference.unit);
         let high = format_value(max_v, reference.factor, &reference.unit);
-        let legend = if log { "色阶（对数）" } else { "色阶" };
-        let legend_w = self.text_width(legend);
+        let legend = if log {
+            t!("tui.chart.scale_log")
+        } else {
+            t!("tui.chart.scale")
+        };
+        let legend_w = self.text_width(&legend);
         let low_w = self.text_width(&low);
         let high_w = self.text_width(&high);
         let bar_left = PAD_X + legend_w + GAP + low_w + GAP;
@@ -151,7 +157,7 @@ impl Painter<'_> {
                 fill,
             );
         }
-        self.text(0, PAD_X, legend, self.palette.text_secondary);
+        self.text(0, PAD_X, &legend, self.palette.text_secondary);
         self.text(0, PAD_X + legend_w + GAP, &low, self.palette.gray_dim);
         self.text_end(0, grid_right, &high, self.palette.gray_dim);
 

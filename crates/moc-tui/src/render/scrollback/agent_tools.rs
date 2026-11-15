@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::super::labels;
 use super::BodyEdge;
 use super::agent_status_label;
@@ -342,18 +344,21 @@ pub(super) fn sidekick_rows_count(
 /// `result` 对象的一行摘要：`结果 <status> · 改动 N 个文件 · 验证 P 通过 F 失败 U 未跑`，
 /// 为 0 的部分省略。
 pub(super) fn sidekick_result_summary(result: &serde_json::Map<String, Value>) -> String {
-    let mut parts = vec![format!(
-        "结果 {}",
-        result
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-    )];
+    let mut parts = vec![
+        t!(
+            "tui.tool.result_fmt",
+            status = result
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        )
+        .into_owned(),
+    ];
     let changes = result.get("changes").and_then(Value::as_array);
     if let Some(changes) = changes
         && !changes.is_empty()
     {
-        parts.push(format!("改动 {} 个文件", changes.len()));
+        parts.push(t!("tui.tool.changes_fmt", n = changes.len()).into_owned());
     }
     if let Some(verification) = result.get("verification").and_then(Value::as_array)
         && !verification.is_empty()
@@ -365,15 +370,15 @@ pub(super) fn sidekick_result_summary(result: &serde_json::Map<String, Value>) -
                 .count()
         };
         let (passed, failed, not_run) = (count("passed"), count("failed"), count("not_run"));
-        let mut word = String::from("验证");
+        let mut word = t!("tui.tool.verify_base").into_owned();
         if passed > 0 {
-            word.push_str(&format!(" {passed} 通过"));
+            word.push_str(&t!("tui.tool.verify_passed_fmt", n = passed));
         }
         if failed > 0 {
-            word.push_str(&format!(" {failed} 失败"));
+            word.push_str(&t!("tui.tool.verify_failed_fmt", n = failed));
         }
         if not_run > 0 {
-            word.push_str(&format!(" {not_run} 未跑"));
+            word.push_str(&t!("tui.tool.verify_notrun_fmt", n = not_run));
         }
         parts.push(word);
     }
@@ -395,10 +400,16 @@ pub(super) fn ask_answer_pairs(tool: &ToolCallBlock, args: &Value) -> Vec<(Strin
     };
     let result = result.trim_end();
     if result == TIMEOUT {
-        return vec![(String::new(), "超时未回答".to_owned(), true)];
+        return vec![
+            (
+                String::new(),
+                t!("tui.ask.timeout_unanswered").into_owned(),
+                true,
+            ),
+        ];
     }
     if result == UNANSWERED {
-        return vec![(String::new(), "未回答".to_owned(), true)];
+        return vec![(String::new(), t!("tui.ask.unanswered").into_owned(), true)];
     }
     let questions: Vec<(String, String)> = args
         .get("questions")
@@ -451,12 +462,12 @@ pub(super) fn ask_answer_pairs(tool: &ToolCallBlock, args: &Value) -> Vec<(Strin
                 .find(|(qid, _)| *qid == id)
                 .map(|(_, key)| key.clone())
                 .or_else(|| questions.get(index).map(|(_, key)| key.clone()))
-                .unwrap_or_else(|| "回答".to_owned());
+                .unwrap_or_else(|| t!("tui.ask.answer").into_owned());
             let unanswered = answer == UNANSWERED;
             (
                 key,
                 if unanswered {
-                    "未回答".to_owned()
+                    t!("tui.ask.unanswered").into_owned()
                 } else {
                     answer
                 },

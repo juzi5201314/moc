@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 
 use crate::app::App;
 use crate::render::wrap::truncate;
+use rust_i18n::t;
 
 /// 侧栏卡片的状态符号与颜色。
 fn status_glyph(
@@ -53,7 +54,7 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let running = app.subagents.values().filter(|view| view.running).count();
     let mut title = vec![
         Span::styled(
-            "子代理",
+            t!("tui.subagent.title"),
             Style::new()
                 .fg(theme.text_primary)
                 .add_modifier(Modifier::BOLD),
@@ -65,7 +66,7 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     ];
     if running > 0 {
         title.push(Span::styled(
-            format!(" · {running} running"),
+            t!("tui.subagent.running_fmt", count = running).into_owned(),
             Style::new().fg(theme.accent_running),
         ));
     }

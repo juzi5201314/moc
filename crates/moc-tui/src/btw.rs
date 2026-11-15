@@ -8,6 +8,7 @@ use moc_protocol::{
     MAX_BTW_HISTORY_TURNS, SessionBtw, SessionBtwCancel, Usage,
 };
 use ratatui::layout::Rect;
+use rust_i18n::t;
 
 use crate::{
     app::{App, Focus},
@@ -242,7 +243,10 @@ impl BtwState {
                 ) {
                     Status::Complete
                 } else {
-                    Status::Failed(format!("结束原因：{:?}", result.finish_reason))
+                    Status::Failed(
+                        t!("tui.btw.finish_reason_fmt", reason = format!("{:?}", result.finish_reason))
+                            .into_owned(),
+                    )
                 };
             }
             Err(error) => {
@@ -301,14 +305,14 @@ fn prepare_submission(app: &mut App) -> Submission {
         return Submission::Unrecognized;
     };
     if app.prompt.has_attached_images() {
-        app.set_notice("旁路问答仅支持文本，请移除图片后发送");
+        app.set_notice(t!("tui.btw.text_only"));
         return Submission::Handled;
     }
     let Some(session_id) = app.require_session() else {
         return Submission::Handled;
     };
     if !question.is_empty() && app.btw.flight.is_some() {
-        app.set_notice("旁路问答仍在运行，草稿已保留；先等待或在面板按 Ctrl+C");
+        app.set_notice(t!("tui.btw.still_running"));
         return Submission::Handled;
     }
     // 只读会话同样可以旁路：core 只读快照，不申请写租约。
@@ -345,7 +349,9 @@ pub fn flush_cancel(app: &mut App, connection: &EmbeddedConnection) {
     let events = app.events.clone();
     tokio::spawn(async move {
         if let Err(error) = client.call::<SessionBtwCancel>(params).await {
-            let _ = events.send(AppEvent::Notice(format!("取消旁路问答失败：{error}")));
+            let _ = events.send(AppEvent::Notice(
+                t!("tui.btw.cancel_failed_fmt", err = error.to_string()).into_owned(),
+            ));
         }
     });
 }
@@ -395,7 +401,7 @@ pub fn handle_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> bool
                 .map(|turn| turn.answer.clone());
             if let Some(answer) = answer.filter(|text| !text.is_empty()) {
                 crate::event::write_osc52(&answer);
-                app.set_notice("已复制旁路回答");
+                app.set_notice(t!("tui.btw.copied"));
                 tokio::spawn(async move {
                     if let Err(error) = crate::clipboard::copy_text_to_clipboard(&answer).await {
                         tracing::debug!(%error, "旁路本地剪贴板复制失败，已发送 OSC52");

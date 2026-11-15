@@ -6,23 +6,22 @@
 use std::fmt;
 use std::time::Duration;
 
+use rust_i18n::t;
+
 mod status;
 
 /// 统一错误类型。
 ///
 /// 实现 `Clone` 是因为流式错误需要同时交付给 [`crate::ChatStream::next_event`]
 /// 与 [`crate::ChatStream::finish`]，调用方读到一个也不会让另一个丢失信息。
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum LlmError {
     /// 构造请求失败：请求类型无法表达为该协议的线上格式（历史不完整、参数缺失等）。
-    #[error("构建请求失败: {0}")]
     Encode(String),
     /// 网络传输失败。
-    #[error("网络传输失败: {0}")]
     Transport(TransportError),
     /// 响应体解析失败。
-    #[error("响应体解析失败: {message}")]
     Decode {
         /// 失败原因。
         message: String,
@@ -31,23 +30,62 @@ pub enum LlmError {
     },
     /// 上游返回错误响应。装入 `Box`：`ApiError` 带七个可选字段，内联会让
     /// 每个 `Result` 都背着两百多字节。
-    #[error("上游返回错误: {0}")]
     Api(Box<ApiError>),
     /// 流式响应异常（SSE 帧结构错误、流中断等）。
-    #[error("流式响应异常: {0}")]
     Stream(String),
     /// 本地循环保护停止；不得作为传输失败重试。
-    #[error(transparent)]
-    Guard(#[from] crate::LoopViolation),
+    Guard(crate::LoopViolation),
     /// 重试预算耗尽。
-    #[error("共尝试 {attempts} 次（含首次）后仍失败: {last}")]
     RetriesExhausted {
         /// 总尝试次数，含首次：`attempts == 3` 表示首发一次、重试两次。
         attempts: u32,
         /// 最后一次失败原因。
-        #[source]
         last: Box<LlmError>,
     },
+}
+
+impl fmt::Display for LlmError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Encode(detail) => write!(f, "{}", t!("llm.err.encode", detail = detail)),
+            Self::Transport(error) => {
+                write!(f, "{}", t!("llm.err.transport", detail = error.message()))
+            }
+            Self::Decode { message, .. } => {
+                write!(f, "{}", t!("llm.err.decode", detail = message))
+            }
+            Self::Api(error) => {
+                write!(f, "{}", t!("llm.err.api", detail = error.to_string()))
+            }
+            Self::Stream(detail) => write!(f, "{}", t!("llm.err.stream", detail = detail)),
+            Self::Guard(violation) => violation.fmt(f),
+            Self::RetriesExhausted { attempts, last } => write!(
+                f,
+                "{}",
+                t!(
+                    "llm.err.retries_exhausted",
+                    attempts = *attempts,
+                    last = last.to_string()
+                )
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LlmError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Guard(violation) => Some(violation),
+            Self::RetriesExhausted { last, .. } => Some(last.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl From<crate::LoopViolation> for LlmError {
+    fn from(violation: crate::LoopViolation) -> Self {
+        Self::Guard(violation)
+    }
 }
 
 impl LlmError {
@@ -71,9 +109,9 @@ impl LlmError {
                 error.request_diagnostics.get_or_insert(diagnostics);
             }
             Self::Transport(error) => {
-                error
-                    .message
-                    .push_str(&format!("\n请求诊断：{diagnostics}。"));
+                error.message.push_str(
+                    &t!("llm.err.diagnostics_fmt", stats = diagnostics).into_owned(),
+                );
             }
             Self::RetriesExhausted { last, .. } => {
                 **last = last.as_ref().clone().with_request_diagnostics(diagnostics);
@@ -235,7 +273,14 @@ impl fmt::Display for ApiError {
             None => write!(f, "{title} [{}]", self.kind),
         }?;
         if !self.message.is_empty() {
-            write!(f, "\n上游消息：{}", status::message_preview(&self.message))?;
+            write!(
+                f,
+                "{}",
+                t!(
+                    "llm.err.upstream_msg",
+                    message = status::message_preview(&self.message)
+                )
+            )?;
         }
         if let Some(code) = &self.code {
             write!(f, " (code={code})")?;
@@ -247,12 +292,16 @@ impl fmt::Display for ApiError {
             write!(f, " (cf-ray={ray})")?;
         }
         if let Some(delay) = self.retry_after {
-            write!(f, "\n上游建议等待：{} 秒（Retry-After）", delay.as_secs())?;
+            write!(
+                f,
+                "{}",
+                t!("llm.err.retry_after_fmt", secs = delay.as_secs())
+            )?;
         }
         if let Some(stats) = self.request_diagnostics {
-            write!(f, "\n请求诊断：{stats}。")?;
+            write!(f, "{}", t!("llm.err.diagnostics_fmt", stats = stats))?;
         }
-        write!(f, "\n排查建议：{hint}")
+        write!(f, "{}", t!("llm.err.hint_fmt", hint = hint))
     }
 }
 
@@ -647,6 +696,7 @@ mod tests {
 
     #[test]
     fn api_error_display_mentions_status_kind_and_code() {
+        rust_i18n::set_locale("zh");
         let mut err = ApiError::new(
             Some(429),
             ApiErrorKind::QuotaExceeded,
@@ -670,6 +720,7 @@ mod tests {
 
     #[test]
     fn llm_error_delegates_classification() {
+        rust_i18n::set_locale("zh");
         let api = LlmError::Api(Box::new(ApiError::new(
             Some(503),
             ApiErrorKind::ServerError,

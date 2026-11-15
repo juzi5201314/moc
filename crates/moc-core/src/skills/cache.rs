@@ -1,5 +1,6 @@
 //! 手动生成的技能路由摘要；整份快照原子发布，读取不获取写锁。
 
+use rust_i18n::t;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -68,9 +69,13 @@ impl Cache {
             Err(error) => return Err(error.into()),
         };
         let cache: Self = serde_json::from_slice(&bytes)
-            .map_err(|error| CoreError::Config(format!("技能摘要缓存无效：{error}")))?;
+            .map_err(|error| {
+                CoreError::Config(t!("core.err.skills_cache_invalid", error = error).into_owned())
+            })?;
         if cache.version != 1 || cache.entries.values().any(|entry| !valid_hint(&entry.hint)) {
-            return Err(CoreError::Config("技能摘要缓存版本或内容无效".into()));
+            return Err(CoreError::Config(
+                t!("core.err.skills_cache_version").into_owned(),
+            ));
         }
         Ok(cache)
     }
@@ -101,7 +106,14 @@ impl Cache {
                 Ok(_) => true,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
                 Err(error) => {
-                    warnings.push(format!("保留 {}：{error}", source.display()));
+                    warnings.push(
+                        t!(
+                            "core.err.skills_keep",
+                            path = source.display().to_string(),
+                            error = error
+                        )
+                        .into_owned(),
+                    );
                     true
                 }
             });
@@ -126,7 +138,7 @@ impl Writer {
             .open(home.join("cache/skill-descriptions.lock"))?;
         fs4::FileExt::try_lock(&lock).map_err(|error| match error {
             fs4::TryLockError::WouldBlock => {
-                CoreError::Session("SESSION_BUSY: 已有技能缓存操作正在进行".into())
+                CoreError::Session(t!("core.err.skills_busy").into_owned())
             }
             fs4::TryLockError::Error(error) => CoreError::Io(error),
         })?;
@@ -140,7 +152,9 @@ impl Writer {
         let target = path(&self.home);
         let mut temporary = tempfile::NamedTempFile::new_in(self.home.join("cache"))?;
         serde_json::to_writer(temporary.as_file_mut(), cache)
-            .map_err(|error| CoreError::Config(format!("技能摘要缓存序列化失败：{error}")))?;
+            .map_err(|error| {
+                CoreError::Config(t!("core.err.skills_cache_serialize", error = error).into_owned())
+            })?;
         temporary.flush()?;
         temporary.as_file().sync_all()?;
         temporary.persist(&target).map_err(|error| error.error)?;

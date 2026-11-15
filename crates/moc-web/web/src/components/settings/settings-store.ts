@@ -3,6 +3,7 @@
 
 import { toast } from "sonner";
 import { create } from "zustand";
+import { t } from "@/lib/i18n";
 import { setPath } from "@/lib/settings-doc";
 import { rpc } from "@/protocol/client";
 import type { ConfigAction, ConfigReply, ConfigScope, SettingsDocument } from "@/protocol/types";
@@ -40,7 +41,7 @@ function errorText(error: unknown): string {
 async function readScope(scope: ConfigScope, cwd: string): Promise<SettingsDocument> {
   const action: ConfigAction = { action: "read", scope, cwd };
   const reply = await rpc.call<ConfigReply>("config/manage", action);
-  if (reply.kind !== "settings") throw new Error("config/manage 返回了非 settings 响应");
+  if (reply.kind !== "settings") throw new Error(t("sd.bad_reply"));
   return reply.data;
 }
 
@@ -82,7 +83,7 @@ export function writeSettings(mutate: (doc: Doc) => Doc, label?: string): Promis
         revision: current.revision,
       };
       const reply = await rpc.call<ConfigReply>("config/manage", action);
-      if (reply.kind !== "settings") throw new Error("config/manage 返回了非 settings 响应");
+      if (reply.kind !== "settings") throw new Error(t("sd.bad_reply"));
       useSettings.setState((state) => ({
         docs: { ...state.docs, [scope]: reply.data },
         savedAt: Date.now(),
@@ -94,7 +95,7 @@ export function writeSettings(mutate: (doc: Doc) => Doc, label?: string): Promis
         .catch(() => undefined);
       return true;
     } catch (error) {
-      toast.error(`保存失败：${errorText(error)}`);
+      toast.error(t("sd.save_failed", { error: errorText(error) }));
       // 本地文档没动；重读一次以防是 revision 冲突（文件被别处改过）。
       void readScope(scope, cwd)
         .then((data) =>

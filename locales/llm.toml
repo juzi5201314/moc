@@ -1,0 +1,406 @@
+_version = 2
+
+[llm.status.html_page]
+zh = "上游返回 HTML 错误页，原始响应已保留；请结合状态码和请求 ID 排查"
+en = "Upstream returned an HTML error page; the raw response is kept — check the status code and request ID"
+
+[llm.status.kind_quota]
+title = { zh = "额度耗尽", en = "Quota exhausted" }
+hint = { zh = "检查供应商账户余额、项目额度和消费上限；单纯等待或重试通常不能恢复额度。", en = "Check the provider account balance, project quota and spending caps; waiting or retrying alone usually won't restore quota." }
+
+[llm.status.kind_context]
+title = { zh = "上下文超限", en = "Context length exceeded" }
+hint = { zh = "输入历史或输出预留超过模型上下文限制；请压缩历史或调整输出上限。这与 HTTP 请求体字节上限不同。", en = "Input history or reserved output exceeded the model context limit; compact history or lower the output cap. This is unrelated to the HTTP request body byte cap." }
+
+[llm.status.kind_thinking_sig]
+title = { zh = "思考签名验证失败", en = "Thinking signature invalid" }
+hint = { zh = "历史加密思考内容与当前上游渠道或密钥来源不一致；剥离旧思考块后重试，或切回原渠道。", en = "Historical encrypted thinking doesn't match the current upstream channel or key source; strip old thinking blocks and retry, or switch back to the original channel." }
+
+[llm.status.kind_filter]
+title = { zh = "内容策略拒绝", en = "Content policy rejected" }
+hint = { zh = "供应商明确报告内容策略限制；请查看上游说明并调整请求内容。", en = "The provider explicitly reported a content policy restriction; read the upstream note and adjust the request." }
+
+[llm.status.kind_auth]
+title = { zh = "认证失败", en = "Authentication failed" }
+hint = { zh = "检查当前供应商的凭据及其有效期。", en = "Check the provider's credentials and their validity." }
+
+[llm.status.kind_permission]
+title = { zh = "访问被拒绝", en = "Access denied" }
+hint = { zh = "检查账户、项目和模型访问权限。", en = "Check account, project and model access permissions." }
+
+[llm.status.kind_billing]
+title = { zh = "计费受限", en = "Billing restricted" }
+hint = { zh = "检查账户余额、订阅和供应商计费状态。", en = "Check the account balance, subscription and provider billing status." }
+
+[llm.status.kind_ratelimit]
+title = { zh = "请求限流", en = "Rate limited" }
+hint = { zh = "降低并发或请求频率，并参考上游建议的等待时间。", en = "Reduce concurrency or request rate, and follow the upstream suggested wait time." }
+
+[llm.status.kind_invalid]
+title = { zh = "请求无效", en = "Invalid request" }
+hint = { zh = "根据上游错误消息检查模型、参数和协议兼容配置。", en = "Check the model, parameters and protocol compatibility settings per the upstream error message." }
+
+[llm.status.kind_notfound]
+title = { zh = "资源不存在", en = "Resource not found" }
+hint = { zh = "核对 API 地址、模型名称及部署名称。", en = "Verify the API endpoint, model name and deployment name." }
+
+[llm.status.kind_toolarge]
+title = { zh = "请求体过大", en = "Request body too large" }
+hint = { zh = "减小请求体或按网关限制设置模型 max_request_bytes。", en = "Shrink the request body or set the model's max_request_bytes within the gateway limit." }
+
+[llm.status.kind_conflict]
+title = { zh = "请求冲突", en = "Request conflict" }
+hint = { zh = "检查并发请求及上游资源状态。", en = "Check concurrent requests and the upstream resource state." }
+
+[llm.status.kind_overloaded]
+title = { zh = "服务过载", en = "Service overloaded" }
+hint = { zh = "上游暂时没有足够容量；稍后重试或切换可用模型/线路。", en = "The upstream lacks capacity for now; retry later or switch to an available model/route." }
+
+[llm.status.kind_server]
+title = { zh = "上游服务错误", en = "Upstream server error" }
+hint = { zh = "结合请求 ID 检查供应商状态和服务日志。", en = "Check the provider status and service logs with the request ID." }
+
+[llm.status.kind_timeout]
+title = { zh = "上游超时", en = "Upstream timeout" }
+hint = { zh = "核对请求耗时和超时设置；超时本身不能证明请求过大。", en = "Check request duration and timeout settings; a timeout alone doesn't prove the request was too large." }
+
+[llm.status.kind_unknown]
+title = { zh = "上游未分类错误", en = "Unclassified upstream error" }
+hint = { zh = "上游未提供可识别的 HTTP 状态或错误类型；请保留原始错误和请求 ID 排查。", en = "The upstream gave no recognizable HTTP status or error type; keep the raw error and request ID for debugging." }
+
+[llm.status.redirect]
+title = { zh = "接口重定向", en = "Endpoint redirect" }
+hint = { zh = "本次未取得预期 API 响应；检查 base_url、接口路径及代理重定向配置。", en = "No expected API response was received; check base_url, the endpoint path and proxy redirect settings." }
+
+[llm.status.cached]
+title = { zh = "收到缓存响应", en = "Cached response received" }
+hint = { zh = "模型生成接口未返回预期响应体；检查网关缓存与接口路径。", en = "The model endpoint didn't return the expected body; check gateway caching and the endpoint path." }
+
+[llm.status.bad_request]
+title = { zh = "请求参数错误", en = "Bad request parameters" }
+hint = { zh = "根据上游消息检查参数、模型及协议兼容配置；不要仅凭 400 判断是图片或上下文问题。", en = "Check parameters, model and protocol compatibility per the upstream message; don't assume 400 means an image or context problem." }
+
+[llm.status.unauthorized]
+title = { zh = "认证失败", en = "Authentication failed" }
+hint = { zh = "检查当前供应商 API Key/登录凭据是否有效，以及代理是否正确转发鉴权头。", en = "Check whether the provider API Key/credentials are valid and whether the proxy forwards auth headers correctly." }
+
+[llm.status.payment]
+title = { zh = "付款或计费受限", en = "Payment or billing restricted" }
+hint = { zh = "供应商常用此码表示余额或付费权限不足；具体以账户状态和上游消息为准。", en = "Providers often use this code for insufficient balance or payment rights; rely on account status and the upstream message." }
+
+[llm.status.forbidden]
+title = { zh = "访问被拒绝", en = "Access denied" }
+hint = { zh = "检查模型权限、账户/地区限制和网关访问规则；403 不一定表示 API Key 错误。", en = "Check model permissions, account/region limits and gateway access rules; 403 doesn't necessarily mean a bad API Key." }
+
+[llm.status.not_found]
+title = { zh = "接口或模型不存在", en = "Endpoint or model not found" }
+hint = { zh = "核对 base_url、API 路径、模型 ID 或部署名称；部分服务也用 404 隐藏无权访问的资源。", en = "Verify base_url, API path, model ID or deployment name; some services also use 404 to hide inaccessible resources." }
+
+[llm.status.method]
+title = { zh = "请求方法不支持", en = "Method not allowed" }
+hint = { zh = "检查 API 路径及代理配置，确认该端点允许 POST。", en = "Check the API path and proxy config; confirm the endpoint allows POST." }
+
+[llm.status.not_acceptable]
+title = { zh = "响应格式无法满足", en = "Response format not satisfiable" }
+hint = { zh = "检查 Accept 请求头及接口支持的响应格式。", en = "Check the Accept header and the formats the endpoint supports." }
+
+[llm.status.proxy_auth]
+title = { zh = "代理认证失败", en = "Proxy authentication failed" }
+hint = { zh = "检查 HTTP 代理凭据；这是代理层认证，未必是模型 API Key 的问题。", en = "Check the HTTP proxy credentials; this is proxy-layer auth, not necessarily a model API Key issue." }
+
+[llm.status.request_timeout]
+title = { zh = "接收请求超时", en = "Request receive timeout" }
+hint = { zh = "服务端未及时收完请求；检查上传链路和网关接收时限，不要与模型生成超时混淆。", en = "The server didn't finish receiving the request in time; check the upload path and gateway receive limits — don't confuse with model generation timeouts." }
+
+[llm.status.conflict]
+title = { zh = "请求状态冲突", en = "Request state conflict" }
+hint = { zh = "检查并发操作、资源状态或幂等键，按上游说明解决冲突。", en = "Check concurrent operations, resource state or idempotency keys, and resolve per the upstream note." }
+
+[llm.status.gone]
+title = { zh = "资源已移除", en = "Resource gone" }
+hint = { zh = "核对接口或模型是否停用，更新到供应商仍支持的地址和模型。", en = "Check whether the endpoint or model was retired; switch to addresses and models the provider still supports." }
+
+[llm.status.length_required]
+title = { zh = "缺少内容长度", en = "Content-Length missing" }
+hint = { zh = "网关要求 Content-Length；检查代理是否改写请求体或传输方式。", en = "The gateway requires Content-Length; check whether the proxy rewrites the body or transfer mode." }
+
+[llm.status.precondition_failed]
+title = { zh = "请求前置条件失败", en = "Precondition failed" }
+hint = { zh = "检查条件请求头和上游资源版本；原样重试通常不会改变条件。", en = "Check conditional headers and the upstream resource version; retrying as-is usually won't change the condition." }
+
+[llm.status.payload_too_large]
+title = { zh = "请求体过大", en = "Payload too large" }
+hint = { zh = "上游明确拒绝了请求体大小；请按网关上限设置模型 max_request_bytes，并分批处理图片或压缩历史。", en = "The upstream explicitly rejected the body size; set the model's max_request_bytes within the gateway limit, batch images or compact history." }
+
+[llm.status.uri_too_long]
+title = { zh = "请求地址过长", en = "Request URI too long" }
+hint = { zh = "检查 base_url 和查询参数，确认消息内容没有被代理拼进 URL。", en = "Check base_url and query parameters; make sure message content isn't being folded into the URL by a proxy." }
+
+[llm.status.unsupported_media]
+title = { zh = "媒体类型不支持", en = "Unsupported media type" }
+hint = { zh = "检查 Content-Type、请求编码与图片格式是否符合该接口要求。", en = "Check whether Content-Type, request encoding and image formats meet the endpoint's requirements." }
+
+[llm.status.range_not_satisfiable]
+title = { zh = "请求范围无效", en = "Range not satisfiable" }
+hint = { zh = "检查代理或接口附加的 Range 请求头。", en = "Check Range headers added by the proxy or endpoint." }
+
+[llm.status.expectation_failed]
+title = { zh = "请求期望无法满足", en = "Expectation failed" }
+hint = { zh = "检查 Expect 请求头以及代理对上传协商的支持。", en = "Check the Expect header and the proxy's support for upload negotiation." }
+
+[llm.status.teapot]
+title = { zh = "保留状态码", en = "Reserved status code" }
+hint = { zh = "IANA 将 418 标为未使用；实际可能是服务自定义响应，请以上游原文为准。", en = "IANA marks 418 as unused; this may be a service-defined response — rely on the upstream text." }
+
+[llm.status.misdirected]
+title = { zh = "请求被发往错误服务", en = "Misdirected request" }
+hint = { zh = "检查域名、Host/SNI 和反向代理路由配置。", en = "Check the domain, Host/SNI and reverse-proxy routing config." }
+
+[llm.status.unprocessable]
+title = { zh = "请求语义校验失败", en = "Unprocessable content" }
+hint = { zh = "请求格式可识别，但内容或参数未通过校验；查看上游给出的具体字段原因。", en = "The request format parsed, but content or params failed validation; see the specific field reason upstream gave." }
+
+[llm.status.locked]
+title = { zh = "资源被锁定", en = "Resource locked" }
+hint = { zh = "检查上游资源锁及并发操作状态。", en = "Check upstream resource locks and concurrent operation state." }
+
+[llm.status.failed_dependency]
+title = { zh = "依赖操作失败", en = "Failed dependency" }
+hint = { zh = "查看上游依赖服务或前置操作的失败原因。", en = "Check the upstream dependency or prerequisite operation's failure reason." }
+
+[llm.status.too_early]
+title = { zh = "拒绝过早发送的请求", en = "Too early" }
+hint = { zh = "服务担心请求被重放；检查 TLS early data 与代理配置。", en = "The server fears request replay; check TLS early data and proxy config." }
+
+[llm.status.upgrade_required]
+title = { zh = "需要升级协议", en = "Upgrade required" }
+hint = { zh = "检查接口要求的 HTTP/TLS 协议及代理支持。", en = "Check the HTTP/TLS protocol the endpoint requires and proxy support." }
+
+[llm.status.precondition_required]
+title = { zh = "缺少请求前置条件", en = "Precondition required" }
+hint = { zh = "按接口要求设置条件请求头，核对资源版本。", en = "Set conditional headers as the endpoint requires and verify the resource version." }
+
+[llm.status.rate_limited]
+title = { zh = "请求限流", en = "Rate limited" }
+hint = { zh = "降低并发、请求频率或 token 用量，并参考 Retry-After；若上游明确报告额度耗尽，应先处理账户额度。", en = "Reduce concurrency, request rate or token usage and follow Retry-After; if the upstream reports exhausted quota, handle the account quota first." }
+
+[llm.status.header_too_large]
+title = { zh = "请求头过大", en = "Request headers too large" }
+hint = { zh = "检查附加请求头、Cookie 和重复鉴权字段；压缩图片请求体不能解决请求头超限。", en = "Check extra headers, cookies and duplicated auth fields; compressing the image body won't fix oversized headers." }
+
+[llm.status.legal]
+title = { zh = "法律原因限制访问", en = "Unavailable for legal reasons" }
+hint = { zh = "服务因法律要求限制资源访问；以上游说明为准。", en = "The service restricts the resource for legal reasons; rely on the upstream note." }
+
+[llm.status.internal]
+title = { zh = "上游内部错误", en = "Upstream internal error" }
+hint = { zh = "上游处理失败；可按重试策略等待恢复，持续失败时提供请求 ID 给供应商排查。", en = "Upstream processing failed; wait per the retry policy, and give the provider the request ID if it persists." }
+
+[llm.status.not_implemented]
+title = { zh = "接口能力未实现", en = "Not implemented" }
+hint = { zh = "服务不支持所需功能或方法；核对协议与端点，原样重试通常不能补齐能力。", en = "The service lacks the required capability or method; check the protocol and endpoint — retrying as-is won't add it." }
+
+[llm.status.bad_gateway]
+title = { zh = "网关收到无效上游响应", en = "Bad gateway" }
+hint = { zh = "检查网关到供应商的连接、响应格式及供应商状态；不能直接归因于客户端输入。", en = "Check the gateway-to-provider connection, response format and provider status; can't be attributed to client input directly." }
+
+[llm.status.unavailable]
+title = { zh = "服务暂不可用", en = "Service unavailable" }
+hint = { zh = "可能是维护、过载或依赖故障；参考 Retry-After 和供应商状态。", en = "Possibly maintenance, overload or a dependency failure; consult Retry-After and provider status." }
+
+[llm.status.gateway_timeout]
+title = { zh = "网关等待上游超时", en = "Gateway timeout" }
+hint = { zh = "核对网关与源站的处理耗时和超时设置；状态码本身不能证明请求过大。", en = "Check gateway and origin processing times and timeout settings; the status alone doesn't prove the request was too large." }
+
+[llm.status.http_version]
+title = { zh = "HTTP 版本不支持", en = "HTTP version not supported" }
+hint = { zh = "检查网关支持的 HTTP 版本与协议协商配置。", en = "Check the HTTP versions the gateway supports and the protocol negotiation config." }
+
+[llm.status.variant_negotiates]
+title = { zh = "服务内容协商配置错误", en = "Variant negotiates" }
+hint = { zh = "上游内容协商形成内部配置冲突，需要服务管理员检查。", en = "Upstream content negotiation formed an internal config conflict; a service admin must check it." }
+
+[llm.status.insufficient_storage]
+title = { zh = "上游存储资源不足", en = "Insufficient storage" }
+hint = { zh = "服务无法完成所需存储操作；联系供应商检查其资源，不代表本机磁盘已满。", en = "The service can't complete the storage operation; ask the provider to check its resources — this doesn't mean your disk is full." }
+
+[llm.status.loop_detected]
+title = { zh = "上游检测到处理循环", en = "Loop detected" }
+hint = { zh = "检查服务或代理内部的循环依赖/路由，提供请求 ID 给管理员。", en = "Check for dependency loops/routing inside the service or proxy; give the request ID to the admin." }
+
+[llm.status.not_extended]
+title = { zh = "已废弃的扩展状态码", en = "Deprecated extension status" }
+hint = { zh = "510 标准已废弃，旧服务可能仍使用；按上游说明检查接口扩展要求。", en = "Status 510 is deprecated but old services may still use it; check the endpoint's extension requirements per upstream docs." }
+
+[llm.status.network_auth]
+title = { zh = "网络访问需要认证", en = "Network authentication required" }
+hint = { zh = "检查网络入口或认证门户；通常不是模型 API 的认证问题。", en = "Check the network gateway or captive portal; usually not a model API auth problem." }
+
+[llm.status.nonstd_auth]
+title = { zh = "非标准认证/会话错误", en = "Non-standard auth/session error" }
+hint = { zh = "部分服务用此码表示会话过期或校验失败；含义未统一，请核对上游文档和登录状态。", en = "Some services use this code for expired sessions or failed checks; the meaning isn't unified — verify against upstream docs and login state." }
+
+[llm.status.nonstd_444]
+title = { zh = "非标准连接拒绝", en = "Non-standard connection refusal" }
+hint = { zh = "Nginx 的 444 表示不发送响应就关闭连接；客户端收到数值 444 时可能经过网关转译，请检查代理访问规则。", en = "Nginx's 444 closes the connection without a response; a client-observed 444 may be gateway-translated — check proxy access rules." }
+
+[llm.status.nonstd_494]
+title = { zh = "非标准请求头错误", en = "Non-standard header error" }
+hint = { zh = "Nginx 常用此码表示请求头过大；其他服务可能另有定义，请查看网关日志。", en = "Nginx often uses this code for oversized request headers; other services may define it differently — check gateway logs." }
+
+[llm.status.nonstd_cert]
+title = { zh = "非标准客户端证书错误", en = "Non-standard client certificate error" }
+hint = { zh = "Nginx 常用 495/496 表示客户端证书校验失败/缺失；检查 mTLS 和代理配置，具体以上游为准。", en = "Nginx often uses 495/496 for client certificate failures/absence; check mTLS and proxy config — rely on upstream specifics." }
+
+[llm.status.nonstd_http_https]
+title = { zh = "非标准 HTTP/HTTPS 不匹配", en = "Non-standard HTTP/HTTPS mismatch" }
+hint = { zh = "Nginx 常用此码表示向 HTTPS 端口发送了 HTTP；核对 URL 协议与端口。", en = "Nginx often uses this code for HTTP sent to an HTTPS port; verify the URL scheme and port." }
+
+[llm.status.nonstd_499]
+title = { zh = "非标准请求取消", en = "Non-standard request cancellation" }
+hint = { zh = "Nginx 常用此码记录客户端提前断开；收到该响应也可能是中间代理转译，不能据此认定用户主动取消。", en = "Nginx often logs this for early client disconnects; receiving it may also be middle-proxy translation — don't assume the user cancelled." }
+
+[llm.status.nonstd_520]
+title = { zh = "非标准源站响应错误", en = "Non-standard origin response error" }
+hint = { zh = "若由 Cloudflare 返回，表示源站响应为空、未知或异常；结合 Ray ID 检查源站和代理日志。", en = "If returned by Cloudflare, the origin response was empty, unknown or errored; check origin and proxy logs with the Ray ID." }
+
+[llm.status.nonstd_521]
+title = { zh = "非标准源站连接被拒绝", en = "Non-standard origin connection refused" }
+hint = { zh = "若由 Cloudflare 返回，表示源站拒绝连接；检查源站是否运行、端口和防火墙规则。", en = "If returned by Cloudflare, the origin refused the connection; check whether the origin is running, its port and firewall rules." }
+
+[llm.status.nonstd_522]
+title = { zh = "非标准源站连接超时", en = "Non-standard origin connect timeout" }
+hint = { zh = "若由 Cloudflare 返回，表示连接握手或请求确认超时；检查源站可达性、负载和防火墙。", en = "If returned by Cloudflare, the handshake or request ack timed out; check origin reachability, load and firewall." }
+
+[llm.status.nonstd_523]
+title = { zh = "非标准源站不可达", en = "Non-standard origin unreachable" }
+hint = { zh = "若由 Cloudflare 返回，检查源站 IP、DNS 和网络路由。", en = "If returned by Cloudflare, check the origin IP, DNS and network routing." }
+
+[llm.status.nonstd_524]
+title = { zh = "非标准网关读写超时", en = "Non-standard gateway read/write timeout" }
+hint = { zh = "Cloudflare 的 524 表示等待源站响应或向源站写入数据超时。不等于已确认请求体超限（超限通常为 413），不能仅凭请求含图片判断原因；请核对网关/源站日志及超时设置。", en = "Cloudflare's 524 means waiting for the origin response or writing to it timed out. It does not confirm a body-size violation (that's usually 413) — don't infer the cause from images alone; check gateway/origin logs and timeout settings." }
+
+[llm.status.nonstd_525]
+title = { zh = "非标准源站 TLS 握手失败", en = "Non-standard origin TLS handshake failure" }
+hint = { zh = "若由 Cloudflare 返回，检查 Cloudflare 到源站的 TLS 协议、证书及监听配置；不是要求关闭客户端证书校验。", en = "If returned by Cloudflare, check TLS protocol, certificates and listen config between Cloudflare and the origin; it isn't asking to disable client-cert checks." }
+
+[llm.status.nonstd_526]
+title = { zh = "非标准源站证书无效", en = "Non-standard invalid origin certificate" }
+hint = { zh = "若由 Cloudflare 返回，检查源站证书的有效期、域名和证书链；应修复证书而非关闭校验。", en = "If returned by Cloudflare, check the origin certificate's validity, domain and chain; fix the certificate rather than disabling verification." }
+
+[llm.status.nonstd_527]
+title = { zh = "非标准代理错误", en = "Non-standard proxy error" }
+hint = { zh = "部分代理使用此码，含义未统一；请保留上游原文和请求 ID，按该代理文档排查。", en = "Some proxies use this code with no unified meaning; keep the upstream text and request ID and debug per that proxy's docs." }
+
+[llm.status.nonstd_529]
+title = { zh = "非标准服务过载", en = "Non-standard service overload" }
+hint = { zh = "Anthropic 用此码表示服务过载；其他服务的定义可能不同，请结合上游消息和服务状态判断。", en = "Anthropic uses this code for service overload; other services may define it differently — judge by the upstream message and service status." }
+
+[llm.status.nonstd_530]
+title = { zh = "非标准源站解析错误", en = "Non-standard origin resolution error" }
+hint = { zh = "若由 Cloudflare 返回，检查响应正文中的 1xxx 细分错误码及源站域名解析；530 本身不足以确定具体原因。", en = "If returned by Cloudflare, check the 1xxx sub-code in the response body and the origin's DNS resolution; 530 alone doesn't pin down the cause." }
+
+[llm.status.nonstd_598]
+title = { zh = "非标准网络超时", en = "Non-standard network timeout" }
+hint = { zh = "部分代理用 598/599 表示读超时或连接超时，定义未统一；请以上游原文和代理日志为准。", en = "Some proxies use 598/599 for read or connect timeouts with no unified definition; rely on the upstream text and proxy logs." }
+
+[llm.status.other_info]
+title = { zh = "意外的信息响应", en = "Unexpected informational response" }
+hint = { zh = "未取得预期的最终 API 响应；检查代理协议处理。", en = "No expected final API response arrived; check proxy protocol handling." }
+
+[llm.status.other_success]
+title = { zh = "成功状态中包含错误", en = "Error inside a success status" }
+hint = { zh = "HTTP 状态看似成功，但响应内容报告失败；请以上游错误正文为准。", en = "The HTTP status looks successful but the body reports failure; rely on the upstream error text." }
+
+[llm.status.other_redirect]
+title = { zh = "未识别的重定向响应", en = "Unrecognized redirect response" }
+hint = { zh = "检查 API 地址和代理路由，并保留原始状态码及响应正文。", en = "Check the API address and proxy routing, and keep the raw status code and body." }
+
+[llm.status.other_client]
+title = { zh = "未识别的请求拒绝", en = "Unrecognized request rejection" }
+hint = { zh = "该状态码可能由供应商自定义；请以上游原文及文档为准，不能只凭数字确定根因。", en = "This status may be provider-defined; rely on the upstream text and docs — the number alone can't pin the root cause." }
+
+[llm.status.other_server]
+title = { zh = "未识别的服务端错误", en = "Unrecognized server error" }
+hint = { zh = "该状态码可能由供应商或代理自定义；结合请求 ID 和服务日志排查，不假定具体故障或自动重试资格。", en = "This status may be provider- or proxy-defined; debug with the request ID and service logs — don't assume a specific fault or retry eligibility." }
+
+[llm.status.other_nonstd]
+title = { zh = "非标准状态码", en = "Non-standard status code" }
+hint = { zh = "此状态码不属于标准 HTTP 状态范围；请检查代理转译和供应商文档。", en = "This status is outside the standard HTTP range; check proxy translation and provider docs." }
+
+[llm.err]
+encode = { zh = "构建请求失败: %{detail}", en = "Failed to build request: %{detail}" }
+transport = { zh = "网络传输失败: %{detail}", en = "Transport failed: %{detail}" }
+decode = { zh = "响应体解析失败: %{detail}", en = "Failed to decode response body: %{detail}" }
+api = { zh = "上游返回错误: %{detail}", en = "Upstream error: %{detail}" }
+stream = { zh = "流式响应异常: %{detail}", en = "Stream error: %{detail}" }
+retries_exhausted = { zh = "共尝试 %{attempts} 次（含首次）后仍失败: %{last}", en = "Failed after %{attempts} attempts (including the first): %{last}" }
+diagnostics_fmt = { zh = "\n请求诊断：%{stats}。", en = "\nRequest diagnostics: %{stats}." }
+upstream_msg = { zh = "\n上游消息：%{message}", en = "\nUpstream message: %{message}" }
+retry_after_fmt = { zh = "\n上游建议等待：%{secs} 秒（Retry-After）", en = "\nUpstream suggests waiting %{secs}s (Retry-After)" }
+hint_fmt = { zh = "\n排查建议：%{hint}", en = "\nHint: %{hint}" }
+loop_detected = { zh = "检测到%{channel}循环：%{detail}", en = "%{channel} loop detected: %{detail}" }
+channel_text = { zh = "正文", en = "text" }
+channel_reasoning = { zh = "思考", en = "reasoning" }
+channel_arguments = { zh = "工具参数", en = "arguments" }
+channel_tool = { zh = "工具", en = "tool" }
+prose_similar = { zh = "近期段落中出现 %{cluster} 段高度相似且没有新引用的内容", en = "%{cluster} highly similar paragraphs with no new citations appeared recently" }
+prose_repeated = { zh = "连续 12 段复用已有词汇，未增加具体信息", en = "12 consecutive paragraphs reused existing wording without adding specifics" }
+period_repeat = { zh = "同一段 %{period} 字符内容连续重复 %{count} 次", en = "The same %{period}-character segment repeated %{count} times in a row" }
+incomplete = { zh = "上游响应在协议终态之前结束，本次响应不完整", en = "The upstream response ended before the protocol's terminal state; the response is incomplete" }
+read_body_failed = { zh = "读取响应体失败: %{err}", en = "Failed to read response body: %{err}" }
+stream_json = { zh = "流式请求返回了非流式 JSON 响应", en = "The streaming request returned a non-streaming JSON response" }
+nonstream_deadline = { zh = "非流式请求在 %{secs} 秒连接与重试时限内没有完成", en = "The non-streaming request didn't finish within the %{secs}s connect-and-retry window" }
+stream_deadline = { zh = "流式请求在 %{secs} 秒连接与重试时限内没有完成", en = "The streaming request didn't finish within the %{secs}s connect-and-retry window" }
+image_prepare = { zh = "图片请求准备失败：%{error}", en = "Failed to prepare image request: %{error}" }
+timeout_cfg = { zh = "连接超时配置无效：%{error}", en = "Invalid connect-timeout config: %{error}" }
+no_headers = { zh = "上游在 %{secs} 秒内没有返回响应头", en = "The upstream returned no response headers within %{secs}s" }
+tool_args_json = { zh = "工具调用 %{name} 的参数不是合法 JSON: %{err}", en = "Tool call %{name}'s arguments are not valid JSON: %{err}" }
+body_serialize = { zh = "%{protocol} 请求体序列化失败: %{error}", en = "Failed to serialize %{protocol} request body: %{error}" }
+body_not_json = { zh = "响应体不是合法 JSON: %{err}", en = "Response body is not valid JSON: %{err}" }
+missing_toolresult = { zh = "工具结果消息缺少 ToolResult 内容块", en = "Tool-result message is missing its ToolResult content block" }
+tool_call_unmatched = { zh = "assistant 消息中的工具调用 [%{names}] 缺少对应的工具结果消息（缺失: %{missing}）", en = "Tool calls [%{names}] in the assistant message lack matching tool-result messages (missing: %{missing})" }
+tool_result_orphan = { zh = "工具结果消息的 tool_call_id \"%{tool_call_id}\" 不在前一条 assistant 消息的工具调用中", en = "The tool-result message's tool_call_id \"%{tool_call_id}\" isn't among the previous assistant message's tool calls" }
+env_read = { zh = "读取环境变量 %{var} 失败", en = "Failed to read env var %{var}" }
+env_empty = { zh = "环境变量 %{var} 为空", en = "Env var %{var} is empty" }
+resp_cache_ttl = { zh = "Responses 协议的显式缓存只支持 30m，收到 %{value}", en = "The Responses protocol's explicit cache only supports 30m; got %{value}" }
+cache_index_range = { zh = "缓存断点下标 %{index} 超出消息范围（共 %{message_count} 条）", en = "Cache breakpoint index %{index} is out of range (%{message_count} messages)" }
+resp_item_kind = { zh = "%{role} 消息不能编码为 Responses 的 message item", en = "%{role} messages can't be encoded as Responses message items" }
+resp_cache_assistant = { zh = "Responses 的缓存断点只能落在 assistant 消息的文本内容块上", en = "Responses cache breakpoints can only land on text content blocks of assistant messages" }
+tool_missing_result = { zh = "tool 消息缺少 ToolResult 内容块", en = "The tool message is missing its ToolResult content block" }
+resp_cache_text = { zh = "Responses 的缓存断点只能落在文本内容块上", en = "Responses cache breakpoints can only land on text content blocks" }
+cache_empty_msg = { zh = "缓存断点落在空消息上", en = "The cache breakpoint landed on an empty message" }
+role_block_kind = { zh = "%{role} 消息不允许出现 %{kind} 内容块", en = "%{role} messages can't contain %{kind} content blocks" }
+resp_failed = { zh = "Responses 请求失败", en = "Responses request failed" }
+resp_stream_error = { zh = "Responses 流错误", en = "Responses stream error" }
+resp_stream_json = { zh = "Responses 流数据不是合法 JSON: %{err}", en = "Responses stream data is not valid JSON: %{err}" }
+chat_cache_ttl = { zh = "Chat 协议的显式缓存只支持 30m，收到 %{value}", en = "The Chat protocol's explicit cache only supports 30m; got %{value}" }
+chat_index_missing = { zh = "Chat 工具调用增量缺少 index", en = "Chat tool-call delta is missing its index" }
+chat_index_range = { zh = "Chat 工具调用 index 超出范围: %{raw_index}", en = "Chat tool-call index out of range: %{raw_index}" }
+chat_index_cap = { zh = "Chat 工具调用 index %{index} 超过本地上限 %{max}", en = "Chat tool-call index %{index} exceeds the local cap %{max}" }
+chat_stream_json = { zh = "Chat 流数据不是合法 JSON: %{err}", en = "Chat stream data is not valid JSON: %{err}" }
+chat_stream_nomsg = { zh = "Chat 流返回了错误，但没有提供消息", en = "Chat stream returned an error without a message" }
+anthropic_stream_json = { zh = "Anthropic 流数据不是合法 JSON: %{err}", en = "Anthropic stream data is not valid JSON: %{err}" }
+cache_block_oob = { zh = "线上消息只有 %{len} 个内容块，缓存断点块下标 %{block} 越界", en = "The wire message has only %{len} content blocks; cache breakpoint block index %{block} is out of bounds" }
+cache_no_instr = { zh = "缓存断点下标 %{message} 没有对应的指令消息", en = "Cache breakpoint index %{message} has no matching instruction message" }
+anthropic_cache_system = { zh = "Anthropic 缓存断点需要非空系统提示才能落位（系统提示为空）", en = "Anthropic cache breakpoints need a non-empty system prompt to land on (system prompt is empty)" }
+system_block_oob = { zh = "系统提示只有 %{len} 个内容块，缓存断点块下标 %{target} 越界", en = "The system prompt has only %{len} content blocks; cache breakpoint block index %{target} is out of bounds" }
+anthropic_max_tokens = { zh = "Anthropic 协议的 max_output_tokens 是必填项", en = "max_output_tokens is required by the Anthropic protocol" }
+anthropic_json_object = { zh = "Anthropic 不支持 json_object 响应格式，请提供 JsonSchema", en = "Anthropic doesn't support the json_object response format; provide a JsonSchema" }
+anthropic_reasoning_item = { zh = "Anthropic 协议不支持 Responses 的 reasoning item", en = "The Anthropic protocol doesn't support the Responses reasoning item" }
+tool_args_object = { zh = "工具调用 %{name} 的参数必须是 JSON 对象，收到 %{value}", en = "Tool call %{name}'s arguments must be a JSON object; got %{value}" }
+anthropic_cache_ttl = { zh = "Anthropic 的缓存 TTL 只支持 5m 与 1h", en = "Anthropic cache TTL only supports 5m and 1h" }
+cache_no_block = { zh = "缓存断点下标 %{index} 没有对应的线上内容块", en = "Cache breakpoint index %{index} has no matching wire content block" }
+tool_args_serialize = { zh = "工具调用参数序列化失败: %{err}", en = "Failed to serialize tool-call arguments: %{err}" }
+
+[llm.img]
+diagnostics = { zh = "请求体 %{bytes} 字节（%{kib} KiB），图片 %{images} 张（历史 %{history} 张），图片 Base64 %{b64_before} → %{b64_after} 字节，非图片部分 %{other} 字节，本地请求上限 %{limit} 字节，等待 %{wait} 秒", en = "request body %{bytes} bytes (%{kib} KiB), %{images} images (%{history} from history), image Base64 %{b64_before} → %{b64_after} bytes, %{other} bytes outside images, local cap %{limit} bytes, waited %{wait}s" }
+remote_note = { zh = "；其中 %{count} 张是远端 URL，其下载体积无法从请求体判断", en = "; %{count} of them are remote URLs whose download size can't be inferred from the request body" }
+budget_short = { zh = "图片请求体预算不足，未发送：%{count} 张图片（历史 %{history} 张）共享 %{budget} 字节 Base64 预算，文本/工具/封套约 %{other} 字节；第 %{index} 张无法在保留细节的策略下压入预算。请分批处理、裁剪关注区域、压缩历史，或按网关实际限制调整模型 max_request_bytes。%{error}", en = "Image request budget too small, not sent: %{count} images (%{history} from history) share a %{budget}-byte Base64 budget, text/tools/envelope ~%{other} bytes; image #%{index} can't fit without dropping detail. Batch images, crop regions of interest, compact history, or set the model's max_request_bytes per the gateway's real limit. %{error}" }
+over_limit = { zh = "请求体超限，未发送：%{diagnostics}；图片 Base64 总预算 %{budget} 字节。请分批处理图片、压缩历史或按网关限制调整模型 max_request_bytes。", en = "Request body over the limit, not sent: %{diagnostics}; total image Base64 budget %{budget} bytes. Batch images, compact history, or set the model's max_request_bytes per the gateway limit." }
+data_url_base64 = { zh = "data URL 必须使用 Base64", en = "data URLs must use Base64" }
+preprocess = { zh = "图片预处理失败，未发送：%{message}", en = "Image preprocessing failed, not sent: %{message}" }
+image_too_large = { zh = "单张输入超过 20 MiB，请先裁剪或缩放", en = "A single input exceeds 20 MiB; crop or scale it first" }
+unrecognized = { zh = "无法识别图片格式", en = "Unrecognized image format" }
+pixels_cap = { zh = "解码像素超过 6400 万，请先裁剪或缩放", en = "Decoded pixels exceed 64 million; crop or scale first" }
+fit_note = { zh = "%{w}×%{h} 图片需要 %{need} 字节，分配到 %{have} 字节；已达到预览尺寸/质量下限，请裁剪关注区域或分批处理", en = "A %{w}×%{h} image needs %{need} bytes but only %{have} were allocated; already at the preview size/quality floor — crop regions of interest or batch images" }

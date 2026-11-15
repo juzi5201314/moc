@@ -11,6 +11,7 @@ pub mod state;
 pub mod store;
 pub mod stored;
 
+use rust_i18n::t;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -121,10 +122,10 @@ impl SessionRecord {
     pub fn try_prompt_lock(&self) -> Result<OwnedMutexGuard<()>, CoreError> {
         let guard = Arc::clone(&self.prompt_lock)
             .try_lock_owned()
-            .map_err(|_| CoreError::Session("SESSION_BUSY: 会话已有进行中的提示".into()))?;
+            .map_err(|_| CoreError::Session(t!("core.err.session_busy").into_owned()))?;
         if !self.active.load(Ordering::Acquire) {
             return Err(CoreError::Session(
-                "SESSION_NOT_FOUND: 会话已卸载或删除".into(),
+                t!("core.err.session_unloaded").into_owned(),
             ));
         }
         Ok(guard)

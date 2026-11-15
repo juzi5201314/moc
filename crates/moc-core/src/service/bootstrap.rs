@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::Core;
 use super::CoreInner;
 use super::CoreServer;
@@ -179,6 +180,8 @@ impl Core {
         sandbox_support: crate::sandbox::SandboxSupport,
     ) -> anyhow::Result<Arc<Self>> {
         let mut resolved = ResolvedConfig::load(&config)?;
+        // 配置语言生效：覆盖进程入口的 auto 探测，core 产出的用户面消息随此前端语言走。
+        crate::i18n::init(&resolved.language);
         if resolved.sandbox.default_mode != moc_protocol::SessionPermission::Full
             && !sandbox_support.supports(resolved.sandbox.default_mode)
         {
@@ -280,7 +283,7 @@ impl Core {
         let path = runtime
             .anchors
             .latest_undo_path()
-            .ok_or_else(|| anyhow::anyhow!("[E_NO_UNDO] 当前会话没有可撤销的编辑"))?;
+            .ok_or_else(|| anyhow::anyhow!("{}", t!("core.err.no_undo")))?;
         let output = crate::hashline::apply::undo(
             &path,
             &runtime.anchors,

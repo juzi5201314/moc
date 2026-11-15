@@ -342,11 +342,14 @@ async fn create_discover_filter_add_and_edit_in_one_page() {
         .mount(&server)
         .await;
     let root = tempfile::tempdir().unwrap();
+    // 不写 home/config.toml：用 overlay 固定 zh，避免 Core::new 的 init 与并行测试抢全局 locale。
+    let zh_overlay = root.path().join("zh.toml");
+    std::fs::write(&zh_overlay, "language='zh'\n").unwrap();
     let boot = CoreConfig {
         home: root.path().to_owned(),
         cwd: root.path().to_owned(),
         user_home: Some(root.path().join("userhome")),
-        overlays: Vec::new(),
+        overlays: vec![zh_overlay],
         session_dir: Some(root.path().join("sessions")),
         client: Default::default(),
         ptc_worker: None,

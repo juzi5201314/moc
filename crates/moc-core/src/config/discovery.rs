@@ -3,6 +3,7 @@
 use super::model::{ProviderDocument, ResolvedProvider};
 use crate::CoreError;
 use moc_llm::{Auth, EndpointStyle, Protocol};
+use rust_i18n::t;
 
 pub async fn models(
     id: &str,
@@ -52,12 +53,12 @@ pub async fn models(
         let rows = body
             .get("data")
             .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| CoreError::Config("模型服务没有返回模型列表".into()))?;
+            .ok_or_else(|| CoreError::Config(t!("core.err.no_model_list").into_owned()))?;
         for row in rows {
             let id = row
                 .get("id")
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| CoreError::Config("模型列表里有条目缺少模型 ID".into()))?;
+                .ok_or_else(|| CoreError::Config(t!("core.err.model_entry_no_id").into_owned()))?;
             result.push(moc_protocol::CatalogModel {
                 id: id.into(),
                 name: row
@@ -75,11 +76,9 @@ pub async fn models(
             .get("last_id")
             .and_then(serde_json::Value::as_str)
             .or_else(|| rows.last()?.get("id")?.as_str())
-            .ok_or_else(|| CoreError::Config("模型列表的分页数据不完整".into()))?;
+            .ok_or_else(|| CoreError::Config(t!("core.err.pagination_incomplete").into_owned()))?;
         if cursor.as_deref() == Some(next) {
-            return Err(CoreError::Config(
-                "模型服务重复返回同一页，已停止获取".into(),
-            ));
+            return Err(CoreError::Config(t!("core.err.same_page").into_owned()));
         }
         cursor = Some(next.into());
     }
@@ -89,5 +88,5 @@ pub async fn models(
 }
 
 fn failure(error: reqwest::Error) -> CoreError {
-    CoreError::Config(format!("获取模型失败：{error}"))
+    CoreError::Config(t!("core.err.fetch_models_failed", error = error).into_owned())
 }

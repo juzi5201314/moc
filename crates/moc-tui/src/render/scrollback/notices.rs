@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+use rust_i18n::t;
+
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -48,14 +50,14 @@ pub(super) fn rows(
             }));
         };
     if count > 0 {
-        push(&format!(
-            "{count} 行内容未完整显示{}",
-            if level == DetailLevel::Full {
-                ""
-            } else {
-                "；展开查看行号与续读方式"
-            }
-        ));
+        let hint = if level == DetailLevel::Full {
+            String::new()
+        } else {
+            t!("tui.scroll.expand_hint").into_owned()
+        };
+        push(
+            &t!("tui.scroll.incomplete_fmt", count = count, hint = hint.as_str()).into_owned(),
+        );
         if level == DetailLevel::Full {
             for notice in &notices {
                 if long_line(notice) {
@@ -68,9 +70,7 @@ pub(super) fn rows(
                     );
                 }
             }
-            push(
-                "用 read 的 offset 指定行、limit=1、byte_offset=0 分片读取，并按 next 续读；省略内容不授权编辑。",
-            );
+            push(t!("tui.scroll.read_hint").as_ref());
         }
     }
     for notice in notices {

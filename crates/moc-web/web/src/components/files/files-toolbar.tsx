@@ -17,6 +17,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { type MsgKey, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import {
   type FileRoot,
@@ -35,6 +36,7 @@ export function FilesToolbar({
   sessionId: string;
   workspaceRoot: FileRoot | null;
 }) {
+  const t = useT();
   const root = useFiles((state) => state.bySession[sessionId]?.root ?? "workspace");
   const hidden = useLayout((state) => state.filesShowHidden);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -75,8 +77,8 @@ export function FilesToolbar({
       <div className="flex items-center rounded-lg bg-muted p-0.5">
         {(
           [
-            ["workspace", "工作区"],
-            ["session", "会话"],
+            ["workspace", "ft.workspace" as MsgKey],
+            ["session", "ft.session" as MsgKey],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -90,32 +92,32 @@ export function FilesToolbar({
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
-            {label}
+            {t(label)}
           </button>
         ))}
       </div>
       <div className="ml-auto flex items-center gap-0.5">
         {root === "workspace" && (
           <>
-            <IconButton label="新建文件" size="xs" onClick={() => startCreate("new-file")}>
+            <IconButton label={t("ft.new_file")} size="xs" onClick={() => startCreate("new-file")}>
               <FilePlus2Icon />
             </IconButton>
-            <IconButton label="新建文件夹" size="xs" onClick={() => startCreate("new-dir")}>
+            <IconButton label={t("ft.new_dir")} size="xs" onClick={() => startCreate("new-dir")}>
               <FolderPlusIcon />
             </IconButton>
-            <IconButton label="上传" size="xs" onClick={() => inputRef.current?.click()}>
+            <IconButton label={t("ft.upload")} size="xs" onClick={() => inputRef.current?.click()}>
               <UploadIcon />
             </IconButton>
           </>
         )}
-        <IconButton label="刷新" size="xs" onClick={refresh}>
+        <IconButton label={t("ft.refresh")} size="xs" onClick={refresh}>
           <RefreshCwIcon />
         </IconButton>
         {root === "workspace" && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <span>
-                <IconButton label="更多" size="xs">
+                <IconButton label={t("sb.more")} size="xs">
                   <MoreHorizontalIcon />
                 </IconButton>
               </span>
@@ -123,10 +125,10 @@ export function FilesToolbar({
             <DropdownMenuContent align="end" className="w-44">
               <DropdownMenuItem onSelect={toggleHidden}>
                 <CheckIcon className={cn("size-3.5", !hidden && "invisible")} />
-                显示隐藏文件
+                {t("wsp.hidden")}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={collapseAll}>全部折叠</DropdownMenuItem>
+              <DropdownMenuItem onSelect={collapseAll}>{t("ft.collapse")}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         )}

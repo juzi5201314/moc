@@ -13,6 +13,7 @@ use moc_protocol::methods::{
     SessionUpdateMethod,
 };
 use moc_protocol::{ClientBuilder, ClientHandle, RpcError, RpcErrorCode, ServerOptions};
+use rust_i18n::t;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::args::CliArgs;
@@ -48,14 +49,14 @@ pub async fn run(args: CliArgs, frontend: crate::Frontend) -> anyhow::Result<()>
         }
         return Ok(());
     }
-    let core = Core::new(config).context("初始化 MOC core 失败")?;
+    let core = Core::new(config).context(t!("cli.repl.core_init_failed").to_string())?;
     // SIGTERM / SIGHUP 不会走前端的正常退出路径：先把前端 future 收掉（TUI 的
     // TerminalGuard Drop 恢复终端、连接 Drop 触发收尾），再统一执行 core.shutdown()，
     // 保证 raw mode 与 MCP 子进程都不因信号退出而丢失。
     let result = tokio::select! {
         result = run_frontend(Arc::clone(&core), args, frontend) => result,
         signal = termination_signal() => {
-            eprintln!("收到 {signal}，正在退出");
+            eprintln!("{}", t!("cli.repl.signal_exit", signal = signal));
             Ok(())
         }
     };
@@ -67,36 +68,43 @@ pub async fn run(args: CliArgs, frontend: crate::Frontend) -> anyhow::Result<()>
 fn validate_acp_args(args: &CliArgs) -> anyhow::Result<()> {
     let mut bad = Vec::new();
     if args.prompt.is_some() {
-        bad.push("提示词");
+        bad.push(t!("cli.repl.prompt_word").into_owned());
     }
     if args.resume.is_some() {
-        bad.push("--resume");
+        bad.push("--resume".to_owned());
     }
     if args.continue_session {
-        bad.push("--continue");
+        bad.push("--continue".to_owned());
     }
     if args.list {
-        bad.push("--list");
+        bad.push("--list".to_owned());
     }
     if args.models {
-        bad.push("--models");
+        bad.push("--models".to_owned());
     }
     if args.print {
-        bad.push("--print");
+        bad.push("--print".to_owned());
     }
     if args.repl {
-        bad.push("--repl");
+        bad.push("--repl".to_owned());
     }
     if args.detail.is_some() {
-        bad.push("--detail");
+        bad.push("--detail".to_owned());
     }
     if args.hide_thinking {
-        bad.push("--hide-thinking");
+        bad.push("--hide-thinking".to_owned());
     }
     if args.port.is_some() || args.token.is_some() || args.no_open {
-        bad.push("web 选项");
+        bad.push(t!("cli.repl.web_opts").into_owned());
     }
-    anyhow::ensure!(bad.is_empty(), "moc acp 不支持这些参数：{}", bad.join("、"));
+    anyhow::ensure!(
+        bad.is_empty(),
+        "{}",
+        t!(
+            "cli.repl.acp_bad_args",
+            args = bad.join(t!("cli.repl.arg_sep").as_ref())
+        )
+    );
     Ok(())
 }
 
@@ -211,10 +219,11 @@ fn make_core_config(args: &CliArgs) -> anyhow::Result<CoreConfig> {
         Some(path) => std::env::current_dir()?.join(path),
         None => std::env::current_dir()?,
     };
-    let cwd = cwd
-        .canonicalize()
-        .with_context(|| format!("无法打开工作目录 {}", cwd.display()))?;
-    let worker = std::env::current_exe().context("无法定位 moc 可执行文件")?;
+    let cwd = cwd.canonicalize().with_context(|| {
+        t!("cli.repl.no_cwd", path = cwd.display().to_string()).into_owned()
+    })?;
+    let worker =
+        std::env::current_exe().context(t!("cli.repl.no_exe").into_owned())?;
     Ok(CoreConfig {
         cwd: cwd.clone(),
         overlays: args
@@ -257,7 +266,7 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
             }
         }
         if prompt.is_empty() {
-            bail!("--print 未收到提示词或 stdin 输入");
+            bail!("{}", t!("cli.repl.no_prompt"));
         }
         initial_prompt = Some(prompt);
     }
@@ -283,7 +292,10 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
     .on_notification::<SessionUpdateMethod, _, _>(move |params, _ctx| {
         // unattended：计划提交后直接自动批准「压缩并执行」，不等 /approve。
         if let SessionUpdate::PlanSubmitted { plan } = &params.update
-            && let Some(client) = update_client.lock().expect("通知 client 槽位").clone()
+            && let Some(client) = update_client
+                .lock()
+                .expect("notify client slot")
+                .clone()
         {
             let session_id = params.session_id.clone();
             let plan_id = plan.plan_id.clone();
@@ -343,9 +355,13 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
         }
     };
     if handshake.server.name != "moc-core" {
-        bail!("连接到非 moc-core 服务：{}", handshake.server.name);
+        bail!(
+            "{}: {}",
+            t!("cli.repl.not_moc_service"),
+            handshake.server.name
+        );
     }
-    *notification_client.lock().expect("通知 client 槽位") = Some(client.clone());
+    *notification_client.lock().expect("notify client slot") = Some(client.clone());
     let result = run_repl(&client, &input, &args, initial_prompt, &renderer).await;
     client.close().await;
     server.shutdown();
@@ -386,7 +402,7 @@ async fn run_repl(
             .into_iter()
             .filter(|session| session.cwd == cwd.to_string_lossy())
             .max_by_key(|session| session.updated_at_ms)
-            .ok_or_else(|| anyhow::anyhow!("当前目录没有可恢复的会话"))?
+            .ok_or_else(|| anyhow::anyhow!("{}", t!("cli.repl.no_resumable")))?
     } else {
         client
             .call::<SessionNew>(SessionNewParams {
@@ -413,8 +429,8 @@ async fn run_repl(
         session = result.session;
         if let Some(overflow) = &result.overflow {
             eprintln!(
-                "警告：{}；可用 /compact 立即压缩",
-                capacity_notice(overflow, selector)
+                "{}",
+                t!("cli.repl.ctx_warn", msg = capacity_notice(overflow, selector))
             );
         }
     }
@@ -423,12 +439,16 @@ async fn run_repl(
             Ok(result) if args.print => {
                 println!("{}", result.message.text());
                 if result.finish_reason.is_guard_stop() {
-                    bail!("提示已由保护机制终止（{}）", result.finish_reason);
+                    bail!(
+                        "{} ({})",
+                        t!("cli.repl.prompt_aborted"),
+                        result.finish_reason
+                    );
                 }
                 return Ok(());
             }
             Err(error) if args.print => return Err(error),
-            Err(error) => eprintln!("请求失败：{error:#}"),
+            Err(error) => eprintln!("{}: {error:#}", t!("cli.repl.request_failed")),
             Ok(_) => {}
         }
     }
@@ -437,12 +457,15 @@ async fn run_repl(
     }
 
     println!(
-        "会话 {} · {} · {} · {} · permission={}",
-        session.id,
-        session.model,
-        state_label(&session),
-        session.cwd,
-        session.permission.as_str()
+        "{}",
+        t!(
+            "cli.repl.banner",
+            id = session.id,
+            model = session.model,
+            state = state_label(&session),
+            cwd = session.cwd,
+            permission = session.permission.as_str()
+        )
     );
     // 特性快照与 TUI 同一来源：config/get 返回的 FeatureStates；拉取失败按默认处理。
     let registry = crate::commands::registry();
@@ -467,14 +490,14 @@ async fn run_repl(
         }
         if let Some(command) = moc_protocol::BashCommand::parse(line) {
             if let Err(error) = send_bash(client, &session.id, command).await {
-                eprintln!("命令失败：{error:#}");
+                eprintln!("{}: {error:#}", t!("cli.repl.command_failed"));
             }
             continue;
         }
         // `.` 独占整行时是 `/retry` 的快捷写法。
         if line.trim() == "." {
             if let Err(error) = send_retry(client, &session.id).await {
-                eprintln!("请求失败：{error:#}");
+                eprintln!("{}: {error:#}", t!("cli.repl.request_failed"));
             }
             continue;
         }
@@ -482,11 +505,11 @@ async fn run_repl(
             match run_command(client, &registry, &features, command, &mut session, input).await {
                 Ok(CommandResult::Continue) => continue,
                 Ok(CommandResult::Quit) => break,
-                Err(error) => eprintln!("命令失败：{error:#}"),
+                Err(error) => eprintln!("{}: {error:#}", t!("cli.repl.command_failed")),
             }
         } else {
             if let Err(error) = send_prompt(client, &session.id, line.to_owned(), None).await {
-                eprintln!("请求失败：{error:#}");
+                eprintln!("{}: {error:#}", t!("cli.repl.request_failed"));
             }
         }
     }

@@ -9,6 +9,7 @@ use moc_protocol::methods::{
 use moc_protocol::{RequestContext, RpcError, RpcErrorCode, build_hunks};
 
 use super::{CoreInner, protocol_to_rpc, to_rpc};
+use rust_i18n::t;
 use crate::compact;
 use crate::error::CoreError;
 use crate::session::entries::{EntryPayload, SessionOrigin};
@@ -203,7 +204,7 @@ pub async fn approve_plan(
     if plan.status != PlanStatus::Submitted {
         return Err(RpcError::new(
             RpcErrorCode::InvalidParams.code(),
-            "计划已经处理过",
+            t!("core.mode.plan_done"),
         ));
     }
     let config = inner
@@ -404,7 +405,7 @@ pub async fn revise_plan(
     if plan.status != PlanStatus::Submitted {
         return Err(RpcError::new(
             RpcErrorCode::InvalidParams.code(),
-            "计划不在待审阅状态",
+            t!("core.mode.plan_not_submitted"),
         ));
     }
     let note = params
@@ -506,40 +507,40 @@ fn validate_plan_feedback(
 ) -> Result<(), RpcError> {
     let invalid = |message: &str| RpcError::new(RpcErrorCode::InvalidParams.code(), message);
     if annotations.is_empty() && note.is_none() {
-        return Err(invalid("批注与整体意见不能同时为空"));
+        return Err(invalid(&t!("core.mode.note_and_review_empty")));
     }
     if annotations.len() > MAX_PLAN_ANNOTATIONS {
-        return Err(invalid("批注条数超过上限"));
+        return Err(invalid(&t!("core.mode.notes_too_many")));
     }
     if note.is_some_and(|note| note.len() > MAX_PLAN_NOTE_BYTES) {
-        return Err(invalid("整体意见超过上限"));
+        return Err(invalid(&t!("core.mode.review_too_long")));
     }
     let line_count = plan.markdown.lines().count();
     let mut total = note.map_or(0, str::len);
     for annotation in annotations {
         if annotation.id.trim().is_empty() || annotation.id.len() > 64 {
-            return Err(invalid("批注 id 无效"));
+            return Err(invalid(&t!("core.mode.note_id_invalid")));
         }
         let start = annotation.start_line as usize;
         let end = annotation.end_line as usize;
         if start == 0 || start > end || end > line_count {
-            return Err(invalid("批注行号超出计划范围"));
+            return Err(invalid(&t!("core.mode.note_line_range")));
         }
         if annotation.body.trim().is_empty() {
-            return Err(invalid("批注正文不能为空"));
+            return Err(invalid(&t!("core.mode.note_body_empty")));
         }
         if annotation.body.len() > MAX_PLAN_ANNOTATION_BODY_BYTES {
-            return Err(invalid("批注正文超过上限"));
+            return Err(invalid(&t!("core.mode.note_body_too_long")));
         }
         if annotation.quote.len() > MAX_PLAN_ANNOTATION_QUOTE_BYTES {
-            return Err(invalid("批注引用超过上限"));
+            return Err(invalid(&t!("core.mode.note_quote_too_long")));
         }
         total = total
             .saturating_add(annotation.body.len())
             .saturating_add(annotation.quote.len());
     }
     if total > MAX_PLAN_FEEDBACK_BYTES {
-        return Err(invalid("批注总量超过上限"));
+        return Err(invalid(&t!("core.mode.notes_total_too_long")));
     }
     Ok(())
 }

@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::App;
 use super::ENGINES;
 use super::EngineMenu;
@@ -28,7 +30,7 @@ impl App {
         path: Vec<String>,
         label: String,
         current: String,
-        specials: &[(&str, &str)],
+        specials: &[(&str, String)],
     ) {
         self.open_model_picker_for(
             current,
@@ -40,11 +42,11 @@ impl App {
     pub(crate) fn open_model_picker_for(
         &mut self,
         current: String,
-        specials: &[(&str, &str)],
+        specials: &[(&str, String)],
         target: crate::modal::ModelTarget,
     ) {
         if self.models.is_empty() {
-            self.set_notice("没有可用的模型，请先在设置中添加");
+            self.set_notice(t!("tui.event.no_models_hint").into_owned());
             return;
         }
         // 配置字段不列组合入口。
@@ -113,7 +115,7 @@ impl App {
     /// 模型带上各自的思考等级与上下文窗口。
     pub(super) fn picker_entries(
         models: &[ModelInfo],
-        specials: &[(&str, &str)],
+        specials: &[(&str, String)],
         fusion_entry: bool,
     ) -> Vec<crate::modal::ModelEntry> {
         let mut entries = Vec::with_capacity(models.len() + specials.len() + 1);
@@ -121,7 +123,7 @@ impl App {
             entries.push(crate::modal::ModelEntry {
                 selector: crate::modal::FUSION_ENTRY_SELECTOR.to_owned(),
                 label: "Fusion".to_owned(),
-                display_name: "fusion lead sidekick 组合".to_owned(),
+                display_name: t!("tui.picker.fusion_name").into_owned(),
                 levels: Vec::new(),
                 context_window: None,
                 max_output_tokens: None,
@@ -133,7 +135,7 @@ impl App {
         for (selector, label) in specials {
             entries.push(crate::modal::ModelEntry {
                 selector: (*selector).to_owned(),
-                label: (*label).to_owned(),
+                label: label.clone(),
                 display_name: String::new(),
                 levels: Vec::new(),
                 context_window: None,
@@ -166,11 +168,11 @@ impl App {
     /// 会话跑过第一条提示后引擎锁定，菜单不再提供。
     pub fn open_engine_menu(&mut self) {
         let Some(session) = self.session.as_ref() else {
-            self.set_notice("当前没有活动会话");
+            self.set_notice(t!("tui.common.no_session").into_owned());
             return;
         };
         if session.engine_locked {
-            self.set_notice("会话引擎已锁定；换引擎请新建会话");
+            self.set_notice(t!("tui.event.engine_locked_notice").into_owned());
             return;
         }
 
@@ -190,11 +192,11 @@ impl App {
     /// 打开就地权限菜单：高亮当前权限模式，候选来自平台探测下发的 `sandbox_modes`。
     pub fn open_permission_menu(&mut self) {
         let Some(permission) = self.session.as_ref().map(|session| session.permission) else {
-            self.set_notice("当前没有活动会话");
+            self.set_notice(t!("tui.common.no_session").into_owned());
             return;
         };
         if self.sandbox_modes.is_empty() {
-            self.set_notice("当前平台没有可切换的权限模式");
+            self.set_notice(t!("tui.event.no_perm_modes").into_owned());
             return;
         }
         self.completion = None;
@@ -241,7 +243,9 @@ impl App {
     /// 记录已生效模型，保存失败时显示反馈。
     pub fn remember_model(&mut self, selector: &str) {
         if let Err(error) = self.recent_models.record(selector) {
-            self.set_error_notice(format!("模型已生效，但最近使用记录保存失败：{error}"));
+            self.set_error_notice(
+                t!("tui.event.recent_save_failed_fmt", err = error.to_string()).into_owned(),
+            );
         }
     }
 }

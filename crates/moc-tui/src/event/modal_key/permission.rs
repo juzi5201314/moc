@@ -1,5 +1,7 @@
 //! 授权作答的键盘交互。
 
+use rust_i18n::t;
+
 use super::Actions;
 use crate::app::App;
 use crate::modal::Modal;
@@ -68,7 +70,7 @@ pub(super) fn handle(
                         )));
                     }
                     actions.close = true;
-                    app.set_notice("未授权，已按拒绝处理");
+                    app.set_notice(t!("tui.event.denied_unauthorized").into_owned());
                 }
                 _ => {}
             }

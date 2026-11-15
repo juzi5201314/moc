@@ -15,10 +15,13 @@ mod commands;
 mod fsraw;
 mod terminal;
 
+rust_i18n::i18n!("../../locales", fallback = "zh");
+
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use rust_i18n::t;
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{DefaultBodyLimit, Query, State};
@@ -50,10 +53,15 @@ pub struct WebOptions {
 pub async fn run(core: Arc<Core>, options: WebOptions) -> anyhow::Result<()> {
     let (listener, fell_back) = listen(options.port, options.fallback)
         .await
-        .with_context(|| format!("无法监听 127.0.0.1:{}；端口被占用或权限不足", options.port))?;
+        .with_context(|| {
+            t!("web.err.bind_failed", port = options.port).into_owned()
+        })?;
     let addr = listener.local_addr()?;
     if fell_back {
-        println!("端口 {} 已被占用，改用随机端口 {addr}", options.port);
+        println!(
+            "{}",
+            t!("web.err.port_fallback", port = options.port, addr = addr)
+        );
     }
     tracing::info!(%addr, "moc web 已启动");
 
@@ -66,15 +74,15 @@ pub async fn run(core: Arc<Core>, options: WebOptions) -> anyhow::Result<()> {
     };
 
     let url = format!("http://{addr}/?token={}", options.token);
-    println!("moc web 已启动：{url}");
+    println!("{}", t!("web.err.started", url = url));
     if options.open_browser {
         match browser::open(&url) {
-            Ok(true) => println!("已在浏览器中打开；如未弹出，请手动访问上面的地址"),
+            Ok(true) => println!("{}", t!("web.err.opened")),
             Ok(false) => {}
             Err(error) => tracing::warn!(%error, "自动打开浏览器失败"),
         }
     }
-    println!("按 Ctrl+C 停止服务");
+    println!("{}", t!("web.err.stop_hint"));
     axum::serve(listener, routes(state)).await?;
     Ok(())
 }
@@ -214,7 +222,7 @@ async fn static_handler(uri: Uri, headers: HeaderMap) -> Response {
         None if uri.path().starts_with("/assets/") => (
             StatusCode::NOT_FOUND,
             [(header::CACHE_CONTROL, "no-cache")],
-            "资源不存在",
+            t!("web.err.not_found").into_owned(),
         )
             .into_response(),
         None => render(assets::index(), "no-cache", accept_zstd),
@@ -283,7 +291,11 @@ async fn require_token(
     next: axum::middleware::Next,
 ) -> Response {
     if !state.authorized(query.token.as_deref()) {
-        return (StatusCode::UNAUTHORIZED, "缺少或错误的访问令牌").into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            t!("web.err.unauthorized").into_owned(),
+        )
+            .into_response();
     }
     next.run(request).await
 }
@@ -294,7 +306,7 @@ async fn ws_handler(
     headers: HeaderMap,
 ) -> Response {
     if !origin_allowed(&headers) {
-        return (StatusCode::FORBIDDEN, "跨站 WebSocket 被拒绝").into_response();
+        return (StatusCode::FORBIDDEN, t!("web.err.ws_denied").into_owned()).into_response();
     }
     let server = state.server.clone();
     ws.on_upgrade(move |socket| bridge::serve(socket, server))

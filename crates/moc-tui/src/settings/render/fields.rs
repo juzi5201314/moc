@@ -28,6 +28,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use rust_i18n::t;
 use serde_json::Value;
 
 /// 标签列宽：取整页最宽标签（含光标、缩进与自定义标记），夹在 24–44 列，
@@ -66,35 +67,34 @@ pub(super) fn draw_fields(
     hits: &mut Vec<(Rect, Hit)>,
 ) -> Footer {
     let width = usize::from(body.width);
-    let hints = |items: &[(&str, &str)]| labels::hint_layout(items, width);
+    let hints = |items: &[(&str, String)]| labels::hint_layout(items, width);
+    let h = |key| t!(key).into_owned();
     if panel.data.is_none() {
         label(
             frame,
             Rect { height: 1, ..body },
-            "正在读取设置…",
+            &t!("tui.settings.loading"),
             Style::new().fg(theme.accent_running),
         );
         return Footer {
-            hint: hints(&[("esc", "返回")]),
+            hint: hints(&[("esc", h("tui.hint.back"))]),
             ..Footer::default()
         };
     }
     if panel.rows.is_empty() {
         let text = if !panel.filter.is_empty() {
-            "没有匹配的设置项；按 / 修改搜索内容，或按 Esc 清空过滤。"
+            t!("tui.settings.no_match").into_owned()
         } else {
             match TABS[panel.tab] {
-                "模型角色" => {
-                    "暂无模型，请先到「供应商与模型」添加模型，或按 Ctrl+D 添加模型默认规则。"
-                }
-                "供应商与模型" => "暂无供应商。",
-                "MCP" => "还没有 MCP 服务。按 A 添加。",
-                "插件" => "当前没有可配置的插件项。",
-                _ => "这一页暂时没有可配置项。",
+                "models" => t!("tui.settings.empty_models").into_owned(),
+                "providers" => t!("tui.settings.empty_providers").into_owned(),
+                "mcp" => t!("tui.settings.empty_mcp").into_owned(),
+                "plugins" => t!("tui.settings.empty_plugins").into_owned(),
+                _ => t!("tui.settings.empty_page").into_owned(),
             }
         };
         let lines = prose(
-            text,
+            &text,
             width,
             usize::from(body.height),
             Style::new().fg(theme.gray),
@@ -102,9 +102,9 @@ pub(super) fn draw_fields(
         );
         paint_lines(frame, body, &lines);
         let hint = if !panel.filter.is_empty() {
-            hints(&[("/", "重新搜索"), ("esc", "清空过滤")])
+            hints(&[("/", h("tui.hint.research")), ("esc", h("tui.hint.clear_filter"))])
         } else {
-            hints(&[("esc", "返回")])
+            hints(&[("esc", h("tui.hint.back"))])
         };
         return Footer {
             hint,
@@ -166,7 +166,7 @@ pub(super) fn draw_fields(
                         }
                     });
                 if let Some(editor) = inline {
-                    let prefix = format!("{lead}模型 ID：");
+                    let prefix = format!("{lead}{}", t!("tui.settings.model_id_prefix"));
                     let start = cells(str_width(&prefix)).min(row_area.width);
                     label(frame, row_area, &prefix, style);
                     let input_area = Rect::new(
@@ -184,7 +184,11 @@ pub(super) fn draw_fields(
                         ));
                     }
                 } else if matches!(action, ProviderAction::More) {
-                    let count = format!("{} 项", panel.provider_more_count());
+                    let count = t!(
+                        "tui.settings.item_count",
+                        count = panel.provider_more_count()
+                    )
+                    .into_owned();
                     let detail_style = if selected {
                         style.fg(theme.gray_bright)
                     } else {
@@ -333,11 +337,11 @@ pub(super) fn draw_fields(
                         let control = &panel.controls[*index];
                         let (text, value_style) = match (control, value) {
                             (Control::Toggle, Value::Bool(true)) => (
-                                "● 开启".to_owned(),
+                                t!("tui.settings.toggle_on").into_owned(),
                                 style.fg(theme.accent_success).add_modifier(Modifier::BOLD),
                             ),
                             (Control::Toggle, Value::Bool(false)) => {
-                                ("○ 关闭".to_owned(), style.fg(theme.gray))
+                                (t!("tui.settings.toggle_off").into_owned(), style.fg(theme.gray))
                             }
                             _ => {
                                 let text = controls::summary(control, value)
@@ -367,16 +371,16 @@ pub(super) fn draw_fields(
     );
     if let Some(edit) = panel.edit.as_ref().filter(|edit| !edit.popup) {
         let note = match (&edit.target, &edit.editor) {
-            (EditTarget::Model(_), _) => "输入模型 ID（支持包含 /）",
+            (EditTarget::Model(_), _) => t!("tui.settings.model_id_hint").into_owned(),
             // 普通文本字段留空写入空值；请求参数与数值、JSON 一样删键回默认。
             (EditTarget::Field(path), Editor::Text(editor))
                 if forms::keeps_empty(&editor.kind, path) =>
             {
-                "留空保存为空值"
+                t!("tui.settings.keep_empty").into_owned()
             }
-            _ => "留空恢复默认",
+            _ => t!("tui.settings.empty_default").into_owned(),
         };
-        let mut items = vec![("", note), ("tab", "下一项")];
+        let mut items = vec![("", note), ("tab", h("tui.hint.next_field"))];
         items.extend(edit.editor.hints());
         return Footer {
             hint: hints(&items),
@@ -387,34 +391,34 @@ pub(super) fn draw_fields(
     match panel.row() {
         Some(RowKind::Action(action)) => Footer {
             description: match action {
-                ProviderAction::More => "展开或收起超时、重试、代理、请求头与默认请求参数。",
-                ProviderAction::Fetch => "打开模型选择弹窗，从供应商目录批量勾选添加。",
-                ProviderAction::Manual => "手动输入模型 ID 添加到当前供应商。",
-                ProviderAction::New => "创建新供应商配置。",
-                ProviderAction::Remove => "移除当前供应商及其模型列表。",
+                ProviderAction::More => t!("tui.settings.act_more"),
+                ProviderAction::Fetch => t!("tui.settings.act_fetch"),
+                ProviderAction::Manual => t!("tui.settings.act_manual"),
+                ProviderAction::New => t!("tui.settings.act_new"),
+                ProviderAction::Remove => t!("tui.settings.act_remove"),
             }
-            .into(),
+            .into_owned(),
             source: None,
             hint: hints(&[
-                ("tab", "切换焦点"),
-                ("↑↓", "移动"),
-                ("enter/space", "操作"),
-                ("esc", "返回"),
+                ("tab", h("tui.hint.focus")),
+                ("↑↓", h("tui.hint.move")),
+                ("enter/space", h("tui.hint.operate")),
+                ("esc", h("tui.hint.back")),
             ]),
         },
         Some(RowKind::Group(group)) => {
             let mut items = Vec::new();
-            if TABS[panel.tab] == "MCP" {
-                items.push(("a", "添加服务"));
-            } else if TABS[panel.tab] == "会话" {
-                items.push(("m", "维护预览"));
-            } else if TABS[panel.tab] == "模型角色" {
-                items.push(("ctrl+d", "默认规则"));
+            if TABS[panel.tab] == "mcp" {
+                items.push(("a", h("tui.hint.add_server")));
+            } else if TABS[panel.tab] == "session" {
+                items.push(("m", h("tui.hint.maintenance")));
+            } else if TABS[panel.tab] == "models" {
+                items.push(("ctrl+d", h("tui.hint.default_rules")));
             }
             if group.path.is_some() {
-                items.push(("del", "删除"));
+                items.push(("del", h("tui.hint.delete")));
             }
-            items.extend([("enter/space", "展开/收起"), ("esc", "返回")]);
+            items.extend([("enter/space", h("tui.hint.expand")), ("esc", h("tui.hint.back"))]);
             Footer {
                 description: group_description(group),
                 source: None,
@@ -424,25 +428,25 @@ pub(super) fn draw_fields(
         Some(RowKind::Field(index)) => {
             let field = &panel.fields[*index];
             let source = if field.path.first().is_some_and(|part| part == "tui") {
-                "界面偏好设置"
+                t!("tui.settings.src_ui").into_owned()
             } else if panel.explicit(&field.path) {
-                "● 已自定义"
+                t!("tui.settings.src_custom").into_owned()
             } else {
-                "○ 默认值"
+                t!("tui.settings.src_default").into_owned()
             };
             let mut items = Vec::new();
-            if TABS[panel.tab] == "MCP" {
-                items.push(("a", "添加服务"));
-            } else if TABS[panel.tab] == "会话" {
-                items.push(("m", "维护预览"));
-            } else if TABS[panel.tab] == "模型角色" {
-                items.push(("ctrl+d", "默认规则"));
+            if TABS[panel.tab] == "mcp" {
+                items.push(("a", h("tui.hint.add_server")));
+            } else if TABS[panel.tab] == "session" {
+                items.push(("m", h("tui.hint.maintenance")));
+            } else if TABS[panel.tab] == "models" {
+                items.push(("ctrl+d", h("tui.hint.default_rules")));
             }
             items.extend([
-                ("/", "搜索"),
-                ("r", "恢复默认"),
+                ("/", h("tui.hint.search")),
+                ("r", h("tui.hint.reset")),
                 ("", controls::action_hint(&panel.controls[*index])),
-                ("esc", "返回"),
+                ("esc", h("tui.hint.back")),
             ]);
             Footer {
                 description: field.description.clone(),
@@ -451,7 +455,7 @@ pub(super) fn draw_fields(
             }
         }
         None => Footer {
-            hint: hints(&[("esc", "返回")]),
+            hint: hints(&[("esc", h("tui.hint.back"))]),
             ..Footer::default()
         },
     }
@@ -473,55 +477,59 @@ pub(super) fn group_description(group: &Group) -> String {
         .iter()
         .any(|part| matches!(part.as_str(), "extra_body" | "headers"))
     {
-        return format!(
-            "{}：供应商提供默认值，模型可覆盖；未设置时使用 moc 或上游默认值，支持范围取决于模型与账号。",
-            group.title
-        );
+        return t!("tui.group.extra_body", title = group.title).into_owned();
     }
     if path.last().is_some_and(|part| part == "__advanced") {
         return match path.first().map(String::as_str) {
-            Some("providers") => "当前模型的高级覆盖参数。".into(),
-            _ => "当前分组的高级配置参数。".into(),
+            Some("providers") => t!("tui.group.advanced_model").into_owned(),
+            _ => t!("tui.group.advanced").into_owned(),
         };
     }
     match path.first().map(String::as_str) {
-        Some("providers") if path.len() == 2 => format!("供应商“{}”的设置。", group.title),
-        Some("providers") if group.detail.is_empty() => format!("模型“{}”的设置。", group.title),
-        Some("providers") => format!("模型“{}”：{}。", group.title, group.detail),
+        Some("providers") if path.len() == 2 => {
+            t!("tui.group.provider", title = group.title).into_owned()
+        }
+        Some("providers") if group.detail.is_empty() => {
+            t!("tui.group.model", title = group.title).into_owned()
+        }
+        Some("providers") => {
+            t!("tui.group.model_detail", title = group.title, detail = group.detail).into_owned()
+        }
         Some("models") if path.get(1).is_some_and(|part| part == "roles") => {
-            "各会话角色使用的模型，候选来自已配置模型。".into()
+            t!("tui.group.roles").into_owned()
         }
-        Some("defaults") => format!(
-            "匹配“{}”的模型默认参数。",
-            path.get(2).map_or("", String::as_str)
-        ),
-        Some("agents") => "子代理并发与默认参数。".into(),
-        Some("context_files") => "随请求加载的上下文规则文件。".into(),
-        Some("system_prompt") => "System Prompt 覆盖与追加规则。".into(),
-        Some("skills") => "Skills 目录扫描与加载规则。".into(),
-        Some("web_search") => "网络搜索接口与检索参数。".into(),
-        Some("web_fetch") => "网页抓取策略与截断限制。".into(),
-        Some("workspace") => "工作区与符号导航参数。".into(),
+        Some("defaults") => t!(
+            "tui.group.defaults",
+            pattern = path.get(2).map_or("", String::as_str)
+        )
+        .into_owned(),
+        Some("agents") => t!("tui.group.agents").into_owned(),
+        Some("context_files") => t!("tui.group.context_files").into_owned(),
+        Some("system_prompt") => t!("tui.group.system_prompt").into_owned(),
+        Some("skills") => t!("tui.group.skills").into_owned(),
+        Some("web_search") => t!("tui.group.web_search").into_owned(),
+        Some("web_fetch") => t!("tui.group.web_fetch").into_owned(),
+        Some("workspace") => t!("tui.group.workspace").into_owned(),
         Some("tools") => match path.get(1).map(String::as_str) {
-            Some("ptc") => "PTC 代码执行沙盒限制。".into(),
-            _ => "基础工具开关与路径、输出限制。".into(),
+            Some("ptc") => t!("tui.group.tools_ptc").into_owned(),
+            _ => t!("tui.group.tools").into_owned(),
         },
-        Some("sandbox") => "命令与路径安全边界策略。".into(),
+        Some("sandbox") => t!("tui.group.sandbox").into_owned(),
         Some("compaction") if path.get(1).is_some_and(|p| p == "shake") => {
-            "上下文压缩前的自动裁剪参数。".into()
+            t!("tui.group.shake").into_owned()
         }
-        Some("compaction") => "上下文压缩阈值与策略。".into(),
-        Some("session") => "会话历史与持久化设置。".into(),
-        Some("workflow") => "Workflow 运行开关与并发限制。".into(),
-        Some("features") => "会话运行时功能开关。".into(),
-        Some("limits") => "工具输出、对话轮数与并发上限。".into(),
+        Some("compaction") => t!("tui.group.compaction").into_owned(),
+        Some("session") => t!("tui.group.session").into_owned(),
+        Some("workflow") => t!("tui.group.workflow").into_owned(),
+        Some("features") => t!("tui.group.features").into_owned(),
+        Some("limits") => t!("tui.group.limits").into_owned(),
         Some("tui") if path.get(1).is_some_and(|p| p == "keybindings") => {
-            "终端交互快捷键绑定。".into()
+            t!("tui.group.keybindings").into_owned()
         }
-        Some("tui") => "终端界面外观与交互偏好。".into(),
-        Some("mcp") if path.len() == 1 => "MCP 服务全局连接与发现设置。".into(),
-        Some("mcp") => format!("MCP 服务“{}”。", group.title),
-        Some("plugins") if path.len() == 1 => "插件启用、沙盒与权限策略。".into(),
-        _ => format!("“{}”设置。", group.title),
+        Some("tui") => t!("tui.group.tui").into_owned(),
+        Some("mcp") if path.len() == 1 => t!("tui.group.mcp").into_owned(),
+        Some("mcp") => t!("tui.group.mcp_one", title = group.title).into_owned(),
+        Some("plugins") if path.len() == 1 => t!("tui.group.plugins").into_owned(),
+        _ => t!("tui.group.generic", title = group.title).into_owned(),
     }
 }

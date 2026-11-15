@@ -31,6 +31,7 @@ import { IconButton } from "@/components/common/icon-button";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { clockTime } from "@/lib/format";
+import { type MsgKey, t, useT } from "@/lib/i18n";
 import { modelName } from "@/lib/models";
 import { type Block, finishLabel } from "@/lib/transcript-model";
 import {
@@ -69,11 +70,11 @@ function errorText(error: unknown): string {
 function rewindTo(sessionId: string, entryId: string, restoreText?: string): void {
   rewind(sessionId, entryId, restoreText)
     .then((redoId) => {
-      toast("已回退到这里", {
-        description: "之后的对话已移出会话",
+      toast(t("th.rewound"), {
+        description: t("th.rewound_desc"),
         action: redoId
           ? {
-              label: "撤销",
+              label: t("th.undo"),
               onClick: () =>
                 void redo(sessionId, redoId)
                   .then(() => {
@@ -84,14 +85,14 @@ function rewindTo(sessionId: string, entryId: string, restoreText?: string): voi
                     ) {
                       composer.clearDraft(sessionId);
                     }
-                    toast.success("已恢复回退前的对话");
+                    toast.success(t("th.restored"));
                   })
-                  .catch((error) => toast.error(`撤销失败：${errorText(error)}`)),
+                  .catch((error) => toast.error(t("th.undo_failed", { error: errorText(error) }))),
             }
           : undefined,
       });
     })
-    .catch((error) => toast.error(`回退失败：${errorText(error)}`));
+    .catch((error) => toast.error(t("th.rewind_failed", { error: errorText(error) })));
 }
 
 function useNow(active: boolean): number {
@@ -205,6 +206,7 @@ function TranscriptRows({
   permissions: readonly PermissionRequestParams[];
   asks: readonly AskParams[];
 }) {
+  const t = useT();
   const { scrollRef } = useStickToBottomContext();
   const lastIndex = turnIds.length - 1;
   const rows = useMemo<Row[]>(() => {
@@ -254,10 +256,10 @@ function TranscriptRows({
         return view.mismatch ? (
           <div className="flex items-center gap-2 text-xs text-warn">
             <AlertTriangleIcon className="size-3.5" />
-            上游回显与请求不一致：
+            {t("th.mismatch")}
             {view.mismatch.fields
               .map((field) => `${field.field} ${field.requested} → ${field.reported}`)
-              .join("，")}
+              .join(t("act.sep"))}
           </div>
         ) : null;
       case "perm":
@@ -288,12 +290,15 @@ function TranscriptRows({
 
 /** 滚到顶部附近时自动翻页；prepend 的滚动锚定由虚拟器负责。 */
 function LoadOlder({ sessionId, loading }: { sessionId: string; loading: boolean }) {
+  const t = useT();
   const { scrollRef } = useStickToBottomContext();
   const sentinel = useRef<HTMLDivElement>(null);
 
   const load = () => {
     if (loading) return;
-    void loadOlder(sessionId).catch((error) => toast.error(`加载历史失败：${errorText(error)}`));
+    void loadOlder(sessionId).catch((error) =>
+      toast.error(t("th.history_failed", { error: errorText(error) })),
+    );
   };
 
   useEffect(() => {
@@ -318,7 +323,7 @@ function LoadOlder({ sessionId, loading }: { sessionId: string; loading: boolean
         disabled={loading}
       >
         {loading && <Loader2Icon className="size-3.5 animate-spin" />}
-        {loading ? "正在加载" : "加载更早的消息"}
+        {loading ? t("th.loading") : t("th.load_older")}
       </Button>
     </div>
   );
@@ -362,6 +367,7 @@ const ImageThumbs = memo(function ImageThumbs({
   images: ImageSource[];
   className?: string;
 }) {
+  const t = useT();
   const [preview, setPreview] = useState<string | null>(null);
   if (images.length === 0) return null;
   return (
@@ -377,7 +383,7 @@ const ImageThumbs = memo(function ImageThumbs({
           >
             <img
               src={imageSrc(image)}
-              alt="图片附件"
+              alt={t("th.image_attachment")}
               loading="lazy"
               decoding="async"
               className="h-24 max-w-[200px] object-cover"
@@ -387,11 +393,11 @@ const ImageThumbs = memo(function ImageThumbs({
       </div>
       <Dialog open={preview !== null} onOpenChange={(open) => !open && setPreview(null)}>
         <DialogContent className="max-w-[min(92vw,1100px)] border-0 bg-transparent p-0 shadow-none sm:max-w-[min(92vw,1100px)]">
-          <DialogTitle className="sr-only">图片预览</DialogTitle>
+          <DialogTitle className="sr-only">{t("th.image_preview")}</DialogTitle>
           {preview && (
             <img
               src={preview}
-              alt="图片预览"
+              alt={t("th.image_preview")}
               className="max-h-[86vh] w-full rounded-xl object-contain"
             />
           )}
@@ -408,6 +414,7 @@ function UserMessage({
   block: Extract<Block, { kind: "user" }>;
   context: TurnContext;
 }) {
+  const t = useT();
   const long = block.text.length > CLAMP_CHARS || block.text.split("\n").length > CLAMP_LINES;
   const [expanded, setExpanded] = useState(false);
   const canEdit = Boolean(block.entryId) && !context.readOnly && !context.running;
@@ -433,7 +440,7 @@ function UserMessage({
               onClick={() => setExpanded((value) => !value)}
               className="mt-1 text-xs font-medium text-muted-foreground hover:text-foreground"
             >
-              {expanded ? "收起" : "展开全部"}
+              {expanded ? t("th.collapse") : t("th.expand")}
             </button>
           )}
         </div>
@@ -442,12 +449,12 @@ function UserMessage({
         <span className="mr-1 text-2xs tabular-nums text-text-tertiary">
           {clockTime(block.atMs)}
         </span>
-        <IconButton label="复制" size="xs" onClick={() => copy(block.text, "已复制")}>
+        <IconButton label={t("th.copy")} size="xs" onClick={() => copy(block.text, t("th.copied"))}>
           <CopyIcon />
         </IconButton>
         {canEdit && block.entryId && (
           <IconButton
-            label="回退到这里编辑"
+            label={t("th.rewind_edit")}
             size="xs"
             onClick={() => rewindTo(context.sessionId, block.entryId as string, block.text)}
           >
@@ -461,10 +468,11 @@ function UserMessage({
 
 function liveLabel(turn: Turn): string {
   const lastBlock = turn.activity.at(-1);
-  if (!lastBlock) return "思考中";
-  if (lastBlock.kind === "reasoning" && lastBlock.durationMs === undefined) return "思考中";
+  if (!lastBlock) return t("verb.thinking_ing");
+  if (lastBlock.kind === "reasoning" && lastBlock.durationMs === undefined)
+    return t("verb.thinking_ing");
   const tail = turn.segments.at(-1);
-  if (tail?.kind === "text") return "正在回复";
+  if (tail?.kind === "text") return t("th.replying");
   return summarizeActivity(turn.activity, false);
 }
 
@@ -481,6 +489,7 @@ function AssistantTurn({
   liveStartedAt?: number;
   context: TurnContext;
 }) {
+  const t = useT();
   const now = useNow(live);
   const [processOpen, setProcessOpen] = useState(false);
   const segments = turn.segments;
@@ -570,7 +579,9 @@ function AssistantTurn({
                   className={cn("size-3.5 transition-transform", processOpen && "rotate-90")}
                 />
                 <span>
-                  {durationMs !== undefined ? `处理用时 ${formatDuration(durationMs)}` : "处理过程"}
+                  {durationMs !== undefined
+                    ? t("th.duration", { d: formatDuration(durationMs) })
+                    : t("th.process")}
                 </span>
                 <span className="text-text-tertiary/60">·</span>
                 <span className="max-w-[420px] truncate">{summarizeActivity(turn.activity)}</span>
@@ -629,16 +640,18 @@ function AssistantTurn({
         >
           {hasCopyText && (
             <IconButton
-              label="复制回复"
+              label={t("th.copy_reply")}
               size="xs"
-              onClick={() => copy(turn.texts.map((block) => block.text).join("\n\n"), "已复制回复")}
+              onClick={() =>
+                copy(turn.texts.map((block) => block.text).join("\n\n"), t("th.copied_reply"))
+              }
             >
               <CopyIcon />
             </IconButton>
           )}
           {finalBlock?.entryId && (
             <IconButton
-              label="回退到这里"
+              label={t("th.rewind_here")}
               size="xs"
               onClick={() => rewindTo(context.sessionId, finalBlock.entryId as string)}
             >
@@ -647,7 +660,7 @@ function AssistantTurn({
           )}
           {canRetry && (
             <IconButton
-              label="继续 / 重试"
+              label={t("th.retry")}
               size="xs"
               onClick={() => void retrySession(context.sessionId)}
             >
@@ -674,6 +687,7 @@ function NoticeCard({
   block: Extract<Block, { kind: "status" }>;
   onRetry?: () => void;
 }) {
+  const t = useT();
   if (block.localCommand) {
     return (
       <div
@@ -711,20 +725,20 @@ function NoticeCard({
           onClick={onRetry}
         >
           <RotateCcwIcon className="size-3.5" />
-          重试
+          {t("th.retry_short")}
         </Button>
       )}
     </div>
   );
 }
 
-const PLAN_STATUS: Record<string, { label: string; tone: string }> = {
-  draft: { label: "起草中", tone: "text-text-tertiary" },
-  submitted: { label: "待审阅", tone: "text-brand" },
-  revised: { label: "等待修订", tone: "text-warn" },
-  superseded: { label: "已被取代", tone: "text-text-tertiary" },
-  approved: { label: "已批准", tone: "text-success" },
-  rejected: { label: "已拒绝", tone: "text-destructive" },
+const PLAN_STATUS: Record<string, { label: MsgKey; tone: string }> = {
+  draft: { label: "planst.draft", tone: "text-text-tertiary" },
+  submitted: { label: "planst.submitted", tone: "text-brand" },
+  revised: { label: "planst.revised", tone: "text-warn" },
+  superseded: { label: "planst.superseded", tone: "text-text-tertiary" },
+  approved: { label: "planst.approved", tone: "text-success" },
+  rejected: { label: "planst.rejected", tone: "text-destructive" },
 };
 
 function PlanCard({
@@ -734,6 +748,7 @@ function PlanCard({
   sessionId: string;
   block: Extract<Block, { kind: "plan" }>;
 }) {
+  const t = useT();
   const plan = useTranscript((state) =>
     state.bySession[sessionId]?.plans.find((item) => item.plan_id === block.planId),
   );
@@ -754,7 +769,7 @@ function PlanCard({
         <div className="flex items-center gap-1.5 text-xs text-text-tertiary">
           <span>v{plan?.version ?? block.version}</span>
           <span>·</span>
-          <span className={status.tone}>{status.label}</span>
+          <span className={status.tone}>{t(status.label)}</span>
         </div>
       </div>
       <Button
@@ -765,7 +780,7 @@ function PlanCard({
           if (plan) openFile(sessionId, { kind: "resource", uri: plan.path });
         }}
       >
-        {pending ? "审阅计划" : "查看计划"}
+        {pending ? t("planst.review") : t("planst.view")}
         {plan?.status === "approved" && <CheckIcon className="size-3.5" />}
       </Button>
     </div>

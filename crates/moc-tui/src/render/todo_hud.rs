@@ -16,6 +16,7 @@ use super::scrollback::todo_status_marker;
 use super::wrap::{display_window, str_width, wrap_text};
 use crate::app::App;
 use crate::theme::Theme;
+use rust_i18n::t;
 
 /// marquee 每前进一步的时间。
 pub const MARQUEE_TICK: Duration = Duration::from_millis(250);
@@ -129,7 +130,7 @@ fn build_chip(
             Style::new().fg(accent).bg(theme.bg_highlight),
         ),
         Span::styled(
-            "任务 ".to_owned(),
+            t!("tui.todo.title_inline").into_owned(),
             Style::new().fg(theme.text_secondary).bg(theme.bg_highlight),
         ),
         Span::styled(format!("{done}/{total}"), count_style),
@@ -213,7 +214,7 @@ fn draw_card(
     let mut shown: Vec<Line<'static>> = rows.drain(..visible).collect();
     if hidden > 0 {
         shown.push(Line::from(Span::styled(
-            format!("… 还有 {hidden} 行"),
+            t!("tui.todo.more_fmt", count = hidden).into_owned(),
             Style::new().fg(theme.gray_dim),
         )));
     }
@@ -244,13 +245,13 @@ fn draw_card(
     });
     let title_left = Line::from(vec![
         Span::styled(
-            " ◆ 任务 ".to_owned(),
+            t!("tui.todo.title_card").into_owned(),
             Style::new().fg(accent).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("{done}/{total} "), count_style),
     ]);
     let title_right = Line::from(Span::styled(
-        " 拖动 · 点击折叠 ".to_owned(),
+        t!("tui.todo.drag_hint").into_owned(),
         Style::new().fg(theme.gray_dim),
     ))
     .alignment(Alignment::Right);

@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::super::labels;
 use super::super::wrap::clip_line;
 use super::super::wrap::str_width;
@@ -36,12 +38,16 @@ pub(super) fn tool_count_spans(
         "grep" => {
             let (matches, files) = grep_counts(result);
             Some(vec![
-                count_span(matches, "match", "matches"),
+                count_span(matches, t!("tui.tool.match_one").as_ref(), t!("tui.tool.match_many").as_ref()),
                 Span::styled(labels::SEP.to_owned(), Style::new().fg(theme.gray_dim)),
-                count_span(files, "file", "files"),
+                count_span(files, t!("tui.tool.file_one").as_ref(), t!("tui.tool.file_many").as_ref()),
             ])
         }
-        "find" => Some(vec![count_span(find_file_count(result), "file", "files")]),
+        "find" => Some(vec![count_span(
+            find_file_count(result),
+            t!("tui.tool.file_one").as_ref(),
+            t!("tui.tool.file_many").as_ref(),
+        )]),
         _ => None,
     }
 }
@@ -251,7 +257,7 @@ pub(super) fn todo_tree_rows(
                 rows.push(Line::from(vec![
                     Span::styled(if single { "├─ " } else { "   " }, rail_style),
                     Span::styled(
-                        format!("⋯ 已省略 {omitted} 项"),
+                        t!("tui.tool.omitted_fmt", n = omitted).into_owned(),
                         Style::new().fg(theme.gray_dim),
                     ),
                 ]));
@@ -324,7 +330,10 @@ pub(super) fn execute_rows(
             Ok(value) if value.is_object() || value.is_array() => {
                 push(
                     &mut lines,
-                    Line::from(Span::styled("result", Style::new().fg(theme.gray))),
+                    Line::from(Span::styled(
+                        t!("tui.tool.result_label").into_owned(),
+                        Style::new().fg(theme.gray),
+                    )),
                     &mut dropped,
                 );
                 for row in json_member_rows(&value, &[], 1, width, theme) {
@@ -333,7 +342,7 @@ pub(super) fn execute_rows(
             }
             Ok(value) => {
                 let mut spans = vec![Span::styled(
-                    "result: ".to_owned(),
+                    t!("tui.tool.result_prefix").into_owned(),
                     Style::new().fg(theme.gray),
                 )];
                 spans.extend(json_scalar_spans(&value, width.saturating_sub(8), theme));

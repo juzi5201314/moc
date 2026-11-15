@@ -1,5 +1,7 @@
 //! 会话回退与重新作答。
 
+use rust_i18n::t;
+
 use super::agents::load_subagents_for_parent;
 use super::context::refresh_context;
 use super::modal_key::handle_modal_key;
@@ -30,7 +32,9 @@ pub(super) fn apply_rewind_loaded(
         Ok(loaded) => state.set_entries(loaded.entries, loaded.redo_entries),
         Err(error) => {
             state.loading = false;
-            state.error = Some(format!("加载消息历史失败：{error}"));
+            state.error = Some(
+                t!("tui.rewind.load_failed_fmt", err = error.to_string()).into_owned(),
+            );
         }
     }
 }
@@ -47,10 +51,18 @@ pub(super) fn apply_rewound(
         Err(error) => {
             if let Some(Modal::Rewind { state }) = app.modal.as_mut() {
                 state.loading = false;
-                state.error = Some(format!(
-                    "消息{}失败：{error}",
-                    if is_redo { "前滚" } else { "回退" }
-                ));
+                state.error = Some(
+                    t!(
+                        "tui.rewind.op_failed_fmt",
+                        op = if is_redo {
+                            t!("tui.rewind.redo")
+                        } else {
+                            t!("tui.rewind.undo")
+                        },
+                        err = error.to_string()
+                    )
+                    .into_owned(),
+                );
             }
             return;
         }
@@ -82,11 +94,14 @@ pub(super) fn apply_rewound(
     app.prompt_changed();
     app.focus = Focus::Prompt;
     app.usage = Default::default();
-    app.set_notice(if is_redo {
-        "已向前滚到该节点".to_owned()
-    } else {
-        "会话已回退".to_owned()
-    });
+    app.set_notice(
+        if is_redo {
+            t!("tui.rewind.redone")
+        } else {
+            t!("tui.rewind.undone")
+        }
+        .into_owned(),
+    );
     refresh_context(app, connection, false);
     // 回退会截断历史，重放出来的累计用量随之缩水，必须重新取一次。
     refresh_usage(app, connection, false);
@@ -110,7 +125,9 @@ pub(super) fn apply_reasked(
             if let Some(session) = app.session.as_ref() {
                 app.inflight_session_ops.remove(&session.id);
             }
-            app.set_notice(format!("重新作答失败：{error}"));
+            app.set_notice(
+                t!("tui.rewind.retry_failed_fmt", err = error.to_string()).into_owned(),
+            );
             return;
         }
     };
@@ -130,7 +147,7 @@ pub(super) fn apply_reasked(
     app.todos = loaded.todos;
     app.goal = loaded.goal;
     app.usage = Default::default();
-    app.set_notice("已重新作答，正在继续".to_owned());
+    app.set_notice(t!("tui.rewind.retried").into_owned());
     refresh_context(app, connection, false);
     refresh_usage(app, connection, false);
     load_subagents_for_parent(
@@ -200,7 +217,7 @@ pub(super) async fn load_rewind_pages(
             Some(
                 page.redo_entries
                     .first()
-                    .context("前滚分页未返回可继续的游标")?
+                    .context(t!("tui.rewind.redo_cursor_missing"))?
                     .id
                     .clone(),
             )
@@ -217,7 +234,7 @@ pub(super) async fn load_rewind_pages(
 /// 空输入框双击 Esc：加载当前会话的 transcript 回退选择器。
 pub(super) fn open_rewind(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session").into_owned());
         return;
     };
     app.open_rewind();

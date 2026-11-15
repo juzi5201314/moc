@@ -16,6 +16,7 @@ use crate::{
     app::{App, Focus},
     btw::Status,
 };
+use rust_i18n::t;
 
 /// 从主滚动区划出 dock；收起时留一行可点击状态条。
 pub fn split(app: &mut App, area: Rect) -> Rect {
@@ -70,7 +71,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let status = thread
         .turns
         .back()
-        .map_or("空线程", |turn| turn.status.label());
+        .map_or(t!("tui.btw.empty_thread"), |turn| turn.status.label().into());
     let turns = thread.turns.len();
     let focused = app.focus == Focus::Btw && app.modal.is_none();
     let border = if focused {
@@ -84,9 +85,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Style::new().bg(theme.bg_base).fg(theme.text_primary),
     );
     if !app.btw.expanded {
-        let head = format!("▸ BTW{SEP}{status}{SEP}{turns} 轮{SEP}");
+        let head = t!("tui.btw.head_fmt", sep = SEP, status = status, turns = turns).into_owned();
         let hints = labels::hints(
-            &[("", "点击展开"), ("alt+b", "展开")],
+            &[("", t!("tui.hint.click_expand")), ("alt+b", t!("tui.hint.expand_row"))],
             usize::from(area.width).saturating_sub(super::wrap::str_width(&head)),
         );
         frame.render_widget(
@@ -102,17 +103,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     if thread.turns.is_empty() {
         lines.extend(
-            wrap_text(
-                "在主输入使用 /btw 问题开始；后续 /btw 问题沿用本线程。仅内存，不调用工具，不写主上下文或历史。",
-                width,
-            )
+            wrap_text(&t!("tui.btw.intro"), width)
             .into_iter()
             .map(|text| Line::styled(text, Style::new().fg(theme.text_secondary))),
         );
     }
     for turn in &thread.turns {
         lines.extend(
-            wrap_text(&format!("你 › {}", turn.question), width)
+            wrap_text(&t!("tui.btw.you_fmt", question = turn.question.as_str()), width)
                 .into_iter()
                 .map(|text| Line::styled(text, Style::new().fg(theme.text_primary))),
         );
@@ -135,18 +133,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             }
         }
         lines.extend(super::markdown::render_markdown(&turn.answer, width, theme));
-        let mut footer = format!(
-            "{} · 回放 {} 轮",
-            turn.status.label(),
-            turn.history_turns_used
-        );
+        let mut footer = t!(
+            "tui.btw.turn_footer_fmt",
+            status = turn.status.label(),
+            turns = turn.history_turns_used
+        )
+        .into_owned();
         if !turn.model.is_empty() {
             footer.push_str(&format!(" · {}", turn.model));
         }
         if let Some(usage) = &turn.usage {
-            footer.push_str(&format!(
-                " · 输入 {} / 输出 {} token",
-                usage.input_tokens, usage.output_tokens
+            footer.push_str(&t!(
+                "tui.btw.turn_usage_fmt",
+                input = usage.input_tokens,
+                output = usage.output_tokens
             ));
         }
         lines.extend(
@@ -169,7 +169,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     thread.scroll = thread.scroll.min(app.btw.scroll_max);
 
     // `scroll` 是距底部的行数；百分比按「已读到哪」从顶部算，到底为 100%。
-    let mut title = format!("BTW{SEP}{status}{SEP}{turns} 轮");
+    let mut title =
+        t!("tui.btw.title_fmt", sep = SEP, status = status, turns = turns).into_owned();
     if let Some(percent) =
         ((app.btw.scroll_max - thread.scroll) * 100).checked_div(app.btw.scroll_max)
     {
@@ -178,11 +179,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let edge = usize::from(area.width.saturating_sub(4));
     let (footer, footer_keys) = labels::hint_layout(
         &[
-            ("x", "清空"),
-            ("c", "复制"),
-            ("ctrl+c", "取消"),
-            ("tab", "主输入"),
-            ("esc", "收起"),
+            ("x", t!("tui.hint.clear")),
+            ("c", t!("tui.hint.copy")),
+            ("ctrl+c", t!("tui.hint.cancel")),
+            ("tab", t!("tui.hint.main_input")),
+            ("esc", t!("tui.hint.collapse")),
         ],
         edge.saturating_sub(2),
     );

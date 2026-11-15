@@ -101,6 +101,7 @@ fn select_popup_is_opaque_and_modal() {
 
 /// 读入 `document` 并停在 `tab` 页的面板（字段目录由 core 补齐）。
 fn loaded(tab: &str, document: Value, fields: Vec<ConfigField>) -> SettingsPanel {
+    rust_i18n::set_locale("zh");
     let mut panel = SettingsPanel {
         id: 1,
         cwd: "/tmp".into(),
@@ -198,7 +199,7 @@ fn select_group(panel: &mut SettingsPanel, key: &str) {
 /// 分组按路径给出准确说明；Fusion 不再出现在设置页面，工具与子页面正确分区。
 #[test]
 fn group_description_follows_grouping_path() {
-    let mut panel = loaded("模型角色", models_config(), Vec::new());
+    let mut panel = loaded("models", models_config(), Vec::new());
     assert!(
         !panel
             .rows
@@ -211,7 +212,7 @@ fn group_description_follows_grouping_path() {
     assert!(locate(&rows, "各会话角色使用的模型").is_some());
 
     let mut tools = loaded(
-        "工具",
+        "tools",
         json!({}),
         vec![ConfigField {
             path: vec!["web_search".into(), "provider".into()],
@@ -230,7 +231,7 @@ fn group_description_follows_grouping_path() {
 /// 取消顶部快捷键芯片条，只在底部渲染简洁提示条。
 #[test]
 fn top_toolbar_removed_and_bottom_hints_clean() {
-    let mut panel = loaded("模型角色", models_config(), Vec::new());
+    let mut panel = loaded("models", models_config(), Vec::new());
     let rows = screen(&mut panel, 80, 30);
     // 顶部第 0 行是标题“全局配置”，第 1 行是页签，紧接着就是正文而非工具芯片条。
     assert!(locate(&rows, "全局配置").is_some());
@@ -252,7 +253,7 @@ fn top_toolbar_removed_and_bottom_hints_clean() {
 /// 底部提示条的单键项可点：命中区落在画出来的那段文字上，且是编辑态也生效的 `Hint`。
 #[test]
 fn hint_bar_keys_are_clickable_where_drawn() {
-    let mut panel = loaded("模型角色", models_config(), Vec::new());
+    let mut panel = loaded("models", models_config(), Vec::new());
     select_group(&mut panel, "models/roles");
     let rows = screen(&mut panel, 120, 40);
     let (y, x) = locate(&rows, "Esc 返回").expect("提示条有 Esc 返回");
@@ -281,7 +282,7 @@ fn long_values_end_with_ellipsis_inside_margin() {
         advanced: false,
     };
     let document = json!({"zz": {"long": "x".repeat(200)}});
-    let mut panel = loaded("模型角色", document, vec![field]);
+    let mut panel = loaded("session", document, vec![field]);
     panel.select_path(&path);
     let rows = screen(&mut panel, 80, 30);
     let (y, _) = locate(&rows, "超长取值").expect("字段行可见");
@@ -300,7 +301,7 @@ fn long_values_end_with_ellipsis_inside_margin() {
 fn model_candidates_align_ids_and_model_card_highlighted() {
     let theme = Theme::global();
     let mut panel = loaded(
-        "供应商与模型",
+        "providers",
         json!({"providers": {"p": {"models": {"a1": {}}}}}),
         Vec::new(),
     );
@@ -351,7 +352,7 @@ fn model_candidates_align_ids_and_model_card_highlighted() {
 #[test]
 fn mcp_group_shows_server_address() {
     let mut panel = loaded(
-        "MCP",
+        "mcp",
         json!({"mcp": {"servers": {"srv": {"command": "npx"}}}}),
         Vec::new(),
     );
@@ -363,7 +364,7 @@ fn mcp_group_shows_server_address() {
 #[test]
 fn provider_workspace_and_draft_fit_narrow_terminals() {
     let mut panel = loaded(
-        "供应商与模型",
+        "providers",
         json!({"providers": {"empty": {"models": {}}}}),
         Vec::new(),
     );
@@ -406,7 +407,7 @@ fn provider_workspace_and_draft_fit_narrow_terminals() {
 #[test]
 fn provider_field_footer_exposes_reset() {
     let mut panel = loaded(
-        "供应商与模型",
+        "providers",
         json!({"providers": {"p": {"api": "openai_chat", "base_url": "https://example.invalid", "models": {"m": {}}}}}),
         Vec::new(),
     );
@@ -438,7 +439,7 @@ fn provider_field_footer_exposes_reset() {
 /// 字段树的滚动条与主界面同一字形，贴终端右缘。
 #[test]
 fn field_scrollbar_matches_main_screen() {
-    let mut panel = loaded("界面", json!({}), flat_fields(20));
+    let mut panel = loaded("ui", json!({}), flat_fields(20));
     let rows = screen(&mut panel, 80, 16);
     assert!(
         rows.iter().any(|(text, _)| text.ends_with('▐')),
@@ -472,7 +473,7 @@ fn flat_fields(count: usize) -> Vec<ConfigField> {
 /// 滚轮只滚视口：选中项不动，普通重绘也不把手动滚到的位置拉回。
 #[test]
 fn wheel_scrolls_fields_viewport_not_selection() {
-    let mut panel = loaded("界面", json!({}), flat_fields(20));
+    let mut panel = loaded("ui", json!({}), flat_fields(20));
     screen(&mut panel, 80, 16);
     assert!(panel.scroll.max_offset > 0, "行数应溢出正文区");
 
@@ -490,7 +491,7 @@ fn wheel_scrolls_fields_viewport_not_selection() {
 #[test]
 fn hover_paints_background_without_moving_selection() {
     let theme = Theme::global();
-    let mut panel = loaded("界面", json!({}), flat_fields(20));
+    let mut panel = loaded("ui", json!({}), flat_fields(20));
     screen(&mut panel, 80, 24);
     let (row_y, row_x) = {
         let (area, _) = panel
@@ -527,7 +528,7 @@ fn wheel_routes_to_provider_sidebar_not_detail() {
         .map(|index| (format!("p{index:02}"), json!({"models": {}})))
         .collect();
     let mut panel = loaded(
-        "供应商与模型",
+        "providers",
         json!({ "providers": Value::Object(providers) }),
         Vec::new(),
     );
@@ -560,7 +561,7 @@ fn wheel_routes_to_provider_sidebar_not_detail() {
 /// 弹窗列表滚轮只滚自己的视口，光标行不动。
 #[test]
 fn popup_wheel_scrolls_viewport_not_cursor() {
-    let mut panel = loaded("界面", json!({}), flat_fields(1));
+    let mut panel = loaded("ui", json!({}), flat_fields(1));
     panel.edit = Some(EditState {
         target: EditTarget::Filter,
         editor: Editor::Select(SelectEditor::new(
@@ -611,7 +612,7 @@ fn test_format_number_commas() {
 /// 鼠标移动触发焦点跟随，但不会拉回已手动滚动的视口。
 #[test]
 fn mouse_move_follows_row_without_snapping_viewport() {
-    let mut panel = loaded("界面", json!({}), flat_fields(20));
+    let mut panel = loaded("ui", json!({}), flat_fields(20));
     screen(&mut panel, 80, 16);
     scroll(&mut panel, (10, 10).into(), 4);
     let offset = panel.offset;

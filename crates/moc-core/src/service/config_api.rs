@@ -70,11 +70,12 @@ pub(super) async fn config_get(
         agents: vec![AgentProfile {
             id: "moc".into(),
             display_name: "moc".into(),
-            description: Some("通用编码代理".into()),
+            description: Some(rust_i18n::t!("core.preset.agent_default").into_owned()),
         }],
         default_agent: Some("moc".into()),
         cwd: config.cwd.to_string_lossy().into_owned(),
         fusion,
         features: config.features,
+        language: Some(config.language.clone()),
     })
 }

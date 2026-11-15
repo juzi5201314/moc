@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rquickjs::{Context, Ctx, Function, Module, Object, Persistent, Runtime, Value as JsValue};
+use rust_i18n::t;
 use serde_json::Value;
 
 use crate::descriptor::{AgentPresetDecl, ConfigDecl, Descriptor, HookKind};
@@ -90,7 +91,7 @@ impl Worker {
         self.commands.send(Command::Call(request)).map_err(|_| {
             PluginError::new(
                 "E_PLUGIN_CRASH",
-                format!("插件 `{}` 的线程已退出", self.name),
+                t!("plugin.err.thread_gone", name = self.name.as_str()).into_owned(),
             )
         })
     }
@@ -165,7 +166,7 @@ fn spawn_mode(
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = tx.send(Err(PluginError::new(
             "E_PLUGIN_THREAD",
-            format!("无法启动插件线程：{error}"),
+            t!("plugin.err.thread_spawn", error = error).into_owned(),
         )));
         return (worker, rx);
     }
@@ -282,7 +283,7 @@ fn run_thread(
         Err(error) => {
             let _ = ready.send(Err(PluginError::new(
                 "E_PLUGIN_THREAD",
-                format!("无法启动加载看门狗：{error}"),
+                t!("plugin.err.watchdog_spawn", error = error).into_owned(),
             )));
             return;
         }
@@ -319,10 +320,11 @@ fn run_thread(
         (Err(_), true) => {
             let _ = ready.send(Err(PluginError::new(
                 "E_PLUGIN_TIMEOUT",
-                format!(
-                    "插件在 {} ms 内没有完成加载（模块求值 + activate）",
-                    limits.load_timeout.as_millis()
-                ),
+                t!(
+                    "plugin.err.load_timeout",
+                    ms = limits.load_timeout.as_millis()
+                )
+                .into_owned(),
             )));
             return;
         }
@@ -407,7 +409,12 @@ fn init<'js>(
     let source = std::fs::read(entry).map_err(|error| {
         PluginError::new(
             "E_PLUGIN_LOAD",
-            format!("读取 {}: {error}", entry.display()),
+            t!(
+                "plugin.err.entry_read",
+                file = entry.display().to_string(),
+                error = error
+            )
+            .into_owned(),
         )
     })?;
     let module =
@@ -417,7 +424,7 @@ fn init<'js>(
         // 没有定时器与事件循环：顶层 await 等不到的东西永远等不到。
         rquickjs::Error::WouldBlock => PluginError::new(
             "E_PLUGIN_STATE",
-            "模块顶层 await 没有落定：插件里没有定时器或事件循环",
+            t!("plugin.err.await_unsettled").into_owned(),
         ),
         error => js_error(ctx, error),
     })?;
@@ -428,7 +435,7 @@ fn init<'js>(
     let object = default.into_object().ok_or_else(|| {
         PluginError::new(
             "E_PLUGIN_DESCRIPTOR",
-            "`export default` 必须是对象；导出形状见 docs/plugins.md",
+            t!("plugin.err.default_export").into_owned(),
         )
     })?;
     if let Some(error) = registrations.borrow_mut().error.take() {

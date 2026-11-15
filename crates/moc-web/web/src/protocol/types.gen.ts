@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 9f5a7d5b50ebb3f3
+// schema sha256: 8884ce74ee291f5b
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -1930,6 +1930,11 @@ export interface ConfigGetResult {
    * `[models.fusion]` 配置的组合；两侧都配置时才有值。
    */
   fusion?: FusionPair | null;
+  /**
+   * `[general] language` 原始值（`""`/`auto`/`zh`/`en`）；`auto` 的解析由前端自己定
+   * （Web 按 navigator.language，TUI 按进程环境）。旧报文没有时按 `auto` 处理。
+   */
+  language?: string | null;
   /**
    * 可用模型。
    */

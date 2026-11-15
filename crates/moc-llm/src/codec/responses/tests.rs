@@ -415,6 +415,7 @@ fn image_input_block() {
 
 #[test]
 fn cache_breakpoints_and_ttl_validation() {
+    rust_i18n::set_locale("zh");
     let req = ChatRequest {
         messages: vec![Message::system("系统"), Message::user_text("hi")],
         options: RequestOptions {

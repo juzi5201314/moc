@@ -1303,6 +1303,13 @@
           ],
           "description": "`[models.fusion]` 配置的组合；两侧都配置时才有值。"
         },
+        "language": {
+          "description": "`[general] language` 原始值（`\"\"`/`auto`/`zh`/`en`）；`auto` 的解析由前端自己定\n（Web 按 navigator.language，TUI 按进程环境）。旧报文没有时按 `auto` 处理。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "models": {
           "description": "可用模型。",
           "items": {

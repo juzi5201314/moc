@@ -13,6 +13,7 @@ use crate::host::PersistenceOp;
 use rquickjs::Ctx;
 use rquickjs::Function;
 use rquickjs::Object;
+use rust_i18n::t;
 use serde_json::Value;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -53,7 +54,7 @@ pub(super) fn install_globals<'js>(
                 Some(call) if call.session != "null" => Ok(call.session.clone()),
                 _ => Err(throw(
                     &ctx,
-                    &PluginError::new("E_PLUGIN_STATE", "没有正在进行的插件调用"),
+                    &PluginError::new("E_PLUGIN_STATE", t!("plugin.err.no_invocation")),
                 )),
             }
         },
@@ -74,7 +75,7 @@ pub(super) fn install_globals<'js>(
                     None => {
                         return Err(throw(
                             &ctx,
-                            &PluginError::new("E_PLUGIN_STATE", "没有正在进行的插件调用"),
+                            &PluginError::new("E_PLUGIN_STATE", t!("plugin.err.no_invocation")),
                         ));
                     }
                 }
@@ -84,20 +85,23 @@ pub(super) fn install_globals<'js>(
                     &ctx,
                     &PluginError::new(
                         "E_PLUGIN_TOOLS_UNAVAILABLE",
-                        "只有工具的 run 里可以调用宿主工具",
+                        t!("plugin.err.tool_only"),
                     ),
                 ));
             }
             let Some(tx) = tx else {
                 return Err(throw(
                     &ctx,
-                    &PluginError::new("E_PLUGIN_STATE", "宿主桥没有登记工具调用"),
+                    &PluginError::new("E_PLUGIN_STATE", t!("plugin.err.bridge_no_call")),
                 ));
             };
             let args: Value = serde_json::from_str(&args).map_err(|error| {
                 throw(
                     &ctx,
-                    &PluginError::new("E_PLUGIN_VALUE", format!("工具参数不是合法 JSON：{error}")),
+                    &PluginError::new(
+                        "E_PLUGIN_VALUE",
+                        t!("plugin.err.args_json", error = error).into_owned(),
+                    ),
                 )
             })?;
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
@@ -110,7 +114,7 @@ pub(super) fn install_globals<'js>(
             {
                 return Err(throw(
                     &ctx,
-                    &PluginError::new("E_PLUGIN_STATE", "宿主调用通道已关闭"),
+                    &PluginError::new("E_PLUGIN_STATE", t!("plugin.err.call_channel_closed")),
                 ));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -119,7 +123,7 @@ pub(super) fn install_globals<'js>(
                 Ok(Err(error)) => Err(throw(&ctx, &error)),
                 Err(_) => Err(throw(
                     &ctx,
-                    &PluginError::new("E_PLUGIN_TIMEOUT", "宿主工具调用超时"),
+                    &PluginError::new("E_PLUGIN_TIMEOUT", t!("plugin.err.host_call_timeout")),
                 )),
             }
         },
@@ -139,10 +143,10 @@ pub(super) fn install_globals<'js>(
                 let fields = registry
                     .fields
                     .as_mut()
-                    .ok_or_else(|| PluginError::new("E_PLUGIN_CONFIG", "配置只能在模块顶层注册"))?;
+                    .ok_or_else(|| PluginError::new("E_PLUGIN_CONFIG", t!("plugin.err.config_top_level")))?;
                 let declaration = config_declaration(key, &definition)?;
                 if fields.iter().any(|field| field.key == declaration.key) {
-                    return Err(PluginError::new("E_PLUGIN_CONFIG", "配置键不能重复注册"));
+                    return Err(PluginError::new("E_PLUGIN_CONFIG", t!("plugin.err.config_dup")));
                 }
                 fields.push(declaration);
                 Ok(())
@@ -169,13 +173,14 @@ pub(super) fn install_globals<'js>(
             let result = (|| -> Result<()> {
                 let mut registry = registry.borrow_mut();
                 let presets = registry.agent_presets.as_mut().ok_or_else(|| {
-                    PluginError::new("E_PLUGIN_AGENT", "preset 只能在模块顶层注册")
+                    PluginError::new("E_PLUGIN_AGENT", t!("plugin.err.preset_top_level"))
                 })?;
                 let declaration = agent_preset_declaration(&definition)?;
                 if presets.iter().any(|preset| preset.name == declaration.name) {
                     return Err(PluginError::new(
                         "E_PLUGIN_AGENT",
-                        format!("agent preset `{}` 不能重复注册", declaration.name),
+                        t!("plugin.err.preset_dup", name = declaration.name.as_str())
+                            .into_owned(),
                     ));
                 }
                 presets.push(declaration);
@@ -225,12 +230,14 @@ pub(super) fn install_globals<'js>(
                 let (tx, deadline) = {
                     let borrowed = current.borrow();
                     let call = borrowed.as_ref().ok_or_else(|| {
-                        PluginError::new("E_PLUGIN_STATE", "没有正在进行的插件调用")
+                        PluginError::new("E_PLUGIN_STATE", t!("plugin.err.no_invocation"))
                     })?;
                     (
                         call.tx
                             .clone()
-                            .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", "持久化桥不可用"))?,
+                            .ok_or_else(|| {
+                                PluginError::new("E_PLUGIN_STATE", t!("plugin.err.persistence_unavailable"))
+                            })?,
                         call.deadline,
                     )
                 };
@@ -251,7 +258,7 @@ pub(super) fn install_globals<'js>(
                     },
                     "stateDelete" => PersistenceOp::StateDelete { key },
                     "stateKeys" => PersistenceOp::StateKeys,
-                    _ => return Err(PluginError::new("E_PLUGIN_STATE", "未知持久化操作")),
+                    _ => return Err(PluginError::new("E_PLUGIN_STATE", t!("plugin.err.persistence_unknown_op"))),
                 };
                 let request = |op| -> Result<Value> {
                     let (reply, receiver) = std::sync::mpsc::channel();
@@ -259,14 +266,18 @@ pub(super) fn install_globals<'js>(
                         operation: HostOperation::Persistence(op),
                         reply,
                     })
-                    .map_err(|_| PluginError::new("E_PLUGIN_STATE", "持久化桥已关闭"))?;
+                    .map_err(|_| {
+                        PluginError::new("E_PLUGIN_STATE", t!("plugin.err.persistence_closed"))
+                    })?;
                     receiver
                         .recv_timeout(
                             deadline
                                 .saturating_duration_since(Instant::now())
                                 .max(Duration::from_millis(1)),
                         )
-                        .map_err(|_| PluginError::new("E_PLUGIN_TIMEOUT", "持久化请求超时"))?
+                        .map_err(|_| {
+                            PluginError::new("E_PLUGIN_TIMEOUT", t!("plugin.err.persistence_timeout"))
+                        })?
                 };
                 if let PersistenceOp::StateGet { key }
                 | PersistenceOp::StateSet { key, .. }
@@ -275,7 +286,7 @@ pub(super) fn install_globals<'js>(
                 {
                     return Err(PluginError::new(
                         "E_PLUGIN_STATE",
-                        "state 键必须是 1..128 UTF-8 字节",
+                        t!("plugin.err.state_key"),
                     ));
                 }
                 if matches!(
@@ -293,7 +304,7 @@ pub(super) fn install_globals<'js>(
                         let object = snapshot
                             .as_object()
                             .ok_or_else(|| {
-                                PluginError::new("E_PLUGIN_STATE", "state 快照必须是对象")
+                                PluginError::new("E_PLUGIN_STATE", t!("plugin.err.state_snapshot"))
                             })?
                             .clone();
                         current.borrow_mut().as_mut().expect("当前调用存在").state = Some(object);

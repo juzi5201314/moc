@@ -26,7 +26,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
+            "language='zh'\n[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\

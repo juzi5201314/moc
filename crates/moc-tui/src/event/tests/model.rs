@@ -36,7 +36,7 @@ async fn model_picker_asks_before_compacting() {
         .await;
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("config.toml"), format!(
-        "[models.roles]\ndefault='test/model:off'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\ncontext_window=100000\n[providers.test.models.tiny]\ncontext_window=32000\nmax_output_tokens=4096\n[compaction]\nmethod='moc'\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        "language='zh'\n[models.roles]\ndefault='test/model:off'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\ncontext_window=100000\n[providers.test.models.tiny]\ncontext_window=32000\nmax_output_tokens=4096\n[compaction]\nmethod='moc'\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
         upstream.uri(),
     )).unwrap();
     let core = Core::new(CoreConfig {

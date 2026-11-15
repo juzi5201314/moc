@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useT } from "@/lib/i18n";
 import { fetchProcStats, type ProcSample, type ProcStats } from "@/lib/web-api";
 import { useUi } from "@/store/ui";
 
@@ -38,11 +39,14 @@ type Series = { points: number[]; className: string };
 
 /** 共享纵轴刻度的折线：同一图里的多条序列按合并 min/max 归一。 */
 function Spark({ series }: { series: Series[] }) {
+  const t = useT();
   const width = 200;
   const height = 36;
   const all = series.flatMap((item) => item.points);
   if (all.length < 2) {
-    return <div className="flex h-9 items-center text-2xs text-text-tertiary">样本不足…</div>;
+    return (
+      <div className="flex h-9 items-center text-2xs text-text-tertiary">{t("mon.no_samples")}</div>
+    );
   }
   const max = Math.max(...all);
   const min = Math.min(...all);
@@ -112,6 +116,7 @@ function Chart({
 }
 
 export function MonitorDialog() {
+  const t = useT();
   const [stats, setStats] = useState<ProcStats | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -143,45 +148,44 @@ export function MonitorDialog() {
     <Dialog open onOpenChange={(open) => !open && useUi.getState().set({ monitor: false })}>
       <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>进程资源监控</DialogTitle>
+          <DialogTitle>{t("mon.title")}</DialogTitle>
           <DialogDescription>
-            moc web 进程近 {stats ? Math.round(stats.windowSecs / 60) : 10} 分钟，1Hz
-            采样；网络为收发的 HTTP(S) 流量。
+            {t("mon.desc", { mins: stats ? Math.round(stats.windowSecs / 60) : 10 })}
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 overflow-y-auto">
           {error ? (
             <p role="alert" className="text-sm text-destructive">
-              读取失败：{error}
+              {t("dr.fetch_failed", { error })}
             </p>
           ) : !stats ? (
             <p role="status" className="text-sm text-muted-foreground">
-              正在读取样本…
+              {t("mon.reading")}
             </p>
           ) : samples.length === 0 ? (
-            <p className="text-sm text-muted-foreground">尚无样本，稍等几秒。</p>
+            <p className="text-sm text-muted-foreground">{t("mon.empty")}</p>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2">
               <Chart
-                title="常驻内存"
+                title={t("mon.rss")}
                 value={latest ? formatBytes(latest.rssBytes) : "—"}
                 series={[{ points: samples.map((s) => s.rssBytes), className: "text-brand" }]}
               />
               <Chart
-                title="CPU（单核=100%）"
+                title={t("mon.cpu")}
                 value={latest ? `${latest.cpuPct.toFixed(0)}%` : "—"}
                 series={[{ points: samples.map((s) => s.cpuPct), className: "text-warn" }]}
               />
               <Chart
-                title="磁盘读写"
+                title={t("mon.disk")}
                 value={
                   latest
                     ? `${formatBytes(latest.diskReadBytes)} / ${formatBytes(latest.diskWriteBytes)}`
                     : "—"
                 }
                 legend={[
-                  { label: "读/s", className: "text-brand" },
-                  { label: "写/s", className: "text-warn" },
+                  { label: t("mon.read"), className: "text-brand" },
+                  { label: t("mon.write"), className: "text-warn" },
                 ]}
                 series={[
                   { points: rates(samples, (s) => s.diskReadBytes), className: "text-brand" },
@@ -189,15 +193,15 @@ export function MonitorDialog() {
                 ]}
               />
               <Chart
-                title="网络收发"
+                title={t("mon.net")}
                 value={
                   latest
                     ? `${formatBytes(latest.netRxBytes)} / ${formatBytes(latest.netTxBytes)}`
                     : "—"
                 }
                 legend={[
-                  { label: "收/s", className: "text-brand" },
-                  { label: "发/s", className: "text-warn" },
+                  { label: t("mon.rx"), className: "text-brand" },
+                  { label: t("mon.tx"), className: "text-warn" },
                 ]}
                 series={[
                   { points: rates(samples, (s) => s.netRxBytes), className: "text-brand" },

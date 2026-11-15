@@ -2,6 +2,7 @@
 
 import { toast } from "sonner";
 import { create } from "zustand";
+import { setLanguage, t } from "@/lib/i18n";
 import { clientListeners, rpc } from "@/protocol/client";
 import { ErrorCode, type RpcError } from "@/protocol/errors";
 import type { ConnectionStatus } from "@/protocol/rpc";
@@ -29,6 +30,7 @@ export const useConnection = create<ConnectionState>()((set) => ({
   everOnline: false,
   refreshConfig: async () => {
     const config = await rpc.call<ConfigGetResult>("config/get", {});
+    setLanguage(config.language);
     set({ config });
   },
   refreshCommands: async () => {
@@ -57,6 +59,6 @@ clientListeners.handshakeError.add((handshakeError) => {
   useConnection.setState({ handshakeError });
   // 版本不兼容不再自动重连，是用户必须干预的终态，不能只靠状态点传达。
   if (handshakeError.code === ErrorCode.UnsupportedProtocolVersion) {
-    toast.error("协议主版本不兼容，请刷新页面获取新版前端");
+    toast.error(t("conn.version_mismatch"));
   }
 });

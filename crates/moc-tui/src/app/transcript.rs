@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::App;
 use super::trimmable_tail_block;
 use crate::transcript::Block;
@@ -153,7 +155,9 @@ impl App {
         if self.tool_block(&id).is_none() {
             self.start_tool_block(ToolCallStart {
                 id: id.clone(),
-                name: name.clone().unwrap_or_else(|| "工具".into()),
+                name: name
+                    .clone()
+                    .unwrap_or_else(|| t!("tui.tool.fallback_name").into_owned()),
                 parent_id: None,
                 arguments: String::new(),
             });
@@ -391,7 +395,7 @@ impl App {
         self.reset_prompt_state();
         self.prompt_running = false;
         if was_cancel_requested {
-            self.set_notice("已停止");
+            self.set_notice(t!("tui.event.stopped").into_owned());
         }
         let Some(elapsed) = elapsed else {
             return;

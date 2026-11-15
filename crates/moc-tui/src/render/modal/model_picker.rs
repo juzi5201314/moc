@@ -1,6 +1,7 @@
 //! 模型选择器：锚定触发标签的列表卡 + 详情卡 + 下拉卡三层不透明浮层。
 
 use super::*;
+use rust_i18n::t;
 use crate::modal::{
     DetailRow, FUSION_ENTRY_SELECTOR, MENU_PAGE, MenuItems, ModelEntry, filtered_entries,
 };
@@ -21,7 +22,7 @@ fn list_natural_rows(app: &App, modal: &Modal) -> usize {
     };
     let filtered = filtered_entries(entries, "");
     let mut groups = 0usize;
-    let mut last_group = "";
+    let mut last_group = String::new();
     for (_, entry) in &filtered {
         let group = entry_group(app, entry);
         if group != last_group {
@@ -34,15 +35,15 @@ fn list_natural_rows(app: &App, modal: &Modal) -> usize {
 }
 
 /// 条目所属分组名；与列表行的分组逻辑同一份。
-fn entry_group<'a>(app: &App, entry: &'a ModelEntry) -> &'a str {
+fn entry_group(app: &App, entry: &ModelEntry) -> String {
     if entry.selector == FUSION_ENTRY_SELECTOR {
-        "模式"
+        t!("tui.picker.group_mode").into_owned()
     } else if entry.provider().is_empty() {
-        "继承"
+        t!("tui.picker.group_inherit").into_owned()
     } else if app.recent_models.rank(&entry.selector).is_some() {
-        "最近使用"
+        t!("tui.picker.group_recent").into_owned()
     } else {
-        entry.provider()
+        entry.provider().to_owned()
     }
 }
 
@@ -367,7 +368,7 @@ fn menu_lines(
                 .push(clip_line(search_line(&menu.query, width, theme), width));
             if entries.is_empty() {
                 body.lines.push(Line::from(Span::styled(
-                    fit("没有匹配的模型", width),
+                    fit(&t!("tui.modal.no_match_models"), width),
                     Style::new().fg(theme.gray),
                 )));
             }
@@ -453,9 +454,12 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
     let header_rows = body.lines.len();
     let fusion = highlighted.is_some_and(|entry| entry.selector == FUSION_ENTRY_SELECTOR);
     let status = if picker.loading {
-        Some("正在切换模型…".to_owned())
+        Some(t!("tui.modal.switching_model").into_owned())
     } else {
-        picker.error.as_ref().map(|error| format!("错误：{error}"))
+        picker
+            .error
+            .as_ref()
+            .map(|error| t!("tui.err.fmt", err = error.as_str()).into_owned())
     };
     let available = max_lines.saturating_sub(header_rows);
     let status_rows = usize::from(status.is_some() && available >= 3);
@@ -505,7 +509,7 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
             fit_line(line.clone(), width)
         } else if row == 0 && filtered.is_empty() {
             Line::from(Span::styled(
-                fit("没有匹配的模型", width),
+                fit(&t!("tui.modal.no_match_models"), width),
                 Style::new().fg(theme.gray),
             ))
         } else {
@@ -524,38 +528,42 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
         )));
     }
     // 底部提示按焦点分层：下拉 > 详情卡 > 列表。
-    let items: Vec<(&str, &str)> = if let Some(menu) = detail.menu.as_ref() {
-        let mut items = vec![("↑↓", "选择"), ("enter", "确定"), ("esc", "收起")];
+    let items: Vec<(&str, std::borrow::Cow<'_, str>)> = if let Some(menu) = detail.menu.as_ref() {
+        let mut items = vec![
+            ("↑↓", t!("tui.hint.choose")),
+            ("enter", t!("tui.hint.ok")),
+            ("esc", t!("tui.hint.collapse")),
+        ];
         if matches!(menu.row, DetailRow::Lead | DetailRow::Sidekick) {
-            items.push(("", "输入搜索"));
+            items.push(("", t!("tui.hint.type_search")));
         }
         items
     } else if let Some(focus) = detail.focus {
         let enter = match focus {
-            DetailRow::Fast => "切换",
-            DetailRow::Apply => "应用",
-            _ => "展开",
+            DetailRow::Fast => t!("tui.hint.switch"),
+            DetailRow::Apply => t!("tui.hint.apply"),
+            _ => t!("tui.hint.expand_row"),
         };
-        vec![("↑↓", "移动"), ("enter", enter), ("left", "返回")]
+        vec![("↑↓", t!("tui.hint.move")), ("enter", enter), ("left", t!("tui.hint.back"))]
     } else {
-        let mut items = vec![("↑↓", "选择")];
+        let mut items = vec![("↑↓", t!("tui.hint.choose"))];
         if highlighted.is_some_and(|entry| {
             entry.selector != FUSION_ENTRY_SELECTOR && !entry.levels.is_empty()
         }) {
-            items.push(("tab", "等级"));
+            items.push(("tab", t!("tui.hint.level")));
         }
         if !rows.is_empty() {
-            items.push(("right", "详情"));
+            items.push(("right", t!("tui.hint.details")));
         }
         let enter = if fusion {
-            "应用"
+            t!("tui.hint.apply")
         } else if picker.error.is_some() {
-            "重试"
+            t!("tui.hint.retry")
         } else {
-            "确认"
+            t!("tui.hint.confirm")
         };
         items.push(("enter", enter));
-        items.push(("esc", "关闭"));
+        items.push(("esc", t!("tui.hint.close")));
         items
     };
     body.footer = Some(overlay::footer(&items, width, theme));
@@ -609,7 +617,7 @@ pub(super) fn detail_lines(
                 .add_modifier(Modifier::BOLD),
         )));
         lines.extend(wrapped_lines(
-            "前沿模型负责规划、调查与评审，高性价比模型执行实现与验证",
+            &t!("tui.picker.fusion_desc"),
             width,
             Style::new().fg(theme.text_secondary),
         ));
@@ -695,7 +703,7 @@ fn control_line(
     // `›` 常驻在第 0 列，后接 1 个空格再接标签；值右对齐到正文右缘。
     let (label, value, value_color): (String, String, Color) = match row {
         DetailRow::Level => (
-            "思考等级".to_owned(),
+            t!("tui.picker.thinking_level").into_owned(),
             level
                 .resolve(&entry.levels)
                 .unwrap_or_else(|| "—".to_owned()),
@@ -704,9 +712,9 @@ fn control_line(
         DetailRow::Fast => (
             "Fast Mode".to_owned(),
             if fast {
-                "● 开".to_owned()
+                t!("tui.picker.fast_on").into_owned()
             } else {
-                "○ 关".to_owned()
+                t!("tui.picker.fast_off").into_owned()
             },
             if fast {
                 theme.accent_success
@@ -742,14 +750,14 @@ fn control_line(
                 &fusion.sidekick
             };
             let value = crate::modal::side_level(entries, side).unwrap_or_else(|| "—".to_owned());
-            ("  思考".to_owned(), value, theme.accent_model)
+            (t!("tui.picker.thinking_side").into_owned(), value, theme.accent_model)
         }
         DetailRow::Apply => {
             let applied = !fusion.lead.is_empty()
                 && !fusion.sidekick.is_empty()
                 && crate::modal::fusion_selector(&fusion.lead, &fusion.sidekick) == *current;
             (
-                "应用".to_owned(),
+                t!("tui.hint.apply").into_owned(),
                 if applied {
                     "✓".to_owned()
                 } else {
@@ -786,7 +794,7 @@ fn control_line(
 /// Fusion 草稿一侧的展示名：找到条目用 `name()`，找不到给裸 id，空串给「未选择」。
 fn side_label(entries: &[ModelEntry], selector: &str) -> (String, bool) {
     if selector.is_empty() {
-        return ("未选择".to_owned(), true);
+        return (t!("tui.picker.unselected").into_owned(), true);
     }
     if let Some(entry) = crate::modal::side_entry(entries, selector) {
         return (entry.name().to_owned(), false);

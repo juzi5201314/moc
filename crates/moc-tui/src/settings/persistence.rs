@@ -5,6 +5,7 @@ use crate::protocol::AppEvent;
 use crate::protocol::EmbeddedConnection;
 use moc_protocol::ConfigReply;
 use moc_protocol::SettingsDocument;
+use rust_i18n::t;
 use serde_json::json;
 
 pub fn response(
@@ -66,7 +67,7 @@ pub fn finish_save(
                         draft.pending = None;
                     }
                 }
-                None => app.set_error_notice(format!("配置保存失败：{text}")),
+                None => app.set_error_notice(t!("tui.persist.save_failed", err = text)),
             }
         }
         Ok(_) => {}
@@ -120,7 +121,7 @@ pub(super) fn adopt(
         panel
             .outcome
             .take()
-            .unwrap_or_else(|| "已保存并生效".into()),
+            .unwrap_or_else(|| t!("tui.persist.saved").into_owned()),
     );
     let client = connection.client.clone();
     let events = app.events.clone();
@@ -133,7 +134,9 @@ pub(super) fn adopt(
                 let _ = events.send(AppEvent::ConfigurationLoaded(config));
             }
             Err(error) => {
-                let _ = events.send(AppEvent::Notice(format!("刷新模型信息失败：{error}")));
+                let _ = events.send(AppEvent::Notice(
+                    t!("tui.persist.models_refresh_failed", err = error.to_string()).into_owned(),
+                ));
             }
         }
     });

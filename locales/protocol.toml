@@ -1,0 +1,62 @@
+_version = 2
+
+# moc-protocol 用户面文案：命令分组标题、补全兜底、/features 一览。
+
+[commands.group]
+session = { zh = "会话", en = "Session" }
+mode = { zh = "模式与引擎", en = "Modes & engine" }
+context = { zh = "上下文", en = "Context" }
+agents = { zh = "子代理与任务", en = "Subagents & tasks" }
+plugins = { zh = "插件", en = "Plugins" }
+ui = { zh = "界面", en = "Interface" }
+
+[commands]
+plugin_fallback = { zh = "插件命令", en = "Plugin command" }
+
+[features]
+header = { zh = "特性开关（生效值 = [features] 覆盖或原配置段）：", en = "Feature flags (effective = [features] override or the original config section):" }
+on = { zh = "开", en = "on" }
+off = { zh = "关", en = "off" }
+cost_dynamic = { zh = "随环境", en = "varies" }
+row = { zh = "  %{key} %{stage} %{state} %{cost} %{summary}（%{toggle}）", en = "  %{key} %{stage} %{state} %{cost} %{summary} (%{toggle})" }
+
+[features.item]
+clm = { zh = "CLM 实验引擎：模型自主维护实时工作上下文", en = "CLM experimental engine: the model maintains live working context itself" }
+ptc = { zh = "PTC 引擎：模型只调 execute，工具经代码沙盒触达", en = "PTC engine: the model only calls execute; tools run through the code sandbox" }
+workflow = { zh = "动态 workflow：模型以 TypeScript 脚本编排多阶段协作", en = "Dynamic workflow: the model orchestrates multi-stage work with TypeScript" }
+plugins = { zh = "插件宿主：插件工具、斜杠命令、钩子与提示词贡献", en = "Plugin host: plugin tools, slash commands, hooks and prompt contributions" }
+mcp = { zh = "MCP 服务器：外部工具经 mcp__* 桥接进入工具表", en = "MCP servers: external tools bridged in via mcp__*" }
+skills = { zh = "skills 目录注入与 skill 工具（渐进披露）", en = "skills directory injection and the skill tool (progressive disclosure)" }
+web_search = { zh = "web_search 工具（需配置供应商）", en = "web_search tool (requires a configured provider)" }
+web_fetch = { zh = "web_fetch 工具", en = "web_fetch tool" }
+
+[protocol.err]
+parse = { zh = "报文不是合法 JSON", en = "Message is not valid JSON" }
+invalid_request = { zh = "报文结构非法", en = "Malformed request envelope" }
+method_not_found = { zh = "未知方法", en = "Unknown method" }
+invalid_params = { zh = "参数非法", en = "Invalid params" }
+internal = { zh = "服务端内部错误", en = "Internal server error" }
+server_busy = { zh = "服务端并发请求已达上限", en = "Server request concurrency limit reached" }
+cancelled = { zh = "请求已被取消", en = "Request cancelled" }
+not_initialized = { zh = "连接尚未完成 initialize", en = "Connection has not finished initialize" }
+version_mismatch = { zh = "协议主版本不兼容", en = "Incompatible protocol major version" }
+session_not_found = { zh = "会话不存在", en = "Session not found" }
+session_busy = { zh = "该会话已有进行中的提示", en = "The session already has a prompt in flight" }
+not_supported = { zh = "服务端不支持该操作", en = "Operation not supported by the server" }
+session_locked = { zh = "会话被其它进程锁定，只读", en = "Session is locked by another process; read-only" }
+file_conflict = { zh = "目标内容已被修改", en = "Target content has been modified" }
+unclassified = { zh = "未分类的协议错误", en = "Unclassified protocol error" }
+frame_header = { zh = "分帧头部超过 8 KiB", en = "Frame header exceeded 8 KiB" }
+frame_bad_length = { zh = "Content-Length 非法：%{value}", en = "Invalid Content-Length: %{value}" }
+frame_too_large = { zh = "报文长度 %{len} 超过上限 %{max}", en = "Message length %{len} exceeds limit %{max}" }
+frame_non_numeric = { zh = "Content-Length 不是十进制数字", en = "Content-Length is not a decimal number" }
+frame_prefix = { zh = "报文前出现非分帧字节，连接无法重新同步", en = "Non-frame bytes precede the message; connection can't resynchronize" }
+io = { zh = "连接 I/O 失败（%{kind}）：%{message}", en = "Connection I/O failed (%{kind}): %{message}" }
+frame = { zh = "分帧失败：%{error}", en = "Framing failed: %{error}" }
+encode = { zh = "本地报文序列化失败：%{error}", en = "Failed to serialize local message: %{error}" }
+closed = { zh = "连接已关闭", en = "Connection closed" }
+dup_handler = { zh = "重复注册方法处理器：%{method}", en = "Duplicate method handler: %{method}" }
+call_cancelled = { zh = "请求已被取消", en = "Request cancelled" }
+call_closed = { zh = "连接已关闭", en = "Connection closed" }
+connect_failed = { zh = "连接建立失败：%{error}", en = "Failed to establish connection: %{error}" }
+init_failed = { zh = "initialize 失败：%{error}", en = "initialize failed: %{error}" }

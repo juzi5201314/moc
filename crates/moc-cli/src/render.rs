@@ -4,6 +4,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use moc_protocol::methods::{AssistantDelta, SessionUpdate, SessionUpdateParams, UpstreamField};
+use rust_i18n::t;
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -60,19 +61,35 @@ impl Renderer {
         let mut out = stdout.lock();
         match params.update {
             SessionUpdate::AgentStarted { agent } => {
-                let _ = writeln!(out, "\n[子代理已创建：{} · {}]", agent.title, agent.id);
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.agent_started", title = agent.title, id = agent.id)
+                );
             }
             SessionUpdate::AgentStatusChanged {
                 agent_id, status, ..
             } => {
-                let _ = writeln!(out, "\n[子代理 {agent_id}：{status:?}]");
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!(
+                        "cli.render.agent_status",
+                        id = agent_id,
+                        status = format!("{status:?}")
+                    )
+                );
             }
             SessionUpdate::Workflow { run_id, event } => {
                 use moc_protocol::methods::WorkflowEvent as E;
                 match event {
                     E::ApprovalRequested { request } => {
                         // 文本版编排图：phase 列表 + role 默认模型 + 命令集。
-                        let _ = writeln!(out, "\n[workflow 审批 {}]", request.request_id);
+                        let _ = writeln!(
+                            out,
+                            "{}",
+                            t!("cli.render.workflow_approval", id = request.request_id)
+                        );
                         if let Some(phases) = request.plan.get("phases").and_then(|p| p.as_array())
                         {
                             for phase in phases {
@@ -125,8 +142,16 @@ impl Renderer {
                     E::ApprovalResolved { approved, .. } => {
                         let _ = writeln!(
                             out,
-                            "[workflow 审批：{}]",
-                            if approved { "已批准" } else { "已拒绝" }
+                            "{}",
+                            t!(
+                                "cli.render.workflow_resolved",
+                                decision = if approved {
+                                    t!("cli.render.approved")
+                                } else {
+                                    t!("cli.render.rejected")
+                                }
+                                .as_ref()
+                            )
                         );
                     }
                     E::RunStatus { status } => {
@@ -137,19 +162,35 @@ impl Renderer {
                             moc_protocol::methods::WorkflowRunStatus::Pending => "pending",
                             moc_protocol::methods::WorkflowRunStatus::Stopped { .. } => "stopped",
                         };
-                        let _ = writeln!(out, "[workflow {run_id}：{label}]");
+                        let _ = writeln!(
+                            out,
+                            "{}",
+                            t!("cli.render.workflow_status", run = run_id, label = label)
+                        );
                     }
                     E::PhaseEntered { phase } => {
-                        let _ = writeln!(out, "[workflow {run_id} phase → {phase}]");
+                        let _ = writeln!(
+                            out,
+                            "{}",
+                            t!("cli.render.workflow_phase", run = run_id, phase = phase)
+                        );
                     }
                     E::Log { message, .. } => {
                         let _ = writeln!(out, "[workflow {run_id}] {message}");
                     }
                     E::HoleOpened { name, .. } => {
-                        let _ = writeln!(out, "[workflow {run_id} hole 打开：{name}]");
+                        let _ = writeln!(
+                            out,
+                            "{}",
+                            t!("cli.render.hole_opened", run = run_id, name = name)
+                        );
                     }
                     E::HoleFilled { name } => {
-                        let _ = writeln!(out, "[workflow {run_id} hole 已填：{name}]");
+                        let _ = writeln!(
+                            out,
+                            "{}",
+                            t!("cli.render.hole_filled", run = run_id, name = name)
+                        );
                     }
                     E::Report { .. }
                     | E::Artifact { .. }
@@ -158,14 +199,18 @@ impl Renderer {
                 }
             }
             SessionUpdate::AgentMessage { meta, body } => {
-                let _ = writeln!(out, "\n[代理消息 ◀ {}：{body}]", meta.from_title);
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.agent_message", from = meta.from_title, body = body)
+                );
             }
             SessionUpdate::ToolProgress { .. } => {}
             SessionUpdate::ToolBatchStarted { .. } => {}
             SessionUpdate::GenerationStarted { .. } => state.calls.clear(),
             SessionUpdate::GenerationRetry { message, .. } => {
                 state.calls.clear();
-                let _ = writeln!(out, "\n[自动重试：本次生成的先前输出作废。{message}]");
+                let _ = writeln!(out, "{}", t!("cli.render.retry", message = message));
             }
             SessionUpdate::GuardNotice {
                 message, terminal, ..
@@ -173,14 +218,23 @@ impl Renderer {
                 if terminal {
                     state.calls.clear();
                 }
-                let _ = writeln!(out, "\n[保护机制：{message}]");
+                let _ = writeln!(out, "{}", t!("cli.render.guard", message = message));
             }
             SessionUpdate::PluginNotice {
                 plugin,
                 code,
                 message,
             } => {
-                let _ = writeln!(out, "\n[插件停用：{plugin}（{code}）{message}]");
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!(
+                        "cli.render.plugin_disabled",
+                        plugin = plugin,
+                        code = code,
+                        message = message
+                    )
+                );
             }
             SessionUpdate::AssistantDelta { delta, .. } => match delta {
                 AssistantDelta::Text { delta } => {
@@ -264,8 +318,12 @@ impl Renderer {
             SessionUpdate::PromptFinished { usage, .. } => {
                 let _ = writeln!(
                     out,
-                    "\n[用量：输入 {}，输出 {} token]",
-                    usage.input_tokens, usage.output_tokens
+                    "{}",
+                    t!(
+                        "cli.render.usage",
+                        input = usage.input_tokens,
+                        output = usage.output_tokens
+                    )
                 );
             }
             SessionUpdate::TodoChanged { phases } => {
@@ -275,29 +333,47 @@ impl Renderer {
                     .flat_map(|phase| &phase.items)
                     .filter(|item| item.status == moc_protocol::methods::TodoStatus::Completed)
                     .count();
-                let _ = writeln!(out, "\n[todo：{done}/{total} 项完成]");
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.todo", done = done, total = total)
+                );
             }
             SessionUpdate::TodoReminder { open_items, .. } => {
-                let _ = writeln!(out, "\n[TodoReminder：{open_items} 项待办仍未关闭]");
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.todo_reminder", open = open_items)
+                );
             }
             SessionUpdate::PlanSubmitted { plan } => {
                 let _ = writeln!(
                     out,
-                    "\n[计划已提交（v{}）：{} ({})，{}]\n{}",
-                    plan.version, plan.title, plan.plan_id, plan.path, plan.markdown
+                    "{}\n{}",
+                    t!(
+                        "cli.render.plan_submitted",
+                        version = plan.version,
+                        title = plan.title,
+                        id = plan.plan_id,
+                        path = plan.path
+                    ),
+                    plan.markdown
                 );
             }
             SessionUpdate::PlanUpdated { plan } => {
                 let _ = writeln!(
                     out,
-                    "\n[计划状态：{} ({}) → {}]",
-                    plan.title,
-                    plan.plan_id,
-                    plan_status_label(plan.status)
+                    "{}",
+                    t!(
+                        "cli.render.plan_status",
+                        title = plan.title,
+                        id = plan.plan_id,
+                        status = plan_status_label(plan.status).as_ref()
+                    )
                 );
             }
             SessionUpdate::ContextCompactionStarted => {
-                let _ = writeln!(out, "\n[上下文压缩中…]");
+                let _ = writeln!(out, "{}", t!("cli.render.compacting"));
             }
             SessionUpdate::ContextCompacted {
                 method,
@@ -308,17 +384,32 @@ impl Renderer {
                 if full {
                     let _ = writeln!(
                         out,
-                        "\n[上下文压缩：{method}，{tokens_before} → {tokens_after} token]"
+                        "{}",
+                        t!(
+                            "cli.render.compacted",
+                            method = method,
+                            before = tokens_before,
+                            after = tokens_after
+                        )
                     );
                 } else {
                     let _ = writeln!(
                         out,
-                        "\n[上下文裁剪：{tokens_before} → {tokens_after} token（未生成摘要）]"
+                        "{}",
+                        t!(
+                            "cli.render.trimmed",
+                            before = tokens_before,
+                            after = tokens_after
+                        )
                     );
                 }
             }
             SessionUpdate::ContextCompactionFailed { message } => {
-                let _ = writeln!(out, "\n[上下文压缩失败：{message}]");
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.compact_failed", message = message)
+                );
             }
             SessionUpdate::JobFinished { job } => {
                 let code = job
@@ -330,76 +421,113 @@ impl Renderer {
                     .unwrap_or_else(|| format!("{:?}", job.status));
                 let _ = writeln!(
                     out,
-                    "\n[后台任务 {} 结束：{} {}{code}，日志 {}]",
-                    job.job_id,
-                    first_line(&job.command),
-                    status_str,
-                    job.log_uri
+                    "{}",
+                    t!(
+                        "cli.render.job_finished",
+                        id = job.job_id,
+                        command = first_line(&job.command),
+                        status = status_str,
+                        code = code,
+                        log = job.log_uri
+                    )
                 );
             }
             SessionUpdate::UpstreamMismatch { fields, .. } => {
                 let detail = fields
                     .iter()
-                    .map(|mismatch| match mismatch.field {
-                        UpstreamField::Model => {
-                            format!("模型 {} → {}", mismatch.requested, mismatch.reported)
-                        }
-                        UpstreamField::Effort => {
-                            format!("推理强度 {} → {}", mismatch.requested, mismatch.reported)
-                        }
+                    .map(|mismatch| {
+                        let label = match mismatch.field {
+                            UpstreamField::Model => t!("cli.render.field_model"),
+                            UpstreamField::Effort => t!("cli.render.field_effort"),
+                        };
+                        t!(
+                            "cli.render.mismatch_field",
+                            label = label.as_ref(),
+                            requested = mismatch.requested,
+                            reported = mismatch.reported
+                        )
+                        .into_owned()
                     })
                     .collect::<Vec<_>>()
-                    .join("，");
-                let _ = writeln!(out, "\n[警告：上游实际配置与请求不一致：{detail}]");
+                    .join(t!("cli.repl.arg_sep").as_ref());
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.upstream_mismatch", detail = detail)
+                );
             }
             SessionUpdate::Error { message, .. } => {
-                let _ = writeln!(out, "\n[错误：{message}]");
+                let _ = writeln!(out, "{}", t!("cli.render.error", message = message));
             }
             SessionUpdate::EngineChanged { engine } => {
-                let _ = writeln!(out, "\n[引擎：{engine:?}]");
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.engine", engine = format!("{engine:?}"))
+                );
             }
             SessionUpdate::AutonomyChanged { autonomy } => {
-                let _ = writeln!(out, "\n[自主程度：{autonomy:?}]");
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.autonomy", autonomy = format!("{autonomy:?}"))
+                );
             }
             SessionUpdate::FastModeChanged { enabled } => {
                 let _ = writeln!(
                     out,
-                    "\n[Fast Mode：{}]",
-                    if enabled { "开启" } else { "关闭" }
+                    "{}",
+                    t!("cli.render.fast_mode", state = on_off(enabled).as_ref())
                 );
             }
             SessionUpdate::PlanModeChanged { active } => {
                 let _ = writeln!(
                     out,
-                    "\n[计划状态：{}]",
-                    if active { "开启" } else { "关闭" }
+                    "{}",
+                    t!("cli.render.plan_mode", state = on_off(active).as_ref())
                 );
             }
             SessionUpdate::ModelChanged { model } => {
-                let _ = writeln!(out, "\n[模型：{model}]");
+                let _ = writeln!(out, "{}", t!("cli.render.model", model = model));
             }
             SessionUpdate::PermissionChanged { permission } => {
-                let _ = writeln!(out, "\n[权限：{}]", permission.as_str());
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.permission", permission = permission.as_str())
+                );
             }
             SessionUpdate::TitleChanged { title } => {
-                let _ = writeln!(out, "\n[会话标题：{title}]");
+                let _ = writeln!(out, "{}", t!("cli.render.title", title = title));
             }
             SessionUpdate::PermissionRequested { tool_call_id, .. } => {
-                let _ = writeln!(out, "\n[等待工具授权：{tool_call_id}]");
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.permission_wait", id = tool_call_id)
+                );
             }
             SessionUpdate::GoalChanged { goal } => {
                 let Some(goal) = goal else {
-                    let _ = writeln!(out, "\n[目标已清除]");
+                    let _ = writeln!(out, "{}", t!("cli.render.goal_cleared"));
                     return;
                 };
                 let _ = writeln!(
                     out,
-                    "\n[目标：{} · 轮次 {}]",
-                    goal.objective, goal.rounds_started
+                    "{}",
+                    t!(
+                        "cli.render.goal",
+                        objective = goal.objective,
+                        rounds = goal.rounds_started
+                    )
                 );
             }
             SessionUpdate::GoalRoundMessage { meta, .. } => {
-                let _ = writeln!(out, "\n[目标续跑：第 {} 轮]", meta.round);
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.goal_round", round = meta.round)
+                );
             }
             SessionUpdate::PermissionResolved { .. }
             | SessionUpdate::PromptStarted { .. }
@@ -444,16 +572,21 @@ fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or_default().to_owned()
 }
 
-/// 计划状态的中文标签（非交互输出里用于标记状态迁移）。
-fn plan_status_label(status: moc_protocol::methods::PlanStatus) -> &'static str {
+/// 计划状态的本地化标签（非交互输出里用于标记状态迁移）。
+fn plan_status_label(status: moc_protocol::methods::PlanStatus) -> std::borrow::Cow<'static, str> {
     match status {
-        moc_protocol::methods::PlanStatus::Draft => "起草中",
-        moc_protocol::methods::PlanStatus::Submitted => "待审阅",
-        moc_protocol::methods::PlanStatus::Revised => "等待修订",
-        moc_protocol::methods::PlanStatus::Superseded => "已被取代",
-        moc_protocol::methods::PlanStatus::Approved => "已批准",
-        moc_protocol::methods::PlanStatus::Rejected => "已拒绝",
+        moc_protocol::methods::PlanStatus::Draft => t!("cli.render.plan.draft"),
+        moc_protocol::methods::PlanStatus::Submitted => t!("cli.render.plan.submitted"),
+        moc_protocol::methods::PlanStatus::Revised => t!("cli.render.plan.revised"),
+        moc_protocol::methods::PlanStatus::Superseded => t!("cli.render.plan.superseded"),
+        moc_protocol::methods::PlanStatus::Approved => t!("cli.render.plan.approved"),
+        moc_protocol::methods::PlanStatus::Rejected => t!("cli.render.plan.rejected"),
     }
+}
+
+/// 开/关的本地化短词（Fast Mode、计划模式等开关行共用）。
+fn on_off(enabled: bool) -> std::borrow::Cow<'static, str> {
+    if enabled { t!("common.on") } else { t!("common.off") }
 }
 
 /// 行式 REPL 的审批输入：`y` 批准 / `n [反馈]` 拒绝 / `role=模型` 覆盖后再 y。
@@ -469,7 +602,7 @@ fn workflow_decision_prompt(
         return WorkflowDecision::Reject { feedback: None };
     };
     loop {
-        let _ = write!(out, "审批 [y/n/<role=模型>]：");
+        let _ = write!(out, "{}", t!("cli.render.approve_prompt"));
         let _ = out.flush();
         // handle() 在 runtime worker 上跑：直接 blocking_recv 会 panic——用
         // block_in_place 让出 worker 再阻塞取行（repl 是 multi_thread）。
@@ -489,7 +622,7 @@ fn workflow_decision_prompt(
             }
             DecisionParse::Override(role, model) => {
                 role_models.insert(role, model);
-                let _ = writeln!(out, "已记录覆盖；再输入 y 批准。");
+                let _ = writeln!(out, "{}", t!("cli.render.override_recorded"));
             }
         }
     }

@@ -460,7 +460,7 @@ const TOKEN_UNITS: [(u64, &str); 3] = [(1_000, "k"), (1_000_000, "m"), (1_000_00
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 struct Activity {
-    label: &'static str,
+    label: std::borrow::Cow<'static, str>,
     color: Color,
 }
 

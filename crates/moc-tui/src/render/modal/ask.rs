@@ -26,6 +26,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Padding;
 use ratatui::widgets::Paragraph;
+use rust_i18n::t;
 
 /// 提问卡片：渲染的同时把每个选项（含自定义行）的命中矩形记到 `ask_option_hits`，
 /// 鼠标点选据此换算。带选项预览时放宽到 [`overlay::CARD_WIDE_MAX_WIDTH`]。
@@ -154,18 +155,20 @@ pub(super) fn draw_ask_strip(frame: &mut Frame, app: &mut App) {
     }
     let confirming = *question >= params.questions.len();
     let header = if confirming {
-        "确认回答".to_string()
+        t!("tui.ask.confirm_answers").into_owned()
     } else {
         params
             .questions
             .get(*question)
             .and_then(|entry| entry.header.clone())
-            .unwrap_or_else(|| "提问".into())
+            .unwrap_or_else(|| t!("tui.ask.question").into_owned())
     };
     // 内宽 = 边框 2 + 左右内边距 2。
     let inner = usize::from(area.width.saturating_sub(4));
-    let (right, right_keys) =
-        labels::hint_layout(&[("tab", "展开作答"), ("esc", "取消")], usize::MAX);
+    let (right, right_keys) = labels::hint_layout(
+        &[("tab", t!("tui.hint.expand_answer")), ("esc", t!("tui.hint.cancel"))],
+        usize::MAX,
+    );
     let right_width = str_width(&right);
     let mut spans: Vec<Span<'static>> = vec![Span::styled(
         "▸ ",
@@ -185,9 +188,19 @@ pub(super) fn draw_ask_strip(frame: &mut Frame, app: &mut App) {
                             .is_some_and(|answer| !answer.text.is_empty())
                 })
                 .count();
-            format!("已答 {answered}/{} · ", params.questions.len())
+            t!(
+                "tui.ask.answered_fmt",
+                answered = answered,
+                total = params.questions.len()
+            )
+            .into_owned()
         } else {
-            format!("问题 {}/{} · ", question + 1, params.questions.len())
+            t!(
+                "tui.ask.question_fmt",
+                current = question + 1,
+                total = params.questions.len()
+            )
+            .into_owned()
         };
         used += str_width(&counter);
         spans.push(Span::styled(counter, Style::new().fg(theme.gray)));
@@ -276,7 +289,10 @@ pub(super) fn ask_layout(
                 || custom
                     .get(index)
                     .is_some_and(|answer| !answer.text.is_empty());
-            let header = entry.header.clone().unwrap_or_else(|| "提问".into());
+            let header = entry
+                .header
+                .clone()
+                .unwrap_or_else(|| t!("tui.ask.question").into_owned());
             let label = truncate(format!("{}. {header}", index + 1), ASK_NAV_ITEM_MAX).into_owned();
             let item_width = str_width(&label) + usize::from(answered) * 2;
             // 放不下的问题收成一个 `…`；连 `…` 都放不下就不画，导航条绝不越过正文宽度。
@@ -309,8 +325,8 @@ pub(super) fn ask_layout(
             col += item_width;
         }
         // 导航条末尾是确认页：越过最后一问强制经过，点击或 → 直达。
-        let confirm_label = "确认";
-        let confirm_width = str_width(confirm_label);
+        let confirm_label = t!("tui.ask.confirm");
+        let confirm_width = str_width(&confirm_label);
         let separator = str_width(labels::SEP);
         if col + separator + confirm_width <= width {
             spans.push(Span::styled(labels::SEP, Style::new().fg(theme.gray_dim)));
@@ -434,7 +450,10 @@ pub(super) fn ask_layout(
             ),
         ];
         if recommended {
-            spans.push(Span::styled("（推荐）", Style::new().fg(theme.gray)));
+            spans.push(Span::styled(
+                t!("tui.ask.recommended"),
+                Style::new().fg(theme.gray),
+            ));
         }
         // 单栏时聚焦行补满正文宽度，选中色带右缘整齐；双栏左栏由 join_columns 补齐。
         let mut row = Line::from(spans);
@@ -500,9 +519,10 @@ pub(super) fn ask_layout(
     option_hits.push((current.options.len(), base + list.len()));
     list.push(Line::from(Span::styled(
         truncate(
-            format!(
-                " {} ✎ 自定义：{custom_display}",
-                if editing_here { "❯" } else { " " }
+            t!(
+                "tui.ask.custom_fmt",
+                marker = if editing_here { "❯" } else { " " },
+                text = custom_display.as_str()
             ),
             width,
         )
@@ -572,15 +592,15 @@ pub(super) fn ask_layout(
     // 提示条：方向键、数字键属常规交互不教，只留反直觉的键；
     // 多选最后一问 enter 从切勾变成进确认页，提示如实切换。窄屏先丢跳过/换题。
     let last = *question + 1 >= params.questions.len();
-    let mut items: Vec<(&str, &str)> = vec![("shift+x", "跳过")];
+    let mut items: Vec<(&str, std::borrow::Cow<'_, str>)> = vec![("shift+x", t!("tui.hint.skip"))];
     if params.questions.len() > 1 {
-        items.push(("tab", "换题"));
+        items.push(("tab", t!("tui.hint.next_question")));
     }
-    items.push(("esc", "折叠问题卡"));
+    items.push(("esc", t!("tui.hint.collapse_card")));
     match (current.multi, last) {
-        (true, true) => items.extend([("space", "勾选"), ("enter", "确认")]),
-        (true, false) => items.push(("space/enter", "勾选")),
-        (false, _) => items.push(("enter", "选择")),
+        (true, true) => items.extend([("space", t!("tui.hint.check")), ("enter", t!("tui.hint.confirm"))]),
+        (true, false) => items.push(("space/enter", t!("tui.hint.check"))),
+        (false, _) => items.push(("enter", t!("tui.hint.choose"))),
     }
     AskLayout {
         lines,
@@ -623,14 +643,16 @@ pub(super) fn scroll_window(
     let offset = scroll.min(scroll_window_max(total, capacity));
     let mut out: Vec<Line<'static>> = rows.into_iter().skip(offset).take(visible).collect();
     if capacity > 1 {
-        let status = format!(
-            "{} {}-{}/{total} 行{}{}",
-            labels::OMITTED,
-            offset + 1,
-            offset + visible,
-            labels::SEP,
-            labels::hints(&[("pgup/pgdn", "滚动")], usize::MAX),
-        );
+        let status = t!(
+            "tui.ask.scroll_status_fmt",
+            omitted = labels::OMITTED,
+            from = offset + 1,
+            to = offset + visible,
+            total = total,
+            sep = labels::SEP,
+            hints = labels::hints(&[("pgup/pgdn", t!("tui.hint.scroll"))], usize::MAX)
+        )
+        .into_owned();
         out.push(Line::from(Span::styled(
             truncate(status, width).into_owned(),
             Style::new().fg(theme.gray_dim),
@@ -642,7 +664,7 @@ pub(super) fn scroll_window(
 /// 选项列表窗口的边缘指示：上沿 `▲ 还有 N 项`、下沿 `▼ 还有 N 项`。
 pub(super) fn scroll_edge_hint(arrow: char, hidden: usize, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(
-        format!("   {arrow} 还有 {hidden} 项"),
+        t!("tui.ask.more_items_fmt", arrow = arrow, count = hidden).into_owned(),
         Style::new().fg(theme.gray_dim),
     ))
 }
@@ -718,7 +740,7 @@ pub(super) fn ask_confirm_layout(
     };
     lines.push(Line::from(String::new()));
     lines.push(Line::from(Span::styled(
-        "确认回答",
+        t!("tui.ask.confirm_answers"),
         Style::new()
             .fg(theme.gray_bright)
             .add_modifier(Modifier::BOLD),
@@ -751,7 +773,7 @@ pub(super) fn ask_confirm_layout(
         }
         if parts.is_empty() {
             spans.push(Span::styled(
-                "未回答",
+                t!("tui.ask.unanswered"),
                 Style::new()
                     .fg(theme.accent_warning)
                     .add_modifier(Modifier::BOLD),
@@ -771,9 +793,9 @@ pub(super) fn ask_confirm_layout(
         lines,
         footer: overlay::footer(
             &[
-                ("shift+x", "跳过"),
-                ("esc", "折叠问题卡"),
-                ("enter", "确认提交"),
+                ("shift+x", t!("tui.hint.skip")),
+                ("esc", t!("tui.hint.collapse_card")),
+                ("enter", t!("tui.hint.submit")),
             ],
             width,
             theme,

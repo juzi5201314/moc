@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { WorkflowModelSelect } from "@/components/workflow/workflow-model-select";
+import { type MsgKey, useT } from "@/lib/i18n";
 import type { WorkflowApproval } from "@/protocol/types";
 import { useTranscript } from "@/store/transcript";
 import { workflowApprove } from "@/store/workflow";
@@ -34,10 +35,10 @@ export type WorkflowApprovalDialogProps = {
   onOpenChange: (open: boolean) => void;
 };
 
-const KIND_LABEL: Record<WorkflowApproval["kind"], string> = {
-  launch: "新建 run",
-  amend: "amend（增量修改）",
-  hole_fill: "hole 填充（只列新增命令）",
+const KIND_LABEL: Record<WorkflowApproval["kind"], MsgKey> = {
+  launch: "wfa.launch",
+  amend: "wfa.amend",
+  hole_fill: "wfa.hole_fill",
 };
 
 export function WorkflowApprovalDialog({
@@ -46,6 +47,7 @@ export function WorkflowApprovalDialog({
   open,
   onOpenChange,
 }: WorkflowApprovalDialogProps) {
+  const t = useT();
   const readOnly = useTranscript((s) => s.bySession[sessionId]?.readOnly ?? true);
   const [roleModels, setRoleModels] = useState<Record<string, string>>({});
   const [refMap, setRefMap] = useState<Record<string, string>>({});
@@ -83,7 +85,9 @@ export function WorkflowApprovalDialog({
     void workflowApprove(sessionId, approval.request_id, decision)
       .then(() => onOpenChange(false))
       .catch((error) =>
-        toast.error(`审批回传失败：${error instanceof Error ? error.message : error}`),
+        toast.error(
+          t("wfa.failed", { error: error instanceof Error ? error.message : String(error) }),
+        ),
       )
       .finally(() => setPending(false));
   };
@@ -92,7 +96,7 @@ export function WorkflowApprovalDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>workflow 审批 · {KIND_LABEL[approval.kind]}</DialogTitle>
+          <DialogTitle>{t("wfa.title", { kind: t(KIND_LABEL[approval.kind]) })}</DialogTitle>
           <DialogDescription>{approval.run_id}</DialogDescription>
         </DialogHeader>
 
@@ -124,7 +128,7 @@ export function WorkflowApprovalDialog({
               </div>
             );
           })}
-          {refs.length > 0 && <div className="text-ui text-muted-foreground">model() 重映射</div>}
+          {refs.length > 0 && <div className="text-ui text-muted-foreground">{t("wfa.remap")}</div>}
           {refs.map((ref) => {
             const id = ref.ref_id ?? "";
             return (
@@ -143,7 +147,7 @@ export function WorkflowApprovalDialog({
         {commands.length > 0 && (
           <div className="space-y-1">
             <div className="text-ui text-muted-foreground">
-              {approval.kind === "hole_fill" ? "新增命令" : "world.run 命令集"}
+              {approval.kind === "hole_fill" ? t("wfa.new_commands") : t("wfa.commands")}
             </div>
             {commands.map((command) => (
               <div key={command} className="text-ui text-warn">
@@ -161,7 +165,7 @@ export function WorkflowApprovalDialog({
           <Textarea
             value={feedback}
             onChange={(event) => setFeedback(event.target.value)}
-            placeholder="拒绝反馈（可选，回传给模型）"
+            placeholder={t("wfa.reject_ph")}
             rows={3}
             disabled={readOnly || pending}
           />
@@ -171,14 +175,14 @@ export function WorkflowApprovalDialog({
           {rejecting ? (
             <>
               <Button variant="ghost" onClick={() => setRejecting(false)} disabled={pending}>
-                取消
+                {t("common.cancel")}
               </Button>
               <Button
                 variant="destructive"
                 onClick={() => decide(false)}
                 disabled={readOnly || pending}
               >
-                确认拒绝
+                {t("wfa.confirm_reject")}
               </Button>
             </>
           ) : (
@@ -188,10 +192,10 @@ export function WorkflowApprovalDialog({
                 onClick={() => setRejecting(true)}
                 disabled={readOnly || pending}
               >
-                拒绝
+                {t("wfa.reject")}
               </Button>
               <Button onClick={() => decide(true)} disabled={readOnly || pending}>
-                批准
+                {t("wfa.approve")}
               </Button>
             </>
           )}

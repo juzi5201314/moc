@@ -1,5 +1,6 @@
 //! 默认启用的流式循环检测；所有窗口都有固定上界，不保存整份生成历史。
 
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
 use crate::StreamEvent;
@@ -36,27 +37,38 @@ pub enum LoopChannel {
 }
 
 impl LoopChannel {
-    fn label(self) -> &'static str {
+    fn label(self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::Text => "正文",
-            Self::Reasoning => "思考",
-            Self::Arguments => "工具参数",
-            Self::Tool => "工具",
+            Self::Text => t!("llm.err.channel_text"),
+            Self::Reasoning => t!("llm.err.channel_reasoning"),
+            Self::Arguments => t!("llm.err.channel_arguments"),
+            Self::Tool => t!("llm.err.channel_tool"),
         }
     }
 }
 
 /// 重复内容检测命中；提示落地由调用方决定，传输层不得按失败重试。
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("检测到{channel}循环：{detail}")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoopViolation {
     /// 命中的通道。
-    pub channel: &'static str,
+    pub channel: std::borrow::Cow<'static, str>,
     /// 命中通道的分类，供调用方决定是终止还是纠偏。
     pub kind: LoopChannel,
     /// 命中描述，用于终止通知。
     pub detail: String,
 }
+
+impl std::fmt::Display for LoopViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            t!("llm.err.loop_detected", channel = self.channel.as_ref(), detail = self.detail)
+        )
+    }
+}
+
+impl std::error::Error for LoopViolation {}
 
 impl LoopViolation {
     pub fn new(kind: LoopChannel, detail: String) -> Self {
@@ -340,7 +352,9 @@ impl ExactCycle {
             if count < repeats || period * count < chars {
                 continue;
             }
-            return Some(format!("同一段 {period} 字符内容连续重复 {count} 次"));
+            return Some(
+                t!("llm.err.period_repeat", period = period, count = count).into_owned(),
+            );
         }
         None
     }

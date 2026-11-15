@@ -1,5 +1,7 @@
 //! 会话协议通知到界面状态的投影。
 
+use rust_i18n::t;
+
 use super::agents::load_subagents;
 use super::context::refresh_context;
 use super::plan::open_plan_review;
@@ -177,7 +179,7 @@ pub(super) fn apply_update_and_refresh(
         let client = connection.client.clone();
         let events = app.events.clone();
         let (session_id, engine) = (session.id.clone(), session.engine);
-        app.set_notice("unattended：已自动批准计划（压缩并执行）");
+        app.set_notice(t!("tui.event.unattended_approved").into_owned());
         tokio::spawn(async move {
             let result = client
                 .call::<SessionPlanApprove>(SessionPlanApproveParams {
@@ -210,9 +212,9 @@ pub(super) fn compaction_done_note(full: bool, tokens_before: u64, tokens_after:
     let before = crate::render::format_tokens(tokens_before);
     let after = crate::render::format_tokens(tokens_after);
     if full {
-        format!("上下文已压缩：{before} → {after}")
+        t!("tui.event.compacted_fmt", before = before, after = after).into_owned()
     } else {
-        format!("上下文已裁剪：{before} → {after}（未生成摘要）")
+        t!("tui.event.trimmed_fmt", before = before, after = after).into_owned()
     }
 }
 
@@ -302,7 +304,10 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
                 plugin_notice_note(&plugin, &code, &message),
                 NoteTone::Error,
             );
-            app.set_warning(format!("插件 `{plugin}` 已停用（{code}）"));
+            app.set_warning(
+                t!("tui.event.plugin_disabled_fmt", plugin = plugin.as_str(), code = code.as_str())
+                    .into_owned(),
+            );
         }
         SessionUpdate::AssistantDelta { delta, .. } => match delta {
             moc_protocol::methods::AssistantDelta::Text { delta } => {
@@ -345,7 +350,7 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
                     },
                     &delta,
                     128 * 1024,
-                    "\n\n[思考内容过长，已停止在界面展开]\n",
+                    &t!("tui.event.thinking_truncated").into_owned(),
                 );
             }
             moc_protocol::methods::AssistantDelta::Usage { usage } => app.apply_usage(usage),
@@ -414,9 +419,7 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
                 session.engine = engine;
             }
             if engine == SessionEngine::ClmExperimental {
-                app.set_notice(
-                    "CLM 实验引擎已启用：模型将维护实时上下文；本会话首次请求后锁定引擎",
-                );
+                app.set_notice(t!("tui.event.clm_enabled").into_owned());
             }
         }
         SessionUpdate::AutonomyChanged { autonomy } => {
@@ -477,7 +480,10 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
             NoteTone::Info,
         ),
         SessionUpdate::ContextCompactionFailed { message } => {
-            app.finish_compaction(format!("上下文压缩失败：{message}"), NoteTone::Error);
+            app.finish_compaction(
+                t!("tui.steer.compact_failed_fmt", err = message.as_str()).into_owned(),
+                NoteTone::Error,
+            );
         }
         SessionUpdate::JobStarted { job } | SessionUpdate::JobUpdated { job } => {
             // 前台 bash 任务会同时发送 JobStarted 和 ToolStarted；
@@ -515,9 +521,9 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
                 entry.touch();
             }
             if job.origin.is_background() {
-                let code = job
-                    .exit_code
-                    .map_or_else(String::new, |code| format!("（退出码 {code}）"));
+                let code = job.exit_code.map_or_else(String::new, |code| {
+                    t!("tui.event.exit_code_fmt", code = code).into_owned()
+                });
                 // 与 WebUI 同口径：只有干净退出（exit 0）算普通信息；
                 // 非零退出、被终止、超时都值得留意。
                 let tone = if job.exit_code == Some(0) {
@@ -525,7 +531,15 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
                 } else {
                     NoteTone::Warn
                 };
-                app.push_note(format!("后台任务结束：{}{code}", job.command), tone);
+                app.push_note(
+                    t!(
+                        "tui.event.job_done_fmt",
+                        cmd = job.command.as_str(),
+                        code = code.as_str()
+                    )
+                    .into_owned(),
+                    tone,
+                );
             }
         }
         SessionUpdate::PermissionRequested { .. } => {}
@@ -554,10 +568,16 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
             app.finish_retry_wait();
             app.discard_generation();
             app.push_note(
-                format!(
-                    "错误：{message}{}",
-                    if retryable { "（可以重试）" } else { "" }
-                ),
+                t!(
+                    "tui.event.error_fmt",
+                    message = message.as_str(),
+                    retryable = if retryable {
+                        t!("tui.event.retryable")
+                    } else {
+                        "".into()
+                    }
+                )
+                .into_owned(),
                 NoteTone::Error,
             );
         }

@@ -11,6 +11,7 @@ use super::server_address;
 use super::tool_subgroup_title;
 use super::tool_title;
 use moc_protocol::ConfigField;
+use rust_i18n::t;
 use serde_json::Value;
 
 impl SettingsPanel {
@@ -157,8 +158,9 @@ impl SettingsPanel {
                     depth: u8::try_from(child_depth).unwrap_or(u8::MAX),
                     kind: RowKind::Group(Group {
                         key: adv_key,
-                        title: "高级选项".into(),
-                        detail: format!("{} 项", node.advanced_fields.len()),
+                        title: t!("tui.settings.advanced_title").into_owned(),
+                        detail: t!("tui.settings.item_count", count = node.advanced_fields.len())
+                            .into_owned(),
                         grouping,
                         path: None,
                     }),
@@ -179,14 +181,7 @@ impl SettingsPanel {
         if field.path.len() >= 2 && field.path[0] == "models" && field.path[1] == "fusion" {
             return false;
         }
-        let tab = TABS[self.tab];
-        match tab {
-            "模型角色" => {
-                field.tab == "模型" && field.path.first().is_some_and(|root| root != "providers")
-            }
-            "Skills" => field.tab == "技能",
-            _ => field.tab == tab,
-        }
+        TABS[self.tab] == super::tab_of(&field.path)
     }
 
     /// 字段所属分组链：`(分组键, 标题, 分组路径, 可删除路径)`。
@@ -227,13 +222,13 @@ impl SettingsPanel {
             }
             Some("models") if second == Some("roles") => chain.push((
                 "models/roles".into(),
-                "模型角色".into(),
+                t!("tui.nav.models_roles").into_owned(),
                 vec!["models".into(), "roles".into()],
                 None,
             )),
             Some("agents") => chain.push((
                 "agents".into(),
-                "子代理".into(),
+                t!("tui.nav.agents").into_owned(),
                 vec!["agents".into()],
                 None,
             )),
@@ -243,7 +238,7 @@ impl SettingsPanel {
                 };
                 chain.push((
                     format!("defaults/models/{pattern}"),
-                    format!("默认 {pattern}"),
+                    t!("tui.nav.default_fmt", pattern = pattern.as_str()).into_owned(),
                     vec!["defaults".into(), "models".into(), pattern.clone()],
                     Some(vec!["defaults".into(), "models".into(), pattern.clone()]),
                 ));
@@ -290,39 +285,39 @@ impl SettingsPanel {
             }
             Some("web_search") => chain.push((
                 "web_search".into(),
-                "网络搜索".into(),
+                t!("tui.nav.web_search").into_owned(),
                 vec!["web_search".into()],
                 None,
             )),
             Some("web_fetch") => chain.push((
                 "web_fetch".into(),
-                "网页抓取".into(),
+                t!("tui.nav.web_fetch").into_owned(),
                 vec!["web_fetch".into()],
                 None,
             )),
             Some("workspace") => chain.push((
                 "workspace".into(),
-                "工作区".into(),
+                t!("tui.nav.workspace").into_owned(),
                 vec!["workspace".into()],
                 None,
             )),
             Some("sandbox") => chain.push((
                 "sandbox".into(),
-                "沙盒安全".into(),
+                t!("tui.nav.sandbox").into_owned(),
                 vec!["sandbox".into()],
                 None,
             )),
             Some("compaction") => {
                 chain.push((
                     "compaction".into(),
-                    "上下文压缩".into(),
+                    t!("tui.nav.compaction").into_owned(),
                     vec!["compaction".into()],
                     None,
                 ));
                 if second == Some("shake") && path.len() >= 3 {
                     chain.push((
                         "compaction/shake".into(),
-                        "本地修剪".into(),
+                        t!("tui.nav.shake").into_owned(),
                         vec!["compaction".into(), "shake".into()],
                         None,
                     ));
@@ -331,14 +326,14 @@ impl SettingsPanel {
             Some("session") => {
                 chain.push((
                     "session".into(),
-                    "会话存储".into(),
+                    t!("tui.nav.session").into_owned(),
                     vec!["session".into()],
                     None,
                 ));
                 if second == Some("retention") && path.len() >= 3 {
                     chain.push((
                         "session/retention".into(),
-                        "会话保留".into(),
+                        t!("tui.nav.retention").into_owned(),
                         vec!["session".into(), "retention".into()],
                         None,
                     ));
@@ -346,13 +341,13 @@ impl SettingsPanel {
             }
             Some("features") => chain.push((
                 "features".into(),
-                "实验特性".into(),
+                t!("tui.nav.features").into_owned(),
                 vec!["features".into()],
                 None,
             )),
             Some("limits") => chain.push((
                 "limits".into(),
-                "请求与循环限制".into(),
+                t!("tui.nav.limits").into_owned(),
                 vec!["limits".into()],
                 None,
             )),
@@ -373,7 +368,12 @@ impl SettingsPanel {
                     Some(vec!["mcp".into(), "servers".into(), name.clone()]),
                 ));
             }
-            Some("mcp") => chain.push(("mcp".into(), "MCP 服务".into(), vec!["mcp".into()], None)),
+            Some("mcp") => chain.push((
+                "mcp".into(),
+                t!("tui.nav.mcp").into_owned(),
+                vec!["mcp".into()],
+                None,
+            )),
             Some("plugins") if path.len() >= 4 && second.is_some() => {
                 let plugin = path[1].clone();
                 chain.push((
@@ -385,13 +385,13 @@ impl SettingsPanel {
             }
             Some("plugins") => chain.push((
                 "plugins".into(),
-                "插件系统".into(),
+                t!("tui.nav.plugins").into_owned(),
                 vec!["plugins".into()],
                 None,
             )),
             Some("tui") if second == Some("keybindings") => chain.push((
                 "tui/keybindings".into(),
-                "快捷键".into(),
+                t!("tui.nav.keybindings").into_owned(),
                 vec!["tui".into(), "keybindings".into()],
                 None,
             )),
@@ -412,9 +412,9 @@ impl SettingsPanel {
                     .and_then(Value::as_object)
                     .map_or(0, serde_json::Map::len);
                 if count > 0 {
-                    format!("{count} 个模型")
+                    t!("tui.nav.models_count", count = count).into_owned()
                 } else {
-                    "尚未添加模型".into()
+                    t!("tui.nav.no_models").into_owned()
                 }
             }
             [root, provider, models, model] if root == "providers" && models == "models" => {
@@ -427,7 +427,7 @@ impl SettingsPanel {
                     _ => String::new(),
                 }
             }
-            [root, ..] if root == "defaults" => "模型默认值".into(),
+            [root, ..] if root == "defaults" => t!("tui.nav.model_defaults").into_owned(),
             _ => String::new(),
         }
     }
@@ -445,19 +445,23 @@ impl SettingsPanel {
         };
         let mut parts = Vec::new();
         if let Some(window) = value.get("context_window").and_then(Value::as_u64) {
-            parts.push(format!("上下文 {}", crate::render::format_tokens(window)));
+            parts.push(
+                t!("tui.nav.ctx_fmt", v = crate::render::format_tokens(window)).into_owned(),
+            );
         }
         if let Some(output) = value.get("max_output_tokens").and_then(Value::as_u64) {
-            parts.push(format!("回复 {}", crate::render::format_tokens(output)));
+            parts.push(
+                t!("tui.nav.out_fmt", v = crate::render::format_tokens(output)).into_owned(),
+            );
         }
         if value
             .get("reasoning")
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
-            parts.push("支持思考".into());
+            parts.push(t!("tui.nav.thinking").into_owned());
         }
-        parts.join(" · ")
+        parts.join(&t!("tui.nav.sep"))
     }
 
     pub fn is_expanded(&self, key: &str, depth: usize) -> bool {

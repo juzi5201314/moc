@@ -11,6 +11,7 @@
 //! 写成 `7648`）；只有「和 / 差 / 刻度」这种派生量才用 [`format_value`]。
 
 use moc_core::chart::{ChartKind, ChartSpec, Point, Series};
+use rust_i18n::t;
 
 use super::ChartLayout;
 use super::fonts::Fonts;
@@ -395,11 +396,11 @@ impl Painter<'_> {
         if !scale.is_log() {
             return;
         }
-        let note = "对数刻度";
-        let width = self.text_width(note);
+        let note = t!("tui.chart.log_note");
+        let width = self.text_width(&note);
         let right = self.w().saturating_sub(PAD_X);
         if legend_end.saturating_add(GAP) < right.saturating_sub(width) {
-            self.text_end(0, right, note, self.palette.gray_dim);
+            self.text_end(0, right, &note, self.palette.gray_dim);
         }
     }
 }

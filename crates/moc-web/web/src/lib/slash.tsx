@@ -4,6 +4,7 @@
 
 import { toast } from "sonner";
 import { AUTONOMY } from "@/lib/autonomy";
+import { type MsgKey, t } from "@/lib/i18n";
 import { applySessionEngine, cycleSessionEngine } from "@/lib/shortcuts";
 import { rpc } from "@/protocol/client";
 import type {
@@ -33,10 +34,10 @@ import { useTranscript } from "@/store/transcript";
 import { openSettings, useUi } from "@/store/ui";
 import { useWorkflow, workflowActivate, workflowRuns } from "@/store/workflow";
 
-const PERMISSION_LABEL: Record<SessionPermission, string> = {
-  full: "完全访问",
-  workspace: "工作区可写",
-  workspace_only: "仅限工作区",
+const PERMISSION_LABEL: Record<SessionPermission, MsgKey> = {
+  full: "perm.full",
+  workspace: "perm.workspace",
+  workspace_only: "perm.workspace_only",
 };
 const PERMISSION_MODES: SessionPermission[] = ["full", "workspace", "workspace_only"];
 
@@ -124,23 +125,23 @@ export function runSlash(
   const composer = useComposer.getState();
 
   if (useUi.getState().skillsWorking) {
-    toast("正在维护技能摘要，请等待完成或取消");
+    toast(t("slash.skills_busy"));
     return true;
   }
   if (flagDisabled(command, features)) {
-    toast(`/${command.name} 依赖的特性 ${command.flag} 已禁用`);
+    toast(t("slash.flag_disabled", { name: command.name, flag: command.flag ?? "" }));
     return true;
   }
   if (command.needsSession && sessionId === "draft-session") {
-    toast(`/${command.name} 需要先发送第一条消息`);
+    toast(t("slash.needs_session", { name: command.name }));
     return true;
   }
   if (command.availableDuringTask === false && view?.running) {
-    toast(`正在运行中，暂时不能执行 /${command.name}`);
+    toast(t("slash.running", { name: command.name }));
     return true;
   }
   if (!command.plugin && command.usage?.startsWith("<") && !args) {
-    toast(`用法：/${command.name} ${command.usage}`);
+    toast(t("slash.usage", { cmd: `/${command.name} ${command.usage}` }));
     return true;
   }
   composer.clearDraft(sessionId);
@@ -158,12 +159,14 @@ export function runSlash(
           description: output ? (
             <pre className="max-h-60 overflow-auto whitespace-pre-wrap font-sans">{output}</pre>
           ) : (
-            "已执行"
+            t("slash.done")
           ),
           duration: output ? 12000 : 3000,
         });
       })
-      .catch((error) => toast.error(`/${command.name} 执行失败：${errorText(error)}`));
+      .catch((error) =>
+        toast.error(t("slash.exec_failed", { name: command.name, error: errorText(error) })),
+      );
     return true;
   }
 
@@ -171,7 +174,7 @@ export function runSlash(
     case "debuginfo":
     case "session": {
       if (args) {
-        toast(`用法：/${command.name}`);
+        toast(t("slash.usage", { cmd: `/${command.name}` }));
         break;
       }
       const method = command.name === "debuginfo" ? "session/debug_info" : "session/inspect";
@@ -189,7 +192,9 @@ export function runSlash(
       void rpc
         .call<string>(method, { session_id: sessionId })
         .then((text) => note("info", text))
-        .catch((error) => note("error", `/${command.name} 执行失败：${errorText(error)}`));
+        .catch((error) =>
+          note("error", t("slash.exec_failed", { name: command.name, error: errorText(error) })),
+        );
       break;
     }
     case "compact-skills": {
@@ -204,7 +209,7 @@ export function runSlash(
         } as Record<string, SkillsCompactAction>
       )[normalized];
       if (!action) {
-        toast.error("用法：/compact-skills [compact | force | cleanup [all]]");
+        toast.error(t("slash.usage", { cmd: "/compact-skills [compact | force | cleanup [all]]" }));
         break;
       }
       // 请求中的结果/错误由行内状态显示；这里只提示启动前被拒绝的情况。
@@ -220,7 +225,7 @@ export function runSlash(
     case "close":
       // 与标签关闭同一套：运行中先 cancel 等收尾，再 unload 放租约、关标签。
       void closeSession(sessionId).catch((error) =>
-        toast.error(`关闭会话失败：${errorText(error)}`),
+        toast.error(t("slash.close_failed", { error: errorText(error) })),
       );
       break;
     case "plan": {
@@ -228,9 +233,9 @@ export function runSlash(
       void togglePlanMode(sessionId, active)
         .then(() => {
           if (args) void sendPrompt(sessionId, toInput(args, []));
-          else toast(active ? "已进入计划状态" : "已退出计划状态");
+          else toast(active ? t("slash.plan_on") : t("slash.plan_off"));
         })
-        .catch((error) => toast.error(`切换计划状态失败：${errorText(error)}`));
+        .catch((error) => toast.error(t("slash.plan_failed", { error: errorText(error) })));
       break;
     }
     case "confirm-plan": {
@@ -238,7 +243,7 @@ export function runSlash(
         (left, right) => (right.version ?? 0) - (left.version ?? 0),
       )[0];
       if (!plan) {
-        toast("还没有可审阅的计划");
+        toast(t("slash.no_plan"));
         break;
       }
       openFile(sessionId, { kind: "resource", uri: plan.path });
@@ -250,12 +255,16 @@ export function runSlash(
         ? AUTONOMY.find((item) => item.id === args)
         : AUTONOMY[(index + 1) % AUTONOMY.length];
       if (!next) {
-        toast(`用法：/autonomy ${command.usage}`);
+        toast(t("slash.usage", { cmd: `/autonomy ${command.usage}` }));
         break;
       }
       void setSessionAutonomy(sessionId, next.id)
-        .then(() => toast(`自主程度：${next.label}`, { description: next.description }))
-        .catch((error) => toast.error(`切换自主程度失败：${errorText(error)}`));
+        .then(() =>
+          toast(t("slash.autonomy_set", { label: t(next.label) }), {
+            description: t(next.description),
+          }),
+        )
+        .catch((error) => toast.error(t("slash.autonomy_failed", { error: errorText(error) })));
       break;
     }
     case "permission": {
@@ -265,29 +274,36 @@ export function runSlash(
           sessionId === "draft-session"
             ? useSessions.getState().draftSession?.permission
             : view?.info.permission;
-        toast(`当前权限：${current ? PERMISSION_LABEL[current] : "core 默认"}`, {
-          description: `用法：/permission ${command.usage}`,
-        });
+        toast(
+          t("slash.perm_current", {
+            label: current ? t(PERMISSION_LABEL[current]) : t("slash.perm_default"),
+          }),
+          {
+            description: t("slash.usage", { cmd: `/permission ${command.usage}` }),
+          },
+        );
         break;
       }
       if (rest === "clear") {
         if (sessionId === "draft-session" || !view?.info.permission) {
-          toast("新会话还没有沙盒授权");
+          toast(t("slash.perm_none"));
           break;
         }
         void setSessionPermission(sessionId, view.info.permission, true)
-          .then(() => toast("已清空本会话沙盒授权"))
-          .catch((error) => toast.error(`清空授权失败：${errorText(error)}`));
+          .then(() => toast(t("slash.perm_cleared")))
+          .catch((error) => toast.error(t("slash.perm_clear_failed", { error: errorText(error) })));
         break;
       }
       const mode = rest === "workspace-only" ? "workspace_only" : rest;
       if (!PERMISSION_MODES.includes(mode as SessionPermission)) {
-        toast(`用法：/permission ${command.usage}`);
+        toast(t("slash.usage", { cmd: `/permission ${command.usage}` }));
         break;
       }
       void setSessionPermission(sessionId, mode as SessionPermission)
-        .then(() => toast(`权限：${PERMISSION_LABEL[mode as SessionPermission]}`))
-        .catch((error) => toast.error(`切换权限失败：${errorText(error)}`));
+        .then(() =>
+          toast(t("slash.perm_set", { label: t(PERMISSION_LABEL[mode as SessionPermission]) })),
+        )
+        .catch((error) => toast.error(t("slash.perm_failed", { error: errorText(error) })));
       break;
     }
     case "ask":
@@ -310,10 +326,13 @@ export function runSlash(
       void compactSession(sessionId)
         .then((result) =>
           toast.success(
-            `上下文已压缩：${result.tokens_before.toLocaleString()} → ${result.tokens_after.toLocaleString()} tokens`,
+            t("slash.compacted", {
+              before: result.tokens_before.toLocaleString(),
+              after: result.tokens_after.toLocaleString(),
+            }),
           ),
         )
-        .catch((error) => toast.error(`压缩失败：${errorText(error)}`));
+        .catch((error) => toast.error(t("slash.compact_failed", { error: errorText(error) })));
       break;
     case "model":
       useUi.getState().set({ modelPicker: sessionId });
@@ -338,7 +357,7 @@ export function runSlash(
         return { action: "create", objective: rest };
       })();
       if (!action) {
-        toast("用法：/goal edit <objective>");
+        toast(t("slash.usage", { cmd: "/goal edit <objective>" }));
         break;
       }
       void rpc
@@ -349,30 +368,34 @@ export function runSlash(
         .then((result) => {
           const goal = result.goal;
           if (!goal) {
-            toast("当前没有目标；/goal <objective> 创建");
+            toast(t("slash.goal_none"));
             return;
           }
           const phase =
             goal.phase === "active"
-              ? "进行中"
+              ? "goal.active"
               : goal.phase === "paused"
-                ? "已暂停"
+                ? "goal.paused"
                 : goal.phase === "blocked"
-                  ? "已阻塞"
-                  : "已完成";
-          toast(`目标：${goal.objective}`, {
-            description: `${phase} · 已跑 ${goal.rounds_started} 轮 · ${goal.armed ? "自动续跑" : "续跑已停"}`,
+                  ? "goal.blocked"
+                  : "goal.done";
+          toast(t("slash.goal_title", { objective: goal.objective }), {
+            description: t("slash.goal_desc", {
+              phase: t(phase as MsgKey),
+              rounds: goal.rounds_started,
+              armed: t(goal.armed ? "goal.armed" : "goal.halted"),
+            }),
           });
           useTranscript.getState().mutate(sessionId, (view) => {
             view.goal = goal;
           });
         })
-        .catch((error) => toast.error(`目标操作失败：${errorText(error)}`));
+        .catch((error) => toast.error(t("slash.goal_failed", { error: errorText(error) })));
       break;
     }
     case "btw":
       useLayout.getState().openInspector("btw");
-      if (!useBtw.getState().ask(sessionId, args)) toast("上一个旁路问题还在回答中");
+      if (!useBtw.getState().ask(sessionId, args)) toast(t("slash.btw_busy"));
       break;
     case "tools":
       useUi.getState().set({ toolsSession: sessionId });
@@ -388,16 +411,16 @@ export function runSlash(
       void workflowActivate(sessionId)
         .then(() => {
           if (args) void sendPrompt(sessionId, toInput(args, []));
-          else toast("workflow 已激活");
+          else toast(t("slash.wf_active"));
         })
-        .catch((error) => toast.error(`workflow 激活失败：${errorText(error)}`));
+        .catch((error) => toast.error(t("slash.wf_failed", { error: errorText(error) })));
       break;
     }
     case "workflows": {
       useWorkflow.setState({ runsOpen: true });
       void workflowRuns(sessionId)
         .then((runs) => useWorkflow.setState({ runList: runs }))
-        .catch((error) => toast.error(`获取 run 列表失败：${errorText(error)}`));
+        .catch((error) => toast.error(t("slash.runs_failed", { error: errorText(error) })));
       break;
     }
     case "agents":
@@ -414,12 +437,12 @@ export function runSlash(
           .call("plugin/reload", {
             session_id: sessionId === "draft-session" ? "" : sessionId,
           })
-          .then(() => toast.success("插件已重新加载"))
-          .catch((error) => toast.error(`重载插件失败：${errorText(error)}`));
+          .then(() => toast.success(t("slash.plugins_reloaded")))
+          .catch((error) => toast.error(t("slash.plugins_failed", { error: errorText(error) })));
       } else if (rest === "") {
         openSettings("plugins");
       } else {
-        toast(`用法：/plugins ${command.usage}`);
+        toast(t("slash.usage", { cmd: `/plugins ${command.usage}` }));
       }
       break;
     }

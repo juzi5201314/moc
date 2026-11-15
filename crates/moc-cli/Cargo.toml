@@ -6,6 +6,7 @@ authors = ["soeur@soeur.dev@gmail.com"]
 default-run = "moc"
 
 [dependencies]
+rust-i18n.workspace = true
 moc-acp = { path = "../moc-acp" }
 moc-core = { path = "../moc-core" }
 moc-llm = { path = "../moc-llm" }

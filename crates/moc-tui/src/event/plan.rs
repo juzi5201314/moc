@@ -1,5 +1,7 @@
 //! 计划阅读、批注与审批交互。
 
+use rust_i18n::t;
+
 use super::agents::load_subagents_for_parent;
 use super::bootstrap::load_display_session;
 use super::bootstrap::refresh_git_branch;
@@ -377,7 +379,7 @@ pub(super) fn plan_toggle_annotate(app: &mut App) {
         return;
     };
     if !state.can_annotate() {
-        state.error = Some("只有待审阅的计划可以批注".into());
+        state.error = Some(t!("tui.plan.not_annotatable").into_owned());
         return;
     }
     state.pane = PlanPane::Annotate;
@@ -423,11 +425,11 @@ pub(super) fn submit_plan_review(app: &mut App, connection: &EmbeddedConnection)
 
 pub(super) fn confirm_plan(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session) = app.session.as_ref() else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session").into_owned());
         return;
     };
     if !session.plan_active {
-        app.set_notice("只有计划状态可以重新审阅计划");
+        app.set_notice(t!("tui.plan.not_plan_mode").into_owned());
         return;
     }
     let session_id = session.id.clone();
@@ -444,7 +446,11 @@ pub(super) fn confirm_plan(app: &mut App, connection: &EmbeddedConnection) {
                         read_only: false,
                     })
                     .await?;
-                anyhow::ensure!(loaded.session.plan_active, "会话已离开计划状态");
+                anyhow::ensure!(
+                    loaded.session.plan_active,
+                    "{}",
+                    t!("tui.plan.left_plan_mode")
+                );
                 let mut before = None;
                 let plan =
                     loop {
@@ -462,19 +468,24 @@ pub(super) fn confirm_plan(app: &mut App, connection: &EmbeddedConnection) {
                                 }),
                             })
                             .await?;
-                        anyhow::ensure!(page.session.plan_active, "会话已离开计划状态");
+                        anyhow::ensure!(
+                            page.session.plan_active,
+                            "{}",
+                            t!("tui.plan.left_plan_mode")
+                        );
                         if let Some(plan) = page.plans.into_iter().rev().find(|plan| {
                             plan.status == moc_protocol::methods::PlanStatus::Submitted
                         }) {
                             break plan;
                         }
                         before = page.plans_before;
-                        anyhow::ensure!(before.is_some(), "当前会话没有已写入的待审计划");
+                        anyhow::ensure!(before.is_some(), "{}", t!("tui.plan.no_pending_plan"));
                     };
                 anyhow::ensure!(
                     !plan.markdown.trim().is_empty()
                         && plan.path == format!("local://{}.md", plan.plan_id),
-                    "待审计划的正文或实体 URI 无效"
+                    "{}",
+                    t!("tui.plan.invalid_entity")
                 );
                 Ok(plan)
             }
@@ -550,8 +561,10 @@ pub(super) fn apply_plan_review(
                 request_plan_diff(app, connection, plan_id);
             }
         }
-        Ok(_) => app.set_notice("当前会话已变化，不能打开该计划"),
-        Err(error) => app.set_notice(format!("无法审阅计划：{error}")),
+        Ok(_) => app.set_notice(t!("tui.plan.session_changed").into_owned()),
+        Err(error) => app.set_notice(
+            t!("tui.plan.review_failed_fmt", err = error.to_string()).into_owned(),
+        ),
     }
 }
 
@@ -571,7 +584,9 @@ pub(crate) fn apply_plan_revised(
                 state.submitting = false;
                 state.error = Some(error.to_string());
             } else {
-                app.set_notice(format!("提交批注失败：{error}"));
+                app.set_notice(
+                    t!("tui.plan.annotate_failed_fmt", err = error.to_string()).into_owned(),
+                );
             }
         }
     }
@@ -610,7 +625,9 @@ pub(crate) fn apply_plan_approval(
                 state.submitting = false;
                 state.error = Some(error.to_string());
             } else {
-                app.set_notice(format!("计划审批失败：{error}"));
+                app.set_notice(
+                    t!("tui.plan.approve_failed_fmt", err = error.to_string()).into_owned(),
+                );
             }
         }
     }
@@ -643,8 +660,8 @@ pub(crate) fn apply_plan_execution_loaded(
             load_subagents_for_parent(app, &connection.client, Some(id));
             start_auto_prompt(app, connection, auto_prompt);
         }
-        Err(error) => app.set_notice(format!(
-            "计划已批准，但加载执行会话失败：{error}；可通过 /resume 恢复"
-        )),
+        Err(error) => app.set_notice(
+            t!("tui.plan.exec_load_failed_fmt", err = error.to_string()).into_owned(),
+        ),
     }
 }

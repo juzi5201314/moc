@@ -10,18 +10,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { type MsgKey, useT } from "@/lib/i18n";
 import { type FeatureRow, fetchFeatures } from "@/lib/web-api";
 import { useUi } from "@/store/ui";
 
-const STAGE_LABEL: Record<string, string> = {
-  dev: "开发中",
-  experimental: "实验",
-  beta: "公测",
-  stable: "稳定",
-  deprecated: "弃用",
+const STAGE_LABEL: Record<string, MsgKey> = {
+  dev: "feat.dev",
+  experimental: "feat.experimental",
+  beta: "feat.beta",
+  stable: "feat.stable",
+  deprecated: "feat.deprecated",
 };
 
 export function FeaturesDialog() {
+  const t = useT();
   const [features, setFeatures] = useState<FeatureRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,27 +44,27 @@ export function FeaturesDialog() {
     <Dialog open onOpenChange={(open) => !open && useUi.getState().set({ features: false })}>
       <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>特性开关</DialogTitle>
-          <DialogDescription>生效值来自 [features] 覆盖或对应配置段。</DialogDescription>
+          <DialogTitle>{t("feat.title")}</DialogTitle>
+          <DialogDescription>{t("feat.desc")}</DialogDescription>
         </DialogHeader>
         <div className="min-h-0 overflow-y-auto">
           {error ? (
             <p role="alert" className="text-sm text-destructive">
-              读取失败：{error}
+              {t("dr.fetch_failed", { error })}
             </p>
           ) : features === null ? (
             <p role="status" className="text-sm text-muted-foreground">
-              正在读取特性表…
+              {t("feat.reading")}
             </p>
           ) : (
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-2xs text-text-tertiary">
-                  <th className="pb-2 font-medium">特性</th>
-                  <th className="pb-2 font-medium">阶段</th>
-                  <th className="pb-2 font-medium">状态</th>
-                  <th className="pb-2 font-medium">上下文成本</th>
-                  <th className="pb-2 font-medium">说明</th>
+                  <th className="pb-2 font-medium">{t("feat.name")}</th>
+                  <th className="pb-2 font-medium">{t("feat.stage")}</th>
+                  <th className="pb-2 font-medium">{t("feat.status")}</th>
+                  <th className="pb-2 font-medium">{t("feat.cost")}</th>
+                  <th className="pb-2 font-medium">{t("feat.note")}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
@@ -71,20 +73,22 @@ export function FeaturesDialog() {
                     <td className="py-2 pr-3 font-mono text-xs">{row.key}</td>
                     <td className="py-2 pr-3">
                       <Badge variant="secondary" className="font-normal">
-                        {STAGE_LABEL[row.stage] ?? row.stage}
+                        {STAGE_LABEL[row.stage] ? t(STAGE_LABEL[row.stage]) : row.stage}
                       </Badge>
                     </td>
                     <td className="py-2 pr-3">
                       <Badge variant={row.enabled ? "brand" : "outline"} className="font-normal">
-                        {row.enabled ? "开" : "关"}
+                        {row.enabled ? t("feat.on") : t("feat.off")}
                       </Badge>
                     </td>
                     <td className="py-2 pr-3 whitespace-nowrap text-xs text-muted-foreground">
-                      {row.contextTokens !== null ? `~${row.contextTokens} tok` : "随环境"}
+                      {row.contextTokens !== null ? `~${row.contextTokens} tok` : t("feat.env")}
                     </td>
                     <td className="py-2 text-xs text-muted-foreground">
                       {row.summary}
-                      <span className="ml-1.5 text-text-tertiary">（{row.toggle}）</span>
+                      <span className="ml-1.5 text-text-tertiary">
+                        {t("feat.toggle_wrap", { toggle: row.toggle })}
+                      </span>
                     </td>
                   </tr>
                 ))}

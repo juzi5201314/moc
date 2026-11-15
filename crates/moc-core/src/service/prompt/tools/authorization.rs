@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use super::AllowedExecution;
 use super::Authorization;
 use super::PermissionAnswer;
@@ -128,7 +129,7 @@ pub(super) async fn authorize_read(
                 tool_name,
                 vec![path],
                 crate::sandbox::Access::Read,
-                format!("允许在沙盒外读取：{target}"),
+                t!("core.err.sandbox_read", target = target).into_owned(),
                 None,
                 None,
             )

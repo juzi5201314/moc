@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 
+use rust_i18n::t;
 use serde_json::{Map, Value, json};
 
 use super::echo::{self, ReasoningEchoPlan};
@@ -159,17 +160,21 @@ fn cache_breakpoints(req: &ChatRequest, message_count: usize) -> Result<BTreeSet
     if let Some(ttl) = cache.ttl
         && ttl != CacheTtl::ThirtyMinutes
     {
-        return Err(LlmError::Encode(format!(
-            "Chat 协议的显式缓存只支持 30m，收到 {}",
-            ttl.as_str()
-        )));
+        return Err(LlmError::Encode(
+            t!("llm.err.chat_cache_ttl", value = ttl.as_str()).into_owned(),
+        ));
     }
     let mut breakpoints = BTreeSet::new();
     for &index in &cache.breakpoints {
         if index >= message_count {
-            return Err(LlmError::Encode(format!(
-                "缓存断点下标 {index} 超出消息范围（共 {message_count} 条）"
-            )));
+            return Err(LlmError::Encode(
+                t!(
+                    "llm.err.cache_index_range",
+                    index = index,
+                    message_count = message_count
+                )
+                .into_owned(),
+            ));
         }
         breakpoints.insert(index);
     }
@@ -351,7 +356,7 @@ fn encode_tool_result(
     breakpoint: bool,
 ) -> Result<Vec<Value>, LlmError> {
     let Some(result) = message.tool_results().next() else {
-        return Err(LlmError::Encode("tool 消息缺少 ToolResult 内容块".into()));
+        return Err(LlmError::Encode(t!("llm.err.tool_missing_result").into_owned()));
     };
     // tool 消息的 `content` 是必填字符串：空结果发空串，而不是 `null`。
     let content = if breakpoint {
@@ -467,7 +472,7 @@ fn encode_thinking(cfg: &LlmConfig, reasoning: &ReasoningConfig, body: &mut Map<
 fn finish_content(mut blocks: Vec<Value>, breakpoint: bool) -> Result<Value, LlmError> {
     if breakpoint {
         let Some(last) = blocks.last_mut() else {
-            return Err(LlmError::Encode("缓存断点落在空消息上".into()));
+            return Err(LlmError::Encode(t!("llm.err.cache_empty_msg").into_owned()));
         };
         last.as_object_mut()
             .expect("内容块由本模块构造成 JSON 对象")
@@ -506,7 +511,7 @@ fn unsupported_part(role: Role, part: &ContentPart) -> LlmError {
         ContentPart::ToolCall(_) => "ToolCall",
         ContentPart::ToolResult(_) => "ToolResult",
     };
-    LlmError::Encode(format!("{role} 消息不允许出现 {kind} 内容块"))
+    LlmError::Encode(t!("llm.err.role_block_kind", role = role, kind = kind).into_owned())
 }
 
 /// 非流式响应解码。
@@ -718,13 +723,19 @@ impl ChatStreamDecoder {
         let raw_index = call
             .get("index")
             .and_then(Value::as_u64)
-            .ok_or_else(|| LlmError::Stream("Chat 工具调用增量缺少 index".into()))?;
-        let index = usize::try_from(raw_index)
-            .map_err(|_| LlmError::Stream(format!("Chat 工具调用 index 超出范围: {raw_index}")))?;
+            .ok_or_else(|| LlmError::Stream(t!("llm.err.chat_index_missing").into_owned()))?;
+        let index = usize::try_from(raw_index).map_err(|_| {
+            LlmError::Stream(t!("llm.err.chat_index_range", raw_index = raw_index).into_owned())
+        })?;
         if index >= MAX_TOOL_CALL_SLOTS {
-            return Err(LlmError::Stream(format!(
-                "Chat 工具调用 index {index} 超过本地上限 {MAX_TOOL_CALL_SLOTS}"
-            )));
+            return Err(LlmError::Stream(
+                t!(
+                    "llm.err.chat_index_cap",
+                    index = index,
+                    max = MAX_TOOL_CALL_SLOTS
+                )
+                .into_owned(),
+            ));
         }
 
         if self.tool_ids.len() <= index {
@@ -799,9 +810,9 @@ impl StreamDecoder for ChatStreamDecoder {
             Ok(value) => value,
             Err(err) => {
                 self.terminated = true;
-                out.push(Err(LlmError::Stream(format!(
-                    "Chat 流数据不是合法 JSON: {err}"
-                ))));
+                out.push(Err(LlmError::Stream(
+                    t!("llm.err.chat_stream_json", err = err).into_owned(),
+                )));
                 return;
             }
         };
@@ -810,7 +821,7 @@ impl StreamDecoder for ChatStreamDecoder {
         {
             self.terminated = true;
             let (message, code) = openai::parse_error_value(&value).map_or_else(
-                || ("Chat 流返回了错误，但没有提供消息".to_owned(), None),
+                || (t!("llm.err.chat_stream_nomsg").into_owned(), None),
                 |fields| (fields.message, fields.code),
             );
             let mut error = ApiError::new(

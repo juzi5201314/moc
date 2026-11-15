@@ -1,5 +1,6 @@
 //! `/debuginfo` 仅统计保留历史中的工具终态和压缩次数。
 
+use rust_i18n::t;
 use super::{CoreInner, to_rpc};
 use crate::session::{entries::Entry, stored::StoredEntry};
 use moc_protocol::{RpcError, ToolStatus, TranscriptChildCall, TranscriptEntry};
@@ -126,33 +127,41 @@ fn render(groups: HashMap<&str, Counts>, compactions: usize) -> String {
             .cmp(&left.calls())
             .then_with(|| left_name.cmp(right_name))
     });
-    let mut text = String::from("工具使用统计\n");
+    let mut text = t!("core.debug.title").into_owned();
     let mut total = Counts::default();
     for (name, counts) in rows {
         append_counts(&mut text, name, &counts);
         total.merge(&counts);
     }
-    append_counts(&mut text, "总计", &total);
-    let _ = write!(text, "\n上下文压缩：{compactions} 次");
+    append_counts(&mut text, &t!("core.debug.total"), &total);
+    let _ = write!(
+        text,
+        "\n{}",
+        t!("core.debug.compactions", n = compactions)
+    );
     text
 }
 
 fn append_counts(text: &mut String, name: &str, counts: &Counts) {
     let _ = write!(
         text,
-        "{name}：{} 次 · 成功 {} · 失败 {} · 成功率 {}",
-        counts.calls(),
-        counts.completed,
-        counts.error,
-        counts.rate()
+        "{}",
+        t!(
+            "core.debug.row",
+            name = name,
+            calls = counts.calls(),
+            ok = counts.completed,
+            err = counts.error,
+            rate = counts.rate()
+        )
     );
-    for (label, count) in [
-        ("拒绝", counts.denied),
-        ("取消", counts.cancelled),
-        ("未结束", counts.pending),
+    for (key, count) in [
+        ("core.debug.denied", counts.denied),
+        ("core.debug.cancelled", counts.cancelled),
+        ("core.debug.pending", counts.pending),
     ] {
         if count != 0 {
-            let _ = write!(text, " · {label} {count}");
+            let _ = write!(text, " · {} {count}", t!(key));
         }
     }
     text.push('\n');

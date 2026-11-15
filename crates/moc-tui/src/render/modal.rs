@@ -16,6 +16,8 @@ use crate::modal::{Modal, PlanPane, SessionScope};
 use crate::render::wrap::{clip_line, fit, fit_line, str_width, truncate, truncate_head};
 use crate::render::{context_content, labels, overlay};
 use crate::theme::Theme;
+use rust_i18n::t;
+use std::borrow::Cow;
 
 mod menus;
 pub use menus::completion_menu_height;
@@ -285,10 +287,10 @@ pub(crate) fn window_offset(offset: usize, selected: usize, visible: usize, tota
 
 /// 搜索框行：`搜索：<query>▏`；查询超宽时从头部截断，光标侧始终可见。
 fn search_line(query: &str, width: usize, theme: &Theme) -> Line<'static> {
-    const LABEL: &str = "搜索：";
-    let budget = width.saturating_sub(str_width(LABEL) + 1);
+    let label = t!("tui.modal.search_label").into_owned();
+    let budget = width.saturating_sub(str_width(&label) + 1);
     Line::from(vec![
-        Span::styled(LABEL, Style::new().fg(theme.gray_dim)),
+        Span::styled(label, Style::new().fg(theme.gray_dim)),
         Span::styled(
             truncate_head(query, budget).into_owned(),
             Style::new().fg(theme.accent_model),
@@ -362,7 +364,11 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 ));
             }
             let footer = overlay::footer(
-                &[("1-9", "直选"), ("esc", "按拒绝处理"), ("enter", "确认")],
+                &[
+                    ("1-9", t!("tui.hint.pick")),
+                    ("esc", t!("tui.hint.deny")),
+                    ("enter", t!("tui.hint.confirm")),
+                ],
                 width,
                 theme,
             );
@@ -388,23 +394,29 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             let window = crate::render::format_tokens(overflow.context_window);
             // 思考关闭时省掉 `:off` 后缀，与其他位置的选择器写法一致。
             let selector = crate::app::model_selector_label(selector);
+            let tokens = crate::render::format_tokens(overflow.tokens);
             let leading = if overflow.tokens > overflow.context_window {
-                format!(
-                    "当前上下文 {} 超过 {selector} 的窗口 {window}",
-                    crate::render::format_tokens(overflow.tokens)
+                t!(
+                    "tui.modal.ctx_over_window_fmt",
+                    tokens = tokens,
+                    selector = selector.as_str(),
+                    window = window
                 )
             } else {
-                format!(
-                    "当前上下文 {} 超过 {selector} 的压缩触发线 {}（窗口 {window}）",
-                    crate::render::format_tokens(overflow.tokens),
-                    crate::render::format_tokens(overflow.threshold)
+                t!(
+                    "tui.modal.ctx_over_threshold_fmt",
+                    tokens = tokens,
+                    selector = selector.as_str(),
+                    threshold = crate::render::format_tokens(overflow.threshold),
+                    window = window
                 )
             };
             let mut lines = wrapped_lines(&leading, width, Style::new().fg(theme.text_primary));
             lines.extend(wrapped_lines(
-                &format!(
-                    "确认后先切换到 {selector}，再由它压缩上下文（压缩后不超过 {}）",
-                    crate::render::format_tokens(overflow.target_tokens)
+                &t!(
+                    "tui.modal.switch_compact_fmt",
+                    selector = selector,
+                    target = crate::render::format_tokens(overflow.target_tokens)
                 ),
                 width,
                 Style::new().fg(theme.text_secondary),
@@ -412,26 +424,33 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             lines.push(Line::from(String::new()));
             if *loading {
                 lines.push(Line::from(Span::styled(
-                    "正在切换并压缩…",
+                    t!("tui.modal.switching"),
                     Style::new().fg(theme.accent_running),
                 )));
             } else if let Some(error) = error {
                 lines.extend(wrapped_lines(
-                    &format!("错误：{error}"),
+                    &t!("tui.err.fmt", err = error.as_str()),
                     width,
                     Style::new().fg(theme.accent_error),
                 ));
             }
-            for (index, text) in ["切换并压缩", "取消"].iter().enumerate() {
+            for (index, text) in [t!("tui.modal.switch_and_compact"), t!("tui.hint.cancel")]
+                .iter()
+                .enumerate()
+            {
                 hits.push((index, lines.len()));
                 lines.push(overlay::list_row(text, index == *option, width, theme));
             }
-            let items: &[(&str, &str)] = if error.is_some() {
-                &[("enter", "重试"), ("esc", "取消")]
+            let items: Vec<(&str, Cow<'_, str>)> = if error.is_some() {
+                vec![("enter", t!("tui.hint.retry")), ("esc", t!("tui.hint.cancel"))]
             } else {
-                &[("↑↓", "选择"), ("enter", "确认"), ("esc", "取消")]
+                vec![
+                    ("↑↓", t!("tui.hint.choose")),
+                    ("enter", t!("tui.hint.confirm")),
+                    ("esc", t!("tui.hint.cancel")),
+                ]
             };
-            (lines, overlay::footer(items, width, theme))
+            (lines, overlay::footer(&items, width, theme))
         }
         Modal::Jobs {
             jobs,
@@ -444,7 +463,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             let mut lines = Vec::new();
             if jobs.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    "当前没有后台任务",
+                    t!("tui.modal.no_jobs"),
                     Style::new().fg(theme.gray_dim),
                 )));
             } else {
@@ -475,7 +494,10 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
 
                     let job_id = &job.job_id;
                     let text = if *pending_kill == Some(actual) {
-                        format!("{icon} {job_id} {cmd} [按 x 或点击确认杀掉]")
+                        format!(
+                            "{icon} {job_id} {cmd} {}",
+                            t!("tui.modal.kill_confirm")
+                        )
                     } else {
                         format!("{icon} {job_id} {cmd}")
                     };
@@ -485,7 +507,11 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             }
 
             let footer = overlay::footer(
-                &[("↑↓", "选择"), ("x x/点击已选", "杀任务"), ("esc", "关闭")],
+                &[
+                    ("↑↓", t!("tui.hint.choose")),
+                    (t!("tui.key.kill_selected").as_ref(), t!("tui.hint.kill_task")),
+                    ("esc", t!("tui.hint.close")),
+                ],
                 width,
                 theme,
             );
@@ -515,15 +541,22 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             );
             let windowed: Vec<_> = lines.into_iter().skip(start).take(max_lines).collect();
             let footer = if state.feedback.is_some() {
-                overlay::footer(&[("enter", "提交拒绝"), ("esc", "取消输入")], width, theme)
+                overlay::footer(
+                    &[
+                        ("enter", t!("tui.hint.submit_deny")),
+                        ("esc", t!("tui.hint.cancel_input")),
+                    ],
+                    width,
+                    theme,
+                )
             } else {
                 overlay::footer(
                     &[
-                        ("↑↓", "选择 role"),
-                        ("enter", "选模型"),
-                        ("a", "批准"),
-                        ("r", "拒绝"),
-                        ("esc", "最小化"),
+                        ("↑↓", t!("tui.hint.choose_role")),
+                        ("enter", t!("tui.hint.pick_model")),
+                        ("a", t!("tui.hint.approve")),
+                        ("r", t!("tui.hint.reject")),
+                        ("esc", t!("tui.hint.minimize")),
                     ],
                     width,
                     theme,
@@ -547,7 +580,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 .collect::<Vec<_>>();
             let mut lines = Vec::new();
             if filtered.is_empty() {
-                lines.push(Line::from(Span::styled("没有 workflow run", dim)));
+                lines.push(Line::from(Span::styled(t!("tui.modal.no_runs"), dim)));
             } else {
                 // 键盘/搜索显露选中项；滚轮只动 offset，重绘不拉回。
                 scroll_max = filtered.len().saturating_sub(max_lines);
@@ -570,7 +603,11 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 }
             }
             let footer = overlay::footer(
-                &[("↑↓", "选择"), ("enter", "打开面板"), ("esc", "关闭")],
+                &[
+                    ("↑↓", t!("tui.hint.choose")),
+                    ("enter", t!("tui.hint.open_panel")),
+                    ("esc", t!("tui.hint.close")),
+                ],
                 width,
                 theme,
             );
@@ -601,11 +638,11 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             let windowed: Vec<_> = lines.into_iter().skip(start).take(max_lines).collect();
             let footer = overlay::footer(
                 &[
-                    ("↑↓", "选择 role"),
-                    ("enter", "改模型"),
-                    ("s", "停止"),
-                    ("r", "续跑"),
-                    ("esc", "关闭"),
+                    ("↑↓", t!("tui.hint.choose_role")),
+                    ("enter", t!("tui.hint.change_model")),
+                    ("s", t!("tui.hint.stop")),
+                    ("r", t!("tui.hint.resume")),
+                    ("esc", t!("tui.hint.close")),
                 ],
                 width,
                 theme,
@@ -626,21 +663,27 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             let mut lines = vec![search_line(&picker.query, width, theme)];
             if picker.loading && sessions.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    "正在加载会话…",
+                    t!("tui.modal.loading_sessions"),
                     Style::new().fg(theme.accent_running),
                 )));
             } else if let Some(error) = &picker.error {
                 lines.extend(wrapped_lines(
-                    &format!("错误：{error}"),
+                    &t!("tui.err.fmt", err = error.as_str()),
                     width,
                     Style::new().fg(theme.accent_error),
                 ));
             } else if filtered.is_empty() {
                 // 搜索无结果与目录为空要分开说：后者才值得引导切范围。
                 let hint = if picker.query.is_empty() && *scope == SessionScope::Folder {
-                    labels::hints(&[("", "当前目录没有会话"), ("tab", "查看全部")], width)
+                    labels::hints(
+                        &[
+                            ("", t!("tui.modal.no_sessions_here")),
+                            ("tab", t!("tui.hint.view_all")),
+                        ],
+                        width,
+                    )
                 } else {
-                    truncate("没有匹配的会话", width).into_owned()
+                    truncate(t!("tui.modal.no_match_sessions").into_owned(), width).into_owned()
                 };
                 lines.push(Line::from(Span::styled(hint, Style::new().fg(theme.gray))));
             } else {
@@ -672,19 +715,19 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                     ));
                 }
             }
-            let items: &[(&str, &str)] = if picker.error.is_some() {
-                &[("enter", "重试"), ("esc", "关闭")]
+            let items: Vec<(&str, Cow<'_, str>)> = if picker.error.is_some() {
+                vec![("enter", t!("tui.hint.retry")), ("esc", t!("tui.hint.close"))]
             } else {
-                &[
-                    ("", "输入搜索"),
-                    ("pgup/pgdn", "翻页"),
-                    ("↑↓", "移动"),
-                    ("tab", "切换范围"),
-                    ("enter", "恢复"),
-                    ("esc", "关闭"),
+                vec![
+                    ("", t!("tui.hint.type_search")),
+                    ("pgup/pgdn", t!("tui.hint.paging")),
+                    ("↑↓", t!("tui.hint.move")),
+                    ("tab", t!("tui.hint.switch_scope")),
+                    ("enter", t!("tui.hint.restore")),
+                    ("esc", t!("tui.hint.close")),
                 ]
             };
-            (lines, overlay::footer(items, width, theme))
+            (lines, overlay::footer(&items, width, theme))
         }
         Modal::Plan { state } => {
             plan_lines(state, width, max_lines, theme, &mut hits, &mut scroll_max)
@@ -695,14 +738,17 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             scroll,
             ..
         } => {
-            let mut rows =
-                wrapped_lines("按当前会话状态，下一轮请求将发送以下工具定义。", width, dim);
+            let mut rows = wrapped_lines(&t!("tui.modal.tools_intro"), width, dim);
             rows.push(Line::default());
             if let Some(error) = error {
-                rows.extend(wrapped_lines(&format!("读取失败：{error}"), width, dim));
+                rows.extend(wrapped_lines(
+                    &t!("tui.modal.tools_read_failed_fmt", err = error.as_str()),
+                    width,
+                    dim,
+                ));
             } else if let Some(tools) = tools {
                 if tools.is_empty() {
-                    rows.extend(wrapped_lines("当前请求不发送任何工具。", width, dim));
+                    rows.extend(wrapped_lines(&t!("tui.modal.tools_none"), width, dim));
                 }
                 for tool in tools {
                     rows.extend(wrapped_lines(
@@ -718,13 +764,17 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                     rows.push(Line::default());
                 }
             } else {
-                rows.push(Line::from(Span::styled("正在读取工具…", dim)));
+                rows.push(Line::from(Span::styled(t!("tui.modal.tools_loading"), dim)));
             }
             scroll_max = scroll_window_max(rows.len(), max_lines);
             let lines = scroll_window(rows, max_lines, *scroll, width, theme);
             (
                 lines,
-                overlay::footer(&[("↑↓", "滚动"), ("esc", "关闭")], width, theme),
+                overlay::footer(
+                    &[("↑↓", t!("tui.hint.scroll")), ("esc", t!("tui.hint.close"))],
+                    width,
+                    theme,
+                ),
             )
         }
         Modal::Monitor => {
@@ -732,10 +782,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             (
                 lines,
                 overlay::footer(
-                    &[
-                        ("", "10min 窗口 · 1Hz 采样 · 随进程退出清空"),
-                        ("esc", "关闭"),
-                    ],
+                    &[("", t!("tui.modal.monitor_note")), ("esc", t!("tui.hint.close"))],
                     width,
                     theme,
                 ),
@@ -745,7 +792,10 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             let rows = help_lines(app, width).0;
             scroll_max = scroll_window_max(rows.len(), max_lines);
             let lines = scroll_window(rows, max_lines, *scroll, width, theme);
-            (lines, overlay::footer(&[("esc", "关闭")], width, theme))
+            (
+                lines,
+                overlay::footer(&[("esc", t!("tui.hint.close"))], width, theme),
+            )
         }
     };
     lines.truncate(max_lines.max(1));

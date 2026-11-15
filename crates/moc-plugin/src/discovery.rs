@@ -10,6 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
+use rust_i18n::t;
+
 /// 发现配置；`dirs` 已由调用方展开 `~`。
 #[derive(Debug, Clone, Default)]
 pub struct DiscoveryConfig {
@@ -43,7 +45,11 @@ pub fn discover(cwd: &Path, home: &Path, config: &DiscoveryConfig) -> Vec<Discov
             roots.push((
                 100 + depth as u32,
                 dir.join(".moc").join("plugins"),
-                format!("项目 .moc/plugins（{}）", dir.display()),
+                t!(
+                    "plugin.err.origin_project",
+                    dir = dir.display().to_string()
+                )
+                .into_owned(),
                 dir.join(".moc/config.toml"),
             ));
         }
@@ -52,7 +58,11 @@ pub fn discover(cwd: &Path, home: &Path, config: &DiscoveryConfig) -> Vec<Discov
         roots.push((
             300,
             dir.clone(),
-            format!("配置 dirs（{}）", dir.display()),
+            t!(
+                "plugin.err.origin_dirs",
+                dir = dir.display().to_string()
+            )
+            .into_owned(),
             home.join("config.toml"),
         ));
     }
@@ -60,7 +70,7 @@ pub fn discover(cwd: &Path, home: &Path, config: &DiscoveryConfig) -> Vec<Discov
         roots.push((
             400,
             home.join("plugins"),
-            "用户 .moc/plugins".into(),
+            t!("plugin.err.origin_user").into_owned(),
             home.join("config.toml"),
         ));
     }
@@ -137,6 +147,7 @@ mod tests {
 
     #[test]
     fn ranks_project_over_config_over_user() {
+        rust_i18n::set_locale("zh");
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
         let home = temp.path().join("home");

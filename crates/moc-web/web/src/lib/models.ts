@@ -1,5 +1,6 @@
 // 模型 selector 的纯函数：`provider/model[:level]` ↔ 模型条目与思考等级。
 
+import { t } from "@/lib/i18n";
 import type { ModelInfo, SessionUsageResult } from "@/protocol/types";
 
 export type ParsedSelector = { model?: ModelInfo; id: string; level?: string };
@@ -60,7 +61,7 @@ export function modelName(id: string): string {
 export function groupByProvider(models: ModelInfo[]): [string, ModelInfo[]][] {
   const groups = new Map<string, ModelInfo[]>();
   for (const model of models) {
-    const provider = providerOf(model.id) || "其他";
+    const provider = providerOf(model.id) || t("models.other");
     const list = groups.get(provider);
     if (list) list.push(model);
     else groups.set(provider, [model]);

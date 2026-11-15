@@ -11,6 +11,7 @@ import { Question, QuestionInput, type QuestionValue } from "@/components/ai-ele
 import { DiffFile } from "@/components/panels/diff-file";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { AskParams, PermissionOption, PermissionRequestParams } from "@/protocol/types";
 import { resolveAsk, resolvePermission } from "@/store/transcript";
@@ -34,6 +35,7 @@ export function PermissionCard({
   sessionId: string;
   request: PermissionRequestParams;
 }) {
+  const t = useT();
   const options = request.options.toSorted((a, b) => OPTION_ORDER[a.kind] - OPTION_ORDER[b.kind]);
   return (
     <Confirmation
@@ -48,10 +50,10 @@ export function PermissionCard({
           </span>
           <div className="min-w-0 flex-1 space-y-1">
             <div className="text-sm font-medium text-foreground">
-              {request.title || "工具请求授权"}
+              {request.title || t("req.tool_perm")}
             </div>
             <div className="flex items-center gap-1.5 text-xs text-text-tertiary">
-              <span>工具</span>
+              <span>{t("req.tool")}</span>
               <code className="rounded bg-muted px-1.5 py-px font-mono text-2xs text-muted-foreground">
                 {request.tool_name}
               </code>
@@ -91,6 +93,7 @@ export function PermissionCard({
 const EMPTY_ANSWER: QuestionValue = { selectedValues: [], text: "" };
 
 export function AskCard({ sessionId, request }: { sessionId: string; request: AskParams }) {
+  const t = useT();
   const [answers, setAnswers] = useState<Record<string, QuestionValue>>({});
   const answered = (id: string) => {
     const value = answers[id] ?? EMPTY_ANSWER;
@@ -115,10 +118,10 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
     <div className="overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-brand/25">
       <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-2.5 text-ui font-medium">
         <SparklesIcon className="size-4 text-brand" />
-        需要你的回答
+        {t("req.need_answer")}
         {request.questions.length > 1 && (
           <span className="text-xs font-normal text-text-tertiary">
-            共 {request.questions.length} 个问题
+            {t("req.count", { n: request.questions.length })}
           </span>
         )}
       </div>
@@ -146,7 +149,7 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
                   </span>
                 )}
                 <p className="text-sm leading-6 font-medium text-foreground">{question.question}</p>
-                {question.multi && <p className="text-xs text-text-tertiary">可多选</p>}
+                {question.multi && <p className="text-xs text-text-tertiary">{t("req.multi")}</p>}
               </div>
               {question.options.length > 0 && (
                 <div className="grid gap-1.5">
@@ -194,7 +197,7 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
                           <span className="flex items-center gap-2 text-sm font-medium text-foreground">
                             <span className="text-text-tertiary tabular-nums">{index + 1}.</span>
                             {option.label}
-                            {recommended && <Badge variant="brand">推荐</Badge>}
+                            {recommended && <Badge variant="brand">{t("req.recommended")}</Badge>}
                           </span>
                           {option.description && (
                             <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
@@ -213,10 +216,10 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
                 </pre>
               )}
               <QuestionInput
-                placeholder={question.options.length > 0 ? "其他想法（可选）" : "输入你的回答"}
+                placeholder={question.options.length > 0 ? t("req.other") : t("req.placeholder")}
                 rows={question.options.length > 0 ? 1 : 3}
                 className="min-h-0 resize-none rounded-lg text-ui"
-                aria-label={`第 ${questionIndex + 1} 题补充说明`}
+                aria-label={t("req.notes", { n: questionIndex + 1 })}
               />
             </Question>
           );
@@ -229,10 +232,10 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
           className="h-8 text-muted-foreground"
           onClick={() => resolveAsk(sessionId, request.request_id, { answers: [] })}
         >
-          跳过
+          {t("req.skip")}
         </Button>
         <Button size="sm" className="h-8" disabled={!complete} onClick={submit}>
-          提交回答
+          {t("req.submit")}
         </Button>
       </div>
     </div>

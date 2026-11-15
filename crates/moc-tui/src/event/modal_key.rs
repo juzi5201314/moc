@@ -1,5 +1,7 @@
 //! 模态键盘分派。
 
+use rust_i18n::t;
+
 use super::model::request_session_model;
 use super::model::set_fast_mode;
 use super::plan::plan_modal_key;
@@ -123,7 +125,9 @@ pub(super) fn handle_modal_key(
                 )
                 .await;
             if let Err(error) = result {
-                let _ = events.send(AppEvent::Notice(format!("workflow 审批回传失败：{error}")));
+                let _ = events.send(AppEvent::Notice(
+                    t!("tui.event.wf_approve_failed_fmt", err = error.to_string()).into_owned(),
+                ));
             }
         });
     }
@@ -163,8 +167,10 @@ pub(super) fn handle_modal_key(
                         )
                         .await
                     {
-                        let _ =
-                            events.send(AppEvent::Notice(format!("workflow 停止失败：{error}")));
+                        let _ = events.send(AppEvent::Notice(
+                            t!("tui.event.wf_stop_failed_fmt", err = error.to_string())
+                                .into_owned(),
+                        ));
                     }
                 }
                 crate::workflow::WorkflowAction::Resume(run_id) => {
@@ -174,8 +180,10 @@ pub(super) fn handle_modal_key(
                         )
                         .await
                     {
-                        let _ =
-                            events.send(AppEvent::Notice(format!("workflow 续跑失败：{error}")));
+                        let _ = events.send(AppEvent::Notice(
+                            t!("tui.event.wf_resume_failed_fmt", err = error.to_string())
+                                .into_owned(),
+                        ));
                     }
                 }
                 crate::workflow::WorkflowAction::OpenRun(run_id) => {
@@ -189,8 +197,10 @@ pub(super) fn handle_modal_key(
                             let _ = events.send(AppEvent::OpenWorkflowRun(Box::new(snapshot)));
                         }
                         Err(error) => {
-                            let _ =
-                                events.send(AppEvent::Notice(format!("读取 run 失败：{error}")));
+                            let _ = events.send(AppEvent::Notice(
+                                t!("tui.event.wf_run_failed_fmt", err = error.to_string())
+                                    .into_owned(),
+                            ));
                         }
                     }
                 }
@@ -206,8 +216,10 @@ pub(super) fn handle_modal_key(
                         )
                         .await
                     {
-                        let _ =
-                            events.send(AppEvent::Notice(format!("role 模型热改失败：{error}")));
+                        let _ = events.send(AppEvent::Notice(
+                            t!("tui.event.role_model_failed_fmt", err = error.to_string())
+                                .into_owned(),
+                        ));
                     }
                 }
                 crate::workflow::WorkflowAction::ViewArtifact(run_id, artifact_id) => {
@@ -229,8 +241,10 @@ pub(super) fn handle_modal_key(
                             });
                         }
                         Err(error) => {
-                            let _ = events
-                                .send(AppEvent::Notice(format!("读取 artifact 失败：{error}")));
+                            let _ = events.send(AppEvent::Notice(
+                                t!("tui.event.artifact_failed_fmt", err = error.to_string())
+                                    .into_owned(),
+                            ));
                         }
                     }
                 }

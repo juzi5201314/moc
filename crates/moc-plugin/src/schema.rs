@@ -4,6 +4,7 @@
 //! `additionalProperties`、`items`、`enum`。其余关键字按 JSON Schema 的注解语义忽略，
 //! 不猜它们的行为，也不把不认识的关键字当成错误。
 
+use rust_i18n::t;
 use serde_json::Value;
 
 /// 校验 `value` 是否满足 `schema`；返回第一处不满足的说明。
@@ -14,20 +15,31 @@ pub fn validate(schema: &Value, value: &Value) -> Result<(), String> {
     if let Some(types) = schema.get("type")
         && !type_matches(types, value)
     {
-        return Err(format!(
-            "类型应为 {}，实际是 {}",
-            type_names(types),
-            kind(value)
-        ));
+        return Err(
+            t!(
+                "plugin.err.type_mismatch",
+                expected = type_names(types),
+                actual = kind(value)
+            )
+            .into_owned(),
+        );
     }
     if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
         && !allowed.contains(value)
     {
-        return Err(format!("取值必须是 {allowed:?} 之一，实际是 {value}"));
+        return Err(
+            t!(
+                "plugin.err.not_allowed_value",
+                allowed = format!("{allowed:?}"),
+                value = value
+            )
+            .into_owned(),
+        );
     }
     if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
         for (index, item) in values.iter().enumerate() {
-            validate(items, item).map_err(|error| format!("第 {index} 项 {error}"))?;
+            validate(items, item)
+                .map_err(|error| t!("plugin.err.item_failed", index = index, error = error).into_owned())?;
         }
     }
     let Some(object) = value.as_object() else {
@@ -36,7 +48,7 @@ pub fn validate(schema: &Value, value: &Value) -> Result<(), String> {
     if let Some(required) = schema.get("required").and_then(Value::as_array) {
         for name in required.iter().filter_map(Value::as_str) {
             if !object.contains_key(name) {
-                return Err(format!("缺少必填字段 `{name}`"));
+                return Err(t!("plugin.err.missing_field", name = name).into_owned());
             }
         }
     }
@@ -44,8 +56,11 @@ pub fn validate(schema: &Value, value: &Value) -> Result<(), String> {
     let closed = schema.get("additionalProperties") == Some(&Value::Bool(false));
     for (name, item) in object {
         match properties.and_then(|properties| properties.get(name)) {
-            Some(child) => validate(child, item).map_err(|error| format!("`{name}` {error}"))?,
-            None if closed => return Err(format!("不允许字段 `{name}`")),
+            Some(child) => validate(child, item)
+                .map_err(|error| t!("plugin.err.field_prefix", name = name, error = error).into_owned())?,
+            None if closed => {
+                return Err(t!("plugin.err.closed_field", name = name).into_owned());
+            }
             None => {}
         }
     }
@@ -89,7 +104,7 @@ fn type_names(types: &Value) -> String {
             .filter_map(Value::as_str)
             .collect::<Vec<_>>()
             .join(" | "),
-        _ => "未声明".to_owned(),
+        _ => t!("plugin.err.undeclared").into_owned(),
     }
 }
 
@@ -132,6 +147,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_required_and_wrong_types() {
+        rust_i18n::set_locale("zh");
         assert!(
             validate(&schema(), &json!({}))
                 .unwrap_err()

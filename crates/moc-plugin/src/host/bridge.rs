@@ -5,6 +5,7 @@ use crate::descriptor::ConfigDecl;
 use crate::error::PluginError;
 use crate::error::Result;
 use crate::runtime::HostRequest;
+use rust_i18n::t;
 use serde_json::Value;
 use std::path::Path;
 
@@ -23,14 +24,18 @@ pub(super) async fn request_persistence(
                 .await?;
             let object = value
                 .as_object()
-                .ok_or_else(|| PluginError::new("E_PLUGIN_CONFIG", "插件配置必须是对象"))?;
+                .ok_or_else(|| PluginError::new("E_PLUGIN_CONFIG", t!("plugin.err.config_object")))?;
             for (key, value) in object {
                 let declaration =
                     fields
                         .iter()
                         .find(|field| &field.key == key)
                         .ok_or_else(|| {
-                            PluginError::new("E_PLUGIN_CONFIG", format!("配置 `{key}` 未注册"))
+                            PluginError::new(
+                                "E_PLUGIN_CONFIG",
+                                t!("plugin.err.config_unregistered", key = key.as_str())
+                                    .into_owned(),
+                            )
                         })?;
                 declaration
                     .validate(value)
@@ -42,7 +47,11 @@ pub(super) async fn request_persistence(
                         .iter()
                         .find(|field| field.key == key)
                         .ok_or_else(|| {
-                            PluginError::new("E_PLUGIN_CONFIG", format!("配置 `{key}` 未注册"))
+                            PluginError::new(
+                                "E_PLUGIN_CONFIG",
+                                t!("plugin.err.config_unregistered", key = key.as_str())
+                                    .into_owned(),
+                            )
                         })?;
                 let value = object.get(&key).or(declaration.default.as_ref());
                 Ok(match value {
@@ -57,14 +66,17 @@ pub(super) async fn request_persistence(
             if context.is_some_and(|context| !context.writable) {
                 return Err(PluginError::new(
                     "E_PLUGIN_STATE",
-                    "当前调用禁止修改插件配置",
+                    t!("plugin.err.config_write_denied"),
                 ));
             }
             let declaration = fields
                 .iter()
                 .find(|field| &field.key == key)
                 .ok_or_else(|| {
-                    PluginError::new("E_PLUGIN_CONFIG", format!("配置 `{key}` 未注册"))
+                    PluginError::new(
+                        "E_PLUGIN_CONFIG",
+                        t!("plugin.err.config_unregistered", key = key.as_str()).into_owned(),
+                    )
                 })?;
             if !value.is_null() {
                 declaration
@@ -75,19 +87,19 @@ pub(super) async fn request_persistence(
         }
         PersistenceOp::StateSet { .. } | PersistenceOp::StateDelete { .. } => {
             if context.is_none() {
-                return Err(PluginError::new("E_PLUGIN_STATE", "当前调用没有会话"));
+                return Err(PluginError::new("E_PLUGIN_STATE", t!("plugin.err.no_session")));
             }
             if context.is_some_and(|context| !context.writable) {
                 return Err(PluginError::new(
                     "E_PLUGIN_STATE",
-                    "当前调用禁止修改插件状态",
+                    t!("plugin.err.state_write_denied"),
                 ));
             }
             bridge.request(plugin, path, context, op).await
         }
         _ => {
             if context.is_none() {
-                return Err(PluginError::new("E_PLUGIN_STATE", "当前调用没有会话"));
+                return Err(PluginError::new("E_PLUGIN_STATE", t!("plugin.err.no_session")));
             }
             bridge.request(plugin, path, context, op).await
         }
@@ -114,7 +126,7 @@ pub(super) async fn host_reply(
         Ok(result) => result,
         Err(error) => Err(PluginError::new(
             "E_PLUGIN_CRASH",
-            format!("宿主工具任务没有正常结束：{error}"),
+            t!("plugin.err.host_task_abnormal", error = error).into_owned(),
         )),
     }
 }

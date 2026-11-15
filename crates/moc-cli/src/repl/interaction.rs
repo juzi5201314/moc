@@ -23,6 +23,7 @@ use moc_protocol::methods::SessionPrompt;
 use moc_protocol::methods::SessionRetry;
 use moc_protocol::methods::SessionRetryParams;
 use moc_protocol::methods::prompt::PromptMode;
+use rust_i18n::t;
 use std::io::Write;
 
 pub(super) async fn approve_plan(
@@ -43,7 +44,7 @@ pub(super) async fn approve_plan(
         .iter()
         .rev()
         .find(|plan| plan.status == PlanStatus::Submitted)
-        .ok_or_else(|| anyhow::anyhow!("当前会话没有等待批准的计划"))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", t!("cli.inter.no_plan")))?;
     // `new` 可带目标引擎：`/approve new ptc`；缺省沿用当前会话引擎。
     let (verb, engine_arg) = command
         .split_once(' ')
@@ -60,7 +61,7 @@ pub(super) async fn approve_plan(
             },
         ),
         "reject" if engine_arg.is_empty() => (PlanAction::Reject, None),
-        _ => bail!("用法：/approve <execute|compact|new [引擎]|reject>"),
+        _ => bail!("{}", t!("cli.cmd.usage_approve")),
     };
     let approved = client
         .call::<SessionPlanApprove>(SessionPlanApproveParams {
@@ -162,7 +163,7 @@ pub(super) async fn permission_prompt(
     for (index, option) in params.options.iter().enumerate() {
         println!("  {}. {}", index + 1, option.label);
     }
-    print!("选择 [默认拒绝]：");
+    print!("{}", t!("cli.inter.choose"));
     let _ = std::io::stdout().flush();
     let line = read_line(&input)
         .await
@@ -205,7 +206,11 @@ pub(super) async fn ask_prompt(
                 "  {}. {}{}",
                 index + 1,
                 option.label,
-                if recommended { " (推荐)" } else { "" }
+                if recommended {
+                    t!("cli.inter.recommended").into_owned()
+                } else {
+                    String::new()
+                }
             );
             if let Some(description) = &option.description {
                 println!("     {description}");
@@ -218,12 +223,15 @@ pub(super) async fn ask_prompt(
             }
         }
         print!(
-            "输入编号{}或自定义内容：",
-            if question.multi {
-                "（可用逗号多选）"
-            } else {
-                ""
-            }
+            "{}",
+            t!(
+                "cli.inter.input_number",
+                multi = if question.multi {
+                    t!("cli.inter.multi_hint").into_owned()
+                } else {
+                    String::new()
+                }
+            )
         );
         let _ = std::io::stdout().flush();
         let line = read_line(&input)

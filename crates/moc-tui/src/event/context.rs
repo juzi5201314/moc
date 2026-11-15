@@ -1,5 +1,7 @@
 //! 上下文阅读与工具目录交互。
 
+use rust_i18n::t;
+
 use crate::app::App;
 use crate::modal::ContextContentState;
 use crate::modal::ContextDrag;
@@ -25,7 +27,9 @@ pub(super) fn refresh_context(app: &App, connection: &EmbeddedConnection, notify
                 let _ = events.send(AppEvent::ContextUsage(usage));
             }
             Err(error) if notify_failure => {
-                let _ = events.send(AppEvent::Notice(format!("读取上下文占用失败：{error}")));
+                let _ = events.send(AppEvent::Notice(
+                    t!("tui.event.ctx_failed_fmt", err = error.to_string()).into_owned(),
+                ));
             }
             Err(_) => {}
         }
@@ -34,7 +38,7 @@ pub(super) fn refresh_context(app: &App, connection: &EmbeddedConnection, notify
 
 pub(super) fn open_tools(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session").into_owned());
         return;
     };
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -61,7 +65,7 @@ pub(super) fn open_tools(app: &mut App, connection: &EmbeddedConnection) {
 /// `/context` 与顶部占用条统一打开冻结总览。
 pub(super) fn open_context(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
-        app.set_notice("当前没有活动会话");
+        app.set_notice(t!("tui.common.no_session").into_owned());
         return;
     };
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);

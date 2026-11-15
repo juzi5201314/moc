@@ -1,4 +1,5 @@
 //! 连接级上下文快照：分类目录按页读取，隐藏内容从不进入可读节点或落盘缓存。
+use rust_i18n::t;
 use super::CoreInner;
 #[cfg(test)]
 mod tests;
@@ -63,7 +64,7 @@ impl View {
     }
 
     pub(super) fn set_error(&mut self, error: impl std::fmt::Display) {
-        self.error = Some(format!("当前上下文尚未形成可发送请求：{error}"));
+        self.error = Some(t!("core.err.ctx_no_request", error = error).into_owned());
     }
 
     pub(super) fn add(
@@ -224,7 +225,7 @@ impl View {
 fn io_error(error: impl std::fmt::Display) -> RpcError {
     RpcError::new(
         RpcErrorCode::InternalError.code(),
-        format!("读取上下文快照失败：{error}"),
+        t!("core.err.ctx_snapshot_read", error = error).into_owned(),
     )
 }
 fn invalid(message: &str) -> RpcError {

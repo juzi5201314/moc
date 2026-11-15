@@ -3,6 +3,7 @@
 //! 声明式：一次读取全部注册项（工具、命令、钩子、提示词贡献），之后宿主只按名字调用，
 //! 不在运行时重新询问插件注册了什么。
 
+use rust_i18n::t;
 use serde_json::Value;
 
 /// 插件工具可见的执行模式集合。
@@ -126,10 +127,9 @@ impl ConfigDecl {
         if valid && toml_value(value) {
             Ok(())
         } else {
-            Err(format!(
-                "配置 `{}` 的值类型、取值或 TOML 表示无效",
-                self.key
-            ))
+            Err(
+                t!("plugin.err.config_value_invalid", key = self.key.as_str()).into_owned(),
+            )
         }
     }
 }

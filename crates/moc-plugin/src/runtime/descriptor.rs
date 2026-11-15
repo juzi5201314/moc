@@ -19,6 +19,7 @@ use rquickjs::Function;
 use rquickjs::Object;
 use rquickjs::Persistent;
 use rquickjs::Value as JsValue;
+use rust_i18n::t;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -42,7 +43,7 @@ pub(super) fn parse_descriptor<'js>(
         if !ALLOWED.contains(&key.as_str()) {
             return Err(PluginError::new(
                 "E_PLUGIN_DESCRIPTOR",
-                format!("`export default` 里有未知字段 `{key}`"),
+                t!("plugin.err.export_unknown_field", key = key.as_str()).into_owned(),
             ));
         }
     }
@@ -60,9 +61,7 @@ pub(super) fn parse_descriptor<'js>(
             if !valid_tool_name(&name) {
                 return Err(PluginError::new(
                     "E_PLUGIN_DESCRIPTOR",
-                    format!(
-                        "工具名 `{name}` 不合法（1-64 位字母/数字/下划线/连字符，且不能用 mcp__ 前缀）"
-                    ),
+                    t!("plugin.err.tool_name_invalid", name = name.as_str()).into_owned(),
                 ));
             }
             let value: JsValue = tools
@@ -71,7 +70,7 @@ pub(super) fn parse_descriptor<'js>(
             let declaration = value.into_object().ok_or_else(|| {
                 PluginError::new(
                     "E_PLUGIN_DESCRIPTOR",
-                    format!("工具 `{name}` 的声明必须是对象"),
+                    t!("plugin.err.tool_decl_object", name = name.as_str()).into_owned(),
                 )
             })?;
             for key in declaration.keys::<String>() {
@@ -81,7 +80,12 @@ pub(super) fn parse_descriptor<'js>(
                 {
                     return Err(PluginError::new(
                         "E_PLUGIN_DESCRIPTOR",
-                        format!("工具 `{name}` 的声明里有未知字段 `{key}`"),
+                        t!(
+                            "plugin.err.tool_unknown_field",
+                            name = name.as_str(),
+                            key = key.as_str()
+                        )
+                        .into_owned(),
                     ));
                 }
             }
@@ -93,7 +97,7 @@ pub(super) fn parse_descriptor<'js>(
             if !parameters.is_object() {
                 return Err(PluginError::new(
                     "E_PLUGIN_DESCRIPTOR",
-                    format!("工具 `{name}` 的 parameters 必须是 JSON Schema 对象"),
+                    t!("plugin.err.tool_params_schema", name = name.as_str()).into_owned(),
                 ));
             }
             let modes = optional_modes(ctx, &declaration, &name)?;
@@ -104,7 +108,7 @@ pub(super) fn parse_descriptor<'js>(
             let run = run.into_function().ok_or_else(|| {
                 PluginError::new(
                     "E_PLUGIN_DESCRIPTOR",
-                    format!("工具 `{name}` 缺少 run 函数"),
+                    t!("plugin.err.tool_missing_run", name = name.as_str()).into_owned(),
                 )
             })?;
             tool_functions.insert(name.clone(), Persistent::save(ctx, run));
@@ -125,7 +129,7 @@ pub(super) fn parse_descriptor<'js>(
             if !valid_command_name(&name) {
                 return Err(PluginError::new(
                     "E_PLUGIN_DESCRIPTOR",
-                    format!("命令名 `{name}` 不合法（与插件名同规则，用作 /{name}）"),
+                    t!("plugin.err.cmd_name_invalid", name = name.as_str()).into_owned(),
                 ));
             }
             let value: JsValue = commands
@@ -134,7 +138,7 @@ pub(super) fn parse_descriptor<'js>(
             let declaration = value.into_object().ok_or_else(|| {
                 PluginError::new(
                     "E_PLUGIN_DESCRIPTOR",
-                    format!("命令 `{name}` 的声明必须是对象"),
+                    t!("plugin.err.cmd_decl_object", name = name.as_str()).into_owned(),
                 )
             })?;
             let description = required_text(ctx, &declaration, "description", &name)?;
@@ -145,7 +149,7 @@ pub(super) fn parse_descriptor<'js>(
             let run = run.into_function().ok_or_else(|| {
                 PluginError::new(
                     "E_PLUGIN_DESCRIPTOR",
-                    format!("命令 `{name}` 缺少 run 函数"),
+                    t!("plugin.err.cmd_missing_run", name = name.as_str()).into_owned(),
                 )
             })?;
             command_functions.insert(name.clone(), Persistent::save(ctx, run));
@@ -164,7 +168,12 @@ pub(super) fn parse_descriptor<'js>(
             let Some(kind) = HookKind::from_js_name(&name) else {
                 return Err(PluginError::new(
                     "E_PLUGIN_DESCRIPTOR",
-                    format!("未知钩子 `{name}`（支持：{}）", HookKind::supported()),
+                    t!(
+                        "plugin.err.hook_unknown",
+                        name = name.as_str(),
+                        supported = HookKind::supported()
+                    )
+                    .into_owned(),
                 ));
             };
             let value: JsValue = hooks
@@ -176,7 +185,7 @@ pub(super) fn parse_descriptor<'js>(
             if !value.is_function() {
                 return Err(PluginError::new(
                     "E_PLUGIN_DESCRIPTOR",
-                    format!("钩子 `{name}` 必须是函数"),
+                    t!("plugin.err.hook_not_fn", name = name.as_str()).into_owned(),
                 ));
             }
             descriptor.hooks.push(kind);
@@ -190,7 +199,7 @@ pub(super) fn parse_descriptor<'js>(
         if !prompt_value.is_function() {
             return Err(PluginError::new(
                 "E_PLUGIN_DESCRIPTOR",
-                "`prompt` 必须是函数",
+                t!("plugin.err.prompt_not_fn").into_owned(),
             ));
         }
         descriptor.has_prompt = true;
@@ -224,7 +233,7 @@ pub(super) fn required_text<'js>(
         Some(text) => Ok(text),
         None => Err(PluginError::new(
             "E_PLUGIN_DESCRIPTOR",
-            format!("`{owner}` 的 `{key}` 必须是非空字符串"),
+            t!("plugin.err.field_nonempty", owner = owner, key = key).into_owned(),
         )),
     }
 }
@@ -241,7 +250,7 @@ pub(super) fn optional_string<'js>(
     let Some(value) = value.into_string() else {
         return Err(PluginError::new(
             "E_PLUGIN_DESCRIPTOR",
-            format!("`{key}` 必须是字符串"),
+            t!("plugin.err.field_string", key = key).into_owned(),
         ));
     };
     value
@@ -264,7 +273,7 @@ pub(super) fn optional_object<'js>(
         Some(object) => Ok(Some(object)),
         None => Err(PluginError::new(
             "E_PLUGIN_DESCRIPTOR",
-            format!("`{key}` 必须是对象"),
+            t!("plugin.err.field_object", key = key).into_owned(),
         )),
     }
 }
@@ -281,7 +290,12 @@ pub(super) fn optional_bool<'js>(
     value
         .as_bool()
         .map(Some)
-        .ok_or_else(|| PluginError::new("E_PLUGIN_DESCRIPTOR", format!("`{key}` 必须是布尔值")))
+        .ok_or_else(|| {
+            PluginError::new(
+                "E_PLUGIN_DESCRIPTOR",
+                t!("plugin.err.field_bool", key = key).into_owned(),
+            )
+        })
 }
 
 /// 可选 `modes`：缺失时三种模式全开；存在时必须是 `default`/`ask`/`plan`
@@ -298,7 +312,7 @@ pub(super) fn optional_modes<'js>(
     let items = value.into_array().ok_or_else(|| {
         PluginError::new(
             "E_PLUGIN_DESCRIPTOR",
-            format!("工具 `{owner}` 的 modes 必须是字符串数组"),
+            t!("plugin.err.modes_array", owner = owner).into_owned(),
         )
     })?;
     let mut modes = ModeMask::empty();
@@ -307,41 +321,49 @@ pub(super) fn optional_modes<'js>(
         let name = item.into_string().ok_or_else(|| {
             PluginError::new(
                 "E_PLUGIN_DESCRIPTOR",
-                format!("工具 `{owner}` 的 modes 必须是字符串数组"),
+                t!("plugin.err.modes_array", owner = owner).into_owned(),
             )
         })?;
         let name = name.to_string().map_err(|error| js_error(ctx, error))?;
         modes = modes.union(ModeMask::parse(&name).ok_or_else(|| {
             PluginError::new(
                 "E_PLUGIN_DESCRIPTOR",
-                format!("工具 `{owner}` 的 modes 含未知模式 `{name}`（default/ask/plan）"),
+                t!(
+                    "plugin.err.modes_unknown",
+                    owner = owner,
+                    name = name.as_str()
+                )
+                .into_owned(),
             )
         })?);
     }
     if modes.is_empty() {
         return Err(PluginError::new(
             "E_PLUGIN_DESCRIPTOR",
-            format!("工具 `{owner}` 的 modes 不能是空数组；不想暴露就删掉这个工具"),
+            t!("plugin.err.modes_empty", owner = owner).into_owned(),
         ));
     }
     Ok(modes)
 }
 
 pub(super) fn config_declaration(key: String, definition: &str) -> Result<ConfigDecl> {
-    let invalid = |message: &str| PluginError::new("E_PLUGIN_CONFIG", message);
+    let invalid = |message: std::borrow::Cow<'static, str>| {
+        PluginError::new("E_PLUGIN_CONFIG", message)
+    };
     if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
-        return Err(invalid("配置键必须是 1–128 字节且不含控制字符"));
+        return Err(invalid(t!("plugin.err.config_key_invalid")));
     }
     let value: Value =
-        serde_json::from_str(definition).map_err(|error| invalid(&error.to_string()))?;
+        serde_json::from_str(definition)
+            .map_err(|error| invalid(error.to_string().into()))?;
     let object = value
         .as_object()
-        .ok_or_else(|| invalid("配置声明必须是对象"))?;
+        .ok_or_else(|| invalid(t!("plugin.err.config_decl_object")))?;
     if object
         .keys()
         .any(|key| !["type", "default", "label", "description", "choices"].contains(&key.as_str()))
     {
-        return Err(invalid("配置声明包含未知字段"));
+        return Err(invalid(t!("plugin.err.config_unknown_field")));
     }
     let kind = match object.get("type").and_then(Value::as_str) {
         Some("bool") => ConfigKind::Bool,
@@ -353,32 +375,32 @@ pub(super) fn config_declaration(key: String, definition: &str) -> Result<Config
         Some("strings") => ConfigKind::Strings,
         Some("object") => ConfigKind::Object,
         Some("choice") => ConfigKind::Choice,
-        _ => return Err(invalid("未知配置字段类型")),
+        _ => return Err(invalid(t!("plugin.err.config_type_unknown"))),
     };
     let mut choices = Vec::new();
     if let Some(value) = object.get("choices") {
         let values = value
             .as_array()
-            .ok_or_else(|| invalid("choices 必须是字符串数组"))?;
+            .ok_or_else(|| invalid(t!("plugin.err.choices_array")))?;
         for item in values {
             let choice = item
                 .as_str()
-                .ok_or_else(|| invalid("choices 必须是字符串数组"))?
+                .ok_or_else(|| invalid(t!("plugin.err.choices_array")))?
                 .to_owned();
             if choices.contains(&choice) {
-                return Err(invalid("choices 不能有重复值"));
+                return Err(invalid(t!("plugin.err.choices_dup")));
             }
             choices.push(choice);
         }
     }
     if (kind == ConfigKind::Choice) != !choices.is_empty() {
-        return Err(invalid("只有 choice 类型必须提供非空 choices"));
+        return Err(invalid(t!("plugin.err.choices_required")));
     }
     let text = |name: &str, fallback: &str| -> Result<String> {
         match object.get(name) {
             None => Ok(fallback.to_owned()),
             Some(Value::String(value)) => Ok(value.clone()),
-            _ => Err(invalid("label 与 description 必须是字符串")),
+            _ => Err(invalid(t!("plugin.err.label_desc_string"))),
         }
     };
     let declaration = ConfigDecl {
@@ -392,23 +414,25 @@ pub(super) fn config_declaration(key: String, definition: &str) -> Result<Config
     if let Some(value) = &declaration.default {
         declaration
             .validate(value)
-            .map_err(|error| invalid(&error))?;
+            .map_err(|error| invalid(error.into()))?;
     }
     Ok(declaration)
 }
 
 /// 解析 `agents.registerPreset` 的声明对象。
 pub(super) fn agent_preset_declaration(definition: &str) -> Result<AgentPresetDecl> {
-    let invalid = |message: &str| PluginError::new("E_PLUGIN_AGENT", message);
+    let invalid = |message: std::borrow::Cow<'static, str>| {
+        PluginError::new("E_PLUGIN_AGENT", message)
+    };
     let value: Value =
-        serde_json::from_str(definition).map_err(|error| invalid(&error.to_string()))?;
+        serde_json::from_str(definition).map_err(|error| invalid(error.to_string().into()))?;
     let object = value
         .as_object()
-        .ok_or_else(|| invalid("preset 声明必须是对象"))?;
+        .ok_or_else(|| invalid(t!("plugin.err.preset_object")))?;
     if object.keys().any(|key| {
         !["name", "description", "model", "systemPrompt", "tools"].contains(&key.as_str())
     }) {
-        return Err(invalid("preset 声明包含未知字段"));
+        return Err(invalid(t!("plugin.err.preset_unknown_field")));
     }
     let name = object
         .get("name")
@@ -421,43 +445,41 @@ pub(super) fn agent_preset_declaration(definition: &str) -> Result<AgentPresetDe
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
     {
-        return Err(invalid(
-            "preset name 须为小写字母开头的小写字母/数字/连字符，1–64 字节",
-        ));
+        return Err(invalid(t!("plugin.err.preset_name")));
     }
     let description = object
         .get("description")
         .and_then(Value::as_str)
         .filter(|text| !text.trim().is_empty())
-        .ok_or_else(|| invalid("固定角色必须提供非空 description"))?;
+        .ok_or_else(|| invalid(t!("plugin.err.preset_desc")))?;
     let model = match object.get("model") {
         None => "inherit",
         Some(value) => value
             .as_str()
             .filter(|text| !text.trim().is_empty())
-            .ok_or_else(|| invalid("角色 model 必须是非空字符串"))?,
+            .ok_or_else(|| invalid(t!("plugin.err.preset_model")))?,
     };
     let system_prompt = object
         .get("systemPrompt")
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid("preset 必须提供 systemPrompt 字符串"))?;
+        .ok_or_else(|| invalid(t!("plugin.err.preset_prompt")))?;
     if system_prompt.trim().is_empty() {
-        return Err(invalid("systemPrompt 不能为空"));
+        return Err(invalid(t!("plugin.err.preset_prompt_empty")));
     }
     if system_prompt.chars().count() > MAX_PRESET_PROMPT_CHARS {
-        return Err(invalid("systemPrompt 超过 4000 字符上限"));
+        return Err(invalid(t!("plugin.err.preset_prompt_long")));
     }
     let mut allow = None;
     let mut deny = None;
     if let Some(tools) = object.get("tools") {
         let tools = tools
             .as_object()
-            .ok_or_else(|| invalid("tools 必须是对象"))?;
+            .ok_or_else(|| invalid(t!("plugin.err.preset_tools_object")))?;
         if tools
             .keys()
             .any(|key| !["allow", "deny"].contains(&key.as_str()))
         {
-            return Err(invalid("tools 只允许 allow / deny 字段"));
+            return Err(invalid(t!("plugin.err.preset_tools_fields")));
         }
         let names = |key: &str| -> Result<Option<Vec<String>>> {
             match tools.get(key) {
@@ -465,13 +487,13 @@ pub(super) fn agent_preset_declaration(definition: &str) -> Result<AgentPresetDe
                 Some(items) => {
                     let items = items
                         .as_array()
-                        .ok_or_else(|| invalid("tools.allow/deny 必须是字符串数组"))?;
+                        .ok_or_else(|| invalid(t!("plugin.err.preset_tools_array")))?;
                     items
                         .iter()
                         .map(|item| {
                             item.as_str()
                                 .map(str::to_owned)
-                                .ok_or_else(|| invalid("tools.allow/deny 必须是字符串数组"))
+                                .ok_or_else(|| invalid(t!("plugin.err.preset_tools_array")))
                         })
                         .collect::<Result<Vec<_>>>()
                         .map(Some)
@@ -481,7 +503,7 @@ pub(super) fn agent_preset_declaration(definition: &str) -> Result<AgentPresetDe
         allow = names("allow")?;
         deny = names("deny")?;
         if allow.is_some() && deny.is_some() {
-            return Err(invalid("tools.allow 与 tools.deny 互斥"));
+            return Err(invalid(t!("plugin.err.preset_tools_exclusive")));
         }
     }
     Ok(AgentPresetDecl {

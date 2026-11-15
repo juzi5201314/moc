@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use globset::GlobBuilder;
 use moc_llm::LlmConfig;
+use rust_i18n::t;
 use moc_protocol::SessionPermission;
 use moc_protocol::features::{FeatureFlag, FeatureStates};
 use toml::Value;
@@ -118,6 +119,8 @@ pub struct ResolvedConfig {
     pub web_fetch: ResolvedWebFetch,
     pub agents: schema::AgentsConfig,
     pub workflow: schema::WorkflowConfig,
+    /// 用户界面语言（`auto`/`zh`/`en`）；`auto` 由前端按系统环境解析。
+    pub language: String,
     /// 特性开关状态快照：`[features]` 覆盖与各段 `enabled` 合成，加载时定死。
     pub features: FeatureStates,
     providers: BTreeMap<String, model::ResolvedProvider>,
@@ -130,7 +133,9 @@ impl ResolvedConfig {
     pub fn load(config: &CoreConfig) -> Result<Self, CoreError> {
         let home = expand_home_path(&config.home);
         let mut base_raw: Value = toml::from_str(include_str!("defaults.toml"))
-            .map_err(|error| CoreError::Config(format!("内置默认配置无效: {error}")))?;
+            .map_err(|error| {
+                CoreError::Config(t!("core.err.defaults_invalid", error = error).into_owned())
+            })?;
         merge_optional_file(&mut base_raw, &home.join("config.toml"))?;
         let legacy_model = base_raw
             .get("models")
@@ -221,9 +226,14 @@ impl ResolvedConfig {
         apply_model_defaults(&mut raw)?;
         let document: ConfigDocument = raw
             .try_into()
-            .map_err(|error| CoreError::Config(format!("配置字段无效: {error}")))?;
+            .map_err(|error| {
+                CoreError::Config(t!("core.err.field_invalid", error = error).into_owned())
+            })?;
         let providers = resolve_catalog(&document.providers)?;
         validate_models(&document.models, &providers)?;
+        if !matches!(document.language.as_str(), "" | "auto" | "zh" | "en") {
+            return Err(CoreError::Config(t!("core.config.invalid_language").into()));
+        }
         validate_compaction(&document.compaction)?;
         schema::validate_tools(&document.tools)?;
         validate_skills(&document.skills)?;
@@ -280,6 +290,7 @@ impl ResolvedConfig {
             },
             agents: document.agents,
             workflow: document.workflow,
+            language: document.language,
             features,
             providers,
             base_raw,
@@ -312,7 +323,16 @@ impl ResolvedConfig {
         .map(|path| {
             let text = fs::read_to_string(&path).unwrap_or_default();
             let servers = moc_mcp::parse_mcp_json(&text)
-                .map_err(|error| CoreError::Config(format!("解析 {}: {error}", path.display())));
+                .map_err(|error| {
+                    CoreError::Config(
+                        t!(
+                            "core.err.parse_path",
+                            path = path.display().to_string(),
+                            error = error
+                        )
+                        .into_owned(),
+                    )
+                });
             servers.map(|servers| (path, servers))
         })
         .collect::<Result<Vec<_>, CoreError>>()?;
@@ -326,10 +346,24 @@ impl ResolvedConfig {
                 .filter(|path| path.is_file())
                 .map(|path| {
                     let text = fs::read_to_string(&path).map_err(|error| {
-                        CoreError::Config(format!("读取 {}: {error}", path.display()))
+                        CoreError::Config(
+                            t!(
+                                "core.err.read_path",
+                                path = path.display().to_string(),
+                                error = error
+                            )
+                            .into_owned(),
+                        )
                     })?;
                     let servers = moc_mcp::parse_mcp_json(&text).map_err(|error| {
-                        CoreError::Config(format!("解析 {}: {error}", path.display()))
+                        CoreError::Config(
+                            t!(
+                                "core.err.parse_path",
+                                path = path.display().to_string(),
+                                error = error
+                            )
+                            .into_owned(),
+                        )
                     })?;
                     Ok((path, servers))
                 })
@@ -420,7 +454,7 @@ fn expand_config_path(value: &str, moc_home: &Path) -> Result<PathBuf, CoreError
         .or_else(|| value.strip_prefix("~\\"))
     {
         let home = crate::paths::home_dir()
-            .ok_or_else(|| CoreError::Config("无法展开配置路径：用户主目录未设置".into()))?;
+            .ok_or_else(|| CoreError::Config(t!("core.err.expand_home").into_owned()))?;
         return Ok(home.join(rest));
     }
     let path = PathBuf::from(value);
@@ -521,9 +555,27 @@ fn merge_optional_file(target: &mut Value, path: &Path) -> Result<(), CoreError>
 
 fn merge_required_file(target: &mut Value, path: &Path) -> Result<(), CoreError> {
     let text = fs::read_to_string(path)
-        .map_err(|error| CoreError::Config(format!("读取配置 {} 失败: {error}", path.display())))?;
+        .map_err(|error| {
+            CoreError::Config(
+                t!(
+                    "core.err.read_config",
+                    path = path.display().to_string(),
+                    error = error
+                )
+                .into_owned(),
+            )
+        })?;
     let overlay: Value = toml::from_str(&text)
-        .map_err(|error| CoreError::Config(format!("解析配置 {} 失败: {error}", path.display())))?;
+        .map_err(|error| {
+            CoreError::Config(
+                t!(
+                    "core.err.parse_config",
+                    path = path.display().to_string(),
+                    error = error
+                )
+                .into_owned(),
+            )
+        })?;
     merge_value(target, overlay);
     Ok(())
 }
@@ -577,7 +629,7 @@ fn apply_model_defaults(raw: &mut Value) -> Result<(), CoreError> {
     let defaults_models = models
         .as_table()
         .cloned()
-        .ok_or_else(|| CoreError::Config("defaults.models 必须是表".into()))?;
+        .ok_or_else(|| CoreError::Config(t!("core.err.defaults_models_table").into_owned()))?;
     for pattern in defaults_models.keys() {
         GlobBuilder::new(pattern)
             .literal_separator(false)
@@ -592,7 +644,7 @@ fn apply_model_defaults(raw: &mut Value) -> Result<(), CoreError> {
     let providers = raw
         .get_mut("providers")
         .and_then(Value::as_table_mut)
-        .ok_or_else(|| CoreError::Config("providers 必须是表".into()))?;
+        .ok_or_else(|| CoreError::Config(t!("core.err.providers_table").into_owned()))?;
     for (_, provider) in providers.iter_mut() {
         let Some(models) = provider.get_mut("models").and_then(Value::as_table_mut) else {
             continue;

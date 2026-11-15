@@ -11,6 +11,7 @@
 //! - `world.read` → files.* / git.* 只读实现（git 固定白名单子命令）；
 //! - `artifact.file/markdown` → 版本化写 `<run>/artifacts/`。
 
+use rust_i18n::t;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -237,7 +238,7 @@ impl WorkflowDriver {
             {
                 return DriverOutcome::Failed {
                     code: "E_ACTOR".into(),
-                    message: format!("actor 消息投递失败：{e}"),
+                    message: t!("core.err.actor_deliver", error = e).into_owned(),
                 };
             }
             let result = crate::agents::wait(
@@ -252,7 +253,11 @@ impl WorkflowDriver {
             let Ok(result) = result else {
                 return DriverOutcome::Failed {
                     code: "E_ACTOR".into(),
-                    message: format!("actor 等待失败：{}", result.unwrap_err()),
+                    message: t!(
+                        "core.err.actor_wait",
+                        error = result.unwrap_err().to_string()
+                    )
+                    .into_owned(),
                 };
             };
             let Some(entry) = result.agents.first() else {
@@ -329,7 +334,7 @@ impl WorkflowDriver {
                     Err(e) => {
                         return Err(DriverOutcome::Failed {
                             code: "E_ACTOR".into(),
-                            message: format!("SeedFrom 源子会话不可读：{e}"),
+                            message: t!("core.err.seedfrom_unreadable", error = e).into_owned(),
                         });
                     }
                 };
@@ -387,7 +392,7 @@ impl WorkflowDriver {
             Ok(result) => Ok(result.agent.id),
             Err(e) => Err(DriverOutcome::Failed {
                 code: "E_ACTOR".into(),
-                message: format!("actor spawn 失败：{e}"),
+                message: t!("core.err.actor_spawn", error = e).into_owned(),
             }),
         }
     }
@@ -431,7 +436,7 @@ impl WorkflowDriver {
         let Some(id) = args.first().and_then(|a| a.as_str()).map(str::to_string) else {
             return DriverOutcome::Failed {
                 code: "E_ARTIFACT".into(),
-                message: format!("artifact.{member} 缺 id"),
+                message: t!("core.err.artifact_no_id", member = member).into_owned(),
             };
         };
         // id 参与拼路径：运行期也按编译期字符集校验。

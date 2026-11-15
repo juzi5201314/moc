@@ -1,5 +1,7 @@
 //! 提问作答的键盘交互。
 
+use rust_i18n::t;
+
 use super::Actions;
 use crate::app::App;
 use crate::event::ASK_PREVIEW_SCROLL_STEP;
@@ -268,7 +270,7 @@ pub(super) fn handle(
                                         Err(error) => tracing::debug!(%error, "复制选项失败"),
                                     }
                                 });
-                                app.set_notice("已复制选项");
+                                app.set_notice(t!("tui.event.option_copied").into_owned());
                             }
                         }
                         (KeyCode::Enter, KeyModifiers::NONE) => {

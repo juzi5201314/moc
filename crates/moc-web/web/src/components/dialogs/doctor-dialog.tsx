@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useT } from "@/lib/i18n";
 import { type DoctorInfo, fetchDoctor } from "@/lib/web-api";
 import { rpc } from "@/protocol/client";
 import type { PingResult, WorkspaceGitBranchResult } from "@/protocol/types";
@@ -23,6 +24,7 @@ function errorText(error: unknown): string {
 }
 
 export function DoctorDialog() {
+  const t = useT();
   const server = useConnection((state) => state.server);
   const status = useConnection((state) => state.status);
   const handshakeError = useConnection((state) => state.handshakeError);
@@ -59,28 +61,32 @@ export function DoctorDialog() {
   const features = Object.values(featureStates).filter(Boolean).length;
   const rows: (Row | null)[] = [
     {
-      label: "连接",
+      label: t("dr.conn"),
       ok: online,
       text: handshakeError
-        ? `握手失败：${handshakeError.message}`
+        ? t("sb.handshake_failed", { error: handshakeError.message })
         : online
-          ? `WebSocket 已连接${rttMs !== null ? `（ping ${rttMs}ms）` : ""}`
-          : "未连接，等待重连…",
+          ? t("dr.ws_ok", { rtt: rttMs !== null ? t("dr.ping", { n: rttMs }) : "" })
+          : t("dr.waiting"),
     },
     {
-      label: "协议",
+      label: t("dr.proto"),
       ok: online ? true : null,
       text: server
-        ? `服务端 ${server.server.name} ${server.server.version} · 协议 ${server.protocol_version}`
-        : "尚未完成握手",
+        ? t("dr.server_info", {
+            name: server.server.name,
+            version: server.server.version,
+            proto: server.protocol_version,
+          })
+        : t("dr.no_handshake"),
     },
     info && {
-      label: "运行环境",
+      label: t("dr.runtime"),
       ok: true,
       text: `${info.os}/${info.arch} · moc web ${info.version}`,
     },
     info && {
-      label: "配置目录",
+      label: t("dr.config_dir"),
       ok: true,
       text: info.configHome,
     },
@@ -88,25 +94,29 @@ export function DoctorDialog() {
       label: "Git",
       ok: info.gitVersion !== null,
       text: info.gitVersion
-        ? `${info.gitVersion}${branch ? ` · ${config?.cwd ?? ""} 在 ${branch} 分支` : ""}`
-        : "未找到 git，工作区变更检测与 diff 将不可用",
+        ? `${info.gitVersion}${branch ? t("dr.git_branch", { cwd: config?.cwd ?? "", branch }) : ""}`
+        : t("dr.no_git"),
     },
     info && {
-      label: "沙盒",
+      label: t("dr.sandbox"),
       ok: info.sandbox.runner !== null ? true : null,
       text: info.sandbox.runner
-        ? `${info.sandbox.runner} · 可用模式 ${info.sandbox.modes.join(", ")}${info.sandbox.homeOverlay ? " · home overlay" : ""}`
-        : `未探测到沙盒 runner，仅完全访问（${info.sandbox.modes.join(", ")}）`,
+        ? `${info.sandbox.runner} · ${t("dr.sandbox_modes", { modes: info.sandbox.modes.join(", ") })}${info.sandbox.homeOverlay ? " · home overlay" : ""}`
+        : t("dr.no_sandbox", { modes: info.sandbox.modes.join(", ") }),
     },
     {
-      label: "浏览器",
+      label: t("dr.browser"),
       ok: navigator.onLine ? true : null,
-      text: `${navigator.language} · ${navigator.onLine ? "在线" : "离线"}`,
+      text: `${navigator.language} · ${navigator.onLine ? t("dr.online") : t("dr.offline")}`,
     },
     config && {
-      label: "特性",
+      label: t("dr.features"),
       ok: true,
-      text: `${features}/${Object.keys(featureStates).length} 项开启 · 可用模型 ${config.models.length} 个`,
+      text: t("dr.features_text", {
+        on: features,
+        total: Object.keys(featureStates).length,
+        models: config.models.length,
+      }),
     },
   ];
 
@@ -114,8 +124,8 @@ export function DoctorDialog() {
     <Dialog open onOpenChange={(open) => !open && useUi.getState().set({ doctor: false })}>
       <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>环境诊断</DialogTitle>
-          <DialogDescription>连接、服务端与平台能力逐项检查。</DialogDescription>
+          <DialogTitle>{t("dr.title")}</DialogTitle>
+          <DialogDescription>{t("dr.desc")}</DialogDescription>
         </DialogHeader>
         <div className="min-h-0 overflow-y-auto">
           <ul className="flex flex-col gap-2.5">
@@ -137,7 +147,7 @@ export function DoctorDialog() {
           </ul>
           {error && (
             <p role="alert" className="mt-3 text-sm text-destructive">
-              服务端环境读取失败：{error}
+              {t("dr.fetch_failed", { error })}
             </p>
           )}
         </div>

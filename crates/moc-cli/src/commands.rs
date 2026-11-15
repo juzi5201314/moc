@@ -48,7 +48,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "debuginfo",
         aliases: &[],
         usage: "",
-        description: "工具调用统计、成功率与上下文压缩次数",
+        description: "cli.commands.debuginfo.desc",
         group: CommandGroup::Ui,
         needs_session: true,
         available_during_task: true,
@@ -62,7 +62,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "session",
         aliases: &[],
         usage: "",
-        description: "当前会话身份、文件路径与分类存储大小",
+        description: "cli.commands.session.desc",
         group: CommandGroup::Session,
         needs_session: true,
         available_during_task: true,
@@ -76,7 +76,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "new",
         aliases: &[],
         usage: "",
-        description: "创建新会话",
+        description: "cli.commands.new.desc",
         group: CommandGroup::Session,
         needs_session: false,
         available_during_task: true,
@@ -90,7 +90,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "sessions",
         aliases: &[],
         usage: "",
-        description: "列出会话",
+        description: "cli.commands.sessions.desc",
         group: CommandGroup::Session,
         needs_session: false,
         available_during_task: true,
@@ -104,7 +104,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "cancel",
         aliases: &[],
         usage: "",
-        description: "取消当前提示（运行中按 Ctrl+C）",
+        description: "cli.commands.cancel.desc",
         group: CommandGroup::Session,
         needs_session: true,
         available_during_task: true,
@@ -118,7 +118,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "quit",
         aliases: &["exit"],
         usage: "",
-        description: "退出",
+        description: "cli.commands.quit.desc",
         group: CommandGroup::Session,
         needs_session: false,
         available_during_task: true,
@@ -132,7 +132,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "engine",
         aliases: &[],
         usage: "<standard|ptc|clm>",
-        description: "切换会话引擎（跑过首条提示后引擎锁定）",
+        description: "cli.commands.engine.desc",
         group: CommandGroup::Mode,
         needs_session: true,
         available_during_task: false,
@@ -146,7 +146,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "clm-experimental",
         aliases: &[],
         usage: "",
-        description: "启用 CLM 实验引擎；首次请求后引擎锁定",
+        description: "cli.commands.clm_experimental.desc",
         group: CommandGroup::Mode,
         needs_session: true,
         available_during_task: false,
@@ -160,7 +160,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "autonomy",
         aliases: &[],
         usage: "[default|dont_ask|unattended]",
-        description: "切换自主程度；无参数时循环",
+        description: "cli.commands.autonomy.desc",
         group: CommandGroup::Mode,
         needs_session: true,
         available_during_task: false,
@@ -174,7 +174,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "permission",
         aliases: &[],
         usage: "<full|workspace|workspace-only|clear>",
-        description: "切换命令权限或清空本会话沙盒授权",
+        description: "cli.commands.permission.desc",
         group: CommandGroup::Mode,
         needs_session: true,
         available_during_task: false,
@@ -187,8 +187,8 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         id: CommandId::Plan,
         name: "plan",
         aliases: &[],
-        usage: "[提示词]",
-        description: "进入/退出计划模式；带提示词时进入并发送",
+        usage: "cli.commands.plan.usage",
+        description: "cli.commands.plan.desc",
         group: CommandGroup::Mode,
         needs_session: true,
         available_during_task: false,
@@ -202,7 +202,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "goal",
         aliases: &[],
         usage: "[<objective>|edit <objective>|pause|resume|clear]",
-        description: "查看或设置会话目标；目标存在时每轮提示结束自动续跑，直到达成或叫停",
+        description: "cli.commands.goal.desc",
         group: CommandGroup::Session,
         needs_session: true,
         available_during_task: true,
@@ -215,8 +215,8 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         id: CommandId::Approve,
         name: "approve",
         aliases: &[],
-        usage: "<execute|compact|new [引擎]|reject>",
-        description: "处理已提交的计划",
+        usage: "cli.commands.approve.usage",
+        description: "cli.commands.approve.desc",
         group: CommandGroup::Mode,
         needs_session: true,
         available_during_task: false,
@@ -229,8 +229,8 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         id: CommandId::Ask,
         name: "ask",
         aliases: &[],
-        usage: "<问题>",
-        description: "仅本条消息按问答模式（只读）处理",
+        usage: "cli.commands.ask.usage",
+        description: "cli.commands.ask.desc",
         group: CommandGroup::Mode,
         needs_session: true,
         available_during_task: true,
@@ -244,7 +244,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "retry",
         aliases: &[],
         usage: "",
-        description: "接着现有上下文继续跑（不追加用户消息，仅空闲时可用）",
+        description: "cli.commands.retry.desc",
         group: CommandGroup::Context,
         needs_session: true,
         available_during_task: false,
@@ -258,7 +258,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "compact-skills",
         aliases: &[],
         usage: "[compact | force | cleanup [all]]",
-        description: "手动压缩技能目录或清理摘要缓存，不写会话历史",
+        description: "cli.commands.compact_skills.desc",
         group: CommandGroup::Context,
         needs_session: false,
         available_during_task: false,
@@ -272,7 +272,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "compact",
         aliases: &[],
         usage: "",
-        description: "压缩当前上下文",
+        description: "cli.commands.compact.desc",
         group: CommandGroup::Context,
         needs_session: true,
         available_during_task: false,
@@ -286,7 +286,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "usage",
         aliases: &[],
         usage: "",
-        description: "查看当前会话模型用量",
+        description: "cli.commands.usage.desc",
         group: CommandGroup::Context,
         needs_session: true,
         available_during_task: true,
@@ -300,7 +300,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "model",
         aliases: &[],
         usage: "<selector>",
-        description: "切换模型（装不下当前上下文时先询问再压缩）",
+        description: "cli.commands.model.desc",
         group: CommandGroup::Mode,
         needs_session: true,
         available_during_task: false,
@@ -314,7 +314,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "agents",
         aliases: &[],
         usage: "",
-        description: "列出当前会话的直接子代理（创建、交流、停止都在 TUI）",
+        description: "cli.commands.agents.desc",
         group: CommandGroup::Agents,
         needs_session: true,
         available_during_task: true,
@@ -328,7 +328,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "plugins",
         aliases: &[],
         usage: "[reload]",
-        description: "查看已加载的插件；reload 重载插件宿主并重新发现",
+        description: "cli.commands.plugins.desc",
         group: CommandGroup::Plugins,
         needs_session: true,
         available_during_task: true,
@@ -342,7 +342,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "help",
         aliases: &[],
         usage: "",
-        description: "显示本帮助",
+        description: "cli.commands.help.desc",
         group: CommandGroup::Ui,
         needs_session: false,
         available_during_task: true,
@@ -356,7 +356,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         name: "features",
         aliases: &[],
         usage: "",
-        description: "特性开关一览：阶段、状态与上下文成本",
+        description: "cli.commands.features.desc",
         group: CommandGroup::Ui,
         needs_session: false,
         available_during_task: true,
@@ -378,6 +378,8 @@ pub fn registry() -> Registry {
 /// `/help` 文本：按组生成，命令与别名都成行；flag 关闭的命令仍列出并注明。
 pub fn help_text(features: &moc_protocol::features::FeatureStates) -> String {
     use std::fmt::Write;
+    use moc_protocol::commands::{description_text, usage_text};
+    use rust_i18n::t;
     let mut text = String::new();
     for group in [
         CommandGroup::Session,
@@ -395,28 +397,34 @@ pub fn help_text(features: &moc_protocol::features::FeatureStates) -> String {
             let usage = if spec.usage.is_empty() {
                 format!("/{}", spec.name)
             } else {
-                format!("/{} {}", spec.name, spec.usage)
+                format!("/{} {}", spec.name, usage_text(spec.usage))
             };
             let disabled = spec.flag.is_some_and(|flag| !features.enabled(flag));
+            let description = description_text(spec.description);
             rows.push((
                 usage,
                 if disabled {
-                    format!("{}（特性已禁用）", spec.description)
+                    t!("cli.help.disabled", desc = description.as_ref()).into_owned()
                 } else {
-                    spec.description.to_owned()
+                    description.as_ref().to_owned()
                 },
             ));
             for alias in spec.aliases {
                 rows.push((
                     format!("/{alias}"),
-                    format!("退出（/{} 的别名）", spec.name),
+                    t!(
+                        "cli.help.alias_of",
+                        desc = description.as_ref(),
+                        name = spec.name
+                    )
+                    .into_owned(),
                 ));
             }
         }
         if rows.is_empty() {
             continue;
         }
-        let _ = writeln!(text, "{}：", group.label());
+        let _ = writeln!(text, "{}", t!("cli.help.group_fmt", group = group.label()));
         let width = rows.iter().map(|(usage, _)| usage.len()).max().unwrap_or(0);
         for (usage, description) in rows {
             let _ = writeln!(text, "  {usage:<width$}  {description}");
@@ -467,6 +475,7 @@ mod tests {
     /// 帮助从注册表生成，天然不会漏命令；守住「每条可见命令与别名都有行」。
     #[test]
     fn help_lists_every_visible_command_and_alias() {
+        rust_i18n::set_locale("zh");
         let text = help_text(&moc_protocol::features::FeatureStates::defaults());
         for spec in COMMANDS.iter().filter(|spec| !spec.hidden) {
             assert!(

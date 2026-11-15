@@ -69,7 +69,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
+            "language='zh'\n[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\
@@ -358,7 +358,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
+            "language='zh'\n[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\
@@ -550,7 +550,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
+            "language='zh'\n[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\

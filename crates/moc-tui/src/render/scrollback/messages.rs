@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::super::PROSE_INDENT;
 use super::super::TITLE_INDENT;
 use super::super::labels;
@@ -256,7 +258,10 @@ pub(super) fn thinking_block(
             .and_then(|keys| keys.first())
             .map_or("ctrl+t", String::as_str);
         spans.push(Span::styled(
-            format!("  {}", labels::hints(&[(binding, "展开")], usize::MAX)),
+            format!(
+                "  {}",
+                labels::hints(&[(binding, t!("tui.hint.expand_row"))], usize::MAX)
+            ),
             dim,
         ));
     }
@@ -356,7 +361,7 @@ pub(super) fn agent_result_block(
             Span::raw(" ".repeat(TITLE_INDENT)),
             Span::styled("◆ ", Style::new().fg(color)),
             Span::styled(
-                "子代理结果 ",
+                t!("tui.subagent.result").into_owned(),
                 Style::new()
                     .fg(theme.accent_tool)
                     .add_modifier(Modifier::BOLD),
@@ -422,16 +427,19 @@ pub(super) fn goal_round_block(
             Span::raw(" ".repeat(TITLE_INDENT)),
             Span::styled("◇ ", Style::new().fg(theme.accent_running)),
             Span::styled(
-                "goal ".to_owned(),
+                t!("tui.subagent.goal").into_owned(),
                 Style::new()
                     .fg(theme.accent_running)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("round {}{}", meta.round, labels::SEP),
+                t!("tui.subagent.round_fmt", round = meta.round, sep = labels::SEP).into_owned(),
                 Style::new().fg(theme.text_primary),
             ),
-            Span::styled("auto".to_owned(), Style::new().fg(theme.gray_bright)),
+            Span::styled(
+                t!("tui.subagent.auto").into_owned(),
+                Style::new().fg(theme.gray_bright),
+            ),
         ]),
         width,
     )];

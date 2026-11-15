@@ -1,4 +1,5 @@
 use crate::error::CoreError;
+use rust_i18n::t;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -199,7 +200,9 @@ pub(in super::super) fn validate_plugins(plugins: &PluginsConfig) -> Result<(), 
         ("plugins.call_timeout_ms", plugins.call_timeout_ms),
     ] {
         if value == 0 {
-            return Err(CoreError::Config(format!("{name} 必须大于 0")));
+            return Err(CoreError::Config(
+                t!("core.err.must_be_positive", name = name).into_owned(),
+            ));
         }
     }
     Ok(())

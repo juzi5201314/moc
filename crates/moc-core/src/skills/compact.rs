@@ -5,6 +5,7 @@ use moc_protocol::{
     RequestContext, SkillsCompactAction, SkillsCompactParams, SkillsCompactResult, SkillsProgress,
     SkillsProgressParams, SkillsProgressPhase,
 };
+use rust_i18n::t;
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::BTreeMap, path::Path, sync::Arc};
@@ -118,7 +119,7 @@ pub(crate) async fn run(
             while start < candidates.len() {
                 let model = model
                     .as_ref()
-                    .ok_or_else(|| CoreError::Config("请先选择用于技能压缩的模型".into()))?;
+                    .ok_or_else(|| CoreError::Config(t!("core.err.skills_no_model").into_owned()))?;
                 // 输入和输出都预留空间；分批生成，但整次命令只提交一次。
                 let output_budget = model.max_output_tokens.min(4096);
                 let batch_limit = (output_budget as usize / 192).clamp(1, 32);
@@ -143,10 +144,13 @@ pub(crate) async fn run(
                     end += 1;
                 }
                 if end == start {
-                    return Err(CoreError::Config(format!(
-                        "模型上下文不足以压缩技能 {}",
-                        candidates[start].name
-                    )));
+                    return Err(CoreError::Config(
+                        t!(
+                            "core.err.skills_ctx_insufficient",
+                            name = candidates[start].name
+                        )
+                        .into_owned(),
+                    ));
                 }
                 let mut request = build_request(
                     model,
@@ -171,7 +175,7 @@ pub(crate) async fn run(
                     FinishReason::Stop | FinishReason::StopSequence
                 ) {
                     return Err(CoreError::Config(
-                        "技能摘要未正常完成，未提交任何缓存".into(),
+                        t!("core.err.skills_incomplete").into_owned(),
                     ));
                 }
                 let hints = parse_hints(&response.message.text(), start, end)?;
@@ -208,10 +212,9 @@ pub(crate) async fn run(
                         && fingerprint(skill) == fingerprint(original)
                 });
                 if !unchanged {
-                    return Err(CoreError::Config(format!(
-                        "技能 {} 在压缩期间已变化，未提交任何缓存",
-                        original.name
-                    )));
+                    return Err(CoreError::Config(
+                        t!("core.err.skills_changed", name = original.name).into_owned(),
+                    ));
                 }
             }
         }
@@ -251,17 +254,23 @@ pub(crate) async fn run(
     } else {
         delta as f64 * 100.0 / result.tokens_before as f64
     };
-    result.message = format!(
-        "技能摘要：压缩 {} 个，缓存跳过 {} 个，清理 {} 个；目录预估 {} → {} tokens（{} {}，{:.1}%）",
-        result.compressed,
-        result.skipped,
-        result.removed,
-        result.tokens_before,
-        result.tokens_after,
-        if delta >= 0 { "减少" } else { "增加" },
-        delta.abs(),
-        percent.abs()
-    );
+    result.message = t!(
+        "core.err.skills_summary_fmt",
+        compacted = result.compressed,
+        cached = result.skipped,
+        removed = result.removed,
+        before = result.tokens_before,
+        after = result.tokens_after,
+        direction = if delta >= 0 {
+            t!("core.err.skills_decrease")
+        } else {
+            t!("core.err.skills_increase")
+        }
+        .as_ref(),
+        delta = delta.abs(),
+        pct = format!("{:.1}", percent.abs())
+    )
+    .into_owned();
     Ok(result)
 }
 
@@ -341,7 +350,9 @@ fn parse_hints(text: &str, start: usize, end: usize) -> Result<Vec<(usize, Strin
         }
     }
     let Hints(raw) = serde_json::from_str(text)
-        .map_err(|error| CoreError::Config(format!("技能摘要 JSON 无效，未提交缓存：{error}")))?;
+        .map_err(|error| {
+            CoreError::Config(t!("core.err.skills_json_invalid", error = error).into_owned())
+        })?;
     let mut seen = vec![false; end - start];
     let mut hints = Vec::with_capacity(raw.len());
     for (key, hint) in raw {
@@ -349,17 +360,15 @@ fn parse_hints(text: &str, start: usize, end: usize) -> Result<Vec<(usize, Strin
             .parse::<usize>()
             .ok()
             .filter(|id| (start..end).contains(id) && id.to_string() == key)
-            .ok_or_else(|| CoreError::Config("技能摘要包含未知 ID，未提交缓存".into()))?;
+            .ok_or_else(|| CoreError::Config(t!("core.err.skills_unknown_id").into_owned()))?;
         if seen[id - start] || !valid_hint(&hint) {
-            return Err(CoreError::Config(
-                "技能摘要重复、为空或超出长度，未提交缓存".into(),
-            ));
+            return Err(CoreError::Config(t!("core.err.skills_dup").into_owned()));
         }
         seen[id - start] = true;
         hints.push((id, hint.trim().to_owned()));
     }
     if seen.iter().any(|seen| !seen) {
-        return Err(CoreError::Config("技能摘要遗漏条目，未提交缓存".into()));
+        return Err(CoreError::Config(t!("core.err.skills_missing").into_owned()));
     }
     Ok(hints)
 }

@@ -23,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { t, useT } from "@/lib/i18n";
 import { compactTokens } from "@/lib/models";
 import { getPath, setPath } from "@/lib/settings-doc";
 import { cn } from "@/lib/utils";
@@ -65,11 +66,12 @@ function apiOptions(doc: SettingsDocument): ChoiceOption[] {
 async function discover(id: string, provider: unknown): Promise<CatalogModel[]> {
   const action: ConfigAction = { action: "models", id, provider };
   const reply = await rpc.call<ConfigReply>("config/manage", action);
-  if (reply.kind !== "models") throw new Error("config/manage 返回了非 models 响应");
+  if (reply.kind !== "models") throw new Error(t("sp.bad_reply"));
   return reply.data;
 }
 
 export function ProvidersSection({ doc }: { doc: SettingsDocument }) {
+  const t = useT();
   const providers = useMemo(() => {
     const value = getPath(doc.effective, ["providers"]);
     return isObject(value) ? Object.keys(value).toSorted() : [];
@@ -107,7 +109,7 @@ export function ProvidersSection({ doc }: { doc: SettingsDocument }) {
             >
               <span className="truncate text-ui font-medium text-foreground">{id}</span>
               <span className="truncate text-xs text-text-tertiary">
-                {api ?? "未选择协议"} · {models} 个模型
+                {api ?? t("sp.no_api")} · {t("sp.models_n", { n: models })}
               </span>
             </button>
           );
@@ -121,7 +123,7 @@ export function ProvidersSection({ doc }: { doc: SettingsDocument }) {
           )}
         >
           <PlusIcon className="size-4" />
-          添加供应商
+          {t("sp.add")}
         </button>
       </aside>
 
@@ -162,14 +164,15 @@ function AddProvider({
   onCancel?: () => void;
   onCreated: (id: string) => void;
 }) {
+  const t = useT();
   const [id, setId] = useState("");
   const [api, setApi] = useState(options[0]?.value ?? "openai_chat");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const trimmed = id.trim();
-  const invalid = trimmed && !/^[A-Za-z0-9_-]+$/.test(trimmed) ? "只能用字母、数字、- 和 _" : null;
-  const duplicate = existing.includes(trimmed) ? "已有同名供应商" : null;
+  const invalid = trimmed && !/^[A-Za-z0-9_-]+$/.test(trimmed) ? t("sp.id_invalid") : null;
+  const duplicate = existing.includes(trimmed) ? t("sp.id_dup") : null;
   const ready = Boolean(trimmed && baseUrl.trim()) && !invalid && !duplicate;
 
   const create = async () => {
@@ -178,7 +181,7 @@ function AddProvider({
     const ok = await writeSettings(
       (doc) =>
         setPath(doc, ["providers", trimmed], { api, base_url: baseUrl.trim(), api_key: apiKey }),
-      `已添加供应商 ${trimmed}`,
+      t("sp.added", { id: trimmed }),
     );
     setBusy(false);
     if (ok) onCreated(trimmed);
@@ -187,25 +190,23 @@ function AddProvider({
   return (
     <div className="space-y-5">
       <div>
-        <h3 className="text-title font-semibold">添加供应商</h3>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          填好地址与密钥后会自动从供应商拉取可用模型，勾选即可加入。
-        </p>
+        <h3 className="text-title font-semibold">{t("sp.add")}</h3>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("sp.add_desc")}</p>
       </div>
       <div className="space-y-3.5 rounded-xl bg-card p-4 ring-1 ring-inset ring-border-subtle">
         <Labeled
-          label="标识"
-          hint={invalid ?? duplicate ?? "用于模型选择器里的 provider/model 前缀"}
+          label={t("sp.id")}
+          hint={invalid ?? duplicate ?? t("sp.id_hint")}
           error={Boolean(invalid ?? duplicate)}
         >
           <Input
             value={id}
             onChange={(event) => setId(event.target.value)}
-            placeholder="例如 openai、deepseek"
+            placeholder={t("sp.id_ph")}
             className="h-8 rounded-lg text-ui shadow-none"
           />
         </Labeled>
-        <Labeled label="API 格式">
+        <Labeled label={t("sp.api")}>
           <Select value={api} onValueChange={setApi}>
             <SelectTrigger size="sm" className="h-8 w-full rounded-lg text-ui shadow-none">
               <SelectValue />
@@ -219,7 +220,7 @@ function AddProvider({
             </SelectContent>
           </Select>
         </Labeled>
-        <Labeled label="服务地址">
+        <Labeled label={t("sp.base_url")}>
           <Input
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
@@ -228,7 +229,7 @@ function AddProvider({
             spellCheck={false}
           />
         </Labeled>
-        <Labeled label="API 密钥" hint="本地模型不需要可留空">
+        <Labeled label={t("sp.api_key")} hint={t("sp.api_key_hint")}>
           <Input
             type="password"
             value={apiKey}
@@ -241,12 +242,12 @@ function AddProvider({
       <div className="flex justify-end gap-2">
         {onCancel && (
           <Button variant="ghost" size="sm" onClick={onCancel}>
-            取消
+            {t("common.cancel")}
           </Button>
         )}
         <Button size="sm" disabled={!ready || busy} onClick={() => void create()}>
           {busy && <Loader2Icon className="animate-spin" />}
-          添加并获取模型
+          {t("sp.add_fetch")}
         </Button>
       </div>
     </div>
@@ -288,6 +289,7 @@ function ProviderDetail({
   autoDiscover: boolean;
   onDeleted: () => void;
 }) {
+  const t = useT();
   const [showMore, setShowMore] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [discovered, setDiscovered] = useState<{
@@ -335,7 +337,7 @@ function ProviderDetail({
   const remove = () =>
     void writeSettings(
       (current) => setPath(current, ["providers", id], undefined),
-      `已删除供应商 ${id}`,
+      t("sp.deleted", { id }),
     ).then((ok) => ok && onDeleted());
 
   return (
@@ -344,30 +346,28 @@ function ProviderDetail({
         <div className="min-w-0">
           <h3 className="truncate text-title font-semibold">{id}</h3>
           <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-            {explicit
-              ? "连接参数与模型改动会立即保存。"
-              : "这个供应商定义在全局配置里，这里只能覆盖部分字段。"}
+            {explicit ? t("sp.explicit_note") : t("sp.inherited_note")}
           </p>
         </div>
         {explicit &&
           (confirmDelete ? (
             <div className="flex shrink-0 items-center gap-1.5">
               <Button size="xs" variant="ghost" onClick={() => setConfirmDelete(false)}>
-                取消
+                {t("common.cancel")}
               </Button>
               <Button size="xs" variant="destructive" onClick={remove}>
-                确认删除
+                {t("sp.confirm_delete")}
               </Button>
             </div>
           ) : (
-            <IconButton label="删除供应商" size="sm" onClick={() => setConfirmDelete(true)}>
+            <IconButton label={t("sp.delete")} size="sm" onClick={() => setConfirmDelete(true)}>
               <Trash2Icon />
             </IconButton>
           ))}
       </div>
 
       <section className="space-y-2">
-        <h4 className="text-xs font-medium text-text-tertiary">连接</h4>
+        <h4 className="text-xs font-medium text-text-tertiary">{t("sp.connection")}</h4>
         <FieldList fields={primary} doc={doc} strip={2} showGroups={false} />
         {(secondary.length > 0 || parameters.length > 0) && (
           <>
@@ -379,7 +379,7 @@ function ProviderDetail({
               <ChevronRightIcon
                 className={cn("size-3.5 transition-transform", showMore && "rotate-90")}
               />
-              {`高级选项（${secondary.length + parameters.length}）`}
+              {t("sp.advanced", { n: secondary.length + parameters.length })}
             </button>
             {showMore && (
               <div className="space-y-4">
@@ -389,12 +389,9 @@ function ProviderDetail({
                 {parameters.length > 0 && (
                   <div className="space-y-2">
                     <h4 className="text-xs font-medium text-text-tertiary">
-                      API 请求参数 · 供应商默认值
+                      {t("sp.params_title")}
                     </h4>
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      按当前 API 格式列出文本、图片与函数调用参数；模型可单独覆盖。未设置的项使用
-                      moc 或上游默认值，具体支持范围取决于模型与账号。
-                    </p>
+                    <p className="text-xs leading-5 text-muted-foreground">{t("sp.params_desc")}</p>
                     <FieldList fields={parameters} doc={doc} strip={2} includeAdvanced />
                   </div>
                 )}
@@ -406,7 +403,9 @@ function ProviderDetail({
 
       <section className="space-y-2">
         <div className="flex items-center justify-between gap-2">
-          <h4 className="text-xs font-medium text-text-tertiary">模型 · {models.length}</h4>
+          <h4 className="text-xs font-medium text-text-tertiary">
+            {t("sp.models_list", { n: models.length })}
+          </h4>
           <Button
             size="xs"
             variant="outline"
@@ -414,13 +413,13 @@ function ProviderDetail({
             onClick={() => void runDiscover()}
           >
             {discovered.busy ? <Loader2Icon className="animate-spin" /> : <DownloadCloudIcon />}
-            从供应商获取
+            {t("sp.fetch")}
           </Button>
         </div>
 
         {discovered.error && (
           <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-            获取模型列表失败：{discovered.error}
+            {t("sp.fetch_failed", { error: discovered.error })}
           </div>
         )}
         {discovered.models && (
@@ -434,9 +433,7 @@ function ProviderDetail({
 
         <div className="divide-y divide-border-subtle overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-border-subtle">
           {models.length === 0 && (
-            <p className="px-4 py-6 text-center text-ui text-text-tertiary">
-              还没有模型。点「从供应商获取」，或在下方手动添加模型 ID。
-            </p>
+            <p className="px-4 py-6 text-center text-ui text-text-tertiary">{t("sp.no_models")}</p>
           )}
           {models.map((modelId) => (
             <ModelRow key={modelId} providerId={id} modelId={modelId} doc={doc} />
@@ -457,6 +454,7 @@ function ModelRow({
   modelId: string;
   doc: SettingsDocument;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const path = ["providers", providerId, "models", modelId];
   const model = getPath(doc.effective, path);
@@ -490,7 +488,7 @@ function ModelRow({
           />
           <span className="min-w-0 truncate font-mono text-xs text-foreground">{modelId}</span>
           <span className="ml-auto flex shrink-0 items-center gap-2 text-text-tertiary">
-            {image && <ImageIcon className="size-3.5" aria-label="支持图片" />}
+            {image && <ImageIcon className="size-3.5" aria-label={t("mp.images")} />}
             {context && (
               <span className="font-mono text-xs tabular-nums">{compactTokens(context)}</span>
             )}
@@ -499,7 +497,7 @@ function ModelRow({
         <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/model:opacity-100 focus-within:opacity-100">
           {explicit && (
             <IconButton
-              label="移除模型"
+              label={t("sp.remove_model")}
               size="xs"
               onClick={() => void writeSettings((current) => setPath(current, path, undefined))}
             >
@@ -518,6 +516,7 @@ function ModelRow({
 }
 
 function ManualAdd({ providerId, existing }: { providerId: string; existing: string[] }) {
+  const t = useT();
   const [value, setValue] = useState("");
   const id = value.trim();
   const add = () => {
@@ -533,13 +532,13 @@ function ManualAdd({ providerId, existing }: { providerId: string; existing: str
         value={value}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => event.key === "Enter" && add()}
-        placeholder="手动添加模型 ID"
+        placeholder={t("sp.manual_ph")}
         spellCheck={false}
         className="h-7 min-w-0 flex-1 bg-transparent font-mono text-xs outline-none placeholder:font-sans placeholder:text-text-tertiary"
       />
       {id && (
         <Button size="xs" variant="ghost" disabled={existing.includes(id)} onClick={add}>
-          {existing.includes(id) ? "已存在" : "添加"}
+          {existing.includes(id) ? t("sp.exists") : t("common.add")}
         </Button>
       )}
     </div>
@@ -557,6 +556,7 @@ function DiscoveryPanel({
   existing: Set<string>;
   onClose: () => void;
 }) {
+  const t = useT();
   const [query, setQuery] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -578,11 +578,14 @@ function DiscoveryPanel({
     const ids = [...picked];
     if (ids.length === 0) return;
     setBusy(true);
-    const ok = await writeSettings((doc) => {
-      let next = doc;
-      for (const id of ids) next = setPath(next, ["providers", providerId, "models", id], {});
-      return next;
-    }, `已添加 ${ids.length} 个模型`);
+    const ok = await writeSettings(
+      (doc) => {
+        let next = doc;
+        for (const id of ids) next = setPath(next, ["providers", providerId, "models", id], {});
+        return next;
+      },
+      t("sp.models_added", { n: ids.length }),
+    );
     setBusy(false);
     if (ok) onClose();
   };
@@ -590,9 +593,9 @@ function DiscoveryPanel({
   if (candidates.length === 0) {
     return (
       <div className="flex items-center justify-between rounded-lg bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
-        供应商没有返回模型列表，可以在下方手动添加。
+        {t("sp.no_candidates")}
         <Button size="xs" variant="ghost" onClick={onClose}>
-          关闭
+          {t("common.close")}
         </Button>
       </div>
     );
@@ -605,7 +608,7 @@ function DiscoveryPanel({
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder={`在 ${candidates.length} 个模型中搜索`}
+          placeholder={t("sp.search_ph", { n: candidates.length })}
           className="h-7 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-text-tertiary"
         />
         <button
@@ -623,7 +626,7 @@ function DiscoveryPanel({
           disabled={addable.length === 0}
           className="shrink-0 text-xs text-muted-foreground hover:text-foreground disabled:opacity-40"
         >
-          {allPicked ? "取消全选" : "全选"}
+          {allPicked ? t("sp.unselect_all") : t("sp.select_all")}
         </button>
       </div>
       <ul className="max-h-64 overflow-y-auto p-1">
@@ -651,7 +654,9 @@ function DiscoveryPanel({
                   <span className="min-w-0 truncate text-xs text-text-tertiary">{model.name}</span>
                 )}
                 {added && (
-                  <span className="ml-auto shrink-0 text-2xs text-text-tertiary">已添加</span>
+                  <span className="ml-auto shrink-0 text-2xs text-text-tertiary">
+                    {t("sp.added_mark")}
+                  </span>
                 )}
               </label>
             </li>
@@ -660,11 +665,11 @@ function DiscoveryPanel({
       </ul>
       <div className="flex items-center justify-end gap-2 border-t border-border-subtle px-3 py-2">
         <Button size="xs" variant="ghost" onClick={onClose}>
-          收起
+          {t("th.collapse")}
         </Button>
         <Button size="xs" disabled={picked.size === 0 || busy} onClick={() => void add()}>
           {busy && <Loader2Icon className="animate-spin" />}
-          {picked.size > 0 ? `添加 ${picked.size} 个模型` : "添加模型"}
+          {picked.size > 0 ? t("sp.add_n", { n: picked.size }) : t("sp.add_models")}
         </Button>
       </div>
     </div>

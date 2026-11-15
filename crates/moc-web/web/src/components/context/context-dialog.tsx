@@ -2,10 +2,12 @@
 
 import { useCallback, useRef } from "react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { useT } from "@/lib/i18n";
 import { useUi } from "@/store/ui";
 import { ContextViewer } from "./context-viewer";
 
 export function ContextDialog() {
+  const t = useT();
   const sessionId = useUi((state) => state.contextDialog);
   const back = useRef<(() => void) | null>(null);
   const onBackChange = useCallback((handler: (() => void) | null) => {
@@ -26,7 +28,7 @@ export function ContextDialog() {
           }
         }}
       >
-        <DialogTitle className="sr-only">上下文</DialogTitle>
+        <DialogTitle className="sr-only">{t("cv.title")}</DialogTitle>
         {sessionId && (
           <ContextViewer key={sessionId} sessionId={sessionId} onBackChange={onBackChange} />
         )}

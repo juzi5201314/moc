@@ -564,6 +564,7 @@ impl AgentService for ScriptedService {
             cwd: state.cwd.clone(),
             fusion: None,
             features: moc_protocol::features::FeatureStates::defaults(),
+            language: None,
         })
     }
     async fn plugin_list(

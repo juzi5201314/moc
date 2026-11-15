@@ -3,6 +3,7 @@
 // 同一套：read 只占一行、grep/find 只报数量、bash 给单行命令 + 末尾 4 行输出、
 // edit/write 给最多 6 行 diff。全部是纯函数，组件只负责画。
 
+import { type MsgKey, t } from "@/lib/i18n";
 import type { Block, ToolBlock } from "@/lib/transcript-model";
 import { activitySnippet } from "@/lib/turn";
 import type { TodoPhase, TodoStatus, ToolDiff, WebDetailLevel } from "@/protocol/types";
@@ -132,14 +133,14 @@ export function fetchedPages(result: string): FetchedPage[] {
 
 export function agentPreviews(tool: ToolBlock): { label: string; text: string }[] {
   const args = parseArgs(tool.arguments);
-  if (tool.name === "yield") return [{ label: "交付报告", text: str(args, "report") }];
+  if (tool.name === "yield") return [{ label: t("tool.report"), text: str(args, "report") }];
   if (tool.name !== "spawn_agent") return [];
   if (Array.isArray(args.tasks))
     return args.tasks.map((task: Record<string, unknown>) => ({
-      label: str(task, "title") || "子代理任务",
+      label: str(task, "title") || t("tool.subagent_task"),
       text: str(task, "task"),
     }));
-  return [{ label: str(args, "title") || "子代理任务", text: str(args, "task") }];
+  return [{ label: str(args, "title") || t("tool.subagent_task"), text: str(args, "task") }];
 }
 
 export function parseArgs(raw: string): Record<string, unknown> {
@@ -237,7 +238,7 @@ export function toolHeadline(tool: ToolBlock): Headline {
       const phases = result !== undefined && !failed ? parseTodo(result) : [];
       const items = phases.flatMap((phase) => phase.items);
       return {
-        verb: op === "view" ? "查看任务" : "更新任务",
+        verb: t(op === "view" ? "tool.todo_view" : "tool.todo_update"),
         target: "",
         mono: false,
         stat: items.length
@@ -267,10 +268,10 @@ export function toolHeadline(tool: ToolBlock): Headline {
           ? args.tasks.map((task: Record<string, unknown>) => str(task, "title")).join(" · ")
           : str(args, "title"),
         mono: false,
-        stat: Array.isArray(args.tasks) ? `共 ${args.tasks.length} 个任务` : undefined,
+        stat: Array.isArray(args.tasks) ? t("tool.tasks_n", { n: args.tasks.length }) : undefined,
       };
     case "yield":
-      return { target: "交付报告", mono: false };
+      return { target: t("tool.report"), mono: false };
     case "skill":
       return { target: str(args, "name"), mono: true };
     case "clm_context":
@@ -286,7 +287,7 @@ export function toolHeadline(tool: ToolBlock): Headline {
             ? (first.question.trim().split("\n", 1)[0] ?? "")
             : "",
         mono: false,
-        stat: questions.length > 1 ? `共 ${questions.length} 问` : undefined,
+        stat: questions.length > 1 ? t("tool.questions_n", { n: questions.length }) : undefined,
       };
     }
     default:
@@ -558,10 +559,10 @@ export const NEXT_LEVEL: Record<DetailLevel, DetailLevel> = {
   full: "hidden",
 };
 
-export const LEVEL_LABEL: Record<DetailLevel, string> = {
-  hidden: "隐藏",
-  brief: "简略",
-  full: "完整",
+export const LEVEL_LABEL: Record<DetailLevel, MsgKey> = {
+  hidden: "level.hidden",
+  brief: "level.brief",
+  full: "level.full",
 };
 
 // ---------- 合并 ----------

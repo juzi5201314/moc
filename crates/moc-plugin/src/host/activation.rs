@@ -14,6 +14,7 @@ use crate::runtime::CallOp;
 use crate::runtime::Limits;
 use crate::runtime::spawn_unactivated;
 use parking_lot::Mutex;
+use rust_i18n::t;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -105,7 +106,7 @@ impl PluginHost {
                 Ok(result) => result,
                 Err(_) => Err(PluginError::new(
                     "E_PLUGIN_CRASH",
-                    "插件线程在报告加载结果前退出",
+                    t!("plugin.err.thread_exit_early"),
                 )),
             };
             match loaded {

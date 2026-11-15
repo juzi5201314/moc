@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::App;
 use super::Focus;
 use crate::transcript::Block;
@@ -27,7 +29,7 @@ impl App {
     /// 取当前会话 ID；没有会话时提示先去配置模型。
     pub fn require_session(&mut self) -> Option<String> {
         let Some(session) = self.session.as_ref() else {
-            self.set_notice("请先用 /model 选择模型；没有候选时到 /config 添加供应商");
+            self.set_notice(t!("tui.event.no_model_hint").into_owned());
             return None;
         };
         Some(session.id.clone())
@@ -70,7 +72,7 @@ impl App {
         self.plan_body_area = Rect::default();
         self.plan_row_map.clear();
         if clm_active {
-            self.set_notice("CLM 实验模式已启用：模型将维护实时上下文");
+            self.set_notice(t!("tui.event.clm_notice").into_owned());
         }
         self.tool_indices.clear();
         // 批次暂存只服务于当前视图的流：转写里已有批次归属的完整形态，
