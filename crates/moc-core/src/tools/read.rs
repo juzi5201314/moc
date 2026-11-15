@@ -404,7 +404,10 @@ fn similar_entries(cwd: &Path, value: &str) -> Option<String> {
         .filter_map(|entry| {
             let entry_name = entry.file_name().to_string_lossy().into_owned();
             let entry_stem = entry_name.split('.').next()?;
-            let directory = entry.file_type().map(|kind| kind.is_dir()).unwrap_or_default();
+            let directory = entry
+                .file_type()
+                .map(|kind| kind.is_dir())
+                .unwrap_or_default();
             entry_stem
                 .eq_ignore_ascii_case(stem)
                 .then_some((entry_name, directory))

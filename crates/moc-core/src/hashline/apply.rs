@@ -944,12 +944,7 @@ fn render_diff(
                 }
             }
         }
-        if let Some(last) = hunk
-            .lines
-            .iter()
-            .filter_map(|line| line.new_no)
-            .next_back()
-        {
+        if let Some(last) = hunk.lines.iter().filter_map(|line| line.new_no).next_back() {
             previous_end = Some(last);
         }
     }
