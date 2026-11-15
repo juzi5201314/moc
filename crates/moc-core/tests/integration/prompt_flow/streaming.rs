@@ -64,10 +64,9 @@ async fn tool_preview_arrives_before_response_finishes() {
                 preview,
                 ..
             } = event
+                && preview.body == "生成中"
             {
-                if preview.body == "生成中" {
-                    break preview_id;
-                }
+                break preview_id;
             }
         }
     })

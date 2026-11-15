@@ -123,6 +123,7 @@ mod tests {
     use crate::hashline::{served::read_snapshot, tag_text};
 
     #[tokio::test]
+    #[allow(clippy::single_range_in_vec_init)]
     async fn restored_anchors_preserve_versions_visibility_and_invalidation() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("source.txt");

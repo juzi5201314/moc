@@ -409,7 +409,7 @@ pub(crate) fn refresh_history_document(
     let source = &paths.transcript;
     if !source.exists() {
         // 源被删除或移走时不要继续暴露旧镜像，让读取方看到不存在的明确结果。
-        let _ = fs::remove_file(&mirror);
+        let _ = fs::remove_file(mirror);
         let _ = fs::remove_file(&stamp_path);
         return Ok(false);
     }
@@ -425,7 +425,7 @@ pub(crate) fn refresh_history_document(
         && let Ok(stamp) = fs::read_to_string(&stamp_path)
         && stamp == before
     {
-        fs::set_permissions(&mirror, permissions)?;
+        fs::set_permissions(mirror, permissions)?;
         return Ok(true);
     }
     paths.ensure_history_cache()?;
@@ -445,7 +445,7 @@ pub(crate) fn refresh_history_document(
         out.flush()?;
         out.get_ref().sync_all()?;
         drop(out);
-        fs::rename(&temp, &mirror)?;
+        fs::rename(&temp, mirror)?;
         let after = snapshot_stamp(source)?;
         let stamp = if after == before { after } else { before };
         fs::write(&stamp_path, stamp)?;
@@ -453,7 +453,7 @@ pub(crate) fn refresh_history_document(
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);
-        let _ = fs::remove_file(&mirror);
+        let _ = fs::remove_file(mirror);
         let _ = fs::remove_file(&stamp_path);
     }
     result?;

@@ -35,12 +35,12 @@ impl ExecutionClock {
         &mut self,
         future: F,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<F::Output, ToolOutcome> {
+    ) -> Result<F::Output, Box<ToolOutcome>> {
         tokio::pin!(future);
         loop {
             tokio::select! {
                 biased;
-                _ = cancel.cancelled() => return Err(ToolOutcome::failure("E_CANCELLED", "script cancelled")),
+                _ = cancel.cancelled() => return Err(Box::new(ToolOutcome::failure("E_CANCELLED", "script cancelled"))),
                 Some((started, at)) = self.events.recv() => {
                     if started {
                         if self.waiting == 0 { self.paused_at = Some(at); }
@@ -54,7 +54,7 @@ impl ExecutionClock {
                     }
                 }
                 _ = tokio::time::sleep_until(self.deadline), if self.waiting == 0 => {
-                    return Err(ToolOutcome::failure("E_TIMEOUT", "script timed out"));
+                    return Err(Box::new(ToolOutcome::failure("E_TIMEOUT", "script timed out")));
                 }
                 result = &mut future => return Ok(result),
             }
@@ -271,7 +271,7 @@ pub(super) async fn run(
                 break;
             }
             Err(error) => {
-                outcome = error;
+                outcome = *error;
                 break;
             }
         };
@@ -361,8 +361,12 @@ pub(super) async fn run(
         }, &ctx.cancel).await;
         let completed = match completed {
             Ok(Ok(completed)) => completed,
-            Ok(Err(error)) | Err(error) => {
+            Ok(Err(error)) => {
                 outcome = error;
+                break;
+            }
+            Err(error) => {
+                outcome = *error;
                 break;
             }
         };

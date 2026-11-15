@@ -395,6 +395,7 @@ fn source_hints(request: &EditRequest) -> Vec<std::ops::Range<usize>> {
 }
 
 /// 目标文件只需展示插入点；无 after 时由文件末尾确定。
+#[allow(clippy::single_range_in_vec_init)]
 fn target_hints(movement: &MoveRequest) -> Vec<std::ops::Range<usize>> {
     let after = movement.after.unwrap_or(usize::MAX);
     vec![after.saturating_sub(1)..after.max(1)]
@@ -415,6 +416,7 @@ fn append_missing_range(
 }
 
 /// 先保证操作区间完整，再用余量补上下文；无法容纳的部分由调用方明确列出。
+#[allow(clippy::single_range_in_vec_init)]
 fn feedback_windows(
     ranges: &[std::ops::Range<usize>],
     len: usize,

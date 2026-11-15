@@ -229,8 +229,14 @@ impl<'a> Document<'a> {
                 let _ = writeln!(output, "Section at line {}: {}", line + 1, self.lines[line]);
             }
             let _ = writeln!(output, "Lines {}-{}:", block.start + 1, block.end);
-            for index in block.start..block.end {
-                let _ = writeln!(output, "{}│{}", index + 1, self.lines[index]);
+            for (index, line) in self
+                .lines
+                .iter()
+                .enumerate()
+                .take(block.end)
+                .skip(block.start)
+            {
+                let _ = writeln!(output, "{}│{}", index + 1, line);
             }
             output.push('\n');
         }

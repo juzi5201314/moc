@@ -226,8 +226,8 @@ pub(super) async fn finish(
         (message, last_message, title, notify, awaited)
     };
     // 阻塞中的 `sidekick` 调用已把报告放在工具结果里，完成通知不再重复投递。
-    if !awaited {
-        if let Err(error) = deliver_result(
+    if !awaited
+        && let Err(error) = deliver_result(
             &inner,
             &request.updates(),
             &parent_id,
@@ -237,9 +237,8 @@ pub(super) async fn finish(
             message.as_ref(),
         )
         .await
-        {
-            tracing::error!(agent_id, %error, "子代理结果投递失败");
-        }
+    {
+        tracing::error!(agent_id, %error, "子代理结果投递失败");
     }
     // 先提交报告与模型提醒，再公开终态；wait_agent 返回时结果已经可读取。
     {

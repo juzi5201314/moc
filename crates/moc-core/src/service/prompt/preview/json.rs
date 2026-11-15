@@ -278,10 +278,10 @@ impl JsonPreview {
                 '\\' => self.escaped = true,
                 '"' => {
                     self.string = false;
-                    if self.key {
-                        if let Some(f) = self.stack.last_mut() {
-                            f.key = std::mem::take(&mut self.key_buffer);
-                        }
+                    if self.key
+                        && let Some(f) = self.stack.last_mut()
+                    {
+                        f.key = std::mem::take(&mut self.key_buffer);
                     }
                     self.key = false;
                 }

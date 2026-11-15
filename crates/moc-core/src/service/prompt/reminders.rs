@@ -185,6 +185,6 @@ pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError>
             ));
         }
     }
-    flush_reminders(&inner, session_id, &record, &candidates).await?;
+    flush_reminders(inner, session_id, record, &candidates).await?;
     Ok(candidates)
 }

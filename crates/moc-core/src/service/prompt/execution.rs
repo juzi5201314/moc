@@ -693,14 +693,13 @@ pub(super) async fn run_prompt_locked(
                 };
                 if connection_error.is_some() {
                     previews = super::preview::Previews::default();
-                } else if response.is_err() || interrupted || guard.violation().is_some() {
-                    if let Err(error) = previews
+                } else if (response.is_err() || interrupted || guard.violation().is_some())
+                    && let Err(error) = previews
                         .resolve(&update, &params.session_id, &prompt_id, &[])
                         .await
-                    {
-                        connection_error = Some(protocol_to_rpc(error));
-                        previews = super::preview::Previews::default();
-                    }
+                {
+                    connection_error = Some(protocol_to_rpc(error));
+                    previews = super::preview::Previews::default();
                 }
                 drop(request_warning);
                 drop(request_permit);

@@ -54,7 +54,7 @@ pub(super) async fn prepare(
         if !state_snapshot.has_history {
             return Err(crate::service::invalid_params("当前会话没有可重试的上下文"));
         }
-        match trim_failed_tail(&inner, &params.session_id).await? {
+        match trim_failed_tail(inner, &params.session_id).await? {
             RetryTrim::Nothing => {}
             RetryTrim::Dropped => {
                 update
@@ -152,7 +152,7 @@ pub(super) async fn prepare(
             // 代理与 goal 续跑消息原样写入会话：skill 调用对用户输入的改写不适用。
             let message = if agent_meta.is_none() && goal_meta.is_none() {
                 apply_skill_invocation(
-                    &inner,
+                    inner,
                     message,
                     &state_snapshot.session.cwd,
                     state_snapshot.workflows_active(

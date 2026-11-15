@@ -190,10 +190,8 @@ impl Editor {
                     editor.cursor = index;
                 }
             }
-            Editor::Record(editor) if editor.draft.is_none() => {
-                if index < editor.rows() {
-                    editor.cursor = index;
-                }
+            Editor::Record(editor) if editor.draft.is_none() && index < editor.rows() => {
+                editor.cursor = index;
             }
             _ => {}
         }

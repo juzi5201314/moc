@@ -116,9 +116,10 @@ const WRAPPER_VERBS: &[&str] = &[
 ];
 
 fn compiled_matchers(patterns: &[String]) -> Result<Arc<Vec<grep_regex::RegexMatcher>>, ToolError> {
+    type Cache = HashMap<Vec<String>, Arc<Vec<grep_regex::RegexMatcher>>>;
+
     const MAX_CACHED_RULE_SETS: usize = 16;
-    static CACHE: OnceLock<Mutex<HashMap<Vec<String>, Arc<Vec<grep_regex::RegexMatcher>>>>> =
-        OnceLock::new();
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache.lock().get(patterns).cloned() {
