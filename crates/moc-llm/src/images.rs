@@ -1,5 +1,5 @@
 //! 所有入口共用的发送前图片预处理；仅改请求副本，原始会话保留高清图片。
-use std::collections::VecDeque;
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Mutex;
 
@@ -66,41 +66,142 @@ impl std::fmt::Display for RequestDiagnostics {
     }
 }
 
-/// 最多 32 个、合计 24 MiB 的压缩结果；固定小上界，用顺序队列实现 FIFO 淘汰。
+/// 内容指纹只采样首/中/尾各 4 KiB 加上总长度。
+/// 每次请求都会对历史里全部内联图片算 key，对完整 base64 做 SHA-256
+/// 意味着每轮重扫几十 MB；会话内图片来源受控（非对抗输入），
+/// 同长度且三个采样区完全相同的碰撞概率可忽略。
+const FINGERPRINT_SAMPLE: usize = 4 * 1024;
+const MAX_CACHE_BYTES: usize = 24 * 1024 * 1024;
+
+fn fingerprint(data: &str) -> [u8; 32] {
+    let bytes = data.as_bytes();
+    let mut hasher = Sha256::new();
+    hasher.update(bytes.len().to_le_bytes());
+    if bytes.len() <= FINGERPRINT_SAMPLE * 3 {
+        hasher.update(bytes);
+    } else {
+        let mid = bytes.len() / 2;
+        hasher.update(&bytes[..FINGERPRINT_SAMPLE]);
+        hasher.update(&bytes[mid - FINGERPRINT_SAMPLE / 2..mid + FINGERPRINT_SAMPLE / 2]);
+        hasher.update(&bytes[bytes.len() - FINGERPRINT_SAMPLE..]);
+    }
+    hasher.finalize().into()
+}
+
+/// 一个压缩变体覆盖 `[decoded, limit]` 的请求预算区间：
+/// 产出预算不小于当前预算、且解码体积不大于当前预算时可直接复用。
+/// 预算随会话增长逐轮微缩，旧变体的区间仍能命中，避免每轮全量重压缩。
+#[derive(Debug)]
+struct Variant {
+    /// 产出时的解码字节预算。
+    limit: usize,
+    /// 压缩结果的解码字节数；`budget`/`cap` 均为解码字节口径。
+    decoded: usize,
+    source: ImageSource,
+}
+
+/// 每条指纹至多保留的变体数，超出时淘汰预算区间最低（质量最差）的。
+const MAX_VARIANTS: usize = 8;
+
 #[derive(Debug, Default)]
-pub(crate) struct ImageCache(Mutex<VecDeque<([u8; 32], usize, ImageSource)>>);
+struct CacheEntry {
+    variants: Vec<Variant>,
+    used: u64,
+}
+
+#[derive(Debug, Default)]
+struct CacheState {
+    entries: HashMap<[u8; 32], CacheEntry>,
+    bytes: usize,
+    clock: u64,
+}
+
+/// 按内容指纹缓存压缩变体，合计 24 MiB 上界，淘汰最久未用的整项。
+#[derive(Debug, Default)]
+pub(crate) struct ImageCache(Mutex<CacheState>);
+
+/// 缓存命中判定与体积上界统一用解码字节估算（base64 长度 × 3/4）。
+fn decoded_len(source: &ImageSource) -> usize {
+    inline_len(source) / 4 * 3
+}
 
 impl ImageCache {
     fn normalize(&self, source: &ImageSource, budget: usize) -> Result<ImageSource, LlmError> {
         let Some((_, data)) = inline(source)? else {
             return Ok(source.clone());
         };
-        let hash: [u8; 32] = Sha256::digest(data.as_bytes()).into();
+        let key = fingerprint(data);
         {
-            let cache = self.0.lock().expect("图片缓存");
-            if let Some((_, _, value)) = cache
-                .iter()
-                .find(|(key, cap, _)| *key == hash && *cap == budget)
-            {
-                return Ok(value.clone());
+            let mut cache = self.0.lock().expect("图片缓存");
+            cache.clock += 1;
+            let clock = cache.clock;
+            if let Some(entry) = cache.entries.get_mut(&key) {
+                entry.used = clock;
+                if let Some(variant) = entry
+                    .variants
+                    .iter()
+                    .filter(|variant| variant.decoded <= budget && budget <= variant.limit)
+                    .max_by_key(|variant| variant.decoded)
+                {
+                    return Ok(variant.source.clone());
+                }
             }
         }
         let value = normalize(source, budget)?;
+        let decoded = decoded_len(&value);
         let mut cache = self.0.lock().expect("图片缓存");
-        while cache.len() >= 32
-            || cache
-                .iter()
-                .map(|(_, _, source)| inline_len(source))
-                .sum::<usize>()
-                + inline_len(&value)
-                > 24 * 1024 * 1024
+        cache.clock += 1;
+        let clock = cache.clock;
+        let mut removed_len = None;
+        let mut inserted = false;
         {
-            if cache.pop_front().is_none() {
-                break;
+            let entry = cache.entries.entry(key).or_default();
+            entry.used = clock;
+            if let Some(variant) = entry.variants.iter_mut().find(|v| v.decoded == decoded) {
+                // 同体积变体合并预算区间，覆盖更大范围的后续请求。
+                variant.limit = variant.limit.max(budget);
+            } else {
+                if entry.variants.len() >= MAX_VARIANTS
+                    && let Some(worst) = entry
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, v)| v.limit)
+                        .map(|(i, _)| i)
+                {
+                    removed_len = Some(inline_len(&entry.variants.remove(worst).source));
+                }
+                entry.variants.push(Variant {
+                    limit: budget,
+                    decoded,
+                    source: value.clone(),
+                });
+                inserted = true;
             }
         }
-        cache.push_back((hash, budget, value.clone()));
-        debug_assert!(cache.len() <= 32);
+        if let Some(removed) = removed_len {
+            cache.bytes -= removed;
+        }
+        if inserted {
+            cache.bytes += inline_len(&value);
+        }
+        while cache.bytes > MAX_CACHE_BYTES {
+            let victim = cache
+                .entries
+                .iter()
+                .filter(|(other, _)| *other != &key)
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(other, _)| *other);
+            let Some(victim) = victim else {
+                break;
+            };
+            let removed = cache.entries.remove(&victim).expect("淘汰目标存在");
+            cache.bytes -= removed
+                .variants
+                .iter()
+                .map(|v| inline_len(&v.source))
+                .sum::<usize>();
+        }
         Ok(value)
     }
 }
@@ -228,6 +329,10 @@ pub(crate) fn prepare(
             }
             let cap = caps[index].min(MAX_IMAGE_BYTES);
             index += 1;
+            // 预算随历史增长逐轮微缩；向下量化到 1/8 档位后，
+            // 同档预算直接命中缓存变体，不至于每张图每轮都重压缩。
+            let quantum = (cap / 8).max(4 * 1024);
+            let cap = (cap / quantum * quantum).max(1);
             cache.normalize(source, cap).map_err(|error| LlmError::Encode(
                 t!(
                     "llm.img.budget_short",
