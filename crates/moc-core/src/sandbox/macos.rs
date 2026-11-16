@@ -151,9 +151,11 @@ fn profile(policy: &SandboxPolicy, scratch: &SandboxScratch) -> String {
         reads.extend(policy.grant_read.iter().cloned());
         reads.extend(policy.grant_write.iter().cloned());
         push_allow(&mut rules, "file-read-data", &reads);
-        push_deny(&mut rules, "file-read-data", &policy.deny_read);
+        // 显式拒读连元数据一起拒：只拒 file-read-data 时 stat 仍成功，
+        // `test -e`/目录列举能看到被拒内容，与 Linux 侧 Landlock 语义不一致。
+        push_deny(&mut rules, "file-read*", &policy.deny_read);
     } else {
-        push_deny(&mut rules, "file-read-data", &policy.deny_read);
+        push_deny(&mut rules, "file-read*", &policy.deny_read);
     }
 
     rules.push("(deny file-write*)".to_owned());

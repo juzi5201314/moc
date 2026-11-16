@@ -557,6 +557,9 @@ impl Search {
         let include = include
             .build()
             .map_err(|error| ToolError::new("E_BAD_GLOB", error.to_string()))?;
+        // cwd 与 walker 产出需同形（canonical）才能相对化展示路径；
+        // macOS 上 cwd 常是 /var/...，walker 给的是 /private/var/...。
+        let cwd = crate::tools::normalized(&cwd);
         let root = crate::tools::resolve_scan_root(&cwd, args.path.as_deref())?;
         let single_file = root.is_file();
         if args.offset.is_some() && !single_file {
@@ -1087,12 +1090,17 @@ mod tests {
         .unwrap();
         let anchors = AnchorStore::new();
         let output = search.run(&anchors, 4096).unwrap().content;
-        let served = anchors.served(&path).unwrap();
+        // 锚点按 walker 产出的规范化路径登记（macOS /var→/private/var）。
+        let served = anchors.served(&path.canonicalize().unwrap()).unwrap();
         let tag = tag_text(served.current_tag().unwrap());
         assert!(output.contains(&format!("[a.txt#{tag}]")));
         assert!(served.is_seen(0) && served.is_seen(2));
         assert!(!served.is_seen(1));
-        assert!(anchors.served(&root.path().join("b.txt")).is_none());
+        assert!(
+            anchors
+                .served(&root.path().join("b.txt").canonicalize().unwrap())
+                .is_none()
+        );
         let mut request = EditRequest {
             path: "a.txt".into(),
             tag,

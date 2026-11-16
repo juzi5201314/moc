@@ -614,7 +614,11 @@ mod tests {
     #[test]
     fn shell_cwd_must_exist_and_be_a_directory() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(resolve_cwd(dir.path(), None).unwrap(), dir.path());
+        // resolve_cwd 返回规范化路径（macOS /var→/private/var），期望值同样归一化。
+        assert_eq!(
+            resolve_cwd(dir.path(), None).unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
         assert!(resolve_cwd(dir.path(), Some("missing")).is_err());
     }
 }
