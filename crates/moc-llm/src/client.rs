@@ -216,10 +216,9 @@ impl Client {
         let Some(seconds) = cfg.connect_timeout_secs else {
             return Ok(self.default_http()?.post(url));
         };
-        let timeout = Duration::try_from_secs_f64(seconds)
-            .map_err(|error| {
-                LlmError::Encode(t!("llm.err.timeout_cfg", error = error).into_owned())
-            })?;
+        let timeout = Duration::try_from_secs_f64(seconds).map_err(|error| {
+            LlmError::Encode(t!("llm.err.timeout_cfg", error = error).into_owned())
+        })?;
         if self.inner.options.connect_timeout == Some(timeout) {
             return Ok(self.default_http()?.post(url));
         }
@@ -376,9 +375,7 @@ async fn read_body(response: reqwest::Response) -> Result<Vec<u8>, LlmError> {
             record_rx(bytes.len() as u64);
             bytes.to_vec()
         })
-        .map_err(|error| {
-            LlmError::Stream(t!("llm.err.read_body_failed", err = error).into_owned())
-        })
+        .map_err(|error| LlmError::Stream(t!("llm.err.read_body_failed", err = error).into_owned()))
 }
 
 /// `bytes_stream` 的计数包装：每交付一个 chunk 计入进程级 RX 计数器。

@@ -1,7 +1,6 @@
 //! 当前上下文的只读组装；正文视图复用实际发送的回放、预算与协议编码。
 mod outline;
 mod view;
-use rust_i18n::t;
 use super::{CoreInner, to_rpc};
 use crate::{
     compact,
@@ -13,6 +12,7 @@ use moc_protocol::methods::{
     SessionContextParams,
 };
 use moc_protocol::{RequestContext, RpcError};
+use rust_i18n::t;
 use std::path::PathBuf;
 use std::sync::Arc;
 pub(crate) use view::Views;

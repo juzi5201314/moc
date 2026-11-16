@@ -56,7 +56,12 @@ pub(super) fn rows(
             t!("tui.scroll.expand_hint").into_owned()
         };
         push(
-            &t!("tui.scroll.incomplete_fmt", count = count, hint = hint.as_str()).into_owned(),
+            &t!(
+                "tui.scroll.incomplete_fmt",
+                count = count,
+                hint = hint.as_str()
+            )
+            .into_owned(),
         );
         if level == DetailLevel::Full {
             for notice in &notices {

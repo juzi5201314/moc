@@ -287,15 +287,12 @@ pub(super) fn optional_bool<'js>(
     if value.is_undefined() || value.is_null() {
         return Ok(None);
     }
-    value
-        .as_bool()
-        .map(Some)
-        .ok_or_else(|| {
-            PluginError::new(
-                "E_PLUGIN_DESCRIPTOR",
-                t!("plugin.err.field_bool", key = key).into_owned(),
-            )
-        })
+    value.as_bool().map(Some).ok_or_else(|| {
+        PluginError::new(
+            "E_PLUGIN_DESCRIPTOR",
+            t!("plugin.err.field_bool", key = key).into_owned(),
+        )
+    })
 }
 
 /// 可选 `modes`：缺失时三种模式全开；存在时必须是 `default`/`ask`/`plan`
@@ -347,15 +344,13 @@ pub(super) fn optional_modes<'js>(
 }
 
 pub(super) fn config_declaration(key: String, definition: &str) -> Result<ConfigDecl> {
-    let invalid = |message: std::borrow::Cow<'static, str>| {
-        PluginError::new("E_PLUGIN_CONFIG", message)
-    };
+    let invalid =
+        |message: std::borrow::Cow<'static, str>| PluginError::new("E_PLUGIN_CONFIG", message);
     if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
         return Err(invalid(t!("plugin.err.config_key_invalid")));
     }
     let value: Value =
-        serde_json::from_str(definition)
-            .map_err(|error| invalid(error.to_string().into()))?;
+        serde_json::from_str(definition).map_err(|error| invalid(error.to_string().into()))?;
     let object = value
         .as_object()
         .ok_or_else(|| invalid(t!("plugin.err.config_decl_object")))?;
@@ -421,9 +416,8 @@ pub(super) fn config_declaration(key: String, definition: &str) -> Result<Config
 
 /// 解析 `agents.registerPreset` 的声明对象。
 pub(super) fn agent_preset_declaration(definition: &str) -> Result<AgentPresetDecl> {
-    let invalid = |message: std::borrow::Cow<'static, str>| {
-        PluginError::new("E_PLUGIN_AGENT", message)
-    };
+    let invalid =
+        |message: std::borrow::Cow<'static, str>| PluginError::new("E_PLUGIN_AGENT", message);
     let value: Value =
         serde_json::from_str(definition).map_err(|error| invalid(error.to_string().into()))?;
     let object = value

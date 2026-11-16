@@ -134,7 +134,9 @@ fn invalid(message: impl Into<String>) -> CoreError {
 fn validate_text(value: &str, label: &str) -> Result<String, CoreError> {
     let value = value.trim();
     if value.is_empty() {
-        return Err(invalid(t!("core.err.label_empty", label = label).into_owned()));
+        return Err(invalid(
+            t!("core.err.label_empty", label = label).into_owned(),
+        ));
     }
     Ok(value.to_owned())
 }

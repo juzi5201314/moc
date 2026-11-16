@@ -1,4 +1,3 @@
-use rust_i18n::t;
 use super::AgentRuntime;
 use super::SpawnProfile;
 use super::SpawnSpec;
@@ -24,6 +23,7 @@ use moc_protocol::methods::AgentInfo;
 use moc_protocol::methods::AgentSpawnResult;
 use moc_protocol::methods::AgentStatus;
 use moc_protocol::methods::SessionUpdate;
+use rust_i18n::t;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Notify;

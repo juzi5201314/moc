@@ -1,9 +1,9 @@
 //! `/debuginfo` 仅统计保留历史中的工具终态和压缩次数。
 
-use rust_i18n::t;
 use super::{CoreInner, to_rpc};
 use crate::session::{entries::Entry, stored::StoredEntry};
 use moc_protocol::{RpcError, ToolStatus, TranscriptChildCall, TranscriptEntry};
+use rust_i18n::t;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;
@@ -134,11 +134,7 @@ fn render(groups: HashMap<&str, Counts>, compactions: usize) -> String {
         total.merge(&counts);
     }
     append_counts(&mut text, &t!("core.debug.total"), &total);
-    let _ = write!(
-        text,
-        "\n{}",
-        t!("core.debug.compactions", n = compactions)
-    );
+    let _ = write!(text, "\n{}", t!("core.debug.compactions", n = compactions));
     text
 }
 

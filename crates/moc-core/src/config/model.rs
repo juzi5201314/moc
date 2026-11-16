@@ -441,9 +441,9 @@ impl ResolvedProvider {
         }
     }
     pub(super) fn from_document(id: &str, document: ProviderDocument) -> Result<Self, CoreError> {
-        let api = document
-            .api
-            .ok_or_else(|| CoreError::Config(t!("core.err.provider_no_api", id = id).into_owned()))?;
+        let api = document.api.ok_or_else(|| {
+            CoreError::Config(t!("core.err.provider_no_api", id = id).into_owned())
+        })?;
         if !(document.base_url.starts_with("https://") || document.base_url.starts_with("http://"))
         {
             return Err(CoreError::Config(
@@ -818,27 +818,23 @@ pub(crate) fn resolve_secret(label: &str, spec: &str) -> Result<Option<String>, 
         return Ok(None);
     }
     let value = if let Some(name) = spec.strip_prefix("env:") {
-        std::env::var(name)
-            .map_err(|_| {
-                CoreError::Config(t!("core.err.env_missing", label = label, name = name).into_owned())
-            })?
+        std::env::var(name).map_err(|_| {
+            CoreError::Config(t!("core.err.env_missing", label = label, name = name).into_owned())
+        })?
     } else if let Some(command) = spec.strip_prefix('!') {
-        let output = shell_command(command)?
-            .output()
-            .map_err(|error| {
-                CoreError::Config(t!("core.err.cmd_start", label = label, error = error).into_owned())
-            })?;
+        let output = shell_command(command)?.output().map_err(|error| {
+            CoreError::Config(t!("core.err.cmd_start", label = label, error = error).into_owned())
+        })?;
         if !output.status.success() {
             return Err(CoreError::Config(
                 t!("core.err.cmd_status", label = label, status = output.status).into_owned(),
             ));
         }
-        String::from_utf8(output.stdout)
-            .map_err(|error| {
-                CoreError::Config(
-                    t!("core.err.cmd_not_utf8", label = label, error = error).into_owned(),
-                )
-            })?
+        String::from_utf8(output.stdout).map_err(|error| {
+            CoreError::Config(
+                t!("core.err.cmd_not_utf8", label = label, error = error).into_owned(),
+            )
+        })?
     } else {
         spec.to_owned()
     };
@@ -868,8 +864,12 @@ pub(super) fn validate_models(
         if !selector.is_empty() {
             resolve_one(providers, selector, None).map_err(|error| {
                 CoreError::Config(
-                    t!("core.err.label_unparsable", label = label, detail = error.detail())
-                        .into_owned(),
+                    t!(
+                        "core.err.label_unparsable",
+                        label = label,
+                        detail = error.detail()
+                    )
+                    .into_owned(),
                 )
             })?;
         }

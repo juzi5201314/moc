@@ -1,9 +1,9 @@
 //! `/session` 的身份和文件大小汇总；只读取元数据，不扫描工作区或解压历史。
 
-use rust_i18n::t;
 use super::{CoreInner, to_rpc};
 use crate::session::store::SessionPaths;
 use moc_protocol::{RpcError, SessionInfo};
+use rust_i18n::t;
 use std::fmt::Write;
 use std::fs;
 use std::io;
@@ -129,7 +129,10 @@ fn render(info: &SessionInfo, paths: &SessionPaths) -> Result<String, crate::Cor
     let _ = writeln!(
         text,
         "{}",
-        t!("core.inspect.file_line", path = transcript.display().to_string())
+        t!(
+            "core.inspect.file_line",
+            path = transcript.display().to_string()
+        )
     );
     let _ = writeln!(
         text,
@@ -157,7 +160,10 @@ fn render(info: &SessionInfo, paths: &SessionPaths) -> Result<String, crate::Cor
     let _ = writeln!(
         text,
         "{}",
-        t!("core.inspect.sidecar_line", path = sidecar.display().to_string())
+        t!(
+            "core.inspect.sidecar_line",
+            path = sidecar.display().to_string()
+        )
     );
     for group in &inventory.groups {
         let _ = writeln!(
@@ -180,12 +186,18 @@ fn render(info: &SessionInfo, paths: &SessionPaths) -> Result<String, crate::Cor
         let _ = writeln!(
             text,
             "{}",
-            t!("core.inspect.children_line", desc = inventory.children.describe())
+            t!(
+                "core.inspect.children_line",
+                desc = inventory.children.describe()
+            )
         );
         let _ = writeln!(
             text,
             "{}",
-            t!("core.inspect.children_hint", path = sidecar.display().to_string())
+            t!(
+                "core.inspect.children_hint",
+                path = sidecar.display().to_string()
+            )
         );
     }
     if inventory.cache.files != 0 || inventory.cache.incomplete {

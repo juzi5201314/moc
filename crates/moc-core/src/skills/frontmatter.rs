@@ -85,7 +85,11 @@ pub struct FrontmatterError(pub String);
 
 impl std::fmt::Display for FrontmatterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", t!("core.err.frontmatter_invalid", detail = &self.0))
+        write!(
+            f,
+            "{}",
+            t!("core.err.frontmatter_invalid", detail = &self.0)
+        )
     }
 }
 
@@ -118,11 +122,14 @@ pub fn parse(text: &str) -> Result<ParsedSkill, FrontmatterError> {
             (yaml, after)
         }
         None => {
-            return Err(FrontmatterError(t!("core.err.frontmatter_unclosed").into_owned()));
+            return Err(FrontmatterError(
+                t!("core.err.frontmatter_unclosed").into_owned(),
+            ));
         }
     };
-    let frontmatter: SkillFrontmatter = serde_yaml::from_str(yaml)
-        .map_err(|error| FrontmatterError(t!("core.err.frontmatter_yaml", error = error).into_owned()))?;
+    let frontmatter: SkillFrontmatter = serde_yaml::from_str(yaml).map_err(|error| {
+        FrontmatterError(t!("core.err.frontmatter_yaml", error = error).into_owned())
+    })?;
     Ok(ParsedSkill {
         frontmatter,
         body: body.to_owned(),

@@ -166,7 +166,10 @@ pub(super) fn draw_ask_strip(frame: &mut Frame, app: &mut App) {
     // 内宽 = 边框 2 + 左右内边距 2。
     let inner = usize::from(area.width.saturating_sub(4));
     let (right, right_keys) = labels::hint_layout(
-        &[("tab", t!("tui.hint.expand_answer")), ("esc", t!("tui.hint.cancel"))],
+        &[
+            ("tab", t!("tui.hint.expand_answer")),
+            ("esc", t!("tui.hint.cancel")),
+        ],
         usize::MAX,
     );
     let right_width = str_width(&right);
@@ -598,7 +601,10 @@ pub(super) fn ask_layout(
     }
     items.push(("esc", t!("tui.hint.collapse_card")));
     match (current.multi, last) {
-        (true, true) => items.extend([("space", t!("tui.hint.check")), ("enter", t!("tui.hint.confirm"))]),
+        (true, true) => items.extend([
+            ("space", t!("tui.hint.check")),
+            ("enter", t!("tui.hint.confirm")),
+        ]),
         (true, false) => items.push(("space/enter", t!("tui.hint.check"))),
         (false, _) => items.push(("enter", t!("tui.hint.choose"))),
     }

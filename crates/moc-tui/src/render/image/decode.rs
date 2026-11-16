@@ -28,12 +28,21 @@ pub enum DecodeError {
         path: PathBuf,
         source: std::io::Error,
     },
-    NotFile { path: PathBuf },
-    TooLarge { path: PathBuf },
-    TooLargeInline { len: u64 },
+    NotFile {
+        path: PathBuf,
+    },
+    TooLarge {
+        path: PathBuf,
+    },
+    TooLargeInline {
+        len: u64,
+    },
     Svg(resvg::usvg::Error),
     SvgSize,
-    SvgTooLarge { w: u64, h: u64 },
+    SvgTooLarge {
+        w: u64,
+        h: u64,
+    },
     EmptySvg,
 }
 
@@ -53,20 +62,36 @@ impl std::fmt::Display for DecodeError {
             Self::Read { path, source } => write!(
                 f,
                 "{}",
-                t!("tui.image_err.read", path = path.display().to_string(), err = source.to_string())
+                t!(
+                    "tui.image_err.read",
+                    path = path.display().to_string(),
+                    err = source.to_string()
+                )
             ),
             Self::NotFile { path } => {
-                write!(f, "{}", t!("tui.image_err.not_file", path = path.display().to_string()))
+                write!(
+                    f,
+                    "{}",
+                    t!("tui.image_err.not_file", path = path.display().to_string())
+                )
             }
             Self::TooLarge { path } => write!(
                 f,
                 "{}",
-                t!("tui.image_err.too_large", path = path.display().to_string(), mb = MAX_FILE_BYTES >> 20)
+                t!(
+                    "tui.image_err.too_large",
+                    path = path.display().to_string(),
+                    mb = MAX_FILE_BYTES >> 20
+                )
             ),
             Self::TooLargeInline { len } => write!(
                 f,
                 "{}",
-                t!("tui.image_err.too_large_inline", len = len, mb = MAX_FILE_BYTES >> 20)
+                t!(
+                    "tui.image_err.too_large_inline",
+                    len = len,
+                    mb = MAX_FILE_BYTES >> 20
+                )
             ),
             Self::Svg(e) => {
                 write!(f, "{}", t!("tui.image_err.svg", err = e.to_string()))
@@ -75,7 +100,12 @@ impl std::fmt::Display for DecodeError {
             Self::SvgTooLarge { w, h } => write!(
                 f,
                 "{}",
-                t!("tui.image_err.svg_too_large", w = w, h = h, max = MAX_IMAGE_SIDE)
+                t!(
+                    "tui.image_err.svg_too_large",
+                    w = w,
+                    h = h,
+                    max = MAX_IMAGE_SIDE
+                )
             ),
             Self::EmptySvg => write!(f, "{}", t!("tui.image_err.empty_svg")),
         }

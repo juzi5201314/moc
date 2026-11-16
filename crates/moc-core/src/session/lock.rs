@@ -127,10 +127,9 @@ fn read_record(file: &mut File) -> Option<SessionLockInfo> {
 fn write_record(file: &mut File, record: &LockRecord) -> Result<(), CoreError> {
     file.set_len(0)?;
     file.seek(SeekFrom::Start(0))?;
-    serde_json::to_writer(&mut *file, record)
-        .map_err(|error| {
-            CoreError::Session(t!("core.err.session_lock_write", error = error).into_owned())
-        })?;
+    serde_json::to_writer(&mut *file, record).map_err(|error| {
+        CoreError::Session(t!("core.err.session_lock_write", error = error).into_owned())
+    })?;
     file.write_all(b"\n")?;
     file.sync_all()?;
     Ok(())

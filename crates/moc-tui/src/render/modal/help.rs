@@ -57,15 +57,27 @@ pub(super) fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, us
             (get_key("cancel"), t!("tui.help.cancel").into_owned()),
             (get_key("focus"), t!("tui.help.focus").into_owned()),
             (get_key("clear"), t!("tui.help.clear").into_owned()),
-            (get_key("line_start"), t!("tui.help.line_start").into_owned()),
+            (
+                get_key("line_start"),
+                t!("tui.help.line_start").into_owned(),
+            ),
             (get_key("line_end"), t!("tui.help.line_end").into_owned()),
-            (get_key("delete_word"), t!("tui.help.delete_word").into_owned()),
+            (
+                get_key("delete_word"),
+                t!("tui.help.delete_word").into_owned(),
+            ),
             (
                 get_key("delete_to_end"),
                 t!("tui.help.delete_to_end").into_owned(),
             ),
-            (get_key("paste_image"), t!("tui.help.paste_image").into_owned()),
-            (get_key("queue_edit"), t!("tui.help.queue_edit").into_owned()),
+            (
+                get_key("paste_image"),
+                t!("tui.help.paste_image").into_owned(),
+            ),
+            (
+                get_key("queue_edit"),
+                t!("tui.help.queue_edit").into_owned(),
+            ),
         ],
     });
     sections.push(HelpSection {

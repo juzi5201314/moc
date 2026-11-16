@@ -177,7 +177,7 @@ pub(super) fn cycle_thinking_level(app: &mut App, connection: &EmbeddedConnectio
                 session_id,
                 notice: None,
                 result: Err(
-                    t!("tui.event.thinking_failed_fmt", err = error.to_string()).into_owned(),
+                    t!("tui.event.thinking_failed_fmt", err = error.to_string()).into_owned()
                 ),
             },
         });

@@ -586,7 +586,9 @@ pub(super) fn apply_cache(
         Some(CacheTtl::FiveMinutes) => Some("5m"),
         Some(CacheTtl::OneHour) => Some("1h"),
         Some(CacheTtl::ThirtyMinutes) => {
-            return Err(LlmError::Encode(t!("llm.err.anthropic_cache_ttl").into_owned()));
+            return Err(LlmError::Encode(
+                t!("llm.err.anthropic_cache_ttl").into_owned(),
+            ));
         }
     };
     let mut cache_control = Map::new();

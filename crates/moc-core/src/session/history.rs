@@ -1,4 +1,3 @@
-use rust_i18n::t;
 use super::SessionTable;
 use super::archive;
 use super::cache_budget::serialized_bytes;
@@ -13,6 +12,7 @@ use moc_protocol::methods::SessionLoadPageResult;
 use moc_protocol::methods::SessionLoadResult;
 use moc_protocol::methods::TranscriptChildCall;
 use moc_protocol::methods::TranscriptEntry;
+use rust_i18n::t;
 
 impl SessionTable {
     /// 加载可展示的消息；不进入 transcript 的 entry 只更新会话状态，不出现在列表里。
@@ -123,11 +123,9 @@ impl SessionTable {
             let plan_page = plan_page.as_ref();
             let state = record.state.blocking_lock();
             let end = match before_entry_id.as_deref() {
-                Some(id) => state
-                    .transcript_position(id)
-                    .ok_or_else(|| {
-                        CoreError::Session(t!("core.err.transcript_msg_missing", id = id).into_owned())
-                    })?,
+                Some(id) => state.transcript_position(id).ok_or_else(|| {
+                    CoreError::Session(t!("core.err.transcript_msg_missing", id = id).into_owned())
+                })?,
                 None => state.transcript.len(),
             };
             let limit = usize::try_from(max_entries)
@@ -241,7 +239,8 @@ impl SessionTable {
                             let end = match &page.before_entry_id {
                                 Some(id) => tail.position(id).ok_or_else(|| {
                                     CoreError::Session(
-                                        t!("core.err.rollforward_msg_missing", id = id).into_owned(),
+                                        t!("core.err.rollforward_msg_missing", id = id)
+                                            .into_owned(),
                                     )
                                 })?,
                                 None => tail.len(),

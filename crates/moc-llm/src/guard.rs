@@ -63,7 +63,11 @@ impl std::fmt::Display for LoopViolation {
         write!(
             f,
             "{}",
-            t!("llm.err.loop_detected", channel = self.channel.as_ref(), detail = self.detail)
+            t!(
+                "llm.err.loop_detected",
+                channel = self.channel.as_ref(),
+                detail = self.detail
+            )
         )
     }
 }
@@ -352,9 +356,7 @@ impl ExactCycle {
             if count < repeats || period * count < chars {
                 continue;
             }
-            return Some(
-                t!("llm.err.period_repeat", period = period, count = count).into_owned(),
-            );
+            return Some(t!("llm.err.period_repeat", period = period, count = count).into_owned());
         }
         None
     }

@@ -356,7 +356,9 @@ fn encode_tool_result(
     breakpoint: bool,
 ) -> Result<Vec<Value>, LlmError> {
     let Some(result) = message.tool_results().next() else {
-        return Err(LlmError::Encode(t!("llm.err.tool_missing_result").into_owned()));
+        return Err(LlmError::Encode(
+            t!("llm.err.tool_missing_result").into_owned(),
+        ));
     };
     // tool 消息的 `content` 是必填字符串：空结果发空串，而不是 `null`。
     let content = if breakpoint {

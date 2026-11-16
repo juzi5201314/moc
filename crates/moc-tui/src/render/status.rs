@@ -56,12 +56,10 @@ pub(super) fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     // 聚焦子代理：头部常驻标识 + 返回手势，避免忘了自己在谁的会话里。
     if app.focused.is_some() {
-        let title = app
-            .session
-            .as_ref()
-            .map_or_else(|| t!("tui.subagent.title").into_owned(), |session| {
-                session.title.clone()
-            });
+        let title = app.session.as_ref().map_or_else(
+            || t!("tui.subagent.title").into_owned(),
+            |session| session.title.clone(),
+        );
         spans.push(Span::styled(
             t!("tui.subagent.header").into_owned(),
             Style::new().fg(theme.accent_tool),

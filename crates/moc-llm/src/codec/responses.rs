@@ -412,9 +412,8 @@ fn encode_assistant_items(
     flush_text(&mut pending_text, &mut phase, &mut last_text, items);
 
     if breakpoint {
-        let position = last_text.ok_or_else(|| {
-            LlmError::Encode(t!("llm.err.resp_cache_assistant").into_owned())
-        })?;
+        let position = last_text
+            .ok_or_else(|| LlmError::Encode(t!("llm.err.resp_cache_assistant").into_owned()))?;
         let blocks = items[position]
             .get_mut("content")
             .and_then(Value::as_array_mut)
@@ -451,7 +450,9 @@ fn encode_tool_result(
     breakpoint: bool,
 ) -> Result<Vec<Value>, LlmError> {
     let Some(result) = message.tool_results().next() else {
-        return Err(LlmError::Encode(t!("llm.err.tool_missing_result").into_owned()));
+        return Err(LlmError::Encode(
+            t!("llm.err.tool_missing_result").into_owned(),
+        ));
     };
     if breakpoint {
         return Err(LlmError::Encode(t!("llm.err.resp_cache_text").into_owned()));

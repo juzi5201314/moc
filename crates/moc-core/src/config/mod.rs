@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 use globset::GlobBuilder;
 use moc_llm::LlmConfig;
-use rust_i18n::t;
 use moc_protocol::SessionPermission;
 use moc_protocol::features::{FeatureFlag, FeatureStates};
+use rust_i18n::t;
 use toml::Value;
 
 use crate::CoreConfig;
@@ -132,8 +132,8 @@ impl ResolvedConfig {
     /// 读取内置默认、全局配置与命令行覆盖层。
     pub fn load(config: &CoreConfig) -> Result<Self, CoreError> {
         let home = expand_home_path(&config.home);
-        let mut base_raw: Value = toml::from_str(include_str!("defaults.toml"))
-            .map_err(|error| {
+        let mut base_raw: Value =
+            toml::from_str(include_str!("defaults.toml")).map_err(|error| {
                 CoreError::Config(t!("core.err.defaults_invalid", error = error).into_owned())
             })?;
         merge_optional_file(&mut base_raw, &home.join("config.toml"))?;
@@ -224,11 +224,9 @@ impl ResolvedConfig {
         selection::remove_legacy_roles(&mut raw);
         remove_deprecated_retention_keys(&mut raw);
         apply_model_defaults(&mut raw)?;
-        let document: ConfigDocument = raw
-            .try_into()
-            .map_err(|error| {
-                CoreError::Config(t!("core.err.field_invalid", error = error).into_owned())
-            })?;
+        let document: ConfigDocument = raw.try_into().map_err(|error| {
+            CoreError::Config(t!("core.err.field_invalid", error = error).into_owned())
+        })?;
         let providers = resolve_catalog(&document.providers)?;
         validate_models(&document.models, &providers)?;
         if !matches!(document.language.as_str(), "" | "auto" | "zh" | "en") {
@@ -322,17 +320,16 @@ impl ResolvedConfig {
         .into_iter()
         .map(|path| {
             let text = fs::read_to_string(&path).unwrap_or_default();
-            let servers = moc_mcp::parse_mcp_json(&text)
-                .map_err(|error| {
-                    CoreError::Config(
-                        t!(
-                            "core.err.parse_path",
-                            path = path.display().to_string(),
-                            error = error
-                        )
-                        .into_owned(),
+            let servers = moc_mcp::parse_mcp_json(&text).map_err(|error| {
+                CoreError::Config(
+                    t!(
+                        "core.err.parse_path",
+                        path = path.display().to_string(),
+                        error = error
                     )
-                });
+                    .into_owned(),
+                )
+            });
             servers.map(|servers| (path, servers))
         })
         .collect::<Result<Vec<_>, CoreError>>()?;
@@ -554,28 +551,26 @@ fn merge_optional_file(target: &mut Value, path: &Path) -> Result<(), CoreError>
 }
 
 fn merge_required_file(target: &mut Value, path: &Path) -> Result<(), CoreError> {
-    let text = fs::read_to_string(path)
-        .map_err(|error| {
-            CoreError::Config(
-                t!(
-                    "core.err.read_config",
-                    path = path.display().to_string(),
-                    error = error
-                )
-                .into_owned(),
+    let text = fs::read_to_string(path).map_err(|error| {
+        CoreError::Config(
+            t!(
+                "core.err.read_config",
+                path = path.display().to_string(),
+                error = error
             )
-        })?;
-    let overlay: Value = toml::from_str(&text)
-        .map_err(|error| {
-            CoreError::Config(
-                t!(
-                    "core.err.parse_config",
-                    path = path.display().to_string(),
-                    error = error
-                )
-                .into_owned(),
+            .into_owned(),
+        )
+    })?;
+    let overlay: Value = toml::from_str(&text).map_err(|error| {
+        CoreError::Config(
+            t!(
+                "core.err.parse_config",
+                path = path.display().to_string(),
+                error = error
             )
-        })?;
+            .into_owned(),
+        )
+    })?;
     merge_value(target, overlay);
     Ok(())
 }

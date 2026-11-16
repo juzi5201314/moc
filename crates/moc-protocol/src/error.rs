@@ -218,7 +218,11 @@ impl std::fmt::Display for FrameError {
                 write!(f, "{}", t!("protocol.err.frame_bad_length", value = v))
             }
             Self::TooLarge { len, max } => {
-                write!(f, "{}", t!("protocol.err.frame_too_large", len = len, max = max))
+                write!(
+                    f,
+                    "{}",
+                    t!("protocol.err.frame_too_large", len = len, max = max)
+                )
             }
             Self::NonNumericLength => write!(f, "{}", t!("protocol.err.frame_non_numeric")),
             Self::UnexpectedPrefix => write!(f, "{}", t!("protocol.err.frame_prefix")),

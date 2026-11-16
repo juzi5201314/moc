@@ -847,8 +847,11 @@ async fn background_pipes_and_pty_reap_killed_jobs_and_keep_logs() {
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         let mut reaped = std::collections::HashSet::new();
         while reaped.len() < 2 {
-            if let SessionUpdate::JobFinished { job } = events.recv().await.expect("事件流开启") {
-                if job.status == JobStatus::Killed && matches!(job.job_id.as_str(), "job_1" | "job_2") {
+            if let SessionUpdate::JobFinished { job } = events.recv().await.expect("事件流开启")
+            {
+                if job.status == JobStatus::Killed
+                    && matches!(job.job_id.as_str(), "job_1" | "job_2")
+                {
                     reaped.insert(job.job_id.clone());
                 }
             }

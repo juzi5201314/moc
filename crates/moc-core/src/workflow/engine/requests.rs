@@ -1,4 +1,3 @@
-use rust_i18n::t;
 use super::DriverOutcome;
 use super::DriverRequest;
 use super::Engine;
@@ -16,6 +15,7 @@ use crate::workflow::engine::JournalRecord;
 use crate::workflow::engine::RecordKind;
 use crate::workflow::engine::input_hash;
 use crate::workflow::facade;
+use rust_i18n::t;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;

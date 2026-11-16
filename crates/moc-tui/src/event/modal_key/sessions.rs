@@ -123,8 +123,11 @@ pub(super) fn handle(
                             }
                             Err(error) => {
                                 let _ = events.send(AppEvent::PickerError(
-                                    t!("tui.event.session_load_failed_fmt", err = error.to_string())
-                                        .into_owned(),
+                                    t!(
+                                        "tui.event.session_load_failed_fmt",
+                                        err = error.to_string()
+                                    )
+                                    .into_owned(),
                                 ));
                             }
                         }
@@ -167,12 +170,12 @@ pub(super) fn handle(
                         let _ = events.send(AppEvent::SessionControlSettled {
                             session_id,
                             notice: None,
-                            result: outcome
-                                .map(|result| result.compaction_error)
-                                .map_err(|error| {
+                            result: outcome.map(|result| result.compaction_error).map_err(
+                                |error| {
                                     t!("tui.event.model_switch_failed_fmt", err = error.to_string())
                                         .into_owned()
-                                }),
+                                },
+                            ),
                         });
                     });
                 }

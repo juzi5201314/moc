@@ -315,8 +315,12 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
                 NoteTone::Error,
             );
             app.set_warning(
-                t!("tui.event.plugin_disabled_fmt", plugin = plugin.as_str(), code = code.as_str())
-                    .into_owned(),
+                t!(
+                    "tui.event.plugin_disabled_fmt",
+                    plugin = plugin.as_str(),
+                    code = code.as_str()
+                )
+                .into_owned(),
             );
         }
         SessionUpdate::AssistantDelta { delta, .. } => match delta {

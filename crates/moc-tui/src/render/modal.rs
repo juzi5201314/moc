@@ -442,7 +442,10 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 lines.push(overlay::list_row(text, index == *option, width, theme));
             }
             let items: Vec<(&str, Cow<'_, str>)> = if error.is_some() {
-                vec![("enter", t!("tui.hint.retry")), ("esc", t!("tui.hint.cancel"))]
+                vec![
+                    ("enter", t!("tui.hint.retry")),
+                    ("esc", t!("tui.hint.cancel")),
+                ]
             } else {
                 vec![
                     ("↑↓", t!("tui.hint.choose")),
@@ -494,10 +497,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
 
                     let job_id = &job.job_id;
                     let text = if *pending_kill == Some(actual) {
-                        format!(
-                            "{icon} {job_id} {cmd} {}",
-                            t!("tui.modal.kill_confirm")
-                        )
+                        format!("{icon} {job_id} {cmd} {}", t!("tui.modal.kill_confirm"))
                     } else {
                         format!("{icon} {job_id} {cmd}")
                     };
@@ -509,7 +509,10 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             let footer = overlay::footer(
                 &[
                     ("↑↓", t!("tui.hint.choose")),
-                    (t!("tui.key.kill_selected").as_ref(), t!("tui.hint.kill_task")),
+                    (
+                        t!("tui.key.kill_selected").as_ref(),
+                        t!("tui.hint.kill_task"),
+                    ),
                     ("esc", t!("tui.hint.close")),
                 ],
                 width,
@@ -716,7 +719,10 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 }
             }
             let items: Vec<(&str, Cow<'_, str>)> = if picker.error.is_some() {
-                vec![("enter", t!("tui.hint.retry")), ("esc", t!("tui.hint.close"))]
+                vec![
+                    ("enter", t!("tui.hint.retry")),
+                    ("esc", t!("tui.hint.close")),
+                ]
             } else {
                 vec![
                     ("", t!("tui.hint.type_search")),
@@ -782,7 +788,10 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             (
                 lines,
                 overlay::footer(
-                    &[("", t!("tui.modal.monitor_note")), ("esc", t!("tui.hint.close"))],
+                    &[
+                        ("", t!("tui.modal.monitor_note")),
+                        ("esc", t!("tui.hint.close")),
+                    ],
                     width,
                     theme,
                 ),

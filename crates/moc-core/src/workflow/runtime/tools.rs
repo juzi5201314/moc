@@ -576,7 +576,12 @@ async fn eval_loop(
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| ToolError::new("E_HOST", t!("core.err.worker_spawn", error = e).into_owned()))?;
+        .map_err(|e| {
+            ToolError::new(
+                "E_HOST",
+                t!("core.err.worker_spawn", error = e).into_owned(),
+            )
+        })?;
     let mut stdin = child
         .stdin
         .take()

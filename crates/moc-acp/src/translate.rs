@@ -349,8 +349,12 @@ pub(crate) fn todo_plan(phases: &[TodoPhase]) -> Plan {
                     if item.status == TodoStatus::Blocked
                         && let Some(reason) = &item.reason
                     {
-                        content = t!("acp.plan.blocked", content = content, reason = reason.as_str())
-                            .into_owned();
+                        content = t!(
+                            "acp.plan.blocked",
+                            content = content,
+                            reason = reason.as_str()
+                        )
+                        .into_owned();
                     }
                     PlanEntry::new(content, PlanEntryPriority::Medium, status)
                 })
@@ -526,8 +530,12 @@ pub(crate) fn session_update(
             caps,
             NoticeSeverity::Error,
             t!("acp.notice.plugin_disabled", plugin = plugin.as_str()).into_owned(),
-            t!("acp.notice.code_message", code = code.as_str(), message = message.as_str())
-                .into_owned(),
+            t!(
+                "acp.notice.code_message",
+                code = code.as_str(),
+                message = message.as_str()
+            )
+            .into_owned(),
         )],
         MocUpdate::UpstreamMismatch { fields, .. } => vec![notice(
             caps,

@@ -195,7 +195,13 @@ impl McpManager {
         shutdown: CancellationToken,
         connector_for: impl Fn(&ServerConfig) -> Connector,
     ) -> Arc<Self> {
-        Self::assemble(servers, shutdown, connector_for, ReconnectPolicy::default(), None)
+        Self::assemble(
+            servers,
+            shutdown,
+            connector_for,
+            ReconnectPolicy::default(),
+            None,
+        )
     }
 
     /// 以自定义重连参数构建；测试用毫秒级参数验证预算耗尽路径。
@@ -415,7 +421,17 @@ impl McpManager {
                 status_of(slot)
             ))
         })?;
-        call_once(&peer, slot, info, args, cancel, &self.shutdown, input, self.call_timeout).await
+        call_once(
+            &peer,
+            slot,
+            info,
+            args,
+            cancel,
+            &self.shutdown,
+            input,
+            self.call_timeout,
+        )
+        .await
     }
 
     /// 关闭全部连接并等待监督任务退出。
@@ -582,7 +598,8 @@ async fn call_once(
     params.name = info.name.clone().into();
     params.arguments = Some(arguments);
 
-    let timeout = call_timeout.unwrap_or_else(|| Duration::from_secs(slot.config.call_timeout_secs));
+    let timeout =
+        call_timeout.unwrap_or_else(|| Duration::from_secs(slot.config.call_timeout_secs));
     let fallback;
     let fulfiller = match input {
         Some(fulfiller) => fulfiller,

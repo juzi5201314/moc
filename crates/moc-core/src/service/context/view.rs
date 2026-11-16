@@ -1,6 +1,6 @@
 //! 连接级上下文快照：分类目录按页读取，隐藏内容从不进入可读节点或落盘缓存。
-use rust_i18n::t;
 use super::CoreInner;
+use rust_i18n::t;
 #[cfg(test)]
 mod tests;
 use moc_protocol::methods::*;

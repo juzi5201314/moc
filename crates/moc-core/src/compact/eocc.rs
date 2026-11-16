@@ -6,12 +6,12 @@ use moc_protocol::CompactResult;
 
 use super::grok_build::{fit, reminder};
 use super::sample::{PromptSkeleton, Sampler};
-use rust_i18n::t;
 use super::{
     Checkpoint, HistoryArchive, SoftInput, guard, message_tokens, messages_tokens, replay,
 };
 use crate::error::CoreError;
 use crate::session::state::SessionState;
+use rust_i18n::t;
 
 const MAX_TASK_TOKENS: u64 = 8192;
 const MAX_REQUEST_TOKENS: u64 = 3072;

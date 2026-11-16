@@ -45,11 +45,7 @@ pub fn discover(cwd: &Path, home: &Path, config: &DiscoveryConfig) -> Vec<Discov
             roots.push((
                 100 + depth as u32,
                 dir.join(".moc").join("plugins"),
-                t!(
-                    "plugin.err.origin_project",
-                    dir = dir.display().to_string()
-                )
-                .into_owned(),
+                t!("plugin.err.origin_project", dir = dir.display().to_string()).into_owned(),
                 dir.join(".moc/config.toml"),
             ));
         }
@@ -58,11 +54,7 @@ pub fn discover(cwd: &Path, home: &Path, config: &DiscoveryConfig) -> Vec<Discov
         roots.push((
             300,
             dir.clone(),
-            t!(
-                "plugin.err.origin_dirs",
-                dir = dir.display().to_string()
-            )
-            .into_owned(),
+            t!("plugin.err.origin_dirs", dir = dir.display().to_string()).into_owned(),
             home.join("config.toml"),
         ));
     }

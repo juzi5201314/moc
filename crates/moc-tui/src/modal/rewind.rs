@@ -96,13 +96,11 @@ impl RewindState {
                     )
                 );
                 for call in entry.message.tool_calls() {
-                    s.push_str(
-                        &t!(
-                            "tui.rewind.tool_args_fmt",
-                            name = call.name.as_str(),
-                            args = call.arguments.to_string()
-                        ),
-                    );
+                    s.push_str(&t!(
+                        "tui.rewind.tool_args_fmt",
+                        name = call.name.as_str(),
+                        args = call.arguments.to_string()
+                    ));
                 }
                 s
             } else {

@@ -38,12 +38,11 @@ pub(crate) struct EncodedRequest<B = bytes::Bytes> {
 
 impl EncodedRequest<Value> {
     fn into_wire(self, protocol: &str) -> Result<EncodedRequest, LlmError> {
-        let body = serde_json::to_vec(&self.body)
-            .map_err(|error| {
-                LlmError::Encode(
-                    t!("llm.err.body_serialize", protocol = protocol, error = error).into_owned(),
-                )
-            })?;
+        let body = serde_json::to_vec(&self.body).map_err(|error| {
+            LlmError::Encode(
+                t!("llm.err.body_serialize", protocol = protocol, error = error).into_owned(),
+            )
+        })?;
         Ok(EncodedRequest {
             url: self.url,
             headers: self.headers,
@@ -344,9 +343,7 @@ pub(crate) fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError
                 .content
                 .tool_result_ids()
                 .next()
-                .ok_or_else(|| {
-                    LlmError::Encode(t!("llm.err.missing_toolresult").into_owned())
-                })?;
+                .ok_or_else(|| LlmError::Encode(t!("llm.err.missing_toolresult").into_owned()))?;
             if !pending.remove(result) {
                 return Err(stray_result_error(result));
             }
@@ -370,7 +367,12 @@ pub(crate) fn validate_tool_history(messages: &[Message]) -> Result<(), LlmError
                 (join_names(&calls), join_names(&missing))
             });
             return Err(LlmError::Encode(
-                t!("llm.err.tool_call_unmatched", names = names, missing = missing).into_owned(),
+                t!(
+                    "llm.err.tool_call_unmatched",
+                    names = names,
+                    missing = missing
+                )
+                .into_owned(),
             ));
         }
     }

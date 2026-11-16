@@ -109,9 +109,9 @@ impl LlmError {
                 error.request_diagnostics.get_or_insert(diagnostics);
             }
             Self::Transport(error) => {
-                error.message.push_str(
-                    &t!("llm.err.diagnostics_fmt", stats = diagnostics).into_owned(),
-                );
+                error
+                    .message
+                    .push_str(&t!("llm.err.diagnostics_fmt", stats = diagnostics).into_owned());
             }
             Self::RetriesExhausted { last, .. } => {
                 **last = last.as_ref().clone().with_request_diagnostics(diagnostics);

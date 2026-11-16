@@ -64,7 +64,11 @@ impl Renderer {
                 let _ = writeln!(
                     out,
                     "{}",
-                    t!("cli.render.agent_started", title = agent.title, id = agent.id)
+                    t!(
+                        "cli.render.agent_started",
+                        title = agent.title,
+                        id = agent.id
+                    )
                 );
             }
             SessionUpdate::AgentStatusChanged {
@@ -202,7 +206,11 @@ impl Renderer {
                 let _ = writeln!(
                     out,
                     "{}",
-                    t!("cli.render.agent_message", from = meta.from_title, body = body)
+                    t!(
+                        "cli.render.agent_message",
+                        from = meta.from_title,
+                        body = body
+                    )
                 );
             }
             SessionUpdate::ToolProgress { .. } => {}
@@ -333,18 +341,10 @@ impl Renderer {
                     .flat_map(|phase| &phase.items)
                     .filter(|item| item.status == moc_protocol::methods::TodoStatus::Completed)
                     .count();
-                let _ = writeln!(
-                    out,
-                    "{}",
-                    t!("cli.render.todo", done = done, total = total)
-                );
+                let _ = writeln!(out, "{}", t!("cli.render.todo", done = done, total = total));
             }
             SessionUpdate::TodoReminder { open_items, .. } => {
-                let _ = writeln!(
-                    out,
-                    "{}",
-                    t!("cli.render.todo_reminder", open = open_items)
-                );
+                let _ = writeln!(out, "{}", t!("cli.render.todo_reminder", open = open_items));
             }
             SessionUpdate::PlanSubmitted { plan } => {
                 let _ = writeln!(
@@ -523,11 +523,7 @@ impl Renderer {
                 );
             }
             SessionUpdate::GoalRoundMessage { meta, .. } => {
-                let _ = writeln!(
-                    out,
-                    "{}",
-                    t!("cli.render.goal_round", round = meta.round)
-                );
+                let _ = writeln!(out, "{}", t!("cli.render.goal_round", round = meta.round));
             }
             SessionUpdate::PermissionResolved { .. }
             | SessionUpdate::PromptStarted { .. }
@@ -587,7 +583,11 @@ fn plan_status_label(status: moc_protocol::methods::PlanStatus) -> std::borrow::
 
 /// 开/关的本地化短词（Fast Mode、计划模式等开关行共用）。
 fn on_off(enabled: bool) -> std::borrow::Cow<'static, str> {
-    if enabled { t!("common.on") } else { t!("common.off") }
+    if enabled {
+        t!("common.on")
+    } else {
+        t!("common.off")
+    }
 }
 
 /// 行式 REPL 的审批输入：`y` 批准 / `n [反馈]` 拒绝 / `role=模型` 覆盖后再 y。

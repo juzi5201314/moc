@@ -15,11 +15,11 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, State};
-use rust_i18n::t;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
 use crate::{AppState, origin_allowed};
@@ -313,7 +313,10 @@ pub async fn list(State(state): State<AppState>, Query(query): Query<ListQuery>)
     let cwd = match canonical_dir(&query.cwd) {
         Some(cwd) => cwd,
         None => {
-            return (StatusCode::BAD_REQUEST, t!("web.err.cwd_invalid").into_owned())
+            return (
+                StatusCode::BAD_REQUEST,
+                t!("web.err.cwd_invalid").into_owned(),
+            )
                 .into_response();
         }
     };
@@ -343,10 +346,18 @@ pub async fn create(
     Json(body): Json<CreateBody>,
 ) -> Response {
     if !origin_allowed(&headers) {
-        return (StatusCode::FORBIDDEN, t!("web.err.csrf_denied").into_owned()).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            t!("web.err.csrf_denied").into_owned(),
+        )
+            .into_response();
     }
     let Some(cwd) = canonical_dir(&body.cwd) else {
-        return (StatusCode::BAD_REQUEST, t!("web.err.cwd_invalid").into_owned()).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            t!("web.err.cwd_invalid").into_owned(),
+        )
+            .into_response();
     };
     let Some(permit) = state.terminals.reserve() else {
         return (
@@ -395,7 +406,11 @@ pub async fn remove(
     headers: HeaderMap,
 ) -> Response {
     if !origin_allowed(&headers) {
-        return (StatusCode::FORBIDDEN, t!("web.err.csrf_denied").into_owned()).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            t!("web.err.csrf_denied").into_owned(),
+        )
+            .into_response();
     }
     let removed = state
         .terminals
@@ -409,7 +424,10 @@ pub async fn remove(
             terminal.kill();
             StatusCode::NO_CONTENT.into_response()
         }
-        None => (StatusCode::NOT_FOUND, t!("web.err.terminal_not_found").into_owned())
+        None => (
+            StatusCode::NOT_FOUND,
+            t!("web.err.terminal_not_found").into_owned(),
+        )
             .into_response(),
     }
 }

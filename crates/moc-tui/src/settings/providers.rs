@@ -115,11 +115,13 @@ impl ProviderDraft {
                 && id
                     .bytes()
                     .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c)),
-            "{}", t!("tui.err.provider_id_invalid")
+            "{}",
+            t!("tui.err.provider_id_invalid")
         );
         anyhow::ensure!(
             panel.effective["providers"].get(id).is_none(),
-            "{}", t!("tui.err.provider_exists", id = id)
+            "{}",
+            t!("tui.err.provider_exists", id = id)
         );
         let url = self.url.input.text.trim();
         anyhow::ensure!(!url.is_empty(), "{}", t!("tui.err.url_required"));
@@ -385,8 +387,7 @@ impl SettingsPanel {
                 kind: RowKind::Group(Group {
                     key,
                     title: parameter_title(&path),
-                    detail: t!("tui.settings.item_count", count = indices.len())
-                        .into_owned(),
+                    detail: t!("tui.settings.item_count", count = indices.len()).into_owned(),
                     grouping: path,
                     path: None,
                 }),

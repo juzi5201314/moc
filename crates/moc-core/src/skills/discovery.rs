@@ -75,7 +75,11 @@ pub fn discover_index(
             roots.push((
                 200 + depth,
                 dir.join(".agents").join("skills"),
-                t!("core.err.skills_src_agents", dir = dir.display().to_string()).into_owned(),
+                t!(
+                    "core.err.skills_src_agents",
+                    dir = dir.display().to_string()
+                )
+                .into_owned(),
             ));
         }
     }

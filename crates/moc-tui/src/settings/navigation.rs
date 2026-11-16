@@ -159,8 +159,11 @@ impl SettingsPanel {
                     kind: RowKind::Group(Group {
                         key: adv_key,
                         title: t!("tui.settings.advanced_title").into_owned(),
-                        detail: t!("tui.settings.item_count", count = node.advanced_fields.len())
-                            .into_owned(),
+                        detail: t!(
+                            "tui.settings.item_count",
+                            count = node.advanced_fields.len()
+                        )
+                        .into_owned(),
                         grouping,
                         path: None,
                     }),
@@ -445,14 +448,12 @@ impl SettingsPanel {
         };
         let mut parts = Vec::new();
         if let Some(window) = value.get("context_window").and_then(Value::as_u64) {
-            parts.push(
-                t!("tui.nav.ctx_fmt", v = crate::render::format_tokens(window)).into_owned(),
-            );
+            parts
+                .push(t!("tui.nav.ctx_fmt", v = crate::render::format_tokens(window)).into_owned());
         }
         if let Some(output) = value.get("max_output_tokens").and_then(Value::as_u64) {
-            parts.push(
-                t!("tui.nav.out_fmt", v = crate::render::format_tokens(output)).into_owned(),
-            );
+            parts
+                .push(t!("tui.nav.out_fmt", v = crate::render::format_tokens(output)).into_owned());
         }
         if value
             .get("reasoning")

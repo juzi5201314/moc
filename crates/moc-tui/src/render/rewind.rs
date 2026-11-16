@@ -204,11 +204,8 @@ fn draw_header(
 
     if area.height >= 2 {
         lines.push(Line::from(Span::styled(
-            crate::render::wrap::truncate(
-                t!("tui.rewind.guide"),
-                usize::from(area.width),
-            )
-            .into_owned(),
+            crate::render::wrap::truncate(t!("tui.rewind.guide"), usize::from(area.width))
+                .into_owned(),
             Style::new().fg(theme.gray_dim),
         )));
     }
@@ -690,10 +687,7 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
 
     let mut detail_lines = Vec::new();
     let meta_spans = vec![
-        Span::styled(
-            t!("tui.rewind.meta_node"),
-            Style::new().fg(theme.gray_dim),
-        ),
+        Span::styled(t!("tui.rewind.meta_node"), Style::new().fg(theme.gray_dim)),
         Span::styled(
             format!("{} · ", current_item.role_label()),
             if current_item.is_user {
@@ -706,10 +700,7 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
                     .add_modifier(Modifier::BOLD)
             },
         ),
-        Span::styled(
-            t!("tui.rewind.meta_time"),
-            Style::new().fg(theme.gray_dim),
-        ),
+        Span::styled(t!("tui.rewind.meta_time"), Style::new().fg(theme.gray_dim)),
         Span::styled(
             format!("{} · ", format_clock(current_item.at_ms)),
             Style::new().fg(theme.text_secondary),
@@ -724,10 +715,7 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
 
     if !current_item.tool_calls.is_empty() {
         detail_lines.push(Line::from(vec![
-            Span::styled(
-                t!("tui.rewind.meta_tools"),
-                Style::new().fg(theme.gray_dim),
-            ),
+            Span::styled(t!("tui.rewind.meta_tools"), Style::new().fg(theme.gray_dim)),
             Span::styled(
                 current_item.tool_calls.join(&t!("tui.values.list_sep")),
                 Style::new().fg(theme.text_primary),

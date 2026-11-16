@@ -83,10 +83,7 @@ pub(super) fn install_globals<'js>(
             if !allowed {
                 return Err(throw(
                     &ctx,
-                    &PluginError::new(
-                        "E_PLUGIN_TOOLS_UNAVAILABLE",
-                        t!("plugin.err.tool_only"),
-                    ),
+                    &PluginError::new("E_PLUGIN_TOOLS_UNAVAILABLE", t!("plugin.err.tool_only")),
                 ));
             }
             let Some(tx) = tx else {
@@ -140,13 +137,15 @@ pub(super) fn install_globals<'js>(
         move |ctx: Ctx<'js>, key: String, definition: String| -> rquickjs::Result<()> {
             let result = (|| -> Result<()> {
                 let mut registry = registry.borrow_mut();
-                let fields = registry
-                    .fields
-                    .as_mut()
-                    .ok_or_else(|| PluginError::new("E_PLUGIN_CONFIG", t!("plugin.err.config_top_level")))?;
+                let fields = registry.fields.as_mut().ok_or_else(|| {
+                    PluginError::new("E_PLUGIN_CONFIG", t!("plugin.err.config_top_level"))
+                })?;
                 let declaration = config_declaration(key, &definition)?;
                 if fields.iter().any(|field| field.key == declaration.key) {
-                    return Err(PluginError::new("E_PLUGIN_CONFIG", t!("plugin.err.config_dup")));
+                    return Err(PluginError::new(
+                        "E_PLUGIN_CONFIG",
+                        t!("plugin.err.config_dup"),
+                    ));
                 }
                 fields.push(declaration);
                 Ok(())
@@ -179,8 +178,7 @@ pub(super) fn install_globals<'js>(
                 if presets.iter().any(|preset| preset.name == declaration.name) {
                     return Err(PluginError::new(
                         "E_PLUGIN_AGENT",
-                        t!("plugin.err.preset_dup", name = declaration.name.as_str())
-                            .into_owned(),
+                        t!("plugin.err.preset_dup", name = declaration.name.as_str()).into_owned(),
                     ));
                 }
                 presets.push(declaration);
@@ -233,11 +231,12 @@ pub(super) fn install_globals<'js>(
                         PluginError::new("E_PLUGIN_STATE", t!("plugin.err.no_invocation"))
                     })?;
                     (
-                        call.tx
-                            .clone()
-                            .ok_or_else(|| {
-                                PluginError::new("E_PLUGIN_STATE", t!("plugin.err.persistence_unavailable"))
-                            })?,
+                        call.tx.clone().ok_or_else(|| {
+                            PluginError::new(
+                                "E_PLUGIN_STATE",
+                                t!("plugin.err.persistence_unavailable"),
+                            )
+                        })?,
                         call.deadline,
                     )
                 };
@@ -258,7 +257,12 @@ pub(super) fn install_globals<'js>(
                     },
                     "stateDelete" => PersistenceOp::StateDelete { key },
                     "stateKeys" => PersistenceOp::StateKeys,
-                    _ => return Err(PluginError::new("E_PLUGIN_STATE", t!("plugin.err.persistence_unknown_op"))),
+                    _ => {
+                        return Err(PluginError::new(
+                            "E_PLUGIN_STATE",
+                            t!("plugin.err.persistence_unknown_op"),
+                        ));
+                    }
                 };
                 let request = |op| -> Result<Value> {
                     let (reply, receiver) = std::sync::mpsc::channel();
@@ -276,7 +280,10 @@ pub(super) fn install_globals<'js>(
                                 .max(Duration::from_millis(1)),
                         )
                         .map_err(|_| {
-                            PluginError::new("E_PLUGIN_TIMEOUT", t!("plugin.err.persistence_timeout"))
+                            PluginError::new(
+                                "E_PLUGIN_TIMEOUT",
+                                t!("plugin.err.persistence_timeout"),
+                            )
                         })?
                 };
                 if let PersistenceOp::StateGet { key }

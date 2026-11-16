@@ -562,9 +562,9 @@ pub(super) fn apply_plan_review(
             }
         }
         Ok(_) => app.set_notice(t!("tui.plan.session_changed").into_owned()),
-        Err(error) => app.set_notice(
-            t!("tui.plan.review_failed_fmt", err = error.to_string()).into_owned(),
-        ),
+        Err(error) => {
+            app.set_notice(t!("tui.plan.review_failed_fmt", err = error.to_string()).into_owned())
+        }
     }
 }
 
@@ -660,8 +660,7 @@ pub(crate) fn apply_plan_execution_loaded(
             load_subagents_for_parent(app, &connection.client, Some(id));
             start_auto_prompt(app, connection, auto_prompt);
         }
-        Err(error) => app.set_notice(
-            t!("tui.plan.exec_load_failed_fmt", err = error.to_string()).into_owned(),
-        ),
+        Err(error) => app
+            .set_notice(t!("tui.plan.exec_load_failed_fmt", err = error.to_string()).into_owned()),
     }
 }

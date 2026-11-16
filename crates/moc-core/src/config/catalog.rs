@@ -371,7 +371,10 @@ fn walk(
         "api" => &[
             ("openai_chat", "core.config.opt.api.openai_chat"),
             ("openai_responses", "core.config.opt.api.openai_responses"),
-            ("anthropic_messages", "core.config.opt.api.anthropic_messages"),
+            (
+                "anthropic_messages",
+                "core.config.opt.api.anthropic_messages",
+            ),
         ],
         "cache" => &[
             ("auto", "core.config.opt.cache.auto"),
@@ -390,12 +393,10 @@ fn walk(
                 "core.config.opt.motf.max_completion_tokens",
             ),
         ],
-        "tool_choice_dialect" if api.is_some_and(|api| api != Protocol::OpenAiChat) => {
-            &[
-                ("standard", "core.config.opt.tool_choice.standard"),
-                ("unsupported", "core.config.opt.tool_choice.unsupported"),
-            ]
-        }
+        "tool_choice_dialect" if api.is_some_and(|api| api != Protocol::OpenAiChat) => &[
+            ("standard", "core.config.opt.tool_choice.standard"),
+            ("unsupported", "core.config.opt.tool_choice.unsupported"),
+        ],
         "tool_choice_dialect" => &[
             ("standard", "core.config.opt.tool_choice.standard"),
             (

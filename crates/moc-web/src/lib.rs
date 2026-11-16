@@ -21,7 +21,6 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use rust_i18n::t;
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{DefaultBodyLimit, Query, State};
@@ -29,6 +28,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use moc_core::{Core, CoreServer};
+use rust_i18n::t;
 use serde::Deserialize;
 use tokio::net::TcpListener;
 
@@ -53,9 +53,7 @@ pub struct WebOptions {
 pub async fn run(core: Arc<Core>, options: WebOptions) -> anyhow::Result<()> {
     let (listener, fell_back) = listen(options.port, options.fallback)
         .await
-        .with_context(|| {
-            t!("web.err.bind_failed", port = options.port).into_owned()
-        })?;
+        .with_context(|| t!("web.err.bind_failed", port = options.port).into_owned())?;
     let addr = listener.local_addr()?;
     if fell_back {
         println!(

@@ -1,4 +1,3 @@
-use rust_i18n::t;
 use super::WorkflowManager;
 use crate::error::CoreError;
 use crate::workflow::compile::CompiledWorkflow;
@@ -6,6 +5,7 @@ use crate::workflow::compile::Diagnostic;
 use crate::workflow::compile::compile;
 use moc_protocol::UpdateSink;
 use moc_protocol::WorkflowEvent;
+use rust_i18n::t;
 use tokio::sync::oneshot;
 
 impl WorkflowManager {

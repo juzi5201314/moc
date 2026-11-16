@@ -89,11 +89,7 @@ impl Entry {
     pub fn validate(self, text: &str) -> anyhow::Result<String> {
         let text = text.trim();
         anyhow::ensure!(!text.is_empty(), "{}", t!("tui.ctrl.empty_content"));
-        anyhow::ensure!(
-            !text.contains('\n'),
-            "{}",
-            t!("tui.ctrl.one_per_line")
-        );
+        anyhow::ensure!(!text.contains('\n'), "{}", t!("tui.ctrl.one_per_line"));
         match self {
             Entry::Text | Entry::Key => Ok(text.to_owned()),
             Entry::Level => {

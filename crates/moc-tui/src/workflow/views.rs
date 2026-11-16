@@ -410,7 +410,11 @@ pub fn run_lines(
         return (lines, hits);
     }
     lines.push(Line::from(Span::styled(
-        t!("tui.wf.status_fmt", status = status_label(state.status).as_str()).into_owned(),
+        t!(
+            "tui.wf.status_fmt",
+            status = status_label(state.status).as_str()
+        )
+        .into_owned(),
         phase_style(&status_label(state.status), theme),
     )));
     lines.push(Line::from(Span::styled(

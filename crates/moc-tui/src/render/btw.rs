@@ -71,7 +71,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let status = thread
         .turns
         .back()
-        .map_or(t!("tui.btw.empty_thread"), |turn| turn.status.label().into());
+        .map_or(t!("tui.btw.empty_thread"), |turn| {
+            turn.status.label().into()
+        });
     let turns = thread.turns.len();
     let focused = app.focus == Focus::Btw && app.modal.is_none();
     let border = if focused {
@@ -85,9 +87,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Style::new().bg(theme.bg_base).fg(theme.text_primary),
     );
     if !app.btw.expanded {
-        let head = t!("tui.btw.head_fmt", sep = SEP, status = status, turns = turns).into_owned();
+        let head = t!(
+            "tui.btw.head_fmt",
+            sep = SEP,
+            status = status,
+            turns = turns
+        )
+        .into_owned();
         let hints = labels::hints(
-            &[("", t!("tui.hint.click_expand")), ("alt+b", t!("tui.hint.expand_row"))],
+            &[
+                ("", t!("tui.hint.click_expand")),
+                ("alt+b", t!("tui.hint.expand_row")),
+            ],
             usize::from(area.width).saturating_sub(super::wrap::str_width(&head)),
         );
         frame.render_widget(
@@ -104,15 +115,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if thread.turns.is_empty() {
         lines.extend(
             wrap_text(&t!("tui.btw.intro"), width)
-            .into_iter()
-            .map(|text| Line::styled(text, Style::new().fg(theme.text_secondary))),
+                .into_iter()
+                .map(|text| Line::styled(text, Style::new().fg(theme.text_secondary))),
         );
     }
     for turn in &thread.turns {
         lines.extend(
-            wrap_text(&t!("tui.btw.you_fmt", question = turn.question.as_str()), width)
-                .into_iter()
-                .map(|text| Line::styled(text, Style::new().fg(theme.text_primary))),
+            wrap_text(
+                &t!("tui.btw.you_fmt", question = turn.question.as_str()),
+                width,
+            )
+            .into_iter()
+            .map(|text| Line::styled(text, Style::new().fg(theme.text_primary))),
         );
         if !turn.reasoning.is_empty() {
             lines.push(Line::from(vec![
@@ -169,8 +183,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     thread.scroll = thread.scroll.min(app.btw.scroll_max);
 
     // `scroll` 是距底部的行数；百分比按「已读到哪」从顶部算，到底为 100%。
-    let mut title =
-        t!("tui.btw.title_fmt", sep = SEP, status = status, turns = turns).into_owned();
+    let mut title = t!(
+        "tui.btw.title_fmt",
+        sep = SEP,
+        status = status,
+        turns = turns
+    )
+    .into_owned();
     if let Some(percent) =
         ((app.btw.scroll_max - thread.scroll) * 100).checked_div(app.btw.scroll_max)
     {

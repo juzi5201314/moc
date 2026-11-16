@@ -15,31 +15,28 @@ pub fn validate(schema: &Value, value: &Value) -> Result<(), String> {
     if let Some(types) = schema.get("type")
         && !type_matches(types, value)
     {
-        return Err(
-            t!(
-                "plugin.err.type_mismatch",
-                expected = type_names(types),
-                actual = kind(value)
-            )
-            .into_owned(),
-        );
+        return Err(t!(
+            "plugin.err.type_mismatch",
+            expected = type_names(types),
+            actual = kind(value)
+        )
+        .into_owned());
     }
     if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
         && !allowed.contains(value)
     {
-        return Err(
-            t!(
-                "plugin.err.not_allowed_value",
-                allowed = format!("{allowed:?}"),
-                value = value
-            )
-            .into_owned(),
-        );
+        return Err(t!(
+            "plugin.err.not_allowed_value",
+            allowed = format!("{allowed:?}"),
+            value = value
+        )
+        .into_owned());
     }
     if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
         for (index, item) in values.iter().enumerate() {
-            validate(items, item)
-                .map_err(|error| t!("plugin.err.item_failed", index = index, error = error).into_owned())?;
+            validate(items, item).map_err(|error| {
+                t!("plugin.err.item_failed", index = index, error = error).into_owned()
+            })?;
         }
     }
     let Some(object) = value.as_object() else {
@@ -56,8 +53,9 @@ pub fn validate(schema: &Value, value: &Value) -> Result<(), String> {
     let closed = schema.get("additionalProperties") == Some(&Value::Bool(false));
     for (name, item) in object {
         match properties.and_then(|properties| properties.get(name)) {
-            Some(child) => validate(child, item)
-                .map_err(|error| t!("plugin.err.field_prefix", name = name, error = error).into_owned())?,
+            Some(child) => validate(child, item).map_err(|error| {
+                t!("plugin.err.field_prefix", name = name, error = error).into_owned()
+            })?,
             None if closed => {
                 return Err(t!("plugin.err.closed_field", name = name).into_owned());
             }

@@ -83,9 +83,7 @@ pub fn report(app: &App) -> String {
     }
 
     match crate::clipboard::local_channel() {
-        Some(channel) => lines.push(
-            t!("tui.doctor.clipboard_fmt", channel = channel).into_owned(),
-        ),
+        Some(channel) => lines.push(t!("tui.doctor.clipboard_fmt", channel = channel).into_owned()),
         None => lines.push(t!("tui.doctor.clipboard_osc52").into_owned()),
     }
 

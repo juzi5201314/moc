@@ -190,8 +190,11 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                                 app.queues.entry(session).or_default().push_front(prompt);
                             }
                             app.set_error_notice(
-                                t!("tui.steer.withdrawn_undelivered_fmt", err = error.to_string())
-                                    .into_owned(),
+                                t!(
+                                    "tui.steer.withdrawn_undelivered_fmt",
+                                    err = error.to_string()
+                                )
+                                .into_owned(),
                             );
                         }
                     } else {

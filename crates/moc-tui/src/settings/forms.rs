@@ -46,9 +46,10 @@ pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Option<Value
                 (1u64, s.as_str())
             };
             if matches!(kind, FieldKind::SignedInteger) {
-                let n = s.trim().parse::<i64>().map_err(|_| {
-                    anyhow::anyhow!("{}", t!("tui.form.bad_signed_int"))
-                })?;
+                let n = s
+                    .trim()
+                    .parse::<i64>()
+                    .map_err(|_| anyhow::anyhow!("{}", t!("tui.form.bad_signed_int")))?;
                 json!(
                     n.checked_mul(multiplier as i64)
                         .ok_or_else(|| anyhow::anyhow!("{}", t!("tui.form.out_of_range")))?

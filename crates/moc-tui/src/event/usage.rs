@@ -98,10 +98,7 @@ pub(super) fn usage_summary(result: &moc_protocol::SessionUsageResult) -> Vec<St
         rows.push((t!("tui.usage.ttft").into_owned(), format_active(ttft)));
     }
     if let Some(tps) = usage_tps(total) {
-        rows.push((
-            t!("tui.usage.tps").into_owned(),
-            format!("{tps:.1} tok/s"),
-        ));
+        rows.push((t!("tui.usage.tps").into_owned(), format!("{tps:.1} tok/s")));
     }
     let label_width = rows
         .iter()
@@ -235,9 +232,10 @@ pub(super) fn usage_row(summary: &moc_protocol::ModelUsageSummary, label: &str) 
         crate::render::format_tokens(summary.input_tokens),
         crate::render::format_tokens(summary.output_tokens),
         format!("{cache_rate:.1}%"),
-        summary
-            .reasoning_tokens
-            .map_or_else(|| t!("tui.usage.unknown").into_owned(), crate::render::format_tokens),
+        summary.reasoning_tokens.map_or_else(
+            || t!("tui.usage.unknown").into_owned(),
+            crate::render::format_tokens,
+        ),
         if summary.gen_ms > 0 {
             format_active(summary.gen_ms)
         } else {

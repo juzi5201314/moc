@@ -400,13 +400,11 @@ pub(super) fn ask_answer_pairs(tool: &ToolCallBlock, args: &Value) -> Vec<(Strin
     };
     let result = result.trim_end();
     if result == TIMEOUT {
-        return vec![
-            (
-                String::new(),
-                t!("tui.ask.timeout_unanswered").into_owned(),
-                true,
-            ),
-        ];
+        return vec![(
+            String::new(),
+            t!("tui.ask.timeout_unanswered").into_owned(),
+            true,
+        )];
     }
     if result == UNANSWERED {
         return vec![(String::new(), t!("tui.ask.unanswered").into_owned(), true)];

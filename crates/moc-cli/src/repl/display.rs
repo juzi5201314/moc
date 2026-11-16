@@ -77,11 +77,10 @@ pub(super) fn print_usage(result: &moc_protocol::SessionUsageResult) {
         } else {
             cache as f64 * 100.0 / summary.input_tokens as f64
         };
-        let reasoning = summary
-            .reasoning_tokens
-            .map_or_else(|| t!("cli.display.unknown").into_owned(), |tokens| {
-                tokens.to_string()
-            });
+        let reasoning = summary.reasoning_tokens.map_or_else(
+            || t!("cli.display.unknown").into_owned(),
+            |tokens| tokens.to_string(),
+        );
         let split = if summary.gen_ms > 0 {
             t!(
                 "cli.display.time_split",

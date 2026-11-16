@@ -77,8 +77,8 @@ impl Auth {
     ///
     /// 环境变量缺失或为空白时返回带上下文的错误。
     pub fn from_env(var: &str) -> anyhow::Result<Auth> {
-        let value = std::env::var(var)
-            .with_context(|| t!("llm.err.env_read", var = var).into_owned())?;
+        let value =
+            std::env::var(var).with_context(|| t!("llm.err.env_read", var = var).into_owned())?;
         if value.trim().is_empty() {
             anyhow::bail!("{}", t!("llm.err.env_empty", var = var));
         }

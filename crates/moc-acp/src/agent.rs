@@ -433,9 +433,10 @@ impl<B: Backend> Bridge<B> {
         req: SetSessionConfigOptionRequest,
     ) -> Result<SetSessionConfigOptionResponse, acp::Error> {
         if req.config_id.0.as_ref() != CONFIG_MODEL {
-            return Err(acp::Error::invalid_params().data(
-                t!("acp.err.unsupported_config", id = req.config_id.0.as_ref()),
-            ));
+            return Err(acp::Error::invalid_params().data(t!(
+                "acp.err.unsupported_config",
+                id = req.config_id.0.as_ref()
+            )));
         }
         let Some(selector) = req.value.as_value_id() else {
             return Err(acp::Error::invalid_params().data(t!("acp.err.need_value_id")));

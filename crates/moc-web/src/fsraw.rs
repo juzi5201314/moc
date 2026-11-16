@@ -45,7 +45,10 @@ pub async fn read(Query(query): Query<RawQuery>) -> Response {
         return (StatusCode::NOT_FOUND, t!("web.err.file_stat").into_owned()).into_response();
     };
     if !metadata.is_file() {
-        return (StatusCode::BAD_REQUEST, t!("web.err.not_regular").into_owned())
+        return (
+            StatusCode::BAD_REQUEST,
+            t!("web.err.not_regular").into_owned(),
+        )
             .into_response();
     }
     let mut headers = HeaderMap::new();
@@ -116,7 +119,11 @@ async fn upload_to(
 ) -> Response {
     let exists = path.symlink_metadata().is_ok();
     if exists && !overwrite {
-        return (StatusCode::CONFLICT, t!("web.err.target_exists").into_owned()).into_response();
+        return (
+            StatusCode::CONFLICT,
+            t!("web.err.target_exists").into_owned(),
+        )
+            .into_response();
     }
     // 覆盖已有链接时沿用原接口语义，替换链接指向的普通文件。
     let target = if exists {
@@ -216,7 +223,10 @@ async fn upload_to(
     match published {
         Ok(Ok(())) => {}
         Ok(Err(error)) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            return (StatusCode::CONFLICT, t!("web.err.target_exists").into_owned())
+            return (
+                StatusCode::CONFLICT,
+                t!("web.err.target_exists").into_owned(),
+            )
                 .into_response();
         }
         Ok(Err(error)) => {

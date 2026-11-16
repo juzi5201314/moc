@@ -68,10 +68,9 @@ impl Cache {
             }
             Err(error) => return Err(error.into()),
         };
-        let cache: Self = serde_json::from_slice(&bytes)
-            .map_err(|error| {
-                CoreError::Config(t!("core.err.skills_cache_invalid", error = error).into_owned())
-            })?;
+        let cache: Self = serde_json::from_slice(&bytes).map_err(|error| {
+            CoreError::Config(t!("core.err.skills_cache_invalid", error = error).into_owned())
+        })?;
         if cache.version != 1 || cache.entries.values().any(|entry| !valid_hint(&entry.hint)) {
             return Err(CoreError::Config(
                 t!("core.err.skills_cache_version").into_owned(),
@@ -151,10 +150,9 @@ impl Writer {
     pub fn commit(&self, cache: &Cache) -> Result<(), CoreError> {
         let target = path(&self.home);
         let mut temporary = tempfile::NamedTempFile::new_in(self.home.join("cache"))?;
-        serde_json::to_writer(temporary.as_file_mut(), cache)
-            .map_err(|error| {
-                CoreError::Config(t!("core.err.skills_cache_serialize", error = error).into_owned())
-            })?;
+        serde_json::to_writer(temporary.as_file_mut(), cache).map_err(|error| {
+            CoreError::Config(t!("core.err.skills_cache_serialize", error = error).into_owned())
+        })?;
         temporary.flush()?;
         temporary.as_file().sync_all()?;
         temporary.persist(&target).map_err(|error| error.error)?;

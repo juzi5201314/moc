@@ -4,7 +4,6 @@
 //! 同一份恢复序列；顺序与启用相反，保证终端状态无残留。
 
 use anyhow::Context;
-use rust_i18n::t;
 use crossterm::cursor::MoveTo;
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
@@ -17,6 +16,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use rust_i18n::t;
 use std::io::Write;
 
 /// 只申请「消歧义」这一位：它让 Ctrl+M、Ctrl+I 这类与旧式控制码撞车的

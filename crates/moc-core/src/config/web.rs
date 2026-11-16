@@ -20,8 +20,9 @@ pub fn load(home: &Path) -> Result<WebStateDocument, CoreError> {
     let state: WebState = if text.trim().is_empty() {
         WebState::default()
     } else {
-        parse(&text)
-            .map_err(|error| CoreError::Config(t!("core.err.web_toml_invalid", error = error).into_owned()))?
+        parse(&text).map_err(|error| {
+            CoreError::Config(t!("core.err.web_toml_invalid", error = error).into_owned())
+        })?
     };
     Ok(WebStateDocument {
         revision: revision(&text),
@@ -54,10 +55,9 @@ pub fn save(home: &Path, params: WebStateSaveParams) -> Result<WebStateDocument,
             t!("core.err.web_toml_conflict").into_owned(),
         ));
     }
-    let text = toml::to_string_pretty(&params.state)
-        .map_err(|error| {
-            CoreError::Config(t!("core.err.web_toml_serialize", error = error).into_owned())
-        })?;
+    let text = toml::to_string_pretty(&params.state).map_err(|error| {
+        CoreError::Config(t!("core.err.web_toml_serialize", error = error).into_owned())
+    })?;
     write_atomic(&path, &text)?;
     Ok(WebStateDocument {
         revision: revision(&text),

@@ -16,12 +16,12 @@ use crate::{
 };
 use controls::Control;
 use crossterm::event::{KeyCode, KeyModifiers};
-use rust_i18n::t;
 use editors::{Editor, Outcome, TextEditor};
 use moc_protocol::{
     CatalogModel, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope, FieldKind,
     MaintenanceReport, SettingsDocument,
 };
+use rust_i18n::t;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 

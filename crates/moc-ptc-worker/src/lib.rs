@@ -261,11 +261,7 @@ fn execute(
                 return Ok(failed(&reason, t!("ptc.err.interrupted").into_owned()));
             }
             runtime.execute_pending_job().map_err(|error| {
-                t!(
-                    "ptc.err.promise_job",
-                    error = format!("{error:?}")
-                )
-                .into_owned()
+                t!("ptc.err.promise_job", error = format!("{error:?}")).into_owned()
             })?;
         }
         let step = context.with(|ctx| -> Result<GuestStep> {
@@ -324,7 +320,10 @@ fn execute(
             }
             Ok(Command::Cancel) => {}
             Err(mpsc::RecvError) => {
-                return Ok(failed("E_CANCELLED", t!("ptc.err.host_closed").into_owned()));
+                return Ok(failed(
+                    "E_CANCELLED",
+                    t!("ptc.err.host_closed").into_owned(),
+                ));
             }
         }
     }

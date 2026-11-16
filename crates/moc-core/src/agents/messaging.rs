@@ -1,4 +1,3 @@
-use rust_i18n::t;
 use super::AgentEntry;
 use super::AgentInbox;
 use super::BROADCAST_TARGET;
@@ -32,6 +31,7 @@ use moc_protocol::methods::AgentStatus;
 use moc_protocol::methods::InputPart;
 use moc_protocol::methods::PromptParams;
 use moc_protocol::methods::SessionUpdate;
+use rust_i18n::t;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -399,8 +399,9 @@ pub(crate) async fn record_yield(
         .and_then(|meta| meta.output_schema.clone());
     let result = match (&schema, result) {
         (Some(schema), Some(result)) => {
-            let validator = jsonschema::validator_for(schema)
-                .map_err(|error| invalid(t!("core.err.output_schema_bad2", error = error).into_owned()))?;
+            let validator = jsonschema::validator_for(schema).map_err(|error| {
+                invalid(t!("core.err.output_schema_bad2", error = error).into_owned())
+            })?;
             if let Err(error) = validator.validate(&result) {
                 return Err(invalid(
                     t!("core.err.yield_schema", error = error).into_owned(),

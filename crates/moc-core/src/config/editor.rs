@@ -28,8 +28,9 @@ pub(crate) fn revision(text: &str) -> String {
     format!("{:032x}", xxhash_rust::xxh3::xxh3_128(text.as_bytes()))
 }
 fn parse(text: &str) -> Result<toml::Value, CoreError> {
-    toml::from_str(text)
-        .map_err(|error| CoreError::Config(t!("core.err.config_toml_invalid", error = error).into_owned()))
+    toml::from_str(text).map_err(|error| {
+        CoreError::Config(t!("core.err.config_toml_invalid", error = error).into_owned())
+    })
 }
 
 pub(crate) fn write_atomic(target: &Path, text: &str) -> Result<(), CoreError> {
@@ -206,7 +207,9 @@ pub fn patch_plugin(
         ));
     }
     if key.is_empty() || key.len() > 256 {
-        return Err(CoreError::Config(t!("core.err.plugin_key_len").into_owned()));
+        return Err(CoreError::Config(
+            t!("core.err.plugin_key_len").into_owned(),
+        ));
     }
     let parent = config_path
         .parent()
@@ -282,10 +285,9 @@ pub fn patch_plugin(
     }
     super::selection::remove_legacy_roles(&mut document);
     super::remove_deprecated_retention_keys(&mut document);
-    let output = toml::to_string_pretty(&document)
-        .map_err(|error| {
-            CoreError::Config(t!("core.err.config_serialize", error = error).into_owned())
-        })?;
+    let output = toml::to_string_pretty(&document).map_err(|error| {
+        CoreError::Config(t!("core.err.config_serialize", error = error).into_owned())
+    })?;
     write_atomic(config_path, &output)
 }
 

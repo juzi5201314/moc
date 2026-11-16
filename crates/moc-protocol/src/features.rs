@@ -229,7 +229,11 @@ pub fn format_features(states: &FeatureStates) -> String {
                 "features.row",
                 key = spec.key,
                 stage = spec.stage.label(),
-                state = if enabled { t!("features.on") } else { t!("features.off") },
+                state = if enabled {
+                    t!("features.on")
+                } else {
+                    t!("features.off")
+                },
                 cost = cost,
                 summary = t!(spec.summary),
                 toggle = toggle

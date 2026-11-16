@@ -244,8 +244,11 @@ impl BtwState {
                     Status::Complete
                 } else {
                     Status::Failed(
-                        t!("tui.btw.finish_reason_fmt", reason = format!("{:?}", result.finish_reason))
-                            .into_owned(),
+                        t!(
+                            "tui.btw.finish_reason_fmt",
+                            reason = format!("{:?}", result.finish_reason)
+                        )
+                        .into_owned(),
                     )
                 };
             }

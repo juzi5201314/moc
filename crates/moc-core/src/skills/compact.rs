@@ -117,9 +117,9 @@ pub(crate) async fn run(
             .await?;
             let mut start = 0;
             while start < candidates.len() {
-                let model = model
-                    .as_ref()
-                    .ok_or_else(|| CoreError::Config(t!("core.err.skills_no_model").into_owned()))?;
+                let model = model.as_ref().ok_or_else(|| {
+                    CoreError::Config(t!("core.err.skills_no_model").into_owned())
+                })?;
                 // 输入和输出都预留空间；分批生成，但整次命令只提交一次。
                 let output_budget = model.max_output_tokens.min(4096);
                 let batch_limit = (output_budget as usize / 192).clamp(1, 32);
@@ -349,10 +349,9 @@ fn parse_hints(text: &str, start: usize, end: usize) -> Result<Vec<(usize, Strin
             deserializer.deserialize_map(Visitor)
         }
     }
-    let Hints(raw) = serde_json::from_str(text)
-        .map_err(|error| {
-            CoreError::Config(t!("core.err.skills_json_invalid", error = error).into_owned())
-        })?;
+    let Hints(raw) = serde_json::from_str(text).map_err(|error| {
+        CoreError::Config(t!("core.err.skills_json_invalid", error = error).into_owned())
+    })?;
     let mut seen = vec![false; end - start];
     let mut hints = Vec::with_capacity(raw.len());
     for (key, hint) in raw {
@@ -368,7 +367,9 @@ fn parse_hints(text: &str, start: usize, end: usize) -> Result<Vec<(usize, Strin
         hints.push((id, hint.trim().to_owned()));
     }
     if seen.iter().any(|seen| !seen) {
-        return Err(CoreError::Config(t!("core.err.skills_missing").into_owned()));
+        return Err(CoreError::Config(
+            t!("core.err.skills_missing").into_owned(),
+        ));
     }
     Ok(hints)
 }

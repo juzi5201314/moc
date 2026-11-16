@@ -125,9 +125,10 @@ pub(super) fn plan_lines(
     ));
     let mut location = state.path.clone();
     if state.previous_plan_id.is_some() {
-        location.push_str(
-            &t!("tui.plan.diff_ver_fmt", ver = state.version.saturating_sub(1)),
-        );
+        location.push_str(&t!(
+            "tui.plan.diff_ver_fmt",
+            ver = state.version.saturating_sub(1)
+        ));
     }
     if !state.drafts.is_empty() || !state.submitted.is_empty() {
         location.push_str(&t!(
@@ -224,7 +225,10 @@ pub(super) fn plan_lines(
             }
             items.push(("↑↓/pgup/pgdn", t!("tui.hint.scroll")));
             if submitted {
-                items.extend([("←→/tab", t!("tui.hint.choose")), ("enter", t!("tui.hint.confirm"))]);
+                items.extend([
+                    ("←→/tab", t!("tui.hint.choose")),
+                    ("enter", t!("tui.hint.confirm")),
+                ]);
             }
             items.push(("esc", t!("tui.hint.close")));
         }

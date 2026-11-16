@@ -102,7 +102,10 @@ pub(super) fn draw_fields(
         );
         paint_lines(frame, body, &lines);
         let hint = if !panel.filter.is_empty() {
-            hints(&[("/", h("tui.hint.research")), ("esc", h("tui.hint.clear_filter"))])
+            hints(&[
+                ("/", h("tui.hint.research")),
+                ("esc", h("tui.hint.clear_filter")),
+            ])
         } else {
             hints(&[("esc", h("tui.hint.back"))])
         };
@@ -340,9 +343,10 @@ pub(super) fn draw_fields(
                                 t!("tui.settings.toggle_on").into_owned(),
                                 style.fg(theme.accent_success).add_modifier(Modifier::BOLD),
                             ),
-                            (Control::Toggle, Value::Bool(false)) => {
-                                (t!("tui.settings.toggle_off").into_owned(), style.fg(theme.gray))
-                            }
+                            (Control::Toggle, Value::Bool(false)) => (
+                                t!("tui.settings.toggle_off").into_owned(),
+                                style.fg(theme.gray),
+                            ),
                             _ => {
                                 let text = controls::summary(control, value)
                                     .unwrap_or_else(|| display_value(value, field));
@@ -418,7 +422,10 @@ pub(super) fn draw_fields(
             if group.path.is_some() {
                 items.push(("del", h("tui.hint.delete")));
             }
-            items.extend([("enter/space", h("tui.hint.expand")), ("esc", h("tui.hint.back"))]);
+            items.extend([
+                ("enter/space", h("tui.hint.expand")),
+                ("esc", h("tui.hint.back")),
+            ]);
             Footer {
                 description: group_description(group),
                 source: None,
@@ -492,9 +499,12 @@ pub(super) fn group_description(group: &Group) -> String {
         Some("providers") if group.detail.is_empty() => {
             t!("tui.group.model", title = group.title).into_owned()
         }
-        Some("providers") => {
-            t!("tui.group.model_detail", title = group.title, detail = group.detail).into_owned()
-        }
+        Some("providers") => t!(
+            "tui.group.model_detail",
+            title = group.title,
+            detail = group.detail
+        )
+        .into_owned(),
         Some("models") if path.get(1).is_some_and(|part| part == "roles") => {
             t!("tui.group.roles").into_owned()
         }

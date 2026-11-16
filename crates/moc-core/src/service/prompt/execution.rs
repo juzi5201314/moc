@@ -1,4 +1,3 @@
-use rust_i18n::t;
 use super::MAX_THINKING_REDIRECTS;
 use super::RequestWarning;
 use super::flush_reminders;
@@ -34,6 +33,7 @@ use moc_protocol::RpcErrorCode;
 use moc_protocol::methods::PromptResult;
 use moc_protocol::methods::SessionUpdate;
 use moc_protocol::methods::ToolStatus;
+use rust_i18n::t;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -759,19 +759,26 @@ pub(super) async fn run_prompt_locked(
                                 ));
                             }
                         };
-                        update.emit(params.session_id.clone(), SessionUpdate::GenerationRetry {
-                            prompt_id: prompt_id.clone(),
-                            // TUI 按本地化锚点定位秒数并替换成倒数；改措辞时同步 moc-tui 与 cli.render.retry。
-                            message: t!(
-                                "core.err.retry_notice",
-                                secs = format!("{:.1}", delay.as_secs_f64()),
-                                attempt = retry_budget.attempts() + 1,
-                                max = model.llm.retry.max_attempts,
-                                message = message
+                        update
+                            .emit(
+                                params.session_id.clone(),
+                                SessionUpdate::GenerationRetry {
+                                    prompt_id: prompt_id.clone(),
+                                    // TUI 按本地化锚点定位秒数并替换成倒数；改措辞时同步 moc-tui 与 cli.render.retry。
+                                    message: t!(
+                                        "core.err.retry_notice",
+                                        secs = format!("{:.1}", delay.as_secs_f64()),
+                                        attempt = retry_budget.attempts() + 1,
+                                        max = model.llm.retry.max_attempts,
+                                        message = message
+                                    )
+                                    .into_owned(),
+                                    retry_in_ms: u64::try_from(delay.as_millis())
+                                        .unwrap_or(u64::MAX),
+                                },
                             )
-                            .into_owned(),
-                            retry_in_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-                        }).await.map_err(protocol_to_rpc)?;
+                            .await
+                            .map_err(protocol_to_rpc)?;
                         last_message = Message::default();
                         tokio::select! {
                             _ = cancel.cancelled() => {

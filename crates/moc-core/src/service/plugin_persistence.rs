@@ -3,9 +3,9 @@
 //! 不持有 CoreInner，避免宿主缓存和桥之间形成 Arc 环；插件配置补丁不获取
 //! config_epoch 写锁，否则插件在运行中保存自身配置会与提示持有的读锁死锁。
 
+use rust_i18n::t;
 use std::future::Future;
 use std::path::Path;
-use rust_i18n::t;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -240,11 +240,9 @@ pub(super) fn validate_changes(
         if before == after || after.is_none_or(Value::is_null) {
             continue;
         }
-        let entry = after
-            .and_then(Value::as_object)
-            .ok_or_else(|| {
-                CoreError::Config(t!("core.err.plugin_cfg_must_table", name = name).into_owned())
-            })?;
+        let entry = after.and_then(Value::as_object).ok_or_else(|| {
+            CoreError::Config(t!("core.err.plugin_cfg_must_table", name = name).into_owned())
+        })?;
         if entry.keys().any(|key| key != "config") {
             return Err(CoreError::Config(
                 t!("core.err.plugin_entry_only_config", name = name).into_owned(),
@@ -253,25 +251,18 @@ pub(super) fn validate_changes(
         let Some(values) = entry.get("config").filter(|v| !v.is_null()) else {
             continue;
         };
-        let values = values
-            .as_object()
-            .ok_or_else(|| {
-                CoreError::Config(
-                    t!("core.err.plugin_config_must_table", name = name).into_owned(),
-                )
-            })?;
+        let values = values.as_object().ok_or_else(|| {
+            CoreError::Config(t!("core.err.plugin_config_must_table", name = name).into_owned())
+        })?;
         for (key, value) in values {
             if value.is_null() {
                 continue;
             }
-            let declaration = declarations
-                .iter()
-                .find(|d| &d.key == key)
-                .ok_or_else(|| {
-                    CoreError::Config(
-                        t!("core.err.plugin_cfg_unregistered", name = name, key = key).into_owned(),
-                    )
-                })?;
+            let declaration = declarations.iter().find(|d| &d.key == key).ok_or_else(|| {
+                CoreError::Config(
+                    t!("core.err.plugin_cfg_unregistered", name = name, key = key).into_owned(),
+                )
+            })?;
             declaration.validate(value).map_err(|error| {
                 CoreError::Config(
                     t!(

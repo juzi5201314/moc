@@ -1,8 +1,8 @@
 use super::App;
-use super::compaction_running_prefix;
 use super::CompactionProgress;
 use super::RetryWait;
 use super::compaction_running_note;
+use super::compaction_running_prefix;
 use crate::transcript::Block;
 use crate::transcript::Entry;
 use crate::transcript::NoteTone;
@@ -233,8 +233,5 @@ fn retry_note_parts(message: &str) -> Option<(String, String)> {
     let rest = message.strip_prefix(before)?;
     let marker = after.split("%{").next()?;
     let pos = rest.find(marker)?;
-    Some((
-        before.to_owned(),
-        rest[pos..].trim_start().to_owned(),
-    ))
+    Some((before.to_owned(), rest[pos..].trim_start().to_owned()))
 }

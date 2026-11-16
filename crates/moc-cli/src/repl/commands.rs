@@ -383,10 +383,7 @@ pub(super) async fn run_command(
                     .await?
                     .is_some_and(|line| matches!(line.trim(), "y" | "Y" | "yes" | "YES"));
                 if !confirmed {
-                    println!(
-                        "{}",
-                        t!("cli.cmd.model_cancelled", model = session.model)
-                    );
+                    println!("{}", t!("cli.cmd.model_cancelled", model = session.model));
                     return Ok(CommandResult::Continue);
                 }
                 result = client

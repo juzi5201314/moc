@@ -2,10 +2,10 @@
 //!
 //! 编辑器只处理按键与草稿，产出 [`Outcome`]；写入配置、撤回栈与错误提示由 forms 负责。
 
-use rust_i18n::t;
 use super::controls::{Empty, Entry, ListSpec, Pick, PickAction, RecordSpec, current_pick};
 use super::*;
 use crate::widgets::prompt::edit_input;
+use rust_i18n::t;
 
 pub enum Editor {
     Text(TextEditor),
@@ -230,7 +230,10 @@ impl Editor {
         let h = |key| t!(key).into_owned();
         match self {
             Editor::Text(editor) if editor.multiline() => {
-                vec![("ctrl+s", h("tui.hint.apply")), ("esc", h("tui.hint.cancel"))]
+                vec![
+                    ("ctrl+s", h("tui.hint.apply")),
+                    ("esc", h("tui.hint.cancel")),
+                ]
             }
             Editor::Text(editor) => {
                 let mut items = Vec::new();
@@ -242,7 +245,10 @@ impl Editor {
                     | FieldKind::SignedNumber => items.push(("", h("tui.hint.suffix_units"))),
                     _ => {}
                 }
-                items.extend([("enter", h("tui.hint.apply")), ("esc", h("tui.hint.cancel"))]);
+                items.extend([
+                    ("enter", h("tui.hint.apply")),
+                    ("esc", h("tui.hint.cancel")),
+                ]);
                 items
             }
             Editor::Select(_) => vec![
@@ -706,7 +712,10 @@ impl RecordEditor {
         anyhow::ensure!(
             missing.is_empty(),
             "{}",
-            t!("tui.ctrl.required_missing", keys = missing.join(&t!("tui.ctrl.list_sep")))
+            t!(
+                "tui.ctrl.required_missing",
+                keys = missing.join(&t!("tui.ctrl.list_sep"))
+            )
         );
         Ok(Some(Value::Object(object)))
     }

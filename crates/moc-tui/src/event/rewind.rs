@@ -32,9 +32,8 @@ pub(super) fn apply_rewind_loaded(
         Ok(loaded) => state.set_entries(loaded.entries, loaded.redo_entries),
         Err(error) => {
             state.loading = false;
-            state.error = Some(
-                t!("tui.rewind.load_failed_fmt", err = error.to_string()).into_owned(),
-            );
+            state.error =
+                Some(t!("tui.rewind.load_failed_fmt", err = error.to_string()).into_owned());
         }
     }
 }
@@ -125,9 +124,7 @@ pub(super) fn apply_reasked(
             if let Some(session) = app.session.as_ref() {
                 app.inflight_session_ops.remove(&session.id);
             }
-            app.set_notice(
-                t!("tui.rewind.retry_failed_fmt", err = error.to_string()).into_owned(),
-            );
+            app.set_notice(t!("tui.rewind.retry_failed_fmt", err = error.to_string()).into_owned());
             return;
         }
     };

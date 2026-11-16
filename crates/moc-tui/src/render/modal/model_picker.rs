@@ -1,10 +1,10 @@
 //! 模型选择器：锚定触发标签的列表卡 + 详情卡 + 下拉卡三层不透明浮层。
 
 use super::*;
-use rust_i18n::t;
 use crate::modal::{
     DetailRow, FUSION_ENTRY_SELECTOR, MENU_PAGE, MenuItems, ModelEntry, filtered_entries,
 };
+use rust_i18n::t;
 
 /// 列表卡外宽（列）；窄屏夹到屏宽。
 const LIST_WIDTH: u16 = 52;
@@ -544,7 +544,11 @@ pub(super) fn body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> 
             DetailRow::Apply => t!("tui.hint.apply"),
             _ => t!("tui.hint.expand_row"),
         };
-        vec![("↑↓", t!("tui.hint.move")), ("enter", enter), ("left", t!("tui.hint.back"))]
+        vec![
+            ("↑↓", t!("tui.hint.move")),
+            ("enter", enter),
+            ("left", t!("tui.hint.back")),
+        ]
     } else {
         let mut items = vec![("↑↓", t!("tui.hint.choose"))];
         if highlighted.is_some_and(|entry| {
@@ -750,7 +754,11 @@ fn control_line(
                 &fusion.sidekick
             };
             let value = crate::modal::side_level(entries, side).unwrap_or_else(|| "—".to_owned());
-            (t!("tui.picker.thinking_side").into_owned(), value, theme.accent_model)
+            (
+                t!("tui.picker.thinking_side").into_owned(),
+                value,
+                theme.accent_model,
+            )
         }
         DetailRow::Apply => {
             let applied = !fusion.lead.is_empty()

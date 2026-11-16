@@ -22,9 +22,9 @@ pub(super) async fn request_persistence(
             let value = bridge
                 .request(plugin, path, context, PersistenceOp::ConfigSnapshot)
                 .await?;
-            let object = value
-                .as_object()
-                .ok_or_else(|| PluginError::new("E_PLUGIN_CONFIG", t!("plugin.err.config_object")))?;
+            let object = value.as_object().ok_or_else(|| {
+                PluginError::new("E_PLUGIN_CONFIG", t!("plugin.err.config_object"))
+            })?;
             for (key, value) in object {
                 let declaration =
                     fields
@@ -87,7 +87,10 @@ pub(super) async fn request_persistence(
         }
         PersistenceOp::StateSet { .. } | PersistenceOp::StateDelete { .. } => {
             if context.is_none() {
-                return Err(PluginError::new("E_PLUGIN_STATE", t!("plugin.err.no_session")));
+                return Err(PluginError::new(
+                    "E_PLUGIN_STATE",
+                    t!("plugin.err.no_session"),
+                ));
             }
             if context.is_some_and(|context| !context.writable) {
                 return Err(PluginError::new(
@@ -99,7 +102,10 @@ pub(super) async fn request_persistence(
         }
         _ => {
             if context.is_none() {
-                return Err(PluginError::new("E_PLUGIN_STATE", t!("plugin.err.no_session")));
+                return Err(PluginError::new(
+                    "E_PLUGIN_STATE",
+                    t!("plugin.err.no_session"),
+                ));
             }
             bridge.request(plugin, path, context, op).await
         }

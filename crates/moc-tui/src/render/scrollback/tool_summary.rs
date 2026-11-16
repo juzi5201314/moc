@@ -319,7 +319,10 @@ pub(super) fn summary_spans(
                 vec![styled(arg_str("title"), theme.gray_bright)]
             }
         }
-        "yield" => vec![styled(t!("tui.tool.yield_report").into_owned(), theme.gray_bright)],
+        "yield" => vec![styled(
+            t!("tui.tool.yield_report").into_owned(),
+            theme.gray_bright,
+        )],
         "skill" => {
             let name = arg_str("name");
             let mut spans = Vec::new();

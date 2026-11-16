@@ -146,7 +146,8 @@ pub fn run_workflow<R: BufRead + Send + 'static, W: Write>(
                     output.flush()?;
                     if terminal {
                         if let Some(join) = execution.take() {
-                            join.join().map_err(|_| t!("ptc.wf.thread_panic").into_owned())?;
+                            join.join()
+                                .map_err(|_| t!("ptc.wf.thread_panic").into_owned())?;
                         }
                         if stopping {
                             return Ok(());

@@ -1,8 +1,8 @@
 //! 前端偏好只保存在 tui.toml，不进入 core 配置或模型上下文。
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use rust_i18n::t;
 use moc_protocol::{ChoiceOption, ConfigField, FieldKind};
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,

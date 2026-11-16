@@ -76,10 +76,9 @@ pub(super) fn dispatch<'js>(
             Ok(Value::Null)
         }
         CallOp::Tool => {
-            let name = payload
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", t!("plugin.err.call_missing_name")))?;
+            let name = payload.get("name").and_then(Value::as_str).ok_or_else(|| {
+                PluginError::new("E_PLUGIN_STATE", t!("plugin.err.call_missing_name"))
+            })?;
             let function = functions
                 .tools
                 .get(name)
@@ -102,10 +101,9 @@ pub(super) fn dispatch<'js>(
             settle(ctx, result)
         }
         CallOp::Command => {
-            let name = payload
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", t!("plugin.err.command_missing_name")))?;
+            let name = payload.get("name").and_then(Value::as_str).ok_or_else(|| {
+                PluginError::new("E_PLUGIN_STATE", t!("plugin.err.command_missing_name"))
+            })?;
             let function = functions
                 .commands
                 .get(name)
@@ -178,15 +176,12 @@ pub(super) fn optional_function<'js>(
     if value.is_undefined() || value.is_null() {
         return Ok(None);
     }
-    value
-        .into_function()
-        .map(Some)
-        .ok_or_else(|| {
-            PluginError::new(
-                "E_PLUGIN_DESCRIPTOR",
-                t!("plugin.err.field_fn", key = key).into_owned(),
-            )
-        })
+    value.into_function().map(Some).ok_or_else(|| {
+        PluginError::new(
+            "E_PLUGIN_DESCRIPTOR",
+            t!("plugin.err.field_fn", key = key).into_owned(),
+        )
+    })
 }
 
 /// 把插件函数的返回值转成 JSON；返回 Promise 时先驱动 QuickJS 的任务队列直到落定。

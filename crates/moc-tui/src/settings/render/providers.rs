@@ -18,12 +18,12 @@ use crate::render::wrap::truncate;
 use crate::settings::providers::APIS;
 use crate::theme::Theme;
 use ratatui::Frame;
-use rust_i18n::t;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use rust_i18n::t;
 
 /// 供应商列表和详情共用一个页面，窄终端用可切换的单栏布局。
 pub(super) fn draw_providers(
@@ -208,16 +208,14 @@ pub(super) fn draw_provider_draft(
         } else {
             Style::new().fg(theme.text_secondary)
         };
-        let title = t!(
-            [
-                "tui.providers.field_id",
-                "tui.providers.field_api",
-                "tui.providers.field_url",
-                "tui.providers.field_key",
-                "tui.providers.field_add_fetch",
-                "tui.providers.field_add_only",
-            ][index]
-        );
+        let title = t!([
+            "tui.providers.field_id",
+            "tui.providers.field_api",
+            "tui.providers.field_url",
+            "tui.providers.field_key",
+            "tui.providers.field_add_fetch",
+            "tui.providers.field_add_only",
+        ][index]);
         label(
             frame,
             area,
@@ -402,7 +400,10 @@ pub(super) fn draw_discovery_popup(
         lines.push(clip_line(Line::from(spans), width));
     }
     let status = if pending {
-        Some((t!("tui.providers.fetching").into_owned(), theme.accent_running))
+        Some((
+            t!("tui.providers.fetching").into_owned(),
+            theme.accent_running,
+        ))
     } else if let Some(err) = &error {
         Some((
             t!("tui.providers.fetch_failed", err = err.as_str()).into_owned(),

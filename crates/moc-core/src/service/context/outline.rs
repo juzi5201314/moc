@@ -1,10 +1,10 @@
 //! 来源目录：只保留模型实际编码的内容；隐藏策略在正文进入快照之前执行。
-use rust_i18n::t;
 use super::{Snapshot, view::View};
 use crate::compact;
 use crate::compact::replay::ContextOrigin;
 use moc_llm::{ChatRequest, ContentPart, Message, RequestInspection, Role};
 use moc_protocol::methods::{ContextContentSection, ContextUsageResult};
+use rust_i18n::t;
 use serde_json::Value;
 
 pub(super) fn build(
@@ -192,7 +192,10 @@ fn add_text(
     );
 }
 
-fn hidden_reason(message: &Message, origin: ContextOrigin) -> Option<std::borrow::Cow<'static, str>> {
+fn hidden_reason(
+    message: &Message,
+    origin: ContextOrigin,
+) -> Option<std::borrow::Cow<'static, str>> {
     if message.role == Role::Tool
         || origin == ContextOrigin::Tool
         || message

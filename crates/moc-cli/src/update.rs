@@ -62,8 +62,7 @@ impl Updater {
         let release = match requested.as_deref() {
             Some(input) => {
                 let release = self.fetch_requested(input).await?;
-                let current =
-                    Version::parse(CURRENT_VERSION).expect("Cargo version must be valid");
+                let current = Version::parse(CURRENT_VERSION).expect("Cargo version must be valid");
                 if parse_tag(&release.tag_name).as_ref() == Some(&current) {
                     println!("{}", t!("cli.update.latest", v = CURRENT_VERSION));
                     return Ok(());
@@ -127,10 +126,7 @@ impl Updater {
         verify_sha256(&bytes, &expected)?;
         self.install(&bytes)?;
 
-        println!(
-            "{}",
-            t!("cli.update.done", tag = tag, v = CURRENT_VERSION)
-        );
+        println!("{}", t!("cli.update.done", tag = tag, v = CURRENT_VERSION));
         Ok(())
     }
 
@@ -259,14 +255,12 @@ impl Updater {
             .with_context(|| {
                 t!("cli.update.create_failed", path = tmp.display().to_string()).into_owned()
             })?;
-        file.write_all(bytes)
-            .with_context(|| {
-                t!("cli.update.write_failed", path = tmp.display().to_string()).into_owned()
-            })?;
-        file.sync_all()
-            .with_context(|| {
-                t!("cli.update.write_failed", path = tmp.display().to_string()).into_owned()
-            })?;
+        file.write_all(bytes).with_context(|| {
+            t!("cli.update.write_failed", path = tmp.display().to_string()).into_owned()
+        })?;
+        file.sync_all().with_context(|| {
+            t!("cli.update.write_failed", path = tmp.display().to_string()).into_owned()
+        })?;
         drop(file);
 
         #[cfg(unix)]
@@ -275,10 +269,9 @@ impl Updater {
             let mode = std::fs::metadata(&self.exe)
                 .map(|meta| meta.permissions().mode())
                 .unwrap_or(0o755);
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
-                .with_context(|| {
-                    t!("cli.update.chmod_failed", path = tmp.display().to_string()).into_owned()
-                })?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).with_context(
+                || t!("cli.update.chmod_failed", path = tmp.display().to_string()).into_owned(),
+            )?;
         }
 
         if let Err(err) = replace_file(&tmp, &self.exe) {
@@ -361,10 +354,9 @@ fn parse_tag(tag: &str) -> Option<Version> {
 }
 
 fn is_newer(tag: &str, current: &str) -> Result<bool> {
-    let latest = parse_tag(tag)
-        .with_context(|| t!("cli.update.bad_tag", tag = tag).into_owned())?;
-    let current =
-        Version::parse(current).context(t!("cli.update.bad_current").to_string())?;
+    let latest =
+        parse_tag(tag).with_context(|| t!("cli.update.bad_tag", tag = tag).into_owned())?;
+    let current = Version::parse(current).context(t!("cli.update.bad_current").to_string())?;
     Ok(latest > current)
 }
 

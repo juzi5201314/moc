@@ -38,9 +38,17 @@ pub(super) fn tool_count_spans(
         "grep" => {
             let (matches, files) = grep_counts(result);
             Some(vec![
-                count_span(matches, t!("tui.tool.match_one").as_ref(), t!("tui.tool.match_many").as_ref()),
+                count_span(
+                    matches,
+                    t!("tui.tool.match_one").as_ref(),
+                    t!("tui.tool.match_many").as_ref(),
+                ),
                 Span::styled(labels::SEP.to_owned(), Style::new().fg(theme.gray_dim)),
-                count_span(files, t!("tui.tool.file_one").as_ref(), t!("tui.tool.file_many").as_ref()),
+                count_span(
+                    files,
+                    t!("tui.tool.file_one").as_ref(),
+                    t!("tui.tool.file_many").as_ref(),
+                ),
             ])
         }
         "find" => Some(vec![count_span(

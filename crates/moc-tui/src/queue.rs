@@ -618,10 +618,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             1,
         );
         let (kind, label) = if is_steer {
-            (
-                t!("tui.queue.steer"),
-                Style::new().fg(theme.accent_running),
-            )
+            (t!("tui.queue.steer"), Style::new().fg(theme.accent_running))
         } else {
             (t!("tui.queue.queued"), Style::new().fg(theme.text_primary))
         };

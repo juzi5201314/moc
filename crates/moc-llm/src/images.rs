@@ -228,18 +228,20 @@ pub(crate) fn prepare(
             }
             let cap = caps[index].min(MAX_IMAGE_BYTES);
             index += 1;
-            cache.normalize(source, cap).map_err(|error| LlmError::Encode(
-                t!(
-                    "llm.img.budget_short",
-                    count = diagnostics.images,
-                    history = diagnostics.history_images,
-                    budget = budget,
-                    other = overhead,
-                    index = index,
-                    error = error
+            cache.normalize(source, cap).map_err(|error| {
+                LlmError::Encode(
+                    t!(
+                        "llm.img.budget_short",
+                        count = diagnostics.images,
+                        history = diagnostics.history_images,
+                        budget = budget,
+                        other = overhead,
+                        index = index,
+                        error = error
+                    )
+                    .into_owned(),
                 )
-                .into_owned(),
-            ))
+            })
         })?;
         encoded = codec::encode(cfg, &req, stream)?;
     }

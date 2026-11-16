@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
-use rust_i18n::t;
 use rquickjs::{Ctx, Module, Result as JsResult};
+use rust_i18n::t;
 
 use crate::error::{PluginError, Result};
 

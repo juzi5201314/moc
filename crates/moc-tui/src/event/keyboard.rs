@@ -317,15 +317,21 @@ pub(super) fn handle_key(
         (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
             app.cycle_thinking_detail();
             app.set_notice(
-                t!("tui.event.thinking_display_fmt", label = app.thinking_detail.label().as_ref())
-                    .into_owned(),
+                t!(
+                    "tui.event.thinking_display_fmt",
+                    label = app.thinking_detail.label().as_ref()
+                )
+                .into_owned(),
             );
         }
         (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
             app.cycle_tool_detail();
             app.set_notice(
-                t!("tui.event.tool_display_fmt", label = app.tool_detail.label().as_ref())
-                    .into_owned(),
+                t!(
+                    "tui.event.tool_display_fmt",
+                    label = app.tool_detail.label().as_ref()
+                )
+                .into_owned(),
             );
         }
         (KeyCode::Char('v'), KeyModifiers::CONTROL) => spawn_clipboard_paste(app.events.clone()),

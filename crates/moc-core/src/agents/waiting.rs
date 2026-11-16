@@ -1,4 +1,3 @@
-use rust_i18n::t;
 use super::AgentRegistry;
 use super::WAIT_DEFAULT_WINDOW_SECS;
 use super::WAIT_PROGRESS_INTERVAL;
@@ -18,6 +17,7 @@ use moc_protocol::methods::AgentWaitResult;
 use moc_protocol::methods::SessionInfo;
 use moc_protocol::methods::SessionUpdate;
 use moc_protocol::methods::ToolProgressRow;
+use rust_i18n::t;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::futures::OwnedNotified;
@@ -158,9 +158,7 @@ pub(super) async fn resolve_wait_targets(
                     .iter()
                     .find(|entry| entry.session.id == *id)
                     .map(|entry| entry.session.clone())
-                    .ok_or_else(|| {
-                        invalid(t!("core.err.not_direct_child", id = id).into_owned())
-                    })
+                    .ok_or_else(|| invalid(t!("core.err.not_direct_child", id = id).into_owned()))
             })
             .collect(),
         None => {

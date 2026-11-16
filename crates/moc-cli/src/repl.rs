@@ -219,11 +219,10 @@ fn make_core_config(args: &CliArgs) -> anyhow::Result<CoreConfig> {
         Some(path) => std::env::current_dir()?.join(path),
         None => std::env::current_dir()?,
     };
-    let cwd = cwd.canonicalize().with_context(|| {
-        t!("cli.repl.no_cwd", path = cwd.display().to_string()).into_owned()
-    })?;
-    let worker =
-        std::env::current_exe().context(t!("cli.repl.no_exe").into_owned())?;
+    let cwd = cwd
+        .canonicalize()
+        .with_context(|| t!("cli.repl.no_cwd", path = cwd.display().to_string()).into_owned())?;
+    let worker = std::env::current_exe().context(t!("cli.repl.no_exe").into_owned())?;
     Ok(CoreConfig {
         cwd: cwd.clone(),
         overlays: args
@@ -292,10 +291,7 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
     .on_notification::<SessionUpdateMethod, _, _>(move |params, _ctx| {
         // unattended：计划提交后直接自动批准「压缩并执行」，不等 /approve。
         if let SessionUpdate::PlanSubmitted { plan } = &params.update
-            && let Some(client) = update_client
-                .lock()
-                .expect("notify client slot")
-                .clone()
+            && let Some(client) = update_client.lock().expect("notify client slot").clone()
         {
             let session_id = params.session_id.clone();
             let plan_id = plan.plan_id.clone();
@@ -430,7 +426,10 @@ async fn run_repl(
         if let Some(overflow) = &result.overflow {
             eprintln!(
                 "{}",
-                t!("cli.repl.ctx_warn", msg = capacity_notice(overflow, selector))
+                t!(
+                    "cli.repl.ctx_warn",
+                    msg = capacity_notice(overflow, selector)
+                )
             );
         }
     }

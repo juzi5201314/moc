@@ -3,10 +3,10 @@
 //! 普通会话是逐行 JSONL；开启 zstd 压缩的新会话是 `.jsonl.zst`，由独立的完整帧拼接。
 //! 两种格式的读写都封装在这里，上层只接触 [`Entry`]。
 
+use rust_i18n::t;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use rust_i18n::t;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
@@ -281,10 +281,9 @@ impl SessionStore {
         state: &BTreeMap<String, serde_json::Value>,
     ) -> Result<(), CoreError> {
         let path = paths.plugin_state(plugin);
-        let bytes = serde_json::to_vec(state)
-            .map_err(|error| {
-                CoreError::Session(t!("core.err.plugin_state_serialize", error = error).into_owned())
-            })?;
+        let bytes = serde_json::to_vec(state).map_err(|error| {
+            CoreError::Session(t!("core.err.plugin_state_serialize", error = error).into_owned())
+        })?;
         if bytes.len() > PLUGIN_STATE_MAX_BYTES {
             return Err(CoreError::Session(
                 t!(
@@ -294,11 +293,9 @@ impl SessionStore {
                 .into_owned(),
             ));
         }
-        let parent = path
-            .parent()
-            .ok_or_else(|| {
-                CoreError::Session(t!("core.err.plugin_state_no_parent").into_owned())
-            })?;
+        let parent = path.parent().ok_or_else(|| {
+            CoreError::Session(t!("core.err.plugin_state_no_parent").into_owned())
+        })?;
         fs::create_dir_all(parent).await?;
         let temp = parent.join(format!(".{plugin}.tmp-{}", crate::ids::entry_id()));
         let result = async {

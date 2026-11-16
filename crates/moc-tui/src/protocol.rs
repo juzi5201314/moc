@@ -7,7 +7,6 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use rust_i18n::t;
 use moc_core::Core;
 use moc_protocol::{
     ClientBuilder, ClientHandle, ClientInfo, ClientRequestContext, RpcError, RpcErrorCode,
@@ -18,6 +17,7 @@ use moc_protocol::{
         SessionUpdateParams,
     },
 };
+use rust_i18n::t;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender, channel};
 use tokio_util::sync::CancellationToken;
 
@@ -357,7 +357,10 @@ pub async fn connect_embedded(
     anyhow::ensure!(
         handshake.server.name == "moc-core",
         "{}",
-        t!("tui.err.builtin_unavail_fmt", name = handshake.server.name.as_str())
+        t!(
+            "tui.err.builtin_unavail_fmt",
+            name = handshake.server.name.as_str()
+        )
     );
     Ok(EmbeddedConnection {
         client,

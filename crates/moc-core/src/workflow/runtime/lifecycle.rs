@@ -1,4 +1,3 @@
-use rust_i18n::t;
 use super::RunHandle;
 use super::RunMeta;
 use super::RunView;
@@ -18,6 +17,7 @@ use moc_protocol::UpdateSink;
 use moc_protocol::WorkflowRunSummary;
 use moc_ptc_protocol::wire::WorkflowHostMessage;
 use parking_lot::Mutex;
+use rust_i18n::t;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -39,8 +39,9 @@ impl WorkflowManager {
     ) -> Result<Arc<RunHandle>, CoreError> {
         let run_id = meta.run_id.clone();
         let dir = self.run_dir(&run_id)?;
-        std::fs::create_dir_all(dir.join("artifacts"))
-            .map_err(|e| CoreError::Session(t!("core.err.run_dir_create", error = e).into_owned()))?;
+        std::fs::create_dir_all(dir.join("artifacts")).map_err(|e| {
+            CoreError::Session(t!("core.err.run_dir_create", error = e).into_owned())
+        })?;
         // approve→launch 窗口内经 set_role_model 记下的覆盖合并进 meta
         // （"inherit" 表示移除该 role 的覆盖）。
         let mut meta = meta;
@@ -211,7 +212,9 @@ impl WorkflowManager {
                 dir.join("run.json"),
                 serde_json::to_vec_pretty(&meta).unwrap_or_default(),
             )
-            .map_err(|e| CoreError::Session(t!("core.err.run_json_write", error = e).into_owned()))?;
+            .map_err(|e| {
+                CoreError::Session(t!("core.err.run_json_write", error = e).into_owned())
+            })?;
             // run.json 已写盘但 status 仍 running：launch 的写盘→注册窗口，
             // 覆盖要进 pending，注册后二次应用到 handle.meta。
             if running {

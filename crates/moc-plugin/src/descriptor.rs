@@ -127,9 +127,7 @@ impl ConfigDecl {
         if valid && toml_value(value) {
             Ok(())
         } else {
-            Err(
-                t!("plugin.err.config_value_invalid", key = self.key.as_str()).into_owned(),
-            )
+            Err(t!("plugin.err.config_value_invalid", key = self.key.as_str()).into_owned())
         }
     }
 }

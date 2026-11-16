@@ -8,8 +8,8 @@
 //! [`PromptState::archived_images`]，召回时按占位 id 换发新 id 挂回。
 
 use moc_protocol::ImageSource;
-use rust_i18n::t;
 use moc_protocol::methods::InputPart;
+use rust_i18n::t;
 use unicode_width::UnicodeWidthChar;
 
 use crate::history::HISTORY_MAX;

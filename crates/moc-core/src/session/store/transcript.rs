@@ -1,10 +1,10 @@
-use rust_i18n::t;
 use super::super::entries::Entry;
 use super::super::log;
 use super::INLINE_COMPRESS_LIMIT;
 use super::SessionFile;
 use crate::error::CoreError;
 use parking_lot::RwLock;
+use rust_i18n::t;
 use std::path::Path;
 use tokio::fs;
 use tokio::fs::OpenOptions;
@@ -30,7 +30,11 @@ impl SessionFile {
         fs::create_dir_all(parent).await?;
         if fs::try_exists(path).await? {
             return Err(CoreError::Session(
-                t!("core.err.transcript_exists", path = path.display().to_string()).into_owned(),
+                t!(
+                    "core.err.transcript_exists",
+                    path = path.display().to_string()
+                )
+                .into_owned(),
             ));
         }
         let format = log::format(path);
@@ -120,10 +124,9 @@ impl SessionFile {
         };
         let mut file = self.file.lock().await;
         if file.is_none() {
-            let parent = self
-                .path
-                .parent()
-                .ok_or_else(|| CoreError::Session(t!("core.err.transcript_no_parent").into_owned()))?;
+            let parent = self.path.parent().ok_or_else(|| {
+                CoreError::Session(t!("core.err.transcript_no_parent").into_owned())
+            })?;
             fs::create_dir_all(parent).await?;
             let created = OpenOptions::new()
                 .read(true)
@@ -134,7 +137,9 @@ impl SessionFile {
             *file = Some(created);
             if let Some(header) = header {
                 let mut header_line = header.to_json_vec().map_err(|error| {
-                    CoreError::Session(t!("core.err.transcript_serialize", error = error).into_owned())
+                    CoreError::Session(
+                        t!("core.err.transcript_serialize", error = error).into_owned(),
+                    )
                 })?;
                 header_line.push(b'\n');
                 let header_payload = match self.format {
@@ -240,7 +245,9 @@ impl SessionFile {
                 log::Format::Plain => {
                     for entry in entries {
                         let line = entry.to_json_vec().map_err(|error| {
-                            CoreError::Session(t!("core.err.transcript_serialize", error = error).into_owned())
+                            CoreError::Session(
+                                t!("core.err.transcript_serialize", error = error).into_owned(),
+                            )
                         })?;
                         replacement.write_all(&line).await?;
                         replacement.write_all(b"\n").await?;

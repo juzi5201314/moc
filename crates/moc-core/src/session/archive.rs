@@ -1,7 +1,7 @@
 //! 把旧正文冻结到私有只读映射；是否仍属模型上下文与是否驻留堆相互独立。
+use rust_i18n::t;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufWriter, Write};
-use rust_i18n::t;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -107,10 +107,9 @@ pub(super) fn prepare(state: &SessionState, range: Range<usize>) -> Result<Batch
         };
         for content in &resident {
             let start = writer.bytes;
-            serde_json::to_writer(&mut writer, content)
-                .map_err(|error| {
-                    CoreError::Session(t!("core.err.freeze_history", error = error).into_owned())
-                })?;
+            serde_json::to_writer(&mut writer, content).map_err(|error| {
+                CoreError::Session(t!("core.err.freeze_history", error = error).into_owned())
+            })?;
             ranges.push((content.storage_id(), start..writer.bytes));
         }
         writer.flush()?;
@@ -122,10 +121,9 @@ pub(super) fn prepare(state: &SessionState, range: Range<usize>) -> Result<Batch
     let bytes = Bytes::from_owner(FrozenMap(Arc::clone(&mapping)));
     let mut archived = HashMap::with_capacity(ranges.len());
     for (id, range) in ranges {
-        let content = MessageContent::from_archive(bytes.slice(range))
-            .map_err(|error| {
-                CoreError::Session(t!("core.err.verify_frozen", error = error).into_owned())
-            })?;
+        let content = MessageContent::from_archive(bytes.slice(range)).map_err(|error| {
+            CoreError::Session(t!("core.err.verify_frozen", error = error).into_owned())
+        })?;
         archived.insert(id, content);
     }
     for index in range {

@@ -159,10 +159,7 @@ fn parameters(api: Protocol) -> Vec<Parameter> {
             Parameter("cache_control.type", Choice(&["ephemeral"])),
             Parameter("cache_control.ttl", Choice(&["5m", "1h"])),
             Parameter("diagnostics.previous_message_id", Text),
-            Parameter(
-                "tool_choice.type",
-                Choice(&["auto", "none", "any", "tool"]),
-            ),
+            Parameter("tool_choice.type", Choice(&["auto", "none", "any", "tool"])),
             Parameter("tool_choice.name", Text),
             Parameter("tool_choice.disable_parallel_tool_use", Bool),
         ]),

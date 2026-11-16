@@ -22,9 +22,9 @@ use crate::config::TuiConfig;
 use crate::protocol::AppEvent;
 use crate::protocol::EmbeddedConnection;
 use moc_protocol::ConfigAction;
-use rust_i18n::t;
 use moc_protocol::ConfigManage;
 use moc_protocol::FieldKind;
+use rust_i18n::t;
 use serde_json::Value;
 use serde_json::json;
 

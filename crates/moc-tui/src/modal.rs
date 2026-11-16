@@ -743,12 +743,10 @@ impl Modal {
                 Some(tools) => t!("tui.title.tools_fmt", count = tools.len()).into_owned(),
                 None => t!("tui.title.tools").into_owned(),
             },
-            Modal::ContextContent { state } => state
-                .current
-                .as_ref()
-                .map_or_else(|| t!("tui.title.context").into_owned(), |node| {
-                    node.name.clone()
-                }),
+            Modal::ContextContent { state } => state.current.as_ref().map_or_else(
+                || t!("tui.title.context").into_owned(),
+                |node| node.name.clone(),
+            ),
             Modal::Jobs { .. } => t!("tui.title.jobs").into_owned(),
             Modal::SwitchModel { .. } => t!("tui.title.switch_model").into_owned(),
             Modal::WorkflowApproval { state } => match state.request.kind {

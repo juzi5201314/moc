@@ -307,7 +307,12 @@ impl ToolCall {
     pub fn arguments_json(&self) -> Result<serde_json::Value, LlmError> {
         serde_json::from_str(&self.arguments).map_err(|err| {
             LlmError::Encode(
-                t!("llm.err.tool_args_json", name = self.name.as_str(), err = err).into_owned(),
+                t!(
+                    "llm.err.tool_args_json",
+                    name = self.name.as_str(),
+                    err = err
+                )
+                .into_owned(),
             )
         })
     }

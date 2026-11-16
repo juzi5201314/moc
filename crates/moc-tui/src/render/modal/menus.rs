@@ -172,10 +172,10 @@ pub(super) fn draw_legend_menu<T: crate::app::LegendItem + PartialEq>(
         .max()
         .unwrap_or(0);
     let selected = menu.selected.min(menu.items.len().saturating_sub(1));
-    let description = menu
-        .items
-        .get(selected)
-        .map_or(std::borrow::Cow::Borrowed(""), crate::app::LegendItem::description);
+    let description = menu.items.get(selected).map_or(
+        std::borrow::Cow::Borrowed(""),
+        crate::app::LegendItem::description,
+    );
     let frame_area = frame.area();
     // 正文宽 = ❯ + 标签；外宽再加两侧内边距与边框。
     let width = u16::try_from(label_width + 6)

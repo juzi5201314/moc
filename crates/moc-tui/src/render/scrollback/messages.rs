@@ -489,7 +489,12 @@ pub(super) fn goal_round_block(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                t!("tui.subagent.round_fmt", round = meta.round, sep = labels::SEP).into_owned(),
+                t!(
+                    "tui.subagent.round_fmt",
+                    round = meta.round,
+                    sep = labels::SEP
+                )
+                .into_owned(),
                 Style::new().fg(theme.text_primary),
             ),
             Span::styled(

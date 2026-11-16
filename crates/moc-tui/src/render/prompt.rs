@@ -8,7 +8,6 @@ use super::wrap::str_width;
 use crate::app::App;
 use crate::app::Focus;
 use ratatui::Frame;
-use rust_i18n::t;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -17,6 +16,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
+use rust_i18n::t;
 use std::borrow::Cow;
 
 /// 输入框按显示列硬折行，保留空白和原始字节偏移；额外留一格显示行尾光标。
@@ -331,7 +331,11 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
             theme.gray_bright,
         )
     } else if copy_feedback {
-        (Cow::Borrowed(""), t!("tui.prompt.copied"), theme.gray_bright)
+        (
+            Cow::Borrowed(""),
+            t!("tui.prompt.copied"),
+            theme.gray_bright,
+        )
     } else if app.prompt_running {
         (
             Cow::Borrowed("Esc"),
@@ -363,8 +367,7 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
     }
     // 左端布局：`␣key tip`（胶囊存在时接 ` · capsule`），末尾再补一格空白，
     // 与右侧的留白对称；分隔点只画在提示与胶囊之间，不留孤点。
-    let tips_width =
-        str_width(left_key) + usize::from(!left_key.is_empty()) + str_width(&left_tip);
+    let tips_width = str_width(left_key) + usize::from(!left_key.is_empty()) + str_width(&left_tip);
     let show_tips = tips_width + 4 + right_width + 4 <= inner;
 
     let buffer = frame.buffer_mut();
@@ -414,7 +417,12 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
         app.workflow.queued_approvals.len() + usize::from(app.workflow.parked_approval.is_some());
     if runs_n + approvals_n > 0 {
         let capsule = if approvals_n > 0 {
-            t!("tui.prompt.capsule_fmt", runs = runs_n, approvals = approvals_n).into_owned()
+            t!(
+                "tui.prompt.capsule_fmt",
+                runs = runs_n,
+                approvals = approvals_n
+            )
+            .into_owned()
         } else {
             t!("tui.prompt.capsule_runs_fmt", runs = runs_n).into_owned()
         };

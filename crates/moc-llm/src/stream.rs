@@ -511,9 +511,9 @@ impl ChatStream {
         while self.next_event().await.is_some() {}
         match self.error {
             Some(error) => Err(error),
-            None if !self.terminal_seen => Err(LlmError::Stream(
-                t!("llm.err.incomplete").into_owned(),
-            )),
+            None if !self.terminal_seen => {
+                Err(LlmError::Stream(t!("llm.err.incomplete").into_owned()))
+            }
             None => Ok(self.accumulator.fold(self.protocol, false)),
         }
     }
