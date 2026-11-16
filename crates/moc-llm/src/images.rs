@@ -66,12 +66,25 @@ impl std::fmt::Display for RequestDiagnostics {
     }
 }
 
-/// 内容指纹只采样首/中/尾各 4 KiB 加上总长度。
+/// 缓存 key = (采样指纹, 全量校验和)。
+/// 指纹只采样首/中/尾各 4 KiB 加上总长度，负责快速分桶；
 /// 每次请求都会对历史里全部内联图片算 key，对完整 base64 做 SHA-256
-/// 意味着每轮重扫几十 MB；会话内图片来源受控（非对抗输入），
-/// 同长度且三个采样区完全相同的碰撞概率可忽略。
+/// 意味着每轮重扫几十 MB。但同长度图片只改未采样区域时指纹不变，
+/// 因此再加一层覆盖全部字节的折叠校验和（加法折叠，速度接近内存带宽），
+/// 保证真实编辑必然 miss，不会把旧图发给模型。
 const FINGERPRINT_SAMPLE: usize = 4 * 1024;
 const MAX_CACHE_BYTES: usize = 24 * 1024 * 1024;
+
+fn checksum(data: &str) -> u64 {
+    let (words, remainder) = data.as_bytes().as_chunks::<8>();
+    let mut sum = 0u64;
+    for word in words {
+        sum = sum.wrapping_add(u64::from_le_bytes(*word));
+    }
+    let mut tail = [0u8; 8];
+    tail[..remainder.len()].copy_from_slice(remainder);
+    sum.wrapping_add(u64::from_le_bytes(tail))
+}
 
 fn fingerprint(data: &str) -> [u8; 32] {
     let bytes = data.as_bytes();
@@ -111,7 +124,7 @@ struct CacheEntry {
 
 #[derive(Debug, Default)]
 struct CacheState {
-    entries: HashMap<[u8; 32], CacheEntry>,
+    entries: HashMap<([u8; 32], u64), CacheEntry>,
     bytes: usize,
     clock: u64,
 }
@@ -130,7 +143,7 @@ impl ImageCache {
         let Some((_, data)) = inline(source)? else {
             return Ok(source.clone());
         };
-        let key = fingerprint(data);
+        let key = (fingerprint(data), checksum(data));
         {
             let mut cache = self.0.lock().expect("图片缓存");
             cache.clock += 1;
