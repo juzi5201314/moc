@@ -53,7 +53,7 @@ deny_write_paths = []          # 强制拒绝写入，优先于允许
 
 - 路径支持 `~`，展开后必须是绝对路径；`extra_*` 在加载时必须存在。
 - `extra_write_paths` 隐含可读；`deny_*` 优先。
-- `network=false` 不影响 `web_fetch`、`web_search`、MCP，只影响 bash 子进程。
+- `network=false` 不影响 `web_fetch`、MCP，只影响 bash 子进程。
 - `allow_unsandboxed=false` 时模型不能申请 `full`，但路径授权仍可用。
 - `on_denied="deny"` 时越界直接返回 `E_SANDBOX_DENIED`，不弹权限窗。
 - `deny_read_paths` / `deny_write_paths` 不能等于或包含会话工作区，否则配置加载报错；
@@ -111,7 +111,7 @@ deny_write_paths = []          # 强制拒绝写入，优先于允许
 
 ## 明确不覆盖
 
-- MCP 服务、`web_fetch`、`web_search`、PTC worker，以及 core 自身的配置、
+- MCP 服务、`web_fetch`、PTC worker，以及 core 自身的配置、
   `context_files`、skill 索引在 core 进程运行，不受 OS 沙盒约束。
 - `workspace` 可读宿主 Unix socket（如 Docker/SSH agent）；`workspace-only` 不挂载
   宿主 `/run`（仅 `/run/systemd/resolve`）和 `/var`（仅 scratch `/var/tmp`），隔离更强。

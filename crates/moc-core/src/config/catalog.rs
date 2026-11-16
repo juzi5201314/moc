@@ -351,7 +351,7 @@ fn walk(
         t!("core.config.tabs.models")
     } else {
         match path.first().map_or("", String::as_str) {
-            "tools" | "web_search" | "web_fetch" => t!("core.config.tabs.tools"),
+            "tools" | "web_fetch" => t!("core.config.tabs.tools"),
             "sandbox" => t!("core.config.tabs.sandbox"),
             "compaction" | "limits" => t!("core.config.tabs.context"),
             "context_files" | "system_prompt" => t!("core.config.tabs.instructions"),
@@ -413,9 +413,6 @@ fn walk(
             ("always", "core.config.opt.echo_reasoning.always"),
             ("never", "core.config.opt.echo_reasoning.never"),
         ],
-        "provider" if path.first().is_some_and(|part| part == "web_search") => {
-            &[("tavily", "core.config.opt.provider.tavily")]
-        }
         "mode" if path.iter().any(|part| part == "threshold") => &[
             ("percent", "core.config.opt.threshold_mode.percent"),
             ("tokens", "core.config.opt.threshold_mode.tokens"),

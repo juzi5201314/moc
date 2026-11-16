@@ -27,7 +27,6 @@ pub(super) struct ConfigDocument {
     pub mcp: moc_mcp::McpDocument,
     pub skills: SkillsConfig,
     pub plugins: PluginsConfig,
-    pub web_search: WebSearchConfig,
     pub web_fetch: WebFetchConfig,
     pub agents: AgentsConfig,
     pub workflow: WorkflowConfig,
@@ -312,33 +311,6 @@ pub(super) fn validate_skills(config: &SkillsConfig) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// web_search 的供应商与凭据配置；web_fetch 使用独立的本地抓取配置。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct WebSearchConfig {
-    /// 关闭后 web_search 不再向模型定义暴露（无 api_key 时同样隐藏）。
-    pub enabled: bool,
-    /// 供应商名；当前仅支持 tavily，大小写不敏感。
-    pub provider: String,
-    /// 字面量 / `env:NAME` / `!command`，与 providers 的 api_key 语法一致。
-    pub api_key: String,
-    /// 供应商接口基地址；留空使用官方地址。
-    pub base_url: String,
-    pub timeout_secs: u64,
-}
-
-impl Default for WebSearchConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            provider: "tavily".into(),
-            api_key: String::new(),
-            base_url: String::new(),
-            timeout_secs: 30,
-        }
-    }
-}
-
 /// web_fetch 的本地抓取配置。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -377,29 +349,6 @@ pub(super) fn validate_web_fetch(config: &WebFetchConfig) -> Result<(), CoreErro
         return Err(CoreError::Config(t!("core.err.webfetch_max_chars").into_owned()));
     }
     Ok(())
-}
-
-pub(super) fn validate_web_search(config: &WebSearchConfig) -> Result<String, CoreError> {
-    let provider = config.provider.trim().to_ascii_lowercase();
-    if provider != "tavily" {
-        return Err(CoreError::Config(
-            "web_search.provider: 仅支持 tavily".into(),
-        ));
-    }
-    if !config.base_url.is_empty()
-        && !config.base_url.starts_with("http://")
-        && !config.base_url.starts_with("https://")
-    {
-        return Err(CoreError::Config(
-            "web_search.base_url: 必须以 http:// 或 https:// 开头".into(),
-        ));
-    }
-    if config.timeout_secs == 0 {
-        return Err(CoreError::Config(
-            "web_search.timeout_secs: 必须大于 0".into(),
-        ));
-    }
-    Ok(provider)
 }
 
 #[derive(Debug, Clone, Deserialize)]

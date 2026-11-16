@@ -1627,7 +1627,7 @@ def build_overlay(selector: str, keep_recent: int, max_output: int) -> str:
         "[mcp]\nenabled = false\n\n"
         "[context_files]\nenabled = false\n\n"
         "[skills]\nenabled = false\n\n"
-        "[web_search]\nenabled = false\n\n"
+        
         "[session]\ncompress = false\n\n"
         "[compaction]\n"
         "auto = false\n"

@@ -13,7 +13,7 @@ use super::http::{
     BatchBudget, HttpFetcher, MAX_BATCH_BYTES, WebFetchFailure, content_type_essence, decode_body,
 };
 use super::sites::{self, SiteEndpoints};
-use super::{ExtractFailed, ExtractRequest, ExtractResponse, ExtractResult, WebSearchError};
+use super::{ExtractFailed, ExtractRequest, ExtractResponse, ExtractResult, WebFetchError};
 use crate::config::ResolvedWebFetch;
 
 const FETCH_CONCURRENCY: usize = 4;
@@ -54,7 +54,7 @@ impl NativeFetcher {
         &self,
         request: &ExtractRequest,
         cancel: &CancellationToken,
-    ) -> Result<ExtractResponse, WebSearchError> {
+    ) -> Result<ExtractResponse, WebFetchError> {
         let refresh = request.refresh;
         let batch = Arc::new(BatchBudget::new(MAX_BATCH_BYTES));
         let mut tasks = Vec::with_capacity(request.urls.len().min(MAX_URLS));
@@ -85,7 +85,7 @@ impl NativeFetcher {
             match outcome {
                 Ok(result) => results.push(result),
                 Err(WebFetchFailure::Cancelled) => {
-                    return Err(WebSearchError::new("E_CANCELLED", "web fetch cancelled"));
+                    return Err(WebFetchError::new("E_CANCELLED", "web fetch cancelled"));
                 }
                 Err(error) => failed.push(ExtractFailed {
                     url: url.to_owned(),
@@ -310,7 +310,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::config::ResolvedWebFetch;
-    use crate::websearch::sites::SiteEndpoints;
+    use crate::webfetch::sites::SiteEndpoints;
 
     fn config(max_bytes: usize, max_chars: usize) -> ResolvedWebFetch {
         ResolvedWebFetch {

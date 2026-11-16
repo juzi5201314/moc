@@ -23,7 +23,7 @@ pub mod plugin;
 pub mod ptc;
 pub mod read;
 pub mod todo;
-pub mod websearch;
+pub mod webfetch;
 pub mod write;
 pub use job::JobManager;
 pub use output::ToolOutput;
@@ -470,8 +470,7 @@ impl ToolRegistry {
                 Arc::new(clm::ClmContextTool),
                 Arc::new(crate::tools::ptc::ExecuteTool),
                 Arc::new(crate::skills::tool::SkillTool),
-                Arc::new(websearch::WebSearchTool),
-                Arc::new(websearch::WebFetchTool),
+                Arc::new(webfetch::WebFetchTool),
                 Arc::new(goal::GetGoalTool),
                 Arc::new(goal::CreateGoalTool),
                 Arc::new(goal::UpdateGoalTool),

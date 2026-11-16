@@ -81,14 +81,14 @@ export const log: {
 /**
  * 调用宿主工具。
  *
- * 只在工具的 `run` 里可用，且只放行 `read`、`grep`、`find`、`web_search`、`web_fetch`；
+ * 只在工具的 `run` 里可用，且只放行 `read`、`grep`、`find`、`web_fetch`；
  * 其它名字，以及在命令、钩子、`prompt`、`activate` 里调用，都会抛
  * `E_PLUGIN_TOOLS_UNAVAILABLE`。
  * 失败以异常形式抛出，异常对象带 `code` 与 `message`。
  */
 export const tools: {
   call(
-    name: "read" | "grep" | "find" | "web_search" | "web_fetch",
+    name: "read" | "grep" | "find" | "web_fetch",
     args?: Record<string, unknown>,
   ): {
     content: string;

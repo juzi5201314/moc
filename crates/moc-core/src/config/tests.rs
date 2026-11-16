@@ -473,7 +473,7 @@ fn legacy_roles_migrate_without_restoring_plan_model_behavior() {
 }
 
 #[test]
-fn web_tools_follow_their_own_switches() {
+fn web_fetch_follows_its_own_switch() {
     let dir = tempfile::tempdir().expect("临时目录");
     let home = dir.path().join("home");
     fs::create_dir_all(&home).expect("创建 home");
@@ -486,35 +486,19 @@ fn web_tools_follow_their_own_switches() {
             crate::service::mode::tool_enabled(name, tool.origin(), false, config)
         })
     };
-    assert!(!visible(&config, "web_search"), "无 key 时搜索工具隐藏");
     assert!(visible(&config, "web_fetch"), "抓取不依赖密钥");
 
     fs::write(
         home.join("config.toml"),
         format!(
-            "{}\n[web_search]\napi_key='tvly-test'\n",
+            "{}\n[web_fetch]\nenabled=false\n",
             provider_config("literal")
         ),
     )
     .expect("写配置");
     let config =
         ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).expect("配置可解析");
-    assert_eq!(config.web_search.api_key.as_deref(), Some("tvly-test"));
-    assert!(visible(&config, "web_search"));
-    assert!(visible(&config, "web_fetch"));
-
-    fs::write(
-        home.join("config.toml"),
-        format!(
-            "{}\n[web_search]\napi_key='tvly-test'\n[web_fetch]\nenabled=false\n",
-            provider_config("literal")
-        ),
-    )
-    .expect("写配置");
-    let config =
-        ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).expect("配置可解析");
-    assert!(visible(&config, "web_search"));
-    assert!(!visible(&config, "web_fetch"), "独立开关只隐藏抓取");
+    assert!(!visible(&config, "web_fetch"), "独立开关隐藏抓取");
 }
 
 #[test]
@@ -569,35 +553,6 @@ fn limits_defaults_cover_loop_detection_and_deadlines() {
 }
 
 #[test]
-fn rejects_invalid_web_search_settings() {
-    for (snippet, expected) in [
-        ("provider='google'\n", "web_search.provider"),
-        (
-            "base_url='ftp://proxy.example.com'\n",
-            "web_search.base_url",
-        ),
-        ("timeout_secs=0\n", "web_search.timeout_secs"),
-    ] {
-        let dir = tempfile::tempdir().expect("临时目录");
-        let home = dir.path().join("home");
-        fs::create_dir_all(&home).expect("创建 home");
-        fs::write(
-            home.join("config.toml"),
-            format!("{}\n[web_search]\n{snippet}", provider_config("literal")),
-        )
-        .expect("写配置");
-        let error = match ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())) {
-            Ok(_) => panic!("{snippet} 应被拒绝"),
-            Err(error) => error,
-        };
-        assert!(
-            error.to_string().contains(expected),
-            "unexpected error for {snippet}: {error}"
-        );
-    }
-}
-
-#[test]
 fn rejects_invalid_web_fetch_settings() {
     for (snippet, expected) in [
         ("timeout_secs=0\n", "web_fetch.timeout_secs"),
@@ -621,44 +576,6 @@ fn rejects_invalid_web_fetch_settings() {
             "unexpected error for {snippet}: {error}"
         );
     }
-}
-
-#[test]
-fn normalizes_web_search_provider_case() {
-    let dir = tempfile::tempdir().expect("临时目录");
-    let home = dir.path().join("home");
-    fs::create_dir_all(&home).expect("创建 home");
-    fs::write(
-        home.join("config.toml"),
-        format!(
-            "{}\n[web_search]\nprovider=' Tavily '\n",
-            provider_config("literal")
-        ),
-    )
-    .expect("写配置");
-    let config = ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new()))
-        .expect("大小写与空白被归一化");
-    assert_eq!(config.web_search.provider, "tavily");
-}
-
-#[test]
-fn web_search_env_secret_reports_missing_variable() {
-    let dir = tempfile::tempdir().expect("临时目录");
-    let home = dir.path().join("home");
-    fs::create_dir_all(&home).expect("创建 home");
-    fs::write(
-        home.join("config.toml"),
-        format!(
-            "{}\n[web_search]\napi_key='env:MOC_TEST_MISSING_WEB_KEY_7261'\n",
-            provider_config("literal")
-        ),
-    )
-    .expect("写配置");
-    let error = match ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())) {
-        Ok(_) => panic!("缺失环境变量应报错"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("web_search.api_key"));
 }
 
 #[test]

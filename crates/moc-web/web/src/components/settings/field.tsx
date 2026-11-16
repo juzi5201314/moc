@@ -317,7 +317,6 @@ const GROUP_TITLES: Record<string, MsgKey> = {
   "tools.todo": "sg.tools_todo",
   "tools.write": "sg.tools_write",
   web_fetch: "sg.web_fetch",
-  web_search: "sg.web_search",
   workspace: "sg.workspace",
   "session.retention": "sg.session_retention",
   context_files: "sg.context_files",

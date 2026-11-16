@@ -626,7 +626,6 @@ const ASK_MODE_TOOLS: &[&str] = &[
     "skill",
     "clm_context",
     "execute",
-    "web_search",
     "web_fetch",
     // 目标是只读可取的会话状态：读它不改写任何东西。
     "get_goal",
@@ -646,7 +645,6 @@ const PLAN_MODE_TOOLS: &[&str] = &[
     "plan",
     "exit_plan",
     "execute",
-    "web_search",
     "web_fetch",
     "get_goal",
 ];
@@ -689,7 +687,6 @@ pub fn allowed_tools(engine: SessionEngine) -> &'static [&'static str] {
             "plan",
             "exit_plan",
             "execute",
-            "web_search",
             "web_fetch",
             // 持久目标工具面（`get_goal` 另入只读模式白名单）。
             "get_goal",
@@ -771,7 +768,6 @@ pub fn tool_enabled(
         "todo" => config.tools.todo.enabled,
         "job" => config.tools.job.enabled,
         "skill" => config.skills.enabled,
-        "web_search" => config.web_search.available(),
         "web_fetch" => config.web_fetch.enabled,
         _ => true,
     }

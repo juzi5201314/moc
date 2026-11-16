@@ -185,7 +185,7 @@ mod tests {
                 "default_agent": "build",
                 "cwd": "/home/soeur/project/moc",
                 "fusion": {"lead": "deepseek-flash:max", "sidekick": "deepseek-flash:off"},
-                "features": {"clm": true, "ptc": true, "workflow": true, "plugins": true, "mcp": true, "skills": true, "web_search": true, "web_fetch": true},
+                "features": {"clm": true, "ptc": true, "workflow": true, "plugins": true, "mcp": true, "skills": true, "web_fetch": true},
                 "language": "zh"
             })
         );

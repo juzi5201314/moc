@@ -133,11 +133,11 @@ fn mode_mask(mode: Mode) -> ModeMask {
     }
 }
 
-/// 插件可以回调的宿主工具白名单：纯读取与联网检索。
+/// 插件可以回调的宿主工具白名单：纯读取与网页抓取。
 ///
 /// 只按 `Tier::Read` 放行会连带放出 `job`（能杀后台任务）、`ask`（要人机交互）、
 /// `todo`、`plan`/`exit_plan`（会结束回合）和 `skill`，所以这里显式列举。
-const HOST_TOOLS: &[&str] = &["read", "grep", "find", "web_search", "web_fetch"];
+const HOST_TOOLS: &[&str] = &["read", "grep", "find", "web_fetch"];
 
 fn host_tool_allowed(name: &str) -> bool {
     HOST_TOOLS.contains(&name)
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn host_tool_allowlist_keeps_the_surface_read_only() {
-        for name in ["read", "grep", "find", "web_search", "web_fetch"] {
+        for name in ["read", "grep", "find", "web_fetch"] {
             assert!(host_tool_allowed(name), "{name} 应在白名单里");
         }
         // 这些工具会改状态、要人机交互或结束回合，不属于插件能力面。
