@@ -344,7 +344,8 @@ pub(crate) fn prepare(
             index += 1;
             // 预算随历史增长逐轮微缩；向下量化到 1/8 档位后，
             // 同档预算直接命中缓存变体，不至于每张图每轮都重压缩。
-            let quantum = (cap / 8).max(4 * 1024);
+            // 档位不超过预算本身：小预算（< 4 KiB）保持原值，量化到 0/1 会阻断请求。
+            let quantum = (cap / 8).max(4 * 1024).min(cap.max(1));
             let cap = (cap / quantum * quantum).max(1);
             cache.normalize(source, cap).map_err(|error| LlmError::Encode(
                 t!(
