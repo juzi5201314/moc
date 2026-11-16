@@ -85,7 +85,7 @@ declare interface ArtifactRef { id: string; version: number }
 declare interface ArtifactOptions {
   /** Shown as the card title; defaults to the id. In the user's language. */
   title?: string;
-  /** A sentence or two, shown beside the title when this artifact is the run's primary. */
+  /** A sentence or two, shown beside the title when this artifact is the run's primary. In the user's language. */
   description?: string;
   /** The run's deliverable: the card and the run pane lead with it. At most one id per run; once set it stays set for later versions. */
   primary?: boolean;
