@@ -149,6 +149,9 @@ impl Scan {
             ));
         }
         let gitignore = self.args.gitignore.unwrap_or(true);
+        // 展示路径用规范化 cwd 相对化：walker 产出 canonical 路径，
+        // cwd 带符号链接段（macOS /var→/private/var）时 strip_prefix 会失败。
+        let display_cwd = crate::tools::normalized(&self.cwd);
         let mut walker = ignore::WalkBuilder::new(&root);
         walker
             .hidden(!self.args.hidden.unwrap_or(false))
@@ -209,7 +212,7 @@ impl Scan {
                 matches.fetch_add(1, Ordering::Relaxed);
                 let path = entry
                     .path()
-                    .strip_prefix(&self.cwd)
+                    .strip_prefix(&display_cwd)
                     .unwrap_or(entry.path())
                     .to_owned();
                 let candidate = (Reverse(modified), path);

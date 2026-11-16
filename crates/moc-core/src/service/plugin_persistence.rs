@@ -223,7 +223,11 @@ pub(super) fn validate_changes(
     previous: &Value,
     candidate: &Value,
 ) -> Result<(), CoreError> {
+    // 插件记录的 source 是规范化路径，target 由 cwd 拼出未必规范化
+    // （macOS /var→/private/var）：两侧都归一化再比对，否则同一文件会判成不同层。
+    let target = crate::sandbox::resolve_landing(target).unwrap_or_else(|| target.to_path_buf());
     for (name, source, declarations) in host.config_declarations() {
+        let source = crate::sandbox::resolve_landing(&source).unwrap_or(source);
         if source != target {
             let before = previous.get("plugins").and_then(|p| p.get(&name));
             let after = candidate.get("plugins").and_then(|p| p.get(&name));

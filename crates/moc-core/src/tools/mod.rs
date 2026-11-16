@@ -11,7 +11,7 @@ pub mod find;
 pub mod goal;
 pub mod grep;
 mod scope;
-pub(crate) use scope::resolve_scan_root;
+pub(crate) use scope::{normalized, resolve_scan_root};
 pub(crate) mod clm;
 pub mod job;
 pub(crate) mod job_log;
@@ -688,18 +688,20 @@ mod tests {
                 escape.display()
             );
         }
+        // landing 是规范化路径：macOS 上 tempdir 在 /var，canonical 是 /private/var。
+        let base = directory.path().canonicalize().unwrap();
         let absolute = root.join("z/../../x").display().to_string();
         let escape = workspace_escape(&root, &absolute).expect("绝对路径变体必须判为越界");
-        assert_eq!(escape, directory.path().join("x"));
+        assert_eq!(escape, base.join("x"));
         // 对照组：已存在组件上的 `..` 和其它越界照样拒绝，工作区内的路径不受影响。
         assert!(workspace_escape(&root, "src/new/deep.rs").is_none());
         assert_eq!(
             workspace_escape(&root, "src/../../evil2.txt").expect("已存在组件上的 `..` 越界"),
-            directory.path().join("evil2.txt")
+            base.join("evil2.txt")
         );
         assert_eq!(
             workspace_escape(&root, "../outside/notes.txt").expect("父级相对路径越界"),
-            directory.path().join("outside/notes.txt")
+            base.join("outside/notes.txt")
         );
     }
 

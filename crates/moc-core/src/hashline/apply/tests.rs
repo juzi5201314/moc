@@ -76,6 +76,8 @@ async fn older_tag_remaps_untouched_lines_and_rejects_changed_ones() {
     let dir = tempfile::tempdir().expect("临时目录");
     let path = dir.path().join("file.txt");
     let (_snapshot, served, t0) = served_snapshot(&path, "a\nb\nc\n");
+    // 锚点按规范化路径登记（macOS /var→/private/var），查找用同一形态。
+    let path = path.canonicalize().unwrap();
     let store = AnchorStore::new();
     let output = apply_edit(
         dir.path(),
@@ -290,6 +292,9 @@ async fn move_commits_both_files_and_advances_both_served_states() {
     let target = dir.path().join("target");
     std::fs::write(&source, "a\nb\nc\nd\ne\nf\n").expect("写源文件");
     std::fs::write(&target, "t1\nt2\nt3\nt4\nt5\nt6\nt7\nt8\n").expect("写目标文件");
+    // 输出头与锚点都按规范化路径生成（macOS /var→/private/var）。
+    let source = source.canonicalize().unwrap();
+    let target = target.canonicalize().unwrap();
     let source_snapshot = read_snapshot(&source, 4096).expect("读取源文件");
     let target_snapshot = read_snapshot(&target, 4096).expect("读取目标文件");
     let mut source_served = ServedFile::new();
@@ -406,6 +411,8 @@ async fn undo_rejects_external_changes_without_consuming_history() {
     let dir = tempfile::tempdir().expect("临时目录");
     let path = dir.path().join("source");
     let (_snapshot, served, tag) = served_snapshot(&path, "first\nlast\n");
+    // undo 栈按规范化路径登记（macOS /var→/private/var）。
+    let path = path.canonicalize().unwrap();
     let store = AnchorStore::new();
     apply_edit(
         dir.path(),
@@ -693,6 +700,8 @@ async fn distant_edits_render_separate_hunks_and_hide_the_gap() {
         .join("\n")
         + "\n";
     std::fs::write(&path, &text).expect("写测试文件");
+    // 锚点按规范化路径登记（macOS /var→/private/var）。
+    let path = path.canonicalize().unwrap();
     let snapshot = read_snapshot(&path, 1_000_000).expect("读取快照");
     let mut served = ServedFile::new();
     // 只展示两处改动附近的行：中间的大段从未展示给模型。

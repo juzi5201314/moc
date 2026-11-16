@@ -805,8 +805,10 @@ async fn background_pipes_and_pty_reap_killed_jobs_and_keep_logs() {
             1 => tool_stream(vec![
                 ("pipe_stop", "job", json!({"op":"kill","job_id":"job_1"})),
                 ("pty_stop", "job", json!({"op":"kill","job_id":"job_2"})),
-                ("pipe_wait", "job", json!({"op":"wait","job_id":"job_1","timeout_secs":5})),
-                ("pty_wait", "job", json!({"op":"wait","job_id":"job_2","timeout_secs":5})),
+                // 回收在慢平台/高负载下可能超过几秒：wait 窗口放宽到 30s，
+                // 否则 wait 先于回收返回 "still running"，断言只能靠运气。
+                ("pipe_wait", "job", json!({"op":"wait","job_id":"job_1","timeout_secs":30})),
+                ("pty_wait", "job", json!({"op":"wait","job_id":"job_2","timeout_secs":30})),
             ]),
             2 => tool_stream(vec![("pty_again", "bash", json!({"description":"Restart the PTY job","command":"exec sleep 60","async":true,"pty":true,"lifecycle":"persistent"}))]),
             3 => tool_stream(vec![("pty_kill", "job", json!({"op":"kill","job_id":"job_3"}))]),
@@ -858,8 +860,13 @@ async fn background_pipes_and_pty_reap_killed_jobs_and_keep_logs() {
     .expect("job_1/job_2 必须被杀并回收");
     for (call, marker) in [("pipe_wait", "pipe-ready"), ("pty_wait", "pty-ready")] {
         let text = output(call);
+        // 同一批里的 kill 与 wait 并发执行：wait 可能赶在回收完成前拿到
+        // Killing 过渡态和 "Killing\n^D" 增量，这也是合法返回；终态与回收
+        // 已由上面的 JobFinished 事件佐证。
         assert!(
-            text.contains("job finished") || text.contains(marker),
+            text.contains("job finished")
+                || text.contains(marker)
+                || text.starts_with("Killing\n"),
             "{call} 应返回终态或增量输出：{text}"
         );
     }

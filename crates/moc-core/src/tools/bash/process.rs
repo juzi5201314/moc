@@ -623,8 +623,14 @@ mod unix_tests {
             Some(Arc::new(SandboxScratch::new().expect("scratch"))),
         );
         let log = test_log(directory.path().join("denied-read.log")).await;
+        // 不用 `test -e`：macOS 上部分 shell（zsh）的存在性检查走 access(F_OK)，
+        // Seatbelt 不把它映射到 file 操作，拦不住；ls/cat 走 readdir/read-data，稳定被拒。
         let process = Process::spawn(
-            bash_args(&format!("test ! -e {}/secret", denied.display())),
+            bash_args(&format!(
+                "! ls {} 2>/dev/null && ! cat {}/secret 2>/dev/null",
+                denied.display(),
+                denied.display()
+            )),
             directory.path().to_owned(),
             Some(Duration::from_secs(5)),
             log,

@@ -568,7 +568,11 @@ fn list_directory(
     offset: Option<i64>,
     limit: Option<usize>,
 ) -> Result<String, ToolError> {
-    let relative = path.strip_prefix(cwd).unwrap_or(path);
+    // path 已由 resolve_path 规范化，cwd 未必（macOS /var→/private/var）；
+    // 相对化前先归一化，否则退化为输出绝对路径。
+    let relative = path
+        .strip_prefix(&crate::tools::normalized(cwd))
+        .unwrap_or(path);
     let mut output = format!("[{}]", relative.display());
     // 显式 limit 时改为单层分页列表；否则保持现有两层预览。
     if let Some(limit) = limit {

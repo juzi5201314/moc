@@ -128,6 +128,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("source.txt");
         std::fs::write(&path, "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n").unwrap();
+        // 锚点与 apply 的路径解析都以规范化路径为键（macOS /var→/private/var）。
+        let path = path.canonicalize().unwrap();
         let store = AnchorStore::new();
         store.restore(directory.path()).await.unwrap();
         let snapshot = read_snapshot(&path, 4096).unwrap();

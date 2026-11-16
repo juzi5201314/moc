@@ -95,6 +95,11 @@ impl Fonts {
     /// 系统字体回退：按 `fontdb` 的 face 顺序找第一个覆盖 `ch` 的字体。
     fn fallback_glyph(&mut self, ch: char, px: u32) -> Option<RenderedGlyph> {
         let db = system_fonts()?;
+        self.fallback_in(db, ch, px)
+    }
+
+    /// `db` 单独传入以便测试构造“无系统字体”的确定场景。
+    fn fallback_in(&mut self, db: &fontdb::Database, ch: char, px: u32) -> Option<RenderedGlyph> {
         for face in db.faces() {
             match self.fallback_fonts.get(&face.id) {
                 Some(font) if font.lookup_glyph_index(ch) != 0 => {
@@ -295,14 +300,19 @@ mod tests {
         });
     }
 
-    /// 内嵌子集与常见系统字体都不覆盖的字符返回 `None`，不 panic。
+    /// 内嵌子集与系统字体都不覆盖的字符返回 `None`，不 panic。
     #[test]
     fn missing_glyph_returns_none() {
         with_fonts(|fonts| {
-            // U+10FFFD 是第 16 平面私用区的替换字符，任何常规字体都不映射。
-            assert!(fonts.glyph('\u{10FFFD}', 16).is_none());
-            // 缺字也要有推进量（按方框宽度算），否则后续文字会叠在一起。
-            assert_eq!(fonts.width("\u{10FFFD}", 16), missing_box_width(16));
+            // macOS 系统库里的 LastResort 用 cmap format 13 映射全部码位，
+            // 真机上没有可靠缺失的字符；空库确定走缺字路径。
+            let empty = fontdb::Database::new();
+            assert!(fonts.fallback_in(&empty, '\u{10FFFD}', 16).is_none());
+            // 真机仍缺字的平台顺带验证缺字推进量（按方框宽度算），
+            // 否则后续文字会叠在一起。
+            if fonts.glyph('\u{10FFFD}', 16).is_none() {
+                assert_eq!(fonts.width("\u{10FFFD}", 16), missing_box_width(16));
+            }
         });
     }
 }
