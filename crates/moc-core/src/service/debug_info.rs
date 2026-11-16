@@ -184,6 +184,7 @@ mod tests {
             agent_result: None,
             goal_round: None,
             reminder: None,
+            job_notice: None,
         })
     }
 

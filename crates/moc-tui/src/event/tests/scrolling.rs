@@ -223,6 +223,7 @@ async fn rewind_wheel_scrolls_timeline_not_selection() {
         agent_result: None,
         goal_round: None,
         reminder: None,
+        job_notice: None,
     };
     let mut state = crate::modal::RewindState::default();
     state.set_entries((0..30).map(entry).collect(), vec![]);

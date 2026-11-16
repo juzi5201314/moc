@@ -83,6 +83,14 @@ export type Block =
       body: string;
       atMs: number;
     }
+  | {
+      kind: "job-notice";
+      id: string;
+      entryId: string;
+      job: JobInfo;
+      body: string;
+      atMs: number;
+    }
   | { kind: "goal-round"; id: string; round: number; body: string; atMs: number }
   | {
       kind: "reasoning";
@@ -209,6 +217,14 @@ export function messageText(message: Message): string {
   return message.content.flatMap((part) => ("Text" in part ? [part.Text] : [])).join("");
 }
 
+/** 剥掉投递外壳：卡片自身已经表达「送达模型的提醒」，正文只留模型可见的部分。 */
+function stripReminderWrap(text: string): string {
+  if (text.startsWith("<system-reminder>") && text.endsWith("</system-reminder>")) {
+    return text.slice("<system-reminder>".length, -"</system-reminder>".length);
+  }
+  return text;
+}
+
 export function reasoningText(part: ContentPart): string {
   if (!("Reasoning" in part)) return "";
   const block = part.Reasoning;
@@ -328,6 +344,18 @@ export function entriesToBlocks(
         entryId: entry.id,
         meta: entry.agent_result,
         body: messageText(message),
+        atMs: entry.at_ms,
+      });
+      continue;
+    }
+    // 任务通知是送达模型的实质内容（Role::Custom），必须排在 Custom 过滤之前。
+    if (entry.job_notice) {
+      blocks.push({
+        kind: "job-notice",
+        id: nextId(),
+        entryId: entry.id,
+        job: entry.job_notice,
+        body: stripReminderWrap(messageText(message)),
         atMs: entry.at_ms,
       });
       continue;
@@ -1024,6 +1052,19 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
           }),
         );
       }
+      break;
+    }
+    // 通知真正写进历史、随本轮提示送达模型时才落卡片；job_finished 的状态条
+    // 只管「进程结束了」，这张卡留痕的是投递内容本身。
+    case "job_notified": {
+      view.blocks.push({
+        kind: "job-notice",
+        id: nextId(view),
+        entryId: update.entry_id,
+        job: update.job,
+        body: stripReminderWrap(update.body),
+        atMs: update.at_ms,
+      });
       break;
     }
     case "upstream_mismatch":

@@ -535,6 +535,7 @@ impl Renderer {
             | SessionUpdate::PromptRewound { .. }
             | SessionUpdate::LockChanged { .. }
             | SessionUpdate::AgentResult { .. }
+            | SessionUpdate::JobNotified { .. }
             | SessionUpdate::JobStarted { .. }
             | SessionUpdate::JobUpdated { .. }
             | SessionUpdate::JobOutput { .. }

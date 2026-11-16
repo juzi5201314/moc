@@ -63,6 +63,7 @@ impl StoredEntry {
                 agent_result: entry.agent_result.clone(),
                 goal: entry.goal_round.clone(),
                 reminder: entry.reminder.clone(),
+                job_notice: entry.job_notice.clone(),
             },
             Self::Other(entry) => (**entry).clone(),
         }

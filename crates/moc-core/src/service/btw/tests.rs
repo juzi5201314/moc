@@ -216,7 +216,9 @@ async fn readonly_snapshot_works_while_main_lock_is_held_and_never_loads_hosts()
         .lock()
         .await
         .notices
-        .push("不得消费的主提醒".into());
+        .push(crate::session::state::SessionNotice::new(
+            "不得消费的主提醒".into(),
+        ));
     let before = h.unchanged_snapshot().await;
     let lock = h.record.try_prompt_lock().expect("模拟主提示占用");
     let mut params = h.params("解释 @does-not-exist.png 的含义，不读取文件");

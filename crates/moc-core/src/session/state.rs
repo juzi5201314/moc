@@ -40,6 +40,25 @@ fn add_optional(current: Option<u64>, added: Option<u64>) -> Option<u64> {
     }
 }
 
+/// 排队等待随下一轮提示注入的通知。
+///
+/// 只在持有会话状态锁时增删；drain 进上下文的时刻才是「送达」时刻，此前可以
+/// 被同前缀的新通知或工具结果（`job wait`/`kill`）替换撤回。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionNotice {
+    /// 通知正文；任务通知带 `notice_prefix` 前缀以便按任务撤回。
+    pub text: String,
+    /// 任务来源的快照；非任务通知为 `None`。投递时据此渲染任务卡片。
+    pub job: Option<moc_protocol::methods::JobInfo>,
+}
+
+impl SessionNotice {
+    /// 与具体任务无关的通知。
+    pub fn new(text: String) -> Self {
+        Self { text, job: None }
+    }
+}
+
 /// 当前会话里每个模型的调用累计；属于运行状态，随会话生命周期保留。
 #[derive(Debug, Clone, Default)]
 pub struct ModelUsage {
@@ -131,7 +150,7 @@ pub struct SessionState {
     pub(crate) has_reset: bool,
     pub prompt_sequence: u64,
     pub job_sequence: u64,
-    pub notices: Vec<String>,
+    pub notices: Vec<SessionNotice>,
     /// 已经写进历史的运行时提醒：条目 key → 正文摘要。`None` 表示该条目从未注入。
     ///
     /// 由 transcript 重放得到，所以会话恢复后不会重复注入。压缩会重写可见历史，

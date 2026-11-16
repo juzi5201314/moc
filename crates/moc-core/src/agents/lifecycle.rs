@@ -337,7 +337,12 @@ pub(super) async fn deliver_result(
             },
         )
         .await?;
-    parent.state.lock().await.notices.push(notice);
+    parent
+        .state
+        .lock()
+        .await
+        .notices
+        .push(crate::session::state::SessionNotice::new(notice));
     updates
         .emit(
             parent_id,

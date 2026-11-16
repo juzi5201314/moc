@@ -289,7 +289,7 @@ impl JobManager {
     ) {
         let prefix = notice_prefix(id);
         let mut state = state.lock().await;
-        state.notices.retain(|notice| !notice.starts_with(&prefix));
+        state.notices.retain(|notice| !notice.text.starts_with(&prefix));
         self.unreported.lock().remove(id);
     }
 

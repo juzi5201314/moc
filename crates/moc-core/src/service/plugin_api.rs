@@ -59,7 +59,9 @@ pub(super) async fn plugin_reload(
         let mut state = record.state.lock().await;
         for plugin in plugins.iter().filter(|plugin| plugin.error.is_none()) {
             let prefix = plugin_notice_prefix(&plugin.name);
-            state.notices.retain(|notice| !notice.starts_with(&prefix));
+            state
+                .notices
+                .retain(|notice| !notice.text.starts_with(&prefix));
         }
     }
     Ok(PluginReloadResult { plugins })

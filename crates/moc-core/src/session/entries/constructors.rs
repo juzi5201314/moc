@@ -79,6 +79,7 @@ impl Entry {
                 agent_result: None,
                 goal,
                 reminder: None,
+                job_notice: None,
             },
             EntryPayload::AgentResult { meta, report } => Self::Message {
                 id,
@@ -92,6 +93,7 @@ impl Entry {
                 agent_result: Some(meta),
                 goal: None,
                 reminder: None,
+                job_notice: None,
             },
             EntryPayload::Reminder { message, items } => Self::Message {
                 id,
@@ -105,6 +107,21 @@ impl Entry {
                 agent_result: None,
                 goal: None,
                 reminder: Some(moc_protocol::ReminderStamp { items }),
+                job_notice: None,
+            },
+            EntryPayload::JobNotice { job, body } => Self::Message {
+                id,
+                parent_id,
+                at_ms,
+                message: Message::custom(body),
+                tool: None,
+                finish_reason: None,
+                bash: None,
+                agent: None,
+                agent_result: None,
+                goal: None,
+                reminder: None,
+                job_notice: Some(job),
             },
             EntryPayload::Bash {
                 command,
@@ -122,6 +139,7 @@ impl Entry {
                 agent_result: None,
                 goal: None,
                 reminder: None,
+                job_notice: None,
             },
             EntryPayload::Compaction {
                 method,
@@ -406,6 +424,7 @@ impl Entry {
                 agent_result,
                 goal,
                 reminder,
+                job_notice,
                 ..
             } => Some(TranscriptEntry {
                 id: id.clone(),
@@ -417,6 +436,7 @@ impl Entry {
                 agent_result: agent_result.clone(),
                 goal_round: goal.clone(),
                 reminder: reminder.clone(),
+                job_notice: job_notice.clone(),
             }),
             _ => None,
         }

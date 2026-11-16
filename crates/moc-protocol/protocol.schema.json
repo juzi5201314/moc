@@ -6899,6 +6899,41 @@
           "type": "object"
         },
         {
+          "description": "一条任务通知已写入历史、将随本轮提示送达模型。\n\n与 `JobFinished` 的区别：后者是进程终态事件（通知可能还在排队）；\n本条在通知真正进上下文时发送，`body` 是送达原文，`job` 是投递时的任务快照。\n前端把它渲染成卡片而不是便签，让人看到模型被告知了什么。",
+          "properties": {
+            "at_ms": {
+              "description": "写入时间的 UNIX 毫秒时间戳。",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "body": {
+              "description": "通知原文（含 `<system-reminder>` 外壳）。",
+              "type": "string"
+            },
+            "entry_id": {
+              "description": "对应 transcript entry ID。",
+              "type": "string"
+            },
+            "job": {
+              "$ref": "#/$defs/JobInfo",
+              "description": "投递时的任务快照。"
+            },
+            "type": {
+              "const": "job_notified",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "entry_id",
+            "at_ms",
+            "job",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
           "description": "上游实际使用的模型或推理强度与本地请求不一致。\n\n网关可能静默改写模型（降级 / 映射）或降低推理强度；每次上游请求完成后由\ncore 比对一次，只在不一致时推送。前端应把它渲染成醒目的告警，并在重复\n出现时替换而非堆叠。",
           "properties": {
             "fields": {
@@ -7844,6 +7879,17 @@
         "id": {
           "description": "条目 ID，由 core 生成。",
           "type": "string"
+        },
+        "job_notice": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JobInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "已送达模型的任务通知的任务快照；`None` 表示非任务通知消息。\n\n消息本身是 `Role::Custom` 的送达原文，参与模型上下文；这个字段只给\n前端把投递渲染成卡片用。"
         },
         "message": {
           "$ref": "#/$defs/Message",

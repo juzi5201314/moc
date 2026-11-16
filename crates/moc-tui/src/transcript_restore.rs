@@ -58,6 +58,14 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
             });
             continue;
         }
+        // 任务通知：送达模型的原文带 `job_notice` 快照，恢复成任务卡片。
+        if let Some(job) = &record.job_notice {
+            blocks.push(Entry {
+                at_ms: Some(record.at_ms),
+                ..Entry::new(Block::job_notice(job.clone(), message.text()))
+            });
+            continue;
+        }
         // goal 续跑轮：带轮次标记的用户消息，恢复成独立卡片而不是普通输入。
         if let Some(meta) = &record.goal_round {
             blocks.push(Entry::new(Block::GoalRound {
@@ -252,6 +260,7 @@ mod tests {
             goal_round: None,
             reminder: None,
             agent_result: None,
+            job_notice: None,
         }
     }
 

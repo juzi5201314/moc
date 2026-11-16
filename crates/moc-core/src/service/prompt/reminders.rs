@@ -3,6 +3,8 @@
 use super::flush_reminders;
 use crate::service::CoreInner;
 use crate::service::protocol_to_rpc;
+use crate::service::to_rpc;
+use crate::session::entries::EntryPayload;
 use crate::system_prompt::engine_reminder;
 use crate::system_prompt::mode_reminder;
 use crate::system_prompt::reminder;
@@ -167,11 +169,38 @@ pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError>
         runtime.jobs.mark_all_reported();
         std::mem::take(&mut state.notices)
     };
-    candidates.extend(
-        notices
-            .into_iter()
-            .map(|notice| Reminder::once(reminder::key::NOTICE, notice)),
-    );
+    for notice in notices {
+        let Some(job) = notice.job else {
+            candidates.push(Reminder::once(reminder::key::NOTICE, notice.text));
+            continue;
+        };
+        // 任务通知单独成条：它带实质交付内容，前端靠 job_notice 元数据渲染卡片，
+        // 混进提醒大杂烩就没有可识别的结构了。
+        let body = reminder::wrap(&notice.text);
+        let entry = inner
+            .sessions
+            .append(
+                session_id,
+                EntryPayload::JobNotice {
+                    job: job.clone(),
+                    body: body.clone(),
+                },
+            )
+            .await
+            .map_err(to_rpc)?;
+        update
+            .emit(
+                session_id.to_owned(),
+                SessionUpdate::JobNotified {
+                    entry_id: entry.id().to_owned(),
+                    at_ms: entry.at_ms(),
+                    job,
+                    body,
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
+    }
     {
         let mut reminder_state = runtime.reminders.lock().await;
         if first_turn {

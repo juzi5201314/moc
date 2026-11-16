@@ -2,8 +2,8 @@
 
 use moc_llm::{FinishReason, Message};
 use moc_protocol::methods::{
-    PlanAnnotation, PlanStatus, SessionAutonomy, SessionEngine, SessionPermission, TodoPhase,
-    ToolExecution,
+    JobInfo, PlanAnnotation, PlanStatus, SessionAutonomy, SessionEngine, SessionPermission,
+    TodoPhase, ToolExecution,
 };
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +123,9 @@ pub enum Entry {
         /// 运行时提醒标记；`None` 表示普通对话消息。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reminder: Option<moc_protocol::ReminderStamp>,
+        /// 已送达模型的任务通知的任务快照；`None` 表示非任务通知消息。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        job_notice: Option<JobInfo>,
     },
     /// 会话目标的完整快照（`session/goal` 与 `update_goal` 工具的每次变更写一条）；
     /// `goal` 为 `None` 是清除墓碑。
@@ -323,6 +326,16 @@ pub enum EntryPayload {
         message: Message,
         /// 本条消息合并了哪些条目；只记摘要，正文在 `message` 里。
         items: Vec<moc_protocol::ReminderItem>,
+    },
+    /// 一条已送达模型的任务通知：`Role::Custom` 消息 + 投递时的任务快照。
+    ///
+    /// 快照挂在 `Message.job_notice` 上，供前端渲染成任务卡片；消息本身照常
+    /// 进入模型上下文。
+    JobNotice {
+        /// 投递时的任务快照。
+        job: JobInfo,
+        /// 通知原文（含 `<system-reminder>` 外壳）。
+        body: String,
     },
     Bash {
         command: moc_protocol::BashCommand,

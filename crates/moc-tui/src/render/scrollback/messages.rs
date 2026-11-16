@@ -379,6 +379,62 @@ pub(super) fn agent_result_block(
     )
 }
 
+/// 任务通知卡片：标题带状态与耗时尾注，正文是送达模型的原文。
+pub(super) fn job_notice_block(
+    job: &moc_protocol::methods::JobInfo,
+    body: &str,
+    width: usize,
+    theme: &Theme,
+    level: DetailLevel,
+) -> Vec<Line<'static>> {
+    use moc_protocol::methods::JobStatus;
+    let status = if job.stalled {
+        t!("tui.job.stalled").into_owned()
+    } else {
+        match job.status {
+            JobStatus::Exited => job.exit_code.map_or_else(
+                || t!("tui.job.finished").into_owned(),
+                |code| t!("tui.job.exit_fmt", code = code).into_owned(),
+            ),
+            JobStatus::Killed => t!("tui.job.killed").into_owned(),
+            JobStatus::TimedOut => t!("tui.job.timed_out").into_owned(),
+            JobStatus::Running | JobStatus::Killing => t!("tui.job.running").into_owned(),
+        }
+    };
+    let color = if job.stalled || matches!(job.status, JobStatus::Running | JobStatus::Killing) {
+        theme.accent_warning
+    } else if job.status == JobStatus::Exited && job.exit_code == Some(0) {
+        theme.accent_success
+    } else {
+        theme.accent_error
+    };
+    let duration = job
+        .duration_ms
+        .map(|ms| format!("{}{}", labels::SEP, labels::duration(ms)))
+        .unwrap_or_default();
+    agent_card(
+        Line::from(vec![
+            Span::raw(" ".repeat(TITLE_INDENT)),
+            Span::styled("◆ ", Style::new().fg(color)),
+            Span::styled(
+                t!("tui.job.notice").into_owned(),
+                Style::new()
+                    .fg(theme.accent_tool)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(job.job_id.clone(), Style::new().fg(theme.text_primary)),
+            Span::styled(
+                format!("{}{status}{duration}", labels::SEP),
+                Style::new().fg(color),
+            ),
+        ]),
+        body,
+        width,
+        theme,
+        level,
+    )
+}
+
 pub(super) fn agent_card(
     header: Line<'static>,
     body: &str,

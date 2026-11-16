@@ -120,11 +120,13 @@ pub(crate) async fn flush_plugin_notices(
         // 锁只圈住 push：通知里可能带多行 JS 栈，不能让格式化或 emit 拖住会话状态。
         let mut state = state.lock().await;
         for notice in &notices {
-            state.notices.push(format!(
-                "{}{}（本进程内已停用；`plugin/reload` 或重启后恢复）",
-                plugin_notice_prefix(&notice.plugin),
-                notice.message
-            ));
+            state
+                .notices
+                .push(crate::session::state::SessionNotice::new(format!(
+                    "{}{}（本进程内已停用；`plugin/reload` 或重启后恢复）",
+                    plugin_notice_prefix(&notice.plugin),
+                    notice.message
+                )));
         }
     }
     for notice in notices {

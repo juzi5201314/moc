@@ -575,6 +575,7 @@ mod tests {
             goal_round: None,
             reminder: None,
             agent_result: None,
+            job_notice: None,
         }
     }
 

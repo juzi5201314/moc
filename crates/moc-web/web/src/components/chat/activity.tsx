@@ -48,7 +48,7 @@ import type { Block, ToolBlock } from "@/lib/transcript-model";
 import { type ActivityKind, activityKind, activitySnippet, activityVerb } from "@/lib/turn";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
-import type { ImageSource, JobResult } from "@/protocol/types";
+import type { ImageSource, JobInfo, JobResult } from "@/protocol/types";
 import { reanswerAsk } from "@/store/actions";
 import { openFile } from "@/store/files";
 import { usePrefs } from "@/store/prefs";
@@ -699,6 +699,84 @@ function bashAsTool(block: Extract<Block, { kind: "bash" }>): ToolBlock {
 export function AgentResultCard({ block }: { block: Extract<Block, { kind: "agent-result" }> }) {
   const axis = usePrefs((state) => state.toolDetail);
   return <AgentReportRow key={`${block.id}:${axis}`} block={block} axis={axis} />;
+}
+
+/** 任务通知的状态尾注：停滞优先（通知发出时任务仍在运行）。 */
+function jobNoticeStatus(job: JobInfo): string {
+  if (job.stalled) return t("act.job_stalled");
+  switch (job.status) {
+    case "exited":
+      return job.exit_code === null || job.exit_code === undefined
+        ? t("act.job_finished")
+        : t("act.job_exit", { code: job.exit_code });
+    case "killed":
+      return t("act.job_killed");
+    case "timed_out":
+      return t("act.job_timed_out");
+    default:
+      return t("act.job_running");
+  }
+}
+
+/** 任务通知卡片独立于处理过程；全局工具档位改变时收回手动展开。 */
+export function JobNoticeCard({ block }: { block: Extract<Block, { kind: "job-notice" }> }) {
+  const axis = usePrefs((state) => state.toolDetail);
+  return <JobNoticeRow key={`${block.id}:${axis}`} block={block} axis={axis} />;
+}
+
+function JobNoticeRow({
+  block,
+  axis,
+}: {
+  block: Extract<Block, { kind: "job-notice" }>;
+  axis: DetailLevel;
+}) {
+  const t = useT();
+  const [level, setLevel] = useState(axis);
+  const head = headLines(block.body, BRIEF_BODY_ROWS);
+  const lines = level === "full" ? block.body : head.lines.join("\n");
+  const job = block.job;
+  const failed =
+    job.status === "killed" ||
+    job.status === "timed_out" ||
+    (job.status === "exited" && job.exit_code !== 0);
+  return (
+    <div>
+      <RowHeader
+        icon={<SquareTerminalIcon />}
+        verb={t("act.job_notice")}
+        target={job.job_id}
+        failed={failed}
+        emphasized
+        suffix={
+          <>
+            <span className="text-xs">{jobNoticeStatus(job)}</span>
+            <Duration ms={job.duration_ms ?? undefined} />
+          </>
+        }
+        interactive
+        open={level === "full"}
+        sticky
+        onToggle={() => setLevel(toggledLevel(axis, level))}
+      />
+      {level !== "hidden" && (
+        <Body>
+          <div className="rounded-xl bg-code px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground">
+            {lines}
+            {level === "brief" && head.hidden > 0 && (
+              <button
+                type="button"
+                onClick={() => setLevel("full")}
+                className="mt-1 block text-2xs text-text-tertiary hover:text-foreground"
+              >
+                {t("act.more_lines", { n: head.hidden })}
+              </button>
+            )}
+          </div>
+        </Body>
+      )}
+    </div>
+  );
 }
 
 function AgentReportRow({

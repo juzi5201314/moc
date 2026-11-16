@@ -335,7 +335,12 @@ impl WorkflowManager {
         let session_id = self.session_id.clone();
         tokio::spawn(async move {
             if let Ok(parent) = inner.sessions.get(&session_id).await {
-                parent.state.lock().await.notices.push(notice);
+                parent
+                    .state
+                    .lock()
+                    .await
+                    .notices
+                    .push(crate::session::state::SessionNotice::new(notice));
             }
         });
         self.emit(handle, WorkflowEvent::RunStatus { status });

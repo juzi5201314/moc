@@ -943,6 +943,15 @@ title_card = { zh = " ◆ 任务 ", en = " ◆ Tasks " }
 more_fmt = { zh = "… 还有 %{count} 行", en = "… %{count} more lines" }
 drag_hint = { zh = " 拖动 · 点击折叠 ", en = " drag · click to fold " }
 
+[tui.job]
+notice = { zh = "任务通知 ", en = "Job notice " }
+stalled = { zh = "停滞", en = "stalled" }
+killed = { zh = "已终止", en = "killed" }
+timed_out = { zh = "超时", en = "timed out" }
+running = { zh = "运行中", en = "running" }
+finished = { zh = "已结束", en = "finished" }
+exit_fmt = { zh = "退出码 %{code}", en = "exit %{code}" }
+
 [tui.event]
 unattended_approved = { zh = "unattended：已自动批准计划（压缩并执行）", en = "unattended: plan auto-approved (compact & execute)" }
 compacted_fmt = { zh = "上下文已压缩：%{before} → %{after}", en = "Context compacted: %{before} → %{after}" }

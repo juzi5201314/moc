@@ -85,6 +85,7 @@ export const SESSION_UPDATE_TYPES: Record<SessionUpdateType, true> = {
   job_updated: true,
   job_output: true,
   job_finished: true,
+  job_notified: true,
   upstream_mismatch: true,
   steering_applied: true,
   workflow: true,

@@ -167,6 +167,7 @@ fn user_entry(id: &str) -> Entry {
         goal: None,
         reminder: None,
         agent_result: None,
+        job_notice: None,
     }
 }
 
@@ -183,6 +184,7 @@ fn assistant_entry(id: &str) -> Entry {
         goal: None,
         reminder: None,
         agent_result: None,
+        job_notice: None,
     }
 }
 

@@ -168,6 +168,7 @@ impl SessionTable {
                     agent_result: entry.agent_result.clone(),
                     goal_round: entry.goal_round.clone(),
                     reminder: entry.reminder.clone(),
+                    job_notice: entry.job_notice.clone(),
                 };
                 let mut size = serialized_bytes(&projected).saturating_add(1);
                 let children = if full_messages {

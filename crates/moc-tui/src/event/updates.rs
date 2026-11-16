@@ -241,6 +241,16 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
                 ..crate::transcript::Entry::new(Block::AgentResult { meta, body })
             });
         }
+        // 任务通知真正写进历史、随本轮提示送达模型时才落卡片：进程结束由
+        // `JobFinished` 的便签回告，这里留痕的是投递内容本身。
+        SessionUpdate::JobNotified {
+            at_ms, job, body, ..
+        } => {
+            app.blocks.push(crate::transcript::Entry {
+                at_ms: Some(at_ms),
+                ..crate::transcript::Entry::new(Block::job_notice(job, body))
+            });
+        }
         SessionUpdate::GoalRoundMessage { meta, body } => {
             app.push_block(Block::GoalRound { meta, body })
         }

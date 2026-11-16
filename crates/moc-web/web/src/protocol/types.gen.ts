@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 8884ce74ee291f5b
+// schema sha256: 4619423228d25500
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -956,6 +956,22 @@ export type SessionUpdate =
   | {
       job: JobInfo;
       type: "job_finished";
+    }
+  | {
+      /**
+       * 写入时间的 UNIX 毫秒时间戳。
+       */
+      at_ms: number;
+      /**
+       * 通知原文（含 `<system-reminder>` 外壳）。
+       */
+      body: string;
+      /**
+       * 对应 transcript entry ID。
+       */
+      entry_id: string;
+      job: JobInfo1;
+      type: "job_notified";
     }
   | {
       /**
@@ -3660,6 +3676,13 @@ export interface TranscriptEntry {
    * 条目 ID，由 core 生成。
    */
   id: string;
+  /**
+   * 已送达模型的任务通知的任务快照；`None` 表示非任务通知消息。
+   *
+   * 消息本身是 `Role::Custom` 的送达原文，参与模型上下文；这个字段只给
+   * 前端把投递渲染成卡片用。
+   */
+  job_notice?: JobInfo | null;
   message: Message2;
   /**
    * 运行时提醒的来源标记；`None` 表示普通对话消息。
@@ -4891,6 +4914,45 @@ export interface GoalRoundMeta1 {
   round: number;
 }
 /**
+ * 一个任务的快照。
+ */
+export interface JobInfo1 {
+  command: string;
+  /**
+   * 模型给 bash 调用写的一句话说明。
+   */
+  description?: string | null;
+  /**
+   * 结束时的总耗时；运行中为 `None`。
+   */
+  duration_ms?: number | null;
+  /**
+   * 仅 `exited` 时可能有值；被信号杀死时为 `None`。
+   */
+  exit_code?: number | null;
+  job_id: string;
+  lifecycle: JobLifecycle;
+  /**
+   * 完整日志的 `artifact://jobs/...` URI。
+   */
+  log_uri: string;
+  origin: JobOrigin;
+  /**
+   * 输出超过日志上限，中段被丢弃（保留开头与结尾）。
+   */
+  output_elided: boolean;
+  /**
+   * monitored 后台任务超过 `tools.bash.stall_after_secs` 没有新输出。
+   */
+  stalled: boolean;
+  started_at_ms: number;
+  status: JobStatus;
+  /**
+   * 发起它的 bash 工具调用；前端用它把任务挂到对应的工具卡片上。
+   */
+  tool_call_id: string;
+}
+/**
  * 一处「本地请求值 ≠ 上游回显值」。
  *
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
@@ -5313,6 +5375,22 @@ export interface SessionUpdateParams {
     | {
         job: JobInfo;
         type: "job_finished";
+      }
+    | {
+        /**
+         * 写入时间的 UNIX 毫秒时间戳。
+         */
+        at_ms: number;
+        /**
+         * 通知原文（含 `<system-reminder>` 外壳）。
+         */
+        body: string;
+        /**
+         * 对应 transcript entry ID。
+         */
+        entry_id: string;
+        job: JobInfo1;
+        type: "job_notified";
       }
     | {
         /**

@@ -218,7 +218,7 @@ impl JobManager {
                 .lock()
                 .await
                 .notices
-                .retain(|notice| !notice.starts_with(&prefix));
+                .retain(|notice| !notice.text.starts_with(&prefix));
             announce.send(SessionUpdate::JobUpdated { job }).await;
         }
         announce.send(output).await;
@@ -249,7 +249,14 @@ impl JobManager {
                 notice_prefix(id),
                 silent.as_secs()
             );
-            ctx.state.lock().await.notices.push(notice);
+            ctx.state
+                .lock()
+                .await
+                .notices
+                .push(crate::session::state::SessionNotice {
+                    text: notice,
+                    job: Some(job.clone()),
+                });
         }
         announce.send(SessionUpdate::JobUpdated { job }).await;
     }
@@ -308,8 +315,13 @@ impl JobManager {
         {
             let mut state = ctx.state.lock().await;
             let prefix = notice_prefix(id);
-            state.notices.retain(|notice| !notice.starts_with(&prefix));
-            state.notices.push(notice);
+            state
+                .notices
+                .retain(|notice| !notice.text.starts_with(&prefix));
+            state.notices.push(crate::session::state::SessionNotice {
+                text: notice,
+                job: Some(info.clone()),
+            });
             self.unreported.lock().insert(id.to_owned());
         }
         crate::service::plugin_events::job_finished(

@@ -362,6 +362,21 @@ pub enum SessionUpdate {
     },
     /// 任务结束；`job.status` 为终态。
     JobFinished { job: super::job::JobInfo },
+    /// 一条任务通知已写入历史、将随本轮提示送达模型。
+    ///
+    /// 与 `JobFinished` 的区别：后者是进程终态事件（通知可能还在排队）；
+    /// 本条在通知真正进上下文时发送，`body` 是送达原文，`job` 是投递时的任务快照。
+    /// 前端把它渲染成卡片而不是便签，让人看到模型被告知了什么。
+    JobNotified {
+        /// 对应 transcript entry ID。
+        entry_id: String,
+        /// 写入时间的 UNIX 毫秒时间戳。
+        at_ms: u64,
+        /// 投递时的任务快照。
+        job: super::job::JobInfo,
+        /// 通知原文（含 `<system-reminder>` 外壳）。
+        body: String,
+    },
     /// 上游实际使用的模型或推理强度与本地请求不一致。
     ///
     /// 网关可能静默改写模型（降级 / 映射）或降低推理强度；每次上游请求完成后由

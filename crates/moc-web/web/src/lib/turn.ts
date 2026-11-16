@@ -18,7 +18,8 @@ export type Segment =
   | { kind: "text"; id: string; block: TextBlock }
   | { kind: "plan"; id: string; block: PlanBlock }
   | { kind: "notice"; id: string; block: StatusBlock }
-  | { kind: "agent-result"; id: string; block: Extract<Block, { kind: "agent-result" }> };
+  | { kind: "agent-result"; id: string; block: Extract<Block, { kind: "agent-result" }> }
+  | { kind: "job-notice"; id: string; block: Extract<Block, { kind: "job-notice" }> };
 
 export type Turn = {
   /** 轮次 id：优先用用户块，续接轮（开头没有用户块）退回首个块的 id。 */
@@ -44,6 +45,11 @@ function pushSegment(turn: Turn, block: Block): void {
   // 交付结果独立显示，不埋进完成轮次的「处理过程」。
   if (block.kind === "agent-result") {
     turn.segments.push({ kind: "agent-result", id: block.id, block });
+    return;
+  }
+  // 送达模型的任务通知同理：它是模型行动的依据，不是过程噪音。
+  if (block.kind === "job-notice") {
+    turn.segments.push({ kind: "job-notice", id: block.id, block });
     return;
   }
   // 告警与错误不藏进折叠组：用户必须一眼看到。

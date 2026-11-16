@@ -443,6 +443,11 @@ pub enum Block {
         meta: moc_protocol::methods::AgentResultMeta,
         body: String,
     },
+    /// 已送达模型的任务通知：`body` 是模型看到的原文（剥掉 `<system-reminder>` 外壳）。
+    JobNotice {
+        job: moc_protocol::methods::JobInfo,
+        body: String,
+    },
     /// goal 自动续跑的一轮（带轮次标记的用户消息）。
     GoalRound {
         meta: moc_protocol::methods::GoalRoundMeta,
@@ -453,12 +458,23 @@ pub enum Block {
 }
 
 impl Block {
+    /// 任务通知块：剥掉投递外壳，块里只留模型可见的正文。
+    pub fn job_notice(job: moc_protocol::methods::JobInfo, body: String) -> Self {
+        let body = body
+            .strip_prefix("<system-reminder>")
+            .and_then(|text| text.strip_suffix("</system-reminder>"))
+            .unwrap_or(&body)
+            .to_owned();
+        Block::JobNotice { job, body }
+    }
+
     /// 块是否响应折叠切换。
     pub fn foldable(&self) -> bool {
         match self {
             Block::Thinking { .. }
             | Block::AgentMessage { .. }
             | Block::AgentResult { .. }
+            | Block::JobNotice { .. }
             | Block::GoalRound { .. } => true,
             Block::Tool(tool) => tool.expandable(),
             Block::User { .. } | Block::Assistant { .. } | Block::Note { .. } => false,

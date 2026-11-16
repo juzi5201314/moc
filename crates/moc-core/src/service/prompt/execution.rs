@@ -150,7 +150,10 @@ pub(super) async fn run_prompt_locked(
             .lock()
             .await
             .notices
-            .push(format!("MCP `{}`：{}", notice.server, notice.message));
+            .push(crate::session::state::SessionNotice::new(format!(
+                "MCP `{}`：{}",
+                notice.server, notice.message
+            )));
     }
     let mcp_snapshot = mcp.snapshot().await;
     // 加载期失败的插件只有在宿主建好后才有通知：先把积压送达模型与前端。

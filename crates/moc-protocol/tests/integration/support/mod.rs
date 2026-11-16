@@ -297,6 +297,7 @@ fn transcript(session_id: &str) -> Vec<TranscriptEntry> {
             bash: None,
             agent: None,
             goal_round: None,
+            job_notice: None,
             reminder: None,
             agent_result: None,
         })
@@ -493,6 +494,7 @@ impl ScriptedService {
                     goal_round: None,
                     reminder: None,
                     agent_result: None,
+                    job_notice: None,
                 });
             }
         });
@@ -1076,6 +1078,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::JobUpdated { .. } => "job_updated",
         SessionUpdate::JobOutput { .. } => "job_output",
         SessionUpdate::JobFinished { .. } => "job_finished",
+        SessionUpdate::JobNotified { .. } => "job_notified",
         SessionUpdate::UpstreamMismatch { .. } => "upstream_mismatch",
         SessionUpdate::SteeringApplied { .. } => "steering_applied",
         SessionUpdate::Error { .. } => "error",

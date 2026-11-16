@@ -127,7 +127,10 @@ impl App {
             DetailLevel::Brief | DetailLevel::Full => DetailLevel::Hidden,
         };
         for entry in &mut self.blocks {
-            if matches!(entry.block, Block::Tool(_) | Block::AgentResult { .. }) {
+            if matches!(
+                entry.block,
+                Block::Tool(_) | Block::AgentResult { .. } | Block::JobNotice { .. }
+            ) {
                 entry.clear_level_override();
             }
         }
@@ -139,7 +142,9 @@ impl App {
     pub fn block_level(&self, block: &Block) -> DetailLevel {
         match block {
             Block::Thinking { .. } => self.thinking_detail,
-            Block::Tool(_) | Block::AgentResult { .. } => self.tool_detail,
+            Block::Tool(_) | Block::AgentResult { .. } | Block::JobNotice { .. } => {
+                self.tool_detail
+            }
             _ => DetailLevel::Brief,
         }
     }

@@ -18,6 +18,7 @@ use super::messages::agent_message_block;
 use super::messages::agent_result_block;
 use super::messages::assistant_message;
 use super::messages::goal_round_block;
+use super::messages::job_notice_block;
 use super::messages::note_block;
 use super::messages::thinking_block;
 use super::messages::user_message;
@@ -148,6 +149,7 @@ pub(super) fn estimate_entry_height(
         Block::Tool(tool) => estimate_tool_height(tool, app, level, width, layout),
         Block::AgentMessage { body, .. }
         | Block::AgentResult { body, .. }
+        | Block::JobNotice { body, .. }
         | Block::GoalRound { body, .. } => {
             // 与 `agent_message_block` 同源：简略档是预览行数 + 省略行，隐藏档只剩标题行。
             let rows = wrapped_text_rows(body, prose_width(width)).len();
@@ -249,6 +251,9 @@ pub(super) fn render_entry_single(
         }
         Block::AgentResult { meta, body } => {
             EntryLines::plain(agent_result_block(meta, body, width, theme, level))
+        }
+        Block::JobNotice { job, body } => {
+            EntryLines::plain(job_notice_block(job, body, width, theme, level))
         }
         Block::GoalRound { meta, body } => {
             EntryLines::plain(goal_round_block(meta, body, width, theme, level))

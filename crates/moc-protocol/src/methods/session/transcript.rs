@@ -1,4 +1,5 @@
 use super::super::diff::ToolDiff;
+use super::super::job::JobInfo;
 use super::GoalRoundMeta;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -69,6 +70,12 @@ pub struct TranscriptEntry {
     /// 运行时提醒的来源标记；`None` 表示普通对话消息。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reminder: Option<ReminderStamp>,
+    /// 已送达模型的任务通知的任务快照；`None` 表示非任务通知消息。
+    ///
+    /// 消息本身是 `Role::Custom` 的送达原文，参与模型上下文；这个字段只给
+    /// 前端把投递渲染成卡片用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_notice: Option<JobInfo>,
 }
 
 impl TranscriptEntry {

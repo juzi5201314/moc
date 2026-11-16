@@ -25,7 +25,12 @@ import {
 } from "@/components/ai-elements/conversation";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { ActivityGroup, AgentResultCard, imageSrc } from "@/components/chat/activity";
+import {
+  ActivityGroup,
+  AgentResultCard,
+  imageSrc,
+  JobNoticeCard,
+} from "@/components/chat/activity";
 import { AskCard, PermissionCard } from "@/components/chat/requests";
 import { IconButton } from "@/components/common/icon-button";
 import { Button } from "@/components/ui/button";
@@ -547,6 +552,8 @@ function AssistantTurn({
         return <PlanCard key={segment.id} sessionId={context.sessionId} block={segment.block} />;
       case "agent-result":
         return <AgentResultCard key={segment.id} block={segment.block} />;
+      case "job-notice":
+        return <JobNoticeCard key={segment.id} block={segment.block} />;
       case "notice":
         return (
           <NoticeCard
@@ -592,7 +599,8 @@ function AssistantTurn({
                     index === finalIndex ||
                     segment.kind === "plan" ||
                     segment.kind === "notice" ||
-                    segment.kind === "agent-result"
+                    segment.kind === "agent-result" ||
+                    segment.kind === "job-notice"
                       ? null
                       : renderSegment(segment, index),
                   )}
@@ -604,7 +612,8 @@ function AssistantTurn({
             index === finalIndex ||
             segment.kind === "plan" ||
             segment.kind === "notice" ||
-            segment.kind === "agent-result"
+            segment.kind === "agent-result" ||
+            segment.kind === "job-notice"
               ? renderSegment(segment, index)
               : processCount === 0
                 ? renderSegment(segment, index)
