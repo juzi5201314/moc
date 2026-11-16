@@ -51,7 +51,7 @@ async fn explorer_role_preserves_reconnaissance_tools() {
             "explore 不得拿到 {denied}：{tools:?}"
         );
     }
-    // `web_search` 依赖 provider 能力，harness 未配置——不列入保留面断言。
+    // `web_fetch` 按需发现，不常驻工具面——不列入保留面断言。
     for kept in [
         "read", "grep", "find", "bash", "job", "todo", "skill", "execute", "yield",
     ] {

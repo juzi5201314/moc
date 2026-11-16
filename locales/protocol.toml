@@ -27,7 +27,6 @@ workflow = { zh = "动态 workflow：模型以 TypeScript 脚本编排多阶段�
 plugins = { zh = "插件宿主：插件工具、斜杠命令、钩子与提示词贡献", en = "Plugin host: plugin tools, slash commands, hooks and prompt contributions" }
 mcp = { zh = "MCP 服务器：外部工具经 mcp__* 桥接进入工具表", en = "MCP servers: external tools bridged in via mcp__*" }
 skills = { zh = "skills 目录注入与 skill 工具（渐进披露）", en = "skills directory injection and the skill tool (progressive disclosure)" }
-web_search = { zh = "web_search 工具（需配置供应商）", en = "web_search tool (requires a configured provider)" }
 web_fetch = { zh = "web_fetch 工具", en = "web_fetch tool" }
 
 [protocol.err]

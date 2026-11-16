@@ -5,7 +5,6 @@ import {
   grepCountText,
   groupActivity,
   parseGrep,
-  parseSearch,
   parseTodo,
   previewDiff,
   toggledLevel,
@@ -113,18 +112,6 @@ it("todo 结果还原阶段、状态与原因", () => {
   expect(phases[0].items.map((item) => item.status)).toEqual(["completed", "in_progress"]);
   expect(phases[1].items[0]).toEqual({ status: "blocked", task: "截图", reason: "等服务" });
   expect(parseTodo("No todos.")).toEqual([]);
-});
-
-it("web_search 结果拆出回答与来源", () => {
-  const parsed = parseSearch(
-    "简短回答\n\n## Sources (2)\n[1] 标题一 (2026-10-01)\n    https://a.dev/x\n    摘要一\n[2] 标题二\n    https://b.dev\n",
-  );
-  expect(parsed.answer).toBe("简短回答");
-  expect(parsed.hits).toEqual([
-    { title: "标题一 (2026-10-01)", url: "https://a.dev/x", snippet: "摘要一" },
-    { title: "标题二", url: "https://b.dev" },
-  ]);
-  expect(parseSearch("No results found for: q").hits).toEqual([]);
 });
 
 it("diff 预览跨 hunk 计行，超出部分折成计数", () => {

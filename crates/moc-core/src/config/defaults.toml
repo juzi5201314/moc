@@ -4,7 +4,7 @@
 language = "auto"
 
 # 特性开关覆盖：只接受注册表自有键（clm、ptc）。workflow/plugins/mcp/skills/
-# web_search/web_fetch 等特性由各自配置段的 enabled 控制（见 /features 一览），
+# web_fetch 等特性由各自配置段的 enabled 控制（见 /features 一览），
 # 误写进本段会被校验拒绝并提示正确路径。
 [features]
 # CLM 实验引擎（SessionEngine::ClmExperimental）
@@ -28,7 +28,7 @@ sidekick = ""
 [sandbox]
 # 新会话默认模式：full（不隔离）、workspace（工作区可写、外部只读）、workspace_only（外部不可读写）
 default_mode = "full"
-# 仅约束沙盒内 bash；web_fetch/web_search/MCP 不受影响
+# 仅约束沙盒内 bash；web_fetch/MCP 不受影响
 network = true
 # ask：越界时向用户申请；deny：直接拒绝
 on_denied = "ask"
@@ -259,13 +259,6 @@ max_prompt_chars = 4000
 # 允许的最大子代理委托深度：1 = 顶层可 spawn，子代理不能再 spawn；
 # 每加 1 多允许一层嵌套委托。
 max_depth = 1
-
-[web_search]
-enabled = true
-provider = "tavily"
-api_key = ""
-base_url = ""
-timeout_secs = 30
 
 [web_fetch]
 enabled = true

@@ -413,7 +413,6 @@ agents = { zh = "子代理并发与默认参数。", en = "Subagent concurrency 
 context_files = { zh = "随请求加载的上下文规则文件。", en = "Context rule files loaded with each request." }
 system_prompt = { zh = "System Prompt 覆盖与追加规则。", en = "System prompt overrides and appended rules." }
 skills = { zh = "Skills 目录扫描与加载规则。", en = "Skills directory scanning and loading rules." }
-web_search = { zh = "网络搜索接口与检索参数。", en = "Web search API and retrieval parameters." }
 web_fetch = { zh = "网页抓取策略与截断限制。", en = "Page fetch policy and truncation limits." }
 workspace = { zh = "工作区与符号导航参数。", en = "Workspace and symbol navigation parameters." }
 tools_ptc = { zh = "PTC 代码执行沙盒限制。", en = "PTC code-execution sandbox limits." }
@@ -573,7 +572,6 @@ running_fmt = { zh = "上下文压缩中…(%{secs}s)", en = "Compacting context
 models_roles = { zh = "模型角色", en = "Model roles" }
 agents = { zh = "子代理", en = "Subagents" }
 default_fmt = { zh = "默认 %{pattern}", en = "Default %{pattern}" }
-web_search = { zh = "网络搜索", en = "Web search" }
 web_fetch = { zh = "网页抓取", en = "Web fetch" }
 workspace = { zh = "工作区", en = "Workspace" }
 sandbox = { zh = "沙盒安全", en = "Sandbox safety" }

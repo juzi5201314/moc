@@ -151,11 +151,10 @@ Explorer 沿用工具拒绝列表：禁用 `edit`、`write`、`spawn_agent`、`s
 
 “子代理”身份由会话头的 `parent_session_id` 确定，普通固定角色、Fusion sidekick 与 workflow actor 均经过统一子会话创建层。消息回退分叉与审批计划的新会话执行不是子代理：它们没有父链接，只记录 `forked_from`，模型侧仍是普通会话，没有子代理契约、名册或 `yield`。
 
-### Web 搜索与抓取
+### Web 抓取
 
-`web_search` 查询互联网并返回答案与编号来源；`web_fetch` 抓取 1–20 个 URL 的正文（markdown）。两者都是只读工具，在标准、问答与计划模式可用，但开关独立：
+`web_fetch` 抓取 1–20 个 URL 的正文（markdown），是只读工具，在标准、问答与计划模式可用：
 
-- `web_search` 需要 `[web_search] api_key`，未配置时从工具定义隐藏。查询支持 `site:host`、`-site:host`、`after:YYYY-MM-DD`、`before:YYYY-MM-DD`、引号短语与 `-term`；带时间过滤的查询零结果时自动去掉时间过滤重试一次。每条来源摘要按 240 字符截断。
 - `web_fetch` 只受 `[web_fetch] enabled` 控制，不需要密钥。优先协商 Markdown；HTML 会发现 Markdown alternate、尝试 `.md`，再用 htmd 提取 `main`／`article` 正文并去掉导航和表单。默认返回目录与短预览；`query` 返回带原文行号的相关章节，字段定义优先于响应示例，代码块不从中间切断，无命中明确说明。它不是完整字段清单生成器；完整盘点应按目录回读相关章节。失败项随成功结果返回，全部失败仍算成功。
 
 每页正文保存为独立的 `artifact://artifacts/web-<id>.md`，查询筛选与展示裁切不修改快照。相同 URL 在会话中复用快照（包括重启后），并发请求合并；再次索要全文或相同 query 只给引用，不重复回灌正文。URL fragment 不参与网络文档身份，最终地址也可复用快照。需要网站最新内容时传 `refresh=true` 创建新快照；旧 URI 仍指向旧正文。用 `read` 的 `offset`／`limit` 分页，或 `grep` 检索已有 artifact，不必重新 fetch 或把全文保存到 PTC state。
@@ -163,8 +162,6 @@ Explorer 沿用工具拒绝列表：禁用 `edit`、`write`、`spawn_agent`、`s
 `[web_fetch]` 默认 `timeout_secs=30`、`max_bytes=52428800`（50 MiB，单次响应）、`max_chars=500000`（现为单页预览字符上限，不再裁切正文）。一次调用最多 20 个 URL，并发 4 个，整批响应读取上限 100 MiB；所有页面共享 16 KiB 的展示字节预算。结果明确区分源响应不完整与仅省略预览：源响应超限时快照只有已取得的前缀，不能把它称作完整网页；展示省略不丢失快照内容。
 
 站点感知：GitHub issue/PR/README/blob、docs.rs rustdoc JSON、MDN `index.json`、arXiv Atom API、npm registry、PyPI JSON。站点 API 失败、限流或格式变化时回退通用 HTML 抓取；GitHub 匿名 API 限流 60 次/小时，环境中有 `GITHUB_TOKEN` 或 `GH_TOKEN` 时自动携带；docs.rs rustdoc JSON 缓存在会话 sidecar。只接受 `http(s)` 且拒绝含内嵌凭据的 URL，允许 localhost 与私网地址；不做 JS 渲染、PDF/Office 转换与 Stack Exchange。
-
-`[web_search]` 当前只有 Tavily 一个供应商：`api_key` 支持字面量、`env:变量名` 或 `!命令`（与供应商密钥同语法），`base_url` 留空使用官方 `https://api.tavily.com`，自定义代理直接按 `{base}/search` 拼接，`timeout_secs` 默认 30。鉴权失败、限流（429/432/433）与超时分别以 `E_WEB_AUTH`、`E_WEB_RATE_LIMIT`、`E_TIMEOUT` 返回，限流提示附带 `Retry-After`。
 
 ### 工具执行与编排（execute / PTC）
 
@@ -202,7 +199,7 @@ PTC Host 入口已编译进 `moc`，首次 `execute` 时将当前 `moc` 作为�
 
 `beforeToolCall` 对模型发起的原生和 `execute` 子调用生效，返回值可 `deny`（模型收到 `E_PLUGIN_DENIED`）或改写 `arguments`；改写发生在沙盒判定、bash 规则与授权之前，多个插件按加载顺序串联。`afterToolCall` 可改写结果正文与结构化内容，归档、落库、回灌模型与前端展示使用同一结果。插件内部回调不重入这些钩子。钩子自身抛错或超时按 fail-open 处理，不会阻断工具执行。
 
-插件提示词汇总进系统提示的 `plugins` 片段（`PIECE_PLUGINS`），按插件名排序拼接并受 `[plugins] max_prompt_chars` 限制；该片段每轮重建，不属于稳定前缀。`moc.tools.call()` 是插件获得文件/搜索能力的唯一通道，只放行 `read`、`grep`、`find`、`web_search`、`web_fetch`。
+插件提示词汇总进系统提示的 `plugins` 片段（`PIECE_PLUGINS`），按插件名排序拼接并受 `[plugins] max_prompt_chars` 限制；该片段每轮重建，不属于稳定前缀。`moc.tools.call()` 是插件获得文件/搜索能力的唯一通道，只放行 `read`、`grep`、`find`、`web_fetch`。
 
 调用是串行的（同一插件排队）；`load_timeout_ms` 约束模块求值与 `activate`，`call_timeout_ms` 到点会中断 JS 并把该插件在本进程内禁用（`/plugins` 与 `plugin/list` 显示原因）；插件等宿主工具超时只让本次调用失败。`run`/命令/钩子/`prompt`/`activate` 返回的 Promise 会被 QuickJS 任务队列驱动到落定，永远不落定的报 `E_PLUGIN_STATE`。内存上限是单个 Runtime 的 `memory_limit_bytes`。插件目录内容或配置变化后宿主在下一个提示/命令重建。QuickJS 崩溃会带走整个进程——插件不是沙盒，是「你信任的本地代码」。
 
@@ -263,7 +260,7 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - `full` 是 yolo：bash 不做文件系统/网络隔离，但危险命令拒绝规则始终生效。
 - `[tools.bash].allow_patterns` 已移除，旧配置中的该字段会触发未知字段错误；删除即可。非 full 命令不再有“批准后以 full 执行”的旁路。
 - 非 full 模式下一律先跑 OS 沙盒：`workspace` 以只读方式挂载宿主根，工作区、会话 scratch、`[sandbox].extra_write_paths` 可写，`$HOME` 在 Linux 上是会话级 copy-on-write 层；`workspace-only` 只挂载运行时只读系统路径、工作区、scratch 与合成 HOME，宿主 HOME 不存在。`[sandbox].network=false` 时 Linux 使用独立网络命名空间，macOS 拒绝网络。没有白名单旁路：命令失败后由模型带 `sandbox_permissions` + `justification` 申请更宽模式，用户可允许一次、本会话始终允许该命令/该前缀或拒绝；路径越界同理，可授权单次或本会话路径。授权只存在内存，切换模式或 `/permission clear` 即清空。`read` / `find` / `grep` 与 `write` / `edit` 共用同一套路径策略，执行阶段还会复校验一次。
-- `workspace` 仍可读宿主文件（除 `[sandbox].deny_read_paths`），不是保密边界；`workspace-only` 才隐藏宿主 HOME。MCP、`web_fetch`、`web_search` 与 PTC worker 在 core 进程执行，不受 OS 沙盒约束。
+- `workspace` 仍可读宿主文件（除 `[sandbox].deny_read_paths`），不是保密边界；`workspace-only` 才隐藏宿主 HOME。MCP、`web_fetch` 与 PTC worker 在 core 进程执行，不受 OS 沙盒约束。
 - ask/plan 保留工具执行限制，禁止普通 edit/write；bash 仍受当前会话 permission 控制。core 不再自动扫描工作区或向模型广播外部文件变化，也不会将其他会话的修改判为只读违规；需要最新内容时显式读取目标文件。
 - 已移除 `[workspace].watch` 配置、`workspace_changed` 协议事件和 `workspaceChanged` 插件钩子；旧配置需删除 `watch`，外部客户端与插件需移除对应事件订阅。`[workspace].max_scan_entries` 保留，仅控制 `find` 工具的扫描上限。
 - 计划模式进入、退出、批准均不修改模型，也不保存或恢复旧模型。`session/new` 的 `plan_active` 只决定模式。

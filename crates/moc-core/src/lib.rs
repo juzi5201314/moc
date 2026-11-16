@@ -31,7 +31,7 @@ pub mod skills;
 pub mod system_prompt;
 mod tips;
 pub mod tools;
-pub mod websearch;
+pub mod webfetch;
 pub mod workflow;
 pub use service::{Core, CoreServer};
 

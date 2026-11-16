@@ -104,7 +104,6 @@ export const zh = {
   "grp.read": "读取 {n} 个文件",
   "grp.grep": "搜索 {n} 次",
   "grp.find": "查找 {n} 次",
-  "grp.web_search": "网页搜索 {n} 次",
   "grp.web_fetch": "抓取 {n} 个页面",
   "grp.failed": "{n} 个失败",
   "grp.times": "{n} 次",
@@ -873,7 +872,6 @@ export const zh = {
   "sg.tools_todo": "任务清单",
   "sg.tools_write": "写入",
   "sg.web_fetch": "网页抓取",
-  "sg.web_search": "网页搜索",
   "sg.workspace": "工作区",
 
   // ---------- 供应商设置 ----------

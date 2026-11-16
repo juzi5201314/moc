@@ -252,7 +252,7 @@ def isolated_config(provider_id: str, model_id: str, provider: dict, selector: s
     selected["models"][model_id]["context_window"] = window
     return {"models": {"roles": {"default": selector}}, "providers": {provider_id: selected},
             "mcp": {"enabled": False}, "skills": {"enabled": False},
-            "context_files": {"enabled": False}, "web_search": {"enabled": False},
+            "context_files": {"enabled": False},
             "compaction": {"method": "moc", "auto": False, "auto_continue": False,
                            "threshold": {"mode": "tokens", "value": target}}}
 

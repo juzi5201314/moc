@@ -113,7 +113,7 @@ const NAV: { group: MsgKey; items: SectionMeta[] }[] = [
         label: "sd.tools",
         description: "sd.tools_desc",
         icon: <WrenchIcon />,
-        fields: byPath("tools", "web_search", "web_fetch"),
+        fields: byPath("tools", "web_fetch"),
       },
       {
         id: "sandbox",
