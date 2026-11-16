@@ -623,11 +623,13 @@ mod unix_tests {
             Some(Arc::new(SandboxScratch::new().expect("scratch"))),
         );
         let log = test_log(directory.path().join("denied-read.log")).await;
-        // 不用 `test -e`：macOS 上部分 shell（zsh）的存在性检查走 access(F_OK)，
-        // Seatbelt 不把它映射到 file 操作，拦不住；ls/cat 走 readdir/read-data，稳定被拒。
+        // 两平台拒读形态不同：Linux 把被拒目录遮蔽成空视图（ls 成功但无输出，
+        // 文件被空占位遮蔽），macOS Seatbelt 直接拒（ls/cat 失败）。两者
+        // stdout 均为空，因此断言「无输出」而非「非零退出」才跨平台一致。
+        // 也不用 `test -e`：zsh 的存在性检查走 access(F_OK)，Seatbelt 拦不住。
         let process = Process::spawn(
             bash_args(&format!(
-                "! ls {} 2>/dev/null && ! cat {}/secret 2>/dev/null",
+                "test -z \"$(ls {} 2>/dev/null)\" && test -z \"$(cat {}/secret 2>/dev/null)\"",
                 denied.display(),
                 denied.display()
             )),
