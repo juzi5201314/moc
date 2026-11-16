@@ -336,6 +336,7 @@ async fn error_body_and_metadata_are_preserved() {
 
 #[tokio::test]
 async fn gateway_status_display_preserves_metadata_and_raw_response() {
+    rust_i18n::set_locale("zh");
     for (status, title) in [
         (407, "代理认证失败"),
         (431, "请求头过大"),
