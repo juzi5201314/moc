@@ -13,7 +13,7 @@ pub fn init(language: &str) {
     rust_i18n::set_locale(resolve(language));
 }
 
-fn resolve(language: &str) -> &'static str {
+pub(crate) fn resolve(language: &str) -> &'static str {
     match language {
         "zh" => "zh",
         "en" => "en",

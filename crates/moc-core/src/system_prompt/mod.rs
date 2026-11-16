@@ -35,6 +35,10 @@ use crate::config::model::ResolvedModel;
 const DEFAULT_INTRO: &str = "You are a precise software-engineering agent working in the user's local workspace through tools.";
 /// 全局渲染契约独立于身份；主会话与旁路问答共用，自定义身份不覆盖它。
 const VISUAL_GUIDE: &str = "Use inline ```mermaid for flows/sequences/states/dependencies; ```svg for layouts/mockups/geometry Mermaid cannot express. Don't repeat diagrams in prose.\nSVG: colors only currentColor or var(--NAME), NAME=fg/muted/border/surface/accent/success/warning/error; no background/scripts/animation/foreignObject/external hrefs.";
+/// 模型写给用户看的文本的语言要求；语言名按 `language` 配置解析后拼接。
+const USER_TEXT_RULE_PREFIX: &str = "Write text the user reads in";
+const USER_TEXT_RULE_SCOPE: &str =
+    "tool-call descriptions, plan and todo items, ask options, artifact titles and descriptions, log lines.";
 // 跨工具纪律只写在这里；单个工具的用法写在各自的 description，这里不重复。
 const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored changes, write for new or complete files, and bash only when a shell is required.";
 const TOOL_POLICY_BUILTIN: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files.";
@@ -184,7 +188,7 @@ pub fn pieces(
 ) -> Vec<PromptPiece> {
     let mut sections = Vec::new();
     sections.push(intro_piece(config));
-    sections.push(output_format_piece());
+    sections.push(output_format_piece(config));
     let prefer_builtin = config.tools.bash.prefer_builtin;
     let mut tool_policy = String::with_capacity(
         TOOL_POLICY.len()
@@ -287,7 +291,7 @@ pub(crate) fn build_btw(
     cwd: &Path,
     context_files: &[context_files::ContextFile],
 ) -> SystemPrompt {
-    let mut pieces = vec![intro_piece(config), output_format_piece()];
+    let mut pieces = vec![intro_piece(config), output_format_piece(config)];
     pieces.extend(repo_rules_piece(context_files));
     pieces.push(environment_piece(config, model, cwd));
     pieces.extend(append_piece(config));
@@ -314,12 +318,18 @@ fn intro_piece(config: &ResolvedConfig) -> PromptPiece {
     }
 }
 
-fn output_format_piece() -> PromptPiece {
+fn output_format_piece(config: &ResolvedConfig) -> PromptPiece {
+    let language = match crate::i18n::resolve(&config.language) {
+        "zh" => "Chinese",
+        _ => "English",
+    };
     PromptPiece {
         title: "system",
         name: PIECE_OUTPUT_FORMAT,
         scope: PieceScope::Static,
-        text: VISUAL_GUIDE.to_owned(),
+        text: format!(
+            "{VISUAL_GUIDE}\n{USER_TEXT_RULE_PREFIX} {language}: {USER_TEXT_RULE_SCOPE}"
+        ),
     }
 }
 
@@ -630,6 +640,35 @@ mod tests {
                 .iter()
                 .all(|block| !block.contains(&cwd.display().to_string()))
         );
+    }
+
+    #[test]
+    fn user_text_language_follows_language_config() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        fs::create_dir_all(&cwd).expect("create repo");
+        for (language, expected) in [("zh", "in Chinese:"), ("en", "in English:")] {
+            let mut config = resolved(&cwd, &home);
+            config.language = language.to_owned();
+            let model = config.resolve_model("p/model").expect("resolve model");
+            let prompt = build(
+                &config,
+                &model,
+                &cwd,
+                &[],
+                &crate::skills::SkillIndex::empty(),
+                "",
+                "",
+                "",
+                None,
+            );
+            let text = prompt_text(&prompt);
+            assert!(
+                text.contains(expected),
+                "language={language} 的提示词应含 {expected:?}：{text}"
+            );
+        }
     }
 
     #[test]
