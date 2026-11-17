@@ -1,6 +1,72 @@
 use super::*;
 
 #[tokio::test]
+async fn next_request_retry_follows_committed_text_and_tool_execution() {
+    let upstream = MockServer::builder().start().await;
+    let extra = format!(
+        "[providers.retried]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\nretry={{max_attempts=3,initial_backoff_secs=0.001,jitter=false}}\n[providers.retried.models.model]\ncontext_window=100000\n[compaction]\nenabled=false\n",
+        upstream.uri()
+    );
+    let h = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "retried/model:off",
+        "retried/model:off",
+        &extra,
+    )
+    .await;
+    let file = h.root.path().join("work/test.txt");
+    std::fs::write(&file, "文件内容").unwrap();
+    let first = format!(
+        "data: {}\n\n{}",
+        serde_json::json!({"choices":[{"index":0,"delta":{"content":"先检查文件"},"finish_reason":null}]}),
+        support::tool_stream(vec![("read", "read", serde_json::json!({"path":file}))])
+    );
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(first, "text/event-stream"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(503)
+                .set_body_json(serde_json::json!({"error":{"message":"connection unavailable"}})),
+        )
+        .mount(&upstream)
+        .await;
+    let id = h.session(SessionEngine::Standard).await;
+    assert!(
+        h.client
+            .call::<SessionPrompt>(PromptParams {
+                session_id: id,
+                input: vec![InputPart::Text {
+                    text: "检查文件".into()
+                }],
+                mode: None,
+                agent_message: None,
+                goal_round: None
+            })
+            .await
+            .is_err()
+    );
+    let events = h.updates.lock().clone();
+    let text = events.iter().position(|event| matches!(event, SessionUpdate::AssistantDelta { delta: moc_protocol::AssistantDelta::Text { delta }, .. } if delta == "先检查文件")).unwrap();
+    let tool = events
+        .iter()
+        .position(|event| matches!(event, SessionUpdate::ToolStarted { .. }))
+        .unwrap();
+    let retry = events
+        .iter()
+        .position(|event| matches!(event, SessionUpdate::GenerationRetry { .. }))
+        .unwrap();
+    assert!(text < tool && tool < retry);
+    assert!(events.iter().any(|event| matches!(event, SessionUpdate::PromptFinished { message, finish_reason: moc_protocol::FinishReason::Other(reason), .. } if message.text().is_empty() && reason == "error")));
+    assert_eq!(upstream.received_requests().await.unwrap().len(), 4);
+    h.close().await;
+}
+
+#[tokio::test]
 async fn connection_retry_is_visible_during_backoff_and_can_be_cancelled() {
     use moc_protocol::methods::{SessionCancel, SessionCancelParams};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

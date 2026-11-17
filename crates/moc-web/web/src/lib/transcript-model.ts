@@ -144,6 +144,7 @@ export type LiveTurn = {
   textIndex?: number;
   /** 当前 generation 创建的块；重试回退时只清理这一段。 */
   generationBlockIds: string[];
+  generationCommitted?: boolean;
   usage?: Usage;
   /** tool_call_id → batch_id，来自 tool_batch_started。 */
   batchOf: Record<string, string>;
@@ -649,6 +650,7 @@ function reconcileGenerationText(
   kind: "text" | "reasoning",
   text: string,
 ): boolean {
+  if (!text && view.live?.generationCommitted) return true;
   const ids = new Set(view.live?.generationBlockIds ?? []);
   const blocks = view.blocks.filter(
     (block): block is Extract<Block, { kind: "text" | "reasoning" }> =>
@@ -705,12 +707,13 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       live.reasoningId = undefined;
       live.textId = undefined;
       live.generationBlockIds = [];
+      live.generationCommitted = false;
       break;
     }
     case "generation_retry": {
       resolveToolPreviews(view);
       const live = ensureLive(view, update.prompt_id, now);
-      const ids = new Set(live.generationBlockIds);
+      const ids = new Set(live.generationCommitted ? [] : live.generationBlockIds);
       // 仅撤销未提交的文本与思考，不删除独立落盘的工具、代理消息或历史内容。
       view.blocks = view.blocks.filter(
         (block) => !ids.has(block.id) || (block.kind !== "text" && block.kind !== "reasoning"),
@@ -721,6 +724,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       live.reasoningIndex = undefined;
       live.usage = undefined;
       live.generationBlockIds = [];
+      live.generationCommitted = false;
       const notice = view.blocks.find(
         (block) => block.kind === "status" && block.retryWait?.promptId === update.prompt_id,
       );
@@ -811,6 +815,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
     }
     case "tool_started": {
       closeReasoning(view, now);
+      if (view.live) view.live.generationCommitted = true;
       const existing = findTool(view.blocks, update.tool_call_id);
       if (existing) {
         existing.name = update.name;

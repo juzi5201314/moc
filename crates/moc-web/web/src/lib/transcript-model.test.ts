@@ -317,6 +317,70 @@ describe("entriesToBlocks", () => {
 });
 
 describe("applyUpdate", () => {
+  it("工具执行已提交的正文与思考在下一次连接重试及空失败收尾后保留", () => {
+    const cases: [boolean, string][] = [
+      [false, ""],
+      [true, ""],
+      [false, "先检查文件"],
+    ];
+    for (const [retry, finalText] of cases) {
+      const view = createView(INFO);
+      applyUpdate(view, { type: "prompt_started", prompt_id: "p", model: "m", at_ms: 0 });
+      applyUpdate(view, { type: "generation_started", prompt_id: "p" });
+      applyUpdate(view, {
+        type: "assistant_delta",
+        prompt_id: "p",
+        delta: { type: "reasoning", delta: "已完成分析" },
+      });
+      applyUpdate(view, {
+        type: "assistant_delta",
+        prompt_id: "p",
+        delta: { type: "text", delta: "先检查文件" },
+      });
+      applyUpdate(view, {
+        type: "tool_started",
+        prompt_id: "p",
+        tool_call_id: "read",
+        name: "read",
+        arguments: '{"path":"test.txt"}',
+      });
+      applyUpdate(view, {
+        type: "tool_finished",
+        prompt_id: "p",
+        tool_call_id: "read",
+        name: "read",
+        arguments: '{"path":"test.txt"}',
+        status: "completed",
+        result: { tool_call_id: "read", content: "文件内容", is_error: false },
+      });
+      const contents = () =>
+        view.blocks.flatMap((block) =>
+          block.kind === "text" || block.kind === "reasoning" ? [block.text] : [],
+        );
+      if (retry) {
+        for (let attempt = 2; attempt <= 3; attempt++) {
+          applyUpdate(view, {
+            type: "generation_retry",
+            prompt_id: "p",
+            message: `连接失败 ${attempt}/3`,
+            retry_in_ms: 1000,
+          });
+          expect(contents()).toEqual(["已完成分析", "先检查文件"]);
+        }
+      }
+      applyUpdate(view, {
+        type: "prompt_finished",
+        prompt_id: "p",
+        message: { role: "Assistant", content: finalText ? [{ Text: finalText }] : [] },
+        finish_reason: finalText ? "ToolCalls" : { Other: "error" },
+        usage: { input_tokens: 0, output_tokens: 0 },
+      });
+      expect(contents()).toEqual(["已完成分析", "先检查文件"]);
+      expect(view.blocks.find((block) => block.kind === "tool")).toMatchObject({
+        status: "completed",
+      });
+    }
+  });
   it("加载更早历史后增量仍追加到原活动块", () => {
     const view = createView(INFO);
     const delta = (text: string): SessionUpdate => ({

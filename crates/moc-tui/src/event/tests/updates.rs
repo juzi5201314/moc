@@ -1,6 +1,75 @@
 use super::*;
 
 #[test]
+fn next_request_connection_retry_preserves_committed_text_and_thinking() {
+    use crate::transcript::Block;
+    use moc_protocol::methods::AssistantDelta;
+    let mut app = app_with_completion();
+    app.prompt_running = true;
+    apply_update(
+        &mut app,
+        SessionUpdate::GenerationStarted {
+            prompt_id: "p".into(),
+        },
+    );
+    for delta in [
+        AssistantDelta::Reasoning {
+            delta: "已完成分析".into(),
+        },
+        AssistantDelta::Text {
+            delta: "先检查文件".into(),
+        },
+    ] {
+        apply_update(
+            &mut app,
+            SessionUpdate::AssistantDelta {
+                prompt_id: "p".into(),
+                delta,
+            },
+        );
+    }
+    apply_update(
+        &mut app,
+        SessionUpdate::ToolStarted {
+            prompt_id: "p".into(),
+            tool_call_id: "read".into(),
+            parent_tool_call_id: None,
+            name: "read".into(),
+            arguments: "{}".into(),
+        },
+    );
+    for attempt in 2..=3 {
+        apply_update(
+            &mut app,
+            SessionUpdate::GenerationRetry {
+                prompt_id: "p".into(),
+                message: format!("连接失败 {attempt}/3"),
+                retry_in_ms: 1000,
+            },
+        );
+    }
+    apply_update(
+        &mut app,
+        SessionUpdate::PromptFinished {
+            prompt_id: "p".into(),
+            message: moc_protocol::Message::default(),
+            finish_reason: moc_protocol::FinishReason::Other("error".into()),
+            usage: moc_protocol::Usage::default(),
+        },
+    );
+    assert!(
+        app.blocks
+            .iter()
+            .any(|entry| matches!(&entry.block, Block::Assistant { text } if text == "先检查文件"))
+    );
+    assert!(
+        app.blocks.iter().any(
+            |entry| matches!(&entry.block, Block::Thinking { text, .. } if text == "已完成分析")
+        )
+    );
+}
+
+#[test]
 fn tool_preview_promotes_in_place_and_cleans_only_unstarted_calls() {
     use crate::transcript::{Block, DetailLevel};
     use moc_protocol::{ToolPreviewContent, ToolPreviewResolution};
