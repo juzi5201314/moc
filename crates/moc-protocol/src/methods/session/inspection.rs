@@ -1,4 +1,4 @@
-//! 用户侧只读便签；正文由 core 生成，各前端直接展示，不加入模型历史。
+//! 用户侧会话信息与 Markdown 导出；正文由 core 生成，不加入模型历史。
 
 use crate::method::{ClientRequest, Method};
 use schemars::JsonSchema;
@@ -39,3 +39,31 @@ impl Method for SessionInspect {
     crate::method::json_codec!();
 }
 impl ClientRequest for SessionInspect {}
+
+/// `/export`：将会话历史脱敏后导出为 Markdown 文件。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionExport;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionExportParams {
+    pub session_id: String,
+    /// 绝对路径或相对于会话工作区的路径；省略时自动命名，已有文件不覆盖。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionExportResult {
+    pub path: String,
+    pub content: String,
+}
+
+impl Method for SessionExport {
+    const NAME: &'static str = "session/export";
+    type Params = SessionExportParams;
+    type Result = SessionExportResult;
+    crate::method::json_codec!();
+}
+impl ClientRequest for SessionExport {}

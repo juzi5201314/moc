@@ -237,7 +237,8 @@ pub struct SessionUsage;
 
 mod inspection;
 pub use inspection::{
-    SessionDebugInfo, SessionDebugInfoParams, SessionInspect, SessionInspectParams,
+    SessionDebugInfo, SessionDebugInfoParams, SessionExport, SessionExportParams,
+    SessionExportResult, SessionInspect, SessionInspectParams,
 };
 
 mod context;

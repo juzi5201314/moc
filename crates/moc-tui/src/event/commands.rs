@@ -206,6 +206,24 @@ pub(super) fn dispatch_command(
             _ => app.set_notice(t!("tui.cmd.plugins_usage")),
         },
         CommandId::Usage => refresh_usage(app, connection, true),
+        CommandId::Export => {
+            let Some(session_id) = session_id else {
+                return;
+            };
+            let path = (!rest.trim().is_empty()).then(|| rest.trim().to_owned());
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            tokio::spawn(async move {
+                let result = client
+                    .call::<moc_protocol::SessionExport>(moc_protocol::SessionExportParams {
+                        session_id: session_id.clone(),
+                        path,
+                    })
+                    .await
+                    .map(|result| t!("tui.cmd.exported", path = result.path).into_owned());
+                let _ = events.send(AppEvent::CommandNote { session_id, result });
+            });
+        }
         CommandId::DebugInfo | CommandId::Session => {
             let name = if id == CommandId::DebugInfo {
                 "debuginfo"

@@ -160,6 +160,7 @@ fn register_all(
     client::<SessionUnlock>(generator, client_map);
     client::<SessionUsage>(generator, client_map);
     client::<SessionDebugInfo>(generator, client_map);
+    client::<SessionExport>(generator, client_map);
     client::<SessionInspect>(generator, client_map);
     client::<SessionContext>(generator, client_map);
     client::<SessionContextRead>(generator, client_map);

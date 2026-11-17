@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 6ff49ad9bb7884a7
+// schema sha256: 780a4cb69a2299f2
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -3543,6 +3543,25 @@ export interface SessionDeleteParams {
    * 目标会话。
    */
   session_id: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SessionExportParams".
+ */
+export interface SessionExportParams {
+  /**
+   * 绝对路径或相对于会话工作区的路径；省略时自动命名，已有文件不覆盖。
+   */
+  path?: string | null;
+  session_id: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "SessionExportResult".
+ */
+export interface SessionExportResult {
+  content: string;
+  path: string;
 }
 /**
  * `session/goal` 的参数。

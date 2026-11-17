@@ -85,6 +85,9 @@ desc = { zh = "工具调用统计、成功率与上下文压缩次数", en = "To
 [cli.commands.session]
 desc = { zh = "当前会话身份、文件路径与分类存储大小", en = "Current session identity, file path and per-kind storage sizes" }
 
+[cli.commands.export]
+desc = { zh = "将会话历史脱敏导出为 Markdown", en = "Export redacted session history as Markdown" }
+
 [cli.commands.new]
 desc = { zh = "创建新会话", en = "Create a new session" }
 
@@ -158,6 +161,7 @@ on = { zh = "开启", en = "on" }
 off = { zh = "关闭", en = "off" }
 
 [cli.cmd]
+exported = { zh = "会话已导出至 %{path}", en = "Session exported to %{path}" }
 flag_disabled = { zh = "/%{name} 依赖的特性 %{flag} 已禁用（见 /features）", en = "/%{name} requires feature %{flag}, which is disabled (see /features)" }
 cancelled = { zh = "提示取消请求已发送", en = "Prompt cancellation sent" }
 no_prompt_running = { zh = "当前没有进行中的提示", en = "No prompt is running" }

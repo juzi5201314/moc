@@ -2,6 +2,7 @@ _version = 2
 
 [web.commands]
 debuginfo.desc = { zh = "工具调用统计、成功率与上下文压缩次数", en = "Tool-call stats, success rate and context-compaction counts" }
+export.desc = { zh = "将会话历史脱敏导出为 Markdown", en = "Export redacted session history as Markdown" }
 session.desc = { zh = "当前会话身份、文件路径与分类存储大小", en = "Current session identity, file path and per-category storage size" }
 new.desc = { zh = "新建会话", en = "Start a new session" }
 resume.desc = { zh = "搜索并切换到历史会话", en = "Search and switch to a previous session" }

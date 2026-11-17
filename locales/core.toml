@@ -1358,6 +1358,20 @@ plugins = { zh = "插件状态", en = "Plugin state" }
 history = { zh = "历史临时缓存", en = "History temp cache" }
 urlfs = { zh = "URI 映射缓存", en = "URI mapping cache" }
 
+[core.export]
+path_empty = { zh = "导出路径不能为空", en = "Export path must not be empty" }
+failed = { zh = "会话导出失败：%{error}", en = "Session export failed: %{error}" }
+model = { zh = "模型", en = "Model" }
+session = { zh = "会话", en = "Session" }
+created = { zh = "创建时间（Unix 毫秒）", en = "Created (Unix milliseconds)" }
+empty = { zh = "暂无对话历史", en = "No conversation history yet" }
+user = { zh = "用户", en = "User" }
+assistant = { zh = "助手", en = "Assistant" }
+image = { zh = "[图片附件未导出]", en = "[Image attachment omitted]" }
+arguments = { zh = "参数", en = "Arguments" }
+output = { zh = "输出", en = "Output" }
+truncated = { zh = "[内容已截断]", en = "[Content truncated]" }
+
 [core.debug]
 title = { zh = "工具使用统计\n", en = "Tool usage statistics\n" }
 total = { zh = "总计", en = "total" }

@@ -1,6 +1,37 @@
 use super::*;
 
 #[tokio::test]
+async fn export_command_writes_markdown_and_reports_existing_path_without_overwrite() {
+    let (_core, connection, mut app, mut receiver, root) = app_with_core().await;
+    for (command, success) in [
+        ("/export 会话.md", true),
+        ("/export 会话.md", false),
+        ("/export", true),
+    ] {
+        execute_command(&mut app, &connection, command.into());
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(event @ AppEvent::CommandNote { .. }) = receiver.recv().await {
+                    break event;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let AppEvent::CommandNote { result, .. } = event else {
+            unreachable!()
+        };
+        assert_eq!(result.is_ok(), success);
+        if let Ok(note) = result {
+            assert!(note.contains(root.path().to_str().unwrap()));
+        }
+    }
+    let content = std::fs::read_to_string(root.path().join("会话.md")).unwrap();
+    assert!(content.contains("test/model"));
+    assert!(content.contains("暂无对话历史"));
+}
+
+#[tokio::test]
 async fn compact_empty_session_settles_with_friendly_notice_without_model_calls() {
     let mut h = SlowCompactionHarness::new().await;
     let session = h
