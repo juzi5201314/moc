@@ -55,6 +55,24 @@ it("/export 共用 RPC，下载返回正文并显示路径，失败时不下载"
       expect(document.querySelector("a[download]")).toBeNull();
       vi.mocked(toast.success).mockClear();
     }
+    for (const locale of ["zh", "en"] as const) {
+      useI18n.setState({ locale });
+      call.mockResolvedValueOnce({
+        path: "/workspace/large.md",
+        ...(locale === "en" ? { content: null } : {}),
+      });
+      runSlash("session", "/export", commands);
+      await vi.waitFor(() =>
+        expect(toast.success).toHaveBeenCalledWith(
+          locale === "zh"
+            ? "会话已导出至 /workspace/large.md；内容较大，请从该路径获取文件"
+            : "Session exported to /workspace/large.md; too large to download here. Retrieve the file from that path.",
+        ),
+      );
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(downloads).toHaveLength(2);
+      vi.mocked(toast.success).mockClear();
+    }
     call.mockRejectedValueOnce(new Error("File exists"));
     runSlash("session", "/export reports/会话.md", commands);
     await vi.waitFor(() =>

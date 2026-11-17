@@ -188,6 +188,10 @@ export function runSlash(
           ...(args ? { path: args } : {}),
         })
         .then((result) => {
+          if (result.content == null) {
+            toast.success(t("slash.export_saved", { path: result.path }));
+            return;
+          }
           const url = URL.createObjectURL(
             new Blob([result.content], { type: "text/markdown;charset=utf-8" }),
           );

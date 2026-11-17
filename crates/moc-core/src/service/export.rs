@@ -7,6 +7,8 @@ use moc_protocol::{RpcError, SessionExportParams, SessionExportResult};
 use rust_i18n::t;
 use std::{collections::HashMap, fmt::Write as _, io::Write as _, path::Path};
 
+const MAX_DOWNLOAD_BYTES: usize = 8 * 1024 * 1024;
+
 pub(super) async fn run(
     inner: &CoreInner,
     params: SessionExportParams,
@@ -56,7 +58,7 @@ pub(super) async fn run(
         };
         Ok(SessionExportResult {
             path: path.to_string_lossy().into_owned(),
-            content,
+            content: download_content(content),
         })
     })
     .await
@@ -66,6 +68,21 @@ pub(super) async fn run(
             t!("core.export.failed", error = error.to_string()).into_owned(),
         ))
     })
+}
+
+fn download_content(content: String) -> Option<String> {
+    let mut encoded_bytes = 2;
+    for byte in content.bytes() {
+        encoded_bytes += match byte {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
+            0..=31 => 6,
+            _ => 1,
+        };
+        if encoded_bytes > MAX_DOWNLOAD_BYTES {
+            return None;
+        }
+    }
+    Some(content)
 }
 
 fn write_new(path: &Path, content: &str) -> std::io::Result<()> {
@@ -278,6 +295,90 @@ fn redact(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_budget_counts_json_escaping_and_preserves_empty_content() {
+        assert_eq!(download_content(String::new()), Some(String::new()));
+        assert!(download_content("x".repeat(MAX_DOWNLOAD_BYTES - 2)).is_some());
+        assert!(download_content("x".repeat(MAX_DOWNLOAD_BYTES - 1)).is_none());
+        for text in [
+            "\"", "\\", "\n", "\r", "\t", "\u{8}", "\u{c}", "\u{1}", "中",
+        ] {
+            let text = text.repeat(MAX_DOWNLOAD_BYTES / 4);
+            let fits = serde_json::to_vec(&text).unwrap().len() <= MAX_DOWNLOAD_BYTES;
+            assert_eq!(download_content(text).is_some(), fits);
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_export_writes_complete_file_without_returning_oversized_frame() {
+        use crate::{CoreConfig, service::Core};
+        use moc_llm::Message;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("config.toml"), "language='zh'\n[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[context_files]\nenabled=false\n[skills]\nenabled=false\n").unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            user_home: Some(root.path().join("userhome")),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+            ptc_worker: None,
+        })
+        .unwrap();
+        let info = core
+            .inner
+            .sessions
+            .create(
+                root.path(),
+                "test/model",
+                Default::default(),
+                Default::default(),
+                None,
+                Default::default(),
+                false,
+            )
+            .await
+            .unwrap();
+        for _ in 0..6 {
+            core.inner
+                .sessions
+                .append_message(
+                    &info.id,
+                    Message::user_text("\u{1}".repeat(1024 * 1024)),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let result = run(
+            &core.inner,
+            SessionExportParams {
+                session_id: info.id,
+                path: Some("large.md".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(result.content.is_none());
+        let body = std::fs::read_to_string(&result.path).unwrap();
+        assert_eq!(
+            body.bytes().filter(|byte| *byte == 1).count(),
+            6 * 1024 * 1024
+        );
+        assert!(serde_json::to_vec(&body).unwrap().len() > moc_protocol::DEFAULT_MAX_FRAME_BYTES);
+        let response = serde_json::to_vec(&result).unwrap();
+        assert!(response.len() < 1024);
+        assert!(
+            !serde_json::from_slice::<serde_json::Value>(&response)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("content")
+        );
+        core.shutdown().await;
+    }
 
     fn empty_state() -> SessionState {
         SessionState::new(crate::session::entries::Entry::header(

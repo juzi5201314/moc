@@ -4632,15 +4632,18 @@
       "additionalProperties": false,
       "properties": {
         "content": {
-          "type": "string"
+          "description": "正文的 JSON 编码超过 8 MiB 时省略，文件仍完整保存。",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "path": {
           "type": "string"
         }
       },
       "required": [
-        "path",
-        "content"
+        "path"
       ],
       "type": "object"
     },

@@ -235,6 +235,8 @@ export const en: Record<MsgKey, string> = {
   "slash.usage": "Usage: {usage}",
   "slash.exec_failed": "Command failed: {error}",
   "slash.exported": "Session exported to {path}; downloading Markdown",
+  "slash.export_saved":
+    "Session exported to {path}; too large to download here. Retrieve the file from that path.",
   "slash.running": "Session is generating; stop it first",
   "slash.needs_session": "This command needs an existing session",
   "slash.done": "Done",

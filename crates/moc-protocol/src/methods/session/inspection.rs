@@ -57,7 +57,9 @@ pub struct SessionExportParams {
 #[serde(deny_unknown_fields)]
 pub struct SessionExportResult {
     pub path: String,
-    pub content: String,
+    /// 正文的 JSON 编码超过 8 MiB 时省略，文件仍完整保存。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 impl Method for SessionExport {
@@ -67,3 +69,26 @@ impl Method for SessionExport {
     crate::method::json_codec!();
 }
 impl ClientRequest for SessionExport {}
+
+#[cfg(test)]
+mod tests {
+    use super::SessionExportResult;
+
+    #[test]
+    fn export_content_is_optional_but_empty_content_is_preserved() {
+        let result: SessionExportResult = serde_json::from_str(r#"{"path":"export.md"}"#).unwrap();
+        assert!(result.content.is_none());
+        assert_eq!(
+            serde_json::to_value(&result).unwrap(),
+            serde_json::json!({"path":"export.md"})
+        );
+        let result: SessionExportResult =
+            serde_json::from_str(r#"{"path":"export.md","content":""}"#).unwrap();
+        assert_eq!(result.content.as_deref(), Some(""));
+        assert_eq!(serde_json::to_value(&result).unwrap()["content"], "");
+        assert!(
+            serde_json::from_str::<SessionExportResult>(r#"{"path":"export.md","content":123}"#)
+                .is_err()
+        );
+    }
+}
