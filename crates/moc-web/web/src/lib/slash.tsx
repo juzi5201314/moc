@@ -25,6 +25,7 @@ import {
   compactSession,
   compactSkills,
   createQuickSession,
+  refreshSideData,
   setSessionAutonomy,
   setSessionPermission,
   togglePlanMode,
@@ -92,12 +93,16 @@ export function slashMatches(
 ): SlashCommand[] {
   if (!/^\/[\w-]*$/.test(text)) return [];
   const query = text.slice(1).toLowerCase();
-  return commands.filter(
-    (command) =>
-      !flagDisabled(command, features) &&
-      (command.name.toLowerCase().startsWith(query) ||
-        command.aliases?.some((alias) => alias.toLowerCase().startsWith(query))),
-  );
+  return commands
+    .filter(
+      (command) =>
+        !flagDisabled(command, features) &&
+        (command.name.toLowerCase().startsWith(query) ||
+          command.aliases?.some((alias) => alias.toLowerCase().startsWith(query))),
+    )
+    .sort(
+      (a, b) => Number(b.name.toLowerCase() === query) - Number(a.name.toLowerCase() === query),
+    );
 }
 
 function errorText(error: unknown): string {
@@ -133,7 +138,11 @@ export function runSlash(
     return true;
   }
   if (command.needsSession && sessionId === "draft-session") {
-    toast(t("slash.needs_session", { name: command.name }));
+    toast(
+      !command.plugin && command.name === "compact"
+        ? t("slash.compact_empty")
+        : t("slash.needs_session", { name: command.name }),
+    );
     return true;
   }
   if (command.availableDuringTask === false && view?.running) {
@@ -324,14 +333,18 @@ export function runSlash(
       break;
     case "compact":
       void compactSession(sessionId)
-        .then((result) =>
+        .then((result) => {
+          if (result.method === "noop") {
+            toast(t("slash.compact_empty"));
+            return;
+          }
           toast.success(
             t("slash.compacted", {
               before: result.tokens_before.toLocaleString(),
               after: result.tokens_after.toLocaleString(),
             }),
-          ),
-        )
+          );
+        })
         .catch((error) => toast.error(t("slash.compact_failed", { error: errorText(error) })));
       break;
     case "model":
@@ -437,7 +450,10 @@ export function runSlash(
           .call("plugin/reload", {
             session_id: sessionId === "draft-session" ? "" : sessionId,
           })
-          .then(() => toast.success(t("slash.plugins_reloaded")))
+          .then(() => {
+            if (sessionId !== "draft-session") void refreshSideData(sessionId);
+            toast.success(t("slash.plugins_reloaded"));
+          })
           .catch((error) => toast.error(t("slash.plugins_failed", { error: errorText(error) })));
       } else if (rest === "") {
         openSettings("plugins");

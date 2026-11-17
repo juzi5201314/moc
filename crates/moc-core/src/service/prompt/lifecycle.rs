@@ -213,7 +213,19 @@ pub(crate) async fn run_prompt_with_lock(
             .await
             .map_err(protocol_to_rpc)
             .err(),
-        Err(_) => None,
+        Err(_) => update
+            .emit(
+                session_id.clone(),
+                SessionUpdate::PromptFinished {
+                    prompt_id: crate::ids::prompt_id(record.state.lock().await.prompt_sequence),
+                    message: Message::default(),
+                    finish_reason: FinishReason::Other("error".into()),
+                    usage: Usage::default(),
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)
+            .err(),
     };
     inner
         .runtime(&session_id)

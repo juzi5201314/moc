@@ -405,6 +405,7 @@ impl App {
             .blocks
             .iter_mut()
             .rev()
+            .take_while(|entry| !matches!(entry.block, Block::User { .. }))
             .find(|entry| matches!(entry.block, Block::Assistant { .. }))
         {
             entry.stamp_prompt(crate::transcript::now_ms(), elapsed_ms);

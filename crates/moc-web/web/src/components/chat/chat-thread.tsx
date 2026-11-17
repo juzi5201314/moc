@@ -282,8 +282,8 @@ function TranscriptRows({
             key={item.key}
             data-index={item.index}
             ref={virtualizer.measureElement}
-            className="absolute top-0 left-0 w-full"
-            style={{ transform: `translateY(${item.start}px)` }}
+            className="absolute left-0 w-full"
+            style={{ top: item.start }}
           >
             {renderRow(rows[item.index])}
           </div>
@@ -498,6 +498,7 @@ function AssistantTurn({
   const now = useNow(live);
   const [processOpen, setProcessOpen] = useState(false);
   const segments = turn.segments;
+  const userShell = turn.activity[0]?.kind === "bash" && !turn.user;
   let finalIndex = -1;
   for (let index = segments.length - 1; index >= 0; index--) {
     if (segments[index].kind === "text") {
@@ -508,7 +509,9 @@ function AssistantTurn({
   }
   const processCount = segments.filter(
     (segment, index) =>
-      index !== finalIndex && (segment.kind === "activity" || segment.kind === "text"),
+      !userShell &&
+      index !== finalIndex &&
+      (segment.kind === "activity" || segment.kind === "text"),
   ).length;
   const durationMs = turnDurationMs(turn);
   // 两个空文本块拼接后也有分隔换行，保持原复制入口的显示条件。
@@ -528,7 +531,9 @@ function AssistantTurn({
   const commandOnly =
     turn.texts.length === 0 &&
     turn.activity.length > 0 &&
-    turn.activity.every((block) => block.kind === "status" && block.localCommand);
+    turn.activity.every(
+      (block) => block.kind === "bash" || (block.kind === "status" && block.localCommand),
+    );
   const canRetry = abnormal && !commandOnly && !context.readOnly && !context.running;
 
   const renderSegment = (segment: Segment, index: number): ReactNode => {
@@ -587,7 +592,7 @@ function AssistantTurn({
                 />
                 <span>
                   {durationMs !== undefined
-                    ? t("th.duration", { d: formatDuration(durationMs) })
+                    ? t("th.duration", { n: formatDuration(durationMs) })
                     : t("th.process")}
                 </span>
                 <span className="text-text-tertiary/60">·</span>
@@ -697,6 +702,16 @@ function NoticeCard({
   onRetry?: () => void;
 }) {
   const t = useT();
+  const now = useNow(Boolean(block.retryWait));
+  let text = block.text;
+  if (block.retryWait) {
+    const { deadline, startedAt } = block.retryWait;
+    const seconds = (Math.max(0, deadline - Math.max(now, startedAt)) / 1000).toFixed(1);
+    const duration = /\d+(?:\.\d+)?(?= 秒后自动重试|s \(attempt )/;
+    text = duration.test(text)
+      ? text.replace(duration, seconds)
+      : `${text}\n${t("th.retry_in", { n: seconds })}`;
+  }
   if (block.localCommand) {
     return (
       <div
@@ -706,7 +721,7 @@ function NoticeCard({
           block.tone === "error" ? "text-destructive" : "text-text-secondary",
         )}
       >
-        {block.text}
+        {text}
       </div>
     );
   }
@@ -725,7 +740,7 @@ function NoticeCard({
       ) : (
         <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" />
       )}
-      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{block.text}</span>
+      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{text}</span>
       {onRetry && (
         <Button
           size="sm"

@@ -2,6 +2,37 @@ use super::RequestWarning;
 use crate::service::protocol_to_rpc;
 use moc_protocol::RpcError;
 use moc_protocol::methods::SessionUpdate;
+use rust_i18n::t;
+use std::time::Duration;
+
+pub(super) async fn emit_request_retry(
+    update: &moc_protocol::UpdateSink,
+    session_id: &str,
+    prompt_id: &str,
+    attempt: u32,
+    max: u32,
+    delay: Duration,
+    message: &str,
+) -> Result<(), RpcError> {
+    update
+        .emit(
+            session_id.to_owned(),
+            SessionUpdate::GenerationRetry {
+                prompt_id: prompt_id.to_owned(),
+                message: t!(
+                    "core.err.request_retry_notice",
+                    secs = format!("{:.1}", delay.as_secs_f64()),
+                    attempt = attempt,
+                    max = max,
+                    message = message,
+                )
+                .into_owned(),
+                retry_in_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            },
+        )
+        .await
+        .map_err(protocol_to_rpc)
+}
 
 pub(super) async fn emit_fatal(
     update: &moc_protocol::UpdateSink,

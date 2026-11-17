@@ -1313,6 +1313,7 @@ artifact_save_failed = { zh = "[E_ARTIFACT] 命令已执行，但保存输出失
 history_transfer = { zh = "历史传输失败：%{error}", en = "History transfer failed: %{error}" }
 plugin_prefix = { zh = "插件 `%{plugin}`：", en = "Plugin `%{plugin}`: " }
 retry_notice = { zh = "本次生成失败，%{secs} 秒后自动重试（第 %{attempt}/%{max} 次尝试）。失败预览已丢弃。\n%{message}", en = "Generation failed; retrying in %{secs}s (attempt %{attempt}/%{max}). The failed preview was discarded.\n%{message}" }
+request_retry_notice = { zh = "连接或请求失败，%{secs} 秒后自动重试（第 %{attempt}/%{max} 次尝试）。\n%{message}", en = "Connection or request failed; retrying in %{secs}s (attempt %{attempt}/%{max}).\n%{message}" }
 sandbox_read = { zh = "允许在沙盒外读取：%{target}", en = "Allow reading outside the sandbox: %{target}" }
 yield_schema = { zh = "yield 的 result 不满足 output_schema：%{error}", en = "The yield result does not satisfy output_schema: %{error}" }
 skills_src_user = { zh = "用户 .moc/skills", en = "user .moc/skills" }
@@ -1393,6 +1394,7 @@ tool_hidden = { zh = "工具输出已隐藏", en = "Tool output hidden" }
 user_hidden = { zh = "用户输入超过 2,000 字符或 80 行，正文已隐藏", en = "User input exceeds 2,000 characters or 80 lines; body hidden" }
 
 [core.history]
+nothing_to_compact = { zh = "暂无可压缩的对话历史", en = "No conversation history to compact yet" }
 closed = { zh = "历史传输已关闭或过期，请重新读取", en = "History transfer closed or expired; read it again" }
 expired = { zh = "历史传输已过期，请重新读取", en = "History transfer expired; read it again" }
 offset_oob = { zh = "历史块偏移越界", en = "History chunk offset out of bounds" }

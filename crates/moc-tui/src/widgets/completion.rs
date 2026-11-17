@@ -123,7 +123,7 @@ impl CompletionState {
     pub fn derive(app: &App) -> Option<Self> {
         let first_line = app.prompt.text.lines().next().unwrap_or_default();
         let query = first_line.strip_prefix('/')?;
-        let (candidates, replace_start) = match query.split_once(char::is_whitespace) {
+        let (mut candidates, replace_start) = match query.split_once(char::is_whitespace) {
             None => (
                 app.commands
                     .complete(query, |spec| command_visible(app, spec))
@@ -134,6 +134,9 @@ impl CompletionState {
             ),
             Some((name, args)) => (arg_candidates(app, name, args)?, name.len() + 2),
         };
+        if replace_start == 0 {
+            candidates.sort_by_key(|candidate| candidate.value != first_line);
+        }
         if candidates.is_empty() {
             return None;
         }

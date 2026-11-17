@@ -267,6 +267,52 @@ fn finish_turn_reports_stop_after_cancel_request() {
     assert_eq!(app.notice.as_deref(), Some("已停止"));
 }
 
+#[test]
+fn finish_prompt_only_stamps_the_current_user_turn() {
+    use crate::transcript::Block;
+    use std::time::{Duration, Instant};
+
+    for (cancelled, has_answer) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+        app.push_user("上一轮".into());
+        app.push_block(Block::Assistant {
+            text: "成功答案".into(),
+        });
+        app.blocks[1].stamp_prompt(1000, 3700);
+        app.push_user("当前轮".into());
+        if has_answer {
+            app.push_block(Block::Assistant {
+                text: "当前答案".into(),
+            });
+        } else {
+            app.push_note("HTTP 404".into(), crate::transcript::NoteTone::Error);
+        }
+        app.prompt_running = true;
+        app.prompt_started_at = Some(Instant::now() - Duration::from_millis(250));
+        app.cancel_requested = cancelled;
+        app.finish_prompt();
+        assert_eq!(app.blocks[1].elapsed_ms, Some(3700));
+        assert_eq!(app.blocks[1].at_ms, Some(1000));
+        if has_answer {
+            assert!(
+                app.blocks[3]
+                    .elapsed_ms
+                    .is_some_and(|elapsed| elapsed >= 250)
+            );
+        }
+        assert!(!app.prompt_running);
+        assert!(!app.cancel_requested);
+        app.finish_prompt();
+        assert_eq!(app.blocks[1].elapsed_ms, Some(3700));
+    }
+    let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = super::App::new(crate::theme::Theme::global(), events);
+    app.prompt_started_at = Some(Instant::now());
+    app.finish_prompt();
+    assert!(app.blocks.is_empty());
+}
+
 /// 思考 token 只回填本次响应的思考块：下一响应若没有思考块，
 /// 上游报 0 不得把上一块已记下的 token 数抹掉。
 #[test]

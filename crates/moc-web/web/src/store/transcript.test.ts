@@ -16,6 +16,7 @@ vi.mock("@/protocol/client", () => ({
 vi.mock("./prefs", () => ({ usePrefs: { getState: () => ({ workspaces: [] }) } }));
 
 import { rpc } from "@/protocol/client";
+import { hasOwnPrompt, reanswerAsk, retrySession, sendPrompt } from "./actions";
 import { closeSession, loadOlder, openSession, reloadReadOnly } from "./lifecycle";
 import { useTabs } from "./tabs";
 import { useTranscript } from "./transcript";
@@ -48,6 +49,98 @@ function contents(): string[] {
       block.kind === "text" || block.kind === "reasoning" ? [block.text] : [],
     );
 }
+
+describe("提示失败收尾", () => {
+  const authenticationError = "HTTP 401: Invalid API key; update provider credentials";
+  const errors = () =>
+    useTranscript
+      .getState()
+      .bySession[info.id].blocks.filter(
+        (block) => block.kind === "status" && block.tone === "error",
+      );
+  const finished = (): SessionUpdate => ({
+    type: "prompt_finished",
+    prompt_id: "p",
+    message: { role: "Assistant", content: [] },
+    finish_reason: { Other: "error" },
+    usage: { input_tokens: 0, output_tokens: 0 },
+  });
+  const expectIdle = () => {
+    const state = useTranscript.getState();
+    expect(state.bySession[info.id].running).toBe(false);
+    expect(state.bySession[info.id].live).toBeNull();
+    expect(state.activity[info.id]).toBeUndefined();
+    expect(hasOwnPrompt(info.id)).toBe(false);
+  };
+
+  afterEach(() => vi.mocked(rpc.call).mockReset());
+
+  it.each([true, false])("认证失败只显示一个错误，兼容缺少结束事件：%s", async (emitFinished) => {
+    useTranscript.getState().ensureView(info);
+    vi.mocked(rpc.call).mockImplementation(async () => {
+      send({ type: "prompt_started", prompt_id: "p", model: "m", at_ms: Date.now() });
+      send({ type: "error", prompt_id: "p", message: authenticationError, retryable: false });
+      if (emitFinished) send(finished());
+      throw new Error(authenticationError);
+    });
+    await sendPrompt(info.id, [{ type: "text", text: "你好" }]);
+    expectIdle();
+    expect(errors()).toHaveLength(1);
+    expect(errors()[0]).toMatchObject({ text: authenticationError });
+    await retrySession(info.id);
+    expectIdle();
+    expect(errors()).toHaveLength(2);
+    expect(vi.mocked(rpc.call).mock.calls.map(([method]) => method)).toEqual([
+      "session/prompt",
+      "session/retry",
+    ]);
+    expect(
+      useTranscript.getState().bySession[info.id].blocks.filter((block) => block.kind === "footer"),
+    ).toHaveLength(2);
+  });
+
+  it.each(["send", "retry", "reask"])(
+    "没有错误推送时 %s 仍报告失败且不受旧错误影响",
+    async (action) => {
+      useTranscript.getState().ensureView(info);
+      useTranscript.getState().localStatus(info.id, "error", "上次错误");
+      vi.mocked(rpc.call).mockImplementation(async () => {
+        send({ type: "prompt_started", prompt_id: "p", model: "m", at_ms: Date.now() });
+        throw new Error(authenticationError);
+      });
+      if (action === "send") await sendPrompt(info.id, [{ type: "text", text: "你好" }]);
+      else if (action === "retry") await retrySession(info.id);
+      else await reanswerAsk(info.id, "ask_1");
+      expectIdle();
+      expect(errors()).toHaveLength(2);
+      expect(errors()[1]).toMatchObject({ text: expect.stringContaining(authenticationError) });
+    },
+  );
+
+  it("空输入不请求；认证恢复后可以继续正常发送", async () => {
+    useTranscript.getState().ensureView(info);
+    vi.mocked(rpc.call).mockRejectedValueOnce(new Error(authenticationError));
+    await sendPrompt(info.id, []);
+    expect(rpc.call).not.toHaveBeenCalled();
+    await sendPrompt(info.id, [{ type: "text", text: "失败" }]);
+    expectIdle();
+    expect(errors()).toHaveLength(1);
+    vi.mocked(rpc.call).mockImplementation(async (method) => {
+      if (method !== "session/prompt") return {};
+      send({ type: "prompt_started", prompt_id: "p", model: "m", at_ms: Date.now() });
+      const update = finished();
+      if (update.type !== "prompt_finished") throw new Error("结束事件");
+      update.finish_reason = "Stop";
+      update.message.content = [{ Text: "恢复成功" }];
+      send(update);
+      return {};
+    });
+    await sendPrompt(info.id, [{ type: "text", text: "恢复" }]);
+    expectIdle();
+    expect(errors()).toHaveLength(1);
+    expect(contents()).toContain("恢复成功");
+  });
+});
 
 afterEach(() => {
   useTranscript.getState().interruptAll();

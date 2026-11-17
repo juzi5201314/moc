@@ -289,6 +289,29 @@ fn status_legend_hit_area_carries_the_menu() {
         .draw(|frame| draw(frame, &mut app, &mut view))
         .expect("绘制成功");
     assert_eq!(row_text(&terminal, app.engine_area), "standard+plan");
+    app.session.as_mut().unwrap().model = crate::modal::fusion_selector(
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+        "zai-org/GLM-5.3-Flash",
+    );
+    for width in [60, 86, 120] {
+        for running in [false, true] {
+            app.prompt_running = running;
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal
+                .draw(|frame| draw(frame, &mut app, &mut view))
+                .unwrap();
+            assert!(!app.legend_tip_area.is_empty(), "保留帮助或停止入口");
+            assert_eq!(row_text(&terminal, app.engine_area), "standard+plan");
+            assert_eq!(row_text(&terminal, app.permission_tag_area), "full");
+            let model = row_text(&terminal, app.model_tag_area);
+            assert!(model.starts_with("Fusion"));
+            assert!(app.model_tag_area.right() < app.engine_area.x);
+            if width <= 86 {
+                assert!(!model.contains("deepseek-ai/"));
+                assert!(model.ends_with('…'));
+            }
+        }
+    }
 }
 
 /// 告警贴滚动区右上角、notice 贴右下角；两者同屏共存且各自只占一行。

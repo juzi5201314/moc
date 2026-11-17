@@ -606,7 +606,10 @@ export async function deleteSession(sessionId: string): Promise<void> {
   useTabs.getState().close(sessionId);
   useTranscript.getState().drop(sessionId);
   useSessions.getState().remove(sessionId);
-  await useSessions.getState().refresh();
+  void useSessions
+    .getState()
+    .refresh()
+    .catch(() => undefined);
 }
 
 export async function renameSession(sessionId: string, title: string): Promise<void> {

@@ -1,6 +1,7 @@
 import { act, fireEvent, render } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useI18n } from "@/lib/i18n";
 import { BRIEF_BODY_ROWS } from "@/lib/tool-view";
 import { applyUpdate, createView, entriesToBlocks } from "@/lib/transcript-model";
 import type { SessionInfo } from "@/protocol/types";
@@ -25,13 +26,289 @@ const info: SessionInfo = {
 
 const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
 const toolDetail = usePrefs.getState().toolDetail;
+const locale = useI18n.getState().locale;
+
+it("连接退避在首个生成块之前显示重试原因及等待时长", async () => {
+  vi.spyOn(Date, "now").mockReturnValue(1000);
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const view = createView(info);
+  view.blocks = [{ kind: "user", id: "question", text: "你好", images: [], atMs: 0 }];
+  applyUpdate(view, { type: "prompt_started", prompt_id: "p", model: "m", at_ms: 0 });
+  const message =
+    "连接或请求失败，60.0 秒后自动重试（第 2/10 次尝试）。\n网络传输失败: http://127.0.0.1:1";
+  applyUpdate(view, { type: "generation_retry", prompt_id: "p", message, retry_in_ms: 60000 });
+  useTranscript.setState({ bySession: { [info.id]: view } });
+  const thread = render(
+    <TooltipProvider>
+      <ChatThread sessionId={info.id} />
+    </TooltipProvider>,
+  );
+  await act(async () => {});
+  expect(thread.getByText(message.replace(/\s+/g, " "))).toBeTruthy();
+  expect(thread.container.textContent).toContain("2/10");
+  expect(view.running).toBe(true);
+  expect(view.blocks.filter((block) => block.kind === "status")).toMatchObject([{ tone: "warn" }]);
+  thread.unmount();
+});
+
 afterEach(() => {
+  vi.useRealTimers();
+  useI18n.setState({ locale });
   useTranscript.getState().drop(info.id);
   usePrefs.setState({ toolDetail });
   if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
   else Reflect.deleteProperty(navigator, "clipboard");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it("连续重试复用同一卡片，中英文倒计时更新并在恢复生成后移除", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  for (const language of ["zh", "en"] as const) {
+    useI18n.setState({ locale: language });
+    const view = createView(info);
+    view.blocks = [{ kind: "user", id: "question", text: "你好", images: [], atMs: 0 }];
+    applyUpdate(view, { type: "prompt_started", prompt_id: "p", model: "m", at_ms: 0 });
+    const message = (attempt: number) =>
+      language === "zh"
+        ? `连接或请求失败，99.0 秒后自动重试（第 ${attempt}/10 次尝试）。\n原因 ${attempt}`
+        : `Connection or request failed; retrying in 99.0s (attempt ${attempt}/10).\nReason ${attempt}`;
+    const expected = (attempt: number, seconds: string) =>
+      message(attempt).replace("99.0", seconds).replace(/\s+/g, " ");
+    applyUpdate(view, {
+      type: "generation_retry",
+      prompt_id: "p",
+      message: message(2),
+      retry_in_ms: 2500,
+    });
+    useTranscript.setState({ bySession: { [info.id]: view } });
+    const thread = render(
+      <TooltipProvider>
+        <ChatThread sessionId={info.id} />
+      </TooltipProvider>,
+    );
+    await act(async () => {});
+    const notice = thread.getByText(expected(2, "2.5"));
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(thread.getByText(expected(2, "1.5"))).toBe(notice);
+    for (let attempt = 3; attempt <= 8; attempt++) {
+      await act(async () => {
+        useTranscript.getState().mutate(info.id, (current) => {
+          applyUpdate(current, {
+            type: "generation_retry",
+            prompt_id: "p",
+            message: message(attempt),
+            retry_in_ms: 2500,
+          });
+        });
+      });
+      expect(thread.getByText(expected(attempt, "2.5"))).toBe(notice);
+    }
+    expect(
+      useTranscript.getState().bySession[info.id].blocks.filter((block) => block.kind === "status"),
+    ).toHaveLength(1);
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(thread.getByText(expected(8, "0.0"))).toBe(notice);
+    await act(async () => {
+      useTranscript
+        .getState()
+        .mutate(info.id, (current) =>
+          applyUpdate(current, { type: "generation_started", prompt_id: "p" }),
+        );
+    });
+    expect(notice.isConnected).toBe(false);
+    thread.unmount();
+  }
+});
+
+it("空原因及零等待也显示倒计时，取消或 RPC 失败会移除重试卡片", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  useI18n.setState({ locale: "zh" });
+  for (const failed of [false, true]) {
+    const view = createView(info);
+    applyUpdate(view, { type: "prompt_started", prompt_id: "p", model: "m", at_ms: 0 });
+    applyUpdate(view, { type: "generation_retry", prompt_id: "p", message: "", retry_in_ms: 0 });
+    useTranscript.setState({ bySession: { [info.id]: view } });
+    const thread = render(
+      <TooltipProvider>
+        <ChatThread sessionId={info.id} />
+      </TooltipProvider>,
+    );
+    await act(async () => {});
+    expect(thread.getByText("0.0 秒后重试")).toBeTruthy();
+    await act(async () => {
+      if (failed) useTranscript.getState().failPrompt(info.id);
+      else
+        useTranscript.getState().mutate(info.id, (current) =>
+          applyUpdate(current, {
+            type: "prompt_finished",
+            prompt_id: "p",
+            message: { role: "Assistant", content: [] },
+            finish_reason: "Cancelled",
+            usage: { input_tokens: 0, output_tokens: 0 },
+          }),
+        );
+    });
+    expect(thread.queryByText("0.0 秒后重试")).toBeNull();
+    expect(useTranscript.getState().bySession[info.id].running).toBe(false);
+    thread.unmount();
+  }
+});
+
+it("处理摘要在中英文中插入耗时，缺少耗时或异常结束时仍正常显示", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  for (const language of ["zh", "en"] as const) {
+    useI18n.setState({ locale: language });
+    for (const durationMs of [23_000, 0, undefined, null]) {
+      const view = createView(info);
+      view.blocks = [
+        { kind: "reasoning", id: "thinking", text: "处理过程" },
+        { kind: "text", id: "reply", text: "回复" },
+      ];
+      if (durationMs !== null) {
+        view.blocks.push({
+          kind: "footer",
+          id: "footer",
+          atMs: 1,
+          durationMs,
+          finishReason: "Stop",
+        });
+      }
+      useTranscript.setState({ bySession: { [info.id]: view } });
+      const thread = render(
+        <TooltipProvider>
+          <ChatThread sessionId={info.id} />
+        </TooltipProvider>,
+      );
+      await act(async () => {});
+      const expected =
+        durationMs == null
+          ? language === "zh"
+            ? "过程"
+            : "Process"
+          : language === "zh"
+            ? `用时 ${durationMs / 1000}秒`
+            : `${durationMs / 1000}s`;
+      expect(thread.getByText(expected)).toBeTruthy();
+      expect(thread.container.textContent).not.toContain("{n}");
+      thread.unmount();
+    }
+  }
+});
+
+it("用户 shell 独立展示且不折叠上一轮最终回复", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  usePrefs.setState({ toolDetail: "brief" });
+  const view = createView(info);
+  view.blocks = [
+    { kind: "text", id: "answer", text: "上一轮最终回复" },
+    { kind: "footer", id: "footer", atMs: 2, finishReason: "Stop" },
+    { kind: "bash", id: "shell", command: "printf BASH-CHECK", output: "BASH-CHECK", atMs: 3 },
+  ];
+  useTranscript.setState({ bySession: { [info.id]: view } });
+  const thread = render(
+    <TooltipProvider>
+      <ChatThread sessionId={info.id} />
+    </TooltipProvider>,
+  );
+  await act(async () => {});
+  expect(thread.getByText("上一轮最终回复")).toBeTruthy();
+  expect(thread.getByText("BASH-CHECK")).toBeTruthy();
+  expect(thread.queryByRole("button", { name: "重试" })).toBeNull();
+  thread.unmount();
+});
+
+it("虚拟轮次以布局偏移定位，展开过程中的工具标题在正文之前", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  usePrefs.setState({ toolDetail: "brief" });
+  for (const rows of [0, 2, 80]) {
+    const view = createView(info);
+    view.blocks = [
+      {
+        kind: "tool",
+        id: "tool",
+        toolCallId: "tool",
+        name: "bash",
+        arguments: '{"command":"printf CHECK"}',
+        status: "completed",
+        result: Array.from({ length: rows }, (_, i) => `CHECK-${i}`).join("\n"),
+        isError: rows === 0,
+        images: [],
+        children: [],
+        awaitingPermission: false,
+      },
+      { kind: "text", id: "answer", text: "最终回复" },
+      { kind: "footer", id: "footer", atMs: 2, finishReason: "Stop" },
+    ];
+    useTranscript.setState({ bySession: { [info.id]: view } });
+    const thread = render(
+      <TooltipProvider>
+        <ChatThread sessionId={info.id} />
+      </TooltipProvider>,
+    );
+    await act(async () => {});
+    fireEvent.click(thread.getByRole("button", { name: /过程/ }));
+    const header = thread.getByRole("button", { name: /printf CHECK/ });
+    const row = header.closest<HTMLElement>("[data-index]");
+    expect(row?.style.top).toBe("40px");
+    expect(row?.style.transform).toBe("");
+    expect(header.classList.contains("sticky")).toBe(true);
+    expect(header.parentElement?.firstElementChild).toBe(header);
+    if (rows > 0) {
+      fireEvent.click(header);
+      expect(thread.container.textContent).toContain("CHECK-0");
+      expect(header.parentElement?.firstElementChild).toBe(header);
+    }
+    thread.unmount();
+  }
 });
 
 it("复制回复按需拼接全部正文，保留空段、顺序和流式入口", async () => {

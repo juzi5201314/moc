@@ -224,14 +224,18 @@ impl App {
 
 /// 把重试文案切成秒数两侧的静态片段：`{head}{:.1} {tail}`。
 ///
-/// 锚点从 `core.err.retry_notice` 的当前 locale 模板推导：模板里 `%{secs}` 前的字面
+/// 锚点从重试文案的当前 locale 模板推导：模板里 `%{secs}` 前的字面
 /// 前缀是消息头，其后第一个占位符前的字面量是秒数终止标记。任一缺失返回 `None`，
 /// 调用方按静态便签处理。
 fn retry_note_parts(message: &str) -> Option<(String, String)> {
-    let template = moc_protocol::commands::try_translate("core.err.retry_notice")?;
-    let (before, after) = template.split_once("%{secs}")?;
-    let rest = message.strip_prefix(before)?;
-    let marker = after.split("%{").next()?;
-    let pos = rest.find(marker)?;
-    Some((before.to_owned(), rest[pos..].trim_start().to_owned()))
+    ["core.err.retry_notice", "core.err.request_retry_notice"]
+        .into_iter()
+        .find_map(|key| {
+            let template = moc_protocol::commands::try_translate(key)?;
+            let (before, after) = template.split_once("%{secs}")?;
+            let rest = message.strip_prefix(before)?;
+            let marker = after.split("%{").next()?;
+            let pos = rest.find(marker)?;
+            Some((before.to_owned(), rest[pos..].trim_start().to_owned()))
+        })
 }

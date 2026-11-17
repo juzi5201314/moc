@@ -305,7 +305,9 @@ pub(super) async fn run_command(
                     instructions: None,
                 })
                 .await?;
-            if result.full {
+            if result.method == "noop" {
+                println!("{}", t!("core.history.nothing_to_compact"));
+            } else if result.full {
                 println!(
                     "{}",
                     t!(

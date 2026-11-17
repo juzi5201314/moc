@@ -80,7 +80,7 @@ pub(super) fn handle_completion_mouse(app: &mut App, mouse: &crossterm::event::M
                     && let Some(comp) = app.completion.as_mut()
                 {
                     comp.selected = index;
-                    accept_completion(app);
+                    accept_completion(app, false);
                 }
                 true
             } else {
@@ -123,7 +123,7 @@ pub(super) fn handle_completion_key(app: &mut App, modifiers: KeyModifiers, code
     match (code, modifiers) {
         (KeyCode::Tab, KeyModifiers::SHIFT) => false,
         (KeyCode::Tab, KeyModifiers::NONE) | (KeyCode::Enter, KeyModifiers::NONE) => {
-            accept_completion(app)
+            accept_completion(app, code == KeyCode::Enter)
         }
         (KeyCode::Up, _) => {
             if let Some(completion) = app.completion.as_mut() {
@@ -141,11 +141,17 @@ pub(super) fn handle_completion_key(app: &mut App, modifiers: KeyModifiers, code
     }
 }
 
-pub(super) fn accept_completion(app: &mut App) -> bool {
+pub(super) fn accept_completion(app: &mut App, submit_exact: bool) -> bool {
     let Some(completion) = app.completion.take() else {
         return false;
     };
     let chosen = completion.chosen().clone();
+    if submit_exact
+        && chosen.source == crate::widgets::completion::CompletionSource::Slash
+        && app.prompt.text.get(completion.replace_range.clone()) == Some(chosen.value.as_str())
+    {
+        return false;
+    }
     app.prompt
         .replace_range(completion.replace_range, &chosen.value, chosen.append_space);
     app.prompt_changed();

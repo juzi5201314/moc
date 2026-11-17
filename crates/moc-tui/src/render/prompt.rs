@@ -297,28 +297,12 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
 
     // 无会话时右端只画 idle；左端仍能显示选区操作。
     let no_session = app.session.is_none();
-    let model = app.model_display();
+    let mut model = app.model_display();
     let status = app.status_label();
     let permission = app
         .session
         .as_ref()
         .map_or("full", |session| session.permission.as_str());
-    let right: Vec<(&str, Color)> = if no_session {
-        vec![(labels::status::IDLE, theme.gray)]
-    } else {
-        vec![
-            (model.as_str(), theme.gray),
-            (labels::SEP, theme.border),
-            (status.as_str(), theme.accent_model),
-            (labels::SEP, theme.border),
-            (permission, theme.accent_model),
-        ]
-    };
-    let right_width: usize = right.iter().map(|(text, _)| str_width(text)).sum();
-    if right_width + 4 > inner {
-        return;
-    }
-
     let selecting = app.selection.is_some() && app.modal.is_none();
     let copy_feedback = app.modal.is_none()
         && app
@@ -360,6 +344,40 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
         (Cow::Owned(help_key), t!("tui.prompt.keys"), theme.gray_dim)
     };
     let left_key = left_key.as_ref();
+    let compact_tip = if selecting {
+        t!("tui.prompt.copy")
+    } else {
+        left_tip.clone()
+    };
+    let reserved_tips =
+        str_width(left_key) + usize::from(!left_key.is_empty()) + str_width(&compact_tip);
+    if !no_session {
+        let fixed = str_width(&status) + str_width(permission) + 2 * str_width(labels::SEP);
+        let budget = inner.saturating_sub(fixed + reserved_tips + 8);
+        if str_width(&model) > budget {
+            model = model
+                .split_whitespace()
+                .map(|part| part.rsplit('/').next().unwrap_or(part))
+                .collect::<Vec<_>>()
+                .join(" ");
+            model = wrap::truncate(model, budget).into_owned();
+        }
+    }
+    let right: Vec<(&str, Color)> = if no_session {
+        vec![(labels::status::IDLE, theme.gray)]
+    } else {
+        vec![
+            (model.as_str(), theme.gray),
+            (labels::SEP, theme.border),
+            (status.as_str(), theme.accent_model),
+            (labels::SEP, theme.border),
+            (permission, theme.accent_model),
+        ]
+    };
+    let right_width: usize = right.iter().map(|(text, _)| str_width(text)).sum();
+    if right_width + 4 > inner {
+        return;
+    }
     let show_cancel =
         selecting && str_width(left_key) + 1 + str_width(&left_tip) + right_width + 8 <= inner;
     if selecting && !show_cancel {

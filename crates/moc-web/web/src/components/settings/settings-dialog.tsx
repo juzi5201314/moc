@@ -202,8 +202,8 @@ function ScopeSwitch({ doc }: { doc?: SettingsDocument }) {
   const t = useT();
   const scope = useSettings((state) => state.scope);
   return (
-    <div className="flex items-center gap-2">
-      <div className="flex rounded-lg bg-muted p-0.5">
+    <div className="flex min-w-0 items-center gap-2">
+      <div className="flex shrink-0 rounded-lg bg-muted p-0.5">
         {(["global", "project"] as ConfigScope[]).map((item) => (
           <button
             key={item}
@@ -222,7 +222,7 @@ function ScopeSwitch({ doc }: { doc?: SettingsDocument }) {
       </div>
       {doc && (
         <span
-          className="max-w-[260px] truncate font-mono text-2xs text-text-tertiary"
+          className="min-w-0 max-w-[260px] truncate font-mono text-2xs text-text-tertiary"
           title={doc.path}
         >
           {doc.path}
@@ -336,9 +336,9 @@ export function SettingsDialog() {
       open={settings.open}
       onOpenChange={(open) => useUi.getState().set({ settings: { open } })}
     >
-      <DialogContent className="flex h-[min(760px,88vh)] w-[min(1040px,94vw)] max-w-none gap-0 overflow-hidden p-0 sm:max-w-none">
-        <nav className="flex w-[220px] shrink-0 flex-col border-r border-border-subtle bg-panel">
-          <div className="p-3 pb-2">
+      <DialogContent className="flex h-[min(760px,88vh)] w-[min(1040px,94vw)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none md:flex-row">
+        <nav className="flex min-h-0 w-full shrink-0 flex-col border-b border-border-subtle bg-panel md:w-[220px] md:border-r md:border-b-0">
+          <div className="p-3 pr-14 pb-2 md:pr-3">
             <label className="flex h-8 items-center gap-2 rounded-lg bg-background px-2.5 ring-1 ring-border focus-within:ring-border-strong">
               <SearchIcon className="size-3.5 shrink-0 text-text-tertiary" />
               <input
@@ -349,22 +349,23 @@ export function SettingsDialog() {
               />
             </label>
           </div>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-2 pb-3">
+          <div className="flex min-h-0 gap-2 overflow-x-auto px-2 pb-3 md:block md:flex-1 md:space-y-4 md:overflow-y-auto">
             {NAV.map((group) => (
-              <div key={group.group}>
-                <div className="px-2.5 pb-1 text-2xs font-medium text-text-tertiary">
+              <div key={group.group} className="flex shrink-0 md:block">
+                <div className="hidden px-2.5 pb-1 text-2xs font-medium text-text-tertiary md:block">
                   {t(group.group)}
                 </div>
                 {group.items.map((item) => (
                   <button
                     key={item.id}
                     type="button"
+                    aria-current={item.id === section && !query ? "page" : undefined}
                     onClick={() => {
                       setSection(item.id);
                       setQuery("");
                     }}
                     className={cn(
-                      "flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-ui transition-colors [&_svg]:size-4",
+                      "flex h-8 shrink-0 items-center gap-2.5 rounded-lg px-2.5 text-ui whitespace-nowrap transition-colors md:w-full [&_svg]:size-4",
                       item.id === section && !query
                         ? "bg-accent font-medium text-foreground"
                         : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
@@ -379,8 +380,8 @@ export function SettingsDialog() {
           </div>
         </nav>
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex shrink-0 items-start justify-between gap-4 border-b border-border-subtle px-7 pt-5 pb-4 pr-14">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <header className="flex shrink-0 flex-col items-start justify-between gap-3 border-b border-border-subtle px-4 pt-4 pb-3 md:flex-row md:gap-4 md:px-7 md:pt-5 md:pr-14 md:pb-4">
             <div className="min-w-0">
               <DialogTitle>{query ? t("sd.search_title") : t(meta.label)}</DialogTitle>
               <DialogDescription className="mt-1 text-xs leading-5">
@@ -391,12 +392,14 @@ export function SettingsDialog() {
                   : t(meta.description)}
               </DialogDescription>
             </div>
-            <div className="flex shrink-0 items-center gap-3 pt-0.5">
+            <div className="flex min-w-0 max-w-full items-center gap-3 pt-0.5 md:shrink-0">
               <SaveStatus />
               {!local && <ScopeSwitch doc={doc} />}
             </div>
           </header>
-          <div className="min-h-0 flex-1 overflow-y-auto px-7 py-5">{body}</div>
+          <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-4 [overflow-wrap:anywhere] md:px-7 md:py-5">
+            {body}
+          </div>
         </div>
       </DialogContent>
     </Dialog>

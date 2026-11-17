@@ -74,6 +74,36 @@ describe("WorkflowApprovalDialog", () => {
     flags.readOnly = false;
   });
 
+  it("审批窗覆盖默认桌面宽度，长脚本可换行且保留全文", () => {
+    const script = `const payload = "${"long-script-token".repeat(80)}";`;
+    const view = render(
+      <WorkflowApprovalDialog
+        sessionId="s1"
+        approval={{ ...approval, script }}
+        open
+        onOpenChange={() => {}}
+      />,
+    );
+    const dialog = view.getByRole("dialog");
+    expect(dialog.classList.contains("sm:max-w-3xl")).toBe(true);
+    expect(dialog.classList.contains("sm:max-w-lg")).toBe(false);
+    const code = dialog.querySelector("[data-language='ts']");
+    expect(code?.classList.contains("min-w-0")).toBe(true);
+    expect(code?.classList.contains("[&_pre]:whitespace-pre-wrap")).toBe(true);
+    expect(code?.classList.contains("[&_pre]:[overflow-wrap:anywhere]")).toBe(true);
+    expect(code?.querySelector("pre")?.textContent).toBe(script);
+    expect(view.getByText("批准")).toBeTruthy();
+    view.rerender(
+      <WorkflowApprovalDialog
+        sessionId="s1"
+        approval={{ ...approval, script: "" }}
+        open
+        onOpenChange={() => {}}
+      />,
+    );
+    expect(dialog.querySelector("[data-language='ts']")).toBeNull();
+  });
+
   it("选中 role 模型后批准：decision 携带覆盖、未选 role 不出现", async () => {
     const { getAllByText, getByText } = render(
       <WorkflowApprovalDialog sessionId="s1" approval={approval} open onOpenChange={() => {}} />,

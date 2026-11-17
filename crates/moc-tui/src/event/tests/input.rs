@@ -1,6 +1,72 @@
 use super::*;
 
 #[test]
+fn exact_command_completion_wins_without_reordering_other_candidates() {
+    let mut app = app_with_completion();
+    app.prompt.text = "/co".into();
+    let prefix = crate::widgets::completion::CompletionState::derive(&app).unwrap();
+    app.prompt.text = "/compact".into();
+    let completion = crate::widgets::completion::CompletionState::derive(&app).unwrap();
+    assert_eq!(completion.chosen().value, "/compact");
+    let expected: Vec<_> = prefix
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.value.starts_with("/compact") && candidate.value != "/compact"
+        })
+        .collect();
+    assert_eq!(
+        completion.candidates.iter().skip(1).collect::<Vec<_>>(),
+        expected
+    );
+    app.completion = Some(completion);
+    assert!(!handle_completion_key(
+        &mut app,
+        KeyModifiers::NONE,
+        KeyCode::Enter
+    ));
+    assert_eq!(app.prompt.text.trim_end(), "/compact");
+    app.prompt.text = "/missing-command".into();
+    assert!(crate::widgets::completion::CompletionState::derive(&app).is_none());
+}
+
+#[test]
+fn exact_argument_and_command_enter_submit_while_tab_still_completes() {
+    let mut app = app_with_completion();
+    for text in ["/plugins reload", "/usage"] {
+        app.prompt.text = text.into();
+        app.completion = crate::widgets::completion::CompletionState::derive(&app);
+        assert!(app.completion.is_some());
+        assert!(!handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Enter
+        ));
+        assert!(app.completion.is_none());
+        assert_eq!(app.prompt.text, text);
+        app.completion = crate::widgets::completion::CompletionState::derive(&app);
+        assert!(handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Tab
+        ));
+    }
+    app.prompt.text = "/plugins rel".into();
+    app.completion = crate::widgets::completion::CompletionState::derive(&app);
+    assert!(handle_completion_key(
+        &mut app,
+        KeyModifiers::NONE,
+        KeyCode::Enter
+    ));
+    assert_eq!(app.prompt.text, "/plugins reload");
+    assert!(!handle_completion_key(
+        &mut app,
+        KeyModifiers::NONE,
+        KeyCode::Enter
+    ));
+}
+
+#[test]
 fn completion_navigation_wraps_and_accepts_with_enter() {
     let mut app = app_with_completion();
     assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(0));
