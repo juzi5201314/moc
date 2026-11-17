@@ -14,6 +14,7 @@ use super::tools::execute_tool_batch;
 use super::tools::persist_tool_result;
 use super::turn_inputs;
 use super::warnings::emit_fatal;
+use super::warnings::emit_request_retry;
 use crate::compact;
 use crate::compact::replay::model_messages;
 use crate::service::CoreInner;
@@ -421,9 +422,27 @@ pub(super) async fn run_prompt_locked(
                         model.max_output_tokens,
                     )
                     .await;
+                    let notify_retry = |attempt, delay, error: moc_llm::LlmError| {
+                        let update = &update;
+                        let session_id = &params.session_id;
+                        let prompt_id = &prompt_id;
+                        let max = model.llm.retry.max_attempts;
+                        async move {
+                            let _ = emit_request_retry(
+                                update,
+                                session_id,
+                                prompt_id,
+                                attempt,
+                                max,
+                                delay,
+                                &error.to_string(),
+                            )
+                            .await;
+                        }
+                    };
                     let streamed = tokio::select! {
                         _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'turns; }
-                        result = inner.client.stream_with_budget(&model.llm, &request, &mut retry_budget) => result,
+                        result = inner.client.stream_with_budget_notified(&model.llm, &request, &mut retry_budget, notify_retry) => result,
                     };
                     // 错误恢复可能再次请求同一个供应商，必须先归还失败请求占用的并发名额。
                     if streamed.is_err() {

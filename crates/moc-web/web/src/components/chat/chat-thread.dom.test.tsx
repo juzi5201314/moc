@@ -27,6 +27,36 @@ const info: SessionInfo = {
 const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
 const toolDetail = usePrefs.getState().toolDetail;
 const locale = useI18n.getState().locale;
+
+it("连接退避在首个生成块之前显示重试原因及等待时长", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const view = createView(info);
+  view.blocks = [{ kind: "user", id: "question", text: "你好", images: [], atMs: 0 }];
+  applyUpdate(view, { type: "prompt_started", prompt_id: "p", model: "m", at_ms: 0 });
+  const message =
+    "连接或请求失败，60.0 秒后自动重试（第 2/10 次尝试）。\n网络传输失败: http://127.0.0.1:1";
+  applyUpdate(view, { type: "generation_retry", prompt_id: "p", message, retry_in_ms: 60000 });
+  useTranscript.setState({ bySession: { [info.id]: view } });
+  const thread = render(
+    <TooltipProvider>
+      <ChatThread sessionId={info.id} />
+    </TooltipProvider>,
+  );
+  await act(async () => {});
+  expect(thread.getByText(message.replace(/\s+/g, " "))).toBeTruthy();
+  expect(thread.container.textContent).toContain("2/10");
+  expect(view.running).toBe(true);
+  expect(view.blocks.filter((block) => block.kind === "status")).toMatchObject([{ tone: "warn" }]);
+  thread.unmount();
+});
+
 afterEach(() => {
   useI18n.setState({ locale });
   useTranscript.getState().drop(info.id);

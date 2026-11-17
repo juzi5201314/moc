@@ -1,6 +1,122 @@
 use super::*;
 
 #[tokio::test]
+async fn connection_retry_is_visible_during_backoff_and_can_be_cancelled() {
+    use moc_protocol::methods::{SessionCancel, SessionCancelParams};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let extra = format!(
+        "[providers.refused]\napi='openai_chat'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=3,initial_backoff_secs=60,max_backoff_secs=60,jitter=false}}\n[providers.refused.models.model]\ncontext_window=100000\n[compaction]\nenabled=false\n"
+    );
+    let h = Harness::with_roles(
+        &url,
+        "openai_chat",
+        "refused/model:off",
+        "refused/model:off",
+        &extra,
+    )
+    .await;
+    let id = h.session(SessionEngine::Standard).await;
+    let mut events = h.events.subscribe();
+    let client = h.client.clone();
+    let session_id = id.clone();
+    let task = tokio::spawn(async move {
+        client
+            .call::<SessionPrompt>(PromptParams {
+                session_id,
+                input: vec![InputPart::Text {
+                    text: "连接测试".into(),
+                }],
+                mode: None,
+                agent_message: None,
+                goal_round: None,
+            })
+            .await
+    });
+    let notice = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let update @ SessionUpdate::GenerationRetry { .. } = events.recv().await.unwrap() {
+                break update;
+            }
+        }
+    })
+    .await
+    .expect("退避尚未结束就必须显示重试提示");
+    if let SessionUpdate::GenerationRetry {
+        message,
+        retry_in_ms,
+        ..
+    } = notice
+    {
+        assert_eq!(retry_in_ms, 60000);
+        assert!(message.contains("2/3"), "{message}");
+        assert!(message.contains("127.0.0.1"), "{message}");
+    }
+    assert!(!task.is_finished());
+    h.client
+        .call::<SessionCancel>(SessionCancelParams { session_id: id })
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.finish_reason, moc_llm::FinishReason::Cancelled);
+    assert!(
+        !h.updates
+            .lock()
+            .iter()
+            .any(|event| matches!(event, SessionUpdate::Error { .. }))
+    );
+    h.close().await;
+}
+
+#[tokio::test]
+async fn first_byte_retry_notification_precedes_recovered_generation() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(503)
+                .set_body_json(serde_json::json!({"error":{"message":"暂时不可用"}})),
+        )
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(text_stream("重试成功"), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+    let extra = format!(
+        "[providers.recovered]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\nretry={{max_attempts=3,initial_backoff_secs=0.001,jitter=false}}\n[providers.recovered.models.model]\ncontext_window=100000\n[compaction]\nenabled=false\n",
+        upstream.uri()
+    );
+    let h = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "recovered/model:off",
+        "recovered/model:off",
+        &extra,
+    )
+    .await;
+    let id = h.session(SessionEngine::Standard).await;
+    assert_eq!(h.prompt(&id, "恢复测试").await.message.text(), "重试成功");
+    let updates = h.updates.lock().clone();
+    let retry = updates.iter().position(|event| matches!(event, SessionUpdate::GenerationRetry { retry_in_ms: 1, message, .. } if message.contains("2/3"))).expect("显示下一次尝试及等待时长");
+    let generation = updates
+        .iter()
+        .position(|event| matches!(event, SessionUpdate::GenerationStarted { .. }))
+        .unwrap();
+    assert!(retry < generation);
+    assert_eq!(upstream.received_requests().await.unwrap().len(), 2);
+    h.close().await;
+}
+
+#[tokio::test]
 async fn authentication_failure_finishes_prompt_and_allows_recovery() {
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))

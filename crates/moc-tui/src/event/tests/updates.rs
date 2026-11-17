@@ -689,3 +689,34 @@ fn automatic_retry_discards_only_current_preview() {
     assert_eq!(note(&app), (message.to_owned(), NoteTone::Warn));
     assert!(app.retry_wait.is_none());
 }
+
+#[test]
+fn connection_retry_before_generation_uses_existing_countdown() {
+    use crate::transcript::{Block, NoteTone};
+    let mut app = app_with_completion();
+    app.prompt_running = true;
+    let message = "连接或请求失败，60.0 秒后自动重试（第 2/10 次尝试）。\n网络传输失败";
+    apply_update(
+        &mut app,
+        SessionUpdate::GenerationRetry {
+            prompt_id: "p".into(),
+            message: message.into(),
+            retry_in_ms: 60000,
+        },
+    );
+    assert!(app.prompt_running);
+    assert!(app.retry_wait.is_some());
+    app.retry_wait.as_mut().unwrap().deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(1400);
+    assert!(app.tick_retry_wait());
+    assert!(
+        matches!(&app.blocks.last().unwrap().block, Block::Note { text, tone: NoteTone::Warn } if text.contains("1.4 秒后自动重试") && text.contains("2/10"))
+    );
+    apply_update(
+        &mut app,
+        SessionUpdate::GenerationStarted {
+            prompt_id: "p".into(),
+        },
+    );
+    assert!(app.retry_wait.is_none());
+}
