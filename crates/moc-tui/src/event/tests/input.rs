@@ -20,7 +20,7 @@ fn exact_command_completion_wins_without_reordering_other_candidates() {
         expected
     );
     app.completion = Some(completion);
-    assert!(handle_completion_key(
+    assert!(!handle_completion_key(
         &mut app,
         KeyModifiers::NONE,
         KeyCode::Enter
@@ -28,6 +28,42 @@ fn exact_command_completion_wins_without_reordering_other_candidates() {
     assert_eq!(app.prompt.text.trim_end(), "/compact");
     app.prompt.text = "/missing-command".into();
     assert!(crate::widgets::completion::CompletionState::derive(&app).is_none());
+}
+
+#[test]
+fn exact_argument_and_command_enter_submit_while_tab_still_completes() {
+    let mut app = app_with_completion();
+    for text in ["/plugins reload", "/usage"] {
+        app.prompt.text = text.into();
+        app.completion = crate::widgets::completion::CompletionState::derive(&app);
+        assert!(app.completion.is_some());
+        assert!(!handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Enter
+        ));
+        assert!(app.completion.is_none());
+        assert_eq!(app.prompt.text, text);
+        app.completion = crate::widgets::completion::CompletionState::derive(&app);
+        assert!(handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Tab
+        ));
+    }
+    app.prompt.text = "/plugins rel".into();
+    app.completion = crate::widgets::completion::CompletionState::derive(&app);
+    assert!(handle_completion_key(
+        &mut app,
+        KeyModifiers::NONE,
+        KeyCode::Enter
+    ));
+    assert_eq!(app.prompt.text, "/plugins reload");
+    assert!(!handle_completion_key(
+        &mut app,
+        KeyModifiers::NONE,
+        KeyCode::Enter
+    ));
 }
 
 #[test]

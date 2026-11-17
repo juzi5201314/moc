@@ -471,7 +471,7 @@ pub(super) fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
         app.set_notice(t!("tui.event.skills_compacting").into_owned());
         return;
     }
-    if accept_completion(app) {
+    if accept_completion(app, true) {
         return;
     }
     if crate::btw::submit(app, connection) {
