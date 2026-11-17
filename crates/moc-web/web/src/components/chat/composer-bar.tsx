@@ -12,7 +12,6 @@ import {
   PackageIcon,
   PaperclipIcon,
   SquareIcon,
-  TerminalIcon,
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import {
@@ -56,6 +55,7 @@ import {
 import { selectCommands, selectFeatures, selectModels, useConnection } from "@/store/connection";
 import { reacquire } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
+import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 import {
@@ -65,6 +65,7 @@ import {
   PendingList,
   PlanToggle,
   SessionOptions,
+  ShellModeNotice,
   type Suggestion,
   SuggestionMenu,
 } from "./composer-parts";
@@ -163,6 +164,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const plugins = useTranscript((state) => state.bySession[sessionId]?.plugins);
 
   const info = useTranscript((state) => state.bySession[sessionId]?.info);
+  const draftPermission = useSessions((state) => state.draftSession?.permission);
   const promptRunning = useTranscript((state) => Boolean(state.bySession[sessionId]?.running));
   const skillsWorking = useUi((state) => state.skillsWorking !== null);
   const running = promptRunning || skillsWorking;
@@ -581,12 +583,10 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               bashMode && "ring-1 ring-inset ring-warn/50",
             )}
           >
-            {bashMode && (
-              <div className="flex items-center gap-1.5 px-4 pt-2.5 text-xs font-medium text-warn">
-                <TerminalIcon className="size-3.5" />
-                {text.startsWith("!!") ? t("cb.bash_exclude") : t("cb.bash_include")}
-              </div>
-            )}
+            <ShellModeNotice
+              text={text}
+              permission={isDraft ? draftPermission : info?.permission}
+            />
 
             {images.length > 0 && (
               <Attachments variant="inline" className="px-3 pt-3">

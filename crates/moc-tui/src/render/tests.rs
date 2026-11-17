@@ -314,6 +314,49 @@ fn status_legend_hit_area_carries_the_menu() {
     }
 }
 
+#[test]
+fn manual_shell_full_access_hint_preserves_prompt_legends() {
+    use moc_protocol::SessionPermission;
+    use ratatui::{Terminal, backend::TestBackend};
+    let (events, _) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(Theme::global(), events);
+    app.session = Some(serde_json::from_value(serde_json::json!({
+        "id":"shell", "title":"shell", "model":"test/model", "permission":"workspace", "engine":"standard", "autonomy":"default", "plan_active":false, "fast_mode":false, "engine_locked":false, "cwd":"/tmp", "created_at_ms":0, "updated_at_ms":0
+    })).unwrap());
+    for width in [60, 240] {
+        for permission in [
+            SessionPermission::Full,
+            SessionPermission::Workspace,
+            SessionPermission::WorkspaceOnly,
+        ] {
+            for text in ["!echo ok", "!!echo ok", "ordinary", ""] {
+                app.session.as_mut().unwrap().permission = permission;
+                app.prompt.text = text.into();
+                let mut terminal = Terminal::new(TestBackend::new(width, 5)).unwrap();
+                terminal
+                    .draw(|frame| super::prompt::draw_prompt(frame, &mut app, frame.area()))
+                    .unwrap();
+                let mut row = String::new();
+                let mut x = 0;
+                while x < width {
+                    let symbol = terminal.backend().buffer()[(x, 4)].symbol();
+                    row.push_str(symbol);
+                    x += u16::try_from(super::wrap::str_width(symbol).max(1)).unwrap();
+                }
+                let hint = rust_i18n::t!("tui.prompt.manual_full_access");
+                assert_eq!(
+                    row.contains(hint.as_ref()),
+                    width == 240 && permission != SessionPermission::Full && text.starts_with('!')
+                );
+                assert!(!app.legend_tip_area.is_empty());
+                assert!(!app.engine_area.is_empty());
+                assert!(!app.permission_tag_area.is_empty());
+                assert!(row.contains(permission.as_str()));
+            }
+        }
+    }
+}
+
 /// 告警贴滚动区右上角、notice 贴右下角；两者同屏共存且各自只占一行。
 ///
 /// 同时校验强调色：告警用 warning、普通 notice 用中性 tool 色、失败 notice 用 error 色。

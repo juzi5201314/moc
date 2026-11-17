@@ -462,6 +462,19 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
             end_x = cx + cap_cells;
         }
     }
+    if app.prompt_text().starts_with('!') && permission != "full" {
+        let note = t!("tui.prompt.manual_full_access");
+        let has_left = end_x > area.x + 3;
+        let nx = end_x + if has_left { cell_width(labels::SEP) } else { 0 };
+        let cells = cell_width(&note);
+        if usize::from(nx + cells + 1) + right_width + 4 <= inner + usize::from(area.x) {
+            if has_left {
+                buffer.set_string(end_x, y, labels::SEP, Style::new().fg(theme.border));
+            }
+            buffer.set_string(nx, y, &note, Style::new().fg(theme.accent_warning));
+            end_x = nx + cells;
+        }
+    }
     if end_x > area.x + 3 {
         // 最后一个元素与边框线之间补一格空白，左右对称。
         buffer.set_string(end_x, y, " ", Style::new());

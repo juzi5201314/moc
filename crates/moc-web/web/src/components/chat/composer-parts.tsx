@@ -11,6 +11,7 @@ import {
   ShieldAlertIcon,
   ShieldCheckIcon,
   ShieldIcon,
+  TerminalIcon,
   XIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
@@ -52,6 +53,24 @@ import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 import { AgentsPopover, UsagePopover } from "./status-popovers";
+
+export function ShellModeNotice({
+  text,
+  permission,
+}: {
+  text: string;
+  permission?: SessionPermission;
+}) {
+  const t = useT();
+  if (!text.startsWith("!")) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 px-4 pt-2.5 text-xs font-medium text-warn">
+      <TerminalIcon className="size-3.5 shrink-0" />
+      <span>{text.startsWith("!!") ? t("cb.bash_exclude") : t("cb.bash_include")}</span>
+      {permission && permission !== "full" && <span>{t("cb.bash_full_access")}</span>}
+    </div>
+  );
+}
 
 export const CHIP =
   "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-foreground";

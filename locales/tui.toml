@@ -1032,6 +1032,7 @@ withdraw_failed_fmt = { zh = "撤回失败：%{err}", en = "Withdrawal failed: %
 compact_failed_fmt = { zh = "上下文压缩失败：%{err}", en = "Context compaction failed: %{err}" }
 
 [tui.prompt]
+manual_full_access = { zh = "手动命令不受沙箱限制，以完整权限运行", en = "Manual commands bypass the sandbox and run with full access" }
 copy = { zh = "复制", en = "copy" }
 copied = { zh = "已复制", en = "copied" }
 copy_cancel = { zh = "复制 · Esc 取消", en = "copy · Esc cancel" }
