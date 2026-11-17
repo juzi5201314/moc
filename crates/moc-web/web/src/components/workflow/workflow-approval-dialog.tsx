@@ -94,88 +94,94 @@ export function WorkflowApprovalDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90dvh] flex-col overflow-hidden sm:max-w-3xl">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{t("wfa.title", { kind: t(KIND_LABEL[approval.kind]) })}</DialogTitle>
           <DialogDescription>{approval.run_id}</DialogDescription>
         </DialogHeader>
 
-        <div className="h-[300px]">
-          <Suspense
-            fallback={
-              <div className="grid h-full place-items-center text-ui text-muted-foreground">…</div>
-            }
-          >
-            <WorkflowGraph plan={plan} />
-          </Suspense>
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-ui text-muted-foreground">roles</div>
-          {roles.map((role) => {
-            const id = role.role_id ?? "";
-            return (
-              <div key={id} className="flex items-center gap-2 text-ui">
-                <span className="min-w-0 flex-1 truncate">
-                  {role.name_pattern ?? id}
-                  {role.fan_out && <Badge variant="secondary">×N</Badge>}
-                </span>
-                <WorkflowModelSelect
-                  value={roleModels[id] ?? approval.defaults.role_models?.[id] ?? ""}
-                  disabled={readOnly || pending}
-                  onSelect={(selector) => setRoleModels((prev) => ({ ...prev, [id]: selector }))}
-                />
-              </div>
-            );
-          })}
-          {refs.length > 0 && <div className="text-ui text-muted-foreground">{t("wfa.remap")}</div>}
-          {refs.map((ref) => {
-            const id = ref.ref_id ?? "";
-            return (
-              <div key={id} className="flex items-center gap-2 text-ui">
-                <span className="min-w-0 flex-1 truncate">model({id})</span>
-                <WorkflowModelSelect
-                  value={refMap[id] ?? approval.defaults.model_ref_map?.[id] ?? ""}
-                  disabled={readOnly || pending}
-                  onSelect={(selector) => setRefMap((prev) => ({ ...prev, [id]: selector }))}
-                />
-              </div>
-            );
-          })}
-        </div>
-
-        {commands.length > 0 && (
-          <div className="space-y-1">
-            <div className="text-ui text-muted-foreground">
-              {approval.kind === "hole_fill" ? t("wfa.new_commands") : t("wfa.commands")}
-            </div>
-            {commands.map((command) => (
-              <div key={command} className="text-ui text-warn">
-                {command}
-              </div>
-            ))}
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+          <div className="h-[300px]">
+            <Suspense
+              fallback={
+                <div className="grid h-full place-items-center text-ui text-muted-foreground">
+                  …
+                </div>
+              }
+            >
+              <WorkflowGraph plan={plan} />
+            </Suspense>
           </div>
-        )}
 
-        {approval.kind !== "hole_fill" && approval.script && (
-          <CodeBlock
-            code={approval.script}
-            language="ts"
-            className="min-w-0 [&_pre]:whitespace-pre-wrap [&_pre]:[overflow-wrap:anywhere]"
-          />
-        )}
+          <div className="space-y-2">
+            <div className="text-ui text-muted-foreground">roles</div>
+            {roles.map((role) => {
+              const id = role.role_id ?? "";
+              return (
+                <div key={id} className="flex items-center gap-2 text-ui">
+                  <span className="min-w-0 flex-1 truncate">
+                    {role.name_pattern ?? id}
+                    {role.fan_out && <Badge variant="secondary">×N</Badge>}
+                  </span>
+                  <WorkflowModelSelect
+                    value={roleModels[id] ?? approval.defaults.role_models?.[id] ?? ""}
+                    disabled={readOnly || pending}
+                    onSelect={(selector) => setRoleModels((prev) => ({ ...prev, [id]: selector }))}
+                  />
+                </div>
+              );
+            })}
+            {refs.length > 0 && (
+              <div className="text-ui text-muted-foreground">{t("wfa.remap")}</div>
+            )}
+            {refs.map((ref) => {
+              const id = ref.ref_id ?? "";
+              return (
+                <div key={id} className="flex items-center gap-2 text-ui">
+                  <span className="min-w-0 flex-1 truncate">model({id})</span>
+                  <WorkflowModelSelect
+                    value={refMap[id] ?? approval.defaults.model_ref_map?.[id] ?? ""}
+                    disabled={readOnly || pending}
+                    onSelect={(selector) => setRefMap((prev) => ({ ...prev, [id]: selector }))}
+                  />
+                </div>
+              );
+            })}
+          </div>
 
-        {rejecting && (
-          <Textarea
-            value={feedback}
-            onChange={(event) => setFeedback(event.target.value)}
-            placeholder={t("wfa.reject_ph")}
-            rows={3}
-            disabled={readOnly || pending}
-          />
-        )}
+          {commands.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-ui text-muted-foreground">
+                {approval.kind === "hole_fill" ? t("wfa.new_commands") : t("wfa.commands")}
+              </div>
+              {commands.map((command) => (
+                <div key={command} className="text-ui text-warn">
+                  {command}
+                </div>
+              ))}
+            </div>
+          )}
 
-        <DialogFooter>
+          {approval.kind !== "hole_fill" && approval.script && (
+            <CodeBlock
+              code={approval.script}
+              language="ts"
+              className="min-w-0 [&_pre]:whitespace-pre-wrap [&_pre]:[overflow-wrap:anywhere]"
+            />
+          )}
+
+          {rejecting && (
+            <Textarea
+              value={feedback}
+              onChange={(event) => setFeedback(event.target.value)}
+              placeholder={t("wfa.reject_ph")}
+              rows={3}
+              disabled={readOnly || pending}
+            />
+          )}
+        </div>
+
+        <DialogFooter className="shrink-0">
           {rejecting ? (
             <>
               <Button variant="ghost" onClick={() => setRejecting(false)} disabled={pending}>

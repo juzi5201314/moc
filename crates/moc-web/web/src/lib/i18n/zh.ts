@@ -178,6 +178,7 @@ export const zh = {
   "cb.ph_cont": "继续对话，/ 查看命令，! 执行命令",
   "cb.bash_include": "执行命令 · 输出写入上下文",
   "cb.bash_exclude": "执行命令 · 输出不进入上下文",
+  "cb.bash_full_access": "手动命令不受沙箱限制，以完整权限运行",
   "cb.remove_image": "移除 {name}",
   "cb.input": "输入消息",
   "cb.add_image": "添加图片",

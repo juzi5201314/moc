@@ -112,7 +112,7 @@ class MocAgent(BaseInstalledAgent):
             return self.options
         return MocOptions()
 
-    def _base_url(self) -> str:
+    def _provider_base_url(self) -> str:
         url = self._opts().moc_base_url or os.environ.get("MOC_BASE_URL")
         if not url:
             raise ValueError(
@@ -155,9 +155,11 @@ class MocAgent(BaseInstalledAgent):
         return (
             "[providers.eval]\n"
             f'api = "{options.api_format}"\n'
-            f"base_url = {json.dumps(self._base_url())}\n"
+            f"base_url = {json.dumps(self._provider_base_url())}\n"
             f'api_key = "env:{options.api_key_env}"\n'
             "timeout_secs = 1800.0\n"
+            # 网关偶发 524 突发：放宽重试预算，尽量在一个 agent 时限内扛过去
+            "retry = { max_attempts = 30, initial_backoff_secs = 0.5, max_backoff_secs = 120.0, jitter = true }\n"
             "\n"
             "[session]\n"
             "compress = false\n"
@@ -271,13 +273,16 @@ class MocAgent(BaseInstalledAgent):
         logs_dir = shlex.quote(str(self.environment_logs_dir))
         sessions = shlex.quote(str(self.SESSION_DIR))
         try:
+            # 会话文件落在 sessions/<cwd-slug>/ 子目录，且可能是 .jsonl.zst；
+            # 用 find 递归收集，缺 zstd 时退化为只收集明文 jsonl
             await environment.exec(
                 command=(
-                    f"cat {sessions}/*.jsonl > {logs_dir}/moc-session.jsonl "
-                    "2>/dev/null; "
-                    f"for f in {sessions}/*.jsonl.zst; do "
-                    f'[ -e "$f" ] && zstd -dc "$f" >> {logs_dir}/moc-session.jsonl '
-                    "2>/dev/null; done; true"
+                    f"find {sessions} -name '*.jsonl' -exec cat {{}} + "
+                    f"> {logs_dir}/moc-session.jsonl 2>/dev/null; "
+                    f"find {sessions} -name '*.jsonl.zst' -print0 2>/dev/null | "
+                    f"while IFS= read -r -d '' f; do "
+                    f'zstd -dc "$f" >> {logs_dir}/moc-session.jsonl 2>/dev/null; '
+                    "done; true"
                 )
             )
         except Exception as exc:  # noqa: BLE001 - 证据收集不能让 trial 失败
@@ -336,7 +341,7 @@ class MocAgent(BaseInstalledAgent):
             "moc_turns": turns,
             "first_turn_cached_tokens": first_turn_cached,
             "cache_creation_input_tokens": cache_write,
-            "moc_base_url": self._base_url(),
+            "moc_base_url": self._provider_base_url(),
         }
 
     def _write_instruction(self, instruction: str) -> Path:

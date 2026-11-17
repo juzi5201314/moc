@@ -81,6 +81,21 @@ export function parseSlash(text: string): { name: string; args: string } | null 
   return match ? { name: match[1], args: (match[2] ?? "").trim() } : null;
 }
 
+/** 已知命令首 token 的范围；未知命令保持普通文本。 */
+export function commandToken(
+  text: string,
+  commands: SlashCommand[],
+): { start: number; end: number } | null {
+  const parsed = parseSlash(text);
+  if (
+    !parsed ||
+    !commands.some((item) => item.name === parsed.name || item.aliases?.includes(parsed.name))
+  )
+    return null;
+  const start = text.length - text.trimStart().length;
+  return { start, end: start + parsed.name.length + 1 };
+}
+
 /** flag 关闭的命令（`features` 未加载时视为开启）。 */
 function flagDisabled(command: SlashCommand, features?: Record<string, boolean>): boolean {
   return command.flag !== undefined && features?.[command.flag] === false;
