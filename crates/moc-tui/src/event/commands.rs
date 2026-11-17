@@ -290,7 +290,13 @@ pub(super) fn dispatch_command(
                     .await;
                 let _ = events.send(AppEvent::SessionControlSettled {
                     session_id,
-                    notice: Some(t!("tui.cmd.compact_done").into_owned()),
+                    notice: Some(
+                        if outcome.as_ref().is_ok_and(|result| result.method == "noop") {
+                            t!("core.history.nothing_to_compact").into_owned()
+                        } else {
+                            t!("tui.cmd.compact_done").into_owned()
+                        },
+                    ),
                     result: outcome.map(|_| None).map_err(|error| {
                         t!("tui.cmd.compact_failed_fmt", err = error.to_string()).into_owned()
                     }),

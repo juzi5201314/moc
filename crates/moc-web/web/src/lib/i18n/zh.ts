@@ -237,6 +237,7 @@ export const zh = {
   "slash.plan_off": "已退出计划状态",
   "slash.plan_failed": "切换计划状态失败：{error}",
   "slash.compacted": "上下文已压缩：{before} → {after} tokens",
+  "slash.compact_empty": "暂无可压缩的对话历史",
   "slash.compact_failed": "压缩失败：{error}",
   "slash.no_plan": "当前没有待审阅的计划",
   "slash.wf_active": "工作流已在运行中",

@@ -1,9 +1,12 @@
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useI18n } from "@/lib/i18n";
 import { rpc } from "@/protocol/client";
 import type { CommandMeta } from "@/protocol/types";
 import { refreshSideData } from "@/store/lifecycle";
 import { fromMeta, parseSlash, runSlash, slashMatches } from "./slash";
+
+vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
 
 vi.mock("@/store/lifecycle", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/store/lifecycle")>()),
@@ -26,6 +29,52 @@ function meta(partial: Partial<CommandMeta> & { name: string }): CommandMeta {
 }
 
 describe("slash 注册表语义", () => {
+  it("空历史与草稿显示友好提示，正常压缩和真正失败保持原反馈", async () => {
+    const originalLocale = useI18n.getState().locale;
+    const call = vi.spyOn(rpc, "call");
+    const commands = [fromMeta(meta({ name: "compact", needsSession: true }))];
+    try {
+      for (const language of ["zh", "en"] as const) {
+        useI18n.setState({ locale: language });
+        const expected =
+          language === "zh" ? "暂无可压缩的对话历史" : "No conversation history to compact yet";
+        vi.mocked(toast).mockClear();
+        call.mockClear();
+        runSlash("draft-session", "/compact", commands);
+        expect(toast).toHaveBeenCalledWith(expected);
+        expect(call).not.toHaveBeenCalled();
+        call.mockResolvedValueOnce({
+          method: "noop",
+          tokens_before: 0,
+          tokens_after: 0,
+          full: false,
+          summary_chars: 0,
+        });
+        runSlash("session", "/compact", commands);
+        await vi.waitFor(() => expect(toast).toHaveBeenCalledTimes(2));
+        expect(toast).toHaveBeenLastCalledWith(expected);
+        expect(call).toHaveBeenCalledWith("session/compact", { session_id: "session" });
+      }
+      const success = vi.spyOn(toast, "success").mockImplementation(() => "toast");
+      const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+      call.mockResolvedValueOnce({
+        method: "moc",
+        tokens_before: 1000,
+        tokens_after: 500,
+        full: true,
+        summary_chars: 100,
+      });
+      runSlash("session", "/compact", commands);
+      await vi.waitFor(() => expect(success).toHaveBeenCalled());
+      call.mockRejectedValueOnce(new Error("upstream failed"));
+      runSlash("session", "/compact", commands);
+      await vi.waitFor(() =>
+        expect(error).toHaveBeenCalledWith(expect.stringContaining("upstream failed")),
+      );
+    } finally {
+      useI18n.setState({ locale: originalLocale });
+    }
+  });
   it("插件重载成功刷新会话命令缓存，草稿或失败不刷新", async () => {
     const refresh = vi.mocked(refreshSideData);
     refresh.mockClear();

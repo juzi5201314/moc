@@ -1,5 +1,36 @@
 use super::*;
 
+#[tokio::test]
+async fn compact_empty_session_settles_with_friendly_notice_without_model_calls() {
+    let mut h = SlowCompactionHarness::new().await;
+    let session = h
+        .connection
+        .client
+        .call::<moc_protocol::SessionNew>(moc_protocol::SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            engine: SessionEngine::Standard,
+            plan_active: false,
+            fast_mode: false,
+        })
+        .await
+        .unwrap();
+    h.session = session.id.clone();
+    h.app.session = Some(session);
+    let before = h.upstream.received_requests().await.unwrap().len();
+    execute_command(&mut h.app, &h.connection, "/compact".into());
+    let event = h.settle().await;
+    assert!(
+        matches!(&event, AppEvent::SessionControlSettled { result: Ok(_), notice: Some(notice), .. } if notice == "暂无可压缩的对话历史")
+    );
+    crate::interaction::handle_event(&mut h.app, &h.connection, event);
+    assert_eq!(h.app.notice.as_deref(), Some("暂无可压缩的对话历史"));
+    assert!(!h.app.inflight_session_ops.contains(&h.session));
+    assert_eq!(h.upstream.received_requests().await.unwrap().len(), before);
+    h.shutdown().await;
+}
+
 /// `/usage` 输出会话统计与对齐表格：列宽一致、数字右对齐、token 走 k/m/b 单位，
 /// 超宽模型名截断，末行是全部模型的合计。
 #[test]

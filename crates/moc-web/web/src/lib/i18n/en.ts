@@ -241,6 +241,7 @@ export const en: Record<MsgKey, string> = {
   "slash.plan_off": "Plan mode off",
   "slash.plan_failed": "Failed to toggle plan mode: {error}",
   "slash.compacted": "Context compacted: {before} → {after} tokens",
+  "slash.compact_empty": "No conversation history to compact yet",
   "slash.compact_failed": "Compaction failed: {error}",
   "slash.no_plan": "No plan awaiting review",
   "slash.wf_active": "A workflow run is already active",

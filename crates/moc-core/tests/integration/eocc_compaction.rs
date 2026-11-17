@@ -6,6 +6,50 @@ use moc_protocol::{SessionCompact, SessionCompactParams, SessionEngine};
 use serde_json::Value;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
+#[tokio::test]
+async fn empty_manual_compaction_is_a_noop_for_every_method_without_model_calls() {
+    let upstream = MockServer::builder().start().await;
+    for method in ["moc", "grok_build", "eocc"] {
+        let harness = Harness::new(
+            &upstream.uri(),
+            "openai_chat",
+            &format!("[compaction]\nmethod='{method}'\nauto=false\n"),
+        )
+        .await;
+        let id = harness.session(SessionEngine::Standard).await;
+        for instructions in [None, Some("保留任务".to_owned())] {
+            let result = harness
+                .client
+                .call::<SessionCompact>(SessionCompactParams {
+                    session_id: id.clone(),
+                    instructions,
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.method, "noop");
+            assert_eq!(
+                (
+                    result.tokens_before,
+                    result.tokens_after,
+                    result.summary_chars
+                ),
+                (0, 0, 0)
+            );
+            assert!(!result.full);
+        }
+        assert!(!harness.updates.lock().iter().any(|update| matches!(
+            update,
+            moc_protocol::SessionUpdate::ContextCompactionStarted
+                | moc_protocol::SessionUpdate::ContextCompacted { .. }
+                | moc_protocol::SessionUpdate::Error { .. }
+        )));
+        let store = SessionStore::new(harness.root.path().join("sessions"));
+        assert!(store.find(&id).await.unwrap().is_none());
+        harness.close().await;
+    }
+    assert!(upstream.received_requests().await.unwrap().is_empty());
+}
+
 fn recap() -> &'static str {
     "## Objective\n实现可选压缩而不修改默认。\n## Established Facts\n原始轨迹可回查。\n## Applied Changes\nNone\n## Verification\n尚未验证实现。\n## Dead Ends\nNone\n## Remaining Plan\n检查新方法并验证默认算法未变；完成条件是全部回归通过。"
 }

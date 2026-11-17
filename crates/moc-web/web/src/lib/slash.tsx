@@ -138,7 +138,11 @@ export function runSlash(
     return true;
   }
   if (command.needsSession && sessionId === "draft-session") {
-    toast(t("slash.needs_session", { name: command.name }));
+    toast(
+      !command.plugin && command.name === "compact"
+        ? t("slash.compact_empty")
+        : t("slash.needs_session", { name: command.name }),
+    );
     return true;
   }
   if (command.availableDuringTask === false && view?.running) {
@@ -329,14 +333,18 @@ export function runSlash(
       break;
     case "compact":
       void compactSession(sessionId)
-        .then((result) =>
+        .then((result) => {
+          if (result.method === "noop") {
+            toast(t("slash.compact_empty"));
+            return;
+          }
           toast.success(
             t("slash.compacted", {
               before: result.tokens_before.toLocaleString(),
               after: result.tokens_after.toLocaleString(),
             }),
-          ),
-        )
+          );
+        })
         .catch((error) => toast.error(t("slash.compact_failed", { error: errorText(error) })));
       break;
     case "model":

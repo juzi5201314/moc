@@ -1394,6 +1394,7 @@ tool_hidden = { zh = "工具输出已隐藏", en = "Tool output hidden" }
 user_hidden = { zh = "用户输入超过 2,000 字符或 80 行，正文已隐藏", en = "User input exceeds 2,000 characters or 80 lines; body hidden" }
 
 [core.history]
+nothing_to_compact = { zh = "暂无可压缩的对话历史", en = "No conversation history to compact yet" }
 closed = { zh = "历史传输已关闭或过期，请重新读取", en = "History transfer closed or expired; read it again" }
 expired = { zh = "历史传输已过期，请重新读取", en = "History transfer expired; read it again" }
 offset_oob = { zh = "历史块偏移越界", en = "History chunk offset out of bounds" }

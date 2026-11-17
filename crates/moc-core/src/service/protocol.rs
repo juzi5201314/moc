@@ -737,6 +737,24 @@ impl AgentService for Core {
             .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        {
+            let state = record.state.lock().await;
+            if state.summary.is_none()
+                && !state
+                    .transcript
+                    .iter()
+                    .skip(state.context_start)
+                    .any(|entry| entry.context_message().is_some())
+            {
+                return Ok(CompactResult {
+                    method: "noop".into(),
+                    tokens_before: 0,
+                    tokens_after: 0,
+                    full: false,
+                    summary_chars: 0,
+                });
+            }
+        }
         let result = compact::manual(
             &self.inner,
             &ctx,
