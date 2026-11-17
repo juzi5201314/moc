@@ -94,7 +94,7 @@ export function WorkflowApprovalDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>{t("wfa.title", { kind: t(KIND_LABEL[approval.kind]) })}</DialogTitle>
           <DialogDescription>{approval.run_id}</DialogDescription>
@@ -158,7 +158,11 @@ export function WorkflowApprovalDialog({
         )}
 
         {approval.kind !== "hole_fill" && approval.script && (
-          <CodeBlock code={approval.script} language="ts" />
+          <CodeBlock
+            code={approval.script}
+            language="ts"
+            className="min-w-0 [&_pre]:whitespace-pre-wrap [&_pre]:[overflow-wrap:anywhere]"
+          />
         )}
 
         {rejecting && (
