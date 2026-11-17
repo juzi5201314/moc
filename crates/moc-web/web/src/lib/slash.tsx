@@ -1,6 +1,6 @@
 // Composer 斜杠命令：内置命令元数据来自后端注册表（/commands.json，
 // 存 useConnection.commands），插件命令经 plugin/list 并入（同名时内置优先）。
-// 命令只在整条输入以 `/名字` 开头时生效；不认识的 `/xxx` 按普通提示发送。
+// 命令只在整条输入以 `/名字` 开头时生效；未知命令本地拒绝，`//` 转义为普通文本。
 
 import { toast } from "sonner";
 import { AUTONOMY } from "@/lib/autonomy";
@@ -76,8 +76,44 @@ export function fromMeta(meta: CommandMeta): SlashCommand {
 
 /** 拆出 `/name args`；不是斜杠开头返回 null。 */
 export function parseSlash(text: string): { name: string; args: string } | null {
-  const match = /^\/([\w-]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  const match = /^\/([^/\s]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
   return match ? { name: match[1], args: (match[2] ?? "").trim() } : null;
+}
+
+export function unescapeSlash(text: string): string {
+  return text.startsWith("//") ? text.slice(1) : text;
+}
+
+export function unknownSlash(text: string, commands: SlashCommand[]): string | null {
+  const parsed = parseSlash(text);
+  if (
+    !parsed ||
+    commands.some((item) => item.name === parsed.name || item.aliases?.includes(parsed.name))
+  )
+    return null;
+  const closest = commands
+    .flatMap((item) => [item.name, ...(item.aliases ?? [])])
+    .map((name) => ({ name, distance: editDistance(parsed.name, name) }))
+    .filter((item) => item.distance <= 2)
+    .sort((a, b) => a.distance - b.distance)[0];
+  return closest
+    ? t("slash.unknown_suggestion", { name: `/${parsed.name}`, suggestion: `/${closest.name}` })
+    : t("slash.unknown", { name: `/${parsed.name}` });
+}
+
+function editDistance(a: string, b: string): number {
+  const target = [...b];
+  const row = Array.from({ length: target.length + 1 }, (_, i) => i);
+  for (const [i, character] of [...a].entries()) {
+    let diagonal = row[0];
+    row[0] = i + 1;
+    for (const [j, other] of target.entries()) {
+      const above = row[j + 1];
+      row[j + 1] = Math.min(diagonal + Number(character !== other), row[j] + 1, above + 1);
+      diagonal = above;
+    }
+  }
+  return row[target.length];
 }
 
 /** flag 关闭的命令（`features` 未加载时视为开启）。 */
@@ -110,7 +146,7 @@ function errorText(error: unknown): string {
 }
 
 /**
- * 执行一条斜杠命令；返回 false 表示不是已知命令（调用方按普通提示发送）。
+ * 执行或拒绝一条斜杠命令；返回 false 表示普通提示。
  * 草稿会话里需要真实会话的命令给出提示而不是静默失败。
  */
 export function runSlash(
@@ -124,7 +160,10 @@ export function runSlash(
   const command = commands.find(
     (item) => item.name === parsed.name || item.aliases?.includes(parsed.name),
   );
-  if (!command) return false;
+  if (!command) {
+    toast.error(unknownSlash(text, commands));
+    return true;
+  }
   const { args } = parsed;
   const view = useTranscript.getState().bySession[sessionId];
   const composer = useComposer.getState();

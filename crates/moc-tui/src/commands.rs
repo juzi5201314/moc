@@ -5,6 +5,56 @@ use moc_protocol::commands::{
     ArgCompletion, CommandGroup, CommandRegistry, CommandSpec, DynamicArg,
 };
 use moc_protocol::features::FeatureFlag;
+use rust_i18n::t;
+
+pub fn unknown_slash(app: &crate::app::App, text: &str) -> Option<String> {
+    let token = text.split_whitespace().next()?;
+    let name = token.strip_prefix('/')?;
+    if name.is_empty() || name.contains('/') || app.commands.resolve(token).is_some() {
+        return None;
+    }
+    let suggestion = app
+        .commands
+        .builtins()
+        .iter()
+        .filter(|spec| !spec.hidden)
+        .flat_map(|spec| std::iter::once(spec.name).chain(spec.aliases.iter().copied()))
+        .chain(
+            app.commands
+                .plugins()
+                .iter()
+                .map(|command| command.name.as_str()),
+        )
+        .map(|candidate| (edit_distance(name, candidate), candidate))
+        .filter(|(distance, _)| *distance <= 2)
+        .min_by_key(|(distance, _)| *distance);
+    Some(match suggestion {
+        Some((_, suggestion)) => t!(
+            "tui.cmd.unknown_suggestion_fmt",
+            name = token,
+            suggestion = format!("/{suggestion}")
+        )
+        .into_owned(),
+        None => t!("tui.cmd.unknown_fmt", name = token).into_owned(),
+    })
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<_> = b.chars().collect();
+    let mut row: Vec<_> = (0..=b.len()).collect();
+    for (i, a) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, b) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (diagonal + usize::from(a != *b))
+                .min(row[j] + 1)
+                .min(above + 1);
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
 
 /// TUI 内置命令 id：`execute_command` 按它分派到具体处理器。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -3,8 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useI18n } from "@/lib/i18n";
 import { rpc } from "@/protocol/client";
 import type { CommandMeta } from "@/protocol/types";
+import { useComposer } from "@/store/composer";
 import { refreshSideData } from "@/store/lifecycle";
-import { fromMeta, parseSlash, runSlash, slashMatches } from "./slash";
+import { fromMeta, parseSlash, runSlash, slashMatches, unescapeSlash, unknownSlash } from "./slash";
 
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
 
@@ -137,17 +138,55 @@ describe("slash 注册表语义", () => {
     expect(fromMeta(meta({ name: "x" })).usage).toBeUndefined();
   });
 
-  it("绝对路径和未注册命令作为普通消息发送", () => {
+  it("绝对路径和转义命令作为普通消息发送", () => {
     const commands = [fromMeta(meta({ name: "goal" }))];
     for (const text of [
       "/tmp/a.txt",
-      "/tmp",
       "/goal/file.txt",
       "/tmp/my file.txt 请检查",
-      "/unknown-command",
+      "//unknown-command",
+      "//goal",
+      "普通文本",
+      "",
     ]) {
       expect(slashMatches(text, commands)).toEqual([]);
       expect(runSlash("test", text, commands)).toBe(false);
+      expect(unknownSlash(text, commands)).toBeNull();
+    }
+    expect(unescapeSlash("//goal")).toBe("/goal");
+    expect(unescapeSlash("//unknown-command")).toBe("/unknown-command");
+    expect(unescapeSlash("/usr/bin/x arg")).toBe("/usr/bin/x arg");
+  });
+
+  it("未知命令保留草稿并本地报错，建议最相近的注册命令，别名和插件仍可识别", () => {
+    const originalLocale = useI18n.getState().locale;
+    const originalDrafts = useComposer.getState().drafts;
+    const call = vi.spyOn(rpc, "call");
+    const commands = [
+      fromMeta(meta({ name: "compact", aliases: ["squash"] })),
+      { ...fromMeta(meta({ name: "hello" })), plugin: "demo" },
+    ];
+    useComposer.getState().setText("test", "/compcat now");
+    try {
+      for (const locale of ["zh", "en"] as const) {
+        useI18n.setState({ locale });
+        expect(runSlash("test", "/compcat now", commands)).toBe(true);
+        expect(toast.error).toHaveBeenLastCalledWith(
+          locale === "zh"
+            ? "未知命令：/compcat，是否想输入 /compact？"
+            : "Unknown command: /compcat. Did you mean /compact?",
+        );
+        expect(unknownSlash("/zzzzzzzzzzzz", commands)).toBe(
+          locale === "zh" ? "未知命令：/zzzzzzzzzzzz" : "Unknown command: /zzzzzzzzzzzz",
+        );
+        expect(useComposer.getState().drafts.test.text).toBe("/compcat now");
+        expect(call).not.toHaveBeenCalled();
+        for (const text of ["/squash", "/hello arg"])
+          expect(unknownSlash(text, commands)).toBeNull();
+      }
+    } finally {
+      useI18n.setState({ locale: originalLocale });
+      useComposer.setState({ drafts: originalDrafts });
     }
   });
 

@@ -1,5 +1,71 @@
 use super::*;
 
+#[tokio::test]
+async fn unknown_slash_preserves_input_instead_of_sending_or_queueing() {
+    let (core, connection, mut app) = setup_test_app().await;
+    for queued in [false, true] {
+        app.prompt.text = "/compcat now".into();
+        if queued {
+            crate::queue::submit(&mut app, &connection, true);
+        } else {
+            commit_prompt(&mut app, &connection);
+        }
+        assert_eq!(app.prompt.text, "/compcat now");
+        assert!(app.notice_error);
+        assert!(app.notice.as_ref().unwrap().contains("/compact"));
+        assert!(app.queues.is_empty());
+        assert!(app.steers.is_empty());
+        assert!(app.inflight_prompts.is_empty());
+    }
+    app.commands
+        .set_plugin_commands(vec![moc_protocol::commands::PluginCommand {
+            name: "hello".into(),
+            description: String::new(),
+            usage: String::new(),
+            plugin: "test".into(),
+            origin: String::new(),
+        }]);
+    for text in [
+        "",
+        "ordinary text",
+        "/",
+        "/settings",
+        "/hello arg",
+        "/usr/bin/x arg",
+        "//usage",
+    ] {
+        assert!(
+            crate::commands::unknown_slash(&app, text).is_none(),
+            "{text}"
+        );
+    }
+    let message = crate::commands::unknown_slash(&app, "/zzzzzzzzzzzz").unwrap();
+    assert!(message.ends_with("/zzzzzzzzzzzz"));
+    connection.shutdown().await;
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn escaped_slash_is_literal_in_the_submitted_draft() {
+    let (core, connection, mut app) = setup_test_app().await;
+    let session = app.session.as_ref().unwrap().id.clone();
+    app.prompt_running = true;
+    for (text, expected) in [
+        ("//usage", "/usage"),
+        ("//compcat", "/compcat"),
+        ("/usr/bin/x arg", "/usr/bin/x arg"),
+    ] {
+        app.prompt.insert_str_raw(text);
+        commit_prompt(&mut app, &connection);
+        assert!(app.prompt.is_empty());
+        let pending = app.steers[&session].back().unwrap();
+        assert_eq!(pending.draft.text, text);
+        assert_eq!(pending.echo_text, expected);
+    }
+    connection.shutdown().await;
+    core.shutdown().await;
+}
+
 #[test]
 fn exact_command_completion_wins_without_reordering_other_candidates() {
     let mut app = app_with_completion();
@@ -665,10 +731,10 @@ async fn slash_paths_submit_as_normal_messages() {
     let session = app.session.as_ref().unwrap().id.clone();
     for text in [
         "/tmp/a.txt",
-        "/tmp",
+        "//tmp",
         "/goal/file.txt",
         "/tmp/my file.txt 请检查",
-        "/unknown-command",
+        "//unknown-command",
     ] {
         for paste in [false, true] {
             if paste {

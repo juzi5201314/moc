@@ -482,8 +482,11 @@ pub(super) fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
         .split_whitespace()
         .next()
         .unwrap_or_default();
-    // 只有已注册的命令才分流；绝对路径和其他斜杠文本按普通消息发送。
-    if app.prompt_text().starts_with('/') && app.commands.resolve(name).is_some() {
+    // 双斜杠转义由普通发送路径处理。
+    if app.prompt_text().trim_start().starts_with('/')
+        && !app.prompt_text().trim_start().starts_with("//")
+        && app.commands.resolve(name).is_some()
+    {
         if app.prompt.has_attached_images() {
             app.set_notice(t!("tui.event.slash_no_images").into_owned());
             return;

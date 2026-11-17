@@ -246,6 +246,7 @@ focused_fmt = { zh = "聚焦子代理时不能执行 /%{cmd}", en = "Can't run /
 busy_fmt = { zh = "正在运行中，暂时不能执行 /%{cmd}", en = "Can't run /%{cmd} while a task is running" }
 plugin_failed_fmt = { zh = "插件命令执行失败：%{err}", en = "Plugin command failed: %{err}" }
 unknown_fmt = { zh = "未知命令：%{name}", en = "Unknown command: %{name}" }
+unknown_suggestion_fmt = { zh = "未知命令：%{name}，是否想输入 %{suggestion}？", en = "Unknown command: %{name}. Did you mean %{suggestion}?" }
 unload_failed_fmt = { zh = "卸载会话失败：%{err}", en = "Failed to unload session: %{err}" }
 new_failed_fmt = { zh = "新建会话失败：%{err}", en = "Failed to create session: %{err}" }
 plugins_usage = { zh = "用法：/plugins [reload]", en = "Usage: /plugins [reload]" }

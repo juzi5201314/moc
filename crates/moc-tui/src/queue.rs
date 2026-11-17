@@ -55,6 +55,10 @@ pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
     if crate::btw::submit(app, connection) {
         return;
     }
+    if let Some(error) = crate::commands::unknown_slash(app, app.prompt_text()) {
+        app.set_error_notice(error);
+        return;
+    }
     if app.prompt.is_empty() {
         return;
     }
@@ -124,8 +128,9 @@ fn enqueue(
         crate::event::cancel_prompt(&connection.client, app);
     } else {
         debug_assert!(prompt.mode.is_none(), "临时模式必须走独立队列");
-        let parts = prompt.draft.preview_parts();
-        let display_text = prompt.draft.expanded_text();
+        let mut parts = prompt.draft.preview_parts();
+        let mut display_text = prompt.draft.expanded_text();
+        unescape_slash(&mut parts, &mut display_text);
         let echo_text = parts_echo(&parts);
         let prompt_id = prompt.id;
         app.steers
@@ -227,8 +232,11 @@ pub fn dispatch(app: &mut App, connection: &EmbeddedConnection) {
         return;
     };
     // 展示文本要在拆块之前取：保留 `[image#N]` 占位供转写高亮。
-    let display_text = prompt.draft.expanded_text();
-    let parts = prompt.draft.build_input_parts();
+    let mut display_text = prompt.draft.expanded_text();
+    let mut parts = prompt.draft.build_input_parts();
+    if prompt.mode.is_none() {
+        unescape_slash(&mut parts, &mut display_text);
+    }
     let command = if prompt.mode.is_none()
         && let [InputPart::Text { text }] = parts.as_slice()
     {
@@ -359,6 +367,20 @@ fn parts_echo(parts: &[InputPart]) -> String {
         }
     }
     out
+}
+
+fn unescape_slash(parts: &mut [InputPart], display_text: &mut String) {
+    let Some(InputPart::Text { text }) = parts.first_mut() else {
+        return;
+    };
+    let start = text.len() - text.trim_start().len();
+    if text[start..].starts_with("//") {
+        text.remove(start);
+        let start = display_text.len() - display_text.trim_start().len();
+        if display_text[start..].starts_with("//") {
+            display_text.remove(start);
+        }
+    }
 }
 
 /// 事件先于 RPC 响应时按正文认领最早的一条；只匹配还没挂 core ID 的项。
