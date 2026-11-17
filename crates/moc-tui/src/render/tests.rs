@@ -21,6 +21,48 @@ fn prompt_preserves_spaces_after_deleting_arguments() {
 }
 
 #[test]
+fn prompt_only_highlights_registered_command_tokens() {
+    let (events, _) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(Theme::global(), events);
+    app.commands
+        .set_plugin_commands(vec![moc_protocol::commands::PluginCommand {
+            name: "deploy".into(),
+            description: String::new(),
+            usage: String::new(),
+            plugin: "demo".into(),
+            origin: String::new(),
+        }]);
+    for width in [18, 80] {
+        for (text, highlighted) in [
+            ("  /help 参数 /help", "/help"),
+            ("/exit 参数", "/exit"),
+            ("/deploy 参数", "/deploy"),
+            ("/unknown-command 参数", ""),
+            ("普通文本 /help", ""),
+            ("", ""),
+        ] {
+            app.prompt.text = text.into();
+            let lines = prompt_lines(&app, Rect::new(0, 0, width, 20));
+            let body: Vec<_> = lines
+                .iter()
+                .flat_map(|line| line.spans.iter().skip(2))
+                .collect();
+            let colored: String = body
+                .iter()
+                .filter(|span| span.style.fg == Some(app.theme.accent_tool))
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(colored, highlighted);
+            assert!(
+                body.iter()
+                    .all(|span| span.style.fg == Some(app.theme.text_primary)
+                        || span.style.fg == Some(app.theme.accent_tool))
+            );
+        }
+    }
+}
+
+#[test]
 fn prompt_wrap_keeps_spaces_and_cursor_mapping() {
     let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::new(Theme::global(), events);
@@ -309,6 +351,49 @@ fn status_legend_hit_area_carries_the_menu() {
             if width <= 86 {
                 assert!(!model.contains("deepseek-ai/"));
                 assert!(model.ends_with('…'));
+            }
+        }
+    }
+}
+
+#[test]
+fn manual_shell_full_access_hint_preserves_prompt_legends() {
+    use moc_protocol::SessionPermission;
+    use ratatui::{Terminal, backend::TestBackend};
+    let (events, _) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(Theme::global(), events);
+    app.session = Some(serde_json::from_value(serde_json::json!({
+        "id":"shell", "title":"shell", "model":"test/model", "permission":"workspace", "engine":"standard", "autonomy":"default", "plan_active":false, "fast_mode":false, "engine_locked":false, "cwd":"/tmp", "created_at_ms":0, "updated_at_ms":0
+    })).unwrap());
+    for width in [60, 240] {
+        for permission in [
+            SessionPermission::Full,
+            SessionPermission::Workspace,
+            SessionPermission::WorkspaceOnly,
+        ] {
+            for text in ["!echo ok", "!!echo ok", "ordinary", ""] {
+                app.session.as_mut().unwrap().permission = permission;
+                app.prompt.text = text.into();
+                let mut terminal = Terminal::new(TestBackend::new(width, 5)).unwrap();
+                terminal
+                    .draw(|frame| super::prompt::draw_prompt(frame, &mut app, frame.area()))
+                    .unwrap();
+                let mut row = String::new();
+                let mut x = 0;
+                while x < width {
+                    let symbol = terminal.backend().buffer()[(x, 4)].symbol();
+                    row.push_str(symbol);
+                    x += u16::try_from(super::wrap::str_width(symbol).max(1)).unwrap();
+                }
+                let hint = rust_i18n::t!("tui.prompt.manual_full_access");
+                assert_eq!(
+                    row.contains(hint.as_ref()),
+                    width == 240 && permission != SessionPermission::Full && text.starts_with('!')
+                );
+                assert!(!app.legend_tip_area.is_empty());
+                assert!(!app.engine_area.is_empty());
+                assert!(!app.permission_tag_area.is_empty());
+                assert!(row.contains(permission.as_str()));
             }
         }
     }

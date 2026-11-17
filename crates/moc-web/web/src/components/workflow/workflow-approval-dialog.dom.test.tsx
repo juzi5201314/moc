@@ -74,6 +74,39 @@ describe("WorkflowApprovalDialog", () => {
     flags.readOnly = false;
   });
 
+  it("长脚本仅中间内容滚动，批准和拒绝操作固定在视口约束的对话框底部", async () => {
+    const view = render(
+      <WorkflowApprovalDialog
+        sessionId="s1"
+        approval={{ ...approval, script: "phase('review');\n".repeat(500) }}
+        open
+        onOpenChange={() => {}}
+      />,
+    );
+    const dialog = view.getByRole("dialog");
+    expect(dialog.classList.contains("flex")).toBe(true);
+    expect(dialog.classList.contains("flex-col")).toBe(true);
+    expect(dialog.classList.contains("max-h-[90dvh]")).toBe(true);
+    expect(dialog.classList.contains("overflow-hidden")).toBe(true);
+    expect(dialog.classList.contains("overflow-y-auto")).toBe(false);
+    const footer = dialog.querySelector("[data-slot='dialog-footer']");
+    const body = dialog.querySelector(".overflow-y-auto");
+    if (!footer || !body) throw new Error("审批布局缺少内容区或操作区");
+    expect(body.classList.contains("min-h-0")).toBe(true);
+    expect(body.classList.contains("flex-1")).toBe(true);
+    expect(body.contains(dialog.querySelector("pre"))).toBe(true);
+    expect(body.nextElementSibling).toBe(footer);
+    expect(footer.classList.contains("shrink-0")).toBe(true);
+    fireEvent.scroll(body, { target: { scrollTop: 10000 } });
+    expect(footer.contains(view.getByRole("button", { name: "批准" }))).toBe(true);
+    fireEvent.click(view.getByRole("button", { name: "拒绝" }));
+    expect(footer.contains(view.getByRole("button", { name: "确认拒绝" }))).toBe(true);
+    expect(body.contains(view.getByPlaceholderText(/拒绝反馈/))).toBe(true);
+    fireEvent.click(view.getByRole("button", { name: "取消" }));
+    fireEvent.click(view.getByRole("button", { name: "批准" }));
+    await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
+  });
+
   it("审批窗覆盖默认桌面宽度，长脚本可换行且保留全文", () => {
     const script = `const payload = "${"long-script-token".repeat(80)}";`;
     const view = render(

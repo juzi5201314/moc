@@ -181,6 +181,7 @@ export const en: Record<MsgKey, string> = {
   "cb.ph_cont": "Continue, / for commands, ! to run a command",
   "cb.bash_include": "Run command · output goes to context",
   "cb.bash_exclude": "Run command · output stays out of context",
+  "cb.bash_full_access": "Manual commands bypass the sandbox and run with full access",
   "cb.remove_image": "Remove {name}",
   "cb.input": "Message input",
   "cb.add_image": "Add image",

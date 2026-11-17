@@ -462,6 +462,19 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
             end_x = cx + cap_cells;
         }
     }
+    if app.prompt_text().starts_with('!') && permission != "full" {
+        let note = t!("tui.prompt.manual_full_access");
+        let has_left = end_x > area.x + 3;
+        let nx = end_x + if has_left { cell_width(labels::SEP) } else { 0 };
+        let cells = cell_width(&note);
+        if usize::from(nx + cells + 1) + right_width + 4 <= inner + usize::from(area.x) {
+            if has_left {
+                buffer.set_string(end_x, y, labels::SEP, Style::new().fg(theme.border));
+            }
+            buffer.set_string(nx, y, &note, Style::new().fg(theme.accent_warning));
+            end_x = nx + cells;
+        }
+    }
     if end_x > area.x + 3 {
         // 最后一个元素与边框线之间补一格空白，左右对称。
         buffer.set_string(end_x, y, " ", Style::new());
@@ -519,6 +532,13 @@ pub(super) fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let theme = app.theme;
     let text = app.prompt_text();
     let rows = prompt_rows(text, area.width);
+    let token = text.split_whitespace().next().unwrap_or_default();
+    let command = if token.starts_with('/') && app.commands.resolve(token).is_some() {
+        let start = text.len() - text.trim_start().len();
+        Some((start, start + token.len()))
+    } else {
+        None
+    };
     let marker = || {
         Span::styled(
             "❯ ".to_owned(),
@@ -533,7 +553,7 @@ pub(super) fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let lines: Vec<Line<'static>> = rows
         .iter()
         .enumerate()
-        .map(|(index, (_, row))| {
+        .map(|(index, (offset, row))| {
             let mut spans: Vec<Span<'static>> = Vec::with_capacity(4);
             spans.push(Span::styled(
                 " ".to_owned(),
@@ -544,7 +564,29 @@ pub(super) fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
             } else {
                 Span::styled(" ".repeat(PROMPT_MARKER), Style::new())
             });
-            spans.extend(chip_spans(row, theme.text_primary, theme.accent_warning));
+            if let Some((start, end)) = command
+                && start < offset + row.len()
+                && end > *offset
+            {
+                let start = start.saturating_sub(*offset).min(row.len());
+                let end = end.saturating_sub(*offset).min(row.len());
+                spans.extend(chip_spans(
+                    &row[..start],
+                    theme.text_primary,
+                    theme.accent_warning,
+                ));
+                spans.push(Span::styled(
+                    row[start..end].to_owned(),
+                    Style::new().fg(theme.accent_tool),
+                ));
+                spans.extend(chip_spans(
+                    &row[end..],
+                    theme.text_primary,
+                    theme.accent_warning,
+                ));
+            } else {
+                spans.extend(chip_spans(row, theme.text_primary, theme.accent_warning));
+            }
             Line::from(spans)
         })
         .collect();
