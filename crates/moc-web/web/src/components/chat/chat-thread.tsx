@@ -498,6 +498,7 @@ function AssistantTurn({
   const now = useNow(live);
   const [processOpen, setProcessOpen] = useState(false);
   const segments = turn.segments;
+  const userShell = turn.activity[0]?.kind === "bash" && !turn.user;
   let finalIndex = -1;
   for (let index = segments.length - 1; index >= 0; index--) {
     if (segments[index].kind === "text") {
@@ -508,7 +509,9 @@ function AssistantTurn({
   }
   const processCount = segments.filter(
     (segment, index) =>
-      index !== finalIndex && (segment.kind === "activity" || segment.kind === "text"),
+      !userShell &&
+      index !== finalIndex &&
+      (segment.kind === "activity" || segment.kind === "text"),
   ).length;
   const durationMs = turnDurationMs(turn);
   // 两个空文本块拼接后也有分隔换行，保持原复制入口的显示条件。
@@ -528,7 +531,9 @@ function AssistantTurn({
   const commandOnly =
     turn.texts.length === 0 &&
     turn.activity.length > 0 &&
-    turn.activity.every((block) => block.kind === "status" && block.localCommand);
+    turn.activity.every(
+      (block) => block.kind === "bash" || (block.kind === "status" && block.localCommand),
+    );
   const canRetry = abnormal && !commandOnly && !context.readOnly && !context.running;
 
   const renderSegment = (segment: Segment, index: number): ReactNode => {

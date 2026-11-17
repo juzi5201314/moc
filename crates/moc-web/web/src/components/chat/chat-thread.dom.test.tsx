@@ -85,6 +85,35 @@ it("处理摘要在中英文中插入耗时，缺少耗时或异常结束时仍�
   }
 });
 
+it("用户 shell 独立展示且不折叠上一轮最终回复", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  usePrefs.setState({ toolDetail: "brief" });
+  const view = createView(info);
+  view.blocks = [
+    { kind: "text", id: "answer", text: "上一轮最终回复" },
+    { kind: "footer", id: "footer", atMs: 2, finishReason: "Stop" },
+    { kind: "bash", id: "shell", command: "printf BASH-CHECK", output: "BASH-CHECK", atMs: 3 },
+  ];
+  useTranscript.setState({ bySession: { [info.id]: view } });
+  const thread = render(
+    <TooltipProvider>
+      <ChatThread sessionId={info.id} />
+    </TooltipProvider>,
+  );
+  await act(async () => {});
+  expect(thread.getByText("上一轮最终回复")).toBeTruthy();
+  expect(thread.getByText("BASH-CHECK")).toBeTruthy();
+  expect(thread.queryByRole("button", { name: "重试" })).toBeNull();
+  thread.unmount();
+});
+
 it("复制回复按需拼接全部正文，保留空段、顺序和流式入口", async () => {
   // jsdom 不做布局；只补观察器接口，使用真实对话、轮次订阅与复制按钮。
   vi.stubGlobal(
