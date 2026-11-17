@@ -25,6 +25,7 @@ import {
   compactSession,
   compactSkills,
   createQuickSession,
+  refreshSideData,
   setSessionAutonomy,
   setSessionPermission,
   togglePlanMode,
@@ -441,7 +442,10 @@ export function runSlash(
           .call("plugin/reload", {
             session_id: sessionId === "draft-session" ? "" : sessionId,
           })
-          .then(() => toast.success(t("slash.plugins_reloaded")))
+          .then(() => {
+            if (sessionId !== "draft-session") void refreshSideData(sessionId);
+            toast.success(t("slash.plugins_reloaded"));
+          })
           .catch((error) => toast.error(t("slash.plugins_failed", { error: errorText(error) })));
       } else if (rest === "") {
         openSettings("plugins");

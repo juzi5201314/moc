@@ -1,6 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { toast } from "sonner";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { rpc } from "@/protocol/client";
 import type { CommandMeta } from "@/protocol/types";
+import { refreshSideData } from "@/store/lifecycle";
 import { fromMeta, parseSlash, runSlash, slashMatches } from "./slash";
+
+vi.mock("@/store/lifecycle", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/store/lifecycle")>()),
+  refreshSideData: vi.fn().mockResolvedValue(undefined),
+}));
+
+afterEach(() => vi.restoreAllMocks());
 
 function meta(partial: Partial<CommandMeta> & { name: string }): CommandMeta {
   return {
@@ -16,6 +26,29 @@ function meta(partial: Partial<CommandMeta> & { name: string }): CommandMeta {
 }
 
 describe("slash 注册表语义", () => {
+  it("插件重载成功刷新会话命令缓存，草稿或失败不刷新", async () => {
+    const refresh = vi.mocked(refreshSideData);
+    refresh.mockClear();
+    const call = vi.spyOn(rpc, "call").mockResolvedValue({});
+    vi.spyOn(toast, "success").mockImplementation(() => "toast");
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+    const commands = [fromMeta(meta({ name: "plugins", usage: "[reload]" }))];
+    expect(runSlash("session", "/plugins reload", commands)).toBe(true);
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledWith("session"));
+    expect(call).toHaveBeenLastCalledWith("plugin/reload", { session_id: "session" });
+
+    refresh.mockClear();
+    runSlash("draft-session", "/plugins reload", commands);
+    await vi.waitFor(() => expect(toast.success).toHaveBeenCalledTimes(2));
+    expect(call).toHaveBeenLastCalledWith("plugin/reload", { session_id: "" });
+    expect(refresh).not.toHaveBeenCalled();
+
+    call.mockRejectedValueOnce(new Error("reload failed"));
+    runSlash("session", "/plugins reload", commands);
+    await vi.waitFor(() => expect(error).toHaveBeenCalled());
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it("精确命令名优先，其他候选保持原顺序", () => {
     const commands = ["compact-skills", "compact", "compact-other"].map((name) =>
       fromMeta(meta({ name })),
