@@ -126,7 +126,7 @@ fn render(state: &SessionState) -> String {
                 let _ = writeln!(out, "{}\n", t!("core.export.image"));
             }
             if let ContentPart::ToolCall(call) = part {
-                let arguments = redact(&call.arguments);
+                let arguments = redact_arguments(&call.arguments);
                 let summary = truncate(
                     &arguments.split_whitespace().collect::<Vec<_>>().join(" "),
                     120,
@@ -147,6 +147,24 @@ fn render(state: &SessionState) -> String {
         }
     }
     redact(&out)
+}
+
+fn redact_arguments(text: &str) -> String {
+    fn visit(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::String(text) => *text = redact(text),
+            serde_json::Value::Array(values) => values.iter_mut().for_each(visit),
+            serde_json::Value::Object(values) => values.values_mut().for_each(visit),
+            _ => {}
+        }
+    }
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(mut value) => {
+            visit(&mut value);
+            redact(&value.to_string())
+        }
+        Err(_) => redact(text),
+    }
 }
 
 fn html(text: &str) -> String {
@@ -228,6 +246,32 @@ fn redact(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_arguments_redact_secrets_after_escaped_newlines() {
+        let arguments = serde_json::json!({
+            "command": "printf hello\nsk-afternewline123\r\nghp_afternewline123",
+            "nested": [{ "value": "\trv_aftertab123\nBearer token123" }],
+            "plain": "task-based risk-free",
+        })
+        .to_string();
+        let output = redact_arguments(&arguments);
+        assert_eq!(output.matches("[REDACTED]").count(), 4);
+        for secret in [
+            "sk-afternewline123",
+            "ghp_afternewline123",
+            "rv_aftertab123",
+            "token123",
+        ] {
+            assert!(!output.contains(secret), "{secret}");
+        }
+        let decoded: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(decoded["command"], "printf hello\n[REDACTED]\r\n[REDACTED]");
+        assert_eq!(decoded["plain"], "task-based risk-free");
+        assert_eq!(redact_arguments("{}"), "{}");
+        assert_eq!(redact_arguments(""), "");
+        assert_eq!(redact_arguments("sk-malformed123 {"), "[REDACTED] {");
+    }
 
     #[test]
     fn redaction_and_markdown_fences_do_not_leak_secrets_or_break_unicode() {
