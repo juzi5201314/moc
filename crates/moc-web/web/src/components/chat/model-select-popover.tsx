@@ -388,9 +388,9 @@ function PickerPanel({ sessionId, onClose }: { sessionId: string; onClose: () =>
     active === FUSION_VALUE ? undefined : models.find((model) => model.id === active);
 
   return (
-    // DOM 顺序先列表后详情，Tab 与初始焦点落在搜索框；视觉上详情卡在左。
-    <div className="flex flex-row-reverse items-start gap-2">
-      <div className="w-72 overflow-hidden rounded-xl bg-popover shadow-[var(--elevation-popover)]">
+    // DOM 顺序先列表后详情，Tab 与初始焦点落在搜索框；桌面详情卡在左，窄屏在下。
+    <div className="flex w-[calc(100vw-2rem)] flex-col items-start gap-2 md:w-auto md:flex-row-reverse">
+      <div className="w-full shrink-0 overflow-hidden rounded-xl bg-popover shadow-[var(--elevation-popover)] md:w-72">
         <Command
           loop
           value={active}
@@ -469,7 +469,7 @@ function PickerPanel({ sessionId, onClose }: { sessionId: string; onClose: () =>
       </div>
 
       {(active === FUSION_VALUE || activeModel) && (
-        <div className="w-80 overflow-hidden rounded-xl bg-popover pb-1 shadow-[var(--elevation-popover)]">
+        <div className="w-full shrink-0 overflow-hidden rounded-xl bg-popover pb-1 shadow-[var(--elevation-popover)] md:w-80">
           {activeModel ? (
             <ModelCard
               model={activeModel}
@@ -536,7 +536,7 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
         align="end"
         side="top"
         sideOffset={8}
-        className="w-auto rounded-none bg-transparent p-0 shadow-none"
+        className="max-h-[var(--radix-popover-content-available-height)] w-auto overflow-y-auto rounded-none bg-transparent p-0 shadow-none md:max-h-none md:overflow-visible"
       >
         <PickerPanel sessionId={sessionId} onClose={() => setOpen(false)} />
       </PopoverContent>
