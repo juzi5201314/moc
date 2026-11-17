@@ -83,8 +83,8 @@ export function ProvidersSection({ doc }: { doc: SettingsDocument }) {
   const options = apiOptions(doc);
 
   return (
-    <div className="flex min-h-[480px] gap-5">
-      <aside className="w-48 shrink-0 space-y-0.5">
+    <div className="flex min-h-[480px] flex-col gap-5 md:flex-row">
+      <aside className="flex gap-1 overflow-x-auto md:block md:w-48 md:shrink-0 md:space-y-0.5">
         {providers.map((id) => {
           const provider = getPath(doc.effective, ["providers", id]);
           const models =
@@ -103,7 +103,7 @@ export function ProvidersSection({ doc }: { doc: SettingsDocument }) {
                 setAdding(false);
               }}
               className={cn(
-                "flex w-full flex-col rounded-lg px-3 py-2 text-left transition-colors",
+                "flex max-w-48 shrink-0 flex-col rounded-lg px-3 py-2 text-left transition-colors md:w-full",
                 id === current && !adding ? "bg-accent" : "hover:bg-surface-hover",
               )}
             >
@@ -118,7 +118,7 @@ export function ProvidersSection({ doc }: { doc: SettingsDocument }) {
           type="button"
           onClick={() => setAdding(true)}
           className={cn(
-            "flex h-9 w-full items-center gap-2 rounded-lg px-3 text-ui text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground",
+            "flex h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-ui text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground md:w-full",
             adding && "bg-accent text-foreground",
           )}
         >
@@ -266,9 +266,9 @@ function Labeled({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[96px_1fr] items-start gap-3">
+    <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-[96px_minmax(0,1fr)]">
       <span className="pt-1.5 text-ui text-muted-foreground">{label}</span>
-      <div className="space-y-1">
+      <div className="min-w-0 space-y-1">
         {children}
         {hint && (
           <p className={cn("text-xs", error ? "text-destructive" : "text-text-tertiary")}>{hint}</p>

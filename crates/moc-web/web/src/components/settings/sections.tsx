@@ -80,7 +80,7 @@ function Segmented<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div className="ml-auto flex w-fit rounded-lg bg-muted p-0.5">
+    <div className="flex w-fit max-w-full flex-wrap rounded-lg bg-muted p-0.5 md:ml-auto">
       {options.map((option) => (
         <button
           key={option.value}
