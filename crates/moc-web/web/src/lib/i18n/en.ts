@@ -519,6 +519,10 @@ export const en: Record<MsgKey, string> = {
   "conn.version_mismatch":
     "Protocol major version mismatch (server {server}, client {client}); please refresh the page",
   "session.new_title": "New session",
+  "session.delete_description":
+    "Delete “{title}”? Session history and local context cannot be recovered after deletion.",
+  "session.deleted": "Session deleted",
+  "session.delete_failed": "Failed to delete session: {error}",
   "session.model_read_failed": "Failed to read session model: {error}",
   "files.op_failed": "Operation failed: {error}",
   "files.save_failed": "Save failed: {error}",

@@ -511,6 +511,9 @@ export const zh = {
   // ---------- 连接 / 存储 ----------
   "conn.version_mismatch": "协议主版本不兼容（服务端 {server}，前端 {client}），请刷新页面",
   "session.new_title": "新会话",
+  "session.delete_description": "确定删除「{title}」吗？会话记录与本地上下文删除后无法恢复。",
+  "session.deleted": "会话已删除",
+  "session.delete_failed": "删除会话失败：{error}",
   "session.model_read_failed": "读取会话模型失败：{error}",
   "files.op_failed": "操作失败：{error}",
   "files.save_failed": "保存失败：{error}",
