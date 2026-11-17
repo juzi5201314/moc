@@ -713,18 +713,19 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
     case "generation_retry": {
       resolveToolPreviews(view);
       const live = ensureLive(view, update.prompt_id, now);
-      const ids = new Set(live.generationCommitted ? [] : live.generationBlockIds);
-      // 仅撤销未提交的文本与思考，不删除独立落盘的工具、代理消息或历史内容。
-      view.blocks = view.blocks.filter(
-        (block) => !ids.has(block.id) || (block.kind !== "text" && block.kind !== "reasoning"),
-      );
-      live.textId = undefined;
-      live.textIndex = undefined;
-      live.reasoningId = undefined;
-      live.reasoningIndex = undefined;
-      live.usage = undefined;
-      live.generationBlockIds = [];
-      live.generationCommitted = false;
+      if (!live.generationCommitted) {
+        const ids = new Set(live.generationBlockIds);
+        // 仅撤销未提交的文本与思考，不删除独立落盘的工具、代理消息或历史内容。
+        view.blocks = view.blocks.filter(
+          (block) => !ids.has(block.id) || (block.kind !== "text" && block.kind !== "reasoning"),
+        );
+        live.textId = undefined;
+        live.textIndex = undefined;
+        live.reasoningId = undefined;
+        live.reasoningIndex = undefined;
+        live.usage = undefined;
+        live.generationBlockIds = [];
+      }
       const notice = view.blocks.find(
         (block) => block.kind === "status" && block.retryWait?.promptId === update.prompt_id,
       );

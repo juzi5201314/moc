@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type {
+  ContentPart,
   JobInfo,
   SessionInfo,
   SessionUpdate,
@@ -317,13 +318,15 @@ describe("entriesToBlocks", () => {
 });
 
 describe("applyUpdate", () => {
-  it("工具执行已提交的正文与思考在下一次连接重试及空失败收尾后保留", () => {
-    const cases: [boolean, string][] = [
-      [false, ""],
-      [true, ""],
-      [false, "先检查文件"],
+  it("工具执行后请求重试，取消、成功和耗尽失败均保留已提交正文与思考且不重复", () => {
+    const cases: [boolean, "error" | "tool" | "cancel" | "success"][] = [
+      [false, "error"],
+      [true, "error"],
+      [false, "tool"],
+      [true, "cancel"],
+      [true, "success"],
     ];
-    for (const [retry, finalText] of cases) {
+    for (const [retry, outcome] of cases) {
       const view = createView(INFO);
       applyUpdate(view, { type: "prompt_started", prompt_id: "p", model: "m", at_ms: 0 });
       applyUpdate(view, { type: "generation_started", prompt_id: "p" });
@@ -368,14 +371,45 @@ describe("applyUpdate", () => {
           expect(contents()).toEqual(["已完成分析", "先检查文件"]);
         }
       }
+      if (outcome === "success") {
+        applyUpdate(view, { type: "generation_started", prompt_id: "p" });
+        applyUpdate(view, {
+          type: "assistant_delta",
+          prompt_id: "p",
+          delta: { type: "text", delta: "检查完成" },
+        });
+      }
+      const content: ContentPart[] =
+        outcome === "cancel" || outcome === "tool"
+          ? [
+              { Reasoning: { Text: { text: "已完成分析", signature: null } } },
+              { Text: "先检查文件" },
+            ]
+          : outcome === "success"
+            ? [{ Text: "检查完成" }]
+            : [];
       applyUpdate(view, {
         type: "prompt_finished",
         prompt_id: "p",
-        message: { role: "Assistant", content: finalText ? [{ Text: finalText }] : [] },
-        finish_reason: finalText ? "ToolCalls" : { Other: "error" },
+        message: { role: "Assistant", content },
+        finish_reason:
+          outcome === "success"
+            ? "Stop"
+            : outcome === "cancel"
+              ? "Cancelled"
+              : outcome === "tool"
+                ? "ToolCalls"
+                : { Other: "error" },
         usage: { input_tokens: 0, output_tokens: 0 },
       });
-      expect(contents()).toEqual(["已完成分析", "先检查文件"]);
+      expect(contents()).toEqual(
+        outcome === "success"
+          ? ["已完成分析", "先检查文件", "检查完成"]
+          : ["已完成分析", "先检查文件"],
+      );
+      expect(view.blocks.some((block) => block.kind === "status" && block.retryWait)).toBe(false);
+      expect(view.running).toBe(false);
+      expect(view.live).toBeNull();
       expect(view.blocks.find((block) => block.kind === "tool")).toMatchObject({
         status: "completed",
       });
