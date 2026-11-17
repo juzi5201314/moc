@@ -19,6 +19,11 @@ impl App {
             .as_ref()
             .map_or_else(String::new, |session| session.model.clone());
         self.open_model_picker_for(current, &[], crate::modal::ModelTarget::Session);
+        if self.read_only
+            && let Some(Modal::Model { picker, .. }) = self.modal.as_mut()
+        {
+            picker.error = Some(t!("tui.status.read_only").into_owned());
+        }
     }
 
     /// 打开 `/config` 的模型角色选择器：与 `Ctrl+P` 共用候选、搜索与思考等级。

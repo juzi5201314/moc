@@ -1,5 +1,49 @@
 use super::*;
 
+#[tokio::test]
+async fn read_only_model_picker_refuses_changes_before_requesting_core() {
+    let (core, connection, mut app) = setup_test_app().await;
+    app.models = connection
+        .client
+        .call::<ConfigGet>(ConfigGetParams {})
+        .await
+        .unwrap()
+        .models;
+    app.read_only = true;
+    app.open_model_picker();
+    let Some(Modal::Model { picker, .. }) = app.modal.as_ref() else {
+        panic!("模型选择器应打开");
+    };
+    assert_eq!(
+        picker.error.as_deref(),
+        Some(rust_i18n::t!("tui.status.read_only").as_ref())
+    );
+    let session = app.session.clone();
+    super::super::model::request_session_model(
+        &mut app,
+        &connection,
+        session.as_ref().map(|session| session.id.clone()),
+        "missing/model".into(),
+    );
+    super::super::model::cycle_thinking_level(&mut app, &connection);
+    super::super::model::set_fast_mode(&mut app, &connection, true);
+    assert!(app.inflight_session_ops.is_empty());
+    assert_eq!(
+        app.session.as_ref().map(|session| &session.model),
+        session.as_ref().map(|session| &session.model)
+    );
+    let Some(Modal::Model { picker, detail, .. }) = app.modal.as_ref() else {
+        panic!("只读选择器保持打开");
+    };
+    assert!(!picker.loading);
+    assert!(detail.pending.is_none());
+    assert_eq!(
+        picker.error.as_deref(),
+        Some(rust_i18n::t!("tui.status.read_only").as_ref())
+    );
+    core.shutdown().await;
+}
+
 /// 模型选择器回报容量缺口时渲染压缩确认卡片，确认后先切换再由新模型压缩。
 #[tokio::test]
 async fn model_picker_asks_before_compacting() {

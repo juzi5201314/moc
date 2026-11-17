@@ -13,6 +13,19 @@ use moc_protocol::SessionSetFastModeParams;
 use moc_protocol::SessionSetModel;
 use moc_protocol::SessionSetModelParams;
 
+fn refuse_read_only(app: &mut App) -> bool {
+    if !app.read_only {
+        return false;
+    }
+    if let Some(crate::modal::Modal::Model { picker, detail, .. }) = app.modal.as_mut() {
+        picker.loading = false;
+        picker.error = Some(t!("tui.status.read_only").into_owned());
+        detail.pending = None;
+    }
+    app.set_notice(t!("tui.queue.read_only"));
+    true
+}
+
 /// Fusion 组合的应用：两侧已齐时，规范组合串等于 `current` 就关闭选择器（返回 `true`），
 /// 否则置 loading 并延后发起 `session/set_model`。调用方先处理两侧有空的情况。
 pub(super) fn apply_fusion_pick(
@@ -41,6 +54,9 @@ pub(super) fn request_session_model(
     session_id: Option<String>,
     selector: String,
 ) {
+    if refuse_read_only(app) {
+        return;
+    }
     let Some(session_id) = session_id else {
         let client = connection.client.clone();
         let events = app.events.clone();
@@ -117,6 +133,9 @@ pub(super) fn request_session_model(
 
 /// 按当前模型声明的思考等级循环切换。
 pub(super) fn cycle_thinking_level(app: &mut App, connection: &EmbeddedConnection) {
+    if refuse_read_only(app) {
+        return;
+    }
     let Some(session) = app.session.as_ref() else {
         app.set_notice(t!("tui.common.no_session").into_owned());
         return;
@@ -186,6 +205,9 @@ pub(super) fn cycle_thinking_level(app: &mut App, connection: &EmbeddedConnectio
 
 /// 请求 core 切换会话 Fast Mode；生效后由 `SessionUpdate::FastModeChanged` 写回。
 pub(super) fn set_fast_mode(app: &mut App, connection: &EmbeddedConnection, enabled: bool) {
+    if refuse_read_only(app) {
+        return;
+    }
     let Some(session) = app.session.as_ref() else {
         app.set_notice(t!("tui.common.no_session").into_owned());
         return;
