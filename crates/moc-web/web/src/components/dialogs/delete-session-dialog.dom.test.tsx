@@ -142,3 +142,25 @@ it("RPC 失败提示错误并保留会话与确认框，允许取消", async () 
   fireEvent.click(view.getByRole("button", { name: "取消" }));
   expect(useUi.getState().confirmDelete).toBeNull();
 });
+
+it("删除成功后立即关闭，即使列表刷新挂起或失败也不误报删除失败", async () => {
+  const refresh = Promise.withResolvers<never>();
+  vi.mocked(rpc.call).mockImplementation(async (method) => {
+    if (method === "session/list") return refresh.promise;
+    return {};
+  });
+  const view = render(<App />);
+  requestDelete();
+  fireEvent.click(view.getByRole("button", { name: "删除" }));
+  await waitFor(() => expect(toast.success).toHaveBeenCalledWith("会话已删除"));
+  expect(view.queryByRole("alertdialog")).toBeNull();
+  expect(useTabs.getState().active).toBe(other.id);
+  expect(useTranscript.getState().bySession[session.id]).toBeUndefined();
+  expect(useSessions.getState().list).toEqual([other]);
+  await act(async () => refresh.reject(new Error("list unavailable")));
+  expect(toast.error).not.toHaveBeenCalled();
+  expect(useUi.getState().confirmDelete).toBeNull();
+  expect(
+    vi.mocked(rpc.call).mock.calls.filter(([method]) => method === "session/delete"),
+  ).toHaveLength(1);
+});
