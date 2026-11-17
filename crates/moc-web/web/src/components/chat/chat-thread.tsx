@@ -282,8 +282,8 @@ function TranscriptRows({
             key={item.key}
             data-index={item.index}
             ref={virtualizer.measureElement}
-            className="absolute top-0 left-0 w-full"
-            style={{ transform: `translateY(${item.start}px)` }}
+            className="absolute left-0 w-full"
+            style={{ top: item.start }}
           >
             {renderRow(rows[item.index])}
           </div>

@@ -114,6 +114,58 @@ it("用户 shell 独立展示且不折叠上一轮最终回复", async () => {
   thread.unmount();
 });
 
+it("虚拟轮次以布局偏移定位，展开过程中的工具标题在正文之前", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  usePrefs.setState({ toolDetail: "brief" });
+  for (const rows of [0, 2, 80]) {
+    const view = createView(info);
+    view.blocks = [
+      {
+        kind: "tool",
+        id: "tool",
+        toolCallId: "tool",
+        name: "bash",
+        arguments: '{"command":"printf CHECK"}',
+        status: "completed",
+        result: Array.from({ length: rows }, (_, i) => `CHECK-${i}`).join("\n"),
+        isError: rows === 0,
+        images: [],
+        children: [],
+        awaitingPermission: false,
+      },
+      { kind: "text", id: "answer", text: "最终回复" },
+      { kind: "footer", id: "footer", atMs: 2, finishReason: "Stop" },
+    ];
+    useTranscript.setState({ bySession: { [info.id]: view } });
+    const thread = render(
+      <TooltipProvider>
+        <ChatThread sessionId={info.id} />
+      </TooltipProvider>,
+    );
+    await act(async () => {});
+    fireEvent.click(thread.getByRole("button", { name: /过程/ }));
+    const header = thread.getByRole("button", { name: /printf CHECK/ });
+    const row = header.closest<HTMLElement>("[data-index]");
+    expect(row?.style.top).toBe("40px");
+    expect(row?.style.transform).toBe("");
+    expect(header.classList.contains("sticky")).toBe(true);
+    expect(header.parentElement?.firstElementChild).toBe(header);
+    if (rows > 0) {
+      fireEvent.click(header);
+      expect(thread.container.textContent).toContain("CHECK-0");
+      expect(header.parentElement?.firstElementChild).toBe(header);
+    }
+    thread.unmount();
+  }
+});
+
 it("复制回复按需拼接全部正文，保留空段、顺序和流式入口", async () => {
   // jsdom 不做布局；只补观察器接口，使用真实对话、轮次订阅与复制按钮。
   vi.stubGlobal(
