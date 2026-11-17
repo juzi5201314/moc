@@ -11,11 +11,14 @@ async fn resource_complete_is_session_scoped_and_exposes_canonical_schemes() {
 
     // harness 的 cwd 固定为 root/work；sessions 目录按 encode_cwd 规则组织。
     // 服务端用的是规范化路径（macOS /var→/private/var），这里同样归一化。
-    let workspace_dir = harness.root.path().join("sessions").join(
-        moc_core::session::store::encode_cwd(
-            &harness.root.path().join("work").canonicalize().unwrap(),
-        ),
-    );
+    let workspace_dir =
+        harness
+            .root
+            .path()
+            .join("sessions")
+            .join(moc_core::session::store::encode_cwd(
+                &harness.root.path().join("work").canonicalize().unwrap(),
+            ));
     let sidecar = workspace_dir.join(&session_id);
     std::fs::create_dir_all(sidecar.join("artifacts")).expect("artifacts 目录");
     std::fs::write(
@@ -91,11 +94,14 @@ async fn artifact_uri_round_trips_through_read_and_grep_tool_calls() {
     let upstream = MockServer::builder().start().await;
     let harness = support::Harness::new(&upstream.uri(), "openai_chat", "").await;
     let session_id = harness.session(moc_protocol::SessionEngine::Standard).await;
-    let workspace_dir = harness.root.path().join("sessions").join(
-        moc_core::session::store::encode_cwd(
-            &harness.root.path().join("work").canonicalize().unwrap(),
-        ),
-    );
+    let workspace_dir =
+        harness
+            .root
+            .path()
+            .join("sessions")
+            .join(moc_core::session::store::encode_cwd(
+                &harness.root.path().join("work").canonicalize().unwrap(),
+            ));
     let sidecar = workspace_dir.join(&session_id);
     std::fs::create_dir_all(sidecar.join("artifacts")).expect("artifacts 目录");
     let artifact = sidecar.join("artifacts").join("roundtrip.txt");

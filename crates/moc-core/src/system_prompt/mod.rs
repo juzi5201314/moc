@@ -37,8 +37,7 @@ const DEFAULT_INTRO: &str = "You are a precise software-engineering agent workin
 const VISUAL_GUIDE: &str = "Use inline ```mermaid for flows/sequences/states/dependencies; ```svg for layouts/mockups/geometry Mermaid cannot express. Don't repeat diagrams in prose.\nSVG: colors only currentColor or var(--NAME), NAME=fg/muted/border/surface/accent/success/warning/error; no background/scripts/animation/foreignObject/external hrefs.";
 /// 模型写给用户看的文本的语言要求；语言名按 `language` 配置解析后拼接。
 const USER_TEXT_RULE_PREFIX: &str = "Write text the user reads in";
-const USER_TEXT_RULE_SCOPE: &str =
-    "tool-call descriptions, plan and todo items, ask options, artifact titles and descriptions, log lines.";
+const USER_TEXT_RULE_SCOPE: &str = "tool-call descriptions, plan and todo items, ask options, artifact titles and descriptions, log lines.";
 // 跨工具纪律只写在这里；单个工具的用法写在各自的 description，这里不重复。
 const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored changes, write for new or complete files, and bash only when a shell is required.";
 const TOOL_POLICY_BUILTIN: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files.";
@@ -327,9 +326,7 @@ fn output_format_piece(config: &ResolvedConfig) -> PromptPiece {
         title: "system",
         name: PIECE_OUTPUT_FORMAT,
         scope: PieceScope::Static,
-        text: format!(
-            "{VISUAL_GUIDE}\n{USER_TEXT_RULE_PREFIX} {language}: {USER_TEXT_RULE_SCOPE}"
-        ),
+        text: format!("{VISUAL_GUIDE}\n{USER_TEXT_RULE_PREFIX} {language}: {USER_TEXT_RULE_SCOPE}"),
     }
 }
 
