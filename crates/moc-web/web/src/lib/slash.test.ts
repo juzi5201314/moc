@@ -16,6 +16,20 @@ function meta(partial: Partial<CommandMeta> & { name: string }): CommandMeta {
 }
 
 describe("slash 注册表语义", () => {
+  it("精确命令名优先，其他候选保持原顺序", () => {
+    const commands = ["compact-skills", "compact", "compact-other"].map((name) =>
+      fromMeta(meta({ name })),
+    );
+    expect(slashMatches("/compact", commands).map((c) => c.name)).toEqual([
+      "compact",
+      "compact-skills",
+      "compact-other",
+    ]);
+    expect(slashMatches("/co", commands)).toEqual(commands);
+    expect(slashMatches("/", commands)).toEqual(commands);
+    expect(slashMatches("/missing", commands)).toEqual([]);
+  });
+
   it("补全命中主名与别名", () => {
     const commands = [
       fromMeta(meta({ name: "quit", aliases: ["exit"] })),

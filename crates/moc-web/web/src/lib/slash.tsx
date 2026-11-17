@@ -92,12 +92,16 @@ export function slashMatches(
 ): SlashCommand[] {
   if (!/^\/[\w-]*$/.test(text)) return [];
   const query = text.slice(1).toLowerCase();
-  return commands.filter(
-    (command) =>
-      !flagDisabled(command, features) &&
-      (command.name.toLowerCase().startsWith(query) ||
-        command.aliases?.some((alias) => alias.toLowerCase().startsWith(query))),
-  );
+  return commands
+    .filter(
+      (command) =>
+        !flagDisabled(command, features) &&
+        (command.name.toLowerCase().startsWith(query) ||
+          command.aliases?.some((alias) => alias.toLowerCase().startsWith(query))),
+    )
+    .sort(
+      (a, b) => Number(b.name.toLowerCase() === query) - Number(a.name.toLowerCase() === query),
+    );
 }
 
 function errorText(error: unknown): string {
