@@ -1,6 +1,7 @@
 import { act, fireEvent, render } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useI18n } from "@/lib/i18n";
 import { BRIEF_BODY_ROWS } from "@/lib/tool-view";
 import { applyUpdate, createView, entriesToBlocks } from "@/lib/transcript-model";
 import type { SessionInfo } from "@/protocol/types";
@@ -25,13 +26,63 @@ const info: SessionInfo = {
 
 const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
 const toolDetail = usePrefs.getState().toolDetail;
+const locale = useI18n.getState().locale;
 afterEach(() => {
+  useI18n.setState({ locale });
   useTranscript.getState().drop(info.id);
   usePrefs.setState({ toolDetail });
   if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
   else Reflect.deleteProperty(navigator, "clipboard");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it("处理摘要在中英文中插入耗时，缺少耗时或异常结束时仍正常显示", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  for (const language of ["zh", "en"] as const) {
+    useI18n.setState({ locale: language });
+    for (const durationMs of [23_000, 0, undefined, null]) {
+      const view = createView(info);
+      view.blocks = [
+        { kind: "reasoning", id: "thinking", text: "处理过程" },
+        { kind: "text", id: "reply", text: "回复" },
+      ];
+      if (durationMs !== null) {
+        view.blocks.push({
+          kind: "footer",
+          id: "footer",
+          atMs: 1,
+          durationMs,
+          finishReason: "Stop",
+        });
+      }
+      useTranscript.setState({ bySession: { [info.id]: view } });
+      const thread = render(
+        <TooltipProvider>
+          <ChatThread sessionId={info.id} />
+        </TooltipProvider>,
+      );
+      await act(async () => {});
+      const expected =
+        durationMs == null
+          ? language === "zh"
+            ? "过程"
+            : "Process"
+          : language === "zh"
+            ? `用时 ${durationMs / 1000}秒`
+            : `${durationMs / 1000}s`;
+      expect(thread.getByText(expected)).toBeTruthy();
+      expect(thread.container.textContent).not.toContain("{n}");
+      thread.unmount();
+    }
+  }
 });
 
 it("复制回复按需拼接全部正文，保留空段、顺序和流式入口", async () => {

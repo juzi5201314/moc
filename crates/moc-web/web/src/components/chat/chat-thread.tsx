@@ -587,7 +587,7 @@ function AssistantTurn({
                 />
                 <span>
                   {durationMs !== undefined
-                    ? t("th.duration", { d: formatDuration(durationMs) })
+                    ? t("th.duration", { n: formatDuration(durationMs) })
                     : t("th.process")}
                 </span>
                 <span className="text-text-tertiary/60">·</span>
