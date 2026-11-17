@@ -1440,7 +1440,9 @@ async fn set_role_model_reroutes_later_asks() {
                         .map(str::to_string)
                 })
                 .expect("plan 有第二个 role");
-            approve(&harness, &session, &request).await;
+            // 热改必须在 approve 之前登记：run 草稿（script.ts）此时已存在，
+            // set_role_model 记入 pending 覆盖，launch 时合并进 meta。
+            // 若在 approve 后调用，工作流可能抢在热改落地前发出第二个 ask。
             harness
                 .client
                 .call::<SessionWorkflowSetRoleModel>(SessionWorkflowSetRoleModelParams {
@@ -1451,6 +1453,7 @@ async fn set_role_model_reroutes_later_asks() {
                 })
                 .await
                 .expect("set_role_model 成功");
+            approve(&harness, &session, &request).await;
             break;
         }
     }

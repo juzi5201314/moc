@@ -812,7 +812,7 @@ fn shell_command(command: &str) -> Result<Command, CoreError> {
 
 /// 解析密钥描述：空 → None；`env:NAME` → 环境变量；`!command` → 命令输出；否则字面量。
 ///
-/// `label` 用于错误信息（如 `providers.p.api_key`、`web_search.api_key`），从不携带密钥值。
+/// `label` 用于错误信息（如 `providers.p.api_key`），从不携带密钥值。
 pub(crate) fn resolve_secret(label: &str, spec: &str) -> Result<Option<String>, CoreError> {
     if spec.is_empty() {
         return Ok(None);

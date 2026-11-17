@@ -114,7 +114,6 @@ export const en: Record<MsgKey, string> = {
   "grp.read": "Read {n} files",
   "grp.grep": "{n} searches",
   "grp.find": "{n} finds",
-  "grp.web_search": "{n} web searches",
   "grp.web_fetch": "Fetched {n} pages",
   "grp.failed": "{n} failed",
   "grp.times": "{n} times",
@@ -893,7 +892,6 @@ export const en: Record<MsgKey, string> = {
   "sg.tools_todo": "Todo list",
   "sg.tools_write": "Write",
   "sg.web_fetch": "Web fetch",
-  "sg.web_search": "Web search",
   "sg.workspace": "Workspace",
 
   // ---------- provider settings ----------

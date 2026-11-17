@@ -54,9 +54,6 @@ protocol = { zh = "按协议默认", en = "Protocol default" }
 always = { zh = "总是", en = "Always" }
 never = { zh = "从不", en = "Never" }
 
-[core.config.opt.provider]
-tavily = { zh = "Tavily", en = "Tavily" }
-
 [core.config.opt.threshold_mode]
 percent = { zh = "按上下文比例", en = "By context percentage" }
 tokens = { zh = "按固定长度", en = "By fixed token count" }
@@ -270,7 +267,7 @@ desc = { zh = "新会话初始模式：full 无隔离；workspace 工作区可�
 
 [core.config.fields.sandbox_network]
 label = { zh = "允许沙盒网络", en = "Allow sandboxed network" }
-desc = { zh = "仅约束沙盒内 bash；web_fetch、web_search 与 MCP 不受影响。", en = "Only constrains bash inside the sandbox; web_fetch, web_search and MCP are unaffected." }
+desc = { zh = "仅约束沙盒内 bash；web_fetch 与 MCP 不受影响。", en = "Only constrains bash inside the sandbox; web_fetch and MCP are unaffected." }
 
 [core.config.fields.sandbox_on_denied]
 label = { zh = "越界处理策略", en = "Out-of-bounds policy" }
@@ -399,26 +396,6 @@ desc = { zh = "按上下文占用百分比，或按固定 token 阈值触发。"
 [core.config.fields.compaction_threshold_value]
 label = { zh = "触发阈值", en = "Trigger threshold" }
 desc = { zh = "百分比模式填 1–100，固定模式填 token 数。", en = "1–100 in percentage mode; token count in fixed mode." }
-
-[core.config.fields.web_search_enabled]
-label = { zh = "启用", en = "Enable" }
-desc = { zh = "关闭后 web_search 工具不再向模型开放。", en = "When off, the web_search tool is no longer offered to the model." }
-
-[core.config.fields.web_search_provider]
-label = { zh = "供应商", en = "Provider" }
-desc = { zh = "网页搜索服务商。", en = "Web search provider." }
-
-[core.config.fields.web_search_api_key]
-label = { zh = "API Key", en = "API key" }
-desc = { zh = "Tavily API Key，仅用于 web_search；支持 env:变量名 或 !命令。", en = "Tavily API key used only for web_search; supports env:VAR or !command." }
-
-[core.config.fields.web_search_base_url]
-label = { zh = "Base URL", en = "Base URL" }
-desc = { zh = "自定义搜索 API 地址；留空使用官方 https://api.tavily.com。", en = "Custom search API endpoint; leave empty for the official https://api.tavily.com." }
-
-[core.config.fields.web_search_timeout_secs]
-label = { zh = "请求超时（秒）", en = "Request timeout (s)" }
-desc = { zh = "单次搜索请求的最长等待时间。", en = "Maximum wait for a single search request." }
 
 [core.config.fields.web_fetch_enabled]
 label = { zh = "启用", en = "Enable" }
@@ -1312,7 +1289,6 @@ tool_not_visible = { zh = "工具 `%{name}` 当前模式不可见", en = "Tool `
 worker_spawn = { zh = "worker 启动失败：%{error}", en = "Failed to start worker: %{error}" }
 preset_registered = { zh = "agent preset `%{name}` 已注册", en = "agent preset `%{name}` is already registered" }
 worker_exited = { zh = "workflow worker 未达终态即退出%{detail}", en = "workflow worker exited before reaching a terminal state%{detail}" }
-websearch_unknown = { zh = "未知 web_search 供应商: %{name}", en = "Unknown web_search provider: %{name}" }
 output_schema_bad = { zh = "output_schema 不是合法的 JSON Schema：%{error}", en = "output_schema is not a valid JSON Schema: %{error}" }
 output_schema_bad2 = { zh = "output_schema 非法：%{error}", en = "Invalid output_schema: %{error}" }
 not_direct_child = { zh = "目标 %{id} 不是调用方的直接子代理", en = "Target %{id} is not a direct subagent of the caller" }

@@ -1286,7 +1286,6 @@
             "ptc": false,
             "skills": false,
             "web_fetch": false,
-            "web_search": false,
             "workflow": false
           },
           "description": "特性开关快照（`[features]` 覆盖合成后的有效状态）；旧报文没有时按注册表默认。",

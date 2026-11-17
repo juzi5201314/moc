@@ -517,7 +517,6 @@ pub(super) fn group_description(group: &Group) -> String {
         Some("context_files") => t!("tui.group.context_files").into_owned(),
         Some("system_prompt") => t!("tui.group.system_prompt").into_owned(),
         Some("skills") => t!("tui.group.skills").into_owned(),
-        Some("web_search") => t!("tui.group.web_search").into_owned(),
         Some("web_fetch") => t!("tui.group.web_fetch").into_owned(),
         Some("workspace") => t!("tui.group.workspace").into_owned(),
         Some("tools") => match path.get(1).map(String::as_str) {

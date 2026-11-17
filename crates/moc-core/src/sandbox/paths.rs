@@ -76,7 +76,8 @@ mod tests {
         let existing = directory.path().join("existing");
         std::fs::create_dir_all(&existing).unwrap();
         let landing = resolve_landing(&existing.join("a/../b")).expect("可解析");
-        assert_eq!(landing, existing.join("b"));
+        // landing 是规范化路径（macOS /var→/private/var），期望值同样归一化。
+        assert_eq!(landing, existing.canonicalize().unwrap().join("b"));
     }
 
     #[test]

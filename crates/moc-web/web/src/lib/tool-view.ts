@@ -21,7 +21,7 @@ export const BRIEF_THINKING_ROWS = 4;
  * 正文策略：固定摘要与可展开正文分开，不允许完整档绕过固定摘要。
  * - `summary`：不展示原始正文；通知常显，网页给摘要预览，媒体按需展开
  * - `agent-preview`：简略档显示任务／交付报告开头，不展开原始载荷
- * - `title`：简略档只有标题（web_search 与未知工具）
+ * - `title`：简略档只有标题（未知工具）
  * - `command`：单行命令 + 末尾输出（bash）
  * - `script`：execute——简略档只有标题，完整档给高亮脚本 + 结果
  * - `diff`：最多 {@link BRIEF_BODY_ROWS} 行 diff（edit、write）
@@ -50,7 +50,6 @@ const POLICY: Record<string, BodyPolicy> = {
   edit: "diff",
   write: "diff",
   todo: "todo",
-  web_search: "title",
   web_fetch: "summary",
   ask: "preview",
   spawn_agent: "agent-preview",
@@ -244,14 +243,6 @@ export function toolHeadline(tool: ToolBlock): Headline {
         stat: items.length
           ? `${items.filter((item) => item.status === "completed").length}/${items.length}`
           : undefined,
-      };
-    }
-    case "web_search": {
-      const hits = result !== undefined && !failed ? parseSearch(result).hits.length : 0;
-      return {
-        target: str(args, "query"),
-        mono: false,
-        stat: hits ? count(hits, "result", "results") : undefined,
       };
     }
     case "web_fetch": {
@@ -497,31 +488,6 @@ export function parseTodo(result: string): TodoPhase[] {
     }
   }
   return phases;
-}
-
-// ---------- web_search ----------
-
-export type SearchHit = { title: string; url: string; snippet?: string };
-
-/** web_search 结果（crates/moc-core/src/tools/websearch.rs 的 `render_search`）。 */
-export function parseSearch(result: string): { answer: string; hits: SearchHit[] } {
-  const marker = result.search(/^## Sources \(\d+\)$/m);
-  if (marker < 0) return { answer: result.trim(), hits: [] };
-  const answer = result.slice(0, marker).trim();
-  const hits: SearchHit[] = [];
-  for (const line of result.slice(marker).split("\n").slice(1)) {
-    const head = /^\[\d+\] (.*)$/.exec(line);
-    if (head) {
-      hits.push({ title: head[1], url: "" });
-      continue;
-    }
-    const hit = hits.at(-1);
-    const body = line.startsWith("    ") ? line.slice(4) : null;
-    if (!hit || body === null) continue;
-    if (!hit.url) hit.url = body;
-    else hit.snippet = hit.snippet ? `${hit.snippet} ${body}` : body;
-  }
-  return { answer, hits };
 }
 
 // ---------- diff ----------

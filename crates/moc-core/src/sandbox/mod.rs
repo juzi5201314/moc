@@ -299,7 +299,7 @@ impl SandboxPolicy {
     pub(crate) fn denies_read(&self, path: &Path) -> bool {
         self.mode != SessionPermission::Full
             && resolve_access_path(path)
-                .is_some_and(|path| self.deny_read.iter().any(|root| is_within(&path, root)))
+                .is_some_and(|path| self.deny_read.iter().any(|root| within_root(&path, root)))
     }
 
     pub(crate) fn inherit_read_denials(&mut self, source: &Path, derived: &Path) {
@@ -320,11 +320,11 @@ impl SandboxPolicy {
             Access::Read => &self.deny_read,
             Access::Write => &self.deny_write,
         };
-        if denied.iter().any(|root| is_within(&path, root)) {
+        if denied.iter().any(|root| within_root(&path, root)) {
             return Decision::Deny;
         }
         if access == Access::Write {
-            let allowed = self.write_roots().any(|root| is_within(&path, root));
+            let allowed = self.write_roots().any(|root| within_root(&path, root));
             return if allowed {
                 Decision::Allow
             } else {
@@ -334,7 +334,7 @@ impl SandboxPolicy {
         if self.mode == SessionPermission::Workspace {
             return Decision::Allow;
         }
-        let allowed = self.read_roots().any(|root| is_within(&path, root));
+        let allowed = self.read_roots().any(|root| within_root(&path, root));
         if allowed {
             Decision::Allow
         } else {
@@ -376,6 +376,13 @@ impl SandboxPolicy {
             ]
         })
     }
+}
+
+/// 根可能带着符号链接段（macOS 上 `/var` 实为 `/private/var`）；
+/// 目标路径已解析，根同样要先归一化再比对，否则同一物理路径会判成不属于。
+fn within_root(path: &Path, root: &Path) -> bool {
+    let root = resolve_access_path(root).unwrap_or_else(|| root.to_path_buf());
+    is_within(path, &root)
 }
 
 fn merge_paths(left: &[PathBuf], right: &[PathBuf]) -> Vec<PathBuf> {
@@ -584,6 +591,11 @@ mod tests {
 
     #[test]
     fn workspace_only_asks_for_reads_and_writes_outside() {
+        // 用真实的外部路径：解析会落到具体卷上的路径（如 macOS /home 的自动挂载
+        // 会落进 /System 运行库根）当不了可靠的“外部”样本。
+        let outside = tempfile::tempdir().expect("外部目录");
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, "x").expect("写入外部文件");
         let policy = SandboxPolicy::new(
             SessionPermission::WorkspaceOnly,
             PathBuf::from("/work"),
@@ -592,18 +604,12 @@ mod tests {
             &SandboxGrants::default(),
             Some(scratch()),
         );
-        assert_eq!(
-            policy.check(Path::new("/home/user/.ssh/config"), Access::Read),
-            Decision::Ask
-        );
+        assert_eq!(policy.check(&outside_file, Access::Read), Decision::Ask);
         assert_eq!(
             policy.check(Path::new("/etc/hosts"), Access::Read),
             Decision::Allow
         );
-        assert_eq!(
-            policy.check(Path::new("/home/user/.ssh/config"), Access::Write),
-            Decision::Ask
-        );
+        assert_eq!(policy.check(&outside_file, Access::Write), Decision::Ask);
     }
 
     #[test]

@@ -238,7 +238,7 @@ PTC 签名对连字符或数字开头的名称使用方括号，例如 `tools["R
 `tools.call` 的边界：
 
 - 只在工具的 `run` 里可用；命令、钩子、`prompt`、`activate` 里调用会抛 `E_PLUGIN_TOOLS_UNAVAILABLE`
-- 只放行白名单里的只读工具：`read`、`grep`、`find`、`web_search`、`web_fetch`；写、shell、`job`、`ask`、`todo`、`execute`、MCP 工具与插件工具一律拒绝
+- 只放行白名单里的只读工具：`read`、`grep`、`find`、`web_fetch`；写、shell、`job`、`ask`、`todo`、`execute`、MCP 工具与插件工具一律拒绝
 - 插件内部不能调自身或其它插件工具，越过白名单返回 `E_PLUGIN_TOOLS_UNAVAILABLE`；这不限制模型经 `execute` 调用插件
 
 ## 插件持久化配置

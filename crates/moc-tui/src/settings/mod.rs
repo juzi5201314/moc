@@ -46,7 +46,7 @@ pub const TABS: &[&str] = &[
 fn tab_of(path: &[String]) -> &'static str {
     match path.first().map(String::as_str) {
         Some("providers") => "providers",
-        Some("tools" | "web_search" | "web_fetch") => "tools",
+        Some("tools" | "web_fetch") => "tools",
         Some("sandbox") => "sandbox",
         Some("compaction" | "limits") => "context",
         Some("context_files" | "system_prompt") => "instructions",

@@ -36,7 +36,7 @@ pub use schema::{
     EditConfig, FeaturesConfig, FindConfig, GrepConfig, HOST_PLUGIN_KEYS, JobConfig, JobOverflow,
     LimitsConfig, OnDenied, OutputConfig, PluginsConfig, PtcConfig, ReadConfig, RetentionConfig,
     ShakeConfig, SkillsConfig, SystemPromptConfig, TodoConfig, ToolsConfig, WebFetchConfig,
-    WebSearchConfig, WorkflowConfig, WorkspaceConfig, WriteConfig, is_plugin_key,
+    WorkflowConfig, WorkspaceConfig, WriteConfig, is_plugin_key,
 };
 
 /// 会话文件与保留策略；跨进程锁始终启用。
@@ -45,29 +45,6 @@ pub struct SessionSettings {
     pub dir: PathBuf,
     pub compress: bool,
     pub retention: RetentionConfig,
-}
-
-/// web search 供应商的运行时配置；api_key 已按 env:/!command 语法解析。
-///
-/// 与 `model::ResolvedProvider` 一致不派生 `Debug`：结构持有已解析密钥，`{:?}` 会把密钥带进日志。
-#[derive(Clone)]
-pub struct ResolvedWebSearch {
-    pub enabled: bool,
-    /// 校验阶段已归一化为小写。
-    pub provider: String,
-    /// 原样保存；空串 = Tavily 官方地址（规范化在 websearch 模块做）。
-    pub base_url: String,
-    pub timeout_secs: u64,
-    pub api_key: Option<String>,
-}
-
-impl ResolvedWebSearch {
-    /// `web_search` 是否对模型可见：启用且已解析出密钥。
-    ///
-    /// 工具定义过滤、执行门槛与系统提示词共用同一判定，保持单点。
-    pub fn available(&self) -> bool {
-        self.enabled && self.api_key.is_some()
-    }
 }
 
 /// web_fetch 本地抓取的运行时配置。
@@ -115,7 +92,6 @@ pub struct ResolvedConfig {
     pub mcp: moc_mcp::McpDocument,
     pub skills: SkillsConfig,
     pub plugins: PluginsConfig,
-    pub web_search: ResolvedWebSearch,
     pub web_fetch: ResolvedWebFetch,
     pub agents: schema::AgentsConfig,
     pub workflow: schema::WorkflowConfig,
@@ -236,14 +212,11 @@ impl ResolvedConfig {
         schema::validate_tools(&document.tools)?;
         validate_skills(&document.skills)?;
         validate_plugins(&document.plugins)?;
-        let web_search_provider = schema::validate_web_search(&document.web_search)?;
-        let web_search_key =
-            model::resolve_secret("web_search.api_key", &document.web_search.api_key)?;
         schema::validate_web_fetch(&document.web_fetch)?;
         schema::validate_ptc(&document.tools.ptc)?;
         schema::validate_agents(&document.agents)?;
         schema::validate_limits(&document.limits)?;
-        let features = resolve_features(&document, web_search_key.is_some())?;
+        let features = resolve_features(&document)?;
         if document.tools.job.max_running == 0 || document.tools.job.max_wait_secs == 0 {
             return Err(CoreError::Config(
                 "tools.job: max_running 与 max_wait_secs 必须大于 0".into(),
@@ -273,13 +246,6 @@ impl ResolvedConfig {
             mcp: document.mcp,
             skills: document.skills,
             plugins: document.plugins,
-            web_search: ResolvedWebSearch {
-                enabled: document.web_search.enabled,
-                provider: web_search_provider,
-                base_url: document.web_search.base_url,
-                timeout_secs: document.web_search.timeout_secs,
-                api_key: web_search_key,
-            },
             web_fetch: ResolvedWebFetch {
                 enabled: document.web_fetch.enabled,
                 timeout_secs: document.web_fetch.timeout_secs,
@@ -379,12 +345,8 @@ impl ResolvedConfig {
 /// 把 `[features]` 覆盖与各段 `enabled` 合成注册表快照。
 ///
 /// `Existing` 开关读原配置段（保持单点来源）；`Features` 自有开关读 `[features]`
-/// 覆盖值、缺省用注册表默认。`web_search` 以 `available()` 为准——没有 API key 时
-/// 工具本就不进表，flag 如实反映。
-fn resolve_features(
-    document: &ConfigDocument,
-    web_search_available: bool,
-) -> Result<FeatureStates, CoreError> {
+/// 覆盖值、缺省用注册表默认。
+fn resolve_features(document: &ConfigDocument) -> Result<FeatureStates, CoreError> {
     schema::validate_features(&document.features)?;
     Ok(FeatureStates::resolve(|flag| match flag {
         FeatureFlag::Clm | FeatureFlag::Ptc => document
@@ -396,7 +358,6 @@ fn resolve_features(
         FeatureFlag::Plugins => document.plugins.enabled,
         FeatureFlag::Mcp => document.mcp.enabled,
         FeatureFlag::Skills => document.skills.enabled,
-        FeatureFlag::WebSearch => web_search_available,
         FeatureFlag::WebFetch => document.web_fetch.enabled,
     }))
 }

@@ -57,8 +57,6 @@ pub enum FeatureFlag {
     Mcp,
     /// skills 目录注入与 `skill` 工具。
     Skills,
-    /// `web_search` 工具。
-    WebSearch,
     /// `web_fetch` 工具。
     WebFetch,
 }
@@ -159,16 +157,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         summary: "features.item.skills",
     },
     FeatureSpec {
-        flag: FeatureFlag::WebSearch,
-        key: "web_search",
-        toggle: FlagToggle::Existing("web_search.enabled"),
-        stage: FlagStage::Stable,
-        default_enabled: true,
-        // 工具 schema 实测 ≈130 token（含参数说明）。
-        context_tokens: Some(150),
-        summary: "features.item.web_search",
-    },
-    FeatureSpec {
         flag: FeatureFlag::WebFetch,
         key: "web_fetch",
         toggle: FlagToggle::Existing("web_fetch.enabled"),
@@ -193,7 +181,6 @@ impl FeatureFlag {
         Self::Plugins,
         Self::Mcp,
         Self::Skills,
-        Self::WebSearch,
         Self::WebFetch,
     ];
 }

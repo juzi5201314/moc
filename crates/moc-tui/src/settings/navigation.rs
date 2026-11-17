@@ -286,12 +286,6 @@ impl SettingsPanel {
                     }
                 }
             }
-            Some("web_search") => chain.push((
-                "web_search".into(),
-                t!("tui.nav.web_search").into_owned(),
-                vec!["web_search".into()],
-                None,
-            )),
             Some("web_fetch") => chain.push((
                 "web_fetch".into(),
                 t!("tui.nav.web_fetch").into_owned(),

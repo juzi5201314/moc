@@ -13,7 +13,10 @@ pub(crate) struct SandboxScratch {
     pub tmp: PathBuf,
     pub var_tmp: PathBuf,
     pub home: PathBuf,
+    // overlay 两个字段只在 Linux（bwrap overlayfs）路径被读。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub overlay_upper: PathBuf,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     overlay_work: PathBuf,
     /// 被拒绝路径的只读空文件占位；bwrap 用它遮蔽单个文件。
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -57,6 +60,7 @@ impl SandboxScratch {
     }
 
     /// 为一次 bwrap 启动创建独立的 overlay workdir；overlayfs 要求它为空。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn new_overlay_work(&self) -> std::io::Result<TempDir> {
         Builder::new()
             .prefix("work-")

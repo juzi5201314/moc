@@ -112,6 +112,21 @@ fn transparent_image_keeps_alpha_and_tall_image_keeps_aspect_ratio() {
 }
 
 #[test]
+fn cache_reuses_variants_across_drifted_budgets() {
+    let cache = ImageCache::default();
+    let source = png(400, 500, false);
+    let first = cache.normalize(&source, 500 * 1024).unwrap();
+    let decoded = decoded_len(&first);
+    // 预算落在已有变体的 [decoded, limit] 区间内：复用而非重压缩。
+    assert_eq!(cache.normalize(&source, decoded).unwrap(), first);
+    assert_eq!(cache.normalize(&source, 500 * 1024).unwrap(), first);
+    let cache = cache.0.lock().unwrap();
+    let entry = cache.entries.values().next().unwrap();
+    assert_eq!(entry.variants.len(), 1);
+    assert_eq!(entry.variants[0].limit, 500 * 1024);
+}
+
+#[test]
 fn malformed_image_fails_locally_instead_of_sending_original() {
     rust_i18n::set_locale("zh");
     let req = request(vec![ImageSource::Base64 {

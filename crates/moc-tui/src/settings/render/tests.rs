@@ -215,17 +215,17 @@ fn group_description_follows_grouping_path() {
         "tools",
         json!({}),
         vec![ConfigField {
-            path: vec!["web_search".into(), "provider".into()],
+            path: vec!["web_fetch".into(), "timeout_secs".into()],
             tab: "工具".into(),
-            label: "搜索引擎".into(),
+            label: "超时".into(),
             description: "测试用".into(),
             kind: FieldKind::Text,
             advanced: false,
         }],
     );
-    select_group(&mut tools, "web_search");
+    select_group(&mut tools, "web_fetch");
     let rows = screen(&mut tools, 120, 40);
-    assert!(locate(&rows, "网络搜索接口与检索参数").is_some());
+    assert!(locate(&rows, "网页抓取策略与截断限制").is_some());
 }
 
 /// 取消顶部快捷键芯片条，只在底部渲染简洁提示条。

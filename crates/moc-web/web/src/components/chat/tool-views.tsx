@@ -20,7 +20,6 @@ import {
   headLines,
   languageOf,
   parseArgs,
-  parseSearch,
   parseTodo,
   previewDiff,
   tailLines,
@@ -407,50 +406,6 @@ function DiffCard({
 
 // ---------- 搜索类 ----------
 
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
-
-function SearchView({ result }: { result: string }) {
-  const { answer, hits } = useMemo(() => parseSearch(result), [result]);
-  return (
-    <div className="space-y-2">
-      {answer && (
-        <div className="rounded-xl bg-code px-3.5 py-2.5 [--moc-prose-color:var(--muted-foreground)] [--moc-prose-size:13px]">
-          <MessageResponse>{answer}</MessageResponse>
-        </div>
-      )}
-      {hits.length > 0 && (
-        <div className="space-y-0.5">
-          {hits.map((hit) => (
-            <a
-              key={hit.url || hit.title}
-              href={hit.url}
-              target="_blank"
-              rel="noreferrer"
-              className="group/hit block rounded-lg px-2 py-1.5 transition-colors"
-            >
-              <div className="flex min-w-0 items-baseline gap-2">
-                <span className="min-w-0 truncate text-ui text-foreground group-hover/hit:text-brand">
-                  {hit.title}
-                </span>
-                <span className="shrink-0 text-2xs text-text-tertiary">{hostOf(hit.url)}</span>
-              </div>
-              {hit.snippet && (
-                <p className="line-clamp-2 text-xs text-muted-foreground">{hit.snippet}</p>
-              )}
-            </a>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** 未知工具的入参：键值表，长值折行、对象按 JSON 展开。 */
 function ArgsTable({ raw }: { raw: string }) {
   const args = parseArgs(raw);
@@ -706,8 +661,6 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
 
   if (result === undefined) return tool.arguments ? <ArgsTable raw={tool.arguments} /> : null;
   switch (tool.name) {
-    case "web_search":
-      return <SearchView result={result} />;
     case "ask":
     case "message_agent":
     case "wait_agent":

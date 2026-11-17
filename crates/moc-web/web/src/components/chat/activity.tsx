@@ -38,7 +38,6 @@ import {
   grepCounts,
   groupActivity,
   headLines,
-  parseSearch,
   toggledLevel,
   toolExpandable,
   toolFailed,
@@ -571,7 +570,6 @@ const GROUP_VERB: Record<string, (n: number) => string> = {
   read: (n) => t("grp.read", { n }),
   grep: (n) => t("grp.grep", { n }),
   find: (n) => t("grp.find", { n }),
-  web_search: (n) => t("grp.web_search", { n }),
   web_fetch: (n) => t("grp.web_fetch", { n }),
 };
 
@@ -595,13 +593,6 @@ function groupStat(name: string, tools: ToolBlock[]): string | undefined {
       0,
     );
     return `${files} files`;
-  }
-  if (name === "web_search") {
-    const hits = done.reduce(
-      (sum, tool) => sum + parseSearch(tool.result as string).hits.length,
-      0,
-    );
-    return `${hits} results`;
   }
   return undefined;
 }
