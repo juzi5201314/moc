@@ -21,6 +21,48 @@ fn prompt_preserves_spaces_after_deleting_arguments() {
 }
 
 #[test]
+fn prompt_only_highlights_registered_command_tokens() {
+    let (events, _) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(Theme::global(), events);
+    app.commands
+        .set_plugin_commands(vec![moc_protocol::commands::PluginCommand {
+            name: "deploy".into(),
+            description: String::new(),
+            usage: String::new(),
+            plugin: "demo".into(),
+            origin: String::new(),
+        }]);
+    for width in [18, 80] {
+        for (text, highlighted) in [
+            ("  /help 参数 /help", "/help"),
+            ("/exit 参数", "/exit"),
+            ("/deploy 参数", "/deploy"),
+            ("/unknown-command 参数", ""),
+            ("普通文本 /help", ""),
+            ("", ""),
+        ] {
+            app.prompt.text = text.into();
+            let lines = prompt_lines(&app, Rect::new(0, 0, width, 20));
+            let body: Vec<_> = lines
+                .iter()
+                .flat_map(|line| line.spans.iter().skip(2))
+                .collect();
+            let colored: String = body
+                .iter()
+                .filter(|span| span.style.fg == Some(app.theme.accent_tool))
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(colored, highlighted);
+            assert!(
+                body.iter()
+                    .all(|span| span.style.fg == Some(app.theme.text_primary)
+                        || span.style.fg == Some(app.theme.accent_tool))
+            );
+        }
+    }
+}
+
+#[test]
 fn prompt_wrap_keeps_spaces_and_cursor_mapping() {
     let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::new(Theme::global(), events);

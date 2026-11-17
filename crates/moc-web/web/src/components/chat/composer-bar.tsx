@@ -34,7 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { t, useT } from "@/lib/i18n";
 import { leadSelector, parseSelector } from "@/lib/models";
-import { fromMeta, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
+import { commandToken, fromMeta, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type { ImageSource, PluginInfo, ResourceCandidate, SteerResult } from "@/protocol/types";
@@ -51,6 +51,7 @@ import { usePrefs } from "@/store/prefs";
 import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
+import { CommandTextarea } from "./command-textarea";
 import {
   CHIP,
   ComposerStatus,
@@ -598,7 +599,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               </Attachments>
             )}
 
-            <textarea
+            <CommandTextarea
+              command={commandToken(text, commands)}
               ref={textareaRef}
               value={text}
               rows={1}
