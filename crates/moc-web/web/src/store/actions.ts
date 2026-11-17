@@ -17,7 +17,7 @@ import type {
   SessionLoadResult,
   SessionPlanApproveResult,
 } from "@/protocol/types";
-import { toInput, unescapeSlash, useComposer } from "./composer";
+import { toInput, useComposer } from "./composer";
 import {
   newSession,
   openSession,
@@ -108,8 +108,7 @@ export function dispatchNext(sessionId: string): void {
   );
   if (!next) return;
   useComposer.getState().removePending(sessionId, next.key);
-  const text = next.rawInput ? unescapeSlash(next.text) : next.text;
-  void sendPrompt(sessionId, toInput(text, next.images), { mode: next.mode });
+  void sendPrompt(sessionId, toInput(next.text, next.images), { mode: next.mode });
 }
 
 /** 草稿会话首次发送时向 core 创建真实会话，返回可用的会话 id。 */

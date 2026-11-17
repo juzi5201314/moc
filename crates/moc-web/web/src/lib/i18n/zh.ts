@@ -230,8 +230,6 @@ export const zh = {
 
   // ---------- 斜杠命令（slash.tsx / shortcuts.ts） ----------
   "slash.usage": "用法：{usage}",
-  "slash.unknown": "未知命令：{name}",
-  "slash.unknown_suggestion": "未知命令：{name}，是否想输入 {suggestion}？",
   "slash.exec_failed": "命令执行失败：{error}",
   "slash.running": "会话正在生成，请先停止",
   "slash.needs_session": "这个命令需要一个已存在的会话",

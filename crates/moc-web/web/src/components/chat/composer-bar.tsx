@@ -34,7 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { t, useT } from "@/lib/i18n";
 import { leadSelector, parseSelector } from "@/lib/models";
-import { fromMeta, runSlash, type SlashCommand, slashMatches, unknownSlash } from "@/lib/slash";
+import { fromMeta, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type { ImageSource, PluginInfo, ResourceCandidate, SteerResult } from "@/protocol/types";
@@ -43,7 +43,6 @@ import {
   type Attachment as ComposerAttachment,
   type PendingItem,
   toInput,
-  unescapeSlash,
   useComposer,
 } from "@/store/composer";
 import { selectCommands, selectFeatures, selectModels, useConnection } from "@/store/connection";
@@ -374,14 +373,9 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     }
     // `.` 独占整条输入时是 /retry 的快捷写法：转写成命令，走同一套门控。
     const dispatch = trimmed === "." ? "/retry" : trimmed;
-    const error = unknownSlash(dispatch, commands);
-    if (error) {
-      toast.error(error);
-      return;
-    }
     if (images.length === 0 && runSlash(sessionId, dispatch, commands, features)) return;
 
-    const input = toInput(unescapeSlash(trimmed), images);
+    const input = toInput(trimmed, images);
     useComposer.getState().clearDraft(sessionId);
     if (!running) {
       void sendPrompt(sessionId, input);
@@ -393,7 +387,6 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       key: nanoid(),
       kind: queue ? "queue" : "steer",
       text: trimmed,
-      rawInput: true,
       images,
     };
     useComposer.getState().pushPending(sessionId, item);

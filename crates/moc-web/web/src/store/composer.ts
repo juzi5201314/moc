@@ -12,8 +12,6 @@ export type PendingItem = {
   /** steer 被 core 接受后的 ID。 */
   steerId?: number;
   text: string;
-  /** 输入框原文，发送时解码 // 转义；已解析的命令参数不解码。 */
-  rawInput?: boolean;
   images: Attachment[];
   /** 仅本条提示生效的执行模式（`/ask` 入队时携带）。 */
   mode?: PromptMode;
@@ -87,10 +85,6 @@ export const useComposer = create<ComposerState>()((set) => ({
       },
     })),
 }));
-
-export function unescapeSlash(text: string): string {
-  return text.startsWith("//") ? text.slice(1) : text;
-}
 
 export function toInput(text: string, images: Attachment[]): InputPart[] {
   const parts: InputPart[] = [];

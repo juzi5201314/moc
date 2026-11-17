@@ -234,8 +234,6 @@ export const en: Record<MsgKey, string> = {
 
   // ---------- slash commands / shortcuts ----------
   "slash.usage": "Usage: {usage}",
-  "slash.unknown": "Unknown command: {name}",
-  "slash.unknown_suggestion": "Unknown command: {name}. Did you mean {suggestion}?",
   "slash.exec_failed": "Command failed: {error}",
   "slash.running": "Session is generating; stop it first",
   "slash.needs_session": "This command needs an existing session",
