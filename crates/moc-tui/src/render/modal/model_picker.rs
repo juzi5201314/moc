@@ -48,7 +48,8 @@ fn entry_group(app: &App, entry: &ModelEntry) -> String {
 }
 
 /// 优先向上展开；空间不足时选择下方。无可见标签时贴输入框右上方。
-fn popup_rect(screen: Rect, anchor: Rect, natural_rows: usize) -> Rect {
+/// `align_left`（计划芯片锚点）：卡片左缘对齐锚点左缘；否则右缘对齐。
+fn popup_rect(screen: Rect, anchor: Rect, natural_rows: usize, align_left: bool) -> Rect {
     let width = LIST_WIDTH.min(screen.width);
     let above = anchor.y.saturating_sub(screen.y).min(screen.height);
     let below = screen.bottom().saturating_sub(anchor.bottom());
@@ -56,11 +57,18 @@ fn popup_rect(screen: Rect, anchor: Rect, natural_rows: usize) -> Rect {
     let wanted = u16::try_from(natural_rows + 3).unwrap_or(u16::MAX).min(18);
     let up = above >= wanted || above >= below;
     let height = wanted.min(if up { above } else { below });
-    Rect::new(
+    let x = if align_left {
+        anchor
+            .x
+            .clamp(screen.x, screen.right().saturating_sub(width))
+    } else {
         anchor
             .right()
             .saturating_sub(width)
-            .clamp(screen.x, screen.right().saturating_sub(width)),
+            .clamp(screen.x, screen.right().saturating_sub(width))
+    };
+    Rect::new(
+        x,
         if up {
             anchor.y.saturating_sub(height)
         } else {
@@ -79,7 +87,13 @@ fn draw_panel(frame: &mut Frame, rect: Rect, title: &str, theme: &Theme) -> Rect
         Style::new().bg(theme.bg_base).fg(theme.text_primary),
     );
     let width = overlay::content_width(rect.width);
-    let panel = overlay::panel(theme).title(overlay::title_span(title, width, theme));
+    // 空标题不设 title，否则边框会画出 `╭  ───` 的双空格标题。
+    let panel = overlay::panel(theme);
+    let panel = if title.is_empty() {
+        panel
+    } else {
+        panel.title(overlay::title_span(title, width, theme))
+    };
     frame.render_widget(panel, rect);
     Rect::new(
         rect.x + 2,
@@ -89,17 +103,21 @@ fn draw_panel(frame: &mut Frame, rect: Rect, title: &str, theme: &Theme) -> Rect
     )
 }
 
-/// 详情卡的横向落位：优先列表卡左侧（留 1 列空隙），其次右侧，
-/// 两侧都放不下（窄屏）时盖在列表卡左部——那种情况下详情卡只在
-/// 焦点落在它上面或下拉打开时才绘制。返回 `(x, 是否覆盖在列表卡上)`。
-fn detail_x(screen: Rect, list: Rect) -> (u16, bool) {
+/// 详情卡的横向落位：默认优先列表卡左侧，计划芯片锚点（`prefer_right`）优先
+/// 右侧；两侧留 1 列空隙，都放不下（窄屏）时盖在列表卡左部——那种情况下详情卡
+/// 只在焦点落在它上面或下拉打开时才绘制。返回 `(x, 是否覆盖在列表卡上)`。
+fn detail_x(screen: Rect, list: Rect, prefer_right: bool) -> (u16, bool) {
     let width = DETAIL_WIDTH.min(screen.width);
-    if list.x > screen.x + width {
-        (list.x - width - 1, false)
-    } else if list.right() + 1 + width <= screen.right() {
-        (list.right() + 1, false)
+    let left = || list.x.checked_sub(width + 1).filter(|x| *x >= screen.x);
+    let right = || (list.right() + 1 + width <= screen.right()).then_some(list.right() + 1);
+    let spot = if prefer_right {
+        right().or_else(left)
     } else {
-        (list.x, true)
+        left().or_else(right)
+    };
+    match spot {
+        Some(x) => (x, false),
+        None => (list.x, true),
     }
 }
 
@@ -157,18 +175,28 @@ fn draw_hover(frame: &mut Frame, app: &App) {
 
 fn draw_cards(frame: &mut Frame, app: &mut App) {
     let screen = frame.area();
-    let anchor = if app.model_tag_area.is_empty() {
-        Rect::new(
-            screen.right().saturating_sub(1),
-            screen.bottom().saturating_sub(1),
-            1,
-            1,
-        )
-    } else {
-        app.model_tag_area
-    };
+    // 计划审阅的模型芯片锚点优先，其次才是输入框图例。
+    let chip = app.model_picker_anchor.filter(|anchor| !anchor.is_empty());
+    let anchor = chip.unwrap_or_else(|| {
+        if app.model_tag_area.is_empty() {
+            Rect::new(
+                screen.right().saturating_sub(1),
+                screen.bottom().saturating_sub(1),
+                1,
+                1,
+            )
+        } else {
+            app.model_tag_area
+        }
+    });
     let modal = app.modal.as_ref().expect("模型浮层已打开");
-    let rect = popup_rect(screen, anchor, list_natural_rows(app, modal));
+    // 芯片锚点：列表卡左缘对齐芯片、详情卡在右；图例锚点维持右对齐原状。
+    let rect = popup_rect(
+        screen,
+        anchor,
+        list_natural_rows(app, modal),
+        chip.is_some(),
+    );
     if rect.height < 4 {
         return;
     }
@@ -216,7 +244,7 @@ fn draw_cards(frame: &mut Frame, app: &mut App) {
     };
     // 详情卡：外宽 38，顶部与列表卡对齐；高度 = 内容行数 + 边框，
     // 超出屏幕底就整体上移，仍超高就截断内容。
-    let (dx, overlaid) = detail_x(screen, rect);
+    let (dx, overlaid) = detail_x(screen, rect, chip.is_some());
     let focused = detail.focus.is_some() || detail.menu.is_some();
     if overlaid && !focused {
         return;
@@ -229,6 +257,21 @@ fn draw_cards(frame: &mut Frame, app: &mut App) {
         .min(screen.bottom().saturating_sub(height))
         .max(screen.y);
     let drect = Rect::new(dx, dy, DETAIL_WIDTH.min(screen.width), height);
+    // 列表卡与详情卡之间的 1 列空隙铺不透明底，免得漏出底下卡片的字符。
+    if !overlaid {
+        let top = rect.y.min(drect.y);
+        let bottom = rect.bottom().max(drect.bottom());
+        let gap_x = if drect.x > rect.x {
+            rect.right()
+        } else {
+            drect.right()
+        };
+        overlay::paint_opaque(
+            frame.buffer_mut(),
+            Rect::new(gap_x, top, 1, bottom.saturating_sub(top)),
+            Style::new().bg(theme.bg_base).fg(theme.text_primary),
+        );
+    }
     let dcontent = draw_panel(frame, drect, "", theme);
     let visible = usize::from(dcontent.height);
     frame.render_widget(

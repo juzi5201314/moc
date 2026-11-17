@@ -2,7 +2,7 @@
 // 详情卡里改思考强度会直接切到该模型，Fast Mode 是会话级开关。
 // selector 形如 `provider/model[:level]`；规范 Fusion selector 经 Fusion 卡配置。
 
-import { CheckIcon, Settings2Icon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, Settings2Icon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -177,7 +177,8 @@ function ModelCard({
   level: string | undefined;
   fast: boolean;
   onLevel: (level: string) => void;
-  onFast: (next: boolean) => void;
+  /** 会话级开关；非会话目标（新会话模型）不传，行整体隐藏。 */
+  onFast?: (next: boolean) => void;
 }) {
   const t = useT();
   const levels = model.thinking_levels ?? [];
@@ -200,7 +201,7 @@ function ModelCard({
               <LevelSelect value={level} levels={levels} onChange={onLevel} />
             </CardRow>
           )}
-          {model.fast_mode && <FastModeRow enabled={fast} onChange={onFast} />}
+          {model.fast_mode && onFast && <FastModeRow enabled={fast} onChange={onFast} />}
         </div>
       )}
       {model.pricing && <PriceGrid pricing={model.pricing} />}
@@ -295,7 +296,7 @@ function FusionCard({
   fast: boolean;
   onDraft: (draft: FusionDraft) => void;
   onApply: () => void;
-  onFast: (next: boolean) => void;
+  onFast?: (next: boolean) => void;
 }) {
   const t = useT();
   const lead = parseSelector(draft.lead, models).model;
@@ -319,7 +320,7 @@ function FusionCard({
           models={models}
           onChange={(selector) => onDraft({ ...draft, sidekick: selector })}
         />
-        {lead?.fast_mode && <FastModeRow enabled={fast} onChange={onFast} />}
+        {lead?.fast_mode && onFast && <FastModeRow enabled={fast} onChange={onFast} />}
       </div>
       <div className="px-4 pt-1 pb-3.5">
         <Button
@@ -335,14 +336,24 @@ function FusionCard({
   );
 }
 
-/** 弹层内容：每次打开都重新挂载，草稿与高亮项随之按当前会话初始化。 */
-function PickerPanel({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+/** 弹层内容：每次打开都重新挂载，草稿与高亮项随之按当前 selector 初始化。
+ *  受控组件：`selector` 是当前值，`onPick` 收到新 selector；`sessionId` 仅
+ *  会话目标需要（Fast Mode 行）。 */
+function PickerPanel({
+  selector,
+  sessionId,
+  onPick,
+  onClose,
+}: {
+  selector: string;
+  sessionId?: string;
+  onPick: (next: string) => void;
+  onClose: () => void;
+}) {
   const t = useT();
   const models = useConnection(selectModels);
-  const fallback = useConnection((state) => state.config?.default_model ?? "");
   const fusionDefaults = useConnection((state) => state.config?.fusion);
-  const info = useTranscript((state) => state.bySession[sessionId]?.info);
-  const selector = info?.model || fallback;
+  const info = useTranscript((state) => (sessionId ? state.bySession[sessionId]?.info : undefined));
   const fast = Boolean(info?.fast_mode);
 
   const fusion = parseFusion(selector);
@@ -363,22 +374,23 @@ function PickerPanel({ sessionId, onClose }: { sessionId: string; onClose: () =>
     onClose();
     const level = levelFor(model);
     const next = level ? `${model.id}:${level}` : model.id;
-    if (next !== selector) void apply(sessionId, next);
+    if (next !== selector) onPick(next);
   };
 
   const pickLevel = (model: ModelInfo, level: string) => {
     const next = `${model.id}:${level}`;
-    if (next !== selector) void apply(sessionId, next);
+    if (next !== selector) onPick(next);
   };
 
   const applyFusion = () => {
     if (!draft.lead || !draft.sidekick) return;
     const next = fusionSelector(draft.lead, draft.sidekick);
     onClose();
-    if (next !== selector) void apply(sessionId, next);
+    if (next !== selector) onPick(next);
   };
 
   const toggleFast = (next: boolean) => {
+    if (!sessionId) return;
     setSessionFastMode(sessionId, next).catch((error) =>
       toast.error(t("mp.fast_failed", { error: errorText(error) })),
     );
@@ -476,7 +488,7 @@ function PickerPanel({ sessionId, onClose }: { sessionId: string; onClose: () =>
               level={levelFor(activeModel)}
               fast={fast}
               onLevel={(level) => pickLevel(activeModel, level)}
-              onFast={toggleFast}
+              onFast={sessionId ? toggleFast : undefined}
             />
           ) : (
             <FusionCard
@@ -486,7 +498,7 @@ function PickerPanel({ sessionId, onClose }: { sessionId: string; onClose: () =>
               fast={fast}
               onDraft={setDraft}
               onApply={applyFusion}
-              onFast={toggleFast}
+              onFast={sessionId ? toggleFast : undefined}
             />
           )}
         </div>
@@ -538,7 +550,60 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
         sideOffset={8}
         className="w-auto rounded-none bg-transparent p-0 shadow-none"
       >
-        <PickerPanel sessionId={sessionId} onClose={() => setOpen(false)} />
+        <PickerPanel
+          selector={selector}
+          sessionId={sessionId}
+          onPick={(next) => void apply(sessionId, next)}
+          onClose={() => setOpen(false)}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * 计划审阅「新会话模型」的受控选择器：只把 selector 交给 onChange，
+ * 不写回会话。触发器用与同行「新会话执行」一致的 outline 小按钮。
+ */
+export function ExecutionModelPicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  /** 生效的 selector；未单独选择时调用方传入会话当前模型。 */
+  value: string;
+  onChange: (next: string) => void;
+  disabled?: boolean;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const models = useConnection(selectModels);
+
+  const fusion = parseFusion(value);
+  const parsed = parseSelector(value, models);
+  const label = fusion ? "Fusion" : modelName(parsed.id) || t("mp.default_model");
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={disabled}
+          title={t("pr.new_model_title")}
+          className="gap-1 px-2.5 text-ui shadow-none"
+        >
+          <span className="max-w-[140px] truncate">{label}</span>
+          <ChevronDownIcon className="opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        side="top"
+        sideOffset={8}
+        className="w-auto rounded-none bg-transparent p-0 shadow-none"
+      >
+        <PickerPanel selector={value} onPick={onChange} onClose={() => setOpen(false)} />
       </PopoverContent>
     </Popover>
   );

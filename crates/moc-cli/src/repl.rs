@@ -313,6 +313,7 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
                             plan_id,
                             action: PlanAction::ExecuteCompacted,
                             execution_engine: None,
+                            execution_model: None,
                         })
                         .await;
                 }

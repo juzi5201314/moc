@@ -11,7 +11,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph};
 
-use super::wrap::{line_width, truncate};
+use super::wrap::{clip_line, line_width, truncate};
 use crate::theme::Theme;
 
 /// 卡片左右内边距（列）：边框与正文之间。
@@ -103,6 +103,198 @@ pub fn footer<K: AsRef<str>, A: AsRef<str>>(
         line: Line::from(Span::styled(text, Style::new().fg(theme.gray_dim))),
         keys,
     }
+}
+
+/// 按钮语义层级：Primary 是默认/主操作，其余为 Secondary。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonKind {
+    Primary,
+    Secondary,
+}
+
+/// 按钮状态：键盘焦点与指针悬停共用 Focused；Disabled 不响应激活。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonState {
+    Normal,
+    Focused,
+    Disabled,
+}
+
+/// ` label ` 药丸按钮：左右各 1 空格，底色随状态变化。
+#[derive(Debug, Clone)]
+pub struct Button {
+    pub label: String,
+    pub kind: ButtonKind,
+    pub state: ButtonState,
+}
+
+impl Button {
+    /// 显示宽度（列）：标签宽 + 两侧空格。
+    pub fn width(&self) -> usize {
+        super::wrap::str_width(&self.label) + 2
+    }
+
+    fn style(&self, theme: &Theme) -> Style {
+        match self.state {
+            ButtonState::Disabled => Style::new().fg(theme.gray_dim).bg(theme.bg_panel),
+            ButtonState::Focused => match self.kind {
+                ButtonKind::Primary => Style::new()
+                    .fg(theme.bg_base)
+                    .bg(theme.accent_user)
+                    .add_modifier(Modifier::BOLD),
+                ButtonKind::Secondary => Style::new()
+                    .fg(theme.text_primary)
+                    .bg(theme.bg_selection)
+                    .add_modifier(Modifier::BOLD),
+            },
+            ButtonState::Normal => match self.kind {
+                ButtonKind::Primary => Style::new()
+                    .fg(theme.accent_user)
+                    .bg(theme.bg_highlight)
+                    .add_modifier(Modifier::BOLD),
+                ButtonKind::Secondary => {
+                    Style::new().fg(theme.text_secondary).bg(theme.bg_highlight)
+                }
+            },
+        }
+    }
+}
+
+/// 下拉触发芯片：`{caption} {value} ▾`，Focused 时整段铺 `bg_hover`。
+#[derive(Debug, Clone)]
+pub struct Chip {
+    pub caption: String,
+    pub value: String,
+    pub focused: bool,
+}
+
+impl Chip {
+    /// 显示宽度（列）。
+    pub fn width(&self) -> usize {
+        super::wrap::str_width(&self.caption) + super::wrap::str_width(&self.value) + 3
+    }
+}
+
+/// 按钮行条目：按钮或下拉芯片，均自带宽度与绘制。
+#[derive(Debug, Clone)]
+pub enum Control {
+    Button(Button),
+    Chip(Chip),
+}
+
+impl Control {
+    /// 显示宽度（列）。
+    pub fn width(&self) -> usize {
+        match self {
+            Control::Button(button) => button.width(),
+            Control::Chip(chip) => chip.width(),
+        }
+    }
+
+    /// 该条目的样式化片段序列。
+    fn spans(&self, theme: &Theme) -> Vec<Span<'static>> {
+        match self {
+            Control::Button(button) => vec![Span::styled(
+                format!(" {} ", button.label),
+                button.style(theme),
+            )],
+            Control::Chip(chip) => {
+                let style = |fg| {
+                    let style = Style::new().fg(fg);
+                    if chip.focused {
+                        style.bg(theme.bg_hover)
+                    } else {
+                        style
+                    }
+                };
+                vec![
+                    Span::styled(format!("{} ", chip.caption), style(theme.gray)),
+                    Span::styled(chip.value.clone(), style(theme.text_primary)),
+                    Span::styled(" ▾", style(theme.gray)),
+                ]
+            }
+        }
+    }
+}
+
+/// 按钮行的对齐方向（行内容贴哪侧）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowAlign {
+    Left,
+    Right,
+}
+
+/// 条目在按钮行里的落位：行号（返回行的下标）、列起点、宽度（列）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlSlot {
+    pub row: usize,
+    pub col: usize,
+    pub width: usize,
+}
+
+/// 按 `width` 列把条目排成若干行：顺序填充、放不下换行、行内贴 `align` 侧、
+/// 条目间距 `gap` 列。渲染与鼠标命中共用同一份布局，返回排好的行与每条目落位。
+pub fn layout_controls(
+    controls: &[Control],
+    width: usize,
+    align: RowAlign,
+    gap: usize,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Vec<ControlSlot>) {
+    // 先按宽分行，再逐行排版；单行放不下的条目独占一行并被截到 `width`。
+    let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut row_width = 0usize;
+    for (index, control) in controls.iter().enumerate() {
+        let item_width = control.width();
+        let needed = if row_width == 0 {
+            item_width
+        } else {
+            row_width + gap + item_width
+        };
+        if needed > width && row_width > 0 {
+            rows.push(Vec::new());
+            row_width = 0;
+        }
+        rows.last_mut().expect("行组非空").push(index);
+        row_width += if row_width == 0 {
+            item_width
+        } else {
+            gap + item_width
+        };
+    }
+    let mut lines = Vec::with_capacity(rows.len());
+    let mut slots = Vec::with_capacity(controls.len());
+    for row in rows.iter().filter(|row| !row.is_empty()) {
+        let content_width = row
+            .iter()
+            .map(|index| controls[*index].width())
+            .sum::<usize>()
+            + gap * (row.len() - 1);
+        let mut x = match align {
+            RowAlign::Left => 0,
+            RowAlign::Right => width.saturating_sub(content_width),
+        };
+        let mut spans = Vec::with_capacity(row.len() * 2 + 1);
+        if x > 0 {
+            spans.push(Span::raw(" ".repeat(x)));
+        }
+        for (position, index) in row.iter().enumerate() {
+            if position > 0 {
+                spans.push(Span::raw(" ".repeat(gap)));
+                x += gap;
+            }
+            let control = &controls[*index];
+            spans.extend(control.spans(theme));
+            slots.push(ControlSlot {
+                row: lines.len(),
+                col: x,
+                width: control.width().min(width.saturating_sub(x)),
+            });
+            x += control.width();
+        }
+        lines.push(clip_line(Line::from(spans), width));
+    }
+    (lines, slots)
 }
 
 /// 列表项：`❯ ` / 两格缩进 + 正文，补满 `width` 列，选中整行反白成同一条色带。
@@ -286,7 +478,9 @@ mod tests {
     use ratatui::style::Style;
     use ratatui::text::Line;
 
-    use super::{Card, paint_opaque};
+    use super::{
+        Button, ButtonKind, ButtonState, Card, Control, RowAlign, layout_controls, paint_opaque,
+    };
     use crate::theme::Theme;
 
     /// 左邻是宽字符时，浮层左边框必须真的发到终端（经过 diff），不能被尾格吞掉。
@@ -332,5 +526,50 @@ mod tests {
         paint_opaque(&mut buffer, Rect::new(1, 0, 2, 1), Style::new());
         assert_eq!(buffer[(0, 0)].symbol(), " ", "左邻宽字符被切开");
         assert_eq!(buffer[(4, 0)].symbol(), "中", "浮层外完整宽字符不动");
+    }
+
+    /// 按钮行：放不下换行；行内容按对齐贴边，命中槽与绘制同一份几何。
+    #[test]
+    fn layout_controls_wraps_and_aligns() {
+        let theme = Theme::global();
+        let button = |label: &str, state| {
+            Control::Button(Button {
+                label: label.to_owned(),
+                kind: ButtonKind::Primary,
+                state,
+            })
+        };
+        let controls = vec![
+            button("run", ButtonState::Normal),       // 宽 5
+            button("keep", ButtonState::Focused),     // 宽 6
+            button("compact", ButtonState::Disabled), // 宽 9
+        ];
+        let (lines, slots) = layout_controls(&controls, 16, RowAlign::Right, 2, theme);
+        assert_eq!(lines.len(), 2, "第三个按钮应换行");
+        assert_eq!(
+            slots,
+            vec![
+                super::ControlSlot {
+                    row: 0,
+                    col: 3,
+                    width: 5
+                },
+                super::ControlSlot {
+                    row: 0,
+                    col: 10,
+                    width: 6
+                },
+                super::ControlSlot {
+                    row: 1,
+                    col: 7,
+                    width: 9
+                },
+            ],
+            "右对齐时整行右移，槽位与绘制位置一致"
+        );
+        let (left_lines, left_slots) = layout_controls(&controls, 16, RowAlign::Left, 2, theme);
+        assert_eq!(left_lines.len(), 2);
+        assert_eq!(left_slots[0].col, 0, "左对齐从行首起排");
+        assert_eq!(left_slots[1].col, 7, "条目间距 2 列");
     }
 }

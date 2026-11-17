@@ -10,7 +10,7 @@ fn model_picker_anchor_stays_inside_terminal() {
             Rect::new(w - 5, h - 1, 4, 1),
             Rect::new(w - 5, 0, 4, 1),
         ] {
-            let rect = popup_rect(screen, anchor, 20);
+            let rect = popup_rect(screen, anchor, 20, false);
             assert_eq!(rect.intersection(screen), rect);
             assert!(rect.bottom() <= anchor.y || rect.y >= anchor.bottom());
             assert!(rect.height >= 4);

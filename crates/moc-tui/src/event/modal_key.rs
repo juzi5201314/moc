@@ -24,6 +24,8 @@ struct Actions {
     close: bool,
     config_pick: Option<(Vec<String>, String, String)>,
     session_apply: Option<(Option<String>, String)>,
+    /// 计划审阅「新会话模型」芯片的选中结果：写回停放的审阅状态，不走会话通道。
+    plan_model_pick: Option<String>,
     fast_mode_apply: Option<bool>,
     workflow_back: Option<crate::workflow::WorkflowRoleBack>,
     workflow_decision: Option<(String, moc_protocol::methods::WorkflowDecision)>,
@@ -92,6 +94,7 @@ pub(super) fn handle_modal_key(
         close,
         config_pick,
         session_apply,
+        plan_model_pick,
         fast_mode_apply,
         workflow_back,
         workflow_decision,
@@ -100,6 +103,12 @@ pub(super) fn handle_modal_key(
     } = actions;
     if let Some((id, selector)) = session_apply {
         request_session_model(app, connection, id, selector);
+    }
+    // 新会话模型：写回停放的审阅状态，模态关闭后由 restore_parked_plan 还原。
+    if let Some(selector) = plan_model_pick
+        && let Some(state) = app.parked_plan.as_mut()
+    {
+        state.execution_model = Some(selector);
     }
     // workflow：模型选择器回程（审批窗/run 面板）。
     if let Some(back) = workflow_back {

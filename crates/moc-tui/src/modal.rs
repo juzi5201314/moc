@@ -135,14 +135,61 @@ impl LevelState {
     }
 }
 
-/// 计划审阅窗口的视图：渲染后的正文（阅读）或带行号的源码（批注）。
+/// 计划审阅窗口的标签页：改动 / 计划 / 源码。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PlanPane {
-    /// 渲染后的计划正文。
+pub enum PlanTab {
+    /// 与上一版的差异（无上一版时不可用）。
+    Diff,
+    /// 渲染后的计划正文；块级段落可直接点选批注。
     #[default]
-    Read,
-    /// 带行号的源码视图；批注在这里按行锚定。
+    Plan,
+    /// 带行号的源码视图；键盘逐行批注在这里完成。
+    Source,
+}
+
+/// 动作区焦点环上的控件：左侧芯片在前，右侧按钮按显示顺序。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanControl {
+    /// 「模型 <当前模型> ▾」芯片：打开模型选择器（计划停放待还原）。
+    Model,
+    /// 「新会话模型 <selector> ▾」芯片：为新会话执行单独选模型（计划停放待还原）。
+    NewModel,
+    /// 「新会话引擎 <engine> ▾」芯片：打开引擎下拉。
+    Engine,
+    /// 继续计划：关闭审阅窗口。
+    Resume,
+    /// 提交批注 (N)。
+    Submit,
+    /// 新会话执行。
+    RunNew,
+    /// 压缩后执行。
+    RunCompacted,
+    /// 执行（Primary，默认焦点）。
+    Run,
+}
+
+/// 选区条按钮。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanSelAction {
+    /// 以当前选区打开批注编辑器。
     Annotate,
+    /// 删除选区覆盖的草稿。
+    Delete,
+    /// 清除选择。
+    Clear,
+}
+
+/// 批注编辑器底部按钮。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanEditorAction {
+    /// 插入 suggestion 围栏（Ctrl+G）。
+    Suggest,
+    /// 删除正在编辑的草稿（仅编辑已有草稿时显示）。
+    Delete,
+    /// 取消编辑（Esc）。
+    Cancel,
+    /// 保存批注（Ctrl+S，Primary）。
+    Save,
 }
 
 /// 还没提交给 core 的一条计划批注。
@@ -194,18 +241,32 @@ pub struct PlanReviewState {
     pub drafts: Vec<PlanAnnotationDraft>,
     /// 下一次新建批注使用的 id 序号。
     pub next_annotation_id: u64,
-    /// 当前视图。
-    pub pane: PlanPane,
-    /// 源码视图光标（0-based 行下标）。
+    /// 当前标签页。
+    pub tab: PlanTab,
+    /// 源码视图光标（0-based 行下标）；计划标签的块选择也落在它上面。
     pub cursor: usize,
     /// 选区锚点；`Some` 时选区为 `anchor..=cursor`。
     pub anchor: Option<usize>,
     /// 正在编辑的批注。
     pub editor: Option<PlanAnnotationEditor>,
-    pub selected: usize,
+    /// 动作区焦点环当前项（芯片 + 按钮）。
+    pub focus: PlanControl,
+    /// 「新会话引擎」就地下拉；打开时键盘/鼠标先给它。
+    pub engine_menu: Option<crate::app::LegendMenu<moc_protocol::SessionEngine>>,
+    /// 计划标签正文悬停块（源码行区间）；悬停块首行 gutter 画 `+`，
+    /// 块内全部渲染行铺淡底。
+    pub hover_block: Option<(usize, usize)>,
+    /// 计划标签正文内按住拖选中：锚点已落在按下块上。
+    pub dragging: bool,
+    /// 拖选起点块（1-based 源码行区间）；拖动中与当前块求并集。
+    pub drag_start: Option<(usize, usize)>,
+    /// 正文滚动条拖拽中：指针相对滑块顶部的抓取行距。
+    pub scroll_grab: Option<usize>,
     pub scroll_offset: usize,
     /// 「在新会话执行」的目标引擎；默认沿用当前会话引擎。
     pub execution_engine: moc_protocol::SessionEngine,
+    /// 「在新会话执行」的目标模型 selector；None 沿用源会话当前模型。
+    pub execution_model: Option<String>,
     pub submitting: bool,
     pub error: Option<String>,
     /// 与上一版的差异；`None` 表示没有上一版或还没加载。
@@ -214,8 +275,6 @@ pub struct PlanReviewState {
     pub diff_loading: bool,
     /// 差异请求失败原因。
     pub diff_error: Option<String>,
-    /// 阅读视图当前展示差异而不是计划正文。
-    pub show_diff: bool,
 }
 
 mod plan;
@@ -233,6 +292,8 @@ fn truncate_chars(text: &str, limit: usize) -> String {
 /// 模型选择器的写入目标。
 pub enum ModelTarget {
     Session,
+    /// 计划审阅「新会话模型」芯片：选中写回停放的审阅状态，不切换会话模型。
+    PlanExecution,
     /// `/config` 的模型角色字段：选中后写回该路径的配置值。
     Config {
         path: Vec<String>,
@@ -787,7 +848,7 @@ impl Modal {
                 cwd,
                 scope,
             } => filtered_sessions(sessions, &picker.query, *scope, cwd).len(),
-            Modal::Plan { .. } => 4,
+            Modal::Plan { state } => state.focus_ring().len(),
             Modal::Help { .. } | Modal::Tools { .. } | Modal::ContextContent { .. } => 0,
             Modal::Jobs { jobs, .. } => jobs.len(),
             Modal::SwitchModel { .. } => 2,
@@ -838,10 +899,7 @@ impl Modal {
                 *selected = (*selected as i32 + delta).clamp(0, count as i32 - 1) as usize;
             }
             Modal::Plan { state } => {
-                state.selected = state
-                    .selected
-                    .saturating_add_signed(isize::try_from(delta).expect("方向增量可表示为 isize"))
-                    .min(count - 1);
+                state.focus_move(isize::try_from(delta).expect("方向增量可表示为 isize"));
             }
             Modal::Jobs { selected, .. } => {
                 *selected = selected

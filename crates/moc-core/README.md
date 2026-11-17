@@ -264,7 +264,7 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - ask/plan 保留工具执行限制，禁止普通 edit/write；bash 仍受当前会话 permission 控制。core 不再自动扫描工作区或向模型广播外部文件变化，也不会将其他会话的修改判为只读违规；需要最新内容时显式读取目标文件。
 - 已移除 `[workspace].watch` 配置、`workspace_changed` 协议事件和 `workspaceChanged` 插件钩子；旧配置需删除 `watch`，外部客户端与插件需移除对应事件订阅。`[workspace].max_scan_entries` 保留，仅控制 `find` 工具的扫描上限。
 - 计划模式进入、退出、批准均不修改模型，也不保存或恢复旧模型。`session/new` 的 `plan_active` 只决定模式。
-- `plan` 保存/修订会话计划文件与 Draft entry（`markdown` 全量写草稿、`edits` 锚点增量修订，对已评审版可播种新草稿）；`exit_plan({})` 提交工作草稿触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作均沿用当前会话模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式。新会话执行将计划标记为 Approved，源会话仍保持计划模式，新会话继承当前模型开始 Normal 执行（独立会话，只在会话头记出身，不建立父子链接）。CLI 的 `/approve execute|compact|new|reject` 继续可用。
+- `plan` 保存/修订会话计划文件与 Draft entry（`markdown` 全量写草稿、`edits` 锚点增量修订，对已评审版可播种新草稿）；`exit_plan({})` 提交工作草稿触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作均沿用当前会话模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式。新会话执行将计划标记为 Approved，源会话仍保持计划模式，新会话默认继承当前模型、也可由 `execution_model` 单独指定（原地/压缩执行忽略该字段），开始 Normal 执行（独立会话，只在会话头记出身，不建立父子链接）。CLI 的 `/approve execute|compact|new|reject` 继续可用。
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。覆盖超过读写容量上限（`tools.output.max_file_bytes`，默认 100 MiB）的旧文件时不产出 diff、也不记录撤销，工具结果里会说明。撤销栈每个文件最多保留 8 份、全会话合计 64 MiB，超限淘汰最旧记录，被淘汰的快照不能恢复。
 - `edit` 的 `replace` / `insert` / `delete` 使用各自独立的参数 schema，不接受其它操作的字段。`read`、本地文本 `grep` 和 `edit` 返回的 `[path#TAG]` 共享编辑快照；只有实际完整展示的行可编辑，搜索长行预览、未输出的分页结果及无 tag 的结果不会获得编辑权限。
 - 编辑定位失败时，回显优先保留完整操作区间；超过行数或字节预算的范围明确给出 `read` 的 `offset` / `limit`，不要求模型盲目重试。回显中完整展示的行直接登记为可编辑。

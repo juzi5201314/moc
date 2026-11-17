@@ -36,7 +36,8 @@ pub struct SessionPlanModeParams {
 
 /// `session/plan_approve`：批准或拒绝已提交计划。
 ///
-/// 批准后原地执行退出 plan 模式并保持当前模型；新会话执行继承当前模型。
+/// 批准后原地执行退出 plan 模式并保持当前模型；新会话执行缺省继承当前模型，
+/// 也可由 `execution_model` 单独指定。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionPlanApprove;
 
@@ -60,6 +61,10 @@ pub struct SessionPlanApproveParams {
     /// 其他动作下忽略。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_engine: Option<SessionEngine>,
+    /// `execute_new_session` 的目标模型 selector（可为 Fusion 组合串）；缺省沿用源会话当前模型。
+    /// 其他动作下忽略：原地执行与压缩执行始终使用源会话当前模型。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_model: Option<String>,
 }
 
 /// 用户对计划的处理动作。
@@ -265,26 +270,27 @@ mod tests {
             plan_id: "plan_1".into(),
             action: PlanAction::Execute,
             execution_engine: None,
+            execution_model: None,
         };
         assert_eq!(
             serde_json::to_value(params).expect("缺省执行模型可序列化"),
             serde_json::json!({"session_id": "ses_1", "plan_id": "plan_1", "action": "execute"})
         );
-        assert!(
-            serde_json::from_value::<SessionPlanApproveParams>(serde_json::json!({
-                "session_id": "ses_1", "plan_id": "plan_1", "action": "execute", "execution_model": "vendor/model:high"
-            })).is_err(),
-            "审批协议不再接受模型切换参数"
-        );
+        let parsed = serde_json::from_value::<SessionPlanApproveParams>(serde_json::json!({
+            "session_id": "ses_1", "plan_id": "plan_1", "action": "execute_new_session", "execution_model": "vendor/model:high"
+        }))
+        .expect("带 execution_model 的审批参数可反序列化");
+        assert_eq!(parsed.execution_model.as_deref(), Some("vendor/model:high"));
         assert_eq!(
             serde_json::to_value(SessionPlanApproveParams {
                 session_id: "ses_1".into(),
                 plan_id: "plan_1".into(),
                 action: PlanAction::ExecuteNewSession,
                 execution_engine: Some(SessionEngine::Ptc),
+                execution_model: Some("vendor/model:high".into()),
             })
             .expect("执行模型与引擎可序列化"),
-            serde_json::json!({"session_id": "ses_1", "plan_id": "plan_1", "action": "execute_new_session", "execution_engine": "ptc"})
+            serde_json::json!({"session_id": "ses_1", "plan_id": "plan_1", "action": "execute_new_session", "execution_engine": "ptc", "execution_model": "vendor/model:high"})
         );
         assert_eq!(
             serde_json::to_value(result).expect("结果可序列化"),

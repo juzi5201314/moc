@@ -1,6 +1,5 @@
 use super::PlanAnnotationDraft;
 use super::PlanAnnotationEditor;
-use super::PlanPane;
 use super::PlanReviewState;
 use super::truncate_chars;
 use rust_i18n::t;
@@ -11,7 +10,11 @@ impl PlanReviewState {
         execution_engine: moc_protocol::SessionEngine,
     ) -> Self {
         // 有上一版时优先让用户看「改了什么」，没有才看正文。
-        let show_diff = plan.previous_plan_id.is_some();
+        let tab = if plan.previous_plan_id.is_some() {
+            super::PlanTab::Diff
+        } else {
+            super::PlanTab::Plan
+        };
         Self {
             plan_id: plan.plan_id,
             title: plan.title,
@@ -23,20 +26,71 @@ impl PlanReviewState {
             submitted: plan.annotations,
             drafts: Vec::new(),
             next_annotation_id: 1,
-            pane: PlanPane::Read,
+            tab,
             cursor: 0,
             anchor: None,
             editor: None,
-            selected: 0,
+            focus: super::PlanControl::Run,
+            engine_menu: None,
+            hover_block: None,
+            dragging: false,
+            drag_start: None,
+            scroll_grab: None,
             scroll_offset: 0,
             execution_engine,
+            execution_model: None,
             submitting: false,
             error: None,
             diff: None,
             diff_loading: false,
             diff_error: None,
-            show_diff,
         }
+    }
+
+    /// 动作区焦点环（存在的项按显示顺序：芯片在前，按钮在后）。
+    pub fn focus_ring(&self) -> Vec<super::PlanControl> {
+        use super::PlanControl;
+        let mut ring = vec![
+            PlanControl::Model,
+            PlanControl::NewModel,
+            PlanControl::Engine,
+            PlanControl::Resume,
+        ];
+        if !self.drafts.is_empty() {
+            ring.push(PlanControl::Submit);
+        }
+        ring.extend([
+            PlanControl::RunNew,
+            PlanControl::RunCompacted,
+            PlanControl::Run,
+        ]);
+        ring
+    }
+
+    /// 焦点环前移/后移一格（循环）。
+    pub fn focus_move(&mut self, delta: isize) {
+        let ring = self.focus_ring();
+        if ring.is_empty() {
+            return;
+        }
+        let index = ring
+            .iter()
+            .position(|item| *item == self.focus)
+            .unwrap_or(0);
+        let len = isize::try_from(ring.len()).unwrap_or(isize::MAX);
+        let next = (isize::try_from(index).unwrap_or(0) + delta).rem_euclid(len);
+        self.focus = ring[usize::try_from(next).unwrap_or(0)];
+    }
+
+    /// 把选区置为 1-based 闭区间对应的源码行（块点击/拖选用）。
+    pub fn select_lines(&mut self, start: usize, end: usize) {
+        self.anchor = Some(start.saturating_sub(1));
+        self.cursor = end.saturating_sub(1);
+    }
+
+    /// 是否有可见的选区（计划标签块选择或源码标签选行）。
+    pub fn has_selection(&self) -> bool {
+        self.anchor.is_some()
     }
 
     /// 计划源码行（0-based）。

@@ -156,8 +156,10 @@ pub fn draw_permission_menu(frame: &mut Frame, app: &mut App) {
     draw_legend_menu(frame, theme, menu, anchor, current);
 }
 
-/// 图例菜单通用画法：窄标签列；高亮项的一句说明画成菜单侧边的独立小提示框，
-/// 随方向键与悬停更新；当前生效项沿用图例里的强调色，与菜单高亮（反色）互相独立。
+/// 图例菜单通用画法：单面板两列——左列 `❯ label` 等宽对齐，右列该条说明
+/// （gray，高亮行用 text_secondary），整行高亮色带铺满；当前生效项沿用
+/// 图例里的强调色，与菜单高亮（反色）互相独立。面板右缘对齐锚点右缘，
+/// 锚点上方放不下时翻到下方；屏宽不够时先截断说明列。
 pub(super) fn draw_legend_menu<T: crate::app::LegendItem + PartialEq>(
     frame: &mut Frame,
     theme: &Theme,
@@ -171,16 +173,20 @@ pub(super) fn draw_legend_menu<T: crate::app::LegendItem + PartialEq>(
         .map(|item| str_width(item.label()))
         .max()
         .unwrap_or(0);
+    let desc_width = menu
+        .items
+        .iter()
+        .map(|item| str_width(item.description().as_ref()))
+        .max()
+        .unwrap_or(0);
     let selected = menu.selected.min(menu.items.len().saturating_sub(1));
-    let description = menu.items.get(selected).map_or(
-        std::borrow::Cow::Borrowed(""),
-        crate::app::LegendItem::description,
-    );
     let frame_area = frame.area();
-    // 正文宽 = ❯ + 标签；外宽再加两侧内边距与边框。
-    let width = u16::try_from(label_width + 6)
-        .unwrap_or(u16::MAX)
-        .min(frame_area.width);
+    // 正文 = ❯ + 标签列 + 2 列间距 + 说明列；外宽再加两侧边框，按屏宽截断。
+    let desc_x = 2 + label_width + 2;
+    let inner = (desc_x + desc_width)
+        .min(usize::from(frame_area.width.saturating_sub(2)))
+        .max(1);
+    let width = u16::try_from(inner + 2).unwrap_or(u16::MAX);
     let height = u16::try_from(menu.items.len() + 2).unwrap_or(u16::MAX);
     let area = if !menu.area.is_empty() {
         menu.area
@@ -189,15 +195,23 @@ pub(super) fn draw_legend_menu<T: crate::app::LegendItem + PartialEq>(
             .saturating_sub(width)
             .min(frame_area.width.saturating_sub(width))
             .max(frame_area.x);
+        let y = if anchor.y >= frame_area.y + height {
+            anchor.y - height
+        } else {
+            anchor
+                .bottom()
+                .min(frame_area.bottom().saturating_sub(height))
+        };
         Rect {
             x,
-            y: anchor.y.saturating_sub(height).max(frame_area.y),
+            y,
             width,
             height,
         }
     };
     menu.area = area;
     let inner = overlay::content_width(area.width);
+    let show_desc = inner > desc_x;
     let lines: Vec<Line<'static>> = menu
         .items
         .iter()
@@ -217,10 +231,30 @@ pub(super) fn draw_legend_menu<T: crate::app::LegendItem + PartialEq>(
             } else {
                 base
             };
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(if highlighted { "❯ " } else { "  " }, base),
-                Span::styled(fit(item.label(), inner.saturating_sub(2)), label_style),
-            ])
+                Span::styled(fit(item.label(), label_width), label_style),
+            ];
+            let mut used = 2 + label_width;
+            if show_desc {
+                let desc_room = inner.saturating_sub(desc_x);
+                let description = fit(item.description().as_ref(), desc_room);
+                used += 2 + str_width(&description);
+                spans.push(Span::styled("  ", base));
+                spans.push(Span::styled(
+                    description,
+                    if highlighted {
+                        base.fg(theme.text_secondary)
+                    } else {
+                        Style::new().fg(theme.gray)
+                    },
+                ));
+            }
+            // 补满整行，让高亮色带铺满整行而不是只盖住文字。
+            if let Some(pad) = inner.checked_sub(used) {
+                spans.push(Span::styled(" ".repeat(pad), base));
+            }
+            Line::from(spans)
         })
         .collect();
     overlay::paint_opaque(
@@ -229,47 +263,4 @@ pub(super) fn draw_legend_menu<T: crate::app::LegendItem + PartialEq>(
         Style::new().bg(theme.bg_base).fg(theme.text_primary),
     );
     frame.render_widget(Paragraph::new(lines).block(overlay::panel(theme)), area);
-    draw_legend_tip(frame, theme, area, selected, &description);
-}
-
-/// 高亮项的一句说明：贴菜单侧边的小提示框，文本行与高亮条目行垂直对齐。
-/// 图例菜单锚在右缘，优先放菜单左侧；左、右都放不下才放弃。
-pub(super) fn draw_legend_tip(
-    frame: &mut Frame,
-    theme: &Theme,
-    menu_area: Rect,
-    selected: usize,
-    description: &str,
-) {
-    if description.is_empty() {
-        return;
-    }
-    let frame_area = frame.area();
-    let tip_w = u16::try_from(str_width(description) + 4).unwrap_or(u16::MAX);
-    let item_y = menu_area.y + 1 + u16::try_from(selected).unwrap_or(0);
-    let y = item_y.saturating_sub(1).max(frame_area.y);
-    let x = if let Some(x) = menu_area.x.checked_sub(tip_w + 1) {
-        x
-    } else if menu_area.right() + 1 + tip_w <= frame_area.right() {
-        menu_area.right() + 1
-    } else {
-        return;
-    };
-    let area = Rect::new(x, y, tip_w.min(frame_area.right().saturating_sub(x)), 3);
-    if area.width < 4 {
-        return;
-    }
-    overlay::paint_opaque(
-        frame.buffer_mut(),
-        area,
-        Style::new().bg(theme.bg_base).fg(theme.text_primary),
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            fit(description, overlay::content_width(area.width)),
-            Style::new().fg(theme.text_secondary),
-        )))
-        .block(overlay::panel(theme)),
-        area,
-    );
 }

@@ -259,6 +259,41 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     if app.modal.is_some() {
         modal::draw_modal(frame, app);
     }
+    // 通用悬停反馈：有模态时只描模态 footer 的可点单键提示（提亮 + 下划线）；
+    // 无模态时再给图例/状态栏可点区铺悬停底色。指针坐标由事件层维护
+    // （scrollbar_pointer），键盘输入时已清空。
+    if let Some((px, py)) = app.scrollbar_pointer {
+        let position = ratatui::layout::Position::new(px, py);
+        for hit in &app.key_hits {
+            if hit.area.contains(position) {
+                frame.buffer_mut().set_style(
+                    hit.area,
+                    Style::new()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::UNDERLINED),
+                );
+            }
+        }
+        if app.modal.is_none() {
+            for area in [
+                app.legend_tip_area,
+                app.model_tag_area,
+                app.engine_area,
+                app.permission_tag_area,
+                app.usage_area,
+                app.context_area,
+                app.header_back_area,
+                app.workflow_capsule_area,
+                app.jump_bottom_area,
+            ] {
+                if !area.is_empty() && area.contains(position) {
+                    frame
+                        .buffer_mut()
+                        .set_style(area, Style::new().bg(theme.bg_hover));
+                }
+            }
+        }
+    }
     // notice/warning 在模态之后画：模态期间触发的提示（如复制选项）不被
     // 调暗层压住，临时提示始终可读。
     draw_notice(frame, app, scroll_area);

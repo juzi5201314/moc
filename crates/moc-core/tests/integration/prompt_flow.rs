@@ -38,12 +38,13 @@ use moc_llm::Client;
 use moc_protocol::methods::{
     ClientCapabilities, ClientInfo, ConfigAction, ConfigManage, ConfigReply, ConfigScope,
     DiffLineKind, InputPart, PlanAction, PlanAnnotation, PlanStatus, PromptMode, PromptParams,
-    SessionCompact, SessionCompactParams, SessionEngine, SessionLoad, SessionLoadParams,
-    SessionLoadResult, SessionModelOverflowAction, SessionNew, SessionNewParams,
-    SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff, SessionPlanDiffParams,
-    SessionPlanMode, SessionPlanModeParams, SessionPlanRevise, SessionPlanReviseParams,
-    SessionPrompt, SessionSetModel, SessionSetModelParams, SessionUnload, SessionUnloadParams,
-    SessionUpdate, SessionUpdateMethod, SessionUsage, SessionUsageParams, UpstreamField,
+    SessionCompact, SessionCompactParams, SessionEngine, SessionList, SessionListParams,
+    SessionLoad, SessionLoadParams, SessionLoadResult, SessionModelOverflowAction, SessionNew,
+    SessionNewParams, SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff,
+    SessionPlanDiffParams, SessionPlanMode, SessionPlanModeParams, SessionPlanRevise,
+    SessionPlanReviseParams, SessionPrompt, SessionSetModel, SessionSetModelParams, SessionUnload,
+    SessionUnloadParams, SessionUpdate, SessionUpdateMethod, SessionUsage, SessionUsageParams,
+    UpstreamField,
 };
 use moc_protocol::{ClientBuilder, Server, ServerOptions, transport};
 use wiremock::matchers::{method, path};

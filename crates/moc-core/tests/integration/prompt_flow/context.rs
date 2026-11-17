@@ -537,6 +537,7 @@ async fn plan_approval_keeps_current_model_for_compaction_and_execution() {
                 plan_id: plan.plan_id,
                 action,
                 execution_engine: None,
+                execution_model: None,
             })
             .await
             .expect("指定执行模型审批");

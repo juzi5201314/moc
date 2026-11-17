@@ -207,6 +207,37 @@ pub(super) fn handle_ask_mouse(
                 advance_ask(question, preview_scroll, question_scroll);
             }
         }
+        // 选项行悬停移动高亮（与 ↑↓ 同语义，focus follows pointer）；
+        // 自定义答案编辑态不抢焦点，确认页没有可悬停的选项行。
+        MouseEventKind::Moved if !matches!(app.modal, Some(Modal::Ask { parked: true, .. })) => {
+            let Some((option, _)) = app
+                .ask_option_hits
+                .iter()
+                .find(|(_, area)| area.contains(position))
+                .copied()
+            else {
+                return;
+            };
+            if let Some(Modal::Ask {
+                params,
+                question,
+                highlight,
+                custom,
+                preview_scroll,
+                ..
+            }) = app.modal.as_mut()
+            {
+                if params.questions.get(*question).is_none()
+                    || custom.get(*question).is_some_and(|answer| answer.editing)
+                {
+                    return;
+                }
+                if highlight[*question] != option {
+                    highlight[*question] = option;
+                    *preview_scroll = 0;
+                }
+            }
+        }
         // 折叠态其余鼠标事件（拖动/抬起/移动/右键）与转写区通用路径一致。
         _ if matches!(app.modal, Some(Modal::Ask { parked: true, .. })) => {
             handle_mouse(app, mouse);

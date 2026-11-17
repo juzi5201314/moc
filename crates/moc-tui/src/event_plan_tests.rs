@@ -314,7 +314,7 @@ async fn plan_review_preserves_model_and_loaded_history() {
         .expect("历史")
         .entries;
     if let Some(Modal::Plan { state }) = h.app.modal.as_mut() {
-        state.selected = 2;
+        state.focus = crate::modal::PlanControl::RunNew;
         state.scroll_offset = 1;
         state.error = Some("保留错误状态".into());
     }
@@ -327,7 +327,7 @@ async fn plan_review_preserves_model_and_loaded_history() {
     let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
         panic!("模型快捷键不得切走审阅窗口")
     };
-    assert_eq!(state.selected, 2);
+    assert_eq!(state.focus, crate::modal::PlanControl::RunNew);
     assert_eq!(state.scroll_offset, 1);
     assert_eq!(state.error.as_deref(), Some("保留错误状态"));
     assert_eq!(state.path, plan.path);
@@ -352,7 +352,7 @@ async fn plan_review_preserves_model_and_loaded_history() {
     assert_eq!(loaded.session.model, original.model);
     assert!(matches!(&h.app.modal, Some(Modal::Plan { state }) if state.scroll_offset == 1));
     if let Some(Modal::Plan { state }) = h.app.modal.as_mut() {
-        state.selected = 0;
+        state.focus = crate::modal::PlanControl::Run;
     }
     h.key(KeyCode::Enter);
     h.approval().await;
@@ -437,7 +437,7 @@ async fn plan_review_preserves_model_and_loaded_history() {
     h.close().await;
 }
 
-/// 审阅卡片的动作行可点：点「继续计划」等同选中后按 Enter（关闭窗口、保持待审）。
+/// 审阅卡片的动作区按钮可点：点「继续计划」等同激活 Resume（关闭窗口、保持待审）。
 #[tokio::test]
 async fn plan_review_action_rows_accept_mouse_clicks() {
     let mut h = PlanHarness::new().await;
@@ -448,19 +448,309 @@ async fn plan_review_action_rows_accept_mouse_clicks() {
     terminal
         .draw(|frame| render::draw(frame, &mut h.app, &mut view))
         .expect("绘制审阅");
-    let (index, row) = *h.app.modal_item_hits.last().expect("动作行可点");
-    assert_eq!(index, 3, "最后一行是「继续计划」");
+    let (_, rect) = h
+        .app
+        .plan_control_hits
+        .iter()
+        .find(|(control, _)| *control == crate::modal::PlanControl::Resume)
+        .copied()
+        .expect("「继续计划」按钮可点");
     handle_mouse_with_connection(
         &mut h.app,
         &h.connection,
         crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
-            column: row.x + 2,
-            row: row.y,
+            column: rect.x,
+            row: rect.y,
             modifiers: KeyModifiers::NONE,
         },
     );
     assert!(h.app.modal.is_none(), "点「继续计划」关闭审阅窗口");
+    h.close().await;
+}
+
+/// 计划标签 gutter 点 `+` 直接打开批注编辑器，行区间等于该块的源码区间。
+#[tokio::test]
+async fn plan_gutter_click_opens_editor_at_block() {
+    let mut h = PlanHarness::new().await;
+    h.write_and_review().await;
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).expect("测试终端");
+    let mut view = render::ScrollbackView::new();
+    terminal
+        .draw(|frame| render::draw(frame, &mut h.app, &mut view))
+        .expect("绘制审阅");
+    let body = h.app.plan_body_area;
+    let (row_index, (start, end)) = h
+        .app
+        .plan_line_sources
+        .iter()
+        .enumerate()
+        .find_map(|(index, source)| source.map(|range| (index, range)))
+        .expect("计划正文应有可映射的源码块");
+    handle_mouse_with_connection(
+        &mut h.app,
+        &h.connection,
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: body.x,
+            row: body.y + u16::try_from(row_index).unwrap_or(0),
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
+        panic!("审阅窗口仍在");
+    };
+    let editor = state.editor.as_ref().expect("gutter 点开编辑器");
+    assert_eq!((editor.start_line, editor.end_line), (start, end));
+    h.close().await;
+}
+
+/// 计划标签正文按下并拖到另一块：选区是两个块源码区间的并集。
+#[tokio::test]
+async fn plan_body_drag_selects_block_union() {
+    let mut h = PlanHarness::new().await;
+    h.write_and_review().await;
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).expect("测试终端");
+    let mut view = render::ScrollbackView::new();
+    terminal
+        .draw(|frame| render::draw(frame, &mut h.app, &mut view))
+        .expect("绘制审阅");
+    let body = h.app.plan_body_area;
+    // 找两个不同块的正文行：首块与最后一个不同区间各取一行。
+    let first = h
+        .app
+        .plan_line_sources
+        .iter()
+        .copied()
+        .flatten()
+        .next()
+        .expect("正文有块");
+    let (last_index, last) = h
+        .app
+        .plan_line_sources
+        .iter()
+        .enumerate()
+        .find_map(|(index, source)| match *source {
+            Some(range) if range != first => Some((index, range)),
+            _ => None,
+        })
+        .expect("计划正文至少两个块");
+    let press_row = body.y + u16::try_from(first_index(&h.app, first)).unwrap_or(0);
+    let drag_row = body.y + u16::try_from(last_index).unwrap_or(0);
+    for (kind, row) in [
+        (
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            press_row,
+        ),
+        (
+            crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+            drag_row,
+        ),
+    ] {
+        handle_mouse_with_connection(
+            &mut h.app,
+            &h.connection,
+            crossterm::event::MouseEvent {
+                kind,
+                column: body.x + 4,
+                row,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+    }
+    let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
+        panic!("审阅窗口仍在");
+    };
+    assert_eq!(
+        (state.selection().0 + 1, state.selection().1 + 1),
+        (first.0.min(last.0), first.1.max(last.1)),
+        "拖选 = 两块源码区间并集"
+    );
+    // Esc 两段语义：先清选区，再按一次才关闭窗口。
+    h.key(KeyCode::Esc);
+    let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
+        panic!("第一次 Esc 只清选区，不关闭审阅窗口");
+    };
+    assert!(!state.has_selection(), "第一次 Esc 清掉选区");
+    h.key(KeyCode::Esc);
+    assert!(h.app.modal.is_none(), "第二次 Esc 关闭审阅窗口");
+    h.close().await;
+}
+
+/// 首个映射行所在的渲染行下标。
+fn first_index(app: &App, block: (usize, usize)) -> usize {
+    app.plan_line_sources
+        .iter()
+        .position(|source| *source == Some(block))
+        .unwrap_or(0)
+}
+
+/// 悬停动作区按钮即移动焦点；单击「执行」走审批路径。
+#[tokio::test]
+async fn plan_button_hover_focuses_and_click_approves() {
+    let mut h = PlanHarness::new().await;
+    h.write_and_review().await;
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).expect("测试终端");
+    let mut view = render::ScrollbackView::new();
+    terminal
+        .draw(|frame| render::draw(frame, &mut h.app, &mut view))
+        .expect("绘制审阅");
+    if let Some(Modal::Plan { state }) = h.app.modal.as_mut() {
+        state.focus = crate::modal::PlanControl::Resume;
+    }
+    let (_, rect) = h
+        .app
+        .plan_control_hits
+        .iter()
+        .find(|(control, _)| *control == crate::modal::PlanControl::Run)
+        .copied()
+        .expect("「执行」按钮可点");
+    handle_mouse_with_connection(
+        &mut h.app,
+        &h.connection,
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Moved,
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
+        panic!("审阅窗口仍在");
+    };
+    assert_eq!(state.focus, crate::modal::PlanControl::Run, "悬停移焦点");
+    handle_mouse_with_connection(
+        &mut h.app,
+        &h.connection,
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    h.approval().await;
+    assert!(h.app.modal.is_none(), "审批完成关闭审阅");
+    h.close().await;
+}
+
+/// 模型芯片停放计划审阅；选择器 Esc 后还原且草稿保留。
+#[tokio::test]
+async fn plan_model_chip_parks_and_esc_restores() {
+    let mut h = PlanHarness::new().await;
+    h.write_and_review().await;
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).expect("测试终端");
+    let mut view = render::ScrollbackView::new();
+    terminal
+        .draw(|frame| render::draw(frame, &mut h.app, &mut view))
+        .expect("绘制审阅");
+    // 先落一条草稿，验证还原后仍在。
+    if let Some(Modal::Plan { state }) = h.app.modal.as_mut() {
+        state.select_lines(1, 1);
+        state.open_editor();
+        state
+            .editor
+            .as_mut()
+            .expect("编辑器")
+            .body
+            .insert_str_raw("草稿批注");
+        state.save_editor();
+    }
+    let (_, rect) = h
+        .app
+        .plan_control_hits
+        .iter()
+        .find(|(control, _)| *control == crate::modal::PlanControl::Model)
+        .copied()
+        .expect("模型芯片可点");
+    handle_mouse_with_connection(
+        &mut h.app,
+        &h.connection,
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(h.app.parked_plan.is_some(), "计划被停放");
+    assert!(
+        matches!(h.app.modal, Some(Modal::Model { .. })),
+        "模型选择器打开"
+    );
+    h.key(KeyCode::Esc);
+    crate::event::restore_parked_plan(&mut h.app);
+    let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
+        panic!("Esc 后还原计划审阅");
+    };
+    assert_eq!(state.drafts.len(), 1, "还原后草稿保留");
+    h.close().await;
+}
+
+/// `n` 打开新会话模型选择器：计划停放、选中写回 `execution_model`、会话模型不变。
+#[tokio::test]
+async fn plan_new_model_chip_picks_execution_model() {
+    let mut h = PlanHarness::new().await;
+    h.write_and_review().await;
+    h.key(KeyCode::Char('n'));
+    assert!(h.app.parked_plan.is_some(), "计划被停放");
+    {
+        let Some(Modal::Model {
+            entries,
+            picker,
+            target,
+            ..
+        }) = h.app.modal.as_mut()
+        else {
+            panic!("n 打开模型选择器");
+        };
+        assert!(
+            matches!(target, crate::modal::ModelTarget::PlanExecution),
+            "选择器目标是新会话模型"
+        );
+        picker.selected = entries
+            .iter()
+            .position(|entry| entry.selector == "test/executor")
+            .expect("候选里有 executor");
+    }
+    h.key(KeyCode::Enter);
+    crate::event::restore_parked_plan(&mut h.app);
+    let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
+        panic!("确认后还原计划审阅");
+    };
+    assert_eq!(state.execution_model.as_deref(), Some("test/executor:off"));
+    assert_eq!(
+        h.app.session.as_ref().expect("会话").model,
+        "test/planner:off"
+    );
+    h.close().await;
+}
+
+/// 引擎芯片下拉：打开 → 移动 → 确认，`execution_engine` 变成选中项。
+#[tokio::test]
+async fn plan_engine_menu_applies_selection() {
+    let mut h = PlanHarness::new().await;
+    h.write_and_review().await;
+    let items: Vec<_> = h.app.engines().collect();
+    assert!(items.len() > 1, "引擎候选至少两项");
+    h.key(KeyCode::Char('e'));
+    {
+        let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
+            panic!("审阅窗口仍在");
+        };
+        assert!(state.engine_menu.is_some(), "e 打开引擎下拉");
+    }
+    h.key(KeyCode::Down);
+    h.key(KeyCode::Enter);
+    let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
+        panic!("审阅窗口仍在");
+    };
+    assert!(state.engine_menu.is_none());
+    assert_eq!(state.execution_engine, items[1]);
     h.close().await;
 }
 
@@ -470,7 +760,7 @@ async fn plan_review_approval_loads_new_session() {
     h.write_and_review().await;
     let parent = h.app.session.as_ref().expect("会话").id.clone();
     if let Some(Modal::Plan { state }) = h.app.modal.as_mut() {
-        state.selected = 2;
+        state.focus = crate::modal::PlanControl::RunNew;
     }
     h.key(KeyCode::Enter);
     h.approval().await;
@@ -555,7 +845,7 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
     let plan = h.write_and_review().await;
     let session = h.app.session.as_ref().expect("计划会话").clone();
     h.app.prompt.insert_str_raw("尚未提交的输入");
-    for _ in 0..3 {
+    for _ in 0..4 {
         h.key(KeyCode::Right);
     }
     h.key(KeyCode::Enter);
@@ -693,7 +983,7 @@ async fn plan_annotate_flow_sends_revision_prompt() {
     let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
         panic!("审阅窗口仍在");
     };
-    assert_eq!(state.pane, crate::modal::PlanPane::Annotate);
+    assert_eq!(state.tab, crate::modal::PlanTab::Source);
     let editor = state.editor.as_ref().expect("编辑器已打开");
     assert_eq!((editor.start_line, editor.end_line), (2, 3));
 

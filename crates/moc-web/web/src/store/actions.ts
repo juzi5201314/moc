@@ -278,12 +278,15 @@ export async function approvePlan(
   planId: string,
   action: PlanAction,
   executionEngine?: SessionEngine,
+  executionModel?: string,
 ): Promise<void> {
   const result = await rpc.call<SessionPlanApproveResult>("session/plan_approve", {
     session_id: sessionId,
     plan_id: planId,
     action,
     ...(executionEngine ? { execution_engine: executionEngine } : {}),
+    // 只有新会话执行才会带：原地/压缩执行始终用源会话当前模型。
+    ...(executionModel ? { execution_model: executionModel } : {}),
   });
   useTranscript.getState().mutate(sessionId, (view) => {
     const current = view.plans.find((item) => item.plan_id === planId);

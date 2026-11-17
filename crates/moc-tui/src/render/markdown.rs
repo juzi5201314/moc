@@ -11,7 +11,7 @@
 
 use moc_core::chart::RawTable;
 
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use rust_i18n::t;
@@ -48,6 +48,20 @@ const MIN_CONTRACT_WIDTH: usize = 24;
 /// 渲染 markdown 文本为终端行（无表格视图态：表格永远画成表格）。
 pub fn render_markdown(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     render_markdown_with(source, width, theme, RenderViews::default()).lines
+}
+
+/// 渲染 markdown，并为每个输出行登记它所属的源码行区间（1-based 闭区间，
+/// 与 `source.lines()` 的编号一致）。
+///
+/// 计划审阅用它把渲染正文映射回源码：空行、图表入口、参考链接附录等不归属
+/// 任何块的行记 `None`。输出行与 [`render_markdown`] 完全一致。
+pub fn render_markdown_with_sources(
+    source: &str,
+    width: usize,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Vec<Option<(usize, usize)>>) {
+    let rendered = render_markdown_pages(source, width, theme, RenderViews::default(), false, true);
+    (rendered.lines.into_vec(), rendered.line_sources)
 }
 
 /// 渲染期视图态：由转写层注入（进程内视图态），渲染层只读。
@@ -132,7 +146,7 @@ pub fn render_markdown_with(
     theme: &Theme,
     views: RenderViews<'_>,
 ) -> Rendered {
-    let rendered = render_markdown_pages(source, width, theme, views, false);
+    let rendered = render_markdown_pages(source, width, theme, views, false, false);
     Rendered {
         lines: rendered.lines.into_vec(),
         tables: rendered.tables,
@@ -148,6 +162,8 @@ pub(super) struct PagedRendered {
     pub raw: Vec<RawTable>,
     pub images: Vec<ImagePlacement>,
     pub links_button: Option<ButtonSpan>,
+    /// 每个输出行所属的源码行区间（1-based 闭区间）；无归属的行记 `None`。
+    pub line_sources: Vec<Option<(usize, usize)>>,
 }
 
 pub(super) fn render_markdown_pages(
@@ -156,6 +172,9 @@ pub(super) fn render_markdown_pages(
     theme: &Theme,
     views: RenderViews<'_>,
     paged: bool,
+    // 转写区分页渲染共用此路径：只有计划审阅才要源码映射，
+    // 关闭时零额外开销（line_sources 为空）。
+    track_sources: bool,
 ) -> PagedRendered {
     let mut renderer = MdRenderer {
         theme,
@@ -195,16 +214,143 @@ pub(super) fn render_markdown_pages(
     };
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    // 行首字节表：事件的字节区间 → 1-based 源码行，给批注锚定用。
+    // 只在 track_sources 时维护块栈与映射表，转写路径零额外开销。
+    let starts = if track_sources {
+        line_starts(source)
+    } else {
+        Vec::new()
+    };
+    let mut blocks: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut line_sources: Vec<Option<(usize, usize)>> = Vec::new();
     for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
         if let Event::Start(Tag::CodeBlock(kind)) = &event {
             renderer.code_closed = match kind {
-                CodeBlockKind::Fenced(_) => fence_is_closed(source, range),
+                CodeBlockKind::Fenced(_) => fence_is_closed(source, range.clone()),
                 CodeBlockKind::Indented => true,
             };
         }
+        if !track_sources {
+            renderer.handle(event);
+            continue;
+        }
+        let opening = matches!(&event, Event::Start(tag) if mapped_block(tag));
+        let closing = matches!(&event, Event::End(tag) if mapped_block_end(tag));
+        let is_rule = matches!(&event, Event::Rule);
+        if opening {
+            blocks.push(range.clone());
+        }
+        let first_new = renderer.out.len();
         renderer.handle(event);
+        // 新落行归属「当前最内层打开块」；`Rule` 这类单事件块用自己的区间。
+        // End 事件先 handle 再登记再出栈：段落、代码块、表格在 End 时落的
+        // 收尾行仍归属本块。空行（宽度 0）与栈外产出记 None。
+        if renderer.out.len() > first_new {
+            let owner = blocks
+                .last()
+                .cloned()
+                .or_else(|| is_rule.then(|| range.clone()));
+            let source_lines = owner.map(|block| {
+                let start = source_line(&starts, block.start);
+                let end = trim_blank_tail(
+                    source,
+                    &starts,
+                    source_line(&starts, block.end.saturating_sub(1).max(block.start)),
+                    start,
+                );
+                (start, end)
+            });
+            for line in renderer.out.window(first_new..renderer.out.len()) {
+                line_sources.push(if line_width(&line) == 0 {
+                    None
+                } else {
+                    source_lines
+                });
+            }
+        }
+        if closing {
+            blocks.pop();
+        }
     }
-    renderer.finish()
+    let rendered = renderer.finish();
+    // `finish` 在表格后插入图表入口、在末尾追加参考链接附录：这些行不归属
+    // 任何源码块。入口按最终落点把映射表撑开（同一份插入几何），附录与
+    // 末尾占位直接以 None 补齐。
+    if track_sources {
+        let mut button_rows: Vec<usize> = rendered
+            .tables
+            .iter()
+            .filter_map(|slot| slot.button.map(|button| button.row))
+            .collect();
+        button_rows.sort_unstable();
+        for row in button_rows {
+            line_sources.insert(row.min(line_sources.len()), None);
+        }
+        line_sources.resize(rendered.lines.len(), None);
+    }
+    debug_assert!(
+        !track_sources || rendered.lines.len() == line_sources.len(),
+        "渲染行与源码映射必须一一对应"
+    );
+    PagedRendered {
+        line_sources,
+        ..rendered
+    }
+}
+
+/// 参与源码映射的块级标签（开区间事件）：段落、标题、引用、代码块、列表项、
+/// 表格、HTML 块。`List`/`TableRow`/`TableCell` 等容器自身不落行，不登记。
+fn mapped_block(tag: &Tag) -> bool {
+    matches!(
+        tag,
+        Tag::Paragraph
+            | Tag::Heading { .. }
+            | Tag::BlockQuote(_)
+            | Tag::CodeBlock(_)
+            | Tag::Item
+            | Tag::Table(_)
+            | Tag::HtmlBlock
+    )
+}
+
+/// [`mapped_block`] 对应的结束事件。
+fn mapped_block_end(tag: &TagEnd) -> bool {
+    matches!(
+        tag,
+        TagEnd::Paragraph
+            | TagEnd::Heading(..)
+            | TagEnd::BlockQuote(..)
+            | TagEnd::CodeBlock
+            | TagEnd::Item
+            | TagEnd::Table
+            | TagEnd::HtmlBlock
+    )
+}
+
+/// 源码各行的起始字节偏移（首行从 0 起）。
+fn line_starts(source: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    starts.extend(source.match_indices('\n').map(|(index, _)| index + 1));
+    starts
+}
+
+/// 字节偏移 → 1-based 行号。
+fn source_line(starts: &[usize], offset: usize) -> usize {
+    starts.partition_point(|start| *start <= offset).max(1)
+}
+
+/// 块区间末行回退：pulldown 会把块尾的空源行算进块范围，越过它们，
+/// 让批注锚定落在最后一条非空白行（不低于 `floor`）。
+fn trim_blank_tail(source: &str, starts: &[usize], mut line: usize, floor: usize) -> usize {
+    while line > floor {
+        let begin = starts[line - 1];
+        let end = starts.get(line).copied().unwrap_or(source.len());
+        if !source[begin..end].trim().is_empty() {
+            break;
+        }
+        line -= 1;
+    }
+    line
 }
 
 /// inline 片段：文本 + 已合成的样式。
@@ -451,6 +597,8 @@ impl<'a> MdRenderer<'a> {
             raw: self.raw,
             images,
             links_button: self.links_button,
+            // 由 `render_markdown_pages` 在事件循环登记后回填。
+            line_sources: Vec::new(),
         }
     }
 }

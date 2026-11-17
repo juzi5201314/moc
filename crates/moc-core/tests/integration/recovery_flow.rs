@@ -387,6 +387,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
                 plan_id: plan.plan_id,
                 action,
                 execution_engine: None,
+                execution_model: None,
             })
             .await
             .unwrap();
@@ -437,6 +438,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
             plan_id: before.plans[0].plan_id.clone(),
             action: PlanAction::ExecuteCompacted,
             execution_engine: None,
+            execution_model: None,
         })
         .await;
     assert!(error.is_err(), "空摘要不能批准计划");
@@ -867,9 +869,7 @@ async fn background_pipes_and_pty_reap_killed_jobs_and_keep_logs() {
         // Killing 过渡态和 "Killing\n^D" 增量，这也是合法返回；终态与回收
         // 已由上面的 JobFinished 事件佐证。
         assert!(
-            text.contains("job finished")
-                || text.contains(marker)
-                || text.starts_with("Killing\n"),
+            text.contains("job finished") || text.contains(marker) || text.starts_with("Killing\n"),
             "{call} 应返回终态或增量输出：{text}"
         );
     }

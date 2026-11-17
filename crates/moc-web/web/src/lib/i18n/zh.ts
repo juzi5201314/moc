@@ -719,6 +719,7 @@ export const zh = {
   "pr.insert_suggestion": "插入建议改法",
   "pr.lines": "第 {s}-{e} 行",
   "pr.loading_diff": "正在加载本版改动…",
+  "pr.new_model_title": "新会话模型",
   "pr.no_diff": "本版没有文本改动。",
   "pr.no_pending": "无未提交批注",
   "pr.pending_n": "{n} 条待提交",

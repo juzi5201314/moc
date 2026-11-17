@@ -71,6 +71,10 @@ impl App {
         self.context_usage = None;
         self.plan_body_area = Rect::default();
         self.plan_row_map.clear();
+        self.plan_line_sources.clear();
+        // 切会话丢弃停放的计划审阅：它锚定的是上一个会话的待审计划。
+        self.parked_plan = None;
+        self.model_picker_anchor = None;
         if clm_active {
             self.set_notice(t!("tui.event.clm_notice").into_owned());
         }

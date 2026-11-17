@@ -201,6 +201,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             plan_id: plan.plan_id.clone(),
             action: PlanAction::ExecuteNewSession,
             execution_engine: None,
+            execution_model: None,
         })
         .await
         .expect("approve into new session");

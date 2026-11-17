@@ -133,6 +133,7 @@ async fn plan_approval_defaults_to_current_session_model() {
             plan_id: plan.plan_id.clone(),
             action: PlanAction::Execute,
             execution_engine: None,
+            execution_model: None,
         })
         .await
         .expect("approve plan in place");
@@ -207,6 +208,7 @@ async fn plan_new_session_inherits_current_model() {
             plan_id: plan.plan_id.clone(),
             action: PlanAction::ExecuteNewSession,
             execution_engine: None,
+            execution_model: None,
         })
         .await
         .expect("新会话审批");
@@ -232,6 +234,97 @@ async fn plan_new_session_inherits_current_model() {
     );
     assert_eq!(parent.plans[0].status, PlanStatus::Approved);
     assert_eq!(h.load(&id).await.entries, parent.entries);
+    h.close().await;
+}
+
+/// `execution_model` 单独指定新会话模型；无效 selector 解析失败、零副作用。
+#[tokio::test]
+async fn plan_new_session_uses_selected_execution_model() {
+    use serde_json::json;
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).expect("请求 JSON");
+            if body.to_string().contains("<active-plan") {
+                assert_eq!(body["model"], "executor");
+                ResponseTemplate::new(200)
+                    .set_body_raw(text_stream("子会话执行"), "text/event-stream")
+            } else {
+                assert_eq!(body["model"], "planner");
+                ResponseTemplate::new(200).set_body_raw(
+                    support::tool_stream(vec![
+                        (
+                            "save",
+                            "plan",
+                            json!({"title":"子会话方案", "markdown":"# 方案\n实现接口"}),
+                        ),
+                        ("exit", "exit_plan", json!({})),
+                    ]),
+                    "text/event-stream",
+                )
+            }
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/planner:off",
+        "test/gpt-test:off",
+        "[providers.test.models.planner]\ncontext_window=100000\nmax_output_tokens=4096\n\
+         [providers.test.models.executor]\ncontext_window=200000\nmax_output_tokens=4096\n",
+    )
+    .await;
+    let id = h.session_plan(SessionEngine::Standard).await;
+    h.prompt(&id, "设计子会话方案").await;
+    let plan = h.load(&id).await.plans.pop().expect("待审计划");
+
+    // 无效 selector：审批报错，不建会话、源会话计划仍待审。
+    let rejected = h
+        .client
+        .call::<SessionPlanApprove>(SessionPlanApproveParams {
+            session_id: id.clone(),
+            plan_id: plan.plan_id.clone(),
+            action: PlanAction::ExecuteNewSession,
+            execution_engine: None,
+            execution_model: Some("test/missing:off".into()),
+        })
+        .await;
+    assert!(rejected.is_err());
+    assert_eq!(h.load(&id).await.plans[0].status, PlanStatus::Submitted);
+    let sessions = h
+        .client
+        .call::<SessionList>(SessionListParams {})
+        .await
+        .expect("会话列表");
+    assert_eq!(sessions.sessions.len(), 1);
+
+    let approved = h
+        .client
+        .call::<SessionPlanApprove>(SessionPlanApproveParams {
+            session_id: id.clone(),
+            plan_id: plan.plan_id.clone(),
+            action: PlanAction::ExecuteNewSession,
+            execution_engine: None,
+            execution_model: Some("test/executor:off".into()),
+        })
+        .await
+        .expect("新会话审批");
+    let child = h.load(&approved.session_id).await;
+    assert_eq!(child.session.model, "test/executor:off");
+    let parent = h.load(&id).await;
+    assert_eq!(parent.session.model, "test/planner:off");
+    assert!(parent.session.plan_active);
+    assert_eq!(
+        h.prompt(
+            &approved.session_id,
+            approved.auto_prompt.as_deref().expect("执行提示")
+        )
+        .await
+        .message
+        .text(),
+        "子会话执行"
+    );
     h.close().await;
 }
 

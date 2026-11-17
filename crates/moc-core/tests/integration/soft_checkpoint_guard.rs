@@ -592,6 +592,7 @@ async fn execute_compacted_requires_the_pending_plan_steps() {
             plan_id: plan.plan_id,
             action: PlanAction::ExecuteCompacted,
             execution_engine: None,
+            execution_model: None,
         })
         .await
         .expect("批准并压缩");

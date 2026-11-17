@@ -49,8 +49,11 @@ impl App {
             self.set_notice(t!("tui.event.no_models_hint").into_owned());
             return;
         }
-        // 配置字段不列组合入口。
-        let fusion_entry = matches!(target, crate::modal::ModelTarget::Session);
+        // 配置字段不列组合入口；会话与新会话模型都可以选 Fusion。
+        let fusion_entry = matches!(
+            target,
+            crate::modal::ModelTarget::Session | crate::modal::ModelTarget::PlanExecution
+        );
         let mut entries = Self::picker_entries(&self.models, specials, fusion_entry);
         let models_start = specials.len() + usize::from(fusion_entry);
         entries[models_start..].sort_by(|a, b| {

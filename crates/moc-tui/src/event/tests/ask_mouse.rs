@@ -309,3 +309,50 @@ async fn ask_mouse_confirm_nav_jumps_and_submits() {
     connection.shutdown().await;
     core.shutdown().await;
 }
+
+/// 选项行悬停移动高亮（focus follows pointer）；自定义答案编辑态悬停不抢焦点。
+#[tokio::test]
+async fn ask_mouse_hover_moves_highlight_but_not_while_editing() {
+    let (core, connection, mut app) = setup_test_app().await;
+    app.modal = Some(ask_modal_with(vec![multi_ask_question()], None));
+    app.ask_option_hits = vec![
+        (0, ratatui::layout::Rect::new(10, 5, 40, 1)),
+        (1, ratatui::layout::Rect::new(10, 6, 40, 1)),
+        (2, ratatui::layout::Rect::new(10, 7, 40, 1)),
+        (3, ratatui::layout::Rect::new(10, 8, 40, 1)),
+    ];
+
+    handle_mouse_with_connection(
+        &mut app,
+        &connection,
+        mouse_event(crossterm::event::MouseEventKind::Moved, 20, 7),
+    );
+    match app.modal.as_ref() {
+        Some(Modal::Ask { highlight, .. }) => {
+            assert_eq!(highlight[0], 2, "悬停到第 3 个选项即移动高亮");
+        }
+        _ => unreachable!("悬停不改动模态"),
+    }
+
+    // 自定义答案进入编辑态后再悬停选项行：高亮与编辑态都不被抢走。
+    if let Some(Modal::Ask { custom, .. }) = app.modal.as_mut() {
+        custom[0].editing = true;
+    }
+    handle_mouse_with_connection(
+        &mut app,
+        &connection,
+        mouse_event(crossterm::event::MouseEventKind::Moved, 20, 5),
+    );
+    match app.modal.as_ref() {
+        Some(Modal::Ask {
+            highlight, custom, ..
+        }) => {
+            assert_eq!(highlight[0], 2, "编辑态悬停不抢焦点");
+            assert!(custom[0].editing, "编辑态保持");
+        }
+        _ => unreachable!("悬停不改动模态"),
+    }
+
+    connection.shutdown().await;
+    core.shutdown().await;
+}

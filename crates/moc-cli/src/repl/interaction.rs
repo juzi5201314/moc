@@ -69,6 +69,7 @@ pub(super) async fn approve_plan(
             plan_id: plan.plan_id.clone(),
             action,
             execution_engine,
+            execution_model: None,
         })
         .await?;
     let next = client

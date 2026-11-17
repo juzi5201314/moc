@@ -5288,6 +5288,13 @@
           ],
           "description": "`execute_new_session` 的目标会话引擎；缺省沿用源会话引擎。\n其他动作下忽略。"
         },
+        "execution_model": {
+          "description": "`execute_new_session` 的目标模型 selector（可为 Fusion 组合串）；缺省沿用源会话当前模型。\n其他动作下忽略：原地执行与压缩执行始终使用源会话当前模型。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "plan_id": {
           "type": "string"
         },

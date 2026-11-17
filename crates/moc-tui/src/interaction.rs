@@ -330,4 +330,6 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
         }
         _ => unreachable!("只接收配置、投递与模型切换回执"),
     }
+    // 模型选择/切换确认等回执可能刚把模态关掉：此时还原停放的计划审阅。
+    crate::event::restore_parked_plan(app);
 }

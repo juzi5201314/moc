@@ -141,6 +141,7 @@ pub(super) fn assistant_layout(
             theme,
             views,
             true,
+            false,
         );
         let height = rendered.lines.len() + usize::from(footer.is_some()) + 1;
         let mut tail = Vec::new();

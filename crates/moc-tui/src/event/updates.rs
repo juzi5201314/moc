@@ -187,6 +187,7 @@ pub(super) fn apply_update_and_refresh(
                     plan_id,
                     action: moc_protocol::methods::PlanAction::ExecuteCompacted,
                     execution_engine: Some(engine),
+                    execution_model: None,
                 })
                 .await
                 .map_err(anyhow::Error::from);

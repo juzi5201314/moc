@@ -129,6 +129,8 @@ pub(super) fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnecti
                 .await;
         });
     }
+    // 每个终端事件处理完、绘制前：模型选择器若已彻底关闭，还原停放的计划审阅。
+    super::plan::restore_parked_plan(app);
 }
 
 /// 键盘处理：模态优先，其次全局开关，最后按焦点路由。

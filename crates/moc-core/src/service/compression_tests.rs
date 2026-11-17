@@ -115,6 +115,7 @@ async fn project_compression_is_selected_per_creation_and_after_config_save() {
                     plan_id: "plan_test".into(),
                     action: PlanAction::ExecuteNewSession,
                     execution_engine: None,
+                    execution_model: None,
                 })
                 .await
                 .unwrap();

@@ -244,10 +244,29 @@ pub struct App {
     /// 「回到底部」浮动胶囊的命中区；滚离底部才登记，不占转写行数。
     pub jump_bottom_area: Rect,
     /// 计划审阅中的执行模型文本命中区。
-    /// 计划批注视图的正文区域（鼠标行选择换算用）。
+    /// 计划审阅正文区域（鼠标命中换算用；计划/源码标签共用）。
     pub plan_body_area: Rect,
-    /// 计划批注视图可见源码行号（屏幕行 → 0-based 源码行）。
+    /// 计划源码标签可见源码行号（屏幕行 → 0-based 源码行）。
     pub plan_row_map: Vec<usize>,
+    /// 计划标签渲染行 → 源码行区间（与 plan_body_area 上方 scroll_offset 对齐）。
+    pub plan_line_sources: Vec<Option<(usize, usize)>>,
+    /// 计划审阅标签栏条目命中区（渲染写入，鼠标只读）。
+    pub plan_tab_hits: Vec<(crate::modal::PlanTab, Rect)>,
+    /// 计划审阅选区条按钮命中区。
+    pub plan_selbar_hits: Vec<(crate::modal::PlanSelAction, Rect)>,
+    /// 计划审阅动作区控件命中区（芯片 + 按钮）。
+    pub plan_control_hits: Vec<(crate::modal::PlanControl, Rect)>,
+    /// 批注编辑器按钮命中区。
+    pub plan_editor_hits: Vec<(crate::modal::PlanEditorAction, Rect)>,
+    /// 计划审阅正文滚动条轨道命中区（溢出时才登记；空矩形 = 无滚动条）。
+    pub plan_scrollbar_area: Rect,
+    /// 计划审阅当前标签的正文总行数（滚动条滑块与拖拽换算用）。
+    pub plan_body_total: usize,
+    /// 从模型芯片打开选择器时停放的计划审阅状态；选择器关闭后还原。
+    pub parked_plan: Option<Box<crate::modal::PlanReviewState>>,
+    /// 模型选择器的锚点覆盖：从计划模型芯片打开时记芯片矩形，让选择器
+    /// 贴着审阅卡弹出而非回落到输入框图例；选择器关闭时清空。
+    pub model_picker_anchor: Option<Rect>,
     /// 消息回退时间线区域（鼠标滚动/点击换算用）。
     pub rewind_timeline_area: Rect,
     /// 消息回退详情区域（鼠标滚动换算用）。
@@ -584,6 +603,15 @@ impl App {
             usage_area: Rect::default(),
             plan_body_area: Rect::default(),
             plan_row_map: Vec::new(),
+            plan_line_sources: Vec::new(),
+            plan_tab_hits: Vec::new(),
+            plan_selbar_hits: Vec::new(),
+            plan_control_hits: Vec::new(),
+            plan_editor_hits: Vec::new(),
+            plan_scrollbar_area: Rect::default(),
+            plan_body_total: 0,
+            parked_plan: None,
+            model_picker_anchor: None,
             rewind_timeline_area: Rect::default(),
             rewind_detail_area: Rect::default(),
             ask_option_hits: Vec::new(),

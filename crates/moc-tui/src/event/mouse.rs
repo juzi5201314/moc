@@ -68,7 +68,8 @@ pub(super) fn handle_mouse_with_connection(
             handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Esc);
             // 点在触发标签上只收起（否则会立刻又打开）；Workflow 回程仍有模态
             // 时同样吞掉这次点击。
-            if app.model_tag_area.contains(pos) || app.modal.is_some() {
+            if app.model_tag_area.contains(pos) || app.modal.is_some() || app.parked_plan.is_some()
+            {
                 return;
             }
             // 已彻底关闭：把这次点击当作无模态时的普通点击重新派发。

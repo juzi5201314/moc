@@ -13,6 +13,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { ExecutionModelPicker } from "@/components/chat/model-select-popover";
 import { IconButton } from "@/components/common/icon-button";
 import { DiffFile } from "@/components/panels/diff-file";
 import { PlanMarkdown } from "@/components/plan/plan-markdown";
@@ -60,7 +61,12 @@ type Props = {
   plan: PlanInfo;
   busy: boolean;
   actionError: string | null;
-  onAction: (plan: PlanInfo, action: PlanAction, executionEngine?: SessionEngine) => void;
+  onAction: (
+    plan: PlanInfo,
+    action: PlanAction,
+    executionEngine?: SessionEngine,
+    executionModel?: string,
+  ) => void;
 };
 
 const EXECUTION_ENGINES: { id: SessionEngine; label: MsgKey }[] = [
@@ -107,7 +113,10 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
   const sourceEngine = useTranscript(
     (state) => state.bySession[sessionId]?.info.engine ?? "standard",
   );
+  const sourceModel = useTranscript((state) => state.bySession[sessionId]?.info.model ?? "");
   const [executionEngine, setExecutionEngine] = useState<SessionEngine>(sourceEngine);
+  // 「新会话执行」可单独选模型；undefined = 沿用源会话当前模型。
+  const [executionModel, setExecutionModel] = useState<string | undefined>(undefined);
 
   const lines = useMemo(() => sourceLines(plan.markdown), [plan.markdown]);
   const submitted = plan.annotations ?? [];
@@ -446,6 +455,11 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
             </Button>
           </div>
           <div className="flex items-center justify-end gap-1.5">
+            <ExecutionModelPicker
+              value={executionModel ?? sourceModel}
+              onChange={setExecutionModel}
+              disabled={busy || submitting}
+            />
             <Select
               value={executionEngine}
               onValueChange={(value) => setExecutionEngine(value as SessionEngine)}
@@ -470,7 +484,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
               size="sm"
               variant="outline"
               className="text-ui"
-              onClick={() => onAction(plan, "execute_new_session", executionEngine)}
+              onClick={() => onAction(plan, "execute_new_session", executionEngine, executionModel)}
               disabled={busy || submitting}
             >
               {t("pr.run_new")}

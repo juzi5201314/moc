@@ -325,6 +325,7 @@ submit_deny = { zh = "提交拒绝", en = "submit denial" }
 cancel_input = { zh = "取消输入", en = "cancel input" }
 choose_role = { zh = "选择 role", en = "select role" }
 pick_model = { zh = "选模型", en = "pick model" }
+pick_new_model = { zh = "新会话模型", en = "new-session model" }
 approve = { zh = "批准", en = "approve" }
 reject = { zh = "拒绝", en = "reject" }
 minimize = { zh = "最小化", en = "minimize" }
@@ -750,23 +751,41 @@ no_prompt = { zh = "选中的条目没有可重新作答的提问", en = "The se
 [tui.plan]
 not_annotatable = { zh = "当前版本不可批注", en = "This version can't be annotated" }
 annotation_empty = { zh = "批注正文不能为空", en = "Annotation body can't be empty" }
-run_here = { zh = "执行（当前会话）", en = "Run (this session)" }
-run_compact = { zh = "压缩当前会话后执行", en = "Compact this session, then run" }
-run_new_fmt = { zh = "在新会话执行（%{engine}）", en = "Run in a new session (%{engine})" }
-resume = { zh = "继续计划", en = "Resume plan" }
+tab_diff = { zh = "改动", en = "Changes" }
+tab_plan = { zh = "计划", en = "Plan" }
+tab_source = { zh = "源码", en = "Source" }
+chip_model = { zh = "模型", en = "Model" }
+chip_new_model = { zh = "新会话模型", en = "New-session model" }
+chip_engine = { zh = "新会话引擎", en = "New-session engine" }
+pending_notes_fmt = { zh = "%{count} 条批注待提交", en = "%{count} notes pending" }
+btn_resume = { zh = "继续计划", en = "Keep planning" }
+btn_submit_fmt = { zh = "提交批注 (%{count})", en = "Send notes (%{count})" }
+btn_run_new = { zh = "新会话执行", en = "Run in new session" }
+btn_run_compact = { zh = "压缩后执行", en = "Compact & run" }
+btn_run = { zh = "执行", en = "Run" }
+sel_lines_fmt = { zh = "第 %{start}–%{end} 行", en = "Lines %{start}–%{end}" }
+sel_annotate = { zh = "批注", en = "Annotate" }
+sel_delete = { zh = "删除批注", en = "Delete note" }
+sel_clear = { zh = "清除选择", en = "Clear" }
+sel_hint_plan = { zh = "点击正文选中段落 · 拖动多选 · 点 + 直接批注", en = "Click a paragraph to select · drag for more · click + to annotate" }
+sel_hint_diff = { zh = "切到「计划」标签批注", en = "Switch to the Plan tab to annotate" }
 note_draft = { zh = "计划仍在起草中。", en = "The plan is still being drafted." }
 note_revised = { zh = "已提交修改意见，等待模型修订。", en = "Feedback submitted; waiting for the model to revise." }
 note_superseded = { zh = "已被新版本取代。", en = "Superseded by a newer version." }
 note_approved = { zh = "计划已批准。", en = "Plan approved." }
 note_rejected = { zh = "计划已拒绝。", en = "Plan rejected." }
 diff_ver_fmt = { zh = " · 对比 v%{ver}", en = " · vs v%{ver}" }
-annot_count_fmt = { zh = " · %{drafts} 条待提交 / %{submitted} 条已提交", en = " · %{drafts} pending / %{submitted} submitted" }
+annot_count_fmt = { zh = "%{drafts} 条待提交 · %{submitted} 条已提交", en = "%{drafts} pending · %{submitted} submitted" }
 diff_load_failed_fmt = { zh = "无法加载改动：%{err}", en = "Failed to load changes: %{err}" }
 no_text_changes = { zh = "本版没有文本改动。", en = "No text changes in this version." }
 diff_loading = { zh = "正在加载本版改动…", en = "Loading changes for this version…" }
 submitting = { zh = "正在提交…", en = "Submitting…" }
 annotation_body_hint = { zh = "批注正文（可用 ```suggestion 围栏给出替换文本）", en = "Annotation body (use ```suggestion fences for replacement text)" }
 annotation_title_fmt = { zh = "批注%{sep}第 %{start}-%{end} 行", en = "Annotate%{sep}lines %{start}-%{end}" }
+editor_suggest = { zh = "插入建议", en = "Insert suggestion" }
+editor_delete = { zh = "删除", en = "Delete" }
+editor_cancel = { zh = "取消", en = "Cancel" }
+editor_save = { zh = "保存", en = "Save" }
 not_plan_mode = { zh = "只有计划状态可以重新审阅计划", en = "Only a session in plan mode can reopen plan review" }
 left_plan_mode = { zh = "会话已离开计划状态", en = "The session has left plan mode" }
 no_pending_plan = { zh = "当前会话没有已写入的待审计划", en = "This session has no submitted plan to review" }

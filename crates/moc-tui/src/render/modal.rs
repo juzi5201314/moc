@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::App;
-use crate::modal::{Modal, PlanPane, SessionScope};
+use crate::modal::{Modal, PlanTab, SessionScope};
 use crate::render::wrap::{clip_line, fit, fit_line, str_width, truncate, truncate_head};
 use crate::render::{context_content, labels, overlay};
 use crate::theme::Theme;
@@ -52,6 +52,8 @@ struct ModalBody {
     applied_offset: Option<usize>,
     /// (条目下标, 正文行号)。
     hits: Vec<(usize, usize)>,
+    /// 计划审阅的命中几何（标签栏 / 选区条 / 动作区 / 渲染行→源码映射）。
+    plan: Option<plan::PlanHits>,
 }
 
 /// 居中模态卡片。
@@ -62,6 +64,10 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     app.modal_card_area = Rect::default();
     app.modal_detail_area = Rect::default();
     app.modal_menu_area = Rect::default();
+    app.plan_tab_hits.clear();
+    app.plan_selbar_hits.clear();
+    app.plan_control_hits.clear();
+    app.plan_editor_hits.clear();
     // 模态是阻塞层：底下界面登记的键位一律作废，只留模态自己的。
     app.key_hits.clear();
     let area = frame.area();
@@ -69,6 +75,31 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         return;
     }
     if matches!(app.modal, Some(Modal::Model { .. })) {
+        // 从计划模型芯片打开的选择器：停放的审阅卡照常画在底下（递归走
+        // 计划分支，含压暗），画完清掉它登记的命中区，避免与选择器抢事件。
+        if let Some(state) = app.parked_plan.take() {
+            let saved = app.modal.replace(Modal::Plan { state });
+            draw_modal(frame, app);
+            if let Some(Modal::Plan { state }) = app.modal.take() {
+                app.parked_plan = Some(state);
+            }
+            app.modal = saved;
+            app.modal_item_hits.clear();
+            app.modal_detail_hits.clear();
+            app.modal_menu_hits.clear();
+            app.modal_card_area = Rect::default();
+            app.modal_detail_area = Rect::default();
+            app.modal_menu_area = Rect::default();
+            app.key_hits.clear();
+            app.plan_tab_hits.clear();
+            app.plan_selbar_hits.clear();
+            app.plan_control_hits.clear();
+            app.plan_editor_hits.clear();
+            app.plan_body_area = Rect::default();
+            app.plan_row_map.clear();
+            app.plan_line_sources.clear();
+            app.plan_scrollbar_area = Rect::default();
+        }
         model_picker::draw(frame, app);
         return;
     }
@@ -164,20 +195,106 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         }
     }
     if let Modal::Plan { state } = modal {
-        if state.pane == PlanPane::Annotate {
-            // 批注视图是一行源码对一行屏幕行，鼠标拖选直接按行换算。
-            let window = plan_source_window(state, rows);
-            app.plan_body_area = Rect::new(
-                layout.body.x,
-                layout.body.y + u16::try_from(PLAN_HEADER_ROWS).expect("常量可表示为 u16"),
-                layout.body.width,
-                u16::try_from(window.len()).unwrap_or(u16::MAX),
+        // 命中行号即屏幕行（同 modal_item_hits 的换算），x 为正文内相对列。
+        let hit_rect = |row: usize, col: usize, w: usize| -> Option<Rect> {
+            Some(Rect::new(
+                layout.body.x.checked_add(u16::try_from(col).ok()?)?,
+                row_y(row)?,
+                u16::try_from(w).ok()?,
+                1,
+            ))
+        };
+        let body_y = layout.body.y + u16::try_from(PLAN_HEADER_ROWS).expect("常量可表示为 u16");
+        if let Some(plan_hits) = body.plan {
+            app.plan_tab_hits = plan_hits
+                .tabs
+                .iter()
+                .filter_map(|(tab, row, col, w)| Some((*tab, hit_rect(*row, *col, *w)?)))
+                .collect();
+            app.plan_selbar_hits = plan_hits
+                .selbar
+                .iter()
+                .filter_map(|(action, row, col, w)| Some((*action, hit_rect(*row, *col, *w)?)))
+                .collect();
+            app.plan_control_hits = plan_hits
+                .controls
+                .iter()
+                .filter_map(|(control, row, col, w)| Some((*control, hit_rect(*row, *col, *w)?)))
+                .collect();
+            app.plan_line_sources = plan_hits.line_sources;
+            if state.tab == PlanTab::Source {
+                // 源码标签一行源码对一行屏幕行，鼠标拖选直接按行换算。
+                let window =
+                    plan_source_window(app, state, overlay::content_width(width), rows, theme);
+                app.plan_body_area = Rect::new(
+                    layout.body.x,
+                    body_y,
+                    layout.body.width,
+                    u16::try_from(window.len()).unwrap_or(u16::MAX),
+                );
+                app.plan_row_map = window;
+            } else {
+                // 计划/改动标签：正文区 = 渲染行窗口（供 gutter/正文点击换算）。
+                app.plan_body_area = Rect::new(
+                    layout.body.x,
+                    body_y,
+                    layout.body.width,
+                    u16::try_from(plan_hits.body_rows).unwrap_or(u16::MAX),
+                );
+            }
+        }
+        // 悬停底色：标签与选区条无焦点态，命中即铺 bg_hover；
+        // 芯片/按钮的悬停样式由事件层写 state.focus 后在渲染期体现。
+        if let Some((px, py)) = app.scrollbar_pointer {
+            let pos = ratatui::layout::Position::new(px, py);
+            for rect in app
+                .plan_tab_hits
+                .iter()
+                .map(|(_, rect)| *rect)
+                .chain(app.plan_selbar_hits.iter().map(|(_, rect)| *rect))
+            {
+                if rect.contains(pos) {
+                    frame
+                        .buffer_mut()
+                        .set_style(rect, Style::new().bg(theme.bg_hover));
+                }
+            }
+        }
+        // 正文滚动条：溢出时画在正文最右列，轨道命中区交给鼠标拖拽。
+        app.plan_scrollbar_area = Rect::default();
+        app.plan_body_total = 0;
+        let total = match state.tab {
+            PlanTab::Plan => app.plan_line_sources.len(),
+            PlanTab::Source => state.source_lines().len(),
+            PlanTab::Diff => body.scroll_max + usize::from(app.plan_body_area.height),
+        };
+        let track_height = usize::from(app.plan_body_area.height);
+        if total > track_height && track_height > 0 {
+            let thumb = (track_height * track_height / total).max(1);
+            let max_offset = total - track_height;
+            let top_range = track_height - thumb;
+            let thumb_top = state.scroll_offset.min(max_offset) * top_range / max_offset;
+            let track = Rect::new(
+                app.plan_body_area.right().saturating_sub(1),
+                app.plan_body_area.y,
+                1,
+                app.plan_body_area.height,
             );
-            app.plan_row_map = window;
+            overlay::paint_scrollbar(
+                frame.buffer_mut(),
+                track,
+                u16::try_from(thumb_top).unwrap_or(u16::MAX),
+                u16::try_from(thumb).unwrap_or(u16::MAX),
+                theme,
+            );
+            app.plan_scrollbar_area = track;
+            app.plan_body_total = total;
         }
         if state.editor.is_some() {
             // 编辑器盖在审阅卡片上：只有它的键位可点。
-            app.key_hits = draw_plan_editor(frame, app, layout.area, area);
+            let (keys, editor_hits) = draw_plan_editor(frame, app, layout.area, area);
+            app.key_hits = keys;
+            app.plan_editor_hits = editor_hits;
         }
     }
     // 事件层只加不减的滚动偏移按本帧上限写回；各模态同一约定。
@@ -189,7 +306,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         Some(Modal::Permission { scroll_offset, .. }) => {
             *scroll_offset = (*scroll_offset).min(body.scroll_max);
         }
-        Some(Modal::Plan { state }) if state.pane == PlanPane::Read => {
+        Some(Modal::Plan { state }) if matches!(state.tab, PlanTab::Plan | PlanTab::Diff) => {
             state.scroll_offset = state.scroll_offset.min(body.scroll_max);
         }
         Some(Modal::Sessions { picker, .. } | Modal::WorkflowRuns { picker, .. }) => {
@@ -221,6 +338,17 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
             state.scroll.reveal_selection = false;
         }
         _ => {}
+    }
+    // 「新会话引擎」芯片的就地下拉画在卡片之上，锚在芯片命中区上方。
+    if let Some(Modal::Plan { state }) = app.modal.as_mut()
+        && let Some(menu) = state.engine_menu.as_mut()
+    {
+        let anchor = app
+            .plan_control_hits
+            .iter()
+            .find(|(control, _)| *control == crate::modal::PlanControl::Engine)
+            .map_or(layout.area, |(_, rect)| *rect);
+        menus::draw_legend_menu(frame, theme, menu, anchor, Some(state.execution_engine));
     }
 }
 
@@ -317,6 +445,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
     let theme = app.theme;
     let dim = Style::new().fg(theme.gray_dim);
     let mut hits = Vec::new();
+    let mut plan = None;
     let (mut lines, footer) = match modal {
         Modal::Permission {
             params,
@@ -736,7 +865,10 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             (lines, overlay::footer(&items, width, theme))
         }
         Modal::Plan { state } => {
-            plan_lines(state, width, max_lines, theme, &mut hits, &mut scroll_max)
+            let (lines, footer, plan_hits) =
+                plan_lines(app, state, width, max_lines, theme, &mut scroll_max);
+            plan = Some(plan_hits);
+            (lines, footer)
         }
         Modal::Tools {
             tools,
@@ -814,6 +946,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
         scroll_max,
         applied_offset,
         hits,
+        plan,
     }
 }
 
@@ -852,10 +985,8 @@ const ASK_DETAIL_ROWS: usize = 4;
 
 // ---------- 计划审阅：阅读 / 批注视图 ----------
 
-/// 计划审阅卡片顶部的固定行数：标题/版本、路径。
-pub(crate) const PLAN_HEADER_ROWS: usize = 2;
-
-const PLAN_ACTIONS_LEN: usize = 4;
+/// 计划审阅卡片顶部的固定行数：标题/版本、路径、标签栏。
+pub(crate) const PLAN_HEADER_ROWS: usize = 3;
 
 /// 折行后的输入内容与光标位置。
 struct WrappedInput {

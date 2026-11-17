@@ -191,14 +191,15 @@ pub(super) fn handle(
                             if detail.fusion.lead.is_empty() || detail.fusion.sidekick.is_empty() {
                                 picker.error =
                                     Some(t!("tui.event.pick_lead_sidekick").into_owned());
-                            } else if apply_fusion_pick(
-                                picker,
-                                &detail.fusion,
-                                current,
-                                &session_id,
-                                &mut actions.session_apply,
-                            ) {
-                                actions.close = true;
+                            } else {
+                                apply_fusion_target(
+                                    picker,
+                                    &detail.fusion,
+                                    current,
+                                    &session_id,
+                                    target,
+                                    actions,
+                                );
                             }
                         }
                         row => {
@@ -320,14 +321,15 @@ pub(super) fn handle(
                                     "",
                                 );
                                 open_menu(detail, row, items.current());
-                            } else if apply_fusion_pick(
-                                picker,
-                                &detail.fusion,
-                                current,
-                                &session_id,
-                                &mut actions.session_apply,
-                            ) {
-                                actions.close = true;
+                            } else {
+                                apply_fusion_target(
+                                    picker,
+                                    &detail.fusion,
+                                    current,
+                                    &session_id,
+                                    target,
+                                    actions,
+                                );
                             }
                         } else {
                             let selector =
@@ -352,6 +354,10 @@ pub(super) fn handle(
                                         actions.workflow_back = Some(back);
                                         actions.workflow_action = action;
                                     }
+                                }
+                                crate::modal::ModelTarget::PlanExecution => {
+                                    actions.plan_model_pick = Some(selector);
+                                    actions.close = true;
                                 }
                                 crate::modal::ModelTarget::Session => {
                                     picker.loading = true;
@@ -391,4 +397,31 @@ pub(super) fn handle(
         _ => unreachable!("模态路由必须与处理器一致"),
     }
     true
+}
+
+/// Fusion 组合的应用出口：「新会话模型」目标把 selector 写回停放的计划审阅
+/// （不经会话通道），其余目标沿用 `apply_fusion_pick` 的会话应用流程。
+fn apply_fusion_target(
+    picker: &mut crate::modal::PickerState,
+    fusion: &crate::modal::FusionDraft,
+    current: &str,
+    session_id: &Option<String>,
+    target: &crate::modal::ModelTarget,
+    actions: &mut Actions,
+) {
+    if matches!(target, crate::modal::ModelTarget::PlanExecution) {
+        actions.plan_model_pick = Some(crate::modal::fusion_selector(
+            &fusion.lead,
+            &fusion.sidekick,
+        ));
+        actions.close = true;
+    } else if apply_fusion_pick(
+        picker,
+        fusion,
+        current,
+        session_id,
+        &mut actions.session_apply,
+    ) {
+        actions.close = true;
+    }
 }

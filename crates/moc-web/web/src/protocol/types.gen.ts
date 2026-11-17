@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 6ff49ad9bb7884a7
+// schema sha256: b7db6a9ac19a3078
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -4075,6 +4075,11 @@ export interface SessionPlanApproveParams {
    * 其他动作下忽略。
    */
   execution_engine?: SessionEngine | null;
+  /**
+   * `execute_new_session` 的目标模型 selector（可为 Fusion 组合串）；缺省沿用源会话当前模型。
+   * 其他动作下忽略：原地执行与压缩执行始终使用源会话当前模型。
+   */
+  execution_model?: string | null;
   plan_id: string;
   session_id: string;
 }

@@ -145,6 +145,7 @@ pub(crate) use plan::apply_plan_diff;
 pub(crate) use plan::apply_plan_execution_loaded;
 use plan::apply_plan_review;
 pub(crate) use plan::apply_plan_revised;
+pub(crate) use plan::restore_parked_plan;
 mod updates;
 use updates::apply_ui_update;
 mod usage;

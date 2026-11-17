@@ -239,6 +239,12 @@ pub async fn approve_plan(
 
     if params.action == PlanAction::ExecuteNewSession {
         // 新会话引擎由评审界面选择，缺省沿用源会话引擎；新会话不继承 plan 模式。
+        // 新会话模型可单独指定，缺省沿用源会话当前模型；解析失败在
+        // `sessions.create` 之前返回，零副作用（不建会话、计划仍待审）。
+        let execution_model = match &params.execution_model {
+            Some(selector) => config.resolve_model(selector).map_err(to_rpc)?,
+            None => execution_model,
+        };
         let fork_engine = params.execution_engine.unwrap_or(state.engine);
         let fork = inner
             .sessions

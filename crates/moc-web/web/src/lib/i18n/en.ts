@@ -730,6 +730,7 @@ export const en: Record<MsgKey, string> = {
   "pr.insert_suggestion": "Insert suggestion",
   "pr.lines": "Lines {s}-{e}",
   "pr.loading_diff": "Loading changes in this revision…",
+  "pr.new_model_title": "New-session model",
   "pr.no_diff": "No text changes in this revision.",
   "pr.no_pending": "No pending annotations",
   "pr.pending_n": "{n} pending",

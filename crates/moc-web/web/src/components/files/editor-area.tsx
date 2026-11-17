@@ -412,11 +412,15 @@ function formatBytes(size: number): string {
 function PlanPane({ sessionId, plan }: { sessionId: string; plan: PlanInfo }) {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const act = async (action: PlanAction, executionEngine?: SessionEngine) => {
+  const act = async (
+    action: PlanAction,
+    executionEngine?: SessionEngine,
+    executionModel?: string,
+  ) => {
     setBusy(true);
     setActionError(null);
     try {
-      await approvePlan(sessionId, plan.plan_id, action, executionEngine);
+      await approvePlan(sessionId, plan.plan_id, action, executionEngine, executionModel);
     } catch (error) {
       setActionError(errorText(error));
     } finally {
@@ -429,7 +433,9 @@ function PlanPane({ sessionId, plan }: { sessionId: string; plan: PlanInfo }) {
       plan={plan}
       busy={busy}
       actionError={actionError}
-      onAction={(_plan, action, executionEngine) => void act(action, executionEngine)}
+      onAction={(_plan, action, executionEngine, executionModel) =>
+        void act(action, executionEngine, executionModel)
+      }
     />
   );
 }

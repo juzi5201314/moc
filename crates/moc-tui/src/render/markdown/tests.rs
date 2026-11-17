@@ -38,7 +38,7 @@ fn paged_layout_matches_full_layout_with_global_references_and_tables() {
             ..Default::default()
         };
         let full = render_markdown_with(&source, 77, &theme, views());
-        let paged = render_markdown_pages(&source, 77, &theme, views(), true);
+        let paged = render_markdown_pages(&source, 77, &theme, views(), true, false);
         assert_eq!(full.tables, paged.tables);
         assert_eq!(full.lines.len(), paged.lines.len());
         for start in (0..full.lines.len()).step_by(63) {
@@ -839,4 +839,28 @@ fn reference_links_fold_beyond_limit_with_clickable_entry() {
         assert_eq!(button.x, 2);
         assert_eq!(button.w as usize, str_width(entry.trim()));
     }
+}
+
+/// 渲染行 → 源码行区间：标题、段落、紧凑列表、围栏代码块各归其块，空行无归属。
+#[test]
+fn source_map_tracks_blocks() {
+    let theme = Theme::resolved(ColorLevel::TrueColor);
+    let source = "# 标题\n\n段落一行。\n\n- 甲\n- 乙\n- 丙\n\n```rust\nlet x = 1;\n```\n";
+    let width = 40;
+    let (lines, map) = render_markdown_with_sources(source, width, &theme);
+    // 输出与普通渲染完全一致。
+    assert_eq!(lines, render_markdown(source, width, &theme));
+    assert_eq!(map.len(), lines.len());
+    // 宽度 0 的空行一律无归属，非空行必然有归属。
+    for (line, entry) in lines.iter().zip(&map) {
+        assert_eq!(line_width(line) == 0, entry.is_none(), "{line:?}");
+    }
+    let ranges: Vec<(usize, usize)> = map.into_iter().flatten().collect();
+    // 块区间越过块尾空源行回退：末个列表项只覆盖自身一行。
+    for expected in [(1, 1), (3, 3), (5, 5), (6, 6), (7, 7)] {
+        assert!(ranges.contains(&expected), "缺 {expected:?}：{ranges:?}");
+    }
+    // 围栏代码块覆盖整个围栏（含 ``` 行）。
+    let code = ranges.iter().copied().find(|range| range.1 >= 10);
+    assert_eq!(code, Some((9, 11)), "{ranges:?}");
 }
