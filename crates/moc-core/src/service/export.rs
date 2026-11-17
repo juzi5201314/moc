@@ -96,6 +96,13 @@ fn render(state: &SessionState) -> String {
         .flat_map(|entry| entry.message.tool_results())
         .map(|result| (result.tool_call_id.as_str(), result.content.as_str()))
         .collect();
+    let mut children: HashMap<&str, Vec<_>> = HashMap::new();
+    for child in state.child_calls.iter() {
+        children
+            .entry(&child.parent_tool_call_id)
+            .or_default()
+            .push(child);
+    }
     if state.transcript.is_empty() {
         let _ = writeln!(out, "{}\n", t!("core.export.empty"));
     }
@@ -143,6 +150,12 @@ fn render(state: &SessionState) -> String {
             if let ContentPart::ToolCall(call) = part {
                 let output = results.get(call.id.as_str()).copied().unwrap_or_default();
                 tool_start(&mut out, &call.name, &call.arguments, output);
+                if let Some(children) = children.get(call.id.as_str()) {
+                    for child in children {
+                        tool_start(&mut out, &child.name, &child.arguments, &child.result);
+                        out.push_str("</details>\n\n");
+                    }
+                }
                 out.push_str("</details>\n\n");
             }
         }
@@ -366,6 +379,93 @@ mod tests {
         assert_eq!(redact_arguments("{}"), "{}");
         assert_eq!(redact_arguments(""), "");
         assert_eq!(redact_arguments("sk-malformed123 {"), "[REDACTED] {");
+    }
+
+    #[test]
+    fn execute_exports_only_its_children_inside_parent_details() {
+        use crate::session::entries::{Entry, EntryPayload};
+        use moc_llm::{Message, ToolCall};
+        use moc_protocol::{ToolStatus, methods::session::TranscriptChildCall};
+        let mut state = empty_state();
+        let mut append = |payload| {
+            let entry =
+                Entry::from_payload(payload, state.entries.last().unwrap().id().to_owned(), 0);
+            state.apply_entry(entry);
+        };
+        let mut message = Message::assistant_text("前言");
+        for id in ["parent", "empty-parent"] {
+            message
+                .content
+                .push(ContentPart::ToolCall(ToolCall::new(id, "execute", "{}")));
+        }
+        append(EntryPayload::Message {
+            message,
+            tool: None,
+            finish_reason: None,
+            agent: None,
+            goal: None,
+        });
+        for (id, parent, name, arguments, result, status) in [
+            (
+                "child-read",
+                "parent",
+                "read",
+                serde_json::json!({"path":"file\nghp_child123"}).to_string(),
+                format!("rv_child123\n{}", "中".repeat(17000)),
+                ToolStatus::Completed,
+            ),
+            (
+                "child-bash",
+                "parent",
+                "bash",
+                String::new(),
+                "failed sk-child123".into(),
+                ToolStatus::Error,
+            ),
+            (
+                "orphan",
+                "missing",
+                "orphan",
+                "{}".into(),
+                "not attached".into(),
+                ToolStatus::Completed,
+            ),
+        ] {
+            append(EntryPayload::ChildTool {
+                call: TranscriptChildCall {
+                    id: id.into(),
+                    parent_tool_call_id: parent.into(),
+                    name: name.into(),
+                    arguments,
+                    result,
+                    status,
+                    duration_ms: None,
+                    diff: None,
+                },
+            });
+        }
+        let output = render(&state);
+        assert_eq!(output.matches("<details>").count(), 4);
+        assert_eq!(output.matches("</details>").count(), 4);
+        for summary in ["<summary>read:", "<summary>bash:"] {
+            let before = &output[..output.find(summary).unwrap()];
+            assert_eq!(
+                before.matches("<details>").count() - before.matches("</details>").count(),
+                2
+            );
+        }
+        assert!(output.contains("failed [REDACTED]"));
+        assert!(output.contains(&*t!("core.export.truncated")));
+        assert!(!output.contains(&"中".repeat(16001)));
+        for omitted in [
+            "ghp_child123",
+            "rv_child123",
+            "sk-child123",
+            "orphan",
+            "not attached",
+        ] {
+            assert!(!output.contains(omitted));
+        }
     }
 
     #[test]
