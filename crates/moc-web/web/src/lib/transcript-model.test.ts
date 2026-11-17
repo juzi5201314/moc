@@ -707,4 +707,58 @@ describe("applyUpdate", () => {
       "新正文",
     ]);
   });
+
+  it("重试提示更新同一块，结束、断线及回退均清理临时提示而不删除其他警告", () => {
+    const endings: (SessionUpdate | null)[] = [
+      { type: "generation_started", prompt_id: "p" },
+      {
+        type: "prompt_finished",
+        prompt_id: "p",
+        message: { role: "Assistant", content: [] },
+        finish_reason: "Stop",
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+      {
+        type: "prompt_finished",
+        prompt_id: "p",
+        message: { role: "Assistant", content: [] },
+        finish_reason: "Cancelled",
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+      { type: "guard_notice", prompt_id: "p", message: "终止", terminal: true },
+      { type: "prompt_rewound", replayed_tools: false },
+      null,
+    ];
+    for (const ending of endings) {
+      const view = createView(INFO);
+      applyUpdate(view, { type: "prompt_started", prompt_id: "p", model: "m", at_ms: 0 }, 0);
+      applyUpdate(
+        view,
+        { type: "guard_notice", prompt_id: "p", message: "保留其他警告", terminal: false },
+        0,
+      );
+      let id: string | undefined;
+      for (let attempt = 2; attempt <= 8; attempt++) {
+        applyUpdate(
+          view,
+          { type: "generation_retry", prompt_id: "p", message: `${attempt}/10`, retry_in_ms: 2000 },
+          attempt * 1000,
+        );
+        const notices = view.blocks.filter((block) => block.kind === "status" && block.retryWait);
+        expect(notices).toHaveLength(1);
+        id ??= notices[0].id;
+        expect(notices[0]).toMatchObject({
+          id,
+          text: `${attempt}/10`,
+          retryWait: { promptId: "p", startedAt: attempt * 1000, deadline: attempt * 1000 + 2000 },
+        });
+      }
+      if (ending) applyUpdate(view, ending, 10000);
+      else interruptLive(view);
+      expect(view.blocks.some((block) => block.kind === "status" && block.retryWait)).toBe(false);
+      expect(
+        view.blocks.some((block) => block.kind === "status" && block.text === "保留其他警告"),
+      ).toBe(true);
+    }
+  });
 });

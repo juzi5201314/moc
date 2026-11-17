@@ -109,6 +109,7 @@ export type Block =
       tone: StatusTone;
       text: string;
       retryable?: boolean;
+      retryWait?: { promptId: string; startedAt: number; deadline: number };
       /** 前端命令的临时行内状态：始终可见，不折叠、不提供模型重试。 */
       localCommand?: boolean;
     }
@@ -544,6 +545,15 @@ function pushPromptStatus(
   if (view.rewindable?.promptId === promptId) view.rewindable.blockIds.push(id);
 }
 
+function clearRetryNotice(view: SessionView, promptId?: string): void {
+  view.blocks = view.blocks.filter(
+    (block) =>
+      block.kind !== "status" ||
+      !block.retryWait ||
+      (promptId !== undefined && block.retryWait.promptId !== promptId),
+  );
+}
+
 function liveBlock(view: SessionView, kind: "text" | "reasoning"): Block | undefined {
   const live = view.live;
   if (!live) return;
@@ -590,6 +600,7 @@ function ensureLive(view: SessionView, promptId: string, now: number): LiveTurn 
 }
 
 function removeRewoundBlocks(view: SessionView, replayedTools: boolean): void {
+  clearRetryNotice(view);
   const rewind = view.rewindable;
   const ids = new Set(rewind?.blockIds ?? view.live?.generationBlockIds ?? []);
   if (rewind) ids.add(rewind.footerId);
@@ -674,6 +685,7 @@ function resolveToolPreviews(view: SessionView, calls: ToolPreviewResolution[] =
 export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date.now()): void {
   switch (update.type) {
     case "prompt_started":
+      clearRetryNotice(view);
       view.live = {
         promptId: update.prompt_id,
         model: update.model,
@@ -686,6 +698,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       view.mismatch = null;
       break;
     case "generation_started": {
+      clearRetryNotice(view, update.prompt_id);
       resolveToolPreviews(view);
       closeReasoning(view, now);
       const live = ensureLive(view, update.prompt_id, now);
@@ -708,7 +721,26 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       live.reasoningIndex = undefined;
       live.usage = undefined;
       live.generationBlockIds = [];
-      pushStatus(view, "warn", update.message);
+      const notice = view.blocks.find(
+        (block) => block.kind === "status" && block.retryWait?.promptId === update.prompt_id,
+      );
+      const retryWait = {
+        promptId: update.prompt_id,
+        startedAt: now,
+        deadline: now + (update.retry_in_ms ?? 0),
+      };
+      if (notice?.kind === "status") {
+        notice.text = update.message;
+        notice.retryWait = retryWait;
+      } else {
+        view.blocks.push({
+          kind: "status",
+          id: nextId(view),
+          tone: "warn",
+          text: update.message,
+          retryWait,
+        });
+      }
       break;
     }
     case "assistant_delta": {
@@ -877,6 +909,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       removeRewoundBlocks(view, update.replayed_tools);
       break;
     case "prompt_finished": {
+      clearRetryNotice(view, update.prompt_id);
       resolveToolPreviews(view);
       closeReasoning(view, now);
       const live = view.live;
@@ -920,10 +953,12 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       break;
     }
     case "guard_notice":
+      if (update.terminal) clearRetryNotice(view, update.prompt_id);
       if (update.terminal) resolveToolPreviews(view);
       pushPromptStatus(view, update.prompt_id, update.terminal ? "error" : "warn", update.message);
       break;
     case "error":
+      clearRetryNotice(view, update.prompt_id);
       resolveToolPreviews(view);
       pushPromptStatus(view, update.prompt_id, "error", update.message, update.retryable);
       break;
@@ -1129,6 +1164,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
 
 /** 断线时收尾：core 已经随连接取消了提示。 */
 export function interruptLive(view: SessionView): void {
+  clearRetryNotice(view);
   resolveToolPreviews(view);
   if (!view.live && !view.running) return;
   for (const block of view.blocks) {

@@ -702,6 +702,16 @@ function NoticeCard({
   onRetry?: () => void;
 }) {
   const t = useT();
+  const now = useNow(Boolean(block.retryWait));
+  let text = block.text;
+  if (block.retryWait) {
+    const { deadline, startedAt } = block.retryWait;
+    const seconds = (Math.max(0, deadline - Math.max(now, startedAt)) / 1000).toFixed(1);
+    const duration = /\d+(?:\.\d+)?(?= 秒后自动重试|s \(attempt )/;
+    text = duration.test(text)
+      ? text.replace(duration, seconds)
+      : `${text}\n${t("th.retry_in", { n: seconds })}`;
+  }
   if (block.localCommand) {
     return (
       <div
@@ -711,7 +721,7 @@ function NoticeCard({
           block.tone === "error" ? "text-destructive" : "text-text-secondary",
         )}
       >
-        {block.text}
+        {text}
       </div>
     );
   }
@@ -730,7 +740,7 @@ function NoticeCard({
       ) : (
         <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" />
       )}
-      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{block.text}</span>
+      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{text}</span>
       {onRetry && (
         <Button
           size="sm"

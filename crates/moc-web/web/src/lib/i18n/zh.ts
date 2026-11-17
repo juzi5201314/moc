@@ -127,6 +127,7 @@ export const zh = {
   "th.copied_reply": "回复已复制",
   "th.retry": "重试",
   "th.retry_short": "重试",
+  "th.retry_in": "{n} 秒后重试",
   "th.expand": "展开",
   "th.collapse": "收起",
   "th.process": "过程",

@@ -130,6 +130,7 @@ export const en: Record<MsgKey, string> = {
   "th.copied_reply": "Reply copied",
   "th.retry": "Retry",
   "th.retry_short": "Retry",
+  "th.retry_in": "Retry in {n}s",
   "th.expand": "Expand",
   "th.collapse": "Collapse",
   "th.process": "Process",
