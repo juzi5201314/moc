@@ -1,5 +1,82 @@
 use super::*;
 
+#[tokio::test]
+async fn authentication_failure_finishes_prompt_and_allows_recovery() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "error": {"message": "Invalid API key; update provider credentials", "type": "authentication_error"}
+        })))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nenabled=false",
+    )
+    .await;
+    let id = h.session(SessionEngine::Standard).await;
+    let error = h
+        .client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: id.clone(),
+            input: vec![InputPart::Text {
+                text: "你好".into(),
+            }],
+            mode: None,
+            agent_message: None,
+            goal_round: None,
+        })
+        .await
+        .expect_err("401 必须返回可操作的认证错误");
+    assert!(error.to_string().contains("Invalid API key"), "{error}");
+    let updates = h.updates.lock().clone();
+    assert_eq!(
+        updates
+            .iter()
+            .filter(|update| matches!(update, SessionUpdate::Error { .. }))
+            .count(),
+        1
+    );
+    let started = updates
+        .iter()
+        .find_map(|update| match update {
+            SessionUpdate::PromptStarted { prompt_id, .. } => Some(prompt_id),
+            _ => None,
+        })
+        .expect("请求已经开始");
+    let finishes: Vec<_> = updates
+        .iter()
+        .filter_map(|update| match update {
+            SessionUpdate::PromptFinished {
+                prompt_id,
+                message,
+                finish_reason,
+                ..
+            } => Some((prompt_id, message, finish_reason)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        finishes.len(),
+        1,
+        "认证失败也必须有且只有一次收尾：{updates:?}"
+    );
+    assert_eq!(finishes[0].0, started);
+    assert_eq!(*finishes[0].2, moc_llm::FinishReason::Other("error".into()));
+    assert!(finishes[0].1.content.is_empty());
+    upstream.reset().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(text_stream("认证已恢复"), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+    assert_eq!(h.prompt(&id, "重试").await.message.text(), "认证已恢复");
+    h.close().await;
+}
+
 /// 上游暂停在参数中间时必须已有预览，且尚未创建文件或开始执行。
 #[tokio::test]
 async fn tool_preview_arrives_before_response_finishes() {

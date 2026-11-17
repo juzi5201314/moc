@@ -1,6 +1,43 @@
 use super::*;
 
 #[tokio::test]
+async fn authentication_failure_does_not_leave_tui_prompt_running() {
+    use wiremock::{Mock, ResponseTemplate, matchers::method};
+    let mut h = SlowCompactionHarness::new().await;
+    h.upstream.reset().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "error": {"message": "Invalid API key"}
+        })))
+        .mount(&h.upstream)
+        .await;
+    assert!(!h.submit_message("认证失败"));
+    let event = h
+        .next_event(|event| matches!(event, AppEvent::PromptReturned { .. }))
+        .await;
+    if let AppEvent::PromptReturned { result, .. } = &event {
+        assert!(
+            result
+                .as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid API key")
+        );
+    }
+    while let Ok(update) = h.connection.updates.try_recv() {
+        if let crate::protocol::UiUpdate::Session(update) = update {
+            apply_update(&mut h.app, update.update);
+        }
+    }
+    crate::interaction::handle_event(&mut h.app, &h.connection, event);
+    assert!(!h.app.prompt_running);
+    assert!(!h.app.inflight_prompts.contains(&h.session));
+    assert!(h.app.prompt_started_at.is_none());
+    h.connection.shutdown().await;
+    h.core.shutdown().await;
+}
+
+#[tokio::test]
 async fn closing_modal_resumes_queue_after_turn_finishes() {
     use moc_core::{Core, CoreConfig};
     use wiremock::{

@@ -43,6 +43,7 @@ export type TranscriptState = {
   drop: (sessionId: string) => void;
   localUser: (sessionId: string, text: string, images: ImageSource[]) => void;
   localStatus: (sessionId: string, tone: "info" | "warn" | "error", text: string) => void;
+  failPrompt: (sessionId: string) => void;
   /** 断线：收尾全部直播轮，清掉待处理的反向请求（core 已按拒绝处理）。 */
   interruptAll: () => void;
 };
@@ -119,6 +120,27 @@ export const useTranscript = create<TranscriptState>()((set) => ({
       withBlockChanges((state: TranscriptState) => {
         const view = state.bySession[sessionId];
         if (view) appendLocalStatus(view, tone, text);
+      }),
+    );
+  },
+  failPrompt: (sessionId) => {
+    flushDeltas();
+    set(
+      withBlockChanges((state: TranscriptState) => {
+        delete state.activity[sessionId];
+        const view = state.bySession[sessionId];
+        if (!view) return;
+        if (view.live) {
+          applyUpdate(view, {
+            type: "prompt_finished",
+            prompt_id: view.live.promptId,
+            message: { role: "Assistant", content: [] },
+            finish_reason: { Other: "error" },
+            usage: { input_tokens: 0, output_tokens: 0 },
+          });
+        } else {
+          view.running = false;
+        }
       }),
     );
   },
