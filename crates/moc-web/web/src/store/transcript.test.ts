@@ -16,7 +16,8 @@ vi.mock("@/protocol/client", () => ({
 vi.mock("./prefs", () => ({ usePrefs: { getState: () => ({ workspaces: [] }) } }));
 
 import { rpc } from "@/protocol/client";
-import { hasOwnPrompt, reanswerAsk, retrySession, sendPrompt } from "./actions";
+import { dispatchNext, hasOwnPrompt, reanswerAsk, retrySession, sendPrompt } from "./actions";
+import { useComposer } from "./composer";
 import { closeSession, loadOlder, openSession, reloadReadOnly } from "./lifecycle";
 import { useTabs } from "./tabs";
 import { useTranscript } from "./transcript";
@@ -139,6 +140,48 @@ describe("提示失败收尾", () => {
     expectIdle();
     expect(errors()).toHaveLength(1);
     expect(contents()).toContain("恢复成功");
+  });
+
+  it("排队保留输入原文，发送时只解码一层斜杠，命令参数保持原样", async () => {
+    const original = useComposer.getState();
+    try {
+      for (const [text, rawInput, expected, fail] of [
+        ["//foo", true, "/foo", false],
+        ["///foo", true, "//foo", true],
+        ["ordinary", true, "ordinary", false],
+        ["", true, "", false],
+        ["//foo", false, "//foo", false],
+      ] as const) {
+        vi.mocked(rpc.call)
+          .mockReset()
+          .mockImplementation(async (method) => {
+            if (method === "session/prompt" && fail) throw new Error(authenticationError);
+            return {};
+          });
+        useTranscript.getState().ensureView(info);
+        send({ type: "prompt_started", prompt_id: "p", model: "m", at_ms: Date.now() });
+        const item = { key: "queued", kind: "queue" as const, text, rawInput, images: [] };
+        useComposer.getState().pushPending(info.id, item);
+        dispatchNext(info.id);
+        expect(rpc.call).not.toHaveBeenCalled();
+        expect(useComposer.getState().pending[info.id]).toEqual([item]);
+        useTranscript.getState().failPrompt(info.id);
+        dispatchNext(info.id);
+        await vi.waitFor(() => {
+          expect(hasOwnPrompt(info.id)).toBe(false);
+          if (expected) {
+            expect(rpc.call).toHaveBeenCalledWith("session/prompt", {
+              session_id: info.id,
+              input: [{ type: "text", text: expected }],
+            });
+          } else expect(rpc.call).not.toHaveBeenCalled();
+        });
+        expect(item.text).toBe(text);
+        expect(useComposer.getState().pending[info.id]).toEqual([]);
+      }
+    } finally {
+      useComposer.setState({ drafts: original.drafts, pending: original.pending });
+    }
   });
 });
 

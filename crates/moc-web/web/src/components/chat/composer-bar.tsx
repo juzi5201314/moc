@@ -34,14 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { t, useT } from "@/lib/i18n";
 import { leadSelector, parseSelector } from "@/lib/models";
-import {
-  fromMeta,
-  runSlash,
-  type SlashCommand,
-  slashMatches,
-  unescapeSlash,
-  unknownSlash,
-} from "@/lib/slash";
+import { fromMeta, runSlash, type SlashCommand, slashMatches, unknownSlash } from "@/lib/slash";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type { ImageSource, PluginInfo, ResourceCandidate, SteerResult } from "@/protocol/types";
@@ -50,6 +43,7 @@ import {
   type Attachment as ComposerAttachment,
   type PendingItem,
   toInput,
+  unescapeSlash,
   useComposer,
 } from "@/store/composer";
 import { selectCommands, selectFeatures, selectModels, useConnection } from "@/store/connection";
@@ -399,6 +393,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       key: nanoid(),
       kind: queue ? "queue" : "steer",
       text: trimmed,
+      rawInput: true,
       images,
     };
     useComposer.getState().pushPending(sessionId, item);

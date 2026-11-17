@@ -80,10 +80,6 @@ export function parseSlash(text: string): { name: string; args: string } | null 
   return match ? { name: match[1], args: (match[2] ?? "").trim() } : null;
 }
 
-export function unescapeSlash(text: string): string {
-  return text.startsWith("//") ? text.slice(1) : text;
-}
-
 export function unknownSlash(text: string, commands: SlashCommand[]): string | null {
   const parsed = parseSlash(text);
   if (

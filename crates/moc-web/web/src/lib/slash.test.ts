@@ -3,9 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useI18n } from "@/lib/i18n";
 import { rpc } from "@/protocol/client";
 import type { CommandMeta } from "@/protocol/types";
-import { useComposer } from "@/store/composer";
+import { unescapeSlash, useComposer } from "@/store/composer";
 import { refreshSideData } from "@/store/lifecycle";
-import { fromMeta, parseSlash, runSlash, slashMatches, unescapeSlash, unknownSlash } from "./slash";
+import { fromMeta, parseSlash, runSlash, slashMatches, unknownSlash } from "./slash";
 
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
 
