@@ -101,6 +101,21 @@ fn render(state: &SessionState) -> String {
     }
     for entry in state.transcript.iter() {
         let message = &entry.message;
+        if let Some(command) = &entry.bash {
+            let prefix = if command.exclude_from_context {
+                "!!"
+            } else {
+                "!"
+            };
+            tool_start(
+                &mut out,
+                "bash",
+                &format!("{prefix}{}", command.command),
+                &message.text(),
+            );
+            out.push_str("</details>\n\n");
+            continue;
+        }
         if !matches!(message.role, Role::User | Role::Assistant) {
             continue;
         }
@@ -126,27 +141,31 @@ fn render(state: &SessionState) -> String {
                 let _ = writeln!(out, "{}\n", t!("core.export.image"));
             }
             if let ContentPart::ToolCall(call) = part {
-                let arguments = redact_arguments(&call.arguments);
-                let summary = truncate(
-                    &arguments.split_whitespace().collect::<Vec<_>>().join(" "),
-                    120,
-                );
-                let _ = writeln!(
-                    out,
-                    "<details>\n<summary>{}: {}</summary>\n",
-                    html(&redact(&call.name)),
-                    html(&summary)
-                );
-                let _ = writeln!(out, "{}\n", t!("core.export.arguments"));
-                fence(&mut out, &truncate(&arguments, 4096));
-                let _ = writeln!(out, "{}\n", t!("core.export.output"));
                 let output = results.get(call.id.as_str()).copied().unwrap_or_default();
-                fence(&mut out, &truncate(&redact(output), 16000));
+                tool_start(&mut out, &call.name, &call.arguments, output);
                 out.push_str("</details>\n\n");
             }
         }
     }
     redact(&out)
+}
+
+fn tool_start(out: &mut String, name: &str, arguments: &str, output: &str) {
+    let arguments = redact_arguments(arguments);
+    let summary = truncate(
+        &arguments.split_whitespace().collect::<Vec<_>>().join(" "),
+        120,
+    );
+    let _ = writeln!(
+        out,
+        "<details>\n<summary>{}: {}</summary>\n",
+        html(&redact(name)),
+        html(&summary)
+    );
+    let _ = writeln!(out, "{}\n", t!("core.export.arguments"));
+    fence(out, &truncate(&arguments, 4096));
+    let _ = writeln!(out, "{}\n", t!("core.export.output"));
+    fence(out, &truncate(&redact(output), 16000));
 }
 
 fn redact_arguments(text: &str) -> String {
@@ -246,6 +265,82 @@ fn redact(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_state() -> SessionState {
+        SessionState::new(crate::session::entries::Entry::header(
+            "ses_export".into(),
+            std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "test/model".into(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            "导出测试".into(),
+            0,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn manual_bash_entries_export_commands_and_folded_truncated_results() {
+        use crate::session::entries::{Entry, EntryPayload};
+        use moc_protocol::{BashCommand, ToolExecution, ToolStatus};
+        let mut state = empty_state();
+        for (index, (command, output, exclude_from_context, status)) in [
+            (
+                "printf sk-command123",
+                format!("rv_output123\n{}", "中".repeat(17000)),
+                false,
+                ToolStatus::Completed,
+            ),
+            (
+                "false",
+                "error ghp_error123".into(),
+                true,
+                ToolStatus::Error,
+            ),
+            ("", String::new(), false, ToolStatus::Denied),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let entry = Entry::from_payload(
+                EntryPayload::Bash {
+                    command: BashCommand {
+                        command: command.into(),
+                        exclude_from_context,
+                    },
+                    output,
+                    tool: ToolExecution {
+                        tool_call_id: format!("manual-{index}"),
+                        status,
+                        duration_ms: None,
+                        diff: None,
+                    },
+                },
+                state.entries.last().unwrap().id().to_owned(),
+                0,
+            );
+            state.apply_entry(entry);
+        }
+        let output = render(&state);
+        assert!(output.contains("<summary>bash: !printf [REDACTED]</summary>"));
+        assert!(output.contains("\n!printf [REDACTED]\n"));
+        assert!(output.contains("<summary>bash: !!false</summary>"));
+        assert!(output.contains("error [REDACTED]"));
+        assert!(output.contains("<summary>bash: !</summary>"));
+        assert_eq!(output.matches("<details>").count(), 3);
+        assert_eq!(output.matches("</details>").count(), 3);
+        assert!(!output.contains(&format!("## {}", t!("core.export.user"))));
+        assert!(!output.contains(&format!("## {}", t!("core.export.assistant"))));
+        assert!(output.contains(&*t!("core.export.truncated")));
+        assert!(!output.contains(&"中".repeat(16001)));
+        for secret in ["sk-command123", "rv_output123", "ghp_error123"] {
+            assert!(!output.contains(secret));
+        }
+    }
 
     #[test]
     fn json_arguments_redact_secrets_after_escaped_newlines() {
