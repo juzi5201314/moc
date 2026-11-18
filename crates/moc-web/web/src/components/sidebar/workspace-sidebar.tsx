@@ -234,15 +234,8 @@ export function WorkspaceSidebar() {
           </IconButton>
         </div>
       </div>
-      <div className="shrink-0 space-y-1 px-2">
-        <NavRow
-          icon={<SquarePenIcon />}
-          label={t("hd.new")}
-          active={active === "draft-session"}
-          onClick={() => createQuickSession()}
-        />
-        <WorkflowNavRow />
-        {searching && (
+      {searching && (
+        <div className="shrink-0 px-2 pb-1">
           <div className={cn(ROW, "bg-sidebar-accent")}>
             <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
             <input
@@ -259,18 +252,26 @@ export function WorkspaceSidebar() {
               <XIcon />
             </IconButton>
           </div>
-        )}
-      </div>
-
-      <div className="mt-2 flex h-8 shrink-0 items-center justify-between pr-2 pl-4">
-        <span className="text-xs text-text-tertiary">{t("sb.workspaces")}</span>
-        <IconButton label={t("sb.add_workspace")} onClick={addWorkspace}>
-          <FolderPlusIcon />
-        </IconButton>
-      </div>
+        </div>
+      )}
 
       {/* 原生滚动容器：Radix ScrollArea 的 table 布局会让 truncate 失效 */}
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-2">
+        <div className="space-y-1">
+          <NavRow
+            icon={<SquarePenIcon />}
+            label={t("hd.new")}
+            active={active === "draft-session"}
+            onClick={() => createQuickSession()}
+          />
+          <WorkflowNavRow />
+        </div>
+        <div className="mt-2 flex h-8 items-center justify-between pl-2">
+          <span className="text-xs text-text-tertiary">{t("sb.workspaces")}</span>
+          <IconButton label={t("sb.add_workspace")} onClick={addWorkspace}>
+            <FolderPlusIcon />
+          </IconButton>
+        </div>
         {groups.length === 0 && shownContent.length === 0 ? (
           <div className="px-2 py-8 text-center text-xs leading-5 text-text-tertiary">
             {query ? t("sb.no_match") : t("sb.empty")}
