@@ -46,6 +46,9 @@ continue = { zh = "继续当前目录下最近会话。", en = "Continue the lat
 list = { zh = "列出已保存会话。", en = "List saved sessions." }
 models = { zh = "列出可用模型 selector。", en = "List available model selectors." }
 print = { zh = "单次提示模式：可从 stdin 读取提示词，只打印最终答案。", en = "One-shot mode: reads the prompt from stdin, prints only the final answer." }
+output_format = { zh = "--print 的输出格式：text 只打印最终答案；json 结束时输出一个汇总对象；stream-json 每条会话更新一行 NDJSON。", en = "Output format for --print: text prints only the final answer; json emits one summary object at the end; stream-json emits one NDJSON line per session update." }
+max_turns = { zh = "--print 下单次提示的模型请求轮数上限；超出后取消提示并以退出码 3 结束。", en = "Cap on model-request rounds for a --print prompt; the prompt is cancelled and the process exits with code 3 when exceeded." }
+allow_tools = { zh = "--print 下自动批准这些工具的权限申请（逗号分隔，可重复）；all 放行全部。", en = "Auto-approve permission requests for these tools under --print (comma-separated, repeatable); 'all' approves every tool." }
 repl = { zh = "强制使用行式 REPL（默认进入 TUI；无 TTY 时自动降级 REPL）。", en = "Force the line-mode REPL (TUI by default; auto-degrades without a TTY)." }
 hide_thinking = { zh = "行式／--print 输出不打印思维链增量（TUI 用 --detail）。", en = "Don't print reasoning deltas in line/--print output (TUI uses --detail)." }
 detail = { zh = "启动时的显示档位（full 只展开思考，工具仍为简略）。", en = "Display level at startup (full expands thinking only; tools stay brief)." }
@@ -68,6 +71,8 @@ not_moc_service = { zh = "连接到非 moc-core 服务", en = "connected to a no
 no_resumable = { zh = "当前目录没有可恢复的会话", en = "No resumable session in the current directory" }
 ctx_warn = { zh = "警告：%{msg}；可用 /compact 立即压缩", en = "Warning: %{msg}; use /compact to compact now" }
 prompt_aborted = { zh = "提示已由保护机制终止", en = "Prompt terminated by a guard" }
+denied_tools = { zh = "%{n} 个工具调用被权限拒绝", en = "%{n} tool call(s) denied by permission" }
+max_turns = { zh = "超出轮次上限（%{n}），提示已取消", en = "Turn limit exceeded (%{n}); prompt cancelled" }
 request_failed = { zh = "请求失败", en = "Request failed" }
 session_word = { zh = "会话", en = "Session" }
 command_failed = { zh = "命令失败", en = "Command failed" }

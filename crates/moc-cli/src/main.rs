@@ -42,8 +42,22 @@ fn main() -> anyhow::Result<()> {
     }
     let frontend = frontend.unwrap_or(moc_cli::Frontend::Default);
     // worker 只需要同步 stdio，CLI 路径才创建 Tokio 运行时。
-    tokio::runtime::Builder::new_multi_thread()
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(moc_cli::run(moc_cli::CliArgs::parse_from(argv), frontend))
+        .block_on(moc_cli::run(moc_cli::CliArgs::parse_from(argv), frontend));
+    // `--print` 的失败类别（权限拒绝 / 超出轮次）编码在 CliExit.code 里，
+    // 按它退出；普通错误走 anyhow 默认的退出码 1。
+    match result {
+        Err(error) => {
+            if let Some(exit) = error.downcast_ref::<moc_cli::CliExit>() {
+                if !exit.message.is_empty() {
+                    eprintln!("{}", exit.message);
+                }
+                std::process::exit(exit.code);
+            }
+            Err(error)
+        }
+        ok => ok,
+    }
 }

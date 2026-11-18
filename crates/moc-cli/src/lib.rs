@@ -9,11 +9,30 @@ rust_i18n::i18n!("../../locales", fallback = "zh");
 
 pub mod args;
 mod commands;
+mod print;
 mod render;
 mod repl;
 pub mod update;
 
 pub use args::CliArgs;
+pub use args::OutputFormat;
+
+/// 以退出码标识的 `--print` 失败类别（权限拒绝 / 超出轮次等）：
+/// 它穿过 anyhow 错误链，main 里 downcast 后按 `code` 退出进程。
+/// 一般性错误仍是普通 anyhow 错误，退出码为 1。
+#[derive(Debug)]
+pub struct CliExit {
+    pub code: i32,
+    pub message: String,
+}
+
+impl std::fmt::Display for CliExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CliExit {}
 
 /// 前端形态：`moc`（默认 TUI / REPL / print）、`moc web`、`moc acp`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

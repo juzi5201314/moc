@@ -56,6 +56,14 @@ moc --resume <id>             # 恢复历史会话
 ```
 
 行式前端的日志写 stderr，stdout 只输出应答正文。需要调试时设置 `RUST_LOG=debug`。
+
+`--print` 面向脚本与 CI，可搭配：
+
+- `--output-format text|json|stream-json`：`text` 只打最终答案（默认）；`json` 结束时输出一个汇总对象（会话 id、最终答案、变更文件、工具调用汇总、token 用量、耗时与错误）；`stream-json` 把每条会话更新输出为一行 NDJSON，末行是同一个汇总对象
+- `--max-turns N`：限制单次提示的模型请求轮数，超出后取消提示
+- `--allow-tools a,b`：自动批准列出的工具的权限申请（逗号分隔，可重复；`all` 放行全部），未列出的申请按拒绝处理
+
+退出码：`0` 成功；`1` 模型/网络等一般错误；`2` 存在被权限拒绝的工具调用；`3` 超出 `--max-turns` 轮次上限。
 浏览器前端的架构、令牌与跨进程写租约见 [docs/web.md](docs/web.md)；ACP 协议覆盖与编辑器配置见 [docs/acp.md](docs/acp.md)。
 
 ## 常用交互
