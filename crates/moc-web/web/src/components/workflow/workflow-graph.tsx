@@ -2,7 +2,13 @@
 // 布局走 lib/workflow-graph 的最长路径分层；data=实线、order=虚线、back=弯到上层的标注边。
 
 import type { Edge as FlowEdge, Node as FlowNode, Viewport } from "@xyflow/react";
-import { getViewportForBounds, MarkerType, useNodesInitialized, useReactFlow } from "@xyflow/react";
+import {
+  getViewportForBounds,
+  MarkerType,
+  ReactFlowProvider,
+  useNodesInitialized,
+  useReactFlow,
+} from "@xyflow/react";
 import { CheckIcon, CircleHelpIcon, Loader2Icon, MinusIcon, XIcon } from "lucide-react";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@/components/ai-elements/canvas";
@@ -80,6 +86,8 @@ const nodeTypes = { phase: PhaseNode };
 const fitViewOptions = { padding: 0.15 };
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 2;
+// 不让鼠标拖动画布，保留框选；触摸仍可平移和双指缩放。
+const PAN_MOUSE_BUTTONS: number[] = [];
 
 function FitOnResize({
   canvas,
@@ -162,45 +170,54 @@ export function WorkflowGraph({ plan, statusOf, className, onNodeClick }: Workfl
   }, [plan, statusOf]);
 
   return (
-    <div
-      className={cn(
-        "flex h-full min-w-0 flex-col overflow-hidden rounded-2xl border border-border bg-card",
-        className,
-      )}
-    >
-      {/* 图例不覆盖画布，以免窄屏自动缩放后遮住节点。 */}
-      <p className="shrink-0 border-b border-border-subtle px-3 py-1.5 text-2xs text-text-tertiary">
-        {t("wfr.edge_legend")}
-      </p>
-      <div ref={canvas} className="min-h-0 flex-1">
-        <Canvas
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          edgeTypes={{ data: Edge.Animated, order: Edge.Animated }}
-          className="moc-workflow-canvas"
-          minZoom={MIN_ZOOM}
-          maxZoom={MAX_ZOOM}
-          fitView={false}
-          fitViewOptions={fitViewOptions}
-          viewport={viewport}
-          onViewportChange={setViewport}
-          onNodeClick={(_, node) => onNodeClick?.(node.id)}
-          defaultEdgeOptions={{
-            markerEnd: {
-              type: MarkerType.ArrowClosed,
-              color: "var(--text-tertiary)",
-              width: 14,
-              height: 14,
-            },
-          }}
-          nodesConnectable={false}
-          proOptions={{ hideAttribution: true }}
-        >
-          <FitOnResize canvas={canvas} onFit={setViewport} />
-          <Controls position="bottom-right" fitViewOptions={fitViewOptions} />
-        </Canvas>
+    <ReactFlowProvider initialMinZoom={MIN_ZOOM} initialMaxZoom={MAX_ZOOM}>
+      <div
+        className={cn(
+          "flex h-full min-w-0 flex-col overflow-hidden rounded-2xl border border-border bg-card",
+          className,
+        )}
+      >
+        {/* 图例不覆盖画布，以免窄屏自动缩放后遮住节点。 */}
+        <p className="shrink-0 border-b border-border-subtle px-3 py-1.5 text-2xs text-text-tertiary">
+          {t("wfr.edge_legend")}
+        </p>
+        <div ref={canvas} className="min-h-0 flex-1">
+          <Canvas
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            edgeTypes={{ data: Edge.Animated, order: Edge.Animated }}
+            className="moc-workflow-canvas"
+            minZoom={MIN_ZOOM}
+            maxZoom={MAX_ZOOM}
+            panOnDrag={PAN_MOUSE_BUTTONS}
+            fitView={false}
+            fitViewOptions={fitViewOptions}
+            viewport={viewport}
+            onViewportChange={setViewport}
+            onNodeClick={(_, node) => onNodeClick?.(node.id)}
+            defaultEdgeOptions={{
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                color: "var(--text-tertiary)",
+                width: 14,
+                height: 14,
+              },
+            }}
+            nodesConnectable={false}
+            proOptions={{ hideAttribution: true }}
+          >
+            <FitOnResize canvas={canvas} onFit={setViewport} />
+          </Canvas>
+        </div>
+        <div className="flex shrink-0 justify-end border-t border-border-subtle px-2 py-1">
+          <Controls
+            className="static! m-0! [&>button]:size-8"
+            orientation="horizontal"
+            fitViewOptions={fitViewOptions}
+          />
+        </div>
       </div>
-    </div>
+    </ReactFlowProvider>
   );
 }
