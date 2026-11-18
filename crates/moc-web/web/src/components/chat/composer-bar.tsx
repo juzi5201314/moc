@@ -443,19 +443,18 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       )
       .catch((error) => toast.error(t("cb.stop_failed", { error: errorText(error) })));
 
-  /** 队列项取回草稿编辑：当前草稿非空时交换回队首，避免静默覆盖。 */
+  /** 队列项取回草稿编辑：`/ask` 项保留前缀（重发仍走只读模式）；
+   * 草稿非空时把待发内容追加进草稿一起编辑，不把未确认的草稿换进队列自动发出。 */
   const editPending = (item: PendingItem) => {
     const composer = useComposer.getState();
-    const current = composer.drafts[sessionId];
+    const current = composer.drafts[sessionId] ?? { text: "", images: [] };
     composer.removePending(sessionId, item.key);
-    if (current && (current.text.trim() || current.images.length)) {
-      composer.pushPending(
-        sessionId,
-        { key: nanoid(), kind: "queue", text: current.text, images: current.images },
-        true,
-      );
-    }
-    composer.restore(sessionId, { text: item.text, images: item.images });
+    const text = item.mode === "ask" ? `/ask ${item.text}` : item.text;
+    const merged = current.text.trim() ? `${current.text}\n${text}` : text;
+    composer.restore(sessionId, {
+      text: merged,
+      images: [...current.images, ...item.images],
+    });
     textareaRef.current?.focus();
   };
 
