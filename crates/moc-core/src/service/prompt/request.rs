@@ -92,6 +92,11 @@ async fn append_text_with_references(
             cursor = end;
             continue;
         }
+        // 含空格的路径：向后按词贪心扩展，取能解析出文件/目录的最长前缀
+        //（补全插进来的 `@dir file.md`，`@dir` 单独也可能是已存在的目录）。
+        let end = extend_reference_end(text, start, end, cwd);
+        index = end;
+        let token = &text[start..end];
         // 图片附件沿用原逻辑：token 从正文移除，换成图片块。
         if accepts_image && let Some(image) = load_local_image(token, cwd).await? {
             push_text(content, &text[cursor..start]);
@@ -158,6 +163,38 @@ fn attachment_for_token(
         kind,
         &body,
     ))
+}
+
+/// 从 `end` 向后按词扩展 `@` 引用：路径含空格时 token 只是前缀，
+/// 逐词试探 `metadata`，记录最后一个能解析的边界。连续多次未命中即停，
+/// 防止长正文尾部带来大量无谓的 stat。
+fn extend_reference_end(text: &str, start: usize, mut end: usize, cwd: &Path) -> usize {
+    let bytes = text.as_bytes();
+    let mut scan = end;
+    let mut misses = 0;
+    loop {
+        let mut i = scan;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i == bytes.len() || i == scan {
+            break;
+        }
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if std::fs::metadata(resolve_reference_path(&text[start + 1..i], cwd)).is_ok() {
+            end = i;
+            misses = 0;
+        } else {
+            misses += 1;
+            if misses >= 8 {
+                break;
+            }
+        }
+        scan = i;
+    }
+    end
 }
 
 fn resolve_reference_path(raw_path: &str, cwd: &Path) -> PathBuf {
@@ -626,6 +663,42 @@ mod tests {
         assert_eq!(dir_kind, "dir");
         assert!(dir_path.ends_with("pkg"), "{dir_path}");
         assert!(dir_body.contains("mod.rs"), "{dir_body}");
+    }
+
+    /// 含空格路径：token 只到第一个空格，向后按词贪心取最长可解析前缀；
+    /// 前缀恰好是已存在目录时，更长的文件路径仍然胜出。
+    #[tokio::test]
+    async fn at_references_resolve_paths_with_spaces_by_longest_match() {
+        let (dir, anchors, config) = attach_fixture();
+        let cwd = dir.path().join("repo");
+        std::fs::create_dir_all(cwd.join("design")).expect("建目录");
+        std::fs::write(cwd.join("design notes.md"), "# notes\n").expect("写文件");
+
+        let message = project_input(
+            vec![InputPart::Text {
+                text: "看 @design notes.md 这一段".into(),
+            }],
+            false,
+            &cwd,
+            &anchors,
+            &config,
+        )
+        .await
+        .expect("投影成功");
+        let attachments = message
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Text(text) => crate::resources::attach::parse_attachment(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(attachments.len(), 1, "{attachments:?}");
+        let (path, kind, body) = attachments[0];
+        assert_eq!(kind, "file", "应命中文件而不是前缀目录：{path}");
+        assert!(path.ends_with("design notes.md"), "{path}");
+        assert!(body.contains("# notes"), "{body}");
+        assert!(message.text().contains("这一段"), "正文尾部不能丢");
     }
 
     #[test]
