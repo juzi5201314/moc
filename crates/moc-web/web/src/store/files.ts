@@ -304,7 +304,8 @@ export function revealDir(sessionId: string, path: string): void {
   if (!(layout.rightbarOpen && layout.inspectorTab === "files")) {
     layout.openInspector("files");
   }
-  patch(sessionId, (current) => ({ ...current, root: "workspace" }));
+  // 窄面板是 tree/editor 层叠：切回 tree 才看得见目录，不能沿用旧文件视图。
+  patch(sessionId, (current) => ({ ...current, root: "workspace", stackedView: "tree" }));
   const cwd = useTranscript.getState().bySession[sessionId]?.info.cwd ?? "";
   const root: FileRoot = { kind: "workspace", cwd };
   expandTo(sessionId, root, path);
