@@ -438,9 +438,11 @@ function UserMessage({
         <Attachments variant="inline" className="justify-end">
           {block.attachments.map((attachment) => (
             <Attachment
+              // FileUIPart 要求 url；路径引用没有可预览 URL，空串让预览落到图标分支。
               data={{
                 id: attachment.path,
                 type: "file",
+                url: "",
                 filename: attachment.path,
                 mediaType: "text/plain",
               }}
