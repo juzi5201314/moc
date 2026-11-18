@@ -57,7 +57,7 @@ import { cn } from "@/lib/utils";
 import type { AskParams, ImageSource, PermissionRequestParams } from "@/protocol/types";
 import { retrySession } from "@/store/actions";
 import { useComposer } from "@/store/composer";
-import { openFile } from "@/store/files";
+import { openFile, revealDir } from "@/store/files";
 import { loadOlder, redo, rewind } from "@/store/lifecycle";
 import { useTranscript } from "@/store/transcript";
 import { useTurn, useTurnIds } from "@/store/turns";
@@ -447,7 +447,12 @@ function UserMessage({
                 mediaType: "text/plain",
               }}
               key={attachment.path}
-              onClick={() => openFile(context.sessionId, { kind: "fs", path: attachment.path })}
+              onClick={() =>
+                attachment.kind === "dir"
+                  ? // 目录没有文件页签（read_path 拒绝），改为在文件树里展开定位。
+                    revealDir(context.sessionId, attachment.path)
+                  : openFile(context.sessionId, { kind: "fs", path: attachment.path })
+              }
               title={attachment.path}
             >
               <AttachmentPreview

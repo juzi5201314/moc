@@ -298,6 +298,25 @@ export function openFile(
   }
 }
 
+/** 目录引用：不开文件页签（read_path 拒绝目录），只在树里展开并定位。 */
+export function revealDir(sessionId: string, path: string): void {
+  const layout = useLayout.getState();
+  if (!(layout.rightbarOpen && layout.inspectorTab === "files")) {
+    layout.openInspector("files");
+  }
+  patch(sessionId, (current) => ({ ...current, root: "workspace" }));
+  const cwd = useTranscript.getState().bySession[sessionId]?.info.cwd ?? "";
+  const root: FileRoot = { kind: "workspace", cwd };
+  expandTo(sessionId, root, path);
+  // 目录自身也要展开（expandTo 只展开各级父目录）。
+  patch(sessionId, (files) => ({
+    ...files,
+    expanded: { ...files.expanded, [path]: true },
+  }));
+  const files = session(useFiles.getState(), sessionId);
+  if (!files.nodes[path]?.children) void loadDir(sessionId, root, path);
+}
+
 /** 沿 key 的各级父目录依次展开并加载。 */
 export function expandTo(sessionId: string, root: FileRoot, key: string): void {
   const files = session(useFiles.getState(), sessionId);
