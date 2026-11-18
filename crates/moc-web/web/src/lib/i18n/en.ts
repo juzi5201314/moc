@@ -210,6 +210,10 @@ export const en: Record<MsgKey, string> = {
   "q.images_n": " · {n} images",
   "q.unsteer": "Withdraw steer",
   "q.dequeue": "Remove from queue",
+  "q.count": "{n} queued",
+  "q.drag": "Drag to reorder",
+  "q.edit": "Edit",
+  "q.send_now": "Send now",
 
   // ---------- permission / engine / autonomy ----------
   "perm.full": "Full access",

@@ -443,6 +443,36 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       )
       .catch((error) => toast.error(t("cb.stop_failed", { error: errorText(error) })));
 
+  /** 队列项取回草稿编辑：当前草稿非空时交换回队首，避免静默覆盖。 */
+  const editPending = (item: PendingItem) => {
+    const composer = useComposer.getState();
+    const current = composer.drafts[sessionId];
+    composer.removePending(sessionId, item.key);
+    if (current && (current.text.trim() || current.images.length)) {
+      composer.pushPending(
+        sessionId,
+        { key: nanoid(), kind: "queue", text: current.text, images: current.images },
+        true,
+      );
+    }
+    composer.restore(sessionId, { text: item.text, images: item.images });
+    textareaRef.current?.focus();
+  };
+
+  /** 立即发送：空闲时直接发；运行中移到队首并中断当前轮，轮到后由 dispatchNext 发出。 */
+  const sendPendingNow = (item: PendingItem) => {
+    const composer = useComposer.getState();
+    composer.removePending(sessionId, item.key);
+    if (!running) {
+      void sendPrompt(sessionId, toInput(item.text, item.images), { mode: item.mode });
+      return;
+    }
+    composer.pushPending(sessionId, item, true);
+    void rpc
+      .call("session/cancel", { session_id: sessionId })
+      .catch((error) => toast.error(t("cb.interrupt_failed", { error: errorText(error) })));
+  };
+
   const removePending = async (item: PendingItem) => {
     if (item.kind === "queue") {
       useComposer.getState().removePending(sessionId, item.key);
@@ -559,8 +589,16 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         >
           {!inline && <ComposerStatus sessionId={sessionId} todos={todos} />}
           {pending.length > 0 && (
-            <div className="px-2 pb-0.5">
-              <PendingList items={pending} onRemove={(item) => void removePending(item)} />
+            <div className="px-1 pb-0.5">
+              <PendingList
+                items={pending}
+                onRemove={(item) => void removePending(item)}
+                onEdit={editPending}
+                onSendNow={sendPendingNow}
+                onMove={(key, toIndex) =>
+                  useComposer.getState().movePending(sessionId, key, toIndex)
+                }
+              />
             </div>
           )}
 
