@@ -593,3 +593,43 @@ fn local_paths_with_scheme_separators_are_not_resource_uris() {
         assert!(!is_resource_uri(path), "{path}");
     }
 }
+
+/// `@` 前缀走工作区文件补全：子序列模糊匹配、尊重 .gitignore、目录候选以 `/` 收尾。
+#[test]
+fn at_prefix_completes_workspace_files_and_skips_ignored() {
+    let root = tempfile::tempdir().expect("临时目录");
+    let paths = test_paths(root.path());
+    let sessions = SessionTable::new(root.path().join("sessions"), false);
+    let skills = SkillIndex::empty();
+    fs::create_dir_all(root.path().join("src")).expect("src 目录");
+    // .gitignore 只在 git 仓库内生效（ignore::WalkBuilder 的 require_git 默认）。
+    fs::create_dir_all(root.path().join(".git")).expect(".git 目录");
+    fs::write(root.path().join("src").join("main.rs"), "fn main() {}\n").expect("main.rs");
+    fs::write(root.path().join("notes.txt"), "hi\n").expect("notes.txt");
+    fs::write(root.path().join(".gitignore"), "secret.txt\n").expect(".gitignore");
+    fs::write(root.path().join("secret.txt"), "s\n").expect("secret.txt");
+    let context = context_of(&paths, root.path(), &skills, &sessions);
+
+    let all = ResourceRouter::complete(&context, "@").expect("@ 候选");
+    let uris = all.iter().map(|c| c.uri.as_str()).collect::<Vec<_>>();
+    assert!(uris.contains(&"@src/"), "{uris:?}");
+    assert!(uris.contains(&"@src/main.rs"), "{uris:?}");
+    assert!(uris.contains(&"@notes.txt"), "{uris:?}");
+    assert!(!uris.iter().any(|uri| uri.contains("secret")), "{uris:?}");
+    let dir = all.iter().find(|c| c.uri == "@src/").expect("目录候选");
+    assert_eq!(dir.kind, "dir");
+    assert!(!dir.append_space, "目录候选不加空格以便续打");
+    let file = all
+        .iter()
+        .find(|c| c.uri == "@notes.txt")
+        .expect("文件候选");
+    assert_eq!(file.kind, "file");
+    assert!(file.append_space);
+
+    let fuzzy = ResourceRouter::complete(&context, "@smr").expect("模糊候选");
+    assert_eq!(fuzzy[0].uri, "@src/main.rs", "{fuzzy:?}");
+
+    // `@@` 是字面转义，不补全。
+    let escaped = ResourceRouter::complete(&context, "@@").expect("转义候选");
+    assert!(escaped.is_empty(), "{escaped:?}");
+}

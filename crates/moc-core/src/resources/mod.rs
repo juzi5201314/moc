@@ -282,7 +282,11 @@ impl ResourceRouter {
         context: &ResourceContext<'_>,
         prefix: &str,
     ) -> Result<Vec<ResourceCandidate>, ResourceError> {
-        let mut candidates = if prefix.is_empty() || prefix == "//" {
+        let mut candidates = if prefix.starts_with('@') {
+            // `@` 附件引用有独立的模糊排序，不走后面的字典序排序。
+            let candidates = attach::file_candidates(context, prefix);
+            return Ok(candidates);
+        } else if prefix.is_empty() || prefix == "//" {
             scheme_candidates(context)
         } else if let Some(scheme) = prefix.strip_suffix(":/") {
             normalized_scheme_candidates(context, scheme)
@@ -339,6 +343,8 @@ impl ResourceRouter {
     }
 }
 
+/// `@` 附件引用：补全与注入块标记（`wrap_attachment`/`parse_attachment` 供前端转写复用）。
+pub mod attach;
 mod resolution;
 use resolution::resolve_history;
 use resolution::resolve_local;

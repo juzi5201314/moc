@@ -29,7 +29,13 @@ pub(super) fn resource_prefix(
     let range = current_token_range(prompt);
     let prefix = prompt.text[range.start..prompt.cursor].to_owned();
     let is_uri = prefix == "//" || prefix.ends_with(":/") || prefix.contains("://");
-    is_uri.then_some((prefix, range))
+    if is_uri {
+        return Some((prefix, range));
+    }
+    // `@` 工作区文件引用；`@@` 是字面转义，`!` bash 模式下 @ 无意义。
+    let is_attachment =
+        prefix.starts_with('@') && !prefix.starts_with("@@") && !prompt.text.starts_with('!');
+    is_attachment.then_some((prefix, range))
 }
 
 pub(super) fn request_resource_completion(app: &mut App, connection: &EmbeddedConnection) {

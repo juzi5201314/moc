@@ -8,6 +8,7 @@ import {
   ChevronRightIcon,
   CircleXIcon,
   CopyIcon,
+  FolderIcon,
   ListChecksIcon,
   Loader2Icon,
   PencilIcon,
@@ -18,6 +19,12 @@ import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from "reac
 import { toast } from "sonner";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { useShallow } from "zustand/react/shallow";
+import {
+  Attachment,
+  AttachmentInfo,
+  AttachmentPreview,
+  Attachments,
+} from "@/components/ai-elements/attachments";
 import {
   Conversation,
   ConversationContent,
@@ -427,6 +434,32 @@ function UserMessage({
   return (
     <div className="group/user flex flex-col items-end gap-1">
       <ImageThumbs images={block.images} className="justify-end" />
+      {block.attachments && block.attachments.length > 0 && (
+        <Attachments variant="inline" className="justify-end">
+          {block.attachments.map((attachment) => (
+            <Attachment
+              data={{
+                id: attachment.path,
+                type: "file",
+                filename: attachment.path,
+                mediaType: "text/plain",
+              }}
+              key={attachment.path}
+              onClick={() => openFile(context.sessionId, { kind: "fs", path: attachment.path })}
+              title={attachment.path}
+            >
+              <AttachmentPreview
+                fallbackIcon={
+                  attachment.kind === "dir" ? (
+                    <FolderIcon className="size-3 text-muted-foreground" />
+                  ) : undefined
+                }
+              />
+              <AttachmentInfo />
+            </Attachment>
+          ))}
+        </Attachments>
+      )}
       {block.text && (
         <div className="relative max-w-[80%] rounded-[18px] bg-bubble px-4 py-2.5 text-chat text-foreground">
           <div
