@@ -32,6 +32,19 @@ pub fn parse_attachment(text: &str) -> Option<(&str, &str, &str)> {
     Some((path, kind, body))
 }
 
+/// 是不是注入块（不要求内容完整可解析）。
+pub fn is_attachment(text: &str) -> bool {
+    text.starts_with(ATTACHMENT_OPEN) && text.ends_with(ATTACHMENT_CLOSE)
+}
+
+/// 分页投影用的占位 stub：保留头尾外壳让附件仍可被解析成 chip，
+/// 正文压成一行省略号，避免注入内容挤占整个消息的字节预算。
+pub fn stub_attachment(text: &str) -> Option<String> {
+    let header_end = text.find(">\n")?;
+    let header = &text[..header_end + 1];
+    Some(format!("{header}\n…\n{ATTACHMENT_CLOSE}"))
+}
+
 fn attr<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     let key = format!("{name}=\"");
     let start = header.find(&key)? + key.len();
