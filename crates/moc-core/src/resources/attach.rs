@@ -40,6 +40,9 @@ pub fn is_attachment(text: &str) -> bool {
 /// 分页投影用的占位 stub：保留头尾外壳让附件仍可被解析成 chip，
 /// 正文压成一行省略号，避免注入内容挤占整个消息的字节预算。
 pub fn stub_attachment(text: &str) -> Option<String> {
+    if !is_attachment(text) {
+        return None;
+    }
     let header_end = text.find(">\n")?;
     let header = &text[..header_end + 1];
     Some(format!("{header}\n…\n{ATTACHMENT_CLOSE}"))
