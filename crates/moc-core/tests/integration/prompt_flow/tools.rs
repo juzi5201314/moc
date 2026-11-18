@@ -132,6 +132,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .expect("submit plan via model tool call");
@@ -235,6 +236,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .expect("start approved implementation");
@@ -421,6 +423,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .expect("run read-edit-tool prompt");
@@ -614,6 +617,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .expect("run prompt");

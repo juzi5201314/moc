@@ -474,6 +474,7 @@ impl<B: Backend> Bridge<B> {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
             .map_err(|e| rpc_err(&e, Some(&session_id)))?;

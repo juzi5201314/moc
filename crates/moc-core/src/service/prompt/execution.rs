@@ -258,6 +258,9 @@ pub(super) async fn run_prompt_locked(
     let roster = subagent_prompt.map(|prompt| prompt.roster);
 
     let mut is_first_turn = true;
+    // 已发起过的模型请求轮数；`max_turns` 在发起下一轮前截断，默认 `None` 不限制。
+    // 同一轮内的重试与溢出重发不算新一轮；重放 `/retry` 剪掉的批次不占轮次。
+    let mut model_turns = 0u32;
     'turns: loop {
         if cancel.is_cancelled() {
             final_reason = FinishReason::Cancelled;
@@ -268,6 +271,11 @@ pub(super) async fn run_prompt_locked(
             // 尾部提醒；`is_first_turn` 留给紧接着那次真实请求。
             Some(calls) => calls,
             None => {
+                if params.max_turns.is_some_and(|max| model_turns >= max) {
+                    final_reason = FinishReason::MaxTurns;
+                    break 'turns;
+                }
+                model_turns += 1;
                 // 本地提醒只在首轮注入；同一提示内因 continue 进入的轮次不算首轮。
                 let first_turn = std::mem::take(&mut is_first_turn);
                 for entry in

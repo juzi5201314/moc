@@ -54,6 +54,7 @@ pub(crate) async fn wake_for_jobs(
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         },
         record,
         prompt_lock,

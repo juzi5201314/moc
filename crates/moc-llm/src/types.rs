@@ -620,6 +620,8 @@ pub enum FinishReason {
     Interrupted,
     /// 本地检测到模型循环，当前提示不可自动继续。
     LoopDetected,
+    /// 达到本次提示的轮数上限（`session/prompt` 的 `max_turns`），未再发起新请求。
+    MaxTurns,
     /// 其余线上取值，原样保留。
     Other(String),
 }
@@ -632,7 +634,7 @@ impl FinishReason {
 
     /// 本地保护已结束提示，不允许自动续写或重试。
     pub fn is_guard_stop(&self) -> bool {
-        matches!(self, Self::LoopDetected)
+        matches!(self, Self::LoopDetected | Self::MaxTurns)
     }
 }
 
@@ -649,6 +651,7 @@ impl std::fmt::Display for FinishReason {
             FinishReason::Cancelled => "cancelled",
             FinishReason::Interrupted => "interrupted",
             FinishReason::LoopDetected => "loop_detected",
+            FinishReason::MaxTurns => "max_turns",
             FinishReason::Other(other) => other.as_str(),
         };
         f.write_str(name)

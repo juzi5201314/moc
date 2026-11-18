@@ -34,12 +34,11 @@ impl Renderer {
         print_mode: bool,
         hide_thinking: bool,
         output_format: crate::args::OutputFormat,
-        max_turns: Option<u32>,
     ) -> Self {
         Self(Arc::new(Mutex::new(State {
             print_mode,
             hide_thinking,
-            collector: crate::print::PrintCollector::new(output_format, max_turns),
+            collector: crate::print::PrintCollector::new(output_format),
             calls: HashMap::new(),
             client: None,
             session_id: None,
@@ -56,9 +55,7 @@ impl Renderer {
         input: crate::repl::Input,
     ) {
         let mut state = self.0.lock();
-        state
-            .collector
-            .bind(client.clone(), session_id.clone(), cwd);
+        state.collector.bind(cwd);
         state.client = Some(client);
         state.session_id = Some(session_id);
         state.input = Some(input);

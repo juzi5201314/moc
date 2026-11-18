@@ -84,7 +84,7 @@ pub(super) async fn approve_plan(
         println!("\n{markdown}\n");
     }
     if let Some(prompt) = approved.auto_prompt {
-        send_prompt(client, &session.id, prompt, None).await?;
+        send_prompt(client, &session.id, prompt, None, None).await?;
     }
     Ok(())
 }
@@ -94,6 +94,7 @@ pub(super) async fn send_prompt(
     session_id: &str,
     prompt: String,
     mode: Option<PromptMode>,
+    max_turns: Option<u32>,
 ) -> anyhow::Result<moc_protocol::methods::PromptResult> {
     let pending = client.call::<SessionPrompt>(moc_protocol::methods::PromptParams {
         session_id: session_id.to_owned(),
@@ -101,6 +102,7 @@ pub(super) async fn send_prompt(
         mode,
         agent_message: None,
         goal_round: None,
+        max_turns,
     });
     tokio::pin!(pending);
     tokio::select! {

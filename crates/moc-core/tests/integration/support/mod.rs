@@ -248,6 +248,7 @@ impl Harness {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
             .unwrap()

@@ -2014,6 +2014,11 @@
           "type": "string"
         },
         {
+          "const": "MaxTurns",
+          "description": "达到本次提示的轮数上限（`session/prompt` 的 `max_turns`），未再发起新请求。",
+          "type": "string"
+        },
+        {
           "additionalProperties": false,
           "description": "其余线上取值，原样保留。",
           "properties": {
@@ -3899,6 +3904,15 @@
             "$ref": "#/$defs/InputPart"
           },
           "type": "array"
+        },
+        "max_turns": {
+          "description": "本次提示的模型请求轮数上限：达到后不再发起新请求，以\n[`crate::FinishReason::MaxTurns`] 结束。`None` 表示无限制（默认）。\n只约束这一次 `session/prompt`，不持久化。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "mode": {
           "anyOf": [

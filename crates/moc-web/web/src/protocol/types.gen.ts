@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 1d37d56586b6edf6
+// schema sha256: eece33a187fbb0c2
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -35,6 +35,7 @@ export type FinishReason =
   | "Cancelled"
   | "Interrupted"
   | "LoopDetected"
+  | "MaxTurns"
   | {
       Other: string;
     };
@@ -803,6 +804,7 @@ export type SessionUpdate =
         | "Cancelled"
         | "Interrupted"
         | "LoopDetected"
+        | "MaxTurns"
         | {
             Other: string;
           };
@@ -1708,6 +1710,7 @@ export interface BtwResult {
     | "Cancelled"
     | "Interrupted"
     | "LoopDetected"
+    | "MaxTurns"
     | {
         Other: string;
       };
@@ -3153,6 +3156,12 @@ export interface PromptParams {
    */
   input: InputPart[];
   /**
+   * 本次提示的模型请求轮数上限：达到后不再发起新请求，以
+   * [`crate::FinishReason::MaxTurns`] 结束。`None` 表示无限制（默认）。
+   * 只约束这一次 `session/prompt`，不持久化。
+   */
+  max_turns?: number | null;
+  /**
    * 仅本次提示生效的执行模式；`None` 沿用会话当前模式（plan 模式照常生效）。
    *
    * 供 `/ask` 这类「只让这一条消息只读」的临时意图使用：core 以它收紧本次
@@ -3185,6 +3194,7 @@ export interface PromptResult {
     | "Cancelled"
     | "Interrupted"
     | "LoopDetected"
+    | "MaxTurns"
     | {
         Other: string;
       };
@@ -5244,6 +5254,7 @@ export interface SessionUpdateParams {
           | "Cancelled"
           | "Interrupted"
           | "LoopDetected"
+          | "MaxTurns"
           | {
               Other: string;
             };

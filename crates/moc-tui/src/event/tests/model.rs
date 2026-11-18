@@ -129,6 +129,7 @@ async fn model_picker_asks_before_compacting() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .unwrap();

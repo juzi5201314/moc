@@ -227,7 +227,7 @@ pub(super) async fn run_command(
                 )
             );
             if !argument.is_empty() {
-                send_prompt(client, &session.id, argument.to_owned(), None).await?;
+                send_prompt(client, &session.id, argument.to_owned(), None, None).await?;
             }
         }
         CommandId::Goal => {
@@ -264,6 +264,7 @@ pub(super) async fn run_command(
                 &session.id,
                 argument.to_owned(),
                 Some(PromptMode::Ask),
+                None,
             )
             .await?;
         }

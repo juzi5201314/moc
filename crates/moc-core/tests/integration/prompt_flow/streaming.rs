@@ -45,7 +45,8 @@ async fn next_request_retry_follows_committed_text_and_tool_execution() {
                 }],
                 mode: None,
                 agent_message: None,
-                goal_round: None
+                goal_round: None,
+                max_turns: None
             })
             .await
             .is_err()
@@ -97,6 +98,7 @@ async fn connection_retry_is_visible_during_backoff_and_can_be_cancelled() {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
     });
@@ -209,6 +211,7 @@ async fn authentication_failure_finishes_prompt_and_allows_recovery() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .expect_err("401 必须返回可操作的认证错误");
@@ -310,6 +313,7 @@ async fn tool_preview_arrives_before_response_finishes() {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
             .unwrap()
@@ -438,6 +442,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .expect("run model prompt");

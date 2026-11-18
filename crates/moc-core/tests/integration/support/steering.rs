@@ -143,6 +143,7 @@ async fn steering_is_delivered_after_the_current_response_and_before_next_reques
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
             .unwrap()
@@ -226,6 +227,7 @@ async fn unsteer_removes_pending_steering_before_boundary() {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
             .unwrap()

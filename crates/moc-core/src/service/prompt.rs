@@ -52,6 +52,7 @@ pub async fn run_retry(
         mode: None,
         agent_message: None,
         goal_round: None,
+        max_turns: None,
     };
     run_prompt_entry(inner, ctx, params, true).await
 }

@@ -638,7 +638,8 @@ pub(crate) fn stop_reason(reason: &FinishReason) -> StopReason {
         | FinishReason::StopSequence
         | FinishReason::ToolCalls
         | FinishReason::PauseTurn
-        | FinishReason::LoopDetected => StopReason::EndTurn,
+        | FinishReason::LoopDetected
+        | FinishReason::MaxTurns => StopReason::EndTurn,
         FinishReason::Length => StopReason::MaxTokens,
         FinishReason::ContentFilter | FinishReason::Refusal => StopReason::Refusal,
         FinishReason::Cancelled | FinishReason::Interrupted => StopReason::Cancelled,

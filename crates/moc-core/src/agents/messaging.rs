@@ -246,6 +246,7 @@ pub(super) async fn deliver(
                     mode: None,
                     agent_message: Some(woken),
                     goal_round: None,
+                    max_turns: None,
                 },
                 record,
                 prompt_lock,

@@ -14,10 +14,10 @@
 //! 外层改称 `Task`/`Run`。moc 的外层因此另名 `prompt`——与 `session/prompt` 同词根。
 //!
 //! 一次提示可包含任意多轮，每一轮都会重新请求模型并把工具结果回灌，直到模型不再发起
-//! 工具调用（或控制类工具要求收尾）为止——这就是「代理主动停止」。轮数没有上限：
+//! 工具调用（或控制类工具要求收尾）为止——这就是「代理主动停止」。轮数默认无上限：
 //! `length` 截断不结束提示，而是在同一次提示内自动续写（见 `max_length_continues`）；
-//! 只有本地重复内容检测（`loop_detected`）会强制结束提示。因此**提示**是模式、
-//! 取消、只读约束、计时与上下文压缩的作用域单位：`PromptStarted` / `PromptFinished`
+//! 本地重复内容检测（`loop_detected`）与本次提示的 `max_turns` 上限会强制结束提示。
+//! 因此**提示**是模式、取消、只读约束、计时与上下文压缩的作用域单位：`PromptStarted` / `PromptFinished`
 //! 各只发一次，[`PromptResult::finish_reason`] 是提示级终态（可能取
 //! `Other("compacted")` 这类非上游取值）。
 //!
@@ -85,6 +85,11 @@ pub struct PromptParams {
     /// 只由 core 内部的续轮驱动设置，前端不直接传。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_round: Option<super::session::GoalRoundMeta>,
+    /// 本次提示的模型请求轮数上限：达到后不再发起新请求，以
+    /// [`crate::FinishReason::MaxTurns`] 结束。`None` 表示无限制（默认）。
+    /// 只约束这一次 `session/prompt`，不持久化。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
 }
 
 /// `session/retry` 的参数。
@@ -189,6 +194,7 @@ mod tests {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         };
         assert_eq!(
             serde_json::to_value(&params).expect("可序列化"),

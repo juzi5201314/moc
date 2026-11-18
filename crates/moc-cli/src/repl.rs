@@ -287,12 +287,7 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
 
     let server = core.server(ServerOptions::default());
     let (frontend_side, connection) = server.connect(64 * 1024);
-    let renderer = Renderer::new(
-        args.print,
-        args.hide_thinking,
-        args.output_format,
-        args.max_turns,
-    );
+    let renderer = Renderer::new(args.print, args.hide_thinking, args.output_format);
     let update_renderer = renderer.clone();
     let permission_input = Arc::clone(&input);
     let ask_input = Arc::clone(&input);
@@ -469,7 +464,7 @@ async fn run_repl(
     }
     if let Some(prompt) = initial_prompt {
         let started = std::time::Instant::now();
-        match send_prompt(client, &session.id, prompt, None).await {
+        match send_prompt(client, &session.id, prompt, None, args.max_turns).await {
             result if args.print => {
                 return finish_print(args, renderer, &session, started, result);
             }
@@ -533,7 +528,8 @@ async fn run_repl(
                 Err(error) => eprintln!("{}: {error:#}", t!("cli.repl.command_failed")),
             }
         } else {
-            if let Err(error) = send_prompt(client, &session.id, line.to_owned(), None).await {
+            if let Err(error) = send_prompt(client, &session.id, line.to_owned(), None, None).await
+            {
                 eprintln!("{}: {error:#}", t!("cli.repl.request_failed"));
             }
         }

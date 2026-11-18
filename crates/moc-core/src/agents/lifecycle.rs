@@ -139,6 +139,7 @@ pub(super) async fn activate(
                 mode: None,
                 agent_message: agent,
                 goal_round: None,
+                max_turns: None,
             },
             record,
             prompt_lock,

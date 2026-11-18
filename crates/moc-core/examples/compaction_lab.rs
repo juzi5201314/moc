@@ -472,6 +472,7 @@ async fn run(spec: &Spec, client: &ClientHandle, sink: &EventSink) -> Result<()>
                         mode: Some(PromptMode::Ask),
                         agent_message: None,
                         goal_round: None,
+                        max_turns: None,
                     })
                     .await?;
                 save(spec.output.join("reply.json"), &result)?;

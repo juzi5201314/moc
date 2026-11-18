@@ -9,10 +9,10 @@ use std::collections::HashSet;
 use std::io::Write;
 
 use moc_protocol::methods::{
-    PermissionOptionKind, PermissionRequestParams, PermissionResult, SessionCancel,
-    SessionCancelParams, SessionUpdate, SessionUpdateParams, ToolStatus,
+    PermissionOptionKind, PermissionRequestParams, PermissionResult, SessionUpdate,
+    SessionUpdateParams, ToolStatus,
 };
-use moc_protocol::{ClientHandle, PromptResult, Usage};
+use moc_protocol::{PromptResult, Usage};
 use rust_i18n::t;
 use serde::Serialize;
 
@@ -99,41 +99,30 @@ impl PrintResult {
 /// 提示过程中的事件收集器；`stream-json` 同时把每条更新即时落到 stdout。
 pub struct PrintCollector {
     format: OutputFormat,
-    max_turns: Option<u32>,
     turns: usize,
-    max_turns_hit: bool,
     calls: Vec<ToolCallSummary>,
     denied: usize,
     changed_files: Vec<String>,
     changed_set: HashSet<String>,
-    /// workflow 绑定后用于 `--max-turns` 触发 `session/cancel`。
-    client: Option<ClientHandle>,
-    session_id: Option<String>,
     /// 会话工作目录：把 write/edit 参数里的相对路径解析成与 diff 一致的绝对路径。
     cwd: Option<std::path::PathBuf>,
 }
 
 impl PrintCollector {
-    pub fn new(format: OutputFormat, max_turns: Option<u32>) -> Self {
+    pub fn new(format: OutputFormat) -> Self {
         Self {
             format,
-            max_turns,
             turns: 0,
-            max_turns_hit: false,
             calls: Vec::new(),
             denied: 0,
             changed_files: Vec::new(),
             changed_set: HashSet::new(),
-            client: None,
-            session_id: None,
             cwd: None,
         }
     }
 
-    /// 会话建立后注入回传通道（`--max-turns` 的取消走它）与工作目录。
-    pub fn bind(&mut self, client: ClientHandle, session_id: String, cwd: std::path::PathBuf) {
-        self.client = Some(client);
-        self.session_id = Some(session_id);
+    /// 会话建立后注入工作目录（相对路径归一按会话 cwd）。
+    pub fn bind(&mut self, cwd: std::path::PathBuf) {
         self.cwd = Some(cwd);
     }
 
@@ -169,7 +158,7 @@ impl PrintCollector {
         self.record_changed(resolved.display().to_string());
     }
 
-    /// 处理一条 `session/update`：stream-json 先落行，再按需累计与触发轮数取消。
+    /// 处理一条 `session/update`：stream-json 先落行，再按需累计。
     pub fn handle(&mut self, params: &SessionUpdateParams) {
         if self.format == OutputFormat::StreamJson
             && let Ok(line) = serde_json::to_string(params)
@@ -182,21 +171,6 @@ impl PrintCollector {
         match &params.update {
             SessionUpdate::GenerationStarted { .. } => {
                 self.turns += 1;
-                if let Some(max) = self.max_turns
-                    && self.turns > max as usize
-                    && !self.max_turns_hit
-                {
-                    self.max_turns_hit = true;
-                    if let (Some(client), Some(session_id)) =
-                        (self.client.clone(), self.session_id.clone())
-                    {
-                        tokio::spawn(async move {
-                            let _ = client
-                                .call::<SessionCancel>(SessionCancelParams { session_id })
-                                .await;
-                        });
-                    }
-                }
             }
             SessionUpdate::ToolFinished {
                 tool_call_id,
@@ -235,7 +209,6 @@ impl PrintCollector {
     pub fn report(&self) -> PrintReport {
         PrintReport {
             num_turns: self.turns,
-            max_turns_hit: self.max_turns_hit,
             tool_calls: self.calls.clone(),
             denied_calls: self.denied,
             changed_files: self.changed_files.clone(),
@@ -246,7 +219,6 @@ impl PrintCollector {
 /// 收集器的只读快照。
 pub struct PrintReport {
     pub num_turns: usize,
-    pub max_turns_hit: bool,
     pub tool_calls: Vec<ToolCallSummary>,
     pub denied_calls: usize,
     pub changed_files: Vec<String>,
@@ -288,14 +260,12 @@ pub fn classify(
     report: &PrintReport,
     result: &anyhow::Result<PromptResult>,
 ) -> (i32, Option<String>) {
-    if report.max_turns_hit {
-        return (
-            EXIT_MAX_TURNS,
-            Some(t!("cli.repl.max_turns", n = max_turns.unwrap_or_default()).into_owned()),
-        );
-    }
     match result {
         Err(error) => (1, Some(format!("{error:#}"))),
+        Ok(result) if result.finish_reason == moc_llm::FinishReason::MaxTurns => (
+            EXIT_MAX_TURNS,
+            Some(t!("cli.repl.max_turns", n = max_turns.unwrap_or_default()).into_owned()),
+        ),
         Ok(result) if result.finish_reason.is_guard_stop() => (
             1,
             Some(format!(
@@ -443,9 +413,37 @@ mod tests {
         );
     }
 
+    fn prompt_result(finish_reason: moc_llm::FinishReason) -> PromptResult {
+        PromptResult {
+            session_id: "ses_1".into(),
+            prompt_id: "p1".into(),
+            message: moc_protocol::Message {
+                role: moc_protocol::Role::Assistant,
+                content: moc_protocol::MessageContent::default(),
+            },
+            finish_reason,
+            usage: Usage::default(),
+        }
+    }
+
+    #[test]
+    fn classify_maps_max_turns_to_exit_three() {
+        let report = PrintReport {
+            num_turns: 2,
+            tool_calls: Vec::new(),
+            denied_calls: 0,
+            changed_files: Vec::new(),
+        };
+        let result: anyhow::Result<PromptResult> =
+            Ok(prompt_result(moc_llm::FinishReason::MaxTurns));
+        let (code, error) = classify(Some(2), &report, &result);
+        assert_eq!(code, EXIT_MAX_TURNS);
+        assert!(error.is_some());
+    }
+
     #[test]
     fn collector_counts_turns_and_denials() {
-        let mut collector = PrintCollector::new(OutputFormat::Json, Some(1));
+        let mut collector = PrintCollector::new(OutputFormat::Json);
         let update = |update: SessionUpdate| SessionUpdateParams {
             session_id: "ses_1".into(),
             update,
@@ -472,10 +470,9 @@ mod tests {
         let report = collector.report();
         assert_eq!(report.num_turns, 1);
         assert_eq!(report.denied_calls, 1);
-        assert!(!report.max_turns_hit);
         collector.handle(&update(SessionUpdate::GenerationStarted {
             prompt_id: "p1".into(),
         }));
-        assert!(collector.report().max_turns_hit);
+        assert_eq!(collector.report().num_turns, 2);
     }
 }

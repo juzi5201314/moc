@@ -92,6 +92,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .expect("prompt with default model");
@@ -114,6 +115,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .expect("prompt with switched model");
@@ -150,6 +152,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .expect("prompt after resume");
