@@ -60,6 +60,8 @@ export type Block =
       entryId?: string;
       text: string;
       images: ImageSource[];
+      /** `@` 文件/目录引用注入的附件。 */
+      attachments?: { path: string; kind: "file" | "dir" }[];
       atMs: number;
     }
   | {
@@ -216,7 +218,43 @@ export function createView(info: SessionInfo): SessionView {
 // ---------- 内容辅助 ----------
 
 export function messageText(message: Message): string {
-  return message.content.flatMap((part) => ("Text" in part ? [part.Text] : [])).join("");
+  return message.content
+    .flatMap((part) => ("Text" in part && !isAttachmentPart(part.Text) ? [part.Text] : []))
+    .join("");
+}
+
+const ATTACHMENT_OPEN = "<moc-attachment";
+const ATTACHMENT_CLOSE = "</moc-attachment>";
+
+function isAttachmentPart(text: string): boolean {
+  return text.startsWith(`${ATTACHMENT_OPEN} `) && text.endsWith(ATTACHMENT_CLOSE);
+}
+
+/** 剥 `<moc-attachment path="…" kind="…">` 外壳；返回 {path, kind} 或 null。 */
+export function parseAttachment(text: string): { path: string; kind: "file" | "dir" } | null {
+  if (!isAttachmentPart(text)) return null;
+  const header = text.slice(0, text.indexOf(">\n"));
+  const attr = (name: string) => {
+    const key = `${name}="`;
+    const start = header.indexOf(key);
+    if (start < 0) return null;
+    const from = start + key.length;
+    const end = header.indexOf('"', from);
+    return end < 0 ? null : header.slice(from, end);
+  };
+  const path = attr("path");
+  const kind = attr("kind");
+  if (!path || (kind !== "file" && kind !== "dir")) return null;
+  return { path, kind };
+}
+
+/** 用户消息里的 `@` 注入附件。 */
+export function messageAttachments(message: Message): { path: string; kind: "file" | "dir" }[] {
+  return message.content.flatMap((part) => {
+    if (!("Text" in part)) return [];
+    const attachment = parseAttachment(part.Text);
+    return attachment ? [attachment] : [];
+  });
 }
 
 /** 剥掉投递外壳：卡片自身已经表达「送达模型的提醒」，正文只留模型可见的部分。 */
@@ -384,6 +422,7 @@ export function entriesToBlocks(
           entryId: entry.id,
           text: messageText(message),
           images: messageImages(message),
+          attachments: messageAttachments(message),
           atMs: entry.at_ms,
         });
         break;
@@ -511,6 +550,9 @@ function backfill(blocks: Block[], entries: TranscriptEntry[], kind: "user" | "t
     }
     if (fingerprint(messageText(entries[cursor].message)) === fingerprint(block.text)) {
       block.entryId = entries[cursor].id;
+      if (block.kind === "user") {
+        block.attachments = messageAttachments(entries[cursor].message);
+      }
       cursor--;
     }
   }

@@ -82,10 +82,13 @@ pub(super) async fn prepare(
         }
         None
     } else {
+        let runtime = inner.runtime(&params.session_id).await;
         let message = project_input(
             std::mem::take(&mut params.input),
             model.capabilities.image,
             std::path::Path::new(&state_snapshot.session.cwd),
+            &runtime.anchors,
+            &project_config,
         )
         .await
         .map_err(to_rpc)?;

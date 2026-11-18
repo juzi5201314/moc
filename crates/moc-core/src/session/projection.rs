@@ -59,6 +59,12 @@ pub(super) fn project_parts(role: Role, parts: &[ContentPart], budget: usize) ->
         let projected = match part {
             ContentPart::ResponsePhase(phase) => ContentPart::ResponsePhase(phase.clone()),
             ContentPart::Text(text) => {
+                // `@` 附件注入块只留头尾 stub：正文不挤占预算，chip 仍能从外壳解析。
+                if let Some(stub) = crate::resources::attach::stub_attachment(text) {
+                    truncated = true;
+                    content.push(ContentPart::Text(stub));
+                    continue;
+                }
                 let (text, was_truncated) = truncate_text(text, remaining);
                 truncated |= was_truncated;
                 remaining = remaining.saturating_sub(text.len());

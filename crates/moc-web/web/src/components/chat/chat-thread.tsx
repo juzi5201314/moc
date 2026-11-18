@@ -8,6 +8,7 @@ import {
   ChevronRightIcon,
   CircleXIcon,
   CopyIcon,
+  FolderIcon,
   ListChecksIcon,
   Loader2Icon,
   PencilIcon,
@@ -18,6 +19,12 @@ import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from "reac
 import { toast } from "sonner";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { useShallow } from "zustand/react/shallow";
+import {
+  Attachment,
+  AttachmentInfo,
+  AttachmentPreview,
+  Attachments,
+} from "@/components/ai-elements/attachments";
 import {
   Conversation,
   ConversationContent,
@@ -50,7 +57,7 @@ import { cn } from "@/lib/utils";
 import type { AskParams, ImageSource, PermissionRequestParams } from "@/protocol/types";
 import { retrySession } from "@/store/actions";
 import { useComposer } from "@/store/composer";
-import { openFile } from "@/store/files";
+import { openFile, revealDir } from "@/store/files";
 import { loadOlder, redo, rewind } from "@/store/lifecycle";
 import { useTranscript } from "@/store/transcript";
 import { useTurn, useTurnIds } from "@/store/turns";
@@ -427,6 +434,39 @@ function UserMessage({
   return (
     <div className="group/user flex flex-col items-end gap-1">
       <ImageThumbs images={block.images} className="justify-end" />
+      {block.attachments && block.attachments.length > 0 && (
+        <Attachments variant="inline" className="justify-end">
+          {block.attachments.map((attachment) => (
+            <Attachment
+              // FileUIPart 要求 url；路径引用没有可预览 URL，空串让预览落到图标分支。
+              data={{
+                id: attachment.path,
+                type: "file",
+                url: "",
+                filename: attachment.path,
+                mediaType: "text/plain",
+              }}
+              key={attachment.path}
+              onClick={() =>
+                attachment.kind === "dir"
+                  ? // 目录没有文件页签（read_path 拒绝），改为在文件树里展开定位。
+                    revealDir(context.sessionId, attachment.path)
+                  : openFile(context.sessionId, { kind: "fs", path: attachment.path })
+              }
+              title={attachment.path}
+            >
+              <AttachmentPreview
+                fallbackIcon={
+                  attachment.kind === "dir" ? (
+                    <FolderIcon className="size-3 text-muted-foreground" />
+                  ) : undefined
+                }
+              />
+              <AttachmentInfo />
+            </Attachment>
+          ))}
+        </Attachments>
+      )}
       {block.text && (
         <div className="relative max-w-[80%] rounded-[18px] bg-bubble px-4 py-2.5 text-chat text-foreground">
           <div

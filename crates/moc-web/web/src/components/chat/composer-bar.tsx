@@ -98,7 +98,8 @@ function readImage(file: File): Promise<ComposerAttachment> {
   return promise;
 }
 
-/** 光标所在的空白分隔 token；以 `//`、`scheme:/` 或含 `://` 时视为资源 URI 前缀（与 TUI 一致）。 */
+/** 光标所在的空白分隔 token；以 `//`、`scheme:/` 或含 `://` 时视为资源 URI 前缀；
+ * `@` 开头（非 `@@`）视为工作区文件引用（与 TUI 一致）。`!` bash 模式下 @ 不补全。 */
 function resourceToken(
   text: string,
   cursor: number,
@@ -109,7 +110,9 @@ function resourceToken(
   while (end < text.length && !/\s/.test(text[end])) end++;
   const prefix = text.slice(start, cursor);
   const isUri = prefix === "//" || prefix.endsWith(":/") || prefix.includes("://");
-  return isUri ? { prefix, start, end } : null;
+  if (isUri) return { prefix, start, end };
+  const isAttachment = prefix.startsWith("@") && !prefix.startsWith("@@") && !text.startsWith("!");
+  return isAttachment ? { prefix, start, end } : null;
 }
 
 const RESOURCE_ICON: Record<string, typeof FileTextIcon> = {
@@ -118,6 +121,8 @@ const RESOURCE_ICON: Record<string, typeof FileTextIcon> = {
   local: FileTextIcon,
   skill: BookOpenIcon,
   namespace: FolderIcon,
+  file: FileTextIcon,
+  dir: FolderIcon,
 };
 
 /** 插件清单 → 斜杠命令；加载失败的插件不贡献命令。 */

@@ -51,16 +51,18 @@ pub(super) async fn steer(
     let snapshot = record.state.lock().await.metadata();
     let config = inner.project_config(Path::new(&snapshot.session.cwd))?;
     let model = config.resolve_model(&snapshot.model)?;
+    let runtime = inner.runtime(&params.session_id).await;
     let message = super::prompt::request::project_input(
         params.input,
         model.capabilities.image,
         Path::new(&snapshot.session.cwd),
+        &runtime.anchors,
+        &config,
     )
     .await?;
     if message.content.is_empty() {
         return Err(CoreError::Config(t!("core.err.message_empty").into_owned()));
     }
-    let runtime = inner.runtime(&params.session_id).await;
     if !runtime.steering.lock().await.accepting {
         return Ok(SteerResult {
             accepted: false,
