@@ -150,6 +150,7 @@ function RowHeader({
         disabled={!interactive}
         aria-label={target ? `${verb} ${target}` : verb}
         aria-expanded={interactive ? open : undefined}
+        title={onTargetClick ? undefined : target}
         onClick={onToggle}
         className="absolute inset-0 rounded-md"
       />

@@ -17,7 +17,9 @@ it("execute 生成时简略可见，原位执行后保留单条展开", () => {
   expect(view.getByText("生成中")).toBeTruthy();
   expect(view.container.textContent).toContain("const n9");
   expect(view.container.textContent).not.toContain("const n0");
-  fireEvent.click(view.getByRole("button", { name: /检查代码/ }));
+  const toggle = view.getByRole("button", { name: /检查代码/ });
+  expect(toggle.getAttribute("title")).toBe("检查代码");
+  fireEvent.click(toggle);
   expect(view.container.textContent).toContain("const n0");
   view.rerender(
     <ActivityGroup
