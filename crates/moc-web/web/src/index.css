@@ -64,10 +64,8 @@
   /* GitHub btn 质感：顶部内高光 + 底部轻投影 */
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(23, 23, 23, 0.08);
   --elevation-ring: 0 0 0 1px rgba(23, 23, 23, 0.08);
-  /* composer：不画描边，只靠贴身柔影 + 长投影勾出轮廓 */
-  --elevation-composer:
-    0 0 2px rgba(23, 23, 23, 0.06), 0 2px 6px rgba(23, 23, 23, 0.04),
-    0 12px 32px -12px rgba(23, 23, 23, 0.12);
+  /* composer：扁平取向，只留发丝级轮廓，不做长投影 */
+  --elevation-composer: 0 0 0 1px rgba(23, 23, 23, 0.05), 0 1px 3px rgba(23, 23, 23, 0.04);
   /* 灰托盘内的白卡：一层贴身软影把它和托盘分开，外投影交给托盘 */
   --elevation-composer-inset: 0 1px 2px rgba(23, 23, 23, 0.05), 0 2px 8px rgba(23, 23, 23, 0.04);
   /* 托盘比白卡暗一级：浅色是浅灰，深色要比卡片更深，否则层级会反过来 */
@@ -130,8 +128,7 @@
   --selection: rgba(109, 151, 255, 0.28);
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.45);
   --elevation-ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
-  --elevation-composer:
-    0 0 2px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3), 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  --elevation-composer: 0 0 0 1px rgba(255, 255, 255, 0.06);
   --elevation-composer-inset: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
   --composer-tray: #121214;
   --elevation-popover:

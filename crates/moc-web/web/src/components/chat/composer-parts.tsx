@@ -5,16 +5,27 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CircleIcon,
+  CornerUpLeftIcon,
+  GripVerticalIcon,
   ListChecksIcon,
   Loader2Icon,
   LockIcon,
+  PencilIcon,
   ShieldAlertIcon,
   ShieldCheckIcon,
   ShieldIcon,
   TerminalIcon,
   XIcon,
 } from "lucide-react";
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type DragEvent,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { DiffStat, diffStats } from "@/components/panels/diff-file";
 import {
@@ -274,57 +285,145 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
 
 // ---------- 待发队列 ----------
 
+/** 行尾操作按钮：悬停 / 键盘聚焦该行时浮现。 */
+const ROW_ACTION =
+  "flex size-5 shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-accent hover:text-foreground disabled:opacity-40";
+
+/**
+ * 待发区卡片：头部计数 + 折叠，行内拖动排序；
+ * 排队项可编辑回草稿或立即发送（移到队首并中断当前轮），补充项只支持撤回。
+ */
 export function PendingList({
   items,
   onRemove,
+  onEdit,
+  onSendNow,
+  onMove,
 }: {
   items: PendingItem[];
   onRemove: (item: PendingItem) => void;
+  onEdit: (item: PendingItem) => void;
+  onSendNow: (item: PendingItem) => void;
+  onMove: (key: string, toIndex: number) => void;
 }) {
   const t = useT();
+  const [collapsed, setCollapsed] = useState(false);
+  const [dragKey, setDragKey] = useState<string | null>(null);
+
+  // 原生 HTML5 拖动：拖到目标行上/下半区即时重排，无第三方依赖。
+  const onDragOver = (event: DragEvent<HTMLLIElement>, item: PendingItem) => {
+    if (!dragKey || dragKey === item.key) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const from = items.findIndex((entry) => entry.key === dragKey);
+    if (from < 0) return;
+    let to = items.indexOf(item);
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (event.clientY > rect.top + rect.height / 2) to += 1;
+    if (to > from) to -= 1;
+    if (to !== from) onMove(dragKey, to);
+  };
+
   return (
-    <ul className="space-y-0.5 px-1 pb-1">
-      {items.map((item) => {
-        const locked = item.kind === "steer" && item.steerId === undefined;
-        return (
-          <li
-            key={item.key}
-            className="flex h-7 min-w-0 items-center gap-2 rounded-md px-1.5 text-xs hover:bg-accent/60"
-          >
-            <span
-              className={cn(
-                "shrink-0 rounded px-1.5 py-px text-2xs font-medium",
-                item.kind === "steer" ? "bg-brand/10 text-brand" : "bg-card text-muted-foreground",
-              )}
-            >
-              {item.kind === "steer"
-                ? t("q.steer")
-                : item.mode === "ask"
-                  ? t("q.ask")
-                  : t("q.queue")}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-foreground/90">
-              {item.text || t("q.image")}
-              {item.images.length > 0 && (
-                <span className="text-text-tertiary">
-                  {t("q.images_n", { n: item.images.length })}
+    <div className="mx-1 mb-1 rounded-[20px] border border-border bg-card shadow-[var(--elevation-composer-inset)]">
+      <button
+        type="button"
+        onClick={() => setCollapsed((value) => !value)}
+        aria-expanded={!collapsed}
+        className="flex h-8 w-full items-center gap-1.5 rounded-[20px] px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <span className="font-medium">{t("q.count", { n: items.length })}</span>
+        <ChevronDownIcon
+          className={cn("ml-auto size-3.5 transition-transform", collapsed && "rotate-180")}
+        />
+      </button>
+      {!collapsed && (
+        <ul className="space-y-0.5 px-1.5 pb-1.5">
+          {items.map((item) => {
+            const locked = item.kind === "steer" && item.steerId === undefined;
+            const queued = item.kind === "queue";
+            return (
+              <li
+                key={item.key}
+                draggable
+                onDragStart={(event) => {
+                  setDragKey(item.key);
+                  event.dataTransfer.setData("text/plain", item.key);
+                  event.dataTransfer.effectAllowed = "move";
+                }}
+                onDragOver={(event) => onDragOver(event, item)}
+                onDragEnd={() => setDragKey(null)}
+                className={cn(
+                  "group flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-xs hover:bg-accent/60",
+                  dragKey === item.key && "opacity-50",
+                )}
+              >
+                <GripVerticalIcon
+                  className="size-3.5 shrink-0 cursor-grab text-text-tertiary"
+                  aria-label={t("q.drag")}
+                />
+                <span
+                  className={cn(
+                    "shrink-0 rounded px-1.5 py-px text-2xs font-medium",
+                    item.kind === "steer"
+                      ? "bg-brand/10 text-brand"
+                      : "bg-card text-muted-foreground",
+                  )}
+                >
+                  {item.kind === "steer"
+                    ? t("q.steer")
+                    : item.mode === "ask"
+                      ? t("q.ask")
+                      : t("q.queue")}
                 </span>
-              )}
-            </span>
-            <button
-              type="button"
-              onClick={() => onRemove(item)}
-              disabled={locked}
-              className="flex size-5 shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-accent hover:text-foreground disabled:opacity-40"
-              aria-label={item.kind === "steer" ? t("q.unsteer") : t("q.dequeue")}
-              title={item.kind === "steer" ? t("q.unsteer") : t("q.dequeue")}
-            >
-              <XIcon className="size-3.5" />
-            </button>
-          </li>
-        );
-      })}
-    </ul>
+                <span className="min-w-0 flex-1 truncate text-foreground/90">
+                  {item.text || t("q.image")}
+                  {item.images.length > 0 && (
+                    <span className="text-text-tertiary">
+                      {t("q.images_n", { n: item.images.length })}
+                    </span>
+                  )}
+                </span>
+                <span className="flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                  {queued && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onEdit(item)}
+                        className={ROW_ACTION}
+                        aria-label={t("q.edit")}
+                        title={t("q.edit")}
+                      >
+                        <PencilIcon className="size-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onSendNow(item)}
+                        className={ROW_ACTION}
+                        aria-label={t("q.send_now")}
+                        title={t("q.send_now")}
+                      >
+                        <CornerUpLeftIcon className="size-3.5" />
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onRemove(item)}
+                    disabled={locked}
+                    className={ROW_ACTION}
+                    aria-label={item.kind === "steer" ? t("q.unsteer") : t("q.dequeue")}
+                    title={item.kind === "steer" ? t("q.unsteer") : t("q.dequeue")}
+                  >
+                    <XIcon className="size-3.5" />
+                  </button>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 

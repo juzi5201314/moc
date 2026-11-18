@@ -207,6 +207,11 @@ export const zh = {
   "q.images_n": " · {n} 张图片",
   "q.unsteer": "撤回补充",
   "q.dequeue": "移出队列",
+  "q.count": "{n} 条待发",
+  "q.drag": "拖动排序",
+  "q.edit": "取回编辑",
+  "q.send_now": "立即发送",
+  "q.edit_command_draft": "输入框是命令草稿，先发出或清空再取回待发消息",
 
   // ---------- 权限 / 引擎 / 自主程度 ----------
   "perm.full": "完全访问",
