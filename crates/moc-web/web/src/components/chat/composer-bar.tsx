@@ -448,6 +448,11 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const editPending = (item: PendingItem) => {
     const composer = useComposer.getState();
     const current = composer.drafts[sessionId] ?? { text: "", images: [] };
+    // 斜杠 / ! 命令草稿不是普通消息：合并后回车会执行命令并吞掉待发正文，直接阻止取回
+    if (current.text.startsWith("/") || current.text.startsWith("!")) {
+      toast(t("q.edit_command_draft"));
+      return;
+    }
     composer.removePending(sessionId, item.key);
     const text = item.mode === "ask" ? `/ask ${item.text}` : item.text;
     const merged = current.text.trim() ? `${current.text}\n${text}` : text;

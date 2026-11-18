@@ -211,6 +211,7 @@ export const zh = {
   "q.drag": "拖动排序",
   "q.edit": "取回编辑",
   "q.send_now": "立即发送",
+  "q.edit_command_draft": "输入框是命令草稿，先发出或清空再取回待发消息",
 
   // ---------- 权限 / 引擎 / 自主程度 ----------
   "perm.full": "完全访问",

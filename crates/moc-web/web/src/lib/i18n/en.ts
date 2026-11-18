@@ -214,6 +214,7 @@ export const en: Record<MsgKey, string> = {
   "q.drag": "Drag to reorder",
   "q.edit": "Edit",
   "q.send_now": "Send now",
+  "q.edit_command_draft": "Draft is a command; send or clear it before editing a queued message",
 
   // ---------- permission / engine / autonomy ----------
   "perm.full": "Full access",
