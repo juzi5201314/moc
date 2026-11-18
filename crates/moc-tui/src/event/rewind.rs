@@ -161,6 +161,8 @@ pub(super) fn restore_user_message(
 ) {
     for part in &message.content {
         match part {
+            // 附件注入块不是用户输入：恢复输入框时跳过，`@path` 引用已在正文里。
+            ContentPart::Text(text) if moc_core::resources::attach::is_attachment(text) => {}
             ContentPart::Text(text) => prompt.insert_str_raw(text),
             ContentPart::Image {
                 source: ImageSource::Base64 { media_type, data },
