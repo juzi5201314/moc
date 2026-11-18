@@ -439,10 +439,11 @@ async fn run_repl(
             })
             .await?
     };
+    // 路径归一按会话工作目录而非 CLI cwd：`--resume` 恢复的会话可能在别的目录。
     renderer.bind_workflow(
         client.clone(),
         session.id.clone(),
-        cwd.clone(),
+        std::path::PathBuf::from(&session.cwd),
         input.clone(),
     );
     if let Some(selector) = &args.model

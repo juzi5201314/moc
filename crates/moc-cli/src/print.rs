@@ -144,33 +144,29 @@ impl PrintCollector {
         }
     }
 
-    /// write/edit 不产生 diff 时（建空文件、仅行尾变化、覆盖非 UTF-8）也会真实落盘：
-    /// 从工具参数兜底收集目标路径；相对路径按会话 cwd 解析，与 `ToolFileDiff.path` 对齐。
+    /// `write` 成功必落盘，但不产 diff 时（建空文件、仅行尾变化、覆盖非 UTF-8）
+    /// 也要计入：从参数取 `path` 兜底；相对路径按会话 cwd 解析，与
+    /// `ToolFileDiff.path`（经 `resolve_tool_path` 规范化）对齐。
+    /// `edit` 无 diff 即无实际修改（比如把一行换成相同内容），不能靠参数判断，跳过。
     fn record_write_targets(&mut self, name: &str, arguments: &str) {
-        if !matches!(name, "write" | "edit") {
+        if name != "write" {
             return;
         }
         let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
             return;
         };
-        let mut paths = Vec::new();
-        if let Some(path) = args.get("path").and_then(serde_json::Value::as_str) {
-            paths.push(path.to_owned());
-        }
-        if let Some(target) = args
-            .get("move")
-            .and_then(|m| m.get("target_path"))
-            .and_then(serde_json::Value::as_str)
-        {
-            paths.push(target.to_owned());
-        }
-        for path in paths {
-            let resolved = match (&self.cwd, std::path::Path::new(&path).is_absolute()) {
-                (Some(cwd), false) => cwd.join(&path).display().to_string(),
-                _ => path,
-            };
-            self.record_changed(resolved);
-        }
+        let Some(path) = args.get("path").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        let joined = match (&self.cwd, std::path::Path::new(path).is_absolute()) {
+            (Some(cwd), false) => cwd.join(path),
+            _ => std::path::PathBuf::from(path),
+        };
+        // 文件刚落盘必然存在：canonicalize 解决 `..` 与符号链接，与 diff 路径同形可去重；
+        // 失败时退回词法归一，保证输出仍是可用的绝对路径。
+        let resolved =
+            std::fs::canonicalize(&joined).unwrap_or_else(|_| normalize_lexically(&joined));
+        self.record_changed(resolved.display().to_string());
     }
 
     /// 处理一条 `session/update`：stream-json 先落行，再按需累计与触发轮数取消。
@@ -314,6 +310,25 @@ pub fn classify(
         ),
         Ok(_) => (0, None),
     }
+}
+
+/// 词法归一化路径：折叠 `.` 与 `..`，不触碰文件系统（canonicalize 失败时的兜底）。
+fn normalize_lexically(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // 只弹普通组件：`..` 越过根或前缀时保持原样，不产生歧义路径。
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// `stream-json` 的一条更新行就是 [`SessionUpdateParams`] 自身的 JSON 形状：
