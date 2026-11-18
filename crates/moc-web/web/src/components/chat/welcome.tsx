@@ -1,4 +1,4 @@
-// 新会话欢迎页：问候 + 工作目录选择 + 内嵌输入框。首条消息发出后切到会话视图。
+// 新会话欢迎页：品牌标题 + 内嵌输入框 + 工作目录选择。
 
 import {
   CheckIcon,
@@ -15,7 +15,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { t, useT } from "@/lib/i18n";
+import { useT } from "@/lib/i18n";
 import { useGitBranch } from "@/lib/use-git-branch";
 import { cn } from "@/lib/utils";
 import { setDraftCwd } from "@/store/lifecycle";
@@ -25,14 +25,6 @@ import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 import { ComposerBar } from "./composer-bar";
 import { InspectorToggle, SidebarReveal } from "./session-header";
-
-function greeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 6) return t("wel.late");
-  if (hour < 12) return t("wel.morning");
-  if (hour < 18) return t("wel.afternoon");
-  return t("wel.evening");
-}
 
 function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
   const t = useT();
@@ -61,7 +53,7 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
     });
 
   return (
-    <div className="flex items-center justify-center gap-1 text-sm text-muted-foreground">
+    <div className="flex min-w-0 flex-wrap items-center gap-1 text-ui text-muted-foreground">
       <DropdownMenu>
         <DropdownMenuTrigger asChild disabled={!isDraft}>
           <button
@@ -76,7 +68,10 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
             {isDraft && <ChevronDownIcon className="size-3 shrink-0 opacity-60" />}
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="center" className="w-80 p-1">
+        <DropdownMenuContent
+          align="start"
+          className="w-80 max-w-[var(--radix-dropdown-menu-content-available-width)] p-1"
+        >
           <DropdownMenuLabel className="px-2 py-1.5 text-2xs font-medium text-text-tertiary">
             {t("wel.dirs")}
           </DropdownMenuLabel>
@@ -121,15 +116,21 @@ export function WelcomeView({ sessionId }: { sessionId: string }) {
           <InspectorToggle sessionId={sessionId} />
         </div>
       </header>
-      <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 pb-[12vh]">
-        <div className="my-auto flex w-full max-w-[720px] flex-col gap-8">
-          <div className="flex flex-col items-center gap-4 text-center">
-            <h1 className="text-3xl font-semibold tracking-[-0.02em] text-foreground">
-              {greeting()}
-            </h1>
+      <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-4 pt-4 pb-16 sm:px-6">
+        <div className="my-auto flex w-full max-w-[688px] flex-col">
+          <h1 className="mb-4 flex items-center gap-2.5 px-2 text-2xl font-semibold tracking-tight">
+            <span
+              aria-hidden="true"
+              className="flex size-6 items-center justify-center rounded-[6px] bg-foreground text-ui text-background"
+            >
+              m
+            </span>
+            moc
+          </h1>
+          <ComposerBar sessionId={sessionId} inline />
+          <div className="mt-1 px-1">
             <WorkspaceSwitch sessionId={sessionId} />
           </div>
-          <ComposerBar sessionId={sessionId} inline />
         </div>
       </div>
     </div>

@@ -95,7 +95,7 @@ export function applyWorkflowEvent(state: WorkflowState, runId: string, event: W
       if (state.approvals.length === 0) state.approvalOpen = false;
       break;
     case "run_status":
-      state.runs[runId] = { ...emptyView(runId), ...state.runs[runId], status: event.status };
+      setRunStatus(state, runId, event.status);
       break;
     case "node_updated": {
       if (!state.runs[runId]) state.runs[runId] = emptyView(runId);
@@ -186,13 +186,31 @@ export async function workflowRun(sessionId: string, runId: string): Promise<Wor
 }
 
 export async function workflowStop(sessionId: string, runId: string): Promise<void> {
-  const params: SessionWorkflowRunParams = { session_id: sessionId, run_id: runId };
-  await rpc.call("session/workflow_stop", params);
+  await changeRunStatus("session/workflow_stop", sessionId, runId);
 }
 
 export async function workflowResume(sessionId: string, runId: string): Promise<void> {
+  await changeRunStatus("session/workflow_resume", sessionId, runId);
+}
+
+function setRunStatus(state: WorkflowState, runId: string, status: WorkflowRunStatus): void {
+  if (!state.runs[runId]) state.runs[runId] = emptyView(runId);
+  state.runs[runId].status = status;
+  const item = state.runList.find((run) => run.run_id === runId);
+  if (item) item.status = status;
+}
+
+async function changeRunStatus(
+  method: "session/workflow_stop" | "session/workflow_resume",
+  sessionId: string,
+  runId: string,
+): Promise<void> {
   const params: SessionWorkflowRunParams = { session_id: sessionId, run_id: runId };
-  await rpc.call("session/workflow_resume", params);
+  const previousStatus = useWorkflow.getState().runs[runId]?.status;
+  const summary = await rpc.call<WorkflowRunSummary>(method, params);
+  if (useWorkflow.getState().runs[runId]?.status === previousStatus) {
+    set((state) => setRunStatus(state, summary.run_id, summary.status));
+  }
 }
 
 export async function workflowSetRoleModel(
@@ -216,11 +234,11 @@ export async function workflowArtifact(
   return rpc.call<WorkflowArtifactResult>("session/workflow_artifact", params);
 }
 
-/** 打开 run 面板：快照灌进视图（事件投影在其上叠加）。 */
-export async function openWorkflowRun(sessionId: string, runId: string): Promise<void> {
-  const snapshot = await workflowRun(sessionId, runId);
+function applySnapshot(runId: string, snapshot: WorkflowRunSnapshot, open: boolean): void {
   set((state) => {
     const view = emptyView(runId);
+    view.log = state.runs[runId]?.log ?? [];
+    view.artifactVersions = state.runs[runId]?.artifactVersions ?? {};
     view.title = snapshot.title ?? runId;
     view.status = snapshot.status;
     view.plan = (snapshot.plan as Record<string, unknown>) ?? null;
@@ -237,9 +255,30 @@ export async function openWorkflowRun(sessionId: string, runId: string): Promise
     view.holes = (snapshot.holes ?? []) as Record<string, unknown>[];
     view.usage = snapshot.usage;
     state.runs[runId] = view;
-    state.panelRun = runId;
-    state.runsOpen = false;
+    setRunStatus(state, runId, snapshot.status);
+    if (open) {
+      state.panelRun = runId;
+      state.runsOpen = false;
+    }
   });
+}
+
+/** 打开 run 面板：快照灌进视图（事件投影在其上叠加）。 */
+export async function openWorkflowRun(sessionId: string, runId: string): Promise<void> {
+  applySnapshot(runId, await workflowRun(sessionId, runId), true);
+}
+
+/** 运行面板用快照补偿错过的状态通知；不覆盖更新的实时状态。 */
+export async function refreshWorkflowRun(
+  sessionId: string,
+  runId: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const previous = useWorkflow.getState().runs[runId];
+  const snapshot = await workflowRun(sessionId, runId);
+  if (!signal.aborted && useWorkflow.getState().runs[runId] === previous) {
+    applySnapshot(runId, snapshot, false);
+  }
 }
 
 /** 徽标数：待审批 + 活跃 run。 */

@@ -32,6 +32,7 @@ export function resolveLocale(language?: string | null): Locale {
 /** 握手后由 connection store 调用；language 是服务端 `[general] language` 原值。 */
 export function setLanguage(language?: string | null) {
   const locale = resolveLocale(language);
+  document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
   if (locale !== useI18n.getState().locale) useI18n.setState({ locale });
 }
 

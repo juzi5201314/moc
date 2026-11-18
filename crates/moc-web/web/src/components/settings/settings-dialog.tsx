@@ -19,7 +19,7 @@ import {
   SparklesIcon,
   WrenchIcon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { type MsgKey, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -274,6 +274,7 @@ export function SettingsDialog() {
   const settings = useUi((state) => state.settings);
   const [section, setSection] = useState<SettingsSection>("general");
   const [query, setQuery] = useState("");
+  const returnFocus = useRef<HTMLElement | null>(null);
   const scope = useSettings((state) => state.scope);
   const doc = useSettings((state) => state.docs[state.scope]);
   const error = useSettings((state) => state.errors[state.scope]);
@@ -336,7 +337,20 @@ export function SettingsDialog() {
       open={settings.open}
       onOpenChange={(open) => useUi.getState().set({ settings: { open } })}
     >
-      <DialogContent className="flex h-[min(760px,88vh)] w-[min(1040px,94vw)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none md:flex-row">
+      <DialogContent
+        className="flex h-[min(760px,88vh)] w-[min(1040px,94vw)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none md:flex-row"
+        onOpenAutoFocus={() => {
+          returnFocus.current =
+            document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        }}
+        onCloseAutoFocus={(event) => {
+          const target = returnFocus.current;
+          returnFocus.current = null;
+          if (!target?.isConnected) return;
+          event.preventDefault();
+          target.focus();
+        }}
+      >
         <nav className="flex min-h-0 w-full shrink-0 flex-col border-b border-border-subtle bg-panel md:w-[220px] md:border-r md:border-b-0">
           <div className="p-3 pr-14 pb-2 md:pr-3">
             <label className="flex h-8 items-center gap-2 rounded-lg bg-background px-2.5 ring-1 ring-border focus-within:ring-border-strong">

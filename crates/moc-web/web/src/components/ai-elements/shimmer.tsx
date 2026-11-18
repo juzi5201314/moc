@@ -1,7 +1,7 @@
 "use client";
 
 import type { MotionProps } from "motion/react";
-import { motion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 import type { CSSProperties, ElementType, JSX } from "react";
 import { memo, useMemo } from "react";
 import { cn } from "@/lib/utils";
@@ -39,8 +39,13 @@ const ShimmerComponent = ({
   spread = 2,
 }: TextShimmerProps) => {
   const MotionComponent = getMotionComponent(Component as keyof JSX.IntrinsicElements);
+  const reducedMotion = useReducedMotion();
 
   const dynamicSpread = useMemo(() => (children?.length ?? 0) * spread, [children, spread]);
+
+  if (reducedMotion) {
+    return <Component className={cn("text-muted-foreground", className)}>{children}</Component>;
+  }
 
   return (
     <MotionComponent

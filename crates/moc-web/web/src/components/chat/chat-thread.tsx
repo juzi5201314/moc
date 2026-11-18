@@ -468,7 +468,7 @@ function UserMessage({
         </Attachments>
       )}
       {block.text && (
-        <div className="relative max-w-[80%] rounded-[18px] bg-bubble px-4 py-2.5 text-chat text-foreground">
+        <div className="relative max-w-[92%] rounded-2xl bg-bubble px-4 py-2.5 text-chat text-foreground sm:max-w-[80%]">
           <div
             className={cn(
               "whitespace-pre-wrap break-words",
@@ -490,7 +490,7 @@ function UserMessage({
           )}
         </div>
       )}
-      <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100">
+      <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
         <span className="mr-1 text-2xs tabular-nums text-text-tertiary">
           {clockTime(block.atMs)}
         </span>
@@ -625,18 +625,24 @@ function AssistantTurn({
               <button
                 type="button"
                 onClick={() => setProcessOpen((value) => !value)}
-                className="group/proc -ml-1.5 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-ui text-text-tertiary transition-colors hover:text-muted-foreground"
+                aria-expanded={processOpen}
+                className="group/proc -ml-1.5 flex h-7 max-w-full items-center gap-1.5 rounded-md px-1.5 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
                 <ChevronRightIcon
-                  className={cn("size-3.5 transition-transform", processOpen && "rotate-90")}
+                  className={cn(
+                    "size-3.5 shrink-0 motion-safe:transition-transform",
+                    processOpen && "rotate-90",
+                  )}
                 />
-                <span>
+                <span className="shrink-0">
                   {durationMs !== undefined
                     ? t("th.duration", { n: formatDuration(durationMs) })
                     : t("th.process")}
                 </span>
                 <span className="text-text-tertiary/60">·</span>
-                <span className="max-w-[420px] truncate">{summarizeActivity(turn.activity)}</span>
+                <span className="min-w-0 truncate text-text-tertiary">
+                  {summarizeActivity(turn.activity)}
+                </span>
               </button>
               {processOpen && (
                 <div className="mt-1.5 ml-[7px] flex flex-col gap-3 border-l border-border pl-4">
@@ -819,13 +825,8 @@ function PlanCard({
   const status = PLAN_STATUS[plan?.status ?? "draft"];
   const pending = plan?.status === "submitted";
   return (
-    <div
-      className={cn(
-        "flex items-center gap-3 rounded-xl bg-card px-3.5 py-3 ring-1 ring-inset",
-        pending ? "ring-brand/35" : "ring-border-subtle",
-      )}
-    >
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+    <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-3.5 py-3 shadow-xs">
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
         <ListChecksIcon className="size-4" />
       </span>
       <div className="min-w-0 flex-1">

@@ -12,6 +12,7 @@ import {
   PackageIcon,
   PaperclipIcon,
   SquareIcon,
+  ZapIcon,
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import {
@@ -19,6 +20,7 @@ import {
   type DragEvent,
   type KeyboardEvent,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -31,6 +33,7 @@ import {
   Attachments,
 } from "@/components/ai-elements/attachments";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverAnchor } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { t, useT } from "@/lib/i18n";
 import { leadSelector, parseSelector } from "@/lib/models";
@@ -149,6 +152,7 @@ type ComposerBarProps = {
 export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const t = useT();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const suggestionsId = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [cursor, setCursor] = useState(0);
   const [reading, setReading] = useState(false);
@@ -234,6 +238,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               detail: command.plugin
                 ? `${command.description} · ${command.plugin}`
                 : command.description,
+              icon: <ZapIcon />,
             })),
           }
         : resourceItems.length > 0
@@ -290,6 +295,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   );
 
   const setText = (value: string, caret?: number) => {
+    if (value !== text) setDismissedAt(null);
     useComposer.getState().setText(sessionId, value);
     if (caret !== undefined) {
       setCursor(caret);
@@ -534,17 +540,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   return (
     <ComposerDock inline={inline}>
       <div className="relative">
-        {menu && (
-          <SuggestionMenu
-            heading={menu.heading}
-            items={menu.items}
-            active={activeIndex}
-            onPick={pick}
-            onHover={setActiveIndex}
-          />
-        )}
-
-        {/* Devin 式双层：外层灰托盘始终存在，白卡嵌在其中；托盘顶部是固定 32px 的状态条（任务或提示 + 改动 / 子代理 / 费用），待发队列接在其下。 */}
+        {/* 会话输入区保留状态托盘；欢迎页状态条独立放在输入卡下方。 */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: 拖放区只承接文件，键盘用户走附件按钮 */}
         <div
           onDragOver={(event) => {
@@ -555,11 +551,13 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
           className={cn(
-            "relative rounded-[24px] bg-[var(--composer-tray)] p-1 shadow-[var(--elevation-composer)]",
+            "relative",
+            !inline &&
+              "rounded-[22px] bg-[var(--composer-tray)] p-1 shadow-[var(--elevation-composer)]",
             dragging && "ring-2 ring-brand/40",
           )}
         >
-          <ComposerStatus sessionId={sessionId} todos={todos} />
+          {!inline && <ComposerStatus sessionId={sessionId} todos={todos} />}
           {pending.length > 0 && (
             <div className="px-2 pb-0.5">
               <PendingList items={pending} onRemove={(item) => void removePending(item)} />
@@ -573,7 +571,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               if (event.target === event.currentTarget) textareaRef.current?.focus();
             }}
             className={cn(
-              "relative rounded-[20px] bg-card shadow-[var(--elevation-composer-inset)] transition-[box-shadow]",
+              "relative rounded-[20px] border border-border bg-card transition-shadow",
+              !inline && "shadow-[var(--elevation-composer-inset)]",
               bashMode && "ring-1 ring-inset ring-warn/50",
             )}
           >
@@ -604,29 +603,57 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               </Attachments>
             )}
 
-            <CommandTextarea
-              command={commandToken(text, commands)}
-              ref={textareaRef}
-              value={text}
-              rows={1}
-              onChange={(event) => {
-                setText(event.target.value);
-                setCursor(event.target.selectionStart);
+            <Popover
+              open={menu !== null}
+              onOpenChange={(open) => {
+                if (!open) setDismissedAt(text);
               }}
-              onSelect={syncCursor}
-              onKeyDown={onKeyDown}
-              onPaste={onPaste}
-              placeholder={placeholder}
-              aria-label={t("cb.input")}
-              className={cn(
-                "block w-full resize-none bg-transparent px-5 pt-4 pb-1 text-chat leading-6 text-foreground outline-none placeholder:text-text-tertiary",
-                bashMode && "font-mono text-sm",
-                inline ? "min-h-[96px]" : "min-h-[64px]",
+            >
+              <PopoverAnchor asChild>
+                <div>
+                  <CommandTextarea
+                    command={commandToken(text, commands)}
+                    ref={textareaRef}
+                    value={text}
+                    rows={1}
+                    onChange={(event) => {
+                      setText(event.target.value);
+                      setCursor(event.target.selectionStart);
+                    }}
+                    onSelect={syncCursor}
+                    onKeyDown={onKeyDown}
+                    onPaste={onPaste}
+                    placeholder={placeholder}
+                    aria-label={t("cb.input")}
+                    aria-autocomplete="list"
+                    aria-controls={menu ? suggestionsId : undefined}
+                    aria-activedescendant={
+                      menu?.items[activeIndex] ? `${suggestionsId}-${activeIndex}` : undefined
+                    }
+                    className={cn(
+                      "block w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-sm leading-6 text-foreground outline-none placeholder:text-text-tertiary",
+                      bashMode && "font-mono text-sm",
+                      inline ? "min-h-[72px]" : "min-h-[60px]",
+                    )}
+                    style={{ maxHeight: MAX_HEIGHT }}
+                  />
+                </div>
+              </PopoverAnchor>
+              {menu && (
+                <SuggestionMenu
+                  id={suggestionsId}
+                  side={inline ? "bottom" : "top"}
+                  heading={menu.heading}
+                  items={menu.items}
+                  active={activeIndex}
+                  onPick={pick}
+                  onHover={setActiveIndex}
+                  inputRef={textareaRef}
+                />
               )}
-              style={{ maxHeight: MAX_HEIGHT }}
-            />
+            </Popover>
 
-            <div className="flex h-11 items-center gap-1 px-3 pb-1">
+            <div className="flex min-h-11 flex-wrap items-center gap-1 px-2.5 pb-1.5 sm:px-3">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -677,7 +704,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                       <button
                         type="button"
                         onClick={stop}
-                        className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-transform active:scale-95"
+                        className="ml-1 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/85 motion-safe:active:scale-95"
                         aria-label={t("cb.stop_gen")}
                       >
                         <SquareIcon className="size-3 fill-current" />
@@ -690,7 +717,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     type="button"
                     onClick={() => send()}
                     disabled={!canSend}
-                    className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-[transform,background-color] active:scale-95 disabled:bg-text-tertiary/60 disabled:text-card"
+                    className="ml-1 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/85 motion-safe:active:scale-95 disabled:bg-text-tertiary disabled:text-card"
                     aria-label={running ? t("cb.steer_send") : t("cb.send")}
                   >
                     <ArrowUpIcon className="size-4" strokeWidth={2.4} />
@@ -700,6 +727,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
             </div>
           </div>
         </div>
+        {inline && <ComposerStatus sessionId={sessionId} todos={todos} />}
       </div>
     </ComposerDock>
   );
