@@ -7,10 +7,10 @@ use moc_core::{Core, CoreConfig, PtcWorkerCommand, resolve_models};
 use moc_protocol::features::FeatureStates;
 use moc_protocol::methods::{
     ClientCapabilities, ClientInfo, ConfigGet, ConfigGetParams, PlanAction, SessionAutonomy,
-    SessionList, SessionListParams, SessionLoad, SessionLoadParams, SessionModelOverflowAction,
-    SessionNew, SessionNewParams, SessionPlanApprove, SessionPlanApproveParams, SessionRequestAsk,
-    SessionRequestPermission, SessionSetModel, SessionSetModelParams, SessionUpdate,
-    SessionUpdateMethod,
+    SessionInfo, SessionList, SessionListParams, SessionLoad, SessionLoadParams,
+    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPlanApprove,
+    SessionPlanApproveParams, SessionRequestAsk, SessionRequestPermission, SessionSetModel,
+    SessionSetModelParams, SessionUpdate, SessionUpdateMethod,
 };
 use moc_protocol::{ClientBuilder, ClientHandle, RpcError, RpcErrorCode, ServerOptions};
 use rust_i18n::t;
@@ -272,10 +272,17 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
 
     let server = core.server(ServerOptions::default());
     let (frontend_side, connection) = server.connect(64 * 1024);
-    let renderer = Renderer::new(args.print, args.hide_thinking);
+    let renderer = Renderer::new(
+        args.print,
+        args.hide_thinking,
+        args.output_format,
+        args.max_turns,
+    );
     let update_renderer = renderer.clone();
     let permission_input = Arc::clone(&input);
     let ask_input = Arc::clone(&input);
+    let allow_tools = args.allow_tools.clone();
+    let print_mode = args.print;
     // 通知回调在 client 建立前注册；槽位在握手完成后填充。
     let notification_client = Arc::new(std::sync::Mutex::new(Option::<ClientHandle>::None));
     let update_client = Arc::clone(&notification_client);
@@ -285,7 +292,9 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
         frontend: if args.print { "print" } else { "tui" }.into(),
     })
     .capabilities(ClientCapabilities {
-        permission_requests: !args.print,
+        // print 默认弹不出权限询问（未注册处理器等效拒绝）；给了 --allow-tools
+        // 就换成非交互的自动应答，让名单内的工具放行、其余照旧拒绝。
+        permission_requests: !args.print || !args.allow_tools.is_empty(),
         ask_requests: !args.print,
     })
     .on_notification::<SessionUpdateMethod, _, _>(move |params, _ctx| {
@@ -323,7 +332,11 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
     })
     .on_request::<SessionRequestPermission, _, _>(move |params, ctx| {
         let input = Arc::clone(&permission_input);
+        let allow = allow_tools.clone();
         async move {
+            if print_mode {
+                return Ok(crate::print::auto_permission(&params, &allow));
+            }
             tokio::select! {
                 _ = ctx.cancel.cancelled() => Err(RpcError::of(RpcErrorCode::RequestCancelled)),
                 _ = tokio::signal::ctrl_c() => Err(RpcError::of(RpcErrorCode::RequestCancelled)),
@@ -359,6 +372,19 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
     }
     *notification_client.lock().expect("notify client slot") = Some(client.clone());
     let result = run_repl(&client, &input, &args, initial_prompt, &renderer).await;
+    // 提示还没跑起来就失败（会话创建 / 模型切换等）时，json 类格式仍给 stdout 一行
+    // 可解析的错误汇总；CliExit 的失败已在 finish_print 里输出过结果对象，不重复。
+    let result = match result {
+        Err(error)
+            if args.print
+                && args.output_format != crate::args::OutputFormat::Text
+                && error.downcast_ref::<crate::CliExit>().is_none() =>
+        {
+            crate::print::emit_early_error(args.output_format, &error);
+            Err(error)
+        }
+        other => other,
+    };
     client.close().await;
     server.shutdown();
     connection.wait().await;
@@ -434,19 +460,11 @@ async fn run_repl(
         }
     }
     if let Some(prompt) = initial_prompt {
+        let started = std::time::Instant::now();
         match send_prompt(client, &session.id, prompt, None).await {
-            Ok(result) if args.print => {
-                println!("{}", result.message.text());
-                if result.finish_reason.is_guard_stop() {
-                    bail!(
-                        "{} ({})",
-                        t!("cli.repl.prompt_aborted"),
-                        result.finish_reason
-                    );
-                }
-                return Ok(());
+            result if args.print => {
+                return finish_print(args, renderer, &session, started, result);
             }
-            Err(error) if args.print => return Err(error),
             Err(error) => eprintln!("{}: {error:#}", t!("cli.repl.request_failed")),
             Ok(_) => {}
         }
@@ -513,6 +531,53 @@ async fn run_repl(
         }
     }
     Ok(())
+}
+
+/// `--print` 的收尾：按 `--output-format` 落最终输出，并把失败类别折成退出码。
+///
+/// text 保持旧行为（正文上 stdout、错误冒泡成退出码 1）；json / stream-json
+/// 输出 [`crate::print::PrintResult`] 汇总对象；退出码 2/3 经 [`crate::CliExit`] 传出。
+fn finish_print(
+    args: &CliArgs,
+    renderer: &Renderer,
+    session: &SessionInfo,
+    started: std::time::Instant,
+    result: anyhow::Result<moc_protocol::methods::PromptResult>,
+) -> anyhow::Result<()> {
+    let report = renderer.report();
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let (code, error) = crate::print::classify(args.max_turns, &report, &result);
+    if args.output_format == crate::args::OutputFormat::Text {
+        if let Ok(result) = &result {
+            println!("{}", result.message.text());
+        }
+        return match code {
+            0 => Ok(()),
+            // 一般错误维持旧路径：原文经 anyhow 冒泡，退出码 1。
+            1 => match result {
+                Err(error) => Err(error),
+                Ok(_) => bail!("{}", error.unwrap_or_default()),
+            },
+            _ => Err(crate::CliExit {
+                code,
+                message: error.unwrap_or_default(),
+            }
+            .into()),
+        };
+    }
+    let mut out = crate::print::build_result(&session.id, &report, duration_ms, &result);
+    if out.error.is_none() {
+        out.error = error;
+    }
+    out.emit(args.output_format);
+    if code == 0 {
+        return Ok(());
+    }
+    Err(crate::CliExit {
+        code,
+        message: out.error.unwrap_or_default(),
+    }
+    .into())
 }
 
 mod commands;

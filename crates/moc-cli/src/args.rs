@@ -40,6 +40,16 @@ pub struct CliArgs {
     /// 单次提示模式：可从 stdin 读取提示词，只打印最终答案。
     #[arg(long = "print", help = t!("cli.args.print").into_owned())]
     pub print: bool,
+    /// `--print` 的输出格式：text 只打印最终答案；json 结束时输出一个汇总对象；
+    /// stream-json 把每条会话更新按行输出为 NDJSON，末行是汇总对象。
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text, requires = "print", help = t!("cli.args.output_format").into_owned())]
+    pub output_format: OutputFormat,
+    /// `--print` 下单次提示的模型请求轮数上限；超出后取消提示并以退出码 3 结束。
+    #[arg(long, requires = "print", help = t!("cli.args.max_turns").into_owned())]
+    pub max_turns: Option<u32>,
+    /// `--print` 下自动批准这些工具的权限申请（逗号分隔，可重复）；`all` 放行全部。
+    #[arg(long = "allow-tools", value_name = "TOOL", value_delimiter = ',', requires = "print", help = t!("cli.args.allow_tools").into_owned())]
+    pub allow_tools: Vec<String>,
     /// 强制使用行式 REPL（默认进入 TUI；无 TTY 时自动降级 REPL）。
     #[arg(long = "repl", help = t!("cli.args.repl").into_owned())]
     pub repl: bool,
@@ -77,6 +87,18 @@ pub enum DetailArg {
     Hidden,
     Brief,
     Full,
+}
+
+/// `--output-format` 的三档取值（仅 `--print` 有效）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    /// 只打印最终答案（原 `--print` 行为）。
+    #[default]
+    Text,
+    /// 结束时输出一个 JSON 汇总对象。
+    Json,
+    /// 每条会话更新一行 NDJSON，末行输出与 json 相同的汇总对象。
+    StreamJson,
 }
 
 impl From<DetailArg> for moc_tui::DetailLevel {
