@@ -651,6 +651,15 @@ impl<S: AgentService> ServerDispatch<S> {
                         .await?,
                 )
             }
+            <crate::SessionExport as Method>::NAME => {
+                let params = params_from_value::<crate::SessionExport>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .session_export(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
             <crate::SessionInspect as Method>::NAME => {
                 let params = params_from_value::<crate::SessionInspect>(params)?;
                 value_from(

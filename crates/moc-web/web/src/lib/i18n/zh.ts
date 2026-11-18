@@ -231,6 +231,8 @@ export const zh = {
   // ---------- 斜杠命令（slash.tsx / shortcuts.ts） ----------
   "slash.usage": "用法：{usage}",
   "slash.exec_failed": "命令执行失败：{error}",
+  "slash.exported": "会话已导出至 {path}，正在下载 Markdown",
+  "slash.export_saved": "会话已导出至 {path}；内容较大，请从该路径获取文件",
   "slash.running": "会话正在生成，请先停止",
   "slash.needs_session": "这个命令需要一个已存在的会话",
   "slash.done": "完成",

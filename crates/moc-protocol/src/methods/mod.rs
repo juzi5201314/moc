@@ -63,6 +63,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use session::{SessionDebugInfo, SessionDebugInfoParams, SessionInspect, SessionInspectParams};
+pub use session::{SessionExport, SessionExportParams, SessionExportResult};
 
 pub use agent::{
     AgentInfo, AgentList, AgentListParams, AgentListResult, AgentMessage, AgentMessageMeta,

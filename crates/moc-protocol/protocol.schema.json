@@ -4609,6 +4609,44 @@
         }
       ]
     },
+    "SessionExportParams": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "绝对路径或相对于会话工作区的路径；省略时自动命名，已有文件不覆盖。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SessionExportResult": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "description": "正文的 JSON 编码超过 8 MiB 时省略，文件仍完整保存。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
     "SessionGoalParams": {
       "additionalProperties": false,
       "description": "`session/goal` 的参数。",
@@ -9301,6 +9339,15 @@
           "$ref": "#/$defs/Empty"
         },
         "type": "SessionDelete"
+      },
+      "session/export": {
+        "params": {
+          "$ref": "#/$defs/SessionExportParams"
+        },
+        "result": {
+          "$ref": "#/$defs/SessionExportResult"
+        },
+        "type": "SessionExport"
       },
       "session/goal": {
         "params": {

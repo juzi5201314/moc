@@ -336,6 +336,15 @@ pub(super) async fn run_command(
                 .await?;
             print_usage(&result);
         }
+        CommandId::Export => {
+            let result = client
+                .call::<moc_protocol::SessionExport>(moc_protocol::SessionExportParams {
+                    session_id: session.id.clone(),
+                    path: (!argument.is_empty()).then(|| argument.to_owned()),
+                })
+                .await?;
+            println!("{}", t!("cli.cmd.exported", path = result.path));
+        }
         CommandId::DebugInfo => {
             if !argument.is_empty() {
                 bail!("{}", t!("cli.cmd.usage_debuginfo"));

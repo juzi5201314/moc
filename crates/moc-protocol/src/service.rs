@@ -644,6 +644,15 @@ pub trait AgentService: Send + Sync + 'static {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 
+    /// 将持久化会话历史脱敏后写入 Markdown，返回路径与正文。
+    fn session_export(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SessionExportParams,
+    ) -> impl Future<Output = Result<crate::SessionExportResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
     /// 返回用户侧会话身份与存储便签，不包含工具或模型用量统计。
     fn session_inspect(
         &self,

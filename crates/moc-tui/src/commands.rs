@@ -18,6 +18,7 @@ pub enum CommandId {
     Plugins,
     Usage,
     DebugInfo,
+    Export,
     Session,
     Doctor,
     Help,
@@ -51,6 +52,20 @@ const AUTONOMY_CHOICES: &[&str] = &["default", "dont_ask", "unattended"];
 /// `needs_session`/`available_*` 是静态门控声明；依赖会话实时状态的更细判定
 /// （plan 激活、引擎锁、授权集）仍由处理器自查。
 pub const COMMANDS: &[CommandSpec<CommandId>] = &[
+    CommandSpec {
+        id: CommandId::Export,
+        name: "export",
+        aliases: &[],
+        usage: "[path]",
+        description: "tui.commands.export.desc",
+        group: CommandGroup::Session,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
     CommandSpec {
         id: CommandId::DebugInfo,
         name: "debuginfo",

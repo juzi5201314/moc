@@ -29,6 +29,7 @@ pub enum CommandId {
     CompactSkills,
     Usage,
     DebugInfo,
+    Export,
     Session,
     Model,
     Plugins,
@@ -43,6 +44,20 @@ const ENGINE_CHOICES: &[&str] = &["standard", "ptc", "clm"];
 
 /// REPL 内置命令表：同一批记录驱动 `run_command` 分派与 `/help` 文本。
 pub const COMMANDS: &[CommandSpec<CommandId>] = &[
+    CommandSpec {
+        id: CommandId::Export,
+        name: "export",
+        aliases: &[],
+        usage: "[path]",
+        description: "cli.commands.export.desc",
+        group: CommandGroup::Session,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
     CommandSpec {
         id: CommandId::DebugInfo,
         name: "debuginfo",
@@ -441,6 +456,9 @@ mod tests {
     #[test]
     fn every_spec_resolves_by_name_and_alias() {
         let registry = registry();
+        let export = registry.builtin("export").expect("注册 /export");
+        assert_eq!(export.id, CommandId::Export);
+        assert_eq!(export.usage, "[path]");
         let mut ids: Vec<CommandId> = Vec::new();
         for spec in COMMANDS {
             assert_eq!(registry.builtin(spec.name).map(|s| s.id), Some(spec.id));

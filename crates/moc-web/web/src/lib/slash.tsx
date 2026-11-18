@@ -11,6 +11,7 @@ import type {
   CommandMeta,
   GoalAction,
   PluginRunCommandResult,
+  SessionExportResult,
   SessionGoalResult,
   SessionPermission,
   SkillsCompactAction,
@@ -195,6 +196,37 @@ export function runSlash(
   }
 
   switch (command.name) {
+    case "export": {
+      void rpc
+        .call<SessionExportResult>("session/export", {
+          session_id: sessionId,
+          ...(args ? { path: args } : {}),
+        })
+        .then((result) => {
+          if (result.content == null) {
+            toast.success(t("slash.export_saved", { path: result.path }));
+            return;
+          }
+          const url = URL.createObjectURL(
+            new Blob([result.content], { type: "text/markdown;charset=utf-8" }),
+          );
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = result.path.split(/[\\/]/).pop() || "moc-export.md";
+          document.body.append(link);
+          try {
+            link.click();
+          } finally {
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+          }
+          toast.success(t("slash.exported", { path: result.path }));
+        })
+        .catch((error) =>
+          toast.error(t("slash.exec_failed", { name: command.name, error: errorText(error) })),
+        );
+      break;
+    }
     case "debuginfo":
     case "session": {
       if (args) {
