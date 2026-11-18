@@ -1,13 +1,19 @@
 // workflow 编排图：ai-elements Canvas（@xyflow/react）+ 自定义 phase 节点。
 // 布局走 lib/workflow-graph 的最长路径分层；data=实线、order=虚线、back=弯到上层的标注边。
 
-import type { Edge as FlowEdge, Node as FlowNode, Viewport } from "@xyflow/react";
+import type {
+  Edge as FlowEdge,
+  Node as FlowNode,
+  ReactFlowState,
+  Rect,
+  Viewport,
+} from "@xyflow/react";
 import {
+  getNodesBounds,
   getViewportForBounds,
   MarkerType,
   ReactFlowProvider,
-  useNodesInitialized,
-  useReactFlow,
+  useStore,
 } from "@xyflow/react";
 import { CheckIcon, CircleHelpIcon, Loader2Icon, MinusIcon, XIcon } from "lucide-react";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
@@ -89,6 +95,22 @@ const MAX_ZOOM = 2;
 // 不让鼠标拖动画布，保留框选；触摸仍可平移和双指缩放。
 const PAN_MOUSE_BUTTONS: number[] = [];
 
+// 受控节点没有回写 measured；只用 React Flow 内部的实际测量结果。
+function measuredBounds({ nodeLookup, nodeOrigin }: ReactFlowState): Rect | null {
+  if (!nodeLookup.size) return null;
+  for (const { measured } of nodeLookup.values()) {
+    if (!measured.width || !measured.height) return null;
+  }
+  return getNodesBounds([...nodeLookup.keys()], { nodeLookup, nodeOrigin });
+}
+
+function equalBounds(a: Rect | null, b: Rect | null): boolean {
+  return (
+    a === b ||
+    (!!a && !!b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height)
+  );
+}
+
 function FitOnResize({
   canvas,
   onFit,
@@ -96,22 +118,31 @@ function FitOnResize({
   canvas: RefObject<HTMLDivElement | null>;
   onFit: (viewport: Viewport) => void;
 }) {
-  const { getNodes, getNodesBounds } = useReactFlow();
-  const ready = useNodesInitialized();
+  const bounds = useStore(measuredBounds, equalBounds);
+  const lastFit = useRef<Viewport | null>(null);
   useEffect(() => {
     const container = canvas.current;
-    if (!container) return;
-    let lastWidth = 0;
-    let lastHeight = 0;
+    if (!container || !bounds) return;
     const adaptViewport = () => {
       const { clientWidth: width, clientHeight: height } = container;
-      if (!width || !height || (width === lastWidth && height === lastHeight)) return;
-      const bounds = getNodesBounds(getNodes());
-      if (!bounds.width || !bounds.height) return;
-      lastWidth = width;
-      lastHeight = height;
-      const maxZoom = ready ? MAX_ZOOM : 1;
-      onFit(getViewportForBounds(bounds, width, height, MIN_ZOOM, maxZoom, fitViewOptions.padding));
+      if (!width || !height) return;
+      const viewport = getViewportForBounds(
+        bounds,
+        width,
+        height,
+        MIN_ZOOM,
+        MAX_ZOOM,
+        fitViewOptions.padding,
+      );
+      const previous = lastFit.current;
+      if (
+        previous?.x === viewport.x &&
+        previous.y === viewport.y &&
+        previous.zoom === viewport.zoom
+      )
+        return;
+      lastFit.current = viewport;
+      onFit(viewport);
     };
     const observer = new ResizeObserver(adaptViewport);
     observer.observe(container);
@@ -121,7 +152,7 @@ function FitOnResize({
       observer.disconnect();
       window.removeEventListener("resize", adaptViewport);
     };
-  }, [canvas, ready, getNodes, getNodesBounds, onFit]);
+  }, [canvas, bounds, onFit]);
   return null;
 }
 
@@ -147,8 +178,6 @@ export function WorkflowGraph({ plan, statusOf, className, onNodeClick }: Workfl
       return {
         id: node.id,
         type: "phase",
-        initialWidth: NODE_W,
-        initialHeight: NODE_H,
         position: { x: node.index * (NODE_W + ROW_GAP), y: node.layer * (NODE_H + LAYER_GAP) },
         data: {
           name: node.name,
