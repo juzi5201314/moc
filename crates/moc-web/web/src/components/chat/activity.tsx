@@ -137,17 +137,22 @@ function RowHeader({
   onToggle: () => void;
 }) {
   return (
-    <button
-      type="button"
-      disabled={!interactive}
-      onClick={onToggle}
+    <div
       className={cn(
         "group/row flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-ui text-muted-foreground transition-colors",
-        interactive ? "hover:text-foreground" : "cursor-default",
+        interactive && "hover:text-foreground",
         // 钉住时正文从行底滚过，需要不透明背景与层级；嵌套行不钉，避免多层叠头。
-        sticky && "sticky top-0 z-10 bg-background",
+        sticky ? "sticky top-0 z-10 bg-background" : "relative",
       )}
     >
+      <button
+        type="button"
+        disabled={!interactive}
+        aria-label={target ? `${verb} ${target}` : verb}
+        aria-expanded={interactive ? open : undefined}
+        onClick={onToggle}
+        className="absolute inset-0 rounded-md"
+      />
       <span
         className={cn(
           "flex size-4 shrink-0 items-center justify-center [&_svg]:size-3.5",
@@ -168,28 +173,17 @@ function RowHeader({
       <span className={cn("flex min-w-0 items-baseline gap-2 truncate", !inlineSuffix && "flex-1")}>
         {target &&
           (onTargetClick ? (
-            // biome-ignore lint/a11y/useSemanticElements: 行内截断 span 才能嵌进 title 截断布局，语义等价于 <a>
-            <span
-              role="link"
-              tabIndex={0}
+            <button
+              type="button"
               className={cn(
-                "min-w-0 truncate text-text-tertiary hover:text-foreground",
+                "relative min-w-0 truncate text-left text-text-tertiary hover:text-foreground",
                 mono && "font-mono text-xs",
               )}
               title={target}
-              onClick={(event) => {
-                event.stopPropagation();
-                onTargetClick();
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.stopPropagation();
-                  onTargetClick();
-                }
-              }}
+              onClick={onTargetClick}
             >
               {target}
-            </span>
+            </button>
           ) : (
             <span
               className={cn(
@@ -208,7 +202,7 @@ function RowHeader({
           </span>
         )}
       </span>
-      {!inlineSuffix && action}
+      {!inlineSuffix && action && <span className="relative shrink-0">{action}</span>}
       <span className="flex shrink-0 items-center gap-1.5">
         {suffix}
         {interactive && (
@@ -220,8 +214,8 @@ function RowHeader({
           />
         )}
       </span>
-      {inlineSuffix && action}
-    </button>
+      {inlineSuffix && action && <span className="relative shrink-0">{action}</span>}
+    </div>
   );
 }
 

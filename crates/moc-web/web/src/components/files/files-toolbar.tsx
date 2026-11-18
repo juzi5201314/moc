@@ -1,7 +1,6 @@
 // 文件分页顶部：左「工作区 | 会话」分段切换，右操作按钮。
 
 import {
-  CheckIcon,
   FilePlus2Icon,
   FolderPlusIcon,
   MoreHorizontalIcon,
@@ -12,6 +11,7 @@ import { useRef } from "react";
 import { IconButton } from "@/components/common/icon-button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -57,11 +57,6 @@ export function FilesToolbar({
   const upload = (files: FileList | null) => {
     if (!files || !workspaceRoot || !cwd) return;
     void uploadFiles(sessionId, workspaceRoot, cwd, [...files]);
-  };
-
-  const toggleHidden = () => {
-    useLayout.getState().setFilesShowHidden(!hidden);
-    if (workspaceRoot) refreshExpanded(sessionId, workspaceRoot);
   };
 
   const collapseAll = () =>
@@ -123,10 +118,12 @@ export function FilesToolbar({
               </span>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem onSelect={toggleHidden}>
-                <CheckIcon className={cn("size-3.5", !hidden && "invisible")} />
+              <DropdownMenuCheckboxItem
+                checked={hidden}
+                onCheckedChange={(checked) => useLayout.getState().setFilesShowHidden(checked)}
+              >
                 {t("wsp.hidden")}
-              </DropdownMenuItem>
+              </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={collapseAll}>{t("ft.collapse")}</DropdownMenuItem>
             </DropdownMenuContent>

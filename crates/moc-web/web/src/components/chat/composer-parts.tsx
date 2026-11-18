@@ -14,7 +14,7 @@ import {
   TerminalIcon,
   XIcon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { DiffStat, diffStats } from "@/components/panels/diff-file";
 import {
@@ -28,6 +28,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { PopoverContent } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AUTONOMY } from "@/lib/autonomy";
 import { type MsgKey, useT } from "@/lib/i18n";
@@ -549,17 +550,23 @@ export type Suggestion = {
 };
 
 export function SuggestionMenu({
+  id,
+  side,
   heading,
   items,
   active,
   onPick,
   onHover,
+  inputRef,
 }: {
+  id: string;
+  side: "bottom" | "top";
   heading: string;
   items: Suggestion[];
   active: number;
   onPick: (index: number) => void;
   onHover: (index: number) => void;
+  inputRef: RefObject<HTMLTextAreaElement | null>;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -569,25 +576,43 @@ export function SuggestionMenu({
   }, [active]);
 
   return (
-    <div className="absolute inset-x-0 bottom-full z-30 mb-2 overflow-hidden rounded-xl bg-popover shadow-[var(--elevation-popover)]">
-      <div className="px-3 pt-2 pb-1 text-2xs font-medium text-text-tertiary">{heading}</div>
-      <div ref={listRef} className="max-h-64 overflow-y-auto p-1" role="listbox">
+    <PopoverContent
+      side={side}
+      align="start"
+      sideOffset={4}
+      alignOffset={8}
+      collisionPadding={12}
+      role="presentation"
+      onOpenAutoFocus={(event) => event.preventDefault()}
+      onCloseAutoFocus={(event) => event.preventDefault()}
+      onInteractOutside={(event) => {
+        if (event.target === inputRef.current) event.preventDefault();
+      }}
+      className="flex max-h-[var(--radix-popover-content-available-height)] w-[300px] max-w-[var(--radix-popover-content-available-width)] flex-col p-1.5"
+    >
+      <div className="px-2 py-1 text-2xs text-text-tertiary">{heading}</div>
+      <div
+        ref={listRef}
+        id={id}
+        className="min-h-0 max-h-64 overflow-y-auto"
+        role="listbox"
+        aria-label={heading}
+      >
         {items.map((item, index) => (
           <button
             key={item.key}
             type="button"
             role="option"
+            id={`${id}-${index}`}
             aria-selected={index === active}
             data-index={index}
-            // 按下即选中：避免 textarea 先失焦
-            onMouseDown={(event) => {
-              event.preventDefault();
-              onPick(index);
-            }}
+            tabIndex={-1}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => onPick(index)}
             onMouseMove={() => onHover(index)}
             className={cn(
-              "flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-left text-ui",
-              index === active ? "bg-accent text-foreground" : "text-muted-foreground",
+              "flex h-[30px] w-full items-center gap-2 rounded-md px-2 text-left text-ui transition-colors",
+              index === active ? "bg-accent text-foreground" : "text-popover-foreground",
             )}
           >
             {item.icon && (
@@ -595,18 +620,23 @@ export function SuggestionMenu({
                 {item.icon}
               </span>
             )}
-            <span className="shrink-0 font-mono text-xs text-foreground">{item.title}</span>
+            <span className="min-w-0 truncate">{item.title}</span>
             {item.hint && (
-              <span className="shrink-0 font-mono text-xs text-text-tertiary">{item.hint}</span>
-            )}
-            {item.detail && (
-              <span className="ml-auto min-w-0 truncate pl-3 text-xs text-text-tertiary">
-                {item.detail}
+              <span className="ml-auto min-w-0 truncate font-mono text-2xs text-text-tertiary">
+                {item.hint}
               </span>
             )}
           </button>
         ))}
       </div>
-    </div>
+      {items[active]?.detail && (
+        <p
+          className="mt-1 line-clamp-3 shrink-0 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground"
+          title={items[active].detail}
+        >
+          {items[active].detail}
+        </p>
+      )}
+    </PopoverContent>
   );
 }

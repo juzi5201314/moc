@@ -35,6 +35,8 @@ export type TreeNode = {
   kind: "dir" | "file";
   /** 目录节点已加载过的子项；未加载为 undefined。 */
   children?: TreeNode[];
+  /** 工作区目录缓存包含隐藏项时为 true。 */
+  showHidden?: boolean;
   /** 本次列举失败时的错误文本。 */
   error?: string;
   description?: string | null;
@@ -148,8 +150,10 @@ export function toggleDir(sessionId: string, root: FileRoot, node: TreeNode, ope
   const expanded = { ...files.expanded };
   expanded[node.key] = open ?? !expanded[node.key];
   patch(sessionId, (current) => ({ ...current, expanded }));
-  // 行内 node.children 可能是过期引用，以 nodes 缓存为准。
-  if (expanded[node.key] && !files.nodes[node.key]?.children) {
+  const cached = files.nodes[node.key];
+  const stale =
+    root.kind === "workspace" && cached?.showHidden !== useLayout.getState().filesShowHidden;
+  if (expanded[node.key] && (!cached?.children || stale)) {
     void loadDir(sessionId, root, node.key);
   }
 }
@@ -169,6 +173,9 @@ function nodeFromResource(entry: ResourceListResult["entries"][number]): TreeNod
 
 /** 拉取一个目录的子项并更新节点缓存。 */
 export async function loadDir(sessionId: string, root: FileRoot, key: string): Promise<TreeNode[]> {
+  const showHidden = root.kind === "workspace" ? useLayout.getState().filesShowHidden : undefined;
+  const isCurrent = () =>
+    showHidden === undefined || showHidden === useLayout.getState().filesShowHidden;
   patch(sessionId, (files) => ({ ...files, loading: { ...files.loading, [key]: true } }));
   try {
     let children: TreeNode[];
@@ -176,7 +183,7 @@ export async function loadDir(sessionId: string, root: FileRoot, key: string): P
       const result = await rpc.call<FsListDirResult>("fs/list_dir", {
         path: key,
         include_files: true,
-        show_hidden: useLayout.getState().filesShowHidden,
+        show_hidden: showHidden,
       });
       children = result.entries.map(nodeFromFs);
     } else {
@@ -186,17 +193,20 @@ export async function loadDir(sessionId: string, root: FileRoot, key: string): P
       });
       children = result.entries.map(nodeFromResource);
     }
+    if (!isCurrent()) return [];
     patch(sessionId, (files) => {
       const nodes = { ...files.nodes };
       nodes[key] = {
         ...(nodes[key] ?? { key, name: key, kind: "dir" }),
         children,
+        showHidden,
         error: undefined,
       };
       return { ...files, nodes, loading: { ...files.loading, [key]: false } };
     });
     return children;
   } catch (error) {
+    if (!isCurrent()) return [];
     const message = errorText(error);
     patch(sessionId, (files) => {
       const nodes = { ...files.nodes };
@@ -207,12 +217,16 @@ export async function loadDir(sessionId: string, root: FileRoot, key: string): P
   }
 }
 
-/** 已展开目录全部重拉（自动刷新用，调用方负责 debounce）。 */
+/** 重拉当前根及同源的已展开目录。 */
 export function refreshExpanded(sessionId: string, root: FileRoot): void {
   const files = session(useFiles.getState(), sessionId);
-  for (const key of Object.keys(files.expanded)) {
-    if (files.expanded[key]) void loadDir(sessionId, root, key);
+  const rootKey = root.kind === "workspace" ? root.cwd : "";
+  const keys = new Set([rootKey]);
+  for (const [key, expanded] of Object.entries(files.expanded)) {
+    const isResource = /^[\w+.-]+:\/\//.test(key);
+    if (expanded && (root.kind === "session") === isResource) keys.add(key);
   }
+  for (const key of keys) void loadDir(sessionId, root, key);
 }
 
 // ---------- 标签与文件操作 ----------

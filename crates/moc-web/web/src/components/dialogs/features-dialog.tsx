@@ -21,6 +21,15 @@ const STAGE_LABEL: Record<string, MsgKey> = {
   stable: "feat.stable",
   deprecated: "feat.deprecated",
 };
+const FEATURE_SUMMARY = new Map<string, MsgKey>([
+  ["features.item.clm", "feat.summary_clm"],
+  ["features.item.ptc", "feat.summary_ptc"],
+  ["features.item.workflow", "feat.summary_workflow"],
+  ["features.item.plugins", "feat.summary_plugins"],
+  ["features.item.mcp", "feat.summary_mcp"],
+  ["features.item.skills", "feat.summary_skills"],
+  ["features.item.web_fetch", "feat.summary_web_fetch"],
+]);
 
 export function FeaturesDialog() {
   const t = useT();
@@ -47,7 +56,7 @@ export function FeaturesDialog() {
           <DialogTitle>{t("feat.title")}</DialogTitle>
           <DialogDescription>{t("feat.desc")}</DialogDescription>
         </DialogHeader>
-        <div className="min-h-0 overflow-y-auto">
+        <div className="min-h-0 overflow-auto">
           {error ? (
             <p role="alert" className="text-sm text-destructive">
               {t("dr.fetch_failed", { error })}
@@ -68,30 +77,33 @@ export function FeaturesDialog() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
-                {features.map((row) => (
-                  <tr key={row.key}>
-                    <td className="py-2 pr-3 font-mono text-xs">{row.key}</td>
-                    <td className="py-2 pr-3">
-                      <Badge variant="secondary" className="font-normal">
-                        {STAGE_LABEL[row.stage] ? t(STAGE_LABEL[row.stage]) : row.stage}
-                      </Badge>
-                    </td>
-                    <td className="py-2 pr-3">
-                      <Badge variant={row.enabled ? "brand" : "outline"} className="font-normal">
-                        {row.enabled ? t("feat.on") : t("feat.off")}
-                      </Badge>
-                    </td>
-                    <td className="py-2 pr-3 whitespace-nowrap text-xs text-muted-foreground">
-                      {row.contextTokens !== null ? `~${row.contextTokens} tok` : t("feat.env")}
-                    </td>
-                    <td className="py-2 text-xs text-muted-foreground">
-                      {row.summary}
-                      <span className="ml-1.5 text-text-tertiary">
-                        {t("feat.toggle_wrap", { toggle: row.toggle })}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {features.map((row) => {
+                  const summary = FEATURE_SUMMARY.get(row.summary);
+                  return (
+                    <tr key={row.key}>
+                      <td className="py-2 pr-3 font-mono text-xs">{row.key}</td>
+                      <td className="py-2 pr-3">
+                        <Badge variant="secondary" className="font-normal">
+                          {STAGE_LABEL[row.stage] ? t(STAGE_LABEL[row.stage]) : row.stage}
+                        </Badge>
+                      </td>
+                      <td className="py-2 pr-3">
+                        <Badge variant={row.enabled ? "brand" : "outline"} className="font-normal">
+                          {row.enabled ? t("feat.on") : t("feat.off")}
+                        </Badge>
+                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap text-xs text-muted-foreground">
+                        {row.contextTokens !== null ? `~${row.contextTokens} tok` : t("feat.env")}
+                      </td>
+                      <td className="py-2 text-xs text-muted-foreground">
+                        {summary ? t(summary) : row.summary}
+                        <span className="ml-1.5 text-text-tertiary">
+                          {t("feat.toggle_wrap", { toggle: row.toggle })}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

@@ -296,14 +296,16 @@ it("虚拟轮次以布局偏移定位，展开过程中的工具标题在正文�
     );
     await act(async () => {});
     fireEvent.click(thread.getByRole("button", { name: /过程/ }));
-    const header = thread.getByRole("button", { name: /printf CHECK/ });
+    const toggle = thread.getByRole("button", { name: /printf CHECK/ });
+    const header = toggle.parentElement;
+    if (!header) throw new Error("缺少工具标题行");
     const row = header.closest<HTMLElement>("[data-index]");
     expect(row?.style.top).toBe("40px");
     expect(row?.style.transform).toBe("");
     expect(header.classList.contains("sticky")).toBe(true);
     expect(header.parentElement?.firstElementChild).toBe(header);
     if (rows > 0) {
-      fireEvent.click(header);
+      fireEvent.click(toggle);
       expect(thread.container.textContent).toContain("CHECK-0");
       expect(header.parentElement?.firstElementChild).toBe(header);
     }

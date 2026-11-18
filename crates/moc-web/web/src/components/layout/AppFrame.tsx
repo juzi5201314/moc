@@ -1,11 +1,11 @@
-// 三栏骨架：侧栏近白底，主舞台纯白贴边铺满，两者之间只有一条发丝线。
+// 三栏骨架：导航轨在外层，工作区侧栏与主舞台拼成一张内嵌窗框。
 // 窄窗口下侧栏与检查面板都改成浮层，主舞台保持完整宽度。
 
 import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { useT } from "@/lib/i18n";
 import { useNarrow } from "@/lib/use-narrow";
 import { cn } from "@/lib/utils";
-import { useLayout } from "@/store/layout";
+import { SIDEBAR_DEFAULT, useLayout } from "@/store/layout";
 
 type AppFrameProps = {
   sidebar: ReactNode;
@@ -47,6 +47,7 @@ function ResizeHandle({
     <div
       role="separator"
       aria-orientation="vertical"
+      data-resizing={dragging || undefined}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -86,17 +87,20 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
   }, [narrow, setSidebarOverlay]);
 
   return (
-    <div className="flex h-dvh w-screen overflow-hidden bg-sidebar text-foreground">
+    <div className="flex h-dvh w-screen overflow-hidden bg-chrome text-foreground md:py-1.5 md:pr-1">
       {narrow ? (
         sidebarVisible && (
           <>
             <button
               type="button"
               aria-label={t("layout.close_sidebar")}
-              className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px] animate-in fade-in-0"
+              className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-160"
               onClick={() => setSidebarOverlay(false)}
             />
-            <aside className="fixed inset-y-0 left-0 z-50 w-[280px] border-r border-border-subtle bg-sidebar shadow-[var(--elevation-popover)] animate-in slide-in-from-left-4 duration-200">
+            <aside
+              style={{ width: SIDEBAR_DEFAULT }}
+              className="fixed inset-y-0 left-0 z-50 max-w-[calc(100%-24px)] overflow-hidden rounded-r-xl bg-sidebar shadow-[var(--elevation-popover)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-left-2 motion-safe:duration-160"
+            >
               {sidebar}
             </aside>
           </>
@@ -104,12 +108,13 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
       ) : (
         <aside
           style={{ width: sidebarVisible ? sidebarWidth : 0 }}
-          className="relative h-full shrink-0 overflow-visible transition-[width] duration-200 ease-out"
+          className="relative h-full shrink-0 overflow-visible motion-safe:transition-[width] motion-safe:duration-160 motion-safe:ease-out has-[[data-resizing]]:transition-none"
         >
           <div
             style={{ width: sidebarWidth }}
+            inert={!sidebarVisible}
             className={cn(
-              "h-full overflow-hidden transition-opacity duration-150",
+              "h-full overflow-hidden motion-safe:transition-opacity motion-safe:duration-150",
               sidebarVisible ? "opacity-100" : "pointer-events-none opacity-0",
             )}
           >
@@ -123,8 +128,8 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
 
       <div
         className={cn(
-          "relative flex min-w-0 flex-1 overflow-hidden bg-background",
-          !narrow && sidebarVisible && "border-l border-border",
+          "relative flex min-w-0 flex-1 overflow-hidden bg-background md:rounded-r-xl",
+          !narrow && sidebarVisible ? "border-l border-border" : "md:ml-1.5 md:rounded-l-xl",
         )}
       >
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">{main}</main>
@@ -135,17 +140,17 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
               <button
                 type="button"
                 aria-label={t("layout.close_inspector")}
-                className="absolute inset-0 z-30 bg-black/20 animate-in fade-in-0"
+                className="absolute inset-0 z-30 bg-black/20 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-160"
                 onClick={() => toggleRightbar(false)}
               />
-              <aside className="absolute inset-y-0 right-0 z-40 w-[min(420px,92%)] border-l border-border-subtle bg-background shadow-[var(--elevation-popover)] animate-in slide-in-from-right-4 duration-200">
+              <aside className="absolute inset-y-0 right-0 z-40 w-[min(420px,92%)] overflow-hidden rounded-l-xl bg-panel shadow-[var(--elevation-popover)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-right-2 motion-safe:duration-160">
                 {rightbar}
               </aside>
             </>
           ) : (
             <aside
               style={{ width: rightbarWidth }}
-              className="relative h-full shrink-0 border-l border-border-subtle bg-background"
+              className="relative h-full max-w-[max(320px,calc(100%-360px))] shrink-0 border-l border-border bg-panel"
             >
               <ResizeHandle side="right" width={rightbarWidth} onResize={setRightbarWidth} />
               {rightbar}

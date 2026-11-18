@@ -45,6 +45,7 @@ import {
   loadDir,
   openFile,
   parentPath,
+  refreshExpanded,
   setStackedView,
   startNaming,
   type TreeNode,
@@ -53,6 +54,7 @@ import {
   uploadFiles,
   useFiles,
 } from "@/store/files";
+import { useLayout } from "@/store/layout";
 import { openTerminal } from "@/store/terminal";
 import { useTranscript } from "@/store/transcript";
 
@@ -205,18 +207,22 @@ export function FileTree({
   const composer = useComposer();
 
   const workspaceCwd = workspaceRoot?.kind === "workspace" ? workspaceRoot.cwd : "";
-  const fileRoot: FileRoot =
-    root === "workspace"
-      ? { kind: "workspace", cwd: workspaceCwd }
-      : { kind: "session", sessionId };
+  const fileRoot = useMemo<FileRoot>(
+    () =>
+      root === "workspace"
+        ? { kind: "workspace", cwd: workspaceCwd }
+        : { kind: "session", sessionId },
+    [root, workspaceCwd, sessionId],
+  );
   roots[sessionId] = fileRoot;
 
-  // 根节点进入即加载。
+  const showHidden = useLayout((state) => root === "workspace" && state.filesShowHidden);
+  // 切根或切换隐藏文件设置后重新加载可见目录。
   const rootKey = root === "workspace" ? workspaceCwd : "";
-  // biome-ignore lint/correctness/useExhaustiveDependencies: fileRoot 由 root/cwd 派生，重复依赖会重复拉取
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 监听隐藏文件设置，loadDir 从 store 读
   useEffect(() => {
-    if (root === "session" || rootKey) void loadDir(sessionId, fileRoot, rootKey);
-  }, [sessionId, root, rootKey]);
+    if (fileRoot.kind === "session" || fileRoot.cwd) refreshExpanded(sessionId, fileRoot);
+  }, [sessionId, fileRoot, showHidden]);
 
   const tree = files?.nodes[rootKey];
   const [selected, setSelected] = useState<string | null>(null);

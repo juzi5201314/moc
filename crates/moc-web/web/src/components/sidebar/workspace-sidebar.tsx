@@ -15,10 +15,10 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
-import { IconButton, Kbd } from "@/components/common/icon-button";
+import { IconButton } from "@/components/common/icon-button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,7 +35,7 @@ import { ErrorCode, type RpcError } from "@/protocol/errors";
 import type { ConnectionStatus } from "@/protocol/rpc";
 import { type InitializeResult, PROTOCOL_VERSION, type SessionInfo } from "@/protocol/types";
 import { useConnection } from "@/store/connection";
-import { useLayout } from "@/store/layout";
+import { NAV_RAIL_WIDTH, useLayout } from "@/store/layout";
 import { createQuickSession, openSession, renameSession } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
 import { allSessions, groupWorkspaces, useSessions } from "@/store/sessions";
@@ -132,29 +132,31 @@ function NavRow({
   icon,
   label,
   hint,
+  active,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
   hint?: ReactNode;
+  active?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-current={active || undefined}
       className={cn(
         ROW,
-        "group/nav text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-foreground",
+        "group/nav text-sidebar-foreground hover:bg-sidebar-accent",
+        active && "bg-sidebar-accent",
       )}
     >
       <span className="flex size-4 items-center justify-center text-muted-foreground group-hover/nav:text-foreground [&_svg]:size-[15px]">
         {icon}
       </span>
       <span className="flex-1 truncate text-left">{label}</span>
-      {hint && (
-        <span className="opacity-0 transition-opacity group-hover/nav:opacity-100">{hint}</span>
-      )}
+      {hint && <span className="shrink-0">{hint}</span>}
     </button>
   );
 }
@@ -206,244 +208,262 @@ export function WorkspaceSidebar() {
   };
 
   return (
-    <nav className="flex h-full w-full flex-col text-sidebar-foreground select-none">
-      <div className="flex h-12 shrink-0 items-center justify-between pr-2 pl-4">
-        <div className="flex items-center gap-2">
-          <span className="flex size-5 items-center justify-center rounded-[6px] bg-foreground text-2xs font-bold tracking-tight text-background">
+    <nav className="flex h-full w-full text-sidebar-foreground select-none">
+      <div
+        style={{ width: NAV_RAIL_WIDTH }}
+        className="flex shrink-0 flex-col items-center gap-1.5 bg-chrome pt-1 pb-2"
+      >
+        <div
+          aria-hidden="true"
+          className="flex size-8 items-center justify-center rounded-lg bg-accent text-foreground"
+        >
+          <span className="flex size-[19px] items-center justify-center rounded-[5px] bg-foreground text-xs font-semibold text-background">
             m
           </span>
-          <span className="text-sm font-semibold tracking-tight">moc</span>
         </div>
+        <IconButton
+          label={t("common.search")}
+          side="right"
+          size="md"
+          active={searching}
+          onClick={() => (searching ? closeSearch() : setSearching(true))}
+        >
+          <SearchIcon />
+        </IconButton>
+        <IconButton
+          label={t("sd.plugins")}
+          side="right"
+          size="md"
+          onClick={() => openSettings("plugins")}
+        >
+          <PuzzleIcon />
+        </IconButton>
+        <div className="mt-auto" />
+        <IconButton label={t("sb.settings")} side="right" size="md" onClick={() => openSettings()}>
+          <SettingsIcon />
+        </IconButton>
         <IconButton
           label={t("layout.close_sidebar")}
           shortcut="Ctrl B"
+          side="right"
+          size="md"
           onClick={() => useLayout.getState().toggleSidebar()}
         >
           <PanelLeftCloseIcon />
         </IconButton>
       </div>
 
-      <div className="shrink-0 space-y-px px-2">
-        <NavRow
-          icon={<SquarePenIcon />}
-          label={t("hd.new")}
-          hint={<Kbd>Alt N</Kbd>}
-          onClick={() => createQuickSession()}
-        />
-        <WorkflowNavRow />
-        {searching ? (
-          <div className={cn(ROW, "bg-sidebar-accent")}>
-            <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
-            <input
-              // biome-ignore lint/a11y/noAutofocus: 搜索行由用户点击展开，立即可输入
-              autoFocus
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => event.key === "Escape" && closeSearch()}
-              placeholder={t("sb.filter_ph")}
-              className="min-w-0 flex-1 bg-transparent text-ui outline-none"
-            />
-            <button
-              type="button"
-              aria-label={t("sb.filter_close")}
-              onClick={closeSearch}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <XIcon className="size-3.5" />
-            </button>
-          </div>
-        ) : (
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-l-xl bg-sidebar">
+        <div className="flex h-11 shrink-0 items-center justify-between pr-3 pl-4">
+          <h2 className="text-sm font-medium">{t("sb.sessions")}</h2>
+          <IconButton label={t("sb.add_workspace")} size="xs" onClick={addWorkspace}>
+            <FolderPlusIcon />
+          </IconButton>
+        </div>
+        <div className="shrink-0 space-y-1 px-2">
           <NavRow
-            icon={<SearchIcon />}
-            label={t("common.search")}
-            hint={<Kbd>Ctrl K</Kbd>}
-            onClick={() => setSearching(true)}
+            icon={<SquarePenIcon />}
+            label={t("hd.new")}
+            active={active === "draft-session"}
+            onClick={() => createQuickSession()}
           />
-        )}
-        <NavRow
-          icon={<PuzzleIcon />}
-          label={t("sd.plugins")}
-          onClick={() => openSettings("plugins")}
-        />
-      </div>
+          <WorkflowNavRow />
+          {searching && (
+            <div className={cn(ROW, "bg-sidebar-accent")}>
+              <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
+              <input
+                // biome-ignore lint/a11y/noAutofocus: 搜索行由用户点击展开，立即可输入
+                autoFocus
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => event.key === "Escape" && closeSearch()}
+                placeholder={t("sb.filter_ph")}
+                className="min-w-0 flex-1 bg-transparent text-ui outline-none"
+              />
+              <button
+                type="button"
+                aria-label={t("sb.filter_close")}
+                onClick={closeSearch}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <XIcon className="size-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
 
-      <div className="mt-4 flex h-7 shrink-0 items-center justify-between pr-2 pl-4">
-        <span className="text-xs font-medium text-text-tertiary">{t("sb.workspaces")}</span>
-        <IconButton label={t("sb.add_workspace")} size="xs" onClick={addWorkspace}>
-          <FolderPlusIcon />
-        </IconButton>
-      </div>
+        <div className="mt-2 flex h-7 shrink-0 items-center pl-4">
+          <span className="text-xs text-text-tertiary">{t("sb.workspaces")}</span>
+        </div>
 
-      {/* 原生滚动容器：Radix ScrollArea 的 table 布局会让 truncate 失效 */}
-      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-2">
-        {groups.length === 0 && shownContent.length === 0 ? (
-          <div className="px-2 py-8 text-center text-xs leading-5 text-text-tertiary">
-            {query ? t("sb.no_match") : t("sb.empty")}
-          </div>
-        ) : (
-          <>
-            {shownContent.length > 0 && (
-              <div className="mb-1">
-                <div className="flex h-7 items-center px-2 text-xs font-medium text-text-tertiary">
-                  {t("sb.content_hits")}
-                </div>
-                {shownContent.map((hit) => (
-                  <button
-                    key={hit.session.id}
-                    type="button"
-                    onClick={() => void openSession(hit.session.id)}
-                    className={cn(
-                      ROW,
-                      "h-auto flex-col items-start gap-0 py-1.5 pl-[26px] text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
-                    )}
-                  >
-                    <span className="w-full truncate">{hit.session.title || t("hd.untitled")}</span>
-                    <span className="w-full truncate text-xs text-text-tertiary">
-                      {hit.matches[0]?.snippet}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {groups.map((group) => {
-              const isFolded = Boolean(folded[group.cwd]);
-              const expandedGroup = Boolean(expanded[group.cwd]);
-              // 搜索时先截到每组 SEARCH_VISIBLE_SESSIONS 条，避免一次查询挂满整棵树。
-              const cap = expandedGroup
-                ? Number.POSITIVE_INFINITY
-                : query
-                  ? SEARCH_VISIBLE_SESSIONS
-                  : VISIBLE_SESSIONS;
-              const visible = group.sessions.slice(0, cap);
-              const hidden = group.sessions.length - visible.length;
-              const hasDraft = draft?.cwd === group.cwd;
-              return (
-                <div key={group.cwd} className="mb-1">
-                  <div
-                    className={cn(ROW, "group/ws cursor-pointer pr-1 hover:bg-sidebar-accent")}
-                    title={group.cwd}
-                  >
+        {/* 原生滚动容器：Radix ScrollArea 的 table 布局会让 truncate 失效 */}
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-2">
+          {groups.length === 0 && shownContent.length === 0 ? (
+            <div className="px-2 py-8 text-center text-xs leading-5 text-text-tertiary">
+              {query ? t("sb.no_match") : t("sb.empty")}
+            </div>
+          ) : (
+            <>
+              {shownContent.length > 0 && (
+                <div className="mb-1">
+                  <div className="flex h-7 items-center px-2 text-xs font-medium text-text-tertiary">
+                    {t("sb.content_hits")}
+                  </div>
+                  {shownContent.map((hit) => (
                     <button
+                      key={hit.session.id}
                       type="button"
-                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                      onClick={() => setFolded((state) => ({ ...state, [group.cwd]: !isFolded }))}
+                      onClick={() => void openSession(hit.session.id)}
+                      className={cn(
+                        ROW,
+                        "h-auto flex-col items-start gap-0 py-1.5 pl-[26px] text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
+                      )}
                     >
-                      <ChevronRightIcon
-                        className={cn(
-                          "size-3.5 shrink-0 text-text-tertiary transition-transform duration-150",
-                          !isFolded && "rotate-90",
-                        )}
-                      />
-                      <span className="truncate font-medium text-sidebar-foreground/90">
-                        {group.name}
+                      <span className="w-full truncate">
+                        {hit.session.title || t("hd.untitled")}
+                      </span>
+                      <span className="w-full truncate text-xs text-text-tertiary">
+                        {hit.matches[0]?.snippet}
                       </span>
                     </button>
-                    <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/ws:opacity-100 has-[[data-state=open]]:opacity-100">
-                      <IconButton
-                        label={t("sb.new_here")}
-                        size="xs"
-                        onClick={() => createQuickSession(group.cwd)}
+                  ))}
+                </div>
+              )}
+              {groups.map((group) => {
+                const isFolded = Boolean(folded[group.cwd]);
+                const expandedGroup = Boolean(expanded[group.cwd]);
+                // 搜索时先截到每组 SEARCH_VISIBLE_SESSIONS 条，避免一次查询挂满整棵树。
+                const cap = expandedGroup
+                  ? Number.POSITIVE_INFINITY
+                  : query
+                    ? SEARCH_VISIBLE_SESSIONS
+                    : VISIBLE_SESSIONS;
+                const visible = group.sessions.slice(0, cap);
+                const hidden = group.sessions.length - visible.length;
+                const hasDraft = draft?.cwd === group.cwd;
+                return (
+                  <div key={group.cwd} className="mb-1">
+                    <div
+                      className={cn(ROW, "group/ws cursor-pointer pr-1 hover:bg-sidebar-accent")}
+                      title={group.cwd}
+                    >
+                      <button
+                        type="button"
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                        onClick={() => setFolded((state) => ({ ...state, [group.cwd]: !isFolded }))}
                       >
-                        <PlusIcon />
-                      </IconButton>
-                      <WorkspaceMenu cwd={group.cwd} removable={workspaces.includes(group.cwd)} />
-                    </div>
-                  </div>
-
-                  {!isFolded && (
-                    <div className="mt-px space-y-px">
-                      {hasDraft && (
-                        <button
-                          type="button"
-                          onClick={() => useTabs.getState().add("draft-session")}
+                        <ChevronRightIcon
                           className={cn(
-                            ROW,
-                            "pl-[26px]",
-                            active === "draft-session"
-                              ? "bg-sidebar-accent text-sidebar-foreground"
-                              : "text-muted-foreground hover:bg-sidebar-accent",
+                            "size-3.5 shrink-0 text-text-tertiary transition-transform duration-150",
+                            !isFolded && "rotate-90",
                           )}
-                        >
-                          <span className="truncate italic">{t("hd.new")}</span>
-                        </button>
-                      )}
-                      {visible.map((session) => (
-                        <SessionRow
-                          key={session.id}
-                          session={session}
-                          active={session.id === active}
                         />
-                      ))}
-                      {hidden > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => setExpanded((state) => ({ ...state, [group.cwd]: true }))}
-                          className={cn(
-                            ROW,
-                            "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
-                          )}
+                        <span className="truncate font-medium text-sidebar-foreground/90">
+                          {group.name}
+                        </span>
+                      </button>
+                      <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/ws:opacity-100 group-focus-within/ws:opacity-100 has-[[data-state=open]]:opacity-100 pointer-coarse:opacity-100">
+                        <IconButton
+                          label={t("sb.new_here")}
+                          size="xs"
+                          onClick={() => createQuickSession(group.cwd)}
                         >
-                          {t("sb.more", { n: hidden })}
-                        </button>
-                      )}
-                      {expanded[group.cwd] &&
-                        !query &&
-                        group.sessions.length > VISIBLE_SESSIONS && (
+                          <PlusIcon />
+                        </IconButton>
+                        <WorkspaceMenu cwd={group.cwd} removable={workspaces.includes(group.cwd)} />
+                      </div>
+                    </div>
+
+                    {!isFolded && (
+                      <div className="mt-px space-y-px">
+                        {hasDraft && (
+                          <button
+                            type="button"
+                            onClick={() => useTabs.getState().add("draft-session")}
+                            className={cn(
+                              ROW,
+                              "pl-[26px]",
+                              active === "draft-session"
+                                ? "bg-sidebar-accent text-sidebar-foreground"
+                                : "text-muted-foreground hover:bg-sidebar-accent",
+                            )}
+                          >
+                            <span className="truncate italic">{t("hd.new")}</span>
+                          </button>
+                        )}
+                        {visible.map((session) => (
+                          <SessionRow
+                            key={session.id}
+                            session={session}
+                            active={session.id === active}
+                          />
+                        ))}
+                        {hidden > 0 && (
                           <button
                             type="button"
                             onClick={() =>
-                              setExpanded((state) => ({ ...state, [group.cwd]: false }))
+                              setExpanded((state) => ({ ...state, [group.cwd]: true }))
                             }
                             className={cn(
                               ROW,
                               "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
                             )}
                           >
-                            {t("th.collapse")}
+                            {t("sb.more", { n: hidden })}
                           </button>
                         )}
-                      {!hasDraft && group.sessions.length === 0 && (
-                        <div className="py-1.5 pl-[26px] text-xs text-text-tertiary">
-                          {t("sb.no_sessions")}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </>
-        )}
-      </div>
+                        {expanded[group.cwd] &&
+                          !query &&
+                          group.sessions.length > VISIBLE_SESSIONS && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpanded((state) => ({ ...state, [group.cwd]: false }))
+                              }
+                              className={cn(
+                                ROW,
+                                "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
+                              )}
+                            >
+                              {t("th.collapse")}
+                            </button>
+                          )}
+                        {!hasDraft && group.sessions.length === 0 && (
+                          <div className="py-1.5 pl-[26px] text-xs text-text-tertiary">
+                            {t("sb.no_sessions")}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
 
-      <div className="flex shrink-0 items-center gap-1 px-2 py-2">
-        <button
-          type="button"
-          onClick={() => openSettings()}
-          className={cn(ROW, "flex-1 text-sidebar-foreground/85 hover:bg-sidebar-accent")}
-        >
-          <SettingsIcon className="size-4 text-muted-foreground" />
-          <span>{t("sb.settings")}</span>
-        </button>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="flex size-8 items-center justify-center">
-              <span
-                className={cn(
-                  "size-2 rounded-full",
-                  status === "online"
-                    ? "bg-success"
-                    : status === "connecting"
-                      ? "animate-pulse bg-warn"
-                      : "bg-destructive",
-                )}
-              />
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            {connectionTip(status, handshakeError, everOnline, server)}
-          </TooltipContent>
-        </Tooltip>
+        <div className="flex shrink-0 items-center px-4 py-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex h-6 items-center gap-2 text-xs font-medium text-muted-foreground">
+                <span
+                  className={cn(
+                    "size-2 rounded-full",
+                    status === "online"
+                      ? "bg-success"
+                      : status === "connecting"
+                        ? "animate-pulse bg-warn"
+                        : "bg-destructive",
+                  )}
+                />
+                moc
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              {connectionTip(status, handshakeError, everOnline, server)}
+            </TooltipContent>
+          </Tooltip>
+        </div>
       </div>
     </nav>
   );
@@ -491,6 +511,8 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
   const running = useTranscript((state) => Boolean(state.activity[session.id]?.running));
   const attention = useTranscript((state) => attentionCount(state, session.id) > 0);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const renamingFromMenu = useRef(false);
+  const sessionButton = useRef<HTMLButtonElement>(null);
   const title = session.title || t("hd.untitled");
 
   const commitRename = () => {
@@ -509,16 +531,21 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
 
   if (renaming !== null) {
     return (
-      <div className={cn(ROW, "bg-sidebar-accent pl-[26px]")}>
+      <div className={cn(ROW, "h-11 bg-sidebar-accent pl-[26px]")}>
         <input
           // biome-ignore lint/a11y/noAutofocus: 进入重命名后立即编辑
           autoFocus
+          aria-label={t("hd.rename")}
           value={renaming}
           onChange={(event) => setRenaming(event.target.value)}
           onFocus={(event) => event.currentTarget.select()}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
             if (event.key === "Enter") commitRename();
-            if (event.key === "Escape") setRenaming(null);
+            else if (event.key === "Escape") setRenaming(null);
+            else return;
+            event.preventDefault();
+            requestAnimationFrame(() => sessionButton.current?.focus());
           }}
           onBlur={commitRename}
           className="min-w-0 flex-1 bg-transparent text-ui outline-none"
@@ -531,77 +558,102 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
     <div
       className={cn(
         ROW,
-        "group/session relative pr-1 pl-[26px] has-[[data-state=open]]:bg-sidebar-accent",
+        "group/session relative h-11 gap-2 pr-1 pl-2.5 has-[[data-state=open]]:bg-sidebar-accent",
         active
           ? "bg-sidebar-accent text-sidebar-foreground"
           : "text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
       )}
     >
       <button
+        ref={sessionButton}
         type="button"
         onClick={() => void openSession(session.id)}
         onDoubleClick={() => setRenaming(title)}
         className="absolute inset-0 rounded-md"
         aria-label={title}
+        title={title}
         aria-current={active || undefined}
       />
-      <span className="pointer-events-none min-w-0 flex-1 truncate" title={title}>
-        {title}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none mt-0.5 flex size-3 shrink-0 self-center items-center justify-center"
+      >
+        {running ? (
+          <span className="size-2.5 rounded-full border border-text-tertiary/40 border-t-foreground motion-safe:animate-spin" />
+        ) : (
+          <span
+            className={cn(
+              "rounded-full",
+              attention ? "size-1.5 bg-warn" : "size-1 bg-text-tertiary/40",
+            )}
+          />
+        )}
       </span>
-      {/* 时间与菜单共用一格：用 visibility 切换，菜单打开时锚点仍保有盒子，Radix 才能正确定位 */}
-      <span className="relative flex h-6 min-w-6 shrink-0 items-center justify-end">
-        <span className="pointer-events-none flex items-center group-hover/session:invisible group-has-[[data-state=open]]/session:invisible">
-          {running ? (
-            <span className="moc-dots flex gap-[3px]">
-              <span className="size-1 rounded-full bg-brand" />
-              <span className="size-1 rounded-full bg-brand" />
-              <span className="size-1 rounded-full bg-brand" />
-            </span>
-          ) : attention ? (
-            <span className="size-1.5 rounded-full bg-warn" title={t("sb.attention")} />
-          ) : (
-            <span className="text-2xs tabular-nums text-text-tertiary">
-              {relativeTime(session.updated_at_ms)}
-            </span>
+      <span className="pointer-events-none flex min-w-0 flex-1 flex-col leading-tight">
+        <span className="truncate text-sidebar-foreground">{title}</span>
+        <span
+          className={cn(
+            "mt-0.5 truncate text-xs tabular-nums",
+            attention && !running ? "text-warn" : "text-text-tertiary",
           )}
+        >
+          {running
+            ? t("sb.running")
+            : attention
+              ? t("sb.attention")
+              : relativeTime(session.updated_at_ms)}
         </span>
-        <div className="invisible absolute inset-y-0 right-0 flex items-center group-hover/session:visible group-has-[[data-state=open]]/session:visible">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label={t("sb.session_actions")}
-                className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                <MoreHorizontalIcon className="size-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-44">
-              <DropdownMenuItem onSelect={() => setRenaming(title)}>
-                <PencilIcon />
-                {t("hd.rename")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  void navigator.clipboard.writeText(session.id);
-                  toast.success(t("hd.id_copied"));
-                }}
-              >
-                <CopyIcon />
-                {t("hd.copy_id")}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant="destructive"
-                onSelect={() => useUi.getState().set({ confirmDelete: { id: session.id, title } })}
-              >
-                <Trash2Icon />
-                {t("common.delete")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
       </span>
+      <div className="pointer-events-none relative shrink-0 opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100 group-has-[[data-state=open]]/session:pointer-events-auto group-has-[[data-state=open]]/session:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label={t("sb.session_actions")}
+              className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <MoreHorizontalIcon className="size-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            className="w-44"
+            onCloseAutoFocus={(event) => {
+              if (!renamingFromMenu.current) return;
+              // 等菜单关闭再挂载输入框，避免菜单的焦点管理抢回焦点。
+              event.preventDefault();
+              renamingFromMenu.current = false;
+              setRenaming(title);
+            }}
+          >
+            <DropdownMenuItem
+              onSelect={() => {
+                renamingFromMenu.current = true;
+              }}
+            >
+              <PencilIcon />
+              {t("hd.rename")}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                void navigator.clipboard.writeText(session.id);
+                toast.success(t("hd.id_copied"));
+              }}
+            >
+              <CopyIcon />
+              {t("hd.copy_id")}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => useUi.getState().set({ confirmDelete: { id: session.id, title } })}
+            >
+              <Trash2Icon />
+              {t("common.delete")}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </div>
   );
 }

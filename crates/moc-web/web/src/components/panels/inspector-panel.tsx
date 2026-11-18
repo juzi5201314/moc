@@ -37,8 +37,8 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <div className="flex h-full w-full min-w-0 flex-col bg-background text-foreground">
-      <div className="flex h-12 shrink-0 items-center gap-1 border-b border-border-subtle pr-2 pl-2">
+    <div className="flex h-full w-full min-w-0 flex-col bg-panel text-foreground">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border-subtle px-2">
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]">
           {TABS.map((item) => {
             const count = counts[item.id] ?? 0;
@@ -48,10 +48,10 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
                 type="button"
                 onClick={() => useLayout.getState().openInspector(item.id)}
                 className={cn(
-                  "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-sm transition-colors",
+                  "inline-flex h-[30px] shrink-0 items-center gap-1.5 rounded-md px-2.5 text-ui transition-colors",
                   tab === item.id
                     ? "bg-accent font-medium text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
                 )}
               >
                 {t(item.label)}

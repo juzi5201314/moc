@@ -6,7 +6,7 @@ import {
   OctagonXIcon,
   TerminalIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -52,7 +52,8 @@ export function JobsDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const t = useT();
-  const jobs = useTranscript((state) => Object.values(state.bySession[sessionId]?.jobs ?? {}));
+  const jobMap = useTranscript((state) => state.bySession[sessionId]?.jobs);
+  const jobs = useMemo(() => Object.values(jobMap ?? {}), [jobMap]);
   const [selected, setSelected] = useState<JobInfo | null>(null);
   const [output, setOutput] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -113,40 +114,42 @@ export function JobsDialog({
             </div>
           ) : (
             jobs.map((job) => (
-              <button
-                type="button"
+              <div
                 key={job.job_id}
-                onClick={() => loadOutput(job)}
-                className="group flex w-full items-center gap-3 rounded-lg border border-transparent px-3 py-2.5 text-left hover:border-border-subtle hover:bg-accent/40"
+                className="flex items-center rounded-lg border border-transparent hover:border-border-subtle hover:bg-accent/40"
               >
-                <TerminalIcon className={cn("size-4 shrink-0", statusClass(job))} />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2 text-sm">
-                    <span className="font-mono text-xs text-text-tertiary">{job.job_id}</span>
-                    <span className={cn("text-xs", statusClass(job))}>{statusLabel(job)}</span>
-                    <span className="text-xs tabular-nums text-text-tertiary">
-                      {elapsed(job, now)}
+                <button
+                  type="button"
+                  onClick={() => loadOutput(job)}
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-3 py-2.5 text-left"
+                >
+                  <TerminalIcon className={cn("size-4 shrink-0", statusClass(job))} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2 text-sm">
+                      <span className="font-mono text-xs text-text-tertiary">{job.job_id}</span>
+                      <span className={cn("text-xs", statusClass(job))}>{statusLabel(job)}</span>
+                      <span className="text-xs tabular-nums text-text-tertiary">
+                        {elapsed(job, now)}
+                      </span>
+                    </span>
+                    <span className="mt-0.5 block truncate font-mono text-xs text-muted-foreground">
+                      $ {job.command}
                     </span>
                   </span>
-                  <span className="mt-0.5 block truncate font-mono text-xs text-muted-foreground">
-                    $ {job.command}
-                  </span>
-                </span>
+                </button>
                 {job.status === "running" && (
                   <Button
                     type="button"
                     variant="ghost"
                     size="icon-xs"
+                    className="mr-2"
                     title={t("job.kill")}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      kill(job);
-                    }}
+                    onClick={() => kill(job)}
                   >
                     <OctagonXIcon className="size-3.5 text-destructive" />
                   </Button>
                 )}
-              </button>
+              </div>
             ))
           )}
         </div>
