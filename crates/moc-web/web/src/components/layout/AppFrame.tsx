@@ -1,4 +1,4 @@
-// 三栏骨架：导航轨在外层，工作区侧栏与主舞台拼成一张内嵌窗框。
+// 三栏骨架：会话侧栏、主舞台与检查区拼成一张内嵌窗框。
 // 窄窗口下侧栏与检查面板都改成浮层，主舞台保持完整宽度。
 
 import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react";
@@ -87,7 +87,7 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
   }, [narrow, setSidebarOverlay]);
 
   return (
-    <div className="flex h-dvh w-screen overflow-hidden bg-chrome text-foreground md:py-1.5 md:pr-1">
+    <div className="flex h-dvh w-screen overflow-hidden bg-chrome text-foreground md:px-1 md:py-1.5">
       {narrow ? (
         sidebarVisible && (
           <>
@@ -114,7 +114,7 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
             style={{ width: sidebarWidth }}
             inert={!sidebarVisible}
             className={cn(
-              "h-full overflow-hidden motion-safe:transition-opacity motion-safe:duration-150",
+              "h-full overflow-hidden rounded-l-xl motion-safe:transition-opacity motion-safe:duration-150",
               sidebarVisible ? "opacity-100" : "pointer-events-none opacity-0",
             )}
           >
@@ -129,7 +129,7 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
       <div
         className={cn(
           "relative flex min-w-0 flex-1 overflow-hidden bg-background md:rounded-r-xl",
-          !narrow && sidebarVisible ? "border-l border-border" : "md:ml-1.5 md:rounded-l-xl",
+          !narrow && sidebarVisible ? "border-l border-border" : "md:rounded-l-xl",
         )}
       >
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">{main}</main>

@@ -2,10 +2,9 @@
 
 import { create } from "zustand";
 
-export const NAV_RAIL_WIDTH = 46;
-export const SIDEBAR_MIN = 232 + NAV_RAIL_WIDTH;
-export const SIDEBAR_MAX = 400 + NAV_RAIL_WIDTH;
-export const SIDEBAR_DEFAULT = 300 + NAV_RAIL_WIDTH;
+export const SIDEBAR_MIN = 232;
+export const SIDEBAR_MAX = 400;
+export const SIDEBAR_DEFAULT = 300;
 /** 窗口窄于此值时侧栏改为浮层，主舞台不被挤压。 */
 export const NARROW_VIEWPORT = 1080;
 
@@ -28,8 +27,10 @@ type Persisted = {
   filesTreeWidth: number;
 };
 
-const STORAGE_KEY = "moc-web-layout-v3";
+const STORAGE_KEY = "moc-web-layout-v4";
+const RAIL_STORAGE_KEY = "moc-web-layout-v3";
 const LEGACY_STORAGE_KEY = "moc-web-layout-v2";
+const LEGACY_RAIL_WIDTH = 46;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.round(value)));
@@ -55,14 +56,17 @@ function load(): Persisted {
   };
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    const parsed: unknown = JSON.parse(saved ?? localStorage.getItem(LEGACY_STORAGE_KEY) ?? "null");
+    const withRail = saved === null ? localStorage.getItem(RAIL_STORAGE_KEY) : null;
+    const parsed: unknown = JSON.parse(
+      saved ?? withRail ?? localStorage.getItem(LEGACY_STORAGE_KEY) ?? "null",
+    );
     if (!parsed || typeof parsed !== "object") return fallback;
     const raw = parsed as Partial<Persisted>;
     return {
       sidebarCollapsed: Boolean(raw.sidebarCollapsed),
       sidebarWidth: clamp(
         typeof raw.sidebarWidth === "number"
-          ? raw.sidebarWidth + (saved === null ? NAV_RAIL_WIDTH : 0)
+          ? raw.sidebarWidth - (withRail === null ? 0 : LEGACY_RAIL_WIDTH)
           : SIDEBAR_DEFAULT,
         SIDEBAR_MIN,
         SIDEBAR_MAX,

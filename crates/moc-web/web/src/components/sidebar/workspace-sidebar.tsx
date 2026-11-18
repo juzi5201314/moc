@@ -1,4 +1,4 @@
-// 左侧工作区栏：品牌 + 全局入口（新会话 / 搜索 / 插件）+ 按目录分组的会话树 + 设置。
+// 左侧会话栏：搜索、新会话、按目录分组的会话树，以及底部全局设置。
 
 import {
   ChevronRightIcon,
@@ -35,7 +35,7 @@ import { ErrorCode, type RpcError } from "@/protocol/errors";
 import type { ConnectionStatus } from "@/protocol/rpc";
 import { type InitializeResult, PROTOCOL_VERSION, type SessionInfo } from "@/protocol/types";
 import { useConnection } from "@/store/connection";
-import { NAV_RAIL_WIDTH, useLayout } from "@/store/layout";
+import { useLayout } from "@/store/layout";
 import { createQuickSession, openSession, renameSession } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
 import { allSessions, groupWorkspaces, useSessions } from "@/store/sessions";
@@ -175,6 +175,7 @@ export function WorkspaceSidebar() {
 
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
+  const searchTrigger = useRef<HTMLButtonElement>(null);
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -205,264 +206,244 @@ export function WorkspaceSidebar() {
   const closeSearch = () => {
     setSearching(false);
     setQuery("");
+    searchTrigger.current?.focus();
   };
 
   return (
-    <nav className="flex h-full w-full text-sidebar-foreground select-none">
-      <div
-        style={{ width: NAV_RAIL_WIDTH }}
-        className="flex shrink-0 flex-col items-center gap-1.5 bg-chrome pt-1 pb-2"
-      >
-        <div
-          aria-hidden="true"
-          className="flex size-8 items-center justify-center rounded-lg bg-accent text-foreground"
-        >
-          <span className="flex size-[19px] items-center justify-center rounded-[5px] bg-foreground text-xs font-semibold text-background">
-            m
-          </span>
+    <nav className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-sidebar text-sidebar-foreground select-none">
+      <div className="flex h-11 shrink-0 items-center justify-between gap-2 pr-2 pl-4">
+        <h2 className="truncate text-sm font-medium">{t("sb.sessions")}</h2>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <IconButton
+            ref={searchTrigger}
+            label={t("common.search")}
+            size="md"
+            active={searching}
+            aria-expanded={searching}
+            onClick={() => (searching ? closeSearch() : setSearching(true))}
+          >
+            <SearchIcon />
+          </IconButton>
+          <IconButton
+            label={t("layout.close_sidebar")}
+            shortcut="Ctrl B"
+            size="md"
+            onClick={() => useLayout.getState().toggleSidebar()}
+          >
+            <PanelLeftCloseIcon />
+          </IconButton>
         </div>
-        <IconButton
-          label={t("common.search")}
-          side="right"
-          size="md"
-          active={searching}
-          onClick={() => (searching ? closeSearch() : setSearching(true))}
-        >
-          <SearchIcon />
-        </IconButton>
-        <IconButton
-          label={t("sd.plugins")}
-          side="right"
-          size="md"
-          onClick={() => openSettings("plugins")}
-        >
-          <PuzzleIcon />
-        </IconButton>
-        <div className="mt-auto" />
-        <IconButton label={t("sb.settings")} side="right" size="md" onClick={() => openSettings()}>
-          <SettingsIcon />
-        </IconButton>
-        <IconButton
-          label={t("layout.close_sidebar")}
-          shortcut="Ctrl B"
-          side="right"
-          size="md"
-          onClick={() => useLayout.getState().toggleSidebar()}
-        >
-          <PanelLeftCloseIcon />
+      </div>
+      <div className="shrink-0 space-y-1 px-2">
+        <NavRow
+          icon={<SquarePenIcon />}
+          label={t("hd.new")}
+          active={active === "draft-session"}
+          onClick={() => createQuickSession()}
+        />
+        <WorkflowNavRow />
+        {searching && (
+          <div className={cn(ROW, "bg-sidebar-accent")}>
+            <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
+            <input
+              // biome-ignore lint/a11y/noAutofocus: 搜索行由用户点击展开，立即可输入
+              autoFocus
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => event.key === "Escape" && closeSearch()}
+              aria-label={t("sb.filter_ph")}
+              placeholder={t("sb.filter_ph")}
+              className="min-w-0 flex-1 bg-transparent text-ui outline-none"
+            />
+            <IconButton label={t("sb.filter_close")} size="xs" onClick={closeSearch}>
+              <XIcon />
+            </IconButton>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-2 flex h-8 shrink-0 items-center justify-between pr-2 pl-4">
+        <span className="text-xs text-text-tertiary">{t("sb.workspaces")}</span>
+        <IconButton label={t("sb.add_workspace")} onClick={addWorkspace}>
+          <FolderPlusIcon />
         </IconButton>
       </div>
 
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-l-xl bg-sidebar">
-        <div className="flex h-11 shrink-0 items-center justify-between pr-3 pl-4">
-          <h2 className="text-sm font-medium">{t("sb.sessions")}</h2>
-          <IconButton label={t("sb.add_workspace")} size="xs" onClick={addWorkspace}>
-            <FolderPlusIcon />
-          </IconButton>
-        </div>
-        <div className="shrink-0 space-y-1 px-2">
-          <NavRow
-            icon={<SquarePenIcon />}
-            label={t("hd.new")}
-            active={active === "draft-session"}
-            onClick={() => createQuickSession()}
-          />
-          <WorkflowNavRow />
-          {searching && (
-            <div className={cn(ROW, "bg-sidebar-accent")}>
-              <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
-              <input
-                // biome-ignore lint/a11y/noAutofocus: 搜索行由用户点击展开，立即可输入
-                autoFocus
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => event.key === "Escape" && closeSearch()}
-                placeholder={t("sb.filter_ph")}
-                className="min-w-0 flex-1 bg-transparent text-ui outline-none"
-              />
-              <button
-                type="button"
-                aria-label={t("sb.filter_close")}
-                onClick={closeSearch}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <XIcon className="size-3.5" />
-              </button>
-            </div>
-          )}
-        </div>
-
-        <div className="mt-2 flex h-7 shrink-0 items-center pl-4">
-          <span className="text-xs text-text-tertiary">{t("sb.workspaces")}</span>
-        </div>
-
-        {/* 原生滚动容器：Radix ScrollArea 的 table 布局会让 truncate 失效 */}
-        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-2">
-          {groups.length === 0 && shownContent.length === 0 ? (
-            <div className="px-2 py-8 text-center text-xs leading-5 text-text-tertiary">
-              {query ? t("sb.no_match") : t("sb.empty")}
-            </div>
-          ) : (
-            <>
-              {shownContent.length > 0 && (
-                <div className="mb-1">
-                  <div className="flex h-7 items-center px-2 text-xs font-medium text-text-tertiary">
-                    {t("sb.content_hits")}
-                  </div>
-                  {shownContent.map((hit) => (
+      {/* 原生滚动容器：Radix ScrollArea 的 table 布局会让 truncate 失效 */}
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-2">
+        {groups.length === 0 && shownContent.length === 0 ? (
+          <div className="px-2 py-8 text-center text-xs leading-5 text-text-tertiary">
+            {query ? t("sb.no_match") : t("sb.empty")}
+          </div>
+        ) : (
+          <>
+            {shownContent.length > 0 && (
+              <div className="mb-1">
+                <div className="flex h-7 items-center px-2 text-xs font-medium text-text-tertiary">
+                  {t("sb.content_hits")}
+                </div>
+                {shownContent.map((hit) => (
+                  <button
+                    key={hit.session.id}
+                    type="button"
+                    onClick={() => void openSession(hit.session.id)}
+                    className={cn(
+                      ROW,
+                      "h-auto flex-col items-start gap-0 py-1.5 pl-[26px] text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
+                    )}
+                  >
+                    <span className="w-full truncate">{hit.session.title || t("hd.untitled")}</span>
+                    <span className="w-full truncate text-xs text-text-tertiary">
+                      {hit.matches[0]?.snippet}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {groups.map((group) => {
+              const isFolded = Boolean(folded[group.cwd]);
+              const expandedGroup = Boolean(expanded[group.cwd]);
+              // 搜索时先截到每组 SEARCH_VISIBLE_SESSIONS 条，避免一次查询挂满整棵树。
+              const cap = expandedGroup
+                ? Number.POSITIVE_INFINITY
+                : query
+                  ? SEARCH_VISIBLE_SESSIONS
+                  : VISIBLE_SESSIONS;
+              const visible = group.sessions.slice(0, cap);
+              const hidden = group.sessions.length - visible.length;
+              const hasDraft = draft?.cwd === group.cwd;
+              return (
+                <div key={group.cwd} className="mb-1">
+                  <div
+                    className={cn(ROW, "group/ws cursor-pointer pr-1 hover:bg-sidebar-accent")}
+                    title={group.cwd}
+                  >
                     <button
-                      key={hit.session.id}
                       type="button"
-                      onClick={() => void openSession(hit.session.id)}
-                      className={cn(
-                        ROW,
-                        "h-auto flex-col items-start gap-0 py-1.5 pl-[26px] text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
-                      )}
+                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                      onClick={() => setFolded((state) => ({ ...state, [group.cwd]: !isFolded }))}
                     >
-                      <span className="w-full truncate">
-                        {hit.session.title || t("hd.untitled")}
-                      </span>
-                      <span className="w-full truncate text-xs text-text-tertiary">
-                        {hit.matches[0]?.snippet}
+                      <ChevronRightIcon
+                        className={cn(
+                          "size-3.5 shrink-0 text-text-tertiary transition-transform duration-150",
+                          !isFolded && "rotate-90",
+                        )}
+                      />
+                      <span className="truncate font-medium text-sidebar-foreground/90">
+                        {group.name}
                       </span>
                     </button>
-                  ))}
-                </div>
-              )}
-              {groups.map((group) => {
-                const isFolded = Boolean(folded[group.cwd]);
-                const expandedGroup = Boolean(expanded[group.cwd]);
-                // 搜索时先截到每组 SEARCH_VISIBLE_SESSIONS 条，避免一次查询挂满整棵树。
-                const cap = expandedGroup
-                  ? Number.POSITIVE_INFINITY
-                  : query
-                    ? SEARCH_VISIBLE_SESSIONS
-                    : VISIBLE_SESSIONS;
-                const visible = group.sessions.slice(0, cap);
-                const hidden = group.sessions.length - visible.length;
-                const hasDraft = draft?.cwd === group.cwd;
-                return (
-                  <div key={group.cwd} className="mb-1">
-                    <div
-                      className={cn(ROW, "group/ws cursor-pointer pr-1 hover:bg-sidebar-accent")}
-                      title={group.cwd}
-                    >
-                      <button
-                        type="button"
-                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                        onClick={() => setFolded((state) => ({ ...state, [group.cwd]: !isFolded }))}
+                    <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/ws:opacity-100 group-focus-within/ws:opacity-100 has-[[data-state=open]]:opacity-100 pointer-coarse:opacity-100">
+                      <IconButton
+                        label={t("sb.new_here")}
+                        size="xs"
+                        onClick={() => createQuickSession(group.cwd)}
                       >
-                        <ChevronRightIcon
-                          className={cn(
-                            "size-3.5 shrink-0 text-text-tertiary transition-transform duration-150",
-                            !isFolded && "rotate-90",
-                          )}
-                        />
-                        <span className="truncate font-medium text-sidebar-foreground/90">
-                          {group.name}
-                        </span>
-                      </button>
-                      <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/ws:opacity-100 group-focus-within/ws:opacity-100 has-[[data-state=open]]:opacity-100 pointer-coarse:opacity-100">
-                        <IconButton
-                          label={t("sb.new_here")}
-                          size="xs"
-                          onClick={() => createQuickSession(group.cwd)}
-                        >
-                          <PlusIcon />
-                        </IconButton>
-                        <WorkspaceMenu cwd={group.cwd} removable={workspaces.includes(group.cwd)} />
-                      </div>
+                        <PlusIcon />
+                      </IconButton>
+                      <WorkspaceMenu cwd={group.cwd} removable={workspaces.includes(group.cwd)} />
                     </div>
+                  </div>
 
-                    {!isFolded && (
-                      <div className="mt-px space-y-px">
-                        {hasDraft && (
-                          <button
-                            type="button"
-                            onClick={() => useTabs.getState().add("draft-session")}
-                            className={cn(
-                              ROW,
-                              "pl-[26px]",
-                              active === "draft-session"
-                                ? "bg-sidebar-accent text-sidebar-foreground"
-                                : "text-muted-foreground hover:bg-sidebar-accent",
-                            )}
-                          >
-                            <span className="truncate italic">{t("hd.new")}</span>
-                          </button>
-                        )}
-                        {visible.map((session) => (
-                          <SessionRow
-                            key={session.id}
-                            session={session}
-                            active={session.id === active}
-                          />
-                        ))}
-                        {hidden > 0 && (
+                  {!isFolded && (
+                    <div className="mt-px space-y-px">
+                      {hasDraft && (
+                        <button
+                          type="button"
+                          onClick={() => useTabs.getState().add("draft-session")}
+                          className={cn(
+                            ROW,
+                            "pl-[26px]",
+                            active === "draft-session"
+                              ? "bg-sidebar-accent text-sidebar-foreground"
+                              : "text-muted-foreground hover:bg-sidebar-accent",
+                          )}
+                        >
+                          <span className="truncate italic">{t("hd.new")}</span>
+                        </button>
+                      )}
+                      {visible.map((session) => (
+                        <SessionRow
+                          key={session.id}
+                          session={session}
+                          active={session.id === active}
+                        />
+                      ))}
+                      {hidden > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setExpanded((state) => ({ ...state, [group.cwd]: true }))}
+                          className={cn(
+                            ROW,
+                            "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
+                          )}
+                        >
+                          {t("sb.more", { n: hidden })}
+                        </button>
+                      )}
+                      {expanded[group.cwd] &&
+                        !query &&
+                        group.sessions.length > VISIBLE_SESSIONS && (
                           <button
                             type="button"
                             onClick={() =>
-                              setExpanded((state) => ({ ...state, [group.cwd]: true }))
+                              setExpanded((state) => ({ ...state, [group.cwd]: false }))
                             }
                             className={cn(
                               ROW,
                               "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
                             )}
                           >
-                            {t("sb.more", { n: hidden })}
+                            {t("th.collapse")}
                           </button>
                         )}
-                        {expanded[group.cwd] &&
-                          !query &&
-                          group.sessions.length > VISIBLE_SESSIONS && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setExpanded((state) => ({ ...state, [group.cwd]: false }))
-                              }
-                              className={cn(
-                                ROW,
-                                "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
-                              )}
-                            >
-                              {t("th.collapse")}
-                            </button>
-                          )}
-                        {!hasDraft && group.sessions.length === 0 && (
-                          <div className="py-1.5 pl-[26px] text-xs text-text-tertiary">
-                            {t("sb.no_sessions")}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </>
-          )}
-        </div>
-
-        <div className="flex shrink-0 items-center px-4 py-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="inline-flex h-6 items-center gap-2 text-xs font-medium text-muted-foreground">
-                <span
-                  className={cn(
-                    "size-2 rounded-full",
-                    status === "online"
-                      ? "bg-success"
-                      : status === "connecting"
-                        ? "animate-pulse bg-warn"
-                        : "bg-destructive",
+                      {!hasDraft && group.sessions.length === 0 && (
+                        <div className="py-1.5 pl-[26px] text-xs text-text-tertiary">
+                          {t("sb.no_sessions")}
+                        </div>
+                      )}
+                    </div>
                   )}
-                />
-                moc
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top">
-              {connectionTip(status, handshakeError, everOnline, server)}
-            </TooltipContent>
-          </Tooltip>
+                </div>
+              );
+            })}
+          </>
+        )}
+      </div>
+
+      <div className="flex h-11 shrink-0 items-center justify-between border-t border-border-subtle pr-2 pl-4">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex h-6 items-center gap-2 text-xs font-medium text-muted-foreground">
+              <span
+                className={cn(
+                  "size-2 rounded-full",
+                  status === "online"
+                    ? "bg-success"
+                    : status === "connecting"
+                      ? "animate-pulse bg-warn"
+                      : "bg-destructive",
+                )}
+              />
+              moc
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            {connectionTip(status, handshakeError, everOnline, server)}
+          </TooltipContent>
+        </Tooltip>
+        <div className="flex items-center gap-0.5">
+          <IconButton
+            label={t("sd.plugins")}
+            side="top"
+            size="md"
+            onClick={() => openSettings("plugins")}
+          >
+            <PuzzleIcon />
+          </IconButton>
+          <IconButton label={t("sb.settings")} side="top" size="md" onClick={() => openSettings()}>
+            <SettingsIcon />
+          </IconButton>
         </div>
       </div>
     </nav>
