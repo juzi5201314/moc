@@ -36,6 +36,21 @@ fn input_reader() -> Input {
 }
 
 pub async fn run(args: CliArgs, frontend: crate::Frontend) -> anyhow::Result<()> {
+    // json / stream-json 约定 stdout 始终可解析：提示前的任何失败（配置、
+    // 会话建立、stdin 为空等）也落一行错误汇总；CliExit 的结果对象已在
+    // finish_print 输出过，不重复。
+    let early_format = (args.print && args.output_format != crate::args::OutputFormat::Text)
+        .then_some(args.output_format);
+    let result = run_inner(args, frontend).await;
+    if let (Some(format), Err(error)) = (early_format, &result)
+        && error.downcast_ref::<crate::CliExit>().is_none()
+    {
+        crate::print::emit_early_error(format, error);
+    }
+    result
+}
+
+async fn run_inner(args: CliArgs, frontend: crate::Frontend) -> anyhow::Result<()> {
     if frontend == crate::Frontend::Acp {
         validate_acp_args(&args)?;
     }
@@ -372,19 +387,6 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
     }
     *notification_client.lock().expect("notify client slot") = Some(client.clone());
     let result = run_repl(&client, &input, &args, initial_prompt, &renderer).await;
-    // 提示还没跑起来就失败（会话创建 / 模型切换等）时，json 类格式仍给 stdout 一行
-    // 可解析的错误汇总；CliExit 的失败已在 finish_print 里输出过结果对象，不重复。
-    let result = match result {
-        Err(error)
-            if args.print
-                && args.output_format != crate::args::OutputFormat::Text
-                && error.downcast_ref::<crate::CliExit>().is_none() =>
-        {
-            crate::print::emit_early_error(args.output_format, &error);
-            Err(error)
-        }
-        other => other,
-    };
     client.close().await;
     server.shutdown();
     connection.wait().await;
@@ -437,7 +439,12 @@ async fn run_repl(
             })
             .await?
     };
-    renderer.bind_workflow(client.clone(), session.id.clone(), input.clone());
+    renderer.bind_workflow(
+        client.clone(),
+        session.id.clone(),
+        cwd.clone(),
+        input.clone(),
+    );
     if let Some(selector) = &args.model
         && selector != &session.model
     {

@@ -52,10 +52,13 @@ impl Renderer {
         &self,
         client: moc_protocol::ClientHandle,
         session_id: String,
+        cwd: std::path::PathBuf,
         input: crate::repl::Input,
     ) {
         let mut state = self.0.lock();
-        state.collector.bind(client.clone(), session_id.clone());
+        state
+            .collector
+            .bind(client.clone(), session_id.clone(), cwd);
         state.client = Some(client);
         state.session_id = Some(session_id);
         state.input = Some(input);

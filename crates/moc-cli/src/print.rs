@@ -109,6 +109,8 @@ pub struct PrintCollector {
     /// workflow 绑定后用于 `--max-turns` 触发 `session/cancel`。
     client: Option<ClientHandle>,
     session_id: Option<String>,
+    /// 会话工作目录：把 write/edit 参数里的相对路径解析成与 diff 一致的绝对路径。
+    cwd: Option<std::path::PathBuf>,
 }
 
 impl PrintCollector {
@@ -124,13 +126,51 @@ impl PrintCollector {
             changed_set: HashSet::new(),
             client: None,
             session_id: None,
+            cwd: None,
         }
     }
 
-    /// 会话建立后注入回传通道（`--max-turns` 的取消走它）。
-    pub fn bind(&mut self, client: ClientHandle, session_id: String) {
+    /// 会话建立后注入回传通道（`--max-turns` 的取消走它）与工作目录。
+    pub fn bind(&mut self, client: ClientHandle, session_id: String, cwd: std::path::PathBuf) {
         self.client = Some(client);
         self.session_id = Some(session_id);
+        self.cwd = Some(cwd);
+    }
+
+    /// 记录一条变更路径（去重、按首次出现排序）。
+    fn record_changed(&mut self, path: String) {
+        if self.changed_set.insert(path.clone()) {
+            self.changed_files.push(path);
+        }
+    }
+
+    /// write/edit 不产生 diff 时（建空文件、仅行尾变化、覆盖非 UTF-8）也会真实落盘：
+    /// 从工具参数兜底收集目标路径；相对路径按会话 cwd 解析，与 `ToolFileDiff.path` 对齐。
+    fn record_write_targets(&mut self, name: &str, arguments: &str) {
+        if !matches!(name, "write" | "edit") {
+            return;
+        }
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
+            return;
+        };
+        let mut paths = Vec::new();
+        if let Some(path) = args.get("path").and_then(serde_json::Value::as_str) {
+            paths.push(path.to_owned());
+        }
+        if let Some(target) = args
+            .get("move")
+            .and_then(|m| m.get("target_path"))
+            .and_then(serde_json::Value::as_str)
+        {
+            paths.push(target.to_owned());
+        }
+        for path in paths {
+            let resolved = match (&self.cwd, std::path::Path::new(&path).is_absolute()) {
+                (Some(cwd), false) => cwd.join(&path).display().to_string(),
+                _ => path,
+            };
+            self.record_changed(resolved);
+        }
     }
 
     /// 处理一条 `session/update`：stream-json 先落行，再按需累计与触发轮数取消。
@@ -169,6 +209,7 @@ impl PrintCollector {
                 result,
                 duration_ms,
                 diff,
+                arguments,
                 ..
             } => {
                 self.calls.push(ToolCallSummary {
@@ -183,10 +224,11 @@ impl PrintCollector {
                 }
                 if let Some(diff) = diff {
                     for file in &diff.files {
-                        if self.changed_set.insert(file.path.clone()) {
-                            self.changed_files.push(file.path.clone());
-                        }
+                        self.record_changed(file.path.clone());
                     }
+                }
+                if *status == ToolStatus::Completed {
+                    self.record_write_targets(name, arguments);
                 }
             }
             _ => {}
