@@ -168,6 +168,7 @@ fn attachment_for_token(
 /// 从 `end` 向后按词扩展 `@` 引用：路径含空格时 token 只是前缀，
 /// 逐词试探 `metadata`，记录最后一个能解析的边界；末段超过 255 个字符即停，
 /// 因为该段已不可能是有效文件名，继续扩展也无法成为有效路径。
+/// 新增词含路径分隔符时，若父目录不存在也立即停止，避免扫描后续引用。
 fn extend_reference_end(text: &str, start: usize, mut end: usize, cwd: &Path) -> usize {
     let bytes = text.as_bytes();
     let mut scan = end;
@@ -186,6 +187,11 @@ fn extend_reference_end(text: &str, start: usize, mut end: usize, cwd: &Path) ->
         if path.components().next_back().is_some_and(|component| {
             component.as_os_str().to_string_lossy().chars().count() > 255
         }) {
+            break;
+        }
+        if text[scan..i].contains(std::path::is_separator)
+            && path.parent().is_some_and(|parent| !parent.is_dir())
+        {
             break;
         }
         if std::fs::metadata(path).is_ok() {
