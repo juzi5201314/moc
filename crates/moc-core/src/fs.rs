@@ -397,8 +397,8 @@ pub(crate) fn rename(from: &str, to: &str) -> Result<FsRenameResult, FileIoError
 
 /// `to` 是否只是 `from` 改了大小写，且大小写不敏感卷把 `to` 解析回了 `from` 本身。
 ///
-/// 同一目录下名称仅大小写不同、而目录里没有与 `to` 逐字节同名的项时，`to` 能被找到
-/// 只可能是卷折叠了大小写；折叠后唯一命中的就是 `from`，因此不会覆盖其他项。
+/// 要求同一目录下名称仅大小写不同、目录里没有与 `to` 逐字节同名的项，且 `to` 解析到的
+/// 正是 `from` 本身；否则卷可能按 Unicode 规范化把 `to` 解析到了另一项，不能放行。
 fn is_case_only_rename(from: &Path, to: &Path) -> bool {
     let (Some(from_parent), Some(to_parent), Some(from_name), Some(to_name)) =
         (from.parent(), to.parent(), from.file_name(), to.file_name())
@@ -418,9 +418,24 @@ fn is_case_only_rename(from: &Path, to: &Path) -> bool {
         _ => false,
     };
     same_parent
-        && from.symlink_metadata().is_ok()
+        && is_same_entry(from, to)
         && std::fs::read_dir(from_parent)
             .is_ok_and(|entries| entries.flatten().all(|entry| entry.file_name() != to_name))
+}
+
+#[cfg(unix)]
+fn is_same_entry(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (a.symlink_metadata(), b.symlink_metadata()) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// NTFS 不做 Unicode 规范化，大小写折叠命中的只会是 `from`，名称检查已足够。
+#[cfg(not(unix))]
+fn is_same_entry(a: &Path, _b: &Path) -> bool {
+    a.symlink_metadata().is_ok()
 }
 
 /// 把文件或目录整体移入系统回收站。
@@ -762,6 +777,18 @@ mod tests {
                 rename(to.to_str().unwrap(), other.to_str().unwrap()).unwrap_err(),
                 FileIoError::Exists { .. }
             ));
+        }
+
+        // 区分大小写但不区分 Unicode 规范化的卷（如大小写敏感 APFS）上，
+        // `É`（NFC）会解析到另一个文件 `E\u{301}`（NFD），不能借仅改大小写的放行覆盖它。
+        let lower = root.path().join("\u{e9}.md");
+        let decomposed = root.path().join("E\u{301}.md");
+        std::fs::write(&lower, "lower").unwrap();
+        std::fs::write(&decomposed, "decomposed").unwrap();
+        if std::fs::read_to_string(&lower).unwrap() == "lower" {
+            let upper = root.path().join("\u{c9}.md");
+            let _ = rename(lower.to_str().unwrap(), upper.to_str().unwrap());
+            assert_eq!(std::fs::read_to_string(&decomposed).unwrap(), "decomposed");
         }
     }
 }
