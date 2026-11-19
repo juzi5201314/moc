@@ -30,7 +30,6 @@ import {
 } from "@/components/ui/context-menu";
 import { type MsgKey, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { rpc } from "@/protocol/client";
 import { useComposer } from "@/store/composer";
 import {
   activateTab,
@@ -46,6 +45,7 @@ import {
   openFile,
   parentPath,
   refreshExpanded,
+  renameFile,
   setStackedView,
   startNaming,
   type TreeNode,
@@ -339,7 +339,7 @@ export function FileTree({
 
   const commitMove = async (from: string, to: string) => {
     try {
-      await rpc.call("fs/rename", { from, to });
+      await renameFile(from, to);
       void loadDir(sessionId, fileRoot, parentPath(from));
       void loadDir(sessionId, fileRoot, parentPath(to));
     } catch (error) {

@@ -487,6 +487,33 @@ export function cancelNaming(sessionId: string): void {
   patch(sessionId, (files) => ({ ...files, naming: undefined }));
 }
 
+/** 重命名或移动后同步所有会话的文件标签，保留未保存的草稿。 */
+export async function renameFile(from: string, to: string): Promise<void> {
+  const result = await rpc.call<FsRenameResult>("fs/rename", { from, to });
+  const remapPath = (path: string) =>
+    path === from || path.startsWith(`${from}/`) ? result.path + path.slice(from.length) : path;
+  const remapKey = (key: string) => (key.startsWith("fs:") ? `fs:${remapPath(key.slice(3))}` : key);
+  useFiles.setState((state) => ({
+    bySession: Object.fromEntries(
+      Object.entries(state.bySession).map(([id, files]) => [
+        id,
+        {
+          ...files,
+          tabs: files.tabs.map((tab) => {
+            if (tab.target.kind !== "fs") return tab;
+            const path = remapPath(tab.target.path);
+            return path === tab.target.path ? tab : { ...tab, target: { ...tab.target, path } };
+          }),
+          active: files.active ? remapKey(files.active) : files.active,
+          closing: files.closing
+            ? { ...files.closing, key: remapKey(files.closing.key) }
+            : files.closing,
+        },
+      ]),
+    ),
+  }));
+}
+
 /** 提交 inline 命名：新建文件/目录或重命名。 */
 export async function commitNaming(sessionId: string, root: FileRoot, name: string): Promise<void> {
   const files = session(useFiles.getState(), sessionId);
@@ -500,7 +527,7 @@ export async function commitNaming(sessionId: string, root: FileRoot, name: stri
   try {
     if (naming.kind === "rename" && naming.fromKey) {
       const to = `${parentPath(naming.fromKey)}/${trimmed}`;
-      await rpc.call<FsRenameResult>("fs/rename", { from: naming.fromKey, to });
+      await renameFile(naming.fromKey, to);
       void loadDir(sessionId, root, parentPath(naming.fromKey));
     } else if (naming.kind === "new-dir") {
       await rpc.call("fs/create_dir", { parent: naming.parentKey, name: trimmed });
