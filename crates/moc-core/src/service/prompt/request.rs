@@ -166,12 +166,10 @@ fn attachment_for_token(
 }
 
 /// 从 `end` 向后按词扩展 `@` 引用：路径含空格时 token 只是前缀，
-/// 逐词试探 `metadata`，记录最后一个能解析的边界。连续多次未命中即停，
-/// 防止长正文尾部带来大量无谓的 stat。
+/// 逐词试探 `metadata`，直到文本末尾，记录最后一个能解析的边界。
 fn extend_reference_end(text: &str, start: usize, mut end: usize, cwd: &Path) -> usize {
     let bytes = text.as_bytes();
     let mut scan = end;
-    let mut misses = 0;
     loop {
         let mut i = scan;
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
@@ -185,12 +183,6 @@ fn extend_reference_end(text: &str, start: usize, mut end: usize, cwd: &Path) ->
         }
         if std::fs::metadata(resolve_reference_path(&text[start + 1..i], cwd)).is_ok() {
             end = i;
-            misses = 0;
-        } else {
-            misses += 1;
-            if misses >= 8 {
-                break;
-            }
         }
         scan = i;
     }
@@ -699,6 +691,41 @@ mod tests {
         assert!(path.ends_with("design notes.md"), "{path}");
         assert!(body.contains("# notes"), "{body}");
         assert!(message.text().contains("这一段"), "正文尾部不能丢");
+    }
+
+    #[tokio::test]
+    async fn at_references_attach_filename_with_many_spaces() {
+        let (dir, anchors, config) = attach_fixture();
+        let cwd = dir.path().join("repo");
+        let filename = "one two three four five six seven eight nine ten eleven.txt";
+        std::fs::write(cwd.join(filename), "many spaces\n").expect("写文件");
+
+        let message = project_input(
+            vec![InputPart::Text {
+                text: format!("看 @{filename} 这一段"),
+            }],
+            false,
+            &cwd,
+            &anchors,
+            &config,
+        )
+        .await
+        .expect("投影成功");
+        let attachments = message
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Text(text) => crate::resources::attach::parse_attachment(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(attachments.len(), 1, "{attachments:?}");
+        let (path, kind, body) = attachments[0];
+        assert!(path.ends_with(filename), "{path}");
+        assert_eq!(kind, "file");
+        assert!(body.contains("many spaces"), "{body}");
+        assert!(message.text().contains(&format!("@{filename}")));
+        assert!(message.text().ends_with(" 这一段"), "正文尾部不能丢");
     }
 
     #[test]
