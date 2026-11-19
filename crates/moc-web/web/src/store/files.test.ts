@@ -302,14 +302,14 @@ it("并发保存串行执行，第二次读取前移后的 mtime", async () => {
   // 串行化后第二个请求要等第一次完成才发出。
   await flush();
   expect(rpc.call).toHaveBeenCalledTimes(1);
-  first.resolve({ size: 1, modified_ms: 200 });
+  first.resolve({ path: PATH, size: 1, modified_ms: 200 });
   await save1;
   await flush();
   expect(rpc.call).toHaveBeenCalledTimes(2);
   expect(vi.mocked(rpc.call).mock.calls[1][1]).toMatchObject({
     expected_modified_ms: 200,
   });
-  second.resolve({ size: 1, modified_ms: 300 });
+  second.resolve({ path: PATH, size: 1, modified_ms: 300 });
   expect(await save2).toBe(true);
   expect(tab().diskConflict).toBeUndefined();
   expect(tab().modifiedMs).toBe(300);
