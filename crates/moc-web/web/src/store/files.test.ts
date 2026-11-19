@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { rpc } from "@/protocol/client";
-import type { FsReadFileResult } from "@/protocol/types";
+import type { FsReadFileResult, FsWriteFileResult } from "@/protocol/types";
 import {
   askDelete,
   commitNaming,
@@ -140,10 +140,12 @@ function read(content: string, modifiedMs: number): FsReadFileResult {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function openTab(content: string, modifiedMs: number, draft = content) {
@@ -276,6 +278,41 @@ it("迟到的旧目录列举不覆盖较新的列举", async () => {
   const files = useFiles.getState().bySession.s;
   expect(files.nodes["/w"].children?.map((child) => child.name)).toEqual(["new.txt"]);
   expect(files.loading["/w"]).toBe(false);
+});
+
+it("并发保存串行执行，第二次读取前移后的 mtime", async () => {
+  openTab("v0", 0);
+  useFiles.setState((state) => ({
+    bySession: {
+      s: {
+        ...state.bySession.s,
+        tabs: state.bySession.s.tabs.map((item) => ({
+          ...item,
+          draft: "edit",
+          modifiedMs: 100,
+        })),
+      },
+    },
+  }));
+  const first = deferred<FsWriteFileResult>();
+  const second = deferred<FsWriteFileResult>();
+  vi.mocked(rpc.call).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  const save1 = saveFile("s", KEY);
+  const save2 = saveFile("s", KEY);
+  // 串行化后第二个请求要等第一次完成才发出。
+  await flush();
+  expect(rpc.call).toHaveBeenCalledTimes(1);
+  first.resolve({ path: PATH, size: 1, modified_ms: 200 });
+  await save1;
+  await flush();
+  expect(rpc.call).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(rpc.call).mock.calls[1][1]).toMatchObject({
+    expected_modified_ms: 200,
+  });
+  second.resolve({ path: PATH, size: 1, modified_ms: 300 });
+  expect(await save2).toBe(true);
+  expect(tab().diskConflict).toBeUndefined();
+  expect(tab().modifiedMs).toBe(300);
 });
 
 it("目录重命名迁移目录树缓存的 key", async () => {

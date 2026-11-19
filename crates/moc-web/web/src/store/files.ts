@@ -430,15 +430,38 @@ export function setDraft(sessionId: string, key: string, draft: string): void {
   }));
 }
 
+/** 每标签一条保存队列：并发调用按序执行，后到的保存等前一次落盘后再读最新标签。
+ * 否则两个请求带着同一个 expected_modified_ms 必有一方收到 FileConflict 误报磁盘冲突，
+ * 而且服务端 mtime 检查与写入非原子，双成功时迟到响应还可能把 modifiedMs 回退。 */
+const saveQueues = new Map<string, Promise<void>>();
+
 /** 保存：mtime 乐观锁；-32016 时打 diskConflict 标记交给 UI 出 banner。 */
 export async function saveFile(
   sessionId: string,
   key: string,
   overwrite = false,
 ): Promise<boolean> {
+  const seqKey = `${sessionId}\n${key}`;
+  const queued = (saveQueues.get(seqKey) ?? Promise.resolve()).then(() =>
+    doSave(sessionId, key, overwrite),
+  );
+  const tail = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  saveQueues.set(seqKey, tail);
+  void tail.then(() => {
+    if (saveQueues.get(seqKey) === tail) saveQueues.delete(seqKey);
+  });
+  return queued;
+}
+
+async function doSave(sessionId: string, key: string, overwrite: boolean): Promise<boolean> {
   const files = session(useFiles.getState(), sessionId);
   const tab = files.tabs.find((item) => targetKey(item.target) === key);
   if (tab?.target.kind !== "fs") return false;
+  // 排队期间标签被关闭又重开：内容还没读回来或没有草稿时，写 `""` 会把文件清空。
+  if (tab.loading || tab.draft === undefined) return true;
   try {
     const result = await rpc.call<FsWriteFileResult>("fs/write_file", {
       path: tab.target.path,
