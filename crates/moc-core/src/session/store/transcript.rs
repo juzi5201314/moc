@@ -99,8 +99,10 @@ impl SessionFile {
             .append(true)
             .open(&self.path)
             .await?;
-        *self.revision.write() =
+        // 同步锁不跨 await：先拿到元数据再进临界区，避免阻塞同线程的读者。
+        let revision =
             crate::hashline::SnapshotId::from_metadata(&reopened.metadata().await?);
+        *self.revision.write() = revision;
         *current = Some(reopened);
         Ok(())
     }
@@ -165,8 +167,9 @@ impl SessionFile {
             handle.flush().await?;
             return Err(error.into());
         }
-        *self.revision.write() =
+        let revision =
             crate::hashline::SnapshotId::from_metadata(&handle.metadata().await?);
+        *self.revision.write() = revision;
         Ok(())
     }
 
@@ -191,8 +194,9 @@ impl SessionFile {
                 .await
                 .map_err(|error| CoreError::Session(error.to_string()))??;
             if truncated {
-                *self.revision.write() =
+                let revision =
                     crate::hashline::SnapshotId::from_metadata(&handle.metadata().await?);
+                *self.revision.write() = revision;
             }
             return Ok(truncated);
         }
@@ -218,8 +222,9 @@ impl SessionFile {
         }
         handle.set_len(keep).await?;
         handle.flush().await?;
-        *self.revision.write() =
+        let revision =
             crate::hashline::SnapshotId::from_metadata(&handle.metadata().await?);
+        *self.revision.write() = revision;
         Ok(true)
     }
 
@@ -269,14 +274,11 @@ impl SessionFile {
                 .await?;
             drop(replacement);
             fs::rename(&temp, &self.path).await?;
-            *current = Some(reopened);
-            *self.revision.write() = crate::hashline::SnapshotId::from_metadata(
-                &current
-                    .as_ref()
-                    .expect("rename 之后一定已有句柄")
-                    .metadata()
-                    .await?,
+            let revision = crate::hashline::SnapshotId::from_metadata(
+                &reopened.metadata().await?,
             );
+            *current = Some(reopened);
+            *self.revision.write() = revision;
             Ok::<(), CoreError>(())
         }
         .await;
