@@ -241,7 +241,12 @@ pub fn plan_edit(
             None => target_snapshot.lines.len(),
             Some(after) => map_gap(target_served, target_version, after, target_tag, None)?,
         };
-        let moved_lines = source_snapshot.lines[start..end].to_vec();
+        let mut moved_lines = source_snapshot.lines[start..end].to_vec();
+        if target_snapshot.lines.is_empty()
+            && drops_single_empty_line(&target_snapshot, &moved_lines)
+        {
+            moved_lines.clear();
+        }
         edits.push(source_range);
         let target_moves = [(
             insert_at,
@@ -263,7 +268,6 @@ pub fn plan_edit(
     // 稳定排序：同一插入点上的多个插入保持请求顺序，并排在从该点开始的替换之前；
     // 逆序 splice 后插入内容按请求顺序出现在替换内容之前。
     edits.sort_by_key(|edit| (edit.start, edit.end));
-    let moves = build_moves(&edits);
     let mut source_lines = source_snapshot.lines.clone();
     for edit in edits.iter().rev() {
         source_lines.splice(edit.start..edit.end, edit.replacement.iter().cloned());
@@ -274,6 +278,15 @@ pub fn plan_edit(
             "E_EMPTY_RANGE",
             "the edit would empty the file; use write or explicitly rewrite the complete file",
         ));
+    }
+    if drops_single_empty_line(&source_snapshot, &source_lines) {
+        source_lines.clear();
+        edits.clear();
+        edits.push(VerifiedEdit {
+            start: 0,
+            end: source_snapshot.lines.len(),
+            replacement: Vec::new(),
+        });
     }
     let no_changes = source_lines == source_snapshot.lines && target_plan.is_none();
     if no_changes {
@@ -292,7 +305,7 @@ pub fn plan_edit(
         });
     }
 
-    let mut source_served = served.advanced(&moves, &source_lines);
+    let mut source_served = served.advanced(&build_moves(&edits), &source_lines);
     // edit 的变更范围在规划阶段已经确定：直接按范围构造完整 hunk，
     // 不再对整份文件做 LCS，因此文件再大也不会把少量改动误判成截断。
     // 模型文本与前端结构化 diff 共用同一份 hunk。
@@ -777,11 +790,18 @@ fn build_moves(edits: &[VerifiedEdit]) -> Vec<(usize, isize)> {
     moves
 }
 
+fn has_trailing_newline(snapshot: &FileSnapshot) -> bool {
+    snapshot.bytes.ends_with(b"\n") || snapshot.bytes.ends_with(b"\r")
+}
+
+fn drops_single_empty_line(snapshot: &FileSnapshot, lines: &[String]) -> bool {
+    matches!(lines, [line] if line.is_empty()) && !has_trailing_newline(snapshot)
+}
+
 pub(crate) fn encode_file(snapshot: &FileSnapshot, lines: &[String]) -> Vec<u8> {
     let line_ending = snapshot.line_ending.bytes();
-    let terminate_last_line = lines.last().is_some_and(String::is_empty)
-        || snapshot.bytes.ends_with(b"\n")
-        || snapshot.bytes.ends_with(b"\r");
+    let terminate_last_line = has_trailing_newline(snapshot)
+        || (lines.len() > 1 && lines.last().is_some_and(String::is_empty));
     let mut output = Vec::with_capacity(snapshot.bytes.len());
     if snapshot.bom {
         output.extend_from_slice(&[0xef, 0xbb, 0xbf]);

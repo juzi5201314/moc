@@ -108,6 +108,32 @@ async fn empty_insert_after_unterminated_last_line_remains_editable() {
 
     assert_eq!(inserted_bytes, b"one\n\n");
     assert_eq!(std::fs::read(&path).expect("读取结果"), b"one\ntwo\n");
+
+    for (original, edit) in [("", insert(0, "")), ("one", replace(1, 1, ""))] {
+        let (_, served, tag) = served_snapshot(&path, original);
+        let store = AnchorStore::new();
+        let output = apply_edit(
+            dir.path(),
+            &request("file.txt", &tag, vec![edit]),
+            &served,
+            None,
+            &store,
+            32,
+            4096,
+        )
+        .await
+        .expect("得到空文件");
+        let snapshot = read_snapshot(&path, 4096).expect("读取空文件");
+        assert!(snapshot.bytes.is_empty(), "{:?}", snapshot.bytes);
+        assert!(snapshot.lines.is_empty());
+        if original.is_empty() {
+            assert!(output.diff.is_none());
+        } else {
+            let served = store.served(&path).expect("清空文件后的 served");
+            let version = served.resolve(served.current_tag().unwrap()).unwrap();
+            assert_eq!(served.version_len(version), 0);
+        }
+    }
 }
 
 #[tokio::test]
