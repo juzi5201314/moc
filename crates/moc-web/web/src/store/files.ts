@@ -519,6 +519,7 @@ export async function renameFile(from: string, to: string): Promise<void> {
   const remapPath = (path: string) =>
     isWithin(path, from) ? result.path + path.slice(from.length) : path;
   const remapKey = (key: string) => (key.startsWith("fs:") ? `fs:${remapPath(key.slice(3))}` : key);
+  const reloading: Array<[string, FileTarget]> = [];
   useFiles.setState((state) => ({
     bySession: Object.fromEntries(
       Object.entries(state.bySession).map(([id, files]) => {
@@ -527,7 +528,9 @@ export async function renameFile(from: string, to: string): Promise<void> {
           if (tab.target.kind !== "fs") continue;
           const path = remapPath(tab.target.path);
           if (path !== tab.target.path) {
-            renamed.set(targetKey(tab.target), { ...tab, target: { ...tab.target, path } });
+            const target = { ...tab.target, path };
+            renamed.set(targetKey(tab.target), { ...tab, target });
+            if (tab.loading) reloading.push([id, target]);
           }
         }
         const destinations = new Set([...renamed.values()].map((tab) => targetKey(tab.target)));
@@ -553,6 +556,9 @@ export async function renameFile(from: string, to: string): Promise<void> {
       }),
     ),
   }));
+  // 改名时在飞的读取按旧 key 落地会被丢弃：仍在加载的改名标签按新路径重读，
+  // 否则该标签永远停在 loading。已加载的标签内容不变（改的是路径不是内容），不重读。
+  for (const [id, target] of reloading) void loadFileContent(id, target);
 }
 
 /** 提交 inline 命名：新建文件/目录或重命名。 */
