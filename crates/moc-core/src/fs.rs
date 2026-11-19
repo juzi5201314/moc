@@ -375,11 +375,11 @@ pub(crate) fn write_file(
     })
 }
 
-/// 重命名/移动 `from` 到 `to`；目标已存在时报错。
+/// 重命名/移动 `from` 到 `to`；目标已存在时报错，仅改大小写除外。
 pub(crate) fn rename(from: &str, to: &str) -> Result<FsRenameResult, FileIoError> {
     let from = expand(from)?;
     let to = expand(to)?;
-    if to.symlink_metadata().is_ok() {
+    if to.symlink_metadata().is_ok() && !is_case_only_rename(&from, &to) {
         return Err(FileIoError::Exists { path: to });
     }
     std::fs::rename(&from, &to).map_err(|source| FileIoError::Io {
@@ -393,6 +393,49 @@ pub(crate) fn rename(from: &str, to: &str) -> Result<FsRenameResult, FileIoError
     Ok(FsRenameResult {
         path: canonical.to_string_lossy().into_owned(),
     })
+}
+
+/// `to` 是否只是 `from` 改了大小写，且大小写不敏感卷把 `to` 解析回了 `from` 本身。
+///
+/// 要求同一目录下名称仅大小写不同、目录里没有与 `to` 逐字节同名的项，且 `to` 解析到的
+/// 正是 `from` 本身；否则卷可能按 Unicode 规范化把 `to` 解析到了另一项，不能放行。
+fn is_case_only_rename(from: &Path, to: &Path) -> bool {
+    let (Some(from_parent), Some(to_parent), Some(from_name), Some(to_name)) =
+        (from.parent(), to.parent(), from.file_name(), to.file_name())
+    else {
+        return false;
+    };
+    if from_name == to_name
+        || from_name.to_string_lossy().to_lowercase() != to_name.to_string_lossy().to_lowercase()
+    {
+        return false;
+    }
+    let same_parent = match (
+        std::fs::canonicalize(from_parent),
+        std::fs::canonicalize(to_parent),
+    ) {
+        (Ok(from_parent), Ok(to_parent)) => from_parent == to_parent,
+        _ => false,
+    };
+    same_parent
+        && is_same_entry(from, to)
+        && std::fs::read_dir(from_parent)
+            .is_ok_and(|entries| entries.flatten().all(|entry| entry.file_name() != to_name))
+}
+
+#[cfg(unix)]
+fn is_same_entry(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (a.symlink_metadata(), b.symlink_metadata()) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// NTFS 不做 Unicode 规范化，大小写折叠命中的只会是 `from`，名称检查已足够。
+#[cfg(not(unix))]
+fn is_same_entry(a: &Path, _b: &Path) -> bool {
+    a.symlink_metadata().is_ok()
 }
 
 /// 把文件或目录整体移入系统回收站。
@@ -710,5 +753,42 @@ mod tests {
             rename("relative/x", "/tmp/y").unwrap_err(),
             FileIoError::Path(PathError::NotAbsolute)
         ));
+    }
+
+    #[test]
+    fn rename_allows_case_only_change() {
+        let root = fixture();
+        let from = root.path().join("file.txt");
+        let to = root.path().join("File.txt");
+        let renamed = rename(from.to_str().unwrap(), to.to_str().unwrap()).unwrap();
+        assert!(renamed.path.ends_with("File.txt"), "{}", renamed.path);
+        let names: Vec<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.eq_ignore_ascii_case("file.txt"))
+            .collect();
+        assert_eq!(names, ["File.txt"]);
+
+        // 大小写不敏感卷上，折叠后命中另一项的目标仍算已存在，不能覆盖。
+        std::fs::write(root.path().join("Other.txt"), "y").unwrap();
+        let other = root.path().join("other.txt");
+        if other.exists() {
+            assert!(matches!(
+                rename(to.to_str().unwrap(), other.to_str().unwrap()).unwrap_err(),
+                FileIoError::Exists { .. }
+            ));
+        }
+
+        // 区分大小写但不区分 Unicode 规范化的卷（如大小写敏感 APFS）上，
+        // `É`（NFC）会解析到另一个文件 `E\u{301}`（NFD），不能借仅改大小写的放行覆盖它。
+        let lower = root.path().join("\u{e9}.md");
+        let decomposed = root.path().join("E\u{301}.md");
+        std::fs::write(&lower, "lower").unwrap();
+        std::fs::write(&decomposed, "decomposed").unwrap();
+        if std::fs::read_to_string(&lower).unwrap() == "lower" {
+            let upper = root.path().join("\u{c9}.md");
+            let _ = rename(lower.to_str().unwrap(), upper.to_str().unwrap());
+            assert_eq!(std::fs::read_to_string(&decomposed).unwrap(), "decomposed");
+        }
     }
 }
