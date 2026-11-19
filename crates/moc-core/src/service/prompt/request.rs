@@ -166,7 +166,8 @@ fn attachment_for_token(
 }
 
 /// 从 `end` 向后按词扩展 `@` 引用：路径含空格时 token 只是前缀，
-/// 逐词试探 `metadata`，直到文本末尾，记录最后一个能解析的边界。
+/// 逐词试探 `metadata`，记录最后一个能解析的边界；末段超过 255 个字符即停，
+/// 因为该段已不可能是有效文件名，继续扩展也无法成为有效路径。
 fn extend_reference_end(text: &str, start: usize, mut end: usize, cwd: &Path) -> usize {
     let bytes = text.as_bytes();
     let mut scan = end;
@@ -181,7 +182,13 @@ fn extend_reference_end(text: &str, start: usize, mut end: usize, cwd: &Path) ->
         while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
             i += 1;
         }
-        if std::fs::metadata(resolve_reference_path(&text[start + 1..i], cwd)).is_ok() {
+        let path = resolve_reference_path(&text[start + 1..i], cwd);
+        if path.components().next_back().is_some_and(|component| {
+            component.as_os_str().to_string_lossy().chars().count() > 255
+        }) {
+            break;
+        }
+        if std::fs::metadata(path).is_ok() {
             end = i;
         }
         scan = i;
