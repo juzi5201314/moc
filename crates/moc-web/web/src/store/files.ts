@@ -495,21 +495,36 @@ export async function renameFile(from: string, to: string): Promise<void> {
   const remapKey = (key: string) => (key.startsWith("fs:") ? `fs:${remapPath(key.slice(3))}` : key);
   useFiles.setState((state) => ({
     bySession: Object.fromEntries(
-      Object.entries(state.bySession).map(([id, files]) => [
-        id,
-        {
-          ...files,
-          tabs: files.tabs.map((tab) => {
-            if (tab.target.kind !== "fs") return tab;
-            const path = remapPath(tab.target.path);
-            return path === tab.target.path ? tab : { ...tab, target: { ...tab.target, path } };
-          }),
-          active: files.active ? remapKey(files.active) : files.active,
-          closing: files.closing
-            ? { ...files.closing, key: remapKey(files.closing.key) }
-            : files.closing,
-        },
-      ]),
+      Object.entries(state.bySession).map(([id, files]) => {
+        const renamed = new Map<string, OpenFile>();
+        for (const tab of files.tabs) {
+          if (tab.target.kind !== "fs") continue;
+          const path = remapPath(tab.target.path);
+          if (path !== tab.target.path) {
+            renamed.set(targetKey(tab.target), { ...tab, target: { ...tab.target, path } });
+          }
+        }
+        const destinations = new Set([...renamed.values()].map((tab) => targetKey(tab.target)));
+        const closingReplaced =
+          files.closing && destinations.has(files.closing.key) && !renamed.has(files.closing.key);
+        return [
+          id,
+          {
+            ...files,
+            tabs: files.tabs.flatMap((tab) => {
+              const key = targetKey(tab.target);
+              const replacement = renamed.get(key);
+              return replacement ? [replacement] : destinations.has(key) ? [] : [tab];
+            }),
+            active: files.active ? remapKey(files.active) : files.active,
+            closing: closingReplaced
+              ? undefined
+              : files.closing
+                ? { ...files.closing, key: remapKey(files.closing.key) }
+                : files.closing,
+          },
+        ];
+      }),
     ),
   }));
 }

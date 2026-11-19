@@ -46,6 +46,7 @@ it("重命名文件和目录后所有会话的标签保留草稿并保存到新�
     ],
   ]) {
     const original = tab(oldPath);
+    const staleDestination = { ...tab(newPath), draft: "deleted file draft" };
     const unrelated = tab(`${from}-other/file.txt`);
     const resource: OpenFile = { ...original, target: { kind: "resource", uri: oldPath } };
     useFiles.setState({ bySession: {} });
@@ -56,8 +57,15 @@ it("重命名文件和目录后所有会话的标签保留草稿并保存到新�
           ...state.bySession,
           [id]: {
             ...state.bySession[id],
-            tabs: [original, unrelated, resource],
-            active: targetKey(original.target),
+            tabs:
+              id === "first"
+                ? [staleDestination, original, unrelated, resource]
+                : [original, staleDestination, unrelated, resource],
+            active: targetKey(id === "first" ? original.target : staleDestination.target),
+            closing: {
+              key: targetKey(id === "first" ? original.target : staleDestination.target),
+              title: "file.txt",
+            },
           },
         },
       }));
@@ -77,6 +85,9 @@ it("重命名文件和目录后所有会话的标签保留草稿并保存到新�
         resource,
       ]);
       expect(files.active).toBe(`fs:${newPath}`);
+      expect(files.closing).toEqual(
+        id === "first" ? { key: `fs:${newPath}`, title: "file.txt" } : undefined,
+      );
       expect(await saveFile(id, files.active ?? "")).toBe(true);
       expect(rpc.call).toHaveBeenCalledWith("fs/write_file", {
         path: newPath,
