@@ -262,6 +262,17 @@ fn tool_status(status: ToolStatus) -> ToolCallStatus {
     }
 }
 
+fn image_content(source: &ImageSource) -> ContentBlock {
+    match source {
+        ImageSource::Base64 { media_type, data } => {
+            ContentBlock::Image(ImageContent::new(data.clone(), media_type.clone()))
+        }
+        ImageSource::Url(url) => {
+            ContentBlock::ResourceLink(acp::ResourceLink::new(url.clone(), url.clone()))
+        }
+    }
+}
+
 /// `ToolResult` + 结构化 diff → `tool_call.content`。
 fn result_content(result: &ToolResult, diff: Option<&ToolDiff>) -> Vec<ToolCallContent> {
     let mut content = Vec::new();
@@ -270,16 +281,12 @@ fn result_content(result: &ToolResult, diff: Option<&ToolDiff>) -> Vec<ToolCallC
             TextContent::new(result.content.clone()),
         ))));
     }
-    content.extend(result.images.iter().map(|image| {
-        ToolCallContent::Content(Content::new(match image {
-            ImageSource::Base64 { media_type, data } => {
-                ContentBlock::Image(ImageContent::new(data.clone(), media_type.clone()))
-            }
-            ImageSource::Url(url) => {
-                ContentBlock::ResourceLink(acp::ResourceLink::new(url.clone(), url.clone()))
-            }
-        }))
-    }));
+    content.extend(
+        result
+            .images
+            .iter()
+            .map(|image| ToolCallContent::Content(Content::new(image_content(image)))),
+    );
     if let Some(diff) = diff {
         content.extend(diff_content(diff));
     }
@@ -697,6 +704,11 @@ pub(crate) fn replay_entry(entry: &TranscriptEntry) -> Vec<SessionUpdate> {
                 Role::Assistant => updates.push(agent_chunk(text.clone())),
                 _ => {}
             },
+            ContentPart::Image { source, .. } if message.role == Role::User => {
+                updates.push(SessionUpdate::UserMessageChunk(ContentChunk::new(
+                    image_content(source),
+                )));
+            }
             ContentPart::Reasoning(ReasoningBlock::Text { text, .. })
                 if message.role == Role::Assistant =>
             {
