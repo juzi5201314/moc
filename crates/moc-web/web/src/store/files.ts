@@ -498,6 +498,63 @@ export function cancelNaming(sessionId: string): void {
   patch(sessionId, (files) => ({ ...files, naming: undefined }));
 }
 
+/** 重命名或移动后同步所有会话的文件标签，保留未保存的草稿。 */
+export async function renameFile(from: string, to: string): Promise<void> {
+  const isWithin = (path: string, parent: string) =>
+    path === parent || path.startsWith(`${parent}/`);
+  for (const files of Object.values(useFiles.getState().bySession)) {
+    const conflict = files.tabs.find(
+      (tab) =>
+        tab.target.kind === "fs" &&
+        !isWithin(tab.target.path, from) &&
+        isWithin(tab.target.path, to) &&
+        tab.draft !== undefined &&
+        tab.draft !== tab.content,
+    );
+    if (conflict?.target.kind === "fs") {
+      throw new Error(t("files.rename_unsaved_destination", { path: conflict.target.path }));
+    }
+  }
+  const result = await rpc.call<FsRenameResult>("fs/rename", { from, to });
+  const remapPath = (path: string) =>
+    isWithin(path, from) ? result.path + path.slice(from.length) : path;
+  const remapKey = (key: string) => (key.startsWith("fs:") ? `fs:${remapPath(key.slice(3))}` : key);
+  useFiles.setState((state) => ({
+    bySession: Object.fromEntries(
+      Object.entries(state.bySession).map(([id, files]) => {
+        const renamed = new Map<string, OpenFile>();
+        for (const tab of files.tabs) {
+          if (tab.target.kind !== "fs") continue;
+          const path = remapPath(tab.target.path);
+          if (path !== tab.target.path) {
+            renamed.set(targetKey(tab.target), { ...tab, target: { ...tab.target, path } });
+          }
+        }
+        const destinations = new Set([...renamed.values()].map((tab) => targetKey(tab.target)));
+        const closingReplaced =
+          files.closing && destinations.has(files.closing.key) && !renamed.has(files.closing.key);
+        return [
+          id,
+          {
+            ...files,
+            tabs: files.tabs.flatMap((tab) => {
+              const key = targetKey(tab.target);
+              const replacement = renamed.get(key);
+              return replacement ? [replacement] : destinations.has(key) ? [] : [tab];
+            }),
+            active: files.active ? remapKey(files.active) : files.active,
+            closing: closingReplaced
+              ? undefined
+              : files.closing
+                ? { ...files.closing, key: remapKey(files.closing.key) }
+                : files.closing,
+          },
+        ];
+      }),
+    ),
+  }));
+}
+
 /** 提交 inline 命名：新建文件/目录或重命名。 */
 export async function commitNaming(sessionId: string, root: FileRoot, name: string): Promise<void> {
   const files = session(useFiles.getState(), sessionId);
@@ -511,7 +568,7 @@ export async function commitNaming(sessionId: string, root: FileRoot, name: stri
   try {
     if (naming.kind === "rename" && naming.fromKey) {
       const to = `${parentPath(naming.fromKey)}/${trimmed}`;
-      await rpc.call<FsRenameResult>("fs/rename", { from: naming.fromKey, to });
+      await renameFile(naming.fromKey, to);
       void loadDir(sessionId, root, parentPath(naming.fromKey));
     } else if (naming.kind === "new-dir") {
       await rpc.call("fs/create_dir", { parent: naming.parentKey, name: trimmed });

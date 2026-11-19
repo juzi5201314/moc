@@ -536,6 +536,8 @@ export const en: Record<MsgKey, string> = {
   "session.delete_failed": "Failed to delete session: {error}",
   "session.model_read_failed": "Failed to read session model: {error}",
   "files.op_failed": "Operation failed: {error}",
+  "files.rename_unsaved_destination":
+    "Cannot rename or move: {path} has unsaved changes. Save or discard them first.",
   "files.save_failed": "Save failed: {error}",
   "files.deleted": "Deleted",
   "files.delete_failed": "Delete failed: {error}",
