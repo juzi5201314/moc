@@ -170,6 +170,15 @@ fn console_output_preserves_lines_results_and_failures() {
         }
         state => panic!("预期脚本错误：{state:?}"),
     }
+    done(
+        &run_with(
+            start("const p = {n:1}; const c = {p}; c.self = c; console.log({a:p, b:p, c});"),
+            &[],
+        )[0],
+        json!(
+            "{\"a\":{\"n\":1},\"b\":{\"n\":1},\"c\":{\"p\":{\"n\":1},\"self\":\"[Circular]\"}}\n"
+        ),
+    );
     let mut request = start("console.log('x'.repeat(128));");
     request.max_output_bytes = 64;
     failed_with(&run_with(request, &[])[0], "E_OUTPUT_LIMIT");

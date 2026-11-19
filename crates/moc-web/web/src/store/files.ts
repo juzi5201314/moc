@@ -231,9 +231,16 @@ export function refreshExpanded(sessionId: string, root: FileRoot): void {
 
 // ---------- 标签与文件操作 ----------
 
+/** 每个标签最近一次读取的序号：迟到的旧响应不得覆盖较新的读取及其后输入的草稿。 */
+const loadSeq = new Map<string, number>();
+
 /** 读一份文件/资源内容并填进标签。 */
 export async function loadFileContent(sessionId: string, target: FileTarget): Promise<void> {
   const key = targetKey(target);
+  const seqKey = `${sessionId}\n${key}`;
+  const seq = (loadSeq.get(seqKey) ?? 0) + 1;
+  loadSeq.set(seqKey, seq);
+  const isLatest = () => loadSeq.get(seqKey) === seq;
   try {
     const result =
       target.kind === "fs"
@@ -242,6 +249,7 @@ export async function loadFileContent(sessionId: string, target: FileTarget): Pr
             session_id: sessionId,
             uri: target.uri,
           });
+    if (!isLatest()) return;
     patchFileTab(sessionId, key, {
       loading: false,
       error: undefined,
@@ -253,6 +261,7 @@ export async function loadFileContent(sessionId: string, target: FileTarget): Pr
       draft: result.content ?? undefined,
     });
   } catch (error) {
+    if (!isLatest()) return;
     patchFileTab(sessionId, key, { loading: false, error: errorText(error) });
   }
 }
@@ -463,12 +472,14 @@ export async function reloadFromDisk(sessionId: string, key: string): Promise<vo
 export function noteExternalChange(sessionId: string): void {
   for (const tab of session(useFiles.getState(), sessionId).tabs) {
     if (tab.target.kind === "resource") continue;
+    const probedMs = tab.modifiedMs;
     void rpc
       .call<FsReadFileResult>("fs/read_file", { path: tab.target.path, max_bytes: 1 })
       .then((result) => {
         const current = session(useFiles.getState(), sessionId);
         const now = current.tabs.find((item) => targetKey(item.target) === targetKey(tab.target));
-        if (!now || result.modified_ms === now.modifiedMs) return;
+        // 探测期间已有读取/保存同步过 mtime：这次结果已过时。
+        if (!now || now.modifiedMs !== probedMs || result.modified_ms === now.modifiedMs) return;
         const dirty = now.draft !== undefined && now.draft !== now.content;
         if (dirty) patchFileTab(sessionId, targetKey(tab.target), { diskConflict: true });
         else void reloadFromDisk(sessionId, targetKey(tab.target));
