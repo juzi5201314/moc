@@ -17,6 +17,7 @@ use std::borrow::Cow;
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
@@ -285,7 +286,10 @@ fn styled_row(
 
 /// 字符串显示宽度。
 pub fn str_width(text: &str) -> usize {
-    UnicodeWidthStr::width(text)
+    text.graphemes(true)
+        .filter(|grapheme| grapheme.chars().any(|ch| ch.width().is_some()))
+        .map(UnicodeWidthStr::width)
+        .sum()
 }
 
 /// 一行的显示宽度（各 span 之和）。

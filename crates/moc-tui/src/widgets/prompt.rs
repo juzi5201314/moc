@@ -790,6 +790,9 @@ mod tests {
 
     #[test]
     fn vertical_movement_preserves_grapheme_column() {
+        assert_eq!(crate::render::wrap::str_width("👩‍💻ab"), 4);
+        assert_eq!(crate::render::wrap::str_width("a\n\t\r\u{1b}\u{7f}b"), 2);
+        assert_eq!(crate::render::wrap::str_width(""), 0);
         let mut prompt = PromptState::default();
         prompt.insert_str_raw("👩‍💻ab\nabcdef");
         prompt.cursor = "👩‍💻ab".len();
