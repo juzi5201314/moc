@@ -50,7 +50,7 @@ stdout 只走 ACP 报文；日志写 stderr，`RUST_LOG=debug moc acp` 即可调
 |---|---|
 | `initialize` | 声明能力：`loadSession`、`sessionCapabilities`(list/resume/close/delete)、`promptCapabilities`(image+embeddedContext) |
 | `session/new` | `session/new`；响应附带 modes 与模型 `configOptions`（来自 `config/get`） |
-| `session/load` | `session/load`；响应后按序重放 transcript 为 `user_message_chunk`/`agent_message_chunk`/`agent_thought_chunk`/`tool_call*` |
+| `session/load` | `session/load`；响应前按序重放全部 transcript 为 `user_message_chunk`/`agent_message_chunk`/`agent_thought_chunk`/`tool_call*` |
 | `session/resume` | `session/load`（`max_entries=0`），不重放历史 |
 | `session/list` | `session/list`，cwd 过滤 + 游标分页 |
 | `session/close` / `session/delete` | `session/unload` / `session/delete` |
