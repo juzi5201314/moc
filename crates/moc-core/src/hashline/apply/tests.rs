@@ -122,17 +122,24 @@ async fn empty_insert_after_unterminated_last_line_remains_editable() {
             4096,
         )
         .await
-        .expect("得到空文件");
-        let snapshot = read_snapshot(&path, 4096).expect("读取空文件");
-        assert!(snapshot.bytes.is_empty(), "{:?}", snapshot.bytes);
-        assert!(snapshot.lines.is_empty());
-        if original.is_empty() {
-            assert!(output.diff.is_none());
-        } else {
-            let served = store.served(&path).expect("清空文件后的 served");
-            let version = served.resolve(served.current_tag().unwrap()).unwrap();
-            assert_eq!(served.version_len(version), 0);
-        }
+        .expect("得到单个空行");
+        assert!(output.content.contains("+ 1│"), "{}", output.content);
+        assert_eq!(std::fs::read(&path).expect("读取结果"), b"\n");
+
+        let header = output.content.lines().next().expect("diff 头部");
+        let served = store.served(&path).expect("编辑后 served");
+        apply_edit(
+            dir.path(),
+            &request("file.txt", header, vec![replace(1, 1, "two")]),
+            &served,
+            None,
+            &store,
+            32,
+            4096,
+        )
+        .await
+        .expect("替换唯一的空行成功");
+        assert_eq!(std::fs::read(&path).expect("读取结果"), b"two\n");
     }
 }
 
