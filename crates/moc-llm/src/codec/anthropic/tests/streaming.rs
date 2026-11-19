@@ -156,6 +156,7 @@ fn stream_event_sequence() {
                 json: "\"北京\"}".into(),
             },
             StreamEvent::Usage(Usage {
+                input_tokens: 10,
                 output_tokens: 40,
                 ..Default::default()
             }),
