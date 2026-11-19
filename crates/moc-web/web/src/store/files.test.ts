@@ -3,6 +3,7 @@ import { rpc } from "@/protocol/client";
 import type { FsReadFileResult } from "@/protocol/types";
 import {
   commitNaming,
+  loadFileContent,
   noteExternalChange,
   type OpenFile,
   reloadFromDisk,
@@ -194,6 +195,50 @@ it("迟到的旧读取不覆盖较新的读取与之后输入的草稿", async (
     draft: "v2 + 用户输入",
     loading: false,
   });
+});
+
+it("重命名仍在加载的标签按新路径重读，不永远停在 loading", async () => {
+  const loadingTab: OpenFile = {
+    target: { kind: "fs", path: PATH },
+    preview: false,
+    loading: true,
+    encoding: "utf8",
+    size: 0,
+    truncated: false,
+    lineNonce: 0,
+  };
+  useFiles.setState({
+    bySession: {
+      s: {
+        root: "workspace",
+        expanded: {},
+        nodes: {},
+        loading: {},
+        tabs: [loadingTab],
+        active: KEY,
+        stackedView: "editor",
+      },
+    },
+  });
+  const staleRead = deferred<FsReadFileResult>();
+  vi.mocked(rpc.call).mockImplementation(async (method, params) => {
+    if (method === "fs/rename") return { path: "/w/b.txt" };
+    if (method === "fs/read_file") {
+      return (params as { path: string }).path === PATH ? staleRead.promise : read("new", 9);
+    }
+    throw new Error(String(method));
+  });
+  void loadFileContent("s", loadingTab.target);
+  await renameFile(PATH, "/w/b.txt");
+  staleRead.resolve(read("stale", 1));
+  await flush();
+  expect(tab()).toMatchObject({
+    loading: false,
+    content: "new",
+    draft: "new",
+    modifiedMs: 9,
+  });
+  expect(tab().target).toMatchObject({ kind: "fs", path: "/w/b.txt" });
 });
 
 it("已被较新读取取代的 mtime 探测不误报冲突", async () => {
