@@ -492,6 +492,77 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
 }
 
 #[tokio::test]
+async fn write_enforces_byte_limit_after_crlf_normalization() {
+    use serde_json::json;
+
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            support::tool_stream(vec![
+                (
+                    "overflow",
+                    "write",
+                    json!({"path":"overflow.txt", "content":"雪\nxy\n"}),
+                ),
+                (
+                    "at_limit",
+                    "write",
+                    json!({"path":"at-limit.txt", "content":"雪\nx\n"}),
+                ),
+            ]),
+            "text/event-stream",
+        ))
+        .up_to_n_times(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(text_stream("写入测试完成"), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[tools.output]\nmax_file_bytes=8",
+    )
+    .await;
+    let overflow = h.root.path().join("work/overflow.txt");
+    let at_limit = h.root.path().join("work/at-limit.txt");
+    for file in [&overflow, &at_limit] {
+        std::fs::write(file, b"old\r\n").unwrap();
+    }
+    let id = h.session(SessionEngine::Standard).await;
+    h.prompt(&id, "替换两份使用 CRLF 的文件").await;
+    let history = h.load(&id).await;
+    let result = |id| {
+        history
+            .entries
+            .iter()
+            .flat_map(|entry| entry.message.tool_results())
+            .find(|result| result.tool_call_id == id)
+            .unwrap()
+    };
+    let rejected = result("overflow");
+    let actual = std::fs::read(&overflow).unwrap();
+    assert!(
+        rejected.is_error && rejected.content.contains("E_TOO_LARGE"),
+        "预期 E_TOO_LARGE（上限 8 字节），实际写入目标文件为 {} 字节，工具结果：{}",
+        actual.len(),
+        rejected.content
+    );
+    assert_eq!(actual, b"old\r\n");
+    let accepted = result("at_limit");
+    assert!(!accepted.is_error, "{}", accepted.content);
+    assert_eq!(std::fs::read(&at_limit).unwrap(), "雪\r\nx\r\n".as_bytes());
+    h.close().await;
+}
+
+#[tokio::test]
 async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
