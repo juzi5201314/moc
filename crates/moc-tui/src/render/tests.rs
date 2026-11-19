@@ -5,6 +5,24 @@ use crate::transcript::Block as TranscriptBlock;
 
 #[test]
 fn prompt_crlf_and_variation_selector_widths() {
+    assert_eq!(wrap::str_width(&wrap::fit("❤️abc", 2)), 2);
+    for text in ["❤️abc", "abc❤️", "👩‍💻abc", "", "a\r\nb"] {
+        for width in 0..=6 {
+            assert!(wrap::str_width(&wrap::truncate(text, width)) <= width);
+            assert!(wrap::str_width(&wrap::truncate_head(text, width)) <= width);
+            assert_eq!(wrap::str_width(&wrap::fit(text, width)), width);
+            let line = wrap::fit_line(ratatui::text::Line::raw(text.to_owned()), width);
+            assert_eq!(wrap::line_width(&line), width);
+            assert!(wrap::str_width(&wrap::display_window(text, 0, width)) <= width);
+            if width >= 2 {
+                assert!(
+                    wrap::wrap_text(text, width)
+                        .iter()
+                        .all(|row| wrap::str_width(row) <= width)
+                );
+            }
+        }
+    }
     let (events, _) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::new(Theme::global(), events);
     app.prompt.insert_str_raw("a\r\nb");

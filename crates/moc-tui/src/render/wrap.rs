@@ -95,6 +95,19 @@ fn can_break_before(chars: &[char], i: usize) -> Option<bool> {
 /// 贪心：每行尽量装满，溢出时回退到最近的一级断点，没有再用次级断点，
 /// 都没有才逐字硬切。硬切也不让避头字符落到行首（连同前一个字一起换行）。
 fn break_rows(chars: &[char], width: usize) -> Vec<(usize, usize)> {
+    let text: String = chars.iter().collect();
+    let mut widths = vec![0; chars.len()];
+    let mut boundaries = vec![false; chars.len() + 1];
+    let mut next = vec![0; chars.len()];
+    let mut offset = 0;
+    for grapheme in text.graphemes(true) {
+        let end = offset + grapheme.chars().count();
+        widths[offset] = str_width(grapheme);
+        boundaries[offset] = true;
+        next[offset] = end;
+        offset = end;
+    }
+    boundaries[chars.len()] = true;
     let mut rows = Vec::new();
     // 段首缩进属于正文，保留；只有续行才丢行首空格
     let mut start = 0usize;
@@ -106,7 +119,7 @@ fn break_rows(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     let mut last_content = None;
     while i < chars.len() {
         let ch = chars[i];
-        let w = char_width(ch);
+        let w = widths[i];
         if i > 0 && chars[i - 1] != ' ' {
             last_content = Some(i - 1);
         }
@@ -116,7 +129,7 @@ fn break_rows(chars: &[char], width: usize) -> Vec<(usize, usize)> {
                 // 空格串：本行在空格前结束，下一行从空格串之后开始
                 let mut resume = i;
                 while resume < chars.len() && chars[resume] == ' ' {
-                    resume += 1;
+                    resume = next[resume];
                 }
                 let blocked = no_line_end(chars[i - 1])
                     || chars.get(resume).copied().is_some_and(no_line_start);
@@ -135,22 +148,19 @@ fn break_rows(chars: &[char], width: usize) -> Vec<(usize, usize)> {
         if used + w <= width || ch == ' ' {
             // 空格永不触发溢出：它要么成为断点被吞掉，要么在行尾被裁掉
             used += w;
-            i += 1;
+            i = next[i];
             continue;
         }
         let (end, resume) = match primary.or(secondary) {
             Some(point) => point,
-            None => hard_cut(chars, start, i),
+            None => hard_cut(chars, &boundaries, start, i),
         };
         rows.push(trim_row(chars, start, end));
         start = resume;
         while start < chars.len() && chars[start] == ' ' {
-            start += 1;
+            start = next[start];
         }
-        used = chars[start..i.max(start)]
-            .iter()
-            .map(|c| char_width(*c))
-            .sum();
+        used = widths[start..i.max(start)].iter().sum();
         primary = None;
         secondary = None;
         i = i.max(start);
@@ -160,13 +170,17 @@ fn break_rows(chars: &[char], width: usize) -> Vec<(usize, usize)> {
 }
 
 /// 没有任何断点时在 `i` 之前硬切；避头字符带上前一个字一起换行。
-fn hard_cut(chars: &[char], start: usize, i: usize) -> (usize, usize) {
+fn hard_cut(chars: &[char], boundaries: &[bool], start: usize, i: usize) -> (usize, usize) {
     if i == start {
         // 单个字比整行还宽：独占一行，保证前进
-        return (i + 1, i + 1);
+        let end = (i + 1..=chars.len())
+            .find(|index| boundaries[*index])
+            .unwrap_or(chars.len());
+        return (end, end);
     }
-    if (no_line_start(chars[i]) || no_line_end(chars[i - 1])) && i - 1 > start {
-        return (i - 1, i - 1);
+    let previous = (start..i).rfind(|index| boundaries[*index]).unwrap();
+    if (no_line_start(chars[i]) || no_line_end(chars[i - 1])) && previous > start {
+        return (previous, previous);
     }
     (i, i)
 }
@@ -315,13 +329,13 @@ pub fn truncate<'a>(text: impl Into<Cow<'a, str>>, width: usize) -> Cow<'a, str>
     let budget = width - 1;
     let mut used = 0usize;
     let mut end = 0usize;
-    for (index, ch) in text.char_indices() {
-        let w = char_width(ch);
+    for (index, grapheme) in text.grapheme_indices(true) {
+        let w = str_width(grapheme);
         if used + w > budget {
             break;
         }
         used += w;
-        end = index + ch.len_utf8();
+        end = index + grapheme.len();
     }
     let mut out = String::with_capacity(end + ELLIPSIS.len_utf8());
     out.push_str(text[..end].trim_end());
@@ -343,8 +357,8 @@ pub fn truncate_head<'a>(text: impl Into<Cow<'a, str>>, width: usize) -> Cow<'a,
     let budget = width - 1;
     let mut used = 0usize;
     let mut start = text.len();
-    for (index, ch) in text.char_indices().rev() {
-        let w = char_width(ch);
+    for (index, grapheme) in text.grapheme_indices(true).rev() {
+        let w = str_width(grapheme);
         if used + w > budget {
             break;
         }
@@ -383,13 +397,13 @@ pub fn clip_line(line: Line<'static>, width: usize) -> Line<'static> {
     for span in line.spans {
         let mut kept = String::new();
         let mut whole = true;
-        for ch in span.content.chars() {
-            let w = char_width(ch);
+        for grapheme in span.content.graphemes(true) {
+            let w = str_width(grapheme);
             if used + w > budget {
                 whole = false;
                 break;
             }
-            kept.push(ch);
+            kept.push_str(grapheme);
             used += w;
         }
         tail_style = span.style;
@@ -430,13 +444,17 @@ pub(crate) fn display_window(text: &str, start_chars: usize, max_width: usize) -
     }
     let mut out = String::new();
     let mut width = 0usize;
-    for ch in text.chars().skip(start_chars) {
-        let ch_width = char_width(ch);
-        if width + ch_width > max_width {
+    let start = text
+        .char_indices()
+        .nth(start_chars)
+        .map_or(text.len(), |(offset, _)| offset);
+    for grapheme in text[start..].graphemes(true) {
+        let cells = str_width(grapheme);
+        if width + cells > max_width {
             break;
         }
-        width += ch_width;
-        out.push(ch);
+        width += cells;
+        out.push_str(grapheme);
     }
     out
 }
