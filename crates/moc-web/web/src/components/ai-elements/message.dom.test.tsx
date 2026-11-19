@@ -202,19 +202,21 @@ describe("MessageResponse GitHub 风格渲染", () => {
     }));
     const source =
       "见 [设计](</repo/docs/设计 文档.md>)、[行号](<docs/中文 笔记.md:3>)、" +
-      "[文件](file:///repo/%E4%B8%AD%E6%96%87%20a.md) 与 [计划](local://计划.md)。";
+      "[文件](file:///repo/%E4%B8%AD%E6%96%87%20a.md)、[字面量](file:///repo/a%2520b.md) 与 [计划](local://计划.md)。";
     const { container } = render(<MessageResponse>{source}</MessageResponse>);
     await waitFor(() => {
-      expect(container.querySelectorAll('[data-streamdown="link"]')).toHaveLength(4);
+      expect(container.querySelectorAll('[data-streamdown="link"]')).toHaveLength(5);
     });
 
-    const [spaced, line, file, uri] = [...container.querySelectorAll('[data-streamdown="link"]')];
+    const [spaced, line, file, literal, uri] = [...container.querySelectorAll('[data-streamdown="link"]')];
     fireEvent.click(spaced);
     expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "fs", path: "/repo/docs/设计 文档.md" }, {});
     fireEvent.click(line);
     expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "fs", path: "/repo/docs/中文 笔记.md" }, { line: 3 });
     fireEvent.click(file);
     expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "fs", path: "/repo/中文 a.md" }, {});
+    fireEvent.click(literal);
+    expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "fs", path: "/repo/a%20b.md" }, {});
     fireEvent.click(uri);
     expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "resource", uri: "local://计划.md" }, {});
   });
