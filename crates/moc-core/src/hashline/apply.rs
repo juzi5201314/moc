@@ -779,16 +779,16 @@ fn build_moves(edits: &[VerifiedEdit]) -> Vec<(usize, isize)> {
 
 pub(crate) fn encode_file(snapshot: &FileSnapshot, lines: &[String]) -> Vec<u8> {
     let line_ending = snapshot.line_ending.bytes();
+    let terminate_last_line = lines.last().is_some_and(String::is_empty)
+        || snapshot.bytes.ends_with(b"\n")
+        || snapshot.bytes.ends_with(b"\r");
     let mut output = Vec::with_capacity(snapshot.bytes.len());
     if snapshot.bom {
         output.extend_from_slice(&[0xef, 0xbb, 0xbf]);
     }
     for (index, line) in lines.iter().enumerate() {
         output.extend_from_slice(line.as_bytes());
-        if index + 1 < lines.len()
-            || snapshot.bytes.ends_with(b"\n")
-            || snapshot.bytes.ends_with(b"\r")
-        {
+        if index + 1 < lines.len() || terminate_last_line {
             output.extend_from_slice(line_ending);
         }
     }
