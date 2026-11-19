@@ -152,6 +152,17 @@ impl PendingMap {
     }
 }
 
+struct PendingGuard<'a> {
+    pending: &'a PendingMap,
+    id: Id,
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        self.pending.remove(&self.id);
+    }
+}
+
 /// 连接的出站通道 + 关闭信号 + pending 表；`Arc` 共享给 core 侧句柄。
 pub(crate) struct Traffic {
     outbound: mpsc::Sender<Outbound>,
@@ -191,16 +202,15 @@ impl Traffic {
     async fn call_value(&self, method: &'static str, params: Value) -> Result<Value, RpcCallError> {
         let id = self.pending.next_call_id();
         let receiver = self.pending.register(id.clone());
+        let _pending = PendingGuard {
+            pending: &self.pending,
+            id: id.clone(),
+        };
         if self
-            .send(Outbound::Request(Request::new(
-                id.clone(),
-                method,
-                Some(params),
-            )))
+            .send(Outbound::Request(Request::new(id, method, Some(params))))
             .await
             .is_err()
         {
-            self.pending.remove(&id);
             return Err(RpcCallError::Closed);
         }
         tokio::select! {
@@ -211,10 +221,7 @@ impl Traffic {
                 // 收尾时发送端被丢弃（连接已关闭）
                 Err(_) => Err(RpcCallError::Closed),
             },
-            () = self.closed.cancelled() => {
-                self.pending.remove(&id);
-                Err(RpcCallError::Closed)
-            }
+            () = self.closed.cancelled() => Err(RpcCallError::Closed),
         }
     }
 
@@ -243,16 +250,15 @@ impl Traffic {
     ) -> Result<Value, RpcCallError> {
         let id = self.pending.next_reverse_id();
         let receiver = self.pending.register(id.clone());
+        let _pending = PendingGuard {
+            pending: &self.pending,
+            id: id.clone(),
+        };
         if self
-            .send(Outbound::Request(Request::new(
-                id.clone(),
-                method,
-                Some(params),
-            )))
+            .send(Outbound::Request(Request::new(id, method, Some(params))))
             .await
             .is_err()
         {
-            self.pending.remove(&id);
             return Err(RpcCallError::Cancelled);
         }
         tokio::select! {
@@ -263,10 +269,7 @@ impl Traffic {
                 // 收尾时发送端被丢弃
                 Err(_) => Err(RpcCallError::Cancelled),
             },
-            () = cancel.cancelled() => {
-                self.pending.remove(&id);
-                Err(RpcCallError::Cancelled)
-            }
+            () = cancel.cancelled() => Err(RpcCallError::Cancelled),
         }
     }
 }
@@ -868,6 +871,38 @@ pub(crate) fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn dropping_call_futures_removes_pending_entries() {
+        let (outbound, mut peer) = mpsc::channel(2);
+        let traffic = Traffic {
+            outbound,
+            closed: CancellationToken::new(),
+            pending: Arc::new(PendingMap::new()),
+        };
+        let cancel = CancellationToken::new();
+        let mut call = Box::pin(traffic.call_value("test/call", Value::Null));
+        let mut reverse = Box::pin(traffic.reverse_value("test/reverse", Value::Null, &cancel));
+
+        assert!(
+            poll_fn(|cx| Poll::Ready(call.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        assert!(
+            poll_fn(|cx| Poll::Ready(reverse.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        assert!(matches!(peer.try_recv(), Ok(Outbound::Request(_))));
+        assert!(matches!(peer.try_recv(), Ok(Outbound::Request(_))));
+        assert_eq!(traffic.pending.entries().len(), 2);
+
+        drop(call);
+        drop(reverse);
+
+        assert!(traffic.pending.entries().is_empty());
+    }
 
     #[test]
     fn pending_ids_do_not_collide_across_directions() {
