@@ -610,8 +610,13 @@ export async function confirmDelete(sessionId: string, root: FileRoot): Promise<
   try {
     await rpc.call("fs/delete", { path: deleting.key });
     if (root.kind === "workspace") void loadDir(sessionId, root, parentPath(deleting.key));
-    // 已打开的标签标为已删除状态（留标签，展示错误）。
-    patchFileTab(sessionId, `fs:${deleting.key}`, { error: t("files.deleted") });
+    // 让在飞的读取失效：迟到的响应不得清掉已删除标记并回填旧内容。
+    loadSeq.delete(`${sessionId}\nfs:${deleting.key}`);
+    // 已打开的标签标为已删除状态（留标签，展示错误）；读取可能尚未返回，一并退出 loading。
+    patchFileTab(sessionId, `fs:${deleting.key}`, {
+      error: t("files.deleted"),
+      loading: false,
+    });
   } catch (error) {
     toast.error(t("files.delete_failed", { error: errorText(error) }));
   }

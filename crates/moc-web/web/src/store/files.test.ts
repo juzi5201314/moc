@@ -2,7 +2,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import { rpc } from "@/protocol/client";
 import type { FsReadFileResult } from "@/protocol/types";
 import {
+  askDelete,
   commitNaming,
+  confirmDelete,
   loadFileContent,
   noteExternalChange,
   type OpenFile,
@@ -239,6 +241,45 @@ it("重命名仍在加载的标签按新路径重读，不永远停在 loading",
     modifiedMs: 9,
   });
   expect(tab().target).toMatchObject({ kind: "fs", path: "/w/b.txt" });
+});
+
+it("删除后迟到的在飞读取不清掉已删除标记", async () => {
+  const loadingTab: OpenFile = {
+    target: { kind: "fs", path: PATH },
+    preview: false,
+    loading: true,
+    encoding: "utf8",
+    size: 0,
+    truncated: false,
+    lineNonce: 0,
+  };
+  useFiles.setState({
+    bySession: {
+      s: {
+        root: "session",
+        expanded: {},
+        nodes: {},
+        loading: {},
+        tabs: [loadingTab],
+        active: KEY,
+        stackedView: "editor",
+      },
+    },
+  });
+  const staleRead = deferred<FsReadFileResult>();
+  vi.mocked(rpc.call).mockImplementation(async (method) => {
+    if (method === "fs/read_file") return staleRead.promise;
+    if (method === "fs/delete") return {};
+    throw new Error(String(method));
+  });
+  void loadFileContent("s", loadingTab.target);
+  askDelete("s", PATH, "a.txt");
+  await confirmDelete("s", { kind: "session", sessionId: "s" });
+  staleRead.resolve(read("stale", 1));
+  await flush();
+  expect(tab().loading).toBe(false);
+  expect(tab().error).toBeTruthy();
+  expect(tab().content).toBeUndefined();
 });
 
 it("已被较新读取取代的 mtime 探测不误报冲突", async () => {
