@@ -243,6 +243,47 @@ it("重命名仍在加载的标签按新路径重读，不永远停在 loading",
   expect(tab().target).toMatchObject({ kind: "fs", path: "/w/b.txt" });
 });
 
+it("目录重命名迁移目录树缓存的 key", async () => {
+  useFiles.setState({
+    bySession: {
+      s: {
+        root: "workspace",
+        expanded: { "/work/old": true, "/work/old/sub": true, "/work/other": true },
+        nodes: {
+          "/work/old": {
+            key: "/work/old",
+            name: "old",
+            kind: "dir",
+            children: [
+              {
+                key: "/work/old/sub",
+                name: "sub",
+                kind: "dir",
+                children: [{ key: "/work/old/sub/a.txt", name: "a.txt", kind: "file" }],
+              },
+            ],
+          },
+          "/work/other": { key: "/work/other", name: "other", kind: "dir" },
+        },
+        loading: { "/work/old/sub": true },
+        tabs: [],
+        stackedView: "editor",
+      },
+    },
+  });
+  vi.mocked(rpc.call).mockImplementation(async (method) => {
+    if (method === "fs/rename") return { path: "/work/new" };
+    throw new Error(String(method));
+  });
+  await renameFile("/work/old", "/work/new");
+  const files = useFiles.getState().bySession.s;
+  expect(files.expanded).toEqual({ "/work/new": true, "/work/new/sub": true, "/work/other": true });
+  expect(Object.keys(files.nodes).sort()).toEqual(["/work/new", "/work/other"]);
+  expect(files.nodes["/work/new"].children?.[0].key).toBe("/work/new/sub");
+  expect(files.nodes["/work/new"].children?.[0].children?.[0].key).toBe("/work/new/sub/a.txt");
+  expect(files.loading).toEqual({ "/work/new/sub": true });
+});
+
 it("删除后迟到的在飞读取不清掉已删除标记", async () => {
   const loadingTab: OpenFile = {
     target: { kind: "fs", path: PATH },
