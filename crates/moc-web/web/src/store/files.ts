@@ -171,11 +171,19 @@ function nodeFromResource(entry: ResourceListResult["entries"][number]): TreeNod
   };
 }
 
+/** 每个目录最近一次列举的序号：迟到的旧响应不得覆盖较新的列举。 */
+const dirSeq = new Map<string, number>();
+
 /** 拉取一个目录的子项并更新节点缓存。 */
+
 export async function loadDir(sessionId: string, root: FileRoot, key: string): Promise<TreeNode[]> {
   const showHidden = root.kind === "workspace" ? useLayout.getState().filesShowHidden : undefined;
   const isCurrent = () =>
     showHidden === undefined || showHidden === useLayout.getState().filesShowHidden;
+  const seqKey = `${sessionId}\n${key}`;
+  const seq = (dirSeq.get(seqKey) ?? 0) + 1;
+  dirSeq.set(seqKey, seq);
+  const isLatest = () => dirSeq.get(seqKey) === seq;
   patch(sessionId, (files) => ({ ...files, loading: { ...files.loading, [key]: true } }));
   try {
     let children: TreeNode[];
@@ -193,7 +201,7 @@ export async function loadDir(sessionId: string, root: FileRoot, key: string): P
       });
       children = result.entries.map(nodeFromResource);
     }
-    if (!isCurrent()) return [];
+    if (!isCurrent() || !isLatest()) return [];
     patch(sessionId, (files) => {
       const nodes = { ...files.nodes };
       nodes[key] = {
@@ -206,7 +214,7 @@ export async function loadDir(sessionId: string, root: FileRoot, key: string): P
     });
     return children;
   } catch (error) {
-    if (!isCurrent()) return [];
+    if (!isCurrent() || !isLatest()) return [];
     const message = errorText(error);
     patch(sessionId, (files) => {
       const nodes = { ...files.nodes };
@@ -537,6 +545,7 @@ export async function renameFile(from: string, to: string): Promise<void> {
     isWithin(path, from) ? result.path + path.slice(from.length) : path;
   const remapKey = (key: string) => (key.startsWith("fs:") ? `fs:${remapPath(key.slice(3))}` : key);
   const reloading: Array<[string, FileTarget]> = [];
+  const reloadDirs: Array<[string, string]> = [];
   useFiles.setState((state) => ({
     bySession: Object.fromEntries(
       Object.entries(state.bySession).map(([id, files]) => {
@@ -548,6 +557,13 @@ export async function renameFile(from: string, to: string): Promise<void> {
             const target = { ...tab.target, path };
             renamed.set(targetKey(tab.target), { ...tab, target });
             if (tab.loading) reloading.push([id, target]);
+          }
+        }
+        // 在飞的列举按旧路径落地会留下孤儿节点，失效后让 loading 随新 key 重拉。
+        for (const key of Object.keys(files.loading)) {
+          if (files.loading[key] && isWithin(key, from)) {
+            dirSeq.delete(`${id}\n${key}`);
+            reloadDirs.push([id, remapPath(key)]);
           }
         }
         const destinations = new Set([...renamed.values()].map((tab) => targetKey(tab.target)));
@@ -586,6 +602,12 @@ export async function renameFile(from: string, to: string): Promise<void> {
   // 改名时在飞的读取按旧 key 落地会被丢弃：仍在加载的改名标签按新路径重读，
   // 否则该标签永远停在 loading。已加载的标签内容不变（改的是路径不是内容），不重读。
   for (const [id, target] of reloading) void loadFileContent(id, target);
+  // 同理处理仍在加载的目录：失效在飞列举并重拉，否则 loading 标志永远卡住，
+  // 迟到的旧响应还会在旧路径下留下孤儿节点。
+  for (const [id, key] of reloadDirs) {
+    const cwd = useTranscript.getState().bySession[id]?.info.cwd;
+    if (cwd) void loadDir(id, { kind: "workspace", cwd }, key);
+  }
 }
 
 /** 提交 inline 命名：新建文件/目录或重命名。 */

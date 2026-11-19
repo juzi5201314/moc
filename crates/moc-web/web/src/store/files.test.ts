@@ -5,6 +5,7 @@ import {
   askDelete,
   commitNaming,
   confirmDelete,
+  loadDir,
   loadFileContent,
   noteExternalChange,
   type OpenFile,
@@ -241,6 +242,40 @@ it("重命名仍在加载的标签按新路径重读，不永远停在 loading",
     modifiedMs: 9,
   });
   expect(tab().target).toMatchObject({ kind: "fs", path: "/w/b.txt" });
+});
+
+it("迟到的旧目录列举不覆盖较新的列举", async () => {
+  useFiles.setState({
+    bySession: {
+      s: {
+        root: "workspace",
+        expanded: { "/w": true },
+        nodes: {},
+        loading: {},
+        tabs: [],
+        stackedView: "tree",
+      },
+    },
+  });
+  const entry = (name: string) => ({
+    git: false,
+    kind: "file" as const,
+    name,
+    path: `/w/${name}`,
+  });
+  const older = deferred<{ entries: ReturnType<typeof entry>[] }>();
+  const newer = deferred<{ entries: ReturnType<typeof entry>[] }>();
+  vi.mocked(rpc.call).mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+  const root = { kind: "workspace", cwd: "/w" } as const;
+  const first = loadDir("s", root, "/w");
+  const second = loadDir("s", root, "/w");
+  newer.resolve({ entries: [entry("new.txt")] });
+  await second;
+  older.resolve({ entries: [entry("stale.txt")] });
+  await first;
+  const files = useFiles.getState().bySession.s;
+  expect(files.nodes["/w"].children?.map((child) => child.name)).toEqual(["new.txt"]);
+  expect(files.loading["/w"]).toBe(false);
 });
 
 it("目录重命名迁移目录树缓存的 key", async () => {
