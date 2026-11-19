@@ -87,12 +87,7 @@ impl Tool for WriteTool {
                 crate::sandbox::Access::Write,
             )?;
             let max_file_bytes = ctx.config.tools.output.max_file_bytes;
-            if args.content.len() as u64 > max_file_bytes {
-                return Err(ToolError::new(
-                    "E_TOO_LARGE",
-                    "content exceeds the per-file byte limit",
-                ));
-            }
+            check_content_size(&args.content, max_file_bytes)?;
             reject_served_hash_echo(
                 &path,
                 &args.content,
@@ -104,6 +99,7 @@ impl Tool for WriteTool {
             let (old, oversized_old) = read_previous(&path, max_file_bytes).await?;
             let ending = old.as_deref().map(line_ending).unwrap_or(b"\n");
             let content = normalize_line_endings(&args.content, ending);
+            check_content_size(&content, max_file_bytes)?;
             let diff = write_diff(&path, old.as_deref(), &content, WRITE_DIFF_MAX_BYTES);
             let temporary = stage(&path, content.as_bytes()).await?;
             if let Err(error) = tokio::fs::rename(&temporary, &path).await {
@@ -271,6 +267,16 @@ fn build_write_diff(path: &Path, old: Option<&[u8]>, content: &str) -> Option<To
         }],
         truncated,
     })
+}
+
+fn check_content_size(content: &str, max_file_bytes: u64) -> Result<(), ToolError> {
+    if content.len() as u64 > max_file_bytes {
+        return Err(ToolError::new(
+            "E_TOO_LARGE",
+            "content exceeds the per-file byte limit",
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_line_endings(content: &str, ending: &[u8]) -> String {
