@@ -298,6 +298,79 @@ async fn lock_refreshes_external_appends_and_replaced_transcript_handles() {
 }
 
 #[tokio::test]
+async fn write_lease_repairs_torn_tail_after_transcript_rewrite() {
+    use tokio::io::AsyncWriteExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let first = SessionTable::new(directory.path(), true);
+    let info = first
+        .create(
+            "/tmp/project",
+            "p/model",
+            SessionEngine::Standard,
+            SessionPermission::Full,
+            None,
+            SessionOrigin::root(),
+            false,
+        )
+        .await
+        .unwrap();
+    first
+        .append_message(&info.id, Message::user_text("原有历史"), None, None)
+        .await
+        .unwrap();
+    let first_record = first.get(&info.id).await.unwrap();
+    first
+        .ensure_write_lease(&info.id, &first_record, "first")
+        .await
+        .unwrap();
+    assert!(first.release_lease(&first_record));
+
+    let second = SessionTable::new(directory.path(), true);
+    let second_record = second.get(&info.id).await.unwrap();
+    second
+        .ensure_write_lease(&info.id, &second_record, "second")
+        .await
+        .unwrap();
+    second
+        .append_message(&info.id, Message::user_text("外部追加"), None, None)
+        .await
+        .unwrap();
+    let entries = second_record.state.lock().await.log_entries();
+    second.rewrite(&info.id, entries).await.unwrap();
+    let mut file = tokio::fs::OpenOptions::new()
+        .append(true)
+        .open(&second_record.paths.transcript)
+        .await
+        .unwrap();
+    file.write_all(b"{\"partial\":").await.unwrap();
+    file.sync_all().await.unwrap();
+    drop(file);
+    assert!(second.release_lease(&second_record));
+
+    first
+        .ensure_write_lease(&info.id, &first_record, "first")
+        .await
+        .unwrap();
+    first
+        .append_message(&info.id, Message::assistant_text("接管续写"), None, None)
+        .await
+        .unwrap();
+    let restored = SessionTable::new(directory.path(), true)
+        .load(&info.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        restored
+            .entries
+            .iter()
+            .map(|entry| entry.message.text())
+            .collect::<Vec<_>>(),
+        ["原有历史", "外部追加", "接管续写"]
+    );
+}
+
+#[tokio::test]
 async fn engine_locks_after_first_prompt_not_before() {
     let directory = tempfile::tempdir().expect("临时目录");
     let table = SessionTable::new(directory.path().join("sessions"), true);
