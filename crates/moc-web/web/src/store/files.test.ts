@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { rpc } from "@/protocol/client";
-import type { FsReadFileResult } from "@/protocol/types";
+import { ErrorCode, RpcError } from "@/protocol/errors";
+import type { FsReadFileResult, FsWriteFileResult } from "@/protocol/types";
 import {
   askDelete,
   commitNaming,
@@ -140,10 +141,12 @@ function read(content: string, modifiedMs: number): FsReadFileResult {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function openTab(content: string, modifiedMs: number, draft = content) {
@@ -276,6 +279,33 @@ it("迟到的旧目录列举不覆盖较新的列举", async () => {
   const files = useFiles.getState().bySession.s;
   expect(files.nodes["/w"].children?.map((child) => child.name)).toEqual(["new.txt"]);
   expect(files.loading["/w"]).toBe(false);
+});
+
+it("并发保存撞上自己的另一次保存不误报磁盘冲突", async () => {
+  openTab("v0", 0);
+  useFiles.setState((state) => ({
+    bySession: {
+      s: {
+        ...state.bySession.s,
+        tabs: state.bySession.s.tabs.map((item) => ({
+          ...item,
+          draft: "edit",
+          modifiedMs: 100,
+        })),
+      },
+    },
+  }));
+  const first = deferred<FsWriteFileResult>();
+  const second = deferred<FsWriteFileResult>();
+  vi.mocked(rpc.call).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  const save1 = saveFile("s", KEY);
+  const save2 = saveFile("s", KEY);
+  first.resolve({ size: 1, modified_ms: 200 });
+  await save1;
+  second.reject(new RpcError(ErrorCode.FileConflict, "conflict"));
+  expect(await save2).toBe(true);
+  expect(tab().diskConflict).toBeUndefined();
+  expect(tab().modifiedMs).toBe(200);
 });
 
 it("目录重命名迁移目录树缓存的 key", async () => {

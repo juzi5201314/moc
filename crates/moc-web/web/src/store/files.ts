@@ -445,6 +445,10 @@ export async function saveFile(
       content: tab.draft ?? "",
       expected_modified_ms: overwrite ? undefined : tab.modifiedMs,
     });
+    // 并发的另一次保存已把 modifiedMs 前移：这条迟到结果更旧，丢掉不回退。
+    const current = session(useFiles.getState(), sessionId);
+    if (current.tabs.find((item) => targetKey(item.target) === key)?.modifiedMs !== tab.modifiedMs)
+      return true;
     patchFileTab(sessionId, key, {
       content: tab.draft,
       size: result.size,
@@ -459,6 +463,10 @@ export async function saveFile(
       "code" in error &&
       (error as { code?: number }).code === ErrorCode.FileConflict;
     if (conflict) {
+      // 撞的是本端另一次在飞保存（期望的 mtime 已被那次成功保存前移），不是磁盘冲突。
+      const current = session(useFiles.getState(), sessionId);
+      const now = current.tabs.find((item) => targetKey(item.target) === key);
+      if (now && now.modifiedMs !== tab.modifiedMs) return true;
       patchFileTab(sessionId, key, { diskConflict: true });
     } else {
       toast.error(t("files.save_failed", { error: errorText(error) }));
