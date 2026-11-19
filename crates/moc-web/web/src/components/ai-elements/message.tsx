@@ -315,11 +315,31 @@ function MermaidFallback({ chart }: MermaidErrorComponentProps) {
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
+type MarkdownLinkNode = {
+  type: string;
+  children?: MarkdownLinkNode[];
+  identifier?: string;
+  url?: string;
+  title?: string | null;
+};
+
+function isRelativeFileLink(url: string) {
+  const value = url.trim();
+  return value !== "" && !/^(?:[#/?\\]|[a-z][\w+.-]*:)/i.test(value);
+}
+
 /// file:// 与 local:// 等资源 URI 都不在 rehype-sanitize 的协议白名单里，
 /// href 会被剥掉、链接退化成 button。在 remark 层先改写：file:// → 裸路径；
 /// 资源 URI → `#moc-res:<uri>` 哨兵（fragment 不是协议，能活到组件层再解开）。
-const fileLinkRewrite = () => (tree: { children?: unknown[]; url?: string }) => {
-  const walk = (node: { children?: unknown[]; url?: string }) => {
+const fileLinkRewrite = () => (tree: MarkdownLinkNode) => {
+  const definitions = new Map<string, MarkdownLinkNode>();
+  const references: MarkdownLinkNode[] = [];
+  const walk = (node: MarkdownLinkNode) => {
+    if (node.type === "definition" && node.identifier && !definitions.has(node.identifier)) {
+      definitions.set(node.identifier, node);
+    } else if (node.type === "linkReference") {
+      references.push(node);
+    }
     if (typeof node.url === "string") {
       if (/^file:\/\//i.test(node.url)) {
         try {
@@ -337,13 +357,25 @@ const fileLinkRewrite = () => (tree: { children?: unknown[]; url?: string }) => 
         // `src/a.ts:9` 这类行号写法含冒号，会被 URL 安全判定拦成按钮；
         // 同样走哨兵 fragment 通道，组件层再拆回路径与行号。
         node.url = `${FS_SENTINEL}${node.url}`;
+      } else if (node.type === "link" && isRelativeFileLink(node.url)) {
+        // rehype-harden 会拦截裸相对路径，或将 ./ 路径改成绝对路径。
+        node.url = `${FS_SENTINEL}${node.url}`;
       }
     }
     for (const child of node.children ?? []) {
-      walk(child as typeof node);
+      walk(child);
     }
   };
   walk(tree);
+
+  for (const node of references) {
+    const definition = node.identifier ? definitions.get(node.identifier) : undefined;
+    if (definition?.url && isRelativeFileLink(definition.url)) {
+      node.type = "link";
+      node.url = `${FS_SENTINEL}${definition.url}`;
+      node.title = definition.title;
+    }
+  }
 };
 
 // remarkPlugins prop 是整体替换默认列表，GFM/代码元信息必须显式保留。
