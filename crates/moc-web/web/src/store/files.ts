@@ -460,6 +460,8 @@ async function doSave(sessionId: string, key: string, overwrite: boolean): Promi
   const files = session(useFiles.getState(), sessionId);
   const tab = files.tabs.find((item) => targetKey(item.target) === key);
   if (tab?.target.kind !== "fs") return false;
+  // 排队期间标签被关闭又重开：内容还没读回来或没有草稿时，写 `""` 会把文件清空。
+  if (tab.loading || tab.draft === undefined) return true;
   try {
     const result = await rpc.call<FsWriteFileResult>("fs/write_file", {
       path: tab.target.path,
