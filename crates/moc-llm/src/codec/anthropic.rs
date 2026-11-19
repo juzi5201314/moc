@@ -204,6 +204,9 @@ pub(crate) struct AnthropicStreamDecoder {
     server_tool_indices: BTreeSet<usize>,
     /// 块序号稀疏、仅在开始/首个增量/结束访问；未流式化的 input 留到块结束再交付。
     tool_inputs: BTreeMap<usize, Value>,
+    /// 至今收到的原始 usage 字段。`message_delta` 的用量是累计值且可选字段可缺省，
+    /// 缺省即沿用 `message_start` 的值，因此必须先按原始字段合并再归一化。
+    usage: serde_json::Map<String, Value>,
 }
 
 #[cfg(test)]

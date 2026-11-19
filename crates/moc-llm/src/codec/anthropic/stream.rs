@@ -28,7 +28,20 @@ impl AnthropicStreamDecoder {
             stop_reason: None,
             server_tool_indices: BTreeSet::new(),
             tool_inputs: BTreeMap::new(),
+            usage: serde_json::Map::new(),
         }
+    }
+
+    /// 把一次 usage 快照的非空字段并入累计原始用量，返回归一化后的完整用量。
+    fn merge_usage(&mut self, usage: &Value) -> StreamEvent {
+        if let Some(fields) = usage.as_object() {
+            for (key, value) in fields {
+                if !value.is_null() {
+                    self.usage.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        StreamEvent::Usage(decode_usage(Some(&Value::Object(self.usage.clone()))))
     }
 
     pub(super) fn decode_payload(
@@ -53,7 +66,7 @@ impl AnthropicStreamDecoder {
                     }));
                 }
                 if let Some(usage) = value.pointer("/message/usage").filter(|u| !u.is_null()) {
-                    out.push(Ok(StreamEvent::Usage(decode_usage(Some(usage)))));
+                    out.push(Ok(self.merge_usage(usage)));
                 }
             }
             "content_block_start" => {
@@ -174,7 +187,7 @@ impl AnthropicStreamDecoder {
                     self.stop_reason = Some(map_stop_reason(reason));
                 }
                 if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
-                    out.push(Ok(StreamEvent::Usage(decode_usage(Some(usage)))));
+                    out.push(Ok(self.merge_usage(usage)));
                 }
             }
             "message_stop" => {
