@@ -70,12 +70,14 @@
     const text = values.map(value => {
       if (typeof value === 'string') return value;
       if (value instanceof Error) return `${value.name}: ${value.message}`;
-      const seen = new Set();
-      return stringify(value, (_, item) => {
+      // 只把当前路径上的祖先视为环；同一对象被多处引用时照常展开。
+      const ancestors = [];
+      return stringify(value, function (_, item) {
         if (typeof item === 'bigint') return String(item);
         if (item && typeof item === 'object') {
-          if (seen.has(item)) return '[Circular]';
-          seen.add(item);
+          while (ancestors.length && ancestors[ancestors.length - 1] !== this) ancestors.pop();
+          if (ancestors.includes(item)) return '[Circular]';
+          ancestors.push(item);
         }
         return item;
       }) ?? String(value);
