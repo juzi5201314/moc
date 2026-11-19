@@ -375,11 +375,11 @@ pub(crate) fn write_file(
     })
 }
 
-/// 重命名/移动 `from` 到 `to`；目标已存在时报错。
+/// 重命名/移动 `from` 到 `to`；目标已存在时报错，仅改大小写除外。
 pub(crate) fn rename(from: &str, to: &str) -> Result<FsRenameResult, FileIoError> {
     let from = expand(from)?;
     let to = expand(to)?;
-    if to.symlink_metadata().is_ok() {
+    if to.symlink_metadata().is_ok() && !is_case_only_rename(&from, &to) {
         return Err(FileIoError::Exists { path: to });
     }
     std::fs::rename(&from, &to).map_err(|source| FileIoError::Io {
@@ -393,6 +393,34 @@ pub(crate) fn rename(from: &str, to: &str) -> Result<FsRenameResult, FileIoError
     Ok(FsRenameResult {
         path: canonical.to_string_lossy().into_owned(),
     })
+}
+
+/// `to` 是否只是 `from` 改了大小写，且大小写不敏感卷把 `to` 解析回了 `from` 本身。
+///
+/// 同一目录下名称仅大小写不同、而目录里没有与 `to` 逐字节同名的项时，`to` 能被找到
+/// 只可能是卷折叠了大小写；折叠后唯一命中的就是 `from`，因此不会覆盖其他项。
+fn is_case_only_rename(from: &Path, to: &Path) -> bool {
+    let (Some(from_parent), Some(to_parent), Some(from_name), Some(to_name)) =
+        (from.parent(), to.parent(), from.file_name(), to.file_name())
+    else {
+        return false;
+    };
+    if from_name == to_name
+        || from_name.to_string_lossy().to_lowercase() != to_name.to_string_lossy().to_lowercase()
+    {
+        return false;
+    }
+    let same_parent = match (
+        std::fs::canonicalize(from_parent),
+        std::fs::canonicalize(to_parent),
+    ) {
+        (Ok(from_parent), Ok(to_parent)) => from_parent == to_parent,
+        _ => false,
+    };
+    same_parent
+        && from.symlink_metadata().is_ok()
+        && std::fs::read_dir(from_parent)
+            .is_ok_and(|entries| entries.flatten().all(|entry| entry.file_name() != to_name))
 }
 
 /// 把文件或目录整体移入系统回收站。
@@ -710,5 +738,30 @@ mod tests {
             rename("relative/x", "/tmp/y").unwrap_err(),
             FileIoError::Path(PathError::NotAbsolute)
         ));
+    }
+
+    #[test]
+    fn rename_allows_case_only_change() {
+        let root = fixture();
+        let from = root.path().join("file.txt");
+        let to = root.path().join("File.txt");
+        let renamed = rename(from.to_str().unwrap(), to.to_str().unwrap()).unwrap();
+        assert!(renamed.path.ends_with("File.txt"), "{}", renamed.path);
+        let names: Vec<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.eq_ignore_ascii_case("file.txt"))
+            .collect();
+        assert_eq!(names, ["File.txt"]);
+
+        // 大小写不敏感卷上，折叠后命中另一项的目标仍算已存在，不能覆盖。
+        std::fs::write(root.path().join("Other.txt"), "y").unwrap();
+        let other = root.path().join("other.txt");
+        if other.exists() {
+            assert!(matches!(
+                rename(to.to_str().unwrap(), other.to_str().unwrap()).unwrap_err(),
+                FileIoError::Exists { .. }
+            ));
+        }
     }
 }
