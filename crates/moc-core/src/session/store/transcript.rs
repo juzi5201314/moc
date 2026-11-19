@@ -274,11 +274,15 @@ impl SessionFile {
                 .await?;
             drop(replacement);
             fs::rename(&temp, &self.path).await?;
-            let revision = crate::hashline::SnapshotId::from_metadata(
-                &reopened.metadata().await?,
-            );
+            // 句柄先换上再读元数据：读取失败时旧句柄指向已被替换的 inode，
+            // 留下它会让后续追加静默写到已删除的旧文件里。
             *current = Some(reopened);
-            *self.revision.write() = revision;
+            let metadata = current
+                .as_ref()
+                .expect("rename 之后一定已有句柄")
+                .metadata()
+                .await?;
+            *self.revision.write() = crate::hashline::SnapshotId::from_metadata(&metadata);
             Ok::<(), CoreError>(())
         }
         .await;
