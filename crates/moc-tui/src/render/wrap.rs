@@ -18,6 +18,7 @@ use std::borrow::Cow;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
+use unicode_width::UnicodeWidthStr;
 
 /// 行内截断的省略号（占 1 列）。
 pub const ELLIPSIS: char = '…';
@@ -284,7 +285,7 @@ fn styled_row(
 
 /// 字符串显示宽度。
 pub fn str_width(text: &str) -> usize {
-    text.chars().map(char_width).sum()
+    UnicodeWidthStr::width(text)
 }
 
 /// 一行的显示宽度（各 span 之和）。

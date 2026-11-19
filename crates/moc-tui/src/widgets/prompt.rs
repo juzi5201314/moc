@@ -10,9 +10,10 @@
 use moc_protocol::ImageSource;
 use moc_protocol::methods::InputPart;
 use rust_i18n::t;
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::history::HISTORY_MAX;
+use crate::render::wrap::str_width;
 
 /// 粘贴超过该行数时 chip 化。
 const PASTE_CHIP_LINES: usize = 4;
@@ -463,22 +464,19 @@ impl PromptState {
             .rsplit('\n')
             .next()
             .unwrap_or_default();
-        let current_cell_width: usize = current_line_text
-            .chars()
-            .map(|ch| ch.width().unwrap_or(0))
-            .sum();
+        let current_cell_width = str_width(current_line_text);
 
         let lines: Vec<&str> = self.text.split('\n').collect();
         let target_line = lines[target as usize];
         let mut target_offset = 0;
         let mut accumulated_width = 0;
-        for ch in target_line.chars() {
-            let w = ch.width().unwrap_or(0);
+        for grapheme in target_line.graphemes(true) {
+            let w = str_width(grapheme);
             if accumulated_width + w > current_cell_width {
                 break;
             }
             accumulated_width += w;
-            target_offset += ch.len_utf8();
+            target_offset += grapheme.len();
         }
         let line_start: usize = lines[..target as usize].iter().map(|l| l.len() + 1).sum();
         self.cursor = line_start + target_offset.min(target_line.len());
@@ -789,6 +787,24 @@ pub(crate) fn edit_input(
 #[cfg(test)]
 mod tests {
     use super::PromptState;
+
+    #[test]
+    fn vertical_movement_preserves_grapheme_column() {
+        let mut prompt = PromptState::default();
+        prompt.insert_str_raw("👩‍💻ab\nabcdef");
+        prompt.cursor = "👩‍💻ab".len();
+        prompt.down();
+        assert_eq!(prompt.cursor, "👩‍💻ab\nabcd".len());
+        prompt.up();
+        assert_eq!(prompt.cursor, "👩‍💻ab".len());
+        prompt.cursor = "👩‍💻ab\na".len();
+        prompt.up();
+        assert_eq!(prompt.cursor, 0);
+        let mut prompt = PromptState::default();
+        prompt.up();
+        prompt.down();
+        assert_eq!(prompt.cursor, 0);
+    }
 
     #[test]
     fn resource_completion_replaces_token_without_space_or_multiline_loss() {

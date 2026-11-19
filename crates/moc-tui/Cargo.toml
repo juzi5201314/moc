@@ -23,6 +23,7 @@ syntect = { version = "5.3", default-features = false, features = [
 ] }
 two-face = "0.5"
 unicode-width = "0.2"
+unicode-segmentation = "1.13"
 anyhow.workspace = true
 thiserror.workspace = true
 base64 = "0.22"
