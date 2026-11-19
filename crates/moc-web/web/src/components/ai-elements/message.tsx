@@ -323,7 +323,8 @@ const fileLinkRewrite = () => (tree: { children?: unknown[]; url?: string }) => 
     if (typeof node.url === "string") {
       if (/^file:\/\//i.test(node.url)) {
         try {
-          node.url = decodeURIComponent(new URL(node.url).pathname);
+          // 保持编码形态，由 resolveAnchorTarget 统一解码一次，避免字面量 `%` 被二次解码。
+          node.url = new URL(node.url).pathname;
         } catch {
           // 非法 file:// URL 保留原样，交给后续管线按既有规则处理。
         }
