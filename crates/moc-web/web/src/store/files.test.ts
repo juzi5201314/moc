@@ -1,6 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { rpc } from "@/protocol/client";
-import { ErrorCode, RpcError } from "@/protocol/errors";
 import type { FsReadFileResult, FsWriteFileResult } from "@/protocol/types";
 import {
   askDelete,
@@ -281,7 +280,7 @@ it("迟到的旧目录列举不覆盖较新的列举", async () => {
   expect(files.loading["/w"]).toBe(false);
 });
 
-it("并发保存撞上自己的另一次保存不误报磁盘冲突", async () => {
+it("并发保存串行执行，第二次读取前移后的 mtime", async () => {
   openTab("v0", 0);
   useFiles.setState((state) => ({
     bySession: {
@@ -300,12 +299,20 @@ it("并发保存撞上自己的另一次保存不误报磁盘冲突", async () =
   vi.mocked(rpc.call).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
   const save1 = saveFile("s", KEY);
   const save2 = saveFile("s", KEY);
+  // 串行化后第二个请求要等第一次完成才发出。
+  await flush();
+  expect(rpc.call).toHaveBeenCalledTimes(1);
   first.resolve({ size: 1, modified_ms: 200 });
   await save1;
-  second.reject(new RpcError(ErrorCode.FileConflict, "conflict"));
+  await flush();
+  expect(rpc.call).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(rpc.call).mock.calls[1][1]).toMatchObject({
+    expected_modified_ms: 200,
+  });
+  second.resolve({ size: 1, modified_ms: 300 });
   expect(await save2).toBe(true);
   expect(tab().diskConflict).toBeUndefined();
-  expect(tab().modifiedMs).toBe(200);
+  expect(tab().modifiedMs).toBe(300);
 });
 
 it("目录重命名迁移目录树缓存的 key", async () => {
