@@ -17,9 +17,9 @@ use crate::hashline::{numbered_line, served::read_snapshot, tag_text};
 use crate::resources::{ResourceBacking, ResourceRouter};
 
 mod partial;
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
-struct ReadArgs {
+pub(crate) struct ReadArgs {
     path: String,
     offset: Option<i64>,
     limit: Option<usize>,
