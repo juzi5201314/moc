@@ -166,20 +166,22 @@ pub(crate) fn unwrap_checkpoint(raw: &str) -> String {
             }
         }
     }
-    let lower = text.to_ascii_lowercase();
-    if let Some(open) = lower.rfind("<summary") {
-        let inner_start = text[open..]
-            .find('>')
-            .map(|offset| open + offset + 1)
-            .unwrap_or(open + "<summary".len());
-        let tail = &text[inner_start..];
-        let inner_end = tail
-            .to_ascii_lowercase()
+    let body = strip_fence(&text);
+    let lower = body.to_ascii_lowercase();
+    // 只剥掉开头的外层标签；正文里的同名标签可能是引用。
+    let body = if let Some(after_name) = lower.strip_prefix("<summary")
+        && after_name.starts_with(|c: char| c == '>' || c.is_ascii_whitespace())
+        && let Some(open_end) = lower.find('>')
+    {
+        let inner_start = open_end + 1;
+        let inner_end = lower[inner_start..]
             .rfind("</summary>")
-            .unwrap_or(tail.len());
-        text = tail[..inner_end].trim().to_owned();
-    }
-    let mut text = strip_fence(&text).trim().to_owned();
+            .map_or(body.len(), |offset| inner_start + offset);
+        strip_fence(&body[inner_start..inner_end])
+    } else {
+        body
+    };
+    let mut text = body.to_owned();
     while text.contains("\n\n\n") {
         text = text.replace("\n\n\n", "\n\n");
     }
@@ -490,6 +492,20 @@ mod tests {
         text.push_str(&"x".repeat(600));
         text.push_str("\n## Current Work\nwork\n## Next Step\nstep\n");
         text
+    }
+
+    #[test]
+    fn unwrap_checkpoint_preserves_literal_summary_tags() {
+        let body = "## Current Work\n记录 <summary>原文</summary>。\n## Next Step\n继续";
+        let wrapped = format!("<summary>\n{body}\n</summary>");
+        assert_eq!(unwrap_checkpoint(&wrapped), body);
+        assert_eq!(unwrap_checkpoint(body), body);
+        let fenced = format!(
+            "<analysis>草稿</analysis>\n```markdown\n<SUMMARY id=\"1\">\n{body}\n</SUMMARY>\n```"
+        );
+        assert_eq!(unwrap_checkpoint(&fenced), body);
+        let similar_tag = "<summary_request>\n## Next Step\n继续\n</summary_request>";
+        assert_eq!(unwrap_checkpoint(similar_tag), similar_tag);
     }
 
     #[test]
