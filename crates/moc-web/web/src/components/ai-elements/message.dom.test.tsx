@@ -157,6 +157,25 @@ describe("MessageResponse GitHub 风格渲染", () => {
     expect(bad.container.querySelector("svg.moc-svg-figure")).toBeNull();
   });
 
+  it.each([
+    "[源码](src/main.rs)",
+    "[源码](./src/main.rs)",
+    "[源码][main]\n\n[main]: src/main.rs",
+  ])("相对路径链接按会话目录打开：%s", (source) => {
+    openFile.mockClear();
+    useTabs.setState({ active: "s1" });
+    useTranscript.setState((state) => ({
+      bySession: {
+        ...state.bySession,
+        s1: { info: { cwd: "/repo" } } as never,
+      },
+    }));
+    const { getByRole } = render(<MessageResponse>{source}</MessageResponse>);
+
+    fireEvent.click(getByRole("link", { name: "源码" }));
+    expect(openFile).toHaveBeenCalledWith("s1", { kind: "fs", path: "/repo/src/main.rs" }, {});
+  });
+
   it("本地路径链接点击在文件分页打开，URL 保持原样", async () => {
     openFile.mockClear();
     useTabs.setState({ active: "s1" });
