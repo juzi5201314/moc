@@ -15,6 +15,7 @@ const KEY = `fs:${PATH}`;
 
 function read(content: string, modifiedMs: number): FsReadFileResult {
   return {
+    path: PATH,
     content,
     encoding: "utf8",
     size: content.length,
