@@ -489,9 +489,24 @@ export function cancelNaming(sessionId: string): void {
 
 /** 重命名或移动后同步所有会话的文件标签，保留未保存的草稿。 */
 export async function renameFile(from: string, to: string): Promise<void> {
+  const isWithin = (path: string, parent: string) =>
+    path === parent || path.startsWith(`${parent}/`);
+  for (const files of Object.values(useFiles.getState().bySession)) {
+    const conflict = files.tabs.find(
+      (tab) =>
+        tab.target.kind === "fs" &&
+        !isWithin(tab.target.path, from) &&
+        isWithin(tab.target.path, to) &&
+        tab.draft !== undefined &&
+        tab.draft !== tab.content,
+    );
+    if (conflict?.target.kind === "fs") {
+      throw new Error(t("files.rename_unsaved_destination", { path: conflict.target.path }));
+    }
+  }
   const result = await rpc.call<FsRenameResult>("fs/rename", { from, to });
   const remapPath = (path: string) =>
-    path === from || path.startsWith(`${from}/`) ? result.path + path.slice(from.length) : path;
+    isWithin(path, from) ? result.path + path.slice(from.length) : path;
   const remapKey = (key: string) => (key.startsWith("fs:") ? `fs:${remapPath(key.slice(3))}` : key);
   useFiles.setState((state) => ({
     bySession: Object.fromEntries(

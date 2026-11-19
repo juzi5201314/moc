@@ -5,6 +5,7 @@ import {
   type OpenFile,
   renameFile,
   saveFile,
+  setDraft,
   startNaming,
   targetKey,
   useFiles,
@@ -46,7 +47,7 @@ it("重命名文件和目录后所有会话的标签保留草稿并保存到新�
     ],
   ]) {
     const original = tab(oldPath);
-    const staleDestination = { ...tab(newPath), draft: "deleted file draft" };
+    const staleDestination = { ...tab(newPath), draft: "old" };
     const unrelated = tab(`${from}-other/file.txt`);
     const resource: OpenFile = { ...original, target: { kind: "resource", uri: oldPath } };
     useFiles.setState({ bySession: {} });
@@ -60,7 +61,12 @@ it("重命名文件和目录后所有会话的标签保留草稿并保存到新�
             tabs:
               id === "first"
                 ? [staleDestination, original, unrelated, resource]
-                : [original, staleDestination, unrelated, resource],
+                : [
+                    original,
+                    { ...staleDestination, draft: "deleted file draft" },
+                    unrelated,
+                    resource,
+                  ],
             active: targetKey(id === "first" ? original.target : staleDestination.target),
             closing: {
               key: targetKey(id === "first" ? original.target : staleDestination.target),
@@ -75,6 +81,12 @@ it("重命名文件和目录后所有会话的标签保留草稿并保存到新�
       if (method === "fs/write_file") return { size: 13, modified_ms: 43 };
       return { entries: [] };
     });
+    vi.mocked(rpc.call).mockClear();
+    const beforeRejectedRename = useFiles.getState();
+    await expect(renameFile(from, to)).rejects.toThrow(newPath);
+    expect(rpc.call).not.toHaveBeenCalled();
+    expect(useFiles.getState()).toBe(beforeRejectedRename);
+    setDraft("second", `fs:${newPath}`, "old");
     if (to.includes("/dest/")) await renameFile(from, to);
     else await commitNaming("first", root, to.split("/").at(-1) ?? "");
     for (const id of ["first", "second"]) {

@@ -526,6 +526,8 @@ export const zh = {
   "session.delete_failed": "删除会话失败：{error}",
   "session.model_read_failed": "读取会话模型失败：{error}",
   "files.op_failed": "操作失败：{error}",
+  "files.rename_unsaved_destination":
+    "无法重命名或移动：{path} 有未保存的更改，请先保存或放弃更改。",
   "files.save_failed": "保存失败：{error}",
   "files.deleted": "已删除",
   "files.delete_failed": "删除失败：{error}",
