@@ -166,12 +166,12 @@ fn attachment_for_token(
 }
 
 /// 从 `end` 向后按词扩展 `@` 引用：路径含空格时 token 只是前缀，
-/// 逐词试探 `metadata`，记录最后一个能解析的边界。连续多次未命中即停，
-/// 防止长正文尾部带来大量无谓的 stat。
+/// 逐词试探 `metadata`，记录最后一个能解析的边界；末段超过 255 个字符即停，
+/// 因为该段已不可能是有效文件名，继续扩展也无法成为有效路径。
+/// 新增词含路径分隔符时，若父目录不存在也立即停止，避免扫描后续引用。
 fn extend_reference_end(text: &str, start: usize, mut end: usize, cwd: &Path) -> usize {
     let bytes = text.as_bytes();
     let mut scan = end;
-    let mut misses = 0;
     loop {
         let mut i = scan;
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
@@ -183,14 +183,19 @@ fn extend_reference_end(text: &str, start: usize, mut end: usize, cwd: &Path) ->
         while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
             i += 1;
         }
-        if std::fs::metadata(resolve_reference_path(&text[start + 1..i], cwd)).is_ok() {
+        let path = resolve_reference_path(&text[start + 1..i], cwd);
+        if path.components().next_back().is_some_and(|component| {
+            component.as_os_str().to_string_lossy().chars().count() > 255
+        }) {
+            break;
+        }
+        if text[scan..i].contains(std::path::is_separator)
+            && path.parent().is_some_and(|parent| !parent.is_dir())
+        {
+            break;
+        }
+        if std::fs::metadata(path).is_ok() {
             end = i;
-            misses = 0;
-        } else {
-            misses += 1;
-            if misses >= 8 {
-                break;
-            }
         }
         scan = i;
     }
@@ -699,6 +704,41 @@ mod tests {
         assert!(path.ends_with("design notes.md"), "{path}");
         assert!(body.contains("# notes"), "{body}");
         assert!(message.text().contains("这一段"), "正文尾部不能丢");
+    }
+
+    #[tokio::test]
+    async fn at_references_attach_filename_with_many_spaces() {
+        let (dir, anchors, config) = attach_fixture();
+        let cwd = dir.path().join("repo");
+        let filename = "one two three four five six seven eight nine ten eleven.txt";
+        std::fs::write(cwd.join(filename), "many spaces\n").expect("写文件");
+
+        let message = project_input(
+            vec![InputPart::Text {
+                text: format!("看 @{filename} 这一段"),
+            }],
+            false,
+            &cwd,
+            &anchors,
+            &config,
+        )
+        .await
+        .expect("投影成功");
+        let attachments = message
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Text(text) => crate::resources::attach::parse_attachment(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(attachments.len(), 1, "{attachments:?}");
+        let (path, kind, body) = attachments[0];
+        assert!(path.ends_with(filename), "{path}");
+        assert_eq!(kind, "file");
+        assert!(body.contains("many spaces"), "{body}");
+        assert!(message.text().contains(&format!("@{filename}")));
+        assert!(message.text().ends_with(" 这一段"), "正文尾部不能丢");
     }
 
     #[test]
