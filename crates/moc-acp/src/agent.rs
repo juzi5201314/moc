@@ -691,6 +691,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_session_replays_user_images_in_order() {
+        let (bridge, backend) = bridge();
+        let mut message = Message::user_text("before");
+        message.content = vec![
+            moc_protocol::ContentPart::Text("before".into()),
+            moc_protocol::ContentPart::Image {
+                source: moc_protocol::ImageSource::Base64 {
+                    media_type: "image/png".into(),
+                    data: "aW1hZ2U=".into(),
+                },
+                detail: None,
+            },
+            moc_protocol::ContentPart::Text("after".into()),
+        ]
+        .into();
+        backend.push::<SessionLoad>(SessionLoadResult {
+            session: session_info("ses_1"),
+            entries: vec![transcript_entry(message)],
+            truncated: false,
+            todos: Vec::new(),
+            plans: Vec::new(),
+            child_calls: Vec::new(),
+            goal: None,
+        });
+        let (result, replay) = bridge
+            .load_session(LoadSessionRequest::new("ses_1", PathBuf::from("/tmp")))
+            .await;
+        result.unwrap();
+        let blocks: Vec<_> = replay
+            .into_iter()
+            .map(|update| match update {
+                SessionUpdate::UserMessageChunk(chunk) => chunk.content,
+                other => panic!("expected user chunk, got {other:?}"),
+            })
+            .collect();
+        assert!(matches!(
+            blocks.get(1),
+            Some(ContentBlock::Image(image))
+                if image.mime_type == "image/png" && image.data == "aW1hZ2U="
+        ));
+        assert_eq!(blocks.len(), 3);
+        assert!(matches!(&blocks[0], ContentBlock::Text(text) if text.text == "before"));
+        assert!(matches!(&blocks[2], ContentBlock::Text(text) if text.text == "after"));
+    }
+
+    #[tokio::test]
     async fn list_sessions_filters_by_cwd() {
         let (bridge, backend) = bridge();
         backend.push::<SessionList>(SessionListResult {
