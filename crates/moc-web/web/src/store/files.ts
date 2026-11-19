@@ -498,6 +498,23 @@ export function cancelNaming(sessionId: string): void {
   patch(sessionId, (files) => ({ ...files, naming: undefined }));
 }
 
+/** 目录树缓存 key 同步改名：节点自身的 key 与子孙节点的 key 都按路径前缀重映射。 */
+function remapTreeNode(remap: (path: string) => string, node: TreeNode): TreeNode {
+  return {
+    ...node,
+    key: remap(node.key),
+    children: node.children?.map((child) => remapTreeNode(remap, child)),
+  };
+}
+
+/** 按路径前缀重映射一张 key 索引表；不在改名范围内的 key 原样保留。 */
+function remapKeys<T>(
+  remap: (path: string) => string,
+  record: Record<string, T>,
+): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).map(([key, value]) => [remap(key), value]));
+}
+
 /** 重命名或移动后同步所有会话的文件标签，保留未保存的草稿。 */
 export async function renameFile(from: string, to: string): Promise<void> {
   const isWithin = (path: string, parent: string) =>
@@ -540,6 +557,16 @@ export async function renameFile(from: string, to: string): Promise<void> {
           id,
           {
             ...files,
+            // 目录改名后 expanded/nodes/loading 里的旧路径 key 永远失效：
+            // refreshExpanded 还会对死路径发 fs/list_dir，展开状态也丢了。
+            expanded: remapKeys(remapPath, files.expanded),
+            nodes: Object.fromEntries(
+              Object.entries(files.nodes).map(([key, node]) => [
+                remapPath(key),
+                remapTreeNode(remapPath, node),
+              ]),
+            ),
+            loading: remapKeys(remapPath, files.loading),
             tabs: files.tabs.flatMap((tab) => {
               const key = targetKey(tab.target);
               const replacement = renamed.get(key);
