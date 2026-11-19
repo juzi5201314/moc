@@ -46,13 +46,17 @@ impl SessionTable {
         let lease = lock::SessionLockGuard::acquire(record.paths.lock_file(session_id), frontend)?;
         let _append = record.append_lock.lock().await;
         let file_slot = record.file.lock().await;
+        let changed_on_disk = match file_slot.as_ref() {
+            Some(file) => file.changed_on_disk().await?,
+            None => false,
+        };
         if let Some(file) = file_slot.as_ref() {
             // 崩溃可能留下半条记录：拿到写租约后先截掉残尾，否则下一次追加会把它粘成坏行。
             // 只读打开绝不修改文件，所以修复只发生在这里。
             file.truncate_partial_tail().await?;
         }
         if let Some(file) = file_slot.as_ref()
-            && file.changed_on_disk().await?
+            && changed_on_disk
         {
             let mut fresh = self.store.read_state(&record.paths).await?;
             file.reopen().await?;
