@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -11,16 +12,21 @@ use tokio::sync::Notify;
 
 /// `read_tail` 最多回看的字节数；只用于取最后几行，不需要整份日志。
 const TAIL_WINDOW: u64 = 1024 * 1024;
+const MAX_UTF8_FRAGMENT: usize = 3;
 
 /// `usize` 在受支持平台上不超过 64 位，转换不会失败；失败时饱和以保持单调。
 fn len64(length: usize) -> u64 {
     u64::try_from(length).unwrap_or(u64::MAX)
 }
 
+fn is_utf8_continuation(byte: u8) -> bool {
+    byte & 0xc0 == 0x80
+}
+
 /// 不完整 UTF-8 尾缀最多 3 字节；只检查这段，已确定非法的序列仍立即按替换字符输出。
 fn incomplete_utf8_suffix(bytes: &[u8]) -> usize {
-    for start in (bytes.len().saturating_sub(3)..bytes.len()).rev() {
-        if bytes[start] & 0xc0 == 0x80 {
+    for start in (bytes.len().saturating_sub(MAX_UTF8_FRAGMENT)..bytes.len()).rev() {
+        if is_utf8_continuation(bytes[start]) {
             continue;
         }
         if let Err(error) = std::str::from_utf8(&bytes[start..])
@@ -33,16 +39,57 @@ fn incomplete_utf8_suffix(bytes: &[u8]) -> usize {
     0
 }
 
+fn utf8_prefix_fragment(bytes: impl Iterator<Item = u8>) -> usize {
+    bytes
+        .take(MAX_UTF8_FRAGMENT)
+        .take_while(|&byte| is_utf8_continuation(byte))
+        .count()
+}
+
+fn trim_utf8_prefix(bytes: &mut Vec<u8>) {
+    let fragment = utf8_prefix_fragment(bytes.iter().copied());
+    bytes.drain(..fragment);
+}
+
 #[derive(Debug)]
 struct JobLogState {
     file: File,
-    /// 文件当前长度；溢出前等于写入总量，溢出后停在 `capacity`。
+    /// 文件当前长度；定稿前最多 `capacity` 字节。
     file_len: u64,
     /// 溢出后的最近输出，最多 `tail_cap` 字节；更早的字节被挤出即计入丢弃。
     ring: VecDeque<u8>,
     /// 累计收到的字节数。
     seen: u64,
+    /// 定稿时丢弃的原始字节区间，不含文件里的省略标记。
+    finished_gap: Option<Range<u64>>,
     finished: bool,
+}
+
+impl JobLogState {
+    fn ring_start(&self) -> u64 {
+        self.seen - len64(self.ring.len())
+    }
+
+    fn read_file(&self, range: Range<u64>, bytes: &mut Vec<u8>) -> std::io::Result<()> {
+        if range.is_empty() {
+            return Ok(());
+        }
+        // 克隆句柄共享文件偏移；读完恢复末尾，后续追加才不会覆盖已有内容。
+        let mut file = self.file.try_clone()?;
+        file.seek(SeekFrom::Start(range.start))?;
+        let result = (&mut file).take(range.end - range.start).read_to_end(bytes);
+        let restore = file.seek(SeekFrom::Start(self.file_len));
+        result.and(restore).map(|_| ())
+    }
+
+    fn utf8_head_end(&self, end: u64) -> std::io::Result<u64> {
+        let mut boundary = Vec::new();
+        self.read_file(
+            end.saturating_sub(len64(MAX_UTF8_FRAGMENT))..end,
+            &mut boundary,
+        )?;
+        Ok(end - len64(incomplete_utf8_suffix(&boundary)))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +129,7 @@ impl JobLog {
                 file_len: 0,
                 ring: VecDeque::new(),
                 seen: 0,
+                finished_gap: None,
                 finished: false,
             })),
             output_notify: Arc::new(Notify::new()),
@@ -124,16 +172,19 @@ impl JobLog {
             return Ok(());
         }
         state.finished = true;
-        let elided = state.seen.saturating_sub(self.capacity);
         if state.seen > self.capacity {
+            let head_end = state.utf8_head_end(self.head_cap)?;
             let tail = self.tail_bytes(&state, self.capacity - self.head_cap)?;
-            state.ring = VecDeque::new();
-            state.file.set_len(self.head_cap)?;
-            state.file.seek(SeekFrom::Start(self.head_cap))?;
+            let tail_start = state.seen - len64(tail.len());
+            let elided = tail_start - head_end;
+            state.file.set_len(head_end)?;
+            state.file.seek(SeekFrom::Start(head_end))?;
             let marker = format!("\n[... {elided} bytes of output elided ...]\n");
             state.file.write_all(marker.as_bytes())?;
             state.file.write_all(&tail)?;
-            state.file_len = self.head_cap + len64(marker.len()) + len64(tail.len());
+            state.file_len = head_end + len64(marker.len()) + len64(tail.len());
+            state.finished_gap = Some(head_end..tail_start);
+            state.ring = VecDeque::new();
         }
         state.file.flush()?;
         state.file.sync_all()
@@ -149,15 +200,27 @@ impl JobLog {
                 .unwrap_or(0)
                 .saturating_add(from_ring),
         );
-        if from_file > 0 {
-            // 克隆句柄与原句柄共享文件偏移：读完必须把偏移放回末尾，后续写入才不会覆盖。
-            let mut file = state.file.try_clone()?;
-            file.seek(SeekFrom::Start(state.file_len - from_file))?;
-            (&mut file).take(from_file).read_to_end(&mut bytes)?;
-            file.seek(SeekFrom::Start(state.file_len))?;
+        let file_start = state.file_len - from_file;
+        state.read_file(file_start..state.file_len, &mut bytes)?;
+        let ring = state
+            .ring
+            .iter()
+            .skip(state.ring.len() - from_ring)
+            .copied();
+        if from_file > 0 && from_ring > 0 && state.file_len < state.ring_start() {
+            // 两段之间有丢弃区，不能把两侧的残缺字节拼成另一个字符。
+            bytes.truncate(bytes.len() - incomplete_utf8_suffix(&bytes));
+            if file_start > 0 {
+                trim_utf8_prefix(&mut bytes);
+            }
+            let fragment = utf8_prefix_fragment(ring.clone());
+            bytes.extend(ring.skip(fragment));
+        } else {
+            bytes.extend(ring);
+            if file_start > 0 {
+                trim_utf8_prefix(&mut bytes);
+            }
         }
-        let skip = state.ring.len() - from_ring;
-        bytes.extend(state.ring.iter().skip(skip).copied());
         Ok(bytes)
     }
 
@@ -203,27 +266,32 @@ impl JobLog {
         }
         // 保留区间：逻辑位置 [0, head_end) 存于文件开头，[tail_start, seen) 存于尾部；
         // 运行中尾部在 ring，定稿溢出后尾部是文件末段（中段标记不算数据，跳过）。
-        let (head_end, tail_start) = if seen <= self.capacity {
-            (state.file_len, state.file_len)
-        } else if state.finished {
-            (self.head_cap, seen - len64(self.tail_cap()))
+        let finished_gap = state.finished_gap.as_ref();
+        let (head_end, tail_start) = if let Some(gap) = finished_gap {
+            (gap.start, gap.end)
         } else {
-            (self.capacity, seen - len64(state.ring.len()))
+            let ring_start = state.ring_start();
+            if state.file_len < ring_start {
+                let head_end = if offset < state.file_len {
+                    state.utf8_head_end(state.file_len)?
+                } else {
+                    state.file_len
+                };
+                let fragment = utf8_prefix_fragment(state.ring.iter().copied());
+                (head_end, ring_start + len64(fragment))
+            } else {
+                (state.file_len, ring_start)
+            }
         };
         let mut bytes = Vec::new();
-        if offset < head_end {
-            // 克隆句柄共享文件偏移；读完恢复末尾，后续追加才不会被截断。
-            let mut file = state.file.try_clone()?;
-            file.seek(SeekFrom::Start(offset))?;
-            (&mut file)
-                .take(head_end - offset)
-                .read_to_end(&mut bytes)?;
-            file.seek(SeekFrom::Start(state.file_len))?;
-        }
-        if tail_start < seen {
-            let tail = self.tail_bytes(&state, seen - tail_start)?;
-            let from = usize::try_from(offset.max(tail_start) - tail_start).unwrap_or(tail.len());
-            bytes.extend_from_slice(&tail[from.min(tail.len())..]);
+        state.read_file(offset..head_end, &mut bytes)?;
+        let from = offset.max(tail_start);
+        if finished_gap.is_some() {
+            let file_start = state.file_len - (seen - from);
+            state.read_file(file_start..state.file_len, &mut bytes)?;
+        } else if from < seen {
+            let skip = (from - state.ring_start()) as usize;
+            bytes.extend(state.ring.iter().skip(skip).copied());
         }
         let skipped = tail_start.saturating_sub(offset.max(head_end));
         let pending = if state.finished {
@@ -310,6 +378,55 @@ mod tests {
         log.append(b"zzz").expect("写入");
         log.finish().expect("重复定稿");
         assert_eq!(std::fs::read_to_string(&path).expect("读取文件"), text);
+    }
+
+    #[test]
+    fn overflow_preserves_utf8_in_finished_log() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("job.log");
+        let log = JobLog::create(path.clone(), 12).expect("创建日志");
+        let input = "ok中🚀a界-middle-🤖tail";
+        log.append(input.as_bytes()).expect("写入");
+        log.finish().expect("定稿");
+        assert_eq!(
+            String::from_utf8_lossy(&fs::read(path).expect("读取日志")),
+            "ok中\n[... 20 bytes of output elided ...]\ntail"
+        );
+        assert_eq!(log.read_since(0).unwrap(), ("ok中tail".into(), 29, 20));
+        assert_eq!(log.read_since(24).unwrap(), ("tail".into(), 29, 1));
+    }
+
+    #[test]
+    fn overflow_preserves_utf8_in_running_log() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let log = JobLog::create(directory.path().join("job.log"), 12).expect("创建日志");
+        let input = "ok中🚀a界-middle-🤖tail";
+        let (first, second) = input.as_bytes().split_at(12);
+        log.append(first).expect("写入未完成字符");
+        assert_eq!(log.read_since(0).unwrap(), ("ok中🚀a".into(), 10, 0));
+        log.append(&second[..1]).expect("补齐字符并超出容量");
+        assert_eq!(log.read_since(10).unwrap(), ("界".into(), 13, 0));
+        log.append(&second[1..]).expect("写入剩余输出");
+        assert_eq!(log.read_since(10).unwrap(), ("tail".into(), 29, 15));
+        assert_eq!(
+            log.read_tail_and_seen(10).unwrap(),
+            ("ok中🚀atail".into(), true, 29)
+        );
+    }
+
+    #[test]
+    fn tail_preview_preserves_utf8_at_window_start() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let log = JobLog::create(directory.path().join("job.log"), TAIL_WINDOW * 2).unwrap();
+        let input = format!("🚀{}tail", "a".repeat(TAIL_WINDOW as usize - 6));
+        log.append(input.as_bytes()).expect("写入");
+        let tail = log.read_tail(1).unwrap().0;
+        assert_eq!(tail.len(), input.len() - 4);
+        assert!(tail.starts_with('a') && tail.ends_with("tail"));
+
+        let log = JobLog::create(directory.path().join("live.log"), 64).unwrap();
+        log.append("🚀tail".as_bytes()).expect("写入");
+        assert_eq!(log.live_tail(1, 1), "t");
     }
 
     #[test]
