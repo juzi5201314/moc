@@ -18,6 +18,7 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
 use rust_i18n::t;
 use std::borrow::Cow;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// 输入框按显示列硬折行，保留空白和原始字节偏移；额外留一格显示行尾光标。
 pub(super) fn prompt_rows(text: &str, width: u16) -> Vec<(usize, &str)> {
@@ -27,14 +28,14 @@ pub(super) fn prompt_rows(text: &str, width: u16) -> Vec<(usize, &str)> {
     let mut rows = Vec::new();
     let mut start = 0;
     let mut column = 0;
-    for (offset, ch) in text.char_indices() {
-        if ch == '\n' {
-            rows.push((start, &text[start..offset]));
-            start = offset + 1;
+    for (offset, grapheme) in text.grapheme_indices(true) {
+        if grapheme.ends_with('\n') {
+            rows.push((start, &text[start..offset + grapheme.len() - 1]));
+            start = offset + grapheme.len();
             column = 0;
             continue;
         }
-        let cells = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        let cells = str_width(grapheme);
         if column > 0 && column + cells > width {
             rows.push((start, &text[start..offset]));
             start = offset;
