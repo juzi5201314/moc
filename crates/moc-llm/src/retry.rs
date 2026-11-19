@@ -51,8 +51,9 @@ impl RetryPolicy {
         } else {
             base
         };
-        let seconds = backoff.max(retry_after.map_or(0.0, |value| value.as_secs_f64()));
-        Some(Duration::from_secs_f64(seconds.max(MIN_DELAY_SECS)))
+        let backoff = Duration::try_from_secs_f64(backoff.max(MIN_DELAY_SECS))
+            .unwrap_or(Duration::MAX);
+        Some(backoff.max(retry_after.unwrap_or_default()))
     }
 }
 
@@ -176,6 +177,15 @@ mod tests {
             let delay = policy.delay(2, Some(Duration::from_secs(5))).unwrap();
             assert!(delay >= Duration::from_secs(5), "{delay:?}");
         }
+    }
+
+    #[test]
+    fn huge_retry_after_preserves_duration() {
+        let retry_after = parse_retry_after(Some("18446744073709551615")).unwrap();
+        assert_eq!(
+            policy(0.5, 20.0, 3).delay(1, Some(retry_after)),
+            Some(retry_after)
+        );
     }
 
     #[test]
