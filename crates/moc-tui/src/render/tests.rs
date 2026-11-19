@@ -4,6 +4,20 @@ use crate::theme::Theme;
 use crate::transcript::Block as TranscriptBlock;
 
 #[test]
+fn prompt_crlf_and_variation_selector_widths() {
+    let (events, _) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(Theme::global(), events);
+    app.prompt.insert_str_raw("a\r\nb");
+    app.prompt.up();
+    let area = Rect::new(0, 0, 80, 4);
+    assert_eq!(prompt_cursor_position(&app, area).1, 1);
+    for cursor in 0..=app.prompt.text.len() {
+        app.prompt.cursor = cursor;
+        let _ = prompt_cursor_position(&app, area);
+    }
+}
+
+#[test]
 fn prompt_preserves_spaces_after_deleting_arguments() {
     let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::new(Theme::global(), events);

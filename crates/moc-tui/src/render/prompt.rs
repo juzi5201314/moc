@@ -29,8 +29,8 @@ pub(super) fn prompt_rows(text: &str, width: u16) -> Vec<(usize, &str)> {
     let mut start = 0;
     let mut column = 0;
     for (offset, grapheme) in text.grapheme_indices(true) {
-        if grapheme == "\n" || grapheme == "\r\n" {
-            rows.push((start, &text[start..offset]));
+        if grapheme.ends_with('\n') {
+            rows.push((start, &text[start..offset + grapheme.len() - 1]));
             start = offset + grapheme.len();
             column = 0;
             continue;
