@@ -417,7 +417,10 @@ impl McpManager {
         let timeout = self
             .call_timeout
             .unwrap_or_else(|| Duration::from_secs(slot.config.call_timeout_secs));
+        // 重连等待计入同一份调用预算。
+        let started = Instant::now();
         let peer = wait_peer(slot, &cancel, &self.shutdown, timeout).await?;
+        let remaining = timeout.saturating_sub(started.elapsed());
         call_once(
             &peer,
             slot,
@@ -426,7 +429,7 @@ impl McpManager {
             cancel,
             &self.shutdown,
             input,
-            self.call_timeout,
+            Some(remaining),
         )
         .await
     }
