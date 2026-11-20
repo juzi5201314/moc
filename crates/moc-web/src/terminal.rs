@@ -31,8 +31,12 @@ const MAX_TERMINALS: usize = 32;
 const SCROLLBACK_BYTES: usize = 512 * 1024;
 /// broadcast 通道积压上限；落后的附着者被断开，重连后靠回放恢复一致画面。
 const EVENT_CAPACITY: usize = 512;
-/// 子进程退出后等待 PTY 读线程排空的上限。
+/// Unix 等待读线程排空 PTY 内核缓冲；ConPTY 管道的 EOF 不随子进程退出保证到达，
+/// Windows 只留短窗口接收在途输出。
+#[cfg(not(windows))]
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(2);
+#[cfg(windows)]
+const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(300);
 
 /// 进程内终端表：`id` 单调递增，BTreeMap 序即创建时间序。
 #[derive(Clone)]
@@ -606,7 +610,9 @@ mod tests {
         let cwd = tempfile::tempdir().expect("临时目录");
         let terminal = spawn(cwd.path().to_path_buf(), 1, 80, 24).expect("启动终端");
         let mut events = terminal.events.subscribe();
-        terminal.write(b"printf 'TAIL_%s\\n' 'OUTPUT'; exit\n");
+        terminal.write(
+            b"head -c 262144 /dev/zero; printf 'TAIL_%s\\n' 'OUTPUT'; exit\n",
+        );
 
         let mut output = Vec::new();
         loop {
