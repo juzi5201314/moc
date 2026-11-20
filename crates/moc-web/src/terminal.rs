@@ -110,8 +110,6 @@ struct Terminal {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     #[cfg(unix)]
     child_pid: Option<libc::pid_t>,
-    #[cfg(unix)]
-    process_group_id: Option<libc::pid_t>,
     closing: Arc<AtomicBool>,
     /// 用户输入 → 写线程 → PTY；Sender 全部 drop 后写线程退出。
     input: Mutex<std::sync::mpsc::Sender<Vec<u8>>>,
@@ -183,7 +181,13 @@ impl Terminal {
                         libc::kill(-pid, libc::SIGKILL);
                     }
                 }
-                if let Some(pgid) = terminal.process_group_id {
+                // 前台进程组号要现读：作业控制会把前台命令放进新组，spawn 时的组号已过期。
+                let fg_pgid = terminal
+                    .master
+                    .lock()
+                    .expect("master 锁")
+                    .process_group_leader();
+                if let Some(pgid) = fg_pgid {
                     unsafe {
                         // 负号才是整组：tcgetpgrp 给的是前台进程组号。
                         libc::kill(-pgid, libc::SIGKILL);
@@ -270,8 +274,6 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
     let child_pid = child
         .process_id()
         .and_then(|pid| libc::pid_t::try_from(pid).ok());
-    #[cfg(unix)]
-    let process_group_id = pair.master.process_group_leader();
     let killer = child.clone_killer();
     drop(pair.slave);
     #[cfg(unix)]
@@ -333,8 +335,6 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
         killer: Mutex::new(killer),
         #[cfg(unix)]
         child_pid,
-        #[cfg(unix)]
-        process_group_id,
         closing: Arc::clone(&closing),
         input: Mutex::new(input_tx),
         state: Mutex::new(TermState {
