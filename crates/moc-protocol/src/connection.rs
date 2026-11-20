@@ -11,9 +11,10 @@
 //!
 //! 三条不变量：
 //!
-//! 1. **背压只有一处**：更新通知与响应共用出站队列，发送方在队列满时 `await`，
-//!    压力直接传回 core 的 LLM 流读取；而取消（`session/cancel`）在读任务里
-//!    trip 令牌，不经过出站队列，因此队列拥塞时取消依然即时生效。
+//! 1. **背压只有一处**：更新通知与响应共用出站队列，通常在队列满时 `await`，
+//!    压力直接传回 core 的 LLM 流读取；busy 拒绝响应只尝试入队，失败则关闭连接，
+//!    避免积压拒绝任务或让调用方永久等待。取消（`session/cancel`）仍可能被并发门禁
+//!    以 busy 拒绝；获准后 trip 令牌不等待出站队列，「即时」仅指不排在出站队列后面。
 //! 2. **ID 空间天然不冲突**：客户端发起的调用用从 1 递增的正整数，服务端发起的
 //!    反向请求用从 -1 递减的负整数。两个方向无需共享状态、无需随机数，也不会撞车。
 //! 3. **收尾单点且幂等**：读任务因 EOF / 致命分帧错 / 令牌取消 / 写任务死亡退出后，
@@ -278,9 +279,9 @@ impl Traffic {
 pub(crate) type BoxFuture<T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
 
-/// 对端消息的落地方式；实现必须保证「请求必有响应」。
+/// 对端消息的落地方式；已接纳请求必须响应，busy 拒绝响应入队失败则关闭连接。
 pub(crate) trait Inbound: Send + Sync + 'static {
-    /// 处理对端请求。实现可以把工作放进 `tasks`，但必须有人最终写出响应。
+    /// 处理对端请求。已接纳的工作可以放进 `tasks`，并负责最终写出响应。
     fn on_request(self: Arc<Self>, request: Request, tasks: &mut JoinSet<()>);
 
     /// 处理对端通知。
@@ -376,9 +377,21 @@ impl Connection {
         }
     }
 
-    /// 写出一个错误响应。
-    pub(crate) async fn respond_error(&self, id: Option<Id>, error: RpcError) {
-        self.respond(id, Err(error)).await;
+    /// 尝试将错误响应入队；仅用于 busy 拒绝，入队失败则关闭连接，不等待。
+    pub(crate) fn try_respond_error(&self, id: Option<Id>, error: RpcError) {
+        let message = Outbound::Response(Response {
+            id,
+            payload: Err(error),
+        });
+        let result = if self.closed.is_cancelled() {
+            Err(mpsc::error::TrySendError::Closed(message))
+        } else {
+            self.traffic.outbound.try_send(message)
+        };
+        if let Err(error) = result {
+            self.closed.cancel();
+            tracing::debug!(connection = self.id, "错误响应未入队，关闭连接：{error}");
+        }
     }
 
     /// 读写主循环：起写任务、读帧、分发、收尾。
@@ -876,6 +889,66 @@ pub(crate) fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn busy_errors_close_connection_when_outbound_is_full_or_closed() {
+        for code in [RpcErrorCode::ServerBusy, RpcErrorCode::SessionBusy] {
+            for outbound_closed in [false, true] {
+                let (connection, mut outbound) = Connection::new(
+                    1,
+                    ConnectionOptions {
+                        framing: Framing::ContentLength,
+                        max_frame_bytes: crate::frame::DEFAULT_MAX_FRAME_BYTES,
+                        outbound_capacity: 1,
+                    },
+                    CancellationToken::new(),
+                );
+                let mut call = Box::pin(connection.traffic.call_value("test/call", Value::Null));
+                assert!(
+                    poll_fn(|cx| Poll::Ready(call.as_mut().poll(cx)))
+                        .await
+                        .is_pending()
+                );
+                assert!(matches!(outbound.try_recv(), Ok(Outbound::Request(_))));
+                assert_eq!(connection.traffic.pending.entries().len(), 1);
+
+                // 不启动写任务：分别模拟队列已满和写任务已退出。
+                if outbound_closed {
+                    outbound.close();
+                } else {
+                    connection.try_respond_error(Some(Id::Number(1)), RpcError::of(code));
+                }
+                assert!(!connection.closed().is_cancelled());
+
+                connection.try_respond_error(Some(Id::Number(2)), RpcError::of(code));
+                assert!(connection.closed().is_cancelled());
+                assert!(matches!(
+                    poll_fn(|cx| Poll::Ready(call.as_mut().poll(cx))).await,
+                    Poll::Ready(Err(RpcCallError::Closed))
+                ));
+                assert!(connection.traffic.pending.entries().is_empty());
+
+                if outbound_closed {
+                    assert!(matches!(
+                        outbound.try_recv(),
+                        Err(mpsc::error::TryRecvError::Disconnected)
+                    ));
+                } else {
+                    let Ok(Outbound::Response(response)) = outbound.try_recv() else {
+                        panic!("队列应保留首个 busy 响应");
+                    };
+                    assert_eq!(response.id, Some(Id::Number(1)));
+                    assert_eq!(response.payload.unwrap_err().code, code.code());
+                    // 连接已关闭，即使队列腾出空间也不能再入队。
+                    connection.try_respond_error(Some(Id::Number(3)), RpcError::of(code));
+                    assert!(matches!(
+                        outbound.try_recv(),
+                        Err(mpsc::error::TryRecvError::Empty)
+                    ));
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn dropping_call_futures_removes_pending_entries() {
