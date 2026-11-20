@@ -154,7 +154,7 @@ pub(crate) struct RunHandle {
     /// 否则同 id 并发 publish 算出同一版本互相覆盖。
     pub publish_lock: Mutex<()>,
     pub cancel: CancellationToken,
-    /// 主循环完成终态落盘与失败收尾后置位；卸载等待可取消、重试或并发订阅。
+    /// 运行任务结束（含 panic）且移出注册表后置位；卸载等待可取消、重试或并发订阅。
     finished: AtomicBool,
     finish_notify: Notify,
     /// 工作区 cwd（world/files/git 基准）。

@@ -113,16 +113,28 @@ impl WorkflowManager {
         }
         let manager = Arc::clone(self);
         let handle2 = Arc::clone(&handle);
-        tokio::spawn(async move {
+        self.spawn_run(Arc::clone(&handle), async move {
             if let Err(error) = manager.run_loop(&handle2, compiled, rx, sink).await {
                 manager.fail_run(&handle2, &format!("{error}"));
             }
-            // 正常结束与提前失败都完成落盘后才移除，卸载不会漏等收尾中的任务。
-            manager.runs.lock().remove(&handle2.id);
-            handle2.finished.store(true, Ordering::Release);
-            handle2.finish_notify.notify_waiters();
         });
         Ok(handle)
+    }
+
+    /// 独立任务监督运行本体，正常收尾或 panic 后都移除注册并通知卸载等待者。
+    pub(super) fn spawn_run(
+        self: &Arc<Self>,
+        handle: Arc<RunHandle>,
+        body: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let task = tokio::spawn(body);
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            let _ = task.await;
+            manager.runs.lock().remove(&handle.id);
+            handle.finished.store(true, Ordering::Release);
+            handle.finish_notify.notify_waiters();
+        });
     }
 
     /// 运行中的 handle（本进程持有才算 running）。

@@ -14,9 +14,9 @@ fn run_id_charset_rejects_traversal() {
     assert!(!valid_run_id(&"x".repeat(65)));
 }
 
-/// 首次卸载等待被丢弃后，重试和并发等待仍须等到主循环收尾并落盘。
+/// 首次卸载等待被丢弃后仍须等待收尾落盘；任务 panic 也须唤醒所有等待者。
 #[tokio::test]
-async fn shutdown_retry_waits_for_terminal_after_first_wait_is_dropped() {
+async fn shutdown_retry_and_panic_notify_all_waiters() {
     use moc_protocol::methods::*;
     use serde_json::json;
     use std::time::Duration;
@@ -112,6 +112,29 @@ async fn shutdown_retry_waits_for_terminal_after_first_wait_is_dropped() {
     assert_eq!(meta.status, "stopped");
     assert_eq!(meta.stop_reason.as_deref(), Some("user"));
     assert!(meta.finished_at_ms.is_some());
+    assert!(futures_util::poll!(Box::pin(manager.shutdown())).is_ready());
+
+    // 复用已收尾的 handle，通过生产启动包装模拟主循环或失败收尾中的 panic。
+    handle.finished.store(false, Ordering::Release);
+    manager
+        .runs
+        .lock()
+        .insert(run_id.clone(), Arc::clone(&handle));
+    manager.spawn_run(Arc::clone(&handle), async {
+        panic!("模拟 workflow 运行任务 panic");
+    });
+    // 单线程连续 poll，确保两个等待者都在运行任务 panic 前订阅。
+    let mut shutdown = Box::pin(manager.shutdown());
+    assert!(futures_util::poll!(&mut shutdown).is_pending());
+    let mut concurrent = Box::pin(manager.shutdown());
+    assert!(futures_util::poll!(&mut concurrent).is_pending());
+    tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::join!(shutdown, concurrent);
+    })
+    .await
+    .expect("运行任务 panic 后应及时唤醒所有等待者");
+    assert!(handle.finished.load(Ordering::Acquire));
+    assert!(manager.running(&run_id).is_none());
     assert!(futures_util::poll!(Box::pin(manager.shutdown())).is_ready());
     harness.close().await;
 }
