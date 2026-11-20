@@ -217,9 +217,11 @@ impl PluginHost {
                     break if waiting_on_host && !waiting_on_persistence {
                         // 插件线程此刻在等宿主的回包，它的 tools.call 也因为同一个
                         // deadline 抛了错：这条路径不算插件跑飞，不毒化它。
-                        // 保留接收端直到 JS 完成 catch/finally，避免正常清理被误判为取消。
+                        // 接收端最多保留 call_timeout（至少 1 秒），供 JS 完成 catch/finally；
+                        // 超出清理预算后关闭接收端，触发中断并让 worker 退出，按跑飞处理。
+                        let cleanup_timeout = self.call_timeout.max(Duration::from_secs(1));
                         tokio::spawn(async move {
-                            let _ = receiver.await;
+                            let _ = tokio::time::timeout(cleanup_timeout, receiver).await;
                         });
                         Err(PluginError::new(
                             "E_PLUGIN_TIMEOUT",
