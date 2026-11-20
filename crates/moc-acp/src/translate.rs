@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use agent_client_protocol::schema::v1::{
     self as acp, ConfigOptionUpdate, Content, ContentBlock, ContentChunk, Cost, CurrentModeUpdate,
-    Diff, EmbeddedResourceResource, ImageContent, Notice, NoticeSeverity, Plan, PlanEntry,
+    EmbeddedResourceResource, ImageContent, Notice, NoticeSeverity, Plan, PlanEntry,
     PlanEntryPriority, PlanEntryStatus, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOption, SessionConfigSelectOptions, SessionInfoUpdate, SessionMode,
     SessionModeState, SessionUpdate, StopReason, TextContent, ToolCall, ToolCallContent,
@@ -293,38 +293,53 @@ fn result_content(result: &ToolResult, diff: Option<&ToolDiff>) -> Vec<ToolCallC
     content
 }
 
-/// `ToolDiff`（hunk 行序列）→ 每文件一条 ACP `diff` 内容（整文件新旧文本重建）。
+/// hunks 省略了未变区域，无法重建整文件；用文本 diff 保留边界与原始行号。
 pub(crate) fn diff_content(diff: &ToolDiff) -> Vec<ToolCallContent> {
-    diff.files
+    let mut content: Vec<_> = diff
+        .files
         .iter()
+        .filter(|file| !file.hunks.is_empty())
         .map(|file| {
-            let (mut old, mut new) = (String::new(), String::new());
-            for line in file.hunks.iter().flat_map(|h| h.lines.iter()) {
-                match line.kind {
-                    DiffLineKind::Equal => {
-                        old.push_str(&line.text);
-                        old.push('\n');
-                        new.push_str(&line.text);
-                        new.push('\n');
-                    }
-                    DiffLineKind::Delete => {
-                        old.push_str(&line.text);
-                        old.push('\n');
-                    }
-                    DiffLineKind::Insert => {
-                        new.push_str(&line.text);
-                        new.push('\n');
-                    }
+            // Markdown 缩进代码块不会被文件内容中的代码围栏提前结束。
+            let mut text = format!("    --- {}\n    +++ {}\n", file.path, file.path);
+            for hunk in &file.hunks {
+                let old_count = hunk
+                    .lines
+                    .iter()
+                    .filter(|l| l.kind != DiffLineKind::Insert)
+                    .count();
+                let new_count = hunk
+                    .lines
+                    .iter()
+                    .filter(|l| l.kind != DiffLineKind::Delete)
+                    .count();
+                // unified diff 的空区间起点是插入／删除位置的前一行。
+                let old_start = hunk.old_start.saturating_sub(u32::from(old_count == 0));
+                let new_start = hunk.new_start.saturating_sub(u32::from(new_count == 0));
+                text.push_str(&format!(
+                    "    @@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+                ));
+                for line in &hunk.lines {
+                    let prefix = match line.kind {
+                        DiffLineKind::Equal => ' ',
+                        DiffLineKind::Delete => '-',
+                        DiffLineKind::Insert => '+',
+                    };
+                    text.push_str("    ");
+                    text.push(prefix);
+                    text.push_str(&line.text);
+                    text.push('\n');
                 }
             }
-            let diff = Diff::new(PathBuf::from(&file.path), new);
-            ToolCallContent::Diff(if old.is_empty() {
-                diff
-            } else {
-                diff.old_text(old)
-            })
+            ToolCallContent::Content(Content::new(ContentBlock::Text(TextContent::new(text))))
         })
-        .collect()
+        .collect();
+    if diff.truncated {
+        content.push(ToolCallContent::Content(Content::new(ContentBlock::Text(
+            TextContent::new(t!("acp.diff.truncated").into_owned()),
+        ))));
+    }
+    content
 }
 
 fn raw_output(result: &ToolResult) -> serde_json::Value {
@@ -778,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_becomes_old_new_text() {
+    fn diff_preserves_separate_hunks() {
         let diff: ToolDiff = serde_json::from_value(json!({
             "files": [{
                 "path": "src/a.rs",
@@ -788,6 +803,14 @@ mod tests {
                         {"kind": "equal", "old_no": 1, "new_no": 1, "text": "a"},
                         {"kind": "delete", "old_no": 2, "new_no": null, "text": "b"},
                         {"kind": "insert", "old_no": null, "new_no": 2, "text": "c"},
+                    ]
+                }, {
+                    "old_start": 100, "new_start": 100,
+                    "lines": [
+                        {"kind": "equal", "old_no": 100, "new_no": 100, "text": "```"},
+                        {"kind": "delete", "old_no": 101, "new_no": null, "text": "x"},
+                        {"kind": "insert", "old_no": null, "new_no": 101, "text": "y"},
+                        {"kind": "insert", "old_no": null, "new_no": 102, "text": "z"},
                     ]
                 }]
             }],
@@ -802,14 +825,63 @@ mod tests {
         };
         let content = result_content(&result, Some(&diff));
         assert_eq!(content.len(), 2);
-        match &content[1] {
-            ToolCallContent::Diff(d) => {
-                assert_eq!(d.path, PathBuf::from("src/a.rs"));
-                assert_eq!(d.old_text.as_deref(), Some("a\nb\n"));
-                assert_eq!(d.new_text, "a\nc\n");
-            }
-            other => panic!("应是 diff 内容：{other:?}"),
-        }
+        let ToolCallContent::Content(Content {
+            content: ContentBlock::Text(text),
+            ..
+        }) = &content[1]
+        else {
+            panic!("应是文本 diff 内容：{:?}", content[1]);
+        };
+        assert_eq!(
+            text.text,
+            concat!(
+                "    --- src/a.rs\n    +++ src/a.rs\n",
+                "    @@ -1,2 +1,2 @@\n     a\n    -b\n    +c\n",
+                "    @@ -100,2 +100,3 @@\n     ```\n    -x\n    +y\n    +z\n",
+            )
+        );
+    }
+
+    #[test]
+    fn truncated_diff_keeps_visible_note() {
+        let mut diff: ToolDiff = serde_json::from_value(json!({
+            "files": [{
+                "path": "src/new.rs",
+                "hunks": [{
+                    "old_start": 1, "new_start": 1,
+                    "lines": [{"kind": "insert", "new_no": 1, "text": "a"}]
+                }]
+            }],
+            "truncated": true
+        }))
+        .unwrap();
+        let content = diff_content(&diff);
+        assert_eq!(content.len(), 2);
+        let ToolCallContent::Content(Content {
+            content: ContentBlock::Text(text),
+            ..
+        }) = &content[0]
+        else {
+            panic!("应是文本 diff 内容：{:?}", content[0]);
+        };
+        assert_eq!(
+            text.text,
+            "    --- src/new.rs\n    +++ src/new.rs\n    @@ -0,0 +1,1 @@\n    +a\n"
+        );
+        let ToolCallContent::Content(Content {
+            content: ContentBlock::Text(note),
+            ..
+        }) = &content[1]
+        else {
+            panic!("应是截断提示：{:?}", content[1]);
+        };
+        assert!(note.text.contains("截断") || note.text.contains("truncated"));
+
+        // 即使没有可展示的 hunk，也不能丢失截断提示。
+        diff.files.clear();
+        assert_eq!(diff_content(&diff), content[1..]);
+        diff.truncated = false;
+        assert!(diff_content(&diff).is_empty());
     }
 
     #[test]
