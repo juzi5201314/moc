@@ -236,6 +236,201 @@ async fn disabled_jobs_keep_slow_commands_in_the_foreground() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn background_job_finished_during_last_request_wakes_after_prompt_unlocks() {
+    for engine in [SessionEngine::Standard, SessionEngine::ClmExperimental] {
+        background_job_during_last_request(engine, moc_protocol::FinishReason::Stop, false).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn background_job_wake_can_be_cancelled_and_abnormal_finish_does_not_wake() {
+    use moc_protocol::FinishReason;
+
+    for (reason, cancel_wake) in [
+        (FinishReason::Stop, true),
+        (FinishReason::LoopDetected, false),
+        (FinishReason::Length, false),
+    ] {
+        background_job_during_last_request(SessionEngine::Standard, reason, cancel_wake).await;
+    }
+}
+
+#[cfg(unix)]
+async fn background_job_during_last_request(
+    engine: SessionEngine,
+    finish_reason: moc_protocol::FinishReason,
+    cancel_wake: bool,
+) {
+    let upstream = MockServer::builder().start().await;
+    let streams = Arc::new(Mutex::new(Vec::<String>::new()));
+    let recorder = Arc::clone(&streams);
+    let last_request = Arc::new(tokio::sync::Notify::new());
+    let arrived = Arc::clone(&last_request);
+    let gate = support::Gate::new();
+    let response_gate = gate.clone();
+    let wake_request = Arc::new(tokio::sync::Notify::new());
+    let wake_arrived = Arc::clone(&wake_request);
+    let wake_gate = support::Gate::new();
+    let wake_response_gate = wake_gate.clone();
+    let response_reason = finish_reason.clone();
+    Mock::given(method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let step = {
+                let mut streams = recorder.lock();
+                streams.push(body.to_string());
+                streams.len()
+            };
+            let response = match step {
+                1 => support::tool_stream(vec![(
+                    "background",
+                    "bash",
+                    serde_json::json!({
+                        "description": "Wait for the background completion signal",
+                        "command": "read -r signal < gate; printf late-job-output",
+                        "async": true,
+                    }),
+                )]),
+                2 => {
+                    arrived.notify_one();
+                    response_gate.wait();
+                    match response_reason {
+                        moc_protocol::FinishReason::LoopDetected => support::text_stream(
+                            &"反复检查现有情况，然后再次确认当前结果。".repeat(150),
+                        ),
+                        moc_protocol::FinishReason::Length => {
+                            support::text_stream("本轮完成").replace("\"stop\"", "\"length\"")
+                        }
+                        _ => support::text_stream("本轮完成"),
+                    }
+                }
+                _ => {
+                    wake_arrived.notify_one();
+                    if cancel_wake {
+                        wake_response_gate.wait();
+                    }
+                    support::text_stream("已收到后台结果")
+                }
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nenabled=false\n[limits]\nmax_length_continues=0\n",
+    )
+    .await;
+    let fifo = harness.root.path().join("work/gate");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let id = harness.session(engine).await;
+    let mut events = harness.events.subscribe();
+    let client = harness.client.clone();
+    let prompt_session_id = id.clone();
+    let prompt = tokio::spawn(async move {
+        client
+            .call::<SessionPrompt>(PromptParams {
+                session_id: prompt_session_id,
+                input: vec![InputPart::Text {
+                    text: "启动后台任务".into(),
+                }],
+                mode: None,
+                agent_message: None,
+                goal_round: None,
+                max_turns: None,
+            })
+            .await
+    });
+    // 最后一次请求已经发出才放行后台进程，且收到完成通知后才让前台提示收尾。
+    // 两道屏障固定时序，确保本轮模型看不到结果、完成回调仍被提示锁挡住。
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        last_request.notified().await;
+        tokio::fs::write(&fifo, "finish\n").await.unwrap();
+        loop {
+            if let SessionUpdate::JobFinished { job } = events.recv().await.unwrap() {
+                assert_eq!(job.exit_code, Some(0));
+                break;
+            }
+        }
+    })
+    .await
+    .expect("后台任务应在前台最后一次模型请求期间完成");
+    gate.open();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), prompt)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.finish_reason, finish_reason);
+    if finish_reason != moc_protocol::FinishReason::Stop {
+        // RPC 已完整收尾，再等一个通知窗口，确认没有自动接力的模型请求。
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                wake_request.notified()
+            )
+            .await
+            .is_err(),
+            "异常收尾不得补唤醒：{finish_reason:?}",
+        );
+        assert_eq!(streams.lock().len(), 2);
+        harness.close().await;
+        return;
+    }
+    assert_eq!(result.message.text(), "本轮完成");
+    if cancel_wake {
+        tokio::time::timeout(std::time::Duration::from_secs(5), wake_request.notified())
+            .await
+            .expect("后台提示应发起模型请求");
+        let cancelled = harness
+            .client
+            .call::<SessionCancel>(SessionCancelParams {
+                session_id: id.clone(),
+            })
+            .await
+            .unwrap();
+        // 先保存取消结果，失败时也必须放行 mock，避免测试清理阻塞。
+        wake_gate.open();
+        assert!(cancelled.cancelled, "session/cancel 应找到后台提示");
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let SessionUpdate::PromptFinished {
+                message,
+                finish_reason,
+                ..
+            } = events.recv().await.unwrap()
+                && (if cancel_wake {
+                    finish_reason == moc_protocol::FinishReason::Cancelled
+                } else {
+                    message.text() == "已收到后台结果"
+                })
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("提示解锁后应补唤醒并自动处理后台任务结果");
+    let requests = streams.lock().clone();
+    assert_eq!(requests.len(), 3, "完成通知应只触发一次补唤醒");
+    let follow_up: Value = serde_json::from_str(&requests[2]).unwrap();
+    let messages = follow_up["messages"].to_string();
+    assert!(messages.contains("Background job job_1 "));
+    assert!(messages.contains("late-job-output"));
+    harness.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn cancel_manual_bash_reaps_process_and_unlocks_session() {
     let harness = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
     let id = harness.session(SessionEngine::Standard).await;

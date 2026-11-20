@@ -171,12 +171,33 @@ pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError>
     };
     for notice in notices {
         let Some(job) = notice.job else {
+            if engine == moc_protocol::SessionEngine::ClmExperimental {
+                crate::tools::clm::append_message(
+                    &inner.sessions,
+                    &record.state,
+                    session_id,
+                    &moc_llm::Message::custom(reminder::wrap(&notice.text)),
+                )
+                .await
+                .map_err(to_rpc)?;
+            }
             candidates.push(Reminder::once(reminder::key::NOTICE, notice.text));
             continue;
         };
         // 任务通知单独成条：它带实质交付内容，前端靠 job_notice 元数据渲染卡片，
         // 混进提醒大杂烩就没有可识别的结构了。
         let body = reminder::wrap(&notice.text);
+        // CLM 请求只读取实时上下文，一次性通知还需同步进去，不能只留在 transcript。
+        if engine == moc_protocol::SessionEngine::ClmExperimental {
+            crate::tools::clm::append_message(
+                &inner.sessions,
+                &record.state,
+                session_id,
+                &moc_llm::Message::custom(body.clone()),
+            )
+            .await
+            .map_err(to_rpc)?;
+        }
         let entry = inner
             .sessions
             .append(

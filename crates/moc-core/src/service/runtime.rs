@@ -92,14 +92,15 @@ impl CoreInner {
 
     /// 在后台跑一次提示：任务挂在 `prompts` JoinSet 上，结果只记日志。
     ///
-    /// 用于代理消息唤醒顶层会话。和 [`Core::run_operation`] 的区别：不返回结果（前端
-    /// 通过更新通知观察），并且调用方已经持有该会话的提示锁。
+    /// 用于代理消息、后台任务唤醒顶层会话与目标续跑。和 [`Core::run_operation`]
+    /// 的区别：不返回结果（前端通过更新通知观察），并且调用方已经持有该会话的提示锁。
     pub(crate) fn spawn_detached_prompt(
         inner: &Arc<CoreInner>,
         ctx: RequestContext,
         params: moc_protocol::methods::PromptParams,
         record: Arc<crate::session::SessionRecord>,
         prompt_lock: tokio::sync::OwnedMutexGuard<()>,
+        run: prompt::PromptRun,
     ) -> futures_util::future::BoxFuture<'_, ()> {
         Box::pin(async move {
             let session_id = params.session_id.clone();
@@ -122,7 +123,8 @@ impl CoreInner {
                     params,
                     record,
                     prompt_lock,
-                    false,
+                    run,
+                    true,
                 );
                 tokio::pin!(running);
                 let result = tokio::select! {

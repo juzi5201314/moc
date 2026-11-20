@@ -25,12 +25,23 @@ pub(crate) use lifecycle::run_prompt_with_lock;
 pub(crate) use lifecycle::wake_for_jobs;
 mod warnings;
 
+/// 提示运行类型，仅在 crate 内部区分输入处理语义。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PromptRun {
+    /// 普通提示：解析并校验新输入，写入用户消息。
+    Normal,
+    /// 重试提示：剪掉失败尾部并按需重放工具，不追加用户消息。
+    Retry,
+    /// 后台唤醒：沿用现有上下文，不解析输入、不剪尾、不追加用户消息。
+    Wake,
+}
+
 pub async fn run_prompt(
     inner: Arc<CoreInner>,
     ctx: RequestContext,
     params: moc_protocol::methods::PromptParams,
 ) -> Result<PromptResult, RpcError> {
-    run_prompt_entry(inner, ctx, params, false).await
+    run_prompt_entry(inner, ctx, params, PromptRun::Normal).await
 }
 
 /// 思维链重复后最多纠偏几次；再重复就按循环终止。
@@ -38,7 +49,7 @@ const MAX_THINKING_REDIRECTS: usize = 3;
 
 /// 不追加任何用户消息，按会话现有上下文继续跑一次提示。
 ///
-/// 内部仍走同一套提示循环：提示锁、取消、工具执行、压缩与收尾完全复用。`retry` 只
+/// 内部仍走同一套提示循环：提示锁、取消、工具执行、压缩与收尾完全复用。重试类型只
 /// 改变输入段：先把上一轮没跑完的尾巴剪掉（见 [`trim_failed_tail`]），然后既不解析
 /// 也不落库新的用户消息，直接把当前 transcript 交给模型。
 pub async fn run_retry(
@@ -54,7 +65,7 @@ pub async fn run_retry(
         goal_round: None,
         max_turns: None,
     };
-    run_prompt_entry(inner, ctx, params, true).await
+    run_prompt_entry(inner, ctx, params, PromptRun::Retry).await
 }
 
 /// 一轮请求需要的会话状态副本。

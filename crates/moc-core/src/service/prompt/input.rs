@@ -1,5 +1,6 @@
 //! 提示输入准备：重试尾部、插件改写与用户消息持久化，顺序与原执行入口一致。
 
+use super::PromptRun;
 use super::RetryTrim;
 use super::request::project_input;
 use super::retry::trim_failed_tail;
@@ -37,7 +38,7 @@ pub(super) async fn prepare(
     ctx: &RequestContext,
     params: &mut moc_protocol::methods::PromptParams,
     record: &Arc<crate::session::SessionRecord>,
-    retry: bool,
+    run: PromptRun,
 ) -> Result<Prepared, RpcError> {
     let update = ctx.updates();
     let state_snapshot = record.state.lock().await.metadata();
@@ -50,52 +51,56 @@ pub(super) async fn prepare(
         .with_fast_mode(state_snapshot.session.fast_mode);
     // `/retry` 剪掉的失败回合如果整批工具都没跑，就直接重放这批调用，省掉一次模型请求。
     let mut replay_calls: Option<Vec<moc_llm::ToolCall>> = None;
-    let user_message = if retry {
-        if !state_snapshot.has_history {
-            return Err(crate::service::invalid_params("当前会话没有可重试的上下文"));
-        }
-        match trim_failed_tail(inner, &params.session_id).await? {
-            RetryTrim::Nothing => {}
-            RetryTrim::Dropped => {
-                update
-                    .emit(
-                        params.session_id.clone(),
-                        SessionUpdate::PromptRewound {
-                            replayed_tools: false,
-                        },
-                    )
-                    .await
-                    .map_err(protocol_to_rpc)?;
+    let user_message = match run {
+        PromptRun::Normal => {
+            let runtime = inner.runtime(&params.session_id).await;
+            let message = project_input(
+                std::mem::take(&mut params.input),
+                model.capabilities.image,
+                std::path::Path::new(&state_snapshot.session.cwd),
+                &runtime.anchors,
+                &project_config,
+            )
+            .await
+            .map_err(to_rpc)?;
+            if message.content.is_empty() {
+                return Err(RpcError::of(RpcErrorCode::InvalidParams));
             }
-            RetryTrim::Replay(calls) => {
-                update
-                    .emit(
-                        params.session_id.clone(),
-                        SessionUpdate::PromptRewound {
-                            replayed_tools: true,
-                        },
-                    )
-                    .await
-                    .map_err(protocol_to_rpc)?;
-                replay_calls = Some(calls);
+            Some(message)
+        }
+        PromptRun::Retry => {
+            if !state_snapshot.has_history {
+                return Err(crate::service::invalid_params("当前会话没有可重试的上下文"));
             }
+            match trim_failed_tail(inner, &params.session_id).await? {
+                RetryTrim::Nothing => {}
+                RetryTrim::Dropped => {
+                    update
+                        .emit(
+                            params.session_id.clone(),
+                            SessionUpdate::PromptRewound {
+                                replayed_tools: false,
+                            },
+                        )
+                        .await
+                        .map_err(protocol_to_rpc)?;
+                }
+                RetryTrim::Replay(calls) => {
+                    update
+                        .emit(
+                            params.session_id.clone(),
+                            SessionUpdate::PromptRewound {
+                                replayed_tools: true,
+                            },
+                        )
+                        .await
+                        .map_err(protocol_to_rpc)?;
+                    replay_calls = Some(calls);
+                }
+            }
+            None
         }
-        None
-    } else {
-        let runtime = inner.runtime(&params.session_id).await;
-        let message = project_input(
-            std::mem::take(&mut params.input),
-            model.capabilities.image,
-            std::path::Path::new(&state_snapshot.session.cwd),
-            &runtime.anchors,
-            &project_config,
-        )
-        .await
-        .map_err(to_rpc)?;
-        if message.content.is_empty() {
-            return Err(RpcError::of(RpcErrorCode::InvalidParams));
-        }
-        Some(message)
+        PromptRun::Wake => None,
     };
     // 插件宿主与事件上下文在落库前就要就绪：`messageReceived` 是正文改写的提交点。
     let plugins = inner
@@ -131,7 +136,7 @@ pub(super) async fn prepare(
             .filter(|part| matches!(part, moc_llm::ContentPart::Image { .. }))
             .count()
     });
-    // `retry` 没有新消息：不触发 `messageReceived`，也不做 `/skill:` 改写。
+    // 重试与后台唤醒没有新消息：不触发 `messageReceived`，也不做 `/skill:` 改写。
     let user_message = match user_message {
         Some(message) => {
             let rewrite = crate::service::plugin_events::message_received(
@@ -173,7 +178,7 @@ pub(super) async fn prepare(
         }
         None => None,
     };
-    let first_prompt = !retry && state_snapshot.prompt_sequence == 0;
+    let first_prompt = run == PromptRun::Normal && state_snapshot.prompt_sequence == 0;
     if let Some(user_message) = &user_message {
         match &agent_meta {
             Some(meta) => {
