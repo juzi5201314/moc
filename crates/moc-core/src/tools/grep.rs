@@ -1318,32 +1318,36 @@ mod tests {
         );
 
         // 恰好 200 个文件时全数搜完，不误报"扫描已停止"；读不出的文件点名提示。
+        // 样本内容 2 字节，要通过 4 字节的大小检查才会真正走到读取路径。
         let exact = root.path().join("exact");
         std::fs::create_dir_all(&exact).unwrap();
         for index in 0..200 {
-            std::fs::write(exact.join(format!("f_{index:03}.log")), "beta\n").unwrap();
+            std::fs::write(exact.join(format!("f_{index:03}.log")), "b\n").unwrap();
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let skip = root.path().join("skip");
             std::fs::create_dir_all(&skip).unwrap();
-            std::fs::write(skip.join("ok.log"), "beta\n").unwrap();
+            std::fs::write(skip.join("ok.log"), "b\n").unwrap();
             let unreadable = skip.join("unreadable.log");
-            std::fs::write(&unreadable, "beta\n").unwrap();
+            std::fs::write(&unreadable, "b\n").unwrap();
             std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
                 .unwrap();
-            let output = search_resource_namespace(
-                &[("artifact://skip/".to_owned(), skip)],
-                &args,
-                &small,
-            )
-            .unwrap()
-            .content;
-            assert!(
-                output.contains("[skipped artifact://skip/unreadable.log:"),
-                "{output}"
-            );
+            // 特权进程（root）仍读得动 000 文件，跳过断言。
+            if std::fs::read(&unreadable).is_err() {
+                let output = search_resource_namespace(
+                    &[("artifact://skip/".to_owned(), skip)],
+                    &args,
+                    &small,
+                )
+                .unwrap()
+                .content;
+                assert!(
+                    output.contains("[skipped artifact://skip/unreadable.log:"),
+                    "{output}"
+                );
+            }
             std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644))
                 .unwrap();
         }
@@ -1352,11 +1356,11 @@ mod tests {
             &args,
             &small,
         )
-        .unwrap()
-        .content;
+        .unwrap();
         assert!(
-            !output.contains("namespace scan stopped"),
-            "{output}"
+            !output.content.contains("namespace scan stopped") && !output.incomplete,
+            "{}",
+            output.content
         );
     }
 
