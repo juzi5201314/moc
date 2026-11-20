@@ -258,8 +258,11 @@ fn search_resource_namespace(
     let mut file_config = config.clone();
     'entries: for (prefix, directory) in entries {
         let remaining = MAX_FILES - scanned;
-        let (files, truncated, enumeration_notices) = directory_files(directory, remaining);
+        let (files, truncated, enumeration_notices) =
+            directory_files(directory, remaining, prefix);
         notices.extend(enumeration_notices);
+        // 截断先置位：分页提前退出时也要报告扫描不完整。
+        stopped |= truncated;
         for (relative, path) in files {
             scanned += 1;
             let uri = format!("{prefix}{relative}");
@@ -322,7 +325,6 @@ fn search_resource_namespace(
             shown_files += 1;
         }
         if truncated {
-            stopped = true;
             break 'entries;
         }
     }
@@ -343,11 +345,12 @@ fn search_resource_namespace(
 }
 
 /// 最多列出 limit 个文件及其相对路径（用 `/` 分隔），跳过点文件。
-/// 返回（文件, 是否还有文件没枚举到, 枚举失败的提示）；只有真的遇到第 limit+1
-/// 个文件才算截断，目录恰好塞满 limit 个不算。
+/// 返回（文件, 是否还有文件没枚举到, 枚举失败的提示）；提示用 `uri_prefix` + 相对
+/// 路径拼 URI，不暴露真实磁盘路径。只有真遇到第 limit+1 个文件才算截断。
 fn directory_files(
     directory: &Path,
     limit: usize,
+    uri_prefix: &str,
 ) -> (Vec<(String, PathBuf)>, bool, Vec<String>) {
     const MAX_NOTICES: usize = 8;
     let mut files = Vec::new();
@@ -361,7 +364,7 @@ fn directory_files(
             Err(error) => {
                 failed += 1;
                 if notices.len() < MAX_NOTICES {
-                    notices.push(format!("[skipped {}: {error}]", current.display()));
+                    notices.push(format!("[skipped {uri_prefix}{prefix}: {error}]"));
                 }
                 continue;
             }
@@ -373,7 +376,7 @@ fn directory_files(
                 Err(error) => {
                     failed += 1;
                     if notices.len() < MAX_NOTICES {
-                        notices.push(format!("[skipped {}: {error}]", current.display()));
+                        notices.push(format!("[skipped {uri_prefix}{prefix}: {error}]"));
                     }
                 }
             }
@@ -396,7 +399,7 @@ fn directory_files(
                 Err(error) => {
                     failed += 1;
                     if notices.len() < MAX_NOTICES {
-                        notices.push(format!("[skipped {}: {error}]", entry.path().display()));
+                        notices.push(format!("[skipped {uri_prefix}{relative}: {error}]"));
                     }
                     continue;
                 }
