@@ -292,11 +292,13 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
+        // 先交给 File 持有，后续 fcntl 失败也会顺带关闭副本 fd。
+        let reader = unsafe { File::from_raw_fd(fd) };
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        unsafe { File::from_raw_fd(fd) }
+        reader
     };
     #[cfg(not(unix))]
     let mut reader = pair
@@ -314,12 +316,13 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
+        let writer = unsafe { File::from_raw_fd(fd) };
         // 非阻塞写 + poll 驱动：否则数据大于可用缓冲时 write 仍会中途阻塞，closing 无法中断。
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        unsafe { File::from_raw_fd(fd) }
+        writer
     };
     #[cfg(not(unix))]
     let mut writer = pair
