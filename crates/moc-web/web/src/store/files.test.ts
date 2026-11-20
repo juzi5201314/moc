@@ -395,6 +395,49 @@ it("删除后迟到的在飞读取不清掉已删除标记", async () => {
   expect(tab().content).toBeUndefined();
 });
 
+it("删除目录后子标签标已删除并清掉子树缓存", async () => {
+  const childTab: OpenFile = {
+    target: { kind: "fs", path: "/work/dir/a.txt" },
+    preview: false,
+    loading: false,
+    encoding: "utf8",
+    size: 1,
+    modifiedMs: 1,
+    truncated: false,
+    content: "x",
+    lineNonce: 0,
+  };
+  useFiles.setState({
+    bySession: {
+      s: {
+        root: "workspace",
+        expanded: { "/work/dir": true, "/work/dir/sub": true, "/work/other": true },
+        nodes: {
+          "/work/dir": { key: "/work/dir", name: "dir", kind: "dir", children: [] },
+          "/work/dir/sub": { key: "/work/dir/sub", name: "sub", kind: "dir" },
+          "/work/other": { key: "/work/other", name: "other", kind: "dir" },
+        },
+        loading: { "/work/dir/sub": true },
+        tabs: [childTab],
+        active: "fs:/work/dir/a.txt",
+        stackedView: "editor",
+      },
+    },
+  });
+  vi.mocked(rpc.call).mockImplementation(async (method) => {
+    if (method === "fs/delete") return {};
+    if (method === "fs/list_dir") return { entries: [] };
+    throw new Error(String(method));
+  });
+  askDelete("s", "/work/dir", "dir");
+  await confirmDelete("s", { kind: "workspace", cwd: "/work" });
+  const files = useFiles.getState().bySession.s;
+  expect(tab().error).toBeTruthy();
+  expect(files.expanded).toEqual({ "/work/other": true });
+  expect(Object.keys(files.nodes).sort()).toEqual(["/work", "/work/other"]);
+  expect(files.loading).toEqual({ "/work": false });
+});
+
 it("已被较新读取取代的 mtime 探测不误报冲突", async () => {
   openTab("v0", 0);
   const probe = deferred<FsReadFileResult>();

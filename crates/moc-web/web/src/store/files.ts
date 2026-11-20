@@ -682,13 +682,35 @@ export async function confirmDelete(sessionId: string, root: FileRoot): Promise<
   try {
     await rpc.call("fs/delete", { path: deleting.key });
     if (root.kind === "workspace") void loadDir(sessionId, root, parentPath(deleting.key));
+    const under = (path: string) => path === deleting.key || path.startsWith(`${deleting.key}/`);
     // 让在飞的读取失效：迟到的响应不得清掉已删除标记并回填旧内容。
-    loadSeq.delete(`${sessionId}\nfs:${deleting.key}`);
-    // 已打开的标签标为已删除状态（留标签，展示错误）；读取可能尚未返回，一并退出 loading。
-    patchFileTab(sessionId, `fs:${deleting.key}`, {
-      error: t("files.deleted"),
-      loading: false,
+    // 删除的是目录时，子文件标签与在飞列举也一并失效/清缓存，
+    // 否则子标签不标已删除、原地新建同名目录还会闪出旧子项。
+    patch(sessionId, (files) => {
+      for (const tab of files.tabs) {
+        if (tab.target.kind === "fs" && under(tab.target.path)) {
+          loadSeq.delete(`${sessionId}\n${targetKey(tab.target)}`);
+        }
+      }
+      for (const key of Object.keys(files.nodes)) {
+        if (under(key)) dirSeq.delete(`${sessionId}\n${key}`);
+      }
+      return {
+        ...files,
+        expanded: Object.fromEntries(Object.entries(files.expanded).filter(([key]) => !under(key))),
+        nodes: Object.fromEntries(Object.entries(files.nodes).filter(([key]) => !under(key))),
+        loading: Object.fromEntries(Object.entries(files.loading).filter(([key]) => !under(key))),
+      };
     });
+    // 已打开的标签标为已删除状态（留标签，展示错误）；读取可能尚未返回，一并退出 loading。
+    patch(sessionId, (files) => ({
+      ...files,
+      tabs: files.tabs.map((tab) =>
+        tab.target.kind === "fs" && under(tab.target.path)
+          ? { ...tab, error: t("files.deleted"), loading: false }
+          : tab,
+      ),
+    }));
   } catch (error) {
     toast.error(t("files.delete_failed", { error: errorText(error) }));
   }
