@@ -466,6 +466,13 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
                     if writing_closing.load(Ordering::Acquire) {
                         return;
                     }
+                    // 挂断/错误下写没有意义；直接退出，避免 EAGAIN 与即时 poll 组合成忙转。
+                    if poll_fd.revents
+                        & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)
+                        != 0
+                    {
+                        return;
+                    }
                     let count = unsafe {
                         libc::write(fd, bytes[offset..].as_ptr().cast(), bytes.len() - offset)
                     };
