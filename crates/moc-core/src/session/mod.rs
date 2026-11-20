@@ -119,6 +119,11 @@ pub struct SessionRecord {
 }
 
 impl SessionRecord {
+    /// 共享本进程已取得的写租约，确保在途写入完成前卸载不会释放内核锁。
+    pub(crate) fn write_lease(&self) -> Option<Arc<lock::SessionLockGuard>> {
+        self.lease.lock().clone()
+    }
+
     pub fn try_prompt_lock(&self) -> Result<OwnedMutexGuard<()>, CoreError> {
         let guard = Arc::clone(&self.prompt_lock)
             .try_lock_owned()

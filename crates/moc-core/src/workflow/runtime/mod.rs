@@ -3,7 +3,7 @@
 //! 一个 run = 一个 `moc --workflow-worker` 子进程（NDJSON 帧）+ 内存中的确定性
 //! [`Engine`] + 一组 driver 副作用。run 目录 `<sidecar>/workflows/<run_id>/`：
 //! `run.json` 元数据、`journal.jsonl`（每条 fsync）、`script.ts` 草稿、`artifacts/`。
-//! 加载会话时状态仍 `running` 且本进程不持有执行者的 run 标为 `stopped(interrupted)`。
+//! 取得会话写租约后首次访问时，将残留的 `running` run 标为 `stopped(interrupted)`。
 
 mod driver;
 pub mod tools;
@@ -12,9 +12,10 @@ pub(crate) use driver::WorkflowDriver;
 pub use tools::WORKFLOW_TOOLS;
 
 use rust_i18n::t;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use moc_protocol::{
     WorkflowEvent, WorkflowPhaseState, WorkflowRoleState, WorkflowRunStatus, WorkflowRunSummary,
@@ -24,7 +25,7 @@ use moc_ptc_protocol::wire::WorkflowHostMessage;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::CoreError;
@@ -69,9 +70,12 @@ pub(crate) struct WorkflowManager {
     /// 落到此表（run.json 与注册表都还不可见），launch 落盘前合并进 meta。
     pending_role_models: Mutex<HashMap<String, HashMap<String, String>>>,
     seq: Mutex<u64>,
-    /// 本实例启动时刻：interrupted 降级只认更早创建的 run——晚于它的
-    /// running run.json 属于本进程未注册完成的活 run，不能误杀。
-    birth_ms: u64,
+    /// 全部孤儿写回成功后才跳过扫描；失败留待下次访问重试。
+    orphan_marked: AtomicBool,
+    /// 串行化扫描；并发访问须等本次标记完成再启动本进程的 run。
+    orphan_marking: StdMutex<()>,
+    /// 首次持写租约扫描的时刻；重试不能误伤此后新建但尚未注册的 run。
+    orphan_epoch: AtomicU64,
 }
 
 /// run 元数据（run.json）。
@@ -150,6 +154,9 @@ pub(crate) struct RunHandle {
     /// 否则同 id 并发 publish 算出同一版本互相覆盖。
     pub publish_lock: Mutex<()>,
     pub cancel: CancellationToken,
+    /// 运行任务结束（含 panic）且移出注册表后置位；卸载等待可取消、重试或并发订阅。
+    finished: AtomicBool,
+    finish_notify: Notify,
     /// 工作区 cwd（world/files/git 基准）。
     pub cwd: PathBuf,
     /// run 发起时的反向请求上下文（子代理 spawn/message 用）。
@@ -167,7 +174,7 @@ mod lifecycle;
 
 impl WorkflowManager {
     pub fn new(inner: Arc<CoreInner>, session_id: &str, paths: SessionPaths) -> Arc<Self> {
-        let manager = Arc::new(Self {
+        Arc::new(Self {
             inner,
             session_id: session_id.to_string(),
             paths,
@@ -175,22 +182,52 @@ impl WorkflowManager {
             approvals: Mutex::new(HashMap::new()),
             pending_role_models: Mutex::new(HashMap::new()),
             seq: Mutex::new(0),
-            birth_ms: crate::session::store::now_ms(),
-        });
-        // 加载即做 interrupted 标记：磁盘上 running 但本进程不持有的 run → stopped(interrupted)。
-        for meta in list_run_metas(&manager.paths.workflows()) {
-            if meta.status == "running" {
-                let mut meta = meta;
-                meta.status = "stopped".into();
-                meta.stop_reason = Some("interrupted".into());
-                let dir = manager.paths.workflows().join(&meta.run_id);
-                let _ = std::fs::write(
-                    dir.join("run.json"),
-                    serde_json::to_vec_pretty(&meta).unwrap_or_default(),
-                );
+            orphan_marked: AtomicBool::new(false),
+            orphan_marking: StdMutex::new(()),
+            orphan_epoch: AtomicU64::new(0),
+        })
+    }
+
+    /// 只有本进程持有写租约，才能确认磁盘上的 running run 已无其它进程执行。
+    /// 只读创建管理器不消耗标记机会；共享租约保证整个扫描写回期间内核锁仍被持有。
+    pub fn mark_orphans(&self, record: &crate::session::SessionRecord) {
+        if self.orphan_marked.load(Ordering::Acquire) {
+            return;
+        }
+        let Some(_lease) = record.write_lease() else {
+            return;
+        };
+        let _marking = self
+            .orphan_marking
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.orphan_marked.load(Ordering::Acquire) {
+            return;
+        }
+        let epoch = self.orphan_epoch.load(Ordering::Relaxed);
+        if epoch == 0 {
+            self.orphan_epoch
+                .store(crate::session::store::now_ms(), Ordering::Relaxed);
+        }
+        // 恢复的旧 run 保留原创建时间，须按注册表排除；快照后释放锁再读写磁盘。
+        let running: HashSet<_> = self.runs.lock().keys().cloned().collect();
+        let (metas, read_errors) = list_run_metas_with_errors(&self.paths.workflows());
+        let mut all_marked = read_errors == 0;
+        for mut meta in metas {
+            // 首次扫描涵盖原写者的全部 run；重试只处理首次扫描前的残留。
+            if meta.status != "running"
+                || running.contains(&meta.run_id)
+                || (epoch != 0 && meta.created_at_ms >= epoch)
+            {
+                continue;
+            }
+            if let Ok(dir) = self.run_dir(&meta.run_id) {
+                all_marked &= mark_interrupted(&dir, &mut meta);
             }
         }
-        manager
+        if all_marked {
+            self.orphan_marked.store(true, Ordering::Release);
+        }
     }
 
     /// run 目录；run_id 来自外部输入（工具/RPC 参数），校验字符集防路径穿越。
@@ -307,16 +344,29 @@ pub(crate) fn workflow_summary(meta: &RunMeta) -> WorkflowRunSummary {
 
 /// 磁盘上的全部 run.json（含历史 run）。
 pub(crate) fn list_run_metas(dir: &Path) -> Vec<RunMeta> {
+    list_run_metas_with_errors(dir).0
+}
+
+/// 同时统计已有 run.json 的读取或解析失败，供孤儿扫描重试；杂散空目录不计入。
+fn list_run_metas_with_errors(dir: &Path) -> (Vec<RunMeta>, usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
-    let mut metas: Vec<RunMeta> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| read_run_meta(&e.path()).ok())
-        .collect();
+    let mut metas = Vec::new();
+    let mut read_errors = 0;
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        match read_run_meta(&path) {
+            Ok(meta) => metas.push(meta),
+            Err(_) if path.join("run.json").exists() => read_errors += 1,
+            Err(_) => {}
+        }
+    }
     metas.sort_by_key(|m| m.created_at_ms);
-    metas
+    (metas, read_errors)
 }
 
 pub(crate) fn read_run_meta(dir: &Path) -> Result<RunMeta, CoreError> {
@@ -326,20 +376,16 @@ pub(crate) fn read_run_meta(dir: &Path) -> Result<RunMeta, CoreError> {
         .map_err(|e| CoreError::Session(t!("core.err.run_json_parse", error = e).into_owned()))
 }
 
-/// running 且无执行者的 run 就地降级为 stopped(interrupted) 并回写 run.json。
-/// `birth_ms` 是调用方 manager 的启动时刻：`created_at_ms` 不早于它的 run
-/// 属于本进程（写盘/注册窗口中的活 run），不得按"进程崩溃残留"降级。
-fn mark_interrupted(dir: &Path, meta: &mut RunMeta, birth_ms: u64) {
-    if meta.status != "running" || meta.created_at_ms >= birth_ms {
-        return;
-    }
+/// 持写租约扫描时，将孤儿 run 降级为 stopped(interrupted)，返回写回是否成功。
+fn mark_interrupted(dir: &Path, meta: &mut RunMeta) -> bool {
     meta.status = "stopped".into();
     meta.stop_reason = Some("interrupted".into());
     meta.finished_at_ms = Some(crate::session::store::now_ms());
-    let _ = std::fs::write(
+    std::fs::write(
         dir.join("run.json"),
         serde_json::to_vec_pretty(meta).unwrap_or_default(),
-    );
+    )
+    .is_ok()
 }
 
 /// `session/workflow_run` 的完整快照。

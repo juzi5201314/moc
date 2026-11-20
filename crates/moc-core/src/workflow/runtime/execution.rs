@@ -171,7 +171,6 @@ impl WorkflowManager {
         let _ = writer.await;
         // 终态落盘 + 主会话投递。
         self.persist_terminal(handle);
-        self.runs.lock().remove(&handle.id);
         let _ = sink;
         Ok(())
     }
