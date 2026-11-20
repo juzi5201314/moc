@@ -695,6 +695,7 @@ async fn call_before_connect_fails_gracefully() {
     manager.shutdown().await;
 }
 
+// 杀死旧传输并使用新连接的 peer，验证调用确实走了重连后的连接。
 #[tokio::test]
 async fn call_waits_for_reconnecting_slot_to_become_connected() {
     let state = Arc::new(TestState::default());
@@ -708,12 +709,12 @@ async fn call_waits_for_reconnecting_slot_to_become_connected() {
     let tools = connected_tools(&manager, Duration::from_secs(5)).await;
     let echo = Arc::clone(tools.iter().find(|tool| tool.name == "echo").unwrap());
     let slot = manager.slots.get("test").unwrap();
-    let (peer, tools, instructions) = match &*slot.phase.read() {
+    let (tools, instructions) = match &*slot.phase.read() {
         Phase::Connected {
-            peer,
             tools,
             instructions,
-        } => (peer.clone(), tools.clone(), instructions.clone()),
+            ..
+        } => (tools.clone(), instructions.clone()),
         _ => panic!("测试 server 应已连接"),
     };
     slot.set_phase(Phase::Reconnecting {
@@ -735,13 +736,23 @@ async fn call_waits_for_reconnecting_slot_to_become_connected() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!call.is_finished(), "重连期间的调用应等待 phase 稳定");
 
+    state.kill.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let (changed_tx, _changed_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let service2 = (slot.connector)(changed_tx)
+        .await
+        .expect("第二次连接应成功");
     slot.set_phase(Phase::Connected {
-        peer,
+        peer: service2.peer().clone(),
         tools,
         instructions,
     });
     let output = call.await.unwrap().unwrap();
     assert_eq!(output.text, "echo: after reconnect");
+    assert!(
+        state.connect_count.load(Ordering::SeqCst) >= 2,
+        "应至少建立两次连接"
+    );
     manager.shutdown().await;
 }
 
