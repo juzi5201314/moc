@@ -163,7 +163,7 @@ impl PluginHost {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             (Some(tx), Some(rx))
         };
-        let (reply, receiver) = tokio::sync::oneshot::channel();
+        let (reply, mut receiver) = tokio::sync::oneshot::channel();
         let submitted = {
             // 只在提交请求时持锁：等待结果期间不占着 worker 槽，超时路径才能把它摘掉。
             let worker = plugin.worker.lock();
@@ -187,9 +187,10 @@ impl PluginHost {
         };
         submitted.map_err(|error| self.fail(index, error))?;
         let deadline = tokio::time::Instant::now() + timeout;
-        tokio::pin!(receiver);
-        // 独立任务保证慢桥不阻塞超时；JoinSet 在调用取消时也会终止在途任务。
+        // 工具任务随调用取消而中止；持久化任务单独保存，丢弃句柄时继续写完，
+        // 避免取消或超时打断临时文件写入、留下未 rename 的状态文件。
         let mut host_tasks = tokio::task::JoinSet::new();
+        let mut persistence_task: Option<tokio::task::JoinHandle<Result<Value>>> = None;
         let mut pending_reply: Option<std::sync::mpsc::Sender<Result<Value>>> = None;
         let mut waiting_on_host = false;
         let mut waiting_on_persistence = false;
@@ -216,6 +217,10 @@ impl PluginHost {
                     break if waiting_on_host && !waiting_on_persistence {
                         // 插件线程此刻在等宿主的回包，它的 tools.call 也因为同一个
                         // deadline 抛了错：这条路径不算插件跑飞，不毒化它。
+                        // 保留接收端直到 JS 完成 catch/finally，避免正常清理被误判为取消。
+                        tokio::spawn(async move {
+                            let _ = receiver.await;
+                        });
                         Err(PluginError::new(
                             "E_PLUGIN_TIMEOUT",
                             t!(
@@ -253,27 +258,29 @@ impl PluginHost {
                     waiting_on_persistence = matches!(&operation, HostOperation::Persistence(_));
                     waiting_on_host = true;
                     pending_reply = Some(reply);
-                    let bridge = bridge.clone();
-                    let persistence = self.persistence.clone();
-                    let name = plugin.name.clone();
-                    let path = plugin.config_path.clone();
-                    let fields = plugin.descriptor.configs.clone();
-                    let context = context.cloned();
-                    host_tasks.spawn(async move {
-                        match operation {
-                            HostOperation::Tool { name, args } => {
+                    match operation {
+                        HostOperation::Tool { name, args } => {
+                            let bridge = bridge.clone();
+                            host_tasks.spawn(async move {
                                 let bridge = bridge.ok_or_else(|| PluginError::new("E_PLUGIN_TOOLS_UNAVAILABLE", t!("plugin.err.tools_bridge_unavailable")))?;
                                 let result = bridge.call_tool(name, args).await?;
                                 Ok(serde_json::json!({"content":result.content,"structuredContent":result.structured,"isError":result.is_error}))
-                            }
-                            HostOperation::Persistence(op) => {
+                            });
+                        }
+                        HostOperation::Persistence(op) => {
+                            let persistence = self.persistence.clone();
+                            let name = plugin.name.clone();
+                            let path = plugin.config_path.clone();
+                            let fields = plugin.descriptor.configs.clone();
+                            let context = context.cloned();
+                            persistence_task = Some(tokio::spawn(async move {
                                 let bridge = persistence.ok_or_else(|| PluginError::new("E_PLUGIN_STATE", t!("plugin.err.persistence_unavailable")))?;
                                 request_persistence(bridge.as_ref(), &name, &path, context.as_ref(), &fields, op).await
-                            }
+                            }));
                         }
-                    });
+                    }
                 }
-                reply = host_reply(&mut host_tasks) => {
+                reply = host_reply(&mut host_tasks, &mut persistence_task) => {
                     waiting_on_host = false;
                     if let Some(sender) = pending_reply.take() {
                         let _ = sender.send(reply);

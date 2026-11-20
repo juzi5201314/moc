@@ -272,7 +272,22 @@ async fn slow_host_bridge_respects_the_call_budget() {
     install(
         temp.path(),
         "reader",
-        r#"import { tools } from "moc"; export default { tools: { read_through: { description: "读文件", parameters: { type: "object" }, run: () => tools.call("read", { path: "x" }) } } };"#,
+        r#"
+        import { tools } from "moc";
+        let cleaned = 0;
+        export default {
+          tools: { read_through: { description: "Read through the host", parameters: { type: "object" },
+            run() {
+              try { return tools.call("read", { path: "x" }); }
+              finally {
+                for (let i = 0; i < 100000; i++) {}
+                cleaned++;
+              }
+            }
+          } },
+          commands: { cleaned: { description: "Report cleanup count", run: () => cleaned } }
+        };
+        "#,
     );
     let mut settings = settings();
     settings.call_timeout = Duration::from_millis(20);
@@ -304,6 +319,10 @@ async fn slow_host_bridge_respects_the_call_budget() {
         .await
         .expect("宿主工具超时后仍可继续调用插件");
     assert_eq!(result.content, "read:x");
+    assert_eq!(
+        host.run_command("cleaned", "", &context()).await.unwrap(),
+        "2"
+    );
 }
 
 #[test]

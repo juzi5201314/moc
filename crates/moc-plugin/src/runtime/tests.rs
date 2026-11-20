@@ -322,9 +322,9 @@ async fn interrupting_stops_a_runaway_loop() {
     assert_eq!(error.code, "E_PLUGIN_INTERRUPTED", "{error}");
 }
 
-/// 用宿主回调确认 JS 已开始执行；取消与超时都不能依赖调用方继续轮询 future。
+/// 用宿主回调确认 JS 已开始执行；取消关闭接收端，超时由宿主置中断标志。
 #[tokio::test]
-async fn abandoned_or_expired_calls_stop_the_worker() {
+async fn abandoned_or_host_interrupted_calls_stop_the_worker() {
     let temp = tempfile::tempdir().unwrap();
     write_plugin(
         temp.path(),
@@ -349,12 +349,7 @@ async fn abandoned_or_expired_calls_stop_the_worker() {
                 payload: json!({"name":"spin","args":{}}),
                 context: SESSION.into(),
                 tools_allowed: true,
-                deadline: Instant::now()
-                    + if cancel {
-                        timeout
-                    } else {
-                        Duration::from_millis(200)
-                    },
+                deadline: Instant::now() + timeout,
                 host_tx: Some(host_tx),
                 reply,
             })
@@ -379,6 +374,8 @@ async fn abandoned_or_expired_calls_stop_the_worker() {
         let mut ready = Some(ready);
         if cancel {
             drop(ready.take());
+        } else {
+            worker.interrupt();
         }
         let _ = started.reply.send(Ok(Value::Null));
         let exited = tokio::time::timeout(Duration::from_secs(2), &mut stopped).await;
@@ -389,8 +386,8 @@ async fn abandoned_or_expired_calls_stop_the_worker() {
         }
         assert!(matches!(exited, Ok(Err(_))), "worker 必须退出：{exited:?}");
         if let Some(ready) = ready {
-            let error = ready.await.unwrap().expect_err("调用必须超时");
-            assert_eq!(error.code, "E_PLUGIN_TIMEOUT");
+            let error = ready.await.unwrap().expect_err("宿主中断必须终止调用");
+            assert_eq!(error.code, "E_PLUGIN_INTERRUPTED");
         }
     }
 }

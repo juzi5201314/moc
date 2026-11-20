@@ -4,7 +4,7 @@
 //! 阻塞等回包；宿主在 `Plugin::invoke` 的 `select!` 里服务这些请求。因此不需要
 //! PTC 那套 step 状态机。
 //!
-//! 中断：QuickJS 的 interrupt handler 同时检查宿主标志、调用期限与结果接收端，
+//! 中断：QuickJS 的 interrupt handler 检查宿主标志与结果接收端，退出钩子另检查期限。
 //! 即使宿主 future 被丢弃也能停止 JS。被中断的线程直接退出，不再复用 Runtime。
 
 use std::cell::RefCell;
@@ -282,9 +282,15 @@ fn run_thread(
         let Some(call) = current.as_mut() else {
             return false;
         };
-        call.timed_out |= Instant::now() >= call.deadline;
-        call.interrupted |=
-            call.timed_out || call.reply.as_ref().is_some_and(|reply| reply.is_closed());
+        call.interrupted |= match call.reply.as_ref() {
+            // 普通调用的超时由宿主处理；这里只检测取消，允许宿主工具超时后完成 JS 清理。
+            Some(reply) => reply.is_closed(),
+            // 退出钩子没有宿主等待结果，只能靠自身期限中断。
+            None => {
+                call.timed_out |= Instant::now() >= call.deadline;
+                call.timed_out
+            }
+        };
         call.interrupted
     })));
     runtime.set_loader(
@@ -421,15 +427,6 @@ fn run_thread(
                     )
                 });
                 let call = active.borrow_mut().take().expect("调用中断上下文已登记");
-                // worker 可能先于宿主定时器发现超时，错误码仍须保持一致。
-                let result = if call.timed_out {
-                    Err(PluginError::new(
-                        "E_PLUGIN_TIMEOUT",
-                        t!("plugin.err.budget_exhausted"),
-                    ))
-                } else {
-                    result
-                };
                 let _ = call.reply.expect("普通调用必须带回包通道").send(result);
                 // 中断后的 JS 状态不再复用；关闭队列也会唤醒尚在排队的调用方。
                 if call.interrupted || interrupt.load(Ordering::SeqCst) {
