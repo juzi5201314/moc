@@ -25,7 +25,7 @@ use moc_ptc_protocol::wire::WorkflowHostMessage;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::CoreError;
@@ -154,8 +154,9 @@ pub(crate) struct RunHandle {
     /// 否则同 id 并发 publish 算出同一版本互相覆盖。
     pub publish_lock: Mutex<()>,
     pub cancel: CancellationToken,
-    /// 包含终态落盘与失败收尾的主循环任务；卸载须等其结束再释放租约。
-    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// 主循环完成终态落盘与失败收尾后置位；卸载等待可取消、重试或并发订阅。
+    finished: AtomicBool,
+    finish_notify: Notify,
     /// 工作区 cwd（world/files/git 基准）。
     pub cwd: PathBuf,
     /// run 发起时的反向请求上下文（子代理 spawn/message 用）。
