@@ -309,6 +309,8 @@ async fn slow_host_bridge_respects_the_call_budget() {
     );
     // 等宿主的这条路径不算插件跑飞：它仍然可用。
     assert_eq!(host.info()[0].error, None);
+    // 等 worker 把上次调用的收尾跑完：在队列里等过 call_timeout 的调用会被当成跑飞毒化。
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let result = host
         .call_tool(
             "read_through",
