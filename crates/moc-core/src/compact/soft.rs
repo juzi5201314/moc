@@ -149,7 +149,7 @@ impl SummaryRequest<'_> {
         // checkpoint 只有几千 token：按模型完整上限申请输出会从预算里扣掉几十万 token。
         request.max_output_tokens = Some(summary_output_tokens(self.model.max_output_tokens));
         let cancel = self.ctx.cancel();
-        let _permit = self.inner.provider_permit(self.model, &cancel).await?;
+        let permit = self.inner.provider_permit(self.model, &cancel).await?;
         let request_started = Instant::now();
         let response = tokio::select! {
             biased;
@@ -164,6 +164,8 @@ impl SummaryRequest<'_> {
                 }
             },
         };
+        // 摘要已到手即可归还名额，本地记账不再占用供应商并发额度。
+        drop(permit);
         crate::service::record_model_usage(
             self.inner,
             &self.state.session.id,
