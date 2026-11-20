@@ -663,6 +663,7 @@ async fn eval_loop(
                             .timeout_ms
                             .unwrap_or(ctx.config.workflow.world_run_timeout_ms),
                         &options.output.clone().unwrap_or(Value::Null),
+                        &ctx.cancel,
                     )
                     .await
                 }
