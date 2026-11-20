@@ -713,6 +713,15 @@ pub struct CustomAnswer {
 }
 
 impl Modal {
+    /// 仅授权与提问持有一次性答复；浏览窗口不属于待答请求。
+    pub fn request_session_id(&self) -> Option<&str> {
+        match self {
+            Self::Permission { params, .. } => Some(&params.session_id),
+            Self::Ask { params, .. } => Some(&params.session_id),
+            _ => None,
+        }
+    }
+
     /// 标题行。
     pub fn title(&self) -> String {
         match self {

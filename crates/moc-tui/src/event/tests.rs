@@ -48,6 +48,7 @@ mod behavior;
 mod commands;
 mod context;
 mod input;
+mod modal_queue;
 mod model;
 mod queue;
 mod scrolling;

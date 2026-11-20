@@ -125,7 +125,7 @@ pub(super) fn focus_agent(app: &mut App, connection: &EmbeddedConnection, agent_
         return;
     }
     app.subagent_selected = Some(target.id.clone());
-    app.modal = None;
+    app.set_modal(None);
     load_focus(app, connection, target.id, false);
 }
 

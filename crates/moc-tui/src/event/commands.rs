@@ -258,12 +258,12 @@ pub(super) fn dispatch_command(
                 let _ = events.send(AppEvent::CommandNote { session_id, result });
             });
         }
-        CommandId::Monitor => app.modal = Some(Modal::Monitor),
+        CommandId::Monitor => app.set_modal(Some(Modal::Monitor)),
         CommandId::Doctor => app.push_note(
             crate::doctor::report(app),
             crate::transcript::NoteTone::Info,
         ),
-        CommandId::Help => app.modal = Some(Modal::Help { scroll: 0 }),
+        CommandId::Help => app.set_modal(Some(Modal::Help { scroll: 0 })),
         CommandId::Context => open_context(app, connection),
         CommandId::Tools => open_tools(app, connection),
         CommandId::Quit => app.should_quit = true,

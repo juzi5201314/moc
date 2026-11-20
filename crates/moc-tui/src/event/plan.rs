@@ -287,7 +287,7 @@ pub(super) fn plan_read_key(
         _ => return,
     };
     match (code, modifiers) {
-        (KeyCode::Esc, _) => app.modal = None,
+        (KeyCode::Esc, _) => app.set_modal(None),
         (KeyCode::Char('a'), KeyModifiers::NONE) => plan_toggle_annotate(app),
         (KeyCode::Char('d'), KeyModifiers::NONE) => {
             if let Some(Modal::Plan { state }) = app.modal.as_mut()
@@ -333,7 +333,7 @@ pub(super) fn plan_read_key(
                 return;
             }
             if selected == 3 {
-                app.modal = None;
+                app.set_modal(None);
                 return;
             }
             let Some(session_id) = session_id else {
@@ -498,9 +498,9 @@ pub(super) fn open_plan_review(app: &mut App, plan: moc_protocol::methods::PlanI
     let Some(session) = app.session.as_ref() else {
         return;
     };
-    app.modal = Some(Modal::Plan {
+    app.set_modal(Some(Modal::Plan {
         state: Box::new(crate::modal::PlanReviewState::new(plan, session.engine)),
-    });
+    }));
 }
 
 /// 为当前计划版本拉取与上一版的差异。
@@ -576,7 +576,7 @@ pub(crate) fn apply_plan_revised(
 ) {
     match result {
         Ok(result) => {
-            app.modal = None;
+            app.set_modal(None);
             start_auto_prompt(app, connection, Some(result.prompt));
         }
         Err(error) => {
@@ -599,7 +599,7 @@ pub(crate) fn apply_plan_approval(
 ) {
     match result {
         Ok(result) => {
-            app.modal = None;
+            app.set_modal(None);
             if app
                 .session
                 .as_ref()

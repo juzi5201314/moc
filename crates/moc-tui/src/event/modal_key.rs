@@ -103,10 +103,10 @@ pub(super) fn handle_modal_key(
     }
     // workflow：模型选择器回程（审批窗/run 面板）。
     if let Some(back) = workflow_back {
-        app.modal = Some(match back {
+        app.set_modal(Some(match back {
             crate::workflow::WorkflowRoleBack::Approval(state) => Modal::WorkflowApproval { state },
             crate::workflow::WorkflowRoleBack::Run(state) => Modal::WorkflowRun { state },
-        });
+        }));
     }
     // workflow：审批决策回传 core。
     if let Some((request_id, decision)) = workflow_decision
@@ -133,13 +133,13 @@ pub(super) fn handle_modal_key(
     }
     // workflow：role/ref 焦点进模型选择器（带回程票）。
     if let Some((key, current)) = workflow_picker
-        && let Some(modal) = app.modal.take()
+        && let Some(modal) = app.take_modal()
     {
         let back = match modal {
             Modal::WorkflowApproval { state } => crate::workflow::WorkflowRoleBack::Approval(state),
             Modal::WorkflowRun { state } => crate::workflow::WorkflowRoleBack::Run(state),
             other => {
-                app.modal = Some(other);
+                app.set_modal(Some(other));
                 return;
             }
         };
@@ -256,19 +256,20 @@ pub(super) fn handle_modal_key(
     }
 
     if let Some((path, label, value)) = config_pick {
-        app.modal = None;
+        app.set_modal(None);
         crate::settings::apply_model_role(app, connection, path, &label, value);
     }
 
     if close {
         // 最小化的 workflow 审批：状态移进状态栏胶囊（点击重开），不算已决。
-        if let Some(Modal::WorkflowApproval { state }) = app.modal.take()
+        if let Some(Modal::WorkflowApproval { state }) = app.take_modal()
             && state.parked
         {
             app.workflow.parked_approval = Some(state);
         } else {
-            app.modal = None;
+            app.set_modal(None);
         }
+        app.show_next_pending_modal();
         if !plan_review_open {
             crate::queue::dispatch(app, connection);
         }

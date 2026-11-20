@@ -260,14 +260,14 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
             app.inflight_session_ops.remove(&session_id);
             // 切换由模型选择器发起：只把它换成确认卡，不碰其他模态。
             if matches!(app.modal, Some(Modal::Model { .. })) {
-                app.modal = Some(Modal::SwitchModel {
+                app.set_modal(Some(Modal::SwitchModel {
                     session_id,
                     selector,
                     overflow,
                     option: 0,
                     loading: false,
                     error: None,
-                });
+                }));
             }
         }
         AppEvent::SessionControlSettled {
@@ -300,7 +300,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         )
                     {
                         // 只关闭这次操作打开的选择器与确认卡片，不碰用户后来打开的模态。
-                        app.modal = None;
+                        app.set_modal(None);
                     }
                     if let Some(error) = compaction_error {
                         app.push_note(

@@ -93,7 +93,7 @@ pub(super) fn request_session_model(
                 }
             }
         });
-        app.modal = None;
+        app.set_modal(None);
         return;
     };
     app.inflight_session_ops.insert(session_id.clone());
