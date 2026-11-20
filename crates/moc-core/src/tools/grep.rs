@@ -257,15 +257,20 @@ fn search_resource_namespace(
     file_args.skip = None;
     let mut file_config = config.clone();
     'entries: for (prefix, directory) in entries {
-        for (relative, path) in directory_files(directory) {
-            if scanned >= MAX_FILES {
-                stopped = true;
-                break 'entries;
-            }
+        let remaining = MAX_FILES - scanned;
+        let (files, enumeration_incomplete) = directory_files(directory, remaining);
+        output.incomplete |= enumeration_incomplete && files.len() < remaining;
+        stopped |= files.len() >= remaining;
+        for (relative, path) in files {
             scanned += 1;
             let uri = format!("{prefix}{relative}");
-            let Ok(metadata) = std::fs::metadata(&path) else {
-                continue;
+            let metadata = match std::fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    notices.push(format!("[skipped {uri}: {error}]"));
+                    output.incomplete = true;
+                    continue;
+                }
             };
             if metadata.len() > config.max_file_bytes {
                 notices.push(format!(
@@ -274,8 +279,13 @@ fn search_resource_namespace(
                 ));
                 continue;
             }
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    notices.push(format!("[skipped {uri}: {error}]"));
+                    output.incomplete = true;
+                    continue;
+                }
             };
             file_config.max_matches_total = config
                 .max_matches_per_file
@@ -312,11 +322,15 @@ fn search_resource_namespace(
             output.matches += matches.matches;
             shown_files += 1;
         }
+        if scanned >= MAX_FILES {
+            stopped = true;
+            break 'entries;
+        }
     }
     if output.content.is_empty() {
         output.content.push_str("No matches found");
     }
-    output.incomplete = stopped || !notices.is_empty();
+    output.incomplete |= stopped || !notices.is_empty();
     for notice in notices {
         push_notice(&mut output.content, &notice);
     }
@@ -329,15 +343,27 @@ fn search_resource_namespace(
     Ok(output)
 }
 
-/// 列出目录下所有文件及其相对路径（用 `/` 分隔，按路径排序），跳过点文件。
-fn directory_files(directory: &Path) -> Vec<(String, PathBuf)> {
+/// 最多列出 limit 个文件及其相对路径（用 `/` 分隔），跳过点文件。
+fn directory_files(directory: &Path, limit: usize) -> (Vec<(String, PathBuf)>, bool) {
     let mut files = Vec::new();
     let mut stack = vec![(String::new(), directory.to_owned())];
-    while let Some((prefix, current)) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            continue;
+    let mut incomplete = false;
+    'walk: while let Some((prefix, current)) = stack.pop() {
+        let entries = match std::fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(_) => {
+                incomplete = true;
+                continue;
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    incomplete = true;
+                    continue;
+                }
+            };
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with('.') {
                 continue;
@@ -347,18 +373,27 @@ fn directory_files(directory: &Path) -> Vec<(String, PathBuf)> {
             } else {
                 format!("{prefix}/{name}")
             };
-            let Ok(file_type) = entry.file_type() else {
-                continue;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => {
+                    incomplete = true;
+                    continue;
+                }
             };
             if file_type.is_dir() {
                 stack.push((relative, entry.path()));
             } else if file_type.is_file() {
                 files.push((relative, entry.path()));
+                if files.len() >= limit {
+                    incomplete = true;
+                    break 'walk;
+                }
             }
         }
     }
+    // read_dir 顺序不稳定；统一在返回前排序，逐层排序会重复工作。
     files.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-    files
+    (files, incomplete)
 }
 
 /// 取出一段文本里的命中行；没有命中时返回空串，由调用方决定报告无结果还是继续拼下一段。
@@ -646,6 +681,7 @@ impl Search {
         let mut limited = false;
         let mut capped = false;
         let mut skipped_large_files = 0usize;
+        let mut skipped_files = Vec::new();
         let skip = self.args.skip.unwrap_or(0);
         // 分块搜索：块内并行，输出上限较低时不必搜完全部候选文件。
         let width = rayon::current_num_threads().clamp(1, 32);
@@ -657,8 +693,10 @@ impl Search {
             for (path, result) in block.iter().zip(results) {
                 let result = match result {
                     Ok(result) => result,
-                    Err(_) => {
+                    Err(error) => {
                         incomplete.store(true, Ordering::Relaxed);
+                        let relative = path.strip_prefix(&self.cwd).unwrap_or(path);
+                        skipped_files.push(format!("[skipped {}: {error}]", relative.display()));
                         continue;
                     }
                 };
@@ -793,6 +831,9 @@ impl Search {
                     self.config.max_file_bytes
                 ),
             );
+        }
+        for notice in skipped_files {
+            push_notice(&mut output, &notice);
         }
         if incomplete.load(Ordering::Relaxed) || self.stopped() {
             page.incomplete = true;
