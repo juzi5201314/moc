@@ -5,6 +5,10 @@ use crate::agents::waiting::await_any;
 use crate::agents::waiting::wait_snapshot;
 use moc_protocol::methods::AgentStatus;
 
+mod finishing;
+#[path = "../../tests/integration/support/mod.rs"]
+mod support;
+
 #[test]
 fn explore_model_inherits_parent_and_never_updates_last_selection() {
     let root = tempfile::tempdir().unwrap();

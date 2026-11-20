@@ -4,12 +4,13 @@
 // table key 去重、metrics 取最新值、board 按 status 分列（无专用组件，Tailwind 注释处自绘），
 // chart 以数据点表呈现（web 无现成 chart 组件，数据完整展示）。
 
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 import { streamdownControls, streamdownPlugins } from "@/components/ai-elements/message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   Select,
@@ -26,6 +27,7 @@ import { useTranscript } from "@/store/transcript";
 import type { WorkflowRunView } from "@/store/workflow";
 import {
   openWorkflowRun,
+  refreshWorkflowRun,
   useWorkflow,
   workflowArtifact,
   workflowResume,
@@ -269,6 +271,26 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
   const runList = useWorkflow((s) => s.runList);
   const view = useWorkflow((s) => (panelRun ? s.runs[panelRun] : undefined));
   const [busy, setBusy] = useState(false);
+  const stoppable = view?.status?.state === "running" || view?.status?.state === "pending";
+
+  useEffect(() => {
+    if (runsOpen || !panelRun || !stoppable) return;
+    const controller = new AbortController();
+    let timer: number;
+    const refresh = async () => {
+      try {
+        await refreshWorkflowRun(sessionId, panelRun, controller.signal);
+      } catch {
+        // 临时断线后重试，关闭面板时停止。
+      }
+      if (!controller.signal.aborted) timer = window.setTimeout(refresh, 1500);
+    };
+    timer = window.setTimeout(refresh, 1500);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [sessionId, panelRun, runsOpen, stoppable]);
 
   const act = (fn: () => Promise<void>, label: string) => {
     setBusy(true);
@@ -311,14 +333,13 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
 
   if (!panelRun || !view) return null;
 
-  const stoppable = view.status?.state === "running" || view.status?.state === "pending";
   const resumable = view.status?.state === "stopped";
 
   return (
     <Dialog open onOpenChange={(o) => !o && useWorkflow.setState({ panelRun: null })}>
-      <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+      <DialogContent className="max-h-[85dvh] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle className="flex flex-wrap items-center gap-2 [overflow-wrap:anywhere]">
             {view.title} <Badge variant="secondary">{statusText(view.status)}</Badge>
           </DialogTitle>
         </DialogHeader>
@@ -347,16 +368,21 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
         <div className="space-y-2">
           <div className="text-ui text-muted-foreground">roles</div>
           {view.roles.map((role) => (
-            <div key={role.role_id} className="flex items-center gap-2 text-ui">
-              <span className="min-w-0 flex-1 truncate">
-                {role.name ?? role.role_id}
-                {role.fan_out && <Badge variant="secondary">×N</Badge>}
-              </span>
-              <span className="text-text-tertiary">
-                {role.status} {role.asks_done ?? 0}/
-                {(role.asks_in_flight ?? 0) + (role.asks_done ?? 0)} asks
-                {role.spent_tokens ? ` ${role.spent_tokens} tok` : ""}
-              </span>
+            <Card
+              key={role.role_id}
+              className="flex-row flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-xl p-3 text-ui shadow-xs"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 font-medium">
+                  <span className="truncate">{role.name ?? role.role_id}</span>
+                  {role.fan_out && <Badge variant="secondary">×N</Badge>}
+                </div>
+                <div className="text-xs text-text-tertiary">
+                  {role.status} {role.asks_done ?? 0}/
+                  {(role.asks_in_flight ?? 0) + (role.asks_done ?? 0)} asks
+                  {role.spent_tokens ? ` ${role.spent_tokens} tok` : ""}
+                </div>
+              </div>
               <WorkflowModelSelect
                 value={role.model ?? ""}
                 disabled={readOnly || busy}
@@ -368,7 +394,7 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
                   );
                 }}
               />
-            </div>
+            </Card>
           ))}
         </div>
 

@@ -136,6 +136,7 @@ impl PlanHarness {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
             .expect("计划轮次");

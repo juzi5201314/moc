@@ -18,6 +18,7 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
 use rust_i18n::t;
 use std::borrow::Cow;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// 输入框按显示列硬折行，保留空白和原始字节偏移；额外留一格显示行尾光标。
 pub(super) fn prompt_rows(text: &str, width: u16) -> Vec<(usize, &str)> {
@@ -27,14 +28,14 @@ pub(super) fn prompt_rows(text: &str, width: u16) -> Vec<(usize, &str)> {
     let mut rows = Vec::new();
     let mut start = 0;
     let mut column = 0;
-    for (offset, ch) in text.char_indices() {
-        if ch == '\n' {
-            rows.push((start, &text[start..offset]));
-            start = offset + 1;
+    for (offset, grapheme) in text.grapheme_indices(true) {
+        if grapheme.ends_with('\n') {
+            rows.push((start, &text[start..offset + grapheme.len() - 1]));
+            start = offset + grapheme.len();
             column = 0;
             continue;
         }
-        let cells = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        let cells = str_width(grapheme);
         if column > 0 && column + cells > width {
             rows.push((start, &text[start..offset]));
             start = offset;
@@ -297,28 +298,12 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
 
     // 无会话时右端只画 idle；左端仍能显示选区操作。
     let no_session = app.session.is_none();
-    let model = app.model_display();
+    let mut model = app.model_display();
     let status = app.status_label();
     let permission = app
         .session
         .as_ref()
         .map_or("full", |session| session.permission.as_str());
-    let right: Vec<(&str, Color)> = if no_session {
-        vec![(labels::status::IDLE, theme.gray)]
-    } else {
-        vec![
-            (model.as_str(), theme.gray),
-            (labels::SEP, theme.border),
-            (status.as_str(), theme.accent_model),
-            (labels::SEP, theme.border),
-            (permission, theme.accent_model),
-        ]
-    };
-    let right_width: usize = right.iter().map(|(text, _)| str_width(text)).sum();
-    if right_width + 4 > inner {
-        return;
-    }
-
     let selecting = app.selection.is_some() && app.modal.is_none();
     let copy_feedback = app.modal.is_none()
         && app
@@ -360,6 +345,40 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
         (Cow::Owned(help_key), t!("tui.prompt.keys"), theme.gray_dim)
     };
     let left_key = left_key.as_ref();
+    let compact_tip = if selecting {
+        t!("tui.prompt.copy")
+    } else {
+        left_tip.clone()
+    };
+    let reserved_tips =
+        str_width(left_key) + usize::from(!left_key.is_empty()) + str_width(&compact_tip);
+    if !no_session {
+        let fixed = str_width(&status) + str_width(permission) + 2 * str_width(labels::SEP);
+        let budget = inner.saturating_sub(fixed + reserved_tips + 8);
+        if str_width(&model) > budget {
+            model = model
+                .split_whitespace()
+                .map(|part| part.rsplit('/').next().unwrap_or(part))
+                .collect::<Vec<_>>()
+                .join(" ");
+            model = wrap::truncate(model, budget).into_owned();
+        }
+    }
+    let right: Vec<(&str, Color)> = if no_session {
+        vec![(labels::status::IDLE, theme.gray)]
+    } else {
+        vec![
+            (model.as_str(), theme.gray),
+            (labels::SEP, theme.border),
+            (status.as_str(), theme.accent_model),
+            (labels::SEP, theme.border),
+            (permission, theme.accent_model),
+        ]
+    };
+    let right_width: usize = right.iter().map(|(text, _)| str_width(text)).sum();
+    if right_width + 4 > inner {
+        return;
+    }
     let show_cancel =
         selecting && str_width(left_key) + 1 + str_width(&left_tip) + right_width + 8 <= inner;
     if selecting && !show_cancel {
@@ -444,6 +463,19 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
             end_x = cx + cap_cells;
         }
     }
+    if app.prompt_text().starts_with('!') && permission != "full" {
+        let note = t!("tui.prompt.manual_full_access");
+        let has_left = end_x > area.x + 3;
+        let nx = end_x + if has_left { cell_width(labels::SEP) } else { 0 };
+        let cells = cell_width(&note);
+        if usize::from(nx + cells + 1) + right_width + 4 <= inner + usize::from(area.x) {
+            if has_left {
+                buffer.set_string(end_x, y, labels::SEP, Style::new().fg(theme.border));
+            }
+            buffer.set_string(nx, y, &note, Style::new().fg(theme.accent_warning));
+            end_x = nx + cells;
+        }
+    }
     if end_x > area.x + 3 {
         // 最后一个元素与边框线之间补一格空白，左右对称。
         buffer.set_string(end_x, y, " ", Style::new());
@@ -501,6 +533,13 @@ pub(super) fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let theme = app.theme;
     let text = app.prompt_text();
     let rows = prompt_rows(text, area.width);
+    let token = text.split_whitespace().next().unwrap_or_default();
+    let command = if token.starts_with('/') && app.commands.resolve(token).is_some() {
+        let start = text.len() - text.trim_start().len();
+        Some((start, start + token.len()))
+    } else {
+        None
+    };
     let marker = || {
         Span::styled(
             "❯ ".to_owned(),
@@ -515,7 +554,7 @@ pub(super) fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let lines: Vec<Line<'static>> = rows
         .iter()
         .enumerate()
-        .map(|(index, (_, row))| {
+        .map(|(index, (offset, row))| {
             let mut spans: Vec<Span<'static>> = Vec::with_capacity(4);
             spans.push(Span::styled(
                 " ".to_owned(),
@@ -526,7 +565,29 @@ pub(super) fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
             } else {
                 Span::styled(" ".repeat(PROMPT_MARKER), Style::new())
             });
-            spans.extend(chip_spans(row, theme.text_primary, theme.accent_warning));
+            if let Some((start, end)) = command
+                && start < offset + row.len()
+                && end > *offset
+            {
+                let start = start.saturating_sub(*offset).min(row.len());
+                let end = end.saturating_sub(*offset).min(row.len());
+                spans.extend(chip_spans(
+                    &row[..start],
+                    theme.text_primary,
+                    theme.accent_warning,
+                ));
+                spans.push(Span::styled(
+                    row[start..end].to_owned(),
+                    Style::new().fg(theme.accent_tool),
+                ));
+                spans.extend(chip_spans(
+                    &row[end..],
+                    theme.text_primary,
+                    theme.accent_warning,
+                ));
+            } else {
+                spans.extend(chip_spans(row, theme.text_primary, theme.accent_warning));
+            }
             Line::from(spans)
         })
         .collect();

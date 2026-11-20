@@ -157,6 +157,25 @@ describe("MessageResponse GitHub 风格渲染", () => {
     expect(bad.container.querySelector("svg.moc-svg-figure")).toBeNull();
   });
 
+  it.each([
+    "[源码](src/main.rs)",
+    "[源码](./src/main.rs)",
+    "[源码][main]\n\n[main]: src/main.rs",
+  ])("相对路径链接按会话目录打开：%s", (source) => {
+    openFile.mockClear();
+    useTabs.setState({ active: "s1" });
+    useTranscript.setState((state) => ({
+      bySession: {
+        ...state.bySession,
+        s1: { info: { cwd: "/repo" } } as never,
+      },
+    }));
+    const { getByRole } = render(<MessageResponse>{source}</MessageResponse>);
+
+    fireEvent.click(getByRole("link", { name: "源码" }));
+    expect(openFile).toHaveBeenCalledWith("s1", { kind: "fs", path: "/repo/src/main.rs" }, {});
+  });
+
   it("本地路径链接点击在文件分页打开，URL 保持原样", async () => {
     openFile.mockClear();
     useTabs.setState({ active: "s1" });
@@ -189,6 +208,36 @@ describe("MessageResponse GitHub 风格渲染", () => {
     expect(doc.tagName).toBe("BUTTON");
     expect(doc.textContent).toBe("文档");
     expect(container.textContent).not.toContain("[blocked]");
+  });
+
+  it("含空格与中文的本地路径链接按解码后的路径打开", async () => {
+    openFile.mockClear();
+    useTabs.setState({ active: "s1" });
+    useTranscript.setState((state) => ({
+      bySession: {
+        ...state.bySession,
+        s1: { info: { cwd: "/repo" } } as never,
+      },
+    }));
+    const source =
+      "见 [设计](</repo/docs/设计 文档.md>)、[行号](<docs/中文 笔记.md:3>)、" +
+      "[文件](file:///repo/%E4%B8%AD%E6%96%87%20a.md)、[字面量](file:///repo/a%2520b.md) 与 [计划](local://计划.md)。";
+    const { container } = render(<MessageResponse>{source}</MessageResponse>);
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-streamdown="link"]')).toHaveLength(5);
+    });
+
+    const [spaced, line, file, literal, uri] = [...container.querySelectorAll('[data-streamdown="link"]')];
+    fireEvent.click(spaced);
+    expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "fs", path: "/repo/docs/设计 文档.md" }, {});
+    fireEvent.click(line);
+    expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "fs", path: "/repo/docs/中文 笔记.md" }, { line: 3 });
+    fireEvent.click(file);
+    expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "fs", path: "/repo/中文 a.md" }, {});
+    fireEvent.click(literal);
+    expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "fs", path: "/repo/a%20b.md" }, {});
+    fireEvent.click(uri);
+    expect(openFile).toHaveBeenLastCalledWith("s1", { kind: "resource", uri: "local://计划.md" }, {});
   });
 
   it("mermaid 解析失败时显示源码，不画红框", async () => {

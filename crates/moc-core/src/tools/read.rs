@@ -17,9 +17,9 @@ use crate::hashline::{numbered_line, served::read_snapshot, tag_text};
 use crate::resources::{ResourceBacking, ResourceRouter};
 
 mod partial;
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
-struct ReadArgs {
+pub(crate) struct ReadArgs {
     path: String,
     offset: Option<i64>,
     limit: Option<usize>,
@@ -562,6 +562,11 @@ fn directory_entries(path: &Path) -> Result<Vec<DirEntry>, ToolError> {
     Ok(entries)
 }
 
+/// `@` 目录附件的浅层列表：与 `read` 目录输出同形（两层、每层 12 条）。
+pub(crate) fn list_attachment(path: &Path, cwd: &Path) -> Result<String, ToolError> {
+    list_directory(path, cwd, None, None)
+}
+
 fn list_directory(
     path: &Path,
     cwd: &Path,
@@ -628,6 +633,66 @@ fn append_directory(path: &Path, depth: usize, output: &mut String) -> Result<()
         ));
     }
     Ok(())
+}
+
+/// `@` 文件附件的注入文本：整文件的 read 格式（`[display#TAG]` 头 +
+/// `N│` 行），全部行登记为可编辑锚点；超长行用只读占位行。
+///
+/// 返回 `Err` 表示文件不适合注入（超限、二进制、读取失败），调用方回退为
+/// 路径+大小提示。
+pub(crate) fn attachment_text(
+    path: &Path,
+    display: &str,
+    anchors: &crate::hashline::AnchorStore,
+    config: &crate::ResolvedConfig,
+) -> Result<String, String> {
+    let snapshot = read_snapshot(path, config.tools.read.max_bytes as u64)
+        .map_err(|error| error.to_string())?;
+    let max_line_bytes = config.tools.read.line_max_bytes;
+    // 占位行不算 served：窗口只覆盖完整展示的行。
+    let mut windows: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut window_start: Option<usize> = None;
+    let mut last_served = 0usize;
+    for (position, line) in snapshot.lines.iter().enumerate() {
+        if line.len() > max_line_bytes {
+            if let Some(start) = window_start.take() {
+                windows.push(start..last_served);
+            }
+            continue;
+        }
+        if window_start.is_none() {
+            window_start = Some(position);
+        }
+        last_served = position + 1;
+    }
+    if let Some(start) = window_start.take() {
+        windows.push(start..last_served);
+    }
+    let tag = anchors.record_served(path.to_path_buf(), &snapshot, &windows);
+    let mut output = format!("[{display}#{}]", tag_text(tag));
+    let mut notices = String::new();
+    if std::str::from_utf8(&snapshot.bytes).is_err() {
+        notices.push_str("\n[Invalid UTF-8 shown as U+FFFD; editing rewrites the file as UTF-8]");
+    }
+    if snapshot.lines.is_empty() {
+        output.push_str("\n(empty file)");
+    }
+    let mut has_placeholder = false;
+    for (position, line) in snapshot.lines.iter().enumerate() {
+        if line.len() > max_line_bytes {
+            has_placeholder = true;
+            output.push('\n');
+            output.push_str(&placeholder_line(position + 1, line));
+        } else {
+            output.push('\n');
+            output.push_str(&numbered_line(position + 1, line));
+        }
+    }
+    output.push_str(&notices);
+    if has_placeholder {
+        output.push_str("\n[Long lines omitted; each notice shows a read-only preview and the exact read arguments to continue; grep the path to locate text. Partial or omitted lines cannot authorize edits.]");
+    }
+    Ok(output)
 }
 
 #[cfg(test)]

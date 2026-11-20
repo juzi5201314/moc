@@ -61,6 +61,13 @@ const LIST_PAGE: usize = 200;
 /// 结束——否则 dispatch 循环被长请求占住，`session/cancel` 与 `session/update`
 /// 都进不来。
 pub(crate) async fn serve<B: Backend>(bridge: &Arc<Bridge<B>>) -> anyhow::Result<()> {
+    serve_with(bridge, Stdio::new()).await
+}
+
+async fn serve_with<B: Backend>(
+    bridge: &Arc<Bridge<B>>,
+    transport: impl agent_client_protocol::ConnectTo<Agent> + 'static,
+) -> anyhow::Result<()> {
     let parked = bridge.clone();
     Agent
         .builder()
@@ -91,9 +98,8 @@ pub(crate) async fn serve<B: Backend>(bridge: &Arc<Bridge<B>>) -> anyhow::Result
                     let (result, replay) = bridge.load_session(req).await;
                     match result {
                         Ok(response) => {
-                            responder.respond(response)?;
                             bridge.emit_updates(&cx, &session_id, replay);
-                            Ok(())
+                            responder.respond(response)
                         }
                         Err(error) => responder.respond_with_error(error),
                     }
@@ -191,7 +197,7 @@ pub(crate) async fn serve<B: Backend>(bridge: &Arc<Bridge<B>>) -> anyhow::Result
             },
             on_receive_notification!(),
         )
-        .connect_with(Stdio::new(), async move |cx| {
+        .connect_with(transport, async move |cx| {
             parked.attach_acp(cx.clone());
             cx.incoming_closed().await;
             parked.detach_acp();
@@ -244,10 +250,10 @@ impl<B: Backend> Bridge<B> {
             .config_options(self.config_options(&proj)))
     }
 
-    /// `session/load`：装载会话并把 transcript 条目按响应之后到达的顺序重放。
+    /// `session/load`：装载会话并在响应前按序重放 transcript 条目。
     ///
-    /// 返回 `(响应, 重放更新)`——ACP 要求 load 的历史更新在响应之后才允许到达，
-    /// 所以由调用点先 respond 再 `emit_updates`。
+    /// 返回 `(响应, 重放更新)`——ACP 要求全部历史更新到达后才响应，
+    /// 所以由调用点先 `emit_updates` 再 respond。
     async fn load_session(
         &self,
         req: LoadSessionRequest,
@@ -474,6 +480,7 @@ impl<B: Backend> Bridge<B> {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
             .map_err(|e| rpc_err(&e, Some(&session_id)))?;
@@ -666,6 +673,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_session_streams_updates_before_response() {
+        use agent_client_protocol::{Channel, RawJsonRpcMessage, TransportFrame};
+
+        let (bridge, backend) = bridge();
+        backend.push::<SessionLoad>(SessionLoadResult {
+            session: session_info("ses_1"),
+            entries: vec![
+                transcript_entry(Message::user_text("问")),
+                transcript_entry(Message::assistant_text("答")),
+            ],
+            truncated: false,
+            todos: Vec::new(),
+            plans: Vec::new(),
+            child_calls: Vec::new(),
+            goal: None,
+        });
+        let (agent, mut client) = Channel::duplex();
+        let connection = serve_with(&bridge, agent);
+        let exchange = async move {
+            client
+                .tx
+                .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::Request(
+                    serde_json::from_value(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 0,
+                        "method": "initialize",
+                        "params": {"protocolVersion": 1, "clientCapabilities": {}}
+                    }))
+                    .unwrap(),
+                )))
+                .unwrap();
+            let initialized = client.rx.recv().await.unwrap();
+            match initialized {
+                TransportFrame::Single(RawJsonRpcMessage::Response(response)) => {
+                    let response = serde_json::to_value(response).unwrap();
+                    assert_eq!(response["id"], 0);
+                    assert!(response.get("result").is_some(), "{response:?}");
+                }
+                other => panic!("unexpected initialize frame: {other:?}"),
+            }
+            client
+                .tx
+                .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::Request(
+                    serde_json::from_value(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "session/load",
+                        "params": {"sessionId": "ses_1", "cwd": "/tmp", "mcpServers": []}
+                    }))
+                    .unwrap(),
+                )))
+                .unwrap();
+            let mut received = Vec::new();
+            for _ in 0..3 {
+                let frame = client.rx.recv().await.unwrap();
+                received.push(match frame {
+                    TransportFrame::Single(RawJsonRpcMessage::Notification(notification)) => {
+                        serde_json::to_value(notification).unwrap()
+                    }
+                    TransportFrame::Single(RawJsonRpcMessage::Response(response)) => {
+                        serde_json::to_value(response).unwrap()
+                    }
+                    other => panic!("unexpected frame: {other:?}"),
+                });
+            }
+            received
+        };
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                result = connection => panic!("ACP connection ended before replay: {result:?}"),
+                received = exchange => received,
+            }
+        })
+        .await
+        .expect("ACP exchange timed out");
+        let order: Vec<_> = received
+            .iter()
+            .map(|message| {
+                message["params"]["update"]["sessionUpdate"]
+                    .as_str()
+                    .unwrap_or("response")
+            })
+            .collect();
+        assert_eq!(
+            order,
+            ["user_message_chunk", "agent_message_chunk", "response"]
+        );
+        assert_eq!(received[0]["method"], "session/update");
+        assert_eq!(received[1]["method"], "session/update");
+        assert_eq!(received[2]["id"], 1);
+        assert!(received[2].get("result").is_some());
+    }
+
+    #[tokio::test]
     async fn load_session_replays_user_and_agent_chunks() {
         let (bridge, backend) = bridge();
         backend.push::<SessionLoad>(SessionLoadResult {
@@ -687,6 +788,52 @@ mod tests {
         assert!(matches!(replay[0], SessionUpdate::UserMessageChunk(_)));
         assert!(matches!(replay[1], SessionUpdate::AgentMessageChunk(_)));
         assert_eq!(replay.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn load_session_replays_user_images_in_order() {
+        let (bridge, backend) = bridge();
+        let mut message = Message::user_text("before");
+        message.content = vec![
+            moc_protocol::ContentPart::Text("before".into()),
+            moc_protocol::ContentPart::Image {
+                source: moc_protocol::ImageSource::Base64 {
+                    media_type: "image/png".into(),
+                    data: "aW1hZ2U=".into(),
+                },
+                detail: None,
+            },
+            moc_protocol::ContentPart::Text("after".into()),
+        ]
+        .into();
+        backend.push::<SessionLoad>(SessionLoadResult {
+            session: session_info("ses_1"),
+            entries: vec![transcript_entry(message)],
+            truncated: false,
+            todos: Vec::new(),
+            plans: Vec::new(),
+            child_calls: Vec::new(),
+            goal: None,
+        });
+        let (result, replay) = bridge
+            .load_session(LoadSessionRequest::new("ses_1", PathBuf::from("/tmp")))
+            .await;
+        result.unwrap();
+        let blocks: Vec<_> = replay
+            .into_iter()
+            .map(|update| match update {
+                SessionUpdate::UserMessageChunk(chunk) => chunk.content,
+                other => panic!("expected user chunk, got {other:?}"),
+            })
+            .collect();
+        assert!(matches!(
+            blocks.get(1),
+            Some(ContentBlock::Image(image))
+                if image.mime_type == "image/png" && image.data == "aW1hZ2U="
+        ));
+        assert_eq!(blocks.len(), 3);
+        assert!(matches!(&blocks[0], ContentBlock::Text(text) if text.text == "before"));
+        assert!(matches!(&blocks[2], ContentBlock::Text(text) if text.text == "after"));
     }
 
     #[tokio::test]

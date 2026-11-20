@@ -102,6 +102,7 @@ async fn retry_drops_the_interrupted_turn_before_asking_again() {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
     });
@@ -204,6 +205,7 @@ async fn retry_replays_tools_that_never_ran_without_asking_the_model() {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
     });
@@ -290,6 +292,7 @@ async fn retry_resends_context_without_appending_user_message() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .expect_err("上游 500 的提示应失败");

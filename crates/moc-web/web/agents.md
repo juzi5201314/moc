@@ -19,7 +19,7 @@
 | **权限与确认 (HITL)**       | `Confirmation`, `ConfirmationTitle`, `ConfirmationRequest`, `ConfirmationActions` (`components/ai-elements/confirmation.tsx`)           | 工具调用确认、高危权限审批（Allow/Deny/Always） |
 | **交互提问 (Ask Question)** | `Question`, `QuestionPrompt`, `QuestionOptions`, `QuestionOption` (`components/ai-elements/question.tsx`)                               | 针对用户选项与输入的交互式问答卡片              |
 | **代码展示与 Diff**         | `CodeBlock`, `CodeBlockHeader`, `CodeBlockContent`, `CodeBlockCopyButton` (`components/ai-elements/code-block.tsx`)                     | 代码高亮、复制与差异呈现                        |
-| **工作流画布**              | `Canvas`, `Node`, `Edge`, `Controls`, `Panel` (`components/ai-elements/{canvas,node,edge,controls,panel}.tsx`)                          | 工作流 DAG 图渲染与缩放平移                     |
+| **工作流画布**              | `Canvas`, `Node`, `Edge`, `Controls` (`components/ai-elements/{canvas,node,edge,controls}.tsx`)                                         | 工作流 DAG 图渲染与缩放平移                     |
 | **附件展示**                | `Attachments`, `Attachment`, `AttachmentPreview` (`components/ai-elements/attachments.tsx`)                                             | 输入附件的缩略图与预览                          |
 | **加载微光**                | `Shimmer` (`components/ai-elements/shimmer.tsx`)                                                                                        | 流式生成中的文本微光效果                        |
 

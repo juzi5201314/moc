@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type {
+  ContentPart,
   JobInfo,
   SessionInfo,
   SessionUpdate,
@@ -317,6 +318,103 @@ describe("entriesToBlocks", () => {
 });
 
 describe("applyUpdate", () => {
+  it("工具执行后请求重试，取消、成功和耗尽失败均保留已提交正文与思考且不重复", () => {
+    const cases: [boolean, "error" | "tool" | "cancel" | "success"][] = [
+      [false, "error"],
+      [true, "error"],
+      [false, "tool"],
+      [true, "cancel"],
+      [true, "success"],
+    ];
+    for (const [retry, outcome] of cases) {
+      const view = createView(INFO);
+      applyUpdate(view, { type: "prompt_started", prompt_id: "p", model: "m", at_ms: 0 });
+      applyUpdate(view, { type: "generation_started", prompt_id: "p" });
+      applyUpdate(view, {
+        type: "assistant_delta",
+        prompt_id: "p",
+        delta: { type: "reasoning", delta: "已完成分析" },
+      });
+      applyUpdate(view, {
+        type: "assistant_delta",
+        prompt_id: "p",
+        delta: { type: "text", delta: "先检查文件" },
+      });
+      applyUpdate(view, {
+        type: "tool_started",
+        prompt_id: "p",
+        tool_call_id: "read",
+        name: "read",
+        arguments: '{"path":"test.txt"}',
+      });
+      applyUpdate(view, {
+        type: "tool_finished",
+        prompt_id: "p",
+        tool_call_id: "read",
+        name: "read",
+        arguments: '{"path":"test.txt"}',
+        status: "completed",
+        result: { tool_call_id: "read", content: "文件内容", is_error: false },
+      });
+      const contents = () =>
+        view.blocks.flatMap((block) =>
+          block.kind === "text" || block.kind === "reasoning" ? [block.text] : [],
+        );
+      if (retry) {
+        for (let attempt = 2; attempt <= 3; attempt++) {
+          applyUpdate(view, {
+            type: "generation_retry",
+            prompt_id: "p",
+            message: `连接失败 ${attempt}/3`,
+            retry_in_ms: 1000,
+          });
+          expect(contents()).toEqual(["已完成分析", "先检查文件"]);
+        }
+      }
+      if (outcome === "success") {
+        applyUpdate(view, { type: "generation_started", prompt_id: "p" });
+        applyUpdate(view, {
+          type: "assistant_delta",
+          prompt_id: "p",
+          delta: { type: "text", delta: "检查完成" },
+        });
+      }
+      const content: ContentPart[] =
+        outcome === "cancel" || outcome === "tool"
+          ? [
+              { Reasoning: { Text: { text: "已完成分析", signature: null } } },
+              { Text: "先检查文件" },
+            ]
+          : outcome === "success"
+            ? [{ Text: "检查完成" }]
+            : [];
+      applyUpdate(view, {
+        type: "prompt_finished",
+        prompt_id: "p",
+        message: { role: "Assistant", content },
+        finish_reason:
+          outcome === "success"
+            ? "Stop"
+            : outcome === "cancel"
+              ? "Cancelled"
+              : outcome === "tool"
+                ? "ToolCalls"
+                : { Other: "error" },
+        usage: { input_tokens: 0, output_tokens: 0 },
+      });
+      expect(contents()).toEqual(
+        outcome === "success"
+          ? ["已完成分析", "先检查文件", "检查完成"]
+          : ["已完成分析", "先检查文件"],
+      );
+      expect(view.blocks.some((block) => block.kind === "status" && block.retryWait)).toBe(false);
+      expect(view.running).toBe(false);
+      expect(view.live).toBeNull();
+      expect(view.blocks.find((block) => block.kind === "tool")).toMatchObject({
+        status: "completed",
+      });
+    }
+  });
   it("加载更早历史后增量仍追加到原活动块", () => {
     const view = createView(INFO);
     const delta = (text: string): SessionUpdate => ({
@@ -706,5 +804,59 @@ describe("applyUpdate", () => {
       "已完成",
       "新正文",
     ]);
+  });
+
+  it("重试提示更新同一块，结束、断线及回退均清理临时提示而不删除其他警告", () => {
+    const endings: (SessionUpdate | null)[] = [
+      { type: "generation_started", prompt_id: "p" },
+      {
+        type: "prompt_finished",
+        prompt_id: "p",
+        message: { role: "Assistant", content: [] },
+        finish_reason: "Stop",
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+      {
+        type: "prompt_finished",
+        prompt_id: "p",
+        message: { role: "Assistant", content: [] },
+        finish_reason: "Cancelled",
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+      { type: "guard_notice", prompt_id: "p", message: "终止", terminal: true },
+      { type: "prompt_rewound", replayed_tools: false },
+      null,
+    ];
+    for (const ending of endings) {
+      const view = createView(INFO);
+      applyUpdate(view, { type: "prompt_started", prompt_id: "p", model: "m", at_ms: 0 }, 0);
+      applyUpdate(
+        view,
+        { type: "guard_notice", prompt_id: "p", message: "保留其他警告", terminal: false },
+        0,
+      );
+      let id: string | undefined;
+      for (let attempt = 2; attempt <= 8; attempt++) {
+        applyUpdate(
+          view,
+          { type: "generation_retry", prompt_id: "p", message: `${attempt}/10`, retry_in_ms: 2000 },
+          attempt * 1000,
+        );
+        const notices = view.blocks.filter((block) => block.kind === "status" && block.retryWait);
+        expect(notices).toHaveLength(1);
+        id ??= notices[0].id;
+        expect(notices[0]).toMatchObject({
+          id,
+          text: `${attempt}/10`,
+          retryWait: { promptId: "p", startedAt: attempt * 1000, deadline: attempt * 1000 + 2000 },
+        });
+      }
+      if (ending) applyUpdate(view, ending, 10000);
+      else interruptLive(view);
+      expect(view.blocks.some((block) => block.kind === "status" && block.retryWait)).toBe(false);
+      expect(
+        view.blocks.some((block) => block.kind === "status" && block.text === "保留其他警告"),
+      ).toBe(true);
+    }
   });
 });

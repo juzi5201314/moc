@@ -1,14 +1,27 @@
 // workflow 编排图：ai-elements Canvas（@xyflow/react）+ 自定义 phase 节点。
 // 布局走 lib/workflow-graph 的最长路径分层；data=实线、order=虚线、back=弯到上层的标注边。
 
-import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
-import { MarkerType } from "@xyflow/react";
-import { useMemo } from "react";
+import type {
+  Edge as FlowEdge,
+  Node as FlowNode,
+  ReactFlowState,
+  Rect,
+  Viewport,
+} from "@xyflow/react";
+import {
+  getNodesBounds,
+  getViewportForBounds,
+  MarkerType,
+  ReactFlowProvider,
+  useStore,
+} from "@xyflow/react";
+import { CheckIcon, CircleHelpIcon, Loader2Icon, MinusIcon, XIcon } from "lucide-react";
+import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@/components/ai-elements/canvas";
 import { Controls } from "@/components/ai-elements/controls";
 import { Edge } from "@/components/ai-elements/edge";
 import { Node, NodeContent, NodeDescription, NodeTitle } from "@/components/ai-elements/node";
-import { Panel } from "@/components/ai-elements/panel";
+import { type MsgKey, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { layoutPhases, phaseNodeInfo, type WorkflowPlan } from "@/lib/workflow-graph";
 
@@ -19,37 +32,51 @@ const ROW_GAP = 40;
 
 type PhaseStatus = string;
 
-/** 状态 → 节点强调色类（pending 灰、running 蓝、done 绿、failed 红、cancelled 暗）。 */
-function statusClass(status: PhaseStatus): string {
+function phaseStatus(status: PhaseStatus): { icon: typeof CheckIcon; tone: string; label: MsgKey } {
   switch (status) {
     case "running":
-      return "border-brand/60 bg-brand/10";
+      return {
+        icon: Loader2Icon,
+        tone: "text-brand motion-safe:animate-spin",
+        label: "todo.running",
+      };
     case "done":
     case "completed":
-      return "border-success/60 bg-success/10";
+      return { icon: CheckIcon, tone: "bg-primary text-primary-foreground", label: "todo.done" };
     case "failed":
     case "errored":
-      return "border-destructive/60 bg-destructive/10";
+      return { icon: XIcon, tone: "bg-muted text-destructive", label: "wfr.errored" };
     case "cancelled":
     case "stopped":
-      return "border-muted-foreground/30 opacity-60";
+      return { icon: MinusIcon, tone: "bg-muted text-text-tertiary", label: "wfr.stopped" };
     default:
-      return "border-border";
+      return { icon: MinusIcon, tone: "bg-muted text-text-tertiary", label: "wfr.pending" };
   }
 }
 
 function PhaseNode({ data }: { data: Record<string, unknown> }) {
+  const t = useT();
   const info = data.info as { roles: string[]; asks: number; worlds: number; hole: boolean };
+  const { icon: StatusIcon, tone, label } = phaseStatus(String(data.status));
   return (
     <Node
       handles={{ target: true, source: true }}
-      className={cn("w-[200px]", statusClass(String(data.status)))}
+      className="w-[200px] rounded-2xl border-border bg-card shadow-sm"
     >
-      <NodeContent>
-        <NodeTitle className="flex items-center gap-1.5">
-          {info.hole ? "?" : "•"} {String(data.name)}
+      <NodeContent className="space-y-2.5">
+        <NodeTitle className="flex items-center gap-2 text-ui leading-tight font-medium">
+          <span
+            role="img"
+            aria-label={t(label)}
+            title={t(label)}
+            className={cn("flex size-5 shrink-0 items-center justify-center rounded-full", tone)}
+          >
+            <StatusIcon className="size-3.5" />
+          </span>
+          <span className="min-w-0 flex-1 break-words">{String(data.name)}</span>
+          {info.hole && <CircleHelpIcon className="size-3.5 shrink-0 text-warn" />}
         </NodeTitle>
-        <NodeDescription>
+        <NodeDescription className="space-y-0.5 break-words rounded-lg bg-code px-2 py-1.5 text-xs">
           {info.roles.length > 0 && <div>{info.roles.join("、")}</div>}
           <div>
             ask×{info.asks} world×{info.worlds}
@@ -62,6 +89,72 @@ function PhaseNode({ data }: { data: Record<string, unknown> }) {
 }
 
 const nodeTypes = { phase: PhaseNode };
+const fitViewOptions = { padding: 0.15 };
+const MIN_ZOOM = 0.05;
+const MAX_ZOOM = 2;
+// 不让鼠标拖动画布，保留框选；触摸仍可平移和双指缩放。
+const PAN_MOUSE_BUTTONS: number[] = [];
+
+// 受控节点没有回写 measured；只用 React Flow 内部的实际测量结果。
+function measuredBounds({ nodeLookup, nodeOrigin }: ReactFlowState): Rect | null {
+  if (!nodeLookup.size) return null;
+  for (const { measured } of nodeLookup.values()) {
+    if (!measured.width || !measured.height) return null;
+  }
+  return getNodesBounds([...nodeLookup.keys()], { nodeLookup, nodeOrigin });
+}
+
+function equalBounds(a: Rect | null, b: Rect | null): boolean {
+  return (
+    a === b ||
+    (!!a && !!b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height)
+  );
+}
+
+function FitOnResize({
+  canvas,
+  onFit,
+}: {
+  canvas: RefObject<HTMLDivElement | null>;
+  onFit: (viewport: Viewport) => void;
+}) {
+  const bounds = useStore(measuredBounds, equalBounds);
+  const lastFit = useRef<Viewport | null>(null);
+  useEffect(() => {
+    const container = canvas.current;
+    if (!container || !bounds) return;
+    const adaptViewport = () => {
+      const { clientWidth: width, clientHeight: height } = container;
+      if (!width || !height) return;
+      const viewport = getViewportForBounds(
+        bounds,
+        width,
+        height,
+        MIN_ZOOM,
+        MAX_ZOOM,
+        fitViewOptions.padding,
+      );
+      const previous = lastFit.current;
+      if (
+        previous?.x === viewport.x &&
+        previous.y === viewport.y &&
+        previous.zoom === viewport.zoom
+      )
+        return;
+      lastFit.current = viewport;
+      onFit(viewport);
+    };
+    const observer = new ResizeObserver(adaptViewport);
+    observer.observe(container);
+    window.addEventListener("resize", adaptViewport);
+    adaptViewport();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", adaptViewport);
+    };
+  }, [canvas, bounds, onFit]);
+  return null;
+}
 
 export type WorkflowGraphProps = {
   plan: WorkflowPlan | null | undefined;
@@ -73,6 +166,9 @@ export type WorkflowGraphProps = {
 };
 
 export function WorkflowGraph({ plan, statusOf, className, onNodeClick }: WorkflowGraphProps) {
+  const t = useT();
+  const canvas = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const { nodes, edges } = useMemo(() => {
     if (!plan) return { nodes: [] as FlowNode[], edges: [] as FlowEdge[] };
     const layout = layoutPhases(plan);
@@ -103,24 +199,54 @@ export function WorkflowGraph({ plan, statusOf, className, onNodeClick }: Workfl
   }, [plan, statusOf]);
 
   return (
-    <Canvas
-      nodes={nodes}
-      edges={edges}
-      nodeTypes={nodeTypes}
-      edgeTypes={{ data: Edge.Animated, order: Edge.Animated }}
-      className={className}
-      onNodeClick={(_, node) => onNodeClick?.(node.id)}
-      defaultEdgeOptions={{
-        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-      }}
-      nodesConnectable={false}
-      proOptions={{ hideAttribution: true }}
-    >
-      <Controls position="bottom-right" />
-      <Panel position="top-right" className="text-ui text-text-tertiary">
-        {/* 实线=data 虚线=order ↺=回边 */}
-        实线 data · 虚线 order · ↺ 回边
-      </Panel>
-    </Canvas>
+    <ReactFlowProvider initialMinZoom={MIN_ZOOM} initialMaxZoom={MAX_ZOOM}>
+      <div
+        className={cn(
+          "flex h-full min-w-0 flex-col overflow-hidden rounded-2xl border border-border bg-card",
+          className,
+        )}
+      >
+        {/* 图例不覆盖画布，以免窄屏自动缩放后遮住节点。 */}
+        <p className="shrink-0 border-b border-border-subtle px-3 py-1.5 text-2xs text-text-tertiary">
+          {t("wfr.edge_legend")}
+        </p>
+        <div ref={canvas} className="min-h-0 flex-1">
+          <Canvas
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            edgeTypes={{ data: Edge.Animated, order: Edge.Animated }}
+            className="moc-workflow-canvas"
+            minZoom={MIN_ZOOM}
+            maxZoom={MAX_ZOOM}
+            panOnDrag={PAN_MOUSE_BUTTONS}
+            fitView={false}
+            fitViewOptions={fitViewOptions}
+            viewport={viewport}
+            onViewportChange={setViewport}
+            onNodeClick={(_, node) => onNodeClick?.(node.id)}
+            defaultEdgeOptions={{
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                color: "var(--text-tertiary)",
+                width: 14,
+                height: 14,
+              },
+            }}
+            nodesConnectable={false}
+            proOptions={{ hideAttribution: true }}
+          >
+            <FitOnResize canvas={canvas} onFit={setViewport} />
+          </Canvas>
+        </div>
+        <div className="flex shrink-0 justify-end border-t border-border-subtle px-2 py-1">
+          <Controls
+            className="static! m-0! [&>button]:size-8"
+            orientation="horizontal"
+            fitViewOptions={fitViewOptions}
+          />
+        </div>
+      </div>
+    </ReactFlowProvider>
   );
 }

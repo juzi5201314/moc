@@ -322,6 +322,76 @@ async fn interrupting_stops_a_runaway_loop() {
     assert_eq!(error.code, "E_PLUGIN_INTERRUPTED", "{error}");
 }
 
+/// 用宿主回调确认 JS 已开始执行；取消关闭接收端，超时由宿主置中断标志。
+#[tokio::test]
+async fn abandoned_or_host_interrupted_calls_stop_the_worker() {
+    let temp = tempfile::tempdir().unwrap();
+    write_plugin(
+        temp.path(),
+        "index.js",
+        r#"
+        import { tools } from "moc";
+        export default {
+          tools: { spin: { description: "Spin until interrupted", parameters: { type: "object" }, parallel: true,
+            run() { tools.call("started", {}); while (true) {} }
+          } }
+        };
+        "#,
+    );
+    for cancel in [true, false] {
+        let timeout = Duration::from_secs(30);
+        let (worker, _) = load(temp.path(), timeout).await;
+        let (host_tx, mut host_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (reply, ready) = tokio::sync::oneshot::channel();
+        worker
+            .call(CallRequest {
+                op: CallOp::Tool,
+                payload: json!({"name":"spin","args":{}}),
+                context: SESSION.into(),
+                tools_allowed: true,
+                deadline: Instant::now() + timeout,
+                host_tx: Some(host_tx),
+                reply,
+            })
+            .unwrap();
+        let started = tokio::time::timeout(Duration::from_secs(2), host_rx.recv())
+            .await
+            .expect("JS 应进入宿主回调")
+            .expect("宿主桥保持打开");
+        // 排队请求的回包通道随 worker 退出而关闭，证明它没有停留在死循环或继续复用。
+        let (reply, mut stopped) = tokio::sync::oneshot::channel();
+        worker
+            .call(CallRequest {
+                op: CallOp::Prompt,
+                payload: Value::Null,
+                context: SESSION.into(),
+                tools_allowed: false,
+                deadline: Instant::now() + timeout,
+                host_tx: None,
+                reply,
+            })
+            .unwrap();
+        let mut ready = Some(ready);
+        if cancel {
+            drop(ready.take());
+        } else {
+            worker.interrupt();
+        }
+        let _ = started.reply.send(Ok(Value::Null));
+        let exited = tokio::time::timeout(Duration::from_secs(2), &mut stopped).await;
+        if exited.is_err() {
+            // 回归时主动清理死循环，避免失败测试自己留下忙等线程。
+            worker.interrupt();
+            let _ = tokio::time::timeout(Duration::from_secs(2), stopped).await;
+        }
+        assert!(matches!(exited, Ok(Err(_))), "worker 必须退出：{exited:?}");
+        if let Some(ready) = ready {
+            let error = ready.await.unwrap().expect_err("宿主中断必须终止调用");
+            assert_eq!(error.code, "E_PLUGIN_INTERRUPTED");
+        }
+    }
+}
+
 #[tokio::test]
 async fn rejects_bad_descriptors_and_escaped_imports() {
     let temp = tempfile::tempdir().unwrap();

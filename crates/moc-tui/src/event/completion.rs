@@ -29,7 +29,13 @@ pub(super) fn resource_prefix(
     let range = current_token_range(prompt);
     let prefix = prompt.text[range.start..prompt.cursor].to_owned();
     let is_uri = prefix == "//" || prefix.ends_with(":/") || prefix.contains("://");
-    is_uri.then_some((prefix, range))
+    if is_uri {
+        return Some((prefix, range));
+    }
+    // `@` 工作区文件引用；`@@` 是字面转义，`!` bash 模式下 @ 无意义。
+    let is_attachment =
+        prefix.starts_with('@') && !prefix.starts_with("@@") && !prompt.text.starts_with('!');
+    is_attachment.then_some((prefix, range))
 }
 
 pub(super) fn request_resource_completion(app: &mut App, connection: &EmbeddedConnection) {
@@ -80,7 +86,7 @@ pub(super) fn handle_completion_mouse(app: &mut App, mouse: &crossterm::event::M
                     && let Some(comp) = app.completion.as_mut()
                 {
                     comp.selected = index;
-                    accept_completion(app);
+                    accept_completion(app, false);
                 }
                 true
             } else {
@@ -123,7 +129,7 @@ pub(super) fn handle_completion_key(app: &mut App, modifiers: KeyModifiers, code
     match (code, modifiers) {
         (KeyCode::Tab, KeyModifiers::SHIFT) => false,
         (KeyCode::Tab, KeyModifiers::NONE) | (KeyCode::Enter, KeyModifiers::NONE) => {
-            accept_completion(app)
+            accept_completion(app, code == KeyCode::Enter)
         }
         (KeyCode::Up, _) => {
             if let Some(completion) = app.completion.as_mut() {
@@ -141,11 +147,17 @@ pub(super) fn handle_completion_key(app: &mut App, modifiers: KeyModifiers, code
     }
 }
 
-pub(super) fn accept_completion(app: &mut App) -> bool {
+pub(super) fn accept_completion(app: &mut App, submit_exact: bool) -> bool {
     let Some(completion) = app.completion.take() else {
         return false;
     };
     let chosen = completion.chosen().clone();
+    if submit_exact
+        && chosen.source == crate::widgets::completion::CompletionSource::Slash
+        && app.prompt.text.get(completion.replace_range.clone()) == Some(chosen.value.as_str())
+    {
+        return false;
+    }
     app.prompt
         .replace_range(completion.replace_range, &chosen.value, chosen.append_space);
     app.prompt_changed();

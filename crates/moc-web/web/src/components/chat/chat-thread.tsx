@@ -8,6 +8,7 @@ import {
   ChevronRightIcon,
   CircleXIcon,
   CopyIcon,
+  FolderIcon,
   ListChecksIcon,
   Loader2Icon,
   PencilIcon,
@@ -18,6 +19,12 @@ import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from "reac
 import { toast } from "sonner";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { useShallow } from "zustand/react/shallow";
+import {
+  Attachment,
+  AttachmentInfo,
+  AttachmentPreview,
+  Attachments,
+} from "@/components/ai-elements/attachments";
 import {
   Conversation,
   ConversationContent,
@@ -50,7 +57,7 @@ import { cn } from "@/lib/utils";
 import type { AskParams, ImageSource, PermissionRequestParams } from "@/protocol/types";
 import { retrySession } from "@/store/actions";
 import { useComposer } from "@/store/composer";
-import { openFile } from "@/store/files";
+import { openFile, revealDir } from "@/store/files";
 import { loadOlder, redo, rewind } from "@/store/lifecycle";
 import { useTranscript } from "@/store/transcript";
 import { useTurn, useTurnIds } from "@/store/turns";
@@ -282,8 +289,8 @@ function TranscriptRows({
             key={item.key}
             data-index={item.index}
             ref={virtualizer.measureElement}
-            className="absolute top-0 left-0 w-full"
-            style={{ transform: `translateY(${item.start}px)` }}
+            className="absolute left-0 w-full"
+            style={{ top: item.start }}
           >
             {renderRow(rows[item.index])}
           </div>
@@ -427,8 +434,41 @@ function UserMessage({
   return (
     <div className="group/user flex flex-col items-end gap-1">
       <ImageThumbs images={block.images} className="justify-end" />
+      {block.attachments && block.attachments.length > 0 && (
+        <Attachments variant="inline" className="justify-end">
+          {block.attachments.map((attachment) => (
+            <Attachment
+              // FileUIPart 要求 url；路径引用没有可预览 URL，空串让预览落到图标分支。
+              data={{
+                id: attachment.path,
+                type: "file",
+                url: "",
+                filename: attachment.path,
+                mediaType: "text/plain",
+              }}
+              key={attachment.path}
+              onClick={() =>
+                attachment.kind === "dir"
+                  ? // 目录没有文件页签（read_path 拒绝），改为在文件树里展开定位。
+                    revealDir(context.sessionId, attachment.path)
+                  : openFile(context.sessionId, { kind: "fs", path: attachment.path })
+              }
+              title={attachment.path}
+            >
+              <AttachmentPreview
+                fallbackIcon={
+                  attachment.kind === "dir" ? (
+                    <FolderIcon className="size-3 text-muted-foreground" />
+                  ) : undefined
+                }
+              />
+              <AttachmentInfo />
+            </Attachment>
+          ))}
+        </Attachments>
+      )}
       {block.text && (
-        <div className="relative max-w-[80%] rounded-[18px] bg-bubble px-4 py-2.5 text-chat text-foreground">
+        <div className="relative max-w-[92%] rounded-2xl bg-bubble px-4 py-2.5 text-chat text-foreground sm:max-w-[80%]">
           <div
             className={cn(
               "whitespace-pre-wrap break-words",
@@ -450,7 +490,7 @@ function UserMessage({
           )}
         </div>
       )}
-      <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100">
+      <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
         <span className="mr-1 text-2xs tabular-nums text-text-tertiary">
           {clockTime(block.atMs)}
         </span>
@@ -498,6 +538,7 @@ function AssistantTurn({
   const now = useNow(live);
   const [processOpen, setProcessOpen] = useState(false);
   const segments = turn.segments;
+  const userShell = turn.activity[0]?.kind === "bash" && !turn.user;
   let finalIndex = -1;
   for (let index = segments.length - 1; index >= 0; index--) {
     if (segments[index].kind === "text") {
@@ -508,7 +549,9 @@ function AssistantTurn({
   }
   const processCount = segments.filter(
     (segment, index) =>
-      index !== finalIndex && (segment.kind === "activity" || segment.kind === "text"),
+      !userShell &&
+      index !== finalIndex &&
+      (segment.kind === "activity" || segment.kind === "text"),
   ).length;
   const durationMs = turnDurationMs(turn);
   // 两个空文本块拼接后也有分隔换行，保持原复制入口的显示条件。
@@ -528,7 +571,9 @@ function AssistantTurn({
   const commandOnly =
     turn.texts.length === 0 &&
     turn.activity.length > 0 &&
-    turn.activity.every((block) => block.kind === "status" && block.localCommand);
+    turn.activity.every(
+      (block) => block.kind === "bash" || (block.kind === "status" && block.localCommand),
+    );
   const canRetry = abnormal && !commandOnly && !context.readOnly && !context.running;
 
   const renderSegment = (segment: Segment, index: number): ReactNode => {
@@ -580,18 +625,24 @@ function AssistantTurn({
               <button
                 type="button"
                 onClick={() => setProcessOpen((value) => !value)}
-                className="group/proc -ml-1.5 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-ui text-text-tertiary transition-colors hover:text-muted-foreground"
+                aria-expanded={processOpen}
+                className="group/proc -ml-1.5 flex h-7 max-w-full items-center gap-1.5 rounded-md px-1.5 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
                 <ChevronRightIcon
-                  className={cn("size-3.5 transition-transform", processOpen && "rotate-90")}
+                  className={cn(
+                    "size-3.5 shrink-0 motion-safe:transition-transform",
+                    processOpen && "rotate-90",
+                  )}
                 />
-                <span>
+                <span className="shrink-0">
                   {durationMs !== undefined
-                    ? t("th.duration", { d: formatDuration(durationMs) })
+                    ? t("th.duration", { n: formatDuration(durationMs) })
                     : t("th.process")}
                 </span>
                 <span className="text-text-tertiary/60">·</span>
-                <span className="max-w-[420px] truncate">{summarizeActivity(turn.activity)}</span>
+                <span className="min-w-0 truncate text-text-tertiary">
+                  {summarizeActivity(turn.activity)}
+                </span>
               </button>
               {processOpen && (
                 <div className="mt-1.5 ml-[7px] flex flex-col gap-3 border-l border-border pl-4">
@@ -697,6 +748,16 @@ function NoticeCard({
   onRetry?: () => void;
 }) {
   const t = useT();
+  const now = useNow(Boolean(block.retryWait));
+  let text = block.text;
+  if (block.retryWait) {
+    const { deadline, startedAt } = block.retryWait;
+    const seconds = (Math.max(0, deadline - Math.max(now, startedAt)) / 1000).toFixed(1);
+    const duration = /\d+(?:\.\d+)?(?= 秒后自动重试|s \(attempt )/;
+    text = duration.test(text)
+      ? text.replace(duration, seconds)
+      : `${text}\n${t("th.retry_in", { n: seconds })}`;
+  }
   if (block.localCommand) {
     return (
       <div
@@ -706,7 +767,7 @@ function NoticeCard({
           block.tone === "error" ? "text-destructive" : "text-text-secondary",
         )}
       >
-        {block.text}
+        {text}
       </div>
     );
   }
@@ -725,7 +786,7 @@ function NoticeCard({
       ) : (
         <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" />
       )}
-      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{block.text}</span>
+      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{text}</span>
       {onRetry && (
         <Button
           size="sm"
@@ -764,13 +825,8 @@ function PlanCard({
   const status = PLAN_STATUS[plan?.status ?? "draft"];
   const pending = plan?.status === "submitted";
   return (
-    <div
-      className={cn(
-        "flex items-center gap-3 rounded-xl bg-card px-3.5 py-3 ring-1 ring-inset",
-        pending ? "ring-brand/35" : "ring-border-subtle",
-      )}
-    >
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+    <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-3.5 py-3 shadow-xs">
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
         <ListChecksIcon className="size-4" />
       </span>
       <div className="min-w-0 flex-1">

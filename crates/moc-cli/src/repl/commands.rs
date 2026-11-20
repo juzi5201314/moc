@@ -227,7 +227,7 @@ pub(super) async fn run_command(
                 )
             );
             if !argument.is_empty() {
-                send_prompt(client, &session.id, argument.to_owned(), None).await?;
+                send_prompt(client, &session.id, argument.to_owned(), None, None).await?;
             }
         }
         CommandId::Goal => {
@@ -264,6 +264,7 @@ pub(super) async fn run_command(
                 &session.id,
                 argument.to_owned(),
                 Some(PromptMode::Ask),
+                None,
             )
             .await?;
         }
@@ -305,7 +306,9 @@ pub(super) async fn run_command(
                     instructions: None,
                 })
                 .await?;
-            if result.full {
+            if result.method == "noop" {
+                println!("{}", t!("core.history.nothing_to_compact"));
+            } else if result.full {
                 println!(
                     "{}",
                     t!(
@@ -333,6 +336,15 @@ pub(super) async fn run_command(
                 })
                 .await?;
             print_usage(&result);
+        }
+        CommandId::Export => {
+            let result = client
+                .call::<moc_protocol::SessionExport>(moc_protocol::SessionExportParams {
+                    session_id: session.id.clone(),
+                    path: (!argument.is_empty()).then(|| argument.to_owned()),
+                })
+                .await?;
+            println!("{}", t!("cli.cmd.exported", path = result.path));
         }
         CommandId::DebugInfo => {
             if !argument.is_empty() {

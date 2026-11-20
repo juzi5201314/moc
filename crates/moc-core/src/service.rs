@@ -6,6 +6,7 @@ mod plugin_persistence;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use moc_llm::Client;
 use moc_protocol::methods::ClientCapabilities;
@@ -36,6 +37,11 @@ pub(crate) struct SessionRuntime {
     pub steering: Mutex<management::Steering>,
     /// 代理间消息的收件箱。运行中的提示在两轮之间取走消息并写入会话。
     pub agent_inbox: Mutex<crate::agents::AgentInbox>,
+    /// 子代理提示锁先于 finish 释放；收尾屏障阻止下一轮 prepare 与旧 finish 交错。
+    pub agent_finishing: AtomicBool,
+    pub agent_finish_notify: tokio::sync::Notify,
+    #[cfg(test)]
+    pub agent_finish_gate: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     pub guard: parking_lot::Mutex<Option<Arc<prompt::guard::PromptGuard>>>,
     /// 本进程是否允许该会话的目标自动续跑；不落库，会话加载时恒为 `false`，
     /// 由 `session/goal` 的 create/resume 或 `create_goal`/`update_goal` 工具置位。
@@ -176,6 +182,7 @@ async fn usage_descendants(
 
 mod config_api;
 mod debug_info;
+mod export;
 mod inspect;
 mod plugin_api;
 mod resource_api;
@@ -187,13 +194,13 @@ mod workflow_api;
 mod protocol;
 
 /// 会话的 workflow 管理器（未激活也会惰性创建：run 查询与 stopped 列表不依赖激活位）。
-async fn workflow_manager(
+pub(crate) async fn workflow_manager(
     inner: &Arc<CoreInner>,
     record: &crate::session::SessionRecord,
 ) -> Arc<crate::workflow::runtime::WorkflowManager> {
     let session_id = record.state.lock().await.session.id.clone();
     let runtime = inner.runtime(&session_id).await;
-    Arc::clone(
+    let manager = Arc::clone(
         runtime
             .workflows
             .get_or_init(|| async {
@@ -204,7 +211,10 @@ async fn workflow_manager(
                 )
             })
             .await,
-    )
+    );
+    // 只读查询可能已缓存管理器；每次访问都检查租约，取得写租约后补做一次孤儿标记。
+    manager.mark_orphans(record);
+    manager
 }
 
 /// load 系结果的 armed 补丁：`SessionTable` 读不到本进程 runtime，这里统一补；

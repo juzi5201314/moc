@@ -296,8 +296,18 @@ pub fn parse_mcp_json(text: &str) -> Result<BTreeMap<String, RawServerSpec>, Mcp
             .unwrap_or(value),
         _ => return Err(McpError::Config("JSON top level must be an object".into())),
     };
-    serde_json::from_value(servers)
-        .map_err(|error| McpError::Config(format!("invalid server description: {error}")))
+    let servers: BTreeMap<String, serde_json::Value> = serde_json::from_value(servers)
+        .map_err(|error| McpError::Config(format!("invalid server description: {error}")))?;
+    let mut parsed = BTreeMap::new();
+    for (name, value) in servers {
+        match serde_json::from_value(value) {
+            Ok(spec) => {
+                parsed.insert(name, spec);
+            }
+            Err(error) => tracing::warn!("跳过非法的 MCP server `{name}`：{error}"),
+        }
+    }
+    Ok(parsed)
 }
 
 /// 从 cwd 向上（含 git root 本身）收集项目级 `.mcp.json` / `mcp.json` /
@@ -511,6 +521,34 @@ mod tests {
 
         assert!(parse_mcp_json("[]").is_err());
         assert!(parse_mcp_json("not json").is_err());
+    }
+
+    #[test]
+    fn parses_mcp_json_skips_mistyped_entries() {
+        for wrapper in [None, Some("mcpServers"), Some("servers")] {
+            for bad in [
+                json!({"command": 42}),
+                json!({"args": "wrong"}),
+                json!(null),
+            ] {
+                let entries = json!({"good": {"command": "echo"}, "broken": bad});
+                let document = match wrapper {
+                    Some(key) => json!({key: entries}),
+                    None => entries,
+                };
+                let parsed = parse_mcp_json(&document.to_string()).unwrap();
+                assert_eq!(parsed.len(), 1);
+                assert_eq!(parsed["good"].command.as_deref(), Some("echo"));
+            }
+        }
+        assert!(
+            parse_mcp_json(r#"{"mcpServers":{"broken":{"command":42}}}"#)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(parse_mcp_json("{}").unwrap().is_empty());
+        assert!(parse_mcp_json(r#"{"servers":[]}"#).is_err());
+        assert!(parse_mcp_json(r#"{"mcpServers":null}"#).is_err());
     }
 
     #[test]

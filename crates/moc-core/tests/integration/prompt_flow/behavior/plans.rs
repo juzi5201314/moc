@@ -46,6 +46,7 @@ async fn external_workspace_changes_do_not_interrupt_or_enter_prompt_context() {
                     mode,
                     agent_message: None,
                     goal_round: None,
+                    max_turns: None,
                 })
                 .await
                 .expect("外部修改不应中断提示");

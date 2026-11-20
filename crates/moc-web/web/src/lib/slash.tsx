@@ -11,6 +11,7 @@ import type {
   CommandMeta,
   GoalAction,
   PluginRunCommandResult,
+  SessionExportResult,
   SessionGoalResult,
   SessionPermission,
   SkillsCompactAction,
@@ -25,6 +26,7 @@ import {
   compactSession,
   compactSkills,
   createQuickSession,
+  refreshSideData,
   setSessionAutonomy,
   setSessionPermission,
   togglePlanMode,
@@ -79,6 +81,21 @@ export function parseSlash(text: string): { name: string; args: string } | null 
   return match ? { name: match[1], args: (match[2] ?? "").trim() } : null;
 }
 
+/** 已知命令首 token 的范围；未知命令保持普通文本。 */
+export function commandToken(
+  text: string,
+  commands: SlashCommand[],
+): { start: number; end: number } | null {
+  const parsed = parseSlash(text);
+  if (
+    !parsed ||
+    !commands.some((item) => item.name === parsed.name || item.aliases?.includes(parsed.name))
+  )
+    return null;
+  const start = text.length - text.trimStart().length;
+  return { start, end: start + parsed.name.length + 1 };
+}
+
 /** flag 关闭的命令（`features` 未加载时视为开启）。 */
 function flagDisabled(command: SlashCommand, features?: Record<string, boolean>): boolean {
   return command.flag !== undefined && features?.[command.flag] === false;
@@ -92,12 +109,16 @@ export function slashMatches(
 ): SlashCommand[] {
   if (!/^\/[\w-]*$/.test(text)) return [];
   const query = text.slice(1).toLowerCase();
-  return commands.filter(
-    (command) =>
-      !flagDisabled(command, features) &&
-      (command.name.toLowerCase().startsWith(query) ||
-        command.aliases?.some((alias) => alias.toLowerCase().startsWith(query))),
-  );
+  return commands
+    .filter(
+      (command) =>
+        !flagDisabled(command, features) &&
+        (command.name.toLowerCase().startsWith(query) ||
+          command.aliases?.some((alias) => alias.toLowerCase().startsWith(query))),
+    )
+    .sort(
+      (a, b) => Number(b.name.toLowerCase() === query) - Number(a.name.toLowerCase() === query),
+    );
 }
 
 function errorText(error: unknown): string {
@@ -133,7 +154,11 @@ export function runSlash(
     return true;
   }
   if (command.needsSession && sessionId === "draft-session") {
-    toast(t("slash.needs_session", { name: command.name }));
+    toast(
+      !command.plugin && command.name === "compact"
+        ? t("slash.compact_empty")
+        : t("slash.needs_session", { name: command.name }),
+    );
     return true;
   }
   if (command.availableDuringTask === false && view?.running) {
@@ -171,6 +196,37 @@ export function runSlash(
   }
 
   switch (command.name) {
+    case "export": {
+      void rpc
+        .call<SessionExportResult>("session/export", {
+          session_id: sessionId,
+          ...(args ? { path: args } : {}),
+        })
+        .then((result) => {
+          if (result.content == null) {
+            toast.success(t("slash.export_saved", { path: result.path }));
+            return;
+          }
+          const url = URL.createObjectURL(
+            new Blob([result.content], { type: "text/markdown;charset=utf-8" }),
+          );
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = result.path.split(/[\\/]/).pop() || "moc-export.md";
+          document.body.append(link);
+          try {
+            link.click();
+          } finally {
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+          }
+          toast.success(t("slash.exported", { path: result.path }));
+        })
+        .catch((error) =>
+          toast.error(t("slash.exec_failed", { name: command.name, error: errorText(error) })),
+        );
+      break;
+    }
     case "debuginfo":
     case "session": {
       if (args) {
@@ -324,14 +380,18 @@ export function runSlash(
       break;
     case "compact":
       void compactSession(sessionId)
-        .then((result) =>
+        .then((result) => {
+          if (result.method === "noop") {
+            toast(t("slash.compact_empty"));
+            return;
+          }
           toast.success(
             t("slash.compacted", {
               before: result.tokens_before.toLocaleString(),
               after: result.tokens_after.toLocaleString(),
             }),
-          ),
-        )
+          );
+        })
         .catch((error) => toast.error(t("slash.compact_failed", { error: errorText(error) })));
       break;
     case "model":
@@ -437,7 +497,10 @@ export function runSlash(
           .call("plugin/reload", {
             session_id: sessionId === "draft-session" ? "" : sessionId,
           })
-          .then(() => toast.success(t("slash.plugins_reloaded")))
+          .then(() => {
+            if (sessionId !== "draft-session") void refreshSideData(sessionId);
+            toast.success(t("slash.plugins_reloaded"));
+          })
           .catch((error) => toast.error(t("slash.plugins_failed", { error: errorText(error) })));
       } else if (rest === "") {
         openSettings("plugins");

@@ -185,6 +185,8 @@ async fn event_loop(
         if app.should_quit {
             return Ok(());
         }
+        // 覆盖异步结果关闭其他窗口的路径，下一次绘制和输入前接上待答请求。
+        dirty |= app.show_next_pending_modal();
         let now = tokio::time::Instant::now();
         if dirty && now >= next_frame {
             // sixel / iTerm2 的旧图只能靠覆盖像素擦除：先清屏并重置 back buffer，
@@ -283,12 +285,7 @@ async fn event_loop(
                         app.btw.finish(&session_id, request_id, result);
                     }
                     Some(AppEvent::SessionClosed { session_id }) => {
-                        app.btw.clear(&session_id);
-                        if app.session.as_ref().is_some_and(|session| session.id == session_id) {
-                            app.btw.expanded = false;
-                            if app.focus == Focus::Btw { app.focus = Focus::Prompt; }
-                            app.set_notice(t!("tui.event.session_unloaded").into_owned());
-                        }
+                        apply_session_closed(app, &session_id);
                     }
                     Some(event @ (AppEvent::SettingsResponse {..} | AppEvent::ConfigurationLoaded(_)
                         | AppEvent::PromptReturned {..} | AppEvent::SteerReturned {..}
@@ -330,39 +327,8 @@ async fn event_loop(
                             app.set_notice(t!("tui.event.clipboard_empty").into_owned());
                         }
                     },
-                    Some(AppEvent::Permission { params, reply }) => {
-                        if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify(t!("tui.event.notify_permission").as_ref()); }
-                        app.modal = Some(Modal::Permission {
-                            params,
-                            selected: 0,
-                            scroll_offset: 0,
-                            reply: Some(reply),
-                        });
-                        app.focus = crate::app::Focus::Prompt;
-                    }
-                    Some(AppEvent::Ask { params, reply }) => {
-                        if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify(t!("tui.event.notify_ask").as_ref()); }
-                        let per_question = params.questions.len();
-                        // 高亮默认落在推荐项上；勾选集永远从空开始——
-                        // 推荐只是徽章提示，答案必须由用户亲自勾选。
-                        let highlight = params
-                            .questions
-                            .iter()
-                            .map(recommended_highlight)
-                            .collect();
-                        let selected = vec![Vec::new(); per_question];
-                        app.modal = Some(Modal::Ask {
-                            params,
-                            highlight,
-                            selected,
-                            custom: vec![crate::modal::CustomAnswer::default(); per_question],
-                            question: 0,
-                            preview_scroll: 0,
-                            question_scroll: 0,
-                            parked: false,
-                            reply: Some(reply),
-                        });
-                        app.focus = crate::app::Focus::Prompt;
+                    Some(event @ (AppEvent::Permission { .. } | AppEvent::Ask { .. })) => {
+                        apply_request_modal(app, event);
                     }
                     Some(AppEvent::Plugins(plugins)) => {
                         app.commands.set_plugins(&plugins);
@@ -441,12 +407,12 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::Sessions(sessions)) => {
-                        app.modal = Some(Modal::Sessions {
+                        app.set_modal(Some(Modal::Sessions {
                             sessions,
                             cwd: app.startup_cwd.clone(),
                             scope: SessionScope::default(),
                             picker: crate::modal::PickerState::default(),
-                        });
+                        }));
                     }
                     Some(AppEvent::SubagentsLoaded(result)) => match result {
                         Ok(agents) => {
@@ -540,24 +506,24 @@ async fn event_loop(
                         app.push_note(text, NoteTone::Info);
                     }
                     Some(AppEvent::OpenJobsModal(jobs)) => {
-                        app.modal = Some(Modal::Jobs {
+                        app.set_modal(Some(Modal::Jobs {
                             jobs,
                             selected: 0,
                             pending_kill: None,
                             offset: 0,
                             scroll: crate::modal::ModelScroll::default(),
                             pointer: None,
-                        });
+                        }));
                     }
                     Some(AppEvent::OpenWorkflowApproval(request)) => {
                         app.workflow
                             .queued_approvals
                             .retain(|a| a.request_id != request.request_id);
-                        app.modal = Some(Modal::WorkflowApproval {
+                        app.set_modal(Some(Modal::WorkflowApproval {
                             state: Box::new(crate::workflow::WorkflowApprovalState::new(
                                 request,
                             )),
-                        });
+                        }));
                     }
                     Some(AppEvent::OpenWorkflowRun(snapshot)) => {
                         let state = crate::workflow::WorkflowRunState {
@@ -585,9 +551,9 @@ async fn event_loop(
                             scroll: crate::modal::ModelScroll::default(),
                             pointer: None,
                         };
-                        app.modal = Some(Modal::WorkflowRun {
+                        app.set_modal(Some(Modal::WorkflowRun {
                             state: Box::new(state),
-                        });
+                        }));
                     }
                     Some(AppEvent::WorkflowArtifactView {
                         artifact_id,
@@ -626,49 +592,12 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::OpenWorkflowRuns(runs)) => {
-                        app.modal = Some(Modal::WorkflowRuns {
+                        app.set_modal(Some(Modal::WorkflowRuns {
                             runs,
                             picker: crate::modal::PickerState::default(),
-                        });
+                        }));
                     }
-                    Some(AppEvent::Loaded(
-                        info,
-                        blocks,
-                        has_more,
-                        before_entry_id,
-                        todos,
-                        read_only,
-                        goal,
-                    )) => {
-                        app.modal = None;
-                        let cwd = info.cwd.clone();
-                        let id = info.id.clone();
-                        let lock_holder = info.lock.clone();
-                        app.switch_session(info, blocks);
-                        app.goal = goal;
-                        app.read_only = read_only;
-                        if read_only {
-                            let holder = lock_holder
-                                .map(|lock| format!("{} (pid {})", lock.frontend, lock.pid))
-                                .unwrap_or_else(|| t!("tui.event.other_process").into_owned());
-                            app.set_notice(
-                                t!("tui.event.locked_readonly_fmt", holder = holder).into_owned(),
-                            );
-                        }
-                        // 恢复会话的 todo 快照：HUD 立刻可见，不必等下一次 TodoChanged。
-                        app.todos = todos;
-                        app.set_history_cursor(has_more, before_entry_id);
-                        refresh_git_branch(app, &cwd);
-                        refresh_context(app, connection, false);
-                        refresh_usage(app, connection, false);
-                        refresh_plugins(app, connection, false, false);
-                        load_subagents_for_parent(app, &connection.client, Some(id));
-                        if let Some(text) = app.startup_pending.take() {
-                            app.prompt.insert_str_raw(&text);
-                            crate::queue::submit(app, connection, false);
-                        }
-                        crate::queue::dispatch(app, connection);
-                    }
+                    Some(event @ AppEvent::Loaded(..)) => apply_loaded(app, connection, event),
                     Some(AppEvent::GitBranch(branch)) => {
                         app.git_branch = Some(branch);
                     }
@@ -676,6 +605,94 @@ async fn event_loop(
                 }
             }
         }
+    }
+}
+
+/// 应用会话加载回执；先关闭当前窗口，再清理离开会话的待答请求。
+fn apply_loaded(app: &mut App, connection: &EmbeddedConnection, event: AppEvent) {
+    let AppEvent::Loaded(info, blocks, has_more, before_entry_id, todos, read_only, goal) = event
+    else {
+        unreachable!("仅处理会话加载回执");
+    };
+    app.set_modal(None);
+    let cwd = info.cwd.clone();
+    let id = info.id.clone();
+    let lock_holder = info.lock.clone();
+    app.switch_session(info, blocks);
+    app.goal = goal;
+    app.read_only = read_only;
+    if read_only {
+        let holder = lock_holder
+            .map(|lock| format!("{} (pid {})", lock.frontend, lock.pid))
+            .unwrap_or_else(|| t!("tui.event.other_process").into_owned());
+        app.set_notice(t!("tui.event.locked_readonly_fmt", holder = holder).into_owned());
+    }
+    // 恢复会话的 todo 快照：HUD 立刻可见，不必等下一次 TodoChanged。
+    app.todos = todos;
+    app.set_history_cursor(has_more, before_entry_id);
+    refresh_git_branch(app, &cwd);
+    refresh_context(app, connection, false);
+    refresh_usage(app, connection, false);
+    refresh_plugins(app, connection, false, false);
+    load_subagents_for_parent(app, &connection.client, Some(id));
+    if let Some(text) = app.startup_pending.take() {
+        app.prompt.insert_str_raw(&text);
+        crate::queue::submit(app, connection, false);
+    }
+    crate::queue::dispatch(app, connection);
+}
+
+/// 两类反向请求共用队列，按事件到达顺序保留答复权。
+fn apply_request_modal(app: &mut App, event: AppEvent) {
+    let modal = match event {
+        AppEvent::Permission { params, reply } => {
+            if !app.terminal_focused && app.preferences.notify_waiting {
+                crate::config::notify(t!("tui.event.notify_permission").as_ref());
+            }
+            Modal::Permission {
+                params,
+                selected: 0,
+                scroll_offset: 0,
+                reply: Some(reply),
+            }
+        }
+        AppEvent::Ask { params, reply } => {
+            if !app.terminal_focused && app.preferences.notify_waiting {
+                crate::config::notify(t!("tui.event.notify_ask").as_ref());
+            }
+            let per_question = params.questions.len();
+            // 高亮默认落在推荐项上；勾选集从空开始，答案由用户亲自选择。
+            let highlight = params.questions.iter().map(recommended_highlight).collect();
+            Modal::Ask {
+                params,
+                highlight,
+                selected: vec![Vec::new(); per_question],
+                custom: vec![crate::modal::CustomAnswer::default(); per_question],
+                question: 0,
+                preview_scroll: 0,
+                question_scroll: 0,
+                parked: false,
+                reply: Some(reply),
+            }
+        }
+        _ => unreachable!("只有授权与提问进入待答队列"),
+    };
+    app.enqueue_request_modal(modal);
+}
+
+fn apply_session_closed(app: &mut App, session_id: &str) {
+    app.cancel_session_modals(session_id);
+    app.btw.clear(session_id);
+    if app
+        .session
+        .as_ref()
+        .is_some_and(|session| session.id == session_id)
+    {
+        app.btw.expanded = false;
+        if app.focus == Focus::Btw {
+            app.focus = Focus::Prompt;
+        }
+        app.set_notice(t!("tui.event.session_unloaded").into_owned());
     }
 }
 

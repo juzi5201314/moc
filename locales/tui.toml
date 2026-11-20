@@ -240,6 +240,7 @@ filter_fmt = { zh = "%{sep}过滤：%{filter}", en = "%{sep}Filter: %{filter}" }
 no_session = { zh = "当前没有活动会话", en = "No active session" }
 
 [tui.cmd]
+exported = { zh = "会话已导出至 %{path}", en = "Session exported to %{path}" }
 skills_busy = { zh = "正在维护技能摘要；请等待完成或按 Esc 取消", en = "Skills summary maintenance is running; wait for it to finish or press Esc to cancel" }
 flag_disabled_fmt = { zh = "/%{cmd} 依赖的特性 %{flag} 已禁用（见 /features）", en = "/%{cmd} depends on feature %{flag}, which is disabled (see /features)" }
 focused_fmt = { zh = "聚焦子代理时不能执行 /%{cmd}", en = "Can't run /%{cmd} while a subagent is focused" }
@@ -516,6 +517,7 @@ empty_svg = { zh = "SVG 内容为空", en = "SVG content is empty" }
 
 [tui.commands]
 debuginfo.desc = { zh = "工具调用统计、成功率与上下文压缩次数", en = "Tool call stats, success rates, and compaction count" }
+export.desc = { zh = "将会话历史脱敏导出为 Markdown", en = "Export redacted session history as Markdown" }
 session.desc = { zh = "当前会话身份、文件路径与分类存储大小", en = "Current session identity, file paths, and storage breakdown" }
 new.desc = { zh = "新建会话", en = "Start a new session" }
 resume.desc = { zh = "恢复历史会话", en = "Resume a past session" }
@@ -1050,6 +1052,7 @@ withdraw_failed_fmt = { zh = "撤回失败：%{err}", en = "Withdrawal failed: %
 compact_failed_fmt = { zh = "上下文压缩失败：%{err}", en = "Context compaction failed: %{err}" }
 
 [tui.prompt]
+manual_full_access = { zh = "手动命令不受沙箱限制，以完整权限运行", en = "Manual commands bypass the sandbox and run with full access" }
 copy = { zh = "复制", en = "copy" }
 copied = { zh = "已复制", en = "copied" }
 copy_cancel = { zh = "复制 · Esc 取消", en = "copy · Esc cancel" }

@@ -217,6 +217,12 @@ pub fn blocks_from_entries_with_children(
     blocks
 }
 
+/// `@` 附件注入块还原成 chip 标记：`[file path]` / `[dir path]`。
+fn attachment_marker(text: &str) -> Option<String> {
+    let (path, kind, _body) = moc_core::resources::attach::parse_attachment(text)?;
+    Some(format!("[{kind} {path}]"))
+}
+
 /// 用户消息正文还原成输入时的形态：图片块按顺序显示为 `[image#N]` 标记，
 /// 连续文本块之间补回换行；其余块不展示。
 pub(crate) fn content_text(parts: &[ContentPart]) -> String {
@@ -226,6 +232,14 @@ pub(crate) fn content_text(parts: &[ContentPart]) -> String {
     for part in parts {
         match part {
             ContentPart::Text(text) => {
+                if let Some(marker) = attachment_marker(text) {
+                    if previous_text {
+                        out.push('\n');
+                    }
+                    out.push_str(&marker);
+                    previous_text = false;
+                    continue;
+                }
                 if previous_text {
                     out.push('\n');
                 }

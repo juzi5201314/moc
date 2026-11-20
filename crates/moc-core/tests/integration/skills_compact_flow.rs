@@ -317,6 +317,7 @@ async fn skills_compaction_blocks_foreground_and_cancels_without_session_history
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .unwrap_err();

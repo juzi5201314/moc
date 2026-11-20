@@ -48,6 +48,7 @@ mod behavior;
 mod commands;
 mod context;
 mod input;
+mod modal_queue;
 mod model;
 mod queue;
 mod scrolling;
@@ -229,6 +230,7 @@ impl SlowCompactionHarness {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
             .unwrap();

@@ -15,7 +15,7 @@ import {
   Trash2Icon,
   UnlockIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { IconButton } from "@/components/common/icon-button";
 import { Button } from "@/components/ui/button";
@@ -95,6 +95,8 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
   const view = useTranscript((state) => state.bySession[sessionId]);
   const branch = useGitBranch(view?.info.cwd);
   const [editing, setEditing] = useState<string | null>(null);
+  const renamingFromMenu = useRef(false);
+  const titleButton = useRef<HTMLButtonElement>(null);
   const [compacting, setCompacting] = useState(false);
 
   if (!view) return null;
@@ -129,7 +131,7 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <header className="flex h-11 shrink-0 items-center gap-2 px-3">
+    <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
       <SidebarReveal />
 
       <div className="flex min-w-0 flex-1 items-center gap-2.5">
@@ -137,18 +139,24 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
           <input
             // biome-ignore lint/a11y/noAutofocus: 进入重命名后立即编辑
             autoFocus
+            aria-label={t("hd.rename")}
             value={editing}
             onChange={(event) => setEditing(event.target.value)}
             onFocus={(event) => event.currentTarget.select()}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
               if (event.key === "Enter") commitTitle();
-              if (event.key === "Escape") setEditing(null);
+              else if (event.key === "Escape") setEditing(null);
+              else return;
+              event.preventDefault();
+              requestAnimationFrame(() => titleButton.current?.focus());
             }}
             onBlur={commitTitle}
             className="h-7 w-[min(360px,50%)] rounded-md bg-accent px-2 text-sm font-medium outline-none ring-1 ring-ring"
           />
         ) : (
           <button
+            ref={titleButton}
             type="button"
             onDoubleClick={() => !isDraft && setEditing(title)}
             className="min-w-0 truncate rounded-md px-1 text-sm font-medium text-foreground"
@@ -224,8 +232,21 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
                 <MoreHorizontalIcon />
               </IconButton>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-52">
-              <DropdownMenuItem onSelect={() => setEditing(title)}>
+            <DropdownMenuContent
+              align="end"
+              className="w-52"
+              onCloseAutoFocus={(event) => {
+                if (!renamingFromMenu.current) return;
+                event.preventDefault();
+                renamingFromMenu.current = false;
+                setEditing(title);
+              }}
+            >
+              <DropdownMenuItem
+                onSelect={() => {
+                  renamingFromMenu.current = true;
+                }}
+              >
                 <PencilIcon />
                 {t("hd.rename")}
               </DropdownMenuItem>

@@ -121,14 +121,22 @@ pub(super) async fn next_request(
     }
 }
 
-/// 等一个在途的宿主工具调用；没有任务时永远挂起，让 `select!` 的分支保持安静。
+/// 等唯一在途的工具或持久化调用；没有任务时挂起，让 `select!` 的分支保持安静。
 pub(super) async fn host_reply(
-    task: &mut Option<tokio::task::JoinHandle<Result<Value>>>,
+    tasks: &mut tokio::task::JoinSet<Result<Value>>,
+    persistence: &mut Option<tokio::task::JoinHandle<Result<Value>>>,
 ) -> Result<Value> {
-    let Some(handle) = task.take() else {
-        return std::future::pending().await;
+    let result = if let Some(task) = persistence.as_mut() {
+        let result = task.await;
+        persistence.take();
+        result
+    } else {
+        let Some(result) = tasks.join_next().await else {
+            return std::future::pending().await;
+        };
+        result
     };
-    match handle.await {
+    match result {
         Ok(result) => result,
         Err(error) => Err(PluginError::new(
             "E_PLUGIN_CRASH",

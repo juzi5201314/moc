@@ -206,6 +206,24 @@ pub(super) fn dispatch_command(
             _ => app.set_notice(t!("tui.cmd.plugins_usage")),
         },
         CommandId::Usage => refresh_usage(app, connection, true),
+        CommandId::Export => {
+            let Some(session_id) = session_id else {
+                return;
+            };
+            let path = (!rest.trim().is_empty()).then(|| rest.trim().to_owned());
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            tokio::spawn(async move {
+                let result = client
+                    .call::<moc_protocol::SessionExport>(moc_protocol::SessionExportParams {
+                        session_id: session_id.clone(),
+                        path,
+                    })
+                    .await
+                    .map(|result| t!("tui.cmd.exported", path = result.path).into_owned());
+                let _ = events.send(AppEvent::CommandNote { session_id, result });
+            });
+        }
         CommandId::DebugInfo | CommandId::Session => {
             let name = if id == CommandId::DebugInfo {
                 "debuginfo"
@@ -240,12 +258,12 @@ pub(super) fn dispatch_command(
                 let _ = events.send(AppEvent::CommandNote { session_id, result });
             });
         }
-        CommandId::Monitor => app.modal = Some(Modal::Monitor),
+        CommandId::Monitor => app.set_modal(Some(Modal::Monitor)),
         CommandId::Doctor => app.push_note(
             crate::doctor::report(app),
             crate::transcript::NoteTone::Info,
         ),
-        CommandId::Help => app.modal = Some(Modal::Help { scroll: 0 }),
+        CommandId::Help => app.set_modal(Some(Modal::Help { scroll: 0 })),
         CommandId::Context => open_context(app, connection),
         CommandId::Tools => open_tools(app, connection),
         CommandId::Quit => app.should_quit = true,
@@ -290,7 +308,13 @@ pub(super) fn dispatch_command(
                     .await;
                 let _ = events.send(AppEvent::SessionControlSettled {
                     session_id,
-                    notice: Some(t!("tui.cmd.compact_done").into_owned()),
+                    notice: Some(
+                        if outcome.as_ref().is_ok_and(|result| result.method == "noop") {
+                            t!("core.history.nothing_to_compact").into_owned()
+                        } else {
+                            t!("tui.cmd.compact_done").into_owned()
+                        },
+                    ),
                     result: outcome.map(|_| None).map_err(|error| {
                         t!("tui.cmd.compact_failed_fmt", err = error.to_string()).into_owned()
                     }),

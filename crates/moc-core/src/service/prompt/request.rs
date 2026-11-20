@@ -14,14 +14,23 @@ pub(in crate::service) async fn project_input(
     input: Vec<InputPart>,
     accepts_image: bool,
     cwd: &Path,
+    anchors: &crate::hashline::AnchorStore,
+    config: &crate::ResolvedConfig,
 ) -> Result<Message, crate::CoreError> {
     let mut content = Vec::with_capacity(input.len());
     for part in input {
         match part {
-            InputPart::Text { text } if accepts_image => {
-                append_text_with_images(&mut content, &text, cwd).await?;
+            InputPart::Text { text } => {
+                append_text_with_references(
+                    &mut content,
+                    &text,
+                    cwd,
+                    accepts_image,
+                    anchors,
+                    config,
+                )
+                .await?;
             }
-            InputPart::Text { text } => content.push(ContentPart::Text(text)),
             InputPart::Image { source, detail } if accepts_image => {
                 content.push(ContentPart::Image {
                     source: normalize_image_source(source, cwd).await?,
@@ -51,10 +60,15 @@ async fn normalize_image_source(
     }
 }
 
-async fn append_text_with_images(
+/// `@` 引用展开：`@path` 就地保留在正文里，紧跟一个 `<moc-attachment …>`
+/// 附件块带注入内容；`@@` 转义为字面 `@`；图片沿用原有内联逻辑。
+async fn append_text_with_references(
     content: &mut Vec<ContentPart>,
     text: &str,
     cwd: &Path,
+    accepts_image: bool,
+    anchors: &crate::hashline::AnchorStore,
+    config: &crate::ResolvedConfig,
 ) -> Result<(), crate::CoreError> {
     let mut cursor = 0;
     let mut index = 0;
@@ -70,18 +84,131 @@ async fn append_text_with_images(
         if start == end || !text[start..end].starts_with('@') {
             continue;
         }
-        let Some(image) = load_local_image(&text[start..end], cwd).await? else {
+        let token = &text[start..end];
+        // `@@` 转义：字面保留单个 `@`。
+        if let Some(rest) = token.strip_prefix("@@") {
+            push_text(content, &text[cursor..start]);
+            content.push(ContentPart::Text(format!("@{rest}")));
+            cursor = end;
+            continue;
+        }
+        // 含空格的路径：向后按词贪心扩展，取能解析出文件/目录的最长前缀
+        //（补全插进来的 `@dir file.md`，`@dir` 单独也可能是已存在的目录）。
+        let end = extend_reference_end(text, start, end, cwd);
+        index = end;
+        let token = &text[start..end];
+        // 图片附件沿用原逻辑：token 从正文移除，换成图片块。
+        if accepts_image && let Some(image) = load_local_image(token, cwd).await? {
+            push_text(content, &text[cursor..start]);
+            content.push(ContentPart::Image {
+                source: image,
+                detail: None,
+            });
+            cursor = end;
+            continue;
+        }
+        let Some(attachment) = attachment_for_token(token, cwd, anchors, config) else {
             continue;
         };
-        push_text(content, &text[cursor..start]);
-        content.push(ContentPart::Image {
-            source: image,
-            detail: None,
-        });
+        // 文件/目录：`@path` 保留在正文作引用，附件块就地跟在后面。
+        push_text(content, &text[cursor..end]);
+        content.push(ContentPart::Text(attachment));
         cursor = end;
     }
     push_text(content, &text[cursor..]);
     Ok(())
+}
+
+/// 把一个 `@token` 解析成附件块文本；路径不存在或不适用时返回 `None`，
+/// 调用方保留 token 原样。
+fn attachment_for_token(
+    token: &str,
+    cwd: &Path,
+    anchors: &crate::hashline::AnchorStore,
+    config: &crate::ResolvedConfig,
+) -> Option<String> {
+    let raw = token.strip_prefix('@')?;
+    if raw.is_empty() {
+        return None;
+    }
+    // 规范化对齐 read 工具的展示相对化：cwd 带符号链接段时不归一就剥不掉前缀。
+    let path = crate::tools::normalized(&resolve_reference_path(raw, cwd));
+    let metadata = std::fs::metadata(&path).ok()?;
+    let normalized = crate::tools::normalized(cwd);
+    let display = path
+        .strip_prefix(&normalized)
+        .map(|relative| relative.display().to_string())
+        .unwrap_or_else(|_| path.display().to_string());
+    let (kind, body) = if metadata.is_dir() {
+        match crate::tools::read::list_attachment(&path, &normalized) {
+            Ok(listing) => ("dir", listing),
+            Err(error) => ("dir", format!("[{display}]\n({error})")),
+        }
+    } else if metadata.is_file() {
+        match crate::tools::read::attachment_text(&path, &display, anchors, config) {
+            Ok(text) => ("file", text),
+            Err(reason) => (
+                "file",
+                format!(
+                    "[{display}]\n({} bytes; not attached: {reason}; read it with the read tool)",
+                    metadata.len()
+                ),
+            ),
+        }
+    } else {
+        return None;
+    };
+    Some(crate::resources::attach::wrap_attachment(
+        &path.display().to_string(),
+        kind,
+        &body,
+    ))
+}
+
+/// 从 `end` 向后按词扩展 `@` 引用：路径含空格时 token 只是前缀，
+/// 逐词试探 `metadata`，记录最后一个能解析的边界；末段超过 255 个字符即停，
+/// 因为该段已不可能是有效文件名，继续扩展也无法成为有效路径。
+/// 新增词含路径分隔符时，若父目录不存在也立即停止，避免扫描后续引用。
+fn extend_reference_end(text: &str, start: usize, mut end: usize, cwd: &Path) -> usize {
+    let bytes = text.as_bytes();
+    let mut scan = end;
+    loop {
+        let mut i = scan;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i == bytes.len() || i == scan {
+            break;
+        }
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let path = resolve_reference_path(&text[start + 1..i], cwd);
+        if path.components().next_back().is_some_and(|component| {
+            component.as_os_str().to_string_lossy().chars().count() > 255
+        }) {
+            break;
+        }
+        if text[scan..i].contains(std::path::is_separator)
+            && path.parent().is_some_and(|parent| !parent.is_dir())
+        {
+            break;
+        }
+        if std::fs::metadata(path).is_ok() {
+            end = i;
+        }
+        scan = i;
+    }
+    end
+}
+
+fn resolve_reference_path(raw_path: &str, cwd: &Path) -> PathBuf {
+    let path = crate::config::expand_user_path(raw_path);
+    if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    }
 }
 
 fn push_text(content: &mut Vec<ContentPart>, text: &str) {
@@ -430,26 +557,47 @@ mod tests {
             }
         }
     }
+    /// project_input 所需的 anchors 与解析配置；返回临时目录保活。
+    fn attach_fixture() -> (
+        tempfile::TempDir,
+        crate::hashline::AnchorStore,
+        crate::ResolvedConfig,
+    ) {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        let cwd = dir.path().join("repo");
+        std::fs::create_dir_all(&home).expect("创建 home");
+        std::fs::create_dir_all(&cwd).expect("创建工作区");
+        let config = crate::ResolvedConfig::load(&crate::CoreConfig {
+            home,
+            cwd,
+            ..Default::default()
+        })
+        .expect("加载配置");
+        (dir, crate::hashline::AnchorStore::new(), config)
+    }
+
     #[tokio::test]
     async fn unsupported_images_become_text_and_local_paths_become_base64() {
         let image = || InputPart::Image {
             source: ImageSource::Url("https://example.invalid/image.png".into()),
             detail: None,
         };
-        let unsupported = project_input(vec![image()], false, Path::new("/tmp"))
+        let (dir, anchors, config) = attach_fixture();
+        let cwd = dir.path().join("repo");
+        let unsupported = project_input(vec![image()], false, &cwd, &anchors, &config)
             .await
             .expect("图片投影成功");
         assert_eq!(
             unsupported.text(),
             "[The user provided an image, but the current model does not support image input]"
         );
-        let supported = project_input(vec![image()], true, Path::new("/tmp"))
+        let supported = project_input(vec![image()], true, &cwd, &anchors, &config)
             .await
             .expect("图片投影成功");
         assert!(matches!(supported.content[0], ContentPart::Image { .. }));
 
-        let dir = tempfile::tempdir().expect("临时目录");
-        tokio::fs::write(dir.path().join("shot.png"), b"png-bytes")
+        tokio::fs::write(cwd.join("shot.png"), b"png-bytes")
             .await
             .expect("写入图片");
         let local = project_input(
@@ -457,7 +605,9 @@ mod tests {
                 text: "请查看 @shot.png".into(),
             }],
             true,
-            dir.path(),
+            &cwd,
+            &anchors,
+            &config,
         )
         .await
         .expect("本地图片投影成功");
@@ -472,6 +622,123 @@ mod tests {
         };
         assert_eq!(media_type, "image/png");
         assert_eq!(data, "cG5nLWJ5dGVz");
+    }
+
+    /// `@` 文件/目录引用：正文保留 token、紧跟 `<moc-attachment>` 注入块；
+    /// 缺失路径与 `@@` 转义都不产生附件。
+    #[tokio::test]
+    async fn at_references_inject_attachment_parts_and_stay_in_text() {
+        let (dir, anchors, config) = attach_fixture();
+        let cwd = dir.path().join("repo");
+        std::fs::write(cwd.join("note.txt"), "hello\nworld\n").expect("写文件");
+        std::fs::create_dir_all(cwd.join("pkg")).expect("建目录");
+        std::fs::write(cwd.join("pkg").join("mod.rs"), "pub mod x {}\n").expect("写子文件");
+
+        let message = project_input(
+            vec![InputPart::Text {
+                text: "看 @note.txt 和 @pkg 还有 @missing 与 @@literal".into(),
+            }],
+            false,
+            &cwd,
+            &anchors,
+            &config,
+        )
+        .await
+        .expect("投影成功");
+        let text = message.text();
+        for kept in ["@note.txt", "@pkg", "@missing", "@literal"] {
+            assert!(text.contains(kept), "正文应保留 {kept}：{text}");
+        }
+        assert!(!text.contains("@@literal"), "转义只留一个 @：{text}");
+        let attachments = message
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Text(text) => crate::resources::attach::parse_attachment(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(attachments.len(), 2, "{attachments:?}");
+        let (file_path, file_kind, file_body) = attachments[0];
+        assert_eq!(file_kind, "file");
+        assert!(file_path.ends_with("note.txt"), "{file_path}");
+        assert!(file_body.contains("note.txt"), "{file_body}");
+        assert!(file_body.contains("hello"), "{file_body}");
+        let (dir_path, dir_kind, dir_body) = attachments[1];
+        assert_eq!(dir_kind, "dir");
+        assert!(dir_path.ends_with("pkg"), "{dir_path}");
+        assert!(dir_body.contains("mod.rs"), "{dir_body}");
+    }
+
+    /// 含空格路径：token 只到第一个空格，向后按词贪心取最长可解析前缀；
+    /// 前缀恰好是已存在目录时，更长的文件路径仍然胜出。
+    #[tokio::test]
+    async fn at_references_resolve_paths_with_spaces_by_longest_match() {
+        let (dir, anchors, config) = attach_fixture();
+        let cwd = dir.path().join("repo");
+        std::fs::create_dir_all(cwd.join("design")).expect("建目录");
+        std::fs::write(cwd.join("design notes.md"), "# notes\n").expect("写文件");
+
+        let message = project_input(
+            vec![InputPart::Text {
+                text: "看 @design notes.md 这一段".into(),
+            }],
+            false,
+            &cwd,
+            &anchors,
+            &config,
+        )
+        .await
+        .expect("投影成功");
+        let attachments = message
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Text(text) => crate::resources::attach::parse_attachment(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(attachments.len(), 1, "{attachments:?}");
+        let (path, kind, body) = attachments[0];
+        assert_eq!(kind, "file", "应命中文件而不是前缀目录：{path}");
+        assert!(path.ends_with("design notes.md"), "{path}");
+        assert!(body.contains("# notes"), "{body}");
+        assert!(message.text().contains("这一段"), "正文尾部不能丢");
+    }
+
+    #[tokio::test]
+    async fn at_references_attach_filename_with_many_spaces() {
+        let (dir, anchors, config) = attach_fixture();
+        let cwd = dir.path().join("repo");
+        let filename = "one two three four five six seven eight nine ten eleven.txt";
+        std::fs::write(cwd.join(filename), "many spaces\n").expect("写文件");
+
+        let message = project_input(
+            vec![InputPart::Text {
+                text: format!("看 @{filename} 这一段"),
+            }],
+            false,
+            &cwd,
+            &anchors,
+            &config,
+        )
+        .await
+        .expect("投影成功");
+        let attachments = message
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Text(text) => crate::resources::attach::parse_attachment(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(attachments.len(), 1, "{attachments:?}");
+        let (path, kind, body) = attachments[0];
+        assert!(path.ends_with(filename), "{path}");
+        assert_eq!(kind, "file");
+        assert!(body.contains("many spaces"), "{body}");
+        assert!(message.text().contains(&format!("@{filename}")));
+        assert!(message.text().ends_with(" 这一段"), "正文尾部不能丢");
     }
 
     #[test]

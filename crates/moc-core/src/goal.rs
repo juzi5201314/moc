@@ -17,6 +17,7 @@ use moc_protocol::methods::{
 };
 use moc_protocol::{RequestContext, RpcError};
 
+use crate::service::prompt::PromptRun;
 use crate::service::{CoreInner, invalid_params, protocol_to_rpc, to_rpc};
 use crate::session::entries::GoalSnapshot;
 
@@ -533,9 +534,11 @@ pub(crate) async fn maybe_continue(inner: &Arc<CoreInner>, ctx: &RequestContext,
             mode: None,
             agent_message: None,
             goal_round: Some(meta),
+            max_turns: None,
         },
         record,
         prompt_lock,
+        PromptRun::Normal,
     )
     .await;
 }

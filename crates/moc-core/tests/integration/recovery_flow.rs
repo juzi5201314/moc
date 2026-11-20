@@ -118,6 +118,7 @@ async fn cancel_persists_partial_output_and_repairs_unexecuted_calls() {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
     });
@@ -244,6 +245,7 @@ async fn fatal_upstream_error_emits_error_and_releases_session_lock() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await;
     assert!(result.is_err());
@@ -491,6 +493,7 @@ async fn disconnected_frontend_persists_partial_text_before_connection_finishes(
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
     });
@@ -1080,6 +1083,7 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
     });
@@ -1552,6 +1556,7 @@ async fn automatic_retry_discards_failed_calls_and_shares_http_budget() {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await;
         if exhausted {
@@ -1629,6 +1634,7 @@ async fn automatic_retry_wait_is_cancellable() {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
     });

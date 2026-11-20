@@ -84,6 +84,7 @@ async fn startup_selects_then_remembers_model_and_resume_ignores_missing_prefere
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .unwrap();

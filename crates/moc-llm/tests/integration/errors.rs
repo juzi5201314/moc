@@ -33,6 +33,56 @@ fn fast_retry(max_attempts: u32) -> RetryPolicy {
     }
 }
 
+#[tokio::test]
+async fn first_byte_retry_notifications_preserve_attempts_and_terminal_errors() {
+    for (status, failures, expected_notices, succeeds) in [
+        (503, 1, 1, true),
+        (503, 3, 2, false),
+        (401, 1, 0, false),
+        (200, 0, 0, true),
+    ] {
+        let server = start().await;
+        if failures > 0 {
+            mount(
+                &server,
+                "/v1/chat/completions",
+                status,
+                json!({"error":{"message":"upstream unavailable"}}),
+                &[],
+                Some(failures),
+                1,
+            )
+            .await;
+        }
+        mount_sse(&server, "/v1/chat/completions", &[
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ]).await;
+        let mut notices = Vec::new();
+        let mut budget = moc_llm::retry::RetryBudget::default();
+        let cfg = config(Protocol::OpenAiChat, &server, fast_retry(3));
+        let result = Client::new()
+            .stream_with_budget_notified(&cfg, &request(), &mut budget, |attempt, delay, error| {
+                notices.push((attempt, delay, error));
+                std::future::ready(())
+            })
+            .await;
+        assert_eq!(notices.len(), expected_notices);
+        for (index, (attempt, delay, error)) in notices.iter().enumerate() {
+            assert_eq!(*attempt, index as u32 + 2);
+            assert_eq!(Some(*delay), cfg.retry.delay(*attempt - 1, None));
+            assert!(error.is_retryable());
+        }
+        assert_eq!(result.is_ok(), succeeds);
+        if let Ok(stream) = result {
+            stream.finish().await.unwrap();
+        }
+        let expected_requests = if succeeds { failures + 1 } else { failures };
+        assert_eq!(request_count(&server).await as u64, expected_requests);
+        assert_eq!(budget.attempts() as u64, expected_requests);
+    }
+}
+
 fn ok_body() -> Value {
     json!({"choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]})
 }

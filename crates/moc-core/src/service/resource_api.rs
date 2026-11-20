@@ -24,25 +24,33 @@ pub(super) async fn resource_complete(
 ) -> Result<ResourceCompleteResult, RpcError> {
     let (record, cwd, skills) = core.resource_context(&params.session_id).await?;
     let tools = core.resource_tools(&ctx, &record, &params.prefix).await?;
-    let context = crate::resources::ResourceContext {
-        session_id: &params.session_id,
-        cwd: &cwd,
-        paths: &record.paths,
-        skills: &skills,
-        sessions: &core.inner.sessions,
-        tools,
-    };
-    let candidates = crate::resources::ResourceRouter::complete(&context, &params.prefix)
-        .map_err(|error| RpcError::new(RpcErrorCode::InvalidParams.code(), error.to_string()))?
-        .into_iter()
-        .map(|candidate| moc_protocol::ResourceCandidate {
-            uri: candidate.uri,
-            label: candidate.label,
-            description: candidate.description,
-            kind: candidate.kind,
-            append_space: candidate.append_space,
-        })
-        .collect();
+    let sessions = core.inner.sessions.clone();
+    let prefix = params.prefix.clone();
+    let session_id = params.session_id.clone();
+    // `@` 补全要遍历工作区，放到阻塞线程避免卡住执行器。
+    let candidates = tokio::task::spawn_blocking(move || {
+        let context = crate::resources::ResourceContext {
+            session_id: &session_id,
+            cwd: &cwd,
+            paths: &record.paths,
+            skills: &skills,
+            sessions: &sessions,
+            tools,
+        };
+        crate::resources::ResourceRouter::complete(&context, &prefix)
+    })
+    .await
+    .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
+    .map_err(|error| RpcError::new(RpcErrorCode::InvalidParams.code(), error.to_string()))?
+    .into_iter()
+    .map(|candidate| moc_protocol::ResourceCandidate {
+        uri: candidate.uri,
+        label: candidate.label,
+        description: candidate.description,
+        kind: candidate.kind,
+        append_space: candidate.append_space,
+    })
+    .collect();
     Ok(ResourceCompleteResult { candidates })
 }
 

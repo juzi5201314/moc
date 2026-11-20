@@ -393,7 +393,9 @@ pub(crate) async fn compact(
                 started = true;
             }
             let result = match step {
-                PipelineStep::Shake => shake::compact(inner, &state, &config, &model, budget).await,
+                PipelineStep::Shake => {
+                    shake::compact(inner, session_id, &config, &model, budget).await
+                }
                 PipelineStep::Summarize => {
                     summarize(SoftInput {
                         inner,

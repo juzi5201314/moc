@@ -36,6 +36,30 @@ const userBlock = (id: string, text = "改一下配色"): Extract<Block, { kind:
 });
 
 describe("groupTurns", () => {
+  it("用户 shell 独立成轮，增量输出、失败和回退不改写上一轮", () => {
+    const group = createTurnGrouper();
+    const previous: Block[] = [
+      userBlock("u1"),
+      { kind: "text", id: "answer", text: "上一轮答案" },
+      { kind: "footer", id: "footer", atMs: 2 },
+    ];
+    const first = group(previous)[0];
+    const shell: Block = { kind: "bash", id: "shell", command: "printf CHECK", atMs: 3 };
+    let blocks = [...previous, shell];
+    expect(group(blocks).map((turn) => turn.id)).toEqual(["u1", "shell"]);
+    for (const output of ["", "CHECK", "failed"]) {
+      blocks = [...previous, { ...shell, output, isError: output === "failed" }];
+      expect(group(blocks)).toEqual(groupTurns(blocks));
+      expect(group(blocks)[0]).toEqual(first);
+      expect(group(blocks)[1].activity).toHaveLength(1);
+    }
+    blocks = [...blocks, { ...shell, id: "shell2" }, userBlock("u2")];
+    expect(group(blocks).map((turn) => turn.id)).toEqual(["u1", "shell", "shell2", "u2"]);
+    for (let end = blocks.length; end >= 0; end--) {
+      expect(group(blocks.slice(0, end))).toEqual(groupTurns(blocks.slice(0, end)));
+    }
+  });
+
   it("增量分组在前插、历史修改和回退后保持原始轮次语义", () => {
     const group = createTurnGrouper();
     let blocks: Block[] = [

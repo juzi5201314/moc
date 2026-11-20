@@ -72,7 +72,7 @@ pub(super) fn apply_rewound(
         && selected.agent.is_none()
         && selected.reminder.is_none();
     let selected_message = selected.message;
-    app.modal = None;
+    app.set_modal(None);
     app.switch_session(
         loaded.session,
         crate::transcript_restore::blocks_from_entries_with_children(
@@ -161,6 +161,8 @@ pub(super) fn restore_user_message(
 ) {
     for part in &message.content {
         match part {
+            // 附件注入块不是用户输入：恢复输入框时跳过，`@path` 引用已在正文里。
+            ContentPart::Text(text) if moc_core::resources::attach::is_attachment(text) => {}
             ContentPart::Text(text) => prompt.insert_str_raw(text),
             ContentPart::Image {
                 source: ImageSource::Base64 { media_type, data },

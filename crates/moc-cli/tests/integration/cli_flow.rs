@@ -67,6 +67,22 @@ fn text(value: &str) -> String {
         json!({"id":"r","choices":[{"index":0,"delta":{"role":"assistant","content":value},"finish_reason":"stop"}]})
     )
 }
+
+#[tokio::test]
+async fn empty_compact_reports_a_note_without_contacting_provider() {
+    let upstream = MockServer::builder().start().await;
+    let project = Project::new(&upstream.uri());
+    let output = project.run(&[], "/compact\n/quit\n").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("暂无可压缩的对话历史"), "{stdout}");
+    assert!(!stdout.contains("上下文已裁剪"), "{stdout}");
+    assert!(upstream.received_requests().await.unwrap().is_empty());
+}
 fn call(id: &str, name: &str, args: Value) -> String {
     format!(
         "data: {}\n\ndata: [DONE]\n\n",

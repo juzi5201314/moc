@@ -51,16 +51,18 @@ pub(super) async fn steer(
     let snapshot = record.state.lock().await.metadata();
     let config = inner.project_config(Path::new(&snapshot.session.cwd))?;
     let model = config.resolve_model(&snapshot.model)?;
+    let runtime = inner.runtime(&params.session_id).await;
     let message = super::prompt::request::project_input(
         params.input,
         model.capabilities.image,
         Path::new(&snapshot.session.cwd),
+        &runtime.anchors,
+        &config,
     )
     .await?;
     if message.content.is_empty() {
         return Err(CoreError::Config(t!("core.err.message_empty").into_owned()));
     }
-    let runtime = inner.runtime(&params.session_id).await;
     if !runtime.steering.lock().await.accepting {
         return Ok(SteerResult {
             accepted: false,
@@ -254,9 +256,16 @@ pub(super) async fn manage(
             let cancel = ctx.cancel();
             let _write = inner.config_write.lock().await;
             // 运行中的提示在用同一份配置：保存要等它们结束，不能中途断开 MCP 连接。
-            let _epoch = tokio::select! {
-                _ = cancel.cancelled() => return Err(CoreError::Cancelled),
-                epoch = inner.config_epoch.write() => epoch,
+            // 不能用排队的 write()：Tokio 写者优先会挡住子提示的读锁，
+            // 导致父提示等子提示、子提示等写锁、写锁等父提示的死锁。
+            let _epoch = loop {
+                if let Ok(epoch) = inner.config_epoch.try_write() {
+                    break epoch;
+                }
+                tokio::select! {
+                    _ = cancel.cancelled() => return Err(CoreError::Cancelled),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+                }
             };
             // 仅校验修改过的插件条目，已有坏配置不能阻挡普通 moc 设置的保存。
             let plugin_host = inner.project_plugins(Path::new(&cwd)).await.ok();
@@ -327,5 +336,84 @@ pub(super) async fn manage(
                 .await
                 .map(ConfigReply::Maintenance)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Core, CoreConfig};
+    use moc_protocol::{ClientBuilder, ClientInfo, ConfigManage, Server, transport};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn config_save_waits_without_blocking_new_readers() {
+        let root = tempfile::tempdir().unwrap();
+        let boot = CoreConfig {
+            home: root.path().join("home"),
+            cwd: root.path().join("work"),
+            user_home: Some(root.path().join("userhome")),
+            session_dir: Some(root.path().join("sessions")),
+            ..Default::default()
+        };
+        std::fs::create_dir_all(&boot.home).unwrap();
+        std::fs::create_dir_all(&boot.cwd).unwrap();
+        let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();
+        let cwd = boot.cwd.to_string_lossy().into_owned();
+        let core =
+            Core::new_with_sandbox_support(boot, crate::sandbox::SandboxSupport::full_only())
+                .unwrap();
+        let server = Server::new((*core).clone());
+        let (server_side, client_side) = transport::duplex(65536);
+        let connection = server.spawn(server_side);
+        let (client, _) = ClientBuilder::new(ClientInfo {
+            name: "配置锁回归".into(),
+            version: "1".into(),
+            frontend: "test".into(),
+        })
+        .connect(client_side)
+        .await
+        .unwrap();
+
+        // 模拟父提示持有读锁并等待子提示；保存必须等待，又不能挡住子提示。
+        let parent = core.inner.config_epoch.read().await;
+        let save_client = client.clone();
+        let save = tokio::spawn(async move {
+            save_client
+                .call::<ConfigManage>(ConfigAction::Save {
+                    scope: ConfigScope::Global,
+                    cwd,
+                    document: view.document,
+                    revision: view.revision,
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            // 单线程运行时中，Save 拿到 config_write 后会一直执行到等待 epoch。
+            while core.inner.config_write.try_lock().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("保存应进入等待配置读锁的阶段");
+        assert!(!save.is_finished(), "父提示未结束时保存必须继续等待");
+        let child = core
+            .inner
+            .config_epoch
+            .try_read()
+            .expect("保存等待期间，子提示仍应能获取读锁");
+        drop(child);
+        drop(parent);
+        let reply = tokio::time::timeout(Duration::from_secs(5), save)
+            .await
+            .expect("父子提示释放读锁后保存应完成")
+            .unwrap()
+            .expect("保存配置成功");
+        assert!(matches!(reply, ConfigReply::Settings(_)));
+
+        client.close().await;
+        connection.close();
+        connection.wait().await;
+        core.shutdown().await;
     }
 }

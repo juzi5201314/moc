@@ -1,3 +1,4 @@
+use super::PromptRun;
 use super::execution::run_prompt_locked;
 use super::guard::PromptGuard;
 use super::tools::repair_pending_calls;
@@ -54,9 +55,11 @@ pub(crate) async fn wake_for_jobs(
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         },
         record,
         prompt_lock,
+        PromptRun::Wake,
     )
     .await;
 }
@@ -65,7 +68,7 @@ pub(super) async fn run_prompt_entry(
     inner: Arc<CoreInner>,
     ctx: RequestContext,
     params: moc_protocol::methods::PromptParams,
-    retry: bool,
+    run: PromptRun,
 ) -> Result<PromptResult, RpcError> {
     let record = inner
         .sessions
@@ -85,24 +88,28 @@ pub(super) async fn run_prompt_entry(
         )));
     }
     let prompt = record.try_prompt_lock().map_err(to_rpc)?;
-    run_prompt_with_lock(inner, ctx, params, record, prompt, retry).await
+    run_prompt_with_lock(inner, ctx, params, record, prompt, run, false).await
 }
 
 /// 用调用方已经拿到的提示锁跑一次提示。
 ///
 /// 代理唤醒会在派发前先抢提示锁：抢不到说明该会话还有提示没结束，调用方就把消息
-/// 放进收件箱，而不是和那个提示争同一个会话。`retry` 为真时不写用户消息（见
-/// [`run_retry`]）。
+/// 放进收件箱，而不是和那个提示争同一个会话。输入处理由 [`PromptRun`] 决定，
+/// 重试与后台任务唤醒都不写用户消息。
+/// 仅脱离 RPC 的提示需要在持锁后登记取消令牌，登记守卫保留到本函数结束。
 pub(crate) async fn run_prompt_with_lock(
     inner: Arc<CoreInner>,
     ctx: RequestContext,
     params: moc_protocol::methods::PromptParams,
     record: Arc<crate::session::SessionRecord>,
     prompt: tokio::sync::OwnedMutexGuard<()>,
-    retry: bool,
+    run: PromptRun,
+    detached: bool,
 ) -> Result<PromptResult, RpcError> {
     let session_id = params.session_id.clone();
     let _prompt = prompt;
+    let _registration = detached
+        .then(|| ctx.claim_detached_prompt(session_id.clone(), Arc::new(ctx.cancel().clone())));
     let _epoch = inner.config_epoch.read().await;
     let started = Instant::now();
     inner
@@ -145,7 +152,7 @@ pub(crate) async fn run_prompt_with_lock(
         &scoped_ctx,
         params,
         Arc::clone(&record),
-        retry,
+        run,
     )
     .await;
     // 用户取消 lead 的提示时，后台（block=false）仍在跑的 sidekick 一并停掉；
@@ -213,7 +220,19 @@ pub(crate) async fn run_prompt_with_lock(
             .await
             .map_err(protocol_to_rpc)
             .err(),
-        Err(_) => None,
+        Err(_) => update
+            .emit(
+                session_id.clone(),
+                SessionUpdate::PromptFinished {
+                    prompt_id: crate::ids::prompt_id(record.state.lock().await.prompt_sequence),
+                    message: Message::default(),
+                    finish_reason: FinishReason::Other("error".into()),
+                    usage: Usage::default(),
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)
+            .err(),
     };
     inner
         .runtime(&session_id)
@@ -300,26 +319,27 @@ pub(crate) async fn run_prompt_with_lock(
         runtime.jobs.suppress_wake(true);
     } else if result.is_ok() {
         runtime.jobs.suppress_wake(false);
+        // 插件元数据只是快照、不持锁；仍在成功且未取消时于提示解锁前释放，保持原收尾时点。
         drop(plugin_state);
-        if runtime.jobs.wants_wake() {
-            wake_for_jobs(Arc::clone(&inner), ctx.clone(), session_id.clone()).await;
-        }
     }
     // 目标续跑只在一切正常时接力：用户取消、循环终止、RPC 错误、length/cancelled
     // 收场一律摘掉 armed，需要 `/goal resume`（或工具的 update/resume）才恢复。
-    let keep_armed = result.as_ref().is_ok_and(|outcome| {
+    let finished_normally = result.as_ref().is_ok_and(|outcome| {
         !ctx.cancel().is_cancelled()
             && !matches!(
                 outcome.finish_reason,
                 FinishReason::Cancelled | FinishReason::LoopDetected | FinishReason::Length
             )
     });
-    if !keep_armed {
+    if !finished_normally {
         runtime.goal_armed.disarm_if_unchanged(goal_armed_snapshot);
     }
-    // 必须先释放提示锁再评估续跑：本轮收尾持有 `_prompt` 时 try_prompt_lock 必失败，
-    // 续跑会被自己挡掉。
+    // 必须先释放提示锁再评估后台任务补唤醒和目标续跑：本轮收尾持有 `_prompt` 时
+    // try_prompt_lock 必失败，两种续跑都会被自己挡掉。
     drop(_prompt);
+    if finished_normally && runtime.jobs.wants_wake() {
+        wake_for_jobs(Arc::clone(&inner), ctx.clone(), session_id.clone()).await;
+    }
     crate::goal::maybe_continue(&inner, &ctx, &session_id).await;
     result
 }

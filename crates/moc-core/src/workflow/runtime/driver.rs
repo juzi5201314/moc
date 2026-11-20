@@ -416,7 +416,15 @@ impl WorkflowDriver {
                 message: "world.run 无沙箱策略快照".into(),
             };
         };
-        world_run_impl(&policy, command, args, *timeout_ms, output).await
+        world_run_impl(
+            &policy,
+            command,
+            args,
+            *timeout_ms,
+            output,
+            &self.run.cancel,
+        )
+        .await
     }
 
     /// files.* / git.* 只读实现。

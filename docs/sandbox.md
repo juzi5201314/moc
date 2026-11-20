@@ -5,6 +5,8 @@ MOC 的会话权限分为 `full`、`workspace`、`workspace-only` 三档。默�
 
 CPU 与内存上限是另一套独立机制，不随沙盒模式变化，见 [limits.md](limits.md)。
 
+用户亲手输入的 `!` / `!!` 手动命令始终以 `full` 权限运行，不受当前会话沙箱限制；下表的 bash 权限指模型发起的工具执行。
+
 ## 模式矩阵
 
 | 模式 | bash 文件系统 | bash 网络 | 内置文件工具 |

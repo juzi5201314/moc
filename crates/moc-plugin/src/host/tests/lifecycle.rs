@@ -108,6 +108,160 @@ async fn timeout_poisons_the_plugin_for_the_process() {
     assert_eq!(result.content, "ok");
 }
 
+#[tokio::test]
+async fn cancelling_a_call_aborts_its_host_task() {
+    struct PendingBridge {
+        started: tokio::sync::Notify,
+        stopped: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    impl HostBridge for PendingBridge {
+        fn call_tool<'a>(
+            &'a self,
+            _name: String,
+            _args: Value,
+        ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
+            Box::pin(async move {
+                // sender 的释放是任务已被回收的信号，不靠 sleep 猜测执行进度。
+                let _stopped = self.stopped.lock().take().unwrap();
+                self.started.notify_one();
+                std::future::pending().await
+            })
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    install(
+        temp.path(),
+        "reader",
+        r#"import { tools } from "moc"; export default { tools: {
+          read_through: { description: "Read through the host", parameters: { type: "object" }, parallel: true,
+            run() { return tools.call("read", {}); }
+          }
+        } };"#,
+    );
+    let mut settings = settings();
+    settings.call_timeout = Duration::from_secs(30);
+    let host = PluginHost::start(temp.path(), temp.path(), &settings, &[]).await;
+    let (stopped, released) = tokio::sync::oneshot::channel();
+    let bridge = Arc::new(PendingBridge {
+        started: tokio::sync::Notify::new(),
+        stopped: Mutex::new(Some(stopped)),
+    });
+    let context = context();
+    let mut invocation = Box::pin(host.call_tool(
+        "read_through",
+        serde_json::json!({}),
+        &context,
+        bridge.clone(),
+    ));
+    tokio::select! {
+        result = &mut invocation => panic!("宿主回调应保持挂起：{result:?}"),
+        _ = bridge.started.notified() => {},
+        _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("宿主回调应启动"),
+    }
+    drop(invocation);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), released)
+            .await
+            .expect("取消必须回收宿主任务")
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn cancelled_or_timed_out_persistence_finishes_writing() {
+    struct PausedPersistence {
+        dir: std::path::PathBuf,
+        started: tokio::sync::Notify,
+        resume: tokio::sync::Notify,
+        finished: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    impl PersistenceBridge for PausedPersistence {
+        fn request<'a>(
+            &'a self,
+            plugin: &'a str,
+            _path: &'a Path,
+            _context: Option<&'a CallContext>,
+            op: PersistenceOp,
+        ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
+            Box::pin(async move {
+                match op {
+                    PersistenceOp::ConfigSnapshot => Ok(serde_json::json!({})),
+                    PersistenceOp::StateSet { key, value } => {
+                        let finished = self.finished.lock().take().unwrap();
+                        let temp = self.dir.join(format!(".{plugin}.tmp-test"));
+                        std::fs::write(&temp, serde_json::json!({key: value}).to_string()).unwrap();
+                        // 固定停在临时文件落盘后、rename 前，取消与超时都不依赖调度竞速。
+                        self.started.notify_one();
+                        self.resume.notified().await;
+                        std::fs::rename(temp, self.dir.join(format!("{plugin}.json"))).unwrap();
+                        let _ = finished.send(());
+                        Ok(Value::Null)
+                    }
+                    _ => panic!("未预期的持久化操作：{op:?}"),
+                }
+            })
+        }
+    }
+
+    for cancel in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "writer",
+            r#"export default { commands: { save: { description: "Save state",
+              run(_args, ctx) { ctx.state.count = 1; }
+            } } };"#,
+        );
+        let (finished, completed) = tokio::sync::oneshot::channel();
+        let bridge = Arc::new(PausedPersistence {
+            dir: temp.path().to_owned(),
+            started: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+            finished: Mutex::new(Some(finished)),
+        });
+        let mut settings = settings();
+        settings.call_timeout = if cancel {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_millis(200)
+        };
+        let host = PluginHost::start_with_persistence(
+            temp.path(),
+            temp.path(),
+            &settings,
+            &[],
+            bridge.clone(),
+        )
+        .await;
+        let context = context();
+        let mut invocation = Box::pin(host.run_command("save", "", &context));
+        tokio::select! {
+            result = &mut invocation => panic!("持久化操作应保持挂起：{result:?}"),
+            _ = bridge.started.notified() => {},
+            _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("持久化操作应启动"),
+        }
+        assert!(temp.path().join(".writer.tmp-test").exists());
+        if cancel {
+            drop(invocation);
+        } else {
+            assert_eq!(invocation.await.unwrap_err().code, "E_PLUGIN_TIMEOUT");
+        }
+        bridge.resume.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), completed)
+            .await
+            .expect("持久化操作应完成")
+            .expect("持久化任务不应被中止");
+        assert!(!temp.path().join(".writer.tmp-test").exists());
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(temp.path().join("writer.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved, serde_json::json!({"count": 1}));
+    }
+}
+
 /// 仓库里的示例插件必须始终可加载：它是文档承诺的最小可运行形态。
 #[tokio::test]
 async fn example_plugin_loads_and_answers() {

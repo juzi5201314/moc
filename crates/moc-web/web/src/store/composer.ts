@@ -30,6 +30,8 @@ export type ComposerState = {
   pushPending: (sessionId: string, item: PendingItem, front?: boolean) => void;
   updatePending: (sessionId: string, key: string, patch: Partial<PendingItem>) => void;
   removePending: (sessionId: string, key: string) => void;
+  /** 把待发项移到目标下标（删除后再插入的语义）。 */
+  movePending: (sessionId: string, key: string, toIndex: number) => void;
 };
 
 const EMPTY: Draft = { text: "", images: [] };
@@ -84,6 +86,15 @@ export const useComposer = create<ComposerState>()((set) => ({
         [sessionId]: (state.pending[sessionId] ?? []).filter((item) => item.key !== key),
       },
     })),
+  movePending: (sessionId, key, toIndex) =>
+    set((state) => {
+      const list = [...(state.pending[sessionId] ?? [])];
+      const from = list.findIndex((item) => item.key === key);
+      if (from < 0) return {};
+      const [item] = list.splice(from, 1);
+      list.splice(Math.max(0, Math.min(toIndex, list.length)), 0, item);
+      return { pending: { ...state.pending, [sessionId]: list } };
+    }),
 }));
 
 export function toInput(text: string, images: Attachment[]): InputPart[] {

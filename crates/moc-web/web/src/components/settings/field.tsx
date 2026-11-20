@@ -64,7 +64,14 @@ export function SettingRow({
   const scope = useSettings((state) => state.scope);
   return (
     <div className="group/row py-3.5">
-      <div className={cn("flex gap-6", wide ? "flex-col gap-2.5" : "items-center justify-between")}>
+      <div
+        className={cn(
+          "flex",
+          wide
+            ? "flex-col gap-2.5"
+            : "flex-col gap-2.5 md:flex-row md:items-center md:justify-between md:gap-6",
+        )}
+      >
         <div className="min-w-0 flex-1" title={title}>
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             <span className="truncate">{label}</span>
@@ -97,7 +104,11 @@ export function SettingRow({
             </p>
           )}
         </div>
-        <div className={cn("shrink-0", wide ? "w-full" : "w-[260px] max-w-[45%]")}>{children}</div>
+        <div
+          className={cn("min-w-0 shrink-0", wide ? "w-full" : "w-full md:w-[260px] md:max-w-[45%]")}
+        >
+          {children}
+        </div>
       </div>
       {error && <p className="mt-1.5 text-xs text-destructive">{error}</p>}
     </div>

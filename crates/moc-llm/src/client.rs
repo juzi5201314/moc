@@ -79,17 +79,22 @@ impl Client {
         let deadline_secs = req.options.connect_deadline_secs;
         tokio::time::timeout(
             Duration::from_secs(deadline_secs),
-            self.with_retry(cfg, &mut RetryBudget::default(), || async {
-                let response = self
-                    .execute(cfg, encoded, false, prepared.diagnostics)
-                    .await?;
-                let headers = response.headers().clone();
-                let body = read_body(response).await?;
-                let response = codec::decode_response(cfg, req, &body)
-                    .map_err(|error| response_metadata(error, &headers))?;
-                crate::guard::StreamGuard::new(guard).check_response(&response)?;
-                Ok(response)
-            }),
+            self.with_retry(
+                cfg,
+                &mut RetryBudget::default(),
+                || async {
+                    let response = self
+                        .execute(cfg, encoded, false, prepared.diagnostics)
+                        .await?;
+                    let headers = response.headers().clone();
+                    let body = read_body(response).await?;
+                    let response = codec::decode_response(cfg, req, &body)
+                        .map_err(|error| response_metadata(error, &headers))?;
+                    crate::guard::StreamGuard::new(guard).check_response(&response)?;
+                    Ok(response)
+                },
+                |_, _, _| async {},
+            ),
         )
         .await
         .map_err(|_| deadline_error("nonstream", deadline_secs))
@@ -112,6 +117,22 @@ impl Client {
         req: &ChatRequest,
         budget: &mut RetryBudget,
     ) -> Result<ChatStream, LlmError> {
+        self.stream_with_budget_notified(cfg, req, budget, |_, _, _| async {})
+            .await
+    }
+
+    /// 每次首个有效内容前退避时通知调用方；参数为下次尝试序号、等待时长与失败原因。
+    pub async fn stream_with_budget_notified<F, Fut>(
+        &self,
+        cfg: &LlmConfig,
+        req: &ChatRequest,
+        budget: &mut RetryBudget,
+        on_retry: F,
+    ) -> Result<ChatStream, LlmError>
+    where
+        F: FnMut(u32, Duration, LlmError) -> Fut,
+        Fut: Future<Output = ()>,
+    {
         let prepared = self.prepare(cfg, req, true).await?;
         let encoded = &prepared.encoded;
         let started = Instant::now();
@@ -119,28 +140,33 @@ impl Client {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(deadline_secs);
         tokio::time::timeout_at(
             deadline,
-            self.with_retry(cfg, budget, || async {
-                let response = self
-                    .execute(cfg, encoded, true, prepared.diagnostics)
-                    .await?;
-                let headers = response.headers().clone();
-                if headers
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok())
-                    .is_some_and(|value| value.contains("application/json"))
-                {
-                    let body = read_body(response).await?;
-                    codec::decode_response(cfg, req, &body)
-                        .map_err(|error| response_metadata(error, &headers))?;
-                    return Err(LlmError::Stream(t!("llm.err.stream_json").into_owned()));
-                }
-                let body: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>> =
-                    Box::pin(CountingStream::new(response.bytes_stream()));
-                let mut stream = ChatStream::new(body, cfg, req);
-                stream.set_response_headers(&headers);
-                stream.prime().await?;
-                Ok(stream)
-            }),
+            self.with_retry(
+                cfg,
+                budget,
+                || async {
+                    let response = self
+                        .execute(cfg, encoded, true, prepared.diagnostics)
+                        .await?;
+                    let headers = response.headers().clone();
+                    if headers
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|value| value.contains("application/json"))
+                    {
+                        let body = read_body(response).await?;
+                        codec::decode_response(cfg, req, &body)
+                            .map_err(|error| response_metadata(error, &headers))?;
+                        return Err(LlmError::Stream(t!("llm.err.stream_json").into_owned()));
+                    }
+                    let body: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>> =
+                        Box::pin(CountingStream::new(response.bytes_stream()));
+                    let mut stream = ChatStream::new(body, cfg, req);
+                    stream.set_response_headers(&headers);
+                    stream.prime().await?;
+                    Ok(stream)
+                },
+                on_retry,
+            ),
         )
         .await
         .map_err(|_| deadline_error("stream", deadline_secs))
@@ -184,15 +210,18 @@ impl Client {
     }
 
     /// 请求失败共享同一个预算；响应体解码也在重试边界内。
-    async fn with_retry<T, F, Fut>(
+    async fn with_retry<T, F, Fut, R, RetryFuture>(
         &self,
         cfg: &LlmConfig,
         budget: &mut RetryBudget,
         mut send: F,
+        mut on_retry: R,
     ) -> Result<T, LlmError>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<T, LlmError>>,
+        R: FnMut(u32, Duration, LlmError) -> RetryFuture,
+        RetryFuture: Future<Output = ()>,
     {
         loop {
             budget.begin_attempt();
@@ -206,6 +235,7 @@ impl Client {
                         error = %error,
                         "请求失败，按退避策略重试"
                     );
+                    on_retry(budget.attempts() + 1, delay, error).await;
                     tokio::time::sleep(delay).await;
                 }
             }

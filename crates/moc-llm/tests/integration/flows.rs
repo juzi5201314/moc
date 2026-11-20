@@ -398,6 +398,36 @@ async fn stream_anthropic() {
 }
 
 #[tokio::test]
+async fn stream_anthropic_partial_delta_usage_keeps_cache_tokens() {
+    // 官方 SDK 约定：message_delta 的 usage 是累计值，可选字段缺省表示沿用 message_start。
+    let server = start().await;
+    mount_sse(
+        &server,
+        "/v1/messages",
+        &[
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":20,\"cache_read_input_tokens\":100,\"output_tokens\":1}}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":20,\"output_tokens\":5}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ],
+    )
+    .await;
+
+    let cfg = config(Protocol::AnthropicMessages, &server);
+    let req = ChatRequest {
+        messages: vec![Message::user_text("hi")],
+        max_output_tokens: Some(512),
+        ..Default::default()
+    };
+    let mut stream = Client::new().stream(&cfg, &req).await.unwrap();
+    while stream.next_event().await.is_some() {}
+
+    let usage = stream.finish().await.unwrap().usage;
+    assert_eq!(usage.input_tokens, 120);
+    assert_eq!(usage.cached_input_tokens, Some(100));
+    assert_eq!(usage.output_tokens, 5);
+}
+
+#[tokio::test]
 async fn complete_responses_nonstream() {
     let server = start().await;
     mount_json(

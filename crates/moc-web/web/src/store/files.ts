@@ -35,6 +35,8 @@ export type TreeNode = {
   kind: "dir" | "file";
   /** 目录节点已加载过的子项；未加载为 undefined。 */
   children?: TreeNode[];
+  /** 工作区目录缓存包含隐藏项时为 true。 */
+  showHidden?: boolean;
   /** 本次列举失败时的错误文本。 */
   error?: string;
   description?: string | null;
@@ -148,8 +150,10 @@ export function toggleDir(sessionId: string, root: FileRoot, node: TreeNode, ope
   const expanded = { ...files.expanded };
   expanded[node.key] = open ?? !expanded[node.key];
   patch(sessionId, (current) => ({ ...current, expanded }));
-  // 行内 node.children 可能是过期引用，以 nodes 缓存为准。
-  if (expanded[node.key] && !files.nodes[node.key]?.children) {
+  const cached = files.nodes[node.key];
+  const stale =
+    root.kind === "workspace" && cached?.showHidden !== useLayout.getState().filesShowHidden;
+  if (expanded[node.key] && (!cached?.children || stale)) {
     void loadDir(sessionId, root, node.key);
   }
 }
@@ -167,8 +171,19 @@ function nodeFromResource(entry: ResourceListResult["entries"][number]): TreeNod
   };
 }
 
+/** 每个目录最近一次列举的序号：迟到的旧响应不得覆盖较新的列举。 */
+const dirSeq = new Map<string, number>();
+
 /** 拉取一个目录的子项并更新节点缓存。 */
+
 export async function loadDir(sessionId: string, root: FileRoot, key: string): Promise<TreeNode[]> {
+  const showHidden = root.kind === "workspace" ? useLayout.getState().filesShowHidden : undefined;
+  const isCurrent = () =>
+    showHidden === undefined || showHidden === useLayout.getState().filesShowHidden;
+  const seqKey = `${sessionId}\n${key}`;
+  const seq = (dirSeq.get(seqKey) ?? 0) + 1;
+  dirSeq.set(seqKey, seq);
+  const isLatest = () => dirSeq.get(seqKey) === seq;
   patch(sessionId, (files) => ({ ...files, loading: { ...files.loading, [key]: true } }));
   try {
     let children: TreeNode[];
@@ -176,7 +191,7 @@ export async function loadDir(sessionId: string, root: FileRoot, key: string): P
       const result = await rpc.call<FsListDirResult>("fs/list_dir", {
         path: key,
         include_files: true,
-        show_hidden: useLayout.getState().filesShowHidden,
+        show_hidden: showHidden,
       });
       children = result.entries.map(nodeFromFs);
     } else {
@@ -186,17 +201,20 @@ export async function loadDir(sessionId: string, root: FileRoot, key: string): P
       });
       children = result.entries.map(nodeFromResource);
     }
+    if (!isCurrent() || !isLatest()) return [];
     patch(sessionId, (files) => {
       const nodes = { ...files.nodes };
       nodes[key] = {
         ...(nodes[key] ?? { key, name: key, kind: "dir" }),
         children,
+        showHidden,
         error: undefined,
       };
       return { ...files, nodes, loading: { ...files.loading, [key]: false } };
     });
     return children;
   } catch (error) {
+    if (!isCurrent() || !isLatest()) return [];
     const message = errorText(error);
     patch(sessionId, (files) => {
       const nodes = { ...files.nodes };
@@ -207,19 +225,30 @@ export async function loadDir(sessionId: string, root: FileRoot, key: string): P
   }
 }
 
-/** 已展开目录全部重拉（自动刷新用，调用方负责 debounce）。 */
+/** 重拉当前根及同源的已展开目录。 */
 export function refreshExpanded(sessionId: string, root: FileRoot): void {
   const files = session(useFiles.getState(), sessionId);
-  for (const key of Object.keys(files.expanded)) {
-    if (files.expanded[key]) void loadDir(sessionId, root, key);
+  const rootKey = root.kind === "workspace" ? root.cwd : "";
+  const keys = new Set([rootKey]);
+  for (const [key, expanded] of Object.entries(files.expanded)) {
+    const isResource = /^[\w+.-]+:\/\//.test(key);
+    if (expanded && (root.kind === "session") === isResource) keys.add(key);
   }
+  for (const key of keys) void loadDir(sessionId, root, key);
 }
 
 // ---------- 标签与文件操作 ----------
 
+/** 每个标签最近一次读取的序号：迟到的旧响应不得覆盖较新的读取及其后输入的草稿。 */
+const loadSeq = new Map<string, number>();
+
 /** 读一份文件/资源内容并填进标签。 */
 export async function loadFileContent(sessionId: string, target: FileTarget): Promise<void> {
   const key = targetKey(target);
+  const seqKey = `${sessionId}\n${key}`;
+  const seq = (loadSeq.get(seqKey) ?? 0) + 1;
+  loadSeq.set(seqKey, seq);
+  const isLatest = () => loadSeq.get(seqKey) === seq;
   try {
     const result =
       target.kind === "fs"
@@ -228,6 +257,7 @@ export async function loadFileContent(sessionId: string, target: FileTarget): Pr
             session_id: sessionId,
             uri: target.uri,
           });
+    if (!isLatest()) return;
     patchFileTab(sessionId, key, {
       loading: false,
       error: undefined,
@@ -239,6 +269,7 @@ export async function loadFileContent(sessionId: string, target: FileTarget): Pr
       draft: result.content ?? undefined,
     });
   } catch (error) {
+    if (!isLatest()) return;
     patchFileTab(sessionId, key, { loading: false, error: errorText(error) });
   }
 }
@@ -296,6 +327,26 @@ export function openFile(
   } else {
     expandTo(sessionId, { kind: "session", sessionId }, target.uri);
   }
+}
+
+/** 目录引用：不开文件页签（read_path 拒绝目录），只在树里展开并定位。 */
+export function revealDir(sessionId: string, path: string): void {
+  const layout = useLayout.getState();
+  if (!(layout.rightbarOpen && layout.inspectorTab === "files")) {
+    layout.openInspector("files");
+  }
+  // 窄面板是 tree/editor 层叠：切回 tree 才看得见目录，不能沿用旧文件视图。
+  patch(sessionId, (current) => ({ ...current, root: "workspace", stackedView: "tree" }));
+  const cwd = useTranscript.getState().bySession[sessionId]?.info.cwd ?? "";
+  const root: FileRoot = { kind: "workspace", cwd };
+  expandTo(sessionId, root, path);
+  // 目录自身也要展开（expandTo 只展开各级父目录）。
+  patch(sessionId, (files) => ({
+    ...files,
+    expanded: { ...files.expanded, [path]: true },
+  }));
+  const files = session(useFiles.getState(), sessionId);
+  if (!files.nodes[path]?.children) void loadDir(sessionId, root, path);
 }
 
 /** 沿 key 的各级父目录依次展开并加载。 */
@@ -379,15 +430,38 @@ export function setDraft(sessionId: string, key: string, draft: string): void {
   }));
 }
 
+/** 每标签一条保存队列：并发调用按序执行，后到的保存等前一次落盘后再读最新标签。
+ * 否则两个请求带着同一个 expected_modified_ms 必有一方收到 FileConflict 误报磁盘冲突，
+ * 而且服务端 mtime 检查与写入非原子，双成功时迟到响应还可能把 modifiedMs 回退。 */
+const saveQueues = new Map<string, Promise<void>>();
+
 /** 保存：mtime 乐观锁；-32016 时打 diskConflict 标记交给 UI 出 banner。 */
 export async function saveFile(
   sessionId: string,
   key: string,
   overwrite = false,
 ): Promise<boolean> {
+  const seqKey = `${sessionId}\n${key}`;
+  const queued = (saveQueues.get(seqKey) ?? Promise.resolve()).then(() =>
+    doSave(sessionId, key, overwrite),
+  );
+  const tail = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  saveQueues.set(seqKey, tail);
+  void tail.then(() => {
+    if (saveQueues.get(seqKey) === tail) saveQueues.delete(seqKey);
+  });
+  return queued;
+}
+
+async function doSave(sessionId: string, key: string, overwrite: boolean): Promise<boolean> {
   const files = session(useFiles.getState(), sessionId);
   const tab = files.tabs.find((item) => targetKey(item.target) === key);
   if (tab?.target.kind !== "fs") return false;
+  // 排队期间标签被关闭又重开：内容还没读回来或没有草稿时，写 `""` 会把文件清空。
+  if (tab.loading || tab.draft === undefined) return true;
   try {
     const result = await rpc.call<FsWriteFileResult>("fs/write_file", {
       path: tab.target.path,
@@ -429,12 +503,14 @@ export async function reloadFromDisk(sessionId: string, key: string): Promise<vo
 export function noteExternalChange(sessionId: string): void {
   for (const tab of session(useFiles.getState(), sessionId).tabs) {
     if (tab.target.kind === "resource") continue;
+    const probedMs = tab.modifiedMs;
     void rpc
       .call<FsReadFileResult>("fs/read_file", { path: tab.target.path, max_bytes: 1 })
       .then((result) => {
         const current = session(useFiles.getState(), sessionId);
         const now = current.tabs.find((item) => targetKey(item.target) === targetKey(tab.target));
-        if (!now || result.modified_ms === now.modifiedMs) return;
+        // 探测期间已有读取/保存同步过 mtime：这次结果已过时。
+        if (!now || now.modifiedMs !== probedMs || result.modified_ms === now.modifiedMs) return;
         const dirty = now.draft !== undefined && now.draft !== now.content;
         if (dirty) patchFileTab(sessionId, targetKey(tab.target), { diskConflict: true });
         else void reloadFromDisk(sessionId, targetKey(tab.target));
@@ -453,6 +529,110 @@ export function cancelNaming(sessionId: string): void {
   patch(sessionId, (files) => ({ ...files, naming: undefined }));
 }
 
+/** 目录树缓存 key 同步改名：节点自身的 key 与子孙节点的 key 都按路径前缀重映射。 */
+function remapTreeNode(remap: (path: string) => string, node: TreeNode): TreeNode {
+  return {
+    ...node,
+    key: remap(node.key),
+    children: node.children?.map((child) => remapTreeNode(remap, child)),
+  };
+}
+
+/** 按路径前缀重映射一张 key 索引表；不在改名范围内的 key 原样保留。 */
+function remapKeys<T>(
+  remap: (path: string) => string,
+  record: Record<string, T>,
+): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).map(([key, value]) => [remap(key), value]));
+}
+
+/** 重命名或移动后同步所有会话的文件标签，保留未保存的草稿。 */
+export async function renameFile(from: string, to: string): Promise<void> {
+  const isWithin = (path: string, parent: string) =>
+    path === parent || path.startsWith(`${parent}/`);
+  for (const files of Object.values(useFiles.getState().bySession)) {
+    const conflict = files.tabs.find(
+      (tab) =>
+        tab.target.kind === "fs" &&
+        !isWithin(tab.target.path, from) &&
+        isWithin(tab.target.path, to) &&
+        tab.draft !== undefined &&
+        tab.draft !== tab.content,
+    );
+    if (conflict?.target.kind === "fs") {
+      throw new Error(t("files.rename_unsaved_destination", { path: conflict.target.path }));
+    }
+  }
+  const result = await rpc.call<FsRenameResult>("fs/rename", { from, to });
+  const remapPath = (path: string) =>
+    isWithin(path, from) ? result.path + path.slice(from.length) : path;
+  const remapKey = (key: string) => (key.startsWith("fs:") ? `fs:${remapPath(key.slice(3))}` : key);
+  const reloading: Array<[string, FileTarget]> = [];
+  const reloadDirs: Array<[string, string]> = [];
+  useFiles.setState((state) => ({
+    bySession: Object.fromEntries(
+      Object.entries(state.bySession).map(([id, files]) => {
+        const renamed = new Map<string, OpenFile>();
+        for (const tab of files.tabs) {
+          if (tab.target.kind !== "fs") continue;
+          const path = remapPath(tab.target.path);
+          if (path !== tab.target.path) {
+            const target = { ...tab.target, path };
+            renamed.set(targetKey(tab.target), { ...tab, target });
+            if (tab.loading) reloading.push([id, target]);
+          }
+        }
+        // 在飞的列举按旧路径落地会留下孤儿节点，失效后让 loading 随新 key 重拉。
+        for (const key of Object.keys(files.loading)) {
+          if (files.loading[key] && isWithin(key, from)) {
+            dirSeq.delete(`${id}\n${key}`);
+            reloadDirs.push([id, remapPath(key)]);
+          }
+        }
+        const destinations = new Set([...renamed.values()].map((tab) => targetKey(tab.target)));
+        const closingReplaced =
+          files.closing && destinations.has(files.closing.key) && !renamed.has(files.closing.key);
+        return [
+          id,
+          {
+            ...files,
+            // 目录改名后 expanded/nodes/loading 里的旧路径 key 永远失效：
+            // refreshExpanded 还会对死路径发 fs/list_dir，展开状态也丢了。
+            expanded: remapKeys(remapPath, files.expanded),
+            nodes: Object.fromEntries(
+              Object.entries(files.nodes).map(([key, node]) => [
+                remapPath(key),
+                remapTreeNode(remapPath, node),
+              ]),
+            ),
+            loading: remapKeys(remapPath, files.loading),
+            tabs: files.tabs.flatMap((tab) => {
+              const key = targetKey(tab.target);
+              const replacement = renamed.get(key);
+              return replacement ? [replacement] : destinations.has(key) ? [] : [tab];
+            }),
+            active: files.active ? remapKey(files.active) : files.active,
+            closing: closingReplaced
+              ? undefined
+              : files.closing
+                ? { ...files.closing, key: remapKey(files.closing.key) }
+                : files.closing,
+          },
+        ];
+      }),
+    ),
+  }));
+  // 改名时在飞的读取按旧 key 落地会被丢弃：仍在加载的改名标签按新路径重读，
+  // 否则该标签永远停在 loading。已加载的标签内容不变（改的是路径不是内容），不重读。
+  for (const [id, target] of reloading) void loadFileContent(id, target);
+  // 同理处理仍在加载的目录：失效在飞列举并重拉，否则 loading 标志永远卡住，
+  // 迟到的旧响应还会在旧路径下留下孤儿节点。
+  for (const [id, key] of reloadDirs) {
+    const cwd = useTranscript.getState().bySession[id]?.info.cwd;
+    if (cwd) void loadDir(id, { kind: "workspace", cwd }, key);
+  }
+}
+
 /** 提交 inline 命名：新建文件/目录或重命名。 */
 export async function commitNaming(sessionId: string, root: FileRoot, name: string): Promise<void> {
   const files = session(useFiles.getState(), sessionId);
@@ -466,7 +646,7 @@ export async function commitNaming(sessionId: string, root: FileRoot, name: stri
   try {
     if (naming.kind === "rename" && naming.fromKey) {
       const to = `${parentPath(naming.fromKey)}/${trimmed}`;
-      await rpc.call<FsRenameResult>("fs/rename", { from: naming.fromKey, to });
+      await renameFile(naming.fromKey, to);
       void loadDir(sessionId, root, parentPath(naming.fromKey));
     } else if (naming.kind === "new-dir") {
       await rpc.call("fs/create_dir", { parent: naming.parentKey, name: trimmed });
@@ -502,8 +682,37 @@ export async function confirmDelete(sessionId: string, root: FileRoot): Promise<
   try {
     await rpc.call("fs/delete", { path: deleting.key });
     if (root.kind === "workspace") void loadDir(sessionId, root, parentPath(deleting.key));
-    // 已打开的标签标为已删除状态（留标签，展示错误）。
-    patchFileTab(sessionId, `fs:${deleting.key}`, { error: t("files.deleted") });
+    const under = (path: string) => path === deleting.key || path.startsWith(`${deleting.key}/`);
+    // 让在飞的读取失效：迟到的响应不得清掉已删除标记并回填旧内容。
+    // 删除的是目录时，子文件标签与在飞列举也一并失效/清缓存，
+    // 否则子标签不标已删除、原地新建同名目录还会闪出旧子项。
+    patch(sessionId, (files) => {
+      for (const tab of files.tabs) {
+        if (tab.target.kind === "fs" && under(tab.target.path)) {
+          loadSeq.delete(`${sessionId}\n${targetKey(tab.target)}`);
+        }
+      }
+      // loading 记的是请求过的目录（含还没落过 nodes 条目的），
+      // 遍历它才不漏掉在飞列举——迟到的响应会把已删目录重建成幽灵节点。
+      for (const key of Object.keys(files.loading)) {
+        if (under(key)) dirSeq.delete(`${sessionId}\n${key}`);
+      }
+      return {
+        ...files,
+        expanded: Object.fromEntries(Object.entries(files.expanded).filter(([key]) => !under(key))),
+        nodes: Object.fromEntries(Object.entries(files.nodes).filter(([key]) => !under(key))),
+        loading: Object.fromEntries(Object.entries(files.loading).filter(([key]) => !under(key))),
+      };
+    });
+    // 已打开的标签标为已删除状态（留标签，展示错误）；读取可能尚未返回，一并退出 loading。
+    patch(sessionId, (files) => ({
+      ...files,
+      tabs: files.tabs.map((tab) =>
+        tab.target.kind === "fs" && under(tab.target.path)
+          ? { ...tab, error: t("files.deleted"), loading: false }
+          : tab,
+      ),
+    }));
   } catch (error) {
     toast.error(t("files.delete_failed", { error: errorText(error) }));
   }

@@ -310,7 +310,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
             </div>
           )}
           {/* 左侧留出 pl-8 给悬停「＋」（块内 -left-6），不能用 overflow-hidden 裁掉它 */}
-          <div className="overflow-x-auto rounded-xl py-4 pr-5 pl-8 ring-1 ring-inset ring-border-subtle">
+          <div className="overflow-x-auto rounded-2xl border border-border bg-card py-4 pr-5 pl-8">
             <PlanMarkdown
               markdown={plan.markdown}
               annotations={[...submitted, ...drafts]}
@@ -322,7 +322,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
       )}
 
       {editor && (
-        <div className="space-y-2.5 rounded-xl bg-card p-3 shadow-[var(--elevation-composer)]">
+        <div className="space-y-2.5 rounded-2xl border border-border bg-card p-3 shadow-xs">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>{t("pr.editing", { s: editor.startLine, e: editor.endLine })}</span>
             <IconButton size="xs" label={t("pr.close_editor")} onClick={() => setEditor(null)}>
@@ -557,7 +557,7 @@ function AnnotationCard({
   const t = useT();
   const parsed = splitSuggestion(annotation.body);
   return (
-    <li className="rounded-xl bg-card p-3 ring-1 ring-inset ring-border-subtle">
+    <li className="rounded-2xl border border-border bg-card p-3 shadow-xs">
       <div className="flex h-5 items-center justify-between gap-2 text-2xs text-text-tertiary">
         <span className="font-mono">
           {t("pr.lines", { s: annotation.start_line, e: annotation.end_line })}

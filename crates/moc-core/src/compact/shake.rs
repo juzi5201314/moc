@@ -1,14 +1,15 @@
 //! shake 压缩：保护窗口之外的工具结果只保留开头结尾，调用配对和原始日志地址不变。
 
 use super::{CompactionBudget, messages_tokens, record_compaction};
-use crate::session::{entries::Entry, state::SessionState};
+use crate::session::entries::Entry;
+use crate::tools::read::ReadArgs;
 use crate::{config::ResolvedConfig, error::CoreError, service::CoreInner};
 use moc_llm::{ContentPart, Role};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) async fn compact(
     inner: &CoreInner,
-    state: &SessionState,
+    session_id: &str,
     config: &ResolvedConfig,
     model: &crate::ResolvedModel,
     budget: CompactionBudget,
@@ -17,17 +18,25 @@ pub(crate) async fn compact(
         tokens_before,
         fixed_tokens,
     } = budget;
-    let mut entries = state.log_entries();
-    if !prune(&mut entries, &config.compaction) {
-        return Err(CoreError::ContextOverflow(
-            "local pruning found no reclaimable tool output".into(),
-        ));
-    }
-    // 归档必须覆盖完整的压缩前历史：整表重写之后 transcript 只剩下剪枝后的内容，
-    // 而摘要向模型承诺能回读的正是这份压缩前的历史。
-    let record = inner.sessions.get(&state.session.id).await?;
-    let archive_uri = super::archive::write(&record.paths, state).await?;
-    inner.sessions.rewrite(&state.session.id, entries).await?;
+    let record = inner.sessions.get(session_id).await?;
+    let paths = record.paths.clone();
+    let compaction = config.compaction.clone();
+    // 在追加锁内重新取状态，裁剪、归档和重写共用同一快照；后台子代理结果只能在
+    // 事务前或事务后追加，不能被压缩入口的旧快照覆盖。
+    let (state, archive_uri) = inner
+        .sessions
+        .rewrite_current(session_id, move |state| async move {
+            let mut entries = state.log_entries();
+            if !prune(&mut entries, &compaction) {
+                return Err(CoreError::ContextOverflow(
+                    "local pruning found no reclaimable tool output".into(),
+                ));
+            }
+            // 归档必须先于重写，保留本次真正裁剪的完整原文。
+            let archive_uri = super::archive::write(&paths, &state).await?;
+            Ok((entries, (state, archive_uri)))
+        })
+        .await?;
     let snapshot = record.state.lock().await.clone();
     let tokens_after = fixed_tokens.saturating_add(messages_tokens(
         &super::replay::model_messages(&snapshot, None, Some(model)),
@@ -35,7 +44,7 @@ pub(crate) async fn compact(
     let first_kept = state.first_kept_id.clone().or_else(|| {
         state
             .transcript
-            .get(super::replay::visible_history_start(state))
+            .get(super::replay::visible_history_start(&state))
             .map(|entry| entry.id.clone())
     });
     // 沿用上一份 checkpoint 的 summary 时，必须保留它原本的方法名和生成它的模型：
@@ -69,8 +78,8 @@ pub(crate) async fn compact(
 }
 
 fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> bool {
-    // read 的路径用于判重；ask 的答复是用户亲手做的决定，短小但丢了无法回查，永不裁剪。
-    let mut reads: HashMap<String, String> = HashMap::new();
+    // read 按完整分页参数判重；ask 的答复是用户亲手做的决定，短小但丢了无法回查，永不裁剪。
+    let mut reads: HashMap<String, ReadArgs> = HashMap::new();
     let mut asks: HashSet<String> = HashSet::new();
     for call in entries
         .iter()
@@ -81,11 +90,9 @@ fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> boo
         .flat_map(|message| message.tool_calls())
     {
         match call.name.as_str() {
-            "read" => {
-                if let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments)
-                    && let Some(path) = args.get("path").and_then(|path| path.as_str())
-                {
-                    reads.insert(call.id.clone(), path.to_owned());
+            "read" if config.shake.supersede_reads => {
+                if let Ok(args) = serde_json::from_str(&call.arguments) {
+                    reads.insert(call.id.clone(), args);
                 }
             }
             "ask" => {
@@ -124,13 +131,14 @@ fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> boo
             if asks.contains(&result.tool_call_id) {
                 continue;
             }
-            let superseded = reads
-                .get(&result.tool_call_id)
-                .is_some_and(|path| !seen_reads.insert(path.clone()));
+            let superseded = !result.is_error
+                && reads
+                    .get(&result.tool_call_id)
+                    .is_some_and(|args| !seen_reads.insert(args));
             if protected {
                 continue;
             }
-            let replacement = if config.shake.supersede_reads && superseded {
+            let replacement = if superseded {
                 Some("[superseded by a later read]".to_owned())
             } else if prompts_ago >= config.shake.hard_clear_prompts {
                 Some("[tool output pruned]".to_owned())
@@ -208,6 +216,77 @@ mod tests {
             parent.to_owned(),
             2,
         )
+    }
+
+    fn earlier_read_after_prune(
+        earlier_args: &str,
+        later_args: &str,
+        later_is_error: bool,
+    ) -> String {
+        let mut config = crate::config::CompactionConfig::default();
+        config.shake.keep_last_prompts = 0;
+        config.protect_recent_tool_tokens = 0;
+        let read = |id: &str, args: &str| Message {
+            role: Role::Assistant,
+            content: moc_llm::message_content![ContentPart::ToolCall(ToolCall::new(
+                id, "read", args,
+            ))],
+        };
+        let later_output = if later_is_error {
+            "E_NOT_FOUND"
+        } else {
+            "later page"
+        };
+        let mut entries = [
+            entry(read("read1", earlier_args), "root"),
+            entry(Message::tool_result("read1", "original page", false), "e1"),
+            entry(read("read2", later_args), "e2"),
+            entry(
+                Message::tool_result("read2", later_output, later_is_error),
+                "e3",
+            ),
+        ];
+        prune(&mut entries, &config);
+        let Entry::Message { message, .. } = &entries[1] else {
+            unreachable!();
+        };
+        message.tool_results().next().unwrap().content.clone()
+    }
+
+    #[test]
+    fn prune_keeps_distinct_read_pages() {
+        let first_lines = r#"{"path":"large.rs","offset":1,"limit":10}"#;
+        let actual = [
+            (
+                first_lines,
+                r#"{"path":"large.rs","offset":100,"limit":10}"#,
+            ),
+            (first_lines, r#"{"path":"large.rs","offset":1,"limit":5}"#),
+            (
+                r#"{"path":"large.rs","offset":1,"limit":1,"byte_offset":0}"#,
+                r#"{"path":"large.rs","offset":1,"limit":1,"byte_offset":1024}"#,
+            ),
+        ]
+        .map(|(earlier, later)| earlier_read_after_prune(earlier, later, false));
+        assert_eq!(actual, ["original page"; 3]);
+    }
+
+    #[test]
+    fn prune_keeps_successful_read_when_retry_fails() {
+        let args = r#"{"path":"large.rs","offset":1,"limit":10}"#;
+        assert_eq!(earlier_read_after_prune(args, args, true), "original page");
+    }
+
+    #[test]
+    fn prune_supersedes_matching_successful_reads() {
+        assert_eq!(
+            earlier_read_after_prune(
+                r#"{"path":"large.rs","offset":1,"limit":10}"#,
+                r#"{"limit":10,"offset":1,"path":"large.rs"}"#,
+                false,
+            ),
+            "[superseded by a later read]"
+        );
     }
 
     #[test]

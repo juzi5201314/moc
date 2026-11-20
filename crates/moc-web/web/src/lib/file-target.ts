@@ -72,10 +72,19 @@ export function isLocalFileRef(href: string): boolean {
   return true;
 }
 
-/** 本地路径链接里剥出路径本体（file:// → 裸路径）。 */
+/** Markdown 渲染后的 href 已百分号编码（空格、中文等）；还原成真实路径，非法序列原样保留。 */
+function decodeHref(href: string): string {
+  try {
+    return decodeURIComponent(href);
+  } catch {
+    return href;
+  }
+}
+
+/** 本地路径链接里剥出路径本体（file:// → 裸路径），并解开百分号编码。 */
 export function localFileRefPath(href: string): string {
   const target = href.trim();
-  if (!/^file:\/\//i.test(target)) return target;
+  if (!/^file:\/\//i.test(target)) return decodeHref(target);
   try {
     return decodeURIComponent(new URL(target).pathname);
   } catch {
@@ -94,14 +103,14 @@ export const FS_SENTINEL = "#moc-fs:";
 export function resolveAnchorTarget(href: string | undefined, cwd: string): ParsedLink | null {
   if (!href) return null;
   if (href.startsWith(RESOURCE_SENTINEL)) {
-    const { path, line } = splitLineRef(href.slice(RESOURCE_SENTINEL.length));
+    const { path, line } = splitLineRef(decodeHref(href.slice(RESOURCE_SENTINEL.length)));
     return { target: { kind: "resource", uri: path }, line };
   }
   if (href.startsWith(FS_SENTINEL)) {
     return parseLinkTarget(localFileRefPath(href.slice(FS_SENTINEL.length)), cwd);
   }
   if (isResourceUri(href)) {
-    const { path, line } = splitLineRef(href);
+    const { path, line } = splitLineRef(decodeHref(href));
     return { target: { kind: "resource", uri: path }, line };
   }
   if (isLocalFileRef(href)) {

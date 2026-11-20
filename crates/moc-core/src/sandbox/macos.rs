@@ -136,6 +136,8 @@ fn profile(policy: &SandboxPolicy, scratch: &SandboxScratch) -> String {
     let mut rules = vec!["(version 1)".to_owned(), "(allow default)".to_owned()];
     if policy.mode == SessionPermission::WorkspaceOnly {
         rules.push("(deny file-read-data)".to_owned());
+        // macOS 启动程序需要读取根目录本身；literal 不放开其子路径。
+        rules.push("(allow file-read-data (literal \"/\"))".to_owned());
         let mut reads = runtime_read_roots()
             .iter()
             .copied()
@@ -268,7 +270,59 @@ mod tests {
         let scratch = policy.scratch().expect("scratch");
         let profile = profile(&policy, &scratch);
         assert!(profile.contains("(deny file-read-data)"));
+        assert!(profile.contains("(allow file-read-data (literal \"/\"))"));
+        assert!(!profile.contains("(subpath \"/\")"));
         assert!(profile.contains("(deny network*)"));
+    }
+
+    #[test]
+    fn workspace_only_starts_programs_without_exposing_outside_files() {
+        if !probe_mode(SessionPermission::Workspace) {
+            return;
+        }
+        assert!(support().supports(SessionPermission::WorkspaceOnly));
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        let marker = outside.path().join("marker");
+        std::fs::write(&marker, "hidden").expect("outside marker");
+        let policy = policy(SessionPermission::WorkspaceOnly, workspace.path());
+        let shell = crate::shell::detect().expect("shell");
+        let wrapped = wrap(
+            shell,
+            "printf sandbox > allowed; test \"$(/bin/cat allowed)\" = sandbox",
+            &policy,
+        )
+        .expect("wrap shell");
+        let output = std::process::Command::new(&wrapped.program)
+            .args(&wrapped.args)
+            .envs(wrapped.envs.iter().map(|(key, value)| (key, value)))
+            .env_remove("BASH_ENV")
+            .env_remove("ENV")
+            .current_dir(workspace.path())
+            .output()
+            .expect("sandbox shell");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            std::fs::read(workspace.path().join("allowed")).unwrap(),
+            b"sandbox"
+        );
+        for program in ["/usr/bin/true", "/bin/cat", "/usr/bin/touch"] {
+            let wrapped = wrap_argv(vec![program.into(), marker.as_os_str().to_owned()], &policy)
+                .expect("wrap argv");
+            let output = std::process::Command::new(&wrapped.program)
+                .args(&wrapped.args)
+                .envs(wrapped.envs.iter().map(|(key, value)| (key, value)))
+                .current_dir(workspace.path())
+                .output()
+                .expect("sandbox argv");
+            assert_eq!(
+                output.status.success(),
+                program == "/usr/bin/true",
+                "{program}: {output:?}"
+            );
+            assert!(output.stdout.is_empty(), "{program}: {output:?}");
+        }
+        assert_eq!(std::fs::read(&marker).unwrap(), b"hidden");
     }
 
     #[test]

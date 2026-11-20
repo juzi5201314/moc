@@ -15,6 +15,9 @@ context = { zh = "%{window} tokens 上下文", en = "%{window} tokens context" }
 label = { zh = "模型", en = "Model" }
 desc = { zh = "本次会话使用的模型", en = "Model used by this session" }
 
+[acp.diff]
+truncated = { zh = "差异已截断，部分改动未显示。", en = "Diff truncated; some changes are not shown." }
+
 [acp.plan]
 blocked = { zh = "%{content}（阻塞：%{reason}）", en = "%{content} (blocked: %{reason})" }
 approved = { zh = "计划「%{title}」已批准", en = "Plan “%{title}” approved" }

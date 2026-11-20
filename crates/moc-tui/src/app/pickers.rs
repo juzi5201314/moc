@@ -19,6 +19,11 @@ impl App {
             .as_ref()
             .map_or_else(String::new, |session| session.model.clone());
         self.open_model_picker_for(current, &[], crate::modal::ModelTarget::Session);
+        if self.read_only
+            && let Some(Modal::Model { picker, .. }) = self.modal.as_mut()
+        {
+            picker.error = Some(t!("tui.status.read_only").into_owned());
+        }
     }
 
     /// 打开 `/config` 的模型角色选择器：与 `Ctrl+P` 共用候选、搜索与思考等级。
@@ -104,14 +109,14 @@ impl App {
             },
             ..Default::default()
         };
-        self.modal = Some(Modal::Model {
+        self.set_modal(Some(Modal::Model {
             entries,
             current,
             picker,
             level,
             detail,
             target,
-        });
+        }));
     }
 
     /// 选择器候选：Fusion 特殊项与角色伪值排在模型前面，
@@ -225,7 +230,7 @@ impl App {
 
     /// 打开会话恢复选择器（列表由调用方异步填充后更新）。
     pub fn open_session_picker(&mut self) {
-        self.modal = Some(Modal::Sessions {
+        self.set_modal(Some(Modal::Sessions {
             sessions: Vec::new(),
             cwd: self.startup_cwd.clone(),
             scope: SessionScope::default(),
@@ -233,14 +238,14 @@ impl App {
                 loading: true,
                 ..Default::default()
             },
-        });
+        }));
     }
 
     /// 打开消息回退选择器；数据由调用方异步加载。
     pub fn open_rewind(&mut self) {
-        self.modal = Some(Modal::Rewind {
+        self.set_modal(Some(Modal::Rewind {
             state: crate::modal::RewindState::default(),
-        });
+        }));
     }
 
     /// 记录已生效模型，保存失败时显示反馈。

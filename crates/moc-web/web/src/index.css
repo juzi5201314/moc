@@ -13,29 +13,30 @@
 
 /* =========================================================================
    设计令牌：中性灰阶 + 单一强调色（参照 Devin 的克制设计语言）。
-   面的层级：sidebar/panel（近白底）< background（主舞台，纯白）< card/popover（浮起）。
-   分隔只靠发丝线，不靠色块；浮层靠「发丝描边 + 极软长投影」，不靠深阴影。
+   面的层级：chrome（外框）< sidebar/panel（会话与检查区）< background（主舞台）< card/popover。
+   主窗框和浮层用发丝轮廓与柔影，信息行用底色差区分。
    强调色只出现在选中、链接、进行中，其余一律灰阶。
    ========================================================================= */
 
 :root {
   color-scheme: light;
-  --background: #ffffff;
+  --chrome: #ececec;
+  --background: #f9f9f9;
   --foreground: #171717;
-  --panel: #fafafa;
+  --panel: #f7f7f7;
   --card: #ffffff;
   --card-foreground: #171717;
   --popover: #ffffff;
   --popover-foreground: #171717;
   --primary: #171717;
   --primary-foreground: #fafafa;
-  --secondary: #f4f4f5;
+  --secondary: #f0f0f0;
   --secondary-foreground: #171717;
-  --muted: #f4f4f5;
-  --muted-foreground: #6b6b70;
-  --accent: rgba(23, 23, 23, 0.05);
+  --muted: #f0f0f0;
+  --muted-foreground: #676767;
+  --accent: rgba(23, 23, 23, 0.065);
   --accent-foreground: #171717;
-  --bubble: #f4f4f5;
+  --bubble: #ededed;
   --brand: #3b6ff5;
   --brand-foreground: #ffffff;
   --destructive: #dc2626;
@@ -49,31 +50,29 @@
   --diff-insert: rgba(22, 163, 74, 0.1);
   --diff-delete: rgba(220, 38, 38, 0.09);
   --radius: 0.625rem;
-  --sidebar: #fafafa;
+  --sidebar: #f7f7f7;
   --sidebar-foreground: #171717;
-  --sidebar-accent: rgba(23, 23, 23, 0.05);
+  --sidebar-accent: rgba(23, 23, 23, 0.07);
   --sidebar-accent-foreground: #171717;
   --surface-raised: #ffffff;
   --surface-hover: rgba(23, 23, 23, 0.04);
-  --text-tertiary: #9a9aa0;
-  --code-bg: #f7f7f8;
+  --text-tertiary: #737373;
+  --code-bg: #f1f1f1;
   /* 行内代码/选区用半透明：叠在表格行、引用块、选区上都能自然混色，不会出现不透明色块 */
   --inline-code-bg: rgba(23, 23, 23, 0.055);
   --selection: rgba(59, 111, 245, 0.14);
   /* GitHub btn 质感：顶部内高光 + 底部轻投影 */
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(23, 23, 23, 0.08);
   --elevation-ring: 0 0 0 1px rgba(23, 23, 23, 0.08);
-  /* composer：不画描边，只靠贴身柔影 + 长投影勾出轮廓 */
-  --elevation-composer:
-    0 0 2px rgba(23, 23, 23, 0.06), 0 2px 6px rgba(23, 23, 23, 0.04),
-    0 12px 32px -12px rgba(23, 23, 23, 0.12);
+  /* composer：扁平取向，只留发丝级轮廓，不做长投影 */
+  --elevation-composer: 0 0 0 1px rgba(23, 23, 23, 0.05), 0 1px 3px rgba(23, 23, 23, 0.04);
   /* 灰托盘内的白卡：一层贴身软影把它和托盘分开，外投影交给托盘 */
   --elevation-composer-inset: 0 1px 2px rgba(23, 23, 23, 0.05), 0 2px 8px rgba(23, 23, 23, 0.04);
   /* 托盘比白卡暗一级：浅色是浅灰，深色要比卡片更深，否则层级会反过来 */
   --composer-tray: #f4f4f5;
   --elevation-popover:
-    0 0 0 1px rgba(23, 23, 23, 0.07), 0 10px 32px -8px rgba(23, 23, 23, 0.14),
-    0 2px 4px rgba(23, 23, 23, 0.03);
+    0 0 0 1px rgba(23, 23, 23, 0.09), 0 20px 42px -10px rgba(23, 23, 23, 0.2),
+    0 2px 6px rgba(23, 23, 23, 0.05);
   /* 模态框：比 popover 更高一层，投影更长更散，仍以发丝描边勾边而非实线 border */
   --elevation-dialog:
     0 0 0 1px rgba(23, 23, 23, 0.07), 0 24px 64px -16px rgba(23, 23, 23, 0.22),
@@ -88,6 +87,7 @@
 
 .dark {
   color-scheme: dark;
+  --chrome: #101011;
   --background: #161618;
   --foreground: #ededef;
   --panel: #111113;
@@ -122,14 +122,13 @@
   --sidebar-accent-foreground: #ededef;
   --surface-raised: #1f1f22;
   --surface-hover: rgba(255, 255, 255, 0.045);
-  --text-tertiary: #6e6e76;
+  --text-tertiary: #8b8b94;
   --code-bg: #1b1b1e;
   --inline-code-bg: rgba(255, 255, 255, 0.075);
   --selection: rgba(109, 151, 255, 0.28);
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.45);
   --elevation-ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
-  --elevation-composer:
-    0 0 2px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3), 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  --elevation-composer: 0 0 0 1px rgba(255, 255, 255, 0.06);
   --elevation-composer-inset: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
   --composer-tray: #121214;
   --elevation-popover:
@@ -147,6 +146,7 @@
 }
 
 @theme inline {
+  --color-chrome: var(--chrome);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-panel: var(--panel);
@@ -334,9 +334,32 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .moc-dots > span {
+  .moc-dots > span,
+  .animate-spin,
+  .animate-pulse,
+  .animate-in {
     animation: none;
   }
+  :is(
+    [data-slot="dialog-content"],
+    [data-slot="dialog-overlay"],
+    [data-slot="alert-dialog-content"],
+    [data-slot="alert-dialog-overlay"],
+    [data-slot="popover-content"],
+    [data-slot="dropdown-menu-content"],
+    [data-slot="dropdown-menu-sub-content"],
+    [data-slot="context-menu-content"],
+    [data-slot="select-content"],
+    [data-slot="tooltip-content"]
+  ) {
+    animation-duration: 1ms;
+  }
+}
+
+.moc-workflow-canvas {
+  --xy-edge-stroke: var(--text-tertiary);
+  --xy-edge-stroke-selected: var(--foreground);
+  --xy-background-pattern-dots-color: var(--border-strong);
 }
 
 /* ---------------- Markdown 排版 ----------------

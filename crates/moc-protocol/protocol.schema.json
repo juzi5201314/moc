@@ -2014,6 +2014,11 @@
           "type": "string"
         },
         {
+          "const": "MaxTurns",
+          "description": "达到本次提示的轮数上限（`session/prompt` 的 `max_turns`），未再发起新请求。",
+          "type": "string"
+        },
+        {
           "additionalProperties": false,
           "description": "其余线上取值，原样保留。",
           "properties": {
@@ -3900,6 +3905,15 @@
           },
           "type": "array"
         },
+        "max_turns": {
+          "description": "本次提示的模型请求轮数上限：达到后不再发起新请求，以\n[`crate::FinishReason::MaxTurns`] 结束。`None` 表示无限制（默认）。\n只约束这一次 `session/prompt`，不持久化。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "mode": {
           "anyOf": [
             {
@@ -4608,6 +4622,44 @@
           "type": "string"
         }
       ]
+    },
+    "SessionExportParams": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "绝对路径或相对于会话工作区的路径；省略时自动命名，已有文件不覆盖。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SessionExportResult": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "description": "正文的 JSON 编码超过 8 MiB 时省略，文件仍完整保存。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
     },
     "SessionGoalParams": {
       "additionalProperties": false,
@@ -9308,6 +9360,15 @@
           "$ref": "#/$defs/Empty"
         },
         "type": "SessionDelete"
+      },
+      "session/export": {
+        "params": {
+          "$ref": "#/$defs/SessionExportParams"
+        },
+        "result": {
+          "$ref": "#/$defs/SessionExportResult"
+        },
+        "type": "SessionExport"
       },
       "session/goal": {
         "params": {

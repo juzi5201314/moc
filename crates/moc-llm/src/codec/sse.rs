@@ -1,7 +1,7 @@
 //! SSE（Server-Sent Events）增量解码器。
 //!
 //! 这是流式的唯一手写字节解析层：三种协议共享它，协议层只解释 `data` 载荷。
-//! 解析严格按帧边界切分，UTF-8 只在帧完整时才解码，因此任意 TCP 分片位置都安全。
+//! 解析严格按帧边界切分，UTF-8 只在行完整时才解码，因此任意 TCP 分片位置都安全。
 
 use std::borrow::Cow;
 
@@ -20,13 +20,22 @@ pub(crate) struct SseEvent {
 ///
 /// 缓冲区用「读游标 + 下一次追加时回收前缀」而不是每帧 `split_off`：流式热路径
 /// 上每帧都要追加与消费一次，逐帧重建缓冲区会让分配与搬移随帧数线性放大。回收
-/// 只在 `push` 时发生，此时未消费部分至多是一个未完成帧，搬移代价摊还到帧大小。
+/// 只在 `push` 时发生；已解析的行保存在字段状态中，未完成行保留字节与扫描进度。
 pub(crate) struct SseDecoder {
     buf: Vec<u8>,
-    /// 已消费前缀的长度；帧完成时推进，`push` 时整体丢弃。
+    /// 已消费前缀的长度，也是当前行起点；完整行解析后推进，`push` 时整体丢弃。
     pos: usize,
+    /// 当前行已扫描到的位置；分片未包含行尾时，下次只扫描新增字节。
+    scan: usize,
+    /// CR 已结束上一行；若下一字节为 LF，则只作为同一行尾的一部分跳过。
+    skip_lf: bool,
     /// 只剥离流开头的一个 UTF-8 BOM；其三个字节可以分属不同网络块。
     bom_checked: bool,
+    /// 当前帧的字段状态，跨分片保留，避免重复解析完整行及拼接数据。
+    event: Option<String>,
+    id: Option<String>,
+    data: String,
+    has_data: bool,
 }
 
 impl SseDecoder {
@@ -35,7 +44,13 @@ impl SseDecoder {
         Self {
             buf: Vec::new(),
             pos: 0,
+            scan: 0,
+            skip_lf: false,
             bom_checked: false,
+            event: None,
+            id: None,
+            data: String::new(),
+            has_data: false,
         }
     }
 
@@ -43,6 +58,7 @@ impl SseDecoder {
     pub fn push(&mut self, chunk: &[u8]) {
         if self.pos > 0 {
             self.buf.drain(..self.pos);
+            self.scan -= self.pos;
             self.pos = 0;
         }
         self.buf.extend_from_slice(chunk);
@@ -59,33 +75,48 @@ impl SseDecoder {
         }
     }
 
-    /// 取出下一个完整帧；不完整时返回 `None` 且不消费任何字节。
+    /// 取出下一个完整帧；不完整时返回 `None`，保留字段状态与未完成行。
     pub fn next_event(&mut self) -> Option<SseEvent> {
-        let mut cursor = 0;
-        // 无字段的空白行可以立即消费（例如心跳产生的空行），但它们之后的部分
-        // 仍可能属于未完成帧，因此单独记录可消费边界。
-        let mut consume_upto = 0;
-        let mut event = None;
-        let mut id = None;
-        let mut data = String::new();
-        let mut has_data = false;
+        // BOM 尚未收齐时不能推进扫描位置，否则剥离 BOM 后偏移会失效。
+        if !self.bom_checked {
+            return None;
+        }
 
         loop {
-            let Some((line, next)) = self.line_at(cursor) else {
-                self.pos += consume_upto;
+            if self.skip_lf {
+                let &byte = self.buf.get(self.pos)?;
+                if byte == b'\n' {
+                    self.pos += 1;
+                }
+                self.scan = self.pos;
+                self.skip_lf = false;
+            }
+            let Some(offset) = self.buf[self.scan..]
+                .iter()
+                .position(|byte| matches!(byte, b'\r' | b'\n'))
+            else {
+                self.scan = self.buf.len();
                 return None;
             };
-            cursor = next;
+            let newline = self.scan + offset;
+            let line = &self.buf[self.pos..newline];
+            self.pos = newline + 1;
+            self.scan = self.pos;
+            // 单独 CR 立即结束一行，不等待后续 LF；跨块的 CRLF 也只算一次行尾。
+            self.skip_lf = self.buf[newline] == b'\r';
 
             if line.is_empty() {
-                if !has_data {
-                    consume_upto = cursor;
-                    event = None;
-                    id = None;
+                if !self.has_data {
+                    self.event = None;
+                    self.id = None;
                     continue;
                 }
-                self.pos += cursor;
-                return Some(SseEvent { event, data, id });
+                self.has_data = false;
+                return Some(SseEvent {
+                    event: self.event.take(),
+                    data: std::mem::take(&mut self.data),
+                    id: self.id.take(),
+                });
             }
             // 注释行（`:` 开头）不构成事件字段，心跳与代理注入的注释都靠它识别。
             if line[0] == b':' {
@@ -93,35 +124,19 @@ impl SseDecoder {
             }
 
             match split_field(line) {
-                (b"event", value) => event = Some(value.into()),
-                (b"id", value) if !value.contains('\0') => id = Some(value.into()),
+                (b"event", value) => self.event = Some(value.into()),
+                (b"id", value) if !value.contains('\0') => self.id = Some(value.into()),
                 (b"data", value) => {
-                    if has_data {
-                        data.push('\n');
+                    if self.has_data {
+                        self.data.push('\n');
                     }
-                    has_data = true;
-                    data.push_str(&value);
+                    self.has_data = true;
+                    self.data.push_str(&value);
                 }
                 // `retry:`、注释行（`:` 开头）等一律忽略。
                 _ => {}
             }
         }
-    }
-
-    /// 读取从 `cursor` 开始的一整行；返回 `(行内容, 下一行起点)`。
-    ///
-    /// LF、CRLF 和单独 CR 都是行尾；尚未到达的 LF 不会让已完成的 CR 帧等待。
-    fn line_at(&self, cursor: usize) -> Option<(&[u8], usize)> {
-        let rest = &self.buf[self.pos..];
-        let newline = rest[cursor..]
-            .iter()
-            .position(|byte| matches!(byte, b'\r' | b'\n'))?
-            + cursor;
-        let mut next = newline + 1;
-        if rest[newline] == b'\r' && rest.get(next) == Some(&b'\n') {
-            next += 1;
-        }
-        Some((&rest[cursor..newline], next))
     }
 }
 
@@ -237,5 +252,39 @@ mod tests {
         // 补上结尾后照常产出，证明未消费字节被保留。
         decoder.push(b"\n\n");
         assert_eq!(drain(&mut decoder), vec![data_event("partial")]);
+    }
+
+    #[test]
+    fn large_frame_in_small_chunks_preserves_partial_lines_and_fields() {
+        let mut decoder = SseDecoder::new();
+        decoder.push(b"\xef\xbb\xbf: heartbeat\r\nevent: message\r\nid: 42\r\n");
+        let line = "北京".repeat(512 * 1024);
+
+        // 两条长行共 6 MiB，同时覆盖未完成行扫描和已完成字段的跨块保留。
+        for _ in 0..2 {
+            decoder.push(b"data: ");
+            for chunk in line.as_bytes().chunks(1024) {
+                decoder.push(chunk);
+                assert_eq!(decoder.next_event(), None);
+            }
+            decoder.push(b"\r");
+            assert_eq!(decoder.next_event(), None);
+            decoder.push(b"\n");
+            assert_eq!(decoder.next_event(), None);
+        }
+
+        // 空行的 CR 立即产出帧；稍后到达的 LF 不应影响下一帧。
+        decoder.push(b"\r");
+        assert_eq!(
+            decoder.next_event(),
+            Some(SseEvent {
+                event: Some("message".into()),
+                data: format!("{line}\n{line}"),
+                id: Some("42".into()),
+            })
+        );
+        assert_eq!(decoder.next_event(), None);
+        decoder.push(b"\ndata: next\r\n\r\n");
+        assert_eq!(drain(&mut decoder), vec![data_event("next")]);
     }
 }

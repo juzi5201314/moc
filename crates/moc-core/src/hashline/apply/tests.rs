@@ -72,6 +72,78 @@ async fn applies_single_line_replacement_and_preserves_crlf_bom() {
 }
 
 #[tokio::test]
+async fn empty_insert_after_unterminated_last_line_remains_editable() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let path = dir.path().join("file.txt");
+    let (_, served, tag) = served_snapshot(&path, "one");
+    let path = path.canonicalize().unwrap();
+    let store = AnchorStore::new();
+    let output = apply_edit(
+        dir.path(),
+        &request("file.txt", &tag, vec![insert(1, "")]),
+        &served,
+        None,
+        &store,
+        32,
+        4096,
+    )
+    .await
+    .expect("插入空行成功");
+    assert!(output.content.contains("+ 2│"), "{}", output.content);
+    let inserted_bytes = std::fs::read(&path).expect("读取结果");
+
+    let served = store.served(&path).expect("插入后 served");
+    let tag = tag_text(served.current_tag().expect("插入后的 tag"));
+    apply_edit(
+        dir.path(),
+        &request("file.txt", &tag, vec![replace(2, 2, "two")]),
+        &served,
+        None,
+        &store,
+        32,
+        4096,
+    )
+    .await
+    .expect("替换新插入的空行成功");
+
+    assert_eq!(inserted_bytes, b"one\n\n");
+    assert_eq!(std::fs::read(&path).expect("读取结果"), b"one\ntwo\n");
+
+    for (original, edit) in [("", insert(0, "")), ("one", replace(1, 1, ""))] {
+        let (_, served, tag) = served_snapshot(&path, original);
+        let store = AnchorStore::new();
+        let output = apply_edit(
+            dir.path(),
+            &request("file.txt", &tag, vec![edit]),
+            &served,
+            None,
+            &store,
+            32,
+            4096,
+        )
+        .await
+        .expect("得到单个空行");
+        assert!(output.content.contains("+ 1│"), "{}", output.content);
+        assert_eq!(std::fs::read(&path).expect("读取结果"), b"\n");
+
+        let header = output.content.lines().next().expect("diff 头部");
+        let served = store.served(&path).expect("编辑后 served");
+        apply_edit(
+            dir.path(),
+            &request("file.txt", header, vec![replace(1, 1, "two")]),
+            &served,
+            None,
+            &store,
+            32,
+            4096,
+        )
+        .await
+        .expect("替换唯一的空行成功");
+        assert_eq!(std::fs::read(&path).expect("读取结果"), b"two\n");
+    }
+}
+
+#[tokio::test]
 async fn older_tag_remaps_untouched_lines_and_rejects_changed_ones() {
     let dir = tempfile::tempdir().expect("临时目录");
     let path = dir.path().join("file.txt");

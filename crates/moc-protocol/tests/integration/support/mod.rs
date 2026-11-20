@@ -978,6 +978,7 @@ impl AgentService for ScriptedService {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             },
         )
         .await
@@ -1164,6 +1165,7 @@ pub fn prompt_params(session_id: &str, text: &str) -> PromptParams {
         mode: None,
         agent_message: None,
         goal_round: None,
+        max_turns: None,
     }
 }
 

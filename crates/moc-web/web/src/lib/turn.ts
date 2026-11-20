@@ -72,7 +72,7 @@ export function groupTurns(blocks: Block[]): Turn[] {
       turns.push(current);
       continue;
     }
-    if (!current) {
+    if (!current || block.kind === "bash") {
       current = { id: block.id, activity: [], texts: [], segments: [] };
       turns.push(current);
     }
@@ -129,7 +129,9 @@ export function createTurnGrouper(): TurnGrouper {
       turns = next;
       starts.length = index;
       for (let offset = begin; offset < blocks.length; offset++) {
-        if (offset === begin || blocks[offset].kind === "user") starts.push(offset);
+        if (offset === begin || blocks[offset].kind === "user" || blocks[offset].kind === "bash") {
+          starts.push(offset);
+        }
       }
       group.changedIndex = index;
       previous = blocks;

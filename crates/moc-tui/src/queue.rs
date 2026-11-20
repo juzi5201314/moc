@@ -272,6 +272,7 @@ pub fn send_prompt(
                 mode,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
             .map(|_| ())

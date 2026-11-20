@@ -11,6 +11,7 @@ import { Question, QuestionInput, type QuestionValue } from "@/components/ai-ele
 import { DiffFile } from "@/components/panels/diff-file";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { AskParams, PermissionOption, PermissionRequestParams } from "@/protocol/types";
@@ -41,18 +42,18 @@ export function PermissionCard({
     <Confirmation
       approval={{ id: request.request_id }}
       state="approval-requested"
-      className="gap-0 overflow-hidden rounded-xl bg-card p-0 ring-1 ring-inset ring-warn/30"
+      className="gap-0 overflow-hidden rounded-2xl border-border bg-card p-0 shadow-xs"
     >
       <ConfirmationRequest>
         <div className="flex items-start gap-3 px-4 pt-3.5 pb-3">
-          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-warn/12 text-warn">
-            <ShieldAlertIcon className="size-4" />
+          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <ShieldAlertIcon className="size-3.5" />
           </span>
           <div className="min-w-0 flex-1 space-y-1">
-            <div className="text-sm font-medium text-foreground">
+            <div className="break-words text-sm font-medium text-foreground">
               {request.title || t("req.tool_perm")}
             </div>
-            <div className="flex items-center gap-1.5 text-xs text-text-tertiary">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs text-text-tertiary">
               <span>{t("req.tool")}</span>
               <code className="rounded bg-muted px-1.5 py-px font-mono text-2xs text-muted-foreground">
                 {request.tool_name}
@@ -73,7 +74,7 @@ export function PermissionCard({
           </div>
         )}
       </ConfirmationRequest>
-      <ConfirmationActions className="w-full justify-end gap-2 self-stretch border-t border-border-subtle bg-muted/40 px-4 py-2.5">
+      <ConfirmationActions className="w-full flex-wrap justify-end gap-2 self-stretch border-t border-border-subtle px-4 py-2.5">
         {options.map((option) => (
           <Button
             key={option.id}
@@ -115,9 +116,11 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
     });
 
   return (
-    <div className="overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-brand/25">
+    <Card className="gap-0 overflow-hidden rounded-2xl border-border py-0 shadow-xs">
       <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-2.5 text-ui font-medium">
-        <SparklesIcon className="size-4 text-brand" />
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+          <SparklesIcon className="size-3.5" />
+        </span>
         {t("req.need_answer")}
         {request.questions.length > 1 && (
           <span className="text-xs font-normal text-text-tertiary">
@@ -225,7 +228,7 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
           );
         })}
       </div>
-      <div className="flex items-center justify-end gap-2 border-t border-border-subtle bg-muted/40 px-4 py-2.5">
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border-subtle px-4 py-2.5">
         <Button
           size="sm"
           variant="ghost"
@@ -238,6 +241,6 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
           {t("req.submit")}
         </Button>
       </div>
-    </div>
+    </Card>
   );
 }

@@ -47,6 +47,8 @@ impl App {
             && previous.id != info.id
         {
             self.btw.leave_session(&previous.id);
+            let previous_id = previous.id.clone();
+            self.cancel_session_modals(&previous_id);
             if self.focus == Focus::Btw {
                 self.focus = Focus::Prompt;
             }

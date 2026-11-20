@@ -1,4 +1,5 @@
 use super::MAX_THINKING_REDIRECTS;
+use super::PromptRun;
 use super::RequestWarning;
 use super::flush_reminders;
 use super::guard::CycleAction;
@@ -14,6 +15,7 @@ use super::tools::execute_tool_batch;
 use super::tools::persist_tool_result;
 use super::turn_inputs;
 use super::warnings::emit_fatal;
+use super::warnings::emit_request_retry;
 use crate::compact;
 use crate::compact::replay::model_messages;
 use crate::service::CoreInner;
@@ -42,7 +44,7 @@ pub(super) async fn run_prompt_locked(
     ctx: &RequestContext,
     mut params: moc_protocol::methods::PromptParams,
     record: Arc<crate::session::SessionRecord>,
-    retry: bool,
+    run: PromptRun,
 ) -> Result<PromptResult, RpcError> {
     let update = ctx.updates();
     let input::Prepared {
@@ -61,7 +63,7 @@ pub(super) async fn run_prompt_locked(
         source,
         images,
         first_prompt,
-    } = input::prepare(&inner, ctx, &mut params, &record, retry).await?;
+    } = input::prepare(&inner, ctx, &mut params, &record, run).await?;
     let runtime = inner.runtime(&params.session_id).await;
     let guard = runtime
         .guard
@@ -71,10 +73,10 @@ pub(super) async fn run_prompt_locked(
     let mut tool_cycles = ToolCycles::default();
     let mut state = record.state.lock().await;
     state.todo_reminders_sent = 0;
-    if retry {
-        // 重试不落库用户消息，`prompt_sequence` 不会随 append 自增；这里显式推进一位，
-        // 保证本次 `prompt_id` 与上一条提示不撞号（该计数由 transcript 推导、不落盘，
-        // 协议层也不解释它，重启后重新计数即可）。
+    if run != PromptRun::Normal {
+        // 重试与后台唤醒不落库用户消息，`prompt_sequence` 不会随 append 自增；
+        // 这里显式推进一位，保证本次 `prompt_id` 与上一条提示不撞号（该计数由
+        // transcript 推导、不落盘，协议层也不解释它，重启后重新计数即可）。
         state.prompt_sequence = state.prompt_sequence.saturating_add(1);
     }
     let prompt_id = crate::ids::prompt_id(state.prompt_sequence);
@@ -105,7 +107,7 @@ pub(super) async fn run_prompt_locked(
         }
     }
 
-    // 重试没有新的用户正文：`beforePrompt` 仍触发，但 `text` 为空、`images` 为 0。
+    // 重试与后台唤醒没有新的用户正文：`beforePrompt` 仍触发，但 `text` 为空、`images` 为 0。
     let prompt_text = user_message.as_ref().map(Message::text).unwrap_or_default();
     crate::service::plugin_events::before_prompt(
         &plugins,
@@ -257,6 +259,9 @@ pub(super) async fn run_prompt_locked(
     let roster = subagent_prompt.map(|prompt| prompt.roster);
 
     let mut is_first_turn = true;
+    // 已发起过的模型请求轮数；`max_turns` 在发起下一轮前截断，默认 `None` 不限制。
+    // 同一轮内的重试与溢出重发不算新一轮；重放 `/retry` 剪掉的批次不占轮次。
+    let mut model_turns = 0u32;
     'turns: loop {
         if cancel.is_cancelled() {
             final_reason = FinishReason::Cancelled;
@@ -267,6 +272,11 @@ pub(super) async fn run_prompt_locked(
             // 尾部提醒；`is_first_turn` 留给紧接着那次真实请求。
             Some(calls) => calls,
             None => {
+                if params.max_turns.is_some_and(|max| model_turns >= max) {
+                    final_reason = FinishReason::MaxTurns;
+                    break 'turns;
+                }
+                model_turns += 1;
                 // 本地提醒只在首轮注入；同一提示内因 continue 进入的轮次不算首轮。
                 let first_turn = std::mem::take(&mut is_first_turn);
                 for entry in
@@ -421,9 +431,27 @@ pub(super) async fn run_prompt_locked(
                         model.max_output_tokens,
                     )
                     .await;
+                    let notify_retry = |attempt, delay, error: moc_llm::LlmError| {
+                        let update = &update;
+                        let session_id = &params.session_id;
+                        let prompt_id = &prompt_id;
+                        let max = model.llm.retry.max_attempts;
+                        async move {
+                            let _ = emit_request_retry(
+                                update,
+                                session_id,
+                                prompt_id,
+                                attempt,
+                                max,
+                                delay,
+                                &error.to_string(),
+                            )
+                            .await;
+                        }
+                    };
                     let streamed = tokio::select! {
                         _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'turns; }
-                        result = inner.client.stream_with_budget(&model.llm, &request, &mut retry_budget) => result,
+                        result = inner.client.stream_with_budget_notified(&model.llm, &request, &mut retry_budget, notify_retry) => result,
                     };
                     // 错误恢复可能再次请求同一个供应商，必须先归还失败请求占用的并发名额。
                     if streamed.is_err() {

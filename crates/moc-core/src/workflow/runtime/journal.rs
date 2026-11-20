@@ -15,6 +15,7 @@ use moc_protocol::WorkflowRunStatus;
 use moc_protocol::WorkflowStopReason;
 use serde_json::Value;
 use serde_json::json;
+use std::io::Write;
 use std::sync::Arc;
 
 impl WorkflowManager {
@@ -330,7 +331,13 @@ impl WorkflowManager {
         let dir = handle.dir.clone();
         let meta_json = serde_json::to_vec_pretty(&*meta).unwrap_or_default();
         drop(meta);
-        let _ = std::fs::write(dir.join("run.json"), meta_json);
+        // shutdown 等待此任务结束；返回前须同步终态，避免释放租约后仍有旧写入。
+        if let Err(error) = std::fs::File::create(dir.join("run.json")).and_then(|mut file| {
+            file.write_all(&meta_json)?;
+            file.sync_all()
+        }) {
+            tracing::warn!(run_id = %handle.id, %error, "workflow 终态落盘失败");
+        }
         let inner = Arc::clone(&self.inner);
         let session_id = self.session_id.clone();
         tokio::spawn(async move {
@@ -361,6 +368,5 @@ impl WorkflowManager {
         }
         drop(view);
         self.persist_terminal(handle);
-        self.runs.lock().remove(&handle.id);
     }
 }

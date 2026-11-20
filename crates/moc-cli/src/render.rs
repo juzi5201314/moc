@@ -13,6 +13,8 @@ pub struct Renderer(Arc<Mutex<State>>);
 struct State {
     print_mode: bool,
     hide_thinking: bool,
+    /// `--print` 下接管全部输出：收集事件、写 stream-json 行、累计轮数与拒绝数。
+    collector: crate::print::PrintCollector,
     calls: HashMap<String, ToolCallView>,
     /// workflow 审批回传用的连接句柄与会话（repl 启动后注入）。
     client: Option<moc_protocol::ClientHandle>,
@@ -28,10 +30,15 @@ struct ToolCallView {
 }
 
 impl Renderer {
-    pub fn new(print_mode: bool, hide_thinking: bool) -> Self {
+    pub fn new(
+        print_mode: bool,
+        hide_thinking: bool,
+        output_format: crate::args::OutputFormat,
+    ) -> Self {
         Self(Arc::new(Mutex::new(State {
             print_mode,
             hide_thinking,
+            collector: crate::print::PrintCollector::new(output_format),
             calls: HashMap::new(),
             client: None,
             session_id: None,
@@ -44,17 +51,25 @@ impl Renderer {
         &self,
         client: moc_protocol::ClientHandle,
         session_id: String,
+        cwd: std::path::PathBuf,
         input: crate::repl::Input,
     ) {
         let mut state = self.0.lock();
+        state.collector.bind(cwd);
         state.client = Some(client);
         state.session_id = Some(session_id);
         state.input = Some(input);
     }
 
+    /// 提示结束后取 `--print` 的收集快照（非 print 模式内容为空）。
+    pub fn report(&self) -> crate::print::PrintReport {
+        self.0.lock().collector.report()
+    }
+
     pub fn handle(&self, params: SessionUpdateParams) {
         let mut state = self.0.lock();
         if state.print_mode {
+            state.collector.handle(&params);
             return;
         }
         let stdout = std::io::stdout();

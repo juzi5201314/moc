@@ -12,7 +12,7 @@ import {
   PackageIcon,
   PaperclipIcon,
   SquareIcon,
-  TerminalIcon,
+  ZapIcon,
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import {
@@ -20,6 +20,7 @@ import {
   type DragEvent,
   type KeyboardEvent,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -32,10 +33,11 @@ import {
   Attachments,
 } from "@/components/ai-elements/attachments";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverAnchor } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { t, useT } from "@/lib/i18n";
 import { leadSelector, parseSelector } from "@/lib/models";
-import { fromMeta, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
+import { commandToken, fromMeta, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type { ImageSource, PluginInfo, ResourceCandidate, SteerResult } from "@/protocol/types";
@@ -49,8 +51,10 @@ import {
 import { selectCommands, selectFeatures, selectModels, useConnection } from "@/store/connection";
 import { reacquire } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
+import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
+import { CommandTextarea } from "./command-textarea";
 import {
   CHIP,
   ComposerStatus,
@@ -58,6 +62,7 @@ import {
   PendingList,
   PlanToggle,
   SessionOptions,
+  ShellModeNotice,
   type Suggestion,
   SuggestionMenu,
 } from "./composer-parts";
@@ -96,7 +101,8 @@ function readImage(file: File): Promise<ComposerAttachment> {
   return promise;
 }
 
-/** 光标所在的空白分隔 token；以 `//`、`scheme:/` 或含 `://` 时视为资源 URI 前缀（与 TUI 一致）。 */
+/** 光标所在的空白分隔 token；以 `//`、`scheme:/` 或含 `://` 时视为资源 URI 前缀；
+ * `@` 开头（非 `@@`）视为工作区文件引用（与 TUI 一致）。`!` bash 模式下 @ 不补全。 */
 function resourceToken(
   text: string,
   cursor: number,
@@ -107,7 +113,9 @@ function resourceToken(
   while (end < text.length && !/\s/.test(text[end])) end++;
   const prefix = text.slice(start, cursor);
   const isUri = prefix === "//" || prefix.endsWith(":/") || prefix.includes("://");
-  return isUri ? { prefix, start, end } : null;
+  if (isUri) return { prefix, start, end };
+  const isAttachment = prefix.startsWith("@") && !prefix.startsWith("@@") && !text.startsWith("!");
+  return isAttachment ? { prefix, start, end } : null;
 }
 
 const RESOURCE_ICON: Record<string, typeof FileTextIcon> = {
@@ -116,6 +124,8 @@ const RESOURCE_ICON: Record<string, typeof FileTextIcon> = {
   local: FileTextIcon,
   skill: BookOpenIcon,
   namespace: FolderIcon,
+  file: FileTextIcon,
+  dir: FolderIcon,
 };
 
 /** 插件清单 → 斜杠命令；加载失败的插件不贡献命令。 */
@@ -142,6 +152,7 @@ type ComposerBarProps = {
 export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const t = useT();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const suggestionsId = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [cursor, setCursor] = useState(0);
   const [reading, setReading] = useState(false);
@@ -156,6 +167,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const plugins = useTranscript((state) => state.bySession[sessionId]?.plugins);
 
   const info = useTranscript((state) => state.bySession[sessionId]?.info);
+  const draftPermission = useSessions((state) => state.draftSession?.permission);
   const promptRunning = useTranscript((state) => Boolean(state.bySession[sessionId]?.running));
   const skillsWorking = useUi((state) => state.skillsWorking !== null);
   const running = promptRunning || skillsWorking;
@@ -226,6 +238,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               detail: command.plugin
                 ? `${command.description} · ${command.plugin}`
                 : command.description,
+              icon: <ZapIcon />,
             })),
           }
         : resourceItems.length > 0
@@ -282,6 +295,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   );
 
   const setText = (value: string, caret?: number) => {
+    if (value !== text) setDismissedAt(null);
     useComposer.getState().setText(sessionId, value);
     if (caret !== undefined) {
       setCursor(caret);
@@ -429,6 +443,40 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       )
       .catch((error) => toast.error(t("cb.stop_failed", { error: errorText(error) })));
 
+  /** 队列项取回草稿编辑：`/ask` 项保留前缀（重发仍走只读模式）；
+   * 草稿非空时把待发内容追加进草稿一起编辑，不把未确认的草稿换进队列自动发出。 */
+  const editPending = (item: PendingItem) => {
+    const composer = useComposer.getState();
+    const current = composer.drafts[sessionId] ?? { text: "", images: [] };
+    // 斜杠 / ! 命令草稿不是普通消息：合并后回车会执行命令并吞掉待发正文，直接阻止取回
+    if (current.text.startsWith("/") || current.text.startsWith("!")) {
+      toast(t("q.edit_command_draft"));
+      return;
+    }
+    composer.removePending(sessionId, item.key);
+    const text = item.mode === "ask" ? `/ask ${item.text}` : item.text;
+    const merged = current.text.trim() ? `${current.text}\n${text}` : text;
+    composer.restore(sessionId, {
+      text: merged,
+      images: [...current.images, ...item.images],
+    });
+    textareaRef.current?.focus();
+  };
+
+  /** 立即发送：空闲时直接发；运行中移到队首并中断当前轮，轮到后由 dispatchNext 发出。 */
+  const sendPendingNow = (item: PendingItem) => {
+    const composer = useComposer.getState();
+    composer.removePending(sessionId, item.key);
+    if (!running) {
+      void sendPrompt(sessionId, toInput(item.text, item.images), { mode: item.mode });
+      return;
+    }
+    composer.pushPending(sessionId, item, true);
+    void rpc
+      .call("session/cancel", { session_id: sessionId })
+      .catch((error) => toast.error(t("cb.interrupt_failed", { error: errorText(error) })));
+  };
+
   const removePending = async (item: PendingItem) => {
     if (item.kind === "queue") {
       useComposer.getState().removePending(sessionId, item.key);
@@ -526,17 +574,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   return (
     <ComposerDock inline={inline}>
       <div className="relative">
-        {menu && (
-          <SuggestionMenu
-            heading={menu.heading}
-            items={menu.items}
-            active={activeIndex}
-            onPick={pick}
-            onHover={setActiveIndex}
-          />
-        )}
-
-        {/* Devin 式双层：外层灰托盘始终存在，白卡嵌在其中；托盘顶部是固定 32px 的状态条（任务或提示 + 改动 / 子代理 / 费用），待发队列接在其下。 */}
+        {/* 会话输入区保留状态托盘；欢迎页状态条独立放在输入卡下方。 */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: 拖放区只承接文件，键盘用户走附件按钮 */}
         <div
           onDragOver={(event) => {
@@ -547,14 +585,24 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
           className={cn(
-            "relative rounded-[24px] bg-[var(--composer-tray)] p-1 shadow-[var(--elevation-composer)]",
+            "relative",
+            !inline &&
+              "rounded-[22px] bg-[var(--composer-tray)] p-1 shadow-[var(--elevation-composer)]",
             dragging && "ring-2 ring-brand/40",
           )}
         >
-          <ComposerStatus sessionId={sessionId} todos={todos} />
+          {!inline && <ComposerStatus sessionId={sessionId} todos={todos} />}
           {pending.length > 0 && (
-            <div className="px-2 pb-0.5">
-              <PendingList items={pending} onRemove={(item) => void removePending(item)} />
+            <div className="px-1 pb-0.5">
+              <PendingList
+                items={pending}
+                onRemove={(item) => void removePending(item)}
+                onEdit={editPending}
+                onSendNow={sendPendingNow}
+                onMove={(key, toIndex) =>
+                  useComposer.getState().movePending(sessionId, key, toIndex)
+                }
+              />
             </div>
           )}
 
@@ -565,16 +613,15 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               if (event.target === event.currentTarget) textareaRef.current?.focus();
             }}
             className={cn(
-              "relative rounded-[20px] bg-card shadow-[var(--elevation-composer-inset)] transition-[box-shadow]",
+              "relative rounded-[20px] border border-border bg-card transition-shadow",
+              !inline && "shadow-[var(--elevation-composer-inset)]",
               bashMode && "ring-1 ring-inset ring-warn/50",
             )}
           >
-            {bashMode && (
-              <div className="flex items-center gap-1.5 px-4 pt-2.5 text-xs font-medium text-warn">
-                <TerminalIcon className="size-3.5" />
-                {text.startsWith("!!") ? t("cb.bash_exclude") : t("cb.bash_include")}
-              </div>
-            )}
+            <ShellModeNotice
+              text={text}
+              permission={isDraft ? draftPermission : info?.permission}
+            />
 
             {images.length > 0 && (
               <Attachments variant="inline" className="px-3 pt-3">
@@ -598,28 +645,57 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               </Attachments>
             )}
 
-            <textarea
-              ref={textareaRef}
-              value={text}
-              rows={1}
-              onChange={(event) => {
-                setText(event.target.value);
-                setCursor(event.target.selectionStart);
+            <Popover
+              open={menu !== null}
+              onOpenChange={(open) => {
+                if (!open) setDismissedAt(text);
               }}
-              onSelect={syncCursor}
-              onKeyDown={onKeyDown}
-              onPaste={onPaste}
-              placeholder={placeholder}
-              aria-label={t("cb.input")}
-              className={cn(
-                "block w-full resize-none bg-transparent px-5 pt-4 pb-1 text-chat leading-6 text-foreground outline-none placeholder:text-text-tertiary",
-                bashMode && "font-mono text-sm",
-                inline ? "min-h-[96px]" : "min-h-[64px]",
+            >
+              <PopoverAnchor asChild>
+                <div>
+                  <CommandTextarea
+                    command={commandToken(text, commands)}
+                    ref={textareaRef}
+                    value={text}
+                    rows={1}
+                    onChange={(event) => {
+                      setText(event.target.value);
+                      setCursor(event.target.selectionStart);
+                    }}
+                    onSelect={syncCursor}
+                    onKeyDown={onKeyDown}
+                    onPaste={onPaste}
+                    placeholder={placeholder}
+                    aria-label={t("cb.input")}
+                    aria-autocomplete="list"
+                    aria-controls={menu ? suggestionsId : undefined}
+                    aria-activedescendant={
+                      menu?.items[activeIndex] ? `${suggestionsId}-${activeIndex}` : undefined
+                    }
+                    className={cn(
+                      "block w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-sm leading-6 text-foreground outline-none placeholder:text-text-tertiary",
+                      bashMode && "font-mono text-sm",
+                      inline ? "min-h-[72px]" : "min-h-[60px]",
+                    )}
+                    style={{ maxHeight: MAX_HEIGHT }}
+                  />
+                </div>
+              </PopoverAnchor>
+              {menu && (
+                <SuggestionMenu
+                  id={suggestionsId}
+                  side={inline ? "bottom" : "top"}
+                  heading={menu.heading}
+                  items={menu.items}
+                  active={activeIndex}
+                  onPick={pick}
+                  onHover={setActiveIndex}
+                  inputRef={textareaRef}
+                />
               )}
-              style={{ maxHeight: MAX_HEIGHT }}
-            />
+            </Popover>
 
-            <div className="flex h-11 items-center gap-1 px-3 pb-1">
+            <div className="flex min-h-11 flex-wrap items-center gap-1 px-2.5 pb-1.5 sm:px-3">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -670,7 +746,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                       <button
                         type="button"
                         onClick={stop}
-                        className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-transform active:scale-95"
+                        className="ml-1 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/85 motion-safe:active:scale-95"
                         aria-label={t("cb.stop_gen")}
                       >
                         <SquareIcon className="size-3 fill-current" />
@@ -683,7 +759,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     type="button"
                     onClick={() => send()}
                     disabled={!canSend}
-                    className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-[transform,background-color] active:scale-95 disabled:bg-text-tertiary/60 disabled:text-card"
+                    className="ml-1 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/85 motion-safe:active:scale-95 disabled:bg-text-tertiary disabled:text-card"
                     aria-label={running ? t("cb.steer_send") : t("cb.send")}
                   >
                     <ArrowUpIcon className="size-4" strokeWidth={2.4} />
@@ -693,6 +769,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
             </div>
           </div>
         </div>
+        {inline && <ComposerStatus sessionId={sessionId} todos={todos} />}
       </div>
     </ComposerDock>
   );

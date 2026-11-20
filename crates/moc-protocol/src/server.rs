@@ -5,16 +5,18 @@
 //!
 //! 每个请求的处理顺序：
 //!
-//! 1. 并发门禁：[`ServerOptions::max_in_flight`] 个许可用尽 → `-32000`。
+//! 1. 并发门禁：[`ServerOptions::max_in_flight`] 个许可用尽 → `-32000`，
+//!    拒绝响应入队失败则关闭连接；`session/cancel` 同样可能被此门禁拒绝。
 //! 2. 握手门禁：除 `initialize` / `ping` 外的请求在握手完成前 → `-32002`；
 //!    重复 `initialize` → `-32600`；major 版本不一致 → `-32003`（附 `server_version`）。
 //! 3. params 反序列化失败 → `-32602`，**不调用 core**。
 //! 4. 分发：`ping` 与 `session/cancel` 由协议层自答；其余进 [`AgentService`]。
+//!    取消的「即时」仅指获准后 trip 令牌不排在出站队列后面，响应仍需入队。
 //! 5. 结果序列化失败 → `-32603`。
 //!
 //! `session/prompt` / `session/retry` 额外过提示注册表：同一会话已有进行中的提示 →
-//! `-32011`，同样**不调用 core**。该注册表同时是 `session/cancel` 的落点，也是协议层
-//! 唯一持有的「会话相关」状态——它只记「谁在飞」，不记任何会话内容。
+//! `-32011`（入队失败则关闭连接），同样**不调用 core**。该注册表同时是 `session/cancel`
+//! 的落点，也是协议层唯一持有的「会话相关」状态——它只记「谁在飞」，不记任何会话内容。
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -45,7 +47,7 @@ pub struct ServerOptions {
     pub framing: Framing,
     /// 单条报文体上限。
     pub max_frame_bytes: usize,
-    /// 连接内并发请求上限；超出立刻回 `-32000`，不排队。
+    /// 连接内并发请求上限；超出尝试回复 `-32000`，入队失败则关闭连接，不等待。
     pub max_in_flight: usize,
     /// 出站队列容量：更新通知的最大积压量，也是背压的起点。
     pub outbound_capacity: usize,
@@ -251,7 +253,7 @@ struct ServerDispatch<S: AgentService> {
     connection: Arc<Connection>,
     handshake: Mutex<Handshake>,
     in_flight: Arc<Semaphore>,
-    prompts: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    prompts: Arc<Mutex<HashMap<String, Arc<CancellationToken>>>>,
     /// 在飞的旁路请求；与 `prompts` 完全独立，主提示的 busy / 取消互不波及。
     btw_flights: Arc<Mutex<HashMap<String, BtwFlight>>>,
 }
@@ -279,19 +281,21 @@ const SKILLS_FLIGHT: &str = "\0skills-compact";
 
 /// 提示注册表的摘除守卫：任务正常结束、被取消、被 abort 都会摘除，绝不留脏记录。
 struct PromptGuard {
-    prompts: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    prompts: Arc<Mutex<HashMap<String, Arc<CancellationToken>>>>,
     session_id: String,
+    cancel: Arc<CancellationToken>,
     skills: bool,
 }
 
-/// `session/prompt` 的占位结果。
+/// RPC 提示类请求在读循环中的占位结果；后台提示取得提示锁后另行登记。
 enum PromptClaim {
     /// 不是提示，或参数里读不出 `session_id`（后者交给任务报 `-32602`）。
     NotPrompt,
-    /// 占位成功，附带 `session_id` 供守卫摘除。
-    Claimed(String),
-    Skills(String),
-    /// 同一会话已有进行中的提示。
+    /// 占位成功，守卫按令牌身份摘除，避免误删已持锁接力的后台提示。
+    Claimed(String, Arc<CancellationToken>),
+    /// 技能压缩占位成功，同时占用全局标记与可选的会话条目。
+    Skills(String, Arc<CancellationToken>),
+    /// 已有会话或全局占位阻止本请求。
     Busy,
 }
 
@@ -308,8 +312,18 @@ enum BtwClaim {
 impl Drop for PromptGuard {
     fn drop(&mut self) {
         let mut prompts = self.prompts.lock().unwrap_or_else(PoisonError::into_inner);
-        prompts.remove(&self.session_id);
-        if self.skills {
+        // RPC 返回前后台提示可能已接力，只摘除本次请求登记的令牌。
+        if prompts
+            .get(&self.session_id)
+            .is_some_and(|cancel| Arc::ptr_eq(cancel, &self.cancel))
+        {
+            prompts.remove(&self.session_id);
+        }
+        if self.skills
+            && prompts
+                .get(SKILLS_FLIGHT)
+                .is_some_and(|cancel| Arc::ptr_eq(cancel, &self.cancel))
+        {
             prompts.remove(SKILLS_FLIGHT);
         }
     }
@@ -371,6 +385,7 @@ impl<S: AgentService> ServerDispatch<S> {
             client,
             Arc::clone(self.connection.traffic()),
             cancel,
+            Arc::clone(&self.prompts),
         )
     }
 
@@ -385,14 +400,16 @@ impl<S: AgentService> ServerDispatch<S> {
         // 守卫在读循环占位之后立刻建立：未握手被拒、方法未知、参数解析失败等任何
         // 提前返回路径都会摘掉占位，只有真正跑进 core 的提示才持占到结束。
         let _guard = match claim {
-            PromptClaim::Claimed(session_id) => Some(PromptGuard {
+            PromptClaim::Claimed(session_id, cancel) => Some(PromptGuard {
                 prompts: Arc::clone(&self.prompts),
                 session_id,
+                cancel,
                 skills: false,
             }),
-            PromptClaim::Skills(session_id) => Some(PromptGuard {
+            PromptClaim::Skills(session_id, cancel) => Some(PromptGuard {
                 prompts: Arc::clone(&self.prompts),
                 session_id,
+                cancel,
                 skills: true,
             }),
             // 无占位：非提示类请求，或参数里读不出 `session_id`
@@ -468,18 +485,14 @@ impl<S: AgentService> ServerDispatch<S> {
 impl<S: AgentService> Inbound for ServerDispatch<S> {
     fn on_request(self: Arc<Self>, request: Request, tasks: &mut JoinSet<()>) {
         let Ok(permit) = Arc::clone(&self.in_flight).try_acquire_owned() else {
-            let connection = Arc::clone(&self.connection);
-            let id = Some(request.id);
-            tasks.spawn(async move {
-                connection
-                    .respond_error(id, RpcError::of(RpcErrorCode::ServerBusy))
-                    .await;
-            });
+            // 拒绝请求不能再起任务等待出站队列，否则突发请求会绕过并发上限。
+            self.connection
+                .try_respond_error(Some(request.id), RpcError::of(RpcErrorCode::ServerBusy));
             return;
         };
         // 每请求令牌与提示 / 旁路的占位都在读循环里完成：`session/cancel` 与
         // `session/btw_cancel` 是同一连接上的后续报文，因此「先请求后取消」的顺序
-        // 是确定的，取消绝不会因为任务调度顺序而落空。
+        // 是确定的，获准的取消不会因为任务调度顺序而落空。
         let cancel = self.connection.closed().child_token();
         let claim = self.claim_prompt(&request, &cancel);
         let btw = if matches!(&claim, PromptClaim::Busy) {
@@ -488,14 +501,10 @@ impl<S: AgentService> Inbound for ServerDispatch<S> {
             self.claim_btw(&request, &cancel)
         };
         if matches!(&claim, PromptClaim::Busy) || matches!(&btw, BtwClaim::Busy) {
-            let connection = Arc::clone(&self.connection);
-            let id = Some(request.id);
-            tasks.spawn(async move {
-                let _permit = permit;
-                connection
-                    .respond_error(id, RpcError::of(RpcErrorCode::SessionBusy))
-                    .await;
-            });
+            self.connection
+                .try_respond_error(Some(request.id), RpcError::of(RpcErrorCode::SessionBusy));
+            // 同步尝试发送结束后归还许可，拒绝路径不占用在飞任务。
+            drop(permit);
             return;
         }
         tasks.spawn(async move {

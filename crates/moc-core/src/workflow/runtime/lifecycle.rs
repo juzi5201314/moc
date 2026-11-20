@@ -4,7 +4,6 @@ use super::RunView;
 use super::WorkflowManager;
 use super::apply_terminal;
 use super::list_run_metas;
-use super::mark_interrupted;
 use super::read_run_meta;
 use super::workflow_summary;
 use crate::error::CoreError;
@@ -22,6 +21,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 impl WorkflowManager {
@@ -54,8 +55,7 @@ impl WorkflowManager {
                 }
             }
         }
-        // run.json 先行落盘（approve→set_role_model 窗口内磁盘必须可读）；
-        // 本进程 run 的 created_at_ms ≥ birth_ms，interrupted 降级不会误杀。
+        // run.json 先行落盘（approve→set_role_model 窗口内磁盘必须可读）。
         std::fs::write(
             dir.join("run.json"),
             serde_json::to_vec_pretty(&meta).unwrap_or_default(),
@@ -91,6 +91,8 @@ impl WorkflowManager {
             engine: Mutex::new(engine),
             publish_lock: Mutex::new(()),
             cancel: cancel_parent.child_token(),
+            finished: AtomicBool::new(false),
+            finish_notify: Notify::new(),
             cwd,
             request,
             policy: Mutex::new(Some(policy)),
@@ -111,7 +113,7 @@ impl WorkflowManager {
         }
         let manager = Arc::clone(self);
         let handle2 = Arc::clone(&handle);
-        tokio::spawn(async move {
+        self.spawn_run(Arc::clone(&handle), async move {
             if let Err(error) = manager.run_loop(&handle2, compiled, rx, sink).await {
                 manager.fail_run(&handle2, &format!("{error}"));
             }
@@ -119,35 +121,53 @@ impl WorkflowManager {
         Ok(handle)
     }
 
+    /// 独立任务监督运行本体，正常收尾或 panic 后都移除注册并通知卸载等待者。
+    pub(super) fn spawn_run(
+        self: &Arc<Self>,
+        handle: Arc<RunHandle>,
+        body: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let task = tokio::spawn(body);
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            let _ = task.await;
+            {
+                let mut runs = manager.runs.lock();
+                // resume 会复用 run_id，旧任务收尾不能移除新注册的 handle。
+                if runs
+                    .get(&handle.id)
+                    .is_some_and(|h| Arc::ptr_eq(h, &handle))
+                {
+                    runs.remove(&handle.id);
+                }
+            }
+            handle.finished.store(true, Ordering::Release);
+            handle.finish_notify.notify_waiters();
+        });
+    }
+
     /// 运行中的 handle（本进程持有才算 running）。
     pub fn running(&self, run_id: &str) -> Option<Arc<RunHandle>> {
         self.runs.lock().get(run_id).cloned()
     }
 
-    /// 读取 run 元数据（优先本进程，否则读磁盘）。磁盘上 running 但本进程不
-    /// 持有执行者的 run 就地降级为 stopped(interrupted)——租约语义：只有持
-    /// 写租约的进程才执行 run。
+    /// 只读查询元数据（优先本进程，否则读磁盘），避免改写其它持租约进程的 run。
     pub fn meta(&self, run_id: &str) -> Result<RunMeta, CoreError> {
         if let Some(handle) = self.runs.lock().get(run_id) {
             return Ok(handle.meta.lock().clone());
         }
         let dir = self.run_dir(run_id)?;
-        let mut meta = read_run_meta(&dir)?;
-        mark_interrupted(&dir, &mut meta, self.birth_ms);
-        Ok(meta)
+        read_run_meta(&dir)
     }
 
     pub fn list(&self) -> Vec<WorkflowRunSummary> {
         let held = self.runs.lock();
         list_run_metas(&self.paths.workflows())
             .into_iter()
-            .map(|mut meta| {
+            .map(|meta| {
                 if let Some(handle) = held.get(&meta.run_id) {
                     workflow_summary(&handle.meta.lock())
                 } else {
-                    if let Ok(dir) = self.run_dir(&meta.run_id) {
-                        mark_interrupted(&dir, &mut meta, self.birth_ms);
-                    }
                     workflow_summary(&meta)
                 }
             })
@@ -161,18 +181,50 @@ impl WorkflowManager {
                 "workflow run {run_id} 不在运行中"
             )));
         };
-        let actions = handle.engine.lock().cancel("E_STOPPED");
-        handle.cancel.cancel();
-        let _ = handle.to_worker.send(WorkflowHostMessage::Cancel {
-            code: "E_STOPPED".into(),
-        });
-        self.apply_actions(&handle, actions);
+        self.cancel_run(&handle, "E_STOPPED");
         // 终态落盘在 run_loop 异步完成；summary 先按已记录的终态投影。
         let mut meta = handle.meta.lock().clone();
         if let Some(terminal) = handle.view.lock().terminal.clone() {
             apply_terminal(&mut meta, &terminal);
         }
         Ok(workflow_summary(&meta))
+    }
+
+    /// 会话卸载或删除前取消全部 run，等待 worker 回收与终态落盘后再释放租约。
+    pub async fn shutdown(self: &Arc<Self>) {
+        let handles: Vec<_> = self.runs.lock().values().cloned().collect();
+        for handle in &handles {
+            self.cancel_run(handle, "E_SHUTDOWN");
+        }
+        // 全部任务共用一个超时，避免单个 worker 卡死或逐个超时拖住卸载。
+        let wait = async {
+            for handle in handles {
+                loop {
+                    // 先订阅再查标志，避免漏掉唤醒；取消等待不会取走其它调用的完成信号。
+                    let notified = handle.finish_notify.notified();
+                    if handle.finished.load(Ordering::Acquire) {
+                        break;
+                    }
+                    notified.await;
+                }
+            }
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(5), wait)
+            .await
+            .is_err()
+        {
+            tracing::warn!("等待 workflow 收尾超时，放弃等待");
+        }
+    }
+
+    fn cancel_run(self: &Arc<Self>, handle: &Arc<RunHandle>, code: &str) {
+        let actions = handle.engine.lock().cancel(code);
+        // 先发布终态再唤醒取消令牌，避免 run_loop 将主动关闭误判为 worker 崩溃。
+        self.apply_actions(handle, actions);
+        handle.cancel.cancel();
+        let _ = handle
+            .to_worker
+            .send(WorkflowHostMessage::Cancel { code: code.into() });
     }
 
     /// `workflow_set_role_model`：run 中生效（写 meta + journal 之外的覆盖表）。

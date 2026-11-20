@@ -1,6 +1,89 @@
 use super::*;
 
 #[tokio::test]
+async fn write_lease_replays_external_history_before_repairing_torn_tail() {
+    use tokio::io::AsyncWriteExt;
+
+    let directory = tempfile::tempdir().expect("临时目录");
+    let first = SessionTable::new(directory.path(), true);
+    let info = first
+        .create(
+            "/tmp/project",
+            "p/model",
+            SessionEngine::Standard,
+            SessionPermission::Full,
+            None,
+            SessionOrigin::root(),
+            false,
+        )
+        .await
+        .expect("创建会话");
+    first
+        .append_message(&info.id, Message::user_text("原有历史"), None, None)
+        .await
+        .expect("追加原有历史");
+    let first_record = first.get(&info.id).await.expect("缓存第一份会话");
+    first
+        .ensure_write_lease(&info.id, &first_record, "tui")
+        .await
+        .expect("取得初始写租约");
+    assert!(first.release_lease(&first_record));
+
+    let second = SessionTable::new(directory.path(), true);
+    let second_record = second.get(&info.id).await.expect("加载第二份会话");
+    second
+        .ensure_write_lease(&info.id, &second_record, "webui")
+        .await
+        .expect("外部写者取得租约");
+    second
+        .append_message(&info.id, Message::user_text("外部已提交历史"), None, None)
+        .await
+        .expect("外部写者提交历史");
+    let mut file = tokio::fs::OpenOptions::new()
+        .append(true)
+        .open(&second_record.paths.transcript)
+        .await
+        .expect("打开日志");
+    file.write_all(b"{\"partial\":")
+        .await
+        .expect("模拟崩溃残尾");
+    file.sync_all().await.expect("刷写残尾");
+    drop(file);
+    assert!(second.release_lease(&second_record));
+
+    first
+        .ensure_write_lease(&info.id, &first_record, "tui")
+        .await
+        .expect("重新取得租约并修复残尾");
+    let loaded = first.load(&info.id, None).await.expect("读取接管后的历史");
+    assert_eq!(
+        loaded
+            .entries
+            .iter()
+            .map(|entry| entry.message.text())
+            .collect::<Vec<_>>(),
+        ["原有历史", "外部已提交历史"]
+    );
+    first
+        .append_message(&info.id, Message::user_text("接管后续写"), None, None)
+        .await
+        .expect("沿最新历史续写");
+    assert!(first.release_lease(&first_record));
+    let restored = SessionTable::new(directory.path(), true)
+        .load(&info.id, None)
+        .await
+        .expect("全新会话表可重载续写后的完整历史");
+    assert_eq!(
+        restored
+            .entries
+            .iter()
+            .map(|entry| entry.message.text())
+            .collect::<Vec<_>>(),
+        ["原有历史", "外部已提交历史", "接管后续写"]
+    );
+}
+
+#[tokio::test]
 async fn compressed_write_lease_truncates_a_torn_frame() {
     use tokio::io::AsyncWriteExt;
 
@@ -295,6 +378,79 @@ async fn lock_refreshes_external_appends_and_replaced_transcript_handles() {
         .unwrap();
     assert_eq!(restored.entries.len(), 3);
     assert_eq!(restored.entries[2].message.text(), "续写");
+}
+
+#[tokio::test]
+async fn write_lease_repairs_torn_tail_after_transcript_rewrite() {
+    use tokio::io::AsyncWriteExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let first = SessionTable::new(directory.path(), true);
+    let info = first
+        .create(
+            "/tmp/project",
+            "p/model",
+            SessionEngine::Standard,
+            SessionPermission::Full,
+            None,
+            SessionOrigin::root(),
+            false,
+        )
+        .await
+        .unwrap();
+    first
+        .append_message(&info.id, Message::user_text("原有历史"), None, None)
+        .await
+        .unwrap();
+    let first_record = first.get(&info.id).await.unwrap();
+    first
+        .ensure_write_lease(&info.id, &first_record, "first")
+        .await
+        .unwrap();
+    assert!(first.release_lease(&first_record));
+
+    let second = SessionTable::new(directory.path(), true);
+    let second_record = second.get(&info.id).await.unwrap();
+    second
+        .ensure_write_lease(&info.id, &second_record, "second")
+        .await
+        .unwrap();
+    second
+        .append_message(&info.id, Message::user_text("外部追加"), None, None)
+        .await
+        .unwrap();
+    let entries = second_record.state.lock().await.log_entries();
+    second.rewrite(&info.id, entries).await.unwrap();
+    let mut file = tokio::fs::OpenOptions::new()
+        .append(true)
+        .open(&second_record.paths.transcript)
+        .await
+        .unwrap();
+    file.write_all(b"{\"partial\":").await.unwrap();
+    file.sync_all().await.unwrap();
+    drop(file);
+    assert!(second.release_lease(&second_record));
+
+    first
+        .ensure_write_lease(&info.id, &first_record, "first")
+        .await
+        .unwrap();
+    first
+        .append_message(&info.id, Message::assistant_text("接管续写"), None, None)
+        .await
+        .unwrap();
+    let restored = SessionTable::new(directory.path(), true)
+        .load(&info.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        restored
+            .entries
+            .iter()
+            .map(|entry| entry.message.text())
+            .collect::<Vec<_>>(),
+        ["原有历史", "外部追加", "接管续写"]
+    );
 }
 
 #[tokio::test]

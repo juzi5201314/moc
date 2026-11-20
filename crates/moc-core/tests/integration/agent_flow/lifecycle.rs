@@ -479,6 +479,7 @@ async fn fusion_cancel_stops_a_background_sidekick() {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
     });

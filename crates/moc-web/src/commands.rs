@@ -29,6 +29,7 @@ pub enum CommandId {
     Tools,
     Usage,
     DebugInfo,
+    Export,
     Session,
     Settings,
     Agents,
@@ -47,6 +48,20 @@ const AUTONOMY_CHOICES: &[&str] = &["default", "dont_ask", "unattended"];
 
 /// WebUI 内置命令表。
 pub const COMMANDS: &[CommandSpec<CommandId>] = &[
+    CommandSpec {
+        id: CommandId::Export,
+        name: "export",
+        aliases: &[],
+        usage: "[path]",
+        description: "web.commands.export.desc",
+        group: CommandGroup::Session,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::None,
+        flag: None,
+    },
     CommandSpec {
         id: CommandId::DebugInfo,
         name: "debuginfo",

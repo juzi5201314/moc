@@ -53,10 +53,29 @@ export function deferAutoApproval(sessionId: string, planId: string): void {
 }
 
 /** 发起本端提示；RPC 返回（锁已释放）后先处理待自动批准的计划，否则续发队列。 */
-async function ownPrompt(sessionId: string, call: () => Promise<unknown>): Promise<void> {
+async function ownPrompt(
+  sessionId: string,
+  call: (reportError: (text: string) => void) => Promise<unknown>,
+): Promise<void> {
+  const previousErrors = new Set(
+    useTranscript
+      .getState()
+      .bySession[sessionId]?.blocks.filter(
+        (block) => block.kind === "status" && block.tone === "error",
+      )
+      .map((block) => block.id),
+  );
   ownPrompts.add(sessionId);
   try {
-    await call();
+    await call((text) => {
+      const transcript = useTranscript.getState();
+      const reported = transcript.bySession[sessionId]?.blocks.some(
+        (block) =>
+          block.kind === "status" && block.tone === "error" && !previousErrors.has(block.id),
+      );
+      if (!reported) transcript.localStatus(sessionId, "error", text);
+      transcript.failPrompt(sessionId);
+    });
   } finally {
     ownPrompts.delete(sessionId);
     const planId = autoApprovals.get(sessionId);
@@ -173,7 +192,7 @@ export async function sendPrompt(
     const images = input.flatMap((part) => (part.type === "image" ? [part.source] : []));
     useTranscript.getState().localUser(target, text, images);
   }
-  await ownPrompt(target, async () => {
+  await ownPrompt(target, async (reportError) => {
     try {
       await rpc.call<PromptResult>("session/prompt", {
         session_id: target,
@@ -181,9 +200,7 @@ export async function sendPrompt(
         ...(options.mode ? { mode: options.mode } : {}),
       });
     } catch (error) {
-      useTranscript
-        .getState()
-        .localStatus(target, "error", t("act.send_failed", { error: errorText(error) }));
+      reportError(t("act.send_failed", { error: errorText(error) }));
       return;
     }
     await afterPrompt(target);
@@ -196,13 +213,11 @@ export async function retrySession(sessionId: string): Promise<void> {
     toast(t("act.skills_busy_retry"));
     return;
   }
-  await ownPrompt(sessionId, async () => {
+  await ownPrompt(sessionId, async (reportError) => {
     try {
       await rpc.call<PromptResult>("session/retry", { session_id: sessionId });
     } catch (error) {
-      useTranscript
-        .getState()
-        .localStatus(sessionId, "error", t("act.retry_failed", { error: errorText(error) }));
+      reportError(t("act.retry_failed", { error: errorText(error) }));
       return;
     }
     await afterPrompt(sessionId);
@@ -215,7 +230,7 @@ export async function retrySession(sessionId: string): Promise<void> {
  * 新答案续跑；用户再次跳过/取消时按「未回答」落库，同样续跑交给模型。
  */
 export async function reanswerAsk(sessionId: string, toolCallId: string): Promise<void> {
-  await ownPrompt(sessionId, async () => {
+  await ownPrompt(sessionId, async (reportError) => {
     try {
       const result = await rpc.call<SessionLoadResult>("session/reask", {
         session_id: sessionId,
@@ -226,9 +241,7 @@ export async function reanswerAsk(sessionId: string, toolCallId: string): Promis
       await reopenWith(sessionId, result);
       await rpc.call<PromptResult>("session/retry", { session_id: sessionId });
     } catch (error) {
-      useTranscript
-        .getState()
-        .localStatus(sessionId, "error", t("act.reask_failed", { error: errorText(error) }));
+      reportError(t("act.reask_failed", { error: errorText(error) }));
       return;
     }
     await afterPrompt(sessionId);

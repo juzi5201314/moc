@@ -2,7 +2,7 @@
 
 use super::errors::{invalid_params, job_error, to_rpc, write_lease_error};
 use super::{
-    Core, bash, btw, config_api, context, debug_info, history, inspect, management, mode,
+    Core, bash, btw, config_api, context, debug_info, export, history, inspect, management, mode,
     plugin_api, prompt, resource_api, session_api, session_config, usage, workflow_api,
 };
 use crate::compact;
@@ -737,6 +737,24 @@ impl AgentService for Core {
             .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        {
+            let state = record.state.lock().await;
+            if state.summary.is_none()
+                && !state
+                    .transcript
+                    .iter()
+                    .skip(state.context_start)
+                    .any(|entry| entry.context_message().is_some())
+            {
+                return Ok(CompactResult {
+                    method: "noop".into(),
+                    tokens_before: 0,
+                    tokens_after: 0,
+                    full: false,
+                    summary_chars: 0,
+                });
+            }
+        }
         let result = compact::manual(
             &self.inner,
             &ctx,
@@ -803,6 +821,14 @@ impl AgentService for Core {
         params: moc_protocol::SessionDebugInfoParams,
     ) -> Result<String, RpcError> {
         debug_info::report(&self.inner, &params.session_id).await
+    }
+
+    async fn session_export(
+        &self,
+        _ctx: RequestContext,
+        params: moc_protocol::SessionExportParams,
+    ) -> Result<moc_protocol::SessionExportResult, RpcError> {
+        export::run(&self.inner, params).await
     }
 
     async fn session_inspect(

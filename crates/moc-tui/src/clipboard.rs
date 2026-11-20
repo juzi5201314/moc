@@ -1,8 +1,9 @@
-//! 剪贴板图片与文本访问（Linux / WSL）。
+//! 剪贴板图片与文本访问（Linux / WSL / macOS）。
 //!
 //! 终端没有统一的「读图片」协议：WSL 走 Windows 剪贴板（powershell.exe，
 //! WSLg 默认不带 wl-clipboard，Wayland 通道通常不可用），Wayland 走
-//! `wl-paste`，X11 走 `xclip`。子进程在 TTY 之外执行（tokio 的进程组隔离），
+//! `wl-paste`，X11 走 `xclip`，macOS 优先 `pngpaste`，否则走系统 `osascript`。
+//! 子进程在 TTY 之外执行（tokio 的进程组隔离），
 //! 失败一律返回 `None`／报错，调用方提示用户即可——剪贴板是可选增强。
 
 use std::time::Duration;
@@ -53,6 +54,24 @@ $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($data.Trim()
 Set-Clipboard -Value $text
 "#;
 
+#[cfg(target_os = "macos")]
+const MACOS_IMAGE_SCRIPT: &str = r#"
+on run argv
+    set imageData to the clipboard as «class PNGf»
+    set outputFile to open for access POSIX file (item 1 of argv) with write permission
+    try
+        set eof outputFile to 0
+        write imageData to outputFile
+        close access outputFile
+    on error errorMessage number errorNumber
+        try
+            close access outputFile
+        end try
+        error errorMessage number errorNumber
+    end try
+end run
+"#;
+
 /// 测试与自动化环境的逃生口：置位后所有剪贴板通道视为不可用，不探测、
 /// 不启动任何外部工具（避免 CI 上为不存在的工具白付子进程启动成本）。
 fn disabled() -> bool {
@@ -87,8 +106,36 @@ pub async fn read_clipboard_image() -> Option<ClipboardImage> {
                 bytes: output,
             });
         }
+        return None;
     }
+    #[cfg(target_os = "macos")]
+    return read_macos_image(MACOS_IMAGE_SCRIPT).await;
+    #[cfg(not(target_os = "macos"))]
     None
+}
+
+#[cfg(target_os = "macos")]
+async fn read_macos_image(script: &str) -> Option<ClipboardImage> {
+    let file = tempfile::Builder::new()
+        .prefix("moc-clipboard-")
+        .suffix(".png")
+        .tempfile()
+        .ok()?;
+    run(
+        "/usr/bin/osascript",
+        &["-e", script, file.path().to_str()?],
+        None,
+        LOCAL_TIMEOUT,
+    )
+    .await?;
+    let bytes = tokio::fs::read(file.path()).await.ok()?;
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    Some(ClipboardImage {
+        media_type: "image/png".into(),
+        bytes,
+    })
 }
 
 /// 尝试从系统剪贴板读取纯文本；空内容返回 `None`。
@@ -340,5 +387,35 @@ mod tests {
     #[test]
     fn osc52_wraps_base64_payload() {
         assert_eq!(osc52_sequence("hi"), "\x1b]52;c;aGk=\x1b\\");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_image_script_reads_png_without_changing_clipboard() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let png = png.into_inner();
+        let hex = png
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<String>();
+        let script = MACOS_IMAGE_SCRIPT.replace(
+            "the clipboard as «class PNGf»",
+            &format!("«data PNGf{hex}»"),
+        );
+        let image = read_macos_image(&script).await.expect("PNG image");
+        assert_eq!(image.media_type, "image/png");
+        assert_eq!(image.bytes, png);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_image_script_rejects_empty_invalid_and_failed_reads() {
+        assert!(read_macos_image("return").await.is_none());
+        let invalid = MACOS_IMAGE_SCRIPT.replace("the clipboard as «class PNGf»", "\"text\"");
+        assert!(read_macos_image(&invalid).await.is_none());
+        assert!(read_macos_image("error \"no image\"").await.is_none());
     }
 }

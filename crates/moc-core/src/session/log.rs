@@ -41,9 +41,14 @@ struct FrameScan {
     torn_start: Option<u64>,
 }
 
-/// 按扩展名判断格式；格式是会话创建时固定的，不做内容嗅探。
+/// 按文件名判断格式；格式是会话创建时固定的，不做内容嗅探。
 pub(crate) fn format(path: &Path) -> Format {
-    if path.extension().is_some_and(|extension| extension == "zst") {
+    // 恢复备份会追加时间戳和 .bak 后缀，仍须按原来的压缩格式读取。
+    if path.extension().is_some_and(|extension| extension == "zst")
+        || path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains(".jsonl.zst."))
+    {
         Format::Zstd
     } else {
         Format::Plain
@@ -479,6 +484,19 @@ fn snapshot_stamp(path: &Path) -> Result<String, CoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_recognizes_compressed_recovery_backups() {
+        for (path, expected) in [
+            ("x.jsonl.zst", Format::Zstd),
+            ("x.jsonl.zst.1234567890.bak", Format::Zstd),
+            ("x.jsonl", Format::Plain),
+            ("x.jsonl.1234567890.bak", Format::Plain),
+            ("dir.jsonl.zst.backup/x.jsonl", Format::Plain),
+        ] {
+            assert_eq!(format(Path::new(path)), expected, "{path}");
+        }
+    }
 
     fn frame(line: &str) -> Vec<u8> {
         compress_frame(line.as_bytes()).expect("压缩测试帧")

@@ -403,7 +403,7 @@ fn plan_activate_control(app: &mut App, connection: &EmbeddedConnection, control
             park_plan_for_model_picker(app, control);
         }
         PlanControl::Engine => plan_open_engine_menu(app),
-        PlanControl::Resume => app.modal = None,
+        PlanControl::Resume => app.set_modal(None),
         PlanControl::Submit => submit_plan_review(app, connection),
         PlanControl::Run | PlanControl::RunCompacted | PlanControl::RunNew => {
             plan_approve(app, connection, control);
@@ -438,7 +438,7 @@ pub(super) fn park_plan_for_model_picker(app: &mut App, control: PlanControl) {
         .iter()
         .find(|(item, _)| *item == control)
         .map(|(_, area)| *area);
-    let Some(Modal::Plan { state }) = app.modal.take() else {
+    let Some(Modal::Plan { state }) = app.take_modal() else {
         return;
     };
     app.parked_plan = Some(state);
@@ -473,7 +473,8 @@ pub(crate) fn restore_parked_plan(app: &mut App) {
         .as_ref()
         .is_some_and(|session| session.plan_active)
     {
-        app.modal = app.parked_plan.take().map(|state| Modal::Plan { state });
+        let modal = app.parked_plan.take().map(|state| Modal::Plan { state });
+        app.set_modal(modal);
     } else {
         app.parked_plan = None;
     }
@@ -711,7 +712,7 @@ pub(super) fn plan_read_key(
                     state.anchor = None;
                 }
             } else {
-                app.modal = None;
+                app.set_modal(None);
             }
         }
         (KeyCode::Char('a'), KeyModifiers::NONE) => plan_toggle_annotate(app),
@@ -912,9 +913,9 @@ pub(super) fn open_plan_review(app: &mut App, plan: moc_protocol::methods::PlanI
     let Some(session) = app.session.as_ref() else {
         return;
     };
-    app.modal = Some(Modal::Plan {
+    app.set_modal(Some(Modal::Plan {
         state: Box::new(crate::modal::PlanReviewState::new(plan, session.engine)),
-    });
+    }));
 }
 
 /// 为当前计划版本拉取与上一版的差异。
@@ -990,7 +991,7 @@ pub(crate) fn apply_plan_revised(
 ) {
     match result {
         Ok(result) => {
-            app.modal = None;
+            app.set_modal(None);
             start_auto_prompt(app, connection, Some(result.prompt));
         }
         Err(error) => {
@@ -1013,7 +1014,7 @@ pub(crate) fn apply_plan_approval(
 ) {
     match result {
         Ok(result) => {
-            app.modal = None;
+            app.set_modal(None);
             if app
                 .session
                 .as_ref()

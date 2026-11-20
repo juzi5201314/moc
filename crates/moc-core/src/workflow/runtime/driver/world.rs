@@ -4,14 +4,16 @@ use crate::workflow::facade;
 use rust_i18n::t;
 use serde_json::Value;
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
-/// `world.run` 的共享实现：eval 与 run driver 同一份（策略快照 + argv + 超时 + 输出视图）。
+/// `world.run` 的共享实现：eval 与 run driver 同一份（策略快照 + argv + 超时/取消 + 输出视图）。
 pub(crate) async fn world_run_impl(
     policy: &crate::sandbox::SandboxPolicy,
     command: &str,
     args: &[String],
     timeout_ms: u64,
     output: &Value,
+    cancel: &CancellationToken,
 ) -> DriverOutcome {
     let wrapped = match crate::sandbox::wrap_command_argv(command, args, &policy.workspace, policy)
     {
@@ -31,13 +33,15 @@ pub(crate) async fn world_run_impl(
         timeout_ms,
         output,
         facade::WORLD_RUN_STREAM_MAX_BYTES,
+        cancel,
     )
     .await
 }
 
 /// world.run 进程执行：固定 argv 直跑。cap 注入供测试（生产路径 = facade 上限）。
 /// 超时覆盖「等待退出 + 两路流读完」整体：后台孙进程持有管道也不会挂死；
-/// 单流超限立即 kill 子进程。
+/// 单流超限立即 kill 子进程；超时或取消时终止读取任务并回收子进程。
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_capped(
     program: &std::ffi::OsStr,
     args: &[std::ffi::OsString],
@@ -46,7 +50,16 @@ pub(super) async fn run_capped(
     timeout_ms: u64,
     output: &Value,
     cap: usize,
+    cancel: &CancellationToken,
 ) -> DriverOutcome {
+    let cancelled = || DriverOutcome::Failed {
+        code: "E_WORLD_CANCELLED".into(),
+        message: "world.run cancelled".into(),
+    };
+    // 派发后、实际启动前就停止的 run 不应再产生进程副作用。
+    if cancel.is_cancelled() {
+        return cancelled();
+    }
     // opts.output："full"（默认，单流 cap 封顶）/ "discard" / {tail:n}（每流保留尾 n 字节）。
     let mode = OutputMode::of(output);
     let mut cmd = tokio::process::Command::new(program);
@@ -97,6 +110,8 @@ pub(super) async fn run_capped(
                 break;
             }
             tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(cancelled()),
                 s = child.wait(), if status.is_none() => status = Some(s),
                 r = &mut out_task, if out_res.is_none() => out_res = Some(r),
                 r = &mut err_task, if err_res.is_none() => err_res = Some(r),
@@ -109,19 +124,33 @@ pub(super) async fn run_capped(
                 let _ = child.start_kill();
             }
         }
-        (status, out_res, err_res)
+        Ok(())
     };
-    let (status, out_res, err_res) =
+    let failure =
         match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), collect).await {
-            Ok(t) => t,
-            Err(_) => {
-                let _ = child.start_kill();
-                return DriverOutcome::Failed {
-                    code: "E_WORLD_TIMEOUT".into(),
-                    message: t!("core.err.world_run_timeout", ms = timeout_ms).into_owned(),
-                };
-            }
+            Ok(Ok(())) => None,
+            Ok(Err(outcome)) => Some(outcome),
+            Err(_) => Some(DriverOutcome::Failed {
+                code: "E_WORLD_TIMEOUT".into(),
+                message: t!("core.err.world_run_timeout", ms = timeout_ms).into_owned(),
+            }),
         };
+    if let Some(outcome) = failure {
+        // 孙进程可能仍持有管道写端：先终止两路读取，不能靠 kill 子进程等 EOF。
+        out_task.abort();
+        err_task.abort();
+        let _ = child.start_kill();
+        // 已从 select! 取得结果的 JoinHandle 不能再次 await。
+        if out_res.is_none() {
+            let _ = out_task.await;
+        }
+        if err_res.is_none() {
+            let _ = err_task.await;
+        }
+        // kill_on_drop 只作兜底；显式 wait 确保返回前已回收子进程。
+        let _ = child.wait().await;
+        return outcome;
+    }
     let status = match status {
         Some(Ok(s)) => s,
         Some(Err(e)) => {

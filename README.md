@@ -56,6 +56,14 @@ moc --resume <id>             # 恢复历史会话
 ```
 
 行式前端的日志写 stderr，stdout 只输出应答正文。需要调试时设置 `RUST_LOG=debug`。
+
+`--print` 面向脚本与 CI，可搭配：
+
+- `--output-format text|json|stream-json`：`text` 只打最终答案（默认）；`json` 结束时输出一个汇总对象（会话 id、最终答案、变更文件、工具调用汇总、token 用量、耗时与错误）；`stream-json` 把每条会话更新输出为一行 NDJSON，末行是同一个汇总对象
+- `--max-turns N`：限制单次提示的模型请求轮数；达到上限后不再发起新请求（默认无限制）
+- `--allow-tools a,b`：自动批准列出的工具的权限申请（逗号分隔，可重复；`all` 放行全部），未列出的申请按拒绝处理
+
+退出码：`0` 成功；`1` 模型/网络等一般错误；`2` 存在被权限拒绝的工具调用；`3` 超出 `--max-turns` 轮次上限。
 浏览器前端的架构、令牌与跨进程写租约见 [docs/web.md](docs/web.md)；ACP 协议覆盖与编辑器配置见 [docs/acp.md](docs/acp.md)。
 
 ## 常用交互
@@ -71,6 +79,7 @@ moc --resume <id>             # 恢复历史会话
 | 查看实际可用工具 | `/tools`（TUI、WebUI 弹窗展示当前会话下一轮请求发送的工具） |
 | 查看工具调用统计与压缩次数 | `/debuginfo`（TUI、Web、行式 CLI） |
 | 查看当前会话身份与存储大小 | `/session`（TUI、Web、行式 CLI） |
+| 导出会话为 Markdown | `/export [path]`（TUI、Web、行式 CLI；工具折叠、常见密钥脱敏，Web 在大小允许时同时下载，不覆盖已有文件） |
 | 压缩技能目录 | `/compact-skills` 或 `/compact-skills compact`（仅缺失/失效缓存）、`/compact-skills force`（全部重压） |
 | 清理技能缓存 | `/compact-skills cleanup`（删除来源已不存在的记录）、`/compact-skills cleanup all`（全部清空） |
 | 切换思考显示档位 | `Ctrl+T` |

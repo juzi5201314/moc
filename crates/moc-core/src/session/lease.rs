@@ -47,19 +47,17 @@ impl SessionTable {
         let _append = record.append_lock.lock().await;
         let file_slot = record.file.lock().await;
         if let Some(file) = file_slot.as_ref() {
+            if file.changed_on_disk().await? {
+                let mut fresh = self.store.read_state(&record.paths).await?;
+                file.reopen().await?;
+                let mut current = record.state.lock().await;
+                fresh.notices = std::mem::take(&mut current.notices);
+                fresh.job_sequence = current.job_sequence;
+                *current = fresh;
+            }
             // 崩溃可能留下半条记录：拿到写租约后先截掉残尾，否则下一次追加会把它粘成坏行。
             // 只读打开绝不修改文件，所以修复只发生在这里。
             file.truncate_partial_tail().await?;
-        }
-        if let Some(file) = file_slot.as_ref()
-            && file.changed_on_disk().await?
-        {
-            let mut fresh = self.store.read_state(&record.paths).await?;
-            file.reopen().await?;
-            let mut current = record.state.lock().await;
-            fresh.notices = std::mem::take(&mut current.notices);
-            fresh.job_sequence = current.job_sequence;
-            *current = fresh;
         }
         record.pinned.store(true, Ordering::Release);
         *record.lease.lock() = Some(Arc::new(lease));

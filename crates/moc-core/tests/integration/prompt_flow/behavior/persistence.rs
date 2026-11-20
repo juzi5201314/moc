@@ -90,6 +90,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
             mode: None,
             agent_message: None,
             goal_round: None,
+            max_turns: None,
         })
         .await
         .expect("run model prompt");
@@ -180,6 +181,7 @@ async fn unload_is_refused_while_a_prompt_is_in_flight() {
                 mode: None,
                 agent_message: None,
                 goal_round: None,
+                max_turns: None,
             })
             .await
     });

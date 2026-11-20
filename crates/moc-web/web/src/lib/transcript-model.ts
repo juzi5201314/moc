@@ -60,6 +60,8 @@ export type Block =
       entryId?: string;
       text: string;
       images: ImageSource[];
+      /** `@` 文件/目录引用注入的附件。 */
+      attachments?: { path: string; kind: "file" | "dir" }[];
       atMs: number;
     }
   | {
@@ -109,6 +111,7 @@ export type Block =
       tone: StatusTone;
       text: string;
       retryable?: boolean;
+      retryWait?: { promptId: string; startedAt: number; deadline: number };
       /** 前端命令的临时行内状态：始终可见，不折叠、不提供模型重试。 */
       localCommand?: boolean;
     }
@@ -143,6 +146,7 @@ export type LiveTurn = {
   textIndex?: number;
   /** 当前 generation 创建的块；重试回退时只清理这一段。 */
   generationBlockIds: string[];
+  generationCommitted?: boolean;
   usage?: Usage;
   /** tool_call_id → batch_id，来自 tool_batch_started。 */
   batchOf: Record<string, string>;
@@ -214,7 +218,43 @@ export function createView(info: SessionInfo): SessionView {
 // ---------- 内容辅助 ----------
 
 export function messageText(message: Message): string {
-  return message.content.flatMap((part) => ("Text" in part ? [part.Text] : [])).join("");
+  return message.content
+    .flatMap((part) => ("Text" in part && !isAttachmentPart(part.Text) ? [part.Text] : []))
+    .join("");
+}
+
+const ATTACHMENT_OPEN = "<moc-attachment";
+const ATTACHMENT_CLOSE = "</moc-attachment>";
+
+function isAttachmentPart(text: string): boolean {
+  return text.startsWith(`${ATTACHMENT_OPEN} `) && text.endsWith(ATTACHMENT_CLOSE);
+}
+
+/** 剥 `<moc-attachment path="…" kind="…">` 外壳；返回 {path, kind} 或 null。 */
+export function parseAttachment(text: string): { path: string; kind: "file" | "dir" } | null {
+  if (!isAttachmentPart(text)) return null;
+  const header = text.slice(0, text.indexOf(">\n"));
+  const attr = (name: string) => {
+    const key = `${name}="`;
+    const start = header.indexOf(key);
+    if (start < 0) return null;
+    const from = start + key.length;
+    const end = header.indexOf('"', from);
+    return end < 0 ? null : header.slice(from, end);
+  };
+  const path = attr("path");
+  const kind = attr("kind");
+  if (!path || (kind !== "file" && kind !== "dir")) return null;
+  return { path, kind };
+}
+
+/** 用户消息里的 `@` 注入附件。 */
+export function messageAttachments(message: Message): { path: string; kind: "file" | "dir" }[] {
+  return message.content.flatMap((part) => {
+    if (!("Text" in part)) return [];
+    const attachment = parseAttachment(part.Text);
+    return attachment ? [attachment] : [];
+  });
 }
 
 /** 剥掉投递外壳：卡片自身已经表达「送达模型的提醒」，正文只留模型可见的部分。 */
@@ -382,6 +422,7 @@ export function entriesToBlocks(
           entryId: entry.id,
           text: messageText(message),
           images: messageImages(message),
+          attachments: messageAttachments(message),
           atMs: entry.at_ms,
         });
         break;
@@ -509,6 +550,9 @@ function backfill(blocks: Block[], entries: TranscriptEntry[], kind: "user" | "t
     }
     if (fingerprint(messageText(entries[cursor].message)) === fingerprint(block.text)) {
       block.entryId = entries[cursor].id;
+      if (block.kind === "user") {
+        block.attachments = messageAttachments(entries[cursor].message);
+      }
       cursor--;
     }
   }
@@ -542,6 +586,15 @@ function pushPromptStatus(
 ): void {
   const id = pushStatus(view, tone, text, retryable);
   if (view.rewindable?.promptId === promptId) view.rewindable.blockIds.push(id);
+}
+
+function clearRetryNotice(view: SessionView, promptId?: string): void {
+  view.blocks = view.blocks.filter(
+    (block) =>
+      block.kind !== "status" ||
+      !block.retryWait ||
+      (promptId !== undefined && block.retryWait.promptId !== promptId),
+  );
 }
 
 function liveBlock(view: SessionView, kind: "text" | "reasoning"): Block | undefined {
@@ -590,6 +643,7 @@ function ensureLive(view: SessionView, promptId: string, now: number): LiveTurn 
 }
 
 function removeRewoundBlocks(view: SessionView, replayedTools: boolean): void {
+  clearRetryNotice(view);
   const rewind = view.rewindable;
   const ids = new Set(rewind?.blockIds ?? view.live?.generationBlockIds ?? []);
   if (rewind) ids.add(rewind.footerId);
@@ -638,6 +692,7 @@ function reconcileGenerationText(
   kind: "text" | "reasoning",
   text: string,
 ): boolean {
+  if (!text && view.live?.generationCommitted) return true;
   const ids = new Set(view.live?.generationBlockIds ?? []);
   const blocks = view.blocks.filter(
     (block): block is Extract<Block, { kind: "text" | "reasoning" }> =>
@@ -674,6 +729,7 @@ function resolveToolPreviews(view: SessionView, calls: ToolPreviewResolution[] =
 export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date.now()): void {
   switch (update.type) {
     case "prompt_started":
+      clearRetryNotice(view);
       view.live = {
         promptId: update.prompt_id,
         model: update.model,
@@ -686,29 +742,52 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       view.mismatch = null;
       break;
     case "generation_started": {
+      clearRetryNotice(view, update.prompt_id);
       resolveToolPreviews(view);
       closeReasoning(view, now);
       const live = ensureLive(view, update.prompt_id, now);
       live.reasoningId = undefined;
       live.textId = undefined;
       live.generationBlockIds = [];
+      live.generationCommitted = false;
       break;
     }
     case "generation_retry": {
       resolveToolPreviews(view);
       const live = ensureLive(view, update.prompt_id, now);
-      const ids = new Set(live.generationBlockIds);
-      // 仅撤销未提交的文本与思考，不删除独立落盘的工具、代理消息或历史内容。
-      view.blocks = view.blocks.filter(
-        (block) => !ids.has(block.id) || (block.kind !== "text" && block.kind !== "reasoning"),
+      if (!live.generationCommitted) {
+        const ids = new Set(live.generationBlockIds);
+        // 仅撤销未提交的文本与思考，不删除独立落盘的工具、代理消息或历史内容。
+        view.blocks = view.blocks.filter(
+          (block) => !ids.has(block.id) || (block.kind !== "text" && block.kind !== "reasoning"),
+        );
+        live.textId = undefined;
+        live.textIndex = undefined;
+        live.reasoningId = undefined;
+        live.reasoningIndex = undefined;
+        live.usage = undefined;
+        live.generationBlockIds = [];
+      }
+      const notice = view.blocks.find(
+        (block) => block.kind === "status" && block.retryWait?.promptId === update.prompt_id,
       );
-      live.textId = undefined;
-      live.textIndex = undefined;
-      live.reasoningId = undefined;
-      live.reasoningIndex = undefined;
-      live.usage = undefined;
-      live.generationBlockIds = [];
-      pushStatus(view, "warn", update.message);
+      const retryWait = {
+        promptId: update.prompt_id,
+        startedAt: now,
+        deadline: now + (update.retry_in_ms ?? 0),
+      };
+      if (notice?.kind === "status") {
+        notice.text = update.message;
+        notice.retryWait = retryWait;
+      } else {
+        view.blocks.push({
+          kind: "status",
+          id: nextId(view),
+          tone: "warn",
+          text: update.message,
+          retryWait,
+        });
+      }
       break;
     }
     case "assistant_delta": {
@@ -779,6 +858,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
     }
     case "tool_started": {
       closeReasoning(view, now);
+      if (view.live) view.live.generationCommitted = true;
       const existing = findTool(view.blocks, update.tool_call_id);
       if (existing) {
         existing.name = update.name;
@@ -877,6 +957,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       removeRewoundBlocks(view, update.replayed_tools);
       break;
     case "prompt_finished": {
+      clearRetryNotice(view, update.prompt_id);
       resolveToolPreviews(view);
       closeReasoning(view, now);
       const live = view.live;
@@ -920,10 +1001,12 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       break;
     }
     case "guard_notice":
+      if (update.terminal) clearRetryNotice(view, update.prompt_id);
       if (update.terminal) resolveToolPreviews(view);
       pushPromptStatus(view, update.prompt_id, update.terminal ? "error" : "warn", update.message);
       break;
     case "error":
+      clearRetryNotice(view, update.prompt_id);
       resolveToolPreviews(view);
       pushPromptStatus(view, update.prompt_id, "error", update.message, update.retryable);
       break;
@@ -1129,6 +1212,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
 
 /** 断线时收尾：core 已经随连接取消了提示。 */
 export function interruptLive(view: SessionView): void {
+  clearRetryNotice(view);
   resolveToolPreviews(view);
   if (!view.live && !view.running) return;
   for (const block of view.blocks) {

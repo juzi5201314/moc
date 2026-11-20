@@ -20,6 +20,7 @@ use super::workflow_scope;
 use crate::agents::child_cancel;
 use crate::error::CoreError;
 use crate::service::CoreInner;
+use crate::service::prompt::PromptRun;
 use moc_llm::Message;
 use moc_protocol::RequestContext;
 use moc_protocol::UpdateSink;
@@ -205,8 +206,9 @@ pub(super) async fn deliver(
     };
     match &target.session.parent_session_id {
         Some(parent_id) => {
-            // 收件箱不收消息、提示锁也空闲，说明旧条目（如果有）已经作废：
-            // 重建条目，清掉上一轮的交付物和等待者。
+            // 提示锁可能先于旧 finish 释放；等收尾结束后才能重建条目，
+            // 否则旧结果、终态和通知会落到新一轮上。
+            session_runtime.wait_agent_finish().await;
             let info = info_from_session(&target.session, AgentStatus::Queued);
             let cancel = match workflow_scope::actor_run(inner, &target.session).await {
                 Ok(Some(run)) => run.cancel.child_token(),
@@ -246,9 +248,11 @@ pub(super) async fn deliver(
                     mode: None,
                     agent_message: Some(woken),
                     goal_round: None,
+                    max_turns: None,
                 },
                 record,
                 prompt_lock,
+                PromptRun::Normal,
             )
             .await;
         }
