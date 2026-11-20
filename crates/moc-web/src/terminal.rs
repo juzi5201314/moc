@@ -7,10 +7,18 @@
 //! 进程；进程退出后条目保留到 DELETE；进程整体退出时靠 Drop 兜底杀子进程。
 
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::Read;
+#[cfg(not(unix))]
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
 
 use axum::Json;
 use axum::body::Bytes;
@@ -100,6 +108,15 @@ struct Terminal {
     master: Mutex<Box<dyn MasterPty + Send>>,
     /// `clone_killer` 拿来的杀进程句柄：child 本体归 wait 线程做阻塞 wait。
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    #[cfg(unix)]
+    child_pid: Option<libc::pid_t>,
+    /// 子进程被回收即置位，早于退出广播；升级线程据此避免给已复用 PID 发信号。
+    #[cfg(unix)]
+    child_dead: Arc<AtomicBool>,
+    closing: Arc<AtomicBool>,
+    /// 写线程退出时通知；测试用它确认写线程真的走了（它不持有 `Arc<Terminal>`）。
+    #[allow(dead_code)] // 仅 cfg(test) 断言会读
+    writer_done: Mutex<std::sync::mpsc::Receiver<()>>,
     /// 用户输入 → 写线程 → PTY；Sender 全部 drop 后写线程退出。
     input: Mutex<std::sync::mpsc::Sender<Vec<u8>>>,
     state: Mutex<TermState>,
@@ -149,9 +166,42 @@ impl Terminal {
     /// 杀掉终端进程。读/写/wait 线程各持一份 `Arc<Terminal>`，靠 drop 计数
     /// 杀不掉进程（线程退出前永远有引用），必须显式调用；moc web 进程退出时
     /// master fd 关闭，shell 收 SIGHUP 结束。
-    fn kill(&self) {
+    fn kill(self: &Arc<Self>) {
+        self.closing.store(true, Ordering::Release);
         if let Ok(mut killer) = self.killer.lock() {
             let _ = killer.kill();
+        }
+
+        #[cfg(unix)]
+        {
+            let terminal = Arc::clone(self);
+            std::thread::spawn(move || {
+                // SIGHUP 给 shell 优雅退出的机会（保存 history/trap），超时升级 SIGKILL 保证删除必有终。
+                std::thread::sleep(Duration::from_millis(1500));
+                // 子进程已被回收就不再发信号，防止误伤复用了 PID 的无关进程。
+                if terminal.child_dead.load(Ordering::Acquire) {
+                    return;
+                }
+                // 前台进程组号要现读：作业控制会把前台命令放进新组，spawn 时的组号已过期。
+                // 必须在杀 shell 之前读：会话首领一死，PTY 可能不再返回原前台组号。
+                let fg_pgid = terminal
+                    .master
+                    .lock()
+                    .expect("master 锁")
+                    .process_group_leader();
+                if let Some(pid) = terminal.child_pid {
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                        libc::kill(-pid, libc::SIGKILL);
+                    }
+                }
+                if let Some(pgid) = fg_pgid {
+                    unsafe {
+                        // 负号才是整组：tcgetpgrp 给的是前台进程组号。
+                        libc::kill(-pgid, libc::SIGKILL);
+                    }
+                }
+            });
         }
     }
 }
@@ -228,12 +278,57 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
         .slave
         .spawn_command(builder)
         .map_err(|error| std::io::Error::other(error.to_string()))?;
+    #[cfg(unix)]
+    let child_pid = child
+        .process_id()
+        .and_then(|pid| libc::pid_t::try_from(pid).ok());
     let killer = child.clone_killer();
     drop(pair.slave);
+    #[cfg(unix)]
+    let mut reader = {
+        let fd = pair
+            .master
+            .as_raw_fd()
+            .ok_or_else(|| std::io::Error::other("PTY master has no file descriptor"))?;
+        // 读线程需要独立 fd，避免 portable-pty 的 reader 在孙进程持有 slave 时阻塞退出。
+        // F_DUPFD_CLOEXEC 原子带上 close-on-exec，防止后续 spawn 的子进程继承该 fd。
+        let fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // 先交给 File 持有，后续 fcntl 失败也会顺带关闭副本 fd。
+        let reader = unsafe { File::from_raw_fd(fd) };
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        reader
+    };
+    #[cfg(not(unix))]
     let mut reader = pair
         .master
         .try_clone_reader()
         .map_err(|error| std::io::Error::other(error.to_string()))?;
+    #[cfg(unix)]
+    let writer = {
+        let fd = pair
+            .master
+            .as_raw_fd()
+            .ok_or_else(|| std::io::Error::other("PTY master has no file descriptor"))?;
+        // 写线程持有独立的 close-on-exec fd，避免阻塞写拖住 master 的其他操作。
+        let fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let writer = unsafe { File::from_raw_fd(fd) };
+        // 非阻塞写 + poll 驱动：否则数据大于可用缓冲时 write 仍会中途阻塞，closing 无法中断。
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        writer
+    };
+    #[cfg(not(unix))]
     let mut writer = pair
         .master
         .take_writer()
@@ -241,6 +336,9 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
 
     let (events, _) = tokio::sync::broadcast::channel(EVENT_CAPACITY);
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (writer_done_tx, writer_done_rx) = std::sync::mpsc::channel::<()>();
+    let closing = Arc::new(AtomicBool::new(false));
+    let child_dead = Arc::new(AtomicBool::new(false));
     let terminal = Arc::new(Terminal {
         id,
         cwd,
@@ -248,6 +346,12 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
         created_at_ms: now_ms(),
         master: Mutex::new(pair.master),
         killer: Mutex::new(killer),
+        #[cfg(unix)]
+        child_pid,
+        #[cfg(unix)]
+        child_dead: Arc::clone(&child_dead),
+        closing: Arc::clone(&closing),
+        writer_done: Mutex::new(writer_done_rx),
         input: Mutex::new(input_tx),
         state: Mutex::new(TermState {
             scroll: Scrollback::new(),
@@ -258,12 +362,48 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
 
     // 读线程：输出 → 滚动缓冲 + broadcast（同一把锁，保证 attach 语义）。
     let reading = Arc::clone(&terminal);
+    let writing_closing = Arc::clone(&closing);
     let (reader_done_tx, reader_done_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buffer = [0u8; 16 * 1024];
+        #[cfg(unix)]
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
         loop {
+            #[cfg(unix)]
+            {
+                if closing.load(Ordering::Acquire) {
+                    break;
+                }
+                let mut poll_fd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+                    revents: 0,
+                };
+                let result = unsafe { libc::poll(&mut poll_fd, 1, 200) };
+                if result == 0 {
+                    continue;
+                }
+                if result < 0 {
+                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    break;
+                }
+                if closing.load(Ordering::Acquire) {
+                    break;
+                }
+            }
             match reader.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    continue;
+                }
+                Err(_) => break,
                 Ok(count) => {
                     let chunk = Bytes::copy_from_slice(&buffer[..count]);
                     let mut state = reading.state.lock().expect("终端状态锁");
@@ -278,8 +418,96 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
     });
 
     // 写线程：串行消费输入，写入失败（进程已死）即退出。
+    // SendOnDrop：多个返回路径统一在收尾发完成通知，供测试确认线程退出。
+    struct SendOnDrop(std::sync::mpsc::Sender<()>);
+    impl Drop for SendOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    #[cfg(unix)]
+    {
+        std::thread::spawn(move || {
+            let _done = SendOnDrop(writer_done_tx);
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&writer);
+            // sender 挂在 Terminal 上，closing 时不会断开；阻塞 recv 会睡死，
+            // 需要定期超时醒来检查 closing 才能退出。
+            loop {
+                let bytes = match input_rx.recv_timeout(Duration::from_millis(200)) {
+                    Ok(bytes) => bytes,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if writing_closing.load(Ordering::Acquire) {
+                            return;
+                        }
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                };
+                let mut offset = 0;
+                while offset < bytes.len() {
+                    if writing_closing.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let mut poll_fd = libc::pollfd {
+                        fd,
+                        events: libc::POLLOUT | libc::POLLERR | libc::POLLHUP,
+                        revents: 0,
+                    };
+                    let result = unsafe { libc::poll(&mut poll_fd, 1, 200) };
+                    if result == 0 {
+                        continue;
+                    }
+                    if result < 0 {
+                        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                        {
+                            continue;
+                        }
+                        return;
+                    }
+                    if writing_closing.load(Ordering::Acquire) {
+                        return;
+                    }
+                    // 挂断/错误下写没有意义；直接退出，避免 EAGAIN 与即时 poll 组合成忙转。
+                    if poll_fd.revents
+                        & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)
+                        != 0
+                    {
+                        return;
+                    }
+                    let count = unsafe {
+                        libc::write(fd, bytes[offset..].as_ptr().cast(), bytes.len() - offset)
+                    };
+                    if count < 0 {
+                        match std::io::Error::last_os_error().kind() {
+                            std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock => {
+                                continue;
+                            }
+                            _ => return,
+                        }
+                    }
+                    if count == 0 {
+                        return;
+                    }
+                    offset += count as usize;
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
     std::thread::spawn(move || {
-        while let Ok(bytes) = input_rx.recv() {
+        let _done = SendOnDrop(writer_done_tx);
+        // 同 unix 分支：sender 不会随 closing 断开，超时醒来检查 closing。
+        loop {
+            let bytes = match input_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(bytes) => bytes,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if writing_closing.load(Ordering::Acquire) {
+                        return;
+                    }
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            };
             if writer.write_all(&bytes).is_err() || writer.flush().is_err() {
                 break;
             }
@@ -290,6 +518,21 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
     // pty 让读线程迟迟不 EOF，退出事件不该被它拖住。
     let waiting = Arc::clone(&terminal);
     std::thread::spawn(move || {
+        #[cfg(unix)]
+        let code = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    break Some(if status.signal().is_some() {
+                        None
+                    } else {
+                        Some(status.exit_code().min(i32::MAX as u32) as i32)
+                    });
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(_) => break None,
+            }
+        };
+        #[cfg(not(unix))]
         let code = child.wait().ok().map(|status| {
             if status.signal().is_some() {
                 None
@@ -298,6 +541,7 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
             }
         });
         let code = code.flatten();
+        child_dead.store(true, Ordering::Release);
         let _ = reader_done_rx.recv_timeout(OUTPUT_DRAIN_GRACE);
         let mut state = waiting.state.lock().expect("终端状态锁");
         state.exit = Some(code);
@@ -610,9 +854,7 @@ mod tests {
         let cwd = tempfile::tempdir().expect("临时目录");
         let terminal = spawn(cwd.path().to_path_buf(), 1, 80, 24).expect("启动终端");
         let mut events = terminal.events.subscribe();
-        terminal.write(
-            b"head -c 262144 /dev/zero; printf 'TAIL_%s\\n' 'OUTPUT'; exit\n",
-        );
+        terminal.write(b"head -c 262144 /dev/zero; printf 'TAIL_%s\\n' 'OUTPUT'; exit\n");
 
         let mut output = Vec::new();
         loop {
@@ -636,5 +878,111 @@ mod tests {
             "Exit 前应收到命令产生的尾部输出，实际输出: {:?}",
             String::from_utf8_lossy(&output)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_releases_terminal_threads_with_background_slave_holder() {
+        let cwd = tempfile::tempdir().expect("临时目录");
+        let terminal = spawn(cwd.path().to_path_buf(), 1, 80, 24).expect("启动终端");
+        // trap '' HUP 让 shell 无视 SIGHUP，迫使 kill() 走升级 SIGKILL 的路径；
+        // sleep 后台常驻并继承持有 slave fd，covering 孙进程占 slave 的场景。
+        terminal.write(b"trap '' HUP\nsleep 300 &\n");
+
+        // 等待命令回显并留出启动后台进程的时间，使其继续持有 slave fd。
+        let delivery_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if terminal
+                .state
+                .lock()
+                .expect("终端状态锁")
+                .scroll
+                .snapshot()
+                .windows(b"sleep 300 &".len())
+                .any(|window| window == b"sleep 300 &")
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < delivery_deadline,
+                "终端未收到后台命令"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+
+        terminal.kill();
+        let exit_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&terminal) != 1 {
+            assert!(
+                std::time::Instant::now() < exit_deadline,
+                "kill 后终端线程未退出，Arc 引用数仍为 {}，退出状态为 {:?}",
+                Arc::strong_count(&terminal),
+                terminal.state.lock().expect("终端状态锁").exit
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // 写线程不持有 Arc，单独靠完成通知确认它也退出了。
+        terminal
+            .writer_done
+            .lock()
+            .expect("写线程通知锁")
+            .recv_timeout(Duration::from_secs(2))
+            .expect("kill 后写线程未退出");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_escalation_terminates_foreground_job() {
+        let cwd = tempfile::tempdir().expect("临时目录");
+        let terminal = spawn(cwd.path().to_path_buf(), 1, 80, 24).expect("启动终端");
+        // shell 无视 SIGHUP，再跑常驻前台作业：作业控制会把它切进独立的前台进程组。
+        // set -m 显式开作业控制，用户登录配置里的 set +m 不干扰测试。
+        terminal.write(b"trap '' HUP\nset -m\nsleep 300\n");
+
+        // 等前台进程组从 shell 切到 sleep 的组，拿到要验证的组号。
+        let shell_pid = terminal.child_pid.expect("缺少子进程 PID");
+        let switch_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let fg_pgid = loop {
+            let pgid = terminal
+                .master
+                .lock()
+                .expect("master 锁")
+                .process_group_leader();
+            if let Some(pgid) = pgid {
+                if pgid != shell_pid {
+                    break pgid;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < switch_deadline,
+                "前台进程组未切换到 sleep"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        terminal.kill();
+        // 升级线程读到的前台组必须在 shell 被杀前取到；SIGKILL 送达后组内不再有存活成员。
+        // 已退出未回收的僵尸 kill(pid,0) 仍返回成功，ps 里标 Z 的按死亡处理。
+        let dead_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let alive = unsafe { libc::kill(fg_pgid, 0) } == 0 && {
+                let stat = std::process::Command::new("ps")
+                    .args(["-o", "stat=", "-p", fg_pgid.to_string().as_str()])
+                    .output()
+                    .ok()
+                    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+                    .unwrap_or_default();
+                !stat.starts_with('Z')
+            };
+            if !alive {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < dead_deadline,
+                "前台作业在终端删除后仍存活"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
