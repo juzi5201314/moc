@@ -158,7 +158,7 @@ impl ClientBuilder {
 
     /// 建连并自动完成 `initialize`（含 major 版本校验）。
     ///
-    /// 返回句柄与服务端握手结果；任何失败路径都会关闭刚建立的连接。
+    /// 返回句柄与服务端握手结果；握手失败或 future 被丢弃时都会关闭刚建立的连接。
     pub async fn connect<T: Transport>(
         self,
         stream: T,
@@ -168,6 +168,8 @@ impl ClientBuilder {
         }
         let (reader, writer) = tokio::io::split(stream);
         let closed = CancellationToken::new();
+        // 握手期间还没有句柄负责关闭；必须在启动任务前兜底 future 被丢弃的路径。
+        let close_on_drop = closed.clone().drop_guard();
         let (connection, outbound) = Connection::new(
             0,
             ConnectionOptions {
@@ -199,16 +201,12 @@ impl ClientBuilder {
             client: self.client,
             capabilities: self.capabilities,
         };
-        let handshake = match traffic.call::<Initialize>(params).await {
-            Ok(handshake) => handshake,
-            Err(error) => {
-                closed.cancel();
-                return Err(connect_error(error));
-            }
-        };
+        let handshake = traffic
+            .call::<Initialize>(params)
+            .await
+            .map_err(connect_error)?;
         if major_version(&handshake.protocol_version) != major_version(PROTOCOL_VERSION) {
             let server_version = handshake.protocol_version.clone();
-            closed.cancel();
             return Err(ConnectError::Rpc(
                 RpcError::of(RpcErrorCode::UnsupportedProtocolVersion)
                     .with_data(serde_json::json!({ "server_version": server_version })),
@@ -222,6 +220,8 @@ impl ClientBuilder {
                 handshake: handshake.clone(),
             }),
         };
+        // 句柄已接管关闭责任，成功返回时不触发取消。
+        close_on_drop.disarm();
         Ok((handle, handshake))
     }
 }
