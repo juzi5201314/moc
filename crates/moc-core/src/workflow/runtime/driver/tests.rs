@@ -138,6 +138,7 @@ async fn world_run_full_overflow_kills_fast() {
         60_000,
         &Value::Null,
         64,
+        &tokio_util::sync::CancellationToken::new(),
     )
     .await;
     let elapsed = start.elapsed();
@@ -152,6 +153,162 @@ async fn world_run_full_overflow_kills_fast() {
         elapsed < std::time::Duration::from_secs(30),
         "超限应立即返回，实际耗时 {elapsed:?}"
     );
+}
+
+#[cfg(unix)]
+async fn world_run_ready(path: &std::path::Path) -> String {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && !text.is_empty()
+            {
+                return text;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("子进程应报告就绪")
+}
+
+/// 同时覆盖仍在运行和已退出的直接子进程；孙进程始终持有 stdout/stderr。
+#[cfg(unix)]
+#[tokio::test]
+async fn world_run_interruptions_reap_child_and_readers() {
+    struct Descendant(libc::pid_t);
+    impl Drop for Descendant {
+        fn drop(&mut self) {
+            // 测试无论成功或 panic 都清理自己启动的孙进程。
+            unsafe { libc::kill(self.0, libc::SIGKILL) };
+        }
+    }
+
+    for cancelled in [false, true] {
+        for child_exits in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let policy = crate::sandbox::SandboxPolicy::full(dir.path().to_path_buf());
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let args = vec![
+                "-c".into(),
+                format!(
+                    "sleep 60 & printf '%s %s' \"$$\" \"$!\" > ready.tmp; mv ready.tmp ready; {}",
+                    if child_exits { "exit 0" } else { "wait" }
+                ),
+            ];
+            let metrics = tokio::runtime::Handle::current().metrics();
+            let tasks_before = metrics.num_alive_tasks();
+            let run = world_run_impl(&policy, "sh", &args, 60_000, &Value::Null, &cancel);
+            tokio::pin!(run);
+            let ready = dir.path().join("ready");
+            let pids = tokio::select! {
+                outcome = &mut run => panic!("中断前不应完成：{outcome:?}"),
+                pids = world_run_ready(&ready) => pids,
+            };
+            let pids: Vec<libc::pid_t> = pids
+                .split_whitespace()
+                .map(|pid| pid.parse().unwrap())
+                .collect();
+            let _descendant = Descendant(pids[1]);
+            if child_exits {
+                // 让 collect 先取得退出状态，确定中断发生在仅等管道 EOF 的路径上。
+                tokio::select! {
+                    outcome = &mut run => panic!("孙进程持有管道时不应完成：{outcome:?}"),
+                    result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        while unsafe { libc::kill(pids[0], 0) } == 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    }) => result.expect("直接子进程应先退出"),
+                }
+                assert_eq!(unsafe { libc::kill(pids[0], 0) }, -1, "直接子进程应已退出");
+            }
+            if cancelled {
+                cancel.cancel();
+            } else {
+                // 就绪后推进虚拟时钟，不靠短超时与进程启动速度竞赛。
+                tokio::time::pause();
+                tokio::time::advance(std::time::Duration::from_secs(60)).await;
+                tokio::time::resume();
+            }
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), &mut run)
+                .await
+                .expect("中断不应等待孙进程释放管道");
+            let expected = if cancelled {
+                "E_WORLD_CANCELLED"
+            } else {
+                "E_WORLD_TIMEOUT"
+            };
+            assert!(matches!(outcome, DriverOutcome::Failed { code, .. } if code == expected));
+            assert_eq!(
+                metrics.num_alive_tasks(),
+                tasks_before,
+                "两路读取任务必须已回收"
+            );
+            assert_eq!(
+                unsafe { libc::kill(pids[0], 0) },
+                -1,
+                "直接子进程不能继续运行"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+            // 已被 wait 回收的子进程不应留下可再次 waitpid 的僵尸。
+            assert_eq!(
+                unsafe { libc::waitpid(pids[0], std::ptr::null_mut(), libc::WNOHANG) },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn world_run_cancel_before_spawn_and_while_waiting_without_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = crate::sandbox::SandboxPolicy::full(dir.path().to_path_buf());
+    for output in [Value::Null, json!({"tail": 64}), json!("discard")] {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        // 无效命令应被取消短路，而非尝试 spawn 后返回 E_WORLD。
+        let outcome = world_run_impl(
+            &policy,
+            "missing-world-run-command",
+            &[],
+            60_000,
+            &output,
+            &cancel,
+        )
+        .await;
+        assert!(
+            matches!(outcome, DriverOutcome::Failed { code, .. } if code == "E_WORLD_CANCELLED")
+        );
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let args = vec![
+            "-c".into(),
+            "exec 1>&- 2>&-; echo $$ > ready.tmp; mv ready.tmp ready; exec sleep 60".into(),
+        ];
+        let run = world_run_impl(&policy, "sh", &args, 60_000, &output, &cancel);
+        tokio::pin!(run);
+        let ready = dir.path().join("ready");
+        let pid = tokio::select! {
+            outcome = &mut run => panic!("取消前不应完成：{outcome:?}"),
+            pid = world_run_ready(&ready) => pid.trim().parse::<libc::pid_t>().unwrap(),
+        };
+        cancel.cancel();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), &mut run)
+            .await
+            .expect("已无输出的子进程也应被取消");
+        assert!(
+            matches!(outcome, DriverOutcome::Failed { code, .. } if code == "E_WORLD_CANCELLED")
+        );
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "子进程不能继续运行");
+        std::fs::remove_file(ready).unwrap();
+    }
 }
 
 fn user_entry(id: &str) -> Entry {
