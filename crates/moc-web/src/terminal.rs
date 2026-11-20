@@ -937,7 +937,8 @@ mod tests {
         let cwd = tempfile::tempdir().expect("临时目录");
         let terminal = spawn(cwd.path().to_path_buf(), 1, 80, 24).expect("启动终端");
         // shell 无视 SIGHUP，再跑常驻前台作业：作业控制会把它切进独立的前台进程组。
-        terminal.write(b"trap '' HUP\nsleep 300\n");
+        // set -m 显式开作业控制，用户登录配置里的 set +m 不干扰测试。
+        terminal.write(b"trap '' HUP\nset -m\nsleep 300\n");
 
         // 等前台进程组从 shell 切到 sleep 的组，拿到要验证的组号。
         let shell_pid = terminal.child_pid.expect("缺少子进程 PID");
@@ -962,9 +963,18 @@ mod tests {
 
         terminal.kill();
         // 升级线程读到的前台组必须在 shell 被杀前取到；SIGKILL 送达后组内不再有存活成员。
+        // 已退出未回收的僵尸 kill(pid,0) 仍返回成功，ps 里标 Z 的按死亡处理。
         let dead_deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let alive = unsafe { libc::kill(fg_pgid, 0) } == 0;
+            let alive = unsafe { libc::kill(fg_pgid, 0) } == 0 && {
+                let stat = std::process::Command::new("ps")
+                    .args(["-o", "stat=", "-p", fg_pgid.to_string().as_str()])
+                    .output()
+                    .ok()
+                    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+                    .unwrap_or_default();
+                !stat.starts_with('Z')
+            };
             if !alive {
                 break;
             }
