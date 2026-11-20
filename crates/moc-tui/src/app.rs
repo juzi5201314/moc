@@ -204,7 +204,7 @@ pub struct App {
     pub completion_prefix: Option<String>,
     /// 打开的模态；更换时统一使用 `set_modal` / `take_modal`。
     pub modal: Option<Modal>,
-    /// 当前模态状态已参与一帧渲染（含尺寸不足而跳过卡片）；换窗后到下一帧之间不接收输入。
+    /// 当前模态已在本帧实际绘制；未绘制时只接收普通 Esc 按下以退出。
     pub modal_drawn: bool,
     /// 等待作答的授权与提问，共用 FIFO 并持有各自的答复发送端。
     pub pending_modals: VecDeque<Modal>,

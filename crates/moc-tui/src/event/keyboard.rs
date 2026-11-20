@@ -34,10 +34,14 @@ use moc_protocol::ClientHandle;
 
 /// 终端事件分派（键盘、鼠标、粘贴与窗口变化）。
 pub(super) fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: Event) {
-    // 帧预算内可能连续收到输入；新模态状态参与一帧渲染前，统一吞掉鼠标、键盘和粘贴。
+    // 模态实际绘制前吞掉键盘、鼠标和粘贴，仅放行普通 Esc 按下，保证小终端也能退出。
     if app.modal.is_some()
         && !app.modal_drawn
         && matches!(event, Event::Key(_) | Event::Mouse(_) | Event::Paste(_))
+        && !matches!(event, Event::Key(key)
+            if key.kind == KeyEventKind::Press
+                && key.code == KeyCode::Esc
+                && key.modifiers.is_empty())
     {
         return;
     }

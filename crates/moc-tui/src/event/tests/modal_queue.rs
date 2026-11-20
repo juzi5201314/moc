@@ -77,28 +77,62 @@ fn terminal_key(
 }
 
 #[tokio::test]
-async fn help_closes_after_render_on_tiny_terminals() {
+async fn undrawn_help_only_closes_on_plain_escape_press() {
     let (core, connection, mut app) = setup_test_app().await;
-    for (width, height) in [(80, 5), (19, 24)] {
-        for close in [KeyCode::Esc, KeyCode::Char('q')] {
-            terminal_key(
+    for (width, height) in [(80, 5), (19, 24), (0, 0)] {
+        terminal_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('h'),
+        );
+        assert!(matches!(app.modal, Some(Modal::Help { .. })));
+        assert!(!app.modal_drawn);
+        terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        assert!(app.modal.is_none());
+
+        app.set_modal(Some(Modal::Help { scroll: 0 }));
+        let _ = draw_frame(&mut app, 100, 30);
+        assert!(app.modal_drawn);
+        let _ = draw_frame(&mut app, width, height);
+        assert!(!app.modal_drawn);
+        assert!(app.modal_card_area.is_empty());
+        terminal_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('q'),
+        );
+        assert!(matches!(app.modal, Some(Modal::Help { .. })));
+        for modifiers in [
+            KeyModifiers::SHIFT,
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SUPER,
+            KeyModifiers::HYPER,
+            KeyModifiers::META,
+        ] {
+            terminal_key(&mut app, &connection, modifiers, KeyCode::Esc);
+            assert!(matches!(app.modal, Some(Modal::Help { .. })));
+        }
+        for kind in [
+            crossterm::event::KeyEventKind::Repeat,
+            crossterm::event::KeyEventKind::Release,
+        ] {
+            handle_terminal_event(
                 &mut app,
                 &connection,
-                KeyModifiers::CONTROL,
-                KeyCode::Char('h'),
+                Event::Key(crossterm::event::KeyEvent::new_with_kind(
+                    KeyCode::Esc,
+                    KeyModifiers::NONE,
+                    kind,
+                )),
             );
             assert!(matches!(app.modal, Some(Modal::Help { .. })));
-            assert!(!app.modal_drawn);
-            terminal_key(&mut app, &connection, KeyModifiers::NONE, close);
-            assert!(matches!(app.modal, Some(Modal::Help { .. })));
-
-            let _ = draw_frame(&mut app, width, height);
-            assert!(app.modal_drawn);
-            assert!(app.modal_card_area.is_empty());
-            terminal_key(&mut app, &connection, KeyModifiers::NONE, close);
-            assert!(app.modal.is_none());
-            assert!(!app.modal_drawn);
         }
+        terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        assert!(app.modal.is_none());
+        assert!(!app.modal_drawn);
     }
     connection.shutdown().await;
     core.shutdown().await;
@@ -123,6 +157,7 @@ async fn request_modals_keep_fifo_across_keyboard_mouse_and_parked_ask() {
     terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
     assert_eq!(first.try_recv(), Err(TryRecvError::Empty));
     let _ = draw_frame(&mut app, 100, 30);
+    assert!(app.modal_drawn);
     let (_, approve) = app.modal_item_hits[0];
     terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
     assert_eq!(first.try_recv().unwrap().unwrap().option_id, "allow_once");
@@ -135,18 +170,29 @@ async fn request_modals_keep_fifo_across_keyboard_mouse_and_parked_ask() {
         &connection,
         Event::Mouse(left_click(approve.x, approve.y)),
     );
-    for code in [KeyCode::Enter, KeyCode::Char('1'), KeyCode::Esc] {
+    for code in [KeyCode::Enter, KeyCode::Char('1')] {
         terminal_key(&mut app, &connection, KeyModifiers::NONE, code);
     }
     assert_eq!(second.try_recv(), Err(TryRecvError::Empty));
     assert_eq!(current_request(&app), "p2");
 
-    // 一帧完成后，即使终端小到画不出卡片，也必须允许 Esc 取消。
+    // 尺寸不足仍不能批准或粘贴，但普通 Esc 必须能取消。
     let _ = draw_frame(&mut app, 80, 5);
-    assert!(app.modal_drawn);
+    assert!(!app.modal_drawn);
     assert!(app.modal_card_area.is_empty());
     assert!(app.modal_item_hits.is_empty());
+    for code in [KeyCode::Char('1'), KeyCode::Enter] {
+        terminal_key(&mut app, &connection, KeyModifiers::NONE, code);
+    }
+    handle_terminal_event(
+        &mut app,
+        &connection,
+        Event::Mouse(left_click(approve.x, approve.y)),
+    );
+    handle_terminal_event(&mut app, &connection, Event::Paste("不可见输入".into()));
+    assert!(app.prompt_text().is_empty());
     assert_eq!(second.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(current_request(&app), "p2");
     terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
     assert!(second.try_recv().unwrap().is_err());
     assert_eq!(current_request(&app), "a1");
@@ -216,6 +262,59 @@ async fn request_modals_keep_fifo_across_keyboard_mouse_and_parked_ask() {
     assert_eq!(fifth.try_recv().unwrap().unwrap().option_id, "allow_once");
     assert!(app.modal.is_none());
     assert!(app.pending_modals.is_empty());
+
+    connection.shutdown().await;
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn undrawn_ask_ignores_stale_clicks_and_escape_cancels() {
+    let (core, connection, mut app) = setup_test_app().await;
+    let session = app.session.as_ref().unwrap().id.clone();
+    let mut first = ask(&mut app, &session, "a1");
+    let mut second = ask(&mut app, &session, "a2");
+    let _ = draw_frame(&mut app, 100, 30);
+    assert!(app.modal_drawn);
+    let (_, option) = app.ask_option_hits[0];
+    terminal_key(
+        &mut app,
+        &connection,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('c'),
+    );
+    assert!(first.try_recv().unwrap().is_err());
+    assert_eq!(current_request(&app), "a2");
+
+    let _ = draw_frame(&mut app, 80, 5);
+    assert!(!app.modal_drawn);
+    assert_eq!(app.ask_option_hits[0].1, option);
+    // 旧选项坐标若被放行，连点会越过末问并索引越界；未绘制的新请求必须保持原样。
+    for _ in 0..3 {
+        handle_terminal_event(
+            &mut app,
+            &connection,
+            Event::Mouse(left_click(option.x, option.y)),
+        );
+    }
+    let Some(Modal::Ask {
+        question, selected, ..
+    }) = &app.modal
+    else {
+        panic!("未绘制的提问应仍在等待");
+    };
+    assert_eq!(*question, 0);
+    assert!(selected.iter().all(Vec::is_empty));
+    assert_eq!(second.try_recv(), Err(TryRecvError::Empty));
+
+    // 沿用提问的退出语义：首次 Esc 折叠，再次 Esc 取消，无需绘制即可完成。
+    terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+    assert!(matches!(app.modal, Some(Modal::Ask { parked: true, .. })));
+    assert!(!app.modal_drawn);
+    assert_eq!(second.try_recv(), Err(TryRecvError::Empty));
+    terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+    assert!(second.try_recv().unwrap().is_err());
+    assert!(app.modal.is_none());
+    assert!(!app.modal_drawn);
 
     connection.shutdown().await;
     core.shutdown().await;
