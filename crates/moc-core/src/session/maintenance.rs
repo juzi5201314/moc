@@ -11,6 +11,12 @@ pub(crate) fn journal_path(path: &Path) -> Option<PathBuf> {
     (name.ends_with(".jsonl") || name.ends_with(".jsonl.zst")).then(|| path.to_owned())
 }
 
+fn escaped_path_pattern(path: &str) -> String {
+    // 使用 JSON 字符串转义并去掉首尾引号，匹配 transcript 中的完整路径。
+    let encoded = serde_json::to_string(path).expect("路径字符串可序列化为 JSON");
+    encoded[1..encoded.len() - 1].to_owned()
+}
+
 struct Candidate {
     session: String,
     paths: SessionPaths,
@@ -85,7 +91,7 @@ impl SessionTable {
                         values.push(uri);
                     }
                     let path = file.path.to_string_lossy().into_owned();
-                    values.push(path.replace('\\', "\\\\"));
+                    values.push(escaped_path_pattern(&path));
                     values.push(path);
                     values
                 })
@@ -114,7 +120,7 @@ impl SessionTable {
                 .ok();
             if uri.as_deref().is_some_and(|uri| referenced.contains(uri))
                 || referenced.contains(&candidate.path.to_string_lossy().into_owned())
-                || referenced.contains(&candidate.path.to_string_lossy().replace('\\', "\\\\"))
+                || referenced.contains(&escaped_path_pattern(&candidate.path.to_string_lossy()))
                 || self.records.read().contains_key(&candidate.session)
             {
                 report.protected += 1;
@@ -274,6 +280,21 @@ mod tests {
                 kept.push(artifact);
             }
         }
+        // 子会话位于嵌套的 ses_ 目录中；用真实 zstd 帧覆盖仅在压缩恢复备份中的引用。
+        let child_paths = &transcripts[1];
+        let artifact = child_paths.artifacts().join("compressed-backup.txt");
+        fs::write(&artifact, "压缩备份仍引用").await.unwrap();
+        let reference = crate::resources::ArtifactStore::new(child_paths.clone())
+            .uri_for_path(&artifact)
+            .unwrap();
+        let line = format!("{}\n", serde_json::json!({ "text": reference }));
+        fs::write(
+            child_paths.transcript.with_extension("zst.1234567890.bak"),
+            log::compress_frame(line.as_bytes()).unwrap(),
+        )
+        .await
+        .unwrap();
+        kept.push(artifact);
         let garbage = paths.artifacts().join("unused.txt");
         fs::write(&garbage, "未被引用").await.unwrap();
         let table = SessionTable::new(store.root(), true);
@@ -320,11 +341,11 @@ mod tests {
             .await
             .unwrap();
         std::fs::create_dir_all(paths.artifacts()).unwrap();
-        // Unix 文件名允许反斜杠，可在当前平台覆盖 JSON 转义路径的匹配。
+        // Unix 文件名允许反斜杠和双引号，可在当前平台覆盖 JSON 转义路径的匹配。
         let kept = paths.artifacts().join(if cfg!(windows) {
             "kept.txt"
         } else {
-            r"kept\kept.txt"
+            r#"kept\"kept.txt"#
         });
         let garbage = paths.artifacts().join("unused.txt");
         fs::write(&kept, "仍被引用").await.unwrap();
