@@ -692,7 +692,9 @@ export async function confirmDelete(sessionId: string, root: FileRoot): Promise<
           loadSeq.delete(`${sessionId}\n${targetKey(tab.target)}`);
         }
       }
-      for (const key of Object.keys(files.nodes)) {
+      // loading 记的是请求过的目录（含还没落过 nodes 条目的），
+      // 遍历它才不漏掉在飞列举——迟到的响应会把已删目录重建成幽灵节点。
+      for (const key of Object.keys(files.loading)) {
         if (under(key)) dirSeq.delete(`${sessionId}\n${key}`);
       }
       return {

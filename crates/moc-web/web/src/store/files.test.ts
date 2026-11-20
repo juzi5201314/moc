@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { rpc } from "@/protocol/client";
-import type { FsReadFileResult, FsWriteFileResult } from "@/protocol/types";
+import type { FsListDirResult, FsReadFileResult, FsWriteFileResult } from "@/protocol/types";
 import {
   askDelete,
   commitNaming,
@@ -436,6 +436,41 @@ it("删除目录后子标签标已删除并清掉子树缓存", async () => {
   expect(files.expanded).toEqual({ "/work/other": true });
   expect(Object.keys(files.nodes).sort()).toEqual(["/work", "/work/other"]);
   expect(files.loading).toEqual({ "/work": false });
+});
+
+it("删除目录时在飞列举的迟到响应不重建幽灵节点", async () => {
+  // /work/dir/sub 只在 loading 里（在飞列举，还没落过 nodes）：
+  // 删除 /work/dir 后旧响应不得把 sub 重新写回 nodes。
+  useFiles.setState({
+    bySession: {
+      s: {
+        root: "workspace",
+        expanded: { "/work/dir": true, "/work/dir/sub": true },
+        nodes: {},
+        loading: { "/work/dir/sub": true },
+        tabs: [],
+        stackedView: "editor",
+      },
+    },
+  });
+  const staleList = deferred<FsListDirResult>();
+  vi.mocked(rpc.call).mockImplementation(async (method, params) => {
+    if (method === "fs/list_dir") {
+      if ((params as { path?: string }).path === "/work/dir/sub") return staleList.promise;
+      return { entries: [], path: "/work", truncated: false };
+    }
+    if (method === "fs/delete") return {};
+    throw new Error(String(method));
+  });
+  askDelete("s", "/work/dir", "dir");
+  await confirmDelete("s", { kind: "workspace", cwd: "/work" });
+  staleList.resolve({
+    entries: [{ path: "/work/dir/sub/x", name: "x", kind: "file", git: false }],
+    path: "/work/dir/sub",
+    truncated: false,
+  });
+  await flush();
+  expect(useFiles.getState().bySession.s.nodes["/work/dir/sub"]).toBeUndefined();
 });
 
 it("已被较新读取取代的 mtime 探测不误报冲突", async () => {
