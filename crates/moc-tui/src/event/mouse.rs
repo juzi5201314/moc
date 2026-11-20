@@ -255,7 +255,7 @@ pub(super) fn handle_mouse_with_connection(
         // workflow 胶囊：最小化审批优先重开，其次弹出排队审批，否则打开 run 列表。
         if app.modal.is_none() && app.workflow_capsule_area.contains(position.into()) {
             if let Some(state) = take_next_approval(app) {
-                app.modal = Some(Modal::WorkflowApproval { state });
+                app.set_modal(Some(Modal::WorkflowApproval { state }));
             } else {
                 open_workflow_runs(app, connection);
             }
@@ -266,7 +266,7 @@ pub(super) fn handle_mouse_with_connection(
             if app.prompt_running {
                 request_stop(app, connection);
             } else {
-                app.modal = Some(Modal::Help { scroll: 0 });
+                app.set_modal(Some(Modal::Help { scroll: 0 }));
             }
             return;
         }
@@ -392,7 +392,7 @@ pub(super) fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, i
             });
         }
         // 与键盘路径一致：杀任务后关闭弹窗。
-        app.modal = None;
+        app.set_modal(None);
         return;
     }
     if confirm {

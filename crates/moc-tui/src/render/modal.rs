@@ -56,6 +56,7 @@ struct ModalBody {
 
 /// 居中模态卡片。
 pub fn draw_modal(frame: &mut Frame, app: &mut App) {
+    app.modal_drawn = false;
     app.modal_item_hits.clear();
     app.modal_detail_hits.clear();
     app.modal_menu_hits.clear();
@@ -70,6 +71,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     }
     if matches!(app.modal, Some(Modal::Model { .. })) {
         model_picker::draw(frame, app);
+        app.modal_drawn = !app.modal_card_area.is_empty();
         return;
     }
     let theme = app.theme;
@@ -84,16 +86,19 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     }
     if matches!(app.modal, Some(Modal::Rewind { .. })) {
         crate::render::rewind::draw(frame, app, area);
+        app.modal_drawn = !app.modal_card_area.is_empty();
         return;
     }
     if matches!(app.modal, Some(Modal::ContextContent { .. })) {
         // 正文窗按自己的列宽折行、按整行滚动，并自带滚动条与命中几何。
         context_content::draw(frame, app, area);
+        app.modal_drawn = !app.modal_card_area.is_empty();
         return;
     }
     if matches!(app.modal, Some(Modal::Ask { .. })) {
         // 提问卡片自带命中几何（鼠标点选选项），同样不走通用路径。
         draw_ask_modal(frame, app, area);
+        app.modal_drawn = true;
         return;
     }
     let Some(modal) = &app.modal else {
@@ -138,6 +143,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         })
         .collect();
     app.modal_card_area = layout.area;
+    app.modal_drawn = true;
     app.key_hits = layout.keys;
     // 悬停只铺底色：pointer 坐标由事件层记录，选中项保持自己的高亮。
     {

@@ -22,9 +22,9 @@ pub(super) fn apply_workflow_update(
             if app.modal.is_some() {
                 app.workflow.queued_approvals.push_back(request);
             } else {
-                app.modal = Some(Modal::WorkflowApproval {
+                app.set_modal(Some(Modal::WorkflowApproval {
                     state: Box::new(crate::workflow::WorkflowApprovalState::new(request)),
-                });
+                }));
             }
         }
         E::ApprovalResolved { request_id, .. } => {
@@ -37,7 +37,7 @@ pub(super) fn apply_workflow_update(
                 Some(Modal::WorkflowApproval { state }) if state.request.request_id == request_id
             );
             if modal_is_request {
-                app.modal = None;
+                app.set_modal(None);
             }
             if app
                 .workflow

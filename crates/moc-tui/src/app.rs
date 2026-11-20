@@ -202,8 +202,10 @@ pub struct App {
     pub prompt_revision: u64,
     /// 当前资源补全请求的 prefix。
     pub completion_prefix: Option<String>,
-    /// 打开的模态；键盘优先路由给它。
+    /// 打开的模态；更换时统一使用 `set_modal` / `take_modal`。
     pub modal: Option<Modal>,
+    /// 当前模态已绘制；换窗后到下一帧之间不接收输入。
+    pub modal_drawn: bool,
     /// 等待作答的授权与提问，共用 FIFO 并持有各自的答复发送端。
     pub pending_modals: VecDeque<Modal>,
     /// 当前焦点。
@@ -566,6 +568,7 @@ impl App {
             prompt_revision: 0,
             completion_prefix: None,
             modal: None,
+            modal_drawn: false,
             pending_modals: VecDeque::new(),
             focus: Focus::Prompt,
             btw: crate::btw::BtwState::default(),
@@ -729,6 +732,18 @@ impl App {
         self.config_flight.is_some() || self.config_queue.is_some()
     }
 
+    /// 换窗时作废绘制状态，避免旧卡片的输入误答新请求。
+    pub fn set_modal(&mut self, modal: Option<Modal>) {
+        self.modal = modal;
+        self.modal_drawn = false;
+    }
+
+    /// 取出模态时同样作废绘制状态。
+    pub fn take_modal(&mut self) -> Option<Modal> {
+        self.modal_drawn = false;
+        self.modal.take()
+    }
+
     /// 授权与提问互不覆盖；已有队列时新请求也不能插队。
     pub fn enqueue_request_modal(&mut self, modal: Modal) {
         debug_assert!(modal.request_session_id().is_some());
@@ -741,17 +756,23 @@ impl App {
             self.show_next_pending_modal();
         } else {
             // 无待答请求时，沿用请求弹窗替换其他浏览窗口的行为。
-            self.modal = Some(modal);
+            self.set_modal(Some(modal));
             self.focus = Focus::Prompt;
         }
     }
 
     /// 其他窗口若替换了当前请求，仍沿用原来的取消语义；队列等待窗口空闲。
     pub fn show_next_pending_modal(&mut self) -> bool {
+        // 接收端已取消的请求无需再展示；同步检查不等待任务退出。
+        self.pending_modals.retain(|modal| match modal {
+            Modal::Permission { reply, .. } => reply.as_ref().is_some_and(|tx| !tx.is_closed()),
+            Modal::Ask { reply, .. } => reply.as_ref().is_some_and(|tx| !tx.is_closed()),
+            _ => true,
+        });
         if self.modal.is_none()
             && let Some(modal) = self.pending_modals.pop_front()
         {
-            self.modal = Some(modal);
+            self.set_modal(Some(modal));
             self.focus = Focus::Prompt;
             return true;
         }
@@ -763,7 +784,7 @@ impl App {
         self.pending_modals
             .retain(|modal| modal.request_session_id() != Some(session_id));
         if self.modal.as_ref().and_then(Modal::request_session_id) == Some(session_id) {
-            self.modal = None;
+            self.set_modal(None);
         }
         self.show_next_pending_modal();
     }

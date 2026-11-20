@@ -34,6 +34,13 @@ use moc_protocol::ClientHandle;
 
 /// 终端事件分派（键盘、鼠标、粘贴与窗口变化）。
 pub(super) fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: Event) {
+    // 帧预算内可能连续收到输入；新模态真正绘制前，统一吞掉鼠标、键盘和粘贴。
+    if app.modal.is_some()
+        && !app.modal_drawn
+        && matches!(event, Event::Key(_) | Event::Mouse(_) | Event::Paste(_))
+    {
+        return;
+    }
     if matches!(event, Event::FocusLost | Event::Resize(_, _)) {
         app.scrollbar_pointer = None;
         app.scrollbar_drag = None;
@@ -313,7 +320,9 @@ pub(super) fn handle_key(
                 app.set_notice(t!("tui.event.ctrl_c_quit").into_owned());
             }
         }
-        (KeyCode::Char('h'), KeyModifiers::CONTROL) => app.modal = Some(Modal::Help { scroll: 0 }),
+        (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
+            app.set_modal(Some(Modal::Help { scroll: 0 }))
+        }
         (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
             app.cycle_thinking_detail();
             app.set_notice(

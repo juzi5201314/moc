@@ -72,7 +72,7 @@ pub(super) fn apply_rewound(
         && selected.agent.is_none()
         && selected.reminder.is_none();
     let selected_message = selected.message;
-    app.modal = None;
+    app.set_modal(None);
     app.switch_session(
         loaded.session,
         crate::transcript_restore::blocks_from_entries_with_children(

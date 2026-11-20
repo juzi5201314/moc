@@ -420,7 +420,8 @@ async fn ask_esc_parks_before_cancelling() {
 #[tokio::test]
 async fn ask_paste_lands_in_editing_custom_answer() {
     let (core, connection, mut app) = setup_test_app().await;
-    app.modal = Some(ask_modal());
+    app.set_modal(Some(ask_modal()));
+    let _ = draw_frame(&mut app, 100, 30);
 
     handle_key(
         &mut app,

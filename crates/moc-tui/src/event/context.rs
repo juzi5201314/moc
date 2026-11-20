@@ -43,12 +43,12 @@ pub(super) fn open_tools(app: &mut App, connection: &EmbeddedConnection) {
     };
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let request = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    app.modal = Some(Modal::Tools {
+    app.set_modal(Some(Modal::Tools {
         request,
         tools: None,
         error: None,
         scroll: 0,
-    });
+    }));
     let client = connection.client.clone();
     let events = app.events.clone();
     tokio::spawn(async move {
@@ -70,13 +70,13 @@ pub(super) fn open_context(app: &mut App, connection: &EmbeddedConnection) {
     };
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let request = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    app.modal = Some(Modal::ContextContent {
+    app.set_modal(Some(Modal::ContextContent {
         state: Box::new(ContextContentState {
             request,
             session_id: session_id.clone(),
             ..Default::default()
         }),
-    });
+    }));
     let client = connection.client.clone();
     let events = app.events.clone();
     tokio::spawn(async move {

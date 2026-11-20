@@ -406,12 +406,12 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::Sessions(sessions)) => {
-                        app.modal = Some(Modal::Sessions {
+                        app.set_modal(Some(Modal::Sessions {
                             sessions,
                             cwd: app.startup_cwd.clone(),
                             scope: SessionScope::default(),
                             picker: crate::modal::PickerState::default(),
-                        });
+                        }));
                     }
                     Some(AppEvent::SubagentsLoaded(result)) => match result {
                         Ok(agents) => {
@@ -505,24 +505,24 @@ async fn event_loop(
                         app.push_note(text, NoteTone::Info);
                     }
                     Some(AppEvent::OpenJobsModal(jobs)) => {
-                        app.modal = Some(Modal::Jobs {
+                        app.set_modal(Some(Modal::Jobs {
                             jobs,
                             selected: 0,
                             pending_kill: None,
                             offset: 0,
                             scroll: crate::modal::ModelScroll::default(),
                             pointer: None,
-                        });
+                        }));
                     }
                     Some(AppEvent::OpenWorkflowApproval(request)) => {
                         app.workflow
                             .queued_approvals
                             .retain(|a| a.request_id != request.request_id);
-                        app.modal = Some(Modal::WorkflowApproval {
+                        app.set_modal(Some(Modal::WorkflowApproval {
                             state: Box::new(crate::workflow::WorkflowApprovalState::new(
                                 request,
                             )),
-                        });
+                        }));
                     }
                     Some(AppEvent::OpenWorkflowRun(snapshot)) => {
                         let state = crate::workflow::WorkflowRunState {
@@ -550,9 +550,9 @@ async fn event_loop(
                             scroll: crate::modal::ModelScroll::default(),
                             pointer: None,
                         };
-                        app.modal = Some(Modal::WorkflowRun {
+                        app.set_modal(Some(Modal::WorkflowRun {
                             state: Box::new(state),
-                        });
+                        }));
                     }
                     Some(AppEvent::WorkflowArtifactView {
                         artifact_id,
@@ -591,49 +591,12 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::OpenWorkflowRuns(runs)) => {
-                        app.modal = Some(Modal::WorkflowRuns {
+                        app.set_modal(Some(Modal::WorkflowRuns {
                             runs,
                             picker: crate::modal::PickerState::default(),
-                        });
+                        }));
                     }
-                    Some(AppEvent::Loaded(
-                        info,
-                        blocks,
-                        has_more,
-                        before_entry_id,
-                        todos,
-                        read_only,
-                        goal,
-                    )) => {
-                        app.modal = None;
-                        let cwd = info.cwd.clone();
-                        let id = info.id.clone();
-                        let lock_holder = info.lock.clone();
-                        app.switch_session(info, blocks);
-                        app.goal = goal;
-                        app.read_only = read_only;
-                        if read_only {
-                            let holder = lock_holder
-                                .map(|lock| format!("{} (pid {})", lock.frontend, lock.pid))
-                                .unwrap_or_else(|| t!("tui.event.other_process").into_owned());
-                            app.set_notice(
-                                t!("tui.event.locked_readonly_fmt", holder = holder).into_owned(),
-                            );
-                        }
-                        // 恢复会话的 todo 快照：HUD 立刻可见，不必等下一次 TodoChanged。
-                        app.todos = todos;
-                        app.set_history_cursor(has_more, before_entry_id);
-                        refresh_git_branch(app, &cwd);
-                        refresh_context(app, connection, false);
-                        refresh_usage(app, connection, false);
-                        refresh_plugins(app, connection, false, false);
-                        load_subagents_for_parent(app, &connection.client, Some(id));
-                        if let Some(text) = app.startup_pending.take() {
-                            app.prompt.insert_str_raw(&text);
-                            crate::queue::submit(app, connection, false);
-                        }
-                        crate::queue::dispatch(app, connection);
-                    }
+                    Some(event @ AppEvent::Loaded(..)) => apply_loaded(app, connection, event),
                     Some(AppEvent::GitBranch(branch)) => {
                         app.git_branch = Some(branch);
                     }
@@ -642,6 +605,40 @@ async fn event_loop(
             }
         }
     }
+}
+
+/// 应用会话加载回执；先关闭当前窗口，再清理离开会话的待答请求。
+fn apply_loaded(app: &mut App, connection: &EmbeddedConnection, event: AppEvent) {
+    let AppEvent::Loaded(info, blocks, has_more, before_entry_id, todos, read_only, goal) = event
+    else {
+        unreachable!("仅处理会话加载回执");
+    };
+    app.set_modal(None);
+    let cwd = info.cwd.clone();
+    let id = info.id.clone();
+    let lock_holder = info.lock.clone();
+    app.switch_session(info, blocks);
+    app.goal = goal;
+    app.read_only = read_only;
+    if read_only {
+        let holder = lock_holder
+            .map(|lock| format!("{} (pid {})", lock.frontend, lock.pid))
+            .unwrap_or_else(|| t!("tui.event.other_process").into_owned());
+        app.set_notice(t!("tui.event.locked_readonly_fmt", holder = holder).into_owned());
+    }
+    // 恢复会话的 todo 快照：HUD 立刻可见，不必等下一次 TodoChanged。
+    app.todos = todos;
+    app.set_history_cursor(has_more, before_entry_id);
+    refresh_git_branch(app, &cwd);
+    refresh_context(app, connection, false);
+    refresh_usage(app, connection, false);
+    refresh_plugins(app, connection, false, false);
+    load_subagents_for_parent(app, &connection.client, Some(id));
+    if let Some(text) = app.startup_pending.take() {
+        app.prompt.insert_str_raw(&text);
+        crate::queue::submit(app, connection, false);
+    }
+    crate::queue::dispatch(app, connection);
 }
 
 /// 两类反向请求共用队列，按事件到达顺序保留答复权。
