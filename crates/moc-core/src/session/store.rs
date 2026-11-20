@@ -324,7 +324,7 @@ impl SessionStore {
             return Ok(Some(paths));
         }
         let suffix = format!("_{session_id}");
-        for path in self.journals().await? {
+        for path in self.journals(false).await? {
             let matches = path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -351,7 +351,8 @@ impl SessionStore {
     ///
     /// 子代理日志落在父会话目录里，所以「再深一层」就等于「代理树的一层」；只进
     /// `ses_` 目录也能把 jobs、artifacts、plans、compaction 这些同级目录挡在外面。
-    async fn journals(&self) -> Result<Vec<PathBuf>, CoreError> {
+    /// 维护扫描另外纳入恢复备份和 compaction 归档，保护仅在旧历史中引用的产物。
+    pub(super) async fn journals(&self, include_archives: bool) -> Result<Vec<PathBuf>, CoreError> {
         let mut found = Vec::new();
         let mut pending = vec![(self.root.clone(), 0usize)];
         while let Some((directory, depth)) = pending.pop() {
@@ -363,13 +364,26 @@ impl SessionStore {
             while let Some(entry) = entries.next_entry().await? {
                 let path = entry.path();
                 if entry.file_type().await?.is_dir() {
-                    if depth == 0 || is_session_directory(&path) {
+                    if depth == 0
+                        || is_session_directory(&path)
+                        || (include_archives
+                            && is_session_directory(&directory)
+                            && entry.file_name() == "compaction")
+                    {
                         pending.push((path, depth + 1));
                     }
                     continue;
                 }
-                if let Some(journal) = super::maintenance::journal_path(&path) {
-                    found.push(journal);
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let archive = include_archives
+                    && ((name.contains(".jsonl.") && name.ends_with(".bak"))
+                        || (directory
+                            .file_name()
+                            .is_some_and(|name| name == "compaction")
+                            && name.ends_with(".md")));
+                if super::maintenance::journal_path(&path).is_some() || archive {
+                    found.push(path);
                 }
             }
         }
@@ -468,7 +482,7 @@ impl SessionStore {
                 listings.entry(path).or_insert(info);
             }
         }
-        let paths = self.journals().await?;
+        let paths = self.journals(false).await?;
         let existing: std::collections::HashSet<&PathBuf> = paths.iter().collect();
         {
             let mut listings = self.listings.write();
