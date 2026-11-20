@@ -152,15 +152,38 @@ async fn connect_stdio(
     if let Some(stderr) = stderr {
         let server = server.to_owned();
         tokio::spawn(async move {
-            use tokio::io::AsyncBufReadExt;
-            let mut lines = tokio::io::BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::debug!(target: "moc_mcp", server, "{line}");
-            }
+            drain_stderr(tokio::io::BufReader::new(stderr), &server).await;
         });
     }
     let handler = ClientHandlerBridge::new(tool_list_changed);
     serve_bridge(server, handler, transport).await
+}
+
+async fn drain_stderr(mut reader: impl tokio::io::AsyncBufRead + Unpin, server: &str) {
+    use tokio::io::AsyncBufReadExt;
+
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => break,
+            Ok(_) => {
+                if buf.ends_with(b"\n") {
+                    buf.pop();
+                    if buf.ends_with(b"\r") {
+                        buf.pop();
+                    }
+                }
+                // 非 UTF-8 日志也必须持续读取，避免提前关闭管道导致子进程写入失败。
+                let line = String::from_utf8_lossy(&buf);
+                tracing::debug!(target: "moc_mcp", server, "{line}");
+            }
+            Err(error) => {
+                tracing::debug!(target: "moc_mcp", server, %error, "读取 MCP stderr 失败");
+                break;
+            }
+        }
+    }
 }
 
 async fn connect_http(
@@ -188,4 +211,19 @@ async fn connect_http(
     let transport = StreamableHttpClientTransport::with_client(reqwest::Client::new(), config);
     let handler = ClientHandlerBridge::new(tool_list_changed);
     serve_bridge(server, handler, transport).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drain_stderr;
+
+    #[tokio::test]
+    async fn stderr_drain_continues_after_invalid_utf8() {
+        let input = b"before\ninvalid \xff\r\nafter\nlast \xff".to_vec();
+        let mut reader = std::io::Cursor::new(input);
+
+        drain_stderr(&mut reader, "test").await;
+
+        assert_eq!(reader.position(), reader.get_ref().len() as u64);
+    }
 }
