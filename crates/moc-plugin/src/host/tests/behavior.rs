@@ -272,7 +272,22 @@ async fn slow_host_bridge_respects_the_call_budget() {
     install(
         temp.path(),
         "reader",
-        r#"import { tools } from "moc"; export default { tools: { read_through: { description: "读文件", parameters: { type: "object" }, run: () => tools.call("read", { path: "x" }) } } };"#,
+        r#"
+        import { tools } from "moc";
+        let cleaned = 0;
+        export default {
+          tools: { read_through: { description: "Read through the host", parameters: { type: "object" },
+            run() {
+              try { return tools.call("read", { path: "x" }); }
+              finally {
+                for (let i = 0; i < 100000; i++) {}
+                cleaned++;
+              }
+            }
+          } },
+          commands: { cleaned: { description: "Report cleanup count", run: () => cleaned } }
+        };
+        "#,
     );
     let mut settings = settings();
     settings.call_timeout = Duration::from_millis(20);
@@ -294,6 +309,22 @@ async fn slow_host_bridge_respects_the_call_budget() {
     );
     // 等宿主的这条路径不算插件跑飞：它仍然可用。
     assert_eq!(host.info()[0].error, None);
+    // 等 worker 把上次调用的收尾跑完：在队列里等过 call_timeout 的调用会被当成跑飞毒化。
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let result = host
+        .call_tool(
+            "read_through",
+            serde_json::json!({}),
+            &context(),
+            Arc::new(EchoBridge),
+        )
+        .await
+        .expect("宿主工具超时后仍可继续调用插件");
+    assert_eq!(result.content, "read:x");
+    assert_eq!(
+        host.run_command("cleaned", "", &context()).await.unwrap(),
+        "2"
+    );
 }
 
 #[test]
