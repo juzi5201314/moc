@@ -89,11 +89,14 @@ impl WorkflowManager {
             engine: Mutex::new(engine),
             publish_lock: Mutex::new(()),
             cancel: cancel_parent.child_token(),
+            task: Mutex::new(None),
             cwd,
             request,
             policy: Mutex::new(Some(policy)),
             to_worker: tx,
         });
+        // 注册到任务句柄回填期间持锁，避免 shutdown 看到尚未保存的任务。
+        let mut task = handle.task.lock();
         self.runs.lock().insert(run_id.clone(), Arc::clone(&handle));
         // 落盘到注册的窗口内经 set_role_model 记的覆盖：应用进内存 meta
         // （盘上的 run.json 已由 set_role_model 写好同值）。
@@ -109,11 +112,14 @@ impl WorkflowManager {
         }
         let manager = Arc::clone(self);
         let handle2 = Arc::clone(&handle);
-        tokio::spawn(async move {
+        *task = Some(tokio::spawn(async move {
             if let Err(error) = manager.run_loop(&handle2, compiled, rx, sink).await {
                 manager.fail_run(&handle2, &format!("{error}"));
             }
-        });
+            // 正常结束与提前失败都完成落盘后才移除，卸载不会漏等收尾中的任务。
+            manager.runs.lock().remove(&handle2.id);
+        }));
+        drop(task);
         Ok(handle)
     }
 
@@ -161,11 +167,29 @@ impl WorkflowManager {
         Ok(workflow_summary(&meta))
     }
 
-    /// 会话卸载或删除前取消全部 run；run_loop 随后回收 worker 并落盘终态。
-    pub fn shutdown(self: &Arc<Self>) {
+    /// 会话卸载或删除前取消全部 run，等待 worker 回收与终态落盘后再释放租约。
+    pub async fn shutdown(self: &Arc<Self>) {
         let handles: Vec<_> = self.runs.lock().values().cloned().collect();
-        for handle in handles {
-            self.cancel_run(&handle, "E_SHUTDOWN");
+        for handle in &handles {
+            self.cancel_run(handle, "E_SHUTDOWN");
+        }
+        let tasks: Vec<_> = handles
+            .iter()
+            .filter_map(|handle| handle.task.lock().take())
+            .collect();
+        // 全部任务共用一个超时，避免单个 worker 卡死或逐个超时拖住卸载。
+        let wait = async {
+            for task in tasks {
+                if let Err(error) = task.await {
+                    tracing::warn!(%error, "workflow 收尾任务失败");
+                }
+            }
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(5), wait)
+            .await
+            .is_err()
+        {
+            tracing::warn!("等待 workflow 收尾超时，放弃等待");
         }
     }
 

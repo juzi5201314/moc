@@ -154,6 +154,8 @@ pub(crate) struct RunHandle {
     /// 否则同 id 并发 publish 算出同一版本互相覆盖。
     pub publish_lock: Mutex<()>,
     pub cancel: CancellationToken,
+    /// 包含终态落盘与失败收尾的主循环任务；卸载须等其结束再释放租约。
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// 工作区 cwd（world/files/git 基准）。
     pub cwd: PathBuf,
     /// run 发起时的反向请求上下文（子代理 spawn/message 用）。

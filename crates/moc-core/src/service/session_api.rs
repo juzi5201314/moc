@@ -372,7 +372,7 @@ pub(super) async fn session_unload(
     }
     let runtime = core.inner.runtime(&params.session_id).await;
     if let Some(workflows) = runtime.workflows.get() {
-        workflows.shutdown();
+        workflows.shutdown().await;
     }
     runtime.jobs.kill_all().await;
     core.inner
@@ -453,7 +453,7 @@ pub(super) async fn session_delete(
     }
     let runtime = core.inner.runtime(&params.session_id).await;
     if let Some(workflows) = runtime.workflows.get() {
-        workflows.shutdown();
+        workflows.shutdown().await;
     }
     runtime.jobs.kill_all().await;
     core.inner

@@ -945,6 +945,11 @@ async fn unload_stops_running_workflow_and_persists_terminal() {
         })
         .await
         .expect("卸载成功");
+    // RPC 返回即检查磁盘，不能等终态事件后才检查，否则会掩盖提前释放租约的竞态。
+    let after: Value = serde_json::from_slice(&std::fs::read(&run_file).unwrap()).unwrap();
+    assert_eq!(after["status"], "stopped");
+    assert_eq!(after["stop_reason"], "user");
+    assert!(after["finished_at_ms"].is_u64());
     let (stopped_run, status) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         wait_terminal(&mut events),
@@ -958,10 +963,6 @@ async fn unload_stops_running_workflow_and_persists_terminal() {
             reason: WorkflowStopReason::User,
         }
     );
-    let after: Value = serde_json::from_slice(&std::fs::read(&run_file).unwrap()).unwrap();
-    assert_eq!(after["status"], "stopped");
-    assert_eq!(after["stop_reason"], "user");
-    assert!(after["finished_at_ms"].is_u64());
     harness.close().await;
 }
 
