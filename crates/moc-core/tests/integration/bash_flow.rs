@@ -237,6 +237,31 @@ async fn disabled_jobs_keep_slow_commands_in_the_foreground() {
 #[cfg(unix)]
 #[tokio::test]
 async fn background_job_finished_during_last_request_wakes_after_prompt_unlocks() {
+    for engine in [SessionEngine::Standard, SessionEngine::ClmExperimental] {
+        background_job_during_last_request(engine, moc_protocol::FinishReason::Stop, false).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn background_job_wake_can_be_cancelled_and_abnormal_finish_does_not_wake() {
+    use moc_protocol::FinishReason;
+
+    for (reason, cancel_wake) in [
+        (FinishReason::Stop, true),
+        (FinishReason::LoopDetected, false),
+        (FinishReason::Length, false),
+    ] {
+        background_job_during_last_request(SessionEngine::Standard, reason, cancel_wake).await;
+    }
+}
+
+#[cfg(unix)]
+async fn background_job_during_last_request(
+    engine: SessionEngine,
+    finish_reason: moc_protocol::FinishReason,
+    cancel_wake: bool,
+) {
     let upstream = MockServer::builder().start().await;
     let streams = Arc::new(Mutex::new(Vec::<String>::new()));
     let recorder = Arc::clone(&streams);
@@ -244,6 +269,11 @@ async fn background_job_finished_during_last_request_wakes_after_prompt_unlocks(
     let arrived = Arc::clone(&last_request);
     let gate = support::Gate::new();
     let response_gate = gate.clone();
+    let wake_request = Arc::new(tokio::sync::Notify::new());
+    let wake_arrived = Arc::clone(&wake_request);
+    let wake_gate = support::Gate::new();
+    let wake_response_gate = wake_gate.clone();
+    let response_reason = finish_reason.clone();
     Mock::given(method("POST"))
         .respond_with(move |request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
@@ -265,9 +295,23 @@ async fn background_job_finished_during_last_request_wakes_after_prompt_unlocks(
                 2 => {
                     arrived.notify_one();
                     response_gate.wait();
-                    support::text_stream("本轮完成")
+                    match response_reason {
+                        moc_protocol::FinishReason::LoopDetected => support::text_stream(
+                            &"反复检查现有情况，然后再次确认当前结果。".repeat(150),
+                        ),
+                        moc_protocol::FinishReason::Length => {
+                            support::text_stream("本轮完成").replace("\"stop\"", "\"length\"")
+                        }
+                        _ => support::text_stream("本轮完成"),
+                    }
                 }
-                _ => support::text_stream("已收到后台结果"),
+                _ => {
+                    wake_arrived.notify_one();
+                    if cancel_wake {
+                        wake_response_gate.wait();
+                    }
+                    support::text_stream("已收到后台结果")
+                }
             };
             ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
         })
@@ -276,7 +320,7 @@ async fn background_job_finished_during_last_request_wakes_after_prompt_unlocks(
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nenabled=false\n",
+        "[compaction]\nenabled=false\n[limits]\nmax_length_continues=0\n",
     )
     .await;
     let fifo = harness.root.path().join("work/gate");
@@ -287,13 +331,14 @@ async fn background_job_finished_during_last_request_wakes_after_prompt_unlocks(
             .unwrap()
             .success()
     );
-    let id = harness.session(SessionEngine::Standard).await;
+    let id = harness.session(engine).await;
     let mut events = harness.events.subscribe();
     let client = harness.client.clone();
+    let prompt_session_id = id.clone();
     let prompt = tokio::spawn(async move {
         client
             .call::<SessionPrompt>(PromptParams {
-                session_id: id,
+                session_id: prompt_session_id,
                 input: vec![InputPart::Text {
                     text: "启动后台任务".into(),
                 }],
@@ -324,11 +369,50 @@ async fn background_job_finished_during_last_request_wakes_after_prompt_unlocks(
         .unwrap()
         .unwrap()
         .unwrap();
+    assert_eq!(result.finish_reason, finish_reason);
+    if finish_reason != moc_protocol::FinishReason::Stop {
+        // RPC 已完整收尾，再等一个通知窗口，确认没有自动接力的模型请求。
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                wake_request.notified()
+            )
+            .await
+            .is_err(),
+            "异常收尾不得补唤醒：{finish_reason:?}",
+        );
+        assert_eq!(streams.lock().len(), 2);
+        harness.close().await;
+        return;
+    }
     assert_eq!(result.message.text(), "本轮完成");
+    if cancel_wake {
+        tokio::time::timeout(std::time::Duration::from_secs(5), wake_request.notified())
+            .await
+            .expect("后台提示应发起模型请求");
+        let cancelled = harness
+            .client
+            .call::<SessionCancel>(SessionCancelParams {
+                session_id: id.clone(),
+            })
+            .await
+            .unwrap();
+        // 先保存取消结果，失败时也必须放行 mock，避免测试清理阻塞。
+        wake_gate.open();
+        assert!(cancelled.cancelled, "session/cancel 应找到后台提示");
+    }
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            if let SessionUpdate::PromptFinished { message, .. } = events.recv().await.unwrap()
-                && message.text() == "已收到后台结果"
+            if let SessionUpdate::PromptFinished {
+                message,
+                finish_reason,
+                ..
+            } = events.recv().await.unwrap()
+                && (if cancel_wake {
+                    finish_reason == moc_protocol::FinishReason::Cancelled
+                } else {
+                    message.text() == "已收到后台结果"
+                })
             {
                 break;
             }

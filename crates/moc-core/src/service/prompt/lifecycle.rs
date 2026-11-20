@@ -324,20 +324,20 @@ pub(crate) async fn run_prompt_with_lock(
     }
     // 目标续跑只在一切正常时接力：用户取消、循环终止、RPC 错误、length/cancelled
     // 收场一律摘掉 armed，需要 `/goal resume`（或工具的 update/resume）才恢复。
-    let keep_armed = result.as_ref().is_ok_and(|outcome| {
+    let finished_normally = result.as_ref().is_ok_and(|outcome| {
         !ctx.cancel().is_cancelled()
             && !matches!(
                 outcome.finish_reason,
                 FinishReason::Cancelled | FinishReason::LoopDetected | FinishReason::Length
             )
     });
-    if !keep_armed {
+    if !finished_normally {
         runtime.goal_armed.disarm_if_unchanged(goal_armed_snapshot);
     }
     // 必须先释放提示锁再评估后台任务补唤醒和目标续跑：本轮收尾持有 `_prompt` 时
     // try_prompt_lock 必失败，两种续跑都会被自己挡掉。
     drop(_prompt);
-    if result.is_ok() && !ctx.cancel().is_cancelled() && runtime.jobs.wants_wake() {
+    if finished_normally && runtime.jobs.wants_wake() {
         wake_for_jobs(Arc::clone(&inner), ctx.clone(), session_id.clone()).await;
     }
     crate::goal::maybe_continue(&inner, &ctx, &session_id).await;
