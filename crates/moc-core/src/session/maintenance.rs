@@ -78,13 +78,15 @@ impl SessionTable {
             let references: Vec<String> = files
                 .iter()
                 .flat_map(|file| {
-                    let mut values = Vec::with_capacity(2);
+                    let mut values = Vec::with_capacity(3);
                     if let Ok(uri) = crate::resources::ArtifactStore::new(file.paths.clone())
                         .uri_for_path(&file.path)
                     {
                         values.push(uri);
                     }
-                    values.push(file.path.to_string_lossy().into_owned());
+                    let path = file.path.to_string_lossy().into_owned();
+                    values.push(path.replace('\\', "\\\\"));
+                    values.push(path);
                     values
                 })
                 .collect();
@@ -112,6 +114,7 @@ impl SessionTable {
                 .ok();
             if uri.as_deref().is_some_and(|uri| referenced.contains(uri))
                 || referenced.contains(&candidate.path.to_string_lossy().into_owned())
+                || referenced.contains(&candidate.path.to_string_lossy().replace('\\', "\\\\"))
                 || self.records.read().contains_key(&candidate.session)
             {
                 report.protected += 1;
@@ -317,7 +320,12 @@ mod tests {
             .await
             .unwrap();
         std::fs::create_dir_all(paths.artifacts()).unwrap();
-        let kept = paths.artifacts().join("kept.txt");
+        // Unix 文件名允许反斜杠，可在当前平台覆盖 JSON 转义路径的匹配。
+        let kept = paths.artifacts().join(if cfg!(windows) {
+            "kept.txt"
+        } else {
+            r"kept\kept.txt"
+        });
         let garbage = paths.artifacts().join("unused.txt");
         fs::write(&kept, "仍被引用").await.unwrap();
         fs::write(&garbage, "未被引用").await.unwrap();
