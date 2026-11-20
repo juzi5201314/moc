@@ -9,6 +9,7 @@ use super::spawn::prepare_agent;
 use super::workflow_scope;
 use crate::error::CoreError;
 use crate::service::CoreInner;
+use crate::service::SessionRuntime;
 use crate::service::prompt::PromptRun;
 use crate::session::store::now_ms;
 use moc_llm::FinishReason;
@@ -23,7 +24,19 @@ use moc_protocol::methods::SessionInfo;
 use moc_protocol::methods::SessionUpdate;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio_util::sync::CancellationToken;
+
+/// 提示锁会在 finish 之前释放；屏障必须保留到收尾结束，防止 prepare 替换仍在写的条目。
+/// 用守卫清位，让 finish 早退、任务 panic 或 abort 也能放行下一轮。
+struct AgentFinishGuard(Arc<SessionRuntime>);
+
+impl Drop for AgentFinishGuard {
+    fn drop(&mut self) {
+        self.0.agent_finishing.store(false, Ordering::Release);
+        self.0.agent_finish_notify.notify_waiters();
+    }
+}
 
 /// 把子代理最近一次工具调用记进注册表：wait_agent/sidekick 的进度行据此
 /// 显示「正在做什么」。注册表里没有条目（顶层会话）时是空操作。
@@ -126,6 +139,9 @@ pub(super) async fn activate(
         }
     }
     tasks.spawn(async move {
+        let runtime = task_inner.runtime(&agent_id).await;
+        runtime.agent_finishing.store(true, Ordering::Release);
+        let _finishing = AgentFinishGuard(runtime);
         let result = crate::service::prompt::run_prompt_with_lock(
             Arc::clone(&task_inner),
             child_request,
@@ -173,6 +189,19 @@ pub(super) async fn finish(
     cancel: CancellationToken,
     result: Result<moc_protocol::methods::PromptResult, RpcError>,
 ) {
+    // 测试在提示锁已释放、注册表尚未写入时暂停，确定性复现旧收尾与消息唤醒的交错。
+    #[cfg(test)]
+    if let Some(gate) = inner
+        .runtime(&agent_id)
+        .await
+        .agent_finish_gate
+        .lock()
+        .await
+        .take()
+    {
+        gate.wait().await;
+        gate.wait().await;
+    }
     let (status, message, finish_reason) = match result {
         Ok(result) => {
             let status = if cancel.is_cancelled()
@@ -379,6 +408,7 @@ pub(crate) async fn retry_wakeup(
     target: &SessionInfo,
     prompt_lock: tokio::sync::OwnedMutexGuard<()>,
 ) -> Result<(), CoreError> {
+    inner.runtime(&target.id).await.wait_agent_finish().await;
     let info = info_from_session(target, AgentStatus::Queued);
     let cancel = child_cancel(&inner, &parent_id).await;
     prepare_agent(&inner, &info, cancel.clone()).await;
