@@ -4,6 +4,7 @@ use super::archive;
 use super::entries;
 use super::entries::Entry;
 use super::entries::EntryPayload;
+use super::state::SessionState;
 use super::store::SessionFile;
 use super::store::now_ms;
 use super::stored::StoredEntry;
@@ -229,21 +230,41 @@ impl SessionTable {
 
     /// 原子替换 transcript，同时重建内存里的状态。
     pub async fn rewrite(&self, session_id: &str, entries: Vec<Entry>) -> Result<(), CoreError> {
-        let record = self.get(session_id).await?;
-        let replay_entries = entries.clone();
-        let mut state = tokio::task::spawn_blocking(move || archive::replay(replay_entries))
+        self.rewrite_current(session_id, move |_| async move { Ok((entries, ())) })
             .await
-            .map_err(|error| CoreError::Session(error.to_string()))??;
-        if state.session.id != session_id {
-            return Err(CoreError::Session(
-                "重写 transcript 的会话 ID 不匹配".into(),
-            ));
-        }
+    }
+
+    /// 在同一追加事务内读取当前状态、准备替换条目并重写，避免快照覆盖并发追加。
+    /// `prepare` 只用于本地处理与归档，不应等待模型；返回的附带结果在提交成功后交还。
+    pub(crate) async fn rewrite_current<T, F, Fut>(
+        &self,
+        session_id: &str,
+        prepare: F,
+    ) -> Result<T, CoreError>
+    where
+        T: Send + 'static,
+        F: FnOnce(SessionState) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<(Vec<Entry>, T), CoreError>> + Send,
+    {
+        let record = self.get(session_id).await?;
+        let session_id = session_id.to_owned();
+        // 与 append 一样，提交开始后不随调用方取消，避免磁盘与内存只更新一边。
         tokio::spawn(async move {
             let _append = record.append_lock.lock().await;
             if !record.active.load(Ordering::Acquire) {
                 return Err(CoreError::Session(
                     "SESSION_NOT_FOUND: 会话已卸载或删除".into(),
+                ));
+            }
+            let snapshot = record.state.lock().await.clone();
+            let (entries, output) = prepare(snapshot).await?;
+            let replay_entries = entries.clone();
+            let mut state = tokio::task::spawn_blocking(move || archive::replay(replay_entries))
+                .await
+                .map_err(|error| CoreError::Session(error.to_string()))??;
+            if state.session.id != session_id {
+                return Err(CoreError::Session(
+                    "重写 transcript 的会话 ID 不匹配".into(),
                 ));
             }
             let mut file_slot = record.file.lock().await;
@@ -262,7 +283,7 @@ impl SessionTable {
             state.notices = std::mem::take(&mut current.notices);
             state.job_sequence = current.job_sequence;
             *current = state;
-            Ok(())
+            Ok(output)
         })
         .await
         .map_err(|error| CoreError::Session(error.to_string()))?
