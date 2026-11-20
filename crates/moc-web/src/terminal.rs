@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::Json;
 use axum::body::Bytes;
@@ -30,6 +31,12 @@ const MAX_TERMINALS: usize = 32;
 const SCROLLBACK_BYTES: usize = 512 * 1024;
 /// broadcast 通道积压上限；落后的附着者被断开，重连后靠回放恢复一致画面。
 const EVENT_CAPACITY: usize = 512;
+/// Unix 等待读线程排空 PTY 内核缓冲；ConPTY 管道的 EOF 不随子进程退出保证到达，
+/// Windows 只留短窗口接收在途输出。
+#[cfg(not(windows))]
+const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(2);
+#[cfg(windows)]
+const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(300);
 
 /// 进程内终端表：`id` 单调递增，BTreeMap 序即创建时间序。
 #[derive(Clone)]
@@ -251,6 +258,7 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
 
     // 读线程：输出 → 滚动缓冲 + broadcast（同一把锁，保证 attach 语义）。
     let reading = Arc::clone(&terminal);
+    let (reader_done_tx, reader_done_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buffer = [0u8; 16 * 1024];
         loop {
@@ -259,11 +267,14 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
                 Ok(count) => {
                     let chunk = Bytes::copy_from_slice(&buffer[..count]);
                     let mut state = reading.state.lock().expect("终端状态锁");
-                    state.scroll.append(&chunk);
-                    let _ = reading.events.send(TermEvent::Output(chunk));
+                    if state.exit.is_none() {
+                        state.scroll.append(&chunk);
+                        let _ = reading.events.send(TermEvent::Output(chunk));
+                    }
                 }
             }
         }
+        let _ = reader_done_tx.send(());
     });
 
     // 写线程：串行消费输入，写入失败（进程已死）即退出。
@@ -275,8 +286,8 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
         }
     });
 
-    // wait 线程：退出后置位并广播；不 join 读线程——孙进程可能占着 pty 让
-    // 读线程迟迟不 EOF，退出事件不该被它拖住。
+    // wait 线程：退出后有限等待读线程排空；不 join 读线程——孙进程可能占着
+    // pty 让读线程迟迟不 EOF，退出事件不该被它拖住。
     let waiting = Arc::clone(&terminal);
     std::thread::spawn(move || {
         let code = child.wait().ok().map(|status| {
@@ -287,6 +298,7 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
             }
         });
         let code = code.flatten();
+        let _ = reader_done_rx.recv_timeout(OUTPUT_DRAIN_GRACE);
         let mut state = waiting.state.lock().expect("终端状态锁");
         state.exit = Some(code);
         let _ = waiting.events.send(TermEvent::Exit(code));
@@ -590,5 +602,39 @@ mod tests {
         let mut scroll = Scrollback::new();
         scroll.append(&vec![b'z'; SCROLLBACK_BYTES + 10]);
         assert_eq!(scroll.snapshot().len(), SCROLLBACK_BYTES);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pty_tail_output_is_broadcast_before_exit() {
+        let cwd = tempfile::tempdir().expect("临时目录");
+        let terminal = spawn(cwd.path().to_path_buf(), 1, 80, 24).expect("启动终端");
+        let mut events = terminal.events.subscribe();
+        terminal.write(
+            b"head -c 262144 /dev/zero; printf 'TAIL_%s\\n' 'OUTPUT'; exit\n",
+        );
+
+        let mut output = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
+                Ok(Ok(TermEvent::Output(bytes))) => output.extend_from_slice(&bytes),
+                Ok(Ok(TermEvent::Exit(_))) => break,
+                Ok(Err(error)) => {
+                    terminal.kill();
+                    panic!("接收终端事件失败: {error}");
+                }
+                Err(_) => {
+                    terminal.kill();
+                    panic!("等待终端输出和退出事件超时");
+                }
+            }
+        }
+        assert!(
+            output
+                .windows(b"TAIL_OUTPUT".len())
+                .any(|window| window == b"TAIL_OUTPUT"),
+            "Exit 前应收到命令产生的尾部输出，实际输出: {:?}",
+            String::from_utf8_lossy(&output)
+        );
     }
 }
