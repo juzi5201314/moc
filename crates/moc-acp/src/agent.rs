@@ -634,6 +634,7 @@ mod tests {
         let (bridge, backend) = bridge();
         backend.push::<SessionPlanMode>(SessionInfo {
             plan_active: true,
+            updated_at_ms: 1,
             ..session_info("ses_1")
         });
         bridge
@@ -645,10 +646,12 @@ mod tests {
         backend.push::<SessionSetAutonomy>(SessionInfo {
             autonomy: SessionAutonomy::Unattended,
             plan_active: true,
+            updated_at_ms: 2,
             ..session_info("ses_1")
         });
         backend.push::<SessionPlanMode>(SessionInfo {
             autonomy: SessionAutonomy::Unattended,
+            updated_at_ms: 3,
             ..session_info("ses_1")
         });
         bridge
@@ -688,6 +691,33 @@ mod tests {
         let proj = bridge.track_session(&stale);
 
         assert_eq!(proj.autonomy, SessionAutonomy::Unattended);
+    }
+
+    #[test]
+    fn late_update_after_drop_does_not_block_loaded_session_snapshot() {
+        let (bridge, _) = bridge();
+        bridge.drop_session("ses_1");
+
+        bridge.translate_update(
+            "ses_1",
+            &MocUpdate::AutonomyChanged {
+                autonomy: SessionAutonomy::Default,
+            },
+        );
+
+        let loaded = SessionInfo {
+            autonomy: SessionAutonomy::Unattended,
+            plan_active: true,
+            updated_at_ms: 1,
+            ..session_info("ses_1")
+        };
+        let proj = bridge.track_session(&loaded);
+
+        assert_eq!(proj.autonomy, SessionAutonomy::Unattended);
+        assert!(proj.plan_active);
+        let tracked = bridge.projection("ses_1").unwrap();
+        assert_eq!(tracked.autonomy, SessionAutonomy::Unattended);
+        assert!(tracked.plan_active);
     }
 
     #[tokio::test]
