@@ -255,30 +255,37 @@ impl Updater {
             .with_context(|| {
                 t!("cli.update.create_failed", path = tmp.display().to_string()).into_owned()
             })?;
-        file.write_all(bytes).with_context(|| {
-            t!("cli.update.write_failed", path = tmp.display().to_string()).into_owned()
-        })?;
-        file.sync_all().with_context(|| {
-            t!("cli.update.write_failed", path = tmp.display().to_string()).into_owned()
-        })?;
-        drop(file);
+        let result = (|| {
+            file.write_all(bytes).with_context(|| {
+                t!("cli.update.write_failed", path = tmp.display().to_string()).into_owned()
+            })?;
+            file.sync_all().with_context(|| {
+                t!("cli.update.write_failed", path = tmp.display().to_string()).into_owned()
+            })?;
+            drop(file);
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&self.exe)
-                .map(|meta| meta.permissions().mode())
-                .unwrap_or(0o755);
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).with_context(
-                || t!("cli.update.chmod_failed", path = tmp.display().to_string()).into_owned(),
-            )?;
-        }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&self.exe)
+                    .map(|meta| meta.permissions().mode())
+                    .unwrap_or(0o755);
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).with_context(
+                    || {
+                        t!("cli.update.chmod_failed", path = tmp.display().to_string())
+                            .into_owned()
+                    },
+                )?;
+            }
 
-        if let Err(err) = replace_file(&tmp, &self.exe) {
+            replace_file(&tmp, &self.exe)
+                .context(t!("cli.update.replace_failed").to_string())?;
+            Ok(())
+        })();
+        if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
-            return Err(err).context(t!("cli.update.replace_failed").to_string());
         }
-        Ok(())
+        result
     }
 
     #[cfg(windows)]
