@@ -36,6 +36,8 @@ pub(crate) struct SessionProjection {
     pub model: String,
     pub autonomy: SessionAutonomy,
     pub plan_active: bool,
+    /// core 每个 mutation entry 都以 entry.at_ms 推进会话时间，快照据此判断新旧。
+    pub updated_at_ms: u64,
 }
 
 impl SessionProjection {
@@ -44,6 +46,7 @@ impl SessionProjection {
             model: info.model.clone(),
             autonomy: info.autonomy,
             plan_active: info.plan_active,
+            updated_at_ms: info.updated_at_ms,
         }
     }
 
@@ -754,6 +757,7 @@ mod tests {
             model: "gpt-5".into(),
             autonomy: SessionAutonomy::Default,
             plan_active: false,
+            updated_at_ms: 0,
         }
     }
 

@@ -535,7 +535,8 @@ mod tests {
 
     use agent_client_protocol::schema::v1::{ContentBlock, SessionUpdate, StopReason, TextContent};
     use moc_protocol::methods::{
-        SessionEngine, SessionListResult, SessionLoadResult, SessionPermission, TranscriptEntry,
+        SessionEngine, SessionListResult, SessionLoadResult, SessionPermission,
+        SessionUpdate as MocUpdate, TranscriptEntry,
     };
     use moc_protocol::{FinishReason, Message, Usage};
 
@@ -670,6 +671,23 @@ mod tests {
         assert_eq!(calls[2].1["active"], false);
         let proj = bridge.projection("ses_1").unwrap();
         assert!(!proj.plan_active);
+    }
+
+    #[test]
+    fn stale_session_snapshot_does_not_overwrite_update_projection() {
+        let (bridge, _) = bridge();
+        let update = MocUpdate::AutonomyChanged {
+            autonomy: SessionAutonomy::Unattended,
+        };
+        bridge.translate_update("ses_1", &update);
+
+        let stale = SessionInfo {
+            updated_at_ms: 0,
+            ..session_info("ses_1")
+        };
+        let proj = bridge.track_session(&stale);
+
+        assert_eq!(proj.autonomy, SessionAutonomy::Unattended);
     }
 
     #[tokio::test]

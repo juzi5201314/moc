@@ -15,6 +15,7 @@ mod translate;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::schema::v1::{self as acp, ClientCapabilities, SessionNotification};
 use agent_client_protocol::{Client, ConnectionTo};
@@ -113,11 +114,15 @@ impl<B: Backend> Bridge<B> {
 
     /// 写入 / 刷新会话投影，返回当前投影副本。
     fn track_session(&self, info: &SessionInfo) -> SessionProjection {
+        let mut sessions = self.sessions.lock().expect("会话投影");
+        if let Some(current) = sessions.get(&info.id) {
+            // core 的 updated_at_ms 随 mutation entry 单调不减，迟到快照不能回滚投影。
+            if info.updated_at_ms < current.updated_at_ms {
+                return current.clone();
+            }
+        }
         let proj = SessionProjection::from_info(info);
-        self.sessions
-            .lock()
-            .expect("会话投影")
-            .insert(info.id.clone(), proj.clone());
+        sessions.insert(info.id.clone(), proj.clone());
         proj
     }
 
@@ -146,6 +151,12 @@ impl<B: Backend> Bridge<B> {
     fn translate_update(&self, session_id: &str, update: &MocUpdate) -> Vec<acp::SessionUpdate> {
         let mut sessions = self.sessions.lock().expect("会话投影");
         let proj = sessions.entry(session_id.to_owned()).or_default();
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+            .unwrap_or_default();
+        proj.updated_at_ms = proj.updated_at_ms.max(now_ms);
         translate::session_update(
             update,
             proj,
