@@ -251,7 +251,7 @@ struct ServerDispatch<S: AgentService> {
     connection: Arc<Connection>,
     handshake: Mutex<Handshake>,
     in_flight: Arc<Semaphore>,
-    prompts: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    prompts: Arc<Mutex<HashMap<String, Arc<CancellationToken>>>>,
     /// 在飞的旁路请求；与 `prompts` 完全独立，主提示的 busy / 取消互不波及。
     btw_flights: Arc<Mutex<HashMap<String, BtwFlight>>>,
 }
@@ -279,19 +279,21 @@ const SKILLS_FLIGHT: &str = "\0skills-compact";
 
 /// 提示注册表的摘除守卫：任务正常结束、被取消、被 abort 都会摘除，绝不留脏记录。
 struct PromptGuard {
-    prompts: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    prompts: Arc<Mutex<HashMap<String, Arc<CancellationToken>>>>,
     session_id: String,
+    cancel: Arc<CancellationToken>,
     skills: bool,
 }
 
-/// `session/prompt` 的占位结果。
+/// RPC 提示类请求在读循环中的占位结果；后台提示取得提示锁后另行登记。
 enum PromptClaim {
     /// 不是提示，或参数里读不出 `session_id`（后者交给任务报 `-32602`）。
     NotPrompt,
-    /// 占位成功，附带 `session_id` 供守卫摘除。
-    Claimed(String),
-    Skills(String),
-    /// 同一会话已有进行中的提示。
+    /// 占位成功，守卫按令牌身份摘除，避免误删已持锁接力的后台提示。
+    Claimed(String, Arc<CancellationToken>),
+    /// 技能压缩占位成功，同时占用全局标记与可选的会话条目。
+    Skills(String, Arc<CancellationToken>),
+    /// 已有会话或全局占位阻止本请求。
     Busy,
 }
 
@@ -308,8 +310,18 @@ enum BtwClaim {
 impl Drop for PromptGuard {
     fn drop(&mut self) {
         let mut prompts = self.prompts.lock().unwrap_or_else(PoisonError::into_inner);
-        prompts.remove(&self.session_id);
-        if self.skills {
+        // RPC 返回前后台提示可能已接力，只摘除本次请求登记的令牌。
+        if prompts
+            .get(&self.session_id)
+            .is_some_and(|cancel| Arc::ptr_eq(cancel, &self.cancel))
+        {
+            prompts.remove(&self.session_id);
+        }
+        if self.skills
+            && prompts
+                .get(SKILLS_FLIGHT)
+                .is_some_and(|cancel| Arc::ptr_eq(cancel, &self.cancel))
+        {
             prompts.remove(SKILLS_FLIGHT);
         }
     }
@@ -371,6 +383,7 @@ impl<S: AgentService> ServerDispatch<S> {
             client,
             Arc::clone(self.connection.traffic()),
             cancel,
+            Arc::clone(&self.prompts),
         )
     }
 
@@ -385,14 +398,16 @@ impl<S: AgentService> ServerDispatch<S> {
         // 守卫在读循环占位之后立刻建立：未握手被拒、方法未知、参数解析失败等任何
         // 提前返回路径都会摘掉占位，只有真正跑进 core 的提示才持占到结束。
         let _guard = match claim {
-            PromptClaim::Claimed(session_id) => Some(PromptGuard {
+            PromptClaim::Claimed(session_id, cancel) => Some(PromptGuard {
                 prompts: Arc::clone(&self.prompts),
                 session_id,
+                cancel,
                 skills: false,
             }),
-            PromptClaim::Skills(session_id) => Some(PromptGuard {
+            PromptClaim::Skills(session_id, cancel) => Some(PromptGuard {
                 prompts: Arc::clone(&self.prompts),
                 session_id,
+                cancel,
                 skills: true,
             }),
             // 无占位：非提示类请求，或参数里读不出 `session_id`

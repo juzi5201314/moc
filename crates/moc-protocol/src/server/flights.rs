@@ -27,7 +27,9 @@ use std::sync::PoisonError;
 use tokio_util::sync::CancellationToken;
 
 impl<S: AgentService> ServerDispatch<S> {
-    pub(super) fn prompts(&self) -> std::sync::MutexGuard<'_, HashMap<String, CancellationToken>> {
+    pub(super) fn prompts(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, Arc<CancellationToken>>> {
         self.prompts.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -77,11 +79,12 @@ impl<S: AgentService> ServerDispatch<S> {
             if !prompts.is_empty() {
                 return PromptClaim::Busy;
             }
-            prompts.insert(SKILLS_FLIGHT.to_owned(), cancel.clone());
+            let cancel = Arc::new(cancel.clone());
+            prompts.insert(SKILLS_FLIGHT.to_owned(), Arc::clone(&cancel));
             if let Some(id) = session_id {
-                prompts.insert(id.to_owned(), cancel.clone());
+                prompts.insert(id.to_owned(), Arc::clone(&cancel));
             }
-            return PromptClaim::Skills(session_id.unwrap_or(SKILLS_FLIGHT).to_owned());
+            return PromptClaim::Skills(session_id.unwrap_or(SKILLS_FLIGHT).to_owned(), cancel);
         }
         let Some(session_id) = session_id else {
             return PromptClaim::NotPrompt;
@@ -89,8 +92,9 @@ impl<S: AgentService> ServerDispatch<S> {
         if prompts.contains_key(session_id) {
             return PromptClaim::Busy;
         }
-        prompts.insert(session_id.to_owned(), cancel.clone());
-        PromptClaim::Claimed(session_id.to_owned())
+        let cancel = Arc::new(cancel.clone());
+        prompts.insert(session_id.to_owned(), Arc::clone(&cancel));
+        PromptClaim::Claimed(session_id.to_owned(), cancel)
     }
 
     /// 在读循环里为 `session/btw` 占位旁路注册表。

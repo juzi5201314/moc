@@ -19,7 +19,8 @@
 //! 任务，future 被直接丢弃。因此不要在 `await` 之间留下「半个会话状态」——
 //! 需要跨 `await` 的一致状态要么放进 core 自己的状态机，要么用 Drop guard 收拾。
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio_util::sync::CancellationToken;
 
@@ -718,6 +719,28 @@ pub struct RequestContext {
     updates: UpdateSink,
     requester: Requester,
     cancel: CancellationToken,
+    prompts: Arc<Mutex<HashMap<String, Arc<CancellationToken>>>>,
+}
+
+/// 脱离 RPC 的提示登记守卫，任务结束或被丢弃时自动摘除自己的取消令牌。
+#[must_use]
+pub struct DetachedPromptGuard {
+    prompts: Arc<Mutex<HashMap<String, Arc<CancellationToken>>>>,
+    session_id: String,
+    cancel: Arc<CancellationToken>,
+}
+
+impl Drop for DetachedPromptGuard {
+    fn drop(&mut self) {
+        let mut prompts = self.prompts.lock().unwrap_or_else(PoisonError::into_inner);
+        // 后续提示可能已接力登记，迟到的收尾只能摘除自己，不能误删新令牌。
+        if prompts
+            .get(&self.session_id)
+            .is_some_and(|cancel| Arc::ptr_eq(cancel, &self.cancel))
+        {
+            prompts.remove(&self.session_id);
+        }
+    }
 }
 
 impl RequestContext {
@@ -727,6 +750,7 @@ impl RequestContext {
         client: crate::methods::ClientInfo,
         traffic: Arc<Traffic>,
         cancel: CancellationToken,
+        prompts: Arc<Mutex<HashMap<String, Arc<CancellationToken>>>>,
     ) -> Self {
         Self {
             connection_id,
@@ -740,6 +764,7 @@ impl RequestContext {
                 interactions: None,
             },
             cancel,
+            prompts,
         }
     }
 
@@ -754,6 +779,28 @@ impl RequestContext {
                 cancel: cancel.clone(),
                 interactions: self.requester.interactions.clone(),
             },
+            cancel,
+            prompts: Arc::clone(&self.prompts),
+        }
+    }
+
+    /// 登记脱离 RPC 的提示，让 `session/cancel` 能取消它。
+    ///
+    /// 调用方必须先取得该会话的提示锁，再登记，并持有返回的守卫直到提示函数结束；
+    /// 拿不到锁的任务不得触碰注册表。锁内可直接覆盖已结束提示的残留条目，
+    /// 旧守卫按令牌身份清理，不会误删接力提示的登记。
+    pub fn claim_detached_prompt(
+        &self,
+        session_id: String,
+        cancel: Arc<CancellationToken>,
+    ) -> DetachedPromptGuard {
+        self.prompts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(session_id.clone(), Arc::clone(&cancel));
+        DetachedPromptGuard {
+            prompts: Arc::clone(&self.prompts),
+            session_id,
             cancel,
         }
     }

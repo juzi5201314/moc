@@ -88,7 +88,7 @@ pub(super) async fn run_prompt_entry(
         )));
     }
     let prompt = record.try_prompt_lock().map_err(to_rpc)?;
-    run_prompt_with_lock(inner, ctx, params, record, prompt, run).await
+    run_prompt_with_lock(inner, ctx, params, record, prompt, run, false).await
 }
 
 /// 用调用方已经拿到的提示锁跑一次提示。
@@ -96,6 +96,7 @@ pub(super) async fn run_prompt_entry(
 /// 代理唤醒会在派发前先抢提示锁：抢不到说明该会话还有提示没结束，调用方就把消息
 /// 放进收件箱，而不是和那个提示争同一个会话。输入处理由 [`PromptRun`] 决定，
 /// 重试与后台任务唤醒都不写用户消息。
+/// 仅脱离 RPC 的提示需要在持锁后登记取消令牌，登记守卫保留到本函数结束。
 pub(crate) async fn run_prompt_with_lock(
     inner: Arc<CoreInner>,
     ctx: RequestContext,
@@ -103,9 +104,12 @@ pub(crate) async fn run_prompt_with_lock(
     record: Arc<crate::session::SessionRecord>,
     prompt: tokio::sync::OwnedMutexGuard<()>,
     run: PromptRun,
+    detached: bool,
 ) -> Result<PromptResult, RpcError> {
     let session_id = params.session_id.clone();
     let _prompt = prompt;
+    let _registration = detached
+        .then(|| ctx.claim_detached_prompt(session_id.clone(), Arc::new(ctx.cancel().clone())));
     let _epoch = inner.config_epoch.read().await;
     let started = Instant::now();
     inner

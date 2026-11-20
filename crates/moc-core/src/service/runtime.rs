@@ -124,6 +124,7 @@ impl CoreInner {
                     record,
                     prompt_lock,
                     run,
+                    true,
                 );
                 tokio::pin!(running);
                 let result = tokio::select! {

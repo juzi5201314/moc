@@ -149,6 +149,7 @@ pub(super) async fn activate(
             } else {
                 PromptRun::Normal
             },
+            false,
         )
         .await;
         finish(
