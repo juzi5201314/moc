@@ -5,15 +5,17 @@
 //!
 //! 每个请求的处理顺序：
 //!
-//! 1. 并发门禁：[`ServerOptions::max_in_flight`] 个许可用尽 → `-32000`，出站满时丢弃。
+//! 1. 并发门禁：[`ServerOptions::max_in_flight`] 个许可用尽 → `-32000`，
+//!    拒绝响应入队失败则关闭连接；`session/cancel` 同样可能被此门禁拒绝。
 //! 2. 握手门禁：除 `initialize` / `ping` 外的请求在握手完成前 → `-32002`；
 //!    重复 `initialize` → `-32600`；major 版本不一致 → `-32003`（附 `server_version`）。
 //! 3. params 反序列化失败 → `-32602`，**不调用 core**。
 //! 4. 分发：`ping` 与 `session/cancel` 由协议层自答；其余进 [`AgentService`]。
+//!    取消的「即时」仅指获准后 trip 令牌不排在出站队列后面，响应仍需入队。
 //! 5. 结果序列化失败 → `-32603`。
 //!
 //! `session/prompt` / `session/retry` 额外过提示注册表：同一会话已有进行中的提示 →
-//! `-32011`（出站满时丢弃），同样**不调用 core**。该注册表同时是 `session/cancel`
+//! `-32011`（入队失败则关闭连接），同样**不调用 core**。该注册表同时是 `session/cancel`
 //! 的落点，也是协议层唯一持有的「会话相关」状态——它只记「谁在飞」，不记任何会话内容。
 
 use serde_json::Value;
@@ -45,7 +47,7 @@ pub struct ServerOptions {
     pub framing: Framing,
     /// 单条报文体上限。
     pub max_frame_bytes: usize,
-    /// 连接内并发请求上限；超出尝试回复 `-32000`，出站队列满时丢弃，不排队。
+    /// 连接内并发请求上限；超出尝试回复 `-32000`，入队失败则关闭连接，不等待。
     pub max_in_flight: usize,
     /// 出站队列容量：更新通知的最大积压量，也是背压的起点。
     pub outbound_capacity: usize,
@@ -490,7 +492,7 @@ impl<S: AgentService> Inbound for ServerDispatch<S> {
         };
         // 每请求令牌与提示 / 旁路的占位都在读循环里完成：`session/cancel` 与
         // `session/btw_cancel` 是同一连接上的后续报文，因此「先请求后取消」的顺序
-        // 是确定的，取消绝不会因为任务调度顺序而落空。
+        // 是确定的，获准的取消不会因为任务调度顺序而落空。
         let cancel = self.connection.closed().child_token();
         let claim = self.claim_prompt(&request, &cancel);
         let btw = if matches!(&claim, PromptClaim::Busy) {

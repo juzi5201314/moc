@@ -27,8 +27,9 @@
 //! 与 `session/update` 里 `prompt_finished.message` 逐字段相同，两者可互换校验。
 //!
 //! `session/cancel` 由协议层自答（查提示注册表并 trip 取消令牌，不进入 core），
-//! 因此即使出站队列拥塞、core 正忙于模型请求，取消也能即时生效。它是幂等的：
-//! 没有进行中的提示时返回 `cancelled = false` 且整体成功。
+//! 但仍可能被并发门禁以 busy 拒绝。获准后 trip 令牌不等待出站队列或 core 的模型请求；
+//! 「即时」仅指不排在出站队列后面。取消操作是幂等的：获准时若没有进行中的提示，
+//! 返回 `cancelled = false` 且整体成功。
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
