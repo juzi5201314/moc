@@ -114,6 +114,9 @@ struct Terminal {
     #[cfg(unix)]
     child_dead: Arc<AtomicBool>,
     closing: Arc<AtomicBool>,
+    /// 写线程退出时通知；测试用它确认写线程真的走了（它不持有 `Arc<Terminal>`）。
+    #[allow(dead_code)] // 仅 cfg(test) 断言会读
+    writer_done: Mutex<std::sync::mpsc::Receiver<()>>,
     /// 用户输入 → 写线程 → PTY；Sender 全部 drop 后写线程退出。
     input: Mutex<std::sync::mpsc::Sender<Vec<u8>>>,
     state: Mutex<TermState>,
@@ -332,6 +335,7 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
 
     let (events, _) = tokio::sync::broadcast::channel(EVENT_CAPACITY);
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (writer_done_tx, writer_done_rx) = std::sync::mpsc::channel::<()>();
     let closing = Arc::new(AtomicBool::new(false));
     let child_dead = Arc::new(AtomicBool::new(false));
     let terminal = Arc::new(Terminal {
@@ -346,6 +350,7 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
         #[cfg(unix)]
         child_dead: Arc::clone(&child_dead),
         closing: Arc::clone(&closing),
+        writer_done: Mutex::new(writer_done_rx),
         input: Mutex::new(input_tx),
         state: Mutex::new(TermState {
             scroll: Scrollback::new(),
@@ -356,7 +361,6 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
 
     // 读线程：输出 → 滚动缓冲 + broadcast（同一把锁，保证 attach 语义）。
     let reading = Arc::clone(&terminal);
-    #[cfg(unix)]
     let writing_closing = Arc::clone(&closing);
     let (reader_done_tx, reader_done_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -413,11 +417,31 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
     });
 
     // 写线程：串行消费输入，写入失败（进程已死）即退出。
+    // SendOnDrop：多个返回路径统一在收尾发完成通知，供测试确认线程退出。
+    struct SendOnDrop(std::sync::mpsc::Sender<()>);
+    impl Drop for SendOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
     #[cfg(unix)]
     {
         std::thread::spawn(move || {
+            let _done = SendOnDrop(writer_done_tx);
             let fd = std::os::fd::AsRawFd::as_raw_fd(&writer);
-            while let Ok(bytes) = input_rx.recv() {
+            // sender 挂在 Terminal 上，closing 时不会断开；阻塞 recv 会睡死，
+            // 需要定期超时醒来检查 closing 才能退出。
+            loop {
+                let bytes = match input_rx.recv_timeout(Duration::from_millis(200)) {
+                    Ok(bytes) => bytes,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if writing_closing.load(Ordering::Acquire) {
+                            return;
+                        }
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                };
                 let mut offset = 0;
                 while offset < bytes.len() {
                     if writing_closing.load(Ordering::Acquire) {
@@ -463,7 +487,19 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
     }
     #[cfg(not(unix))]
     std::thread::spawn(move || {
-        while let Ok(bytes) = input_rx.recv() {
+        let _done = SendOnDrop(writer_done_tx);
+        // 同 unix 分支：sender 不会随 closing 断开，超时醒来检查 closing。
+        loop {
+            let bytes = match input_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(bytes) => bytes,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if writing_closing.load(Ordering::Acquire) {
+                        return;
+                    }
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            };
             if writer.write_all(&bytes).is_err() || writer.flush().is_err() {
                 break;
             }
@@ -878,5 +914,12 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+        // 写线程不持有 Arc，单独靠完成通知确认它也退出了。
+        terminal
+            .writer_done
+            .lock()
+            .expect("写线程通知锁")
+            .recv_timeout(Duration::from_secs(2))
+            .expect("kill 后写线程未退出");
     }
 }
