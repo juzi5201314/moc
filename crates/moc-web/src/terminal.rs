@@ -930,4 +930,49 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("kill 后写线程未退出");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_escalation_terminates_foreground_job() {
+        let cwd = tempfile::tempdir().expect("临时目录");
+        let terminal = spawn(cwd.path().to_path_buf(), 1, 80, 24).expect("启动终端");
+        // shell 无视 SIGHUP，再跑常驻前台作业：作业控制会把它切进独立的前台进程组。
+        terminal.write(b"trap '' HUP\nsleep 300\n");
+
+        // 等前台进程组从 shell 切到 sleep 的组，拿到要验证的组号。
+        let shell_pid = terminal.child_pid.expect("缺少子进程 PID");
+        let switch_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let fg_pgid = loop {
+            let pgid = terminal
+                .master
+                .lock()
+                .expect("master 锁")
+                .process_group_leader();
+            if let Some(pgid) = pgid {
+                if pgid != shell_pid {
+                    break pgid;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < switch_deadline,
+                "前台进程组未切换到 sleep"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        terminal.kill();
+        // 升级线程读到的前台组必须在 shell 被杀前取到；SIGKILL 送达后组内不再有存活成员。
+        let dead_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let alive = unsafe { libc::kill(fg_pgid, 0) } == 0;
+            if !alive {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < dead_deadline,
+                "前台作业在终端删除后仍存活"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
