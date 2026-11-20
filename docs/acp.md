@@ -60,7 +60,7 @@ stdout 只走 ACP 报文；日志写 stderr，`RUST_LOG=debug moc acp` 即可调
 | `session/set_config_option` | `model` 一项 → `session/set_model`（溢出动作直接 Switch） |
 | `session/request_permission`（agent→client） | moc 权限询问，选项映射 allow_once/allow_always/reject_once |
 | `elicit`（agent→client） | moc `ask` 工具；客户端无 form elicitation 能力时返回 MethodNotFound 由 core 降级 |
-| `session/update` | `AssistantDelta`→文本/思维 chunk，`ToolStarted/Finished/Progress`→`tool_call*`，diff→unified diff テキスト（hunks 省略の未変領域では整文再建不可のため），todo/plan→`plan`，用量→`usage` |
+| `session/update` | `AssistantDelta`→文本/思维 chunk，`ToolStarted/Finished/Progress`→`tool_call*`，diff→unified diff 文本（hunks 省略了未变区域，无法重建整文件故发文本），todo/plan→`plan`，用量→`usage` |
 
 ## 明确不支持
 
