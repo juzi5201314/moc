@@ -947,19 +947,28 @@ mod tests {
     #[tokio::test]
     async fn list_sessions_paginates_with_lookahead() {
         let (bridge, backend) = bridge();
-        backend.push::<SessionList>(SessionListResult {
+        let result = SessionListResult {
             sessions: (0..=LIST_PAGE)
                 .map(|index| SessionInfo {
                     id: format!("ses_{index}"),
                     ..session_info("ses")
                 })
                 .collect(),
-        });
+        };
+        backend.push::<SessionList>(result.clone());
+        backend.push::<SessionList>(result);
         let response = bridge
             .list_sessions(ListSessionsRequest::new())
             .await
             .unwrap();
         assert_eq!(response.sessions.len(), LIST_PAGE);
         assert_eq!(response.next_cursor.as_deref(), Some("200"));
+
+        let mut next_page = ListSessionsRequest::new();
+        next_page.cursor = response.next_cursor;
+        let response = bridge.list_sessions(next_page).await.unwrap();
+        assert_eq!(response.sessions.len(), 1);
+        assert_eq!(response.sessions[0].session_id.0.as_ref(), "ses_200");
+        assert_eq!(response.next_cursor, None);
     }
 }
