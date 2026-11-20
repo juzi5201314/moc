@@ -695,6 +695,56 @@ async fn call_before_connect_fails_gracefully() {
     manager.shutdown().await;
 }
 
+#[tokio::test]
+async fn call_waits_for_reconnecting_slot_to_become_connected() {
+    let state = Arc::new(TestState::default());
+    let manager = McpManager::build_with_call_timeout(
+        vec![test_server("test", true)],
+        CancellationToken::new(),
+        |_| test_connector(state.clone()),
+        Duration::from_secs(2),
+    );
+    manager.start().await;
+    let tools = connected_tools(&manager, Duration::from_secs(5)).await;
+    let echo = Arc::clone(tools.iter().find(|tool| tool.name == "echo").unwrap());
+    let slot = manager.slots.get("test").unwrap();
+    let (peer, tools, instructions) = match &*slot.phase.read() {
+        Phase::Connected {
+            peer,
+            tools,
+            instructions,
+        } => (peer.clone(), tools.clone(), instructions.clone()),
+        _ => panic!("测试 server 应已连接"),
+    };
+    slot.set_phase(Phase::Reconnecting {
+        attempts: 1,
+        error: "test disconnect".into(),
+    });
+
+    let call_manager = Arc::clone(&manager);
+    let call = tokio::spawn(async move {
+        call_manager
+            .call(
+                &echo,
+                json!({"text": "after reconnect"}),
+                CancellationToken::new(),
+                None,
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!call.is_finished(), "重连期间的调用应等待 phase 稳定");
+
+    slot.set_phase(Phase::Connected {
+        peer,
+        tools,
+        instructions,
+    });
+    let output = call.await.unwrap().unwrap();
+    assert_eq!(output.text, "echo: after reconnect");
+    manager.shutdown().await;
+}
+
 /// 握手成功但立即退出的 server 必须耗尽重连预算，而不是无限重启。
 #[tokio::test]
 async fn handshake_then_immediate_exit_exhausts_reconnect_budget() {

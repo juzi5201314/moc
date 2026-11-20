@@ -414,13 +414,10 @@ impl McpManager {
             _ = self.shutdown.cancelled() => return Err(McpError::Cancelled),
             permit = slot.calls.acquire() => permit.expect("server 信号量不会关闭"),
         };
-        let peer = connected_peer(slot).ok_or_else(|| {
-            McpError::Transport(format!(
-                "server `{}` is not connected (status: {:?})",
-                info.server,
-                status_of(slot)
-            ))
-        })?;
+        let timeout = self
+            .call_timeout
+            .unwrap_or_else(|| Duration::from_secs(slot.config.call_timeout_secs));
+        let peer = wait_peer(slot, &cancel, &self.shutdown, timeout).await?;
         call_once(
             &peer,
             slot,
@@ -446,27 +443,56 @@ impl McpManager {
     }
 }
 
-fn status_of(slot: &ServerSlot) -> ServerStatus {
-    match &*slot.phase.read() {
-        Phase::Connecting => ServerStatus::Connecting,
-        Phase::Connected { tools, .. } => ServerStatus::Connected {
-            tool_count: tools.len(),
-        },
-        Phase::Reconnecting { attempts, error } => ServerStatus::Reconnecting {
-            attempts: *attempts,
-            error: error.clone(),
-        },
-        Phase::Failed { error } => ServerStatus::Failed {
-            error: error.clone(),
-        },
-        Phase::Disabled => ServerStatus::Disabled,
-    }
-}
+async fn wait_peer(
+    slot: &ServerSlot,
+    cancel: &CancellationToken,
+    shutdown: &CancellationToken,
+    timeout: Duration,
+) -> Result<Peer<RoleClient>, McpError> {
+    let mut generation = slot.generation.subscribe();
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match &*slot.phase.read() {
+            Phase::Connected { peer, .. } => return Ok(peer.clone()),
+            Phase::Failed { error } => {
+                return Err(McpError::Transport(format!(
+                    "server `{}` is not connected (status: {:?})",
+                    slot.config.name,
+                    ServerStatus::Failed {
+                        error: error.clone(),
+                    }
+                )));
+            }
+            Phase::Disabled => {
+                return Err(McpError::Transport(format!(
+                    "server `{}` is not connected (status: {:?})",
+                    slot.config.name,
+                    ServerStatus::Disabled
+                )));
+            }
+            Phase::Connecting | Phase::Reconnecting { .. } => {}
+        }
 
-fn connected_peer(slot: &ServerSlot) -> Option<Peer<RoleClient>> {
-    match &*slot.phase.read() {
-        Phase::Connected { peer, .. } => Some(peer.clone()),
-        _ => None,
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(McpError::Cancelled),
+            _ = shutdown.cancelled() => return Err(McpError::Cancelled),
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err(McpError::Transport(format!(
+                    "timed out waiting for server `{}` to reconnect after {:?}",
+                    slot.config.name,
+                    timeout
+                )));
+            }
+            changed = generation.changed() => {
+                if changed.is_err() {
+                    return Err(McpError::Transport(format!(
+                        "server `{}` connection status is unavailable",
+                        slot.config.name
+                    )));
+                }
+            }
+        }
     }
 }
 
