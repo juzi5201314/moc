@@ -110,6 +110,9 @@ struct Terminal {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     #[cfg(unix)]
     child_pid: Option<libc::pid_t>,
+    /// 子进程被回收即置位，早于退出广播；升级线程据此避免给已复用 PID 发信号。
+    #[cfg(unix)]
+    child_dead: Arc<AtomicBool>,
     closing: Arc<AtomicBool>,
     /// 用户输入 → 写线程 → PTY；Sender 全部 drop 后写线程退出。
     input: Mutex<std::sync::mpsc::Sender<Vec<u8>>>,
@@ -172,7 +175,8 @@ impl Terminal {
             std::thread::spawn(move || {
                 // SIGHUP 给 shell 优雅退出的机会（保存 history/trap），超时升级 SIGKILL 保证删除必有终。
                 std::thread::sleep(Duration::from_millis(1500));
-                if terminal.state.lock().expect("终端状态锁").exit.is_some() {
+                // 子进程已被回收就不再发信号，防止误伤复用了 PID 的无关进程。
+                if terminal.child_dead.load(Ordering::Acquire) {
                     return;
                 }
                 if let Some(pid) = terminal.child_pid {
@@ -326,6 +330,7 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
     let (events, _) = tokio::sync::broadcast::channel(EVENT_CAPACITY);
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let closing = Arc::new(AtomicBool::new(false));
+    let child_dead = Arc::new(AtomicBool::new(false));
     let terminal = Arc::new(Terminal {
         id,
         cwd,
@@ -335,6 +340,8 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
         killer: Mutex::new(killer),
         #[cfg(unix)]
         child_pid,
+        #[cfg(unix)]
+        child_dead: Arc::clone(&child_dead),
         closing: Arc::clone(&closing),
         input: Mutex::new(input_tx),
         state: Mutex::new(TermState {
@@ -487,6 +494,7 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
             }
         });
         let code = code.flatten();
+        child_dead.store(true, Ordering::Release);
         let _ = reader_done_rx.recv_timeout(OUTPUT_DRAIN_GRACE);
         let mut state = waiting.state.lock().expect("终端状态锁");
         state.exit = Some(code);
