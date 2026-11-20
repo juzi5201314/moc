@@ -258,9 +258,8 @@ fn search_resource_namespace(
     let mut file_config = config.clone();
     'entries: for (prefix, directory) in entries {
         let remaining = MAX_FILES - scanned;
-        let (files, enumeration_incomplete) = directory_files(directory, remaining);
-        output.incomplete |= enumeration_incomplete && files.len() < remaining;
-        stopped |= files.len() >= remaining;
+        let (files, truncated, enumeration_notices) = directory_files(directory, remaining);
+        notices.extend(enumeration_notices);
         for (relative, path) in files {
             scanned += 1;
             let uri = format!("{prefix}{relative}");
@@ -322,7 +321,7 @@ fn search_resource_namespace(
             output.matches += matches.matches;
             shown_files += 1;
         }
-        if scanned >= MAX_FILES {
+        if truncated {
             stopped = true;
             break 'entries;
         }
@@ -344,26 +343,45 @@ fn search_resource_namespace(
 }
 
 /// 最多列出 limit 个文件及其相对路径（用 `/` 分隔），跳过点文件。
-fn directory_files(directory: &Path, limit: usize) -> (Vec<(String, PathBuf)>, bool) {
+/// 返回（文件, 是否还有文件没枚举到, 枚举失败的提示）；只有真的遇到第 limit+1
+/// 个文件才算截断，目录恰好塞满 limit 个不算。
+fn directory_files(
+    directory: &Path,
+    limit: usize,
+) -> (Vec<(String, PathBuf)>, bool, Vec<String>) {
+    const MAX_NOTICES: usize = 8;
     let mut files = Vec::new();
+    let mut notices = Vec::new();
+    let mut failed = 0usize;
     let mut stack = vec![(String::new(), directory.to_owned())];
-    let mut incomplete = false;
+    let mut truncated = false;
     'walk: while let Some((prefix, current)) = stack.pop() {
         let entries = match std::fs::read_dir(&current) {
             Ok(entries) => entries,
-            Err(_) => {
-                incomplete = true;
+            Err(error) => {
+                failed += 1;
+                if notices.len() < MAX_NOTICES {
+                    notices.push(format!("[skipped {}: {error}]", current.display()));
+                }
                 continue;
             }
         };
+        let mut listing = Vec::new();
         for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(_) => {
-                    incomplete = true;
-                    continue;
+            match entry {
+                Ok(entry) => listing.push(entry),
+                Err(error) => {
+                    failed += 1;
+                    if notices.len() < MAX_NOTICES {
+                        notices.push(format!("[skipped {}: {error}]", current.display()));
+                    }
                 }
-            };
+            }
+        }
+        // read_dir 顺序不稳定：逐层排序让达到上限时截取的文件子集可复现。
+        listing.sort_unstable_by_key(std::fs::DirEntry::file_name);
+        let mut subdirs = Vec::new();
+        for entry in listing {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with('.') {
                 continue;
@@ -375,25 +393,35 @@ fn directory_files(directory: &Path, limit: usize) -> (Vec<(String, PathBuf)>, b
             };
             let file_type = match entry.file_type() {
                 Ok(file_type) => file_type,
-                Err(_) => {
-                    incomplete = true;
+                Err(error) => {
+                    failed += 1;
+                    if notices.len() < MAX_NOTICES {
+                        notices.push(format!("[skipped {}: {error}]", entry.path().display()));
+                    }
                     continue;
                 }
             };
             if file_type.is_dir() {
-                stack.push((relative, entry.path()));
+                subdirs.push((relative, entry.path()));
             } else if file_type.is_file() {
-                files.push((relative, entry.path()));
                 if files.len() >= limit {
-                    incomplete = true;
+                    truncated = true;
                     break 'walk;
                 }
+                files.push((relative, entry.path()));
             }
         }
+        // 栈是后进先出：倒序压栈让子目录仍按排序序展开。
+        for subdir in subdirs.into_iter().rev() {
+            stack.push(subdir);
+        }
     }
-    // read_dir 顺序不稳定；统一在返回前排序，逐层排序会重复工作。
+    if failed > notices.len() {
+        let omitted = failed - notices.len();
+        notices.push(format!("[{omitted} more unreadable entries skipped]"));
+    }
     files.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-    (files, incomplete)
+    (files, truncated, notices)
 }
 
 /// 取出一段文本里的命中行；没有命中时返回空串，由调用方决定报告无结果还是继续拼下一段。
@@ -1267,6 +1295,48 @@ mod tests {
             .content;
         assert!(
             output.ends_with("[namespace scan stopped after 200 files]"),
+            "{output}"
+        );
+
+        // 恰好 200 个文件时全数搜完，不误报"扫描已停止"；读不出的文件点名提示。
+        let exact = root.path().join("exact");
+        std::fs::create_dir_all(&exact).unwrap();
+        for index in 0..200 {
+            std::fs::write(exact.join(format!("f_{index:03}.log")), "beta\n").unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let skip = root.path().join("skip");
+            std::fs::create_dir_all(&skip).unwrap();
+            std::fs::write(skip.join("ok.log"), "beta\n").unwrap();
+            let unreadable = skip.join("unreadable.log");
+            std::fs::write(&unreadable, "beta\n").unwrap();
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+            let output = search_resource_namespace(
+                &[("artifact://skip/".to_owned(), skip)],
+                &args,
+                &small,
+            )
+            .unwrap()
+            .content;
+            assert!(
+                output.contains("[skipped artifact://skip/unreadable.log:"),
+                "{output}"
+            );
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        let output = search_resource_namespace(
+            &[("artifact://exact/".to_owned(), exact)],
+            &args,
+            &small,
+        )
+        .unwrap()
+        .content;
+        assert!(
+            !output.contains("namespace scan stopped"),
             "{output}"
         );
     }
