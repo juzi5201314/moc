@@ -288,6 +288,7 @@ pub(crate) trait Inbound: Send + Sync + 'static {
     /// 返回的 future 会被读循环**原地 await**：同一连接上的通知因此严格按线上顺序
     /// 落地（流式文本增量乱序会把渲染撕裂）。实现应当是「快速交接」——把事件转交给
     /// 自己的 UI/业务队列，而不是在处理器里长时间等待，否则会拖慢本连接的读取。
+    /// 连接取消时会丢弃尚未完成的 future，避免队列背压阻塞收尾。
     ///
     /// 没有处理器时返回已就绪的空 future，通知永远不产生响应。
     fn on_notification(self: Arc<Self>, notification: Notification) -> BoxFuture<()>;
@@ -472,7 +473,11 @@ impl Connection {
                     }
                     RpcMessage::Request(request) => Arc::clone(dispatch).on_request(request, tasks),
                     RpcMessage::Notification(notification) => {
-                        Arc::clone(dispatch).on_notification(notification).await;
+                        tokio::select! {
+                            biased;
+                            () = self.closed.cancelled() => return false,
+                            () = Arc::clone(dispatch).on_notification(notification) => {}
+                        }
                     }
                 },
                 Ok(ReadStep::InvalidJson(failure)) => {
