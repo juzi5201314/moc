@@ -12,7 +12,7 @@ pub(crate) use driver::WorkflowDriver;
 pub use tools::WORKFLOW_TOOLS;
 
 use rust_i18n::t;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -206,10 +206,16 @@ impl WorkflowManager {
             self.orphan_epoch
                 .store(crate::session::store::now_ms(), Ordering::Relaxed);
         }
-        let mut all_marked = true;
-        for mut meta in list_run_metas(&self.paths.workflows()) {
+        // 恢复的旧 run 保留原创建时间，须按注册表排除；快照后释放锁再读写磁盘。
+        let running: HashSet<_> = self.runs.lock().keys().cloned().collect();
+        let (metas, read_errors) = list_run_metas_with_errors(&self.paths.workflows());
+        let mut all_marked = read_errors == 0;
+        for mut meta in metas {
             // 首次扫描涵盖原写者的全部 run；重试只处理首次扫描前的残留。
-            if meta.status != "running" || (epoch != 0 && meta.created_at_ms >= epoch) {
+            if meta.status != "running"
+                || running.contains(&meta.run_id)
+                || (epoch != 0 && meta.created_at_ms >= epoch)
+            {
                 continue;
             }
             if let Ok(dir) = self.run_dir(&meta.run_id) {
@@ -335,16 +341,29 @@ pub(crate) fn workflow_summary(meta: &RunMeta) -> WorkflowRunSummary {
 
 /// 磁盘上的全部 run.json（含历史 run）。
 pub(crate) fn list_run_metas(dir: &Path) -> Vec<RunMeta> {
+    list_run_metas_with_errors(dir).0
+}
+
+/// 同时统计已有 run.json 的读取或解析失败，供孤儿扫描重试；杂散空目录不计入。
+fn list_run_metas_with_errors(dir: &Path) -> (Vec<RunMeta>, usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
-    let mut metas: Vec<RunMeta> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| read_run_meta(&e.path()).ok())
-        .collect();
+    let mut metas = Vec::new();
+    let mut read_errors = 0;
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        match read_run_meta(&path) {
+            Ok(meta) => metas.push(meta),
+            Err(_) if path.join("run.json").exists() => read_errors += 1,
+            Err(_) => {}
+        }
+    }
     metas.sort_by_key(|m| m.created_at_ms);
-    metas
+    (metas, read_errors)
 }
 
 pub(crate) fn read_run_meta(dir: &Path) -> Result<RunMeta, CoreError> {

@@ -764,7 +764,139 @@ async fn interrupted_runs_require_write_lease() {
     }
 }
 
-/// 卸载会话必须停止在飞 run，由 worker 循环收尾并把终态写入磁盘。
+/// 孤儿标记失败须重试，但恢复中的旧 run 不能被误标；空目录不应阻止扫描完成。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn orphan_retries_preserve_resumed_runs() {
+    assert!(require_moc_bin());
+    for failure in ["write", "read", "parse"] {
+        let upstream = MockServer::builder().start().await;
+        let harness = Harness::with_ask_support(&upstream.uri(), "openai_chat", "").await;
+        let session = harness.session(SessionEngine::Standard).await;
+        // 空会话尚未写 transcript，按规范化 cwd 定位 sidecar，不依赖文件发现。
+        let workflows = harness
+            .root
+            .path()
+            .join("sessions")
+            .join(moc_core::session::store::encode_cwd(
+                &harness.root.path().join("work").canonicalize().unwrap(),
+            ))
+            .join(&session)
+            .join("workflows");
+        let resumed_dir = workflows.join("resumed");
+        std::fs::create_dir_all(&resumed_dir).unwrap();
+        let resumed_file = resumed_dir.join("run.json");
+        std::fs::write(
+            &resumed_file,
+            br#"{"run_id":"resumed","status":"stopped","created_at_ms":1}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            resumed_dir.join("script.ts"),
+            r#"return await hole<string>("pending", "Wait for input");"#,
+        )
+        .unwrap();
+        let orphan_dir = workflows.join("orphan");
+        std::fs::create_dir(&orphan_dir).unwrap();
+        let orphan_file = orphan_dir.join("run.json");
+        let orphan_bytes = br#"{"run_id":"orphan","status":"running","created_at_ms":1}"#;
+        let staged = workflows.join("staged");
+        std::fs::create_dir(&staged).unwrap();
+        if failure == "parse" {
+            std::fs::write(&orphan_file, b"{").unwrap();
+        } else {
+            // 用目录占住文件位置，不依赖权限位，root 下也能稳定触发读取失败。
+            std::fs::create_dir(&orphan_file).unwrap();
+            if failure == "write" {
+                // 元数据可读，但其 run_id 对应的写回目标仍被目录占住。
+                std::fs::write(staged.join("run.json"), orphan_bytes).unwrap();
+            }
+        }
+
+        let params = SessionWorkflowRunParams {
+            session_id: session.clone(),
+            run_id: "resumed".into(),
+        };
+        let mut events = harness.events.subscribe();
+        let resumed = harness
+            .client
+            .call::<SessionWorkflowResume>(params.clone())
+            .await
+            .expect("标记失败不妨碍恢复旧 run");
+        assert_eq!(resumed.status, WorkflowRunStatus::Running);
+        assert_eq!(resumed.created_at_ms, Some(1), "恢复保留原创建时间");
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let (run_id, event) = next_wf_event(&mut events).await;
+                if matches!(event, WorkflowEvent::HoleOpened { .. }) {
+                    assert_eq!(run_id, "resumed");
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("恢复的 run 应等待输入");
+
+        // 查询触发再次扫描；必须直接验盘，列表会优先用内存状态而掩盖误写。
+        harness
+            .client
+            .call::<SessionWorkflowRuns>(SessionWorkflowRunsParams {
+                session_id: session.clone(),
+            })
+            .await
+            .unwrap();
+        let running_bytes = std::fs::read(&resumed_file).unwrap();
+        let meta: Value = serde_json::from_slice(&running_bytes).unwrap();
+        assert_eq!(meta["status"], "running", "失败类型={failure}");
+        assert!(
+            harness
+                .client
+                .call::<SessionWorkflowResume>(params)
+                .await
+                .is_err(),
+            "运行中的旧 run 不得再次恢复"
+        );
+
+        if failure != "parse" {
+            std::fs::remove_dir(&orphan_file).unwrap();
+        }
+        if failure == "write" {
+            std::fs::remove_file(staged.join("run.json")).unwrap();
+        }
+        std::fs::write(&orphan_file, orphan_bytes).unwrap();
+        harness
+            .client
+            .call::<SessionWorkflowRuns>(SessionWorkflowRunsParams {
+                session_id: session.clone(),
+            })
+            .await
+            .unwrap();
+        let meta: Value = serde_json::from_slice(&std::fs::read(&orphan_file).unwrap()).unwrap();
+        assert_eq!(meta["status"], "stopped", "失败类型={failure}");
+        assert_eq!(meta["stop_reason"], "interrupted");
+        assert_eq!(std::fs::read(&resumed_file).unwrap(), running_bytes);
+
+        // staged 空目录仍保留；扫描成功后不应再改写后来出现的元数据。
+        std::fs::write(&orphan_file, orphan_bytes).unwrap();
+        harness
+            .client
+            .call::<SessionWorkflowRuns>(SessionWorkflowRunsParams {
+                session_id: session.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&orphan_file).unwrap(), orphan_bytes);
+        harness
+            .client
+            .call::<SessionUnload>(SessionUnloadParams {
+                session_id: session,
+            })
+            .await
+            .unwrap();
+        harness.close().await;
+    }
+}
+
+/// 卸载 RPC 返回前必须停止在飞 run，由 worker 循环收尾并把终态写入磁盘。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unload_stops_running_workflow_and_persists_terminal() {
     assert!(require_moc_bin());
