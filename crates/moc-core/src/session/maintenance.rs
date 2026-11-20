@@ -90,25 +90,7 @@ impl SessionTable {
                 .collect();
             let matcher = aho_corasick::AhoCorasick::new(&references)
                 .map_err(|error| CoreError::Session(error.to_string()))?;
-            let mut scan_paths = Vec::new();
-            let mut directories = fs::read_dir(self.store.root()).await?;
-            while let Some(directory) = directories.next_entry().await? {
-                if !directory.file_type().await?.is_dir() {
-                    continue;
-                }
-                let mut entries = fs::read_dir(directory.path()).await?;
-                while let Some(entry) = entries.next_entry().await? {
-                    let path = entry.path();
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if journal_path(&path).is_none()
-                        && !(name.contains(".jsonl.") && name.ends_with(".bak"))
-                    {
-                        continue;
-                    }
-                    scan_paths.push(path);
-                }
-            }
+            let scan_paths = self.store.journals(true).await?;
             tokio::task::spawn_blocking(move || {
                 let mut referenced = HashSet::new();
                 for path in scan_paths {
@@ -166,10 +148,154 @@ impl SessionTable {
 mod tests {
     use super::*;
     use crate::session::{
-        entries::{Entry, EntryPayload, SessionOrigin},
+        entries::{AgentSessionMeta, Entry, EntryPayload, SessionOrigin},
         store::{SessionFile, SessionStore},
     };
     use moc_protocol::{SessionEngine, SessionPermission};
+
+    #[tokio::test]
+    async fn 维护保留子代理及归档中独有的产物引用() {
+        let root = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(root.path().join("sessions"));
+        let parent = "ses_parent000001";
+        let child = "ses_child0000001";
+        let paths = store.paths_for(root.path(), parent, 1);
+        fs::create_dir_all(paths.artifacts()).await.unwrap();
+        let mut kept = Vec::new();
+        let mut transcripts = Vec::new();
+        for (id, parent_id, depth, compressed, agent) in [
+            (parent, None, 0, false, None),
+            (child, Some(parent), 1, true, None),
+            ("ses_grandchild01", Some(child), 2, false, None),
+            (
+                "ses_actor000001",
+                Some(parent),
+                1,
+                true,
+                Some(AgentSessionMeta {
+                    workflow_run: Some("run_maintenance".into()),
+                    ..Default::default()
+                }),
+            ),
+        ] {
+            let (session_paths, origin, text) = if let Some(parent_id) = parent_id {
+                let session_paths = store
+                    .paths_for_child(root.path(), parent_id, id, 1, compressed)
+                    .await
+                    .unwrap();
+                let artifact = if compressed {
+                    session_paths.artifacts()
+                } else {
+                    paths.artifacts()
+                }
+                .join(format!("{id}.txt"));
+                fs::create_dir_all(artifact.parent().unwrap())
+                    .await
+                    .unwrap();
+                fs::write(&artifact, "仍被引用").await.unwrap();
+                // 分别覆盖子代理的 URI 引用和孙代理的完整物理路径引用。
+                let reference = if compressed {
+                    crate::resources::ArtifactStore::new(session_paths.clone())
+                        .uri_for_path(&artifact)
+                        .unwrap()
+                } else {
+                    artifact.to_string_lossy().into_owned()
+                };
+                kept.push(artifact);
+                (
+                    session_paths,
+                    SessionOrigin::spawned(parent_id, depth, agent),
+                    reference,
+                )
+            } else {
+                (
+                    paths.clone(),
+                    SessionOrigin::root(),
+                    "父会话无产物引用".into(),
+                )
+            };
+            let header = Entry::header(
+                id.into(),
+                root.path().to_string_lossy().into_owned(),
+                "p/model:off".into(),
+                SessionEngine::Standard,
+                SessionPermission::Full,
+                origin,
+                "维护测试".into(),
+                1,
+            );
+            let file = SessionFile::create_with_header(&session_paths.transcript, &header)
+                .await
+                .unwrap();
+            let entry = Entry::from_payload(
+                EntryPayload::Message {
+                    message: moc_llm::Message::user_text(text),
+                    tool: None,
+                    finish_reason: None,
+                    agent: None,
+                    goal: None,
+                },
+                header.id().into(),
+                2,
+            );
+            file.append(&entry, None).await.unwrap();
+            transcripts.push(session_paths);
+        }
+        // 引用只留在归档或恢复备份中，当前 transcript 不再含有它们。
+        for transcript in &transcripts {
+            for reference_path in [
+                transcript.compaction().join("segment-0000.md"),
+                transcript.transcript.with_extension("jsonl.recovery.bak"),
+            ] {
+                let artifact = transcript
+                    .artifacts()
+                    .join(format!("archive-{}.txt", kept.len()));
+                fs::create_dir_all(artifact.parent().unwrap())
+                    .await
+                    .unwrap();
+                fs::write(&artifact, "归档仍引用").await.unwrap();
+                fs::create_dir_all(reference_path.parent().unwrap())
+                    .await
+                    .unwrap();
+                fs::write(
+                    &reference_path,
+                    format!(
+                        "{}\n",
+                        crate::resources::ArtifactStore::new(transcript.clone())
+                            .uri_for_path(&artifact)
+                            .unwrap()
+                    ),
+                )
+                .await
+                .unwrap();
+                kept.push(artifact);
+            }
+        }
+        let garbage = paths.artifacts().join("unused.txt");
+        fs::write(&garbage, "未被引用").await.unwrap();
+        let table = SessionTable::new(store.root(), true);
+        let policy = RetentionConfig {
+            artifacts_days: 0,
+            logs_days: 0,
+            ..Default::default()
+        };
+        for apply in [false, true] {
+            let report = table.maintenance(&policy, apply).await.unwrap();
+            for artifact in &kept {
+                assert!(
+                    !report
+                        .removed
+                        .contains(&artifact.to_string_lossy().into_owned()),
+                    "仍被引用的产物不应被清理：{}",
+                    artifact.display()
+                );
+                assert!(artifact.exists());
+            }
+            assert_eq!(report.removed, vec![garbage.to_string_lossy().into_owned()]);
+            assert_eq!(garbage.exists(), !apply);
+            assert_eq!(store.list().await.unwrap().len(), transcripts.len());
+        }
+    }
 
     #[tokio::test]
     async fn preview_preserves_referenced_files_and_cleanup_applies() {
