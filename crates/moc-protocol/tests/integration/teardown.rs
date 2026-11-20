@@ -1,9 +1,10 @@
-//! 连接收尾测试：对端不读数据、处理器 panic 时，收尾都必须完成。
+//! 连接收尾测试：对端不读数据、通知队列满、处理器 panic 时，收尾都必须完成。
 //!
 //! 用可控假对端复现「连接活着但对端不再读取」：读半边只递一次请求，写半边接受
 //! 固定字节数后永远不 ready。服务端的 `write_all` 因此永久挂起——收尾若不响应
 //! 取消，`close()` / `wait()` 会跟着挂死。
 
+use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -16,6 +17,7 @@ use moc_protocol::methods::{SessionPrompt, SessionUpdateMethod};
 use moc_protocol::{ClientBuilder, FrameEncoder, Framing, RpcCallError, Server, ServerOptions};
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::{Notify, mpsc};
 
 // ───────────────────────────── 假对端 ─────────────────────────────
 
@@ -131,6 +133,60 @@ async fn teardown_completes_while_peer_stops_reading() {
         .await
         .expect("对端不读数据时收尾也必须完成");
     assert!(connection.is_closed());
+}
+
+#[tokio::test]
+async fn close_completes_while_notification_queue_is_full() {
+    // 缩小 UI 队列容量：第一条通知填满队列，第二条通知的 send 必须挂起。
+    let (updates, queued) = mpsc::channel(1);
+    let blocked = Arc::new(Notify::new());
+    let handler_blocked = Arc::clone(&blocked);
+    let builder = ClientBuilder::new(client_info()).on_notification::<SessionUpdateMethod, _, _>(
+        move |params, _ctx| {
+            let updates = updates.clone();
+            let blocked = Arc::clone(&handler_blocked);
+            async move {
+                let send = updates.send(params);
+                tokio::pin!(send);
+                poll_fn(|cx| {
+                    let result = send.as_mut().poll(cx);
+                    if result.is_pending() {
+                        blocked.notify_one();
+                    }
+                    result
+                })
+                .await
+                .expect("接收端仍然存活");
+            }
+        },
+    );
+    let (_server, connection, handle, _) = local_client(ScriptedService::new(), builder).await;
+    let prompt_handle = handle.clone();
+    let prompt = tokio::spawn(async move {
+        prompt_handle
+            .call::<SessionPrompt>(prompt_params("ses_1", "填满更新队列"))
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), blocked.notified())
+        .await
+        .expect("通知处理器必须卡在满队列的 send 上");
+    assert_eq!(queued.len(), 1);
+
+    // 接收端保持存活且不消费：关闭连接必须取消正在等待入队的通知。
+    tokio::time::timeout(Duration::from_secs(5), handle.close())
+        .await
+        .expect("通知队列满时 close 也必须完成");
+    assert!(handle.is_closed());
+    assert_eq!(queued.len(), 1);
+    let outcome = prompt.await.expect("提示任务正常结束");
+    assert!(
+        matches!(outcome, Err(RpcCallError::Closed)),
+        "连接关闭后在飞提示应当收到 Closed：{outcome:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(5), connection.wait())
+        .await
+        .expect("前端关闭后服务端连接必须收尾");
 }
 
 // ───────────────────────────── 处理器 panic ─────────────────────────────
