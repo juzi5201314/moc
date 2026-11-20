@@ -764,6 +764,75 @@ async fn interrupted_runs_require_write_lease() {
     }
 }
 
+/// 卸载会话必须停止在飞 run，由 worker 循环收尾并把终态写入磁盘。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unload_stops_running_workflow_and_persists_terminal() {
+    assert!(require_moc_bin());
+    let upstream = MockServer::builder().start().await;
+    mount_router_script(
+        &upstream,
+        Default::default(),
+        r#"return await hole<string>("pending", "Wait for input");"#,
+    )
+    .await;
+    let harness = Harness::with_ask_support(&upstream.uri(), "openai_chat", "").await;
+    let session = harness.session(SessionEngine::Standard).await;
+    harness
+        .client
+        .call::<SessionWorkflowActivate>(SessionWorkflowActivateParams {
+            session_id: session.clone(),
+        })
+        .await
+        .unwrap();
+    let mut events = harness.events.subscribe();
+    // 等 hole 真正挂起且主提示释放锁后再卸载，避免与正常完成或 SESSION_BUSY 混淆。
+    let (_, run_id) = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        tokio::join!(harness.prompt(&session, "启动等待输入的 workflow"), async {
+            loop {
+                let (run_id, event) = next_wf_event(&mut events).await;
+                match event {
+                    WorkflowEvent::ApprovalRequested { request } => {
+                        approve(&harness, &session, &request).await;
+                    }
+                    WorkflowEvent::HoleOpened { .. } => break run_id,
+                    _ => {}
+                }
+            }
+        })
+    })
+    .await
+    .expect("run 应进入等待输入状态");
+    let run_file = run_dir_of(&harness, &session, &run_id).join("run.json");
+    let before: Value = serde_json::from_slice(&std::fs::read(&run_file).unwrap()).unwrap();
+    assert_eq!(before["status"], "running");
+
+    harness
+        .client
+        .call::<SessionUnload>(SessionUnloadParams {
+            session_id: session,
+        })
+        .await
+        .expect("卸载成功");
+    let (stopped_run, status) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        wait_terminal(&mut events),
+    )
+    .await
+    .expect("卸载后 run 必须收尾");
+    assert_eq!(stopped_run, run_id);
+    assert_eq!(
+        status,
+        WorkflowRunStatus::Stopped {
+            reason: WorkflowStopReason::User,
+        }
+    );
+    let after: Value = serde_json::from_slice(&std::fs::read(&run_file).unwrap()).unwrap();
+    assert_eq!(after["status"], "stopped");
+    assert_eq!(after["stop_reason"], "user");
+    assert!(after["finished_at_ms"].is_u64());
+    harness.close().await;
+}
+
 /// 需要 moc 二进制的测试入口守卫（解析逻辑见 `support::require_moc_bin`）。
 fn require_moc_bin() -> bool {
     support::require_moc_bin("workflow flow")

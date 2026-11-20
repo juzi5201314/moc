@@ -371,6 +371,9 @@ pub(super) async fn session_unload(
         plugin_events::session_end(&host, &context, "unloaded").await;
     }
     let runtime = core.inner.runtime(&params.session_id).await;
+    if let Some(workflows) = runtime.workflows.get() {
+        workflows.shutdown();
+    }
     runtime.jobs.kill_all().await;
     core.inner
         .sessions
@@ -449,6 +452,9 @@ pub(super) async fn session_delete(
         plugin_events::session_end(&host, &context, "deleted").await;
     }
     let runtime = core.inner.runtime(&params.session_id).await;
+    if let Some(workflows) = runtime.workflows.get() {
+        workflows.shutdown();
+    }
     runtime.jobs.kill_all().await;
     core.inner
         .sessions

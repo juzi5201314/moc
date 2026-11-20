@@ -152,18 +152,31 @@ impl WorkflowManager {
                 "workflow run {run_id} 不在运行中"
             )));
         };
-        let actions = handle.engine.lock().cancel("E_STOPPED");
-        handle.cancel.cancel();
-        let _ = handle.to_worker.send(WorkflowHostMessage::Cancel {
-            code: "E_STOPPED".into(),
-        });
-        self.apply_actions(&handle, actions);
+        self.cancel_run(&handle, "E_STOPPED");
         // 终态落盘在 run_loop 异步完成；summary 先按已记录的终态投影。
         let mut meta = handle.meta.lock().clone();
         if let Some(terminal) = handle.view.lock().terminal.clone() {
             apply_terminal(&mut meta, &terminal);
         }
         Ok(workflow_summary(&meta))
+    }
+
+    /// 会话卸载或删除前取消全部 run；run_loop 随后回收 worker 并落盘终态。
+    pub fn shutdown(self: &Arc<Self>) {
+        let handles: Vec<_> = self.runs.lock().values().cloned().collect();
+        for handle in handles {
+            self.cancel_run(&handle, "E_SHUTDOWN");
+        }
+    }
+
+    fn cancel_run(self: &Arc<Self>, handle: &Arc<RunHandle>, code: &str) {
+        let actions = handle.engine.lock().cancel(code);
+        // 先发布终态再唤醒取消令牌，避免 run_loop 将主动关闭误判为 worker 崩溃。
+        self.apply_actions(handle, actions);
+        handle.cancel.cancel();
+        let _ = handle
+            .to_worker
+            .send(WorkflowHostMessage::Cancel { code: code.into() });
     }
 
     /// `workflow_set_role_model`：run 中生效（写 meta + journal 之外的覆盖表）。
