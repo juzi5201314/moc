@@ -14,7 +14,8 @@ pub use tools::WORKFLOW_TOOLS;
 use rust_i18n::t;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Once};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use moc_protocol::{
     WorkflowEvent, WorkflowPhaseState, WorkflowRoleState, WorkflowRunStatus, WorkflowRunSummary,
@@ -69,8 +70,12 @@ pub(crate) struct WorkflowManager {
     /// 落到此表（run.json 与注册表都还不可见），launch 落盘前合并进 meta。
     pending_role_models: Mutex<HashMap<String, HashMap<String, String>>>,
     seq: Mutex<u64>,
-    /// 持写租约后只标记一次；并发访问须等标记完成再启动本进程的 run。
-    orphan_marking: Once,
+    /// 全部孤儿写回成功后才跳过扫描；失败留待下次访问重试。
+    orphan_marked: AtomicBool,
+    /// 串行化扫描；并发访问须等本次标记完成再启动本进程的 run。
+    orphan_marking: StdMutex<()>,
+    /// 首次持写租约扫描的时刻；重试不能误伤此后新建但尚未注册的 run。
+    orphan_epoch: AtomicU64,
 }
 
 /// run 元数据（run.json）。
@@ -174,26 +179,46 @@ impl WorkflowManager {
             approvals: Mutex::new(HashMap::new()),
             pending_role_models: Mutex::new(HashMap::new()),
             seq: Mutex::new(0),
-            orphan_marking: Once::new(),
+            orphan_marked: AtomicBool::new(false),
+            orphan_marking: StdMutex::new(()),
+            orphan_epoch: AtomicU64::new(0),
         })
     }
 
     /// 只有本进程持有写租约，才能确认磁盘上的 running run 已无其它进程执行。
     /// 只读创建管理器不消耗标记机会；共享租约保证整个扫描写回期间内核锁仍被持有。
     pub fn mark_orphans(&self, record: &crate::session::SessionRecord) {
+        if self.orphan_marked.load(Ordering::Acquire) {
+            return;
+        }
         let Some(_lease) = record.write_lease() else {
             return;
         };
-        self.orphan_marking.call_once(|| {
-            for mut meta in list_run_metas(&self.paths.workflows()) {
-                if meta.status != "running" {
-                    continue;
-                }
-                if let Ok(dir) = self.run_dir(&meta.run_id) {
-                    mark_interrupted(&dir, &mut meta);
-                }
+        let _marking = self
+            .orphan_marking
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.orphan_marked.load(Ordering::Acquire) {
+            return;
+        }
+        let epoch = self.orphan_epoch.load(Ordering::Relaxed);
+        if epoch == 0 {
+            self.orphan_epoch
+                .store(crate::session::store::now_ms(), Ordering::Relaxed);
+        }
+        let mut all_marked = true;
+        for mut meta in list_run_metas(&self.paths.workflows()) {
+            // 首次扫描涵盖原写者的全部 run；重试只处理首次扫描前的残留。
+            if meta.status != "running" || (epoch != 0 && meta.created_at_ms >= epoch) {
+                continue;
             }
-        });
+            if let Ok(dir) = self.run_dir(&meta.run_id) {
+                all_marked &= mark_interrupted(&dir, &mut meta);
+            }
+        }
+        if all_marked {
+            self.orphan_marked.store(true, Ordering::Release);
+        }
     }
 
     /// run 目录；run_id 来自外部输入（工具/RPC 参数），校验字符集防路径穿越。
@@ -329,15 +354,16 @@ pub(crate) fn read_run_meta(dir: &Path) -> Result<RunMeta, CoreError> {
         .map_err(|e| CoreError::Session(t!("core.err.run_json_parse", error = e).into_owned()))
 }
 
-/// 持写租约的首次扫描中，将孤儿 run 降级为 stopped(interrupted) 并回写 run.json。
-fn mark_interrupted(dir: &Path, meta: &mut RunMeta) {
+/// 持写租约扫描时，将孤儿 run 降级为 stopped(interrupted)，返回写回是否成功。
+fn mark_interrupted(dir: &Path, meta: &mut RunMeta) -> bool {
     meta.status = "stopped".into();
     meta.stop_reason = Some("interrupted".into());
     meta.finished_at_ms = Some(crate::session::store::now_ms());
-    let _ = std::fs::write(
+    std::fs::write(
         dir.join("run.json"),
         serde_json::to_vec_pretty(meta).unwrap_or_default(),
-    );
+    )
+    .is_ok()
 }
 
 /// `session/workflow_run` 的完整快照。

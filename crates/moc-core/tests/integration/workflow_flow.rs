@@ -707,6 +707,11 @@ async fn interrupted_runs_require_write_lease() {
         harness.load(&session).await;
         assert_eq!(std::fs::read(&ghost_file).unwrap(), ghost_bytes);
         assert_eq!(std::fs::read(&late_file).unwrap(), late_bytes);
+        // 元数据仍可读，但写回目标被目录占住；不依赖权限位，root 下也能模拟失败。
+        let staged = record.paths.workflows().join("staged");
+        std::fs::create_dir(&staged).unwrap();
+        std::fs::rename(&ghost_file, staged.join("run.json")).unwrap();
+        std::fs::create_dir(&ghost_file).unwrap();
         if via_tool {
             harness.prompt(&session, "查询 workflow 状态").await;
         } else {
@@ -718,14 +723,31 @@ async fn interrupted_runs_require_write_lease() {
                 .await
                 .unwrap();
         }
+        assert_eq!(std::fs::read(staged.join("run.json")).unwrap(), ghost_bytes);
+        let late_meta: Value = serde_json::from_slice(&std::fs::read(&late_file).unwrap()).unwrap();
+        assert_eq!(late_meta["status"], "stopped", "其它孤儿仍须继续标记");
+
+        // 失败后本进程可先启动新 run；重试不能把写盘到注册窗口中的 run 当成孤儿。
+        let (new_file, new_bytes) = write_run("new", "running", u64::MAX);
+        std::fs::remove_dir(&ghost_file).unwrap();
+        std::fs::rename(staged.join("run.json"), &ghost_file).unwrap();
+        std::fs::remove_dir(&staged).unwrap();
+        harness
+            .client
+            .call::<SessionWorkflowRuns>(SessionWorkflowRunsParams {
+                session_id: session.clone(),
+            })
+            .await
+            .unwrap();
         for file in [&ghost_file, &late_file] {
             let meta: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
             assert_eq!(meta["status"], "stopped", "工具入口={via_tool}");
             assert_eq!(meta["stop_reason"], "interrupted");
         }
         assert_eq!(std::fs::read(&finished_file).unwrap(), finished_bytes);
+        assert_eq!(std::fs::read(&new_file).unwrap(), new_bytes);
 
-        // 首次标记后不再扫描，后续查询和工具访问不能误伤本进程新落盘的活 run。
+        // 全部标记成功后不再扫描，后续查询和工具访问不能误伤本进程新落盘的活 run。
         let (active_file, active_bytes) = write_run("active", "running", 1);
         harness.prompt(&session, "再次查询 workflow 状态").await;
         let snapshot = harness
