@@ -14,9 +14,9 @@ use std::{
 use tokio::{io::AsyncWriteExt, process::Command};
 use tokio_util::sync::CancellationToken;
 
-/// 子进程退出后等管道读完的时限。超时就放弃读取并回收任务，免得逃出进程组的子孙进程
-/// 一直占着 stdout，导致并发名额无法释放。
-const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
+/// 子进程退出后等管道或 PTY 读写完成的时限。超时就放弃读写并回收任务，免得逃出
+/// 进程组的子孙进程一直占着文件描述符，导致并发名额无法释放。
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 pub(crate) struct Process {
     pub pid: Option<u32>,
@@ -34,8 +34,7 @@ impl Process {
         policy: SandboxPolicy,
         limits: Option<BashLimits>,
     ) -> Result<Self, ToolError> {
-        Self::spawn_with_drain_grace(args, cwd, timeout, log, policy, limits, PIPE_DRAIN_GRACE)
-            .await
+        Self::spawn_with_drain_grace(args, cwd, timeout, log, policy, limits, DRAIN_GRACE).await
     }
 
     /// 排空宽限按调用注入：测试构造短宽限的进程，不碰全局态，并行测试互不干扰。
@@ -55,7 +54,7 @@ impl Process {
             ));
         }
         if args.pty.unwrap_or(false) {
-            Self::pty(args, cwd, timeout, log, policy, limits).await
+            Self::pty(args, cwd, timeout, log, policy, limits, drain_grace).await
         } else {
             Self::pipe(args, cwd, timeout, log, policy, limits, drain_grace)
         }
@@ -203,12 +202,23 @@ impl Process {
         log: JobLog,
         policy: SandboxPolicy,
         limits: Option<BashLimits>,
+        drain_grace: Duration,
     ) -> Result<Self, ToolError> {
         let cancel = CancellationToken::new();
         let cancel_on_drop = cancel.clone().drop_guard();
         let (started, ready) = tokio::sync::oneshot::channel();
         let worker = tokio::task::spawn_blocking(move || {
-            run_pty(args, cwd, timeout, log, policy, limits, cancel, started)
+            run_pty(
+                args,
+                cwd,
+                timeout,
+                log,
+                policy,
+                limits,
+                drain_grace,
+                cancel,
+                started,
+            )
         });
         let (pid, group) = match ready.await {
             Ok((pid, group)) => (pid, group),
@@ -247,6 +257,7 @@ fn run_pty(
     log: JobLog,
     policy: SandboxPolicy,
     limits: Option<BashLimits>,
+    drain_grace: Duration,
     cancel: CancellationToken,
     started: tokio::sync::oneshot::Sender<(Option<u32>, ProcessGroup)>,
 ) -> std::io::Result<ProcessExit> {
@@ -350,15 +361,15 @@ fn run_pty(
     let writer_thread = std::thread::spawn(move || writer.write_all(&input));
     let began = std::time::Instant::now();
     let _ = started.send((pid, group.clone()));
-    let tail_log = log.clone();
+    let reader_log = log.clone();
     let reader_thread = std::thread::spawn(move || -> std::io::Result<()> {
         let mut buffer = [0u8; 16 * 1024];
         loop {
             let count = reader.read(&mut buffer)?;
             if count == 0 {
-                return log.finish();
+                return Ok(());
             }
-            log.append(&buffer[..count])?;
+            reader_log.append(&buffer[..count])?;
         }
     });
     let mut timed_out = false;
@@ -370,20 +381,40 @@ fn run_pty(
         }
         timed_out = timeout.is_some_and(|limit| began.elapsed() >= limit);
         if timed_out || cancel.is_cancelled() {
-            group.kill().map_err(std::io::Error::other)?;
-            break child.wait();
+            break group
+                .kill()
+                .map_err(std::io::Error::other)
+                .and_then(|()| child.wait());
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let _ = writer_thread.join();
-    reader_thread
-        .join()
-        .map_err(|_| std::io::Error::other("PTY output thread exited unexpectedly"))??;
+    // 读写共用一个排空期限；无人读取 stdin 时，写线程也可能一直阻塞。
+    let drain_deadline = std::time::Instant::now() + drain_grace;
+    while !reader_thread.is_finished() || !writer_thread.is_finished() {
+        let remaining = drain_deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(20)));
+    }
+    // 只在此处定稿；放弃 join 后读线程即使收到迟到输出，也不会改写日志。
+    // 读写端为独立 fd，外部无法取消阻塞 read，也杀不到逃逸进程组的子孙；
+    // 放弃 join 可能泄漏仍持有 PTY fd 和 JobLog 的读线程，但任务名额可回收，优于原来的永久挂死。
+    log.finish()?;
+    if writer_thread.is_finished() {
+        let _ = writer_thread.join();
+    } else {
+        tracing::warn!("子进程已退出但 PTY 输入仍阻塞，放弃等待写线程");
+    }
+    if reader_thread.is_finished() {
+        reader_thread
+            .join()
+            .map_err(|_| std::io::Error::other("PTY output thread exited unexpectedly"))??;
+    } else {
+        tracing::warn!("子进程已退出但 PTY 输出仍被占用，放弃等待读线程");
+    }
     let status = waited?;
-    let tail = tail_log
-        .read_tail(80)
-        .map(|(text, _)| text)
-        .unwrap_or_default();
+    let tail = log.read_tail(80).map(|(text, _)| text).unwrap_or_default();
     Ok(ProcessExit::pty(
         status,
         timed_out,
@@ -741,6 +772,41 @@ mod unix_tests {
             .expect("占着 stdout 的子孙进程不能让任务永远无法回收")
             .expect("等待 shell");
         assert_eq!(result.code(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn lingering_pty_grandchild_does_not_stall_completion() {
+        // macOS 上会话首进程退出会让 master 立即 EOF，无法复现阻塞，因此本测试主要在 Linux CI 生效。
+        let directory = tempfile::tempdir().expect("临时目录");
+        let log = test_log(directory.path().join("pty-drain.log")).await;
+        // 忽略挂断信号，让后台进程在 shell 退出后继续持有 PTY slave。
+        let mut args = bash_args("trap '' HUP; sleep 20 & printf done");
+        args.pty = Some(true);
+        let process = Process::spawn_with_drain_grace(
+            args,
+            directory.path().to_owned(),
+            Some(Duration::from_secs(1)),
+            log.clone(),
+            policy(moc_protocol::SessionPermission::Full, directory.path()),
+            None,
+            Duration::from_millis(10),
+        )
+        .await
+        .expect("启动 PTY shell");
+        let result = tokio::time::timeout(Duration::from_secs(6), process.completion).await;
+        let seen = log.bytes_seen();
+        log.append(b"late output").expect("追加迟到输出");
+        let finished = log.bytes_seen() == seen;
+        // 超时失败时也先回收后台进程，让阻塞线程退出，避免测试运行时等待它们。
+        process.group.kill().expect("回收测试进程组");
+        let result = result
+            .expect("占着 PTY 的子孙进程不能让任务永远无法回收")
+            .expect("等待 PTY shell");
+        assert_eq!(result.code(), Some(0));
+        assert!(!result.timed_out);
+        assert!(finished, "任务返回前必须定稿日志");
+        let text = fs::read(log.path()).expect("读取日志");
+        assert!(String::from_utf8_lossy(&text).contains("done"));
     }
 
     #[tokio::test]
