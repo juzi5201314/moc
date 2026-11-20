@@ -1,3 +1,4 @@
+use super::PromptRun;
 use super::execution::run_prompt_locked;
 use super::guard::PromptGuard;
 use super::tools::repair_pending_calls;
@@ -58,6 +59,7 @@ pub(crate) async fn wake_for_jobs(
         },
         record,
         prompt_lock,
+        PromptRun::Wake,
     )
     .await;
 }
@@ -66,7 +68,7 @@ pub(super) async fn run_prompt_entry(
     inner: Arc<CoreInner>,
     ctx: RequestContext,
     params: moc_protocol::methods::PromptParams,
-    retry: bool,
+    run: PromptRun,
 ) -> Result<PromptResult, RpcError> {
     let record = inner
         .sessions
@@ -86,21 +88,21 @@ pub(super) async fn run_prompt_entry(
         )));
     }
     let prompt = record.try_prompt_lock().map_err(to_rpc)?;
-    run_prompt_with_lock(inner, ctx, params, record, prompt, retry).await
+    run_prompt_with_lock(inner, ctx, params, record, prompt, run).await
 }
 
 /// 用调用方已经拿到的提示锁跑一次提示。
 ///
 /// 代理唤醒会在派发前先抢提示锁：抢不到说明该会话还有提示没结束，调用方就把消息
-/// 放进收件箱，而不是和那个提示争同一个会话。`retry` 为真时不写用户消息（见
-/// [`run_retry`]）。
+/// 放进收件箱，而不是和那个提示争同一个会话。输入处理由 [`PromptRun`] 决定，
+/// 重试与后台任务唤醒都不写用户消息。
 pub(crate) async fn run_prompt_with_lock(
     inner: Arc<CoreInner>,
     ctx: RequestContext,
     params: moc_protocol::methods::PromptParams,
     record: Arc<crate::session::SessionRecord>,
     prompt: tokio::sync::OwnedMutexGuard<()>,
-    retry: bool,
+    run: PromptRun,
 ) -> Result<PromptResult, RpcError> {
     let session_id = params.session_id.clone();
     let _prompt = prompt;
@@ -146,7 +148,7 @@ pub(crate) async fn run_prompt_with_lock(
         &scoped_ctx,
         params,
         Arc::clone(&record),
-        retry,
+        run,
     )
     .await;
     // 用户取消 lead 的提示时，后台（block=false）仍在跑的 sidekick 一并停掉；
@@ -313,10 +315,8 @@ pub(crate) async fn run_prompt_with_lock(
         runtime.jobs.suppress_wake(true);
     } else if result.is_ok() {
         runtime.jobs.suppress_wake(false);
+        // 插件元数据只是快照、不持锁；仍在成功且未取消时于提示解锁前释放，保持原收尾时点。
         drop(plugin_state);
-        if runtime.jobs.wants_wake() {
-            wake_for_jobs(Arc::clone(&inner), ctx.clone(), session_id.clone()).await;
-        }
     }
     // 目标续跑只在一切正常时接力：用户取消、循环终止、RPC 错误、length/cancelled
     // 收场一律摘掉 armed，需要 `/goal resume`（或工具的 update/resume）才恢复。
@@ -330,9 +330,12 @@ pub(crate) async fn run_prompt_with_lock(
     if !keep_armed {
         runtime.goal_armed.disarm_if_unchanged(goal_armed_snapshot);
     }
-    // 必须先释放提示锁再评估续跑：本轮收尾持有 `_prompt` 时 try_prompt_lock 必失败，
-    // 续跑会被自己挡掉。
+    // 必须先释放提示锁再评估后台任务补唤醒和目标续跑：本轮收尾持有 `_prompt` 时
+    // try_prompt_lock 必失败，两种续跑都会被自己挡掉。
     drop(_prompt);
+    if result.is_ok() && !ctx.cancel().is_cancelled() && runtime.jobs.wants_wake() {
+        wake_for_jobs(Arc::clone(&inner), ctx.clone(), session_id.clone()).await;
+    }
     crate::goal::maybe_continue(&inner, &ctx, &session_id).await;
     result
 }

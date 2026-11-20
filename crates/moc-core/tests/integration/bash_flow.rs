@@ -236,6 +236,117 @@ async fn disabled_jobs_keep_slow_commands_in_the_foreground() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn background_job_finished_during_last_request_wakes_after_prompt_unlocks() {
+    let upstream = MockServer::builder().start().await;
+    let streams = Arc::new(Mutex::new(Vec::<String>::new()));
+    let recorder = Arc::clone(&streams);
+    let last_request = Arc::new(tokio::sync::Notify::new());
+    let arrived = Arc::clone(&last_request);
+    let gate = support::Gate::new();
+    let response_gate = gate.clone();
+    Mock::given(method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let step = {
+                let mut streams = recorder.lock();
+                streams.push(body.to_string());
+                streams.len()
+            };
+            let response = match step {
+                1 => support::tool_stream(vec![(
+                    "background",
+                    "bash",
+                    serde_json::json!({
+                        "description": "Wait for the background completion signal",
+                        "command": "read -r signal < gate; printf late-job-output",
+                        "async": true,
+                    }),
+                )]),
+                2 => {
+                    arrived.notify_one();
+                    response_gate.wait();
+                    support::text_stream("本轮完成")
+                }
+                _ => support::text_stream("已收到后台结果"),
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nenabled=false\n",
+    )
+    .await;
+    let fifo = harness.root.path().join("work/gate");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let id = harness.session(SessionEngine::Standard).await;
+    let mut events = harness.events.subscribe();
+    let client = harness.client.clone();
+    let prompt = tokio::spawn(async move {
+        client
+            .call::<SessionPrompt>(PromptParams {
+                session_id: id,
+                input: vec![InputPart::Text {
+                    text: "启动后台任务".into(),
+                }],
+                mode: None,
+                agent_message: None,
+                goal_round: None,
+                max_turns: None,
+            })
+            .await
+    });
+    // 最后一次请求已经发出才放行后台进程，且收到完成通知后才让前台提示收尾。
+    // 两道屏障固定时序，确保本轮模型看不到结果、完成回调仍被提示锁挡住。
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        last_request.notified().await;
+        tokio::fs::write(&fifo, "finish\n").await.unwrap();
+        loop {
+            if let SessionUpdate::JobFinished { job } = events.recv().await.unwrap() {
+                assert_eq!(job.exit_code, Some(0));
+                break;
+            }
+        }
+    })
+    .await
+    .expect("后台任务应在前台最后一次模型请求期间完成");
+    gate.open();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), prompt)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.message.text(), "本轮完成");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let SessionUpdate::PromptFinished { message, .. } = events.recv().await.unwrap()
+                && message.text() == "已收到后台结果"
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("提示解锁后应补唤醒并自动处理后台任务结果");
+    let requests = streams.lock().clone();
+    assert_eq!(requests.len(), 3, "完成通知应只触发一次补唤醒");
+    let follow_up: Value = serde_json::from_str(&requests[2]).unwrap();
+    let messages = follow_up["messages"].to_string();
+    assert!(messages.contains("Background job job_1 "));
+    assert!(messages.contains("late-job-output"));
+    harness.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn cancel_manual_bash_reaps_process_and_unlocks_session() {
     let harness = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
     let id = harness.session(SessionEngine::Standard).await;

@@ -9,6 +9,7 @@ use super::spawn::prepare_agent;
 use super::workflow_scope;
 use crate::error::CoreError;
 use crate::service::CoreInner;
+use crate::service::prompt::PromptRun;
 use crate::session::store::now_ms;
 use moc_llm::FinishReason;
 use moc_llm::Message;
@@ -143,7 +144,11 @@ pub(super) async fn activate(
             },
             record,
             prompt_lock,
-            retry,
+            if retry {
+                PromptRun::Retry
+            } else {
+                PromptRun::Normal
+            },
         )
         .await;
         finish(
