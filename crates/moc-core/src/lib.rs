@@ -6,6 +6,10 @@
 // 本地化 catalog 编译期内嵌；i18n! 必须展开在 crate 根，`t!` 才能经 crate::_rust_i18n_t 解析。
 rust_i18n::i18n!("../../locales", fallback = "zh");
 
+// 单元测试复用集成测试的 RPC harness，并保留对内部同步点的访问。
+#[cfg(test)]
+extern crate self as moc_core;
+
 pub(crate) mod agents;
 pub mod chart;
 pub mod clm;

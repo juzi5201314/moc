@@ -14,6 +14,7 @@ use moc_protocol::methods::SessionPermission;
 use parking_lot::RwLock;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 
 impl SessionRuntime {
@@ -32,6 +33,10 @@ impl SessionRuntime {
             loaded_skills: Arc::new(RwLock::new(std::collections::HashSet::new())),
             steering: Mutex::new(management::Steering::default()),
             agent_inbox: Mutex::new(crate::agents::AgentInbox::default()),
+            agent_finishing: AtomicBool::new(false),
+            agent_finish_notify: tokio::sync::Notify::new(),
+            #[cfg(test)]
+            agent_finish_gate: Mutex::new(None),
             guard: parking_lot::Mutex::new(None),
             goal_armed: crate::goal::GoalArmed::new(),
             goal_active_round: parking_lot::Mutex::new(None),
@@ -40,6 +45,18 @@ impl SessionRuntime {
             sandbox_grants: Arc::new(RwLock::new(crate::sandbox::SandboxGrants::default())),
             sandbox_scratch: scratch,
             workflows: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// 调用方须持有提示锁，等待上一轮子代理收尾后才能重建注册表条目。
+    pub(crate) async fn wait_agent_finish(&self) {
+        loop {
+            // 先建立等待者再读标志，避免清位与 notify_waiters 发生在检查和 await 之间。
+            let notified = self.agent_finish_notify.notified();
+            if !self.agent_finishing.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
         }
     }
 }
