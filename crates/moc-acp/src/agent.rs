@@ -331,7 +331,7 @@ impl<B: Backend> Bridge<B> {
             .moc_call::<SessionList>(SessionListParams {})
             .await
             .map_err(|e| rpc_err(&e, None))?;
-        let filtered: Vec<&SessionInfo> = result
+        let mut page: Vec<&SessionInfo> = result
             .sessions
             .iter()
             .filter(|s| {
@@ -339,13 +339,14 @@ impl<B: Backend> Bridge<B> {
                     .as_ref()
                     .is_none_or(|cwd| s.cwd == cwd.to_string_lossy())
             })
-            .collect();
-        let next_cursor =
-            (offset + LIST_PAGE < filtered.len()).then(|| (offset + LIST_PAGE).to_string());
-        let sessions = filtered
-            .iter()
             .skip(offset)
-            .take(LIST_PAGE)
+            .take(LIST_PAGE + 1)
+            .collect();
+        let next_cursor = (page.len() > LIST_PAGE)
+            .then(|| offset.saturating_add(LIST_PAGE).to_string());
+        page.truncate(LIST_PAGE);
+        let sessions = page
+            .into_iter()
             .map(|info| {
                 AcpSessionInfo::new(info.id.clone(), PathBuf::from(&info.cwd))
                     .title(info.title.clone())
@@ -941,5 +942,33 @@ mod tests {
         let response = bridge.list_sessions(req).await.unwrap();
         assert_eq!(response.sessions.len(), 1);
         assert_eq!(response.sessions[0].session_id.0.as_ref(), "ses_a");
+    }
+
+    #[tokio::test]
+    async fn list_sessions_paginates_with_lookahead() {
+        let (bridge, backend) = bridge();
+        let result = SessionListResult {
+            sessions: (0..=LIST_PAGE)
+                .map(|index| SessionInfo {
+                    id: format!("ses_{index}"),
+                    ..session_info("ses")
+                })
+                .collect(),
+        };
+        backend.push::<SessionList>(result.clone());
+        backend.push::<SessionList>(result);
+        let response = bridge
+            .list_sessions(ListSessionsRequest::new())
+            .await
+            .unwrap();
+        assert_eq!(response.sessions.len(), LIST_PAGE);
+        assert_eq!(response.next_cursor.as_deref(), Some("200"));
+
+        let mut next_page = ListSessionsRequest::new();
+        next_page.cursor = response.next_cursor;
+        let response = bridge.list_sessions(next_page).await.unwrap();
+        assert_eq!(response.sessions.len(), 1);
+        assert_eq!(response.sessions[0].session_id.0.as_ref(), "ses_200");
+        assert_eq!(response.next_cursor, None);
     }
 }
