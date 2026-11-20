@@ -194,13 +194,13 @@ mod workflow_api;
 mod protocol;
 
 /// 会话的 workflow 管理器（未激活也会惰性创建：run 查询与 stopped 列表不依赖激活位）。
-async fn workflow_manager(
+pub(crate) async fn workflow_manager(
     inner: &Arc<CoreInner>,
     record: &crate::session::SessionRecord,
 ) -> Arc<crate::workflow::runtime::WorkflowManager> {
     let session_id = record.state.lock().await.session.id.clone();
     let runtime = inner.runtime(&session_id).await;
-    Arc::clone(
+    let manager = Arc::clone(
         runtime
             .workflows
             .get_or_init(|| async {
@@ -211,7 +211,10 @@ async fn workflow_manager(
                 )
             })
             .await,
-    )
+    );
+    // 只读查询可能已缓存管理器；每次访问都检查租约，取得写租约后补做一次孤儿标记。
+    manager.mark_orphans(record);
+    manager
 }
 
 /// load 系结果的 armed 补丁：`SessionTable` 读不到本进程 runtime，这里统一补；

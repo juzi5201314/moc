@@ -62,14 +62,13 @@ async fn activated(ctx: &ToolCtx) -> Result<Arc<super::WorkflowManager>, ToolErr
             "workflows are not activated in this session (session/workflow_activate)",
         ));
     }
-    let runtime = ctx.core.runtime(&ctx.session_id).await;
-    Ok(runtime
-        .workflows
-        .get_or_init(|| async {
-            super::WorkflowManager::new(Arc::clone(&ctx.core), &ctx.session_id, ctx.paths.clone())
-        })
+    let record = ctx
+        .core
+        .sessions
+        .get(&ctx.session_id)
         .await
-        .clone())
+        .map_err(tool_err)?;
+    Ok(crate::service::workflow_manager(&ctx.core, &record).await)
 }
 
 fn wf_outcome(v: Value) -> Result<ToolOutcome, ToolError> {

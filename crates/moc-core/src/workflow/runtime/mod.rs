@@ -3,7 +3,7 @@
 //! 一个 run = 一个 `moc --workflow-worker` 子进程（NDJSON 帧）+ 内存中的确定性
 //! [`Engine`] + 一组 driver 副作用。run 目录 `<sidecar>/workflows/<run_id>/`：
 //! `run.json` 元数据、`journal.jsonl`（每条 fsync）、`script.ts` 草稿、`artifacts/`。
-//! 加载会话时状态仍 `running` 且本进程不持有执行者的 run 标为 `stopped(interrupted)`。
+//! 取得会话写租约后首次访问时，将残留的 `running` run 标为 `stopped(interrupted)`。
 
 mod driver;
 pub mod tools;
@@ -14,7 +14,7 @@ pub use tools::WORKFLOW_TOOLS;
 use rust_i18n::t;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use moc_protocol::{
     WorkflowEvent, WorkflowPhaseState, WorkflowRoleState, WorkflowRunStatus, WorkflowRunSummary,
@@ -69,9 +69,8 @@ pub(crate) struct WorkflowManager {
     /// 落到此表（run.json 与注册表都还不可见），launch 落盘前合并进 meta。
     pending_role_models: Mutex<HashMap<String, HashMap<String, String>>>,
     seq: Mutex<u64>,
-    /// 本实例启动时刻：interrupted 降级只认更早创建的 run——晚于它的
-    /// running run.json 属于本进程未注册完成的活 run，不能误杀。
-    birth_ms: u64,
+    /// 持写租约后只标记一次；并发访问须等标记完成再启动本进程的 run。
+    orphan_marking: Once,
 }
 
 /// run 元数据（run.json）。
@@ -167,7 +166,7 @@ mod lifecycle;
 
 impl WorkflowManager {
     pub fn new(inner: Arc<CoreInner>, session_id: &str, paths: SessionPaths) -> Arc<Self> {
-        let manager = Arc::new(Self {
+        Arc::new(Self {
             inner,
             session_id: session_id.to_string(),
             paths,
@@ -175,22 +174,26 @@ impl WorkflowManager {
             approvals: Mutex::new(HashMap::new()),
             pending_role_models: Mutex::new(HashMap::new()),
             seq: Mutex::new(0),
-            birth_ms: crate::session::store::now_ms(),
-        });
-        // 加载即做 interrupted 标记：磁盘上 running 但本进程不持有的 run → stopped(interrupted)。
-        for meta in list_run_metas(&manager.paths.workflows()) {
-            if meta.status == "running" {
-                let mut meta = meta;
-                meta.status = "stopped".into();
-                meta.stop_reason = Some("interrupted".into());
-                let dir = manager.paths.workflows().join(&meta.run_id);
-                let _ = std::fs::write(
-                    dir.join("run.json"),
-                    serde_json::to_vec_pretty(&meta).unwrap_or_default(),
-                );
+            orphan_marking: Once::new(),
+        })
+    }
+
+    /// 只有本进程持有写租约，才能确认磁盘上的 running run 已无其它进程执行。
+    /// 只读创建管理器不消耗标记机会；共享租约保证整个扫描写回期间内核锁仍被持有。
+    pub fn mark_orphans(&self, record: &crate::session::SessionRecord) {
+        let Some(_lease) = record.write_lease() else {
+            return;
+        };
+        self.orphan_marking.call_once(|| {
+            for mut meta in list_run_metas(&self.paths.workflows()) {
+                if meta.status != "running" {
+                    continue;
+                }
+                if let Ok(dir) = self.run_dir(&meta.run_id) {
+                    mark_interrupted(&dir, &mut meta);
+                }
             }
-        }
-        manager
+        });
     }
 
     /// run 目录；run_id 来自外部输入（工具/RPC 参数），校验字符集防路径穿越。
@@ -326,13 +329,8 @@ pub(crate) fn read_run_meta(dir: &Path) -> Result<RunMeta, CoreError> {
         .map_err(|e| CoreError::Session(t!("core.err.run_json_parse", error = e).into_owned()))
 }
 
-/// running 且无执行者的 run 就地降级为 stopped(interrupted) 并回写 run.json。
-/// `birth_ms` 是调用方 manager 的启动时刻：`created_at_ms` 不早于它的 run
-/// 属于本进程（写盘/注册窗口中的活 run），不得按"进程崩溃残留"降级。
-fn mark_interrupted(dir: &Path, meta: &mut RunMeta, birth_ms: u64) {
-    if meta.status != "running" || meta.created_at_ms >= birth_ms {
-        return;
-    }
+/// 持写租约的首次扫描中，将孤儿 run 降级为 stopped(interrupted) 并回写 run.json。
+fn mark_interrupted(dir: &Path, meta: &mut RunMeta) {
     meta.status = "stopped".into();
     meta.stop_reason = Some("interrupted".into());
     meta.finished_at_ms = Some(crate::session::store::now_ms());

@@ -595,69 +595,151 @@ async fn subagent_requests_carry_no_workflow_tools() {
     harness.close().await;
 }
 
-/// 进程内无执行者的 running run 在加载时标为 stopped(interrupted)。
+/// 只读查询不改写其它写者的 run；缓存管理器取得租约后，经 RPC 或工具访问补做一次标记。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interrupted_run_marked_on_load() {
-    if !require_moc_bin() {
-        return;
-    }
-    let upstream = MockServer::builder().start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(support::text_stream("hi"), "text/event-stream"),
-        )
-        .mount(&upstream)
-        .await;
-    let harness = Harness::with_ask_support(&upstream.uri(), "openai_chat", "").await;
-    let session = harness.session(SessionEngine::Standard).await;
-    // 从未落盘的会话没有 sidecar 目录：先跑一条消息让会话成为真实会话。
-    harness.prompt(&session, "hi").await;
-    harness
-        .client
-        .call::<SessionWorkflowActivate>(SessionWorkflowActivateParams {
-            session_id: session.clone(),
-        })
-        .await
-        .expect("激活");
-    // 手写一个 running run.json：模拟进程崩溃前未收尾的 run。sidecar 嵌在
-    // `<store>/<encoded-cwd>/<session>/workflows/`，按目录名遍历定位。
-    let sidecar = session_sidecar(harness.root.path().join("sessions").as_path(), &session)
-        .expect("session sidecar 存在");
-    let run_dir = sidecar.join("workflows").join("ghost");
-    std::fs::create_dir_all(&run_dir).unwrap();
-    std::fs::write(
-        run_dir.join("run.json"),
-        serde_json::to_string(&json!({
-            "run_id": "ghost",
-            "status": "running",
-            "title": "ghost run",
-            "mode": "fresh",
-            "created_at_ms": 1u64,
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    let result = harness
-        .client
-        .call::<SessionWorkflowRuns>(SessionWorkflowRunsParams {
-            session_id: session.clone(),
-        })
-        .await
-        .expect("runs 成功");
-    let ghost = result
-        .runs
-        .iter()
-        .find(|r| r.run_id == "ghost")
-        .unwrap_or_else(|| panic!("ghost run 可见，实际列表：{:?}", result.runs));
-    assert_eq!(
-        ghost.status,
-        WorkflowRunStatus::Stopped {
-            reason: WorkflowStopReason::Interrupted
+async fn interrupted_runs_require_write_lease() {
+    use moc_core::session::SessionTable;
+    use moc_core::session::entries::{EntryPayload, SessionOrigin};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    for via_tool in [false, true] {
+        let upstream = MockServer::builder().start().await;
+        let calls = AtomicUsize::new(0);
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(move |_: &Request| {
+                let body = if calls.fetch_add(1, Ordering::SeqCst) % 2 == 0 {
+                    support::tool_stream(vec![("status", "workflow_status", json!({}))])
+                } else {
+                    support::text_stream("done")
+                };
+                ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
+            })
+            .mount(&upstream)
+            .await;
+        let harness = Harness::with_ask_support(&upstream.uri(), "openai_chat", "").await;
+        // 独立会话表模拟另一进程，持有真实内核写租约并共享同一存储目录。
+        let writer = SessionTable::new(harness.root.path().join("sessions"), true);
+        let session = writer
+            .create(
+                harness.root.path().join("work"),
+                "test/gpt-test:off",
+                SessionEngine::Standard,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+                false,
+            )
+            .await
+            .unwrap()
+            .id;
+        let record = writer.get(&session).await.unwrap();
+        writer
+            .ensure_write_lease(&session, &record, "writer")
+            .await
+            .unwrap();
+        writer
+            .append(&session, EntryPayload::WorkflowActivated { active: true })
+            .await
+            .unwrap();
+        writer
+            .append_message(
+                &session,
+                moc_llm::Message::user_text("workflow"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let write_run = |run_id: &str, status: &str, created_at_ms: u64| {
+            let dir = record.paths.workflows().join(run_id);
+            std::fs::create_dir_all(&dir).unwrap();
+            let bytes = serde_json::to_vec(&json!({
+                "run_id": run_id,
+                "status": status,
+                "created_at_ms": created_at_ms,
+            }))
+            .unwrap();
+            let file = dir.join("run.json");
+            std::fs::write(&file, &bytes).unwrap();
+            (file, bytes)
+        };
+        let (ghost_file, ghost_bytes) = write_run("ghost", "running", 1);
+        write_run("finished", "running", 1);
+        harness
+            .client
+            .call::<SessionLoad>(SessionLoadParams {
+                session_id: session.clone(),
+                max_entries: Some(0),
+                omit_auxiliary: true,
+                read_only: true,
+            })
+            .await
+            .unwrap();
+        let runs = harness
+            .client
+            .call::<SessionWorkflowRuns>(SessionWorkflowRunsParams {
+                session_id: session.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(runs.runs.len(), 2);
+        assert!(
+            runs.runs
+                .iter()
+                .all(|r| r.status == WorkflowRunStatus::Running)
+        );
+        let snapshot = harness
+            .client
+            .call::<SessionWorkflowRun>(SessionWorkflowRunParams {
+                session_id: session.clone(),
+                run_id: "ghost".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(snapshot.summary.status, WorkflowRunStatus::Running);
+        assert_eq!(std::fs::read(&ghost_file).unwrap(), ghost_bytes);
+
+        // 管理器缓存后，原写者仍可完成旧 run 或启动新 run；不能用创建时间判定归属。
+        let (finished_file, finished_bytes) = write_run("finished", "completed", 1);
+        let (late_file, late_bytes) = write_run("late", "running", u64::MAX);
+        assert!(writer.release_lease(&record));
+        harness.load(&session).await;
+        assert_eq!(std::fs::read(&ghost_file).unwrap(), ghost_bytes);
+        assert_eq!(std::fs::read(&late_file).unwrap(), late_bytes);
+        if via_tool {
+            harness.prompt(&session, "查询 workflow 状态").await;
+        } else {
+            harness
+                .client
+                .call::<SessionWorkflowRuns>(SessionWorkflowRunsParams {
+                    session_id: session.clone(),
+                })
+                .await
+                .unwrap();
         }
-    );
-    harness.close().await;
+        for file in [&ghost_file, &late_file] {
+            let meta: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+            assert_eq!(meta["status"], "stopped", "工具入口={via_tool}");
+            assert_eq!(meta["stop_reason"], "interrupted");
+        }
+        assert_eq!(std::fs::read(&finished_file).unwrap(), finished_bytes);
+
+        // 首次标记后不再扫描，后续查询和工具访问不能误伤本进程新落盘的活 run。
+        let (active_file, active_bytes) = write_run("active", "running", 1);
+        harness.prompt(&session, "再次查询 workflow 状态").await;
+        let snapshot = harness
+            .client
+            .call::<SessionWorkflowRun>(SessionWorkflowRunParams {
+                session_id: session.clone(),
+                run_id: "active".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(snapshot.summary.status, WorkflowRunStatus::Running);
+        assert_eq!(std::fs::read(&active_file).unwrap(), active_bytes);
+        harness.close().await;
+    }
 }
 
 /// 需要 moc 二进制的测试入口守卫（解析逻辑见 `support::require_moc_bin`）。

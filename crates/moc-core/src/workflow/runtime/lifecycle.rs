@@ -4,7 +4,6 @@ use super::RunView;
 use super::WorkflowManager;
 use super::apply_terminal;
 use super::list_run_metas;
-use super::mark_interrupted;
 use super::read_run_meta;
 use super::workflow_summary;
 use crate::error::CoreError;
@@ -54,8 +53,7 @@ impl WorkflowManager {
                 }
             }
         }
-        // run.json 先行落盘（approve→set_role_model 窗口内磁盘必须可读）；
-        // 本进程 run 的 created_at_ms ≥ birth_ms，interrupted 降级不会误杀。
+        // run.json 先行落盘（approve→set_role_model 窗口内磁盘必须可读）。
         std::fs::write(
             dir.join("run.json"),
             serde_json::to_vec_pretty(&meta).unwrap_or_default(),
@@ -124,30 +122,23 @@ impl WorkflowManager {
         self.runs.lock().get(run_id).cloned()
     }
 
-    /// 读取 run 元数据（优先本进程，否则读磁盘）。磁盘上 running 但本进程不
-    /// 持有执行者的 run 就地降级为 stopped(interrupted)——租约语义：只有持
-    /// 写租约的进程才执行 run。
+    /// 只读查询元数据（优先本进程，否则读磁盘），避免改写其它持租约进程的 run。
     pub fn meta(&self, run_id: &str) -> Result<RunMeta, CoreError> {
         if let Some(handle) = self.runs.lock().get(run_id) {
             return Ok(handle.meta.lock().clone());
         }
         let dir = self.run_dir(run_id)?;
-        let mut meta = read_run_meta(&dir)?;
-        mark_interrupted(&dir, &mut meta, self.birth_ms);
-        Ok(meta)
+        read_run_meta(&dir)
     }
 
     pub fn list(&self) -> Vec<WorkflowRunSummary> {
         let held = self.runs.lock();
         list_run_metas(&self.paths.workflows())
             .into_iter()
-            .map(|mut meta| {
+            .map(|meta| {
                 if let Some(handle) = held.get(&meta.run_id) {
                     workflow_summary(&handle.meta.lock())
                 } else {
-                    if let Ok(dir) = self.run_dir(&meta.run_id) {
-                        mark_interrupted(&dir, &mut meta, self.birth_ms);
-                    }
                     workflow_summary(&meta)
                 }
             })
