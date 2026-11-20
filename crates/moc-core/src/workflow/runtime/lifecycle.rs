@@ -131,7 +131,16 @@ impl WorkflowManager {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             let _ = task.await;
-            manager.runs.lock().remove(&handle.id);
+            {
+                let mut runs = manager.runs.lock();
+                // resume 会复用 run_id，旧任务收尾不能移除新注册的 handle。
+                if runs
+                    .get(&handle.id)
+                    .is_some_and(|h| Arc::ptr_eq(h, &handle))
+                {
+                    runs.remove(&handle.id);
+                }
+            }
             handle.finished.store(true, Ordering::Release);
             handle.finish_notify.notify_waiters();
         });

@@ -14,7 +14,7 @@ fn run_id_charset_rejects_traversal() {
     assert!(!valid_run_id(&"x".repeat(65)));
 }
 
-/// 首次卸载等待被丢弃后仍须等待收尾落盘；任务 panic 也须唤醒所有等待者。
+/// 卸载重试与并发等待均须收到收尾通知；旧任务 panic 后不能移除恢复运行的新注册。
 #[tokio::test]
 async fn shutdown_retry_and_panic_notify_all_waiters() {
     use moc_protocol::methods::*;
@@ -128,12 +128,63 @@ async fn shutdown_retry_and_panic_notify_all_waiters() {
     assert!(futures_util::poll!(&mut shutdown).is_pending());
     let mut concurrent = Box::pin(manager.shutdown());
     assert!(futures_util::poll!(&mut concurrent).is_pending());
+
+    // 不让出执行权，在旧 supervisor 收尾前注册同一 run_id 的新 handle，模拟 resume。
+    let (to_worker, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let resumed = Arc::new(RunHandle {
+        id: run_id.clone(),
+        dir: handle.dir.clone(),
+        meta: Mutex::new(handle.meta.lock().clone()),
+        view: Mutex::new(RunView {
+            phases: Vec::new(),
+            roles: Vec::new(),
+            usage: json!({}),
+            terminal: None,
+            actor_sessions: HashMap::new(),
+            actor_first_sent: HashSet::new(),
+        }),
+        engine: Mutex::new(Engine::new(
+            Box::new(crate::workflow::engine::MemoryJournal::default()),
+            crate::workflow::engine::EngineConfig::default(),
+        )),
+        publish_lock: Mutex::new(()),
+        cancel: CancellationToken::new(),
+        finished: AtomicBool::new(false),
+        finish_notify: Notify::new(),
+        cwd: handle.cwd.clone(),
+        request: handle.request.clone(),
+        policy: Mutex::new(None),
+        to_worker,
+    });
+    manager
+        .runs
+        .lock()
+        .insert(run_id.clone(), Arc::clone(&resumed));
+    let cancel = resumed.cancel.clone();
+    let (finish_tx, finish_rx) = oneshot::channel();
+    manager.spawn_run(Arc::clone(&resumed), async move {
+        cancel.cancelled().await;
+        finish_rx.await.unwrap();
+    });
     tokio::time::timeout(Duration::from_secs(3), async {
         tokio::join!(shutdown, concurrent);
     })
     .await
     .expect("运行任务 panic 后应及时唤醒所有等待者");
     assert!(handle.finished.load(Ordering::Acquire));
+    assert!(Arc::ptr_eq(&manager.running(&run_id).unwrap(), &resumed));
+    assert!(!resumed.finished.load(Ordering::Acquire));
+    assert!(!resumed.cancel.is_cancelled());
+
+    // 新注册仍可被 shutdown 取消，且必须等它自己的任务收尾。
+    let mut shutdown = Box::pin(manager.shutdown());
+    assert!(futures_util::poll!(&mut shutdown).is_pending());
+    assert!(resumed.cancel.is_cancelled());
+    finish_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), shutdown)
+        .await
+        .expect("恢复运行的任务收尾后应唤醒卸载等待者");
+    assert!(resumed.finished.load(Ordering::Acquire));
     assert!(manager.running(&run_id).is_none());
     assert!(futures_util::poll!(Box::pin(manager.shutdown())).is_ready());
     harness.close().await;
