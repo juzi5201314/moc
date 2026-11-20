@@ -34,7 +34,7 @@ use moc_protocol::ClientHandle;
 
 /// 终端事件分派（键盘、鼠标、粘贴与窗口变化）。
 pub(super) fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: Event) {
-    // 帧预算内可能连续收到输入；新模态真正绘制前，统一吞掉鼠标、键盘和粘贴。
+    // 帧预算内可能连续收到输入；新模态状态参与一帧渲染前，统一吞掉鼠标、键盘和粘贴。
     if app.modal.is_some()
         && !app.modal_drawn
         && matches!(event, Event::Key(_) | Event::Mouse(_) | Event::Paste(_))

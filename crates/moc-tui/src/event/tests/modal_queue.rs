@@ -77,6 +77,34 @@ fn terminal_key(
 }
 
 #[tokio::test]
+async fn help_closes_after_render_on_tiny_terminals() {
+    let (core, connection, mut app) = setup_test_app().await;
+    for (width, height) in [(80, 5), (19, 24)] {
+        for close in [KeyCode::Esc, KeyCode::Char('q')] {
+            terminal_key(
+                &mut app,
+                &connection,
+                KeyModifiers::CONTROL,
+                KeyCode::Char('h'),
+            );
+            assert!(matches!(app.modal, Some(Modal::Help { .. })));
+            assert!(!app.modal_drawn);
+            terminal_key(&mut app, &connection, KeyModifiers::NONE, close);
+            assert!(matches!(app.modal, Some(Modal::Help { .. })));
+
+            let _ = draw_frame(&mut app, width, height);
+            assert!(app.modal_drawn);
+            assert!(app.modal_card_area.is_empty());
+            terminal_key(&mut app, &connection, KeyModifiers::NONE, close);
+            assert!(app.modal.is_none());
+            assert!(!app.modal_drawn);
+        }
+    }
+    connection.shutdown().await;
+    core.shutdown().await;
+}
+
+#[tokio::test]
 async fn request_modals_keep_fifo_across_keyboard_mouse_and_parked_ask() {
     let (core, connection, mut app) = setup_test_app().await;
     let session = app.session.as_ref().unwrap().id.clone();
@@ -113,14 +141,16 @@ async fn request_modals_keep_fifo_across_keyboard_mouse_and_parked_ask() {
     assert_eq!(second.try_recv(), Err(TryRecvError::Empty));
     assert_eq!(current_request(&app), "p2");
 
-    // 终端小到画不出卡片时也不能放行；恢复正常尺寸后键盘取消才生效。
-    let _ = draw_frame(&mut app, 19, 5);
-    terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+    // 一帧完成后，即使终端小到画不出卡片，也必须允许 Esc 取消。
+    let _ = draw_frame(&mut app, 80, 5);
+    assert!(app.modal_drawn);
+    assert!(app.modal_card_area.is_empty());
+    assert!(app.modal_item_hits.is_empty());
     assert_eq!(second.try_recv(), Err(TryRecvError::Empty));
-    let _ = draw_frame(&mut app, 100, 30);
     terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
     assert!(second.try_recv().unwrap().is_err());
     assert_eq!(current_request(&app), "a1");
+    assert!(!app.modal_drawn);
     handle_terminal_event(&mut app, &connection, Event::Paste("旧输入".into()));
     assert!(app.prompt_text().is_empty());
 
