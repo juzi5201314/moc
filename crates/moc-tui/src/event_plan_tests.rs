@@ -854,7 +854,8 @@ async fn plan_execution_load_does_not_switch_after_user_changes_session() {
             .await
             .expect("执行会话加载")
             .expect("事件");
-        if matches!(event, AppEvent::PlanExecutionLoaded { .. }) {
+        if let AppEvent::PlanExecutionLoaded { result, .. } = &event {
+            result.as_ref().expect("执行会话加载成功");
             break event;
         }
     };
