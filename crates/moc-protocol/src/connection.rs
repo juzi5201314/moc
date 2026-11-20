@@ -11,9 +11,10 @@
 //!
 //! 三条不变量：
 //!
-//! 1. **背压只有一处**：更新通知与响应共用出站队列，发送方在队列满时 `await`，
-//!    压力直接传回 core 的 LLM 流读取；而取消（`session/cancel`）在读任务里
-//!    trip 令牌，不经过出站队列，因此队列拥塞时取消依然即时生效。
+//! 1. **背压只有一处**：更新通知与响应共用出站队列，通常在队列满时 `await`，
+//!    压力直接传回 core 的 LLM 流读取；busy 拒绝响应只尝试入队，满时丢弃，避免
+//!    积压拒绝任务。取消（`session/cancel`）在读任务里 trip 令牌，不经过出站队列，
+//!    因此队列拥塞时取消依然即时生效。
 //! 2. **ID 空间天然不冲突**：客户端发起的调用用从 1 递增的正整数，服务端发起的
 //!    反向请求用从 -1 递减的负整数。两个方向无需共享状态、无需随机数，也不会撞车。
 //! 3. **收尾单点且幂等**：读任务因 EOF / 致命分帧错 / 令牌取消 / 写任务死亡退出后，
@@ -278,9 +279,9 @@ impl Traffic {
 pub(crate) type BoxFuture<T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
 
-/// 对端消息的落地方式；实现必须保证「请求必有响应」。
+/// 对端消息的落地方式；已接纳请求必须响应，busy 拒绝响应允许在出站拥塞时丢弃。
 pub(crate) trait Inbound: Send + Sync + 'static {
-    /// 处理对端请求。实现可以把工作放进 `tasks`，但必须有人最终写出响应。
+    /// 处理对端请求。已接纳的工作可以放进 `tasks`，并负责最终写出响应。
     fn on_request(self: Arc<Self>, request: Request, tasks: &mut JoinSet<()>);
 
     /// 处理对端通知。
@@ -376,9 +377,20 @@ impl Connection {
         }
     }
 
-    /// 写出一个错误响应。
-    pub(crate) async fn respond_error(&self, id: Option<Id>, error: RpcError) {
-        self.respond(id, Err(error)).await;
+    /// 尝试将错误响应入队；仅用于 busy 拒绝，队列满或连接关闭时丢弃，不等待。
+    pub(crate) fn try_respond_error(&self, id: Option<Id>, error: RpcError) {
+        let message = Outbound::Response(Response {
+            id,
+            payload: Err(error),
+        });
+        let result = if self.closed.is_cancelled() {
+            Err(mpsc::error::TrySendError::Closed(message))
+        } else {
+            self.traffic.outbound.try_send(message)
+        };
+        if let Err(error) = result {
+            tracing::debug!(connection = self.id, "错误响应未入队，丢弃：{error}");
+        }
     }
 
     /// 读写主循环：起写任务、读帧、分发、收尾。
@@ -876,6 +888,43 @@ pub(crate) fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_errors_drop_when_outbound_is_full_or_closed() {
+        let (connection, mut outbound) = Connection::new(
+            1,
+            ConnectionOptions {
+                framing: Framing::ContentLength,
+                max_frame_bytes: crate::frame::DEFAULT_MAX_FRAME_BYTES,
+                outbound_capacity: 1,
+            },
+            CancellationToken::new(),
+        );
+
+        // 不启动写任务：突发拒绝最多保留队列容量内的响应，排空后仍能继续入队。
+        for code in [RpcErrorCode::ServerBusy, RpcErrorCode::SessionBusy] {
+            for id in 1..=1024 {
+                connection.try_respond_error(Some(Id::Number(id)), RpcError::of(code));
+            }
+            let Ok(Outbound::Response(response)) = outbound.try_recv() else {
+                panic!("队列应保留首个 busy 响应");
+            };
+            assert_eq!(response.id, Some(Id::Number(1)));
+            assert_eq!(response.payload.unwrap_err().code, code.code());
+            assert!(matches!(
+                outbound.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+        }
+
+        // 写任务退出后也只丢弃，不 panic。
+        outbound.close();
+        connection.try_respond_error(Some(Id::Number(1025)), RpcErrorCode::ServerBusy.into());
+        assert!(matches!(
+            outbound.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
 
     #[tokio::test]
     async fn dropping_call_futures_removes_pending_entries() {

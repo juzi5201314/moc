@@ -5,7 +5,7 @@
 //!
 //! 每个请求的处理顺序：
 //!
-//! 1. 并发门禁：[`ServerOptions::max_in_flight`] 个许可用尽 → `-32000`。
+//! 1. 并发门禁：[`ServerOptions::max_in_flight`] 个许可用尽 → `-32000`，出站满时丢弃。
 //! 2. 握手门禁：除 `initialize` / `ping` 外的请求在握手完成前 → `-32002`；
 //!    重复 `initialize` → `-32600`；major 版本不一致 → `-32003`（附 `server_version`）。
 //! 3. params 反序列化失败 → `-32602`，**不调用 core**。
@@ -13,8 +13,8 @@
 //! 5. 结果序列化失败 → `-32603`。
 //!
 //! `session/prompt` / `session/retry` 额外过提示注册表：同一会话已有进行中的提示 →
-//! `-32011`，同样**不调用 core**。该注册表同时是 `session/cancel` 的落点，也是协议层
-//! 唯一持有的「会话相关」状态——它只记「谁在飞」，不记任何会话内容。
+//! `-32011`（出站满时丢弃），同样**不调用 core**。该注册表同时是 `session/cancel`
+//! 的落点，也是协议层唯一持有的「会话相关」状态——它只记「谁在飞」，不记任何会话内容。
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -45,7 +45,7 @@ pub struct ServerOptions {
     pub framing: Framing,
     /// 单条报文体上限。
     pub max_frame_bytes: usize,
-    /// 连接内并发请求上限；超出立刻回 `-32000`，不排队。
+    /// 连接内并发请求上限；超出尝试回复 `-32000`，出站队列满时丢弃，不排队。
     pub max_in_flight: usize,
     /// 出站队列容量：更新通知的最大积压量，也是背压的起点。
     pub outbound_capacity: usize,
@@ -483,13 +483,9 @@ impl<S: AgentService> ServerDispatch<S> {
 impl<S: AgentService> Inbound for ServerDispatch<S> {
     fn on_request(self: Arc<Self>, request: Request, tasks: &mut JoinSet<()>) {
         let Ok(permit) = Arc::clone(&self.in_flight).try_acquire_owned() else {
-            let connection = Arc::clone(&self.connection);
-            let id = Some(request.id);
-            tasks.spawn(async move {
-                connection
-                    .respond_error(id, RpcError::of(RpcErrorCode::ServerBusy))
-                    .await;
-            });
+            // 拒绝请求不能再起任务等待出站队列，否则突发请求会绕过并发上限。
+            self.connection
+                .try_respond_error(Some(request.id), RpcError::of(RpcErrorCode::ServerBusy));
             return;
         };
         // 每请求令牌与提示 / 旁路的占位都在读循环里完成：`session/cancel` 与
@@ -503,14 +499,10 @@ impl<S: AgentService> Inbound for ServerDispatch<S> {
             self.claim_btw(&request, &cancel)
         };
         if matches!(&claim, PromptClaim::Busy) || matches!(&btw, BtwClaim::Busy) {
-            let connection = Arc::clone(&self.connection);
-            let id = Some(request.id);
-            tasks.spawn(async move {
-                let _permit = permit;
-                connection
-                    .respond_error(id, RpcError::of(RpcErrorCode::SessionBusy))
-                    .await;
-            });
+            self.connection
+                .try_respond_error(Some(request.id), RpcError::of(RpcErrorCode::SessionBusy));
+            // 同步尝试发送结束后归还许可，拒绝路径不占用在飞任务。
+            drop(permit);
             return;
         }
         tasks.spawn(async move {
