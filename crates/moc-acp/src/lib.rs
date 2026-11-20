@@ -126,8 +126,9 @@ impl<B: Backend> Bridge<B> {
         state.dropped_ids.remove(&info.id);
         if let Some(current) = state.sessions.get(&info.id) {
             // core 的 updated_at_ms 随 mutation entry 单调不减，迟到快照不能回滚投影。
-            // 等值时保留既有投影，因为 mutation 字段已由增量通知同步，等值快照不提供新信息。
-            if info.updated_at_ms <= current.updated_at_ms {
+            // 孤儿投影只由迟到通知重建、字段不全，真实快照到达时必须无条件生效。
+            // 首个接触是通知的会话，首个快照会覆盖通知已同步的字段，这个窗口可以接受。
+            if current.anchored && info.updated_at_ms <= current.updated_at_ms {
                 return current.clone();
             }
         }

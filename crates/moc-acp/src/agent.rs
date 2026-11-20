@@ -679,6 +679,8 @@ mod tests {
     #[test]
     fn stale_session_snapshot_does_not_overwrite_update_projection() {
         let (bridge, _) = bridge();
+        bridge.track_session(&session_info("ses_1"));
+
         let update = MocUpdate::AutonomyChanged {
             autonomy: SessionAutonomy::Unattended,
         };
@@ -727,6 +729,35 @@ mod tests {
         let tracked = bridge.projection("ses_1").unwrap();
         assert_eq!(tracked.autonomy, SessionAutonomy::Unattended);
         assert!(tracked.plan_active);
+    }
+
+    #[test]
+    fn snapshot_replaces_orphan_projection_after_tombstone_eviction() {
+        let (bridge, _) = bridge();
+        bridge.drop_session("ses_1");
+
+        for index in 0..1024 {
+            bridge.drop_session(&format!("other_{index}"));
+        }
+
+        bridge.translate_update(
+            "ses_1",
+            &MocUpdate::AutonomyChanged {
+                autonomy: SessionAutonomy::Default,
+            },
+        );
+        let orphan = bridge.projection("ses_1").unwrap();
+        assert!(!orphan.anchored);
+
+        let loaded = SessionInfo {
+            autonomy: SessionAutonomy::Unattended,
+            updated_at_ms: 1,
+            ..session_info("ses_1")
+        };
+        let proj = bridge.track_session(&loaded);
+
+        assert_eq!(proj.autonomy, SessionAutonomy::Unattended);
+        assert!(proj.anchored);
     }
 
     #[tokio::test]
