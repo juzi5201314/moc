@@ -184,6 +184,8 @@ async fn event_loop(
         if app.should_quit {
             return Ok(());
         }
+        // 覆盖异步结果关闭其他窗口的路径，下一次绘制和输入前接上待答请求。
+        dirty |= app.show_next_pending_modal();
         let now = tokio::time::Instant::now();
         if dirty && now >= next_frame {
             // sixel / iTerm2 的旧图只能靠覆盖像素擦除：先清屏并重置 back buffer，
@@ -282,12 +284,7 @@ async fn event_loop(
                         app.btw.finish(&session_id, request_id, result);
                     }
                     Some(AppEvent::SessionClosed { session_id }) => {
-                        app.btw.clear(&session_id);
-                        if app.session.as_ref().is_some_and(|session| session.id == session_id) {
-                            app.btw.expanded = false;
-                            if app.focus == Focus::Btw { app.focus = Focus::Prompt; }
-                            app.set_notice(t!("tui.event.session_unloaded").into_owned());
-                        }
+                        apply_session_closed(app, &session_id);
                     }
                     Some(event @ (AppEvent::SettingsResponse {..} | AppEvent::ConfigurationLoaded(_)
                         | AppEvent::PromptReturned {..} | AppEvent::SteerReturned {..}
@@ -329,39 +326,8 @@ async fn event_loop(
                             app.set_notice(t!("tui.event.clipboard_empty").into_owned());
                         }
                     },
-                    Some(AppEvent::Permission { params, reply }) => {
-                        if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify(t!("tui.event.notify_permission").as_ref()); }
-                        app.modal = Some(Modal::Permission {
-                            params,
-                            selected: 0,
-                            scroll_offset: 0,
-                            reply: Some(reply),
-                        });
-                        app.focus = crate::app::Focus::Prompt;
-                    }
-                    Some(AppEvent::Ask { params, reply }) => {
-                        if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify(t!("tui.event.notify_ask").as_ref()); }
-                        let per_question = params.questions.len();
-                        // 高亮默认落在推荐项上；勾选集永远从空开始——
-                        // 推荐只是徽章提示，答案必须由用户亲自勾选。
-                        let highlight = params
-                            .questions
-                            .iter()
-                            .map(recommended_highlight)
-                            .collect();
-                        let selected = vec![Vec::new(); per_question];
-                        app.modal = Some(Modal::Ask {
-                            params,
-                            highlight,
-                            selected,
-                            custom: vec![crate::modal::CustomAnswer::default(); per_question],
-                            question: 0,
-                            preview_scroll: 0,
-                            question_scroll: 0,
-                            parked: false,
-                            reply: Some(reply),
-                        });
-                        app.focus = crate::app::Focus::Prompt;
+                    Some(event @ (AppEvent::Permission { .. } | AppEvent::Ask { .. })) => {
+                        apply_request_modal(app, event);
                     }
                     Some(AppEvent::Plugins(plugins)) => {
                         app.commands.set_plugins(&plugins);
@@ -675,6 +641,60 @@ async fn event_loop(
                 }
             }
         }
+    }
+}
+
+/// 两类反向请求共用队列，按事件到达顺序保留答复权。
+fn apply_request_modal(app: &mut App, event: AppEvent) {
+    let modal = match event {
+        AppEvent::Permission { params, reply } => {
+            if !app.terminal_focused && app.preferences.notify_waiting {
+                crate::config::notify(t!("tui.event.notify_permission").as_ref());
+            }
+            Modal::Permission {
+                params,
+                selected: 0,
+                scroll_offset: 0,
+                reply: Some(reply),
+            }
+        }
+        AppEvent::Ask { params, reply } => {
+            if !app.terminal_focused && app.preferences.notify_waiting {
+                crate::config::notify(t!("tui.event.notify_ask").as_ref());
+            }
+            let per_question = params.questions.len();
+            // 高亮默认落在推荐项上；勾选集从空开始，答案由用户亲自选择。
+            let highlight = params.questions.iter().map(recommended_highlight).collect();
+            Modal::Ask {
+                params,
+                highlight,
+                selected: vec![Vec::new(); per_question],
+                custom: vec![crate::modal::CustomAnswer::default(); per_question],
+                question: 0,
+                preview_scroll: 0,
+                question_scroll: 0,
+                parked: false,
+                reply: Some(reply),
+            }
+        }
+        _ => unreachable!("只有授权与提问进入待答队列"),
+    };
+    app.enqueue_request_modal(modal);
+}
+
+fn apply_session_closed(app: &mut App, session_id: &str) {
+    app.cancel_session_modals(session_id);
+    app.btw.clear(session_id);
+    if app
+        .session
+        .as_ref()
+        .is_some_and(|session| session.id == session_id)
+    {
+        app.btw.expanded = false;
+        if app.focus == Focus::Btw {
+            app.focus = Focus::Prompt;
+        }
+        app.set_notice(t!("tui.event.session_unloaded").into_owned());
     }
 }
 

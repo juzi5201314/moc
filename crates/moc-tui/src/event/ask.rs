@@ -139,6 +139,7 @@ pub(super) fn handle_ask_mouse(
                 }
                 if submitted {
                     app.modal = None;
+                    app.show_next_pending_modal();
                 }
                 return;
             }

@@ -269,6 +269,7 @@ pub(super) fn handle_modal_key(
         } else {
             app.modal = None;
         }
+        app.show_next_pending_modal();
         if !plan_review_open {
             crate::queue::dispatch(app, connection);
         }

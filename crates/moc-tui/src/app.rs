@@ -2,7 +2,7 @@
 //!
 //! 状态集中在一个 `App` 结构上，`update` 全部由事件循环驱动；渲染层只读。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use moc_protocol::methods::TodoPhase;
 use moc_protocol::{
@@ -204,6 +204,8 @@ pub struct App {
     pub completion_prefix: Option<String>,
     /// 打开的模态；键盘优先路由给它。
     pub modal: Option<Modal>,
+    /// 等待作答的授权与提问，共用 FIFO 并持有各自的答复发送端。
+    pub pending_modals: VecDeque<Modal>,
     /// 当前焦点。
     pub focus: Focus,
     /// 旁路问答只驻留内存，独立于主转写、输入历史及用量。
@@ -564,6 +566,7 @@ impl App {
             prompt_revision: 0,
             completion_prefix: None,
             modal: None,
+            pending_modals: VecDeque::new(),
             focus: Focus::Prompt,
             btw: crate::btw::BtwState::default(),
             prompt_area: Rect::default(),
@@ -724,6 +727,45 @@ impl App {
     /// 是否有配置写入在途或排队。
     pub fn saving_config(&self) -> bool {
         self.config_flight.is_some() || self.config_queue.is_some()
+    }
+
+    /// 授权与提问互不覆盖；已有队列时新请求也不能插队。
+    pub fn enqueue_request_modal(&mut self, modal: Modal) {
+        debug_assert!(modal.request_session_id().is_some());
+        if matches!(
+            self.modal,
+            Some(Modal::Permission { .. } | Modal::Ask { .. })
+        ) || !self.pending_modals.is_empty()
+        {
+            self.pending_modals.push_back(modal);
+            self.show_next_pending_modal();
+        } else {
+            // 无待答请求时，沿用请求弹窗替换其他浏览窗口的行为。
+            self.modal = Some(modal);
+            self.focus = Focus::Prompt;
+        }
+    }
+
+    /// 其他窗口若替换了当前请求，仍沿用原来的取消语义；队列等待窗口空闲。
+    pub fn show_next_pending_modal(&mut self) -> bool {
+        if self.modal.is_none()
+            && let Some(modal) = self.pending_modals.pop_front()
+        {
+            self.modal = Some(modal);
+            self.focus = Focus::Prompt;
+            return true;
+        }
+        false
+    }
+
+    /// 关闭或离开会话时丢弃未答请求，由发送端析构维持原有取消语义。
+    pub fn cancel_session_modals(&mut self, session_id: &str) {
+        self.pending_modals
+            .retain(|modal| modal.request_session_id() != Some(session_id));
+        if self.modal.as_ref().and_then(Modal::request_session_id) == Some(session_id) {
+            self.modal = None;
+        }
+        self.show_next_pending_modal();
     }
 
     /// 设置一次性提示并刷新计时（操作反馈、引导，中性配色）。
