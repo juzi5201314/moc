@@ -29,6 +29,8 @@ use moc_protocol::{ClientRequest, ServerOptions};
 use backend::Backend;
 use translate::SessionProjection;
 
+const DROPPED_TOMBSTONE_CAP: usize = 1024;
+
 /// `moc acp` 的进程级选项：新会话的默认模型 / 引擎 / plan 入口。
 #[derive(Debug, Clone, Default)]
 pub struct AcpOptions {
@@ -124,6 +126,7 @@ impl<B: Backend> Bridge<B> {
         state.dropped_ids.remove(&info.id);
         if let Some(current) = state.sessions.get(&info.id) {
             // core 的 updated_at_ms 随 mutation entry 单调不减，迟到快照不能回滚投影。
+            // 等值时保留既有投影，因为 mutation 字段已由增量通知同步，等值快照不提供新信息。
             if info.updated_at_ms <= current.updated_at_ms {
                 return current.clone();
             }
@@ -145,6 +148,12 @@ impl<B: Backend> Bridge<B> {
     fn drop_session(&self, session_id: &str) {
         let mut state = self.sessions.lock().expect("会话投影");
         state.sessions.remove(session_id);
+        if !state.dropped_ids.contains(session_id)
+            && state.dropped_ids.len() >= DROPPED_TOMBSTONE_CAP
+        {
+            // 极旧会话之后若再收到迟到通知，丢失 tombstone 可能短暂重建投影；限制集合避免其随进程时长无界增长。
+            state.dropped_ids.clear();
+        }
         state.dropped_ids.insert(session_id.to_owned());
     }
 

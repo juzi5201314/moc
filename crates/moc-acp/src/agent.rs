@@ -691,6 +691,15 @@ mod tests {
         let proj = bridge.track_session(&stale);
 
         assert_eq!(proj.autonomy, SessionAutonomy::Unattended);
+
+        let equal_timestamp = SessionInfo {
+            autonomy: SessionAutonomy::Default,
+            updated_at_ms: proj.updated_at_ms,
+            ..session_info("ses_1")
+        };
+        let proj = bridge.track_session(&equal_timestamp);
+
+        assert_eq!(proj.autonomy, SessionAutonomy::Unattended);
     }
 
     #[test]
