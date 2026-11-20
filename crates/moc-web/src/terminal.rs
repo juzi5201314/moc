@@ -825,4 +825,47 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn kill_releases_terminal_threads_with_background_slave_holder() {
+        let cwd = tempfile::tempdir().expect("临时目录");
+        let terminal = spawn(cwd.path().to_path_buf(), 1, 80, 24).expect("启动终端");
+        // trap '' HUP 让 shell 无视 SIGHUP，迫使 kill() 走升级 SIGKILL 的路径；
+        // sleep 后台常驻并继承持有 slave fd，covering 孙进程占 slave 的场景。
+        terminal.write(b"trap '' HUP\nsleep 300 &\n");
+
+        // 等待命令回显并留出启动后台进程的时间，使其继续持有 slave fd。
+        let delivery_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if terminal
+                .state
+                .lock()
+                .expect("终端状态锁")
+                .scroll
+                .snapshot()
+                .windows(b"sleep 300 &".len())
+                .any(|window| window == b"sleep 300 &")
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < delivery_deadline,
+                "终端未收到后台命令"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+
+        terminal.kill();
+        let exit_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&terminal) != 1 {
+            assert!(
+                std::time::Instant::now() < exit_deadline,
+                "kill 后终端线程未退出，Arc 引用数仍为 {}，退出状态为 {:?}",
+                Arc::strong_count(&terminal),
+                terminal.state.lock().expect("终端状态锁").exit
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
