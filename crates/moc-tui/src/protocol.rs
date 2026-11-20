@@ -81,6 +81,7 @@ pub enum AppEvent {
     PlanExecutionLoaded {
         result: anyhow::Result<moc_protocol::SessionLoadResult>,
         auto_prompt: Option<String>,
+        source_session_id: Option<String>,
     },
     /// 授权请求；主循环收到后弹出模态，回选经 `reply` 送回协议层。
     Permission {
