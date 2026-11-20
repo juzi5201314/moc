@@ -535,7 +535,8 @@ mod tests {
 
     use agent_client_protocol::schema::v1::{ContentBlock, SessionUpdate, StopReason, TextContent};
     use moc_protocol::methods::{
-        SessionEngine, SessionListResult, SessionLoadResult, SessionPermission, TranscriptEntry,
+        SessionEngine, SessionListResult, SessionLoadResult, SessionPermission,
+        SessionUpdate as MocUpdate, TranscriptEntry,
     };
     use moc_protocol::{FinishReason, Message, Usage};
 
@@ -633,6 +634,7 @@ mod tests {
         let (bridge, backend) = bridge();
         backend.push::<SessionPlanMode>(SessionInfo {
             plan_active: true,
+            updated_at_ms: 1,
             ..session_info("ses_1")
         });
         bridge
@@ -644,10 +646,12 @@ mod tests {
         backend.push::<SessionSetAutonomy>(SessionInfo {
             autonomy: SessionAutonomy::Unattended,
             plan_active: true,
+            updated_at_ms: 2,
             ..session_info("ses_1")
         });
         backend.push::<SessionPlanMode>(SessionInfo {
             autonomy: SessionAutonomy::Unattended,
+            updated_at_ms: 3,
             ..session_info("ses_1")
         });
         bridge
@@ -670,6 +674,90 @@ mod tests {
         assert_eq!(calls[2].1["active"], false);
         let proj = bridge.projection("ses_1").unwrap();
         assert!(!proj.plan_active);
+    }
+
+    #[test]
+    fn stale_session_snapshot_does_not_overwrite_update_projection() {
+        let (bridge, _) = bridge();
+        bridge.track_session(&session_info("ses_1"));
+
+        let update = MocUpdate::AutonomyChanged {
+            autonomy: SessionAutonomy::Unattended,
+        };
+        bridge.translate_update("ses_1", &update);
+
+        let stale = SessionInfo {
+            updated_at_ms: 0,
+            ..session_info("ses_1")
+        };
+        let proj = bridge.track_session(&stale);
+
+        assert_eq!(proj.autonomy, SessionAutonomy::Unattended);
+
+        let equal_timestamp = SessionInfo {
+            autonomy: SessionAutonomy::Default,
+            updated_at_ms: proj.updated_at_ms,
+            ..session_info("ses_1")
+        };
+        let proj = bridge.track_session(&equal_timestamp);
+
+        assert_eq!(proj.autonomy, SessionAutonomy::Unattended);
+    }
+
+    #[test]
+    fn late_update_after_drop_does_not_block_loaded_session_snapshot() {
+        let (bridge, _) = bridge();
+        bridge.drop_session("ses_1");
+
+        bridge.translate_update(
+            "ses_1",
+            &MocUpdate::AutonomyChanged {
+                autonomy: SessionAutonomy::Default,
+            },
+        );
+
+        let loaded = SessionInfo {
+            autonomy: SessionAutonomy::Unattended,
+            plan_active: true,
+            updated_at_ms: 1,
+            ..session_info("ses_1")
+        };
+        let proj = bridge.track_session(&loaded);
+
+        assert_eq!(proj.autonomy, SessionAutonomy::Unattended);
+        assert!(proj.plan_active);
+        let tracked = bridge.projection("ses_1").unwrap();
+        assert_eq!(tracked.autonomy, SessionAutonomy::Unattended);
+        assert!(tracked.plan_active);
+    }
+
+    #[test]
+    fn snapshot_replaces_orphan_projection_after_tombstone_eviction() {
+        let (bridge, _) = bridge();
+        bridge.drop_session("ses_1");
+
+        for index in 0..1024 {
+            bridge.drop_session(&format!("other_{index}"));
+        }
+
+        bridge.translate_update(
+            "ses_1",
+            &MocUpdate::AutonomyChanged {
+                autonomy: SessionAutonomy::Default,
+            },
+        );
+        let orphan = bridge.projection("ses_1").unwrap();
+        assert!(!orphan.anchored);
+
+        let loaded = SessionInfo {
+            autonomy: SessionAutonomy::Unattended,
+            updated_at_ms: 1,
+            ..session_info("ses_1")
+        };
+        let proj = bridge.track_session(&loaded);
+
+        assert_eq!(proj.autonomy, SessionAutonomy::Unattended);
+        assert!(proj.anchored);
     }
 
     #[tokio::test]
