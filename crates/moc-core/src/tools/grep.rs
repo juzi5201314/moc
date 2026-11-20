@@ -1362,6 +1362,33 @@ mod tests {
             "{}",
             output.content
         );
+
+        // 超限与分页同时发生：截断提示和 scan_incomplete 不能被分页提前退出丢掉。
+        let paged = root.path().join("paged");
+        std::fs::create_dir_all(&paged).unwrap();
+        for index in 0..201 {
+            std::fs::write(paged.join(format!("p_{index:03}.log")), "hit\n").unwrap();
+        }
+        let hit_args: GrepArgs =
+            serde_json::from_value(serde_json::json!({"pattern":"hit"})).unwrap();
+        let one_per_page = crate::config::GrepConfig {
+            max_files: 1,
+            max_file_bytes: 4,
+            ..Default::default()
+        };
+        let output = search_resource_namespace(
+            &[("artifact://paged/".to_owned(), paged)],
+            &hit_args,
+            &one_per_page,
+        )
+        .unwrap();
+        assert!(
+            output.content.contains("continue with skip=1")
+                && output.content.contains("namespace scan stopped")
+                && output.incomplete,
+            "{}",
+            output.content
+        );
     }
 
     #[test]
