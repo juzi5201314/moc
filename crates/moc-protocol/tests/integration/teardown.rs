@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use crate::support::{ScriptedService, client_info, local_client, prompt_params, request};
+use crate::support::{
+    ScriptedService, client_info, local_client, prompt_params, request, wait_until,
+};
 use moc_protocol::frame::DEFAULT_MAX_FRAME_BYTES;
 use moc_protocol::methods::{SessionPrompt, SessionUpdateMethod};
 use moc_protocol::{ClientBuilder, FrameEncoder, Framing, RpcCallError, Server, ServerOptions};
@@ -113,6 +115,30 @@ fn ping_frames(count: i64) -> Vec<u8> {
         assert!(encoder.encode(&body, DEFAULT_MAX_FRAME_BYTES, &mut frames));
     }
     frames
+}
+
+#[tokio::test]
+async fn dropping_connect_future_releases_transport() {
+    // 分别取消写到一半的握手，以及已写完请求、仍在等响应的握手。
+    for limit in [16, usize::MAX] {
+        let peer = StalledPeer::new(Vec::new(), limit);
+        let mut connecting = Box::pin(ClientBuilder::new(client_info()).connect(peer.clone()));
+        tokio::select! {
+            biased;
+            _ = &mut connecting => panic!("对端未回应，握手不应结束"),
+            () = wait_until(|| peer.inner.accepted.load(Ordering::SeqCst) > 0) => {}
+        }
+        let accepted = peer.inner.accepted.load(Ordering::SeqCst);
+
+        drop(connecting);
+        // split 的两个半边都释放后，假 transport 只剩测试保留的这一份引用。
+        wait_until(|| Arc::strong_count(&peer.inner) == 1).await;
+        assert_eq!(
+            peer.inner.accepted.load(Ordering::SeqCst),
+            accepted,
+            "取消握手不应再向对端写入协议数据"
+        );
+    }
 }
 
 #[tokio::test]
