@@ -709,6 +709,9 @@ impl Search {
         let mut limited = false;
         let mut capped = false;
         let mut skipped_large_files = 0usize;
+        // 逐条提示有上限：不可读文件可能上万个，提示本身不能撑爆输出预算。
+        const MAX_SKIPPED_NOTICES: usize = 8;
+        let mut skipped_unreadable = 0usize;
         let mut skipped_files = Vec::new();
         let skip = self.args.skip.unwrap_or(0);
         // 分块搜索：块内并行，输出上限较低时不必搜完全部候选文件。
@@ -723,8 +726,12 @@ impl Search {
                     Ok(result) => result,
                     Err(error) => {
                         incomplete.store(true, Ordering::Relaxed);
-                        let relative = path.strip_prefix(&self.cwd).unwrap_or(path);
-                        skipped_files.push(format!("[skipped {}: {error}]", relative.display()));
+                        skipped_unreadable += 1;
+                        if skipped_files.len() < MAX_SKIPPED_NOTICES {
+                            let relative = path.strip_prefix(&self.cwd).unwrap_or(path);
+                            skipped_files
+                                .push(format!("[skipped {}: {error}]", relative.display()));
+                        }
                         continue;
                     }
                 };
@@ -860,8 +867,17 @@ impl Search {
                 ),
             );
         }
-        for notice in skipped_files {
-            push_notice(&mut output, &notice);
+        for notice in &skipped_files {
+            push_notice(&mut output, notice);
+        }
+        if skipped_unreadable > skipped_files.len() {
+            push_notice(
+                &mut output,
+                &format!(
+                    "[{} more unreadable files skipped]",
+                    skipped_unreadable - skipped_files.len()
+                ),
+            );
         }
         if incomplete.load(Ordering::Relaxed) || self.stopped() {
             page.incomplete = true;
