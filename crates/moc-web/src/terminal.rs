@@ -182,18 +182,19 @@ impl Terminal {
                 if terminal.child_dead.load(Ordering::Acquire) {
                     return;
                 }
+                // 前台进程组号要现读：作业控制会把前台命令放进新组，spawn 时的组号已过期。
+                // 必须在杀 shell 之前读：会话首领一死，PTY 可能不再返回原前台组号。
+                let fg_pgid = terminal
+                    .master
+                    .lock()
+                    .expect("master 锁")
+                    .process_group_leader();
                 if let Some(pid) = terminal.child_pid {
                     unsafe {
                         libc::kill(pid, libc::SIGKILL);
                         libc::kill(-pid, libc::SIGKILL);
                     }
                 }
-                // 前台进程组号要现读：作业控制会把前台命令放进新组，spawn 时的组号已过期。
-                let fg_pgid = terminal
-                    .master
-                    .lock()
-                    .expect("master 锁")
-                    .process_group_leader();
                 if let Some(pgid) = fg_pgid {
                     unsafe {
                         // 负号才是整组：tcgetpgrp 给的是前台进程组号。
