@@ -9,8 +9,14 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
 
 use axum::Json;
 use axum::body::Bytes;
@@ -100,6 +106,7 @@ struct Terminal {
     master: Mutex<Box<dyn MasterPty + Send>>,
     /// `clone_killer` 拿来的杀进程句柄：child 本体归 wait 线程做阻塞 wait。
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    closing: Arc<AtomicBool>,
     /// 用户输入 → 写线程 → PTY；Sender 全部 drop 后写线程退出。
     input: Mutex<std::sync::mpsc::Sender<Vec<u8>>>,
     state: Mutex<TermState>,
@@ -150,6 +157,7 @@ impl Terminal {
     /// 杀不掉进程（线程退出前永远有引用），必须显式调用；moc web 进程退出时
     /// master fd 关闭，shell 收 SIGHUP 结束。
     fn kill(&self) {
+        self.closing.store(true, Ordering::Release);
         if let Ok(mut killer) = self.killer.lock() {
             let _ = killer.kill();
         }
@@ -230,6 +238,21 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
         .map_err(|error| std::io::Error::other(error.to_string()))?;
     let killer = child.clone_killer();
     drop(pair.slave);
+    #[cfg(unix)]
+    let mut reader = {
+        let fd = pair
+            .master
+            .as_raw_fd()
+            .ok_or_else(|| std::io::Error::other("PTY master has no file descriptor"))?;
+        // 读线程需要独立 fd，避免 portable-pty 的 reader 在孙进程持有 slave 时阻塞退出。
+        // F_DUPFD_CLOEXEC 原子带上 close-on-exec，防止后续 spawn 的子进程继承该 fd。
+        let fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        unsafe { File::from_raw_fd(fd) }
+    };
+    #[cfg(not(unix))]
     let mut reader = pair
         .master
         .try_clone_reader()
@@ -241,6 +264,7 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
 
     let (events, _) = tokio::sync::broadcast::channel(EVENT_CAPACITY);
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let closing = Arc::new(AtomicBool::new(false));
     let terminal = Arc::new(Terminal {
         id,
         cwd,
@@ -248,6 +272,7 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
         created_at_ms: now_ms(),
         master: Mutex::new(pair.master),
         killer: Mutex::new(killer),
+        closing: Arc::clone(&closing),
         input: Mutex::new(input_tx),
         state: Mutex::new(TermState {
             scroll: Scrollback::new(),
@@ -261,7 +286,33 @@ fn spawn(cwd: PathBuf, id: u64, cols: u16, rows: u16) -> std::io::Result<Arc<Ter
     let (reader_done_tx, reader_done_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buffer = [0u8; 16 * 1024];
+        #[cfg(unix)]
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
         loop {
+            #[cfg(unix)]
+            {
+                if closing.load(Ordering::Acquire) {
+                    break;
+                }
+                let mut poll_fd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+                    revents: 0,
+                };
+                let result = unsafe { libc::poll(&mut poll_fd, 1, 200) };
+                if result == 0 {
+                    continue;
+                }
+                if result < 0 {
+                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    break;
+                }
+                if closing.load(Ordering::Acquire) {
+                    break;
+                }
+            }
             match reader.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(count) => {
