@@ -108,6 +108,67 @@ async fn timeout_poisons_the_plugin_for_the_process() {
     assert_eq!(result.content, "ok");
 }
 
+#[tokio::test]
+async fn cancelling_a_call_aborts_its_host_task() {
+    struct PendingBridge {
+        started: tokio::sync::Notify,
+        stopped: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    impl HostBridge for PendingBridge {
+        fn call_tool<'a>(
+            &'a self,
+            _name: String,
+            _args: Value,
+        ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
+            Box::pin(async move {
+                // sender 的释放是任务已被回收的信号，不靠 sleep 猜测执行进度。
+                let _stopped = self.stopped.lock().take().unwrap();
+                self.started.notify_one();
+                std::future::pending().await
+            })
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    install(
+        temp.path(),
+        "reader",
+        r#"import { tools } from "moc"; export default { tools: {
+          read_through: { description: "Read through the host", parameters: { type: "object" }, parallel: true,
+            run() { return tools.call("read", {}); }
+          }
+        } };"#,
+    );
+    let mut settings = settings();
+    settings.call_timeout = Duration::from_secs(30);
+    let host = PluginHost::start(temp.path(), temp.path(), &settings, &[]).await;
+    let (stopped, released) = tokio::sync::oneshot::channel();
+    let bridge = Arc::new(PendingBridge {
+        started: tokio::sync::Notify::new(),
+        stopped: Mutex::new(Some(stopped)),
+    });
+    let context = context();
+    let mut invocation = Box::pin(host.call_tool(
+        "read_through",
+        serde_json::json!({}),
+        &context,
+        bridge.clone(),
+    ));
+    tokio::select! {
+        result = &mut invocation => panic!("宿主回调应保持挂起：{result:?}"),
+        _ = bridge.started.notified() => {},
+        _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("宿主回调应启动"),
+    }
+    drop(invocation);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), released)
+            .await
+            .expect("取消必须回收宿主任务")
+            .is_err()
+    );
+}
+
 /// 仓库里的示例插件必须始终可加载：它是文档承诺的最小可运行形态。
 #[tokio::test]
 async fn example_plugin_loads_and_answers() {

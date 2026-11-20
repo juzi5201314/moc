@@ -321,7 +321,8 @@ delete state.count;
 - **每个插件一个专用线程**，线程里建独立的 QuickJS `Runtime`。插件之间不共享全局状态，一个插件的死循环不会卡住另一个（各自有 `call_timeout_ms`）。
 - 同一个插件的调用**串行**：工具、命令、钩子、`prompt` 排队执行。插件里不需要自己加锁。
 - **加载超时**：`load_timeout_ms` 覆盖模块求值与 `activate`。到点仍未完成时中断 JS 并返回 `E_PLUGIN_TIMEOUT`，该插件按加载失败列出，不会拖住启动它的提示。
-- **调用超时**：JS 自身跑到 `call_timeout_ms` 时宿主置中断标志，QuickJS 在 JS 执行期间中断，返回 `E_PLUGIN_TIMEOUT`；该插件在**本进程内**被禁用，`/plugins` 与 `plugin/list` 会显示原因，`/plugins reload` 或重启 moc 恢复。这样一次卡死不会让后续每个调用都再等一轮超时。
+- **调用超时**：宿主与 QuickJS 线程各自检查 `call_timeout_ms`；即使宿主不再轮询调用，JS 也会在期限到达时中断，返回 `E_PLUGIN_TIMEOUT`。该插件在**本进程内**被禁用，`/plugins` 与 `plugin/list` 会显示原因，`/plugins reload` 或重启 moc 恢复。这样一次卡死不会让后续每个调用都再等一轮超时。
+- **调用取消**：QuickJS 检查结果接收端是否关闭，取消不会丢失中断机制；触发中断后线程退出，后续调用发现线程关闭时停用插件。仍在排队的已取消请求直接跳过；在途宿主回调随调用取消一并终止。
 - **借宿主工具时超时**：插件线程在等 `tools.call` 的宿主工具，同样受同一个 `call_timeout_ms` 约束（宿主工具本身慢不会被无限等待）；这条路径只让本次调用失败，不禁用插件。
 - **失败与恢复**：运行期任何异常（工具、命令、钩子、`prompt`、配置校验）都会让该插件在**本进程内停用**并通知一次：模型下一轮收到一条插件提醒，前端显示停用原因与 JS 调用栈。停用后的调用返回 `E_PLUGIN_DISABLED`（带首次失败原因）。恢复方式：TUI/REPL 执行 `/plugins reload`（协议 `plugin/reload`）、改动插件文件、保存配置或重启 moc。
 - **内存**：`memory_limit_bytes`（默认 64 MiB）是单个 Runtime 的上限，超限抛 `E_PLUGIN_MEMORY`。

@@ -164,7 +164,7 @@ impl PluginHost {
             (Some(tx), Some(rx))
         };
         let (reply, receiver) = tokio::sync::oneshot::channel();
-        {
+        let submitted = {
             // 只在提交请求时持锁：等待结果期间不占着 worker 槽，超时路径才能把它摘掉。
             let worker = plugin.worker.lock();
             let Some(worker) = worker.as_ref() else {
@@ -183,16 +183,17 @@ impl PluginHost {
                 deadline: std::time::Instant::now() + timeout,
                 host_tx,
                 reply,
-            })?;
-        }
+            })
+        };
+        submitted.map_err(|error| self.fail(index, error))?;
         let deadline = tokio::time::Instant::now() + timeout;
         tokio::pin!(receiver);
-        // 宿主工具调用放进独立任务：桥自己慢不能让超时分支失去作用。
-        let mut host_task: Option<tokio::task::JoinHandle<Result<Value>>> = None;
+        // 独立任务保证慢桥不阻塞超时；JoinSet 在调用取消时也会终止在途任务。
+        let mut host_tasks = tokio::task::JoinSet::new();
         let mut pending_reply: Option<std::sync::mpsc::Sender<Result<Value>>> = None;
         let mut waiting_on_host = false;
         let mut waiting_on_persistence = false;
-        let outcome = loop {
+        loop {
             tokio::select! {
                 biased;
                 result = &mut receiver => {
@@ -258,7 +259,7 @@ impl PluginHost {
                     let path = plugin.config_path.clone();
                     let fields = plugin.descriptor.configs.clone();
                     let context = context.cloned();
-                    host_task = Some(tokio::spawn(async move {
+                    host_tasks.spawn(async move {
                         match operation {
                             HostOperation::Tool { name, args } => {
                                 let bridge = bridge.ok_or_else(|| PluginError::new("E_PLUGIN_TOOLS_UNAVAILABLE", t!("plugin.err.tools_bridge_unavailable")))?;
@@ -270,21 +271,16 @@ impl PluginHost {
                                 request_persistence(bridge.as_ref(), &name, &path, context.as_ref(), &fields, op).await
                             }
                         }
-                    }));
+                    });
                 }
-                reply = host_reply(&mut host_task) => {
+                reply = host_reply(&mut host_tasks) => {
                     waiting_on_host = false;
                     if let Some(sender) = pending_reply.take() {
                         let _ = sender.send(reply);
                     }
                 }
             }
-        };
-        // 超时或插件先返回时，宿主的工具调用可能还在跑：摘掉它，不留在后台。
-        if let Some(task) = host_task.take() {
-            task.abort();
         }
-        outcome
     }
 
     /// 记录运行期失败：禁用插件、发一条通知，并丢掉线程句柄，让它的 Runtime 随线程退出而释放。

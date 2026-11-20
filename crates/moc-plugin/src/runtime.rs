@@ -4,8 +4,8 @@
 //! 阻塞等回包；宿主在 `Plugin::invoke` 的 `select!` 里服务这些请求。因此不需要
 //! PTC 那套 step 状态机。
 //!
-//! 中断：宿主设置 `interrupt` 标志，QuickJS 的 interrupt handler 在 JS 执行期间轮询，
-//! 用来实现超时与取消。被中断的线程不再复用——下一次调用会重建 Runtime。
+//! 中断：QuickJS 的 interrupt handler 同时检查宿主标志、调用期限与结果接收端，
+//! 即使宿主 future 被丢弃也能停止 JS。被中断的线程直接退出，不再复用 Runtime。
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -183,6 +183,14 @@ struct CallHost {
     state: Option<serde_json::Map<String, Value>>,
 }
 
+/// 由 worker 持有调用预算和回包通道，取消不能把中断机制一起丢掉。
+struct CallInterrupt {
+    deadline: Instant,
+    reply: Option<tokio::sync::oneshot::Sender<Result<Value>>>,
+    interrupted: bool,
+    timed_out: bool,
+}
+
 struct Registrations {
     fields: Option<Vec<ConfigDecl>>,
     agent_presets: Option<Vec<AgentPresetDecl>>,
@@ -263,8 +271,22 @@ fn run_thread(
     };
     runtime.set_memory_limit(limits.memory_limit_bytes);
     runtime.set_max_stack_size(STACK_BYTES);
+    let active: Rc<RefCell<Option<CallInterrupt>>> = Rc::new(RefCell::new(None));
+    let current = Rc::clone(&active);
     let flag = Arc::clone(&interrupt);
-    runtime.set_interrupt_handler(Some(Box::new(move || flag.load(Ordering::SeqCst))));
+    runtime.set_interrupt_handler(Some(Box::new(move || {
+        if flag.load(Ordering::SeqCst) {
+            return true;
+        }
+        let mut current = current.borrow_mut();
+        let Some(call) = current.as_mut() else {
+            return false;
+        };
+        call.timed_out |= Instant::now() >= call.deadline;
+        call.interrupted |=
+            call.timed_out || call.reply.as_ref().is_some_and(|reply| reply.is_closed());
+        call.interrupted
+    })));
     runtime.set_loader(
         PluginResolver::new(dir.clone()),
         PluginLoader::new(dir.clone()),
@@ -339,6 +361,13 @@ fn run_thread(
         match command {
             Command::Shutdown => {
                 let deadline = Instant::now() + Duration::from_secs(1);
+                // 退出钩子也必须受期限约束，不能在回收线程时再次跑飞。
+                *active.borrow_mut() = Some(CallInterrupt {
+                    deadline,
+                    reply: None,
+                    interrupted: false,
+                    timed_out: false,
+                });
                 let _ = context.with(|ctx| {
                     invoke(
                         &ctx,
@@ -366,6 +395,16 @@ fn run_thread(
                     host_tx,
                     reply,
                 } = request;
+                // 排队期间已取消的请求不执行，也不影响同一插件的其他调用。
+                if reply.is_closed() {
+                    continue;
+                }
+                *active.borrow_mut() = Some(CallInterrupt {
+                    deadline,
+                    reply: Some(reply),
+                    interrupted: false,
+                    timed_out: false,
+                });
                 let result = context.with(|ctx| {
                     invoke(
                         &ctx,
@@ -381,7 +420,21 @@ fn run_thread(
                         },
                     )
                 });
-                let _ = reply.send(result);
+                let call = active.borrow_mut().take().expect("调用中断上下文已登记");
+                // worker 可能先于宿主定时器发现超时，错误码仍须保持一致。
+                let result = if call.timed_out {
+                    Err(PluginError::new(
+                        "E_PLUGIN_TIMEOUT",
+                        t!("plugin.err.budget_exhausted"),
+                    ))
+                } else {
+                    result
+                };
+                let _ = call.reply.expect("普通调用必须带回包通道").send(result);
+                // 中断后的 JS 状态不再复用；关闭队列也会唤醒尚在排队的调用方。
+                if call.interrupted || interrupt.load(Ordering::SeqCst) {
+                    break;
+                }
             }
         }
     }

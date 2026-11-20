@@ -294,6 +294,16 @@ async fn slow_host_bridge_respects_the_call_budget() {
     );
     // 等宿主的这条路径不算插件跑飞：它仍然可用。
     assert_eq!(host.info()[0].error, None);
+    let result = host
+        .call_tool(
+            "read_through",
+            serde_json::json!({}),
+            &context(),
+            Arc::new(EchoBridge),
+        )
+        .await
+        .expect("宿主工具超时后仍可继续调用插件");
+    assert_eq!(result.content, "read:x");
 }
 
 #[test]
