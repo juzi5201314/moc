@@ -88,14 +88,15 @@ async fn undrawn_help_only_closes_on_plain_escape_press() {
         );
         assert!(matches!(app.modal, Some(Modal::Help { .. })));
         assert!(!app.modal_drawn);
+        assert!(!app.modal_frame_seen);
         terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
-        assert!(app.modal.is_none());
+        assert!(matches!(app.modal, Some(Modal::Help { .. })));
 
-        app.set_modal(Some(Modal::Help { scroll: 0 }));
         let _ = draw_frame(&mut app, 100, 30);
         assert!(app.modal_drawn);
         let _ = draw_frame(&mut app, width, height);
         assert!(!app.modal_drawn);
+        assert!(app.modal_frame_seen);
         assert!(app.modal_card_area.is_empty());
         terminal_key(
             &mut app,
@@ -134,6 +135,54 @@ async fn undrawn_help_only_closes_on_plain_escape_press() {
         assert!(app.modal.is_none());
         assert!(!app.modal_drawn);
     }
+    connection.shutdown().await;
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn queued_modal_ignores_escape_until_first_frame() {
+    let (core, connection, mut app) = setup_test_app().await;
+    let session = app.session.as_ref().unwrap().id.clone();
+    let mut first = permission(&mut app, &session, "p1");
+    let mut second = permission(&mut app, &session, "p2");
+    let mut third = permission(&mut app, &session, "p3");
+    let _ = draw_frame(&mut app, 100, 30);
+    assert!(app.modal_drawn);
+    assert!(app.modal_frame_seen);
+
+    // 连续两次 Esc 只能取消已展示的请求，刚出队的请求尚未走过首帧。
+    terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+    assert!(first.try_recv().unwrap().is_err());
+    assert_eq!(current_request(&app), "p2");
+    assert!(!app.modal_drawn);
+    assert!(!app.modal_frame_seen);
+    terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+    assert_eq!(second.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(current_request(&app), "p2");
+
+    // 已走过一帧但卡片放不下时，Esc 仍能退出。
+    let _ = draw_frame(&mut app, 80, 5);
+    assert!(!app.modal_drawn);
+    assert!(app.modal_frame_seen);
+    assert!(app.modal_card_area.is_empty());
+    terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+    assert!(second.try_recv().unwrap().is_err());
+    assert_eq!(current_request(&app), "p3");
+    assert!(!app.modal_drawn);
+    assert!(!app.modal_frame_seen);
+
+    // 后续请求实际绘制后，普通按键恢复作答。
+    terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+    assert_eq!(third.try_recv(), Err(TryRecvError::Empty));
+    let _ = draw_frame(&mut app, 100, 30);
+    assert!(app.modal_drawn);
+    assert!(app.modal_frame_seen);
+    terminal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+    assert_eq!(third.try_recv().unwrap().unwrap().option_id, "allow_once");
+    assert!(app.modal.is_none());
+    assert!(!app.modal_drawn);
+    assert!(!app.modal_frame_seen);
+
     connection.shutdown().await;
     core.shutdown().await;
 }

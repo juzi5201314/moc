@@ -204,8 +204,10 @@ pub struct App {
     pub completion_prefix: Option<String>,
     /// 打开的模态；更换时统一使用 `set_modal` / `take_modal`。
     pub modal: Option<Modal>,
-    /// 当前模态已在本帧实际绘制；未绘制时只接收普通 Esc 按下以退出。
+    /// 当前模态已在本帧实际绘制。
     pub modal_drawn: bool,
+    /// 当前模态已走过至少一帧；尺寸不足未绘制时也允许普通 Esc 退出。
+    pub modal_frame_seen: bool,
     /// 等待作答的授权与提问，共用 FIFO 并持有各自的答复发送端。
     pub pending_modals: VecDeque<Modal>,
     /// 当前焦点。
@@ -569,6 +571,7 @@ impl App {
             completion_prefix: None,
             modal: None,
             modal_drawn: false,
+            modal_frame_seen: false,
             pending_modals: VecDeque::new(),
             focus: Focus::Prompt,
             btw: crate::btw::BtwState::default(),
@@ -736,11 +739,13 @@ impl App {
     pub fn set_modal(&mut self, modal: Option<Modal>) {
         self.modal = modal;
         self.modal_drawn = false;
+        self.modal_frame_seen = false;
     }
 
     /// 取出模态时同样作废绘制状态。
     pub fn take_modal(&mut self) -> Option<Modal> {
         self.modal_drawn = false;
+        self.modal_frame_seen = false;
         self.modal.take()
     }
 

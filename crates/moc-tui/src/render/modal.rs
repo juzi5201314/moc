@@ -58,6 +58,7 @@ struct ModalBody {
 pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     app.modal_drawn = false;
     draw_modal_card(frame, app);
+    app.modal_frame_seen = true;
 }
 
 fn draw_modal_card(frame: &mut Frame, app: &mut App) {
