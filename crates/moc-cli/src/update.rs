@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 const REPO: &str = "juzi5201314/moc";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const USER_AGENT: &str = concat!("moc-updater/", env!("CARGO_PKG_VERSION"));
+const MAX_DOWNLOAD_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct Release {
@@ -228,14 +229,21 @@ impl Updater {
         let response = response
             .error_for_status()
             .with_context(|| t!("cli.update.download_failed", url = url).into_owned())?;
-        response
-            .bytes()
+        let mut response = response;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map(|bytes| {
-                moc_llm::record_rx(bytes.len() as u64);
-                bytes.to_vec()
-            })
-            .with_context(|| t!("cli.update.read_failed", url = url).into_owned())
+            .with_context(|| t!("cli.update.read_failed", url = url).into_owned())?
+        {
+            moc_llm::record_rx(chunk.len() as u64);
+            if bytes.len().saturating_add(chunk.len()) > MAX_DOWNLOAD_BYTES {
+                return Err(anyhow!("download exceeds {MAX_DOWNLOAD_BYTES} byte limit"))
+                    .with_context(|| t!("cli.update.read_failed", url = url).into_owned());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
     }
 
     fn install(&self, bytes: &[u8]) -> Result<()> {
@@ -270,16 +278,13 @@ impl Updater {
                 let mode = std::fs::metadata(&self.exe)
                     .map(|meta| meta.permissions().mode())
                     .unwrap_or(0o755);
-                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).with_context(
-                    || {
-                        t!("cli.update.chmod_failed", path = tmp.display().to_string())
-                            .into_owned()
-                    },
-                )?;
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
+                    .with_context(|| {
+                        t!("cli.update.chmod_failed", path = tmp.display().to_string()).into_owned()
+                    })?;
             }
 
-            replace_file(&tmp, &self.exe)
-                .context(t!("cli.update.replace_failed").to_string())?;
+            replace_file(&tmp, &self.exe).context(t!("cli.update.replace_failed").to_string())?;
             Ok(())
         })();
         if result.is_err() {
