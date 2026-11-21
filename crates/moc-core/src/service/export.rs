@@ -13,6 +13,14 @@ pub(super) async fn run(
     inner: &CoreInner,
     params: SessionExportParams,
 ) -> Result<SessionExportResult, RpcError> {
+    run_with_download_limit(inner, params, MAX_DOWNLOAD_BYTES).await
+}
+
+async fn run_with_download_limit(
+    inner: &CoreInner,
+    params: SessionExportParams,
+    max_download_bytes: usize,
+) -> Result<SessionExportResult, RpcError> {
     if params
         .path
         .as_deref()
@@ -58,7 +66,7 @@ pub(super) async fn run(
         };
         Ok(SessionExportResult {
             path: path.to_string_lossy().into_owned(),
-            content: download_content(content),
+            content: download_content_with_limit(content, max_download_bytes),
         })
     })
     .await
@@ -70,7 +78,7 @@ pub(super) async fn run(
     })
 }
 
-fn download_content(content: String) -> Option<String> {
+fn download_content_with_limit(content: String, limit: usize) -> Option<String> {
     let mut encoded_bytes = 2;
     for byte in content.bytes() {
         encoded_bytes += match byte {
@@ -78,7 +86,7 @@ fn download_content(content: String) -> Option<String> {
             0..=31 => 6,
             _ => 1,
         };
-        if encoded_bytes > MAX_DOWNLOAD_BYTES {
+        if encoded_bytes > limit {
             return None;
         }
     }
@@ -298,15 +306,21 @@ mod tests {
 
     #[test]
     fn download_budget_counts_json_escaping_and_preserves_empty_content() {
-        assert_eq!(download_content(String::new()), Some(String::new()));
-        assert!(download_content("x".repeat(MAX_DOWNLOAD_BYTES - 2)).is_some());
-        assert!(download_content("x".repeat(MAX_DOWNLOAD_BYTES - 1)).is_none());
+        assert_eq!(MAX_DOWNLOAD_BYTES, 8 * 1024 * 1024);
+        assert!(MAX_DOWNLOAD_BYTES < moc_protocol::DEFAULT_MAX_FRAME_BYTES);
+        let limit = 1024;
+        assert_eq!(
+            download_content_with_limit(String::new(), limit),
+            Some(String::new())
+        );
+        assert!(download_content_with_limit("x".repeat(limit - 2), limit).is_some());
+        assert!(download_content_with_limit("x".repeat(limit - 1), limit).is_none());
         for text in [
             "\"", "\\", "\n", "\r", "\t", "\u{8}", "\u{c}", "\u{1}", "中",
         ] {
-            let text = text.repeat(MAX_DOWNLOAD_BYTES / 4);
-            let fits = serde_json::to_vec(&text).unwrap().len() <= MAX_DOWNLOAD_BYTES;
-            assert_eq!(download_content(text).is_some(), fits);
+            let text = text.repeat(limit / 4);
+            let fits = serde_json::to_vec(&text).unwrap().len() <= limit;
+            assert_eq!(download_content_with_limit(text, limit).is_some(), fits);
         }
     }
 
@@ -345,29 +359,28 @@ mod tests {
                 .sessions
                 .append_message(
                     &info.id,
-                    Message::user_text("\u{1}".repeat(1024 * 1024)),
+                    Message::user_text("\u{1}".repeat(1024)),
                     None,
                     None,
                 )
                 .await
                 .unwrap();
         }
-        let result = run(
+        let test_limit = 4096;
+        let result = run_with_download_limit(
             &core.inner,
             SessionExportParams {
                 session_id: info.id,
                 path: Some("large.md".into()),
             },
+            test_limit,
         )
         .await
         .unwrap();
         assert!(result.content.is_none());
         let body = std::fs::read_to_string(&result.path).unwrap();
-        assert_eq!(
-            body.bytes().filter(|byte| *byte == 1).count(),
-            6 * 1024 * 1024
-        );
-        assert!(serde_json::to_vec(&body).unwrap().len() > moc_protocol::DEFAULT_MAX_FRAME_BYTES);
+        assert_eq!(body.bytes().filter(|byte| *byte == 1).count(), 6 * 1024);
+        assert!(serde_json::to_vec(&body).unwrap().len() > test_limit);
         let response = serde_json::to_vec(&result).unwrap();
         assert!(response.len() < 1024);
         assert!(

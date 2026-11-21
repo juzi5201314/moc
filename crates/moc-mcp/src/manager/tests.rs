@@ -672,10 +672,11 @@ async fn raised_limit_allows_same_server_concurrency() {
 #[tokio::test]
 async fn call_before_connect_fails_gracefully() {
     let state = Arc::new(TestState::default());
-    let manager = McpManager::build(
+    let manager = McpManager::build_with_call_timeout(
         vec![test_server("test", true)],
         CancellationToken::new(),
         |_| test_connector(state.clone()),
+        Duration::from_millis(50),
     );
     // 未 start：slot 保持 Connecting，调用应得到结构化错误。
     let info = McpToolInfo {

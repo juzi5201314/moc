@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 authors = ["soeur@soeur.dev@gmail.com"]
 
+# 默认关闭文档测试以加速本地 cargo test --workspace；CI 仍通过 --doc 显式校验。
+[lib]
+doctest = false
+
 [dependencies]
 rust-i18n.workspace = true
 moc-llm = { path = "../moc-llm" }

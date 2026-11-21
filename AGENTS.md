@@ -5,7 +5,7 @@ Rust 编写的终端 AI 编码助手（Cargo workspace，edition 2024，Rust 1.8
 ## 命令
 
 - 构建：`cargo build`（调试）/ `cargo build --release`（产物在 `target/release/moc`）
-- 测试：`cargo test --workspace --locked --lib --bins --tests`（本地跳过重复 `rustdoc` 的全量快速测试；完整含文档测试：`cargo test --workspace --locked`，或装有 nextest 时 `cargo nextest run --workspace --locked && cargo test -p moc-llm -p moc-protocol --locked --doc`，CI 同款）；迭代期跑单 crate：`cargo test -p <crate>`
+- 测试：`cargo test --workspace --locked`（本地快速全量测试；文档测试按 `cargo test -p moc-llm -p moc-protocol --locked --doc` 跑，CI 使用 `cargo nextest run --workspace --locked && cargo test -p moc-llm -p moc-protocol --locked --doc`）；迭代期跑单 crate：`cargo test -p <crate>`
 - 前端（`crates/moc-web/web/`）：`pnpm lint`（biome）/ `pnpm build`（tsc + vite）/ `pnpm test`（vitest）
 - 用户信息（TUI / Web / 行式 CLI）：`/debuginfo` 查看工具统计与压缩次数；`/session` 查看会话身份与存储。两者为独立只读 note，不接受参数，不重复 `/usage`，不写模型上下文。
 - 用户导出（TUI / Web / 行式 CLI）：`/export [path]` 共用 `session/export`，将历史脱敏写为 Markdown，不覆盖已有文件；Web 在正文的 JSON 编码不超过 8 MiB 时同时下载，超限仅提示文件路径。不调用模型或改变会话。
