@@ -897,3 +897,29 @@ fn source_map_tracks_blocks() {
     let code = ranges.iter().copied().find(|range| range.1 >= 10);
     assert_eq!(code, Some((9, 11)), "{ranges:?}");
 }
+
+#[test]
+fn widget_fences_collapse_to_single_line_placeholder_within_width() {
+    let source = "```widget title=\"数据看板\"\n<div>hello</div>\n<script>1+1</script>\n```";
+    let theme = Theme::resolved(ColorLevel::TrueColor);
+    let wide = text(&render_markdown(source, 64, &theme));
+    assert!(
+        wide.iter().any(|line| line.contains("数据看板") && line.contains('2')),
+        "应含标题与行数占位：{wide:?}"
+    );
+    assert!(
+        !wide.iter().any(|line| line.contains("<div>hello</div>")),
+        "不能把组件源码铺进终端：{wide:?}"
+    );
+    let narrow = render_markdown(source, 24, &theme);
+    assert!(
+        narrow.iter().all(|line| line_width(line) <= 24),
+        "窄屏截断后每行不能超宽：{narrow:?}"
+    );
+    // 引用块内部仍保持普通代码块。
+    let quoted = lines("> ```widget\n> <div>in quote</div>\n> ```", 50);
+    assert!(
+        quoted.iter().any(|line| line.contains("<div>in quote</div>")),
+        "{quoted:?}"
+    );
+}

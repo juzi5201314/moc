@@ -25,7 +25,7 @@ use moc_ptc_protocol::wire::WorkflowHostMessage;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::CoreError;
@@ -154,6 +154,8 @@ pub(crate) struct RunHandle {
     /// 否则同 id 并发 publish 算出同一版本互相覆盖。
     pub publish_lock: Mutex<()>,
     pub cancel: CancellationToken,
+    /// 此 run 的 workflow 事件 FIFO 队列；运行任务收尾后关闭发送端。
+    pub workflow_events: Mutex<Option<mpsc::UnboundedSender<WorkflowEvent>>>,
     /// 运行任务结束（含 panic）且移出注册表后置位；卸载等待可取消、重试或并发订阅。
     finished: AtomicBool,
     finish_notify: Notify,

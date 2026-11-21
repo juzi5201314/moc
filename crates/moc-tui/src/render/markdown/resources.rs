@@ -17,6 +17,71 @@ pub(crate) fn is_mermaid_fence_info(info: &str) -> bool {
         .is_some_and(|tag| tag.eq_ignore_ascii_case("mermaid"))
 }
 
+/// 代码块 info 串是否声明了 WebUI 交互组件（`widget`）。
+pub(crate) fn is_widget_fence_info(info: &str) -> bool {
+    info.split_whitespace()
+        .next()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("widget"))
+}
+
+/// 从 `widget` 围栏 info 串中提取 `title="..."` 或 `title='...'`。
+pub(crate) fn widget_fence_title(info: &str) -> Option<String> {
+    let bytes = info.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let key_start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' {
+            i += 1;
+        }
+        let key = &info[key_start..i];
+        if i < bytes.len() && bytes[i] == b'=' {
+            i += 1;
+            let value = if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+                let quote = bytes[i];
+                i += 1;
+                let mut out = String::new();
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 1;
+                        let ch = info[i..].chars().next()?;
+                        out.push(ch);
+                        i += ch.len_utf8();
+                        continue;
+                    }
+                    if bytes[i] == quote {
+                        i += 1;
+                        break;
+                    }
+                    let ch = info[i..].chars().next()?;
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
+                out
+            } else {
+                let start = i;
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                info[start..i].to_owned()
+            };
+            if key.eq_ignore_ascii_case("title") {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_owned());
+                }
+            }
+        } else {
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+        }
+    }
+    None
+}
+
 /// 围栏代码块的源码区间是否以闭合围栏结尾。
 ///
 /// pulldown 把未闭合的围栏收到文件末尾，并把空余量当成一次长度为 0 的闭合，

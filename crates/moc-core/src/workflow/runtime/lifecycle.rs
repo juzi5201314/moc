@@ -12,8 +12,8 @@ use crate::workflow::engine::Engine;
 use crate::workflow::engine::EngineConfig;
 use crate::workflow::engine::FileJournal;
 use crate::workflow::engine::RunMode;
-use moc_protocol::UpdateSink;
 use moc_protocol::WorkflowRunSummary;
+use moc_protocol::{SessionUpdate, UpdateSink};
 use moc_ptc_protocol::wire::WorkflowHostMessage;
 use parking_lot::Mutex;
 use rust_i18n::t;
@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
 impl WorkflowManager {
@@ -76,6 +76,23 @@ impl WorkflowManager {
         };
         let engine = Engine::new(Box::new(journal), config);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (workflow_events, mut workflow_rx) = mpsc::unbounded_channel();
+        let workflow_sink = sink.clone();
+        let workflow_session_id = self.session_id.clone();
+        let workflow_run_id = run_id.clone();
+        tokio::spawn(async move {
+            while let Some(event) = workflow_rx.recv().await {
+                let _ = workflow_sink
+                    .emit(
+                        workflow_session_id.clone(),
+                        SessionUpdate::Workflow {
+                            run_id: workflow_run_id.clone(),
+                            event,
+                        },
+                    )
+                    .await;
+            }
+        });
         let handle = Arc::new(RunHandle {
             id: run_id.clone(),
             dir: dir.clone(),
@@ -91,6 +108,7 @@ impl WorkflowManager {
             engine: Mutex::new(engine),
             publish_lock: Mutex::new(()),
             cancel: cancel_parent.child_token(),
+            workflow_events: Mutex::new(Some(workflow_events)),
             finished: AtomicBool::new(false),
             finish_notify: Notify::new(),
             cwd,
@@ -131,6 +149,7 @@ impl WorkflowManager {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             let _ = task.await;
+            manager.close_event_dispatch(&handle);
             {
                 let mut runs = manager.runs.lock();
                 // resume 会复用 run_id，旧任务收尾不能移除新注册的 handle。

@@ -33,6 +33,8 @@ import { useTranscript } from "@/store/transcript";
 import { cn } from "@/lib/utils";
 import { mermaidConfig } from "./mermaid-theme";
 import { SVG_ALLOWED_TAGS, liftSvgFences, readFigureTokens } from "./svg-figure";
+import { WidgetCard } from "./widget-card";
+import { splitWidgetParts } from "./widget-fence";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -313,7 +315,12 @@ function MermaidFallback({ chart }: MermaidErrorComponentProps) {
   );
 }
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown>;
+export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
+  /** 仅主对话助手正文开启内嵌交互组件渲染，防止文件预览或工具预览执行脚本。 */
+  allowWidgets?: boolean;
+  /** 所属会话 ID，供组件运行报错「发给助手修复」填入输入框。 */
+  sessionId?: string;
+};
 
 type MarkdownLinkNode = {
   type: string;
@@ -430,34 +437,87 @@ const MarkdownAnchor: NonNullable<Components["a"]> = ({
 const messageComponents: Components = { a: MarkdownAnchor };
 
 export const MessageResponse = memo(
-  ({ className, children, ...props }: MessageResponseProps) => {
+  ({
+    className,
+    children,
+    allowWidgets = false,
+    sessionId,
+    isAnimating,
+    ...props
+  }: MessageResponseProps) => {
     const dark = useIsDark();
     const tokens = useMemo(() => readFigureTokens(dark), [dark]);
     const mermaid = useMemo(
       () => ({ config: mermaidConfig(tokens, dark), errorComponent: MermaidFallback }),
       [tokens, dark],
     );
-    const source = typeof children === "string" ? liftSvgFences(children, tokens) : children;
+    const parts = useMemo(
+      () => (allowWidgets && typeof children === "string" ? splitWidgetParts(children) : null),
+      [allowWidgets, children],
+    );
+
+    const renderMarkdown = (
+      content: ComponentProps<typeof Streamdown>["children"],
+      animating?: boolean,
+      key?: string,
+      extraClassName?: string,
+    ) => {
+      const source = typeof content === "string" ? liftSvgFences(content, tokens) : content;
+      return (
+        <Streamdown
+          key={key}
+          allowedTags={SVG_ALLOWED_TAGS}
+          className={cn("moc-prose size-full", extraClassName)}
+          components={messageComponents}
+          controls={streamdownControls}
+          isAnimating={animating}
+          lineNumbers={false}
+          mermaid={mermaid}
+          plugins={streamdownPlugins}
+          remarkPlugins={messageRemarkPlugins}
+          {...props}
+        >
+          {source}
+        </Streamdown>
+      );
+    };
+
+    if (!parts) {
+      return renderMarkdown(children, isAnimating, undefined, className);
+    }
+    if (parts.length === 1 && parts[0].kind === "markdown") {
+      return renderMarkdown(parts[0].text, isAnimating, undefined, className);
+    }
+
     return (
-      <Streamdown
-        allowedTags={SVG_ALLOWED_TAGS}
-        className={cn("moc-prose size-full", className)}
-        components={messageComponents}
-        controls={streamdownControls}
-        lineNumbers={false}
-        mermaid={mermaid}
-        plugins={streamdownPlugins}
-        remarkPlugins={messageRemarkPlugins}
-        {...props}
-      >
-        {source}
-      </Streamdown>
+      <div className={cn("flex w-full min-w-0 flex-col gap-3", className)}>
+        {parts.map((part, index) =>
+          part.kind === "markdown" ? (
+            renderMarkdown(
+              part.text,
+              Boolean(isAnimating) && index === parts.length - 1,
+              `md-${index}`,
+            )
+          ) : (
+            <WidgetCard
+              key={`widget-${part.index}`}
+              code={part.code}
+              title={part.title}
+              height={part.height}
+              complete={part.complete}
+              sessionId={sessionId}
+            />
+          ),
+        )}
+      </div>
     );
   },
   (prevProps, nextProps) =>
     prevProps.children === nextProps.children &&
     prevProps.isAnimating === nextProps.isAnimating &&
-    prevProps.mode === nextProps.mode,
+    prevProps.mode === nextProps.mode &&
+    prevProps.allowWidgets === nextProps.allowWidgets &&
+    prevProps.sessionId === nextProps.sessionId,
 );
 
 MessageResponse.displayName = "MessageResponse";

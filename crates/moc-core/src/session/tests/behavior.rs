@@ -136,6 +136,54 @@ async fn spawned_child_session_lives_inside_the_parent_directory() {
 }
 
 #[tokio::test]
+async fn sidecar_delete_failure_invalidates_session_and_releases_write_lease() {
+    let directory = tempfile::tempdir().expect("临时目录");
+    let table = SessionTable::new(directory.path().join("sessions"), true);
+    let info = create_plugin_state_session(&table).await;
+    table
+        .append_message(&info.id, Message::user_text("已有消息"), None, None)
+        .await
+        .expect("写入 transcript");
+    let record = table.get(&info.id).await.expect("保留旧记录句柄");
+    table
+        .ensure_write_lease(&info.id, &record, "test")
+        .await
+        .expect("取得写租约");
+    assert!(record.write_lease().is_some());
+    table.list().await.expect("填充存储索引");
+
+    // 用普通文件占据 sidecar 路径，让目录清理在 transcript 删除后稳定失败。
+    tokio::fs::write(&record.paths.sidecar, b"sidecar")
+        .await
+        .expect("制造 sidecar 清理失败");
+    assert!(matches!(
+        table.delete(&info.id).await,
+        Err(CoreError::Io(_))
+    ));
+    assert!(!record.paths.transcript.exists());
+    assert!(record.paths.sidecar.is_file());
+    assert!(!table.records.read().contains_key(&info.id));
+    assert!(
+        table
+            .store
+            .find(&info.id)
+            .await
+            .expect("查询索引")
+            .is_none()
+    );
+    assert!(record.try_prompt_lock().is_err(), "旧记录必须已失效");
+    assert!(record.write_lease().is_none(), "旧记录必须释放写租约");
+    assert!(lock::read(record.paths.lock_file(&info.id)).is_none());
+    assert!(
+        table
+            .append_message(&info.id, Message::user_text("删除后续写"), None, None)
+            .await
+            .is_err(),
+        "部分删除后的会话必须拒绝追加"
+    );
+}
+
+#[tokio::test]
 async fn fresh_session_is_deferred_to_disk_until_first_message() {
     let directory = tempfile::tempdir().expect("临时目录");
     let table = SessionTable::new(directory.path().join("sessions"), true);

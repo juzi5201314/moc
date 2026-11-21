@@ -9,9 +9,13 @@
 //! [`crate::protocol::AppEvent::ImagePrepared`] 通知重绘。缓存按字节数 LRU
 //! 淘汰，每帧被 `payload()` 触达的可见图永远不会被淘汰。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 
 use xxhash_rust::xxh3::Xxh3;
 
@@ -34,6 +38,11 @@ pub use layout::{ImageLayout, layout};
 /// 单张图允许突破预算：淘汰只发生在**新增**条目时，且绝不挑刚落地的那个，
 /// 否则「解码完成 → 立刻被自己挤掉 → 下一帧重新解码」会变成自持死循环。
 const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
+
+/// 固定的图片解码 worker 数量，避免每张图片都创建独立系统线程。
+const IMAGE_DECODE_WORKERS: usize = 2;
+/// 限制等待解码的图片数，避免 Pending 项绕过字节缓存预算无限积压。
+const MAX_QUEUED_DECODES: usize = 64;
 
 /// SVG 树在缓存里的记账下限。
 ///
@@ -234,6 +243,8 @@ struct Entry {
 
 struct Inner {
     entries: HashMap<ImageKey, Entry>,
+    /// channel 满时暂存任务；之后每次解码完成腾出一个槽位，由 complete() 补回队列。
+    deferred_decodes: VecDeque<DecodeTask>,
     /// 正在后台编码的 `(图, 尺寸)`：挡住同一份编码被连续几帧重复提交。
     encoding: std::collections::HashSet<(ImageKey, EncodedKey)>,
     next_id: u32,
@@ -278,24 +289,108 @@ impl Inner {
     }
 }
 
+type DecodeTask = (
+    ImageKey,
+    Box<dyn FnOnce() -> ImageSourceSpec + Send + 'static>,
+);
+
+struct DecodePool {
+    sender: Option<mpsc::SyncSender<DecodeTask>>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+    /// 停机标志：置位后 worker 跳过队列里还没解的任务，只完成手头那次解码。
+    /// 没有它，Drop 的 join 要等最多 64 项积压全部解完，TUI 退出会卡住。
+    stop: Arc<AtomicBool>,
+}
+
+impl DecodePool {
+    fn new(events: tokio::sync::mpsc::UnboundedSender<AppEvent>) -> Option<Self> {
+        let (sender, receiver) = mpsc::sync_channel::<DecodeTask>(MAX_QUEUED_DECODES);
+        let receiver = Arc::new(Mutex::new(receiver));
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut workers = Vec::with_capacity(IMAGE_DECODE_WORKERS);
+        for index in 0..IMAGE_DECODE_WORKERS {
+            let receiver = Arc::clone(&receiver);
+            let events = events.clone();
+            let worker_stop = Arc::clone(&stop);
+            match std::thread::Builder::new()
+                .name(format!("moc-image-{index}"))
+                .spawn(move || {
+                    loop {
+                        let task = receiver
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .recv();
+                        let Ok((key, make)) = task else {
+                            break;
+                        };
+                        if worker_stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let result = decode::decode(make()).map_err(|error| error.to_string());
+                        // 接收端已关闭（TUI 正在退出）就静默丢弃，没必要报错
+                        let _ = events.send(AppEvent::ImagePrepared { key, result });
+                    }
+                }) {
+                Ok(worker) => workers.push(worker),
+                Err(_) => {
+                    stop.store(true, Ordering::Release);
+                    drop(sender);
+                    for worker in workers {
+                        let _ = worker.join();
+                    }
+                    return None;
+                }
+            }
+        }
+        Some(Self {
+            sender: Some(sender),
+            workers,
+            stop,
+        })
+    }
+
+    fn try_send(&self, task: DecodeTask) -> Result<(), mpsc::TrySendError<DecodeTask>> {
+        self.sender
+            .as_ref()
+            .expect("解码池 sender 尚未关闭")
+            .try_send(task)
+    }
+}
+
+impl Drop for DecodePool {
+    fn drop(&mut self) {
+        // 先置停机标志让 worker 跳过排队任务，再关发送端唤醒 recv；
+        // join 最多等一次在飞解码，不会被积压拖住退出。
+        self.stop.store(true, Ordering::Release);
+        self.sender.take();
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
 /// 图片缓存。线程安全，克隆开销为零（内部全是 `Arc`）。
 #[derive(Clone)]
 pub struct ImageStore {
     inner: Arc<Mutex<Inner>>,
     events: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    decode_pool: Option<Arc<DecodePool>>,
 }
 
 impl ImageStore {
     pub fn new(events: tokio::sync::mpsc::UnboundedSender<AppEvent>) -> Self {
+        let decode_pool = DecodePool::new(events.clone()).map(Arc::new);
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 entries: HashMap::new(),
+                deferred_decodes: VecDeque::new(),
                 encoding: std::collections::HashSet::new(),
                 // 从 1 开始：0 在部分终端里是「无 ID」的哨兵值
                 next_id: 1,
                 tick: 0,
             })),
             events,
+            decode_pool,
         }
     }
 
@@ -343,6 +438,7 @@ impl ImageStore {
         };
         if spawn {
             self.spawn_decode(key.clone(), make);
+            return self.peek(key).unwrap_or(state);
         }
         state
     }
@@ -356,6 +452,30 @@ impl ImageStore {
     /// 后台线程完成后由事件循环调用（主线程）。
     pub fn complete(&self, key: ImageKey, result: Result<DecodedImage, String>) {
         let mut inner = self.lock();
+        Self::record_completion(&mut inner, key, result);
+
+        if let Some(task) = inner.deferred_decodes.pop_front() {
+            let key = task.0.clone();
+            match &self.decode_pool {
+                Some(pool) => match pool.try_send(task) {
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(task)) => {
+                        inner.deferred_decodes.push_front(task);
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => Self::record_completion(
+                        &mut inner,
+                        key,
+                        Err("图片解码池不可用或已关闭".into()),
+                    ),
+                },
+                None => {
+                    Self::record_completion(&mut inner, key, Err("图片解码池不可用或已关闭".into()))
+                }
+            }
+        }
+    }
+
+    fn record_completion(inner: &mut Inner, key: ImageKey, result: Result<DecodedImage, String>) {
         inner.tick += 1;
         let tick = inner.tick;
         let bytes = match &result {
@@ -589,20 +709,32 @@ impl ImageStore {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    /// 起后台解码线程；结果经事件通道回到主线程。
+    /// 将解码任务交给固定 worker；结果经事件通道回到主线程。
     ///
     /// `make` 在**后台线程里**才执行：工具图片的 `spec()` 要克隆整份 base64，
     /// 那可能是几 MB 的拷贝，放在主线程上做就等于把「不卡顿」的承诺还回去。
     fn spawn_decode(&self, key: ImageKey, make: impl FnOnce() -> ImageSourceSpec + Send + 'static) {
-        let events = self.events.clone();
-        std::thread::Builder::new()
-            .name("moc-image".into())
-            .spawn(move || {
-                let result = decode::decode(make()).map_err(|error| error.to_string());
-                // 接收端已关闭（TUI 正在退出）就静默丢弃，没必要报错
-                let _ = events.send(AppEvent::ImagePrepared { key, result });
-            })
-            .ok();
+        let task: DecodeTask = (key.clone(), Box::new(make));
+        match &self.decode_pool {
+            Some(pool) => match pool.try_send(task) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(task)) => {
+                    let mut inner = self.lock();
+                    if inner.deferred_decodes.len() < MAX_QUEUED_DECODES {
+                        inner.deferred_decodes.push_back(task);
+                    } else if matches!(
+                        inner.entries.get(&key).map(|entry| &entry.state),
+                        Some(ImageState::Pending)
+                    ) {
+                        inner.entries.remove(&key);
+                    }
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    self.complete(key, Err("图片解码池不可用或已关闭".into()));
+                }
+            },
+            None => self.complete(key, Err("图片解码池不可用或已关闭".into())),
+        }
     }
 }
 

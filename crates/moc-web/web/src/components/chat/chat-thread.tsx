@@ -592,6 +592,8 @@ function AssistantTurn({
         return (
           <MessageResponse
             key={segment.id}
+            allowWidgets
+            sessionId={context.sessionId}
             isAnimating={isAnimating}
             mode={isAnimating ? "streaming" : "static"}
           >
