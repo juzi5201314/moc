@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { IconButton } from "@/components/common/icon-button";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -468,8 +469,10 @@ function ModelRow({
       field.path[2] === "models" &&
       field.path[3] === modelId,
   );
-  const context = typeof info.context_window === "number" ? info.context_window : undefined;
-  const image = Array.isArray(info.input) && info.input.includes("image");
+  const imageGen = info.image_gen === true;
+  const context =
+    !imageGen && typeof info.context_window === "number" ? info.context_window : undefined;
+  const image = !imageGen && Array.isArray(info.input) && info.input.includes("image");
 
   return (
     <div>
@@ -488,6 +491,7 @@ function ModelRow({
           />
           <span className="min-w-0 truncate font-mono text-xs text-foreground">{modelId}</span>
           <span className="ml-auto flex shrink-0 items-center gap-2 text-text-tertiary">
+            {imageGen && <Badge variant="brand">Image</Badge>}
             {image && <ImageIcon className="size-3.5" aria-label={t("mp.images")} />}
             {context && (
               <span className="font-mono text-xs tabular-nums">{compactTokens(context)}</span>

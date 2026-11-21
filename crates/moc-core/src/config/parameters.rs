@@ -273,7 +273,10 @@ pub(super) fn append_fields(effective: &Value, output: &mut Vec<ConfigField>) {
             output,
         );
         if let Some(models) = provider.get("models").and_then(Value::as_object) {
-            for model in models.keys() {
+            for (model, spec) in models {
+                if spec.get("image_gen").and_then(Value::as_bool) == Some(true) {
+                    continue;
+                }
                 append(
                     &["providers", id, "models", model, "compat", "extra_body"],
                     api,

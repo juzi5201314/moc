@@ -188,6 +188,8 @@ pub(super) struct ModelDocument {
     pub pricing: Option<moc_protocol::ModelPricing>,
     /// 是否支持 Fast Mode；开启后前端显示开关，会话打开开关时请求带 `service_tier = "fast"`。
     pub fast_mode: bool,
+    /// 图片生成模型：仅在 Image Playground 可见，Agent 主界面隐藏。
+    pub image_gen: bool,
 }
 impl Default for ModelDocument {
     fn default() -> Self {
@@ -201,6 +203,7 @@ impl Default for ModelDocument {
             compat: ModelCompat::default(),
             pricing: None,
             fast_mode: false,
+            image_gen: false,
         }
     }
 }
@@ -369,6 +372,8 @@ pub struct ResolvedModel {
     pub pricing: Option<moc_protocol::ModelPricing>,
     /// 模型配置了 `fast_mode = true`，即上游接受 `service_tier = "fast"`。
     pub fast_mode: bool,
+    /// 是否为图片生成模型（仅 Image Playground 可见）。
+    pub image_gen: bool,
     /// 供应商协议配置。
     pub llm: LlmConfig,
     pub max_concurrency: usize,
@@ -457,6 +462,10 @@ impl ResolvedProvider {
         )?;
         // 上下文窗口为 0 会使压缩阈值饱和为 0，导致每一轮都触发压缩。
         for (model_id, model) in &document.models {
+            if model.image_gen {
+                // 图片生成模型不走聊天协议，跳过聊天专属校验，允许 compat.extra_body 携带任意生图参数。
+                continue;
+            }
             if model.context_window == 0 {
                 return Err(CoreError::Config(format!(
                     "providers.{id}.models.{model_id}.context_window 必须大于 0"
@@ -621,6 +630,7 @@ impl ResolvedProvider {
             thinking_levels,
             pricing: model.pricing,
             fast_mode: model.fast_mode,
+            image_gen: model.image_gen,
             llm,
             max_concurrency: self.max_concurrency,
             cache: self.cache,
@@ -721,6 +731,11 @@ pub(super) fn resolve_one(
             parsed.model_id
         ))
     })?;
+    if model.image_gen {
+        return Err(CoreError::Config(format!(
+            "模型 `{selector}` 已标记为图片生成模型，仅可在 Image Playground 中使用"
+        )));
+    }
     let resolved = provider.resolve_model(
         parsed.provider_id,
         parsed.model_id,
@@ -737,6 +752,37 @@ pub(super) fn resolve_one(
         )));
     }
     Ok(resolved)
+}
+
+/// 解析仅用于 Image Playground 的图片生成模型（格式 `provider/model`）。
+pub(super) fn resolve_image_one(
+    providers: &BTreeMap<String, ResolvedProvider>,
+    selector: &str,
+) -> Result<ResolvedModel, CoreError> {
+    let (provider_id, model_id) = selector.split_once('/').ok_or_else(|| {
+        CoreError::Config(t!("core.err.model_fmt_bad", value = selector).into_owned())
+    })?;
+    if provider_id.is_empty() || model_id.is_empty() {
+        return Err(CoreError::Config(
+            t!("core.err.model_fmt_incomplete", value = selector).into_owned(),
+        ));
+    }
+    let provider = providers.get(provider_id).ok_or_else(|| {
+        CoreError::Config(format!(
+            "图片模型 `{selector}` 引用了不存在的 provider `{provider_id}`"
+        ))
+    })?;
+    let model = provider.models.get(model_id).ok_or_else(|| {
+        CoreError::Config(format!(
+            "图片模型 `{selector}` 引用了不存在的模型 `{model_id}`"
+        ))
+    })?;
+    if !model.image_gen {
+        return Err(CoreError::Config(format!(
+            "模型 `{selector}` 未勾选为图片生成模型"
+        )));
+    }
+    Ok(provider.resolve_model(provider_id, model_id, model, None))
 }
 
 /// 解析一个可能带 Fusion 语法的 selector：普通写法直接走 [`resolve_one`]；
@@ -796,7 +842,23 @@ pub(super) fn all_models(providers: &BTreeMap<String, ResolvedProvider>) -> Vec<
     let mut result = Vec::new();
     for (provider_id, provider) in providers {
         for (model_id, model) in &provider.models {
-            result.push(provider.resolve_model(provider_id, model_id, model, None));
+            if !model.image_gen {
+                result.push(provider.resolve_model(provider_id, model_id, model, None));
+            }
+        }
+    }
+    result
+}
+
+pub(super) fn all_image_models(
+    providers: &BTreeMap<String, ResolvedProvider>,
+) -> Vec<ResolvedModel> {
+    let mut result = Vec::new();
+    for (provider_id, provider) in providers {
+        for (model_id, model) in &provider.models {
+            if model.image_gen {
+                result.push(provider.resolve_model(provider_id, model_id, model, None));
+            }
         }
     }
     result
@@ -926,5 +988,38 @@ mod tests {
         assert_eq!(request_selector("fusion:p/a"), "p/a");
         assert_eq!(request_selector("p/a"), "p/a");
         assert_eq!(request_selector("fusion"), "fusion");
+    }
+
+    #[test]
+    fn image_gen_models_are_isolated_from_agent_models() {
+        let mut models = BTreeMap::new();
+        models.insert("chat-1".to_owned(), ModelDocument::default());
+        models.insert(
+            "img-1".to_owned(),
+            ModelDocument {
+                image_gen: true,
+                ..Default::default()
+            },
+        );
+        let provider = ProviderDocument {
+            api: Some(ProviderApi::OpenaiChat),
+            base_url: "https://example.com/v1".into(),
+            models,
+            ..Default::default()
+        };
+        let mut map = BTreeMap::new();
+        map.insert("p".to_owned(), provider);
+        let catalog = resolve_catalog(&map).expect("解析目录");
+
+        let agent_ids: Vec<_> = all_models(&catalog).into_iter().map(|m| m.id).collect();
+        let image_ids: Vec<_> = all_image_models(&catalog)
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(agent_ids, vec!["p/chat-1"]);
+        assert_eq!(image_ids, vec!["p/img-1"]);
+        assert!(resolve_one(&catalog, "p/img-1", None).is_err());
+        assert!(resolve_image_one(&catalog, "p/chat-1").is_err());
+        assert!(resolve_image_one(&catalog, "p/img-1").is_ok());
     }
 }

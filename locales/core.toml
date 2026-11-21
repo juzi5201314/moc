@@ -509,6 +509,10 @@ desc = { zh = "模型支持接收 text 或 text + image 多模态输入。", en 
 label = { zh = "Fast Mode", en = "Fast mode" }
 desc = { zh = "开启后模型选择器显示 Fast Mode 开关（请求携带 service_tier = \"fast\"）。", en = "When on, the model picker shows a fast-mode switch (requests carry service_tier = \"fast\")." }
 
+[core.config.keys.image_gen]
+label = { zh = "图片生成模型", en = "Image generation model" }
+desc = { zh = "勾选后该模型仅在 Image Playground 可见，并在 Agent 对话界面隐藏。", en = "When enabled, this model is only visible in Image Playground and hidden from the Agent interface." }
+
 [core.config.keys.pricing]
 label = { zh = "Pricing（每百万 token）", en = "Pricing (per million tokens)" }
 desc = { zh = "JSON：input/output 必填，cache_read/cache_write 可选，单位 USD。", en = "JSON: input/output required, cache_read/cache_write optional, in USD." }

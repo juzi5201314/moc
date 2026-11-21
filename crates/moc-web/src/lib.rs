@@ -13,6 +13,7 @@ mod bridge;
 mod browser;
 mod commands;
 mod fsraw;
+mod image_playground;
 mod terminal;
 
 rust_i18n::i18n!("../../locales", fallback = "zh");
@@ -69,6 +70,7 @@ pub async fn run(core: Arc<Core>, options: WebOptions) -> anyhow::Result<()> {
         token: Arc::new(options.token.clone()),
         server,
         terminals: terminal::Terminals::default(),
+        image_playground: image_playground::ImagePlaygroundService::default(),
     };
 
     let url = format!("http://{addr}/?token={}", options.token);
@@ -106,6 +108,8 @@ struct AppState {
     /// 终端分页的进程内 PTY 表；条目经 DELETE 显式杀进程，进程退出时
     /// master fd 关闭、shell 收 SIGHUP 结束。
     terminals: terminal::Terminals,
+    /// Image Playground 并发与取消协调器。
+    pub(crate) image_playground: image_playground::ImagePlaygroundService,
 }
 
 impl AppState {
@@ -144,7 +148,8 @@ fn routes(state: AppState) -> Router {
             "/pty/{id}",
             delete(terminal::remove).route_layer(authed.clone()),
         )
-        .route("/pty/{id}/ws", get(terminal::attach).route_layer(authed))
+        .route("/pty/{id}/ws", get(terminal::attach).route_layer(authed.clone()))
+        .merge(image_playground::router().route_layer(authed))
         .fallback(get(static_handler))
         .layer(axum::middleware::from_fn(security_headers))
         .with_state(state)

@@ -8,6 +8,7 @@ import {
   CpuIcon,
   FileTextIcon,
   HardDriveIcon,
+  ImageIcon,
   LayersIcon,
   Loader2Icon,
   PlugIcon,
@@ -20,6 +21,7 @@ import {
   WrenchIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { ImagePlaygroundSettingsSection } from "@/components/image-playground/playground-settings";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { type MsgKey, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -69,6 +71,12 @@ const NAV: { group: MsgKey; items: SectionMeta[] }[] = [
         label: "sd.shortcuts",
         description: "sd.shortcuts_desc",
         icon: <CommandIcon />,
+      },
+      {
+        id: "image_playground",
+        label: "sd.image_playground",
+        description: "sd.image_playground_desc",
+        icon: <ImageIcon />,
       },
     ],
   },
@@ -168,7 +176,11 @@ const NAV: { group: MsgKey; items: SectionMeta[] }[] = [
 ];
 
 const SECTIONS = NAV.flatMap((group) => group.items);
-const LOCAL_SECTIONS: Partial<Record<SettingsSection, true>> = { general: true, shortcuts: true };
+const LOCAL_SECTIONS: Partial<Record<SettingsSection, true>> = {
+  general: true,
+  shortcuts: true,
+  image_playground: true,
+};
 
 function SaveStatus() {
   const t = useT();
@@ -302,6 +314,7 @@ export function SettingsDialog() {
   const body = (() => {
     if (section === "general" && !query) return <GeneralSection />;
     if (section === "shortcuts" && !query) return <ShortcutsSection />;
+    if (section === "image_playground" && !query) return <ImagePlaygroundSettingsSection />;
     if (error)
       return (
         <p className="rounded-lg bg-destructive/5 px-3 py-2 text-ui text-destructive">
