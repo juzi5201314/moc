@@ -560,6 +560,23 @@ pub(crate) async fn lock_commit_paths(
     guards
 }
 
+pub(crate) fn lock_commit_paths_blocking(
+    source: &Path,
+    target: Option<&Path>,
+) -> Vec<MutexGuard<'static, ()>> {
+    let mut slots = vec![commit_lock_slot(source)];
+    if let Some(target) = target {
+        slots.push(commit_lock_slot(target));
+    }
+    slots.sort_unstable();
+    slots.dedup();
+
+    slots
+        .into_iter()
+        .map(|slot| COMMIT_LOCKS[slot].blocking_lock())
+        .collect()
+}
+
 fn commit_lock_slot(path: &Path) -> usize {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut hasher);
