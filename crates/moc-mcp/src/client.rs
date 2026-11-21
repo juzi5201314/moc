@@ -185,6 +185,8 @@ async fn read_log_line(
         let terminator_len = match line_ending_index {
             Some(index) if index > 0 && available[index - 1] == b'\r' => 2,
             Some(_) => 1,
+            // 块末尾的 CR 可能是跨块 CRLF 的前半，先按待定终止符计数。
+            None if available.ends_with(b"\r") => 1,
             None => 0,
         };
         let content_len = chunk_len - terminator_len;
@@ -319,6 +321,25 @@ mod tests {
             assert!(!truncated);
             assert!(buf.ends_with(expected_suffix));
         }
+    }
+
+    #[tokio::test]
+    async fn stderr_crlf_at_chunk_boundary_preserves_maximum_body() {
+        let mut input = vec![b'x'; MAX_LOG_LINE_BYTES];
+        input.extend_from_slice(b"\r\n");
+        let mut reader =
+            BufReader::with_capacity(MAX_LOG_LINE_BYTES + 1, std::io::Cursor::new(input));
+        let mut buf = Vec::new();
+        let mut truncated = false;
+
+        read_log_line(&mut reader, &mut buf, &mut truncated)
+            .await
+            .unwrap();
+
+        assert!(!truncated);
+        assert_eq!(buf.len(), MAX_LOG_LINE_BYTES + 2);
+        assert!(buf[..MAX_LOG_LINE_BYTES].iter().all(|byte| *byte == b'x'));
+        assert!(buf.ends_with(b"\r\n"));
     }
 
     #[tokio::test]
