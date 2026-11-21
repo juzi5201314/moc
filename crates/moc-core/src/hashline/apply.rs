@@ -1,11 +1,14 @@
 //! Hashline 批量编辑解析、验证、搬运与原子提交。
 
 use std::fmt::Write as _;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::{Mutex, MutexGuard};
 
 use super::served::read_snapshot;
 use crate::error::CoreError;
@@ -15,6 +18,10 @@ use crate::hashline::{
 use moc_protocol::{
     DiffHunk, DiffLineKind, LineChange, ToolDiff, ToolFileDiff, build_hunks_from_changes,
 };
+
+const COMMIT_LOCK_COUNT: usize = 64;
+static COMMIT_LOCKS: LazyLock<[Mutex<()>; COMMIT_LOCK_COUNT]> =
+    LazyLock::new(|| std::array::from_fn(|_| Mutex::new(())));
 
 #[derive(Debug, Error)]
 pub enum EditError {
@@ -461,7 +468,12 @@ async fn commit_plan(
     } else {
         None
     };
+    let target_path = target_change
+        .as_ref()
+        .map(|(target, _)| target.path.as_path());
+    let _commit_guards = lock_commit_paths(&source_path, target_path).await;
     // 校验与 rename 之间存在窗口：紧邻提交前重读源文件，窗口内被外部写入时放弃。
+    // 进程内锁串行化本进程的写者，跨进程写入仍可能在检查与提交之间竞争。
     if let Err(error) = ensure_epoch(&source_path, source_snapshot.epoch, max_file_bytes).await {
         cleanup_staged(source_temp, target_temp).await;
         if let Some(backup) = &source_backup {
@@ -528,6 +540,27 @@ async fn commit_plan(
         content: output,
         diff: Some(diff),
     })
+}
+
+async fn lock_commit_paths(source: &Path, target: Option<&Path>) -> Vec<MutexGuard<'static, ()>> {
+    let mut slots = vec![commit_lock_slot(source)];
+    if let Some(target) = target {
+        slots.push(commit_lock_slot(target));
+    }
+    slots.sort_unstable();
+    slots.dedup();
+
+    let mut guards = Vec::with_capacity(slots.len());
+    for slot in slots {
+        guards.push(COMMIT_LOCKS[slot].lock().await);
+    }
+    guards
+}
+
+fn commit_lock_slot(path: &Path) -> usize {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    hasher.finish() as usize % COMMIT_LOCK_COUNT
 }
 
 /// 授权预览：计算 edit 将产生的结构化 diff，不落盘、不更新 served 状态。
