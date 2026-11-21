@@ -185,6 +185,10 @@ supersede_reads = true
 override = ""
 append = ""
 
+[git]
+# 开启后，创建 git commit 时自动添加 moc 为 Co-authored-by 协作者
+co_author = false
+
 [context_files]
 enabled = true
 user = true

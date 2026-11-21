@@ -107,7 +107,7 @@ const NAV: { group: MsgKey; items: SectionMeta[] }[] = [
         label: "sd.instructions",
         description: "sd.instructions_desc",
         icon: <FileTextIcon />,
-        fields: byPath("context_files", "system_prompt"),
+        fields: byPath("context_files", "system_prompt", "git"),
       },
       {
         id: "skills",

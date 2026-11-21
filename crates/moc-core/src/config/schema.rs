@@ -21,6 +21,7 @@ pub(super) struct ConfigDocument {
     pub compaction: CompactionConfig,
     pub limits: LimitsConfig,
     pub system_prompt: SystemPromptConfig,
+    pub git: GitConfig,
     pub context_files: ContextFilesConfig,
     pub workspace: WorkspaceConfig,
     pub session: SessionDocument,
@@ -438,6 +439,14 @@ pub struct SystemPromptConfig {
     #[serde(rename = "override")]
     pub override_text: String,
     pub append: String,
+}
+
+/// `[git]` 段：Git 提交协作相关配置。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GitConfig {
+    /// 开启后，创建 git commit 时追加 `Co-authored-by: myowncode-agent[bot]` 协作者 trailer。
+    pub co_author: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

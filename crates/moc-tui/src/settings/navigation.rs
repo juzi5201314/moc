@@ -258,6 +258,7 @@ impl SettingsPanel {
                 vec!["system_prompt".into()],
                 None,
             )),
+            Some("git") => chain.push(("git".into(), "Git".into(), vec!["git".into()], None)),
             Some("skills") => chain.push((
                 "skills".into(),
                 "Skills".into(),

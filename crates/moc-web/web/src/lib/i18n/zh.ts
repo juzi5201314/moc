@@ -882,6 +882,7 @@ export const zh = {
   "sg.eb_thinking": "思考模式与预算",
   "sg.eb_tool_choice": "工具调用策略",
   "sg.extra_body": "采样与通用请求参数",
+  "sg.git": "Git",
   "sg.headers": "API 请求头",
   "sg.limits": "请求与循环",
   "sg.mcp": "MCP",

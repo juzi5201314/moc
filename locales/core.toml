@@ -129,6 +129,10 @@ desc = { zh = "完全替换默认的 System Prompt。", en = "Fully replace the 
 label = { zh = "追加 System Prompt", en = "Append to system prompt" }
 desc = { zh = "在默认 System Prompt 末尾追加自定义指令。", en = "Append custom instructions to the default system prompt." }
 
+[core.config.fields.git_co_author]
+label = { zh = "将 Moc 添加为协作者", en = "Add Moc as co-author" }
+desc = { zh = "开启后，在创建 git commit 时自动追加 Co-authored-by: myowncode-agent[bot] 协作者信息。", en = "When enabled, append Co-authored-by: myowncode-agent[bot] as a trailer when creating git commits." }
+
 [core.config.fields.skills_enabled]
 label = { zh = "启用 Skills", en = "Enable Skills" }
 desc = { zh = "关闭后不再加载任何 Skill。", en = "When off, no skills are loaded." }

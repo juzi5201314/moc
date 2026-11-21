@@ -49,7 +49,7 @@ fn tab_of(path: &[String]) -> &'static str {
         Some("tools" | "web_fetch") => "tools",
         Some("sandbox") => "sandbox",
         Some("compaction" | "limits") => "context",
-        Some("context_files" | "system_prompt") => "instructions",
+        Some("context_files" | "system_prompt" | "git") => "instructions",
         Some("defaults" | "agents" | "models") => "models",
         Some("skills") => "skills",
         Some("mcp") => "mcp",

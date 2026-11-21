@@ -899,6 +899,7 @@ export const en: Record<MsgKey, string> = {
   "sg.eb_thinking": "Thinking mode & budget",
   "sg.eb_tool_choice": "Tool choice policy",
   "sg.extra_body": "Sampling & common request params",
+  "sg.git": "Git",
   "sg.headers": "API request headers",
   "sg.limits": "Requests & loops",
   "sg.mcp": "MCP",

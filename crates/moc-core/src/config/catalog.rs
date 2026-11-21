@@ -153,6 +153,7 @@ fn rank(key: &str) -> usize {
         "import_depth" => 4,
         "override" => 0,
         "append" => 1,
+        "co_author" => 0,
         // MCP 与插件
         "user_config" => 1,
         "project_config" => 2,
@@ -376,7 +377,7 @@ fn walk(
             "tools" | "web_fetch" => t!("core.config.tabs.tools"),
             "sandbox" => t!("core.config.tabs.sandbox"),
             "compaction" | "limits" => t!("core.config.tabs.context"),
-            "context_files" | "system_prompt" => t!("core.config.tabs.instructions"),
+            "context_files" | "system_prompt" | "git" => t!("core.config.tabs.instructions"),
             "defaults" | "agents" => t!("core.config.tabs.models"),
             "skills" => t!("core.config.tabs.skills"),
             "mcp" => t!("core.config.tabs.mcp"),

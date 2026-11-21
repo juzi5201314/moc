@@ -414,6 +414,7 @@ defaults = { zh = "匹配“%{pattern}”的模型默认参数。", en = "Defaul
 agents = { zh = "子代理并发与默认参数。", en = "Subagent concurrency and default parameters." }
 context_files = { zh = "随请求加载的上下文规则文件。", en = "Context rule files loaded with each request." }
 system_prompt = { zh = "System Prompt 覆盖与追加规则。", en = "System prompt overrides and appended rules." }
+git = { zh = "Git 提交协作与归因设置。", en = "Git commit attribution and collaboration settings." }
 skills = { zh = "Skills 目录扫描与加载规则。", en = "Skills directory scanning and loading rules." }
 web_fetch = { zh = "网页抓取策略与截断限制。", en = "Page fetch policy and truncation limits." }
 workspace = { zh = "工作区与符号导航参数。", en = "Workspace and symbol navigation parameters." }

@@ -332,6 +332,7 @@ const GROUP_TITLES: Record<string, MsgKey> = {
   "session.retention": "sg.session_retention",
   context_files: "sg.context_files",
   system_prompt: "sg.system_prompt",
+  git: "sg.git",
   "plugins.limits": "sg.plugins_limits",
   retry: "sg.retry",
   compat: "sg.compat",

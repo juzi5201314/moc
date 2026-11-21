@@ -87,7 +87,11 @@ pub const PIECE_INTRO: &str = "intro";
 pub const PIECE_OUTPUT_FORMAT: &str = "output format";
 pub const PIECE_TOOL_POLICY: &str = "tool policy";
 pub const PIECE_EXECUTION_RUNTIME: &str = "execution runtime";
+pub const PIECE_GIT: &str = "git";
 pub const PIECE_FUSION: &str = "fusion";
+
+const MOC_CO_AUTHOR_TRAILER: &str =
+    "Co-authored-by: myowncode-agent[bot] <359507523+myowncode-agent[bot]@users.noreply.github.com>";
 pub const PIECE_TOOL_DECLS: &str = "tool declarations";
 pub const PIECE_MCP_SERVERS: &str = "mcp servers";
 pub const PIECE_REPO_RULES: &str = "repo rules";
@@ -221,6 +225,16 @@ pub fn pieces(
         scope: PieceScope::Static,
         text: "execute runs JavaScript in a fresh QuickJS runtime. Call await tools.<name>(args); return needed results or use console.log/print. Logs precede the return value and share its output budget. Tool results contain {content,structuredContent,isError,status,artifact}: use content for text, structuredContent for metadata. Failures reject with {code,message,result}. Await every call; do not shadow tools/catalog/state. Globals do not persist. Standard exposes core tools directly: prefer them for simple calls; PTC exposes only execute. Discover schemas with catalog.describe(name) or read tool://<name>; never guess arguments. Composition, MCP discovery, and named state: tool://execute.".to_owned(),
     });
+    if config.git.co_author {
+        sections.push(PromptPiece {
+            title: "system",
+            name: PIECE_GIT,
+            scope: PieceScope::Static,
+            text: format!(
+                "When creating a git commit, append `{MOC_CO_AUTHOR_TRAILER}` as a trailer after a blank line; preserve existing trailers and do not duplicate it on amend."
+            ),
+        });
+    }
     // Fusion lead 的分工契约：只注入 Fusion 顶层会话，静态片段保持前缀连续。
     if model.fusion.is_some() && subagent.is_none() {
         sections.push(PromptPiece {
@@ -565,6 +579,53 @@ mod tests {
             text.contains(&format!("{TOOL_POLICY_BUILTIN} {TOOL_POLICY_REST}")),
             "{text}"
         );
+    }
+
+    #[test]
+    fn git_co_author_piece_is_conditional() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        fs::create_dir_all(&cwd).unwrap();
+
+        let off_config = resolved(&cwd, &home);
+        let model = off_config.resolve_model("p/model").expect("resolve model");
+        let off_prompt = build(
+            &off_config,
+            &model,
+            &cwd,
+            &[],
+            &crate::skills::SkillIndex::empty(),
+            "",
+            "",
+            "",
+            None,
+        );
+        assert_eq!(off_prompt.static_prefix, vec![4]);
+        assert!(!prompt_text(&off_prompt).contains(MOC_CO_AUTHOR_TRAILER));
+
+        let on_home = directory.path().join("home2");
+        let on_config = resolved_with_settings(&cwd, &on_home, "[git]\nco_author = true");
+        let on_prompt = build(
+            &on_config,
+            &model,
+            &cwd,
+            &[],
+            &crate::skills::SkillIndex::empty(),
+            "",
+            "",
+            "",
+            None,
+        );
+        assert_eq!(on_prompt.static_prefix, vec![5]);
+        let on_blocks = blocks(&on_prompt);
+        assert!(
+            on_blocks[..on_prompt.static_prefix[0]]
+                .iter()
+                .any(|block| block.contains(MOC_CO_AUTHOR_TRAILER))
+        );
+        let btw_prompt = build_btw(&on_config, &model, &cwd, &[]);
+        assert!(!prompt_text(&btw_prompt).contains(MOC_CO_AUTHOR_TRAILER));
     }
 
     #[test]

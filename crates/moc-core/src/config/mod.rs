@@ -33,10 +33,10 @@ pub mod web;
 pub use model::{ModelCapabilities, ROLE_INHERIT, ThinkingLevel};
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
-    EditConfig, FeaturesConfig, FindConfig, GrepConfig, HOST_PLUGIN_KEYS, JobConfig, JobOverflow,
-    LimitsConfig, OnDenied, OutputConfig, PluginsConfig, PtcConfig, ReadConfig, RetentionConfig,
-    ShakeConfig, SkillsConfig, SystemPromptConfig, TodoConfig, ToolsConfig, WebFetchConfig,
-    WorkflowConfig, WorkspaceConfig, WriteConfig, is_plugin_key,
+    EditConfig, FeaturesConfig, FindConfig, GitConfig, GrepConfig, HOST_PLUGIN_KEYS, JobConfig,
+    JobOverflow, LimitsConfig, OnDenied, OutputConfig, PluginsConfig, PtcConfig, ReadConfig,
+    RetentionConfig, ShakeConfig, SkillsConfig, SystemPromptConfig, TodoConfig, ToolsConfig,
+    WebFetchConfig, WorkflowConfig, WorkspaceConfig, WriteConfig, is_plugin_key,
 };
 
 /// 会话文件与保留策略；跨进程锁始终启用。
@@ -86,6 +86,7 @@ pub struct ResolvedConfig {
     pub compaction: CompactionConfig,
     pub limits: LimitsConfig,
     pub system_prompt: SystemPromptConfig,
+    pub git: GitConfig,
     pub context_files: ContextFilesConfig,
     pub workspace: WorkspaceConfig,
     pub session: SessionSettings,
@@ -246,6 +247,7 @@ impl ResolvedConfig {
             compaction: document.compaction,
             limits: document.limits,
             system_prompt: document.system_prompt,
+            git: document.git,
             context_files: document.context_files,
             workspace: document.workspace,
             session: SessionSettings {
