@@ -60,7 +60,10 @@ pub(super) fn estimate_entry_height_indexed(
     // 图表占位行、图片占位行和字符图的行数都是渲染期才算出来的，估错会让滚动
     // 范围与懒渲染的可见区间一起失真。
     if let Block::Assistant { text } = &entry.block
-        && (may_contain_table(text) || may_contain_image(text) || may_contain_mermaid(text))
+        && (may_contain_table(text)
+            || may_contain_image(text)
+            || may_contain_mermaid(text)
+            || may_contain_widget(text))
     {
         return render_entry_with(index, entry, app, width, false, batches, tree).height;
     }
@@ -623,6 +626,18 @@ pub(super) fn may_contain_mermaid(text: &str) -> bool {
             .take_while(|ch| *ch == '`' || *ch == '~')
             .count();
         fence_len >= 3 && crate::render::markdown::is_mermaid_fence_info(&trimmed[fence_len..])
+    })
+}
+
+/// 正文里是否可能出现 `widget` 围栏。口径与 [`may_contain_mermaid`] 相同。
+pub(super) fn may_contain_widget(text: &str) -> bool {
+    text.lines().any(|line| {
+        let trimmed = line.trim_start();
+        let fence_len = trimmed
+            .chars()
+            .take_while(|ch| *ch == '`' || *ch == '~')
+            .count();
+        fence_len >= 3 && crate::render::markdown::is_widget_fence_info(&trimmed[fence_len..])
     })
 }
 

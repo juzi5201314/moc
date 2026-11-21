@@ -662,3 +662,121 @@ async fn runtime_reminders_are_injected_once_per_change_not_per_request() {
     assert_eq!(users.len(), 1, "提醒不得被算成用户消息");
     h.close().await;
 }
+
+#[tokio::test]
+async fn web_widget_reminder_is_scoped_to_webui_and_retracted_in_tui() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(text_stream("ok"), "text/event-stream"))
+        .mount(&upstream)
+        .await;
+
+    let h = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    let connect_as = |frontend: &str| {
+        let server = &h.server;
+        let frontend = frontend.to_owned();
+        async move {
+            let (server_side, client_side) = transport::duplex(65536);
+            let conn = server.spawn(server_side);
+            let (client, _) = ClientBuilder::new(ClientInfo {
+                name: "widget-test".into(),
+                version: "1".into(),
+                frontend,
+            })
+            .connect(client_side)
+            .await
+            .expect("connect");
+            (client, conn)
+        }
+    };
+
+    // 1. 纯 TUI 会话既不注入 WEB_WIDGET，也不产生 Retract。
+    let (tui_client, tui_conn) = connect_as("tui").await;
+    let tui_session = tui_client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            engine: SessionEngine::Standard,
+            plan_active: false,
+            fast_mode: false,
+        })
+        .await
+        .expect("new tui session");
+    tui_client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: tui_session.id.clone(),
+            input: vec![InputPart::Text { text: "hi".into() }],
+            mode: None,
+            agent_message: None,
+            goal_round: None,
+            max_turns: None,
+        })
+        .await
+        .expect("tui prompt");
+
+    // 2. WebUI 会话注入 WEB_WIDGET；释放后用 TUI 打开续聊时触发一次 Retract。
+    let (web_client, web_conn) = connect_as("webui").await;
+    let web_session = web_client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            engine: SessionEngine::Standard,
+            plan_active: false,
+            fast_mode: false,
+        })
+        .await
+        .expect("new webui session");
+    web_client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: web_session.id.clone(),
+            input: vec![InputPart::Text { text: "hi".into() }],
+            mode: None,
+            agent_message: None,
+            goal_round: None,
+            max_turns: None,
+        })
+        .await
+        .expect("webui prompt");
+    web_client
+        .call::<SessionUnload>(SessionUnloadParams {
+            session_id: web_session.id.clone(),
+        })
+        .await
+        .expect("unload webui session");
+    web_conn.close();
+
+    tui_client
+        .call::<SessionLoad>(SessionLoadParams {
+            session_id: web_session.id.clone(),
+            max_entries: None,
+            omit_auxiliary: false,
+            read_only: false,
+        })
+        .await
+        .expect("load web session in tui");
+    tui_client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: web_session.id.clone(),
+            input: vec![InputPart::Text { text: "follow up".into() }],
+            mode: None,
+            agent_message: None,
+            goal_round: None,
+            max_turns: None,
+        })
+        .await
+        .expect("tui follow up");
+    tui_conn.close();
+
+    let requests = upstream.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 3);
+    let body_text = |req: &wiremock::Request| String::from_utf8_lossy(&req.body).into_owned();
+    assert!(!body_text(&requests[0]).contains("WebUI renders fenced"));
+    assert!(!body_text(&requests[0]).contains("Interactive web widgets are unavailable"));
+    assert!(body_text(&requests[1]).contains("WebUI renders fenced"));
+    assert!(body_text(&requests[2]).contains("Interactive web widgets are unavailable"));
+
+    h.close().await;
+}

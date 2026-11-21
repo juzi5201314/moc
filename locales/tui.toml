@@ -946,6 +946,8 @@ hide_chart = { zh = "▾ 隐藏图表", en = "▾ Hide chart" }
 ref_links = { zh = "参考链接：", en = "References:" }
 more_links_fmt = { zh = "▸ 还有 %{count} 条链接", en = "▸ %{count} more links" }
 collapse_links = { zh = "▾ 收起链接", en = "▾ Collapse links" }
+widget_placeholder = { zh = "[交互组件：%{title} — 仅 WebUI 支持预览，%{lines} 行]", en = "[Interactive widget: %{title} — preview in WebUI only, %{lines} lines]" }
+widget_placeholder_untitled = { zh = "[交互组件 — 仅 WebUI 支持预览，%{lines} 行]", en = "[Interactive widget — preview in WebUI only, %{lines} lines]" }
 
 [tui.subagent]
 title = { zh = "子代理", en = "Subagents" }

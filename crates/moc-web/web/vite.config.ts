@@ -30,6 +30,7 @@ export default defineConfig({
       "/doctor.json": "http://127.0.0.1:7432",
       "/procstats.json": "http://127.0.0.1:7432",
       "/fs/raw": "http://127.0.0.1:7432",
+      "/widget-host": "http://127.0.0.1:7432",
     },
   },
   test: {

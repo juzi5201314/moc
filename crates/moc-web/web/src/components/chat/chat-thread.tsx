@@ -589,7 +589,12 @@ function AssistantTurn({
         );
       case "text":
         return (
-          <MessageResponse key={segment.id} isAnimating={live && index === segments.length - 1}>
+          <MessageResponse
+            key={segment.id}
+            allowWidgets
+            sessionId={context.sessionId}
+            isAnimating={live && index === segments.length - 1}
+          >
             {segment.block.text}
           </MessageResponse>
         );

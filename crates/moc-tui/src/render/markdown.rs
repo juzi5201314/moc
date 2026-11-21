@@ -375,6 +375,8 @@ mod tables;
 use resources::fence_is_closed;
 pub(crate) use resources::is_mermaid_fence_info;
 pub(crate) use resources::is_svg_fence_info;
+pub(crate) use resources::is_widget_fence_info;
+pub(crate) use resources::widget_fence_title;
 
 #[derive(Default)]
 struct TableAcc {

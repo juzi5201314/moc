@@ -254,4 +254,28 @@ describe("MessageResponse GitHub 风格渲染", () => {
     );
     expect(container.querySelector(".bg-red-50")).toBeNull();
   }, 15000);
+
+  it("仅在 allowWidgets 时渲染无 allow-same-origin 的交互组件卡片", async () => {
+    const widgetMd = '```widget title="计算器"\n<div>1+1</div>\n```';
+
+    const locked = render(<MessageResponse>{widgetMd}</MessageResponse>);
+    await waitFor(() => {
+      expect(locked.container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
+    });
+    expect(locked.container.querySelector("iframe")).toBeNull();
+
+    const enabled = render(
+      <MessageResponse allowWidgets sessionId="s1">
+        {widgetMd}
+      </MessageResponse>,
+    );
+    await waitFor(() => {
+      const iframe = enabled.container.querySelector("iframe");
+      expect(iframe).not.toBeNull();
+      expect(iframe?.getAttribute("src")).toMatch(/^\/widget-host#/);
+      const sandbox = iframe?.getAttribute("sandbox") ?? "";
+      expect(sandbox).toContain("allow-scripts");
+      expect(sandbox).not.toContain("allow-same-origin");
+    });
+  });
 });
