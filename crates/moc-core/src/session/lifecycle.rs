@@ -308,9 +308,10 @@ impl SessionTable {
         let _append = record.append_lock.lock().await;
         // 删除期间保持租约：先让文件从磁盘消失，再放开内核锁，否则另一个进程
         // 可能在 release 与 delete 之间抢到租约并开始写一个正在被删除的会话。
-        self.store.delete(session_id, &record.paths).await?;
-        self.release_lease(record);
+        let result = self.store.delete(session_id, &record.paths).await;
+        // 删除失败也可能已移除 transcript；必须停用旧记录并释放独立于索引的租约，
+        // 避免持有旧句柄的追加请求继续写入已被删除的文件。
         self.unload_locked(session_id, record);
-        Ok(())
+        result
     }
 }

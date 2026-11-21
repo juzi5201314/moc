@@ -561,7 +561,7 @@ impl SessionStore {
         Ok(result)
     }
 
-    /// 删除 transcript 和 sidecar；锁文件由调用方按语义先释放。
+    /// 删除 transcript 和 sidecar；调用方须在删除期间持有写租约，结束后再释放。
     ///
     /// sidecar 目录同时是子代理 transcript 的容器，所以删除父会话会一并删除整棵
     /// 子代理子树（与代理树、目录树同构）。
@@ -571,12 +571,13 @@ impl SessionStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
+        // transcript 已不存在，即使 sidecar 清理失败也不能留下可复用的索引。
+        self.index.write().remove(session_id);
         match fs::remove_dir_all(&paths.sidecar).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        self.index.write().remove(session_id);
         Ok(())
     }
 }
