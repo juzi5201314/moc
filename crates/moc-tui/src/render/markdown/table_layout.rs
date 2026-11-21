@@ -79,11 +79,8 @@ impl<'a> MdRenderer<'a> {
         let plannable = fits && {
             let analysis = chart::analyze(&raw);
             chart::plan(&analysis).is_some_and(|plan| {
-                crate::render::chart::rows_needed(
-                    plan.kind,
-                    analysis.rows.len(),
-                    plan.series.len(),
-                ) <= crate::render::chart::MAX_ROWS
+                crate::render::chart::rows_needed(plan.kind, analysis.rows.len(), plan.series.len())
+                    <= crate::render::chart::MAX_ROWS
             })
         };
         let offers = charted.is_some() || plannable;

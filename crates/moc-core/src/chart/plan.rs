@@ -35,6 +35,8 @@ pub enum ChartKind {
     Heatmap,
     /// 散点图：两个不同量纲做 x / y。
     Scatter,
+    /// 分面小面板：2 列网格，各指标独立线性刻度，顶部圆点图例按类别配色。
+    Panels,
 }
 
 /// 一次规划的结果。
@@ -81,6 +83,14 @@ const LINE_FILL_RATIO: f64 = 0.8;
 const STACKED_NORMALIZE_RATIO: f64 = 4.0;
 /// `Progress` 的百分比上限。
 const PROGRESS_MAX_PERCENT: f64 = 100.0;
+/// `Panels` 的类别行数上限：超过 6 个类别在 2 列小面板里图例和条行都会过密。
+const PANELS_MAX_ROWS: usize = 6;
+/// `Panels` 最多展示的指标面板数。
+const PANELS_MAX_SERIES: usize = 8;
+/// `Panels` 同组量纲跨度门槛：正数极差达到 100 倍即拆面，避免被迫走对数刻度。
+const PANELS_SPAN_RATIO: f64 = 100.0;
+/// `Panels` 同组列峰值倍率门槛：各列最大正值相差 10 倍以上即拆面各自定标。
+const PANELS_COL_MAX_RATIO: f64 = 10.0;
 
 /// 「越低越好」表头词表。
 const POLARITY_LOWER: &[&str] = &[
@@ -195,6 +205,10 @@ pub fn plan(table: &TableAnalysis) -> Option<ChartPlan> {
             normalize,
             false,
         ));
+    }
+    // 规则 8.5：多量纲指标或同组跨量级悬殊 → 分面小面板（独立线性刻度）
+    if let Some(series) = panels_series(table, &main) {
+        return Some(finish(table, ChartKind::Panels, label, series, false, false));
     }
     // 规则 9：2–4 个同组系列 → 分组条形
     if (2..=GROUP_MAX).contains(&main.len()) {
@@ -367,6 +381,53 @@ fn is_filled_increasing(column: &Column, rows: &[usize]) -> bool {
         previous = Some(value);
     }
     values as f64 >= LINE_FILL_RATIO * rows.len() as f64
+}
+
+/// 分面小面板：存在未被主组收入的异量纲列，或同组列之间量级悬殊时拆成独立面板。
+fn panels_series(table: &TableAnalysis, main: &[usize]) -> Option<Vec<usize>> {
+    if !(MIN_ROWS..=PANELS_MAX_ROWS).contains(&table.rows.len()) || table.measures.len() < 2 {
+        return None;
+    }
+    if table.measures.len() > main.len() {
+        return Some(
+            table
+                .measures
+                .iter()
+                .copied()
+                .take(PANELS_MAX_SERIES)
+                .collect(),
+        );
+    }
+    if !(2..=PANELS_MAX_SERIES).contains(&main.len()) {
+        return None;
+    }
+    let mut global_min = f64::INFINITY;
+    let mut global_max = 0.0f64;
+    let mut col_max_min = f64::INFINITY;
+    let mut col_max_max = 0.0f64;
+    let mut positive_cols = 0usize;
+    for &col_idx in main {
+        let mut c_max = 0.0f64;
+        for &row in &table.rows {
+            if let Some(value) = table.columns[col_idx].value_at(row)
+                && value > 0.0
+            {
+                global_min = global_min.min(value);
+                global_max = global_max.max(value);
+                c_max = c_max.max(value);
+            }
+        }
+        if c_max > 0.0 {
+            positive_cols += 1;
+            col_max_min = col_max_min.min(c_max);
+            col_max_max = col_max_max.max(c_max);
+        }
+    }
+    let wide_span = global_min.is_finite() && global_max / global_min >= PANELS_SPAN_RATIO;
+    let wide_cols = positive_cols >= 2
+        && col_max_min.is_finite()
+        && col_max_max / col_max_min >= PANELS_COL_MAX_RATIO;
+    (wide_span || wide_cols).then(|| main.to_vec())
 }
 
 /// 散点：前两个量纲不同、且都不是百分比 / 分数的测量列（先出现的当 x，后者当 y）。

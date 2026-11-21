@@ -55,7 +55,7 @@ fn emit_places_once_and_skips_unchanged_frames() {
         out.starts_with(format!("\x1b[{};{}H", slot.y + 1, slot.x + 1).as_bytes()),
         "贴图前先定位到格子左上角"
     );
-    assert!(contains(&out, b"\x1bPq"), "sixel 载荷应已写出");
+    assert!(contains(&out, b"\x1bP0;1q"), "sixel 载荷应已写出");
     assert!(contains(&out, b"\x1b\\"), "sixel 结尾 ST");
     assert_eq!(app.image_placed.len(), 1);
 
@@ -67,7 +67,7 @@ fn emit_places_once_and_skips_unchanged_frames() {
     app.image_slots[0].y = slot.y + 1;
     let mut moved = Vec::new();
     emit(&mut app, &mut moved).expect("写内存不会失败");
-    assert!(contains(&moved, b"\x1bPq"), "换位后应重发载荷");
+    assert!(contains(&moved, b"\x1bP0;1q"), "换位后应重发载荷");
     assert!(!app.image_repaint, "纯换位不需要清屏重绘");
 }
 
@@ -123,13 +123,13 @@ fn overlays_suspend_and_resume_placement() {
     let (mut app, slot) = app_with_chart(GraphicsProto::Sixel);
     let mut first = Vec::new();
     emit(&mut app, &mut first).expect("写内存不会失败");
-    assert!(contains(&first, b"\x1bPq"), "先正常贴一次");
+    assert!(contains(&first, b"\x1bP0;1q"), "先正常贴一次");
     app.notice = Some("已附加剪贴板图片".into());
     app.notice_at = Some(std::time::Instant::now());
     let mut covered = Vec::new();
     emit(&mut app, &mut covered).expect("写内存不会失败");
     assert!(
-        !contains(&covered, b"\x1bPq"),
+        !contains(&covered, b"\x1bP0;1q"),
         "浮层期间不得再贴图：{:?}",
         String::from_utf8_lossy(&covered)
     );
@@ -138,7 +138,7 @@ fn overlays_suspend_and_resume_placement() {
     app.image_slots = vec![slot];
     let mut resumed = Vec::new();
     emit(&mut app, &mut resumed).expect("写内存不会失败");
-    assert!(contains(&resumed, b"\x1bPq"), "浮层消失后重放");
+    assert!(contains(&resumed, b"\x1bP0;1q"), "浮层消失后重放");
 }
 
 /// 浮层出现时 kitty 的图必须被撤下来：图像是独立图层，默认画在文字之上，

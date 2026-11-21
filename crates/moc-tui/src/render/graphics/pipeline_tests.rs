@@ -8,8 +8,8 @@ use crate::transcript::Block;
 /// 解析 sixel 头里的栅格属性 `"Pan;Pad;Ph;Pv`，返回 (宽, 高)。
 fn sixel_size(bytes: &[u8]) -> (u32, u32) {
     let text = String::from_utf8_lossy(bytes);
-    // `\x1bPq"` 四个字节：跳过它才是栅格属性
-    let start = text.find("\x1bPq\"").expect("sixel 头") + 4;
+    // `\x1bP0;1q"` 7 个字节：跳过它才是栅格属性
+    let start = text.find("\x1bP0;1q\"").expect("sixel 头") + 7;
     let rest = &text[start..];
     let end = rest
         .find(|ch: char| !ch.is_ascii_digit() && ch != ';')

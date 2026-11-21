@@ -421,5 +421,6 @@ fn digit_prefixed_labels_stay_text_while_parenthesized_numbers_parse() {
     assert_eq!(analysis.label, Some(0));
     assert_eq!(analysis.columns[0].role, ColumnRole::Label);
     let planned = crate::chart::plan::plan(&analysis).expect("截图表格应当可规划为图表");
-    assert_eq!(planned.kind, crate::chart::plan::ChartKind::Grouped);
+    assert_eq!(planned.kind, crate::chart::plan::ChartKind::Panels);
+    assert_eq!(planned.series, vec![1, 2, 3, 4]);
 }

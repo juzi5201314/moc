@@ -1,6 +1,5 @@
 use rust_i18n::t;
 
-use super::super::text;
 use super::GAP;
 use super::HEAT_STEPS;
 use super::LOG_SCALE_RATIO;
@@ -15,7 +14,7 @@ use super::padded_bounds;
 use super::point;
 
 impl Painter<'_> {
-    /// 折线图：图例 + 绘图区（含 y 轴极值）+ 横轴刻度。
+    /// 折线图：圆点图例 + 抗锯齿折线绘图区（含 y 轴极值）+ 横轴刻度。
     pub(super) fn line(&mut self) {
         let spec = self.spec;
         let Some(reference) = spec.series.first() else {
@@ -44,36 +43,35 @@ impl Painter<'_> {
                 f64::from(plot_left)
             } else {
                 f64::from(plot_left)
-                    + (plot_right - plot_left) as f64 * index as f64 / (count - 1) as f64
+                    + f64::from(plot_right - plot_left) * index as f64 / (count - 1) as f64
             }
         };
         let y_of = |value: f64| -> f64 {
-            let height = (plot_bottom - plot_top).max(1) as f64;
+            let height = f64::from((plot_bottom - plot_top).max(1));
             f64::from(plot_bottom) - (value - min_v) / span * height
         };
         let draw_dots = spec.categories.len() <= 12;
         for (index, series) in spec.series.iter().enumerate() {
             let color = self.series_color(index);
-            let color_id = self.canvas.color(color);
             let mut run: Vec<(f64, f64)> = Vec::new();
             for category in 0..spec.categories.len() {
                 match point(series, category) {
                     Some(value) => run.push((x_of(category), y_of(value.value))),
                     None => {
-                        self.polyline(&run, color_id);
+                        self.svg.polyline(&run, 2.0, color);
                         if draw_dots || run.len() == 1 {
                             for &(x, y) in &run {
-                                self.canvas.disc(x, y, 2.0, color_id);
+                                self.svg.circle(x, y, 2.6, color);
                             }
                         }
                         run.clear();
                     }
                 }
             }
-            self.polyline(&run, color_id);
+            self.svg.polyline(&run, 2.0, color);
             if draw_dots || run.len() == 1 {
                 for &(x, y) in &run {
-                    self.canvas.disc(x, y, 2.0, color_id);
+                    self.svg.circle(x, y, 2.6, color);
                 }
             }
         }
@@ -105,17 +103,7 @@ impl Painter<'_> {
         }
     }
 
-    pub(super) fn polyline(&mut self, points: &[(f64, f64)], color: u8) {
-        if points.len() >= 2 {
-            self.canvas.polyline(points, color, 2);
-        }
-    }
-
-    /// 热力图：顶部色标 + 列头 + 每类别一行色块。
-    ///
-    /// 所有格子共用系列 0 的色相：热力图表达同一量纲的强弱，逐列换色会把
-    /// 「值」误读成「类别」。色深按全部系列统一定标，宽范围走对数映射；
-    /// 色标放在顶部图例区，底部不再有与数据行同构的色标行。
+    /// 热力图：顶部圆角渐变色标 + 列头 + 每类别一行圆角色块。
     pub(super) fn heatmap(&mut self) {
         let spec = self.spec;
         let Some(reference) = spec.series.first() else {
@@ -151,20 +139,15 @@ impl Painter<'_> {
         let high_w = self.text_width(&high);
         let bar_left = PAD_X + legend_w + GAP + low_w + GAP;
         let bar_right = grid_right.saturating_sub(high_w + GAP).max(bar_left + 1);
-        let bar_h = (self.cell_h() / 4).max(3);
+        let bar_h = (self.cell_h() / 4).max(4);
         let bar_y = self.row_top(0) + (self.cell_h() - bar_h) / 2;
         let bar_span = (bar_right - bar_left).max(1);
         let segment = (bar_span / HEAT_STEPS as u32).max(1);
-        for step in 0..HEAT_STEPS {
-            let fill = blend(self.palette.bg_base, hue, heat_alpha(step));
-            self.fill(
-                bar_left + segment * step as u32,
-                bar_y,
-                segment,
-                bar_h,
-                fill,
-            );
-        }
+        let segments: Vec<(u32, [u8; 3])> = (0..HEAT_STEPS)
+            .map(|step| (segment, blend(self.palette.bg_base, hue, heat_alpha(step))))
+            .collect();
+        self.svg
+            .clipped_segments(bar_left, bar_y, segment * HEAT_STEPS as u32, bar_h, &segments);
         self.text(0, PAD_X, &legend, self.palette.text_secondary);
         self.text(0, PAD_X + legend_w + GAP, &low, self.palette.gray_dim);
         self.text_end(0, grid_right, &high, self.palette.gray_dim);
@@ -200,29 +183,20 @@ impl Painter<'_> {
                 let fill = blend(self.palette.bg_base, hue, heat_alpha(step));
                 let inset = if cell_w >= 4 { 1 } else { 0 };
                 let width = cell_w.saturating_sub(2 * inset).max(1);
-                self.fill(x + inset, y, width, height, fill);
-                // 格内数值：格宽足够才写，否则宁可不写（挤成一团更不可读）
+                let rx = if width >= 8 && height >= 8 { 3.0 } else { 0.0 };
+                self.svg.rect(x + inset, y, width, height, rx, fill);
+                // 格内数值：格宽足够才写，否则宁可不写
                 let label = &value.text;
                 let text_w = self.text_width(label);
                 if width >= text_w + 6 {
-                    // 墨色按格子亮度选：浅底写深色，深底写浅色
                     let luma = (299 * u32::from(fill[0])
                         + 587 * u32::from(fill[1])
                         + 114 * u32::from(fill[2]))
                         / 1000;
                     let ink = if luma > 140 { dark } else { text_color };
                     let baseline = self.baseline(line);
-                    let px = self.px();
-                    text::draw(
-                        &mut self.canvas,
-                        x + (cell_w - text_w) / 2,
-                        baseline,
-                        label,
-                        px,
-                        ink,
-                        fill,
-                        self.fonts,
-                    );
+                    self.svg
+                        .text(x + (cell_w - text_w) / 2, baseline, label, ink);
                 }
             }
         }
@@ -231,7 +205,6 @@ impl Painter<'_> {
     /// 散点图：x / y 两个量纲，12 行绘图区 + 两行轴标签。
     pub(super) fn scatter(&mut self) {
         let spec = self.spec;
-        // 规划保证散点是两个不同量纲的测量列；不足两列就什么都不画
         let [x_series, y_series, ..] = spec.series.as_slice() else {
             return;
         };
@@ -272,13 +245,13 @@ impl Painter<'_> {
         let map_y = |value: f64| -> f64 {
             f64::from(plot_bottom) - (value - y_min) / y_span * f64::from(plot_bottom - plot_top)
         };
-        let color = self.canvas.color(self.series_color(0));
-        let radius = (f64::from(self.cell_h()) * 0.08).clamp(1.5, 4.0);
+        let color = self.series_color(0);
+        let radius = (f64::from(self.cell_h()) * 0.14).clamp(2.2, 4.5);
         let border = self.palette.border_subtle;
         self.hline(plot_left, plot_right, plot_bottom, border);
         self.vline(plot_left, plot_top, plot_bottom, border);
         for (x, y) in &pairs {
-            self.canvas.disc(map_x(*x), map_y(*y), radius, color);
+            self.svg.circle(map_x(*x), map_y(*y), radius, color);
         }
         let axis_row = rows.saturating_sub(2);
         let x_low = format_value(raw_x.0, x_series.factor, &x_series.unit);

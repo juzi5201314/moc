@@ -1,13 +1,12 @@
-//! 图表栅格化：把 `moc_core::chart::ChartSpec` 画成像素图。
+//! 图表栅格化：把 `moc_core::chart::ChartSpec` 生成透明 SVG 并交给 `resvg` 渲染为位图。
 //!
-//! 分成四层，层与层之间只靠数据传递：
-//! - [`crate::render::canvas`]：双平面像素画布（24 位 RGB + 有界调色板索引），几何图元的唯一写入口；
-//! - [`fonts`]：内嵌字体的光栅化与字形缓存，缺字才懒回退系统字体；
-//! - [`text`]：把字形覆盖度按 5 档 alpha 预混成调色板像素；
-//! - [`draw`]：八种图型的版式；`graphics::encode`：kitty / sixel / iTerm2 / PNG 编码。
+//! 管线分层：
+//! - [`fonts`]：共享 `resvg::usvg::fontdb`（系统等宽字体优先，内嵌 CJK 子集兜底）与同源测宽；
+//! - [`draw`]：九种图型的矢量 SVG 生成（圆角胶囊条、圆点图例、分面小面板、无底色透明画布）；
+//! - `resvg` + `tiny-skia` 光栅化为直通 RGBA，封装成 [`Canvas`] 供 kitty (`f=32`) /
+//!   iTerm2 (RGBA PNG) / sixel (`P2=1` 透明索引) 编码。
 //!
-//! 字体与画布都按整数像素落位：图片尺寸 = 终端格尺寸的整数倍，终端不缩放，
-//! 文字才不会像系统字体 + 分数缩放那样发虚。
+//! 图片尺寸严格等于「终端格数 × 单元格像素尺寸」的整数倍，终端不做缩放。
 
 use moc_core::chart::{ChartKind, ChartSpec};
 
@@ -17,7 +16,6 @@ use crate::theme::Theme;
 
 pub mod draw;
 pub mod fonts;
-pub mod text;
 
 pub use fonts::{Fonts, with_fonts};
 
@@ -77,6 +75,8 @@ pub fn rows_needed(kind: ChartKind, categories: usize, series: usize) -> u16 {
         ChartKind::Scatter => 1 + 12 + 2,
         // 顶部色标 + 列头 + 每类别一行（底部不再有伪数据行）
         ChartKind::Heatmap => 2 + categories,
+        // 顶部类别图例 + ceil(series/2) 排分面（每排：面板标题 + 类别行 + 留白）
+        ChartKind::Panels => 1 + series.div_ceil(2).max(1).saturating_mul(categories.saturating_add(2)),
     };
     u16::try_from(rows).unwrap_or(u16::MAX)
 }
@@ -96,8 +96,8 @@ pub fn layout(spec: &ChartSpec, cols: u16, cell: CellPixels) -> Option<ChartLayo
         return None;
     }
     let px = (u32::from(cols) * cell.w, u32::from(rows) * cell.h);
-    // 字号固定为行高的 0.72：行距留给上下留白，字号不随图片缩放变化
-    let px_size = ((f64::from(cell.h) * 0.72).round() as u32).max(9);
+    // 字号控制在行高的 0.68（10..=18px）：字形上下留出呼吸感，贴近终端正文观感。
+    let px_size = ((f64::from(cell.h) * 0.68).round() as u32).clamp(10, 18);
     let baseline = ((f64::from(cell.h) * f64::from(BASELINE_RATIO)).round() as u32).min(cell.h);
     Some(ChartLayout {
         kind: spec.kind,
@@ -110,7 +110,7 @@ pub fn layout(spec: &ChartSpec, cols: u16, cell: CellPixels) -> Option<ChartLayo
     })
 }
 
-/// 栅格化一张图：画布尺寸严格等于版式的像素尺寸。
+/// 栅格化一张图：生成透明 SVG 后交给 `resvg` 光栅化为直通 RGBA 画布。
 pub fn rasterize(
     spec: &ChartSpec,
     layout: &ChartLayout,
@@ -118,8 +118,39 @@ pub fn rasterize(
     fonts: &mut Fonts,
 ) -> Canvas {
     let palette = theme.raw();
-    let canvas = Canvas::new(layout.px.0, layout.px.1, palette.bg_base);
-    draw::paint(canvas, spec, layout, palette, fonts)
+    let svg = draw::render_svg(spec, layout, palette, fonts);
+    let opts = resvg::usvg::Options {
+        fontdb: fonts.database(),
+        ..Default::default()
+    };
+    let Ok(tree) = resvg::usvg::Tree::from_str(&svg, &opts) else {
+        return Canvas::new(layout.px.0, layout.px.1, palette.bg_base);
+    };
+    let Some(mut pixmap) = resvg::tiny_skia::Pixmap::new(layout.px.0, layout.px.1) else {
+        return Canvas::new(layout.px.0, layout.px.1, palette.bg_base);
+    };
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::identity(),
+        &mut pixmap.as_mut(),
+    );
+    let mut rgba = pixmap.take();
+    // tiny-skia 输出预乘 RGBA；反预乘回直通 RGBA 供 kitty f=32 与 RGBA PNG 使用。
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        let a = pixel[3];
+        if a == 0 {
+            pixel[0] = 0;
+            pixel[1] = 0;
+            pixel[2] = 0;
+        } else if a < 255 {
+            let a_u16 = u16::from(a);
+            let half = a_u16 / 2;
+            for channel in &mut pixel[..3] {
+                *channel = ((u16::from(*channel) * 255 + half) / a_u16).min(255) as u8;
+            }
+        }
+    }
+    Canvas::from_rgba(layout.px.0, layout.px.1, rgba, palette.bg_base)
 }
 
 /// 后台预热内嵌字体（幂等）。
@@ -182,7 +213,7 @@ mod tests {
         let layout = layout(&spec(ChartKind::Bar, 5, 1), 60, cell).expect("60 列足够");
         assert_eq!(layout.rows, 7, "图例 + 5 类别 + 轴");
         assert_eq!(layout.px, (60 * 9, 7 * 18));
-        assert_eq!(layout.px_size, 13, "18 * 0.72 四舍五入");
+        assert_eq!(layout.px_size, 12, "18 * 0.68 四舍五入");
         assert_eq!(layout.baseline, 14, "18 * 0.78 四舍五入");
     }
 

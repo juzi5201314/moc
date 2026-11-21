@@ -184,6 +184,7 @@ pub(super) async fn chart_analyze(
         crate::chart::ChartKind::Progress => "Progress",
         crate::chart::ChartKind::Heatmap => "Heatmap",
         crate::chart::ChartKind::Scatter => "Scatter",
+        crate::chart::ChartKind::Panels => "Panels",
     };
     let series = spec
         .series

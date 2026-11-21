@@ -2,6 +2,7 @@ use super::*;
 
 use moc_core::chart::{Dimension, Point};
 
+use crate::render::canvas::Canvas;
 use crate::render::chart::with_fonts;
 use crate::render::graphics::CellPixels;
 use crate::theme::{ColorLevel, Theme};
@@ -49,10 +50,7 @@ fn spec(kind: ChartKind, categories: &[&str], series: Vec<Series>) -> ChartSpec 
 fn raster(spec: &ChartSpec) -> (Canvas, ChartLayout) {
     let theme = Theme::resolved(ColorLevel::TrueColor);
     let layout = super::super::layout(spec, 48, cell()).expect("测试版式应当可用");
-    let canvas = with_fonts(|fonts| {
-        let canvas = Canvas::new(layout.px.0, layout.px.1, theme.raw().bg_base);
-        paint(canvas, spec, &layout, theme.raw(), fonts)
-    });
+    let canvas = with_fonts(|fonts| super::super::rasterize(spec, &layout, &theme, fonts));
     (canvas, layout)
 }
 
@@ -311,4 +309,33 @@ fn diverging_bars_and_sparse_plots_stay_within_bounds() {
     );
     let (scatter_canvas, _) = raster(&sparse_scatter);
     assert!(scatter_canvas.w() > 0);
+}
+
+/// 分面小面板：透明 RGBA 背景（角点 alpha == 0），且 2×2 面板各自独立出条。
+#[test]
+fn panels_render_transparent_rgba_with_four_facets() {
+    let theme = Theme::resolved(ColorLevel::TrueColor);
+    let panels_spec = spec(
+        ChartKind::Panels,
+        &["100 条", "1 万条", "8 MiB 末条"],
+        vec![
+            series("s1", &[(4.6, "4.6 ms"), (150.0, "150 ms"), (64.0, "64 ms")]),
+            series("s2", &[(4.2, "4.2 ms"), (3.8, "3.8 ms"), (127.0, "127 ms")]),
+            series("s3", &[(339.0, "339 ms"), (488.0, "488 ms"), (1040.0, "1.04 s")]),
+            series("s4", &[(40.2, "40.2 MiB"), (51.1, "51.1 MiB"), (158.0, "158 MiB")]),
+        ],
+    );
+    let (canvas, layout) = raster(&panels_spec);
+    assert_eq!(layout.rows, 1 + 2 * (3 + 2));
+    let rgba = canvas.rgba().expect("SVG 光栅化应保留直通 RGBA 通道");
+    assert_eq!(rgba[3], 0, "左上角背景像素必须全透明");
+    // 四个面板的最后一行（cat 2，用 chart_rgb(2)）都应落出实色像素
+    let cat2 = chart_rgb(&theme, 2);
+    for (grid_row, grid_col) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+        let y = (1 + grid_row * 5 + 3) * 18 + 9;
+        let x0 = if grid_col == 0 { 0 } else { canvas.w() / 2 };
+        let x1 = if grid_col == 0 { canvas.w() / 2 } else { canvas.w() };
+        let painted = (x0..x1).filter(|&x| rgb_at(&canvas, x, y) == cat2).count();
+        assert!(painted >= 4, "面板 ({grid_row}, {grid_col}) 应画出第 3 类胶囊条");
+    }
 }

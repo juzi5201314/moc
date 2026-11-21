@@ -71,12 +71,16 @@ pub fn encode(canvas: &Canvas, proto: GraphicsProto, id: u32, cols: u16, rows: u
 /// kitty 单个分块的 payload 上限（规范建议 4096 字节 base64）。
 const KITTY_CHUNK: usize = 4096;
 
-/// kitty 传输串：`a=t` 只传输不显示，`f=24` 原始 RGB，`o=z` zlib 压缩。
+/// kitty 传输串：`a=t` 只传输不显示，带透明平面时用 `f=32` RGBA，否则 `f=24` RGB，`o=z` zlib 压缩。
 ///
 /// 分块规则按规范：首块带全部键，后续块只带 `m`，最后一块 `m=0`。
 /// `q=2` 关掉应答，避免终端把 OK 写回输入流。
 fn kitty_transmit(canvas: &Canvas, id: u32) -> String {
-    let compressed = zlib(canvas.rgb());
+    let (format, pixels) = match canvas.rgba() {
+        Some(rgba) => (32, rgba),
+        None => (24, canvas.rgb()),
+    };
+    let compressed = zlib(pixels);
     let payload = base64::engine::general_purpose::STANDARD.encode(&compressed);
     let chunks: Vec<&str> = payload
         .as_bytes()
@@ -89,7 +93,7 @@ fn kitty_transmit(canvas: &Canvas, id: u32) -> String {
         out.push_str("\x1b_G");
         if index == 0 {
             out.push_str(&format!(
-                "f=24,o=z,s={},v={},a=t,i={id},q=2,",
+                "f={format},o=z,s={},v={},a=t,i={id},q=2,",
                 canvas.w(),
                 canvas.h()
             ));
@@ -135,7 +139,8 @@ fn sixel(canvas: &Canvas) -> Vec<u8> {
     let palette = canvas.palette();
     let index = canvas.index();
     let mut out = Vec::with_capacity(palette.len() * 24 + index.len() / 4 + 64);
-    out.extend_from_slice(b"\x1bPq");
+    // `P2=1`：未绘制的 0 号背景槽位保持透明，不覆盖终端自身底色。
+    out.extend_from_slice(b"\x1bP0;1q");
     out.extend_from_slice(format!("\"1;1;{w};{h}").as_bytes());
     for (slot, rgb) in palette.iter().enumerate() {
         let percent = |value: u8| u32::from(value) * 100 / 255;
@@ -226,15 +231,17 @@ fn iterm2(canvas: &Canvas, cols: u16, rows: u16) -> String {
     )
 }
 
-/// PNG（RGB 8 位、无滤波、单 IDAT）：iTerm2 与预览落盘共用。
+/// PNG（8 位 RGB 或带 alpha 时的 RGBA、无滤波、单 IDAT）：iTerm2 与预览落盘共用。
 pub fn png(canvas: &Canvas) -> Vec<u8> {
     let (w, h) = (canvas.w(), canvas.h());
-    let stride = 3 * w as usize;
-    let rgb = canvas.rgb();
+    let (color_type, stride, pixels) = match canvas.rgba() {
+        Some(rgba) => (6u8, 4 * w as usize, rgba),
+        None => (2u8, 3 * w as usize, canvas.rgb()),
+    };
     let mut raw = Vec::with_capacity((stride + 1) * h as usize);
     for row in 0..h as usize {
         raw.push(0); // filter type 0（None）：图表是纯色块，滤波省不下多少
-        raw.extend_from_slice(&rgb[row * stride..(row + 1) * stride]);
+        raw.extend_from_slice(&pixels[row * stride..(row + 1) * stride]);
     }
     let compressed = zlib(&raw);
     let mut out = Vec::with_capacity(compressed.len() + 64);
@@ -242,7 +249,7 @@ pub fn png(canvas: &Canvas) -> Vec<u8> {
     let mut ihdr = Vec::with_capacity(13);
     ihdr.extend_from_slice(&w.to_be_bytes());
     ihdr.extend_from_slice(&h.to_be_bytes());
-    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    ihdr.extend_from_slice(&[8, color_type, 0, 0, 0]);
     push_chunk(&mut out, b"IHDR", &ihdr);
     push_chunk(&mut out, b"IDAT", &compressed);
     push_chunk(&mut out, b"IEND", &[]);
@@ -328,7 +335,7 @@ mod tests {
     fn decode_sixel(bytes: &[u8]) -> (u32, u32, Vec<[u8; 3]>, Vec<u8>) {
         let text = std::str::from_utf8(bytes).expect("sixel 是 ASCII");
         let body = text
-            .strip_prefix("\x1bPq")
+            .strip_prefix("\x1bP0;1q")
             .and_then(|rest| rest.strip_suffix("\x1b\\"))
             .expect("sixel 头尾固定");
         let mut palette: Vec<[u8; 3]> = Vec::new();
@@ -577,5 +584,31 @@ mod tests {
             .decode(payload)
             .expect("base64 可解");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    /// 透明 RGBA 画布：kitty 走 `f=32`，PNG 写 Color Type 6（RGBA）。
+    #[test]
+    fn rgba_canvas_encodes_with_alpha_channel() {
+        let rgba = vec![
+            0, 0, 0, 0, // 全透明背景
+            10, 20, 30, 255, // 不透明前景
+        ];
+        let canvas = Canvas::from_rgba(2, 1, rgba.clone(), [0x14, 0x14, 0x14]);
+        let kitty = kitty_transmit(&canvas, 5);
+        assert!(kitty.contains("f=32,o=z,s=2,v=1,a=t,i=5,q=2,"), "{kitty}");
+        let png_bytes = png(&canvas);
+        assert_eq!(png_bytes[25], 6, "PNG Color Type 必须是 6（RGBA）");
+        let start = png_bytes
+            .windows(4)
+            .position(|window| window == b"IDAT")
+            .expect("IDAT");
+        let len = u32::from_be_bytes(png_bytes[start - 4..start].try_into().unwrap()) as usize;
+        let mut raw = Vec::new();
+        std::io::Read::read_to_end(
+            &mut flate2::read::ZlibDecoder::new(&png_bytes[start + 4..start + 4 + len]),
+            &mut raw,
+        )
+        .expect("IDAT 可解");
+        assert_eq!(raw, [vec![0u8], rgba].concat());
     }
 }

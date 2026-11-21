@@ -1140,3 +1140,4 @@ args_fmt = { zh = "/%{name} 参数", en = "/%{name} args" }
 scale = { zh = "色阶", en = "scale" }
 scale_log = { zh = "色阶（对数）", en = "scale (log)" }
 log_note = { zh = "对数刻度", en = "log scale" }
+scaled_per_panel = { zh = "各面板独立刻度", en = "scaled per panel" }

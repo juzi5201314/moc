@@ -1,6 +1,9 @@
+use rust_i18n::t;
+
 use super::GAP;
 use super::PAD_X;
 use super::Painter;
+use super::SWATCH;
 use super::ValueScale;
 use super::bar_height;
 use super::bar_inset;
@@ -15,6 +18,11 @@ use super::progress_ratio;
 use moc_core::chart::Point;
 use moc_core::chart::Polarity;
 use moc_core::chart::Series;
+
+/// 分面小面板两列之间的列间距（像素）。
+const PANEL_COL_GAP: u32 = 28;
+/// 分面小面板零值以上小条的最小可见胶囊宽度（像素），避免极小正数缩成看不见的竖线。
+const PANEL_MIN_BAR_W: u32 = 6;
 
 impl Painter<'_> {
     /// 分别统计负值与非负值文本的最大像素宽（负值标签画在条左端之外，需在轨道左侧留宽）。
@@ -114,7 +122,7 @@ impl Painter<'_> {
         self.value_axis(axis_row, track, scale, &min_text, &mid_text, &max_text);
     }
 
-    /// 分组条形图：每类别占系列数行，行内只画条与数值（系列由色块图例区分）。
+    /// 分组条形图：每类别占系列数行，行内只画圆角胶囊条与数值。
     pub(super) fn grouped(&mut self) {
         let spec = self.spec;
         let scale = ValueScale::new(&spec.series);
@@ -206,6 +214,124 @@ impl Painter<'_> {
         self.value_axis(axis_row, track, scale, &min_text, &mid_text, &max_text);
     }
 
+    /// 分面小面板（对标 omp autoGraph）：顶部类别圆点图例 + 2 列网格，各指标独立线性比例尺。
+    pub(super) fn panels(&mut self) {
+        let spec = self.spec;
+        if spec.series.is_empty() || spec.categories.is_empty() {
+            return;
+        }
+        self.panel_legend();
+        let inner_w = self.w().saturating_sub(2 * PAD_X);
+        let col_gap = PANEL_COL_GAP.min(inner_w / 6);
+        let panel_w = inner_w.saturating_sub(col_gap) / 2;
+        if panel_w < 24 {
+            return;
+        }
+        let stride = spec.categories.len() + 2;
+        for (idx, series) in spec.series.iter().enumerate() {
+            let grid_row = idx / 2;
+            let grid_col = idx % 2;
+            let x0 = PAD_X + (grid_col as u32) * (panel_w + col_gap);
+            let top_row = u16::try_from(1 + grid_row * stride).unwrap_or(u16::MAX);
+            self.draw_panel(x0, panel_w, top_row, series);
+        }
+    }
+
+    /// 分面顶行：左侧灰字 `各面板独立刻度` + 右侧（空间允许时右对齐）类别圆点图例。
+    fn panel_legend(&mut self) {
+        let spec = self.spec;
+        let note = t!("tui.chart.scaled_per_panel").into_owned();
+        let note_w = self.text_width(&note);
+        let right = self.w().saturating_sub(PAD_X);
+        self.text(0, PAD_X, &note, self.palette.gray_dim);
+
+        let mut x = PAD_X + note_w + 3 * GAP;
+        if x >= right {
+            return;
+        }
+        let mut items: Vec<(usize, String, u32)> = Vec::with_capacity(spec.categories.len());
+        let mut total_w = 0u32;
+        let max_item_w = (right - x) / (spec.categories.len().max(1) as u32);
+        for (cat_idx, name) in spec.categories.iter().enumerate() {
+            let room = max_item_w.saturating_sub(SWATCH + GAP + 2 * GAP);
+            let shown = self.fit(name, room.max(1));
+            let text_w = self.text_width(&shown);
+            let item_w = SWATCH + GAP + text_w;
+            total_w += item_w + if cat_idx > 0 { 2 * GAP } else { 0 };
+            items.push((cat_idx, shown, item_w));
+        }
+        if x + total_w <= right {
+            x = right - total_w;
+        }
+        for (idx, (cat_idx, shown, item_w)) in items.into_iter().enumerate() {
+            if idx > 0 {
+                x += 2 * GAP;
+            }
+            if x + SWATCH + GAP >= right {
+                break;
+            }
+            self.dot(x, 0, self.series_color(cat_idx));
+            self.text(0, x + SWATCH + GAP, &shown, self.palette.text_secondary);
+            x += item_w;
+        }
+    }
+
+    /// 单个分面小面板：顶行系列名（含单位），下方每类别一条圆角胶囊 + 数值。
+    fn draw_panel(&mut self, x0: u32, panel_w: u32, top_row: u16, series: &Series) {
+        let title = self.fit(&series.name, panel_w);
+        self.text(top_row, x0, &title, self.palette.text_primary);
+
+        let slice = std::slice::from_ref(series);
+        let scale = ValueScale::linear(slice);
+        let (left_w, right_w) = self.split_value_widths(slice, scale, (panel_w * 2) / 5);
+        let track_left = x0 + if left_w > 0 { left_w + GAP } else { 0 };
+        let right_pad = if right_w > 0 { right_w + GAP } else { 0 };
+        let track_right = (x0 + panel_w)
+            .saturating_sub(right_pad)
+            .max(track_left + PANEL_MIN_BAR_W + 1);
+        let track = (track_left, track_right);
+        let origin = scale.origin(track);
+
+        if scale.has_negative() && scale.has_positive() {
+            let bottom = self.row_top(top_row + 1 + u16::try_from(self.spec.categories.len()).unwrap_or(0));
+            self.vline(origin, self.row_top(top_row + 1), bottom, self.palette.border_subtle);
+        }
+
+        let bar_h = bar_height(self.cell_h());
+        let inset = bar_inset(self.cell_h());
+        for cat_idx in 0..self.spec.categories.len() {
+            let row = top_row + 1 + u16::try_from(cat_idx).unwrap_or(0);
+            let Some(val) = point(series, cat_idx) else {
+                self.text(row, track.0, "—", self.palette.gray_dim);
+                continue;
+            };
+            let color = self.series_color(cat_idx);
+            let mut x = scale.position(track, val.value);
+            if val.value > 0.0 && x.saturating_sub(origin) < PANEL_MIN_BAR_W {
+                x = (origin + PANEL_MIN_BAR_W).min(track.1);
+            } else if val.value < 0.0 && origin.saturating_sub(x) < PANEL_MIN_BAR_W {
+                x = origin.saturating_sub(PANEL_MIN_BAR_W).max(track.0);
+            }
+            let bar_y = self.row_top(row) + inset;
+            let (left, right) = if x >= origin { (origin, x) } else { (x, origin) };
+            let width = if val.value == 0.0 { 2 } else { (right - left).max(1) };
+            self.pill(left, bar_y, width, bar_h, color);
+            if val.value >= 0.0 {
+                let text_x = left + width + GAP;
+                let max_text = (x0 + panel_w).saturating_sub(text_x);
+                let shown = self.fit(&val.text, max_text.max(1));
+                self.text(row, text_x, &shown, self.palette.text_secondary);
+            } else {
+                let shown = if left_w > 0 {
+                    self.fit(&val.text, left_w)
+                } else {
+                    val.text.clone()
+                };
+                self.text_end(row, x.saturating_sub(GAP), &shown, self.palette.text_secondary);
+            }
+        }
+    }
+
     /// 一行条形（条形 / 分组 / 成对共用；负值标签按预留左侧宽度截断，避免压入类别列）。
     #[expect(clippy::too_many_arguments, reason = "内部行绘制复用，参数与轨道几何一一对应")]
     pub(super) fn bar_row(
@@ -228,15 +354,10 @@ impl Painter<'_> {
         } else {
             (x, origin)
         };
-        self.fill(
-            left,
-            bar_y,
-            (right - left).max(1),
-            bar_height(self.cell_h()),
-            color,
-        );
+        let width = (right - left).max(2);
+        self.pill(left, bar_y, width, bar_height(self.cell_h()), color);
         if value.value >= 0.0 {
-            self.text(row, x + GAP, &value.text, self.palette.text_secondary);
+            self.text(row, left + width + GAP, &value.text, self.palette.text_secondary);
         } else {
             let shown = if left_w > 0 {
                 self.fit(&value.text, left_w)
@@ -274,7 +395,7 @@ impl Painter<'_> {
         }
     }
 
-    /// 堆叠条形图：类别一行，段按系列顺序拼；归一化时条长恒为满格。
+    /// 堆叠条形图：类别一行，段按系列顺序无缝拼成胶囊条；归一化时条长恒为满格。
     pub(super) fn stacked(&mut self) {
         let spec = self.spec;
         let Some(reference) = spec.series.first() else {
@@ -307,13 +428,14 @@ impl Painter<'_> {
                 .max(PAD_X + label_w + GAP + 1),
         );
         let length = track.1 - track.0;
+        let bar_h = bar_height(self.cell_h());
+        let inset = bar_inset(self.cell_h());
         for row in 0..spec.categories.len() {
             let line = u16::try_from(row + 1).unwrap_or(u16::MAX);
             let shown = self.fit(&spec.categories[row].clone(), label_w);
             self.text(line, PAD_X, &shown, self.palette.text_primary);
             let total = totals[row];
-            let bar_y = self.row_top(line) + bar_inset(self.cell_h());
-            let bar_h = bar_height(self.cell_h());
+            let bar_y = self.row_top(line) + inset;
             if total <= 0.0 || max_total <= 0.0 {
                 continue;
             }
@@ -351,17 +473,16 @@ impl Painter<'_> {
                     (index, width.saturating_sub(sum - target_len))
                 };
             }
-            let mut x = track.0;
-            for (index, width) in widths {
-                if width > 0 {
-                    self.fill(x, bar_y, width, bar_h, self.series_color(index));
-                }
-                x += width;
-            }
+            let segments: Vec<(u32, [u8; 3])> = widths
+                .into_iter()
+                .map(|(index, width)| (width, self.series_color(index)))
+                .collect();
+            self.svg
+                .clipped_segments(track.0, bar_y, target_len, bar_h, &segments);
             if !spec.normalized {
                 self.text_end(
                     line,
-                    self.w() - PAD_X,
+                    self.w().saturating_sub(PAD_X),
                     &total_labels[row],
                     self.palette.text_secondary,
                 );
@@ -393,7 +514,7 @@ impl Painter<'_> {
         }
     }
 
-    /// 进度条：每类别一行，轨道 + 填充 + 右侧 `文本（百分比）`。
+    /// 进度条：每类别一行，半透明圆角轨道 + 胶囊填充 + 右侧 `文本（百分比）`。
     pub(super) fn progress(&mut self) {
         let spec = self.spec;
         let Some(series) = spec.series.first() else {
@@ -411,7 +532,8 @@ impl Painter<'_> {
                 .max(PAD_X + label_w + GAP + 1),
         );
         let length = track.1 - track.0;
-        let track_h = (self.cell_h() / 6).max(2);
+        let track_h = (self.cell_h() / 4).max(4);
+        let color = self.series_color(0);
         for row in 0..spec.categories.len() {
             let line = u16::try_from(row).unwrap_or(u16::MAX);
             let shown = self.fit(&spec.categories[row].clone(), label_w);
@@ -420,13 +542,16 @@ impl Painter<'_> {
                 continue;
             };
             let y = self.row_top(line) + (self.cell_h() - track_h) / 2;
-            self.fill(track.0, y, length, track_h, self.palette.bg_panel);
+            self.svg
+                .track_pill(track.0, y, length, track_h, self.palette.border);
             let ratio = progress_ratio(value);
             let filled = ((f64::from(length) * ratio).round() as u32).min(length);
-            self.fill(track.0, y, filled, track_h, self.series_color(0));
+            if filled > 0 {
+                self.pill(track.0, y, filled, track_h, color);
+            }
             self.text_end(
                 line,
-                self.w() - PAD_X,
+                self.w().saturating_sub(PAD_X),
                 &labels[row],
                 self.palette.text_secondary,
             );

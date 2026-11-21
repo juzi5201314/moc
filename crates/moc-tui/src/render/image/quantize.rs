@@ -19,6 +19,9 @@ const SAMPLE_FACTOR: i32 = 10;
 /// NeuQuant 的色槽数：留 1 个给主题底色。
 const QUANT_COLORS: usize = PALETTE_CAP - 1;
 
+/// 透明像素直接归入 0 号透明槽位的 alpha 阈值（消除 sixel 边缘毛刺）。
+const ALPHA_CUTOFF: u8 = 24;
+
 /// RGBA → (调色板, 索引平面)，索引 0 恒为底色 `bg`。
 ///
 /// 先尝试精确调色板：图标、截图、图表这类「颜色数不多」的图直接拿真彩色，
@@ -35,6 +38,24 @@ pub fn quantize(image: &image::RgbaImage, bg: [u8; 3]) -> (Vec<[u8; 3]>, Vec<u8>
         rgba.extend_from_slice(&[flattened[0], flattened[1], flattened[2], 0xff]);
     }
     exact(&rgba, bg).unwrap_or_else(|| reduce(&rgba, bg))
+}
+
+/// 直通 RGBA 字节流 → (调色板, 索引平面)，索引 0 恒为透明底色 `bg`。
+///
+/// 供透明图表画布给 sixel 编码用：`alpha < 24` 直接映射到底色 `bg`（0 号槽位在
+/// sixel `P2=1` 下跳过即透明），半透明像素预混后走精确调色板或 NeuQuant。
+pub fn quantize_rgba(rgba: &[u8], bg: [u8; 3]) -> (Vec<[u8; 3]>, Vec<u8>) {
+    let mut flattened_rgba = Vec::with_capacity(rgba.len());
+    for pixel in rgba.as_chunks::<4>().0 {
+        let [r, g, b, a] = *pixel;
+        let mixed = if a < ALPHA_CUTOFF {
+            bg
+        } else {
+            blend([r, g, b], bg, a)
+        };
+        flattened_rgba.extend_from_slice(&[mixed[0], mixed[1], mixed[2], 0xff]);
+    }
+    exact(&flattened_rgba, bg).unwrap_or_else(|| reduce(&flattened_rgba, bg))
 }
 
 /// 颜色数不超过 256 时直接建精确调色板；超了返回 `None`（交给 NeuQuant）。

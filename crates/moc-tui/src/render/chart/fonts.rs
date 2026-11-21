@@ -1,16 +1,14 @@
-//! 字体与字形光栅化：内嵌 CJK 等宽字体为主，缺字才懒回退系统字体。
+//! 图表字体与测宽：基于 `resvg::usvg::fontdb`，系统等宽字体优先，内嵌 CJK 子集兜底。
 //!
-//! 内嵌字体随 crate 提交（见 `assets/fonts/`），因此图表的拉丁与中文标签
-//! 在任何机器上都是同一副字形，不受系统字体差异影响。解析子集里全部字形
-//! 几何是一次性重活（约九千字形），[`Fonts`] 由 [`with_fonts`] 的进程单例
-//! 惰性构造一次，绝不每帧重建。
-//!
-//! 缺字回退只在真正遇到内嵌字体没有的字符时发生：先扫一遍系统字体库的
-//! cmap，解析第一个覆盖该字的 face，并按 face id 缓存；没命中就返回 `None`，
-//! 由 [`crate::render::chart::text::draw`] 画方框占位。
+//! 测宽与 `resvg` 的 `<text>` 排版共用同一个 [`fontdb::Database`] 实例：
+//! - 默认优先系统 `monospace` 与常见系统 CJK 字体，使拉丁字母/数字比例贴近终端正文；
+//! - 支持通过 `MOC_CHART_FONT` 指定首选字体族；
+//! - 随 crate 内嵌的 `Noto Sans Mono CJK SC` 子集始终注入 `fontdb`，无系统字体环境下也能正常出字。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
+
+use resvg::usvg::fontdb::{Database, Family, ID, Query, Source};
 
 /// 内嵌字体子集（Noto Sans Mono CJK SC，CFF/OTF，含 GB2312 汉字与拉丁区）。
 ///
@@ -19,133 +17,68 @@ use std::sync::{Arc, LazyLock, Mutex};
 pub const EMBEDDED_FONT: &[u8] =
     include_bytes!("../../../assets/fonts/NotoSansMonoCJKsc-Regular.subset.otf");
 
-/// 字形缓存上限；超过整表清空。
-const GLYPH_CACHE_LIMIT: usize = 8192;
+/// 字符 advance 缓存上限；超过整表清空。
+const ADVANCE_CACHE_LIMIT: usize = 8192;
 
-/// 已光栅化的字形位图。
-///
-/// 坐标沿用 fontdue 的约定：`left`（`xmin`）是位图左缘相对笔位的像素偏移，
-/// `top`（`ymin`）是位图**下缘**相对基线的偏移（向上为正）。整数像素落位
-/// 由 [`crate::render::chart::text::draw`] 做——`fonts` 只报告度量，不管排版。
-///
-/// 字形与颜色无关：同一字形缓存可被不同颜色复用，颜色由绘制调用传入。
-pub struct RenderedGlyph {
-    /// 位图宽（像素）。
-    pub w: u32,
-    /// 位图高（像素）。
-    pub h: u32,
-    /// 位图左缘相对笔位的偏移（可负）。
-    pub left: i32,
-    /// 位图下缘相对基线的偏移，向上为正。
-    pub top: i32,
-    /// 推进量（像素，未取整；取整规则见 [`glyph_advance`]）。
-    pub advance: f32,
-    /// 覆盖度，行优先，长度恰为 `w * h`。
-    pub coverage: Vec<u8>,
-}
-
-/// 字形缓存键：`(字符, 字号)`。
-type GlyphKey = (char, u32);
-/// 缓存槽：要么是字形，要么是"确认缺字"（`None`）。
-type GlyphSlot = Option<Arc<RenderedGlyph>>;
-
-/// 字体集：内嵌主字体 + 按需加载的系统回退字体 + 字形缓存。
+/// 字体集：共享 `fontdb::Database`、CSS `font-family` 回退链与字符宽度缓存。
 pub struct Fonts {
-    primary: fontdue::Font,
-    /// 系统回退字体：按 face id 缓存已解析的那一个（只为真正用到的缺字付费）。
-    fallback_fonts: HashMap<fontdb::ID, fontdue::Font>,
-    /// 字形缓存：键是稀疏的 `(字符, 字号)` 组合，用 `HashMap` 而非按字符码
-    /// 开稠密二维表；图表只在切换时重绘，超过上限整表清空的代价可忽略。
-    cache: HashMap<GlyphKey, GlyphSlot>,
+    db: Arc<Database>,
+    css_family: String,
+    face_order: Vec<ID>,
+    advance_cache: HashMap<(char, u32), u32>,
 }
 
 impl Fonts {
-    /// 创建字体集：解析内嵌字体（进程内只做一次）。
-    ///
-    /// 内嵌资产是构建期固定的产物，解析失败说明构建产物损坏——直接 `expect`
-    /// 暴露，不给运行时留静默降级路径。
+    /// 加载系统字体库并注入内嵌兜底字体（进程内由 [`with_fonts`] 单例复用）。
     pub fn new() -> Self {
-        let primary = fontdue::Font::from_bytes(EMBEDDED_FONT, font_settings(0))
-            .expect("moc-tui 内嵌字体解析失败：构建产物损坏");
+        let mut db = Database::new();
+        db.load_system_fonts();
+        let embedded_ids = db.load_font_source(Source::Binary(Arc::new(EMBEDDED_FONT)));
+        let embedded_family = embedded_ids
+            .first()
+            .and_then(|&id| db.face(id))
+            .and_then(|face| face.families.first())
+            .map(|(name, _)| name.clone())
+            .unwrap_or_else(|| "Noto Sans Mono CJK SC".to_owned());
+        if db
+            .query(&Query {
+                families: &[Family::Monospace],
+                ..Default::default()
+            })
+            .is_none()
+        {
+            db.set_monospace_family(&embedded_family);
+        }
+        let custom = std::env::var("MOC_CHART_FONT")
+            .ok()
+            .and_then(|raw| sanitize_font_name(&raw));
+        let css_family = build_css_family(custom.as_deref(), &embedded_family);
+        let face_order = resolve_face_order(&db, custom.as_deref(), &embedded_family);
         Self {
-            primary,
-            fallback_fonts: HashMap::new(),
-            cache: HashMap::new(),
+            db: Arc::new(db),
+            css_family,
+            face_order,
+            advance_cache: HashMap::new(),
         }
     }
 
-    /// 取字符在指定字号下的字形；内嵌字体缺字时回退系统字体，仍缺则 `None`。
-    pub fn glyph(&mut self, ch: char, px: u32) -> Option<Arc<RenderedGlyph>> {
-        let key: GlyphKey = (ch, px);
-        if let Some(slot) = self.cache.get(&key) {
-            return slot.clone();
-        }
-        let rendered = if self.primary.lookup_glyph_index(ch) != 0 {
-            Some(Arc::new(rasterize(&self.primary, ch, px)))
-        } else {
-            self.fallback_glyph(ch, px).map(Arc::new)
-        };
-        if self.cache.len() >= GLYPH_CACHE_LIMIT {
-            self.cache.clear();
-        }
-        self.cache.insert(key, rendered.clone());
-        rendered
+    /// 供 `resvg::usvg::Options` 复用的字体库句柄（零拷贝 `Arc`）。
+    pub fn database(&self) -> Arc<Database> {
+        Arc::clone(&self.db)
     }
 
-    /// 系统字体回退：按 `fontdb` 的 face 顺序找第一个覆盖 `ch` 的字体。
-    fn fallback_glyph(&mut self, ch: char, px: u32) -> Option<RenderedGlyph> {
-        let db = system_fonts()?;
-        self.fallback_in(db, ch, px)
+    /// 供 SVG `<text font-family="...">` 使用的字体回退链。
+    pub fn css_family(&self) -> &str {
+        &self.css_family
     }
 
-    /// `db` 单独传入以便测试构造“无系统字体”的确定场景。
-    fn fallback_in(&mut self, db: &fontdb::Database, ch: char, px: u32) -> Option<RenderedGlyph> {
-        for face in db.faces() {
-            match self.fallback_fonts.get(&face.id) {
-                Some(font) if font.lookup_glyph_index(ch) != 0 => {
-                    return Some(rasterize(font, ch, px));
-                }
-                Some(_) => continue,
-                None => {}
-            }
-            // 先只解析 cmap 判定覆盖，命中才把整张字体交给 fontdue 解析。
-            let covered = db.with_face_data(face.id, |data, index| {
-                ttf_parser::Face::parse(data, index)
-                    .ok()
-                    .and_then(|f| f.glyph_index(ch))
-                    .is_some()
-            });
-            if covered != Some(true) {
-                continue;
-            }
-            let font = db.with_face_data(face.id, |data, index| {
-                fontdue::Font::from_bytes(data, font_settings(index))
-            });
-            let Some(Ok(font)) = font else {
-                continue;
-            };
-            let glyph = rasterize(&font, ch, px);
-            self.fallback_fonts.insert(face.id, font);
-            return Some(glyph);
-        }
-        None
-    }
-
-    /// 文本宽度：逐字符累加推进量（规则见 [`glyph_advance`]）。
+    /// 文本宽度：逐字符累加整数像素 advance。
     pub fn width(&mut self, text: &str, px: u32) -> u32 {
         let mut pen = 0u32;
         for ch in text.chars() {
             pen += self.advance_of(ch, px);
         }
         pen
-    }
-
-    /// 单字符推进量：命中字形用其 advance，缺字用方框宽度。
-    fn advance_of(&mut self, ch: char, px: u32) -> u32 {
-        match self.glyph(ch, px) {
-            Some(glyph) => glyph_advance(&glyph),
-            None => missing_box_width(px),
-        }
     }
 
     /// 按像素宽度截断文本，超宽时以 `…` 结尾（`…` 自身的宽度计入预算）。
@@ -167,20 +100,45 @@ impl Fonts {
         out.push('…');
         out
     }
+
+    /// 单字符在指定字号下的整数像素推进量。
+    fn advance_of(&mut self, ch: char, px: u32) -> u32 {
+        let key = (ch, px);
+        if let Some(&cached) = self.advance_cache.get(&key) {
+            return cached;
+        }
+        let measured = self.measure_advance(ch, px);
+        if self.advance_cache.len() >= ADVANCE_CACHE_LIMIT {
+            self.advance_cache.clear();
+        }
+        self.advance_cache.insert(key, measured);
+        measured
+    }
+
+    /// 按与 SVG 回退链一致的优先级在 `fontdb` 中测量字符 advance。
+    fn measure_advance(&self, ch: char, px: u32) -> u32 {
+        for &id in &self.face_order {
+            if let Some(advance) = face_char_advance(&self.db, id, ch, px) {
+                return advance;
+            }
+        }
+        for face in self.db.faces() {
+            if let Some(advance) = face_char_advance(&self.db, face.id, ch, px) {
+                return advance;
+            }
+        }
+        if ch.is_ascii() { px / 2 } else { px }
+    }
 }
 
-/// `new()` 会解析内嵌字体资产（有副作用），不是各字段默认值的简单拼装，
-/// 因此手写 `Default` 转调它，而不是 derive。
+/// `new()` 会扫描系统字体库并注入内嵌字体，手写 `Default` 转调它。
 impl Default for Fonts {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// 进程内字体单例：光栅化与测量都通过它拿字体。
-///
-/// 内嵌字体解析一次即驻留；锁中毒（某次绘制 panic）时取回内部值继续用，
-/// 不让一次 panic 传染后续所有绘制。
+/// 进程内字体单例：光栅化与测宽都通过它拿共享字体库。
 pub fn with_fonts<R>(f: impl FnOnce(&mut Fonts) -> R) -> R {
     static FONTS: LazyLock<Mutex<Fonts>> = LazyLock::new(|| Mutex::new(Fonts::new()));
     let mut fonts = match FONTS.lock() {
@@ -190,53 +148,85 @@ pub fn with_fonts<R>(f: impl FnOnce(&mut Fonts) -> R) -> R {
     f(&mut fonts)
 }
 
-/// 字形推进量的唯一取整规则：四舍五入到整数像素。
-///
-/// [`Fonts::width`] 与 [`crate::render::chart::text::draw`] 必须共用它：
-/// 量宽与落位各算一套，累加几字后就会差 1px，截断与右对齐全部错位。
-pub(crate) fn glyph_advance(glyph: &RenderedGlyph) -> u32 {
-    // 像素数学：advance 由 fontdue 按字号给出，非负；浮点转整点饱和。
-    glyph.advance.round().max(0.0) as u32
+/// 清理 `MOC_CHART_FONT` 中的引号、分号及 XML/CSS 特殊字符。
+fn sanitize_font_name(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_control() && !matches!(ch, '\'' | '"' | ';' | '<' | '>' | '&'))
+        .collect();
+    let trimmed = cleaned.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-/// 缺字方框的宽度（同时也是它的推进量）。
-pub(crate) fn missing_box_width(px: u32) -> u32 {
-    px / 2
-}
-
-/// fontdue 解析参数。
-///
-/// 图表只做单字符顺序排版，用不到 GSUB 连字；关掉替换字形加载，避免把 CJK
-/// 子集里的竖排/变体字形也解析一遍（解析量直接翻倍）。
-fn font_settings(collection_index: u32) -> fontdue::FontSettings {
-    fontdue::FontSettings {
-        collection_index,
-        load_substitutions: false,
-        ..fontdue::FontSettings::default()
+/// 构造 CSS `font-family` 回退链：可选用户指定字体 → 系统 `monospace` → CJK 回退 → 内嵌字体。
+fn build_css_family(custom: Option<&str>, embedded: &str) -> String {
+    let mut parts = Vec::with_capacity(10);
+    if let Some(name) = custom {
+        parts.push(format!("'{name}'"));
     }
-}
-
-/// 把字形光栅化成位图与度量。
-fn rasterize(font: &fontdue::Font, ch: char, px: u32) -> RenderedGlyph {
-    let (metrics, coverage) = font.rasterize(ch, px as f32); // 字号是像素数，精度足够
-    RenderedGlyph {
-        w: u32::try_from(metrics.width).expect("字形位图宽度超出 u32"),
-        h: u32::try_from(metrics.height).expect("字形位图高度超出 u32"),
-        left: metrics.xmin,
-        top: metrics.ymin,
-        advance: metrics.advance_width,
-        coverage,
+    parts.push("monospace".to_owned());
+    for family in [
+        "PingFang SC",
+        "Microsoft YaHei",
+        "Noto Sans CJK SC",
+        "WenQuanYi Zen Hei Mono",
+        "WenQuanYi Zen Hei",
+        embedded,
+    ] {
+        parts.push(format!("'{family}'"));
     }
+    parts.push("sans-serif".to_owned());
+    parts.join(", ")
 }
 
-/// 进程内系统字体库：只在首次遇到内嵌字体缺字时扫描一次目录。
-fn system_fonts() -> Option<&'static fontdb::Database> {
-    static DB: LazyLock<Option<fontdb::Database>> = LazyLock::new(|| {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
-        (!db.is_empty()).then_some(db)
-    });
-    DB.as_ref()
+/// 按与 CSS 回退链同序解析 `fontdb::ID` 列表，供精确测宽。
+fn resolve_face_order(db: &Database, custom: Option<&str>, embedded: &str) -> Vec<ID> {
+    let mut families: Vec<Family<'_>> = Vec::with_capacity(10);
+    if let Some(name) = custom {
+        families.push(Family::Name(name));
+    }
+    families.push(Family::Monospace);
+    for name in [
+        "PingFang SC",
+        "Microsoft YaHei",
+        "Noto Sans CJK SC",
+        "WenQuanYi Zen Hei Mono",
+        "WenQuanYi Zen Hei",
+        embedded,
+    ] {
+        families.push(Family::Name(name));
+    }
+    families.push(Family::SansSerif);
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(families.len());
+    for family in families {
+        if let Some(id) = db.query(&Query {
+            families: &[family],
+            ..Default::default()
+        }) && seen.insert(id)
+        {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// 用 `ttf_parser` 读取指定字体面中 `ch` 的水平 advance（像素，四舍五入）。
+fn face_char_advance(db: &Database, id: ID, ch: char, px: u32) -> Option<u32> {
+    db.with_face_data(id, |data, index| {
+        let face = ttf_parser::Face::parse(data, index).ok()?;
+        let gid = face.glyph_index(ch)?;
+        let raw = face.glyph_hor_advance(gid)?;
+        let upem = u32::from(face.units_per_em());
+        if upem == 0 {
+            return None;
+        }
+        let scaled = f64::from(raw) * f64::from(px) / f64::from(upem);
+        Some(scaled.round().max(0.0) as u32)
+    })
+    .flatten()
 }
 
 #[cfg(test)]
@@ -276,43 +266,22 @@ mod tests {
         });
     }
 
-    /// 位图尺寸与覆盖度长度严格一致，中文有实体像素。
+    /// 共享字体库包含内嵌 CJK 兜底字体，无系统字体环境也能覆盖常用汉字与拉丁。
     #[test]
-    fn glyph_coverage_matches_dimensions() {
+    fn database_covers_embedded_cjk_fallback() {
         with_fonts(|fonts| {
-            let glyph = fonts.glyph('中', 16).expect("内嵌字体必须覆盖常用汉字");
-            assert!(glyph.w > 0 && glyph.h > 0);
-            assert_eq!(
-                usize::try_from(glyph.w * glyph.h).expect("位图尺寸在 usize 内"),
-                glyph.coverage.len()
-            );
-            assert!(glyph.coverage.iter().any(|c| *c > 0), "字形不能是空白");
-        });
-    }
-
-    /// 同一 `(字符, 字号)` 两次调用返回同一个 `Arc`（缓存命中）。
-    #[test]
-    fn glyph_cache_shares_arc() {
-        with_fonts(|fonts| {
-            let first = fonts.glyph('字', 14).expect("内嵌字体覆盖该字");
-            let second = fonts.glyph('字', 14).expect("第二次应从缓存返回");
-            assert!(Arc::ptr_eq(&first, &second), "缓存必须复用同一字形");
-        });
-    }
-
-    /// 内嵌子集与系统字体都不覆盖的字符返回 `None`，不 panic。
-    #[test]
-    fn missing_glyph_returns_none() {
-        with_fonts(|fonts| {
-            // macOS 系统库里的 LastResort 用 cmap format 13 映射全部码位，
-            // 真机上没有可靠缺失的字符；空库确定走缺字路径。
-            let empty = fontdb::Database::new();
-            assert!(fonts.fallback_in(&empty, '\u{10FFFD}', 16).is_none());
-            // 真机仍缺字的平台顺带验证缺字推进量（按方框宽度算），
-            // 否则后续文字会叠在一起。
-            if fonts.glyph('\u{10FFFD}', 16).is_none() {
-                assert_eq!(fonts.width("\u{10FFFD}", 16), missing_box_width(16));
-            }
+            let db = fonts.database();
+            assert!(!db.is_empty());
+            assert!(fonts.css_family().contains("monospace"));
+            let has_cjk = db.faces().any(|face| {
+                db.with_face_data(face.id, |data, idx| {
+                    ttf_parser::Face::parse(data, idx)
+                        .ok()
+                        .and_then(|f| f.glyph_index('中'))
+                        .is_some()
+                }) == Some(true)
+            });
+            assert!(has_cjk, "fontdb 必须能覆盖中文汉字");
         });
     }
 }

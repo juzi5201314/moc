@@ -1,22 +1,23 @@
-//! 八种图型的版式与绘制。
+//! 九种图型的矢量 SVG 生成（透明背景、圆角胶囊条、圆点图例）。
 //!
 //! 所有图型共用一套几何约定：
-//! - 坐标一律整数像素，`(x, y)` 是左上角，`row_top(row)` 是该行首像素行；
+//! - 坐标一律按画布像素计算，`(x, y)` 是左上角，`row_top(row)` 是该行首像素行；
 //! - 文本基线固定在 `row_top(row) + ChartLayout::baseline`，因此同一行的文本、
-//!   色块、条形天然对齐，不需要逐个度量做垂直居中；
+//!   圆点图例、胶囊条天然垂直对齐；
 //! - 左侧类别标签列宽度按内容取上限（不超过图宽的 [`LABEL_BUDGET`]），
-//!   右侧给数值 / 差值文本留出宽裕度，条形只在中间的可变区伸缩。
+//!   右侧给数值 / 差值文本留出宽裕度，条形只在中间的可变区伸缩；
+//! - 根元素不铺设任何不透明背景矩形，由 `resvg` 产出透明 RGBA 融入终端背景。
 //!
-//! 数值一律以 `Point::text` 的原样书写显示（不二次格式化，避免把 `7648 / 176`
-//! 写成 `7648`）；只有「和 / 差 / 刻度」这种派生量才用 [`format_value`]。
+//! 数值一律以 `Point::text` 的原样书写显示（不二次格式化）；
+//! 只有「和 / 差 / 刻度」这种派生量才用 [`format_value`]。
+
+use std::fmt::Write as _;
 
 use moc_core::chart::{ChartKind, ChartSpec, Point, Series};
 use rust_i18n::t;
 
 use super::ChartLayout;
 use super::fonts::Fonts;
-use super::text;
-use crate::render::canvas::Canvas;
 use crate::theme::RawPalette;
 
 /// 左右留白（像素）。
@@ -25,23 +26,25 @@ const PAD_X: u32 = 10;
 const GAP: u32 = 6;
 /// 类别标签列占图宽的上限比例。
 const LABEL_BUDGET: f64 = 0.35;
-/// 条形高度占行高的比例。
-const BAR_RATIO: f64 = 0.62;
-/// 图例色块边长（像素）。
+/// 条形高度占行高的比例：留足上下呼吸感，视觉利落不糊成墙。
+const BAR_RATIO: f64 = 0.50;
+/// 图例圆点半径（像素）。
+const DOT_R: f64 = 4.0;
+/// 图例圆点直径占位（像素）。
 const SWATCH: u32 = 8;
-/// 热力图的混色档数：档位越少调色板越稳，5 档已能看出层次。
+/// 热力图的混色档数：5 档渐变层次清晰。
 const HEAT_STEPS: usize = 5;
 
-/// 绘制入口：吃一张按格对齐的画布，返回同一张画布（尺寸不变）。
-pub fn paint(
-    canvas: Canvas,
+/// 渲染出口：生成与 [`ChartLayout`] 同尺寸的透明 SVG 文本。
+pub fn render_svg(
     spec: &ChartSpec,
     layout: &ChartLayout,
     palette: &'static RawPalette,
     fonts: &mut Fonts,
-) -> Canvas {
+) -> String {
+    let svg = SvgBuilder::new(layout.px.0, layout.px.1, fonts.css_family(), layout.px_size);
     let mut painter = Painter {
-        canvas,
+        svg,
         fonts,
         spec,
         layout,
@@ -56,8 +59,161 @@ pub fn paint(
         ChartKind::Progress => painter.progress(),
         ChartKind::Heatmap => painter.heatmap(),
         ChartKind::Scatter => painter.scatter(),
+        ChartKind::Panels => painter.panels(),
     }
-    painter.canvas
+    painter.svg.finish()
+}
+
+/// 轻量 SVG 矢量构建器（无背景矩形，保留透明通道）。
+struct SvgBuilder {
+    buf: String,
+    clip_seq: u32,
+}
+
+impl SvgBuilder {
+    fn new(w: u32, h: u32, css_family: &str, px: u32) -> Self {
+        let mut buf = String::with_capacity(4096);
+        let escaped_font = xml_escape(css_family);
+        let _ = write!(
+            buf,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">\
+             <g font-family=\"{escaped_font}\" font-size=\"{px}\">"
+        );
+        Self { buf, clip_seq: 0 }
+    }
+
+    fn finish(mut self) -> String {
+        self.buf.push_str("</g></svg>");
+        self.buf
+    }
+
+    fn rect(&mut self, x: u32, y: u32, w: u32, h: u32, rx: f64, rgb: [u8; 3]) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        let color = hex(rgb);
+        if rx > 0.0 {
+            let _ = write!(
+                self.buf,
+                "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"{rx:.2}\" ry=\"{rx:.2}\" fill=\"{color}\"/>"
+            );
+        } else {
+            let _ = write!(
+                self.buf,
+                "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" fill=\"{color}\"/>"
+            );
+        }
+    }
+
+    /// 半透明圆角胶囊底槽（进度条背景轨道，融入透明终端背景）。
+    fn track_pill(&mut self, x: u32, y: u32, w: u32, h: u32, rgb: [u8; 3]) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        let rx = f64::from(h) / 2.0;
+        let color = hex(rgb);
+        let _ = write!(
+            self.buf,
+            "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"{rx:.2}\" ry=\"{rx:.2}\" fill=\"{color}\" fill-opacity=\"0.55\"/>"
+        );
+    }
+
+    /// 圆角胶囊条：圆角半径取 `min(h/2, w/2, 4.0)`，兼顾短条与长条比例。
+    fn pill(&mut self, x: u32, y: u32, w: u32, h: u32, rgb: [u8; 3]) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        let rx = (f64::from(h) / 2.0).min(f64::from(w) / 2.0).min(4.0);
+        self.rect(x, y, w, h, rx, rgb);
+    }
+
+    /// 堆叠分段：用外层圆角 clipPath 裁出胶囊两端，内部各整数段紧密相邻不留缝。
+    fn clipped_segments(&mut self, x: u32, y: u32, total_w: u32, h: u32, segments: &[(u32, [u8; 3])]) {
+        if total_w == 0 || h == 0 || segments.is_empty() {
+            return;
+        }
+        self.clip_seq += 1;
+        let id = self.clip_seq;
+        let rx = (f64::from(h) / 2.0).min(f64::from(total_w) / 2.0).min(4.0);
+        let _ = write!(
+            self.buf,
+            "<defs><clipPath id=\"c{id}\"><rect x=\"{x}\" y=\"{y}\" width=\"{total_w}\" height=\"{h}\" rx=\"{rx:.2}\" ry=\"{rx:.2}\"/></clipPath></defs>\
+             <g clip-path=\"url(#c{id})\">"
+        );
+        let mut cursor = x;
+        for &(w, rgb) in segments {
+            if w > 0 {
+                self.rect(cursor, y, w, h, 0.0, rgb);
+                cursor += w;
+            }
+        }
+        self.buf.push_str("</g>");
+    }
+
+    fn circle(&mut self, cx: f64, cy: f64, r: f64, rgb: [u8; 3]) {
+        let color = hex(rgb);
+        let _ = write!(
+            self.buf,
+            "<circle cx=\"{cx:.2}\" cy=\"{cy:.2}\" r=\"{r:.2}\" fill=\"{color}\"/>"
+        );
+    }
+
+    fn line(&mut self, x1: f64, y1: f64, x2: f64, y2: f64, stroke_w: f64, rgb: [u8; 3]) {
+        let color = hex(rgb);
+        let _ = write!(
+            self.buf,
+            "<line x1=\"{x1:.2}\" y1=\"{y1:.2}\" x2=\"{x2:.2}\" y2=\"{y2:.2}\" stroke=\"{color}\" stroke-width=\"{stroke_w:.2}\"/>"
+        );
+    }
+
+    fn polyline(&mut self, pts: &[(f64, f64)], stroke_w: f64, rgb: [u8; 3]) {
+        if pts.len() < 2 {
+            return;
+        }
+        let color = hex(rgb);
+        let _ = write!(
+            self.buf,
+            "<polyline fill=\"none\" stroke=\"{color}\" stroke-width=\"{stroke_w:.2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" points=\""
+        );
+        for (idx, (x, y)) in pts.iter().enumerate() {
+            if idx > 0 {
+                self.buf.push(' ');
+            }
+            let _ = write!(self.buf, "{x:.2},{y:.2}");
+        }
+        self.buf.push_str("\"/>");
+    }
+
+    fn text(&mut self, x: u32, baseline: i32, content: &str, rgb: [u8; 3]) {
+        if content.is_empty() {
+            return;
+        }
+        let color = hex(rgb);
+        let escaped = xml_escape(content);
+        let _ = write!(
+            self.buf,
+            "<text x=\"{x}\" y=\"{baseline}\" fill=\"{color}\">{escaped}</text>"
+        );
+    }
+}
+
+fn hex(rgb: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
+}
+
+fn xml_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// 基本单位 → 书写单位的紧凑格式（派生量专用：和、差、刻度、总量）。
@@ -119,12 +275,9 @@ fn point(series: &Series, row: usize) -> Option<&Point> {
 }
 
 /// 条形刻度的极差门槛：全部为正且 max/min 达到这个倍数时改用对数刻度。
-///
-/// 与 omp autoGraph 的 100 倍阈值一致：线性刻度下 12 与 884,736 同图时，
-/// 小值的条只剩一两个像素，读者无法比较。
 const LOG_SCALE_RATIO: f64 = 100.0;
 
-/// 条形 / 分组条 / 成对条共用的横向刻度。
+/// 条形 / 分组条 / 成对条 / 分面共用的横向刻度。
 #[derive(Debug, Clone, Copy)]
 enum ValueScale {
     /// 含零线性刻度：条从零基线起画，正负都能表达。
@@ -144,6 +297,11 @@ impl ValueScale {
             let (min, max) = bounds(series).unwrap_or((0.0, 1.0));
             Self::Linear { min, max }
         }
+    }
+
+    fn linear(series: &[Series]) -> Self {
+        let (min, max) = bounds(series).unwrap_or((0.0, 1.0));
+        Self::Linear { min, max }
     }
 
     fn is_log(self) -> bool {
@@ -205,7 +363,7 @@ impl ValueScale {
     }
 }
 
-/// 按 8 位 alpha 把前景混到背景上。
+/// 按 8 位 alpha 把前景混到背景上（热力图 5 档格色）。
 fn blend(under: [u8; 3], over: [u8; 3], alpha: u32) -> [u8; 3] {
     let channel = |u: u8, o: u8| -> u8 {
         ((u32::from(u) * (255 - alpha) + u32::from(o) * alpha + 127) / 255) as u8
@@ -219,12 +377,11 @@ fn blend(under: [u8; 3], over: [u8; 3], alpha: u32) -> [u8; 3] {
 
 /// 数值 → 混色档位（0..HEAT_STEPS-1）：最浅几乎只有底色，最深接近纯系列色。
 fn heat_alpha(step: usize) -> u32 {
-    // 5 档：32 / 80 / 128 / 176 / 224。上限留一点底色，避免整块图过曝。
     32 + (step.min(HEAT_STEPS - 1) as u32 * 192) / (HEAT_STEPS as u32 - 1)
 }
 
 struct Painter<'a> {
-    canvas: Canvas,
+    svg: SvgBuilder,
     fonts: &'a mut Fonts,
     spec: &'a ChartSpec,
     layout: &'a ChartLayout,
@@ -236,7 +393,7 @@ mod plots;
 
 impl Painter<'_> {
     fn w(&self) -> u32 {
-        self.canvas.w()
+        self.layout.px.0
     }
 
     fn px(&self) -> u32 {
@@ -262,18 +419,9 @@ impl Painter<'_> {
     /// 在 `row` 行左对齐写字，返回结束笔位。
     fn text(&mut self, row: u16, x: u32, label: &str, color: [u8; 3]) -> u32 {
         let baseline = self.baseline(row);
-        let px = self.px();
-        let under = self.palette.bg_base;
-        text::draw(
-            &mut self.canvas,
-            x,
-            baseline,
-            label,
-            px,
-            color,
-            under,
-            self.fonts,
-        )
+        let width = self.text_width(label);
+        self.svg.text(x, baseline, label, color);
+        x.saturating_add(width)
     }
 
     /// 在 `row` 行右对齐写字：`right` 是文本右缘（不含）。
@@ -291,25 +439,29 @@ impl Painter<'_> {
         self.fonts.truncate(label, max, self.px())
     }
 
-    fn fill(&mut self, x: u32, y: u32, w: u32, h: u32, rgb: [u8; 3]) {
-        let color = self.canvas.color(rgb);
-        self.canvas.fill_rect(x, y, w, h, color);
+    fn pill(&mut self, x: u32, y: u32, w: u32, h: u32, rgb: [u8; 3]) {
+        self.svg.pill(x, y, w, h, rgb);
     }
 
     fn hline(&mut self, x0: u32, x1: u32, y: u32, rgb: [u8; 3]) {
-        let color = self.canvas.color(rgb);
-        self.canvas.hline(x0, x1, y, color);
+        let lo = x0.min(x1);
+        let hi = x0.max(x1);
+        self.svg
+            .line(f64::from(lo), f64::from(y) + 0.5, f64::from(hi), f64::from(y) + 0.5, 1.0, rgb);
     }
 
     fn vline(&mut self, x: u32, y0: u32, y1: u32, rgb: [u8; 3]) {
-        let color = self.canvas.color(rgb);
-        self.canvas.vline(x, y0, y1, color);
+        let lo = y0.min(y1);
+        let hi = y0.max(y1);
+        self.svg
+            .line(f64::from(x) + 0.5, f64::from(lo), f64::from(x) + 0.5, f64::from(hi), 1.0, rgb);
     }
 
-    /// 图例色块：垂直居中于该行。
-    fn swatch(&mut self, x: u32, row: u16, rgb: [u8; 3]) {
-        let y = self.row_top(row) + (self.cell_h().saturating_sub(SWATCH)) / 2;
-        self.fill(x, y, SWATCH, SWATCH, rgb);
+    /// 图例圆点：与该行文本中心对齐。
+    fn dot(&mut self, x: u32, row: u16, rgb: [u8; 3]) {
+        let cx = f64::from(x) + DOT_R;
+        let cy = f64::from(self.row_top(row)) + f64::from(self.cell_h()) / 2.0;
+        self.svg.circle(cx, cy, DOT_R, rgb);
     }
 
     /// 类别标签列宽：按内容取，最多占图宽的 [`LABEL_BUDGET`]。
@@ -332,7 +484,7 @@ impl Painter<'_> {
         widest
     }
 
-    /// 图例行：色块 + 系列名；单系列时顺带写出书写单位。返回结束笔位。
+    /// 图例行：圆点 + 系列名；单系列时顺带写出书写单位。返回结束笔位。
     fn legend(&mut self) -> u32 {
         let spec = self.spec;
         let limit = self.w().saturating_sub(PAD_X);
@@ -341,7 +493,7 @@ impl Painter<'_> {
             if x + SWATCH + GAP >= limit {
                 break;
             }
-            self.swatch(x, 0, self.series_color(index));
+            self.dot(x, 0, self.series_color(index));
             x += SWATCH + GAP;
             let label = if spec.series.len() == 1 && !series.unit.is_empty() {
                 format!("{}（{}）", series.name, series.unit)
@@ -360,7 +512,6 @@ impl Painter<'_> {
     /// 底轴：基线 + 刻度。
     ///
     /// 线性刻度画最小（含负值时）/ 零 / 中 / 最大；对数刻度画最小 / 几何中值 / 最大。
-    /// 线性刻度的文本取自真实数据点，保证「轴上的字」与「表里的字」同一套写法；
     /// 刻度文本按互斥区间排版，间距不足时不硬叠画。
     fn value_axis(
         &mut self,
@@ -452,9 +603,9 @@ fn bar_inset(cell_h: u32) -> u32 {
     (cell_h - bar_height(cell_h)) / 2
 }
 
-/// 条形高度：行高的 62%，至少 2px（再细就看不出量级）。
+/// 条形高度：行高的 50%，至少 4px。
 fn bar_height(cell_h: u32) -> u32 {
-    ((f64::from(cell_h) * BAR_RATIO).round() as u32).max(2)
+    ((f64::from(cell_h) * BAR_RATIO).round() as u32).max(4)
 }
 
 /// 数据区间（不强制含 0）：折线 / 热力图用它做定标。

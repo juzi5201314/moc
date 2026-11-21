@@ -22,12 +22,14 @@ const MAX_COLORS: usize = 256;
 /// 5-5-5 桶表槽位数：每通道高 5 位组成 15 位键。
 const BUCKET_SLOTS: usize = 1 << 15;
 
-/// 双平面像素画布。
+/// 双平面像素画布（可选携带直通 RGBA 透明通道）。
 pub struct Canvas {
     w: u32,
     h: u32,
     /// 24 位 RGB 平面，长度 `3 * w * h`，行优先。
     rgb: Vec<u8>,
+    /// 直通 RGBA 平面（存在时供 kitty `f=32` / PNG Color Type 6 保留真透明）。
+    rgba: Option<Vec<u8>>,
     /// 调色板索引平面，长度 `w * h`，行优先；值即 [`Canvas::palette`] 下标。
     index: Vec<u8>,
     /// 出现过的颜色，索引即像素值；0 号槽位恒为底色（sixel 编码跳过 0 号槽位）。
@@ -52,6 +54,7 @@ impl Canvas {
             w,
             h,
             rgb,
+            rgba: None,
             index: vec![0; pixels],
             palette: vec![bg],
             bucket,
@@ -94,10 +97,21 @@ impl Canvas {
             w,
             h,
             rgb,
+            rgba: None,
             index,
             palette,
             bucket: vec![None; BUCKET_SLOTS],
         }
+    }
+
+    /// 从直通 RGBA 像素直接建画布：保留透明通道给 kitty / iTerm2，并量化出 sixel 索引平面。
+    pub fn from_rgba(w: u32, h: u32, rgba: Vec<u8>, bg: [u8; 3]) -> Self {
+        let pixels = w as usize * h as usize;
+        debug_assert!(rgba.len() == pixels * 4, "RGBA 平面长度必须等于 4 * 像素数");
+        let (palette, index) = crate::render::image::quantize::quantize_rgba(&rgba, bg);
+        let mut base = Self::from_indexed(w, h, palette, index);
+        base.rgba = Some(rgba);
+        base
     }
 
     /// 登记颜色并返回调色板索引。
@@ -347,6 +361,11 @@ impl Canvas {
     /// 24 位 RGB 平面，长度 `3 * w * h`，行优先。
     pub fn rgb(&self) -> &[u8] {
         &self.rgb
+    }
+
+    /// 直通 RGBA 平面（存在时为 `4 * w * h`，行优先）。
+    pub fn rgba(&self) -> Option<&[u8]> {
+        self.rgba.as_deref()
     }
 
     /// 调色板索引平面，长度 `w * h`，行优先。
