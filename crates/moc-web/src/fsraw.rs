@@ -134,8 +134,6 @@ async fn upload_to(
     } else {
         path.to_owned()
     };
-    let lock_path = moc_core::hashline::apply::resolve_commit_lock_path(&target);
-    let _commit_guards = moc_core::hashline::apply::lock_commit_paths(&lock_path, None).await;
     let Some(parent) = target.parent().map(std::path::Path::to_owned) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -213,6 +211,9 @@ async fn upload_to(
             .into_response();
     }
     drop(file);
+    // 流式读 body 可能很慢：锁只在发布前获取，避免慢上传长期占住同槽路径。
+    let lock_path = moc_core::hashline::apply::resolve_commit_lock_path(&target);
+    let _commit_guards = moc_core::hashline::apply::lock_commit_paths(&lock_path, None).await;
     // 不覆盖发布不能使用 exists + rename；persist_noclobber 在发布时原子拒绝竞争者。
     let published = tokio::task::spawn_blocking(move || {
         if overwrite {
