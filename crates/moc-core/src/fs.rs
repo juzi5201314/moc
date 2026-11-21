@@ -203,7 +203,7 @@ pub(crate) fn create_dir(parent: &str, name: &str) -> Result<FsCreateDirResult, 
     }
 
     let target = canonical.join(name);
-    let lock_path = commit_lock_path(&target);
+    let lock_path = crate::hashline::apply::resolve_commit_lock_path(&target);
     let _commit_guards = crate::hashline::apply::lock_commit_paths_blocking(&lock_path, None);
     match std::fs::create_dir(&target) {
         Ok(()) => Ok(FsCreateDirResult {
@@ -344,7 +344,7 @@ pub(crate) fn write_file(
     expected_modified_ms: Option<u64>,
 ) -> Result<FileWrite, WriteFileError> {
     let target = expand(raw).map_err(FileIoError::Path)?;
-    let lock_path = commit_lock_path(&target);
+    let lock_path = crate::hashline::apply::resolve_commit_lock_path(&target);
     let _commit_guards = crate::hashline::apply::lock_commit_paths_blocking(&lock_path, None);
     let metadata = std::fs::metadata(&target).map_err(|source| FileIoError::Io {
         path: target.clone(),
@@ -384,8 +384,8 @@ pub(crate) fn write_file(
 pub(crate) fn rename(from: &str, to: &str) -> Result<FsRenameResult, FileIoError> {
     let from = expand(from)?;
     let to = expand(to)?;
-    let from_lock_path = commit_lock_path(&from);
-    let to_lock_path = commit_lock_path(&to);
+    let from_lock_path = crate::hashline::apply::resolve_commit_lock_path(&from);
+    let to_lock_path = crate::hashline::apply::resolve_commit_lock_path(&to);
     let _commit_guards =
         crate::hashline::apply::lock_commit_paths_blocking(&from_lock_path, Some(&to_lock_path));
     if to.symlink_metadata().is_ok() && !is_case_only_rename(&from, &to) {
@@ -450,7 +450,7 @@ fn is_same_entry(a: &Path, _b: &Path) -> bool {
 /// 把文件或目录整体移入系统回收站。
 pub(crate) fn delete(raw: &str) -> Result<(), DeleteError> {
     let target = expand(raw)?;
-    let lock_path = commit_lock_path(&target);
+    let lock_path = crate::hashline::apply::resolve_commit_lock_path(&target);
     let _commit_guards = crate::hashline::apply::lock_commit_paths_blocking(&lock_path, None);
     trash::delete(&target).map_err(|error| DeleteError::Trash {
         path: target.clone(),
@@ -491,19 +491,6 @@ pub fn expand(raw: &str) -> Result<PathBuf, PathError> {
         return Err(PathError::NotAbsolute);
     }
     Ok(path)
-}
-
-// 与 resolve_tool_path 一致：优先规范化目标，目标不存在时规范化父目录。
-fn commit_lock_path(path: &Path) -> PathBuf {
-    if let Ok(canonical) = std::fs::canonicalize(path) {
-        return canonical;
-    }
-    match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => std::fs::canonicalize(parent)
-            .map(|parent| parent.join(name))
-            .unwrap_or_else(|_| path.to_owned()),
-        _ => path.to_owned(),
-    }
 }
 
 #[cfg(test)]

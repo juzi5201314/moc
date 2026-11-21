@@ -23,6 +23,19 @@ const COMMIT_LOCK_COUNT: usize = 64;
 static COMMIT_LOCKS: LazyLock<[Mutex<()>; COMMIT_LOCK_COUNT]> =
     LazyLock::new(|| std::array::from_fn(|_| Mutex::new(())));
 
+/// 规范化提交锁路径，覆盖目标尚不存在但父目录包含符号链接的情况。
+pub fn resolve_commit_lock_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => std::fs::canonicalize(parent)
+            .map(|parent| parent.join(name))
+            .unwrap_or_else(|_| path.to_owned()),
+        _ => path.to_owned(),
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum EditError {
     #[error("{0}")]
