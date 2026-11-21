@@ -3,6 +3,7 @@
 //! [`Connector`] 把「建一条连接」抽象为可重入闭包，监督任务每次重连都重新调用它；
 //! 测试由此可以注入内存 transport 而无需拉起真实子进程。
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
@@ -179,17 +180,24 @@ async fn read_log_line(
             return Ok(bytes_read);
         }
 
-        let chunk_len = available
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(available.len(), |index| index + 1);
+        let line_ending_index = available.iter().position(|byte| *byte == b'\n');
+        let chunk_len = line_ending_index.map_or(available.len(), |index| index + 1);
+        let terminator_len = match line_ending_index {
+            Some(index) if index > 0 && available[index - 1] == b'\r' => 2,
+            Some(_) => 1,
+            None => 0,
+        };
+        let content_len = chunk_len - terminator_len;
         let remaining_capacity = MAX_LOG_LINE_BYTES.saturating_sub(buf.len());
-        let bytes_to_keep = chunk_len.min(remaining_capacity);
+        let bytes_to_keep = content_len.min(remaining_capacity)
+            + if content_len <= remaining_capacity {
+                terminator_len
+            } else {
+                0
+            };
         buf.extend_from_slice(&available[..bytes_to_keep]);
-        if bytes_to_keep < chunk_len {
-            *truncated = true;
-        }
-        let line_ended = available[chunk_len - 1] == b'\n';
+        *truncated |= bytes_to_keep < chunk_len;
+        let line_ended = line_ending_index.is_some();
         reader.consume(chunk_len);
         bytes_read = bytes_read.saturating_add(chunk_len);
 
@@ -199,18 +207,15 @@ async fn read_log_line(
     }
 }
 
-fn render_log_line(buf: &[u8], truncated: bool) -> String {
-    // 截断可能只保留 CRLF 中的回车，渲染前将其移除。
-    let buf = if truncated {
-        buf.strip_suffix(b"\r").unwrap_or(buf)
-    } else {
-        buf
-    };
-    let mut line = String::from_utf8_lossy(buf).into_owned();
+fn render_log_line(buf: &[u8], truncated: bool) -> Cow<'_, str> {
+    let line = String::from_utf8_lossy(buf);
     if truncated {
-        line.push_str("…[truncated]");
+        let mut owned = line.into_owned();
+        owned.push_str("…[truncated]");
+        Cow::Owned(owned)
+    } else {
+        line
     }
-    line
 }
 
 async fn drain_stderr(mut reader: impl tokio::io::AsyncBufRead + Unpin, server: &str) {
@@ -268,12 +273,13 @@ async fn connect_http(
 #[cfg(test)]
 mod tests {
     use super::{MAX_LOG_LINE_BYTES, drain_stderr, read_log_line, render_log_line};
+    use tokio::io::BufReader;
 
     #[tokio::test]
     async fn stderr_long_line_is_bounded_and_next_line_is_read() {
         let mut input = vec![b'x'; MAX_LOG_LINE_BYTES + 1024];
         input.extend_from_slice(b"\nnext line\n");
-        let mut reader = std::io::Cursor::new(input);
+        let mut reader = BufReader::with_capacity(64, std::io::Cursor::new(input));
         let mut buf = Vec::new();
         let mut truncated = false;
 
@@ -281,7 +287,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first_len, MAX_LOG_LINE_BYTES + 1025);
-        assert_eq!(buf.len(), MAX_LOG_LINE_BYTES);
+        assert_eq!(buf.len(), MAX_LOG_LINE_BYTES + 1);
+        assert!(buf.ends_with(b"\n"));
         assert!(truncated);
         assert!(render_log_line(&buf, truncated).ends_with("…[truncated]"));
 
@@ -294,10 +301,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stderr_truncated_crlf_line_drops_trailing_carriage_return() {
+    async fn stderr_body_limit_excludes_lf_and_crlf_terminators() {
+        for (input, expected_suffix) in [
+            (vec![b'x'; MAX_LOG_LINE_BYTES], b"\n".as_slice()),
+            (vec![b'x'; MAX_LOG_LINE_BYTES - 1], b"\r\n".as_slice()),
+        ] {
+            let mut input = input;
+            input.extend_from_slice(expected_suffix);
+            let mut reader = BufReader::with_capacity(64, std::io::Cursor::new(input));
+            let mut buf = Vec::new();
+            let mut truncated = false;
+
+            read_log_line(&mut reader, &mut buf, &mut truncated)
+                .await
+                .unwrap();
+
+            assert!(!truncated);
+            assert!(buf.ends_with(expected_suffix));
+        }
+    }
+
+    #[tokio::test]
+    async fn stderr_truncated_line_preserves_trailing_carriage_return() {
         let mut input = vec![b'x'; MAX_LOG_LINE_BYTES - 1];
-        input.extend_from_slice(b"\r\n");
-        let mut reader = std::io::Cursor::new(input);
+        input.extend_from_slice(b"\rmore\n");
+        let mut reader = BufReader::with_capacity(64, std::io::Cursor::new(input));
         let mut buf = Vec::new();
         let mut truncated = false;
 
@@ -309,8 +337,8 @@ mod tests {
         assert_eq!(buf.len(), MAX_LOG_LINE_BYTES);
         assert!(buf.ends_with(b"\r"));
         let rendered = render_log_line(&buf, truncated);
-        assert!(!rendered.contains('\r'));
-        assert!(rendered.ends_with("…[truncated]"));
+        let rendered_body = rendered.strip_suffix("…[truncated]").unwrap();
+        assert!(rendered_body.ends_with('\r'));
     }
 
     #[tokio::test]
