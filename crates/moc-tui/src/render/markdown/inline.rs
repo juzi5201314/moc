@@ -200,7 +200,10 @@ impl<'a> MdRenderer<'a> {
         // 制表符按 4 列展开：宽度计算把 `\t` 记作 0 列，不展开背景带就会错位。
         let code = std::mem::take(&mut self.code_buf).replace('\t', "    ");
 
-        if self.place_mermaid(&info, &code) || self.place_svg(&info, &code) {
+        if self.place_mermaid(&info, &code)
+            || self.place_svg(&info, &code)
+            || self.place_widget(&info, &code)
+        {
             return;
         }
         let lang = code_language(&info);

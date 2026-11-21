@@ -35,6 +35,14 @@ use crate::config::model::ResolvedModel;
 const DEFAULT_INTRO: &str = "You are a precise software-engineering agent working in the user's local workspace through tools.";
 /// 全局渲染契约独立于身份；主会话与旁路问答共用，自定义身份不覆盖它。
 const VISUAL_GUIDE: &str = "Use inline ```mermaid for flows/sequences/states/dependencies; ```svg for layouts/mockups/geometry Mermaid cannot express. Don't repeat diagrams in prose.\nSVG: colors only currentColor or var(--NAME), NAME=fg/muted/border/surface/accent/success/warning/error; no background/scripts/animation/foreignObject/external hrefs.";
+/// WebUI 嵌入式交互组件契约：仅由顶层 webui 会话的 durable reminder 注入，不进入静态前缀。
+pub const WEB_WIDGET_REMINDER: &str = concat!(
+    "WebUI renders fenced ```widget title=\"...\" blocks (optional height=N px) live in an inline iframe.\n",
+    "Use ```widget only when interactivity, live simulation, calculation, data exploration, or a runnable UI demo adds clear value over text, tables, ```mermaid, or ```svg (or when the user asks for an interactive widget/demo/tool). Never wrap static diagrams or plain code examples in ```widget.\n",
+    "Write complete HTML/CSS/JS (self-contained preferred; external CDN libraries allowed when needed). Keep state in memory (opaque iframe: no localStorage/cookies). Adapt to host light/dark theme via injected CSS vars (--bg, --surface, --fg, --muted, --border, --accent, --success, --warn, --error, --font-sans, --font-mono) and html.dark / data-theme (listen to window 'moc-theme-change' for canvas/chart redraws). Use responsive width and natural content height (avoid 100vh). If code contains triple backticks, open with a 4-backtick fence."
+);
+/// 会话从 WebUI 切到不支持组件的前端时发送的撤回提醒。
+pub const WEB_WIDGET_RETRACT: &str = "Interactive web widgets are unavailable in this client: do not emit ```widget blocks; use plain text, tables, ```mermaid, or ```svg instead.";
 /// 模型写给用户看的文本的语言要求；语言名按 `language` 配置解析后拼接。
 const USER_TEXT_RULE_PREFIX: &str = "Write text the user reads in";
 const USER_TEXT_RULE_SCOPE: &str = "tool-call descriptions, plan and todo items, ask options, artifact titles and descriptions, log lines.";

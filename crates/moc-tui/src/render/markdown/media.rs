@@ -9,7 +9,12 @@ use super::resources::file_key;
 use super::resources::file_url_path;
 use crate::render::markdown::is_mermaid_fence_info;
 use crate::render::markdown::is_svg_fence_info;
+use crate::render::markdown::is_widget_fence_info;
+use crate::render::markdown::widget_fence_title;
+use ratatui::style::Style;
 use ratatui::text::Line;
+use ratatui::text::Span;
+use rust_i18n::t;
 use std::path::PathBuf;
 
 impl<'a> MdRenderer<'a> {
@@ -105,6 +110,25 @@ impl<'a> MdRenderer<'a> {
             }
         };
         self.emit_placeholder(&key, state)
+    }
+
+    /// WebUI 交互组件围栏：TUI 中折叠为单行次级色占位文本，避免满屏源码噪音。
+    pub(super) fn place_widget(&mut self, info: &str, code: &str) -> bool {
+        if self.quote_depth > 0 || !self.list_stack.is_empty() || !is_widget_fence_info(info) {
+            return false;
+        }
+        let lines = code.lines().count().max(1);
+        let label = match widget_fence_title(info) {
+            Some(title) => t!("tui.md.widget_placeholder", title = title, lines = lines).into_owned(),
+            None => t!("tui.md.widget_placeholder_untitled", lines = lines).into_owned(),
+        };
+        let clipped = super::super::wrap::truncate(label, self.width.saturating_sub(2).max(1));
+        self.out.push(Line::from(Span::styled(
+            clipped.into_owned(),
+            Style::new().fg(self.theme.gray_dim),
+        )));
+        self.out.push(Line::from(String::new()));
+        true
     }
 
     /// 解码就绪就按版式留空行并登记落位；其余状态返回 `false`（回落文本）。

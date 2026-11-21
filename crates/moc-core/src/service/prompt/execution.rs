@@ -315,6 +315,7 @@ pub(super) async fn run_prompt_locked(
                     cycle_redirect: cycle_redirect.take(),
                     thinking_redirect: thinking_redirect.take(),
                     first_turn,
+                    web_widgets: !subagent && ctx.client().frontend == "webui",
                 })
                 .await?;
                 let mut inputs = {

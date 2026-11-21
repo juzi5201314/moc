@@ -15,6 +15,7 @@ mod commands;
 mod fsraw;
 mod image_playground;
 mod terminal;
+mod widget_host;
 
 rust_i18n::i18n!("../../locales", fallback = "zh");
 
@@ -120,7 +121,7 @@ impl AppState {
 
 fn routes(state: AppState) -> Router {
     let authed = axum::middleware::from_fn_with_state(state.clone(), require_token);
-    Router::new()
+    let app = Router::new()
         .route("/ws", get(ws_handler).route_layer(authed.clone()))
         .route("/commands.json", get(commands_handler))
         // 进程内部数据统一走令牌保护；/commands.json 是公开元数据（见 handler 注释）。
@@ -152,11 +153,16 @@ fn routes(state: AppState) -> Router {
         .merge(image_playground::router().route_layer(authed))
         .fallback(get(static_handler))
         .layer(axum::middleware::from_fn(security_headers))
-        .with_state(state)
+        .with_state(state);
+
+    // `/widget-host` 使用自身专属响应头，不套主页面 `security_headers`（避免被 `frame-src 'self'` / `X-Frame-Options: DENY` 覆写）。
+    Router::new()
+        .route("/widget-host", get(widget_host::handler))
+        .merge(app)
 }
 
 /// 页面只加载自身资源；连接层放行回环 WebSocket（`ws` 直连在 'self' 之外的兜底）。
-/// `frame-ancestors`/`frame-src` 双断 iframe 嵌套：本应用自己也不内嵌任何页面。
+/// `frame-src 'self'` 仅允许内嵌同源 `/widget-host` 沙盒宿主页；`frame-ancestors 'none'` 禁止被外站嵌套。
 const CSP: &str = concat!(
     "default-src 'self'",
     "; script-src 'self'",
@@ -165,7 +171,7 @@ const CSP: &str = concat!(
     "; font-src 'self' data:",
     "; connect-src 'self' ws://127.0.0.1:* ws://localhost:* ws://[::1]:* wss://127.0.0.1:* wss://localhost:* wss://[::1]:*",
     "; object-src 'none'",
-    "; frame-src 'none'",
+    "; frame-src 'self'",
     "; base-uri 'self'",
     "; form-action 'self'",
     "; frame-ancestors 'none'",
@@ -382,11 +388,25 @@ mod tests {
             "default-src 'self'",
             "script-src 'self'",
             "frame-ancestors 'none'",
-            "frame-src 'none'",
+            "frame-src 'self'",
             "object-src 'none'",
         ] {
             assert!(csp.contains(directive), "CSP 缺少 {directive}");
         }
+    }
+
+    #[tokio::test]
+    async fn widget_host_sets_isolated_framing_headers_without_script_csp() {
+        let response = widget_host::handler().await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(headers[header::REFERRER_POLICY], "no-referrer");
+        assert_eq!(
+            headers[header::CONTENT_SECURITY_POLICY],
+            "frame-ancestors 'self'"
+        );
     }
 
     #[tokio::test]

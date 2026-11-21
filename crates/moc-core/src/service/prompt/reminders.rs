@@ -31,6 +31,7 @@ pub(super) struct Scope<'a> {
     pub(super) cycle_redirect: Option<String>,
     pub(super) thinking_redirect: Option<String>,
     pub(super) first_turn: bool,
+    pub(super) web_widgets: bool,
 }
 
 pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError> {
@@ -51,6 +52,7 @@ pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError>
         mut cycle_redirect,
         mut thinking_redirect,
         first_turn,
+        web_widgets,
     } = scope;
     let mut candidates = Vec::new();
     // todo 停滞提醒：仍有未完成项，且距上次 todo 变更已累计足够多次工具调用时注入一次。
@@ -113,6 +115,17 @@ pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError>
         reminder::key::SANDBOX,
         sandbox_contract(permission, &project_config.sandbox),
     ));
+    if web_widgets {
+        candidates.push(Reminder::durable(
+            reminder::key::WEB_WIDGET,
+            crate::system_prompt::WEB_WIDGET_REMINDER.to_owned(),
+        ));
+    } else {
+        candidates.push(Reminder::retract(
+            reminder::key::WEB_WIDGET,
+            crate::system_prompt::WEB_WIDGET_RETRACT,
+        ));
+    }
     match &roster {
         Some(roster) => {
             candidates.push(Reminder::durable(reminder::key::ROSTER, roster.clone()));
