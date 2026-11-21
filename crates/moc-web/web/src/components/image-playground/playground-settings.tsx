@@ -94,6 +94,9 @@ export function ImagePlaygroundSettingsSection() {
       await updateConfig(next);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
+      setDirDraft(config.storage_dir);
+      setMaxDimDraft(String(config.input_compress.max_dimension));
+      setMaxMbDraft(String(config.input_compress.max_bytes_mb));
       setQualityDraft(config.compression.quality);
       setAnimQualityDraft(config.compression.animated_quality);
       committedQualityRef.current = config.compression.quality;

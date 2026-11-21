@@ -369,8 +369,8 @@ impl PlaygroundIndex {
         Some(PathBuf::from(removed.file_path))
     }
 
-    /// 清理不再被单图收藏、组合收藏或任何会话输入引用的 `UploadedFavorite` 晋升图片，返回待清理的磁盘路径。
-    pub fn prune_orphan_preset_uploads(&mut self, candidate_ids: &[String]) -> Vec<PathBuf> {
+    /// 清理不再被单图收藏、组合收藏或任何会话输入引用的 `UploadedFavorite` 晋升图片，返回待清理的 `(图片 ID, 磁盘路径)`。
+    pub fn prune_orphan_preset_uploads(&mut self, candidate_ids: &[String]) -> Vec<(String, PathBuf)> {
         let mut to_trash = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for id in candidate_ids {
@@ -391,14 +391,18 @@ impl PlaygroundIndex {
                 });
             if is_orphan_upload && let Some(removed) = self.images.remove(id) {
                 self.favorite_image_folders.remove(id);
-                to_trash.push(PathBuf::from(removed.file_path));
+                to_trash.push((id.clone(), PathBuf::from(removed.file_path)));
             }
         }
         to_trash
     }
 
-    /// 删除会话：保留所有已收藏图片或被收藏组合引用的图片（将其 `session_id` 置空）；可选删除未收藏的会话生成图。
-    pub fn remove_session(&mut self, session_id: &str, delete_unfavorited: bool) -> Vec<PathBuf> {
+    /// 删除会话：保留所有已收藏图片或被收藏组合引用的图片（将其 `session_id` 置空）；可选删除未收藏的会话生成图，返回待清理的 `(图片 ID, 磁盘路径)`。
+    pub fn remove_session(
+        &mut self,
+        session_id: &str,
+        delete_unfavorited: bool,
+    ) -> Vec<(String, PathBuf)> {
         let candidate_input_ids: Vec<String> = self
             .sessions
             .iter()
@@ -427,7 +431,7 @@ impl PlaygroundIndex {
         }
         for id in to_remove_ids {
             if let Some(img) = self.images.remove(&id) {
-                to_trash.push(PathBuf::from(img.file_path));
+                to_trash.push((id, PathBuf::from(img.file_path)));
             }
         }
         if delete_unfavorited {
@@ -538,7 +542,7 @@ mod tests {
 
         // 删除会话：img1（收藏）与 img3（被组合预设引用）均保留，仅 img2 删除
         let trashed = index.remove_session("s1", true);
-        assert_eq!(trashed, vec![f2]);
+        assert_eq!(trashed, vec![("img2".into(), f2)]);
         assert!(index.images.contains_key("img1"), "已收藏图片应保留");
         assert!(index.images.contains_key("img3"), "被组合收藏引用的图片应保留");
         assert_eq!(index.images["img1"].session_id, None);
@@ -569,7 +573,7 @@ mod tests {
         index.images.insert("img5".into(), up5);
         index.favorites.push("img5".into());
         let pruned = index.prune_orphan_preset_uploads(&["img4".into(), "img5".into()]);
-        assert_eq!(pruned, vec![f4]);
+        assert_eq!(pruned, vec![("img4".into(), f4)]);
         assert!(!index.images.contains_key("img4"));
         assert!(index.images.contains_key("img5"));
     }

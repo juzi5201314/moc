@@ -266,7 +266,7 @@ export const patchPgSession = (
   });
 
 export const deletePgSession = (id: string, deleteUnfavorited = true) =>
-  pgFetch<{ ok: boolean }>(
+  pgFetch<{ ok: boolean; removed_image_ids?: string[] }>(
     `/sessions/${encodeURIComponent(id)}`,
     { method: "DELETE" },
     { delete_unfavorited: deleteUnfavorited ? "true" : "false" },
@@ -382,16 +382,22 @@ export const patchPgFavoritePreset = (
     folder_id?: string | null;
   },
 ) =>
-  pgFetch<FavoritePreset>(`/favorites/presets/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
+  pgFetch<FavoritePreset & { removed_image_ids?: string[] }>(
+    `/favorites/presets/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
 
 export const deletePgFavoritePreset = (id: string) =>
-  pgFetch<{ ok: boolean }>(`/favorites/presets/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
+  pgFetch<{ ok: boolean; removed_image_ids?: string[] }>(
+    `/favorites/presets/${encodeURIComponent(id)}`,
+    {
+      method: "DELETE",
+    },
+  );
 
 export const deletePgImage = (id: string) =>
   pgFetch<{ ok: boolean }>(`/images/${encodeURIComponent(id)}`, { method: "DELETE" });

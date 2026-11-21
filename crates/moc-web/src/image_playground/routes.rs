@@ -113,7 +113,7 @@ pub async fn get_config(State(state): State<AppState>) -> Response {
 pub async fn put_config(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(next): Json<PlaygroundConfig>,
+    Json(mut next): Json<PlaygroundConfig>,
 ) -> Response {
     if let Err(resp) = check_origin(&headers) {
         return resp;
@@ -121,9 +121,10 @@ pub async fn put_config(
     let home = state.core.config_home();
     let _guard = state.image_playground.write_lock.lock().await;
     match tokio::task::spawn_blocking(move || {
-        let saved = config::save(&home, next)?;
-        let resolved = saved.resolved_storage_dir(&home);
+        next.validate()?;
+        let resolved = next.resolved_storage_dir(&home);
         std::fs::create_dir_all(&resolved)?;
+        let saved = config::save(&home, next)?;
         Ok::<_, anyhow::Error>((saved, resolved))
     })
     .await
@@ -362,16 +363,22 @@ pub async fn delete_session(
     state.image_playground.cancel_session(&id);
     match tokio::task::spawn_blocking(move || {
         let mut index = store::load_index(&dir)?;
-        let paths = index.remove_session(&id, delete_unfavorited);
+        let removed = index.remove_session(&id, delete_unfavorited);
         store::save_index(&dir, &index)?;
-        for path in paths {
+        let mut removed_ids = Vec::with_capacity(removed.len());
+        for (img_id, path) in removed {
+            removed_ids.push(img_id);
             store::trash_or_remove(&path);
         }
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>(removed_ids)
     })
     .await
     {
-        Ok(Ok(())) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(Ok(removed_image_ids)) => Json(serde_json::json!({
+            "ok": true,
+            "removed_image_ids": removed_image_ids,
+        }))
+        .into_response(),
         Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -1193,7 +1200,7 @@ pub async fn toggle_favorite(
         };
         let removed = !to_trash.is_empty();
         store::save_index(&dir, &index)?;
-        for path in to_trash {
+        for (_, path) in to_trash {
             store::trash_or_remove(&path);
         }
         Ok::<_, anyhow::Error>(Some((is_fav, folder, removed)))
@@ -1510,6 +1517,13 @@ pub struct PatchPresetBody {
     pub folder_id: Option<Option<String>>,
 }
 
+#[derive(Serialize)]
+struct PatchPresetResponse {
+    #[serde(flatten)]
+    preset: FavoritePreset,
+    removed_image_ids: Vec<String>,
+}
+
 pub async fn patch_favorite_preset(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1578,14 +1592,19 @@ pub async fn patch_favorite_preset(
         };
         let to_trash = index.prune_orphan_preset_uploads(&removed_ids);
         store::save_index(&dir, &index)?;
-        for path in to_trash {
+        let mut removed_image_ids = Vec::with_capacity(to_trash.len());
+        for (img_id, path) in to_trash {
+            removed_image_ids.push(img_id);
             store::trash_or_remove(&path);
         }
-        Ok::<_, anyhow::Error>(Some(updated))
+        Ok::<_, anyhow::Error>(Some(PatchPresetResponse {
+            preset: updated,
+            removed_image_ids,
+        }))
     })
     .await
     {
-        Ok(Ok(Some(preset))) => Json(preset).into_response(),
+        Ok(Ok(Some(resp))) => Json(resp).into_response(),
         Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "收藏组合不存在"),
         Ok(Err(error)) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -1608,20 +1627,26 @@ pub async fn delete_favorite_preset(
     match tokio::task::spawn_blocking(move || {
         let mut index = store::load_index(&dir)?;
         let Some(pos) = index.favorite_presets.iter().position(|p| p.id == id) else {
-            return Ok(false);
+            return Ok(None);
         };
         let removed_preset = index.favorite_presets.remove(pos);
         let to_trash = index.prune_orphan_preset_uploads(&removed_preset.image_ids);
         store::save_index(&dir, &index)?;
-        for path in to_trash {
+        let mut removed_image_ids = Vec::with_capacity(to_trash.len());
+        for (img_id, path) in to_trash {
+            removed_image_ids.push(img_id);
             store::trash_or_remove(&path);
         }
-        Ok::<_, anyhow::Error>(true)
+        Ok::<_, anyhow::Error>(Some(removed_image_ids))
     })
     .await
     {
-        Ok(Ok(true)) => Json(serde_json::json!({ "ok": true })).into_response(),
-        Ok(Ok(false)) => err_response(StatusCode::NOT_FOUND, "收藏组合不存在"),
+        Ok(Ok(Some(removed_image_ids))) => Json(serde_json::json!({
+            "ok": true,
+            "removed_image_ids": removed_image_ids,
+        }))
+        .into_response(),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "收藏组合不存在"),
         Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }

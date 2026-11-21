@@ -175,24 +175,52 @@ function mergeImages(
   return next;
 }
 
-function stripRefFromDrafts(
+function stripRefsFromDrafts(
   drafts: Record<string, SessionDraft>,
-  imageId: string,
+  removedIds: Set<string>,
 ): Record<string, SessionDraft> {
+  if (removedIds.size === 0) return drafts;
   let changed = false;
   const next: Record<string, SessionDraft> = {};
   for (const [sid, draft] of Object.entries(drafts)) {
-    if (draft.refImageIds.includes(imageId)) {
+    if (draft.refImageIds.some((id) => removedIds.has(id))) {
       changed = true;
       next[sid] = {
         ...draft,
-        refImageIds: draft.refImageIds.filter((id) => id !== imageId),
+        refImageIds: draft.refImageIds.filter((id) => !removedIds.has(id)),
       };
     } else {
       next[sid] = draft;
     }
   }
   return changed ? next : drafts;
+}
+
+function purgeRemovedImageState(
+  state: Pick<ImagePlaygroundState, "imagesById" | "drafts" | "lightboxImageId" | "lightboxList">,
+  ids: string[],
+): Pick<ImagePlaygroundState, "imagesById" | "drafts" | "lightboxImageId" | "lightboxList"> {
+  if (ids.length === 0) {
+    return {
+      imagesById: state.imagesById,
+      drafts: state.drafts,
+      lightboxImageId: state.lightboxImageId,
+      lightboxList: state.lightboxList,
+    };
+  }
+  const removedSet = new Set(ids);
+  const nextImages = { ...state.imagesById };
+  for (const id of removedSet) {
+    delete nextImages[id];
+  }
+  const nextLightboxList = state.lightboxList.filter((id) => !removedSet.has(id));
+  return {
+    imagesById: nextImages,
+    drafts: stripRefsFromDrafts(state.drafts, removedSet),
+    lightboxImageId:
+      state.lightboxImageId && removedSet.has(state.lightboxImageId) ? null : state.lightboxImageId,
+    lightboxList: nextLightboxList,
+  };
 }
 
 async function executeGenerateRequest(
@@ -477,7 +505,8 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
   },
 
   removeSession: async (id) => {
-    await deletePgSession(id, true);
+    const resp = await deletePgSession(id, true);
+    const removedIds = resp.removed_image_ids ?? [];
     const remaining = get().sessions.filter((s) => s.id !== id);
     const nextActive =
       get().activeSessionId === id ? (remaining[0]?.id ?? null) : get().activeSessionId;
@@ -488,10 +517,10 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
       for (const up of drafts[id]?.uploads ?? []) URL.revokeObjectURL(up.previewUrl);
       delete drafts[id];
       return {
+        ...purgeRemovedImageState({ ...state, drafts }, removedIds),
         sessions: remaining,
         activeSessionId: nextActive,
         sessionDetails: details,
-        drafts,
         confirmDeleteSession: null,
       };
     });
@@ -548,6 +577,7 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
     })),
 
   editWithImage: async (imageId) => {
+    if (get().imagesById[imageId]?.format.toLowerCase() === "avif") return;
     let sid = get().activeSessionId;
     if (!sid) {
       sid = await get().newSession();
@@ -665,15 +695,7 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
     try {
       const resp = await togglePgFavorite(imageId, { favorite: nextFav });
       if (resp.removed) {
-        set((state) => {
-          const nextImages = { ...state.imagesById };
-          delete nextImages[imageId];
-          return {
-            imagesById: nextImages,
-            drafts: stripRefFromDrafts(state.drafts, imageId),
-            lightboxImageId: state.lightboxImageId === imageId ? null : state.lightboxImageId,
-          };
-        });
+        set((state) => purgeRemovedImageState(state, [imageId]));
       }
     } catch (error) {
       // 回滚
@@ -791,16 +813,19 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
   },
 
   updateFavoritePreset: async (id, patch) => {
-    const updated = await patchPgFavoritePreset(id, patch);
+    const { removed_image_ids = [], ...preset } = await patchPgFavoritePreset(id, patch);
     set((state) => ({
-      favoritePresets: state.favoritePresets.map((p) => (p.id === id ? updated : p)),
+      ...purgeRemovedImageState(state, removed_image_ids),
+      favoritePresets: state.favoritePresets.map((p) => (p.id === id ? preset : p)),
     }));
-    return updated;
+    return preset;
   },
 
   deleteFavoritePreset: async (id) => {
-    await deletePgFavoritePreset(id);
+    const resp = await deletePgFavoritePreset(id);
+    const removedIds = resp.removed_image_ids ?? [];
     set((state) => ({
+      ...purgeRemovedImageState(state, removedIds),
       favoritePresets: state.favoritePresets.filter((p) => p.id !== id),
     }));
   },
@@ -814,7 +839,7 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
       },
       drafts:
         resp.image.format.toLowerCase() === "avif"
-          ? stripRefFromDrafts(state.drafts, imageId)
+          ? stripRefsFromDrafts(state.drafts, new Set([imageId]))
           : state.drafts,
       pendingConvert: null,
     }));
@@ -824,8 +849,6 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
   removeImage: async (imageId) => {
     await deletePgImage(imageId);
     set((state) => {
-      const nextImages = { ...state.imagesById };
-      delete nextImages[imageId];
       const nextDetails: Record<string, PlaygroundSession> = {};
       for (const [sid, session] of Object.entries(state.sessionDetails)) {
         nextDetails[sid] = {
@@ -837,7 +860,7 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
         };
       }
       return {
-        imagesById: nextImages,
+        ...purgeRemovedImageState(state, [imageId]),
         galleryIds: state.galleryIds.filter((id) => id !== imageId),
         favoriteIds: state.favoriteIds.filter((id) => id !== imageId),
         favoritePresets: state.favoritePresets.map((p) => ({
@@ -845,9 +868,7 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
           image_ids: p.image_ids.filter((id) => id !== imageId),
         })),
         sessionDetails: nextDetails,
-        drafts: stripRefFromDrafts(state.drafts, imageId),
         confirmDeleteImage: null,
-        lightboxImageId: state.lightboxImageId === imageId ? null : state.lightboxImageId,
       };
     });
   },
