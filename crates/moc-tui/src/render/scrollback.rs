@@ -49,6 +49,7 @@ pub struct ScrollbackView {
     generations: Vec<u64>,
     batches: BatchIndex,
     tree: TreeIndex,
+    indexed_state: (usize, u64, u64),
     deferred: bool,
     background_layout: bool,
     pending_layout: Option<PendingLayout>,
@@ -333,8 +334,18 @@ impl ScrollbackView {
             .flatten().filter(|&index| app.prompt_running && app.blocks[index].elapsed_ms.is_none()
                 && matches!(&app.blocks[index].block, Block::Assistant { text } if text.len() > 64 * 1024));
         let eager_start = app.blocks.len().saturating_sub(EAGER_BLOCKS);
-        self.batches.sync(&app.blocks, &mut self.generations);
-        self.tree.sync(&app.blocks);
+        // 三信号覆盖块的全部变更路径：长度变化、视图失效，以及 Entry::new /
+        // touch / text_appended 统一递增的条目修订号。未变时 O(1) 跳过索引重建。
+        let indexed_state = (
+            app.blocks.len(),
+            app.view_gen,
+            crate::transcript::entry_revision(),
+        );
+        if self.indexed_state != indexed_state {
+            self.batches.sync(&app.blocks, &mut self.generations);
+            self.tree.sync(&app.blocks);
+            self.indexed_state = indexed_state;
+        }
         for (index, entry) in app.blocks.iter().enumerate() {
             let key = (
                 self.generations.get(index).copied().unwrap_or(0),
