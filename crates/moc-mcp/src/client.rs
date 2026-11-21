@@ -200,6 +200,12 @@ async fn read_log_line(
 }
 
 fn render_log_line(buf: &[u8], truncated: bool) -> String {
+    // 截断可能只保留 CRLF 中的回车，渲染前将其移除。
+    let buf = if truncated {
+        buf.strip_suffix(b"\r").unwrap_or(buf)
+    } else {
+        buf
+    };
     let mut line = String::from_utf8_lossy(buf).into_owned();
     if truncated {
         line.push_str("…[truncated]");
@@ -285,6 +291,26 @@ mod tests {
         assert_eq!(second_len, b"next line\n".len());
         assert_eq!(buf, b"next line\n");
         assert!(!truncated);
+    }
+
+    #[tokio::test]
+    async fn stderr_truncated_crlf_line_drops_trailing_carriage_return() {
+        let mut input = vec![b'x'; MAX_LOG_LINE_BYTES - 1];
+        input.extend_from_slice(b"\r\n");
+        let mut reader = std::io::Cursor::new(input);
+        let mut buf = Vec::new();
+        let mut truncated = false;
+
+        read_log_line(&mut reader, &mut buf, &mut truncated)
+            .await
+            .unwrap();
+
+        assert!(truncated);
+        assert_eq!(buf.len(), MAX_LOG_LINE_BYTES);
+        assert!(buf.ends_with(b"\r"));
+        let rendered = render_log_line(&buf, truncated);
+        assert!(!rendered.contains('\r'));
+        assert!(rendered.ends_with("…[truncated]"));
     }
 
     #[tokio::test]
