@@ -33,7 +33,9 @@ import {
   patchPgSession,
   renamePgFavoriteFolder,
   savePlaygroundConfig,
+  type TurnInputRef,
   togglePgFavorite,
+  type UploadRefInput,
   uploadPgFavorites,
 } from "@/lib/image-playground-api";
 
@@ -58,6 +60,8 @@ export type PresetEditorState = {
   initialTitle?: string;
   initialPrompt?: string;
   initialImageIds?: string[];
+  initialUploads?: UploadRefInput[];
+  initialFiles?: File[];
   initialFolderId?: string | null;
 };
 
@@ -126,7 +130,8 @@ export type ImagePlaygroundState = {
     sessionId: string,
     prompt: string,
     params: ImageGenParams,
-    refImageIds: string[],
+    inputs: TurnInputRef[],
+    fallbackModel?: string,
   ) => Promise<void>;
   cancelGenerate: (sessionId: string) => Promise<void>;
 
@@ -140,6 +145,7 @@ export type ImagePlaygroundState = {
     title?: string;
     prompt: string;
     image_ids: string[];
+    source_uploads?: UploadRefInput[];
     folder_id: string | null;
   }) => Promise<FavoritePreset>;
   updateFavoritePreset: (
@@ -167,6 +173,63 @@ function mergeImages(
   const next = { ...prev };
   for (const img of incoming) next[img.id] = img;
   return next;
+}
+
+async function executeGenerateRequest(
+  sessionId: string,
+  payload: {
+    prompt: string;
+    model: string;
+    params: ImageGenParams;
+    sourceImageIds: string[];
+    sourceUploads: UploadRefInput[];
+    files: File[];
+  },
+): Promise<void> {
+  useImagePlayground.setState((prev) => ({
+    runningBySession: { ...prev.runningBySession, [sessionId]: true },
+  }));
+  try {
+    const resp = await generatePgImages(sessionId, payload);
+    useImagePlayground.setState((prev) => {
+      const existing = prev.sessionDetails[sessionId];
+      const nextSession: PlaygroundSession | undefined = existing
+        ? {
+            ...existing,
+            title: resp.session_title || existing.title,
+            model: payload.model,
+            updated_at_ms: resp.turn.created_at_ms,
+            turns: [...existing.turns, resp.turn],
+          }
+        : undefined;
+      const newIds = resp.images.map((i) => i.id);
+      return {
+        sessionDetails: nextSession
+          ? { ...prev.sessionDetails, [sessionId]: nextSession }
+          : prev.sessionDetails,
+        sessions: prev.sessions
+          .map((s) =>
+            s.id === sessionId
+              ? {
+                  ...s,
+                  title: resp.session_title || s.title,
+                  model: payload.model,
+                  updated_at_ms: resp.turn.created_at_ms,
+                  turn_count: s.turn_count + 1,
+                  image_count: s.image_count + newIds.length,
+                }
+              : s,
+          )
+          .toSorted((a, b) => b.updated_at_ms - a.updated_at_ms),
+        imagesById: mergeImages(prev.imagesById, resp.images),
+        galleryIds: [...newIds, ...prev.galleryIds.filter((id) => !newIds.includes(id))],
+      };
+    });
+  } finally {
+    useImagePlayground.setState((prev) => ({
+      runningBySession: { ...prev.runningBySession, [sessionId]: false },
+    }));
+  }
 }
 
 export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => ({
@@ -453,70 +516,41 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
     // 清空文本与临时上传（保留参数配置；引用图清空避免误带入下轮，收藏浮层随时可点选）。
     for (const u of draft.uploads) URL.revokeObjectURL(u.previewUrl);
     set((prev) => ({
-      runningBySession: { ...prev.runningBySession, [sessionId]: true },
       drafts: {
         ...prev.drafts,
         [sessionId]: { ...draft, prompt: "", uploads: [], refImageIds: [] },
       },
     }));
 
-    try {
-      const resp = await generatePgImages(sessionId, {
-        prompt,
-        model,
-        params,
-        sourceImageIds: refIds,
-        files,
-      });
-      set((prev) => {
-        const existing = prev.sessionDetails[sessionId];
-        const nextSession: PlaygroundSession | undefined = existing
-          ? {
-              ...existing,
-              title: resp.session_title || existing.title,
-              model,
-              updated_at_ms: resp.turn.created_at_ms,
-              turns: [...existing.turns, resp.turn],
-            }
-          : undefined;
-        const newIds = resp.images.map((i) => i.id);
-        return {
-          sessionDetails: nextSession
-            ? { ...prev.sessionDetails, [sessionId]: nextSession }
-            : prev.sessionDetails,
-          sessions: prev.sessions
-            .map((s) =>
-              s.id === sessionId
-                ? {
-                    ...s,
-                    title: resp.session_title || s.title,
-                    model,
-                    updated_at_ms: resp.turn.created_at_ms,
-                    turn_count: s.turn_count + 1,
-                    image_count: s.image_count + newIds.length,
-                  }
-                : s,
-            )
-            .toSorted((a, b) => b.updated_at_ms - a.updated_at_ms),
-          imagesById: mergeImages(prev.imagesById, resp.images),
-          galleryIds: [...newIds, ...prev.galleryIds.filter((id) => !newIds.includes(id))],
-        };
-      });
-    } finally {
-      set((prev) => ({
-        runningBySession: { ...prev.runningBySession, [sessionId]: false },
-      }));
-    }
+    await executeGenerateRequest(sessionId, {
+      prompt,
+      model,
+      params,
+      sourceImageIds: refIds,
+      sourceUploads: [],
+      files,
+    });
   },
 
-  retryTurn: async (sessionId, prompt, params, refImageIds) => {
-    get().updateDraft(sessionId, (prev) => ({
-      ...prev,
-      prompt,
+  retryTurn: async (sessionId, prompt, params, inputs, fallbackModel) => {
+    const state = get();
+    const trimmed = prompt.trim();
+    const model = state.selectedModel || fallbackModel || "";
+    if (!trimmed || !model || state.runningBySession[sessionId]) return;
+
+    const sourceImageIds = inputs.map((i) => i.image_id).filter((id): id is string => Boolean(id));
+    const sourceUploads: UploadRefInput[] = inputs
+      .filter((i): i is TurnInputRef & { upload_id: string } => Boolean(!i.image_id && i.upload_id))
+      .map((i) => ({ upload_id: i.upload_id, filename: i.filename }));
+
+    await executeGenerateRequest(sessionId, {
+      prompt: trimmed,
+      model,
       params: { ...params },
-      refImageIds: [...refImageIds],
-    }));
-    await get().submitGenerate(sessionId);
+      sourceImageIds,
+      sourceUploads,
+      files: [],
+    });
   },
 
   cancelGenerate: async (sessionId) => {
@@ -665,6 +699,14 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
 
   createFavoritePreset: async (body) => {
     const preset = await createPgFavoritePreset(body);
+    if (body.source_uploads && body.source_uploads.length > 0) {
+      const meta = await fetchPgFavoritesMeta().catch(() => null);
+      set((state) => ({
+        imagesById: meta ? mergeImages(state.imagesById, meta.preset_images) : state.imagesById,
+        favoritePresets: [preset, ...state.favoritePresets.filter((p) => p.id !== preset.id)],
+      }));
+      return preset;
+    }
     set((state) => ({
       favoritePresets: [preset, ...state.favoritePresets.filter((p) => p.id !== preset.id)],
     }));

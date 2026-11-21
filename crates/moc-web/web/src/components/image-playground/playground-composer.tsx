@@ -262,7 +262,7 @@ export function PlaygroundComposer({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
             multiple
             hidden
             onChange={(e) => {
@@ -291,7 +291,7 @@ export function PlaygroundComposer({
             onChange={(next) => updateDraft(sessionId, (prev) => ({ ...prev, params: next }))}
           />
 
-          {(prompt.trim() || refImageIds.length > 0) && (
+          {(prompt.trim() || totalRefs > 0) && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -300,6 +300,7 @@ export function PlaygroundComposer({
                     useImagePlayground.getState().openPresetEditor({
                       initialPrompt: prompt.trim(),
                       initialImageIds: [...refImageIds],
+                      initialFiles: uploads.map((u) => u.file),
                     })
                   }
                   className={cn(CHIP, "w-8 justify-center px-0")}

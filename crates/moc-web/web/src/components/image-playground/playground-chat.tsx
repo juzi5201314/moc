@@ -202,9 +202,15 @@ function TurnItem({ sessionId, turn }: { sessionId: string; turn: PlaygroundTurn
               const refIds = turn.inputs
                 .map((i) => i.image_id)
                 .filter((id): id is string => Boolean(id));
+              const uploadRefs = turn.inputs
+                .filter((i): i is typeof i & { upload_id: string } =>
+                  Boolean(!i.image_id && i.upload_id),
+                )
+                .map((i) => ({ upload_id: i.upload_id, filename: i.filename }));
               useImagePlayground.getState().openPresetEditor({
                 initialPrompt: turn.prompt,
                 initialImageIds: refIds,
+                initialUploads: uploadRefs,
               });
             }}
             title={t("ip.save_as_preset")}
@@ -246,12 +252,13 @@ function TurnItem({ sessionId, turn }: { sessionId: string; turn: PlaygroundTurn
                   variant="outline"
                   disabled={running}
                   onClick={() => {
-                    const refIds = turn.inputs
-                      .map((i) => i.image_id)
-                      .filter((id): id is string => Boolean(id));
-                    void retryTurn(sessionId, turn.prompt, turn.params, refIds).catch((err) =>
-                      toast.error(String(err)),
-                    );
+                    void retryTurn(
+                      sessionId,
+                      turn.prompt,
+                      turn.params,
+                      turn.inputs,
+                      turn.model,
+                    ).catch((err) => toast.error(String(err)));
                   }}
                 >
                   <RotateCcwIcon className="size-3.5" />

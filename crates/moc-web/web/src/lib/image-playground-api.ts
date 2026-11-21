@@ -66,6 +66,11 @@ export type TurnInputRef = {
   mime_type: string;
 };
 
+export type UploadRefInput = {
+  upload_id: string;
+  filename?: string;
+};
+
 export type TurnError = {
   status: number | null;
   message: string;
@@ -274,6 +279,7 @@ export const generatePgImages = (
     model: string;
     params: ImageGenParams;
     sourceImageIds: string[];
+    sourceUploads?: UploadRefInput[];
     files: File[];
   },
 ) => {
@@ -283,6 +289,9 @@ export const generatePgImages = (
   form.append("params", JSON.stringify(payload.params));
   if (payload.sourceImageIds.length > 0) {
     form.append("source_image_ids", JSON.stringify(payload.sourceImageIds));
+  }
+  if (payload.sourceUploads && payload.sourceUploads.length > 0) {
+    form.append("source_uploads", JSON.stringify(payload.sourceUploads));
   }
   for (const file of payload.files) {
     form.append("images", file, file.name || "image.png");
@@ -353,6 +362,7 @@ export const createPgFavoritePreset = (body: {
   title?: string;
   prompt: string;
   image_ids: string[];
+  source_uploads?: UploadRefInput[];
   folder_id: string | null;
 }) =>
   pgFetch<FavoritePreset>("/favorites/presets", {

@@ -2,6 +2,7 @@
 // 支持纯提示词收藏，或将多张参考图 + 提示词打包为一个收藏单位，并可归入指定收藏文件夹。
 
 import { CheckIcon, ImagePlusIcon, SparklesIcon, UploadIcon, XIcon } from "lucide-react";
+import { nanoid } from "nanoid";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -22,11 +23,22 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useT } from "@/lib/i18n";
-import { pgImageUrl } from "@/lib/image-playground-api";
+import { pgImageUrl, pgUploadUrl, type UploadRefInput } from "@/lib/image-playground-api";
 import { cn } from "@/lib/utils";
 import { useImagePlayground } from "@/store/image-playground";
 
 const ROOT_FOLDER = "__root__";
+
+type PendingUploadRef = {
+  id: string;
+  ref: UploadRefInput;
+};
+
+type PendingFileRef = {
+  id: string;
+  file: File;
+  previewUrl: string;
+};
 
 export function FavoritePresetDialog() {
   const t = useT();
@@ -43,6 +55,8 @@ export function FavoritePresetDialog() {
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [imageIds, setImageIds] = useState<string[]>([]);
+  const [pendingUploads, setPendingUploads] = useState<PendingUploadRef[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<PendingFileRef[]>([]);
   const [folderId, setFolderId] = useState<string | null>(null);
   const [pickingImages, setPickingImages] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -50,19 +64,36 @@ export function FavoritePresetDialog() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!editor) return;
+    if (!editor) {
+      setPendingUploads([]);
+      setPendingFiles([]);
+      return;
+    }
     if (editor.editing) {
       setTitle(editor.editing.title);
       setPrompt(editor.editing.prompt);
       setImageIds(editor.editing.image_ids);
       setFolderId(editor.editing.folder_id);
-    } else {
-      setTitle(editor.initialTitle ?? "");
-      setPrompt(editor.initialPrompt ?? "");
-      setImageIds(editor.initialImageIds ?? []);
-      setFolderId(editor.initialFolderId ?? null);
+      setPendingUploads([]);
+      setPendingFiles([]);
+      setPickingImages(false);
+      return;
     }
+    setTitle(editor.initialTitle ?? "");
+    setPrompt(editor.initialPrompt ?? "");
+    setImageIds(editor.initialImageIds ?? []);
+    setFolderId(editor.initialFolderId ?? null);
+    setPendingUploads((editor.initialUploads ?? []).map((ref) => ({ id: nanoid(), ref })));
+    const nextFiles = (editor.initialFiles ?? []).map((file) => ({
+      id: nanoid(),
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }));
+    setPendingFiles(nextFiles);
     setPickingImages(false);
+    return () => {
+      for (const item of nextFiles) URL.revokeObjectURL(item.previewUrl);
+    };
   }, [editor]);
 
   const candidateImages = useMemo(() => {
@@ -81,6 +112,18 @@ export function FavoritePresetDialog() {
 
   const toggleImage = (id: string) => {
     setImageIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const removePendingUpload = (id: string) => {
+    setPendingUploads((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const removePendingFile = (id: string) => {
+    setPendingFiles((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((item) => item.id !== id);
+    });
   };
 
   const handleUpload = async (files: File[]) => {
@@ -103,19 +146,35 @@ export function FavoritePresetDialog() {
     }
   };
 
+  const totalRefCount = imageIds.length + pendingUploads.length + pendingFiles.length;
+
   const handleSave = async () => {
     const trimmedPrompt = prompt.trim();
-    if (!trimmedPrompt && imageIds.length === 0) {
+    if (!trimmedPrompt && totalRefCount === 0) {
       toast.error(t("ip.preset_empty_err"));
       return;
     }
     setSaving(true);
     try {
+      const nextImageIds = [...imageIds];
+      if (pendingFiles.length > 0) {
+        const uploaded = await uploadFavorites(
+          pendingFiles.map((item) => item.file),
+          folderId,
+        );
+        for (const img of uploaded) {
+          if (!nextImageIds.includes(img.id)) nextImageIds.push(img.id);
+        }
+        // 上传成功后立刻同步进 imageIds 并清空待传文件，避免后续保存报错重试时重复上传。
+        setImageIds(nextImageIds);
+        for (const item of pendingFiles) URL.revokeObjectURL(item.previewUrl);
+        setPendingFiles([]);
+      }
       if (editor?.editing) {
         await updateFavoritePreset(editor.editing.id, {
           title: title.trim() || undefined,
           prompt: trimmedPrompt,
-          image_ids: imageIds,
+          image_ids: nextImageIds,
           folder_id: folderId,
         });
         toast.success(t("ip.preset_updated"));
@@ -123,7 +182,9 @@ export function FavoritePresetDialog() {
         await createFavoritePreset({
           title: title.trim() || undefined,
           prompt: trimmedPrompt,
-          image_ids: imageIds,
+          image_ids: nextImageIds,
+          source_uploads:
+            pendingUploads.length > 0 ? pendingUploads.map((item) => item.ref) : undefined,
           folder_id: folderId,
         });
         toast.success(t("ip.preset_saved"));
@@ -202,7 +263,7 @@ export function FavoritePresetDialog() {
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-medium text-muted-foreground">
-                {t("ip.preset_refs_label", { n: imageIds.length })}
+                {t("ip.preset_refs_label", { n: totalRefCount })}
               </span>
               <div className="flex items-center gap-1.5">
                 <Button
@@ -218,7 +279,7 @@ export function FavoritePresetDialog() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
                   multiple
                   hidden
                   onChange={(e) => {
@@ -241,7 +302,7 @@ export function FavoritePresetDialog() {
               </div>
             </div>
 
-            {imageIds.length > 0 && (
+            {totalRefCount > 0 && (
               <div className="flex flex-wrap gap-2">
                 {imageIds.map((id) => {
                   const img = imagesById[id];
@@ -267,6 +328,46 @@ export function FavoritePresetDialog() {
                     </div>
                   );
                 })}
+                {pendingUploads.map((up) => (
+                  <div
+                    key={up.id}
+                    className="group relative size-14 overflow-hidden rounded-lg bg-muted/40 ring-1 ring-inset ring-border-subtle"
+                  >
+                    <img
+                      src={pgUploadUrl(up.ref.upload_id)}
+                      alt={up.ref.filename ?? up.ref.upload_id}
+                      className="size-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removePendingUpload(up.id)}
+                      aria-label={t("common.delete")}
+                      className="absolute top-0.5 right-0.5 flex size-4 items-center justify-center rounded-full bg-black/65 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                    >
+                      <XIcon className="size-2.5" />
+                    </button>
+                  </div>
+                ))}
+                {pendingFiles.map((pf) => (
+                  <div
+                    key={pf.id}
+                    className="group relative size-14 overflow-hidden rounded-lg bg-muted/40 ring-1 ring-inset ring-border-subtle"
+                  >
+                    <img
+                      src={pf.previewUrl}
+                      alt={pf.file.name || "image"}
+                      className="size-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removePendingFile(pf.id)}
+                      aria-label={t("common.delete")}
+                      className="absolute top-0.5 right-0.5 flex size-4 items-center justify-center rounded-full bg-black/65 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                    >
+                      <XIcon className="size-2.5" />
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
 

@@ -4,13 +4,17 @@
 //! 以兼容 OpenAI GPT Image 系列与任意第三方兼容网关；上游返回非 2xx 时
 //! 原样保留 HTTP 状态码与响应体文本。
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{CONTENT_TYPE, LOCATION};
 use reqwest::multipart::{Form, Part};
+use reqwest::redirect::Policy;
+use reqwest::{Client as ReqwestClient, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use tokio::time::Instant;
 
 use crate::client::Client;
 use crate::config::{Auth, LlmConfig};
@@ -20,6 +24,12 @@ use crate::traffic::{record_rx, record_tx};
 const MAX_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
 /// 从响应 `url` 拉取单张图片的上限。
 const MAX_REMOTE_IMAGE_BYTES: usize = 100 * 1024 * 1024;
+/// 从响应 `url` 拉取图片时允许的最大重定向跳数。
+const MAX_REMOTE_IMAGE_REDIRECTS: usize = 5;
+/// 未配置 `timeout_secs` 时，从响应 `url` 拉取图片的默认总超时（秒）。
+const DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS: f64 = 60.0;
+/// 未配置 `connect_timeout_secs` 时，从响应 `url` 拉取图片的默认连接超时（秒）。
+const DEFAULT_REMOTE_IMAGE_CONNECT_TIMEOUT_SECS: f64 = 15.0;
 /// 上游错误响应体读取上限。
 const MAX_ERROR_BODY_BYTES: usize = 256 * 1024;
 
@@ -224,7 +234,7 @@ impl Client {
             });
         }
 
-        parse_json_response(&http, &bytes).await
+        parse_json_response(cfg, &bytes).await
     }
 }
 
@@ -372,7 +382,7 @@ struct WireImageItem {
 }
 
 async fn parse_json_response(
-    http: &reqwest::Client,
+    cfg: &LlmConfig,
     body: &[u8],
 ) -> Result<ImageGenResponse, ImageGenError> {
     let wire: WireResponse = serde_json::from_slice(body).map_err(|error| {
@@ -405,7 +415,7 @@ async fn parse_json_response(
                 source_url: item.url,
             });
         } else if let Some(url) = item.url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            let (bytes, mime) = download_remote_image(http, url).await?;
+            let (bytes, mime) = download_remote_image(cfg, url).await?;
             images.push(GeneratedImage {
                 bytes,
                 mime_hint: mime.or(item.media_type).or_else(|| default_mime.clone()),
@@ -426,28 +436,336 @@ async fn parse_json_response(
     })
 }
 
-async fn download_remote_image(
-    http: &reqwest::Client,
-    url: &str,
-) -> Result<(Vec<u8>, Option<String>), ImageGenError> {
-    let response = http
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| ImageGenError::Transport(format!("下载生成图片失败：{error}")))?;
-    let status = response.status();
-    if !status.is_success() {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SameOriginAllowance {
+    LocalhostLoopbackOnly,
+    LiteralNonPublicIp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AllowedUpstreamOrigin {
+    scheme: String,
+    host_key: String,
+    port: u16,
+    kind: SameOriginAllowance,
+}
+
+fn canonical_host_and_ip(url: &Url) -> Option<(String, Option<IpAddr>)> {
+    let raw = url.host_str()?;
+    let trimmed = raw
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(raw);
+    if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        Some((ip.to_string(), Some(ip)))
+    } else {
+        Some((raw.trim_end_matches('.').to_ascii_lowercase(), None))
+    }
+}
+
+fn allowed_upstream_origin(cfg: &LlmConfig) -> Option<AllowedUpstreamOrigin> {
+    let url = Url::parse(&cfg.base_url).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let port = url.port_or_known_default()?;
+    let (host_key, ip_opt) = canonical_host_and_ip(&url)?;
+    let kind = match ip_opt {
+        Some(ip) if !is_public_ip(ip) => SameOriginAllowance::LiteralNonPublicIp,
+        Some(_) => return None,
+        None if host_key == "localhost" => SameOriginAllowance::LocalhostLoopbackOnly,
+        None => return None,
+    };
+    Some(AllowedUpstreamOrigin {
+        scheme: url.scheme().to_owned(),
+        host_key,
+        port,
+        kind,
+    })
+}
+
+fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    if ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_unspecified()
+        || ip.is_documentation()
+        || ip.is_multicast()
+    {
+        return false;
+    }
+    // 0.0.0.0/8（当前网络）
+    if a == 0 {
+        return false;
+    }
+    // 100.64.0.0/10（CGNAT 共享地址空间，RFC 6598）
+    if a == 100 && (b & 0b1100_0000) == 64 {
+        return false;
+    }
+    // 192.0.0.0/24（IETF 协议保留段）
+    if a == 192 && b == 0 && c == 0 {
+        return false;
+    }
+    // 198.18.0.0/15（基准测试网络，RFC 2544）
+    if a == 198 && (b == 18 || b == 19) {
+        return false;
+    }
+    // 240.0.0.0/4（保留地址段，含受限广播）
+    if a >= 240 {
+        return false;
+    }
+    true
+}
+
+fn is_public_ipv6(ip: Ipv6Addr) -> bool {
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+        return false;
+    }
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return is_public_ipv4(v4);
+    }
+    if let Some(v4) = ip.to_ipv4() {
+        return is_public_ipv4(v4);
+    }
+    let segs = ip.segments();
+    // NAT64 64:ff9b::/96：校验内嵌 IPv4 地址
+    if segs[0] == 0x0064
+        && segs[1] == 0xff9b
+        && segs[2] == 0
+        && segs[3] == 0
+        && segs[4] == 0
+        && segs[5] == 0
+    {
+        let v4 = Ipv4Addr::new(
+            (segs[6] >> 8) as u8,
+            segs[6] as u8,
+            (segs[7] >> 8) as u8,
+            segs[7] as u8,
+        );
+        return is_public_ipv4(v4);
+    }
+    // NAT64 局部使用段 64:ff9b:1::/48
+    if segs[0] == 0x0064 && segs[1] == 0xff9b && segs[2] == 0x0001 {
+        return false;
+    }
+    // 6to4 2002::/16：校验内嵌 IPv4 地址
+    if segs[0] == 0x2002 {
+        let v4 = Ipv4Addr::new(
+            (segs[1] >> 8) as u8,
+            segs[1] as u8,
+            (segs[2] >> 8) as u8,
+            segs[2] as u8,
+        );
+        return is_public_ipv4(v4);
+    }
+    // Teredo 2001::/32
+    if segs[0] == 0x2001 && segs[1] == 0 {
+        return false;
+    }
+    // ULA fc00::/7
+    if (segs[0] & 0xfe00) == 0xfc00 {
+        return false;
+    }
+    // Link-local fe80::/10
+    if (segs[0] & 0xffc0) == 0xfe80 {
+        return false;
+    }
+    // Site-local fec0::/10
+    if (segs[0] & 0xffc0) == 0xfec0 {
+        return false;
+    }
+    // Documentation 2001:db8::/32
+    if segs[0] == 0x2001 && segs[1] == 0x0db8 {
+        return false;
+    }
+    // Discard 100::/64
+    if segs[0] == 0x0100 && segs[1] == 0 && segs[2] == 0 && segs[3] == 0 {
+        return false;
+    }
+    true
+}
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_public_ipv4(v4),
+        IpAddr::V6(v6) => is_public_ipv6(v6),
+    }
+}
+
+fn remote_image_timeout(cfg: &LlmConfig) -> Duration {
+    let secs = cfg
+        .timeout_secs
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS);
+    Duration::from_secs_f64(secs)
+}
+
+fn remote_image_connect_timeout(cfg: &LlmConfig) -> Duration {
+    let secs = cfg
+        .connect_timeout_secs
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(DEFAULT_REMOTE_IMAGE_CONNECT_TIMEOUT_SECS);
+    Duration::from_secs_f64(secs)
+}
+
+/// 校验图片下载目标 URL 的协议与目标网络，必要时解析域名并钉死 IP，防止 SSRF 与 DNS 重绑定。
+async fn validate_and_pin_target(
+    url: &Url,
+    upstream: Option<&AllowedUpstreamOrigin>,
+) -> Result<Option<(String, Vec<SocketAddr>)>, ImageGenError> {
+    if !matches!(url.scheme(), "http" | "https") {
         return Err(ImageGenError::Transport(format!(
-            "下载生成图片失败：HTTP {status}"
+            "拒绝下载不受支持的图片协议：{}",
+            url.scheme()
         )));
     }
-    let mime = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_owned());
-    let bytes = read_limited_checked(response, MAX_REMOTE_IMAGE_BYTES).await?;
-    Ok((bytes, mime))
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(ImageGenError::Transport(
+            "拒绝下载包含内嵌凭据的图片 URL".into(),
+        ));
+    }
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| ImageGenError::Transport("图片 URL 缺少有效端口".into()))?;
+    let (host_key, ip_opt) = canonical_host_and_ip(url)
+        .ok_or_else(|| ImageGenError::Transport("图片 URL 缺少有效主机名".into()))?;
+    let raw_host = url
+        .host_str()
+        .ok_or_else(|| ImageGenError::Transport("图片 URL 缺少有效主机名".into()))?;
+
+    let is_same_upstream_origin = upstream.is_some_and(|u| {
+        u.scheme == url.scheme() && u.host_key == host_key && u.port == port
+    });
+
+    if let Some(ip) = ip_opt {
+        let allowed = is_public_ip(ip)
+            || (is_same_upstream_origin
+                && upstream
+                    .is_some_and(|u| u.kind == SameOriginAllowance::LiteralNonPublicIp));
+        if !allowed {
+            return Err(ImageGenError::Transport(format!(
+                "拒绝访问非公网图片地址：{ip}"
+            )));
+        }
+        return Ok(None);
+    }
+
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((raw_host, port))
+        .await
+        .map_err(|error| ImageGenError::Transport(format!("解析图片域名失败：{error}")))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(ImageGenError::Transport(format!(
+            "图片域名未解析出任何地址：{raw_host}"
+        )));
+    }
+
+    let allow_localhost_loopback = is_same_upstream_origin
+        && upstream.is_some_and(|u| u.kind == SameOriginAllowance::LocalhostLoopbackOnly);
+
+    for addr in &addrs {
+        let ip = addr.ip();
+        let ok = if allow_localhost_loopback {
+            ip.is_loopback()
+        } else {
+            is_public_ip(ip)
+        };
+        if !ok {
+            return Err(ImageGenError::Transport(format!(
+                "拒绝访问解析到非公网地址的图片域名：{raw_host} -> {ip}"
+            )));
+        }
+    }
+
+    Ok(Some((raw_host.to_owned(), addrs)))
+}
+
+async fn download_remote_image(
+    cfg: &LlmConfig,
+    raw_url: &str,
+) -> Result<(Vec<u8>, Option<String>), ImageGenError> {
+    let timeout = remote_image_timeout(cfg);
+    let deadline = Instant::now() + timeout;
+    match tokio::time::timeout_at(deadline, download_remote_image_inner(cfg, raw_url, deadline))
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(ImageGenError::Transport(format!(
+            "下载生成图片超时（超过 {:.1}s）",
+            timeout.as_secs_f64()
+        ))),
+    }
+}
+
+async fn download_remote_image_inner(
+    cfg: &LlmConfig,
+    raw_url: &str,
+    deadline: Instant,
+) -> Result<(Vec<u8>, Option<String>), ImageGenError> {
+    let mut current_url = Url::parse(raw_url)
+        .map_err(|error| ImageGenError::Transport(format!("无效的生成图片 URL：{error}")))?;
+    let upstream = allowed_upstream_origin(cfg);
+    let base_connect_timeout = remote_image_connect_timeout(cfg);
+
+    for redirects in 0..=MAX_REMOTE_IMAGE_REDIRECTS {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ImageGenError::Transport("下载生成图片超时".into()));
+        }
+
+        let pinned = validate_and_pin_target(&current_url, upstream.as_ref()).await?;
+        let mut builder = ReqwestClient::builder()
+            .redirect(Policy::none())
+            .connect_timeout(base_connect_timeout.min(remaining));
+        if let Some((domain, addrs)) = pinned {
+            builder = builder.resolve_to_addrs(&domain, &addrs);
+        }
+        let hop_client = builder
+            .build()
+            .map_err(|error| ImageGenError::Transport(format!("构建图片下载客户端失败：{error}")))?;
+
+        let response = hop_client
+            .get(current_url.as_str())
+            .timeout(remaining)
+            .send()
+            .await
+            .map_err(|error| ImageGenError::Transport(format!("下载生成图片失败：{error}")))?;
+        let status = response.status();
+        if status.is_redirection() {
+            if redirects >= MAX_REMOTE_IMAGE_REDIRECTS {
+                return Err(ImageGenError::Transport(format!(
+                    "下载生成图片重定向次数超过上限（{MAX_REMOTE_IMAGE_REDIRECTS}）"
+                )));
+            }
+            let location = response
+                .headers()
+                .get(LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| {
+                    ImageGenError::Transport("下载生成图片收到重定向但缺少 Location 头".into())
+                })?;
+            current_url = current_url.join(location).map_err(|error| {
+                ImageGenError::Transport(format!("下载生成图片重定向目标无效：{error}"))
+            })?;
+            continue;
+        }
+        if !status.is_success() {
+            return Err(ImageGenError::Transport(format!(
+                "下载生成图片失败：HTTP {status}"
+            )));
+        }
+        let mime = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(|ct| ct.split(';').next().unwrap_or(ct).trim().to_owned());
+        let bytes = read_limited_checked(response, MAX_REMOTE_IMAGE_BYTES).await?;
+        return Ok((bytes, mime));
+    }
+
+    unreachable!("重定向循环已在上限处返回")
 }
 
 fn strip_data_url(input: &str) -> (Option<&str>, &str) {
@@ -635,5 +953,79 @@ mod tests {
         assert!(body.contains("name=\"image[]\""), "多图应使用 image[] 字段");
         assert!(body.contains("filename=\"a.png\""));
         assert!(body.contains("filename=\"b.png\""));
+    }
+
+    #[tokio::test]
+    async fn download_remote_image_rejects_disallowed_schemes_and_private_targets() {
+        let upstream = MockServer::start().await;
+        let other_local = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/secret.png"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"secret".to_vec()))
+            .mount(&other_local)
+            .await;
+
+        let redirect_target = format!("{}/secret.png", other_local.uri());
+        Mock::given(method("GET"))
+            .and(path("/redirect-ssrf"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", redirect_target.as_str()),
+            )
+            .mount(&upstream)
+            .await;
+
+        let cfg = LlmConfig {
+            base_url: format!("{}/v1", upstream.uri()),
+            ..Default::default()
+        };
+
+        // 拒绝非 http/https 协议
+        let err = download_remote_image(&cfg, "file:///etc/passwd")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("协议"), "{err}");
+
+        // 拒绝私网与跨端口回环地址
+        let err = download_remote_image(&cfg, "http://10.0.0.1/img.png")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("非公网"), "{err}");
+
+        let err = download_remote_image(&cfg, &format!("{}/secret.png", other_local.uri()))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("非公网"), "{err}");
+
+        // 拒绝同源接口重定向到另一本地端口
+        let err = download_remote_image(&cfg, &format!("{}/redirect-ssrf", upstream.uri()))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("非公网"), "{err}");
+        assert!(other_local.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn download_remote_image_honors_cfg_timeout() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/slow.png"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(2))
+                    .set_body_bytes(b"slow".to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        let cfg = LlmConfig {
+            base_url: format!("{}/v1", server.uri()),
+            timeout_secs: Some(0.1),
+            ..Default::default()
+        };
+
+        let err = download_remote_image(&cfg, &format!("{}/slow.png", server.uri()))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("超时"), "{err}");
     }
 }

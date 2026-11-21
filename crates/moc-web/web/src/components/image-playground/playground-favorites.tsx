@@ -300,7 +300,7 @@ export function PlaygroundFavoritesView() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
             multiple
             hidden
             onChange={(e) => {

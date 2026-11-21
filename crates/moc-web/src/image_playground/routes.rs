@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use axum::Json;
@@ -350,13 +351,15 @@ pub async fn delete_session(
     if let Err(resp) = check_origin(&headers) {
         return resp;
     }
-    state.image_playground.cancel_session(&id).await;
+    state.image_playground.cancel_session(&id);
     let dir = match resolve_storage_dir(&state).await {
         Ok(dir) => dir,
         Err(resp) => return resp,
     };
     let delete_unfavorited = query.delete_unfavorited.unwrap_or(true);
     let _guard = state.image_playground.write_lock.lock().await;
+    // 持锁期间再次取消，确保命中在拿锁前瞬间完成校验并注册的生成请求。
+    state.image_playground.cancel_session(&id);
     match tokio::task::spawn_blocking(move || {
         let mut index = store::load_index(&dir)?;
         let paths = index.remove_session(&id, delete_unfavorited);
@@ -376,11 +379,28 @@ pub async fn delete_session(
 
 // ---------- 生成 / 编辑 ----------
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct UploadRefInput {
+    pub upload_id: String,
+    #[serde(default)]
+    pub filename: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct GenerateResponse {
     pub turn: PlaygroundTurn,
     pub images: Vec<ImageDto>,
     pub session_title: String,
+}
+
+enum PrepOutcome {
+    Ready(Vec<ImageInputFile>, Vec<TurnInputRef>),
+    Cancelled,
+}
+
+enum TranscodeOutcome {
+    Ready(Vec<StoredImage>),
+    Cancelled,
 }
 
 pub async fn generate(
@@ -397,6 +417,7 @@ pub async fn generate(
     let mut model_selector = String::new();
     let mut params = ImageGenParams::default();
     let mut source_image_ids: Vec<String> = Vec::new();
+    let mut source_uploads: Vec<UploadRefInput> = Vec::new();
     let mut uploaded_files: Vec<(String, String, Vec<u8>)> = Vec::new();
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -437,6 +458,21 @@ pub async fn generate(
                             return err_response(
                                 StatusCode::BAD_REQUEST,
                                 format!("参考图 ID 列表无效：{error}"),
+                            );
+                        }
+                    }
+                }
+            }
+            "source_uploads" => {
+                if let Ok(text) = field.text().await
+                    && !text.trim().is_empty()
+                {
+                    match serde_json::from_str::<Vec<UploadRefInput>>(&text) {
+                        Ok(refs) => source_uploads = refs,
+                        Err(error) => {
+                            return err_response(
+                                StatusCode::BAD_REQUEST,
+                                format!("上传参考图引用无效：{error}"),
                             );
                         }
                     }
@@ -487,12 +523,13 @@ pub async fn generate(
         Err(resp) => return resp,
     };
 
-    // 确认会话存在，并取出引用的历史/收藏图片文件路径。
-    let ref_records: Vec<(String, String, String, PathBuf)> = {
+    // 持写锁原子校验会话存在、读取参考图记录并注册取消令牌，消除与删除会话间的竞态窗口。
+    let (ref_records, flight) = {
+        let _guard = state.image_playground.write_lock.lock().await;
         let dir = storage_dir.clone();
         let sid = session_id.clone();
         let ids = source_image_ids.clone();
-        match tokio::task::spawn_blocking(move || {
+        let refs = match tokio::task::spawn_blocking(move || {
             let index = store::load_index(&dir)?;
             if !index.sessions.iter().any(|s| s.id == sid) {
                 anyhow::bail!("NOT_FOUND");
@@ -522,106 +559,168 @@ pub async fn generate(
             Err(error) => {
                 return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
             }
-        }
+        };
+        let flight = state.image_playground.register_flight(&session_id);
+        (refs, flight)
     };
 
-    // 准备 Edit 输入图（含参考图保护压缩与本地去重归档）。
+    let has_requested_inputs =
+        !ref_records.is_empty() || !source_uploads.is_empty() || !uploaded_files.is_empty();
+
+    // 准备 Edit 输入图（含参考图保护压缩与本地去重归档），每步均检查取消状态。
     let input_compress = pg_cfg.input_compress.clone();
     let dir_for_inputs = storage_dir.clone();
-    let (api_inputs, turn_inputs): (Vec<ImageInputFile>, Vec<TurnInputRef>) =
-        match tokio::task::spawn_blocking(move || {
-            let mut api_inputs = Vec::new();
-            let mut turn_inputs = Vec::new();
+    let cancel_for_prep = flight.cancel.clone();
+    let prep_outcome = match tokio::task::spawn_blocking(move || {
+        let mut api_inputs = Vec::new();
+        let mut turn_inputs = Vec::new();
 
-            for (img_id, filename, mime, path) in ref_records {
-                let raw = std::fs::read(&path)
-                    .map_err(|e| anyhow::anyhow!("读取参考图 {filename} 失败：{e}"))?;
-                let prepared = codec::prepare_edit_input(&raw, Some(&mime), &input_compress)?;
-                api_inputs.push(ImageInputFile {
-                    filename: replace_ext(&filename, &prepared.extension),
-                    mime_type: prepared.mime_type.clone(),
-                    bytes: prepared.bytes,
-                });
-                turn_inputs.push(TurnInputRef {
-                    image_id: Some(img_id),
-                    upload_id: None,
-                    filename,
-                    mime_type: mime,
-                });
+        for (img_id, filename, mime, path) in ref_records {
+            if cancel_for_prep.is_cancelled() {
+                return Ok(PrepOutcome::Cancelled);
             }
+            let raw = std::fs::read(&path)
+                .map_err(|e| anyhow::anyhow!("读取参考图 {filename} 失败：{e}"))?;
+            let prepared = codec::prepare_edit_input(&raw, Some(&mime), &input_compress)?;
+            api_inputs.push(ImageInputFile {
+                filename: replace_ext(&filename, &prepared.extension),
+                mime_type: prepared.mime_type.clone(),
+                bytes: prepared.bytes,
+            });
+            turn_inputs.push(TurnInputRef {
+                image_id: Some(img_id),
+                upload_id: None,
+                filename,
+                mime_type: mime,
+            });
+        }
 
-            for (filename, mime, raw) in uploaded_files {
-                let meta = codec::inspect_image(&raw, Some(&mime))?;
-                let (upload_id, _) = store::write_edit_upload(&dir_for_inputs, &meta.extension, &raw)?;
-                let prepared = codec::prepare_edit_input(&raw, Some(&mime), &input_compress)?;
-                api_inputs.push(ImageInputFile {
-                    filename: replace_ext(&filename, &prepared.extension),
-                    mime_type: prepared.mime_type.clone(),
-                    bytes: prepared.bytes,
-                });
-                turn_inputs.push(TurnInputRef {
-                    image_id: None,
-                    upload_id: Some(upload_id),
-                    filename,
-                    mime_type: meta.mime_type,
-                });
+        for up_ref in source_uploads {
+            if cancel_for_prep.is_cancelled() {
+                return Ok(PrepOutcome::Cancelled);
             }
+            if !is_safe_upload_id(&up_ref.upload_id) {
+                anyhow::bail!("非法参考图上传 ID");
+            }
+            let path = dir_for_inputs.join("uploads").join(&up_ref.upload_id);
+            let raw = std::fs::read(&path)
+                .map_err(|e| anyhow::anyhow!("读取临时参考图 {} 失败：{e}", up_ref.upload_id))?;
+            let meta = codec::inspect_image(&raw, None)?;
+            let prepared =
+                codec::prepare_edit_input(&raw, Some(&meta.mime_type), &input_compress)?;
+            let filename = up_ref
+                .filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&up_ref.upload_id)
+                .to_owned();
+            api_inputs.push(ImageInputFile {
+                filename: replace_ext(&filename, &prepared.extension),
+                mime_type: prepared.mime_type.clone(),
+                bytes: prepared.bytes,
+            });
+            turn_inputs.push(TurnInputRef {
+                image_id: None,
+                upload_id: Some(up_ref.upload_id),
+                filename,
+                mime_type: meta.mime_type,
+            });
+        }
 
-            Ok::<_, anyhow::Error>((api_inputs, turn_inputs))
-        })
-        .await
-        {
-            Ok(Ok(pair)) => pair,
-            Ok(Err(error)) => return err_response(StatusCode::BAD_REQUEST, error.to_string()),
-            Err(error) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        };
+        for (filename, mime, raw) in uploaded_files {
+            if cancel_for_prep.is_cancelled() {
+                return Ok(PrepOutcome::Cancelled);
+            }
+            let meta = codec::inspect_image(&raw, Some(&mime))?;
+            let (upload_id, _) = store::write_edit_upload(&dir_for_inputs, &meta.extension, &raw)?;
+            let prepared = codec::prepare_edit_input(&raw, Some(&mime), &input_compress)?;
+            api_inputs.push(ImageInputFile {
+                filename: replace_ext(&filename, &prepared.extension),
+                mime_type: prepared.mime_type.clone(),
+                bytes: prepared.bytes,
+            });
+            turn_inputs.push(TurnInputRef {
+                image_id: None,
+                upload_id: Some(upload_id),
+                filename,
+                mime_type: meta.mime_type,
+            });
+        }
 
-    let mut effective_params = params.clone();
-    if !api_inputs.is_empty() && effective_params.edit_encoding.is_none() {
-        effective_params.edit_encoding = Some(pg_cfg.default_edit_encoding);
-    }
-    let mode = if api_inputs.is_empty() {
-        "generate".to_owned()
-    } else {
-        "edit".to_owned()
+        Ok::<_, anyhow::Error>(PrepOutcome::Ready(api_inputs, turn_inputs))
+    })
+    .await
+    {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(error)) => return err_response(StatusCode::BAD_REQUEST, error.to_string()),
+        Err(error) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
 
-    // 注册本会话取消令牌。
-    let cancel = state.image_playground.register_flight(&session_id).await;
     let started = Instant::now();
-    let llm_client = state.core.llm_client();
-    let llm_cfg = resolved_model.llm.clone();
-
-    let call_result = tokio::select! {
-        _ = cancel.cancelled() => Err(moc_llm::ImageGenError::Transport("已取消生成".into())),
-        res = llm_client.generate_images(&llm_cfg, &prompt_trimmed, &api_inputs, &effective_params) => res,
+    let (call_result, turn_inputs, mode) = match prep_outcome {
+        PrepOutcome::Cancelled => (
+            Err(moc_llm::ImageGenError::Transport("已取消生成".into())),
+            Vec::new(),
+            if has_requested_inputs { "edit" } else { "generate" }.to_owned(),
+        ),
+        PrepOutcome::Ready(api_inputs, turn_inputs) => {
+            let mut effective_params = params.clone();
+            if !api_inputs.is_empty() && effective_params.edit_encoding.is_none() {
+                effective_params.edit_encoding = Some(pg_cfg.default_edit_encoding);
+            }
+            let mode = if api_inputs.is_empty() {
+                "generate".to_owned()
+            } else {
+                "edit".to_owned()
+            };
+            let llm_client = state.core.llm_client();
+            let llm_cfg = resolved_model.llm.clone();
+            let res = if flight.cancel.is_cancelled() {
+                Err(moc_llm::ImageGenError::Transport("已取消生成".into()))
+            } else {
+                tokio::select! {
+                    biased;
+                    _ = flight.cancel.cancelled() => Err(moc_llm::ImageGenError::Transport("已取消生成".into())),
+                    res = llm_client.generate_images(&llm_cfg, &prompt_trimmed, &api_inputs, &effective_params) => res,
+                }
+            };
+            (res, turn_inputs, mode)
+        }
     };
-    state.image_playground.clear_flight(&session_id, &cancel).await;
     let duration_ms = started.elapsed().as_millis() as u64;
 
     let turn_id = store::new_id();
     let now = store::now_ms();
 
-    match call_result {
+    let final_error = match call_result {
         Ok(resp) => {
-            // 阻塞线程池执行本地转码并写盘。
+            // 阻塞线程池执行本地转码并写盘，期间持续响应取消。
             let compression = pg_cfg.compression.clone();
             let dir_for_write = storage_dir.clone();
             let sid_clone = session_id.clone();
             let tid_clone = turn_id.clone();
             let model_clone = model_selector.clone();
             let prompt_clone = prompt_trimmed.clone();
+            let cancel_for_transcode = flight.cancel.clone();
 
-            let encoded_items = match tokio::task::spawn_blocking(move || {
-                let mut stored = Vec::with_capacity(resp.images.len());
+            let transcode_outcome = match tokio::task::spawn_blocking(move || {
+                let mut stored: Vec<StoredImage> = Vec::with_capacity(resp.images.len());
                 for item in resp.images {
+                    if cancel_for_transcode.is_cancelled() {
+                        for img in &stored {
+                            let _ = std::fs::remove_file(&img.file_path);
+                        }
+                        return Ok(TranscodeOutcome::Cancelled);
+                    }
                     let encoded = codec::transcode_output(
                         item.bytes,
                         item.mime_hint.as_deref(),
                         &compression,
                     )?;
                     let img_id = store::new_id();
-                    let file_path = store::write_generated_image(&dir_for_write, &img_id, &encoded)?;
+                    let file_path =
+                        store::write_generated_image(&dir_for_write, &img_id, &encoded)?;
                     let filename = format!("{img_id}.{}", encoded.extension);
                     stored.push(StoredImage {
                         id: img_id,
@@ -645,11 +744,11 @@ pub async fn generate(
                         filename,
                     });
                 }
-                Ok::<_, anyhow::Error>(stored)
+                Ok::<_, anyhow::Error>(TranscodeOutcome::Ready(stored))
             })
             .await
             {
-                Ok(Ok(items)) => items,
+                Ok(Ok(outcome)) => outcome,
                 Ok(Err(error)) => {
                     return err_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -661,114 +760,141 @@ pub async fn generate(
                 }
             };
 
-            let revised_prompt = encoded_items
-                .iter()
-                .find_map(|img| img.revised_prompt.clone());
-            let output_ids: Vec<String> = encoded_items.iter().map(|img| img.id.clone()).collect();
-            let turn = PlaygroundTurn {
-                id: turn_id,
-                created_at_ms: now,
-                model: model_selector.clone(),
-                mode,
-                prompt: prompt_trimmed.clone(),
-                params,
-                inputs: turn_inputs,
-                outputs: output_ids,
-                revised_prompt,
-                duration_ms,
-                error: None,
-            };
-
-            let _guard = state.image_playground.write_lock.lock().await;
-            let dir_for_save = storage_dir.clone();
-            let turn_for_save = turn.clone();
-            let dtos: Vec<ImageDto> = encoded_items
-                .iter()
-                .map(|img| ImageDto::from_stored(img, false, None))
-                .collect();
-
-            match tokio::task::spawn_blocking(move || {
-                let mut index = store::load_index(&dir_for_save)?;
-                for img in encoded_items {
-                    index.images.insert(img.id.clone(), img);
+            match transcode_outcome {
+                TranscodeOutcome::Cancelled => {
+                    Some(moc_llm::ImageGenError::Transport("已取消生成".into()))
                 }
-                let mut session_title = String::new();
-                if let Some(session) = index.sessions.iter_mut().find(|s| s.id == session_id) {
-                    if session.turns.is_empty() && session.title == "新生成会话" {
-                        session.title = derive_title(&prompt_trimmed);
+                TranscodeOutcome::Ready(encoded_items) if flight.cancel.is_cancelled() => {
+                    for img in &encoded_items {
+                        let _ = std::fs::remove_file(&img.file_path);
                     }
-                    session.model = Some(model_selector);
-                    session.updated_at_ms = now;
-                    session.turns.push(turn_for_save);
-                    session_title = session.title.clone();
+                    Some(moc_llm::ImageGenError::Transport("已取消生成".into()))
                 }
-                store::save_index(&dir_for_save, &index)?;
-                Ok::<_, anyhow::Error>(session_title)
-            })
-            .await
-            {
-                Ok(Ok(session_title)) => Json(GenerateResponse {
-                    turn,
-                    images: dtos,
-                    session_title,
-                })
-                .into_response(),
-                Ok(Err(error)) => {
-                    err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                TranscodeOutcome::Ready(encoded_items) => {
+                    let revised_prompt = encoded_items
+                        .iter()
+                        .find_map(|img| img.revised_prompt.clone());
+                    let output_ids: Vec<String> =
+                        encoded_items.iter().map(|img| img.id.clone()).collect();
+                    let turn = PlaygroundTurn {
+                        id: turn_id,
+                        created_at_ms: now,
+                        model: model_selector.clone(),
+                        mode,
+                        prompt: prompt_trimmed.clone(),
+                        params,
+                        inputs: turn_inputs,
+                        outputs: output_ids,
+                        revised_prompt,
+                        duration_ms,
+                        error: None,
+                    };
+
+                    let _guard = state.image_playground.write_lock.lock().await;
+                    let dir_for_save = storage_dir.clone();
+                    let turn_for_save = turn.clone();
+                    let sid_for_save = session_id.clone();
+                    let dtos: Vec<ImageDto> = encoded_items
+                        .iter()
+                        .map(|img| ImageDto::from_stored(img, false, None))
+                        .collect();
+
+                    return match tokio::task::spawn_blocking(move || {
+                        let mut index = store::load_index(&dir_for_save)?;
+                        let Some(session) =
+                            index.sessions.iter_mut().find(|s| s.id == sid_for_save)
+                        else {
+                            // 会话已被删除：清理刚写入磁盘的图片文件，不写入索引，避免留下孤立图片。
+                            for img in &encoded_items {
+                                let _ = std::fs::remove_file(&img.file_path);
+                            }
+                            return Ok::<_, anyhow::Error>(None);
+                        };
+                        if session.turns.is_empty() && session.title == "新生成会话" {
+                            session.title = derive_title(&prompt_trimmed);
+                        }
+                        session.model = Some(model_selector);
+                        session.updated_at_ms = now;
+                        session.turns.push(turn_for_save);
+                        let session_title = session.title.clone();
+                        for img in encoded_items {
+                            index.images.insert(img.id.clone(), img);
+                        }
+                        store::save_index(&dir_for_save, &index)?;
+                        Ok::<_, anyhow::Error>(Some(session_title))
+                    })
+                    .await
+                    {
+                        Ok(Ok(Some(session_title))) => Json(GenerateResponse {
+                            turn,
+                            images: dtos,
+                            session_title,
+                        })
+                        .into_response(),
+                        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "会话不存在"),
+                        Ok(Err(error)) => {
+                            err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                        }
+                        Err(error) => {
+                            err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                        }
+                    };
                 }
-                Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
             }
         }
-        Err(error) => {
-            // 失败轮次也落盘，便于用户原样查看上游报错并一键重试。
-            let turn_error = TurnError {
-                status: error.upstream_status(),
-                message: error.to_string(),
-                raw_body: error.raw_body().map(str::to_owned),
-            };
-            let turn = PlaygroundTurn {
-                id: turn_id,
-                created_at_ms: now,
-                model: model_selector.clone(),
-                mode,
-                prompt: prompt_trimmed.clone(),
-                params,
-                inputs: turn_inputs,
-                outputs: Vec::new(),
-                revised_prompt: None,
-                duration_ms,
-                error: Some(turn_error),
-            };
-            let _guard = state.image_playground.write_lock.lock().await;
-            let dir_for_save = storage_dir.clone();
-            let turn_for_save = turn.clone();
-            let session_title = tokio::task::spawn_blocking(move || {
-                let mut index = store::load_index(&dir_for_save)?;
-                let mut title = String::new();
-                if let Some(session) = index.sessions.iter_mut().find(|s| s.id == session_id) {
-                    if session.turns.is_empty() && session.title == "新生成会话" {
-                        session.title = derive_title(&prompt_trimmed);
-                    }
-                    session.model = Some(model_selector);
-                    session.updated_at_ms = now;
-                    session.turns.push(turn_for_save);
-                    title = session.title.clone();
-                }
-                store::save_index(&dir_for_save, &index)?;
-                Ok::<_, anyhow::Error>(title)
-            })
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default();
+        Err(error) => Some(error),
+    };
 
-            Json(GenerateResponse {
-                turn,
-                images: Vec::new(),
-                session_title,
-            })
-            .into_response()
+    let error = final_error.expect("成功路径已提前返回");
+    // 失败或取消轮次仅在会话仍存在时落盘，便于用户原样查看报错并一键重试。
+    let turn_error = TurnError {
+        status: error.upstream_status(),
+        message: error.to_string(),
+        raw_body: error.raw_body().map(str::to_owned),
+    };
+    let turn = PlaygroundTurn {
+        id: turn_id,
+        created_at_ms: now,
+        model: model_selector.clone(),
+        mode,
+        prompt: prompt_trimmed.clone(),
+        params,
+        inputs: turn_inputs,
+        outputs: Vec::new(),
+        revised_prompt: None,
+        duration_ms,
+        error: Some(turn_error),
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    let dir_for_save = storage_dir.clone();
+    let turn_for_save = turn.clone();
+    let sid_for_save = session_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir_for_save)?;
+        let Some(session) = index.sessions.iter_mut().find(|s| s.id == sid_for_save) else {
+            return Ok::<_, anyhow::Error>(None);
+        };
+        if session.turns.is_empty() && session.title == "新生成会话" {
+            session.title = derive_title(&prompt_trimmed);
         }
+        session.model = Some(model_selector);
+        session.updated_at_ms = now;
+        session.turns.push(turn_for_save);
+        let title = session.title.clone();
+        store::save_index(&dir_for_save, &index)?;
+        Ok::<_, anyhow::Error>(Some(title))
+    })
+    .await
+    {
+        Ok(Ok(Some(session_title))) => Json(GenerateResponse {
+            turn,
+            images: Vec::new(),
+            session_title,
+        })
+        .into_response(),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "会话不存在"),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 
@@ -780,7 +906,7 @@ pub async fn cancel_generate(
     if let Err(resp) = check_origin(&headers) {
         return resp;
     }
-    state.image_playground.cancel_session(&session_id).await;
+    state.image_playground.cancel_session(&session_id);
     Json(serde_json::json!({ "ok": true })).into_response()
 }
 
@@ -907,11 +1033,17 @@ pub async fn upload_favorites(
     };
     let _guard = state.image_playground.write_lock.lock().await;
     match tokio::task::spawn_blocking(move || {
+        // 先校验全部上传文件，避免批量上传中途失败留下孤立磁盘文件。
+        let mut inspected = Vec::with_capacity(files.len());
+        for (filename, mime, bytes) in files {
+            let meta = codec::inspect_image(&bytes, Some(&mime))?;
+            inspected.push((filename, bytes, meta));
+        }
+
         let mut index = store::load_index(&dir)?;
         let valid_folder = folder_id.filter(|fid| index.has_favorite_folder(fid));
         let mut added = Vec::new();
-        for (filename, mime, bytes) in files {
-            let meta = codec::inspect_image(&bytes, Some(&mime))?;
+        for (filename, bytes, meta) in inspected {
             let id = store::new_id();
             let file_path = store::write_favorite_upload(&dir, &id, &meta.extension, &bytes)?;
             let img = StoredImage {
@@ -1186,6 +1318,8 @@ pub struct CreatePresetBody {
     pub prompt: String,
     #[serde(default)]
     pub image_ids: Vec<String>,
+    #[serde(default)]
+    pub source_uploads: Vec<UploadRefInput>,
     pub folder_id: Option<String>,
 }
 
@@ -1199,7 +1333,7 @@ pub async fn create_favorite_preset(
     }
     let prompt = body.prompt.trim().to_owned();
     let title = body.title.trim().to_owned();
-    if prompt.is_empty() && body.image_ids.is_empty() {
+    if prompt.is_empty() && body.image_ids.is_empty() && body.source_uploads.is_empty() {
         return err_response(StatusCode::BAD_REQUEST, "提示词与参考图不能同时为空");
     }
     let dir = match resolve_storage_dir(&state).await {
@@ -1226,10 +1360,59 @@ pub async fn create_favorite_preset(
                 deduped_ids.push(img_id);
             }
         }
-        if prompt.is_empty() && deduped_ids.is_empty() {
+        // 先校验全部待晋升的临时上传图，避免中途失败留下孤立收藏文件。
+        let mut prepared_uploads = Vec::with_capacity(body.source_uploads.len());
+        for up_ref in body.source_uploads {
+            if !is_safe_upload_id(&up_ref.upload_id) {
+                anyhow::bail!("非法参考图上传 ID");
+            }
+            let path = dir.join("uploads").join(&up_ref.upload_id);
+            let raw = std::fs::read(&path)
+                .map_err(|e| anyhow::anyhow!("读取临时参考图 {} 失败：{e}", up_ref.upload_id))?;
+            let meta = codec::inspect_image(&raw, None)?;
+            let filename = up_ref
+                .filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&up_ref.upload_id)
+                .to_owned();
+            prepared_uploads.push((filename, raw, meta));
+        }
+
+        if prompt.is_empty() && deduped_ids.is_empty() && prepared_uploads.is_empty() {
             anyhow::bail!("提示词与有效参考图不能同时为空");
         }
+
         let now = store::now_ms();
+        for (filename, raw, meta) in prepared_uploads {
+            let img_id = store::new_id();
+            let file_path = store::write_favorite_upload(&dir, &img_id, &meta.extension, &raw)?;
+            let img = StoredImage {
+                id: img_id.clone(),
+                origin: ImageOrigin::UploadedFavorite,
+                session_id: None,
+                turn_id: None,
+                created_at_ms: now,
+                model: None,
+                prompt: None,
+                revised_prompt: None,
+                width: meta.width,
+                height: meta.height,
+                format: meta.format.clone(),
+                extension: meta.extension,
+                mime_type: meta.mime_type,
+                is_animated: meta.is_animated,
+                size_bytes: raw.len() as u64,
+                original_size_bytes: raw.len() as u64,
+                original_format: meta.format,
+                file_path: file_path.to_string_lossy().into_owned(),
+                filename,
+            };
+            index.images.insert(img_id.clone(), img);
+            deduped_ids.push(img_id);
+        }
+
         let final_title = if !title.is_empty() {
             title
         } else if !prompt.is_empty() {
@@ -1601,8 +1784,7 @@ pub async fn get_upload_file(
     State(state): State<AppState>,
     Path(upload_id): Path<String>,
 ) -> Response {
-    // 严格校验单段文件名，防止路径穿越。
-    if upload_id.contains('/') || upload_id.contains('\\') || upload_id.contains("..") {
+    if !is_safe_upload_id(&upload_id) {
         return err_response(StatusCode::BAD_REQUEST, "非法文件名");
     }
     let dir = match resolve_storage_dir(&state).await {
@@ -1620,10 +1802,20 @@ pub async fn get_upload_file(
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("webp") => "image/webp",
         Some("gif") => "image/gif",
+        Some("bmp") => "image/bmp",
         Some("avif") => "image/avif",
         _ => "application/octet-stream",
     };
     stream_file(path, mime, &upload_id, false, true).await
+}
+
+/// 严格校验单段文件名，防止路径穿越。
+fn is_safe_upload_id(upload_id: &str) -> bool {
+    !upload_id.is_empty()
+        && upload_id != "."
+        && !upload_id.contains('/')
+        && !upload_id.contains('\\')
+        && !upload_id.contains("..")
 }
 
 async fn stream_file(
@@ -1706,43 +1898,53 @@ fn derive_title(prompt: &str) -> String {
 #[derive(Clone, Default)]
 pub struct ImagePlaygroundService {
     pub(crate) write_lock: Arc<tokio::sync::Mutex<()>>,
-    flights: Arc<tokio::sync::Mutex<HashMap<String, CancellationToken>>>,
+    flights: Arc<std::sync::Mutex<HashMap<String, (u64, CancellationToken)>>>,
+    next_flight_id: Arc<AtomicU64>,
+}
+
+/// 单个生成请求的在途租约：Drop 时按精确 ID 自动释放槽位，防止提前返回或任务中止时泄漏。
+pub(crate) struct FlightGuard {
+    service: ImagePlaygroundService,
+    session_id: String,
+    flight_id: u64,
+    pub(crate) cancel: CancellationToken,
+}
+
+impl Drop for FlightGuard {
+    fn drop(&mut self) {
+        self.service.clear_flight(&self.session_id, self.flight_id);
+    }
 }
 
 impl ImagePlaygroundService {
-    pub(crate) async fn register_flight(&self, session_id: &str) -> CancellationToken {
-        let token = CancellationToken::new();
-        let mut map = self.flights.lock().await;
-        if let Some(prev) = map.insert(session_id.to_owned(), token.clone()) {
+    pub(crate) fn register_flight(&self, session_id: &str) -> FlightGuard {
+        let flight_id = self.next_flight_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let cancel = CancellationToken::new();
+        let mut map = self.flights.lock().expect("flights lock");
+        if let Some((_, prev)) = map.insert(session_id.to_owned(), (flight_id, cancel.clone())) {
             prev.cancel();
         }
-        token
+        FlightGuard {
+            service: self.clone(),
+            session_id: session_id.to_owned(),
+            flight_id,
+            cancel,
+        }
     }
 
-    pub(crate) async fn clear_flight(&self, session_id: &str, token: &CancellationToken) {
-        let mut map = self.flights.lock().await;
+    pub(crate) fn clear_flight(&self, session_id: &str, flight_id: u64) {
+        let mut map = self.flights.lock().expect("flights lock");
         if map
             .get(session_id)
-            .is_some_and(|current| current.same_token(token))
+            .is_some_and(|(current_id, _)| *current_id == flight_id)
         {
             map.remove(session_id);
         }
     }
 
-    pub(crate) async fn cancel_session(&self, session_id: &str) {
-        if let Some(token) = self.flights.lock().await.remove(session_id) {
+    pub(crate) fn cancel_session(&self, session_id: &str) {
+        if let Some((_, token)) = self.flights.lock().expect("flights lock").remove(session_id) {
             token.cancel();
         }
-    }
-}
-
-trait SameToken {
-    fn same_token(&self, other: &Self) -> bool;
-}
-
-impl SameToken for CancellationToken {
-    fn same_token(&self, other: &Self) -> bool {
-        // CancellationToken 未提供 ptr_eq；以取消状态与子令牌无关性近似：若未取消且同槽位直接移除即可。
-        self.is_cancelled() == other.is_cancelled()
     }
 }
