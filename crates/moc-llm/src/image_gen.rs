@@ -258,11 +258,8 @@ fn apply_common_headers(
         }
         builder = builder.header(name.as_str(), value.as_str());
     }
-    if let Some(secs) = cfg.timeout_secs
-        && secs.is_finite()
-        && secs > 0.0
-    {
-        builder = builder.timeout(Duration::from_secs_f64(secs));
+    if let Some(timeout) = positive_duration(cfg.timeout_secs) {
+        builder = builder.timeout(timeout);
     }
     builder
 }
@@ -594,20 +591,19 @@ fn is_public_ip(ip: IpAddr) -> bool {
     }
 }
 
+fn positive_duration(secs: Option<f64>) -> Option<Duration> {
+    let secs = secs.filter(|s| s.is_finite() && *s > 0.0)?;
+    Duration::try_from_secs_f64(secs).ok()
+}
+
 fn remote_image_timeout(cfg: &LlmConfig) -> Duration {
-    let secs = cfg
-        .timeout_secs
-        .filter(|s| s.is_finite() && *s > 0.0)
-        .unwrap_or(DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS);
-    Duration::from_secs_f64(secs)
+    positive_duration(cfg.timeout_secs)
+        .unwrap_or_else(|| Duration::from_secs_f64(DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS))
 }
 
 fn remote_image_connect_timeout(cfg: &LlmConfig) -> Duration {
-    let secs = cfg
-        .connect_timeout_secs
-        .filter(|s| s.is_finite() && *s > 0.0)
-        .unwrap_or(DEFAULT_REMOTE_IMAGE_CONNECT_TIMEOUT_SECS);
-    Duration::from_secs_f64(secs)
+    positive_duration(cfg.connect_timeout_secs)
+        .unwrap_or_else(|| Duration::from_secs_f64(DEFAULT_REMOTE_IMAGE_CONNECT_TIMEOUT_SECS))
 }
 
 /// 校验图片下载目标 URL 的协议与目标网络，必要时解析域名并钉死 IP，防止 SSRF 与 DNS 重绑定。

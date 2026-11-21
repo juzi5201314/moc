@@ -330,14 +330,16 @@ export const togglePgFavorite = (
   id: string,
   patch: { favorite?: boolean; folder_id?: string | null },
 ) =>
-  pgFetch<{ ok: boolean; favorite: boolean; favorite_folder_id: string | null }>(
-    `/images/${encodeURIComponent(id)}/favorite`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    },
-  );
+  pgFetch<{
+    ok: boolean;
+    favorite: boolean;
+    favorite_folder_id: string | null;
+    removed?: boolean;
+  }>(`/images/${encodeURIComponent(id)}/favorite`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
 
 export const createPgFavoriteFolder = (name: string) =>
   pgFetch<FavoriteFolder>("/favorites/folders", {

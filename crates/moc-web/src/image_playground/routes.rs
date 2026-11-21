@@ -420,23 +420,40 @@ pub async fn generate(
     let mut source_uploads: Vec<UploadRefInput> = Vec::new();
     let mut uploaded_files: Vec<(String, String, Vec<u8>)> = Vec::new();
 
-    while let Ok(Some(field)) = multipart.next_field().await {
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(error) => {
+                return err_response(error.status(), format!("读取表单数据失败：{error}"));
+            }
+        };
         let name = field.name().unwrap_or_default().to_owned();
         match name.as_str() {
             "prompt" => {
-                if let Ok(text) = field.text().await {
-                    prompt = text;
-                }
+                prompt = match field.text().await {
+                    Ok(text) => text,
+                    Err(error) => {
+                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
+                    }
+                };
             }
             "model" => {
-                if let Ok(text) = field.text().await {
-                    model_selector = text.trim().to_owned();
-                }
+                model_selector = match field.text().await {
+                    Ok(text) => text.trim().to_owned(),
+                    Err(error) => {
+                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
+                    }
+                };
             }
             "params" => {
-                if let Ok(text) = field.text().await
-                    && !text.trim().is_empty()
-                {
+                let text = match field.text().await {
+                    Ok(text) => text,
+                    Err(error) => {
+                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
+                    }
+                };
+                if !text.trim().is_empty() {
                     match serde_json::from_str::<ImageGenParams>(&text) {
                         Ok(parsed) => params = parsed,
                         Err(error) => {
@@ -449,9 +466,13 @@ pub async fn generate(
                 }
             }
             "source_image_ids" => {
-                if let Ok(text) = field.text().await
-                    && !text.trim().is_empty()
-                {
+                let text = match field.text().await {
+                    Ok(text) => text,
+                    Err(error) => {
+                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
+                    }
+                };
+                if !text.trim().is_empty() {
                     match serde_json::from_str::<Vec<String>>(&text) {
                         Ok(ids) => source_image_ids = ids,
                         Err(error) => {
@@ -464,9 +485,13 @@ pub async fn generate(
                 }
             }
             "source_uploads" => {
-                if let Ok(text) = field.text().await
-                    && !text.trim().is_empty()
-                {
+                let text = match field.text().await {
+                    Ok(text) => text,
+                    Err(error) => {
+                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
+                    }
+                };
+                if !text.trim().is_empty() {
                     match serde_json::from_str::<Vec<UploadRefInput>>(&text) {
                         Ok(refs) => source_uploads = refs,
                         Err(error) => {
@@ -493,10 +518,7 @@ pub async fn generate(
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        return err_response(
-                            StatusCode::BAD_REQUEST,
-                            format!("读取上传图片失败：{error}"),
-                        );
+                        return err_response(error.status(), format!("读取上传图片失败：{error}"));
                     }
                 }
             }
@@ -1008,14 +1030,25 @@ pub async fn upload_favorites(
     }
     let mut files: Vec<(String, String, Vec<u8>)> = Vec::new();
     let mut folder_id: Option<String> = None;
-    while let Ok(Some(field)) = multipart.next_field().await {
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(error) => {
+                return err_response(error.status(), format!("读取表单数据失败：{error}"));
+            }
+        };
         match field.name() {
             Some("folder_id") => {
-                if let Ok(text) = field.text().await {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        folder_id = Some(trimmed.to_owned());
+                let text = match field.text().await {
+                    Ok(text) => text,
+                    Err(error) => {
+                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
                     }
+                };
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    folder_id = Some(trimmed.to_owned());
                 }
             }
             Some("files" | "file" | "images" | "image") => {
@@ -1027,10 +1060,14 @@ pub async fn upload_favorites(
                     .content_type()
                     .map(str::to_owned)
                     .unwrap_or_else(|| "application/octet-stream".into());
-                if let Ok(bytes) = field.bytes().await
-                    && !bytes.is_empty()
-                {
-                    files.push((filename, mime, bytes.to_vec()));
+                match field.bytes().await {
+                    Ok(bytes) if !bytes.is_empty() => {
+                        files.push((filename, mime, bytes.to_vec()));
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        return err_response(error.status(), format!("读取上传图片失败：{error}"));
+                    }
                 }
             }
             _ => {}
@@ -1149,15 +1186,25 @@ pub async fn toggle_favorite(
         }
         let is_fav = index.is_favorite(&id);
         let folder = index.favorite_folder_of(&id);
+        let to_trash = if is_fav {
+            Vec::new()
+        } else {
+            index.prune_orphan_preset_uploads(std::slice::from_ref(&id))
+        };
+        let removed = !to_trash.is_empty();
         store::save_index(&dir, &index)?;
-        Ok::<_, anyhow::Error>(Some((is_fav, folder)))
+        for path in to_trash {
+            store::trash_or_remove(&path);
+        }
+        Ok::<_, anyhow::Error>(Some((is_fav, folder, removed)))
     })
     .await
     {
-        Ok(Ok(Some((favorite, favorite_folder_id)))) => Json(serde_json::json!({
+        Ok(Ok(Some((favorite, favorite_folder_id, removed)))) => Json(serde_json::json!({
             "ok": true,
             "favorite": favorite,
             "favorite_folder_id": favorite_folder_id,
+            "removed": removed,
         }))
         .into_response(),
         Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "图片不存在"),

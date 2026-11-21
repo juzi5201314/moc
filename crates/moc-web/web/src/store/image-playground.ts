@@ -175,6 +175,26 @@ function mergeImages(
   return next;
 }
 
+function stripRefFromDrafts(
+  drafts: Record<string, SessionDraft>,
+  imageId: string,
+): Record<string, SessionDraft> {
+  let changed = false;
+  const next: Record<string, SessionDraft> = {};
+  for (const [sid, draft] of Object.entries(drafts)) {
+    if (draft.refImageIds.includes(imageId)) {
+      changed = true;
+      next[sid] = {
+        ...draft,
+        refImageIds: draft.refImageIds.filter((id) => id !== imageId),
+      };
+    } else {
+      next[sid] = draft;
+    }
+  }
+  return changed ? next : drafts;
+}
+
 async function executeGenerateRequest(
   sessionId: string,
   payload: {
@@ -398,13 +418,18 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
     set({ activeSessionId: id, view: "generate" });
     const detail = await getPgSession(id);
     set((state) => {
+      if (!state.sessions.some((s) => s.id === id)) {
+        return state;
+      }
       const nextDraft = state.drafts[id] ?? {
         ...EMPTY_DRAFT,
         params: detail.session.params ?? {},
       };
       const sessionModel = detail.session.model;
       const selectedModel =
-        sessionModel && state.models.some((m) => m.id === sessionModel)
+        state.activeSessionId === id &&
+        sessionModel &&
+        state.models.some((m) => m.id === sessionModel)
           ? sessionModel
           : state.selectedModel;
       return {
@@ -638,7 +663,18 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
         : state.favoriteIds.filter((id) => id !== imageId),
     }));
     try {
-      await togglePgFavorite(imageId, { favorite: nextFav });
+      const resp = await togglePgFavorite(imageId, { favorite: nextFav });
+      if (resp.removed) {
+        set((state) => {
+          const nextImages = { ...state.imagesById };
+          delete nextImages[imageId];
+          return {
+            imagesById: nextImages,
+            drafts: stripRefFromDrafts(state.drafts, imageId),
+            lightboxImageId: state.lightboxImageId === imageId ? null : state.lightboxImageId,
+          };
+        });
+      }
     } catch (error) {
       // 回滚
       set((state) => ({
@@ -683,6 +719,11 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
     } catch (error) {
       set((state) => ({
         imagesById: { ...state.imagesById, [imageId]: prevImg },
+        favoriteIds: prevImg.favorite
+          ? state.favoriteIds.includes(imageId)
+            ? state.favoriteIds
+            : [imageId, ...state.favoriteIds]
+          : state.favoriteIds.filter((id) => id !== imageId),
       }));
       throw error;
     }
@@ -771,6 +812,10 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
         ...state.imagesById,
         [imageId]: resp.image,
       },
+      drafts:
+        resp.image.format.toLowerCase() === "avif"
+          ? stripRefFromDrafts(state.drafts, imageId)
+          : state.drafts,
       pendingConvert: null,
     }));
     return resp;
@@ -800,6 +845,7 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
           image_ids: p.image_ids.filter((id) => id !== imageId),
         })),
         sessionDetails: nextDetails,
+        drafts: stripRefFromDrafts(state.drafts, imageId),
         confirmDeleteImage: null,
         lightboxImageId: state.lightboxImageId === imageId ? null : state.lightboxImageId,
       };
