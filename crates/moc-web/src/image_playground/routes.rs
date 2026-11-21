@@ -13,6 +13,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use moc_llm::{ImageGenParams, ImageInputFile};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::{AppState, origin_allowed};
@@ -26,6 +27,10 @@ use super::store::{
     self, FavoriteFolder, FavoritePreset, ImageOrigin, PlaygroundSession, PlaygroundSessionSummary,
     PlaygroundTurn, StoredImage, TurnError, TurnInputRef,
 };
+
+// 同时最多读取两个上传请求，结合单请求体积限制约束进程内上传缓冲区。
+const MAX_CONCURRENT_UPLOAD_READS: usize = 2;
+static UPLOAD_READ_SEMAPHORE: Semaphore = Semaphore::const_new(MAX_CONCURRENT_UPLOAD_READS);
 
 #[derive(Debug, Serialize)]
 struct ErrorBody {
@@ -419,6 +424,12 @@ pub async fn generate(
     if let Err(resp) = check_origin(&headers) {
         return resp;
     }
+    let upload_permit = match UPLOAD_READ_SEMAPHORE.acquire().await {
+        Ok(permit) => permit,
+        Err(_) => {
+            return err_response(StatusCode::INTERNAL_SERVER_ERROR, "上传读取许可不可用");
+        }
+    };
 
     let mut prompt = String::new();
     let mut model_selector = String::new();
@@ -614,6 +625,7 @@ pub async fn generate(
     let dir_for_inputs = storage_dir.clone();
     let cancel_for_prep = flight.cancel.clone();
     let prep_outcome = match tokio::task::spawn_blocking(move || {
+        let _upload_permit = upload_permit;
         let mut api_inputs = Vec::new();
         let mut turn_inputs = Vec::new();
 
@@ -648,8 +660,7 @@ pub async fn generate(
             let raw = std::fs::read(&path)
                 .map_err(|e| anyhow::anyhow!("读取临时参考图 {} 失败：{e}", up_ref.upload_id))?;
             let meta = codec::inspect_image(&raw, None)?;
-            let prepared =
-                codec::prepare_edit_input(&raw, Some(&meta.mime_type), &input_compress)?;
+            let prepared = codec::prepare_edit_input(&raw, Some(&meta.mime_type), &input_compress)?;
             let filename = up_ref
                 .filename
                 .as_deref()
@@ -704,7 +715,12 @@ pub async fn generate(
         PrepOutcome::Cancelled => (
             Err(moc_llm::ImageGenError::Transport("已取消生成".into())),
             Vec::new(),
-            if has_requested_inputs { "edit" } else { "generate" }.to_owned(),
+            if has_requested_inputs {
+                "edit"
+            } else {
+                "generate"
+            }
+            .to_owned(),
         ),
         PrepOutcome::Ready(api_inputs, turn_inputs) => {
             let mut effective_params = params.clone();
@@ -963,7 +979,11 @@ pub struct ImageDto {
 }
 
 impl ImageDto {
-    fn from_stored(image: &StoredImage, favorite: bool, favorite_folder_id: Option<String>) -> Self {
+    fn from_stored(
+        image: &StoredImage,
+        favorite: bool,
+        favorite_folder_id: Option<String>,
+    ) -> Self {
         Self {
             image: image.clone(),
             favorite,
@@ -1035,6 +1055,12 @@ pub async fn upload_favorites(
     if let Err(resp) = check_origin(&headers) {
         return resp;
     }
+    let upload_permit = match UPLOAD_READ_SEMAPHORE.acquire().await {
+        Ok(permit) => permit,
+        Err(_) => {
+            return err_response(StatusCode::INTERNAL_SERVER_ERROR, "上传读取许可不可用");
+        }
+    };
     let mut files: Vec<(String, String, Vec<u8>)> = Vec::new();
     let mut folder_id: Option<String> = None;
     loop {
@@ -1090,6 +1116,7 @@ pub async fn upload_favorites(
     };
     let _guard = state.image_playground.write_lock.lock().await;
     match tokio::task::spawn_blocking(move || {
+        let _upload_permit = upload_permit;
         // 先校验全部上传文件，避免批量上传中途失败留下孤立磁盘文件。
         let mut inspected = Vec::with_capacity(files.len());
         for (filename, mime, bytes) in files {
@@ -1410,12 +1437,10 @@ pub async fn create_favorite_preset(
     let _guard = state.image_playground.write_lock.lock().await;
     match tokio::task::spawn_blocking(move || {
         let mut index = store::load_index(&dir)?;
-        let folder_id = body
-            .folder_id
-            .and_then(|s| {
-                let t = s.trim().to_owned();
-                if t.is_empty() { None } else { Some(t) }
-            });
+        let folder_id = body.folder_id.and_then(|s| {
+            let t = s.trim().to_owned();
+            if t.is_empty() { None } else { Some(t) }
+        });
         if let Some(ref fid) = folder_id
             && !index.has_favorite_folder(fid)
         {
@@ -1544,7 +1569,10 @@ pub async fn patch_favorite_preset(
             return Ok(None);
         };
         if let Some(ref folder_opt) = body.folder_id
-            && let Some(fid) = folder_opt.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            && let Some(fid) = folder_opt
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
             && !index.has_favorite_folder(fid)
         {
             anyhow::bail!("目标收藏文件夹不存在");
@@ -1735,7 +1763,10 @@ pub async fn convert_image(
         let raw_bytes = std::fs::read(&old_path)
             .map_err(|error| anyhow::anyhow!("读取原图文件失败：{error}"))?;
 
-        let static_q = body.quality.unwrap_or(cfg.compression.quality).clamp(1, 100);
+        let static_q = body
+            .quality
+            .unwrap_or(cfg.compression.quality)
+            .clamp(1, 100);
         let anim_q = body
             .quality
             .unwrap_or(cfg.compression.animated_quality)
@@ -1771,7 +1802,8 @@ pub async fn convert_image(
             }
         };
 
-        let encoded = codec::transcode_output(raw_bytes, Some(&existing.mime_type), &transcode_cfg)?;
+        let encoded =
+            codec::transcode_output(raw_bytes, Some(&existing.mime_type), &transcode_cfg)?;
         let parent = old_path.parent().unwrap_or(&dir);
         std::fs::create_dir_all(parent)?;
         let new_path = parent.join(format!("{id}.{}", encoded.extension));
@@ -1838,7 +1870,9 @@ pub async fn reveal_image(
     {
         Ok(Ok(Some(path))) => path,
         Ok(Ok(None)) => return err_response(StatusCode::NOT_FOUND, "图片不存在"),
-        Ok(Err(error)) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Ok(Err(error)) => {
+            return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+        }
         Err(error) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     match reveal::reveal_in_file_manager(&path).await {
@@ -1869,7 +1903,9 @@ pub async fn get_image_file(
     {
         Ok(Ok(Some(img))) => img,
         Ok(Ok(None)) => return err_response(StatusCode::NOT_FOUND, "图片不存在"),
-        Ok(Err(error)) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Ok(Err(error)) => {
+            return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+        }
         Err(error) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
 
@@ -2046,7 +2082,12 @@ impl ImagePlaygroundService {
     }
 
     pub(crate) fn cancel_session(&self, session_id: &str) {
-        if let Some((_, token)) = self.flights.lock().expect("flights lock").remove(session_id) {
+        if let Some((_, token)) = self
+            .flights
+            .lock()
+            .expect("flights lock")
+            .remove(session_id)
+        {
             token.cancel();
         }
     }
