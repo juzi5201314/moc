@@ -542,7 +542,8 @@ async fn commit_plan(
     })
 }
 
-pub(crate) async fn lock_commit_paths(
+/// 串行化进程内的文件提交。
+pub async fn lock_commit_paths(
     source: &Path,
     target: Option<&Path>,
 ) -> Vec<MutexGuard<'static, ()>> {

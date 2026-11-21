@@ -134,6 +134,7 @@ async fn upload_to(
     } else {
         path.to_owned()
     };
+    let _commit_guards = moc_core::hashline::apply::lock_commit_paths(&target, None).await;
     let Some(parent) = target.parent().map(std::path::Path::to_owned) else {
         return (
             StatusCode::BAD_REQUEST,
