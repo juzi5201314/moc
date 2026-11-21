@@ -119,6 +119,8 @@ impl LineEnding {
 
 /// 版本链上限：本会话连续编辑超过该次数后，最旧的 tag 不再可用。
 const MAX_VERSIONS: usize = 16;
+/// 单会话最多保留的文件锚点数。
+pub(super) const MAX_FILES: usize = 1024;
 
 /// 版本链中的一个文件版本。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -307,6 +309,7 @@ pub struct AnchorStore {
     undo: RwLock<UndoHistory>,
     noop: Mutex<Option<(String, usize)>>,
     dirty: Mutex<HashSet<PathBuf>>,
+    removed: Mutex<HashSet<PathBuf>>,
     restored: tokio::sync::OnceCell<PathBuf>,
     persistence: tokio::sync::Mutex<()>,
 }
@@ -367,6 +370,7 @@ impl AnchorStore {
             undo: RwLock::new(UndoHistory::default()),
             noop: Mutex::new(None),
             dirty: Mutex::new(HashSet::new()),
+            removed: Mutex::new(HashSet::new()),
             restored: tokio::sync::OnceCell::new(),
             persistence: tokio::sync::Mutex::new(()),
         }
@@ -384,18 +388,36 @@ impl AnchorStore {
         windows: &[std::ops::Range<usize>],
     ) -> u16 {
         let mut files = self.files.write();
+        if !files.contains_key(&path) && files.len() >= MAX_FILES {
+            // 锚点无顺序语义，任意淘汰即可；删除记录会在 flush 时清理旧 JSON。
+            if let Some(evicted) = files.keys().next().cloned() {
+                files.remove(&evicted);
+                self.dirty.lock().remove(&evicted);
+                self.removed.lock().insert(evicted);
+            }
+        }
         let tag =
             files
                 .entry(path.clone())
                 .or_default()
                 .serve(snapshot.epoch, &snapshot.lines, windows);
+        self.removed.lock().remove(&path);
         self.dirty.lock().insert(path);
         tag
     }
 
     pub fn commit_edit(&self, path: PathBuf, served: ServedFile) {
         let mut files = self.files.write();
+        if !files.contains_key(&path) && files.len() >= MAX_FILES {
+            // 编辑写入也可能首次登记路径，继续遵守会话锚点上限。
+            if let Some(evicted) = files.keys().next().cloned() {
+                files.remove(&evicted);
+                self.dirty.lock().remove(&evicted);
+                self.removed.lock().insert(evicted);
+            }
+        }
         files.insert(path.clone(), served);
+        self.removed.lock().remove(&path);
         self.dirty.lock().insert(path);
     }
 
