@@ -59,9 +59,19 @@ pub fn now_ms() -> u64 {
     u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX)
 }
 
+static NEXT_LAYOUT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static ENTRY_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub(crate) fn next_layout_epoch() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    NEXT_LAYOUT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn bump_entry_revision() {
+    ENTRY_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn entry_revision() -> u64 {
+    ENTRY_REVISION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// 转写条目：块 + 内容版本（渲染缓存 key 的一部分）。
@@ -93,6 +103,7 @@ pub struct Entry {
 
 impl Entry {
     pub fn new(block: Block) -> Self {
+        bump_entry_revision();
         Self {
             generation: 0,
             layout_epoch: next_layout_epoch(),
@@ -134,11 +145,13 @@ impl Entry {
 
     /// 内容变化时统一走这里，保证缓存失效。
     pub(crate) fn touch(&mut self) {
+        bump_entry_revision();
         self.generation += 1;
         self.layout_epoch = next_layout_epoch();
     }
 
     pub(crate) fn text_appended(&mut self) {
+        bump_entry_revision();
         if !self.charts.is_empty() {
             self.layout_epoch = next_layout_epoch();
         }
