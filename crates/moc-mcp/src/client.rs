@@ -161,7 +161,7 @@ async fn connect_stdio(
 }
 
 // 限制单条 stderr 日志的内存占用，同时仍完整排空超长行，避免阻塞子进程。
-// 保留的待定 CR 可能让缓冲短暂达到 MAX+1，但不会继续增长，仍受界限制。
+// 正文最多 MAX 字节，行终止符最多额外保留 CRLF 两字节。
 const MAX_LOG_LINE_BYTES: usize = 8 * 1024;
 
 async fn read_log_line(
@@ -174,35 +174,55 @@ async fn read_log_line(
     buf.clear();
     *truncated = false;
     let mut bytes_read = 0usize;
+    let mut pending_cr = false;
 
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
-            if buf.len() > MAX_LOG_LINE_BYTES {
-                *truncated = true;
+            if pending_cr {
+                if buf.len() < MAX_LOG_LINE_BYTES {
+                    buf.push(b'\r');
+                } else {
+                    *truncated = true;
+                }
             }
             return Ok(bytes_read);
         }
 
+        if pending_cr {
+            if available[0] == b'\n' {
+                // 跨块 CRLF 的 CR 属于终止符，不占正文上限。
+                buf.push(b'\r');
+            } else if buf.len() < MAX_LOG_LINE_BYTES {
+                // 后续字节不是 LF，待定 CR 属于正文。
+                buf.push(b'\r');
+            } else {
+                *truncated = true;
+            }
+            pending_cr = false;
+        }
+
         let line_ending_index = available.iter().position(|byte| *byte == b'\n');
         let chunk_len = line_ending_index.map_or(available.len(), |index| index + 1);
+        let trailing_cr = line_ending_index.is_none() && available.ends_with(b"\r");
         let terminator_len = match line_ending_index {
             Some(index) if index > 0 && available[index - 1] == b'\r' => 2,
             Some(_) => 1,
-            // 块末尾的 CR 可能是跨块 CRLF 的前半，先按待定终止符计数。
-            None if available.ends_with(b"\r") => 1,
+            None if trailing_cr => 1,
             None => 0,
         };
         let content_len = chunk_len - terminator_len;
         let remaining_capacity = MAX_LOG_LINE_BYTES.saturating_sub(buf.len());
-        let bytes_to_keep = content_len.min(remaining_capacity)
-            + if content_len <= remaining_capacity {
-                terminator_len
+        let content_to_keep = content_len.min(remaining_capacity);
+        buf.extend_from_slice(&available[..content_to_keep]);
+        *truncated |= content_to_keep < content_len;
+        if content_len <= remaining_capacity {
+            if trailing_cr {
+                pending_cr = true;
             } else {
-                0
-            };
-        buf.extend_from_slice(&available[..bytes_to_keep]);
-        *truncated |= bytes_to_keep < chunk_len;
+                buf.extend_from_slice(&available[content_len..chunk_len]);
+            }
+        }
         let line_ended = line_ending_index.is_some();
         reader.consume(chunk_len);
         bytes_read = bytes_read.saturating_add(chunk_len);
@@ -359,9 +379,49 @@ mod tests {
             .unwrap();
 
         assert!(truncated);
-        assert_eq!(buf.len(), MAX_LOG_LINE_BYTES + 1);
+        assert_eq!(buf.len(), MAX_LOG_LINE_BYTES);
         assert!(buf[..MAX_LOG_LINE_BYTES].iter().all(|byte| *byte == b'x'));
-        assert_eq!(buf[MAX_LOG_LINE_BYTES], b'\r');
+    }
+
+    #[tokio::test]
+    async fn stderr_maximum_body_pending_cr_followed_by_body_is_truncated_and_drained() {
+        let mut input = vec![b'x'; MAX_LOG_LINE_BYTES];
+        input.extend_from_slice(b"\rbody\nnext\n");
+        let mut reader =
+            BufReader::with_capacity(MAX_LOG_LINE_BYTES + 1, std::io::Cursor::new(input));
+        let mut buf = Vec::new();
+        let mut truncated = false;
+
+        let first_len = read_log_line(&mut reader, &mut buf, &mut truncated)
+            .await
+            .unwrap();
+
+        assert_eq!(first_len, MAX_LOG_LINE_BYTES + b"\rbody\n".len());
+        assert!(truncated);
+        assert_eq!(buf.len(), MAX_LOG_LINE_BYTES);
+        assert!(buf.iter().all(|byte| *byte == b'x'));
+
+        let second_len = read_log_line(&mut reader, &mut buf, &mut truncated)
+            .await
+            .unwrap();
+
+        assert_eq!(second_len, b"next\n".len());
+        assert_eq!(buf, b"next\n");
+        assert!(!truncated);
+    }
+
+    #[tokio::test]
+    async fn stderr_pending_cr_followed_by_body_is_kept_when_under_limit() {
+        let mut reader = BufReader::with_capacity(2, std::io::Cursor::new(b"a\rb\n"));
+        let mut buf = Vec::new();
+        let mut truncated = false;
+
+        read_log_line(&mut reader, &mut buf, &mut truncated)
+            .await
+            .unwrap();
+
+        assert!(!truncated);
+        assert_eq!(buf, b"a\rb\n");
     }
 
     #[tokio::test]
