@@ -3,8 +3,8 @@ use super::state::SessionState;
 use super::stored::StoredEntry;
 use moc_llm::Message;
 
-/// 冷加载后的体积权重：非消息日志可能有计划/PTC/子工具的大正文，投影还会持有副本。
-/// 两倍序列化大小可高估旧版本，目的在于驱逐顺序；它不是分配器或 RSS 的精确统计。
+/// 冷加载后的驻留堆容量估算；非消息日志仍按序列化大小加倍计入。
+/// 哈希权重用于缓存驱逐，不是分配器或 RSS 的精确统计。
 pub(super) fn state_cache_bytes(state: &SessionState) -> usize {
     state.entries.iter().fold(0usize, |total, entry| {
         let bytes = match entry {
@@ -34,10 +34,7 @@ pub(super) fn state_cache_bytes(state: &SessionState) -> usize {
 }
 
 pub(super) fn message_storage_bytes(message: &Message) -> usize {
-    message
-        .content
-        .archive_index_bytes()
-        .unwrap_or_else(|| serialized_bytes(&message.content))
+    message.content.heap_capacity_bytes()
 }
 
 pub(super) fn serialized_bytes(value: &impl serde::Serialize) -> usize {

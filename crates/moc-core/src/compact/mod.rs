@@ -36,12 +36,17 @@ pub enum CompactReason {
 
 /// 估算 token：每 4 个 ASCII 字节算 1 个，每个非 ASCII 字符算 1 个。
 pub fn estimate_tokens(text: &str) -> u64 {
+    let bytes = text.as_bytes();
+    if bytes.is_ascii() {
+        return u64::try_from(bytes.len()).expect("UTF-8 文本长度可表示为 u64") / 4;
+    }
+
     let mut ascii = 0u64;
     let mut non_ascii = 0u64;
-    for character in text.chars() {
-        if character.is_ascii() {
-            ascii += character.len_utf8() as u64;
-        } else {
+    for &byte in bytes {
+        if byte.is_ascii() {
+            ascii += 1;
+        } else if byte & 0b1100_0000 != 0b1000_0000 {
             non_ascii += 1;
         }
     }
@@ -750,6 +755,9 @@ mod tests {
     fn token_estimator_and_threshold_modes() {
         // 4 个 ASCII 字符算 1 个 token：abcd 记 1，中日韩字符各记 1。
         assert_eq!(estimate_tokens("abcd你好"), 3);
+        assert_eq!(estimate_tokens("abcdefgh"), 2);
+        assert_eq!(estimate_tokens("aé中🙂bc"), 3);
+        assert_eq!(estimate_tokens(""), 0);
         let tokens =
             config_with("\n[compaction]\nthreshold = { mode = 'tokens', value = 50000 }\n");
         assert_eq!(threshold(&tokens, 200_000), 50_000);

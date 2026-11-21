@@ -28,6 +28,37 @@ fn render(source: &str, width: usize, views: RenderViews<'_>) -> Rendered {
 }
 
 #[test]
+fn large_plain_markdown_chunks_match_full_rendering() {
+    let source = "Paragraph with **emphasis**, `inline code`, and ordinary text.\n\n".repeat(5000);
+    assert!(source.len() > MARKDOWN_CHUNK_BYTES);
+    assert!(source.lines().all(|line| !has_block_markdown_syntax(line)));
+    let chunks = MarkdownChunks::new(&source).unwrap().collect::<Vec<_>>();
+    assert!(chunks.len() > 1);
+    assert_eq!(chunks.concat(), source);
+
+    let theme = Theme::resolved(ColorLevel::TrueColor);
+    let full = render_markdown_pages(&source, 77, &theme, RenderViews::default(), true, true);
+    let paged = render_markdown_pages(&source, 77, &theme, RenderViews::default(), true, false);
+    assert_eq!(paged.lines.len(), full.lines.len());
+    for start in (0..full.lines.len()).step_by(97) {
+        let end = (start + 53).min(full.lines.len());
+        assert_eq!(
+            paged.lines.window(start..end),
+            full.lines.window(start..end)
+        );
+    }
+}
+
+#[test]
+fn markdown_keeps_cross_paragraph_code_spans_in_one_parse() {
+    let source = format!(
+        "{} `code starts\n\nand ends`",
+        "ordinary paragraph.\n\n".repeat(3000)
+    );
+
+    assert!(MarkdownChunks::new(&source).is_none());
+}
+#[test]
 fn paged_layout_matches_full_layout_with_global_references_and_tables() {
     let source = format!("{}\n[ref]: https://example.com\n", "# 标题\n\n正文 **强调** 与 [链接][ref]。\n\n> 引用\n> - 子项\n\n```rust\n/* 连续\n注释 */ let x = 1;\n```\n\n| 月份 | 数量 |\n|---|---|\n| 一月 | 12 |\n| 二月 | 24 |\n\n".repeat(30));
     let theme = Theme::resolved(ColorLevel::TrueColor);

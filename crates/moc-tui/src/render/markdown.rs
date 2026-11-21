@@ -223,6 +223,211 @@ pub(super) fn render_markdown_pages(
     };
     let mut blocks: Vec<std::ops::Range<usize>> = Vec::new();
     let mut line_sources: Vec<Option<(usize, usize)>> = Vec::new();
+    // 大块纯段落按段落边界切片，限制 pulldown-cmark 完整语法树的峰值；块级结构
+    // 可能跨段引用或依赖围栏状态时继续一次性解析，不改变其 CommonMark 语义。
+    let chunks = if track_sources {
+        None
+    } else {
+        MarkdownChunks::new(source)
+    };
+    if let Some(chunks) = chunks {
+        for chunk in chunks {
+            render_markdown_events(
+                &mut renderer,
+                chunk,
+                options,
+                false,
+                &starts,
+                &mut blocks,
+                &mut line_sources,
+            );
+        }
+    } else {
+        render_markdown_events(
+            &mut renderer,
+            source,
+            options,
+            track_sources,
+            &starts,
+            &mut blocks,
+            &mut line_sources,
+        );
+    }
+    let rendered = renderer.finish();
+    // `finish` 在表格后插入图表入口、在末尾追加参考链接附录：这些行不归属
+    // 任何源码块。入口按最终落点把映射表撑开（同一份插入几何），附录与
+    // 末尾占位直接以 None 补齐。
+    if track_sources {
+        let mut button_rows: Vec<usize> = rendered
+            .tables
+            .iter()
+            .filter_map(|slot| slot.button.map(|button| button.row))
+            .collect();
+        button_rows.sort_unstable();
+        for row in button_rows {
+            line_sources.insert(row.min(line_sources.len()), None);
+        }
+        line_sources.resize(rendered.lines.len(), None);
+    }
+    debug_assert!(
+        !track_sources || rendered.lines.len() == line_sources.len(),
+        "渲染行与源码映射必须一一对应"
+    );
+    PagedRendered {
+        line_sources,
+        ..rendered
+    }
+}
+const MARKDOWN_CHUNK_BYTES: usize = 64 * 1024;
+
+/// 只切分可独立解析的段落；链接引用、列表、围栏等块级状态回退到完整解析。
+struct MarkdownChunks<'a> {
+    remaining: &'a str,
+}
+
+impl<'a> MarkdownChunks<'a> {
+    fn new(source: &'a str) -> Option<Self> {
+        paragraph_chunks_are_independent(source).then_some(Self { remaining: source })
+    }
+}
+
+fn paragraph_chunks_are_independent(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut open_ticks = None;
+    let mut backslashes: usize = 0;
+    let mut line_start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\r' {
+            return false;
+        }
+        if byte == b'\n' {
+            if index > 0 && bytes[index - 1] == b'\n' && open_ticks.is_some() {
+                return false;
+            }
+            if has_block_markdown_syntax(&source[line_start..index]) {
+                return false;
+            }
+            line_start = index + 1;
+        }
+        if byte == b'\\' {
+            backslashes += 1;
+            index += 1;
+            continue;
+        }
+        if byte == b'`' {
+            let start = index;
+            while bytes.get(index) == Some(&b'`') {
+                index += 1;
+            }
+            if backslashes.is_multiple_of(2) {
+                let run = index - start;
+                if open_ticks == Some(run) {
+                    open_ticks = None;
+                } else if open_ticks.is_none() {
+                    open_ticks = Some(run);
+                }
+            }
+            backslashes = 0;
+            continue;
+        }
+        backslashes = 0;
+        index += 1;
+    }
+    !has_block_markdown_syntax(&source[line_start..])
+}
+
+fn has_block_markdown_syntax(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    bytes
+        .first()
+        .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+        || line.starts_with('#')
+        || line.starts_with('>')
+        || line.starts_with('<')
+        || line.starts_with('|')
+        || line.starts_with("```")
+        || line.starts_with("~~~")
+        || is_list_marker(bytes)
+        || is_thematic_or_setext_rule(line)
+        || bytes
+            .iter()
+            .any(|byte| matches!(byte, b'[' | b']' | b'(' | b')' | b'<' | b'>' | b'|' | b'$'))
+}
+fn is_list_marker(bytes: &[u8]) -> bool {
+    let Some(first) = bytes.first().copied() else {
+        return false;
+    };
+    if matches!(first, b'-' | b'+' | b'*') {
+        return bytes.len() == 1 || matches!(bytes[1], b' ' | b'\t');
+    }
+    let digits = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    digits > 0
+        && bytes
+            .get(digits)
+            .is_some_and(|byte| matches!(*byte, b'.' | b')'))
+        && bytes
+            .get(digits + 1)
+            .is_none_or(|byte| matches!(*byte, b' ' | b'\t'))
+}
+
+fn is_thematic_or_setext_rule(line: &str) -> bool {
+    let mut marker = None;
+    let mut count = 0;
+    for byte in line.bytes() {
+        if matches!(byte, b' ' | b'\t') {
+            continue;
+        }
+        if !matches!(byte, b'-' | b'_' | b'=' | b'*')
+            || marker.is_some_and(|previous| previous != byte)
+        {
+            return false;
+        }
+        marker = Some(byte);
+        count += 1;
+    }
+    count >= 2
+}
+
+impl<'a> Iterator for MarkdownChunks<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let source = self.remaining;
+        if source.is_empty() {
+            return None;
+        }
+        if source.len() <= MARKDOWN_CHUNK_BYTES {
+            self.remaining = "";
+            return Some(source);
+        }
+
+        let boundary = source.as_bytes()[..MARKDOWN_CHUNK_BYTES]
+            .windows(2)
+            .rposition(|pair| pair == b"\n\n")
+            .map(|index| index + 2);
+        let Some(boundary) = boundary else {
+            self.remaining = "";
+            return Some(source);
+        };
+        self.remaining = &source[boundary..];
+        Some(&source[..boundary])
+    }
+}
+
+fn render_markdown_events(
+    renderer: &mut MdRenderer<'_>,
+    source: &str,
+    options: Options,
+    track_sources: bool,
+    starts: &[usize],
+    blocks: &mut Vec<std::ops::Range<usize>>,
+    line_sources: &mut Vec<Option<(usize, usize)>>,
+) {
     for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
         if let Event::Start(Tag::CodeBlock(kind)) = &event {
             renderer.code_closed = match kind {
@@ -251,11 +456,11 @@ pub(super) fn render_markdown_pages(
                 .cloned()
                 .or_else(|| is_rule.then(|| range.clone()));
             let source_lines = owner.map(|block| {
-                let start = source_line(&starts, block.start);
+                let start = source_line(starts, block.start);
                 let end = trim_blank_tail(
                     source,
-                    &starts,
-                    source_line(&starts, block.end.saturating_sub(1).max(block.start)),
+                    starts,
+                    source_line(starts, block.end.saturating_sub(1).max(block.start)),
                     start,
                 );
                 (start, end)
@@ -271,30 +476,6 @@ pub(super) fn render_markdown_pages(
         if closing {
             blocks.pop();
         }
-    }
-    let rendered = renderer.finish();
-    // `finish` 在表格后插入图表入口、在末尾追加参考链接附录：这些行不归属
-    // 任何源码块。入口按最终落点把映射表撑开（同一份插入几何），附录与
-    // 末尾占位直接以 None 补齐。
-    if track_sources {
-        let mut button_rows: Vec<usize> = rendered
-            .tables
-            .iter()
-            .filter_map(|slot| slot.button.map(|button| button.row))
-            .collect();
-        button_rows.sort_unstable();
-        for row in button_rows {
-            line_sources.insert(row.min(line_sources.len()), None);
-        }
-        line_sources.resize(rendered.lines.len(), None);
-    }
-    debug_assert!(
-        !track_sources || rendered.lines.len() == line_sources.len(),
-        "渲染行与源码映射必须一一对应"
-    );
-    PagedRendered {
-        line_sources,
-        ..rendered
     }
 }
 

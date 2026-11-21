@@ -587,12 +587,18 @@ function AssistantTurn({
             sessionId={context.sessionId}
           />
         );
-      case "text":
+      case "text": {
+        const isAnimating = live && index === segments.length - 1;
         return (
-          <MessageResponse key={segment.id} isAnimating={live && index === segments.length - 1}>
+          <MessageResponse
+            key={segment.id}
+            isAnimating={isAnimating}
+            mode={isAnimating ? "streaming" : "static"}
+          >
             {segment.block.text}
           </MessageResponse>
         );
+      }
       case "plan":
         return <PlanCard key={segment.id} sessionId={context.sessionId} block={segment.block} />;
       case "agent-result":

@@ -455,7 +455,9 @@ export const MessageResponse = memo(
     );
   },
   (prevProps, nextProps) =>
-    prevProps.children === nextProps.children && nextProps.isAnimating === prevProps.isAnimating,
+    prevProps.children === nextProps.children &&
+    prevProps.isAnimating === nextProps.isAnimating &&
+    prevProps.mode === nextProps.mode,
 );
 
 MessageResponse.displayName = "MessageResponse";

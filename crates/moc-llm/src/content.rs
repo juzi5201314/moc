@@ -143,6 +143,18 @@ impl MessageContent {
         }
     }
 
+    /// 返回驻留正文的堆容量估算；日志冷加载时使用，避免为计数重新序列化每条正文。
+    pub fn heap_capacity_bytes(&self) -> usize {
+        match self.0.as_ref() {
+            Storage::Resident(parts) => parts.iter().fold(
+                std::mem::size_of::<Storage>()
+                    .saturating_add(parts.capacity() * std::mem::size_of::<ContentPart>()),
+                |bytes, part| bytes.saturating_add(part_heap_capacity_bytes(part)),
+            ),
+            Storage::Archived(_) => self.archive_index_bytes().expect("归档内容必有索引占用"),
+        }
+    }
+
     fn resident_parts(&self) -> Option<&[ContentPart]> {
         match self.0.as_ref() {
             Storage::Resident(parts) => Some(parts),
@@ -181,6 +193,67 @@ impl MessageContent {
                     _ => None,
                 }),
         )
+    }
+}
+fn part_heap_capacity_bytes(part: &ContentPart) -> usize {
+    use crate::types::{ContentPart as Part, ImageSource, ReasoningBlock};
+
+    match part {
+        Part::Text(text) | Part::ResponsePhase(text) => text.capacity(),
+        Part::Image { source, .. } => match source {
+            ImageSource::Url(url) => url.capacity(),
+            ImageSource::Base64 { media_type, data } => {
+                media_type.capacity().saturating_add(data.capacity())
+            }
+        },
+        Part::Reasoning(reasoning) => match reasoning {
+            ReasoningBlock::Text { text, signature } => text
+                .capacity()
+                .saturating_add(signature.as_ref().map_or(0, String::capacity)),
+            ReasoningBlock::Redacted { data } => data.capacity(),
+            ReasoningBlock::Item(item) => std::mem::size_of_val(item.as_ref())
+                .saturating_add(json_heap_capacity(&item.raw))
+                .saturating_add(item.display_text.as_ref().map_or(0, String::capacity)),
+        },
+        Part::ToolCall(call) => call
+            .id
+            .capacity()
+            .saturating_add(call.name.capacity())
+            .saturating_add(call.arguments.capacity()),
+        Part::ToolResult(result) => result
+            .tool_call_id
+            .capacity()
+            .saturating_add(result.content.capacity())
+            .saturating_add(result.images.capacity() * std::mem::size_of::<ImageSource>())
+            .saturating_add(result.images.iter().fold(0usize, |bytes, image| {
+                bytes.saturating_add(match image {
+                    ImageSource::Url(url) => url.capacity(),
+                    ImageSource::Base64 { media_type, data } => {
+                        media_type.capacity().saturating_add(data.capacity())
+                    }
+                })
+            })),
+    }
+}
+
+fn json_heap_capacity(value: &serde_json::Value) -> usize {
+    use serde_json::Value;
+
+    match value {
+        Value::String(text) => text.capacity(),
+        Value::Array(values) => values
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Value>())
+            .saturating_add(values.iter().fold(0usize, |bytes, value| {
+                bytes.saturating_add(json_heap_capacity(value))
+            })),
+        Value::Object(values) => values.iter().fold(0usize, |bytes, (key, value)| {
+            bytes
+                .saturating_add(std::mem::size_of::<(String, Value)>())
+                .saturating_add(key.capacity())
+                .saturating_add(json_heap_capacity(value))
+        }),
+        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
     }
 }
 
@@ -304,5 +377,25 @@ mod tests {
         assert_eq!(cold.len(), 5);
         assert_eq!(content.len(), 6);
         assert_eq!(serde_json::to_value(&cold).unwrap(), json);
+    }
+
+    #[test]
+    fn heap_capacity_accounts_for_resident_and_archived_content_without_charging_twice() {
+        let text = "large response".repeat(1024);
+        let text_capacity = text.capacity();
+        let content = MessageContent::from(vec![ContentPart::Text(text)]);
+        assert!(content.heap_capacity_bytes() >= text_capacity);
+        assert_eq!(
+            content.heap_capacity_bytes(),
+            content.clone().heap_capacity_bytes()
+        );
+
+        let encoded = serde_json::to_vec(&content).unwrap();
+        let archived = MessageContent::from_archive(encoded.into()).unwrap();
+        assert_eq!(
+            archived.heap_capacity_bytes(),
+            archived.archive_index_bytes().unwrap()
+        );
+        assert!(!archived.archive_cache_loaded());
     }
 }

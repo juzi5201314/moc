@@ -1,4 +1,4 @@
-import { act, fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useI18n } from "@/lib/i18n";
@@ -28,6 +28,39 @@ const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
 const toolDetail = usePrefs.getState().toolDetail;
 const locale = useI18n.getState().locale;
 
+it("已完成的回复以静态 Markdown 渲染并保留语义内容", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const view = createView(info);
+  view.blocks = [
+    { kind: "user", id: "question", text: "解释这段代码", images: [], atMs: 0 },
+    {
+      kind: "text",
+      id: "answer",
+      text: "**完整答案**与 `代码`。",
+    },
+    { kind: "footer", id: "footer", finishReason: "Stop", atMs: 1 },
+  ];
+  useTranscript.setState({ bySession: { [info.id]: view } });
+  const thread = render(
+    <TooltipProvider>
+      <ChatThread sessionId={info.id} />
+    </TooltipProvider>,
+  );
+
+  await waitFor(() => {
+    const prose = thread.container.querySelector(".moc-prose");
+    expect(prose?.querySelector('[data-streamdown="strong"]')?.textContent).toBe("完整答案");
+    expect(prose?.querySelector('[data-streamdown="inline-code"]')?.textContent).toBe("代码");
+  });
+  thread.unmount();
+});
 it("连接退避在首个生成块之前显示重试原因及等待时长", async () => {
   vi.spyOn(Date, "now").mockReturnValue(1000);
   vi.stubGlobal(
