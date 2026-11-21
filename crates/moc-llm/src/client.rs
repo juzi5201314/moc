@@ -20,6 +20,9 @@ use crate::retry::RetryBudget;
 use crate::stream::ChatStream;
 use crate::traffic::{record_rx, record_tx};
 use crate::types::{ChatRequest, ChatResponse};
+
+const MAX_CACHED_TRANSPORTS: usize = 8;
+
 /// HTTP 客户端。
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -30,7 +33,7 @@ pub struct Client {
 struct ClientInner {
     http: OnceLock<Result<reqwest::Client, LlmError>>,
     options: ClientBuilder,
-    /// 配置可提供任意时限；按完整 Duration 分组，冷路径建池、热路径点查。
+    /// 按完整 Duration 分组，最多缓存 8 个连接池，热路径点查。
     transports: Mutex<HashMap<Duration, reqwest::Client>>,
     images: crate::images::ImageCache,
     image_workers: Arc<tokio::sync::Semaphore>,
@@ -255,6 +258,15 @@ impl Client {
         let mut transports = self.inner.transports.lock().expect("HTTP 连接池表");
         if let Some(http) = transports.get(&timeout) {
             return Ok(http.clone());
+        }
+        if transports.len() >= MAX_CACHED_TRANSPORTS {
+            drop(transports);
+            return self
+                .inner
+                .options
+                .clone()
+                .connect_timeout(timeout)
+                .build_http();
         }
         let http = self
             .inner
@@ -545,6 +557,24 @@ mod tests {
 
         let error = read_body_with_limit(response, 4).await.unwrap_err();
         assert!(matches!(error, LlmError::Stream(message) if message.contains("超过 4 字节上限")));
+    }
+
+    #[test]
+    fn transport_cache_stays_within_limit() {
+        let client = Client::new();
+
+        for seconds in 1..=MAX_CACHED_TRANSPORTS + 1 {
+            let config = LlmConfig {
+                connect_timeout_secs: Some(seconds as f64),
+                ..LlmConfig::default()
+            };
+            client.http_for(&config).unwrap();
+        }
+
+        assert_eq!(
+            client.inner.transports.lock().unwrap().len(),
+            MAX_CACHED_TRANSPORTS
+        );
     }
 
     #[test]
