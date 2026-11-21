@@ -542,7 +542,10 @@ async fn commit_plan(
     })
 }
 
-async fn lock_commit_paths(source: &Path, target: Option<&Path>) -> Vec<MutexGuard<'static, ()>> {
+pub(crate) async fn lock_commit_paths(
+    source: &Path,
+    target: Option<&Path>,
+) -> Vec<MutexGuard<'static, ()>> {
     let mut slots = vec![commit_lock_slot(source)];
     if let Some(target) = target {
         slots.push(commit_lock_slot(target));
@@ -598,6 +601,7 @@ pub async fn undo(
     anchors: &AnchorStore,
     max_file_bytes: u64,
 ) -> Result<String, EditError> {
+    let _commit_guards = lock_commit_paths(path, None).await;
     let Some(previous) = anchors.peek_undo(path) else {
         return Err(tool_error("E_NO_UNDO", "the file has no undoable edit"));
     };

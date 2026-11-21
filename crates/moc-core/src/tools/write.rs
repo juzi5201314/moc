@@ -98,6 +98,7 @@ impl Tool for WriteTool {
             let content = normalize_line_endings(&args.content, ending);
             check_content_size(&content, max_file_bytes)?;
             let diff = write_diff(&path, old.as_deref(), &content, WRITE_DIFF_MAX_BYTES);
+            let _commit_guards = crate::hashline::apply::lock_commit_paths(&path, None).await;
             let temporary = stage(&path, content.as_bytes()).await?;
             if let Err(error) = tokio::fs::rename(&temporary, &path).await {
                 let _ = tokio::fs::remove_file(&temporary).await;
