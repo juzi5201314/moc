@@ -81,7 +81,6 @@ impl SseDecoder {
                 self.bom_checked = true;
             }
         }
-        self.check_overflow();
     }
 
     /// 缓冲区是否因单行或单帧过长而溢出。
@@ -113,6 +112,7 @@ impl SseDecoder {
                 .position(|byte| matches!(byte, b'\r' | b'\n'))
             else {
                 self.scan = self.buf.len();
+                self.check_overflow(true);
                 return None;
             };
             let newline = self.scan + offset;
@@ -149,30 +149,29 @@ impl SseDecoder {
                     }
                     self.has_data = true;
                     self.data.push_str(&value);
-                    self.check_overflow();
-                    if self.overflowed {
-                        return None;
-                    }
                 }
                 // `retry:`、注释行（`:` 开头）等一律忽略。
                 _ => {}
             }
+            self.check_overflow(false);
+            if self.overflowed {
+                return None;
+            }
         }
     }
 
-    fn check_overflow(&mut self) {
+    fn check_overflow(&mut self, include_pending_bytes: bool) {
         let fields_len = self
             .data
             .len()
             .saturating_add(self.event.as_ref().map_or(0, String::len))
             .saturating_add(self.id.as_ref().map_or(0, String::len));
-        if self
-            .buf
-            .len()
-            .saturating_sub(self.pos)
-            .saturating_add(fields_len)
-            > MAX_BUFFERED_BYTES
-        {
+        let pending_bytes = if include_pending_bytes {
+            self.buf.len().saturating_sub(self.pos)
+        } else {
+            0
+        };
+        if pending_bytes.saturating_add(fields_len) > MAX_BUFFERED_BYTES {
             self.overflowed = true;
             self.buf = Vec::new();
             self.pos = 0;
@@ -305,13 +304,50 @@ mod tests {
         let chunk = vec![b'x'; MAX_BUFFERED_BYTES + 1];
         decoder.push(&chunk);
 
+        assert_eq!(decoder.next_event(), None);
         assert!(decoder.is_overflowed());
         assert!(decoder.buf.is_empty());
-        assert_eq!(decoder.next_event(), None);
         decoder.push(b"\n\ndata: later\n\n");
         assert!(decoder.is_overflowed());
         assert!(decoder.buf.is_empty());
         assert_eq!(decoder.next_event(), None);
+    }
+
+    #[test]
+    fn large_chunk_with_complete_events_is_drained_before_overflow_check() {
+        let mut decoder = SseDecoder::new();
+        let frame = b"data: x\n\n";
+        let frame_count = MAX_BUFFERED_BYTES / frame.len() + 1;
+        let mut chunk = Vec::with_capacity(frame_count * frame.len());
+        for _ in 0..frame_count {
+            chunk.extend_from_slice(frame);
+        }
+
+        decoder.push(&chunk);
+        assert!(!decoder.is_overflowed());
+        let mut event_count = 0;
+        while let Some(event) = decoder.next_event() {
+            assert_eq!(event, data_event("x"));
+            event_count += 1;
+        }
+
+        assert_eq!(event_count, frame_count);
+        assert!(!decoder.is_overflowed());
+    }
+
+    #[test]
+    fn oversized_lossy_event_field_latches_overflow() {
+        let mut decoder = SseDecoder::new();
+        let invalid_bytes = vec![0xff; 11 * 1024 * 1024];
+        let mut chunk = Vec::with_capacity(b"event:\n\n".len() + invalid_bytes.len());
+        chunk.extend_from_slice(b"event:");
+        chunk.extend_from_slice(&invalid_bytes);
+        chunk.extend_from_slice(b"\n\ndata: later\n\n");
+
+        decoder.push(&chunk);
+        assert_eq!(decoder.next_event(), None);
+        assert!(decoder.is_overflowed());
+        assert!(decoder.buf.is_empty());
     }
 
     #[test]
