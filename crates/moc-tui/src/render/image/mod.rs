@@ -672,13 +672,25 @@ impl ImageStore {
     /// 那可能是几 MB 的拷贝，放在主线程上做就等于把「不卡顿」的承诺还回去。
     fn spawn_decode(&self, key: ImageKey, make: impl FnOnce() -> ImageSourceSpec + Send + 'static) {
         let task: DecodeTask = (key.clone(), Box::new(make));
-        let result = self
-            .decode_pool
-            .as_ref()
-            .ok_or(())
-            .and_then(|pool| pool.try_send(task).map_err(|_| ()));
-        if result.is_err() {
-            self.complete(key, Err("图片解码队列不可用或已满".into()));
+        let outcome = match &self.decode_pool {
+            None => Err(None),
+            Some(pool) => pool.try_send(task).map_err(Some),
+        };
+        match outcome {
+            Ok(()) => {}
+            // 队列满属瞬时拥塞：移除刚插入的 Pending，下次 state() 重新入队重试，
+            // 而不是把一个不会自愈的 Failed 留在缓存里直到淘汰。
+            Err(Some(mpsc::TrySendError::Full(_))) => {
+                let mut inner = self.lock();
+                if matches!(
+                    inner.entries.get(&key).map(|entry| &entry.state),
+                    Some(ImageState::Pending)
+                ) {
+                    inner.entries.remove(&key);
+                }
+            }
+            // 池不可用或通道已断：重试没有意义，直接标记失败。
+            _ => self.complete(key, Err("图片解码池不可用或已关闭".into())),
         }
     }
 }
