@@ -9,8 +9,6 @@ use super::Painter;
 use super::blend;
 use super::data_bounds;
 use super::data_extent;
-use super::data_max;
-use super::data_min;
 use super::format_value;
 use super::heat_alpha;
 use super::padded_bounds;
@@ -35,7 +33,7 @@ impl Painter<'_> {
         ];
         let y_w = self.widest(&y_labels).min(self.w() / 4);
         let plot_left = PAD_X + y_w + GAP;
-        let plot_right = self.w() - PAD_X;
+        let plot_right = self.w().saturating_sub(PAD_X).max(plot_left + 1);
         self.text_end(1, PAD_X + y_w, &y_labels[0], gray);
         let last_plot_row = rows.saturating_sub(2);
         self.text_end(last_plot_row, PAD_X + y_w, &y_labels[1], gray);
@@ -53,6 +51,7 @@ impl Painter<'_> {
             let height = (plot_bottom - plot_top).max(1) as f64;
             f64::from(plot_bottom) - (value - min_v) / span * height
         };
+        let draw_dots = spec.categories.len() <= 12;
         for (index, series) in spec.series.iter().enumerate() {
             let color = self.series_color(index);
             let color_id = self.canvas.color(color);
@@ -62,29 +61,38 @@ impl Painter<'_> {
                     Some(value) => run.push((x_of(category), y_of(value.value))),
                     None => {
                         self.polyline(&run, color_id);
+                        if draw_dots || run.len() == 1 {
+                            for &(x, y) in &run {
+                                self.canvas.disc(x, y, 2.0, color_id);
+                            }
+                        }
                         run.clear();
                     }
                 }
             }
             self.polyline(&run, color_id);
-            if spec.categories.len() <= 12 {
+            if draw_dots || run.len() == 1 {
                 for &(x, y) in &run {
                     self.canvas.disc(x, y, 2.0, color_id);
                 }
             }
         }
-        // 横轴：首 / 中 / 尾三个刻度（类别多了写不下）
+        // 横轴：≤ 2 个类别时只画首尾，避免中位刻度与末尾重叠；≥ 3 时画首 / 中 / 尾
         let axis_row = rows.saturating_sub(1);
         let border = self.palette.border_subtle;
         self.hline(plot_left, plot_right, plot_bottom, border);
-        let ticks = [0, count / 2, count - 1];
-        for (slot, index) in ticks.iter().enumerate() {
-            let Some(category) = spec.categories.get(*index) else {
+        let ticks: Vec<(usize, u8)> = match count {
+            1 => vec![(0, 0)],
+            2 => vec![(0, 0), (1, 2)],
+            _ => vec![(0, 0), (count / 2, 1), (count - 1, 2)],
+        };
+        for (index, slot) in ticks {
+            let Some(category) = spec.categories.get(index) else {
                 continue;
             };
             let label = self.fit(&category.clone(), (plot_right - plot_left) / 2);
             let width = self.text_width(&label);
-            let center = x_of(*index);
+            let center = x_of(index);
             let x = if slot == 0 {
                 plot_left
             } else if slot == 2 {
@@ -115,7 +123,7 @@ impl Painter<'_> {
         };
         let label_w = self.label_width();
         let grid_left = PAD_X + label_w + GAP;
-        let grid_right = self.w() - PAD_X;
+        let grid_right = self.w().saturating_sub(PAD_X).max(grid_left + 1);
         let columns = spec.series.len().max(1);
         let cell_w = ((grid_right - grid_left) / columns as u32).max(2);
         let (min_v, max_v) = data_bounds(&spec.series).unwrap_or((0.0, 1.0));
@@ -238,13 +246,15 @@ impl Painter<'_> {
         let rows = self.layout.rows;
         let plot_top = self.row_top(1);
         let plot_bottom = self.row_top(rows.saturating_sub(2));
+        let raw_x = data_extent(&pairs, |pair| pair.0);
+        let raw_y = data_extent(&pairs, |pair| pair.1);
         let y_labels = [
-            format_value(data_max(y_series), y_series.factor, &y_series.unit),
-            format_value(data_min(y_series), y_series.factor, &y_series.unit),
+            format_value(raw_y.1, y_series.factor, &y_series.unit),
+            format_value(raw_y.0, y_series.factor, &y_series.unit),
         ];
         let y_w = self.widest(&y_labels).min(self.w() / 4);
         let plot_left = PAD_X + y_w + GAP;
-        let plot_right = self.w() - PAD_X;
+        let plot_right = self.w().saturating_sub(PAD_X).max(plot_left + 1);
         self.text_end(1, PAD_X + y_w, &y_labels[0], self.palette.gray_dim);
         self.text_end(
             rows.saturating_sub(3),
@@ -254,7 +264,6 @@ impl Painter<'_> {
         );
         let (x_min, x_max) = padded_bounds(&pairs, |pair| pair.0);
         let (y_min, y_max) = padded_bounds(&pairs, |pair| pair.1);
-        let raw_x = data_extent(&pairs, |pair| pair.0);
         let x_span = (x_max - x_min).max(f64::EPSILON);
         let y_span = (y_max - y_min).max(f64::EPSILON);
         let map_x = |value: f64| -> f64 {

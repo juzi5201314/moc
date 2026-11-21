@@ -381,3 +381,45 @@ fn falls_back_to_structured_label_columns() {
     assert_eq!(analysis.label, Some(0));
     assert_eq!(analysis.measures, vec![1]);
 }
+
+#[test]
+fn digit_prefixed_labels_stay_text_while_parenthesized_numbers_parse() {
+    // 描述性前缀（如 `100 条普通消息`、`1. 安装依赖`）保留为文本；括号注释数值正常解析
+    assert!(matches!(parse_cell("100 条普通消息", None), Cell::Text(_)));
+    assert!(matches!(parse_cell("1 万条普通消息", None), Cell::Text(_)));
+    assert!(matches!(
+        parse_cell("100 条，末条回复约 8 MiB", None),
+        Cell::Text(_)
+    ));
+    assert!(matches!(parse_cell("1. 安装依赖", None), Cell::Text(_)));
+    assert!(matches!(parse_cell("10k plain messages", None), Cell::Text(_)));
+    assert!(matches!(parse_cell("1st", None), Cell::Text(_)));
+    assert_eq!(number("100 条").value, 100.0);
+    assert_eq!(number("127 ms (33 块)").value, 0.127);
+
+    let raw = table(
+        &[
+            "场景",
+            "Core 首次 session/load",
+            "首个完整历史页 RPC",
+            "TUI 启动到正文",
+            "TUI 峰值 RSS",
+        ],
+        &[
+            &["100 条普通消息", "4.6 ms", "4.2 ms", "339 ms", "40.2 MiB"],
+            &["1 万条普通消息", "150 ms", "3.8 ms", "488 ms", "51.1 MiB"],
+            &[
+                "100 条，末条回复约 8 MiB",
+                "64 ms",
+                "127 ms (33 块)",
+                "1.04 s",
+                "158.0 MiB",
+            ],
+        ],
+    );
+    let analysis = analyze(&raw);
+    assert_eq!(analysis.label, Some(0));
+    assert_eq!(analysis.columns[0].role, ColumnRole::Label);
+    let planned = crate::chart::plan::plan(&analysis).expect("截图表格应当可规划为图表");
+    assert_eq!(planned.kind, crate::chart::plan::ChartKind::Grouped);
+}

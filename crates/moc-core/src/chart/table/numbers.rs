@@ -390,6 +390,11 @@ pub(super) fn scan_number(text: &str, hint: Option<UnitHit<'_>>) -> Option<Numbe
         to = to.map(|target| target * hint.mult);
     }
 
+    let has_unit = inherited.is_some() || currency.is_some() || denominator.is_some();
+    if !valid_numeric_tail(scanner.rest(), has_unit) {
+        return None;
+    }
+
     Some(Number {
         value: if negative { -value } else { value },
         factor,
@@ -402,6 +407,129 @@ pub(super) fn scan_number(text: &str, hint: Option<UnitHit<'_>>) -> Option<Numbe
         to,
         denominator,
     })
+}
+
+/// 校验数字（及可选单位）之后剩余文本是否符合数值单元格的尾部规则。
+///
+/// 放行空白、公差/空格连字符（`± 5`、`12 - 15`）、末尾括号注释（`127 ms (33 块)`），
+/// 以及无已知单位时的单个简短自定义单位词（`12 samples`、`100 条`）；拒绝
+/// `100 条普通消息`、`1. 安装依赖`、`10k plain messages` 等描述性文本。
+fn valid_numeric_tail(rest: &str, has_unit: bool) -> bool {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if let Some(after) = strip_tolerance_prefix(trimmed) {
+        return valid_tolerance_tail(after);
+    }
+    let Some(core) = strip_trailing_parens(trimmed) else {
+        return false;
+    };
+    if core.is_empty() {
+        return true;
+    }
+    if has_unit {
+        return false;
+    }
+    is_custom_unit_word(core, !rest.starts_with(char::is_whitespace))
+}
+
+/// 剥离公差或空格连字符前缀（`±` 或 `- `），返回剩余切片。
+fn strip_tolerance_prefix(text: &str) -> Option<&str> {
+    if let Some(rest) = text.strip_prefix('±') {
+        Some(rest)
+    } else {
+        text.strip_prefix("- ")
+    }
+}
+
+/// 校验 `±` / `- ` 之后的公差部分：数字 + 可选已登记单位 + 可选末尾括号注释。
+fn valid_tolerance_tail(text: &str) -> bool {
+    let mut scanner = Scanner { text, pos: 0 };
+    scanner.skip_spaces();
+    let Some((_, end)) = scan_decimal(text, scanner.pos) else {
+        return false;
+    };
+    scanner.pos = end;
+    let after_num = scanner.pos;
+    scanner.skip_spaces();
+    if scanner.take_unit().is_none() {
+        scanner.pos = after_num;
+    }
+    matches!(strip_trailing_parens(scanner.rest().trim()), Some(""))
+}
+
+/// 从末尾剥除一层或多层配对括号注释（`(...)` / `（...）`）；括号不配对返回 `None`。
+fn strip_trailing_parens(mut text: &str) -> Option<&str> {
+    loop {
+        text = text.trim();
+        let close = text.chars().next_back();
+        if !matches!(close, Some(')' | '）')) {
+            break;
+        }
+        let mut depth = 0usize;
+        let mut open_idx = None;
+        for (idx, ch) in text.char_indices().rev() {
+            match ch {
+                ')' | '）' => depth += 1,
+                '(' | '（' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        open_idx = Some(idx);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let idx = open_idx?;
+        text = &text[..idx];
+    }
+    if text.contains(['(', ')', '（', '）']) {
+        return None;
+    }
+    Some(text.trim())
+}
+
+/// 判断无已知单位的尾部是否为单个简短自定义单位词（如 `samples`、`req/min`、`条`）。
+fn is_custom_unit_word(word: &str, attached: bool) -> bool {
+    if word.chars().any(char::is_whitespace) {
+        return false;
+    }
+    if word.is_ascii() {
+        if word.len() > 12 {
+            return false;
+        }
+        let mut chars = word.chars();
+        if !chars.next().is_some_and(|ch| ch.is_ascii_alphabetic()) {
+            return false;
+        }
+        if !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '/' | '-')) {
+            return false;
+        }
+        if attached
+            && matches!(
+                word.to_ascii_lowercase().as_str(),
+                "st" | "nd" | "rd" | "th"
+            )
+        {
+            return false;
+        }
+        return true;
+    }
+    let mut chars = word.chars();
+    let Some(ch) = chars.next() else {
+        return false;
+    };
+    chars.next().is_none() && is_cjk_quantifier(ch)
+}
+
+/// 是否为汉字量词字符（排除标点与空白）。
+fn is_cjk_quantifier(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}'
+    )
 }
 
 /// 把书写数值折算到基本单位：右端自带单位就用右端的，否则继承左端单位。

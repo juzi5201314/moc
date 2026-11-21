@@ -695,13 +695,19 @@ impl ScrollbackView {
                 }
                 if let Some(chart) = table.chart
                     && chart.row >= offset
+                    && (PROSE_INDENT as u16).saturating_add(chart.cols) <= area.width
                 {
                     let row = origin
                         .saturating_add(u16::try_from(chart.row - offset).unwrap_or(u16::MAX));
                     let end = row.saturating_add(chart.rows);
-                    if row >= area.y && end <= bottom {
-                        let from = chart.row;
-                        let to = from + usize::from(chart.rows);
+                    let from = chart.row;
+                    let to = from + usize::from(chart.rows);
+                    if row >= area.y
+                        && end <= bottom
+                        && from >= cached.line_start
+                        && let Some(slot_lines) =
+                            cached.lines.get(from - cached.line_start..to - cached.line_start)
+                    {
                         slots.push(ImageSlot {
                             entry: index,
                             source: SlotSource::Chart { table: table.table },
@@ -710,10 +716,7 @@ impl ScrollbackView {
                             cols: chart.cols,
                             rows: chart.rows,
                             px: chart.px,
-                            hash: line_hash(
-                                &cached.lines[from - cached.line_start..to - cached.line_start],
-                                0,
-                            ),
+                            hash: line_hash(slot_lines, 0),
                             placement_id: placement_id(index, 0, table.table),
                         });
                     }

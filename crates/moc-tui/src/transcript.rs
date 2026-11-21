@@ -263,6 +263,8 @@ pub struct TableChartState {
     pub px: (u32, u32),
     /// kitty 图像 ID（进程内唯一，放置/删除都靠它对齐）。
     pub image_id: u32,
+    /// kitty 像素数据是否已传给终端；被删除后需置 `false`，滚回视口时重新传输。
+    pub transmitted: bool,
 }
 
 /// 一次工具调用的终态：`ToolFinished` 去掉 `prompt_id` 后的字段，回填用。

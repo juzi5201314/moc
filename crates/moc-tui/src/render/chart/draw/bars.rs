@@ -4,18 +4,81 @@ use super::Painter;
 use super::ValueScale;
 use super::bar_height;
 use super::bar_inset;
-use super::collect_texts;
 use super::format_value;
 use super::max_point;
 use super::mid_point;
+use super::min_point;
 use super::paired_deltas;
 use super::point;
 use super::progress_label;
 use super::progress_ratio;
 use moc_core::chart::Point;
 use moc_core::chart::Polarity;
+use moc_core::chart::Series;
 
 impl Painter<'_> {
+    /// 分别统计负值与非负值文本的最大像素宽（负值标签画在条左端之外，需在轨道左侧留宽）。
+    fn split_value_widths(
+        &mut self,
+        series: &[Series],
+        scale: ValueScale,
+        max_side: u32,
+    ) -> (u32, u32) {
+        let mut neg = Vec::new();
+        let mut pos = Vec::new();
+        for item in series {
+            for value in item.points.iter().flatten() {
+                if value.value < 0.0 {
+                    neg.push(value.text.clone());
+                } else {
+                    pos.push(value.text.clone());
+                }
+            }
+        }
+        let left_w = if scale.has_negative() {
+            self.widest(&neg).min(max_side)
+        } else {
+            0
+        };
+        let right_w = if scale.has_positive() || neg.is_empty() {
+            self.widest(&pos).min(max_side)
+        } else {
+            0
+        };
+        (left_w, right_w)
+    }
+
+    /// 计算带可选负侧标签区与右侧余量的横向轨道区间。
+    fn bar_track(&self, label_w: u32, left_w: u32, right_pad: u32) -> (u32, u32) {
+        let left = PAD_X + label_w + GAP + if left_w > 0 { left_w + GAP } else { 0 };
+        let right = self.w().saturating_sub(PAD_X + right_pad).max(left + 1);
+        (left, right)
+    }
+
+    /// 组装条形 / 分组条 / 成对条共用的轴刻度文本。
+    fn bar_axis_labels(
+        &self,
+        scale: ValueScale,
+        series: &[Series],
+        reference: &Series,
+    ) -> (String, String, String) {
+        if scale.is_log() {
+            return scale.log_labels(reference);
+        }
+        let min_text = if scale.has_negative() {
+            min_point(series).map_or_else(String::new, |point| point.text.clone())
+        } else {
+            String::new()
+        };
+        let mid_text = mid_point(series).map_or_else(String::new, |point| point.text.clone());
+        let max_text = if scale.has_positive() {
+            max_point(series).map_or_else(String::new, |point| point.text.clone())
+        } else {
+            String::new()
+        };
+        (min_text, mid_text, max_text)
+    }
+
     /// 条形图：单系列，每类别一行。
     pub(super) fn bar(&mut self) {
         let spec = self.spec;
@@ -24,22 +87,15 @@ impl Painter<'_> {
         };
         let scale = ValueScale::new(&spec.series);
         let label_w = self.label_width();
-        let labels: Vec<String> = (0..spec.categories.len())
-            .filter_map(|row| point(series, row).map(|point| point.text.clone()))
-            .collect();
-        let value_w = self.widest(&labels).min(self.w() / 4);
-        let track = (
-            PAD_X + label_w + GAP,
-            self.w()
-                .saturating_sub(PAD_X + value_w + GAP)
-                .max(PAD_X + label_w + GAP + 1),
-        );
+        let (left_w, right_w) = self.split_value_widths(&spec.series, scale, self.w() / 4);
+        let right_pad = if right_w > 0 { right_w + GAP } else { 0 };
+        let track = self.bar_track(label_w, left_w, right_pad);
         let origin = scale.origin(track);
         let legend_end = self.legend();
         self.scale_note(legend_end, scale);
         let color = self.series_color(0);
         let gray = self.palette.gray_dim;
-        if spec.diverging && !scale.is_log() {
+        if (spec.diverging || (scale.has_negative() && scale.has_positive())) && !scale.is_log() {
             let bottom = self.row_top(u16::try_from(spec.categories.len()).unwrap_or(0) + 1);
             self.vline(origin, self.row_top(1), bottom, self.palette.border_subtle);
         }
@@ -51,36 +107,10 @@ impl Painter<'_> {
                 self.text(line, track.0, "—", gray);
                 continue;
             };
-            let x = scale.position(track, value.value);
-            let bar_y = self.row_top(line) + bar_inset(self.cell_h());
-            let bar_h = bar_height(self.cell_h());
-            let (left, right) = if x >= origin {
-                (origin, x)
-            } else {
-                (x, origin)
-            };
-            self.fill(left, bar_y, (right - left).max(1), bar_h, color);
-            if value.value >= 0.0 {
-                self.text(line, x + GAP, &value.text, self.palette.text_secondary);
-            } else {
-                self.text_end(
-                    line,
-                    x.saturating_sub(GAP),
-                    &value.text,
-                    self.palette.text_secondary,
-                );
-            }
+            self.bar_row(line, Some(value), track, scale, origin, left_w, color);
         }
         let axis_row = u16::try_from(spec.categories.len() + 1).unwrap_or(u16::MAX);
-        let (min_text, mid_text, max_text) = if scale.is_log() {
-            scale.log_labels(series)
-        } else {
-            (
-                String::new(),
-                mid_point(series).map_or_else(String::new, |point| point.text.clone()),
-                max_point(series).map_or_else(String::new, |point| point.text.clone()),
-            )
-        };
+        let (min_text, mid_text, max_text) = self.bar_axis_labels(scale, &spec.series, series);
         self.value_axis(axis_row, track, scale, &min_text, &mid_text, &max_text);
     }
 
@@ -89,13 +119,9 @@ impl Painter<'_> {
         let spec = self.spec;
         let scale = ValueScale::new(&spec.series);
         let label_w = self.label_width();
-        let value_w = self.widest(&collect_texts(&spec.series)).min(self.w() / 4);
-        let track = (
-            PAD_X + label_w + GAP,
-            self.w()
-                .saturating_sub(PAD_X + value_w + GAP)
-                .max(PAD_X + label_w + GAP + 1),
-        );
+        let (left_w, right_w) = self.split_value_widths(&spec.series, scale, self.w() / 4);
+        let right_pad = if right_w > 0 { right_w + GAP } else { 0 };
+        let track = self.bar_track(label_w, left_w, right_pad);
         let origin = scale.origin(track);
         let legend_end = self.legend();
         self.scale_note(legend_end, scale);
@@ -107,51 +133,21 @@ impl Painter<'_> {
                     let shown = self.fit(&spec.categories[category].clone(), label_w);
                     self.text(line, PAD_X, &shown, self.palette.text_primary);
                 }
-                if let Some(value) = point(series, category) {
-                    let x = scale.position(track, value.value);
-                    let bar_y = self.row_top(line) + bar_inset(self.cell_h());
-                    let (left, right) = if x >= origin {
-                        (origin, x)
-                    } else {
-                        (x, origin)
-                    };
-                    self.fill(
-                        left,
-                        bar_y,
-                        (right - left).max(1),
-                        bar_height(self.cell_h()),
-                        self.series_color(index),
-                    );
-                    if value.value >= 0.0 {
-                        self.text(line, x + GAP, &value.text, self.palette.text_secondary);
-                    } else {
-                        self.text_end(
-                            line,
-                            x.saturating_sub(GAP),
-                            &value.text,
-                            self.palette.text_secondary,
-                        );
-                    }
-                }
+                self.bar_row(
+                    line,
+                    point(series, category),
+                    track,
+                    scale,
+                    origin,
+                    left_w,
+                    self.series_color(index),
+                );
                 row += 1;
             }
         }
         let axis_row = u16::try_from(row).unwrap_or(u16::MAX);
         let reference = spec.series.first().expect("分组图至少一个系列");
-        let (min_text, mid_text, max_text) = if scale.is_log() {
-            scale.log_labels(reference)
-        } else {
-            let extreme = spec
-                .series
-                .iter()
-                .filter_map(max_point)
-                .max_by(|a, b| a.value.total_cmp(&b.value));
-            (
-                String::new(),
-                mid_point(reference).map_or_else(String::new, |point| point.text.clone()),
-                extreme.map_or_else(String::new, |point| point.text.clone()),
-            )
-        };
+        let (min_text, mid_text, max_text) = self.bar_axis_labels(scale, &spec.series, reference);
         self.value_axis(axis_row, track, scale, &min_text, &mid_text, &max_text);
     }
 
@@ -163,15 +159,12 @@ impl Painter<'_> {
         };
         let scale = ValueScale::new(&spec.series);
         let label_w = self.label_width();
-        let value_w = self.widest(&collect_texts(&spec.series)).min(self.w() / 5);
+        let (left_w, right_w) = self.split_value_widths(&spec.series, scale, self.w() / 5);
         let deltas = paired_deltas(&spec.series);
         let delta_w = self.widest(&deltas).min(self.w() / 4);
-        let track = (
-            PAD_X + label_w + GAP,
-            self.w()
-                .saturating_sub(PAD_X + value_w + delta_w + 2 * GAP)
-                .max(PAD_X + label_w + GAP + 1),
-        );
+        let right_pad =
+            if right_w > 0 { right_w + GAP } else { 0 } + if delta_w > 0 { delta_w + GAP } else { 0 };
+        let track = self.bar_track(label_w, left_w, right_pad);
         let origin = scale.origin(track);
         let legend_end = self.legend();
         self.scale_note(legend_end, scale);
@@ -183,29 +176,38 @@ impl Painter<'_> {
             let shown = self.fit(label, label_w);
             self.text(first, PAD_X, &shown, self.palette.text_primary);
             let gray = self.palette.text_secondary;
-            self.bar_row(first, point(before, category), track, scale, origin, gray);
+            self.bar_row(
+                first,
+                point(before, category),
+                track,
+                scale,
+                origin,
+                left_w,
+                gray,
+            );
             let accent = self.series_color(1);
-            self.bar_row(second, point(after, category), track, scale, origin, accent);
+            self.bar_row(
+                second,
+                point(after, category),
+                track,
+                scale,
+                origin,
+                left_w,
+                accent,
+            );
             if let Some(delta) = deltas.get(category).filter(|delta| !delta.is_empty()) {
                 let color = self.delta_color(category, polarity);
-                self.text_end(second, self.w() - PAD_X, delta, color);
+                self.text_end(second, self.w().saturating_sub(PAD_X), delta, color);
             }
             row += 2;
         }
         let axis_row = u16::try_from(row).unwrap_or(u16::MAX);
-        let (min_text, mid_text, max_text) = if scale.is_log() {
-            scale.log_labels(after)
-        } else {
-            (
-                String::new(),
-                mid_point(after).map_or_else(String::new, |point| point.text.clone()),
-                max_point(after).map_or_else(String::new, |point| point.text.clone()),
-            )
-        };
+        let (min_text, mid_text, max_text) = self.bar_axis_labels(scale, &spec.series, after);
         self.value_axis(axis_row, track, scale, &min_text, &mid_text, &max_text);
     }
 
-    /// 一行条形（成对图复用前 / 后两行）。
+    /// 一行条形（条形 / 分组 / 成对共用；负值标签按预留左侧宽度截断，避免压入类别列）。
+    #[expect(clippy::too_many_arguments, reason = "内部行绘制复用，参数与轨道几何一一对应")]
     pub(super) fn bar_row(
         &mut self,
         row: u16,
@@ -213,6 +215,7 @@ impl Painter<'_> {
         track: (u32, u32),
         scale: ValueScale,
         origin: u32,
+        left_w: u32,
         color: [u8; 3],
     ) {
         let Some(value) = point else {
@@ -235,10 +238,15 @@ impl Painter<'_> {
         if value.value >= 0.0 {
             self.text(row, x + GAP, &value.text, self.palette.text_secondary);
         } else {
+            let shown = if left_w > 0 {
+                self.fit(&value.text, left_w)
+            } else {
+                value.text.clone()
+            };
             self.text_end(
                 row,
                 x.saturating_sub(GAP),
-                &value.text,
+                &shown,
                 self.palette.text_secondary,
             );
         }
@@ -306,11 +314,19 @@ impl Painter<'_> {
             let total = totals[row];
             let bar_y = self.row_top(line) + bar_inset(self.cell_h());
             let bar_h = bar_height(self.cell_h());
-            if total <= 0.0 {
+            if total <= 0.0 || max_total <= 0.0 {
                 continue;
             }
-            // 段宽先各自取整，再把舍入误差补给占比最大的一段：条的总长恒等于
-            // 满格长度，读者才能横向比较不同类别的总量。
+            let target_len = if spec.normalized {
+                length
+            } else {
+                ((total / max_total) * f64::from(length))
+                    .round()
+                    .max(1.0) as u32
+            }
+            .min(length);
+            // 段宽先各自取整，再把舍入误差补给占比最大的一段：条长在归一化时
+            // 恒为满格，非归一化时与总量成比例且绝不超出轨道右缘。
             let mut widths: Vec<(usize, u32)> = spec
                 .series
                 .iter()
@@ -318,7 +334,7 @@ impl Painter<'_> {
                 .filter_map(|(index, series)| {
                     let value = point(series, row)?;
                     let ratio = (value.value.max(0.0) / total).clamp(0.0, 1.0);
-                    Some((index, (f64::from(length) * ratio).round() as u32))
+                    Some((index, (f64::from(target_len) * ratio).round() as u32))
                 })
                 .collect();
             if let Some(widest) = widths
@@ -329,7 +345,11 @@ impl Painter<'_> {
             {
                 let sum: u32 = widths.iter().map(|(_, width)| *width).sum();
                 let (index, width) = widths[widest];
-                widths[widest] = (index, width + length.saturating_sub(sum));
+                widths[widest] = if sum < target_len {
+                    (index, width + (target_len - sum))
+                } else {
+                    (index, width.saturating_sub(sum - target_len))
+                };
             }
             let mut x = track.0;
             for (index, width) in widths {

@@ -98,6 +98,7 @@ fn kitty_transmits_once_and_deletes_stale_placements() {
     assert!(!transmitted.is_empty());
 
     // 图像离开视口：连图像数据与放置一起删
+    let saved_slot = app.image_slots[0].clone();
     app.image_slots.clear();
     let mut gone = Vec::new();
     emit(&mut app, &mut gone).expect("写内存不会失败");
@@ -107,6 +108,13 @@ fn kitty_transmits_once_and_deletes_stale_placements() {
     );
     assert!(app.image_placed.is_empty());
     assert!(!app.image_repaint, "kitty 有显式删除，不需要清屏");
+
+    // 滚回视口：已删除的图表必须重新传输像素数据并放置
+    app.image_slots.push(saved_slot);
+    let mut returned = Vec::new();
+    emit(&mut app, &mut returned).expect("写内存不会失败");
+    assert!(contains(&returned, b"a=t"), "滚回视口后应重传像素数据");
+    assert!(contains(&returned, b"a=p"), "滚回视口后应重新放置图像");
 }
 
 /// 浮层期间不贴图，浮层消失后整批重放（避免图像盖住模态或残影）。

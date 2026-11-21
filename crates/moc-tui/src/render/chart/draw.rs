@@ -150,6 +150,14 @@ impl ValueScale {
         matches!(self, Self::Log { .. })
     }
 
+    fn has_negative(self) -> bool {
+        matches!(self, Self::Linear { min, .. } if min < 0.0)
+    }
+
+    fn has_positive(self) -> bool {
+        matches!(self, Self::Linear { max, .. } if max > 0.0)
+    }
+
     /// 数值在横向轨道里的比例（0..1）。
     fn ratio(self, value: f64) -> f64 {
         match self {
@@ -349,10 +357,11 @@ impl Painter<'_> {
         x
     }
 
-    /// 底轴：基线 + 三个刻度。
+    /// 底轴：基线 + 刻度。
     ///
-    /// 线性刻度画零 / 中 / 最大；对数刻度画最小 / 几何中值 / 最大。
-    /// 线性刻度的文本取自真实数据点，保证「轴上的字」与「表里的字」同一套写法。
+    /// 线性刻度画最小（含负值时）/ 零 / 中 / 最大；对数刻度画最小 / 几何中值 / 最大。
+    /// 线性刻度的文本取自真实数据点，保证「轴上的字」与「表里的字」同一套写法；
+    /// 刻度文本按互斥区间排版，间距不足时不硬叠画。
     fn value_axis(
         &mut self,
         row: u16,
@@ -367,27 +376,60 @@ impl Painter<'_> {
         let gray = self.palette.gray_dim;
         let center = track.0 + (track.1 - track.0) / 2;
         self.hline(track.0, track.1, y, border);
+        let mut occupied: Vec<(u32, u32)> = Vec::with_capacity(4);
+        let mut try_label = |painter: &mut Self, x: u32, text: &str| {
+            let width = painter.text_width(text);
+            let right = x.saturating_add(width);
+            if occupied
+                .iter()
+                .any(|&(lo, hi)| x < hi.saturating_add(2) && right.saturating_add(2) > lo)
+            {
+                return;
+            }
+            occupied.push((x, right));
+            painter.text(row, x, text, gray);
+        };
         if scale.is_log() {
             if !min.is_empty() {
                 self.vline(track.0, y, y + 3, border);
-                self.text(row, track.0, min, gray);
+                try_label(self, track.0, min);
             }
-        } else {
-            let zero_x = scale.origin(track);
-            self.vline(zero_x, y, y + 3, border);
-            let zero_width = self.text_width("0");
-            self.text(row, zero_x.saturating_sub(zero_width / 2), "0", gray);
+            if !max.is_empty() {
+                let width = self.text_width(max);
+                let right = track.1;
+                self.vline(right.saturating_sub(width / 2), y, y + 3, border);
+                try_label(self, right.saturating_sub(width), max);
+            }
+            if !mid.is_empty() {
+                let width = self.text_width(mid);
+                self.vline(center, y, y + 3, border);
+                try_label(self, center.saturating_sub(width / 2), mid);
+            }
+            return;
         }
-        if !mid.is_empty() {
-            let width = self.text_width(mid);
-            self.vline(center, y, y + 3, border);
-            self.text(row, center.saturating_sub(width / 2), mid, gray);
+        if !min.is_empty() {
+            self.vline(track.0, y, y + 3, border);
+            try_label(self, track.0, min);
         }
         if !max.is_empty() {
             let width = self.text_width(max);
             let right = track.1;
-            self.vline(right.saturating_sub(width / 2), y, y + 3, border);
-            self.text_end(row, right, max, gray);
+            self.vline(right, y, y + 3, border);
+            try_label(self, right.saturating_sub(width), max);
+        }
+        let zero_x = scale.origin(track);
+        self.vline(zero_x, y, y + 3, border);
+        let zero_width = self.text_width("0");
+        let zero_text_x = if zero_x >= track.1.saturating_sub(zero_width / 2) {
+            track.1.saturating_sub(zero_width)
+        } else {
+            zero_x.saturating_sub(zero_width / 2)
+        };
+        try_label(self, zero_text_x, "0");
+        if !mid.is_empty() {
+            let width = self.text_width(mid);
+            self.vline(center, y, y + 3, border);
+            try_label(self, center.saturating_sub(width / 2), mid);
         }
     }
 
@@ -428,55 +470,40 @@ fn data_bounds(series: &[Series]) -> Option<(f64, f64)> {
     (min <= max).then_some((min, max))
 }
 
-fn data_min(series: &Series) -> f64 {
+/// 取全部系列里的最小值点（负侧轴刻度用），并列取先出现的。
+fn min_point(series: &[Series]) -> Option<&Point> {
     series
-        .points
         .iter()
-        .flatten()
-        .map(|point| point.value)
-        .fold(f64::INFINITY, f64::min)
+        .flat_map(|item| item.points.iter().flatten())
+        .min_by(|a, b| a.value.total_cmp(&b.value))
 }
 
-fn data_max(series: &Series) -> f64 {
+/// 取全部系列里的最大值点（轴刻度文本用），并列取先出现的。
+fn max_point(series: &[Series]) -> Option<&Point> {
     series
-        .points
         .iter()
-        .flatten()
-        .map(|point| point.value)
-        .fold(f64::NEG_INFINITY, f64::max)
-}
-
-/// 取每个系列的最值点（轴刻度文本用），并列取先出现的。
-fn max_point(series: &Series) -> Option<&Point> {
-    series
-        .points
-        .iter()
-        .flatten()
+        .flat_map(|item| item.points.iter().flatten())
         .max_by(|a, b| a.value.total_cmp(&b.value))
 }
 
-/// 取最接近中值的点：轴上的中间刻度直接用真实单元格的写法。
-fn mid_point(series: &Series) -> Option<&Point> {
-    let (min, max) = (data_min(series), data_max(series));
-    if !min.is_finite() || !max.is_finite() {
-        return None;
-    }
+/// 取最接近全部系列中值的点：轴上的中间刻度直接用真实单元格的写法。
+fn mid_point(series: &[Series]) -> Option<&Point> {
+    let (min, max) = data_bounds(series)?;
     if (max - min).abs() < f64::EPSILON {
-        return series.points.iter().flatten().next();
+        return series
+            .iter()
+            .flat_map(|item| item.points.iter().flatten())
+            .next();
     }
     let middle = min + (max - min) / 2.0;
-    series.points.iter().flatten().min_by(|a, b| {
-        (a.value - middle)
-            .abs()
-            .total_cmp(&(b.value - middle).abs())
-    })
-}
-
-fn collect_texts(series: &[Series]) -> Vec<String> {
     series
         .iter()
-        .flat_map(|item| item.points.iter().flatten().map(|point| point.text.clone()))
-        .collect()
+        .flat_map(|item| item.points.iter().flatten())
+        .min_by(|a, b| {
+            (a.value - middle)
+                .abs()
+                .total_cmp(&(b.value - middle).abs())
+        })
 }
 
 /// 成对图的差值文本：`Δ -1547（-20%）`；任一侧缺失时为空。

@@ -80,6 +80,7 @@ fn chart_state(source: &str, table: usize, image_id: u32) -> TableChartState {
         payload: None,
         px: (0, 0),
         image_id,
+        transmitted: false,
     }
 }
 

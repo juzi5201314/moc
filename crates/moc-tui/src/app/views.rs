@@ -72,6 +72,7 @@ impl App {
                     payload: None,
                     px: (0, 0),
                     image_id,
+                    transmitted: false,
                 }),
             );
         }

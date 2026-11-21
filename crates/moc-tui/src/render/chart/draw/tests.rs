@@ -126,11 +126,11 @@ fn bar_lengths_follow_values() {
     );
 }
 
-/// 堆叠图：各段之和恰好等于条长（不允许舍入留缝）。
+/// 堆叠图：各段之和紧贴不留缝；非归一化按总量等比，归一化铺满整条轨道。
 #[test]
 fn stacked_segments_fill_the_track() {
     let theme = Theme::resolved(ColorLevel::TrueColor);
-    let spec = spec(
+    let mut chart = spec(
         ChartKind::Stacked,
         &["a", "b"],
         vec![
@@ -138,13 +138,14 @@ fn stacked_segments_fill_the_track() {
             series("写", &[(20.0, "20"), (10.0, "10")]),
         ],
     );
-    let (canvas, _) = raster(&spec);
+    let (canvas, _) = raster(&chart);
     let first = chart_rgb(&theme, 0);
     let second = chart_rgb(&theme, 1);
+    let mut totals = [0u32; 2];
     for row in 1..=2u32 {
         let y = row * 18 + 9;
         let total = width_of(&canvas, y, first) + width_of(&canvas, y, second);
-        // 同一类别的满格长度必须一致（条总长不由数值决定，而由轨道长度决定）
+        totals[row as usize - 1] = total;
         assert!(total > 0, "第 {row} 行应有色块");
         let span = span_of(&canvas, y, first)
             .zip(span_of(&canvas, y, second))
@@ -156,11 +157,15 @@ fn stacked_segments_fill_the_track() {
             "两段之间不该有空隙（第 {row} 行）"
         );
     }
-    // a 行（30/100）的第一段应短于 b 行（10/20）
     assert!(
-        width_of(&canvas, 18 + 9, first) > width_of(&canvas, 36 + 9, first),
-        "份额大的类别第一段更长"
+        totals[0] > totals[1] * 3,
+        "非归一化时 a(100) 的条长应远大于 b(20)：{totals:?}"
     );
+    chart.normalized = true;
+    let (norm, _) = raster(&chart);
+    let norm_a = width_of(&norm, 18 + 9, first) + width_of(&norm, 18 + 9, second);
+    let norm_b = width_of(&norm, 36 + 9, first) + width_of(&norm, 36 + 9, second);
+    assert_eq!(norm_a, norm_b, "归一化时两行总条长必须相等");
 }
 
 /// 热力图：数值越大越接近系列色（亮度递增），且每格有填充。
@@ -231,4 +236,79 @@ fn scatter_places_points() {
         .count();
     assert!(ink > 8, "至少落下 8 个点：{ink}");
     assert!(ink < 8 * 64, "点数远小于绘图区面积：{ink}");
+}
+
+/// 负值发散条形保留左侧数值区、折线孤立点与 2 类别、散点缺失对均安全绘制。
+#[test]
+fn diverging_bars_and_sparse_plots_stay_within_bounds() {
+    let theme = Theme::resolved(ColorLevel::TrueColor);
+    let mut diverging = spec(
+        ChartKind::Bar,
+        &["cat_a", "cat_b", "cat_c"],
+        vec![series("Δ", &[(-40.0, "-40"), (-10.0, "-10"), (5.0, "+5")])],
+    );
+    diverging.diverging = true;
+    let (canvas, _) = raster(&diverging);
+    let bar_color = chart_rgb(&theme, 0);
+    // 最负条形的条左缘必须在标签与负值预留区右侧，不会盖进左端标签区
+    let (left, _) = span_of(&canvas, 18 + 9, bar_color).expect("负条形应绘制");
+    assert!(left > PAD_X + 20, "负值标签不得覆盖左侧类别区：left={left}");
+
+    let sparse_line = spec(
+        ChartKind::Line,
+        &["s0", "s1"],
+        vec![Series {
+            name: "v".into(),
+            dim: Dimension::Count,
+            unit: String::new(),
+            factor: 1.0,
+            polarity: None,
+            points: vec![point(10.0, "10"), None],
+        }],
+    );
+    let (line_canvas, _) = raster(&sparse_line);
+    let line_ink = (0..line_canvas.h())
+        .flat_map(|y| (0..line_canvas.w()).map(move |x| (x, y)))
+        .filter(|(x, y)| rgb_at(&line_canvas, *x, *y) == bar_color)
+        .count();
+    assert!(line_ink > 0, "缺值前的孤立点必须画出圆点");
+
+    let sparse_scatter = spec(
+        ChartKind::Scatter,
+        &["0", "1", "2", "3", "4", "5"],
+        vec![
+            Series {
+                name: "x".into(),
+                dim: Dimension::Count,
+                unit: String::new(),
+                factor: 1.0,
+                polarity: None,
+                points: vec![
+                    point(1.0, "1"),
+                    point(2.0, "2"),
+                    point(3.0, "3"),
+                    point(4.0, "4"),
+                    point(5.0, "5"),
+                    point(999.0, "999"),
+                ],
+            },
+            Series {
+                name: "y".into(),
+                dim: Dimension::Duration,
+                unit: "s".into(),
+                factor: 1.0,
+                polarity: None,
+                points: vec![
+                    point(2.0, "2"),
+                    point(4.0, "4"),
+                    point(6.0, "6"),
+                    point(8.0, "8"),
+                    point(10.0, "10"),
+                    None,
+                ],
+            },
+        ],
+    );
+    let (scatter_canvas, _) = raster(&sparse_scatter);
+    assert!(scatter_canvas.w() > 0);
 }

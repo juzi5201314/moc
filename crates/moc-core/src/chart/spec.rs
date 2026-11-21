@@ -126,15 +126,26 @@ fn point_total(number: &Number) -> Option<f64> {
     number.denominator
 }
 
-/// 系列的展示换算因子：取该列任一数字的 `Number::factor`（列内单位一致，因子也一致）。
+/// 系列的展示换算因子：优先取与该列主导 `(dim, unit)` 一致的单元格 `Number::factor`，
+/// 避免首行混用不同单位（如 `1.04 s` 配主导单位 `ms`）时错用 `1.0`；未命中再回退到首个数字。
 ///
 /// 无单位的计数列因子是 1.0；进入 `plan.series` 的列按构造必然含数字，
 /// 这里的 `1.0` 只是「单位换算恒等」的本值。
 fn series_factor(column: &Column, rows: &[usize]) -> f64 {
     rows.iter()
         .find_map(|&row| match column.cell_at(row) {
-            Cell::Number(number) => Some(number.factor),
+            Cell::Number(number)
+                if Some(number.dim) == column.dim && number.unit == column.unit =>
+            {
+                Some(number.factor)
+            }
             _ => None,
+        })
+        .or_else(|| {
+            rows.iter().find_map(|&row| match column.cell_at(row) {
+                Cell::Number(number) => Some(number.factor),
+                _ => None,
+            })
         })
         .unwrap_or(1.0)
 }
@@ -244,6 +255,14 @@ mod tests {
             &[&["C1", "10", "20"], &["C2", "12", "18"], &["C3", "9", "25"]],
         );
         assert_eq!(spec_of(&raw).series[0].factor, 1.0);
+        // 首行写 `1.04 s` 但列主导单位是 `ms` 时，factor 必须与主导单位 `ms`（0.001）对齐
+        let mixed = table(
+            &["场景", "启动耗时"],
+            &[&["大消息", "1.04 s"], &["百条", "339 ms"], &["万条", "488 ms"]],
+        );
+        let mixed_spec = spec_of(&mixed);
+        assert_eq!(mixed_spec.series[0].unit, "ms");
+        assert_eq!(mixed_spec.series[0].factor, 0.001);
     }
 
     #[test]

@@ -445,11 +445,14 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
                         slot.rows,
                     )));
                     state.px = chart_layout.px;
+                    state.transmitted = false;
                 }
                 let Some(payload) = state.payload.as_ref() else {
                     continue;
                 };
-                (Arc::clone(payload), state.image_id, fresh)
+                let transmit = !state.transmitted;
+                state.transmitted = true;
+                (Arc::clone(payload), state.image_id, transmit)
             }
             SlotSource::Image(key) => {
                 let Some(encoded) =
@@ -522,6 +525,13 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
                         // 终端里这份像素数据没了：不记录的话滚回来只会重新放置
                         // 一个终端并不存在的图像，屏幕上留下一片空白。
                         app.images.forget_transmission(old.image_id);
+                        for entry in &mut app.blocks {
+                            for state in entry.charts.iter_mut().flatten() {
+                                if state.image_id == old.image_id {
+                                    state.transmitted = false;
+                                }
+                            }
+                        }
                         encode::kitty_delete(old.image_id)
                     };
                     out.write_all(seq.as_bytes())?;

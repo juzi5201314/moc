@@ -76,11 +76,16 @@ impl<'a> MdRenderer<'a> {
                 .views
                 .graphics
                 .is_some_and(|graphics| crate::render::graphics::cell_supported(graphics.cell));
-        let plannable = fits
-            && chart::plan(&chart::analyze(&raw)).is_some_and(|plan| {
-                crate::render::chart::rows_needed(plan.kind, raw.rows.len(), plan.series.len())
-                    <= crate::render::chart::MAX_ROWS
-            });
+        let plannable = fits && {
+            let analysis = chart::analyze(&raw);
+            chart::plan(&analysis).is_some_and(|plan| {
+                crate::render::chart::rows_needed(
+                    plan.kind,
+                    analysis.rows.len(),
+                    plan.series.len(),
+                ) <= crate::render::chart::MAX_ROWS
+            })
+        };
         let offers = charted.is_some() || plannable;
         if offers {
             // 用户可能马上点入口：后台先把字体解析好，别让第一张图卡在解析上
