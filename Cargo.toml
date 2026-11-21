@@ -10,7 +10,7 @@ serde_json = { version = "1.0" }
 serde_yaml = "0.9"
 semver = "1"
 sha2 = "0.10"
-reqwest = { version = "0.13.5", features = ["stream", "json", "gzip"] }
+reqwest = { version = "0.13.5", features = ["stream", "json", "gzip", "multipart"] }
 thiserror = { version = "2.0.21" }
 anyhow = { version = "1.0.104" }
 clap = { version = "4.5", features = ["derive"] }
@@ -56,6 +56,13 @@ rustix = { version = "1", features = ["event"] }
 rquickjs = { version = "=0.14.0", features = ["loader"] }
 # 用户面文案本地化：TOML catalog（locales/ 目录，_version = 2）编译期内嵌
 rust-i18n = "4.2.4"
+# 图像编解码（moc-llm 与 moc-web Image Playground 共用）
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+png = "0.18.1"
+gif = "0.14.2"
+webpx = { version = "0.4", features = ["animation"] }
+# 回收站：5.3.0 发布未满 7 天，钉在 5.2.9。
+trash = "=5.2.9"
 
 # 测试/开发构建只需要行号，不需要完整 DWARF：
 # 完整调试信息会让单个集成测试二进制达到 0.4–0.65GB，

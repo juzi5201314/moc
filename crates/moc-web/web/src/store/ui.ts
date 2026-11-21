@@ -15,7 +15,8 @@ export type SettingsSection =
   | "mcp"
   | "plugins"
   | "advanced"
-  | "shortcuts";
+  | "shortcuts"
+  | "image_playground";
 
 export type UiState = {
   /** 技能维护占用前台；不写 transcript 或持久化状态。 */

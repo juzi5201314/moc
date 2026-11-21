@@ -1,5 +1,5 @@
 import { Loader2Icon } from "lucide-react";
-import { useEffect } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { ChatThread } from "@/components/chat/chat-thread";
 import { ComposerBar } from "@/components/chat/composer-bar";
 import { SessionHeader } from "@/components/chat/session-header";
@@ -32,10 +32,28 @@ import { useWorkflow } from "@/store/workflow";
 import "@/store/connection";
 import "@/store/dispatch";
 
+const ImagePlaygroundApp = lazy(() => import("@/components/image-playground/playground-app"));
+
+function isImagePlaygroundPath(): boolean {
+  return window.location.pathname.startsWith("/image-playground");
+}
+
 export function App() {
   useThemeSync();
   useGlobalShortcuts();
   // files store 只读 cwd，避免 store 间循环依赖。
+
+  const [inPlayground, setInPlayground] = useState(isImagePlaygroundPath);
+  useEffect(() => {
+    const onPop = () => setInPlayground(isImagePlaygroundPath());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const backToAgent = useCallback(() => {
+    window.history.pushState(null, "", "/");
+    setInPlayground(false);
+  }, []);
 
   const jobsSession = useUi((state) => state.jobsSession);
   const toolsSession = useUi((state) => state.toolsSession);
@@ -60,61 +78,75 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!active) createQuickSession();
-  }, [active]);
+    if (!active && !inPlayground) createQuickSession();
+  }, [active, inPlayground]);
 
   return (
     <TooltipProvider delayDuration={300}>
-      <AppFrame
-        sidebar={<WorkspaceSidebar />}
-        main={
-          stage === "welcome" ? (
-            <WelcomeView sessionId={sessionId} />
-          ) : stage === "loading" ? (
-            <div className="flex h-full flex-1 items-center justify-center">
+      {inPlayground ? (
+        <Suspense
+          fallback={
+            <div className="flex h-dvh w-screen items-center justify-center bg-background">
               <Loader2Icon className="size-5 animate-spin text-text-tertiary" />
             </div>
-          ) : (
-            <div className="flex h-full min-h-0 flex-1 flex-col">
-              <SessionHeader sessionId={sessionId} />
-              <ChatThread sessionId={sessionId} />
-              <ComposerBar sessionId={sessionId} />
-            </div>
-          )
-        }
-        rightbar={<InspectorPanel sessionId={sessionId} />}
-      />
-      <WorkflowApprovalDialog
-        sessionId={sessionId}
-        approval={wfApproval}
-        open={wfApprovalOpen && wfApproval !== null}
-        onOpenChange={(open) => useWorkflow.setState({ approvalOpen: open })}
-      />
-      <WorkflowRunPanel sessionId={sessionId} />
-      <WorkspacePicker />
-      <SettingsDialog />
-      <CommandPalette />
-      <DeleteSessionDialog />
-      {jobsSession && (
-        <JobsDialog
-          sessionId={jobsSession}
-          open
-          onOpenChange={(open) => {
-            if (!open) useUi.getState().set({ jobsSession: null });
-          }}
-        />
+          }
+        >
+          <ImagePlaygroundApp onBackToAgent={backToAgent} />
+        </Suspense>
+      ) : (
+        <>
+          <AppFrame
+            sidebar={<WorkspaceSidebar />}
+            main={
+              stage === "welcome" ? (
+                <WelcomeView sessionId={sessionId} />
+              ) : stage === "loading" ? (
+                <div className="flex h-full flex-1 items-center justify-center">
+                  <Loader2Icon className="size-5 animate-spin text-text-tertiary" />
+                </div>
+              ) : (
+                <div className="flex h-full min-h-0 flex-1 flex-col">
+                  <SessionHeader sessionId={sessionId} />
+                  <ChatThread sessionId={sessionId} />
+                  <ComposerBar sessionId={sessionId} />
+                </div>
+              )
+            }
+            rightbar={<InspectorPanel sessionId={sessionId} />}
+          />
+          <WorkflowApprovalDialog
+            sessionId={sessionId}
+            approval={wfApproval}
+            open={wfApprovalOpen && wfApproval !== null}
+            onOpenChange={(open) => useWorkflow.setState({ approvalOpen: open })}
+          />
+          <WorkflowRunPanel sessionId={sessionId} />
+          <WorkspacePicker />
+          <CommandPalette />
+          <DeleteSessionDialog />
+          {jobsSession && (
+            <JobsDialog
+              sessionId={jobsSession}
+              open
+              onOpenChange={(open) => {
+                if (!open) useUi.getState().set({ jobsSession: null });
+              }}
+            />
+          )}
+          {toolsSession ? (
+            <ToolsDialog
+              key={toolsSession}
+              sessionId={toolsSession}
+              onClose={() => useUi.getState().set({ toolsSession: null })}
+            />
+          ) : null}
+          {featuresOpen && <FeaturesDialog />}
+          {doctorOpen && <DoctorDialog />}
+          {monitorOpen && <MonitorDialog />}
+          <ContextDialog />
+        </>
       )}
-      {toolsSession ? (
-        <ToolsDialog
-          key={toolsSession}
-          sessionId={toolsSession}
-          onClose={() => useUi.getState().set({ toolsSession: null })}
-        />
-      ) : null}
-      {featuresOpen && <FeaturesDialog />}
-      {doctorOpen && <DoctorDialog />}
-      {monitorOpen && <MonitorDialog />}
-      <ContextDialog />
+      <SettingsDialog />
       <Toaster />
     </TooltipProvider>
   );

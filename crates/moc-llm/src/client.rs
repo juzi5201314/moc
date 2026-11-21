@@ -242,19 +242,19 @@ impl Client {
         }
     }
 
-    fn post(&self, cfg: &LlmConfig, url: &str) -> Result<reqwest::RequestBuilder, LlmError> {
+    pub(crate) fn http_for(&self, cfg: &LlmConfig) -> Result<reqwest::Client, LlmError> {
         let Some(seconds) = cfg.connect_timeout_secs else {
-            return Ok(self.default_http()?.post(url));
+            return Ok(self.default_http()?.clone());
         };
         let timeout = Duration::try_from_secs_f64(seconds).map_err(|error| {
             LlmError::Encode(t!("llm.err.timeout_cfg", error = error).into_owned())
         })?;
         if self.inner.options.connect_timeout == Some(timeout) {
-            return Ok(self.default_http()?.post(url));
+            return Ok(self.default_http()?.clone());
         }
         let mut transports = self.inner.transports.lock().expect("HTTP 连接池表");
         if let Some(http) = transports.get(&timeout) {
-            return Ok(http.post(url));
+            return Ok(http.clone());
         }
         let http = self
             .inner
@@ -262,9 +262,12 @@ impl Client {
             .clone()
             .connect_timeout(timeout)
             .build_http()?;
-        let request = http.post(url);
-        transports.insert(timeout, http);
-        Ok(request)
+        transports.insert(timeout, http.clone());
+        Ok(http)
+    }
+
+    fn post(&self, cfg: &LlmConfig, url: &str) -> Result<reqwest::RequestBuilder, LlmError> {
+        Ok(self.http_for(cfg)?.post(url))
     }
 
     /// 发送一次请求并把非 2xx 响应解码为 [`LlmError::Api`]。

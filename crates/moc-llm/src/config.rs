@@ -386,6 +386,27 @@ impl LlmConfig {
         }
     }
 
+    /// OpenAI Images API 文生图端点（`POST .../images/generations`）。
+    pub fn images_generations_url(&self) -> String {
+        self.images_endpoint_url("images/generations")
+    }
+
+    /// OpenAI Images API 图片编辑端点（`POST .../images/edits`）。
+    pub fn images_edits_url(&self) -> String {
+        self.images_endpoint_url("images/edits")
+    }
+
+    fn images_endpoint_url(&self, path: &str) -> String {
+        match &self.endpoint {
+            EndpointStyle::Default => format!("{}/{path}", normalize_base_url(&self.base_url)),
+            EndpointStyle::Azure { api_version } => format!(
+                "{}/openai/deployments/{}/{path}?api-version={api_version}",
+                self.base_url.trim_end_matches('/'),
+                self.model
+            ),
+        }
+    }
+
     /// 本次请求的完整 URL（不含查询串之外的内容）。
     pub(crate) fn endpoint_url(&self) -> String {
         let base = match &self.endpoint {

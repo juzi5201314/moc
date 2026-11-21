@@ -96,6 +96,16 @@ impl Core {
         self.inner.config().home.clone()
     }
 
+    /// 当前全局生效配置的只读快照（供进程内 Web 扩展模块读取模型列表与连接信息）。
+    pub fn config_snapshot(&self) -> Arc<ResolvedConfig> {
+        self.inner.config()
+    }
+
+    /// 进程内复用的 LLM HTTP 客户端。
+    pub fn llm_client(&self) -> moc_llm::Client {
+        self.inner.client.clone()
+    }
+
     /// 当前平台的沙盒能力；前端据此只展示可用的权限模式。
     pub fn sandbox_support(&self) -> crate::sandbox::SandboxSupport {
         self.inner.sandbox_support.clone()

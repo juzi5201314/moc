@@ -14,8 +14,8 @@ use toml::Value;
 use crate::CoreConfig;
 use crate::error::CoreError;
 use model::{
-    FusionDefaults, ModelRoles, ResolvedModel, all_models, resolve_catalog, resolve_selector,
-    validate_models,
+    FusionDefaults, ModelRoles, ResolvedModel, all_image_models, all_models, resolve_catalog,
+    resolve_image_one, resolve_selector, validate_models,
 };
 use schema::{
     ConfigDocument, SandboxConfig, validate_compaction, validate_plugins, validate_skills,
@@ -179,9 +179,19 @@ impl ResolvedConfig {
         })
     }
 
-    /// 列出 provider 配置中的全部模型，顺序按 provider 与模型 ID 稳定排序。
+    /// 列出 provider 配置中的全部模型（不含图片生成模型），顺序按 provider 与模型 ID 稳定排序。
     pub fn available_models(&self) -> Vec<ResolvedModel> {
         all_models(&self.providers)
+    }
+
+    /// 列出 provider 配置中的全部图片生成模型（`image_gen = true`），供 Image Playground 使用。
+    pub fn available_image_models(&self) -> Vec<ResolvedModel> {
+        all_image_models(&self.providers)
+    }
+
+    /// 解析 Image Playground 的图片生成模型（格式 `provider/model`）。
+    pub fn resolve_image_model(&self, selector: &str) -> Result<ResolvedModel, CoreError> {
+        resolve_image_one(&self.providers, selector)
     }
 
     /// 返回指定模型的协议配置；输出上限由模型自身配置决定。

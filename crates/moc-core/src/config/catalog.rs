@@ -17,7 +17,7 @@ pub fn provider_template() -> Value {
 }
 
 pub fn model_template() -> Value {
-    json!({"context_window":200000,"max_output_tokens":32000,"max_request_bytes":null,"reasoning":false,
+    json!({"image_gen":false,"context_window":200000,"max_output_tokens":32000,"max_request_bytes":null,"reasoning":false,
         "thinking_levels":null,"input":["text"],"pricing":null,"fast_mode":false,
         "compat":{"max_output_tokens_field":"max_tokens","supports_stop":true,
             "supports_prompt_cache_key":true,"reasoning_field":"reasoning_content",
@@ -119,15 +119,16 @@ fn rank(key: &str) -> usize {
         "initial_backoff_secs" => 1,
         "max_backoff_secs" => 2,
         "jitter" => 3,
-        // 模型：先规模，再能力，最后价格与兼容
-        "context_window" => 0,
-        "max_output_tokens" => 1,
-        "max_request_bytes" => 2,
-        "max_bytes" => 2,
-        "max_chars" => 3,
-        "reasoning" => 3,
-        "thinking_levels" => 4,
-        "input" => 5,
+        // 模型：先定位用途，再规模、能力，最后价格与兼容
+        "image_gen" => 0,
+        "context_window" => 1,
+        "max_output_tokens" => 2,
+        "max_request_bytes" => 3,
+        "max_bytes" => 3,
+        "max_chars" => 4,
+        "reasoning" => 4,
+        "thinking_levels" => 5,
+        "input" => 6,
         // 会话、工作区与实验特性
         "clm" => 0,
         "ptc" => 1,
@@ -297,10 +298,31 @@ fn walk(
     if let Value::Object(values) = value
         && !object_editor
     {
+        let image_gen_model = path.len() == 4
+            && path[0] == "providers"
+            && path[2] == "models"
+            && values.get("image_gen").and_then(Value::as_bool) == Some(true);
         // 对象键按配置顺序无关紧要，这里按展示顺序重排，同档保持原有字母序。
         let mut keys: Vec<&String> = values.keys().collect();
         keys.sort_by_key(|key| rank(key));
         for key in keys {
+            if image_gen_model && !matches!(key.as_str(), "image_gen" | "compat") {
+                continue;
+            }
+            if image_gen_model && key == "compat" {
+                if let Some(compat) = values.get("compat").and_then(Value::as_object) {
+                    path.push(key.clone());
+                    for sub in ["headers", "extra_body"] {
+                        if let Some(sub_val) = compat.get(sub) {
+                            path.push(sub.to_owned());
+                            walk(sub_val, path, api, output);
+                            path.pop();
+                        }
+                    }
+                    path.pop();
+                }
+                continue;
+            }
             path.push(key.clone());
             walk(&values[key], path, api, output);
             path.pop();

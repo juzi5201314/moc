@@ -1,0 +1,1748 @@
+//! Image Playground HTTP API 路由处理器。
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
+
+use axum::Json;
+use axum::body::Body;
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use moc_llm::{ImageGenParams, ImageInputFile};
+use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
+
+use crate::{AppState, origin_allowed};
+
+use super::codec;
+use super::config::{
+    self, AnimatedOutputFormat, OutputCompressionConfig, OutputCompressionFormat, PlaygroundConfig,
+};
+use super::reveal;
+use super::store::{
+    self, FavoriteFolder, FavoritePreset, ImageOrigin, PlaygroundSession, PlaygroundSessionSummary,
+    PlaygroundTurn, StoredImage, TurnError, TurnInputRef,
+};
+
+#[derive(Debug, Serialize)]
+struct ErrorBody {
+    error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_body: Option<String>,
+}
+
+fn err_response(status: StatusCode, message: impl Into<String>) -> Response {
+    (
+        status,
+        Json(ErrorBody {
+            error: message.into(),
+            status: None,
+            raw_body: None,
+        }),
+    )
+        .into_response()
+}
+
+fn check_origin(headers: &HeaderMap) -> Result<(), Response> {
+    if !origin_allowed(headers) {
+        return Err(err_response(StatusCode::FORBIDDEN, "拒绝跨站写请求"));
+    }
+    Ok(())
+}
+
+// ---------- 模型列表 ----------
+
+#[derive(Serialize)]
+pub struct ImageModelRow {
+    pub id: String,
+    pub provider: String,
+    pub name: String,
+}
+
+#[derive(Serialize)]
+pub struct ModelsResponse {
+    pub models: Vec<ImageModelRow>,
+}
+
+pub async fn list_models(State(state): State<AppState>) -> Json<ModelsResponse> {
+    let cfg = state.core.config_snapshot();
+    let models = cfg
+        .available_image_models()
+        .into_iter()
+        .map(|m| ImageModelRow {
+            id: m.id,
+            provider: m.provider_id,
+            name: m.model_id,
+        })
+        .collect();
+    Json(ModelsResponse { models })
+}
+
+// ---------- 配置 ----------
+
+#[derive(Serialize)]
+pub struct ConfigResponse {
+    pub config: PlaygroundConfig,
+    pub resolved_storage_dir: String,
+}
+
+pub async fn get_config(State(state): State<AppState>) -> Response {
+    let home = state.core.config_home();
+    match tokio::task::spawn_blocking(move || {
+        let cfg = config::load(&home)?;
+        let resolved = cfg.resolved_storage_dir(&home);
+        Ok::<_, anyhow::Error>((cfg, resolved))
+    })
+    .await
+    {
+        Ok(Ok((cfg, resolved))) => Json(ConfigResponse {
+            config: cfg,
+            resolved_storage_dir: resolved.to_string_lossy().into_owned(),
+        })
+        .into_response(),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+pub async fn put_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(next): Json<PlaygroundConfig>,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let home = state.core.config_home();
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let saved = config::save(&home, next)?;
+        let resolved = saved.resolved_storage_dir(&home);
+        std::fs::create_dir_all(&resolved)?;
+        Ok::<_, anyhow::Error>((saved, resolved))
+    })
+    .await
+    {
+        Ok(Ok((cfg, resolved))) => Json(ConfigResponse {
+            config: cfg,
+            resolved_storage_dir: resolved.to_string_lossy().into_owned(),
+        })
+        .into_response(),
+        Ok(Err(error)) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+pub async fn open_storage_dir(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    match reveal::reveal_in_file_manager(&dir).await {
+        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(error) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
+    }
+}
+
+// ---------- 会话 ----------
+
+#[derive(Serialize)]
+pub struct SessionsResponse {
+    pub sessions: Vec<PlaygroundSessionSummary>,
+}
+
+pub async fn list_sessions(State(state): State<AppState>) -> Response {
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    match tokio::task::spawn_blocking(move || store::load_index(&dir).map(|i| i.summaries())).await
+    {
+        Ok(Ok(sessions)) => Json(SessionsResponse { sessions }).into_response(),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct CreateSessionBody {
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub params: Option<ImageGenParams>,
+}
+
+#[derive(Serialize)]
+pub struct SessionDetailResponse {
+    pub session: PlaygroundSession,
+    pub images: HashMap<String, ImageDto>,
+}
+
+pub async fn create_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Option<Json<CreateSessionBody>>,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        let now = store::now_ms();
+        let session = PlaygroundSession {
+            id: store::new_id(),
+            title: body
+                .title
+                .map(|t| t.trim().to_owned())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "新生成会话".into()),
+            created_at_ms: now,
+            updated_at_ms: now,
+            model: body.model,
+            params: body.params.unwrap_or_default(),
+            turns: Vec::new(),
+        };
+        index.sessions.push(session.clone());
+        store::save_index(&dir, &index)?;
+        Ok::<_, anyhow::Error>(session)
+    })
+    .await
+    {
+        Ok(Ok(session)) => Json(SessionDetailResponse {
+            session,
+            images: HashMap::new(),
+        })
+        .into_response(),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+pub async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    match tokio::task::spawn_blocking(move || {
+        let index = store::load_index(&dir)?;
+        let Some(session) = index.sessions.iter().find(|s| s.id == id).cloned() else {
+            return Ok(None);
+        };
+        let mut images = HashMap::new();
+        for turn in &session.turns {
+            for out_id in &turn.outputs {
+                if let Some(img) = index.images.get(out_id) {
+                    images.insert(
+                        out_id.clone(),
+                        ImageDto::from_stored(
+                            img,
+                            index.is_favorite(out_id),
+                            index.favorite_folder_of(out_id),
+                        ),
+                    );
+                }
+            }
+            for input in &turn.inputs {
+                if let Some(img_id) = &input.image_id
+                    && let Some(img) = index.images.get(img_id)
+                {
+                    images.insert(
+                        img_id.clone(),
+                        ImageDto::from_stored(
+                            img,
+                            index.is_favorite(img_id),
+                            index.favorite_folder_of(img_id),
+                        ),
+                    );
+                }
+            }
+        }
+        Ok::<_, anyhow::Error>(Some(SessionDetailResponse { session, images }))
+    })
+    .await
+    {
+        Ok(Ok(Some(detail))) => Json(detail).into_response(),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "会话不存在"),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PatchSessionBody {
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub params: Option<ImageGenParams>,
+}
+
+pub async fn patch_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<PatchSessionBody>,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        let Some(session) = index.sessions.iter_mut().find(|s| s.id == id) else {
+            return Ok(None);
+        };
+        if let Some(title) = body.title.map(|t| t.trim().to_owned())
+            && !title.is_empty()
+        {
+            session.title = title;
+        }
+        if let Some(model) = body.model {
+            session.model = if model.trim().is_empty() {
+                None
+            } else {
+                Some(model)
+            };
+        }
+        if let Some(params) = body.params {
+            session.params = params;
+        }
+        session.updated_at_ms = store::now_ms();
+        let updated = session.clone();
+        store::save_index(&dir, &index)?;
+        Ok::<_, anyhow::Error>(Some(updated))
+    })
+    .await
+    {
+        Ok(Ok(Some(session))) => Json(serde_json::json!({ "session": session })).into_response(),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "会话不存在"),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct DeleteSessionQuery {
+    pub delete_unfavorited: Option<bool>,
+}
+
+pub async fn delete_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<DeleteSessionQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    state.image_playground.cancel_session(&id).await;
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let delete_unfavorited = query.delete_unfavorited.unwrap_or(true);
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        let paths = index.remove_session(&id, delete_unfavorited);
+        store::save_index(&dir, &index)?;
+        for path in paths {
+            store::trash_or_remove(&path);
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    {
+        Ok(Ok(())) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+// ---------- 生成 / 编辑 ----------
+
+#[derive(Serialize)]
+pub struct GenerateResponse {
+    pub turn: PlaygroundTurn,
+    pub images: Vec<ImageDto>,
+    pub session_title: String,
+}
+
+pub async fn generate(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+
+    let mut prompt = String::new();
+    let mut model_selector = String::new();
+    let mut params = ImageGenParams::default();
+    let mut source_image_ids: Vec<String> = Vec::new();
+    let mut uploaded_files: Vec<(String, String, Vec<u8>)> = Vec::new();
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or_default().to_owned();
+        match name.as_str() {
+            "prompt" => {
+                if let Ok(text) = field.text().await {
+                    prompt = text;
+                }
+            }
+            "model" => {
+                if let Ok(text) = field.text().await {
+                    model_selector = text.trim().to_owned();
+                }
+            }
+            "params" => {
+                if let Ok(text) = field.text().await
+                    && !text.trim().is_empty()
+                {
+                    match serde_json::from_str::<ImageGenParams>(&text) {
+                        Ok(parsed) => params = parsed,
+                        Err(error) => {
+                            return err_response(
+                                StatusCode::BAD_REQUEST,
+                                format!("生成参数 JSON 无效：{error}"),
+                            );
+                        }
+                    }
+                }
+            }
+            "source_image_ids" => {
+                if let Ok(text) = field.text().await
+                    && !text.trim().is_empty()
+                {
+                    match serde_json::from_str::<Vec<String>>(&text) {
+                        Ok(ids) => source_image_ids = ids,
+                        Err(error) => {
+                            return err_response(
+                                StatusCode::BAD_REQUEST,
+                                format!("参考图 ID 列表无效：{error}"),
+                            );
+                        }
+                    }
+                }
+            }
+            "images" | "image" => {
+                let filename = field
+                    .file_name()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| "image.png".into());
+                let mime = field
+                    .content_type()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| "application/octet-stream".into());
+                match field.bytes().await {
+                    Ok(bytes) if !bytes.is_empty() => {
+                        uploaded_files.push((filename, mime, bytes.to_vec()));
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        return err_response(
+                            StatusCode::BAD_REQUEST,
+                            format!("读取上传图片失败：{error}"),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let prompt_trimmed = prompt.trim().to_owned();
+    if prompt_trimmed.is_empty() {
+        return err_response(StatusCode::BAD_REQUEST, "请输入提示词");
+    }
+    if model_selector.is_empty() {
+        return err_response(StatusCode::BAD_REQUEST, "请先选择图片生成模型");
+    }
+
+    let core_cfg = state.core.config_snapshot();
+    let resolved_model = match core_cfg.resolve_image_model(&model_selector) {
+        Ok(model) => model,
+        Err(error) => return err_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+
+    let (pg_cfg, storage_dir) = match load_cfg_and_dir(&state).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+
+    // 确认会话存在，并取出引用的历史/收藏图片文件路径。
+    let ref_records: Vec<(String, String, String, PathBuf)> = {
+        let dir = storage_dir.clone();
+        let sid = session_id.clone();
+        let ids = source_image_ids.clone();
+        match tokio::task::spawn_blocking(move || {
+            let index = store::load_index(&dir)?;
+            if !index.sessions.iter().any(|s| s.id == sid) {
+                anyhow::bail!("NOT_FOUND");
+            }
+            let mut refs = Vec::new();
+            for id in ids {
+                if let Some(img) = index.images.get(&id) {
+                    refs.push((
+                        id,
+                        img.filename.clone(),
+                        img.mime_type.clone(),
+                        PathBuf::from(&img.file_path),
+                    ));
+                }
+            }
+            Ok::<_, anyhow::Error>(refs)
+        })
+        .await
+        {
+            Ok(Ok(refs)) => refs,
+            Ok(Err(error)) if error.to_string() == "NOT_FOUND" => {
+                return err_response(StatusCode::NOT_FOUND, "会话不存在");
+            }
+            Ok(Err(error)) => {
+                return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+            }
+            Err(error) => {
+                return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+            }
+        }
+    };
+
+    // 准备 Edit 输入图（含参考图保护压缩与本地去重归档）。
+    let input_compress = pg_cfg.input_compress.clone();
+    let dir_for_inputs = storage_dir.clone();
+    let (api_inputs, turn_inputs): (Vec<ImageInputFile>, Vec<TurnInputRef>) =
+        match tokio::task::spawn_blocking(move || {
+            let mut api_inputs = Vec::new();
+            let mut turn_inputs = Vec::new();
+
+            for (img_id, filename, mime, path) in ref_records {
+                let raw = std::fs::read(&path)
+                    .map_err(|e| anyhow::anyhow!("读取参考图 {filename} 失败：{e}"))?;
+                let prepared = codec::prepare_edit_input(&raw, Some(&mime), &input_compress)?;
+                api_inputs.push(ImageInputFile {
+                    filename: replace_ext(&filename, &prepared.extension),
+                    mime_type: prepared.mime_type.clone(),
+                    bytes: prepared.bytes,
+                });
+                turn_inputs.push(TurnInputRef {
+                    image_id: Some(img_id),
+                    upload_id: None,
+                    filename,
+                    mime_type: mime,
+                });
+            }
+
+            for (filename, mime, raw) in uploaded_files {
+                let meta = codec::inspect_image(&raw, Some(&mime))?;
+                let (upload_id, _) = store::write_edit_upload(&dir_for_inputs, &meta.extension, &raw)?;
+                let prepared = codec::prepare_edit_input(&raw, Some(&mime), &input_compress)?;
+                api_inputs.push(ImageInputFile {
+                    filename: replace_ext(&filename, &prepared.extension),
+                    mime_type: prepared.mime_type.clone(),
+                    bytes: prepared.bytes,
+                });
+                turn_inputs.push(TurnInputRef {
+                    image_id: None,
+                    upload_id: Some(upload_id),
+                    filename,
+                    mime_type: meta.mime_type,
+                });
+            }
+
+            Ok::<_, anyhow::Error>((api_inputs, turn_inputs))
+        })
+        .await
+        {
+            Ok(Ok(pair)) => pair,
+            Ok(Err(error)) => return err_response(StatusCode::BAD_REQUEST, error.to_string()),
+            Err(error) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        };
+
+    let mut effective_params = params.clone();
+    if !api_inputs.is_empty() && effective_params.edit_encoding.is_none() {
+        effective_params.edit_encoding = Some(pg_cfg.default_edit_encoding);
+    }
+    let mode = if api_inputs.is_empty() {
+        "generate".to_owned()
+    } else {
+        "edit".to_owned()
+    };
+
+    // 注册本会话取消令牌。
+    let cancel = state.image_playground.register_flight(&session_id).await;
+    let started = Instant::now();
+    let llm_client = state.core.llm_client();
+    let llm_cfg = resolved_model.llm.clone();
+
+    let call_result = tokio::select! {
+        _ = cancel.cancelled() => Err(moc_llm::ImageGenError::Transport("已取消生成".into())),
+        res = llm_client.generate_images(&llm_cfg, &prompt_trimmed, &api_inputs, &effective_params) => res,
+    };
+    state.image_playground.clear_flight(&session_id, &cancel).await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    let turn_id = store::new_id();
+    let now = store::now_ms();
+
+    match call_result {
+        Ok(resp) => {
+            // 阻塞线程池执行本地转码并写盘。
+            let compression = pg_cfg.compression.clone();
+            let dir_for_write = storage_dir.clone();
+            let sid_clone = session_id.clone();
+            let tid_clone = turn_id.clone();
+            let model_clone = model_selector.clone();
+            let prompt_clone = prompt_trimmed.clone();
+
+            let encoded_items = match tokio::task::spawn_blocking(move || {
+                let mut stored = Vec::with_capacity(resp.images.len());
+                for item in resp.images {
+                    let encoded = codec::transcode_output(
+                        item.bytes,
+                        item.mime_hint.as_deref(),
+                        &compression,
+                    )?;
+                    let img_id = store::new_id();
+                    let file_path = store::write_generated_image(&dir_for_write, &img_id, &encoded)?;
+                    let filename = format!("{img_id}.{}", encoded.extension);
+                    stored.push(StoredImage {
+                        id: img_id,
+                        origin: ImageOrigin::Generated,
+                        session_id: Some(sid_clone.clone()),
+                        turn_id: Some(tid_clone.clone()),
+                        created_at_ms: now,
+                        model: Some(model_clone.clone()),
+                        prompt: Some(prompt_clone.clone()),
+                        revised_prompt: item.revised_prompt,
+                        width: encoded.width,
+                        height: encoded.height,
+                        format: encoded.format,
+                        extension: encoded.extension,
+                        mime_type: encoded.mime_type,
+                        is_animated: encoded.is_animated,
+                        size_bytes: encoded.bytes.len() as u64,
+                        original_size_bytes: encoded.original_size_bytes,
+                        original_format: encoded.original_format,
+                        file_path: file_path.to_string_lossy().into_owned(),
+                        filename,
+                    });
+                }
+                Ok::<_, anyhow::Error>(stored)
+            })
+            .await
+            {
+                Ok(Ok(items)) => items,
+                Ok(Err(error)) => {
+                    return err_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("保存或压缩生成图失败：{error}"),
+                    );
+                }
+                Err(error) => {
+                    return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+                }
+            };
+
+            let revised_prompt = encoded_items
+                .iter()
+                .find_map(|img| img.revised_prompt.clone());
+            let output_ids: Vec<String> = encoded_items.iter().map(|img| img.id.clone()).collect();
+            let turn = PlaygroundTurn {
+                id: turn_id,
+                created_at_ms: now,
+                model: model_selector.clone(),
+                mode,
+                prompt: prompt_trimmed.clone(),
+                params,
+                inputs: turn_inputs,
+                outputs: output_ids,
+                revised_prompt,
+                duration_ms,
+                error: None,
+            };
+
+            let _guard = state.image_playground.write_lock.lock().await;
+            let dir_for_save = storage_dir.clone();
+            let turn_for_save = turn.clone();
+            let dtos: Vec<ImageDto> = encoded_items
+                .iter()
+                .map(|img| ImageDto::from_stored(img, false, None))
+                .collect();
+
+            match tokio::task::spawn_blocking(move || {
+                let mut index = store::load_index(&dir_for_save)?;
+                for img in encoded_items {
+                    index.images.insert(img.id.clone(), img);
+                }
+                let mut session_title = String::new();
+                if let Some(session) = index.sessions.iter_mut().find(|s| s.id == session_id) {
+                    if session.turns.is_empty() && session.title == "新生成会话" {
+                        session.title = derive_title(&prompt_trimmed);
+                    }
+                    session.model = Some(model_selector);
+                    session.updated_at_ms = now;
+                    session.turns.push(turn_for_save);
+                    session_title = session.title.clone();
+                }
+                store::save_index(&dir_for_save, &index)?;
+                Ok::<_, anyhow::Error>(session_title)
+            })
+            .await
+            {
+                Ok(Ok(session_title)) => Json(GenerateResponse {
+                    turn,
+                    images: dtos,
+                    session_title,
+                })
+                .into_response(),
+                Ok(Err(error)) => {
+                    err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                }
+                Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+            }
+        }
+        Err(error) => {
+            // 失败轮次也落盘，便于用户原样查看上游报错并一键重试。
+            let turn_error = TurnError {
+                status: error.upstream_status(),
+                message: error.to_string(),
+                raw_body: error.raw_body().map(str::to_owned),
+            };
+            let turn = PlaygroundTurn {
+                id: turn_id,
+                created_at_ms: now,
+                model: model_selector.clone(),
+                mode,
+                prompt: prompt_trimmed.clone(),
+                params,
+                inputs: turn_inputs,
+                outputs: Vec::new(),
+                revised_prompt: None,
+                duration_ms,
+                error: Some(turn_error),
+            };
+            let _guard = state.image_playground.write_lock.lock().await;
+            let dir_for_save = storage_dir.clone();
+            let turn_for_save = turn.clone();
+            let session_title = tokio::task::spawn_blocking(move || {
+                let mut index = store::load_index(&dir_for_save)?;
+                let mut title = String::new();
+                if let Some(session) = index.sessions.iter_mut().find(|s| s.id == session_id) {
+                    if session.turns.is_empty() && session.title == "新生成会话" {
+                        session.title = derive_title(&prompt_trimmed);
+                    }
+                    session.model = Some(model_selector);
+                    session.updated_at_ms = now;
+                    session.turns.push(turn_for_save);
+                    title = session.title.clone();
+                }
+                store::save_index(&dir_for_save, &index)?;
+                Ok::<_, anyhow::Error>(title)
+            })
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+
+            Json(GenerateResponse {
+                turn,
+                images: Vec::new(),
+                session_title,
+            })
+            .into_response()
+        }
+    }
+}
+
+pub async fn cancel_generate(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    state.image_playground.cancel_session(&session_id).await;
+    Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+// ---------- 图片、画廊与收藏 ----------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageDto {
+    #[serde(flatten)]
+    pub image: StoredImage,
+    pub favorite: bool,
+    pub favorite_folder_id: Option<String>,
+}
+
+impl ImageDto {
+    fn from_stored(image: &StoredImage, favorite: bool, favorite_folder_id: Option<String>) -> Self {
+        Self {
+            image: image.clone(),
+            favorite,
+            favorite_folder_id,
+        }
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct ListImagesQuery {
+    pub scope: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ImagesResponse {
+    pub images: Vec<ImageDto>,
+}
+
+pub async fn list_images(
+    State(state): State<AppState>,
+    Query(query): Query<ListImagesQuery>,
+) -> Response {
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let scope = query.scope.unwrap_or_else(|| "gallery".into());
+    match tokio::task::spawn_blocking(move || {
+        let index = store::load_index(&dir)?;
+        let list = if scope == "favorites" {
+            index
+                .favorites
+                .iter()
+                .filter_map(|id| index.images.get(id))
+                .map(|img| ImageDto::from_stored(img, true, index.favorite_folder_of(&img.id)))
+                .collect::<Vec<_>>()
+        } else {
+            let mut items: Vec<_> = index
+                .images
+                .values()
+                .filter(|img| img.origin == ImageOrigin::Generated)
+                .map(|img| {
+                    ImageDto::from_stored(
+                        img,
+                        index.is_favorite(&img.id),
+                        index.favorite_folder_of(&img.id),
+                    )
+                })
+                .collect();
+            items.sort_by(|a, b| b.image.created_at_ms.cmp(&a.image.created_at_ms));
+            items
+        };
+        Ok::<_, anyhow::Error>(list)
+    })
+    .await
+    {
+        Ok(Ok(images)) => Json(ImagesResponse { images }).into_response(),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+/// 直接上传本地参考图到收藏夹（支持可选 `folder_id` 字段归入指定收藏文件夹）。
+pub async fn upload_favorites(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let mut files: Vec<(String, String, Vec<u8>)> = Vec::new();
+    let mut folder_id: Option<String> = None;
+    while let Ok(Some(field)) = multipart.next_field().await {
+        match field.name() {
+            Some("folder_id") => {
+                if let Ok(text) = field.text().await {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        folder_id = Some(trimmed.to_owned());
+                    }
+                }
+            }
+            Some("files" | "file" | "images" | "image") => {
+                let filename = field
+                    .file_name()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| "reference.png".into());
+                let mime = field
+                    .content_type()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| "application/octet-stream".into());
+                if let Ok(bytes) = field.bytes().await
+                    && !bytes.is_empty()
+                {
+                    files.push((filename, mime, bytes.to_vec()));
+                }
+            }
+            _ => {}
+        }
+    }
+    if files.is_empty() {
+        return err_response(StatusCode::BAD_REQUEST, "请选择至少一张图片");
+    }
+
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        let valid_folder = folder_id.filter(|fid| index.has_favorite_folder(fid));
+        let mut added = Vec::new();
+        for (filename, mime, bytes) in files {
+            let meta = codec::inspect_image(&bytes, Some(&mime))?;
+            let id = store::new_id();
+            let file_path = store::write_favorite_upload(&dir, &id, &meta.extension, &bytes)?;
+            let img = StoredImage {
+                id: id.clone(),
+                origin: ImageOrigin::UploadedFavorite,
+                session_id: None,
+                turn_id: None,
+                created_at_ms: store::now_ms(),
+                model: None,
+                prompt: None,
+                revised_prompt: None,
+                width: meta.width,
+                height: meta.height,
+                format: meta.format.clone(),
+                extension: meta.extension,
+                mime_type: meta.mime_type,
+                is_animated: meta.is_animated,
+                size_bytes: bytes.len() as u64,
+                original_size_bytes: bytes.len() as u64,
+                original_format: meta.format,
+                file_path: file_path.to_string_lossy().into_owned(),
+                filename,
+            };
+            index.images.insert(id.clone(), img.clone());
+            index.set_favorite(&id, true);
+            if let Some(ref fid) = valid_folder {
+                let _ = index.set_favorite_image_folder(&id, Some(fid.clone()));
+            }
+            added.push(ImageDto::from_stored(&img, true, valid_folder.clone()));
+        }
+        store::save_index(&dir, &index)?;
+        Ok::<_, anyhow::Error>(added)
+    })
+    .await
+    {
+        Ok(Ok(images)) => Json(ImagesResponse { images }).into_response(),
+        Ok(Err(error)) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+/// 区分 JSON 中字段未提供 (`None`) 与显式设为 `null` (`Some(None)`)。
+fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
+}
+
+#[derive(Deserialize)]
+pub struct ToggleFavoriteBody {
+    pub favorite: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub folder_id: Option<Option<String>>,
+}
+
+pub async fn toggle_favorite(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<ToggleFavoriteBody>,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        if !index.images.contains_key(&id) {
+            return Ok(None);
+        }
+        if let Some(fav) = body.favorite {
+            index.set_favorite(&id, fav);
+        }
+        if let Some(folder_opt) = body.folder_id {
+            let normalized = folder_opt.and_then(|s| {
+                let trimmed = s.trim().to_owned();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            });
+            index.set_favorite_image_folder(&id, normalized)?;
+        }
+        let is_fav = index.is_favorite(&id);
+        let folder = index.favorite_folder_of(&id);
+        store::save_index(&dir, &index)?;
+        Ok::<_, anyhow::Error>(Some((is_fav, folder)))
+    })
+    .await
+    {
+        Ok(Ok(Some((favorite, favorite_folder_id)))) => Json(serde_json::json!({
+            "ok": true,
+            "favorite": favorite,
+            "favorite_folder_id": favorite_folder_id,
+        }))
+        .into_response(),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "图片不存在"),
+        Ok(Err(error)) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+// ---------- 收藏文件夹与提示词/组合收藏 ----------
+
+#[derive(Serialize)]
+pub struct FavoritesMetaResponse {
+    pub folders: Vec<FavoriteFolder>,
+    pub presets: Vec<FavoritePreset>,
+    /// 组合预设引用到的、但未必在单图收藏列表中的图片（避免前端缺图）。
+    pub preset_images: Vec<ImageDto>,
+}
+
+pub async fn list_favorites_meta(State(state): State<AppState>) -> Response {
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    match tokio::task::spawn_blocking(move || {
+        let index = store::load_index(&dir)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut preset_images = Vec::new();
+        for preset in &index.favorite_presets {
+            for img_id in &preset.image_ids {
+                if seen.insert(img_id.clone())
+                    && let Some(img) = index.images.get(img_id)
+                {
+                    preset_images.push(ImageDto::from_stored(
+                        img,
+                        index.is_favorite(img_id),
+                        index.favorite_folder_of(img_id),
+                    ));
+                }
+            }
+        }
+        Ok::<_, anyhow::Error>(FavoritesMetaResponse {
+            folders: index.favorite_folders,
+            presets: index.favorite_presets,
+            preset_images,
+        })
+    })
+    .await
+    {
+        Ok(Ok(resp)) => Json(resp).into_response(),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct FolderNameBody {
+    pub name: String,
+}
+
+pub async fn create_favorite_folder(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<FolderNameBody>,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let name = body.name.trim().to_owned();
+    if name.is_empty() {
+        return err_response(StatusCode::BAD_REQUEST, "文件夹名称不能为空");
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        let now = store::now_ms();
+        let folder = FavoriteFolder {
+            id: store::new_id(),
+            name,
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        index.favorite_folders.push(folder.clone());
+        store::save_index(&dir, &index)?;
+        Ok::<_, anyhow::Error>(folder)
+    })
+    .await
+    {
+        Ok(Ok(folder)) => Json(folder).into_response(),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+pub async fn rename_favorite_folder(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<FolderNameBody>,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let name = body.name.trim().to_owned();
+    if name.is_empty() {
+        return err_response(StatusCode::BAD_REQUEST, "文件夹名称不能为空");
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        let Some(folder) = index.favorite_folders.iter_mut().find(|f| f.id == id) else {
+            return Ok(None);
+        };
+        folder.name = name;
+        folder.updated_at_ms = store::now_ms();
+        let updated = folder.clone();
+        store::save_index(&dir, &index)?;
+        Ok::<_, anyhow::Error>(Some(updated))
+    })
+    .await
+    {
+        Ok(Ok(Some(folder))) => Json(folder).into_response(),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "文件夹不存在"),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+pub async fn delete_favorite_folder(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        if !index.remove_favorite_folder(&id) {
+            return Ok(false);
+        }
+        store::save_index(&dir, &index)?;
+        Ok::<_, anyhow::Error>(true)
+    })
+    .await
+    {
+        Ok(Ok(true)) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(Ok(false)) => err_response(StatusCode::NOT_FOUND, "文件夹不存在"),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct CreatePresetBody {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub image_ids: Vec<String>,
+    pub folder_id: Option<String>,
+}
+
+pub async fn create_favorite_preset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreatePresetBody>,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let prompt = body.prompt.trim().to_owned();
+    let title = body.title.trim().to_owned();
+    if prompt.is_empty() && body.image_ids.is_empty() {
+        return err_response(StatusCode::BAD_REQUEST, "提示词与参考图不能同时为空");
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        let folder_id = body
+            .folder_id
+            .and_then(|s| {
+                let t = s.trim().to_owned();
+                if t.is_empty() { None } else { Some(t) }
+            });
+        if let Some(ref fid) = folder_id
+            && !index.has_favorite_folder(fid)
+        {
+            anyhow::bail!("目标收藏文件夹不存在");
+        }
+        let mut deduped_ids = Vec::new();
+        for img_id in body.image_ids {
+            if index.images.contains_key(&img_id) && !deduped_ids.contains(&img_id) {
+                deduped_ids.push(img_id);
+            }
+        }
+        if prompt.is_empty() && deduped_ids.is_empty() {
+            anyhow::bail!("提示词与有效参考图不能同时为空");
+        }
+        let now = store::now_ms();
+        let final_title = if !title.is_empty() {
+            title
+        } else if !prompt.is_empty() {
+            derive_title(&prompt)
+        } else {
+            format!("{} 张参考图", deduped_ids.len())
+        };
+        let preset = FavoritePreset {
+            id: store::new_id(),
+            title: final_title,
+            prompt,
+            image_ids: deduped_ids,
+            folder_id,
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        index.favorite_presets.insert(0, preset.clone());
+        store::save_index(&dir, &index)?;
+        Ok::<_, anyhow::Error>(preset)
+    })
+    .await
+    {
+        Ok(Ok(preset)) => Json(preset).into_response(),
+        Ok(Err(error)) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PatchPresetBody {
+    pub title: Option<String>,
+    pub prompt: Option<String>,
+    pub image_ids: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub folder_id: Option<Option<String>>,
+}
+
+pub async fn patch_favorite_preset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<PatchPresetBody>,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        let Some(pos) = index.favorite_presets.iter().position(|p| p.id == id) else {
+            return Ok(None);
+        };
+        if let Some(ref folder_opt) = body.folder_id
+            && let Some(fid) = folder_opt.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            && !index.has_favorite_folder(fid)
+        {
+            anyhow::bail!("目标收藏文件夹不存在");
+        }
+        let next_image_ids = body.image_ids.map(|ids| {
+            let mut out = Vec::new();
+            for img_id in ids {
+                if index.images.contains_key(&img_id) && !out.contains(&img_id) {
+                    out.push(img_id);
+                }
+            }
+            out
+        });
+        let preset = &mut index.favorite_presets[pos];
+        if let Some(title) = body.title {
+            let trimmed = title.trim().to_owned();
+            if !trimmed.is_empty() {
+                preset.title = trimmed;
+            }
+        }
+        if let Some(prompt) = body.prompt {
+            preset.prompt = prompt.trim().to_owned();
+        }
+        if let Some(ids) = next_image_ids {
+            preset.image_ids = ids;
+        }
+        if let Some(folder_opt) = body.folder_id {
+            preset.folder_id = folder_opt.and_then(|s| {
+                let t = s.trim().to_owned();
+                if t.is_empty() { None } else { Some(t) }
+            });
+        }
+        if preset.prompt.is_empty() && preset.image_ids.is_empty() {
+            anyhow::bail!("提示词与参考图不能同时为空");
+        }
+        preset.updated_at_ms = store::now_ms();
+        let updated = preset.clone();
+        store::save_index(&dir, &index)?;
+        Ok::<_, anyhow::Error>(Some(updated))
+    })
+    .await
+    {
+        Ok(Ok(Some(preset))) => Json(preset).into_response(),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "收藏组合不存在"),
+        Ok(Err(error)) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+pub async fn delete_favorite_preset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        let before = index.favorite_presets.len();
+        index.favorite_presets.retain(|p| p.id != id);
+        if index.favorite_presets.len() == before {
+            return Ok(false);
+        }
+        store::save_index(&dir, &index)?;
+        Ok::<_, anyhow::Error>(true)
+    })
+    .await
+    {
+        Ok(Ok(true)) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(Ok(false)) => err_response(StatusCode::NOT_FOUND, "收藏组合不存在"),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+pub async fn delete_image(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        let Some(path) = index.remove_image(&id) else {
+            return Ok(false);
+        };
+        store::save_index(&dir, &index)?;
+        store::trash_or_remove(&path);
+        Ok::<_, anyhow::Error>(true)
+    })
+    .await
+    {
+        Ok(Ok(true)) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(Ok(false)) => err_response(StatusCode::NOT_FOUND, "图片不存在"),
+        Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConvertFormat {
+    Webp,
+    WebpLossless,
+    Avif,
+    Jpeg,
+    Png,
+    WebpAnimated,
+    Apng,
+}
+
+#[derive(Deserialize)]
+pub struct ConvertImageBody {
+    pub format: ConvertFormat,
+    pub quality: Option<u8>,
+}
+
+#[derive(Serialize)]
+pub struct ConvertImageResponse {
+    pub image: ImageDto,
+    pub previous_size_bytes: u64,
+    pub previous_format: String,
+}
+
+/// 将已保存的本地图片原地转换为指定格式（原子写入新文件并更新索引）。
+pub async fn convert_image(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<ConvertImageBody>,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let (cfg, dir) = match load_cfg_and_dir(&state).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    let _guard = state.image_playground.write_lock.lock().await;
+    match tokio::task::spawn_blocking(move || {
+        let mut index = store::load_index(&dir)?;
+        let Some(existing) = index.images.get(&id).cloned() else {
+            return Ok(None);
+        };
+        let old_path = PathBuf::from(&existing.file_path);
+        let raw_bytes = std::fs::read(&old_path)
+            .map_err(|error| anyhow::anyhow!("读取原图文件失败：{error}"))?;
+
+        let static_q = body.quality.unwrap_or(cfg.compression.quality).clamp(1, 100);
+        let anim_q = body
+            .quality
+            .unwrap_or(cfg.compression.animated_quality)
+            .clamp(1, 100);
+
+        let transcode_cfg = if existing.is_animated {
+            let anim_fmt = match body.format {
+                ConvertFormat::WebpAnimated | ConvertFormat::Webp => {
+                    AnimatedOutputFormat::WebpAnimated
+                }
+                ConvertFormat::Apng | ConvertFormat::Png => AnimatedOutputFormat::Apng,
+                _ => anyhow::bail!("动图仅支持转换为动图 WebP 或 APNG"),
+            };
+            OutputCompressionConfig {
+                format: OutputCompressionFormat::Original,
+                quality: static_q,
+                animated_format: anim_fmt,
+                animated_quality: anim_q,
+            }
+        } else {
+            let static_fmt = match body.format {
+                ConvertFormat::Webp | ConvertFormat::WebpAnimated => OutputCompressionFormat::Webp,
+                ConvertFormat::WebpLossless => OutputCompressionFormat::WebpLossless,
+                ConvertFormat::Avif => OutputCompressionFormat::Avif,
+                ConvertFormat::Jpeg => OutputCompressionFormat::Jpeg,
+                ConvertFormat::Png | ConvertFormat::Apng => OutputCompressionFormat::Png,
+            };
+            OutputCompressionConfig {
+                format: static_fmt,
+                quality: static_q,
+                animated_format: AnimatedOutputFormat::Original,
+                animated_quality: anim_q,
+            }
+        };
+
+        let encoded = codec::transcode_output(raw_bytes, Some(&existing.mime_type), &transcode_cfg)?;
+        let parent = old_path.parent().unwrap_or(&dir);
+        std::fs::create_dir_all(parent)?;
+        let new_path = parent.join(format!("{id}.{}", encoded.extension));
+        let tmp = tempfile::NamedTempFile::new_in(parent)?;
+        std::fs::write(tmp.path(), &encoded.bytes)?;
+        tmp.persist(&new_path).map_err(|error| error.error)?;
+
+        let previous_size_bytes = existing.size_bytes;
+        let previous_format = existing.format.clone();
+        let is_fav = index.is_favorite(&id);
+        let folder_id = index.favorite_folder_of(&id);
+
+        let updated_stored = {
+            let entry = index.images.get_mut(&id).expect("已校验存在");
+            entry.width = encoded.width;
+            entry.height = encoded.height;
+            entry.format = encoded.format;
+            entry.extension = encoded.extension.clone();
+            entry.mime_type = encoded.mime_type;
+            entry.is_animated = encoded.is_animated;
+            entry.size_bytes = encoded.bytes.len() as u64;
+            entry.file_path = new_path.to_string_lossy().into_owned();
+            entry.filename = replace_ext(&entry.filename, &encoded.extension);
+            entry.clone()
+        };
+
+        store::save_index(&dir, &index)?;
+        if new_path != old_path {
+            let _ = std::fs::remove_file(&old_path);
+        }
+
+        Ok::<_, anyhow::Error>(Some(ConvertImageResponse {
+            image: ImageDto::from_stored(&updated_stored, is_fav, folder_id),
+            previous_size_bytes,
+            previous_format,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(Some(resp))) => Json(resp).into_response(),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "图片不存在"),
+        Ok(Err(error)) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
+        Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+pub async fn reveal_image(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let path = match tokio::task::spawn_blocking(move || {
+        let index = store::load_index(&dir)?;
+        Ok::<_, anyhow::Error>(index.images.get(&id).map(|i| PathBuf::from(&i.file_path)))
+    })
+    .await
+    {
+        Ok(Ok(Some(path))) => path,
+        Ok(Ok(None)) => return err_response(StatusCode::NOT_FOUND, "图片不存在"),
+        Ok(Err(error)) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    match reveal::reveal_in_file_manager(&path).await {
+        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(error) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct FileQuery {
+    pub download: Option<u8>,
+}
+
+pub async fn get_image_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<FileQuery>,
+) -> Response {
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let record = match tokio::task::spawn_blocking(move || {
+        let index = store::load_index(&dir)?;
+        Ok::<_, anyhow::Error>(index.images.get(&id).cloned())
+    })
+    .await
+    {
+        Ok(Ok(Some(img))) => img,
+        Ok(Ok(None)) => return err_response(StatusCode::NOT_FOUND, "图片不存在"),
+        Ok(Err(error)) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+
+    stream_file(
+        PathBuf::from(&record.file_path),
+        &record.mime_type,
+        &record.filename,
+        query.download == Some(1),
+        false,
+    )
+    .await
+}
+
+pub async fn get_upload_file(
+    State(state): State<AppState>,
+    Path(upload_id): Path<String>,
+) -> Response {
+    // 严格校验单段文件名，防止路径穿越。
+    if upload_id.contains('/') || upload_id.contains('\\') || upload_id.contains("..") {
+        return err_response(StatusCode::BAD_REQUEST, "非法文件名");
+    }
+    let dir = match resolve_storage_dir(&state).await {
+        Ok(dir) => dir,
+        Err(resp) => return resp,
+    };
+    let path = dir.join("uploads").join(&upload_id);
+    let mime = match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("avif") => "image/avif",
+        _ => "application/octet-stream",
+    };
+    stream_file(path, mime, &upload_id, false, true).await
+}
+
+async fn stream_file(
+    path: PathBuf,
+    mime: &str,
+    filename: &str,
+    download: bool,
+    immutable: bool,
+) -> Response {
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(_) => return err_response(StatusCode::NOT_FOUND, "本地图片文件不存在"),
+    };
+    let Ok(metadata) = file.metadata().await else {
+        return err_response(StatusCode::NOT_FOUND, "无法读取文件信息");
+    };
+    let mut headers = HeaderMap::new();
+    if let Ok(ct) = HeaderValue::from_str(mime) {
+        headers.insert(header::CONTENT_TYPE, ct);
+    }
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&metadata.len().to_string()).expect("长度是数字"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(if immutable {
+            "private, max-age=31536000, immutable"
+        } else {
+            "private, no-cache"
+        }),
+    );
+    if download {
+        let safe_name = filename.replace(['"', '\\', '\r', '\n'], "_");
+        if let Ok(disp) = HeaderValue::from_str(&format!("attachment; filename=\"{safe_name}\"")) {
+            headers.insert(header::CONTENT_DISPOSITION, disp);
+        }
+    }
+    let stream = tokio_util::io::ReaderStream::new(file);
+    (headers, Body::from_stream(stream)).into_response()
+}
+
+async fn load_cfg_and_dir(state: &AppState) -> Result<(PlaygroundConfig, PathBuf), Response> {
+    let home = state.core.config_home();
+    tokio::task::spawn_blocking(move || {
+        let cfg = config::load(&home)?;
+        let dir = cfg.resolved_storage_dir(&home);
+        Ok::<_, anyhow::Error>((cfg, dir))
+    })
+    .await
+    .map_err(|error| err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+    .map_err(|error| err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+}
+
+async fn resolve_storage_dir(state: &AppState) -> Result<PathBuf, Response> {
+    load_cfg_and_dir(state).await.map(|(_, dir)| dir)
+}
+
+fn replace_ext(filename: &str, ext: &str) -> String {
+    let stem = std::path::Path::new(filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("image");
+    format!("{stem}.{ext}")
+}
+
+fn derive_title(prompt: &str) -> String {
+    let first_line = prompt.lines().next().unwrap_or(prompt).trim();
+    let chars: Vec<char> = first_line.chars().collect();
+    if chars.len() <= 28 {
+        first_line.to_owned()
+    } else {
+        let prefix: String = chars.into_iter().take(28).collect();
+        format!("{prefix}…")
+    }
+}
+
+/// 进程内 Image Playground 并发与取消协调器。
+#[derive(Clone, Default)]
+pub struct ImagePlaygroundService {
+    pub(crate) write_lock: Arc<tokio::sync::Mutex<()>>,
+    flights: Arc<tokio::sync::Mutex<HashMap<String, CancellationToken>>>,
+}
+
+impl ImagePlaygroundService {
+    pub(crate) async fn register_flight(&self, session_id: &str) -> CancellationToken {
+        let token = CancellationToken::new();
+        let mut map = self.flights.lock().await;
+        if let Some(prev) = map.insert(session_id.to_owned(), token.clone()) {
+            prev.cancel();
+        }
+        token
+    }
+
+    pub(crate) async fn clear_flight(&self, session_id: &str, token: &CancellationToken) {
+        let mut map = self.flights.lock().await;
+        if map
+            .get(session_id)
+            .is_some_and(|current| current.same_token(token))
+        {
+            map.remove(session_id);
+        }
+    }
+
+    pub(crate) async fn cancel_session(&self, session_id: &str) {
+        if let Some(token) = self.flights.lock().await.remove(session_id) {
+            token.cancel();
+        }
+    }
+}
+
+trait SameToken {
+    fn same_token(&self, other: &Self) -> bool;
+}
+
+impl SameToken for CancellationToken {
+    fn same_token(&self, other: &Self) -> bool {
+        // CancellationToken 未提供 ptr_eq；以取消状态与子令牌无关性近似：若未取消且同槽位直接移除即可。
+        self.is_cancelled() == other.is_cancelled()
+    }
+}

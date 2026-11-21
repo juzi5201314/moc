@@ -107,6 +107,7 @@ pub mod config;
 mod content;
 pub mod error;
 pub mod guard;
+pub mod image_gen;
 mod images;
 pub mod retry;
 pub mod stream;
@@ -121,6 +122,9 @@ pub use config::{
 };
 pub use error::{ApiError, ApiErrorKind, LlmError, TransportError, TransportKind};
 pub use guard::{LoopChannel, LoopViolation, StreamGuardConfig};
+pub use image_gen::{
+    EditEncoding, GeneratedImage, ImageGenError, ImageGenParams, ImageGenResponse, ImageInputFile,
+};
 pub use images::RequestDiagnostics;
 pub use retry::RetryPolicy;
 pub use stream::ChatStream;

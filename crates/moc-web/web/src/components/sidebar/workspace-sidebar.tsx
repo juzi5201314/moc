@@ -4,6 +4,7 @@ import {
   ChevronRightIcon,
   CopyIcon,
   FolderPlusIcon,
+  ImageIcon,
   MoreHorizontalIcon,
   PanelLeftCloseIcon,
   PencilIcon,
@@ -434,6 +435,17 @@ export function WorkspaceSidebar() {
           </TooltipContent>
         </Tooltip>
         <div className="flex items-center gap-0.5">
+          <IconButton
+            label="Image Playground"
+            side="top"
+            size="md"
+            onClick={() => {
+              window.history.pushState(null, "", "/image-playground");
+              window.dispatchEvent(new PopStateEvent("popstate"));
+            }}
+          >
+            <ImageIcon />
+          </IconButton>
           <IconButton
             label={t("sd.plugins")}
             side="top"
