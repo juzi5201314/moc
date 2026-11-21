@@ -91,6 +91,9 @@ impl Tool for WriteTool {
                 &ctx.anchors,
                 ctx.config.tools.write.hash_echo_min_hits,
             )?;
+            // 锁包住读-改-写全程：两个并发 write 若都基于同一旧内容记 undo，
+            // 后完成的一次会把前一次写入从撤销链里跳过。
+            let _commit_guards = crate::hashline::apply::lock_commit_paths(&path, None).await;
             // 覆盖已有文件前先看旧文件大小：超过读写上限就不读旧内容，
             // 因此也不做 diff、不记撤销（几 GB 的旧文件会撑爆内存）。
             let (old, oversized_old) = read_previous(&path, max_file_bytes).await?;
@@ -98,7 +101,6 @@ impl Tool for WriteTool {
             let content = normalize_line_endings(&args.content, ending);
             check_content_size(&content, max_file_bytes)?;
             let diff = write_diff(&path, old.as_deref(), &content, WRITE_DIFF_MAX_BYTES);
-            let _commit_guards = crate::hashline::apply::lock_commit_paths(&path, None).await;
             let temporary = stage(&path, content.as_bytes()).await?;
             if let Err(error) = tokio::fs::rename(&temporary, &path).await {
                 let _ = tokio::fs::remove_file(&temporary).await;
