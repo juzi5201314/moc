@@ -102,7 +102,7 @@ export function FavoritePresetDialog() {
     for (const id of [...favoriteIds, ...galleryIds]) {
       if (seen.has(id)) continue;
       const img = imagesById[id];
-      if (img) {
+      if (img && img.format.toLowerCase() !== "avif") {
         seen.add(id);
         list.push(img);
       }

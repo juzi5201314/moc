@@ -339,8 +339,41 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
   },
 
   updateConfig: async (config) => {
+    const prevDir = get().resolvedStorageDir;
     const resp = await savePlaygroundConfig(config);
-    set({ config: resp.config, resolvedStorageDir: resp.resolved_storage_dir });
+    const dirChanged = Boolean(prevDir) && resp.resolved_storage_dir !== prevDir;
+    if (!dirChanged) {
+      set({ config: resp.config, resolvedStorageDir: resp.resolved_storage_dir });
+      return;
+    }
+    set((state) => {
+      for (const draft of Object.values(state.drafts)) {
+        for (const up of draft.uploads) URL.revokeObjectURL(up.previewUrl);
+      }
+      return {
+        config: resp.config,
+        resolvedStorageDir: resp.resolved_storage_dir,
+        sessions: [],
+        activeSessionId: null,
+        sessionDetails: {},
+        imagesById: {},
+        galleryIds: [],
+        favoriteIds: [],
+        favoriteFolders: [],
+        favoritePresets: [],
+        presetEditor: null,
+        runningBySession: {},
+        drafts: {},
+        lightboxImageId: null,
+        lightboxList: [],
+        confirmDeleteImage: null,
+        confirmDeleteSession: null,
+        pendingConvert: null,
+      };
+    });
+    if (get().initialized) {
+      await get().bootstrap();
+    }
   },
 
   refreshImages: async () => {
@@ -567,7 +600,10 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
       set({ activeSessionId: sessionId, view: "generate" });
     }
     const existingImages = get().imagesById;
-    const validIds = preset.image_ids.filter((id) => Boolean(existingImages[id]));
+    const validIds = preset.image_ids.filter((id) => {
+      const img = existingImages[id];
+      return Boolean(img) && img.format.toLowerCase() !== "avif";
+    });
     get().updateDraft(sessionId, (prev) => {
       const nextPrompt = preset.prompt
         ? prev.prompt.trim()

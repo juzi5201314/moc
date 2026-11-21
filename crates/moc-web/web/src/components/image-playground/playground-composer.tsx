@@ -19,6 +19,7 @@ import {
   type ClipboardEvent,
   type DragEvent,
   type KeyboardEvent,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -287,6 +288,7 @@ export function PlaygroundComposer({
           </Tooltip>
 
           <ParamsPopover
+            key={sessionId}
             params={params}
             onChange={(next) => updateDraft(sessionId, (prev) => ({ ...prev, params: next }))}
           />
@@ -606,15 +608,21 @@ function FavoritesQuickPicker({
                 <div className="grid grid-cols-3 gap-1.5">
                   {items.map((img) => {
                     const picked = selectedIds.includes(img.id);
+                    const isAvif = img.format.toLowerCase() === "avif";
                     return (
                       <button
                         key={img.id}
                         type="button"
-                        onClick={() => toggleRefImage(sessionId, img.id)}
-                        title={img.prompt || img.filename}
+                        disabled={isAvif}
+                        onClick={() => !isAvif && toggleRefImage(sessionId, img.id)}
+                        title={isAvif ? t("ip.convert_avif_note") : img.prompt || img.filename}
                         className={cn(
                           "group relative aspect-square overflow-hidden rounded-lg bg-muted/40 ring-1 ring-inset transition-opacity",
-                          picked ? "ring-2 ring-brand" : "ring-border-subtle hover:opacity-90",
+                          isAvif
+                            ? "cursor-not-allowed opacity-45 ring-border-subtle"
+                            : picked
+                              ? "ring-2 ring-brand"
+                              : "ring-border-subtle hover:opacity-90",
                         )}
                       >
                         <img
@@ -731,12 +739,20 @@ function ParamsPopover({
   const t = useT();
   const [open, setOpen] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [extraText, setExtraText] = useState(() =>
-    params.extra_params && Object.keys(params.extra_params).length > 0
-      ? JSON.stringify(params.extra_params, null, 2)
-      : "",
+  const serializedExtra = useMemo(
+    () =>
+      params.extra_params && Object.keys(params.extra_params).length > 0
+        ? JSON.stringify(params.extra_params, null, 2)
+        : "",
+    [params.extra_params],
   );
+  const [extraText, setExtraText] = useState(serializedExtra);
   const [extraErr, setExtraErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setExtraText(serializedExtra);
+    setExtraErr(null);
+  }, [serializedExtra]);
 
   const activeCount = countActiveParams(params);
 

@@ -99,6 +99,7 @@ export function ImageCard({
 
   const cacheKey = `${image.format}-${image.size_bytes}`;
   const src = pgImageUrl(image.id, false, cacheKey);
+  const isAvif = image.format.toLowerCase() === "avif";
   const convertOptions = image.is_animated ? ANIMATED_CONVERT_OPTIONS : STATIC_CONVERT_OPTIONS;
 
   const onFavorite = () => {
@@ -245,13 +246,15 @@ export function ImageCard({
           <EyeIcon className="size-4" />
           {t("ip.ctx_preview")}
         </ContextMenuItem>
-        <ContextMenuItem
-          className="rounded-lg text-ui"
-          onSelect={() => void editWithImage(image.id)}
-        >
-          <PencilIcon className="size-4" />
-          {t("ip.ctx_edit_with")}
-        </ContextMenuItem>
+        {!isAvif && (
+          <ContextMenuItem
+            className="rounded-lg text-ui"
+            onSelect={() => void editWithImage(image.id)}
+          >
+            <PencilIcon className="size-4" />
+            {t("ip.ctx_edit_with")}
+          </ContextMenuItem>
+        )}
         <ContextMenuItem className="rounded-lg text-ui" onSelect={onFavorite}>
           <StarIcon className={cn("size-4", image.favorite && "fill-current text-amber-500")} />
           {image.favorite ? t("ip.unfavorite") : t("ip.favorite")}
@@ -288,26 +291,28 @@ export function ImageCard({
           </ContextMenuSub>
         )}
 
-        <ContextMenuSub>
-          <ContextMenuSubTrigger className="rounded-lg text-ui">
-            <ArrowRightLeftIcon className="size-4" />
-            {t("ip.ctx_convert")}
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent className="w-48 rounded-xl border-0 bg-popover p-1 shadow-[var(--elevation-popover)]">
-            {convertOptions.map((option) => (
-              <ContextMenuItem
-                key={option.format}
-                className="rounded-lg text-ui"
-                onSelect={() => onSelectConvert(option)}
-              >
-                <span className="flex-1 truncate">{option.label}</span>
-                <span className="text-2xs text-text-tertiary">
-                  {option.lossy ? t("ip.convert_lossy_tag") : t("ip.convert_lossless_tag")}
-                </span>
-              </ContextMenuItem>
-            ))}
-          </ContextMenuSubContent>
-        </ContextMenuSub>
+        {!isAvif && (
+          <ContextMenuSub>
+            <ContextMenuSubTrigger className="rounded-lg text-ui">
+              <ArrowRightLeftIcon className="size-4" />
+              {t("ip.ctx_convert")}
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent className="w-48 rounded-xl border-0 bg-popover p-1 shadow-[var(--elevation-popover)]">
+              {convertOptions.map((option) => (
+                <ContextMenuItem
+                  key={option.format}
+                  className="rounded-lg text-ui"
+                  onSelect={() => onSelectConvert(option)}
+                >
+                  <span className="flex-1 truncate">{option.label}</span>
+                  <span className="text-2xs text-text-tertiary">
+                    {option.lossy ? t("ip.convert_lossy_tag") : t("ip.convert_lossless_tag")}
+                  </span>
+                </ContextMenuItem>
+              ))}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+        )}
 
         <ContextMenuSeparator className="bg-border-subtle" />
         <ContextMenuItem className="rounded-lg text-ui" onSelect={onDownload}>

@@ -26,13 +26,25 @@ async fn reveal_impl(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 async fn reveal_impl(path: &Path) -> anyhow::Result<()> {
+    let display_path = strip_windows_verbatim_prefix(&path.to_string_lossy());
     let mut cmd = Command::new("explorer.exe");
     if path.is_file() {
-        cmd.arg(format!("/select,{}", path.display()));
+        cmd.arg(format!("/select,{display_path}"));
     } else {
-        cmd.arg(path);
+        cmd.arg(display_path);
     }
     spawn_detached(cmd)
+}
+
+#[cfg(any(windows, test))]
+fn strip_windows_verbatim_prefix(raw: &str) -> String {
+    if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else if let Some(local) = raw.strip_prefix(r"\\?\") {
+        local.to_owned()
+    } else {
+        raw.to_owned()
+    }
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -104,4 +116,25 @@ fn spawn_detached(mut cmd: Command) -> anyhow::Result<()> {
         let _ = child.wait().await;
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_windows_verbatim_prefix;
+
+    #[test]
+    fn strip_windows_verbatim_prefix_handles_local_and_unc_paths() {
+        assert_eq!(
+            strip_windows_verbatim_prefix(r"\\?\C:\Users\moc\img.png"),
+            r"C:\Users\moc\img.png"
+        );
+        assert_eq!(
+            strip_windows_verbatim_prefix(r"\\?\UNC\server\share\img.png"),
+            r"\\server\share\img.png"
+        );
+        assert_eq!(
+            strip_windows_verbatim_prefix(r"C:\Users\moc\img.png"),
+            r"C:\Users\moc\img.png"
+        );
+    }
 }

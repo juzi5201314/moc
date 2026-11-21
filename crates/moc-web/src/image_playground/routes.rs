@@ -537,6 +537,9 @@ pub async fn generate(
             let mut refs = Vec::new();
             for id in ids {
                 if let Some(img) = index.images.get(&id) {
+                    if img.format.eq_ignore_ascii_case("avif") {
+                        anyhow::bail!("AVIF_UNSUPPORTED:{}", img.filename);
+                    }
                     refs.push((
                         id,
                         img.filename.clone(),
@@ -552,6 +555,16 @@ pub async fn generate(
             Ok(Ok(refs)) => refs,
             Ok(Err(error)) if error.to_string() == "NOT_FOUND" => {
                 return err_response(StatusCode::NOT_FOUND, "会话不存在");
+            }
+            Ok(Err(error)) if error.to_string().starts_with("AVIF_UNSUPPORTED:") => {
+                let filename = error
+                    .to_string()
+                    .trim_start_matches("AVIF_UNSUPPORTED:")
+                    .to_owned();
+                return err_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("图片 {filename} 为 AVIF 格式，暂不支持作为编辑参考图"),
+                );
             }
             Ok(Err(error)) => {
                 return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
@@ -1484,31 +1497,43 @@ pub async fn patch_favorite_preset(
             }
             out
         });
-        let preset = &mut index.favorite_presets[pos];
-        if let Some(title) = body.title {
-            let trimmed = title.trim().to_owned();
-            if !trimmed.is_empty() {
-                preset.title = trimmed;
+        let mut removed_ids = Vec::new();
+        let updated = {
+            let preset = &mut index.favorite_presets[pos];
+            if let Some(title) = body.title {
+                let trimmed = title.trim().to_owned();
+                if !trimmed.is_empty() {
+                    preset.title = trimmed;
+                }
             }
-        }
-        if let Some(prompt) = body.prompt {
-            preset.prompt = prompt.trim().to_owned();
-        }
-        if let Some(ids) = next_image_ids {
-            preset.image_ids = ids;
-        }
-        if let Some(folder_opt) = body.folder_id {
-            preset.folder_id = folder_opt.and_then(|s| {
-                let t = s.trim().to_owned();
-                if t.is_empty() { None } else { Some(t) }
-            });
-        }
-        if preset.prompt.is_empty() && preset.image_ids.is_empty() {
-            anyhow::bail!("提示词与参考图不能同时为空");
-        }
-        preset.updated_at_ms = store::now_ms();
-        let updated = preset.clone();
+            if let Some(prompt) = body.prompt {
+                preset.prompt = prompt.trim().to_owned();
+            }
+            if let Some(ids) = next_image_ids {
+                for old_id in &preset.image_ids {
+                    if !ids.contains(old_id) {
+                        removed_ids.push(old_id.clone());
+                    }
+                }
+                preset.image_ids = ids;
+            }
+            if let Some(folder_opt) = body.folder_id {
+                preset.folder_id = folder_opt.and_then(|s| {
+                    let t = s.trim().to_owned();
+                    if t.is_empty() { None } else { Some(t) }
+                });
+            }
+            if preset.prompt.is_empty() && preset.image_ids.is_empty() {
+                anyhow::bail!("提示词与参考图不能同时为空");
+            }
+            preset.updated_at_ms = store::now_ms();
+            preset.clone()
+        };
+        let to_trash = index.prune_orphan_preset_uploads(&removed_ids);
         store::save_index(&dir, &index)?;
+        for path in to_trash {
+            store::trash_or_remove(&path);
+        }
         Ok::<_, anyhow::Error>(Some(updated))
     })
     .await
@@ -1535,12 +1560,15 @@ pub async fn delete_favorite_preset(
     let _guard = state.image_playground.write_lock.lock().await;
     match tokio::task::spawn_blocking(move || {
         let mut index = store::load_index(&dir)?;
-        let before = index.favorite_presets.len();
-        index.favorite_presets.retain(|p| p.id != id);
-        if index.favorite_presets.len() == before {
+        let Some(pos) = index.favorite_presets.iter().position(|p| p.id == id) else {
             return Ok(false);
-        }
+        };
+        let removed_preset = index.favorite_presets.remove(pos);
+        let to_trash = index.prune_orphan_preset_uploads(&removed_preset.image_ids);
         store::save_index(&dir, &index)?;
+        for path in to_trash {
+            store::trash_or_remove(&path);
+        }
         Ok::<_, anyhow::Error>(true)
     })
     .await
@@ -1628,6 +1656,9 @@ pub async fn convert_image(
         let Some(existing) = index.images.get(&id).cloned() else {
             return Ok(None);
         };
+        if existing.format.eq_ignore_ascii_case("avif") {
+            anyhow::bail!("当前构建不支持解码 AVIF，无法将 AVIF 图片再次转换格式");
+        }
         let old_path = PathBuf::from(&existing.file_path);
         let raw_bytes = std::fs::read(&old_path)
             .map_err(|error| anyhow::anyhow!("读取原图文件失败：{error}"))?;

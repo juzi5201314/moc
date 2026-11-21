@@ -3,7 +3,7 @@
 // Edit 上传参考图保护性压缩与默认编辑编码方式。
 
 import { FolderOpenIcon, Loader2Icon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { SettingRow } from "@/components/settings/field";
 import { Card } from "@/components/settings/sections";
@@ -59,6 +59,10 @@ export function ImagePlaygroundSettingsSection() {
   const [dirDraft, setDirDraft] = useState("");
   const [maxDimDraft, setMaxDimDraft] = useState("2048");
   const [maxMbDraft, setMaxMbDraft] = useState("4");
+  const [qualityDraft, setQualityDraft] = useState(85);
+  const [animQualityDraft, setAnimQualityDraft] = useState(80);
+  const committedQualityRef = useRef(85);
+  const committedAnimQualityRef = useRef(80);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -70,6 +74,10 @@ export function ImagePlaygroundSettingsSection() {
     setDirDraft(config.storage_dir);
     setMaxDimDraft(String(config.input_compress.max_dimension));
     setMaxMbDraft(String(config.input_compress.max_bytes_mb));
+    setQualityDraft(config.compression.quality);
+    setAnimQualityDraft(config.compression.animated_quality);
+    committedQualityRef.current = config.compression.quality;
+    committedAnimQualityRef.current = config.compression.animated_quality;
   }, [config]);
 
   if (!config) {
@@ -86,9 +94,31 @@ export function ImagePlaygroundSettingsSection() {
       await updateConfig(next);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
+      setQualityDraft(config.compression.quality);
+      setAnimQualityDraft(config.compression.animated_quality);
+      committedQualityRef.current = config.compression.quality;
+      committedAnimQualityRef.current = config.compression.animated_quality;
     } finally {
       setSaving(false);
     }
+  };
+
+  const commitQuality = (nextValue: number) => {
+    if (nextValue === committedQualityRef.current) return;
+    committedQualityRef.current = nextValue;
+    void commit({
+      ...config,
+      compression: { ...config.compression, quality: nextValue },
+    });
+  };
+
+  const commitAnimQuality = (nextValue: number) => {
+    if (nextValue === committedAnimQualityRef.current) return;
+    committedAnimQualityRef.current = nextValue;
+    void commit({
+      ...config,
+      compression: { ...config.compression, animated_quality: nextValue },
+    });
   };
 
   const hasStaticQuality =
@@ -145,7 +175,11 @@ export function ImagePlaygroundSettingsSection() {
         <Card>
           <SettingRow
             label={t("ip.set_static_format")}
-            description={t("ip.set_static_format_desc")}
+            description={
+              config.compression.format === "avif"
+                ? `${t("ip.set_static_format_desc")} ${t("ip.convert_avif_note")}`
+                : t("ip.set_static_format_desc")
+            }
           >
             <Select
               value={config.compression.format}
@@ -179,20 +213,15 @@ export function ImagePlaygroundSettingsSection() {
                   type="range"
                   min={1}
                   max={100}
-                  value={config.compression.quality}
-                  onChange={(e) =>
-                    void commit({
-                      ...config,
-                      compression: {
-                        ...config.compression,
-                        quality: Number(e.target.value),
-                      },
-                    })
-                  }
+                  value={qualityDraft}
+                  onChange={(e) => setQualityDraft(Number(e.target.value))}
+                  onPointerUp={() => commitQuality(qualityDraft)}
+                  onKeyUp={() => commitQuality(qualityDraft)}
+                  onBlur={() => commitQuality(qualityDraft)}
                   className="flex-1 accent-brand"
                 />
                 <span className="w-9 text-right font-mono text-xs tabular-nums text-foreground">
-                  {config.compression.quality}
+                  {qualityDraft}
                 </span>
               </div>
             </SettingRow>
@@ -234,20 +263,15 @@ export function ImagePlaygroundSettingsSection() {
                   type="range"
                   min={1}
                   max={100}
-                  value={config.compression.animated_quality}
-                  onChange={(e) =>
-                    void commit({
-                      ...config,
-                      compression: {
-                        ...config.compression,
-                        animated_quality: Number(e.target.value),
-                      },
-                    })
-                  }
+                  value={animQualityDraft}
+                  onChange={(e) => setAnimQualityDraft(Number(e.target.value))}
+                  onPointerUp={() => commitAnimQuality(animQualityDraft)}
+                  onKeyUp={() => commitAnimQuality(animQualityDraft)}
+                  onBlur={() => commitAnimQuality(animQualityDraft)}
                   className="flex-1 accent-brand"
                 />
                 <span className="w-9 text-right font-mono text-xs tabular-nums text-foreground">
-                  {config.compression.animated_quality}
+                  {animQualityDraft}
                 </span>
               </div>
             </SettingRow>

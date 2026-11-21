@@ -110,6 +110,7 @@ export default function ImagePlaygroundApp({ onBackToAgent }: { onBackToAgent: (
                   })
                 : ""}
               {pendingConvert?.format === "jpeg" && ` ${t("ip.convert_jpeg_alpha_note")}`}
+              {pendingConvert?.format === "avif" && ` ${t("ip.convert_avif_note")}`}
             </AlertDialogDescription>
           </AlertDialogHeader>
 

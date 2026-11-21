@@ -98,9 +98,14 @@ export function ImageLightbox() {
             >
               <StarIcon className={cn(image.favorite && "fill-current text-amber-500")} />
             </IconButton>
-            <IconButton label={t("ip.ctx_edit_with")} onClick={() => void editWithImage(image.id)}>
-              <PencilIcon />
-            </IconButton>
+            {image.format.toLowerCase() !== "avif" && (
+              <IconButton
+                label={t("ip.ctx_edit_with")}
+                onClick={() => void editWithImage(image.id)}
+              >
+                <PencilIcon />
+              </IconButton>
+            )}
             <IconButton
               label={t("ip.ctx_download")}
               onClick={() => {

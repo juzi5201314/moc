@@ -369,8 +369,44 @@ impl PlaygroundIndex {
         Some(PathBuf::from(removed.file_path))
     }
 
+    /// 清理不再被单图收藏、组合收藏或任何会话输入引用的 `UploadedFavorite` 晋升图片，返回待清理的磁盘路径。
+    pub fn prune_orphan_preset_uploads(&mut self, candidate_ids: &[String]) -> Vec<PathBuf> {
+        let mut to_trash = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for id in candidate_ids {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let is_orphan_upload = self
+                .images
+                .get(id)
+                .is_some_and(|img| img.origin == ImageOrigin::UploadedFavorite)
+                && !self.is_protected_by_favorite(id)
+                && !self.sessions.iter().any(|s| {
+                    s.turns.iter().any(|t| {
+                        t.inputs
+                            .iter()
+                            .any(|inp| inp.image_id.as_deref() == Some(id.as_str()))
+                    })
+                });
+            if is_orphan_upload && let Some(removed) = self.images.remove(id) {
+                self.favorite_image_folders.remove(id);
+                to_trash.push(PathBuf::from(removed.file_path));
+            }
+        }
+        to_trash
+    }
+
     /// 删除会话：保留所有已收藏图片或被收藏组合引用的图片（将其 `session_id` 置空）；可选删除未收藏的会话生成图。
     pub fn remove_session(&mut self, session_id: &str, delete_unfavorited: bool) -> Vec<PathBuf> {
+        let candidate_input_ids: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|s| s.id == session_id)
+            .flat_map(|s| s.turns.iter())
+            .flat_map(|t| t.inputs.iter())
+            .filter_map(|inp| inp.image_id.clone())
+            .collect();
         self.sessions.retain(|s| s.id != session_id);
         let mut to_trash = Vec::new();
         let mut to_remove_ids = Vec::new();
@@ -393,6 +429,9 @@ impl PlaygroundIndex {
             if let Some(img) = self.images.remove(&id) {
                 to_trash.push(PathBuf::from(img.file_path));
             }
+        }
+        if delete_unfavorited {
+            to_trash.extend(self.prune_orphan_preset_uploads(&candidate_input_ids));
         }
         to_trash
     }
@@ -516,5 +555,22 @@ mod tests {
         assert!(!index.is_favorite("img1"));
         index.remove_image("img3");
         assert!(index.favorite_presets[0].image_ids.is_empty());
+
+        // 仅被组合引用的 UploadedFavorite 晋升图在无任何引用时应被清理；仍被收藏的保留
+        let f4 = dir.path().join("img4.png");
+        let f5 = dir.path().join("img5.png");
+        std::fs::write(&f4, b"4").unwrap();
+        std::fs::write(&f5, b"5").unwrap();
+        let mut up4 = dummy_image("img4", None, &f4);
+        up4.origin = ImageOrigin::UploadedFavorite;
+        let mut up5 = dummy_image("img5", None, &f5);
+        up5.origin = ImageOrigin::UploadedFavorite;
+        index.images.insert("img4".into(), up4);
+        index.images.insert("img5".into(), up5);
+        index.favorites.push("img5".into());
+        let pruned = index.prune_orphan_preset_uploads(&["img4".into(), "img5".into()]);
+        assert_eq!(pruned, vec![f4]);
+        assert!(!index.images.contains_key("img4"));
+        assert!(index.images.contains_key("img5"));
     }
 }

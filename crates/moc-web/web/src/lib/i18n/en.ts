@@ -1210,6 +1210,7 @@ export const en: Record<MsgKey, string> = {
   "ip.convert_lossy_desc":
     "Current image is {from} ({size}). Converting to {to} uses lossy compression, overwrites the local file, and cannot be undone.",
   "ip.convert_jpeg_alpha_note": "Transparent areas will be flattened onto a white background.",
+  "ip.convert_avif_note": "AVIF images cannot be re-converted or used as edit references.",
   "ip.convert_confirm": "Convert",
   "ip.converting": "Converting to {format}…",
   "ip.convert_done": "Converted to {format} ({from} → {to})",

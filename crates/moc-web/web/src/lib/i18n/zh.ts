@@ -1174,6 +1174,7 @@ export const zh = {
   "ip.convert_lossy_desc":
     "当前图片为 {from}（{size}）。转换为 {to} 属于有损压缩，会覆盖原本地文件且画质损失不可逆。",
   "ip.convert_jpeg_alpha_note": "透明背景将被填充为白色。",
+  "ip.convert_avif_note": "转为 AVIF 后暂不支持再次转换格式或作为编辑参考图。",
   "ip.convert_confirm": "确认转换",
   "ip.converting": "正在转换为 {format}…",
   "ip.convert_done": "已转为 {format}（{from} → {to}）",
