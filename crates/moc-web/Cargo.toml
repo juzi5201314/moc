@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 authors = ["soeur@soeur.dev@gmail.com"]
 
+# 无文档测试；避免 cargo test --workspace 对零用例库重复跑 rustdoc。
+[lib]
+doctest = false
+
 [dependencies]
 rust-i18n.workspace = true
 moc-core = { path = "../moc-core" }
@@ -26,13 +30,13 @@ libc.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 trash.workspace = true
-# Image Playground 图像编解码（静态图含 AVIF / WebP，动图含 GIF / 动图 WebP / APNG）。
-image = { workspace = true, features = ["avif"] }
+# Image Playground 图像编解码（与 workspace image 统一 feature 集合）。
+image.workspace = true
 png.workspace = true
 gif.workspace = true
 webpx.workspace = true
 # /fs/raw 的流式下载与取消令牌。
-tokio-util = { workspace = true, features = ["io"] }
+tokio-util.workspace = true
 
 [build-dependencies]
 serde_json.workspace = true

@@ -5,6 +5,10 @@ edition = "2024"
 authors = ["soeur@soeur.dev@gmail.com"]
 default-run = "moc"
 
+# 无文档测试；避免 cargo test --workspace 对零用例库重复跑 rustdoc。
+[lib]
+doctest = false
+
 [dependencies]
 rust-i18n.workspace = true
 moc-acp = { path = "../moc-acp" }

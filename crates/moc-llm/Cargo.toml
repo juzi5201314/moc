@@ -23,7 +23,6 @@ schemars = "1.2.3"
 
 [dev-dependencies]
 wiremock.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
 serde_json.workspace = true
 anyhow.workspace = true
 rust-i18n.workspace = true

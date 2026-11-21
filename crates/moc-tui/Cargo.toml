@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 authors = ["soeur@soeur.dev@gmail.com"]
 
+# 无文档测试；避免 cargo test --workspace 对零用例库重复跑 rustdoc。
+[lib]
+doctest = false
+
 [dependencies]
 rust-i18n.workspace = true
 tempfile.workspace = true
@@ -28,7 +32,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 base64 = "0.22"
 # 消息时间戳按本地时区格式化（`clock` 特性走 iana-time-zone）。
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 futures-util.workspace = true
@@ -41,14 +45,8 @@ fontdue.workspace = true
 fontdb.workspace = true
 flate2.workspace = true
 xxhash-rust.workspace = true
-# 通用内联图片：位图解码（PNG/JPEG/GIF/WebP）与 NeuQuant 量化
-image = { version = "0.25.10", default-features = false, features = [
-    "png",
-    "jpeg",
-    "gif",
-    "webp",
-    "color_quant",
-] }
+# 通用内联图片：位图解码与 NeuQuant 量化（与 workspace image 统一 feature 集合）
+image.workspace = true
 # NeuQuant 量化：`image` 的 `color_quant` 特性只启用 impl，不重导出类型
 color_quant = "1"
 # SVG 代码块的光栅化（自带 usvg / tiny-skia）

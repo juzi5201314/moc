@@ -4,7 +4,7 @@ members = ["crates/moc-acp", "crates/moc-cli", "crates/moc-core", "crates/moc-ll
 default-members = ["crates/moc-cli", "crates/moc-tui"]
 
 [workspace.dependencies]
-tokio = { version = "1.53.1", features = ["full"] }
+tokio = { version = "1.53.1", features = ["full", "test-util"] }
 serde = { version = "1.0", features = ["serde_derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = "0.9"
@@ -17,9 +17,10 @@ clap = { version = "4.5", features = ["derive"] }
 futures-core = { version = "0.3.34" }
 bytes = { version = "1.12.1" }
 tracing = { version = "0.1.44" }
-tokio-util = { version = "0.7.19" }
+tokio-util = { version = "0.7.19", features = ["io"] }
 wiremock = { version = "0.6.5" }
 toml = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 base64 = "0.22"
 htmd = "0.5"
 encoding_rs = "0.8"
@@ -56,8 +57,8 @@ rustix = { version = "1", features = ["event"] }
 rquickjs = { version = "=0.14.0", features = ["loader"] }
 # 用户面文案本地化：TOML catalog（locales/ 目录，_version = 2）编译期内嵌
 rust-i18n = "4.2.4"
-# 图像编解码（moc-llm 与 moc-web Image Playground 共用）
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# 图像编解码（moc-llm / moc-tui / moc-web 统一 feature 集合，避免切换 -p 重编）
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "color_quant", "avif"] }
 png = "0.18.1"
 gif = "0.14.2"
 webpx = { version = "0.4", features = ["animation"] }
@@ -69,6 +70,14 @@ trash = "=5.2.9"
 # 多个目标并行链接时峰值内存被放大。
 [profile.dev]
 debug = 1
+
+# 工作区自身 moc-* 保留 debug = 1 行号，外部依赖去除 DWARF 调试信息以加速代码生成与链接并降低峰值内存。
+[profile.dev.package."*"]
+debug = false
+
+# rav1e 在纯 debug 下极慢；开 opt-level = 2 可将 moc-web 的 AVIF 编码单测从约 5s 压至亚秒。
+[profile.dev.package.rav1e]
+opt-level = 2
 
 # moc-web 的 build.rs 每次前端变化都要压缩约 17MB 产物；zstd-sys 不开优化时压缩慢数倍。
 [profile.dev.package.zstd-sys]

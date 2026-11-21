@@ -4,10 +4,15 @@ version = "0.1.0"
 edition = "2024"
 authors = ["soeur@soeur.dev@gmail.com"]
 
+# 无文档测试；避免 cargo test --workspace 对零用例库重复跑 rustdoc。
+[lib]
+doctest = false
+
 [dependencies]
-# 生产只使用客户端；测试服务端在 dev-dependencies 单独启用。
+# 统一启用 server feature，避免在单测与非单测 crate 之间切换时触发 rmcp 及上游 crate 全量重编。
 rmcp = { version = "3.4.1", default-features = false, features = [
     "client",
+    "server",
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
 ] }
@@ -25,4 +30,3 @@ tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-rmcp = { version = "3.4.1", default-features = false, features = ["server"] }

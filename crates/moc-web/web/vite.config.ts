@@ -3,6 +3,15 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
+const DOM_TESTS = [
+  "src/**/*.dom.test.{ts,tsx}",
+  "src/store/**/*.test.{ts,tsx}",
+  "src/lib/plan-annotation.test.ts",
+  "src/lib/slash.test.ts",
+  "src/protocol/rpc.test.ts",
+  "src/components/ai-elements/svg-figure.test.ts",
+];
+
 // 开发：一个终端 `moc web --token dev`，另一个 `pnpm dev`，
 // 打开 http://localhost:5173/?token=dev；/ws 代理到 moc web。
 export default defineConfig({
@@ -33,7 +42,26 @@ export default defineConfig({
     },
   },
   test: {
-    environment: "jsdom",
+    // 仅对带 DOM/窗口依赖的测试启用 jsdom，避免纯逻辑测试重复创建 jsdom。
     globals: true,
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "node",
+          environment: "node",
+          include: ["src/**/*.test.{ts,tsx}"],
+          exclude: DOM_TESTS,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "dom",
+          environment: "jsdom",
+          include: DOM_TESTS,
+        },
+      },
+    ],
   },
 });

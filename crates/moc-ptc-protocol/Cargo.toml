@@ -3,6 +3,10 @@ name = "moc-ptc-protocol"
 version = "0.1.0"
 edition = "2024"
 
+# 无文档测试；避免 cargo test --workspace 对零用例库重复跑 rustdoc。
+[lib]
+doctest = false
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

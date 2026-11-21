@@ -49,6 +49,9 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold
     steps:
       - uses: actions/checkout@v7
 
@@ -73,14 +76,19 @@ jobs:
           cache: pnpm
           cache-dependency-path: crates/moc-web/web/pnpm-lock.yaml
 
-      # aws-lc-sys 在 Linux 上汇编需要 nasm（同 release.yml）。
-      - name: Install nasm
+      # aws-lc-sys 在 Linux 上汇编需要 nasm（同 release.yml）；mold + clang 加速测试链接。
+      - name: Install nasm and mold
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm
+          sudo apt-get install -y nasm mold clang
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Test
-        run: cargo test --workspace --locked
+        run: |
+          cargo nextest run --workspace --locked
+          cargo test -p moc-llm -p moc-protocol --locked --doc
 
   web:
     needs: changes
