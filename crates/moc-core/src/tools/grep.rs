@@ -258,8 +258,7 @@ fn search_resource_namespace(
     let mut file_config = config.clone();
     'entries: for (prefix, directory) in entries {
         let remaining = MAX_FILES - scanned;
-        let (files, truncated, enumeration_notices) =
-            directory_files(directory, remaining, prefix);
+        let (files, truncated, enumeration_notices) = directory_files(directory, remaining, prefix);
         notices.extend(enumeration_notices);
         // 截断先置位：分页提前退出时也要报告扫描不完整。
         stopped |= truncated;
@@ -1332,8 +1331,7 @@ mod tests {
             std::fs::write(skip.join("ok.log"), "b\n").unwrap();
             let unreadable = skip.join("unreadable.log");
             std::fs::write(&unreadable, "b\n").unwrap();
-            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
-                .unwrap();
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
             // 特权进程（root）仍读得动 000 文件，跳过断言。
             if std::fs::read(&unreadable).is_err() {
                 let output = search_resource_namespace(
@@ -1348,15 +1346,11 @@ mod tests {
                     "{output}"
                 );
             }
-            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644))
-                .unwrap();
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
         }
-        let output = search_resource_namespace(
-            &[("artifact://exact/".to_owned(), exact)],
-            &args,
-            &small,
-        )
-        .unwrap();
+        let output =
+            search_resource_namespace(&[("artifact://exact/".to_owned(), exact)], &args, &small)
+                .unwrap();
         assert!(
             !output.content.contains("namespace scan stopped") && !output.incomplete,
             "{}",

@@ -100,8 +100,7 @@ impl SessionFile {
             .open(&self.path)
             .await?;
         // 同步锁不跨 await：先拿到元数据再进临界区，避免阻塞同线程的读者。
-        let revision =
-            crate::hashline::SnapshotId::from_metadata(&reopened.metadata().await?);
+        let revision = crate::hashline::SnapshotId::from_metadata(&reopened.metadata().await?);
         *self.revision.write() = revision;
         *current = Some(reopened);
         Ok(())
@@ -167,8 +166,7 @@ impl SessionFile {
             handle.flush().await?;
             return Err(error.into());
         }
-        let revision =
-            crate::hashline::SnapshotId::from_metadata(&handle.metadata().await?);
+        let revision = crate::hashline::SnapshotId::from_metadata(&handle.metadata().await?);
         *self.revision.write() = revision;
         Ok(())
     }
@@ -222,8 +220,7 @@ impl SessionFile {
         }
         handle.set_len(keep).await?;
         handle.flush().await?;
-        let revision =
-            crate::hashline::SnapshotId::from_metadata(&handle.metadata().await?);
+        let revision = crate::hashline::SnapshotId::from_metadata(&handle.metadata().await?);
         *self.revision.write() = revision;
         Ok(true)
     }
