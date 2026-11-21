@@ -5,6 +5,9 @@
 
 use std::borrow::Cow;
 
+/// SSE 解码器允许保留的未消费字节上限。
+pub(crate) const MAX_BUFFERED_BYTES: usize = 32 * 1024 * 1024;
+
 /// 一个完整的 SSE 帧。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SseEvent {
@@ -36,6 +39,7 @@ pub(crate) struct SseDecoder {
     id: Option<String>,
     data: String,
     has_data: bool,
+    overflowed: bool,
 }
 
 impl SseDecoder {
@@ -51,11 +55,15 @@ impl SseDecoder {
             id: None,
             data: String::new(),
             has_data: false,
+            overflowed: false,
         }
     }
 
     /// 追加一段字节；分片位置任意。
     pub fn push(&mut self, chunk: &[u8]) {
+        if self.overflowed {
+            return;
+        }
         if self.pos > 0 {
             self.buf.drain(..self.pos);
             self.scan -= self.pos;
@@ -73,10 +81,19 @@ impl SseDecoder {
                 self.bom_checked = true;
             }
         }
+        self.check_overflow();
+    }
+
+    /// 缓冲区是否因单行或单帧过长而溢出。
+    pub fn is_overflowed(&self) -> bool {
+        self.overflowed
     }
 
     /// 取出下一个完整帧；不完整时返回 `None`，保留字段状态与未完成行。
     pub fn next_event(&mut self) -> Option<SseEvent> {
+        if self.overflowed {
+            return None;
+        }
         // BOM 尚未收齐时不能推进扫描位置，否则剥离 BOM 后偏移会失效。
         if !self.bom_checked {
             return None;
@@ -132,10 +149,38 @@ impl SseDecoder {
                     }
                     self.has_data = true;
                     self.data.push_str(&value);
+                    self.check_overflow();
+                    if self.overflowed {
+                        return None;
+                    }
                 }
                 // `retry:`、注释行（`:` 开头）等一律忽略。
                 _ => {}
             }
+        }
+    }
+
+    fn check_overflow(&mut self) {
+        let fields_len = self
+            .data
+            .len()
+            .saturating_add(self.event.as_ref().map_or(0, String::len))
+            .saturating_add(self.id.as_ref().map_or(0, String::len));
+        if self
+            .buf
+            .len()
+            .saturating_sub(self.pos)
+            .saturating_add(fields_len)
+            > MAX_BUFFERED_BYTES
+        {
+            self.overflowed = true;
+            self.buf = Vec::new();
+            self.pos = 0;
+            self.scan = 0;
+            self.event = None;
+            self.id = None;
+            self.data.clear();
+            self.has_data = false;
         }
     }
 }
@@ -252,6 +297,21 @@ mod tests {
         // 补上结尾后照常产出，证明未消费字节被保留。
         decoder.push(b"\n\n");
         assert_eq!(drain(&mut decoder), vec![data_event("partial")]);
+    }
+
+    #[test]
+    fn oversized_unterminated_line_latches_overflow_and_releases_buffer() {
+        let mut decoder = SseDecoder::new();
+        let chunk = vec![b'x'; MAX_BUFFERED_BYTES + 1];
+        decoder.push(&chunk);
+
+        assert!(decoder.is_overflowed());
+        assert!(decoder.buf.is_empty());
+        assert_eq!(decoder.next_event(), None);
+        decoder.push(b"\n\ndata: later\n\n");
+        assert!(decoder.is_overflowed());
+        assert!(decoder.buf.is_empty());
+        assert_eq!(decoder.next_event(), None);
     }
 
     #[test]
