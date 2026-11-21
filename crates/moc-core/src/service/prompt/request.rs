@@ -9,6 +9,7 @@ use moc_llm::{
     Role,
 };
 use moc_protocol::methods::InputPart;
+use tokio::io::AsyncReadExt;
 
 pub(in crate::service) async fn project_input(
     input: Vec<InputPart>,
@@ -250,8 +251,8 @@ async fn load_local_image(
             metadata.len()
         )));
     }
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(bytes) => bytes,
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return Err(crate::CoreError::Tool(format!(
                 "image file not found: {}",
@@ -265,6 +266,24 @@ async fn load_local_image(
             )));
         }
     };
+    let mut bytes = Vec::new();
+    if let Err(error) = file
+        .take(crate::tools::read::MAX_IMAGE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+    {
+        return Err(crate::CoreError::Tool(format!(
+            "failed to read image {}: {error}",
+            path.display()
+        )));
+    }
+    if bytes.len() as u64 > crate::tools::read::MAX_IMAGE_FILE_BYTES {
+        return Err(crate::CoreError::Tool(format!(
+            "{}: image is {} bytes and exceeds the 20 MiB image input limit; crop or downscale it first",
+            path.display(),
+            bytes.len()
+        )));
+    }
     Ok(Some(moc_llm::ImageSource::Base64 {
         media_type: media_type.to_owned(),
         data: base64::engine::general_purpose::STANDARD.encode(bytes),
