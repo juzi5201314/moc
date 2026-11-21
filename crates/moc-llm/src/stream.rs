@@ -588,6 +588,12 @@ impl ChatStream {
                 return;
             }
         }
+        if self.sse.is_overflowed() {
+            self.stop_with(LlmError::Stream(format!(
+                "SSE 缓冲区超过 {} 字节上限",
+                crate::codec::sse::MAX_BUFFERED_BYTES
+            )));
+        }
     }
 
     /// 把暂存事件交给累加器与调用方。
