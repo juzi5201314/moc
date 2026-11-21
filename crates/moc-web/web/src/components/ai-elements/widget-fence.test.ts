@@ -54,6 +54,39 @@ describe("widget-fence 与文档组装", () => {
     });
   });
 
+  it("列表项内的 widget 围栏保留为 Markdown，顶层缩进围栏仍可识别", () => {
+    const md = [
+      "- 无序列表项",
+      "  ```widget",
+      "<div>无序列表示例</div>",
+      "  ```",
+      "1) 有序列表项",
+      "   ```widget",
+      "<div>有序列表示例</div>",
+      "   ```",
+      "",
+      ' ```widget title="顶层组件"',
+      "<div>顶层组件</div>",
+      " ```",
+    ].join("\n");
+
+    const parts = splitWidgetParts(md);
+    expect(parts).toHaveLength(2);
+    const markdownPart = parts[0];
+    expect(markdownPart?.kind).toBe("markdown");
+    if (!markdownPart || markdownPart.kind !== "markdown") {
+      throw new Error("列表项内的代码必须保留为 Markdown");
+    }
+    expect(markdownPart.text).toContain("<div>无序列表示例</div>");
+    expect(markdownPart.text).toContain("<div>有序列表示例</div>");
+    expect(parts[1]).toMatchObject({
+      kind: "widget",
+      title: "顶层组件",
+      code: "<div>顶层组件</div>",
+      complete: true,
+    });
+  });
+
   it("组装宿主运行文档与离线导出 HTML，并转义闭合标签", () => {
     const tokens = readWidgetTokens(true);
     const runtime = buildWidgetDocument("<div>hi</div>", {

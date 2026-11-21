@@ -42,6 +42,38 @@ function isClosingFence(line: string, fence: Fence): boolean {
   return match[2][0] === fence.char && match[2].length >= fence.len;
 }
 
+type ListItemContext = { indent: number; contentIndent: number };
+
+function isThematicBreak(line: string): boolean {
+  return /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line);
+}
+
+function parseListItem(line: string): ListItemContext | undefined {
+  if (isThematicBreak(line)) return undefined;
+  const match = /^( {0,3})([*+-]|\d{1,9}[.)])([ \t]+|$)/.exec(line);
+  if (!match) return undefined;
+
+  const indent = match[1].length;
+  const markerEnd = indent + match[2].length;
+  let column = markerEnd;
+  for (const char of match[3] ?? "") {
+    column += char === "\t" ? 4 - (column % 4) : 1;
+  }
+  let padding = column - markerEnd;
+  if (padding === 0 || padding > 4) padding = 1;
+
+  return { indent, contentIndent: markerEnd + padding };
+}
+
+function isBlockStart(line: string, fence: Fence | null): boolean {
+  return (
+    fence !== null ||
+    /^ {0,3}>/.test(line) ||
+    /^ {0,3}#{1,6}(?:[ \t]|$)/.test(line) ||
+    isThematicBreak(line)
+  );
+}
+
 function parseMeta(rest: string): { title?: string; height?: number } {
   let title: string | undefined;
   let height: number | undefined;
@@ -117,6 +149,8 @@ export function splitWidgetParts(markdown: string): MessagePart[] {
   let proseStart = 0;
   let lineStart = 0;
   let widgetIndex = 0;
+  const listItems: ListItemContext[] = [];
+  let previousLineWasBlank = false;
 
   const pushMarkdown = (text: string) => {
     if (!text) return;
@@ -133,6 +167,32 @@ export function splitWidgetParts(markdown: string): MessagePart[] {
     const lineEnd = newline < 0 ? normalized.length : newline;
     const line = normalized.slice(lineStart, lineEnd);
     const fence = parseOpeningFence(line);
+    const listItem = parseListItem(line);
+    const indent = line.match(/^ */)?.[0].length ?? 0;
+    const blank = /^[ \t]*$/.test(line);
+
+    if (listItem) {
+      while (true) {
+        const parent = listItems.at(-1);
+        if (!parent || listItem.indent >= parent.contentIndent) break;
+        listItems.pop();
+      }
+      listItems.push(listItem);
+    } else if (!blank) {
+      while (true) {
+        const current = listItems.at(-1);
+        if (
+          !current ||
+          indent >= current.contentIndent ||
+          (!previousLineWasBlank && !isBlockStart(line, fence))
+        ) {
+          break;
+        }
+        listItems.pop();
+      }
+    }
+    previousLineWasBlank = blank;
+    const insideList = listItems.some((item) => indent >= item.contentIndent);
 
     if (!fence) {
       if (newline < 0) break;
@@ -156,8 +216,8 @@ export function splitWidgetParts(markdown: string): MessagePart[] {
       scan = nextNl + 1;
     }
 
-    if (fence.lang !== "widget") {
-      // 普通代码块：整体略过，保持在 markdown 缓冲区中。
+    if (fence.lang !== "widget" || insideList) {
+      // 普通代码块和列表项内的 widget 示例都留在 Markdown 中，不作为组件执行。
       if (closeStart < 0) break;
       if (closeEnd >= normalized.length) break;
       lineStart = closeEnd + 1;
