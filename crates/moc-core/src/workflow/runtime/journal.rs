@@ -19,19 +19,16 @@ use std::io::Write;
 use std::sync::Arc;
 
 impl WorkflowManager {
-    /// 向前端发一条 workflow 事件（异步投递，不阻塞引擎循环）。
+    /// 将 workflow 事件放入此 run 的 FIFO 派发队列。
     pub(super) fn emit(&self, handle: &Arc<RunHandle>, event: WorkflowEvent) {
-        let sink = handle.request.updates();
-        let session_id = self.session_id.clone();
-        let run_id = handle.id.clone();
-        tokio::spawn(async move {
-            let _ = sink
-                .emit(
-                    session_id,
-                    moc_protocol::SessionUpdate::Workflow { run_id, event },
-                )
-                .await;
-        });
+        if let Some(sender) = handle.workflow_events.lock().as_ref() {
+            let _ = sender.send(event);
+        }
+    }
+
+    /// 运行任务收尾后关闭队列；drain 会先发送完已入队事件再退出。
+    pub(super) fn close_event_dispatch(&self, handle: &Arc<RunHandle>) {
+        handle.workflow_events.lock().take();
     }
 
     /// ask 派发：对应 role 的在飞计数 + 解析模型写入 view（供面板与快照）。
@@ -148,7 +145,6 @@ impl WorkflowManager {
 
     /// Session 事件 → SessionUpdate::Workflow + run view 更新。
     pub(super) fn on_session_event(&self, handle: &Arc<RunHandle>, event: SessionEvent) {
-        let run_id = handle.id.clone();
         let update = match event {
             SessionEvent::ActorCreated {
                 site_id,
@@ -257,16 +253,7 @@ impl WorkflowManager {
             }),
         };
         if let Some(event) = update {
-            let sink = handle.request.updates();
-            let session_id = self.session_id.clone();
-            tokio::spawn(async move {
-                let _ = sink
-                    .emit(
-                        session_id,
-                        moc_protocol::SessionUpdate::Workflow { run_id, event },
-                    )
-                    .await;
-            });
+            self.emit(handle, event);
         }
     }
 

@@ -131,6 +131,7 @@ async fn shutdown_retry_and_panic_notify_all_waiters() {
 
     // 不让出执行权，在旧 supervisor 收尾前注册同一 run_id 的新 handle，模拟 resume。
     let (to_worker, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (workflow_events, _workflow_rx) = tokio::sync::mpsc::unbounded_channel();
     let resumed = Arc::new(RunHandle {
         id: run_id.clone(),
         dir: handle.dir.clone(),
@@ -149,6 +150,7 @@ async fn shutdown_retry_and_panic_notify_all_waiters() {
         )),
         publish_lock: Mutex::new(()),
         cancel: CancellationToken::new(),
+        workflow_events: Mutex::new(Some(workflow_events)),
         finished: AtomicBool::new(false),
         finish_notify: Notify::new(),
         cwd: handle.cwd.clone(),
