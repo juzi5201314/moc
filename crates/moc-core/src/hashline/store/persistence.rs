@@ -1,6 +1,6 @@
 //! 已展示行和版本链按文件持久化；不保存正文或撤销栈。
 
-use super::{AnchorStore, MAX_VERSIONS, ServedFile};
+use super::{AnchorStore, MAX_FILES, MAX_VERSIONS, ServedFile};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -12,10 +12,17 @@ impl AnchorStore {
             .get_or_try_init(|| async {
                 let directory = sidecar.join("anchors");
                 let source = directory.clone();
-                let files = tokio::task::spawn_blocking(move || load(&source))
+                let (files, removed) = tokio::task::spawn_blocking(move || load(&source))
                     .await
                     .map_err(io::Error::other)??;
-                self.files.write().extend(files);
+                let mut current = self.files.write();
+                current.extend(files);
+                while current.len() > MAX_FILES {
+                    let path = current.keys().next().cloned().expect("文件数超过上限");
+                    current.remove(&path);
+                    self.removed.lock().insert(path);
+                }
+                self.removed.lock().extend(removed);
                 Ok::<_, io::Error>(directory)
             })
             .await?;
@@ -28,26 +35,30 @@ impl AnchorStore {
             return Ok(());
         };
         let _serial = self.persistence.lock().await;
-        let records: Vec<(PathBuf, Vec<u8>)> = {
+        let (records, removed): (Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>) = {
             // 与 record_served/commit_edit/invalidate 保持相同锁序。
             let files = self.files.read();
             let mut dirty = self.dirty.lock();
+            let mut removed = self.removed.lock();
             let records = dirty
                 .iter()
-                .map(|path| {
-                    let served = files.get(path).expect("脏记录一定存在");
+                .filter_map(|path| files.get(path).map(|served| (path, served)))
+                .map(|(path, served)| {
                     let bytes = serde_json::to_vec(&(path, served)).map_err(io::Error::other)?;
                     Ok((path.clone(), bytes))
                 })
                 .collect::<io::Result<Vec<_>>>()?;
+            let removed_paths = removed.drain().collect();
             dirty.clear();
-            records
+            (records, removed_paths)
         };
-        if records.is_empty() {
+        if records.is_empty() && removed.is_empty() {
             return Ok(());
         }
         let result = async {
-            tokio::fs::create_dir_all(directory).await?;
+            if !records.is_empty() {
+                tokio::fs::create_dir_all(directory).await?;
+            }
             for (path, bytes) in &records {
                 let hash = xxhash_rust::xxh3::xxh3_128(path.as_os_str().as_encoded_bytes());
                 let target = directory.join(format!("{hash:032x}.json"));
@@ -62,27 +73,50 @@ impl AnchorStore {
                 }
                 saved?;
             }
+            for path in &removed {
+                let hash = xxhash_rust::xxh3::xxh3_128(path.as_os_str().as_encoded_bytes());
+                let target = directory.join(format!("{hash:032x}.json"));
+                match tokio::fs::remove_file(target).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
             Ok::<_, io::Error>(())
         }
         .await;
         if result.is_err() {
-            self.dirty
-                .lock()
-                .extend(records.into_iter().map(|(path, _)| path));
+            let files = self.files.read();
+            let mut dirty = self.dirty.lock();
+            let mut pending_removals = self.removed.lock();
+            for path in records.into_iter().map(|(path, _)| path).chain(removed) {
+                if files.contains_key(&path) {
+                    pending_removals.remove(&path);
+                    dirty.insert(path);
+                } else {
+                    dirty.remove(&path);
+                    pending_removals.insert(path);
+                }
+            }
         }
         result
     }
 }
 
-fn load(directory: &Path) -> io::Result<HashMap<PathBuf, ServedFile>> {
+fn load(directory: &Path) -> io::Result<(HashMap<PathBuf, ServedFile>, Vec<PathBuf>)> {
     let entries = match std::fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Ok(entries) => entries.collect::<Result<Vec<_>, _>>()?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok((HashMap::new(), Vec::new()));
+        }
         Err(error) => return Err(error),
     };
+    let mut entries = entries;
+    entries.sort_by_key(|entry| entry.file_name());
     let mut files = HashMap::new();
+    let mut removed = Vec::new();
     for entry in entries {
-        let path = entry?.path();
+        let path = entry.path();
         if path.extension().is_none_or(|extension| extension != "json") {
             continue;
         }
@@ -111,16 +145,62 @@ fn load(directory: &Path) -> io::Result<HashMap<PathBuf, ServedFile>> {
                 "invalid persisted edit snapshot",
             ));
         }
-        files.insert(path, served);
+        if files.len() < MAX_FILES {
+            files.insert(path, served);
+        } else {
+            removed.push(path);
+        }
     }
-    Ok(files)
+    Ok((files, removed))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hashline::apply::{EditOp, EditRequest, apply_edit, plan_edit};
-    use crate::hashline::{served::read_snapshot, tag_text};
+    use crate::hashline::{LineEnding, SnapshotId, served::read_snapshot, tag_text};
+
+    #[tokio::test]
+    async fn file_limit_evicts_and_removes_persisted_anchor() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = AnchorStore::new();
+        store.restore(directory.path()).await.unwrap();
+        let snapshot = crate::hashline::FileSnapshot {
+            bytes: b"line\n".to_vec(),
+            lines: vec!["line".into()],
+            epoch: SnapshotId {
+                device: 0,
+                inode: 0,
+                modified_secs: 0,
+                modified_nanos: 0,
+                changed_secs: 0,
+                changed_nanos: 0,
+                size: 5,
+                content_hash: 0,
+            },
+            bom: false,
+            line_ending: LineEnding::Lf,
+        };
+        for index in 0..MAX_FILES {
+            store.record_served(
+                directory.path().join(format!("file-{index}")),
+                &snapshot,
+                &[0..1],
+            );
+        }
+        store.flush().await.unwrap();
+
+        store.record_served(directory.path().join("new-file"), &snapshot, &[0..1]);
+        assert_eq!(store.files.read().len(), MAX_FILES);
+        store.flush().await.unwrap();
+
+        let anchors = directory.path().join("anchors");
+        let count = std::fs::read_dir(&anchors).unwrap().count();
+        assert_eq!(count, MAX_FILES);
+        let restored = AnchorStore::new();
+        restored.restore(directory.path()).await.unwrap();
+        assert_eq!(restored.files.read().len(), MAX_FILES);
+    }
 
     #[tokio::test]
     #[allow(clippy::single_range_in_vec_init)]
