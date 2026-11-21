@@ -11,7 +11,11 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 
 use xxhash_rust::xxh3::Xxh3;
 
@@ -291,16 +295,21 @@ type DecodeTask = (
 struct DecodePool {
     sender: Option<mpsc::SyncSender<DecodeTask>>,
     workers: Vec<std::thread::JoinHandle<()>>,
+    /// 停机标志：置位后 worker 跳过队列里还没解的任务，只完成手头那次解码。
+    /// 没有它，Drop 的 join 要等最多 64 项积压全部解完，TUI 退出会卡住。
+    stop: Arc<AtomicBool>,
 }
 
 impl DecodePool {
     fn new(events: tokio::sync::mpsc::UnboundedSender<AppEvent>) -> Option<Self> {
         let (sender, receiver) = mpsc::sync_channel::<DecodeTask>(MAX_QUEUED_DECODES);
         let receiver = Arc::new(Mutex::new(receiver));
+        let stop = Arc::new(AtomicBool::new(false));
         let mut workers = Vec::with_capacity(IMAGE_DECODE_WORKERS);
         for index in 0..IMAGE_DECODE_WORKERS {
             let receiver = Arc::clone(&receiver);
             let events = events.clone();
+            let worker_stop = Arc::clone(&stop);
             match std::thread::Builder::new()
                 .name(format!("moc-image-{index}"))
                 .spawn(move || {
@@ -312,6 +321,9 @@ impl DecodePool {
                         let Ok((key, make)) = task else {
                             break;
                         };
+                        if worker_stop.load(Ordering::Acquire) {
+                            break;
+                        }
                         let result = decode::decode(make()).map_err(|error| error.to_string());
                         // 接收端已关闭（TUI 正在退出）就静默丢弃，没必要报错
                         let _ = events.send(AppEvent::ImagePrepared { key, result });
@@ -319,6 +331,7 @@ impl DecodePool {
                 }) {
                 Ok(worker) => workers.push(worker),
                 Err(_) => {
+                    stop.store(true, Ordering::Release);
                     drop(sender);
                     for worker in workers {
                         let _ = worker.join();
@@ -330,6 +343,7 @@ impl DecodePool {
         Some(Self {
             sender: Some(sender),
             workers,
+            stop,
         })
     }
 
@@ -343,7 +357,9 @@ impl DecodePool {
 
 impl Drop for DecodePool {
     fn drop(&mut self) {
-        // 关闭发送端后，阻塞在 recv 的 worker 会依次退出。
+        // 先置停机标志让 worker 跳过排队任务，再关发送端唤醒 recv；
+        // join 最多等一次在飞解码，不会被积压拖住退出。
+        self.stop.store(true, Ordering::Release);
         self.sender.take();
         for worker in self.workers.drain(..) {
             let _ = worker.join();
