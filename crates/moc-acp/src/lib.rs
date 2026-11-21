@@ -13,8 +13,9 @@ mod backend;
 mod bridge;
 mod translate;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::schema::v1::{self as acp, ClientCapabilities, SessionNotification};
 use agent_client_protocol::{Client, ConnectionTo};
@@ -27,6 +28,8 @@ use moc_protocol::{ClientRequest, ServerOptions};
 
 use backend::Backend;
 use translate::SessionProjection;
+
+const DROPPED_TOMBSTONE_CAP: usize = 1024;
 
 /// `moc acp` 的进程级选项：新会话的默认模型 / 引擎 / plan 入口。
 #[derive(Debug, Clone, Default)]
@@ -51,7 +54,13 @@ pub(crate) struct Bridge<B> {
     client_caps: Mutex<ClientCapabilities>,
     /// `config/get` 结果：模型表给 config_option 与 usage 上下文用；失败时为空。
     config: OnceLock<Option<ConfigGetResult>>,
-    sessions: Mutex<HashMap<String, SessionProjection>>,
+    sessions: Mutex<SessionState>,
+}
+
+#[derive(Default)]
+struct SessionState {
+    sessions: HashMap<String, SessionProjection>,
+    dropped_ids: HashSet<String>,
 }
 
 impl<B: Backend> Bridge<B> {
@@ -62,7 +71,7 @@ impl<B: Backend> Bridge<B> {
             acp: Mutex::new(None),
             client_caps: Mutex::new(ClientCapabilities::default()),
             config: OnceLock::new(),
-            sessions: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(SessionState::default()),
         }
     }
 
@@ -113,11 +122,18 @@ impl<B: Backend> Bridge<B> {
 
     /// 写入 / 刷新会话投影，返回当前投影副本。
     fn track_session(&self, info: &SessionInfo) -> SessionProjection {
+        let mut state = self.sessions.lock().expect("会话投影");
+        state.dropped_ids.remove(&info.id);
+        if let Some(current) = state.sessions.get(&info.id) {
+            // core 的 updated_at_ms 随 mutation entry 单调不减，迟到快照不能回滚投影。
+            // 孤儿投影只由迟到通知重建、字段不全，真实快照到达时必须无条件生效。
+            // 首个接触是通知的会话，首个快照会覆盖通知已同步的字段，这个窗口可以接受。
+            if current.anchored && info.updated_at_ms <= current.updated_at_ms {
+                return current.clone();
+            }
+        }
         let proj = SessionProjection::from_info(info);
-        self.sessions
-            .lock()
-            .expect("会话投影")
-            .insert(info.id.clone(), proj.clone());
+        state.sessions.insert(info.id.clone(), proj.clone());
         proj
     }
 
@@ -125,12 +141,21 @@ impl<B: Backend> Bridge<B> {
         self.sessions
             .lock()
             .expect("会话投影")
+            .sessions
             .get(session_id)
             .cloned()
     }
 
     fn drop_session(&self, session_id: &str) {
-        self.sessions.lock().expect("会话投影").remove(session_id);
+        let mut state = self.sessions.lock().expect("会话投影");
+        state.sessions.remove(session_id);
+        if !state.dropped_ids.contains(session_id)
+            && state.dropped_ids.len() >= DROPPED_TOMBSTONE_CAP
+        {
+            // 极旧会话之后若再收到迟到通知，丢失 tombstone 可能短暂重建投影；限制集合避免其随进程时长无界增长。
+            state.dropped_ids.clear();
+        }
+        state.dropped_ids.insert(session_id.to_owned());
     }
 
     /// 会话的 config_options 列表（当前只有模型项；拿不到模型表则为空）。
@@ -144,8 +169,22 @@ impl<B: Backend> Bridge<B> {
 
     /// moc 会话更新 → ACP 更新序列（顺手维护该会话的投影）。
     fn translate_update(&self, session_id: &str, update: &MocUpdate) -> Vec<acp::SessionUpdate> {
-        let mut sessions = self.sessions.lock().expect("会话投影");
-        let proj = sessions.entry(session_id.to_owned()).or_default();
+        let mut state = self.sessions.lock().expect("会话投影");
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+            .unwrap_or_default();
+        let dropped = state.dropped_ids.contains(session_id);
+        let mut temporary = SessionProjection::default();
+        let proj = if dropped {
+            temporary.updated_at_ms = now_ms;
+            &mut temporary
+        } else {
+            let proj = state.sessions.entry(session_id.to_owned()).or_default();
+            proj.updated_at_ms = proj.updated_at_ms.max(now_ms);
+            proj
+        };
         translate::session_update(
             update,
             proj,

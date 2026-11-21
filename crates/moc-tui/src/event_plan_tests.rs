@@ -841,6 +841,46 @@ async fn plan_review_approval_loads_new_session() {
 }
 
 #[tokio::test]
+async fn plan_execution_load_does_not_switch_after_user_changes_session() {
+    let mut h = PlanHarness::new().await;
+    h.write_and_review().await;
+    if let Some(Modal::Plan { state }) = h.app.modal.as_mut() {
+        state.focus = crate::modal::PlanControl::RunNew;
+    }
+    h.key(KeyCode::Enter);
+    h.approval().await;
+    let event = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(3), h.events.recv())
+            .await
+            .expect("执行会话加载")
+            .expect("事件");
+        if let AppEvent::PlanExecutionLoaded { result, .. } = &event {
+            result.as_ref().expect("执行会话加载成功");
+            break event;
+        }
+    };
+    let other = h
+        .connection
+        .client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: Some("手动切换的会话".into()),
+            engine: SessionEngine::Standard,
+            plan_active: false,
+            fast_mode: false,
+        })
+        .await
+        .expect("新会话");
+    let other_id = other.id.clone();
+    h.app.switch_session(other, Vec::new());
+    crate::interaction::handle_event(&mut h.app, &h.connection, event);
+    assert_eq!(h.app.session.as_ref().expect("当前会话").id, other_id);
+    assert!(h.app.inflight_prompts.is_empty());
+    h.close().await;
+}
+
+#[tokio::test]
 async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
     let mut h = PlanHarness::new().await;
     let plan = h.write_and_review().await;

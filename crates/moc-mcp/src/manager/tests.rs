@@ -695,6 +695,67 @@ async fn call_before_connect_fails_gracefully() {
     manager.shutdown().await;
 }
 
+// 杀死旧传输并使用新连接的 peer，验证调用确实走了重连后的连接。
+#[tokio::test]
+async fn call_waits_for_reconnecting_slot_to_become_connected() {
+    let state = Arc::new(TestState::default());
+    let manager = McpManager::build_with_call_timeout(
+        vec![test_server("test", true)],
+        CancellationToken::new(),
+        |_| test_connector(state.clone()),
+        Duration::from_secs(2),
+    );
+    manager.start().await;
+    let tools = connected_tools(&manager, Duration::from_secs(5)).await;
+    let echo = Arc::clone(tools.iter().find(|tool| tool.name == "echo").unwrap());
+    let slot = manager.slots.get("test").unwrap();
+    let (tools, instructions) = match &*slot.phase.read() {
+        Phase::Connected {
+            tools,
+            instructions,
+            ..
+        } => (tools.clone(), instructions.clone()),
+        _ => panic!("测试 server 应已连接"),
+    };
+    slot.set_phase(Phase::Reconnecting {
+        attempts: 1,
+        error: "test disconnect".into(),
+    });
+
+    let call_manager = Arc::clone(&manager);
+    let call = tokio::spawn(async move {
+        call_manager
+            .call(
+                &echo,
+                json!({"text": "after reconnect"}),
+                CancellationToken::new(),
+                None,
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!call.is_finished(), "重连期间的调用应等待 phase 稳定");
+
+    state.kill.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let (changed_tx, _changed_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let service2 = (slot.connector)(changed_tx)
+        .await
+        .expect("第二次连接应成功");
+    slot.set_phase(Phase::Connected {
+        peer: service2.peer().clone(),
+        tools,
+        instructions,
+    });
+    let output = call.await.unwrap().unwrap();
+    assert_eq!(output.text, "echo: after reconnect");
+    assert!(
+        state.connect_count.load(Ordering::SeqCst) >= 2,
+        "应至少建立两次连接"
+    );
+    manager.shutdown().await;
+}
+
 /// 握手成功但立即退出的 server 必须耗尽重连预算，而不是无限重启。
 #[tokio::test]
 async fn handshake_then_immediate_exit_exhausts_reconnect_budget() {

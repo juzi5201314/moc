@@ -357,6 +357,9 @@ fn diagnose(
 /// 异常上游或代理可以用错误响应把整份响应体塞进来，读到底只会白占内存。
 const MAX_ERROR_BODY_BYTES: usize = 1024 * 1024;
 
+/// 非流式成功响应体的读取上限。
+const MAX_RESPONSE_BODY_BYTES: usize = 64 * 1024 * 1024;
+
 /// 读取非 2xx 响应体，最多 [`MAX_ERROR_BODY_BYTES`] 字节。
 ///
 /// 达到上限即停止读取（状态码与已读部分足以分类），读取中途失败也按已读内容
@@ -401,14 +404,25 @@ fn deadline_error(slug: &str, secs: u64) -> LlmError {
 
 /// 读取完整的 2xx 响应体。
 async fn read_body(response: reqwest::Response) -> Result<Vec<u8>, LlmError> {
-    response
-        .bytes()
-        .await
-        .map(|bytes| {
-            record_rx(bytes.len() as u64);
-            bytes.to_vec()
-        })
-        .map_err(|error| LlmError::Stream(t!("llm.err.read_body_failed", err = error).into_owned()))
+    read_body_with_limit(response, MAX_RESPONSE_BODY_BYTES).await
+}
+
+async fn read_body_with_limit(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, LlmError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        LlmError::Stream(t!("llm.err.read_body_failed", err = error).into_owned())
+    })? {
+        record_rx(chunk.len() as u64);
+        let room = limit.saturating_sub(body.len());
+        if chunk.len() > room {
+            return Err(LlmError::Stream(format!("成功响应体超过 {limit} 字节上限")));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// `bytes_stream` 的计数包装：每交付一个 chunk 计入进程级 RX 计数器。
@@ -517,6 +531,21 @@ impl ClientBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn response_body_over_limit_returns_stream_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"12345".to_vec()))
+            .mount(&server)
+            .await;
+        let response = reqwest::get(server.uri()).await.unwrap();
+
+        let error = read_body_with_limit(response, 4).await.unwrap_err();
+        assert!(matches!(error, LlmError::Stream(message) if message.contains("超过 4 字节上限")));
+    }
 
     #[test]
     fn default_transport_is_lazy_and_shared() {

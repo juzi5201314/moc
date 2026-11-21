@@ -3083,6 +3083,7 @@ dependencies = [
  "futures-util",
  "gif",
  "image",
+ "libc",
  "moc-core",
  "moc-llm",
  "moc-protocol",

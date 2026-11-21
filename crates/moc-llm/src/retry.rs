@@ -51,8 +51,8 @@ impl RetryPolicy {
         } else {
             base
         };
-        let backoff = Duration::try_from_secs_f64(backoff.max(MIN_DELAY_SECS))
-            .unwrap_or(Duration::MAX);
+        let backoff =
+            Duration::try_from_secs_f64(backoff.max(MIN_DELAY_SECS)).unwrap_or(Duration::MAX);
         Some(backoff.max(retry_after.unwrap_or_default()))
     }
 }

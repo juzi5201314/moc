@@ -1022,6 +1022,7 @@ pub(crate) fn apply_plan_approval(
             {
                 start_auto_prompt(app, connection, result.auto_prompt);
             } else {
+                let source_session_id = app.session.as_ref().map(|session| session.id.clone());
                 let client = connection.client.clone();
                 let events = app.events.clone();
                 tokio::spawn(async move {
@@ -1031,6 +1032,7 @@ pub(crate) fn apply_plan_approval(
                     let _ = events.send(AppEvent::PlanExecutionLoaded {
                         result: loaded,
                         auto_prompt: result.auto_prompt,
+                        source_session_id,
                     });
                 });
             }
@@ -1053,9 +1055,17 @@ pub(crate) fn apply_plan_execution_loaded(
     connection: &EmbeddedConnection,
     result: anyhow::Result<SessionLoadResult>,
     auto_prompt: Option<String>,
+    source_session_id: Option<String>,
 ) {
     match result {
         Ok(loaded) => {
+            if !app
+                .session
+                .as_ref()
+                .is_some_and(|session| Some(session.id.as_str()) == source_session_id.as_deref())
+            {
+                return;
+            }
             let cwd = loaded.session.cwd.clone();
             let id = loaded.session.id.clone();
             let before = loaded.entries.first().map(|entry| entry.id.clone());

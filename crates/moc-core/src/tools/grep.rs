@@ -257,15 +257,21 @@ fn search_resource_namespace(
     file_args.skip = None;
     let mut file_config = config.clone();
     'entries: for (prefix, directory) in entries {
-        for (relative, path) in directory_files(directory) {
-            if scanned >= MAX_FILES {
-                stopped = true;
-                break 'entries;
-            }
+        let remaining = MAX_FILES - scanned;
+        let (files, truncated, enumeration_notices) = directory_files(directory, remaining, prefix);
+        notices.extend(enumeration_notices);
+        // 截断先置位：分页提前退出时也要报告扫描不完整。
+        stopped |= truncated;
+        for (relative, path) in files {
             scanned += 1;
             let uri = format!("{prefix}{relative}");
-            let Ok(metadata) = std::fs::metadata(&path) else {
-                continue;
+            let metadata = match std::fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    notices.push(format!("[skipped {uri}: {error}]"));
+                    output.incomplete = true;
+                    continue;
+                }
             };
             if metadata.len() > config.max_file_bytes {
                 notices.push(format!(
@@ -274,8 +280,13 @@ fn search_resource_namespace(
                 ));
                 continue;
             }
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    notices.push(format!("[skipped {uri}: {error}]"));
+                    output.incomplete = true;
+                    continue;
+                }
             };
             file_config.max_matches_total = config
                 .max_matches_per_file
@@ -312,11 +323,14 @@ fn search_resource_namespace(
             output.matches += matches.matches;
             shown_files += 1;
         }
+        if truncated {
+            break 'entries;
+        }
     }
     if output.content.is_empty() {
         output.content.push_str("No matches found");
     }
-    output.incomplete = stopped || !notices.is_empty();
+    output.incomplete |= stopped || !notices.is_empty();
     for notice in notices {
         push_notice(&mut output.content, &notice);
     }
@@ -329,15 +343,47 @@ fn search_resource_namespace(
     Ok(output)
 }
 
-/// 列出目录下所有文件及其相对路径（用 `/` 分隔，按路径排序），跳过点文件。
-fn directory_files(directory: &Path) -> Vec<(String, PathBuf)> {
+/// 最多列出 limit 个文件及其相对路径（用 `/` 分隔），跳过点文件。
+/// 返回（文件, 是否还有文件没枚举到, 枚举失败的提示）；提示用 `uri_prefix` + 相对
+/// 路径拼 URI，不暴露真实磁盘路径。只有真遇到第 limit+1 个文件才算截断。
+fn directory_files(
+    directory: &Path,
+    limit: usize,
+    uri_prefix: &str,
+) -> (Vec<(String, PathBuf)>, bool, Vec<String>) {
+    const MAX_NOTICES: usize = 8;
     let mut files = Vec::new();
+    let mut notices = Vec::new();
+    let mut failed = 0usize;
     let mut stack = vec![(String::new(), directory.to_owned())];
-    while let Some((prefix, current)) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            continue;
+    let mut truncated = false;
+    'walk: while let Some((prefix, current)) = stack.pop() {
+        let entries = match std::fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(error) => {
+                failed += 1;
+                if notices.len() < MAX_NOTICES {
+                    notices.push(format!("[skipped {uri_prefix}{prefix}: {error}]"));
+                }
+                continue;
+            }
         };
-        for entry in entries.flatten() {
+        let mut listing = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => listing.push(entry),
+                Err(error) => {
+                    failed += 1;
+                    if notices.len() < MAX_NOTICES {
+                        notices.push(format!("[skipped {uri_prefix}{prefix}: {error}]"));
+                    }
+                }
+            }
+        }
+        // read_dir 顺序不稳定：逐层排序让达到上限时截取的文件子集可复现。
+        listing.sort_unstable_by_key(std::fs::DirEntry::file_name);
+        let mut subdirs = Vec::new();
+        for entry in listing {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with('.') {
                 continue;
@@ -347,18 +393,37 @@ fn directory_files(directory: &Path) -> Vec<(String, PathBuf)> {
             } else {
                 format!("{prefix}/{name}")
             };
-            let Ok(file_type) = entry.file_type() else {
-                continue;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    failed += 1;
+                    if notices.len() < MAX_NOTICES {
+                        notices.push(format!("[skipped {uri_prefix}{relative}: {error}]"));
+                    }
+                    continue;
+                }
             };
             if file_type.is_dir() {
-                stack.push((relative, entry.path()));
+                subdirs.push((relative, entry.path()));
             } else if file_type.is_file() {
+                if files.len() >= limit {
+                    truncated = true;
+                    break 'walk;
+                }
                 files.push((relative, entry.path()));
             }
         }
+        // 栈是后进先出：倒序压栈让子目录仍按排序序展开。
+        for subdir in subdirs.into_iter().rev() {
+            stack.push(subdir);
+        }
+    }
+    if failed > notices.len() {
+        let omitted = failed - notices.len();
+        notices.push(format!("[{omitted} more unreadable entries skipped]"));
     }
     files.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-    files
+    (files, truncated, notices)
 }
 
 /// 取出一段文本里的命中行；没有命中时返回空串，由调用方决定报告无结果还是继续拼下一段。
@@ -646,6 +711,10 @@ impl Search {
         let mut limited = false;
         let mut capped = false;
         let mut skipped_large_files = 0usize;
+        // 逐条提示有上限：不可读文件可能上万个，提示本身不能撑爆输出预算。
+        const MAX_SKIPPED_NOTICES: usize = 8;
+        let mut skipped_unreadable = 0usize;
+        let mut skipped_files = Vec::new();
         let skip = self.args.skip.unwrap_or(0);
         // 分块搜索：块内并行，输出上限较低时不必搜完全部候选文件。
         let width = rayon::current_num_threads().clamp(1, 32);
@@ -657,8 +726,14 @@ impl Search {
             for (path, result) in block.iter().zip(results) {
                 let result = match result {
                     Ok(result) => result,
-                    Err(_) => {
+                    Err(error) => {
                         incomplete.store(true, Ordering::Relaxed);
+                        skipped_unreadable += 1;
+                        if skipped_files.len() < MAX_SKIPPED_NOTICES {
+                            let relative = path.strip_prefix(&self.cwd).unwrap_or(path);
+                            skipped_files
+                                .push(format!("[skipped {}: {error}]", relative.display()));
+                        }
                         continue;
                     }
                 };
@@ -791,6 +866,18 @@ impl Search {
                 &format!(
                     "[{skipped_large_files} files exceeded the {}-byte limit and were not searched]",
                     self.config.max_file_bytes
+                ),
+            );
+        }
+        for notice in &skipped_files {
+            push_notice(&mut output, notice);
+        }
+        if skipped_unreadable > skipped_files.len() {
+            push_notice(
+                &mut output,
+                &format!(
+                    "[{} more unreadable files skipped]",
+                    skipped_unreadable - skipped_files.len()
                 ),
             );
         }
@@ -1227,6 +1314,74 @@ mod tests {
         assert!(
             output.ends_with("[namespace scan stopped after 200 files]"),
             "{output}"
+        );
+
+        // 恰好 200 个文件时全数搜完，不误报"扫描已停止"；读不出的文件点名提示。
+        // 样本内容 2 字节，要通过 4 字节的大小检查才会真正走到读取路径。
+        let exact = root.path().join("exact");
+        std::fs::create_dir_all(&exact).unwrap();
+        for index in 0..200 {
+            std::fs::write(exact.join(format!("f_{index:03}.log")), "b\n").unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let skip = root.path().join("skip");
+            std::fs::create_dir_all(&skip).unwrap();
+            std::fs::write(skip.join("ok.log"), "b\n").unwrap();
+            let unreadable = skip.join("unreadable.log");
+            std::fs::write(&unreadable, "b\n").unwrap();
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // 特权进程（root）仍读得动 000 文件，跳过断言。
+            if std::fs::read(&unreadable).is_err() {
+                let output = search_resource_namespace(
+                    &[("artifact://skip/".to_owned(), skip)],
+                    &args,
+                    &small,
+                )
+                .unwrap()
+                .content;
+                assert!(
+                    output.contains("[skipped artifact://skip/unreadable.log:"),
+                    "{output}"
+                );
+            }
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let output =
+            search_resource_namespace(&[("artifact://exact/".to_owned(), exact)], &args, &small)
+                .unwrap();
+        assert!(
+            !output.content.contains("namespace scan stopped") && !output.incomplete,
+            "{}",
+            output.content
+        );
+
+        // 超限与分页同时发生：截断提示和 scan_incomplete 不能被分页提前退出丢掉。
+        let paged = root.path().join("paged");
+        std::fs::create_dir_all(&paged).unwrap();
+        for index in 0..201 {
+            std::fs::write(paged.join(format!("p_{index:03}.log")), "hit\n").unwrap();
+        }
+        let hit_args: GrepArgs =
+            serde_json::from_value(serde_json::json!({"pattern":"hit"})).unwrap();
+        let one_per_page = crate::config::GrepConfig {
+            max_files: 1,
+            max_file_bytes: 4,
+            ..Default::default()
+        };
+        let output = search_resource_namespace(
+            &[("artifact://paged/".to_owned(), paged)],
+            &hit_args,
+            &one_per_page,
+        )
+        .unwrap();
+        assert!(
+            output.content.contains("continue with skip=1")
+                && output.content.contains("namespace scan stopped")
+                && output.incomplete,
+            "{}",
+            output.content
         );
     }
 
