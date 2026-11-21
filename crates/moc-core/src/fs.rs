@@ -203,6 +203,8 @@ pub(crate) fn create_dir(parent: &str, name: &str) -> Result<FsCreateDirResult, 
     }
 
     let target = canonical.join(name);
+    let lock_path = commit_lock_path(&target);
+    let _commit_guards = crate::hashline::apply::lock_commit_paths_blocking(&lock_path, None);
     match std::fs::create_dir(&target) {
         Ok(()) => Ok(FsCreateDirResult {
             path: target.to_string_lossy().into_owned(),
