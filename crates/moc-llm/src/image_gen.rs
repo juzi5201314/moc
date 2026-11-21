@@ -358,7 +358,10 @@ fn insert_standard_fields(body: &mut Map<String, Value>, params: &ImageGenParams
         }
     }
     if let Some(compression) = params.output_compression {
-        body.insert("output_compression".into(), Value::Number(compression.into()));
+        body.insert(
+            "output_compression".into(),
+            Value::Number(compression.into()),
+        );
     }
 }
 
@@ -384,7 +387,9 @@ async fn parse_json_response(
 ) -> Result<ImageGenResponse, ImageGenError> {
     let wire: WireResponse = serde_json::from_slice(body).map_err(|error| {
         let preview = String::from_utf8_lossy(&body[..body.len().min(512)]);
-        ImageGenError::Decode(format!("无法解析上游 JSON 响应：{error}（响应片段：{preview}）"))
+        ImageGenError::Decode(format!(
+            "无法解析上游 JSON 响应：{error}（响应片段：{preview}）"
+        ))
     })?;
     if wire.data.is_empty() {
         return Err(ImageGenError::Decode("上游返回了空的 data 数组".into()));
@@ -397,7 +402,12 @@ async fn parse_json_response(
 
     let mut images = Vec::with_capacity(wire.data.len());
     for item in wire.data {
-        if let Some(raw_b64) = item.b64_json.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(raw_b64) = item
+            .b64_json
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             let (data_mime, b64) = strip_data_url(raw_b64);
             let bytes = STANDARD
                 .decode(b64.trim())
@@ -631,15 +641,13 @@ async fn validate_and_pin_target(
         .host_str()
         .ok_or_else(|| ImageGenError::Transport("图片 URL 缺少有效主机名".into()))?;
 
-    let is_same_upstream_origin = upstream.is_some_and(|u| {
-        u.scheme == url.scheme() && u.host_key == host_key && u.port == port
-    });
+    let is_same_upstream_origin = upstream
+        .is_some_and(|u| u.scheme == url.scheme() && u.host_key == host_key && u.port == port);
 
     if let Some(ip) = ip_opt {
         let allowed = is_public_ip(ip)
             || (is_same_upstream_origin
-                && upstream
-                    .is_some_and(|u| u.kind == SameOriginAllowance::LiteralNonPublicIp));
+                && upstream.is_some_and(|u| u.kind == SameOriginAllowance::LiteralNonPublicIp));
         if !allowed {
             return Err(ImageGenError::Transport(format!(
                 "拒绝访问非公网图片地址：{ip}"
@@ -684,8 +692,11 @@ async fn download_remote_image(
 ) -> Result<(Vec<u8>, Option<String>), ImageGenError> {
     let timeout = remote_image_timeout(cfg);
     let deadline = Instant::now() + timeout;
-    match tokio::time::timeout_at(deadline, download_remote_image_inner(cfg, raw_url, deadline))
-        .await
+    match tokio::time::timeout_at(
+        deadline,
+        download_remote_image_inner(cfg, raw_url, deadline),
+    )
+    .await
     {
         Ok(result) => result,
         Err(_) => Err(ImageGenError::Transport(format!(
@@ -718,9 +729,9 @@ async fn download_remote_image_inner(
         if let Some((domain, addrs)) = pinned {
             builder = builder.resolve_to_addrs(&domain, &addrs);
         }
-        let hop_client = builder
-            .build()
-            .map_err(|error| ImageGenError::Transport(format!("构建图片下载客户端失败：{error}")))?;
+        let hop_client = builder.build().map_err(|error| {
+            ImageGenError::Transport(format!("构建图片下载客户端失败：{error}"))
+        })?;
 
         let response = hop_client
             .get(current_url.as_str())
