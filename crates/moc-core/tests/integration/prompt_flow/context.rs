@@ -2,6 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn hot_switch_persists_across_prompts_compaction_and_resume() {
+    moc_core::i18n::init("zh");
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))

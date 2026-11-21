@@ -50,6 +50,7 @@ impl Harness {
         extra: &str,
         sandbox_support: moc_core::sandbox::SandboxSupport,
     ) -> Self {
+        moc_core::i18n::init("zh");
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         let cwd = root.path().join("work");
@@ -106,6 +107,7 @@ impl Harness {
         plan: &str,
         extra: &str,
     ) -> (tempfile::TempDir, Arc<Core>) {
+        moc_core::i18n::init("zh");
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         let cwd = root.path().join("work");

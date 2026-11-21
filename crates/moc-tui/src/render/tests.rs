@@ -390,6 +390,7 @@ fn status_legend_hit_area_carries_the_menu() {
 
 #[test]
 fn manual_shell_full_access_hint_preserves_prompt_legends() {
+    rust_i18n::set_locale("zh");
     use moc_protocol::SessionPermission;
     use ratatui::{Terminal, backend::TestBackend};
     let (events, _) = tokio::sync::mpsc::unbounded_channel();

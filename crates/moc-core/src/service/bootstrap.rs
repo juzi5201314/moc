@@ -190,8 +190,7 @@ impl Core {
         sandbox_support: crate::sandbox::SandboxSupport,
     ) -> anyhow::Result<Arc<Self>> {
         let mut resolved = ResolvedConfig::load(&config)?;
-        // 配置语言生效：覆盖进程入口的 auto 探测，core 产出的用户面消息随此前端语言走。
-        crate::i18n::init(&resolved.language);
+        // 进程级语言初始化由前端入口（moc-cli）在启动 Core 后调用，避免库构造在并发测试中竞争全局 locale。
         if resolved.sandbox.default_mode != moc_protocol::SessionPermission::Full
             && !sandbox_support.supports(resolved.sandbox.default_mode)
         {
@@ -273,6 +272,11 @@ impl Core {
         // 丢掉宿主句柄：插件线程收到退出信号后自己走 deactivate 并释放 Runtime。
         self.inner.plugin_hosts.lock().await.clear();
         self.inner.sessions.clear_history_views();
+    }
+
+    /// 返回配置中的语言设置（`auto`/`zh`/`en`），供前端入口初始化进程 locale。
+    pub fn language(&self) -> String {
+        self.inner.config.read().language.clone()
     }
 
     /// 返回配置中的模型列表，供 CLI 展示与诊断。

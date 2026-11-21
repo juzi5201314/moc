@@ -358,6 +358,7 @@ async fn tool_preview_arrives_before_response_finishes() {
 
 #[tokio::test]
 async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
+    moc_core::i18n::init("zh");
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))

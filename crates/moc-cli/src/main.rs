@@ -6,7 +6,7 @@ use rust_i18n::t;
 
 fn main() -> anyhow::Result<()> {
     // 先用系统语言探测兜底：配置加载前的错误（含配置本身的错误）也能本地化；
-    // Core::new 加载配置后再按 language 字段覆盖。
+    // CLI 启动 Core 加载配置后再按 language 字段覆盖。
     moc_core::i18n::init("auto");
     let mut argv: Vec<String> = std::env::args().collect();
     // PTC worker 与 CLI 共用同一个可执行文件，但仍在独立子进程中运行。

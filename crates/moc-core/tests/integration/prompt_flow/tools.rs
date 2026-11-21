@@ -2,6 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
+    moc_core::i18n::init("zh");
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use moc_protocol::methods::{
@@ -298,6 +299,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
 
 #[tokio::test]
 async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
+    moc_core::i18n::init("zh");
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use moc_core::hashline::{content_hash, tag_of, tag_text};
@@ -565,6 +567,7 @@ async fn write_enforces_byte_limit_after_crlf_normalization() {
 
 #[tokio::test]
 async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
+    moc_core::i18n::init("zh");
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use serde_json::json;

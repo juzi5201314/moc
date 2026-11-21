@@ -65,6 +65,8 @@ async fn run_inner(args: CliArgs, frontend: crate::Frontend) -> anyhow::Result<(
         return Ok(());
     }
     let core = Core::new(config).context(t!("cli.repl.core_init_failed").to_string())?;
+    // 配置语言生效：覆盖进程入口的 auto 探测，core 与前端产出的用户面消息随配置语言走。
+    moc_core::i18n::init(&core.language());
     // SIGTERM / SIGHUP 不会走前端的正常退出路径：先把前端 future 收掉（TUI 的
     // TerminalGuard Drop 恢复终端、连接 Drop 触发收尾），再统一执行 core.shutdown()，
     // 保证 raw mode 与 MCP 子进程都不因信号退出而丢失。

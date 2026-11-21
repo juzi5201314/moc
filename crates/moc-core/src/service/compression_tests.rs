@@ -9,6 +9,7 @@ use std::path::Path;
 
 #[tokio::test]
 async fn project_compression_is_selected_per_creation_and_after_config_save() {
+    rust_i18n::set_locale("zh");
     for global in [false, true] {
         let root = tempfile::tempdir().expect("临时目录");
         let home = root.path().join("home");

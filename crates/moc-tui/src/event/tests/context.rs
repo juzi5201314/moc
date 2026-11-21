@@ -153,6 +153,7 @@ fn context_window_mouse_toggles_and_drags() {
 
 #[tokio::test]
 async fn input_bang_commands_render_results_and_remain_out_of_agent_context_when_private() {
+    rust_i18n::set_locale("zh");
     use crate::transcript::Block;
     use moc_core::{Core, CoreConfig};
     let root = tempfile::tempdir().unwrap();

@@ -36,6 +36,7 @@ fn restore_keeps_the_other_stack() {
 /// 任何新增，Enter 却照常写入一条空改动。
 #[tokio::test]
 async fn clicking_an_added_model_keeps_the_selection_empty() {
+    rust_i18n::set_locale("zh");
     use crate::settings::{Hit, View};
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use moc_core::{Core, CoreConfig};

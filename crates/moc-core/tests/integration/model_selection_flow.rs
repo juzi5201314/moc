@@ -43,6 +43,7 @@ async fn remembered(client: &ClientHandle) -> Option<String> {
 
 #[tokio::test]
 async fn model_selection_is_shared_without_mode_resume_or_print_side_effects() {
+    moc_core::i18n::init("zh");
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
     let cwd = root.path().join("work");

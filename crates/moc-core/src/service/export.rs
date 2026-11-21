@@ -326,6 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_export_writes_complete_file_without_returning_oversized_frame() {
+        rust_i18n::set_locale("zh");
         use crate::{CoreConfig, service::Core};
         use moc_llm::Message;
         let root = tempfile::tempdir().unwrap();
@@ -412,6 +413,7 @@ mod tests {
 
     #[test]
     fn manual_bash_entries_export_commands_and_folded_truncated_results() {
+        rust_i18n::set_locale("zh");
         use crate::session::entries::{Entry, EntryPayload};
         use moc_protocol::{BashCommand, ToolExecution, ToolStatus};
         let mut state = empty_state();
@@ -497,6 +499,7 @@ mod tests {
 
     #[test]
     fn execute_exports_only_its_children_inside_parent_details() {
+        rust_i18n::set_locale("zh");
         use crate::session::entries::{Entry, EntryPayload};
         use moc_llm::{Message, ToolCall};
         use moc_protocol::{ToolStatus, methods::session::TranscriptChildCall};
@@ -612,6 +615,7 @@ mod tests {
 
     #[tokio::test]
     async fn markdown_replays_persisted_messages_tools_and_omits_reasoning() {
+        rust_i18n::set_locale("zh");
         use crate::session::{SessionTable, entries::SessionOrigin};
         use moc_llm::{Message, ReasoningBlock, ToolCall};
         let root = tempfile::tempdir().unwrap();

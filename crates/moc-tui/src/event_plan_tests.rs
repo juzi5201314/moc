@@ -28,6 +28,7 @@ struct PlanHarness {
 
 impl PlanHarness {
     async fn new() -> Self {
+        rust_i18n::set_locale("zh");
         let upstream = MockServer::builder().start().await;
         Mock::given(method("POST")).respond_with(|request: &wiremock::Request| {
             let body: serde_json::Value = serde_json::from_slice(&request.body).expect("请求 JSON");

@@ -47,6 +47,7 @@ async fn read_only_model_picker_refuses_changes_before_requesting_core() {
 /// 模型选择器回报容量缺口时渲染压缩确认卡片，确认后先切换再由新模型压缩。
 #[tokio::test]
 async fn model_picker_asks_before_compacting() {
+    rust_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
     use moc_protocol::{PromptParams, SessionPrompt};
     use wiremock::{

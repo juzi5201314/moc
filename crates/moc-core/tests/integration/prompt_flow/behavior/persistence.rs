@@ -2,6 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn plain_text_turn_persists_authoritative_message_over_rpc() {
+    moc_core::i18n::init("zh");
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
