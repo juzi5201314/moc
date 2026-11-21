@@ -161,6 +161,7 @@ async fn connect_stdio(
 }
 
 // 限制单条 stderr 日志的内存占用，同时仍完整排空超长行，避免阻塞子进程。
+// 保留的待定 CR 可能让缓冲短暂达到 MAX+1，但不会继续增长，仍受界限制。
 const MAX_LOG_LINE_BYTES: usize = 8 * 1024;
 
 async fn read_log_line(
@@ -177,6 +178,9 @@ async fn read_log_line(
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
+            if buf.len() > MAX_LOG_LINE_BYTES {
+                *truncated = true;
+            }
             return Ok(bytes_read);
         }
 
@@ -340,6 +344,24 @@ mod tests {
         assert_eq!(buf.len(), MAX_LOG_LINE_BYTES + 2);
         assert!(buf[..MAX_LOG_LINE_BYTES].iter().all(|byte| *byte == b'x'));
         assert!(buf.ends_with(b"\r\n"));
+    }
+
+    #[tokio::test]
+    async fn stderr_eof_after_maximum_body_and_trailing_carriage_return_is_truncated() {
+        let mut input = vec![b'x'; MAX_LOG_LINE_BYTES];
+        input.push(b'\r');
+        let mut reader = BufReader::with_capacity(MAX_LOG_LINE_BYTES, std::io::Cursor::new(input));
+        let mut buf = Vec::new();
+        let mut truncated = false;
+
+        read_log_line(&mut reader, &mut buf, &mut truncated)
+            .await
+            .unwrap();
+
+        assert!(truncated);
+        assert_eq!(buf.len(), MAX_LOG_LINE_BYTES + 1);
+        assert!(buf[..MAX_LOG_LINE_BYTES].iter().all(|byte| *byte == b'x'));
+        assert_eq!(buf[MAX_LOG_LINE_BYTES], b'\r');
     }
 
     #[tokio::test]
