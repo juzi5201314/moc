@@ -9,6 +9,7 @@ use moc_llm::{
     Role,
 };
 use moc_protocol::methods::InputPart;
+use tokio::io::AsyncReadExt;
 
 pub(in crate::service) async fn project_input(
     input: Vec<InputPart>,
@@ -184,9 +185,11 @@ fn extend_reference_end(text: &str, start: usize, mut end: usize, cwd: &Path) ->
             i += 1;
         }
         let path = resolve_reference_path(&text[start + 1..i], cwd);
-        if path.components().next_back().is_some_and(|component| {
-            component.as_os_str().to_string_lossy().chars().count() > 255
-        }) {
+        if path
+            .components()
+            .next_back()
+            .is_some_and(|component| component.as_os_str().to_string_lossy().chars().count() > 255)
+        {
             break;
         }
         if text[scan..i].contains(std::path::is_separator)
@@ -226,8 +229,8 @@ async fn load_local_image(
         return Ok(None);
     };
     let path = resolve_image_path(raw_path, cwd);
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(bytes) => bytes,
+    let metadata = match tokio::fs::metadata(&path).await {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return Err(crate::CoreError::Tool(format!(
                 "image file not found: {}",
@@ -241,6 +244,46 @@ async fn load_local_image(
             )));
         }
     };
+    if metadata.len() > crate::tools::read::MAX_IMAGE_FILE_BYTES {
+        return Err(crate::CoreError::Tool(format!(
+            "{}: image is {} bytes and exceeds the 20 MiB image input limit; crop or downscale it first",
+            path.display(),
+            metadata.len()
+        )));
+    }
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err(crate::CoreError::Tool(format!(
+                "image file not found: {}",
+                path.display()
+            )));
+        }
+        Err(error) => {
+            return Err(crate::CoreError::Tool(format!(
+                "failed to read image {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    let mut bytes = Vec::new();
+    if let Err(error) = file
+        .take(crate::tools::read::MAX_IMAGE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+    {
+        return Err(crate::CoreError::Tool(format!(
+            "failed to read image {}: {error}",
+            path.display()
+        )));
+    }
+    if bytes.len() as u64 > crate::tools::read::MAX_IMAGE_FILE_BYTES {
+        return Err(crate::CoreError::Tool(format!(
+            "{}: image is {} bytes and exceeds the 20 MiB image input limit; crop or downscale it first",
+            path.display(),
+            bytes.len()
+        )));
+    }
     Ok(Some(moc_llm::ImageSource::Base64 {
         media_type: media_type.to_owned(),
         data: base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -622,6 +665,32 @@ mod tests {
         };
         assert_eq!(media_type, "image/png");
         assert_eq!(data, "cG5nLWJ5dGVz");
+    }
+
+    #[tokio::test]
+    async fn oversized_at_image_is_rejected_before_reading() {
+        let (dir, anchors, config) = attach_fixture();
+        let cwd = dir.path().join("repo");
+        let path = cwd.join("large.png");
+        let file = std::fs::File::create(&path).expect("创建图片");
+        file.set_len(crate::tools::read::MAX_IMAGE_FILE_BYTES + 1)
+            .expect("设置图片大小");
+
+        let error = project_input(
+            vec![InputPart::Text {
+                text: "查看 @large.png".into(),
+            }],
+            true,
+            &cwd,
+            &anchors,
+            &config,
+        )
+        .await
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("image is 20971521 bytes"), "{message}");
+        assert!(message.contains("20 MiB image input limit"), "{message}");
     }
 
     /// `@` 文件/目录引用：正文保留 token、紧跟 `<moc-attachment>` 注入块；

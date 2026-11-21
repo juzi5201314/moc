@@ -75,9 +75,8 @@ impl Tool for WriteTool {
             let parent = absolute
                 .parent()
                 .ok_or_else(|| ToolError::new("E_ACCESS", "invalid file path"))?;
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
+            let max_file_bytes = ctx.config.tools.output.max_file_bytes;
+            ensure_parent_for_write(parent, &args.content, max_file_bytes).await?;
             let path = resolve_tool_path(&ctx.cwd, &args.path)?;
             // create_dir_all 可能会创建末尾缺失的目录：按当前解析结果再判断一次边界，
             // 没获授权的越界写入在这里拦下，不会写到磁盘上。
@@ -86,8 +85,6 @@ impl Tool for WriteTool {
                 &path.to_string_lossy(),
                 crate::sandbox::Access::Write,
             )?;
-            let max_file_bytes = ctx.config.tools.output.max_file_bytes;
-            check_content_size(&args.content, max_file_bytes)?;
             reject_served_hash_echo(
                 &path,
                 &args.content,
@@ -279,6 +276,17 @@ fn check_content_size(content: &str, max_file_bytes: u64) -> Result<(), ToolErro
     Ok(())
 }
 
+async fn ensure_parent_for_write(
+    parent: &Path,
+    content: &str,
+    max_file_bytes: u64,
+) -> Result<(), ToolError> {
+    check_content_size(content, max_file_bytes)?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))
+}
+
 fn normalize_line_endings(content: &str, ending: &[u8]) -> String {
     let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
     if ending == b"\n" {
@@ -356,6 +364,19 @@ mod tests {
             .await
             .unwrap();
         assert!(old.is_none() && !oversized);
+    }
+
+    #[tokio::test]
+    async fn oversized_content_does_not_create_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("new/nested");
+
+        let error = ensure_parent_for_write(&parent, "oversized", 3)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, "E_TOO_LARGE");
+        assert!(!parent.exists());
     }
 
     #[test]

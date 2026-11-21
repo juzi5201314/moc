@@ -443,7 +443,7 @@ fn similar_entries(cwd: &Path, value: &str) -> Option<String> {
 }
 
 /// 与发送侧单图输入上限一致（moc-llm 预处理拒收更大的图片）。
-const MAX_IMAGE_FILE_BYTES: u64 = 20 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_FILE_BYTES: u64 = 20 * 1024 * 1024;
 
 /// 嗅探文件头魔数；读不出来或格式不识时返回 `None`，让调用方走文本路径。
 fn sniff_image(path: &Path) -> Option<&'static str> {
