@@ -2019,8 +2019,24 @@ return { names, head, git: git_status };
             break;
         }
     }
-    let (run_id, status) = wait_terminal(&mut events).await;
+    let mut report_seen = false;
+    let (run_id, status) = loop {
+        let (run_id, event) = next_wf_event(&mut events).await;
+        match event {
+            WorkflowEvent::Report { .. } => report_seen = true,
+            WorkflowEvent::RunStatus { status }
+                if !matches!(
+                    status,
+                    WorkflowRunStatus::Running | WorkflowRunStatus::Pending
+                ) =>
+            {
+                break (run_id, status);
+            }
+            _ => {}
+        }
+    };
     assert_eq!(status, WorkflowRunStatus::Completed, "run 应 completed");
+    assert!(report_seen, "终态 RunStatus 前应先收到 Report");
     prompt_task.await.expect("prompt 完成");
 
     let run_dir = run_dir_of(&harness, &session, &run_id);
