@@ -70,8 +70,11 @@ async fn next_request_retry_follows_committed_text_and_tool_execution() {
 #[tokio::test]
 async fn connection_retry_is_visible_during_backoff_and_can_be_cancelled() {
     use moc_protocol::methods::{SessionCancel, SessionCancelParams};
+    // 主机名用 localhost 而不是 127.0.0.1：reqwest 不识别 no_proxy 的 `127.*`
+    // 通配语法，裸 IP 在带代理环境中会被吞掉连接拒绝并回 502，而 localhost 能命中直连。
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("http://localhost:{port}");
     drop(listener);
     let extra = format!(
         "[providers.refused]\napi='openai_chat'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=3,initial_backoff_secs=60,max_backoff_secs=60,jitter=false}}\n[providers.refused.models.model]\ncontext_window=100000\n[compaction]\nenabled=false\n"
@@ -119,7 +122,7 @@ async fn connection_retry_is_visible_during_backoff_and_can_be_cancelled() {
     {
         assert_eq!(retry_in_ms, 60000);
         assert!(message.contains("2/3"), "{message}");
-        assert!(message.contains("127.0.0.1"), "{message}");
+        assert!(message.contains(&format!("localhost:{port}")), "{message}");
     }
     assert!(!task.is_finished());
     h.client
