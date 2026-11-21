@@ -9,7 +9,7 @@
 //! [`crate::protocol::AppEvent::ImagePrepared`] 通知重绘。缓存按字节数 LRU
 //! 淘汰，每帧被 `payload()` 触达的可见图永远不会被淘汰。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
@@ -243,6 +243,8 @@ struct Entry {
 
 struct Inner {
     entries: HashMap<ImageKey, Entry>,
+    /// channel 满时暂存任务；之后每次解码完成腾出一个槽位，由 complete() 补回队列。
+    deferred_decodes: VecDeque<DecodeTask>,
     /// 正在后台编码的 `(图, 尺寸)`：挡住同一份编码被连续几帧重复提交。
     encoding: std::collections::HashSet<(ImageKey, EncodedKey)>,
     next_id: u32,
@@ -381,6 +383,7 @@ impl ImageStore {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 entries: HashMap::new(),
+                deferred_decodes: VecDeque::new(),
                 encoding: std::collections::HashSet::new(),
                 // 从 1 开始：0 在部分终端里是「无 ID」的哨兵值
                 next_id: 1,
@@ -449,6 +452,30 @@ impl ImageStore {
     /// 后台线程完成后由事件循环调用（主线程）。
     pub fn complete(&self, key: ImageKey, result: Result<DecodedImage, String>) {
         let mut inner = self.lock();
+        Self::record_completion(&mut inner, key, result);
+
+        if let Some(task) = inner.deferred_decodes.pop_front() {
+            let key = task.0.clone();
+            match &self.decode_pool {
+                Some(pool) => match pool.try_send(task) {
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(task)) => {
+                        inner.deferred_decodes.push_front(task);
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => Self::record_completion(
+                        &mut inner,
+                        key,
+                        Err("图片解码池不可用或已关闭".into()),
+                    ),
+                },
+                None => {
+                    Self::record_completion(&mut inner, key, Err("图片解码池不可用或已关闭".into()))
+                }
+            }
+        }
+    }
+
+    fn record_completion(inner: &mut Inner, key: ImageKey, result: Result<DecodedImage, String>) {
         inner.tick += 1;
         let tick = inner.tick;
         let bytes = match &result {
@@ -688,25 +715,25 @@ impl ImageStore {
     /// 那可能是几 MB 的拷贝，放在主线程上做就等于把「不卡顿」的承诺还回去。
     fn spawn_decode(&self, key: ImageKey, make: impl FnOnce() -> ImageSourceSpec + Send + 'static) {
         let task: DecodeTask = (key.clone(), Box::new(make));
-        let outcome = match &self.decode_pool {
-            None => Err(None),
-            Some(pool) => pool.try_send(task).map_err(Some),
-        };
-        match outcome {
-            Ok(()) => {}
-            // 队列满属瞬时拥塞：移除刚插入的 Pending，下次 state() 重新入队重试，
-            // 而不是把一个不会自愈的 Failed 留在缓存里直到淘汰。
-            Err(Some(mpsc::TrySendError::Full(_))) => {
-                let mut inner = self.lock();
-                if matches!(
-                    inner.entries.get(&key).map(|entry| &entry.state),
-                    Some(ImageState::Pending)
-                ) {
-                    inner.entries.remove(&key);
+        match &self.decode_pool {
+            Some(pool) => match pool.try_send(task) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(task)) => {
+                    let mut inner = self.lock();
+                    if inner.deferred_decodes.len() < MAX_QUEUED_DECODES {
+                        inner.deferred_decodes.push_back(task);
+                    } else if matches!(
+                        inner.entries.get(&key).map(|entry| &entry.state),
+                        Some(ImageState::Pending)
+                    ) {
+                        inner.entries.remove(&key);
+                    }
                 }
-            }
-            // 池不可用或通道已断：重试没有意义，直接标记失败。
-            _ => self.complete(key, Err("图片解码池不可用或已关闭".into())),
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    self.complete(key, Err("图片解码池不可用或已关闭".into()));
+                }
+            },
+            None => self.complete(key, Err("图片解码池不可用或已关闭".into())),
         }
     }
 }
