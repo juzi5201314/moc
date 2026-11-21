@@ -153,7 +153,7 @@ export function splitWidgetParts(markdown: string): MessagePart[] {
   let previousLineWasBlank = false;
 
   const pushMarkdown = (text: string) => {
-    if (!text) return;
+    if (!text.trim()) return;
     const prev = parts.at(-1);
     if (prev?.kind === "markdown") {
       prev.text = prev.text ? `${prev.text}\n${text}` : text;

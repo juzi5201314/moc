@@ -16,6 +16,8 @@ const BOOTSTRAP_HTML: &str = r#"<!doctype html>
 <body>
 <script>
 (function () {
+  // 只在无 allow-same-origin 的沙盒中渲染。
+  if (window.parent === window || window.origin !== "null") return;
   var id = location.hash.slice(1);
   var rendered = false;
   window.addEventListener("message", function (event) {

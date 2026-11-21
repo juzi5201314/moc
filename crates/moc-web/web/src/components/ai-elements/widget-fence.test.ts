@@ -52,6 +52,10 @@ describe("widget-fence 与文档组装", () => {
       code: "<title>流式计算器</title>\n<div>partial",
       complete: false,
     });
+
+    expect(
+      splitWidgetParts("```widget\n<a></a>\n```\n\n\n```widget\n<b></b>\n```").map((p) => p.kind),
+    ).toEqual(["widget", "widget"]);
   });
 
   it("列表项内的 widget 围栏保留为 Markdown，顶层缩进围栏仍可识别", () => {
@@ -111,5 +115,26 @@ describe("widget-fence 与文档组装", () => {
     expect(standalone).toContain("moc-widget-theme");
     expect(standalone).not.toContain("moc-widget-bridge");
     expect(sanitizeFilename("统计 / 面板?v1")).toBe("统计-面板-v1.html");
+
+    const lightOverride = buildStandaloneHtml(
+      '<!doctype html><html class="dark foo" data-theme="dark"><head></head><body>x</body></html>',
+      {
+        title: "T",
+        dark: false,
+        tokens: readWidgetTokens(false),
+        lang: "en",
+      },
+    );
+    expect(lightOverride).toContain('data-theme="light"');
+    expect(lightOverride).toContain('class="foo"');
+    expect(lightOverride).not.toContain("dark foo");
+
+    const missingHtml = buildWidgetDocument("<!doctype html><body>x</body>", {
+      id: "w-2",
+      dark: true,
+      tokens,
+      lang: "en",
+    });
+    expect(missingHtml).toContain('<html data-theme="dark" class="dark">');
   });
 });

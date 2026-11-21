@@ -114,11 +114,12 @@ function themeStyleBlock(dark: boolean, tokens: WidgetTokens): string {
 </style>`;
 }
 
-function bridgeScriptBlock(id: string): string {
+function bridgeScriptBlock(id: string, dark: boolean): string {
   const safeId = safeJson(id);
   return `<script id="moc-widget-bridge">
 (function () {
   var ID = ${safeId};
+  var INITIAL_DARK = ${dark ? "true" : "false"};
   var VAR_MAP = {
     bg: "--bg",
     surface: "--surface",
@@ -139,11 +140,16 @@ function bridgeScriptBlock(id: string): string {
     }
   }
 
-  function applyTheme(dark, tokens) {
+  function syncThemeMarks(dark) {
     var root = document.documentElement;
     root.classList.toggle("dark", Boolean(dark));
     root.dataset.theme = dark ? "dark" : "light";
     root.style.colorScheme = dark ? "dark" : "light";
+  }
+
+  function applyTheme(dark, tokens) {
+    var root = document.documentElement;
+    syncThemeMarks(dark);
     if (tokens && typeof tokens === "object") {
       for (var k in VAR_MAP) {
         if (typeof tokens[k] === "string") {
@@ -155,6 +161,8 @@ function bridgeScriptBlock(id: string): string {
       window.dispatchEvent(new CustomEvent("moc-theme-change", { detail: { dark: Boolean(dark), tokens: tokens } }));
     } catch (_) {}
   }
+
+  syncThemeMarks(INITIAL_DARK);
 
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
@@ -181,32 +189,39 @@ function bridgeScriptBlock(id: string): string {
     post({ type: "error", message: String(message) });
   });
 
-  var lastHeight = 0;
-  var rafId = 0;
-
   function measureHeight() {
     var body = document.body;
     if (!body) return 0;
     var height = body.scrollHeight || 0;
     var viewH = window.innerHeight || 0;
-    // 若组件误用 min-height: 100vh，防止 scrollHeight 随 iframe 增高产生死循环反馈。
+    // body 自身 min-height: 100vh 时 scrollHeight 恒等于视口，改用子元素包络高度（顶到底），居中布局一步收敛。
     if (viewH > 0 && Math.abs(height - viewH) <= 2 && body.children.length > 0) {
-      var padBottom = parseFloat(getComputedStyle(body).paddingBottom) || 0;
-      var maxBottom = 0;
+      var style = getComputedStyle(body);
+      var pad = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      var minTop = Infinity, maxBottom = -Infinity;
       for (var i = 0; i < body.children.length; i++) {
         var rect = body.children[i].getBoundingClientRect();
-        if (rect.height > 0 && rect.bottom > maxBottom) maxBottom = rect.bottom;
+        if (rect.height > 0) {
+          if (rect.top < minTop) minTop = rect.top;
+          if (rect.bottom > maxBottom) maxBottom = rect.bottom;
+        }
       }
-      if (maxBottom > 0) {
-        height = Math.min(height, Math.ceil(maxBottom + padBottom));
-      }
+      if (maxBottom > minTop) height = Math.min(height, Math.ceil(maxBottom - minTop + pad));
     }
     return Math.ceil(height);
   }
 
+  var lastHeight = 0, lastViewH = 0, rafId = 0;
+
   function reportHeight() {
     rafId = 0;
+    var viewH = window.innerHeight || 0;
     var height = measureHeight();
+    var dV = viewH - lastViewH;
+    // 子元素用 100vh / h-screen 时内容随 iframe 同步变高：视口刚长了多少、内容就长了多少，停止追高。
+    var followsViewport = lastViewH > 0 && dV > 2 && Math.abs((height - lastHeight) - dV) <= 2;
+    lastViewH = viewH;
+    if (followsViewport) return;
     if (height > 0 && Math.abs(height - lastHeight) > 2) {
       lastHeight = height;
       post({ type: "resize", height: height });
@@ -241,6 +256,29 @@ function bridgeScriptBlock(id: string): string {
 </script>`;
 }
 
+function themeHtmlAttrs(attrs: string, dark: boolean): string {
+  const theme = dark ? "dark" : "light";
+  let next = attrs;
+  const themeRe = /(^|\s)data-theme\s*=\s*(?:(["'])[\s\S]*?\2|[^\s>]+)/i;
+  if (themeRe.test(next)) {
+    next = next.replace(themeRe, (_match, lead: string) => `${lead}data-theme="${theme}"`);
+  } else {
+    next += ` data-theme="${theme}"`;
+  }
+
+  const classRe = /(^|\s)class\s*=\s*(["'])([\s\S]*?)\2/i;
+  if (classRe.test(next)) {
+    next = next.replace(classRe, (_match, lead: string, quote: string, value: string) => {
+      const tokens = value.split(/\s+/).filter((token) => token && token !== "dark");
+      if (dark) tokens.push("dark");
+      return `${lead}class=${quote}${tokens.join(" ")}${quote}`;
+    });
+  } else if (dark) {
+    next += ' class="dark"';
+  }
+  return next;
+}
+
 function injectIntoFullHtml(
   source: string,
   dark: boolean,
@@ -248,27 +286,16 @@ function injectIntoFullHtml(
   titleFallback?: string,
 ): string {
   let html = source;
-  // 为 <html> 补充暗色标记与 data-theme，保留已有属性与 class。
+  // 统一覆写 <html> 主题标记；省略 <html> 时补齐根标签，保证初始深浅色一致。
   const htmlMatch = /<html\b([^>]*)>/i.exec(html);
   if (htmlMatch) {
-    let attrs = htmlMatch[1];
-    if (!/\bdata-theme\s*=/i.test(attrs)) {
-      attrs += ` data-theme="${dark ? "dark" : "light"}"`;
-    }
-    if (dark) {
-      const classMatch = /\bclass\s*=\s*(["'])([\s\S]*?)\1/i.exec(attrs);
-      if (classMatch) {
-        if (!/\bdark\b/.test(classMatch[2])) {
-          attrs = attrs.replace(
-            classMatch[0],
-            `class=${classMatch[1]}${classMatch[2]} dark${classMatch[1]}`,
-          );
-        }
-      } else {
-        attrs += ' class="dark"';
-      }
-    }
-    html = html.replace(htmlMatch[0], () => `<html${attrs}>`);
+    html = html.replace(htmlMatch[0], () => `<html${themeHtmlAttrs(htmlMatch[1], dark)}>`);
+  } else {
+    const root = `<html${themeHtmlAttrs("", dark)}>`;
+    const doctypeRe = /^\s*<!doctype[^>]*>/i;
+    html = doctypeRe.test(html)
+      ? html.replace(doctypeRe, (doctype) => `${doctype}\n${root}`)
+      : `${root}\n${html}`;
   }
 
   const titleTag =
@@ -280,12 +307,10 @@ function injectIntoFullHtml(
     return `${html.slice(0, pos)}\n${titleTag}${injectedHead}\n${html.slice(pos)}`;
   }
 
-  if (htmlMatch) {
-    const updatedHtmlMatch = /<html\b[^>]*>/i.exec(html);
-    if (updatedHtmlMatch) {
-      const pos = updatedHtmlMatch.index + updatedHtmlMatch[0].length;
-      return `${html.slice(0, pos)}\n<head>${titleTag}${injectedHead}</head>\n${html.slice(pos)}`;
-    }
+  const updatedHtmlMatch = /<html\b[^>]*>/i.exec(html);
+  if (updatedHtmlMatch) {
+    const pos = updatedHtmlMatch.index + updatedHtmlMatch[0].length;
+    return `${html.slice(0, pos)}\n<head>${titleTag}${injectedHead}</head>\n${html.slice(pos)}`;
   }
 
   return `${injectedHead}\n${html}`;
@@ -300,7 +325,7 @@ export function buildWidgetDocument(
   code: string,
   options: { id: string; dark: boolean; tokens: WidgetTokens; lang: string },
 ): string {
-  const injected = `${themeStyleBlock(options.dark, options.tokens)}\n${bridgeScriptBlock(options.id)}`;
+  const injected = `${themeStyleBlock(options.dark, options.tokens)}\n${bridgeScriptBlock(options.id, options.dark)}`;
   if (isFullHtmlDocument(code)) {
     return injectIntoFullHtml(code, options.dark, injected);
   }

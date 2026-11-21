@@ -81,6 +81,7 @@ type WidgetFrameProps = {
   maxHeight?: number;
   initialHeight: number;
   fillHeight?: boolean;
+  suspended?: boolean;
   onMeasuredHeight?: (height: number) => void;
   onError: (message: string) => void;
 };
@@ -92,6 +93,7 @@ function WidgetFrame({
   maxHeight = DEFAULT_MAX_HEIGHT,
   initialHeight,
   fillHeight = false,
+  suspended = false,
   onMeasuredHeight,
   onError,
 }: WidgetFrameProps) {
@@ -113,9 +115,13 @@ function WidgetFrame({
   const renderedRef = useRef(false);
   const [frameHeight, setFrameHeight] = useState(initialHeight);
 
+  useEffect(() => {
+    setFrameHeight(initialHeight);
+  }, [initialHeight]);
+
   // 保持最新回调与配置供 ready 握手读取，避免主题切换触发 iframe 重载。
-  const latestRef = useRef({ code, dark, lang, maxHeight, onMeasuredHeight, onError });
-  latestRef.current = { code, dark, lang, maxHeight, onMeasuredHeight, onError };
+  const latestRef = useRef({ code, dark, lang, maxHeight, suspended, onMeasuredHeight, onError });
+  latestRef.current = { code, dark, lang, maxHeight, suspended, onMeasuredHeight, onError };
 
   // 重置或源码变更时重新建立握手渲染。
   // biome-ignore lint/correctness/useExhaustiveDependencies: instanceId/code 变化即新建或重载 iframe
@@ -152,6 +158,7 @@ function WidgetFrame({
       }
 
       if (data.type === "resize" && typeof data.height === "number" && Number.isFinite(data.height)) {
+        if (latestRef.current.suspended) return;
         const next = clampHeight(data.height, latestRef.current.maxHeight);
         setFrameHeight(next);
         latestRef.current.onMeasuredHeight?.(next);
@@ -453,27 +460,35 @@ export const WidgetCard = memo(function WidgetCard({
 
   return (
     <TooltipProvider>
-      <div className="my-3 overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-border">
+      <div className="my-3 overflow-hidden rounded-xl border border-border bg-card">
         {renderToolbar(false)}
         {!complete ? (
           <StreamingSource code={code} />
-        ) : effectiveMode === "preview" && !fullscreen ? (
-          <WidgetFrame
-            code={code}
-            title={resolvedTitle}
-            reloadNonce={reloadNonce}
-            maxHeight={maxInlineHeight}
-            initialHeight={inlineHeight}
-            onMeasuredHeight={(measured) => {
-              writeCachedHeight(key, measured);
-              setInlineHeight(measured);
-            }}
-            onError={pushError}
-          />
-        ) : effectiveMode === "preview" ? (
-          <div style={{ height: inlineHeight }} className="bg-card" />
+        ) : fullscreen ? (
+          effectiveMode === "preview" ? (
+            <div style={{ height: inlineHeight }} className="bg-card" />
+          ) : (
+            renderCode(false)
+          )
         ) : (
-          renderCode(false)
+          <>
+            <div className={cn(effectiveMode !== "preview" && "hidden")}>
+              <WidgetFrame
+                code={code}
+                title={resolvedTitle}
+                reloadNonce={reloadNonce}
+                maxHeight={maxInlineHeight}
+                initialHeight={inlineHeight}
+                suspended={effectiveMode !== "preview"}
+                onMeasuredHeight={(measured) => {
+                  writeCachedHeight(key, measured);
+                  setInlineHeight(measured);
+                }}
+                onError={pushError}
+              />
+            </div>
+            {effectiveMode === "code" && renderCode(false)}
+          </>
         )}
         {renderErrorBar()}
       </div>
@@ -486,18 +501,18 @@ export const WidgetCard = memo(function WidgetCard({
           <DialogTitle className="sr-only">{resolvedTitle}</DialogTitle>
           {renderToolbar(true)}
           <div className="flex min-h-0 flex-1 flex-col">
-            {effectiveMode === "preview" ? (
+            <div className={cn("flex min-h-0 flex-1 flex-col", effectiveMode !== "preview" && "hidden")}>
               <WidgetFrame
                 code={code}
                 title={resolvedTitle}
                 reloadNonce={reloadNonce}
                 initialHeight={initialHeight}
                 fillHeight
+                suspended={effectiveMode !== "preview"}
                 onError={pushError}
               />
-            ) : (
-              renderCode(true)
-            )}
+            </div>
+            {effectiveMode === "code" && renderCode(true)}
           </div>
           {renderErrorBar()}
         </DialogContent>
