@@ -5,9 +5,41 @@ use ratatui::layout::Rect;
 use crate::app::ImageSlot;
 use crate::transcript::Block;
 
-/// 造一个「已展开一张图表」的 app，并给出对应的槽位。
+/// 等候后台图表编码完成并回填到 `App`。
+fn settle_chart(
+    app: &mut App,
+    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<crate::protocol::AppEvent>,
+) {
+    for _ in 0..1000 {
+        while let Ok(event) = receiver.try_recv() {
+            if let crate::protocol::AppEvent::ChartEncoded {
+                entry,
+                table,
+                image_id,
+                px,
+                payload,
+            } = event
+            {
+                app.complete_chart_encode(entry, table, image_id, px, payload);
+            }
+        }
+        if !app.has_rendering_charts()
+            && app
+                .blocks
+                .first()
+                .and_then(|block| block.table_chart(0))
+                .is_some_and(|state| state.payload.is_some())
+        {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("图表未在预算内完成后台编码");
+}
+
+/// 造一个「已展开并完成后台编码」的 app，并给出对应的槽位。
 fn app_with_chart(proto: GraphicsProto) -> (App, ImageSlot) {
-    let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::new(crate::theme::Theme::global(), events);
     app.graphics = Some(GraphicsSupport {
         proto,
@@ -36,6 +68,7 @@ fn app_with_chart(proto: GraphicsProto) -> (App, ImageSlot) {
         placement_id: 0x1234,
     };
     app.image_slots = vec![slot.clone()];
+    settle_chart(&mut app, &mut receiver);
     (app, slot)
 }
 
@@ -217,4 +250,72 @@ fn emit_is_silent_without_graphics_support() {
     let mut out = Vec::new();
     emit(&mut app, &mut out).expect("写内存不会失败");
     assert!(out.is_empty());
+}
+
+/// 异步渲染：渲染中 emit 立即返回且保持加载态，取消后过期回执被安全丢弃。
+#[test]
+fn async_chart_renders_without_blocking_and_drops_stale_results() {
+    let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(crate::theme::Theme::global(), events);
+    app.graphics = Some(GraphicsSupport {
+        proto: GraphicsProto::Sixel,
+        cell: CellPixels { w: 8, h: 18 },
+    });
+    app.scrollback_area = Rect::new(3, 0, 74, 40);
+    app.push_block(Block::Assistant {
+        text: "| 项 | 读 | 写 |\n|---|---|---|\n| a | 10 | 20 |\n| b | 30 | 40 |".into(),
+    });
+    app.toggle_table_chart(0, 0);
+    assert!(app.has_rendering_charts(), "点击后应立刻进入后台渲染态");
+
+    let state = app.blocks[0].table_chart(0).expect("图表态已建立");
+    let rows = crate::render::chart::rows_needed(
+        state.spec.kind,
+        state.spec.categories.len(),
+        state.spec.series.len(),
+    );
+    app.image_slots = vec![ImageSlot {
+        entry: 0,
+        source: SlotSource::Chart { table: 0 },
+        x: 6,
+        y: 5,
+        cols: 71,
+        rows,
+        px: (71 * 8, u32::from(rows) * 18),
+        hash: 0xabcd,
+        placement_id: 0x1234,
+    }];
+
+    // 渲染尚未回填时 emit 不阻塞、不输出半成品
+    let mut pending_out = Vec::new();
+    emit(&mut app, &mut pending_out).expect("写内存不会失败");
+    assert!(pending_out.is_empty());
+
+    // 用户中途取消后，收到在途回执必须安全丢弃
+    app.toggle_table_chart(0, 0);
+    assert!(!app.has_rendering_charts());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Ok(crate::protocol::AppEvent::ChartEncoded {
+            entry,
+            table,
+            image_id,
+            px,
+            payload,
+        }) = receiver.try_recv()
+        {
+            assert!(!app.complete_chart_encode(entry, table, image_id, px, payload));
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "未在预算内收到回执");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    // 再次展开并等回填完成后可正常贴出
+    app.toggle_table_chart(0, 0);
+    settle_chart(&mut app, &mut receiver);
+    assert!(!app.has_rendering_charts());
+    let mut ready_out = Vec::new();
+    emit(&mut app, &mut ready_out).expect("写内存不会失败");
+    assert!(contains(&ready_out, b"\x1bP0;1q"));
 }

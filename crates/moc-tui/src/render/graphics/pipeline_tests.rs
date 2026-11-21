@@ -27,7 +27,7 @@ fn sixel_size(bytes: &[u8]) -> (u32, u32) {
 /// 列数 × 单元格宽、行数 × 单元格高，多一像素少一像素都会触发重采样。
 #[test]
 fn emitted_image_matches_the_reserved_cell_area() {
-    let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::new(crate::theme::Theme::global(), events);
     let cell = CellPixels { w: 9, h: 20 };
     app.graphics = Some(GraphicsSupport {
@@ -45,6 +45,25 @@ fn emitted_image_matches_the_reserved_cell_area() {
         .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
         .expect("绘制成功");
     let slot = app.image_slots.first().expect("图表已登记槽位").clone();
+
+    // 首帧 emit 触发后台编码，收到回执后下一帧正式贴出
+    emit(&mut app, &mut Vec::new()).expect("写内存不会失败");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Ok(crate::protocol::AppEvent::ChartEncoded {
+            entry,
+            table,
+            image_id,
+            px,
+            payload,
+        }) = receiver.try_recv()
+        {
+            assert!(app.complete_chart_encode(entry, table, image_id, px, payload));
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "图表未在预算内完成编码");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 
     let mut out = Vec::new();
     emit(&mut app, &mut out).expect("写内存不会失败");

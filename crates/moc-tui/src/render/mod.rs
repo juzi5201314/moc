@@ -28,12 +28,14 @@ pub(crate) mod rewind;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 
 pub use scrollback::ScrollbackView;
 
 use self::wrap::str_width;
 use crate::app::{App, ScrollbackScrollbar};
 use crate::modal::Modal;
+use crate::theme::Theme;
 
 /// 内容区左右边距（格）：主界面与设置页共用。
 pub(crate) const MARGIN_X: u16 = 3;
@@ -195,6 +197,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
             lines: &mut app.paint_lines,
         },
     );
+    draw_chart_loading_indicators(frame.buffer_mut(), scroll_area, app, theme);
     // 粘性折叠头：盖住顶行的可折叠块（思考 / 工具等）把标题钉在首行，
     // 命中区一并补登——正文再长也能随时点回折叠。
     if let Some((index, title)) = view.sticky_title(app, window.skip_rows) {
@@ -493,6 +496,47 @@ struct StatuslineData {
 const TOKEN_UNITS: [(u64, &str); 3] = [(1_000, "k"), (1_000_000, "m"), (1_000_000_000, "b")];
 
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// 按给定起始时刻计算盲文 spinner 当前帧（120ms/帧）。
+pub(super) fn spinner_since(started: std::time::Instant) -> &'static str {
+    let elapsed_ms = started.elapsed().as_millis();
+    let frame_count = u128::try_from(SPINNER_FRAMES.len()).expect("spinner frame count fits u128");
+    let frame = (elapsed_ms / 120) % frame_count;
+    let index = usize::try_from(frame).expect("spinner frame index fits usize");
+    SPINNER_FRAMES[index]
+}
+
+/// 在正在后台渲染的图表按钮右侧绘制动态 spinner 与提示文字（不改动按钮命中区与下方占位槽）。
+fn draw_chart_loading_indicators(
+    buffer: &mut ratatui::buffer::Buffer,
+    scroll_area: Rect,
+    app: &App,
+    theme: &Theme,
+) {
+    let right = scroll_area.x.saturating_add(scroll_area.width);
+    for hit in &app.chart_hits {
+        let Some(started) = app
+            .blocks
+            .get(hit.entry)
+            .and_then(|entry| entry.table_chart(hit.table))
+            .and_then(|state| state.rendering_started_at())
+        else {
+            continue;
+        };
+        let start_x = hit.x.saturating_add(hit.w).saturating_add(2);
+        let avail = right.saturating_sub(start_x);
+        if avail == 0 {
+            continue;
+        }
+        let text = format!(
+            "{} {}",
+            spinner_since(started),
+            rust_i18n::t!("tui.md.rendering_chart")
+        );
+        let line = Line::from(Span::styled(text, Style::new().fg(theme.accent_running)));
+        buffer.set_line(start_x, hit.row, &line, avail);
+    }
+}
 
 struct Activity {
     label: std::borrow::Cow<'static, str>,

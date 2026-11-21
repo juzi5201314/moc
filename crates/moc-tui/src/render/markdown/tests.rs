@@ -112,6 +112,7 @@ fn chart_state(source: &str, table: usize, image_id: u32) -> TableChartState {
         px: (0, 0),
         image_id,
         transmitted: false,
+        rendering: None,
     }
 }
 

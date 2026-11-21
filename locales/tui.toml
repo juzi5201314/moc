@@ -944,6 +944,7 @@ unchanged_fmt = { zh = "%{pad}⋯ %{count} 行未变", en = "%{pad}⋯ %{count} 
 [tui.md]
 chart = { zh = "▸ 可视化图表", en = "▸ Show chart" }
 hide_chart = { zh = "▾ 隐藏图表", en = "▾ Hide chart" }
+rendering_chart = { zh = "渲染图表中…", en = "Rendering chart…" }
 ref_links = { zh = "参考链接：", en = "References:" }
 more_links_fmt = { zh = "▸ 还有 %{count} 条链接", en = "▸ %{count} more links" }
 collapse_links = { zh = "▾ 收起链接", en = "▾ Collapse links" }

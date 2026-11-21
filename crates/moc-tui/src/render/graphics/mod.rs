@@ -20,7 +20,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ratatui::layout::Rect;
 
 use crate::app::{App, Focus, ImageSlot, Placed, SlotSource};
-use crate::render::chart::{layout, rasterize, with_fonts};
+use crate::protocol::AppEvent;
+use crate::render::chart::{ChartLayout, layout, rasterize_for_proto, with_fonts};
 
 pub mod encode;
 
@@ -378,6 +379,42 @@ fn image_covered(app: &App) -> bool {
         || card_covers_image
 }
 
+/// 在后台线程执行图表光栅化与协议编码，完成后通过 [`AppEvent::ChartEncoded`] 回传主线程。
+#[expect(clippy::too_many_arguments, reason = "后台线程入口，直接传递上下文快照")]
+pub fn spawn_chart_encode(
+    events: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    entry: usize,
+    table: usize,
+    image_id: u32,
+    spec: moc_core::chart::ChartSpec,
+    chart_layout: ChartLayout,
+    proto: GraphicsProto,
+    theme: &'static crate::theme::Theme,
+) {
+    std::thread::Builder::new()
+        .name("moc-chart-encode".into())
+        .spawn(move || {
+            let canvas = with_fonts(|fonts| {
+                rasterize_for_proto(&spec, &chart_layout, theme, fonts, proto)
+            });
+            let payload = Arc::new(encode::encode(
+                &canvas,
+                proto,
+                image_id,
+                chart_layout.cols,
+                chart_layout.rows,
+            ));
+            let _ = events.send(AppEvent::ChartEncoded {
+                entry,
+                table,
+                image_id,
+                px: chart_layout.px,
+                payload,
+            });
+        })
+        .ok();
+}
+
 /// 每帧放置图像：在 `terminal.draw()` 之后调用。
 ///
 /// 位置与内容都没变就跳过；kitty 换位时先删旧放置，永久消失的图像按图像 ID
@@ -417,10 +454,11 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
     // 槽位表归 `App` 所有，下一帧 `render::draw` 会先 clear 再重填；这里只读不取走，
     // 免得 emit 之后还有人想读本帧登记的落位。
     let slots: Vec<ImageSlot> = app.image_slots.clone();
+    let events = app.events.clone();
     let theme = app.theme;
     let mut placed: Vec<Placed> = Vec::with_capacity(slots.len());
     for slot in slots {
-        // 载荷来源：表格图表就地编码，通用图片走 `ImageStore` 的内容缓存
+        // 载荷来源：表格图表后台异步光栅化与编码，通用图片走 `ImageStore` 的内容缓存
         let (payload, image_id, transmit) = match &slot.source {
             SlotSource::Chart { table } => {
                 let Some(entry) = app.blocks.get_mut(slot.entry) else {
@@ -432,27 +470,30 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
                 let Some(chart_layout) = layout(&state.spec, slot.cols, support.cell) else {
                     continue;
                 };
-                // 载荷按像素尺寸缓存：终端格尺寸或可用列数变了就重排，绝不缩放旧图
-                let fresh = state.payload.is_none() || state.px != chart_layout.px;
-                if fresh {
-                    let canvas =
-                        with_fonts(|fonts| rasterize(&state.spec, &chart_layout, theme, fonts));
-                    state.payload = Some(Arc::new(encode::encode(
-                        &canvas,
-                        support.proto,
-                        state.image_id,
-                        slot.cols,
-                        slot.rows,
-                    )));
-                    state.px = chart_layout.px;
-                    state.transmitted = false;
-                }
-                let Some(payload) = state.payload.as_ref() else {
+                if let Some(payload) = state.payload.as_ref().filter(|_| state.px == chart_layout.px)
+                {
+                    let transmit = !state.transmitted;
+                    state.transmitted = true;
+                    (Arc::clone(payload), state.image_id, transmit)
+                } else {
+                    let already_rendering = state
+                        .rendering
+                        .is_some_and(|(px, _)| px == chart_layout.px);
+                    if !already_rendering {
+                        state.rendering = Some((chart_layout.px, std::time::Instant::now()));
+                        spawn_chart_encode(
+                            events.clone(),
+                            slot.entry,
+                            *table,
+                            state.image_id,
+                            state.spec.clone(),
+                            chart_layout,
+                            support.proto,
+                            theme,
+                        );
+                    }
                     continue;
-                };
-                let transmit = !state.transmitted;
-                state.transmitted = true;
-                (Arc::clone(payload), state.image_id, transmit)
+                }
             }
             SlotSource::Image(key) => {
                 let Some(encoded) =

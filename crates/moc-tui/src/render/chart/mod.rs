@@ -11,7 +11,7 @@
 use moc_core::chart::{ChartKind, ChartSpec};
 
 use crate::render::canvas::Canvas;
-use crate::render::graphics::{CellPixels, cell_supported};
+use crate::render::graphics::{CellPixels, GraphicsProto, cell_supported};
 use crate::theme::Theme;
 
 pub mod draw;
@@ -110,12 +110,14 @@ pub fn layout(spec: &ChartSpec, cols: u16, cell: CellPixels) -> Option<ChartLayo
     })
 }
 
-/// 栅格化一张图：生成透明 SVG 后交给 `resvg` 光栅化为直通 RGBA 画布。
-pub fn rasterize(
+/// 按目标图形协议栅格化图表：生成透明 SVG 后交给 `resvg` 光栅化为直通 RGBA；
+/// 仅 `Sixel` 构建 256 色索引平面，Kitty / iTerm2 直接跳过量化。
+pub fn rasterize_for_proto(
     spec: &ChartSpec,
     layout: &ChartLayout,
     theme: &Theme,
     fonts: &mut Fonts,
+    proto: GraphicsProto,
 ) -> Canvas {
     let palette = theme.raw();
     let svg = draw::render_svg(spec, layout, palette, fonts);
@@ -150,7 +152,22 @@ pub fn rasterize(
             }
         }
     }
-    Canvas::from_rgba(layout.px.0, layout.px.1, rgba, palette.bg_base)
+    match proto {
+        GraphicsProto::Sixel => Canvas::from_rgba(layout.px.0, layout.px.1, rgba, palette.bg_base),
+        GraphicsProto::Kitty | GraphicsProto::Iterm2 => {
+            Canvas::from_rgba_direct(layout.px.0, layout.px.1, rgba)
+        }
+    }
+}
+
+/// 栅格化一张图（含 sixel 索引平面，供单元测试或通用画布读取使用）。
+pub fn rasterize(
+    spec: &ChartSpec,
+    layout: &ChartLayout,
+    theme: &Theme,
+    fonts: &mut Fonts,
+) -> Canvas {
+    rasterize_for_proto(spec, layout, theme, fonts, GraphicsProto::Sixel)
 }
 
 /// 后台预热内嵌字体（幂等）。

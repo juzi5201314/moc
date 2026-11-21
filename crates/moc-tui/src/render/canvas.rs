@@ -114,6 +114,21 @@ impl Canvas {
         base
     }
 
+    /// 直接封装直通 RGBA 像素，跳过索引量化（供 kitty `f=32` 与 iTerm2 RGBA PNG 使用）。
+    pub fn from_rgba_direct(w: u32, h: u32, rgba: Vec<u8>) -> Self {
+        let pixels = w as usize * h as usize;
+        debug_assert!(rgba.len() == pixels * 4, "RGBA 平面长度必须等于 4 * 像素数");
+        Self {
+            w,
+            h,
+            rgb: Vec::new(),
+            rgba: Some(rgba),
+            index: Vec::new(),
+            palette: Vec::new(),
+            bucket: Vec::new(),
+        }
+    }
+
     /// 登记颜色并返回调色板索引。
     ///
     /// 快路径是 5-5-5 桶：桶里存着同量化区间内最近一次使用的颜色，命中且

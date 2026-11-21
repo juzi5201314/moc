@@ -43,15 +43,19 @@ pub fn quantize(image: &image::RgbaImage, bg: [u8; 3]) -> (Vec<[u8; 3]>, Vec<u8>
 /// 直通 RGBA 字节流 → (调色板, 索引平面)，索引 0 恒为透明底色 `bg`。
 ///
 /// 供透明图表画布给 sixel 编码用：`alpha < 24` 直接映射到底色 `bg`（0 号槽位在
-/// sixel `P2=1` 下跳过即透明），半透明像素预混后走精确调色板或 NeuQuant。
+/// sixel `P2=1` 下跳过即透明）；半透明抗锯齿像素把 alpha 量化成 8 档再预混，
+/// 让矢量图表总色数稳居 256 色以内，100% 走 `exact` 快路径、避免 NeuQuant 训练开销。
 pub fn quantize_rgba(rgba: &[u8], bg: [u8; 3]) -> (Vec<[u8; 3]>, Vec<u8>) {
     let mut flattened_rgba = Vec::with_capacity(rgba.len());
     for pixel in rgba.as_chunks::<4>().0 {
         let [r, g, b, a] = *pixel;
         let mixed = if a < ALPHA_CUTOFF {
             bg
+        } else if a == 255 {
+            [r, g, b]
         } else {
-            blend([r, g, b], bg, a)
+            let quantized_alpha = (((u16::from(a) * 8 + 127) / 255) * 255 / 8) as u8;
+            blend([r, g, b], bg, quantized_alpha)
         };
         flattened_rgba.extend_from_slice(&[mixed[0], mixed[1], mixed[2], 0xff]);
     }
@@ -172,6 +176,15 @@ mod tests {
         assert_eq!(index[0], 0, "全透明 = 底色");
         assert_eq!(index[1], 0, "恰好等于底色的像素");
         assert_ne!(index[2], 0, "白色必须留在别的槽位");
+
+        // 抗锯齿半透明梯度走 8 档 alpha 量化，总色数保持在精确调色板上限内
+        let mut ramp = Vec::new();
+        for a in 0..=255u8 {
+            ramp.extend_from_slice(&[0x7a, 0xa2, 0xf7, a]);
+            ramp.extend_from_slice(&[0x9e, 0xce, 0x6a, a]);
+        }
+        let (ramp_palette, _) = quantize_rgba(&ramp, BG);
+        assert!(ramp_palette.len() < PALETTE_CAP);
     }
 
     /// 精确路径满 256 色仍然成立：第 256 个新色正好占满最后一个槽位。

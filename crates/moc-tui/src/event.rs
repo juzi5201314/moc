@@ -220,6 +220,7 @@ async fn event_loop(
         let activity_tick_enabled = app.prompt_running
             || app.compaction_progress.is_some()
             || app.retry_wait.is_some()
+            || app.has_rendering_charts()
             || matches!(app.modal, Some(Modal::Monitor));
         // 通知、告警与选区复制反馈到期时重绘；选区操作提示本身不计时。
         let notice_deadline = app.notice_deadline().map(tokio::time::Instant::from_std);
@@ -251,7 +252,10 @@ async fn event_loop(
             }
             _ = tokio::time::sleep_until(next_activity_tick), if activity_tick_enabled => {
                 next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
-                if app.prompt_running || matches!(app.modal, Some(Modal::Monitor)) {
+                if app.prompt_running
+                    || app.has_rendering_charts()
+                    || matches!(app.modal, Some(Modal::Monitor))
+                {
                     dirty = true;
                 }
                 if app.tick_compaction() {
@@ -459,6 +463,15 @@ async fn event_loop(
                     // 编码完成不改变布局（占位行已经按版式留好了），
                     // 下一次 emit 就能取到载荷；事件本身已经把 dirty 置上了。
                     Some(AppEvent::ImageEncoded { .. } | AppEvent::LayoutReady) => {}
+                    Some(AppEvent::ChartEncoded {
+                        entry,
+                        table,
+                        image_id,
+                        px,
+                        payload,
+                    }) => {
+                        app.complete_chart_encode(entry, table, image_id, px, payload);
+                    }
                     Some(AppEvent::PickerError(error)) => {
                         let shown = app
                             .modal

@@ -64,6 +64,25 @@ impl App {
         // 编号必须与内联图片共用同一个空间：kitty 里用已存在的 `i=` 重传会
         // 释放旧图像、清掉它的全部放置，两套自增器各自从 1 起必然互相覆盖。
         let image_id = self.images.allocate_image_id();
+        let immediate_layout = self.graphics.and_then(|support| {
+            let cols = u16::try_from(width).unwrap_or(u16::MAX);
+            crate::render::chart::layout(&spec, cols, support.cell).map(|l| (support.proto, l))
+        });
+        let rendering = immediate_layout
+            .as_ref()
+            .map(|(_, l)| (l.px, std::time::Instant::now()));
+        if let Some((proto, chart_layout)) = immediate_layout {
+            crate::render::graphics::spawn_chart_encode(
+                self.events.clone(),
+                entry,
+                table,
+                image_id,
+                spec.clone(),
+                chart_layout,
+                proto,
+                theme,
+            );
+        }
         if let Some(block) = self.blocks.get_mut(entry) {
             block.set_table_chart(
                 table,
@@ -73,9 +92,52 @@ impl App {
                     px: (0, 0),
                     image_id,
                     transmitted: false,
+                    rendering,
                 }),
             );
         }
+    }
+
+    /// 回填后台完成的图表渲染载荷；若该图表已被收起、替换或尺寸已过期则静默丢弃。
+    pub fn complete_chart_encode(
+        &mut self,
+        entry: usize,
+        table: usize,
+        image_id: u32,
+        px: (u32, u32),
+        payload: std::sync::Arc<crate::render::graphics::encode::Payload>,
+    ) -> bool {
+        let Some(block) = self.blocks.get_mut(entry) else {
+            return false;
+        };
+        let Some(state) = block.table_chart_mut(table) else {
+            return false;
+        };
+        if state.image_id != image_id {
+            return false;
+        }
+        if state
+            .rendering
+            .is_some_and(|(target_px, _)| target_px != px)
+        {
+            return false;
+        }
+        state.payload = Some(payload);
+        state.px = px;
+        state.transmitted = false;
+        state.rendering = None;
+        true
+    }
+
+    /// 是否仍有正在后台渲染的表格图表（用于驱动事件循环加载动画 tick）。
+    pub fn has_rendering_charts(&self) -> bool {
+        self.blocks.iter().any(|entry| {
+            entry
+                .charts
+                .iter()
+                .flatten()
+                .any(TableChartState::is_rendering)
+        })
     }
 
     /// 切换正文末尾参考链接的折叠态：展开与收起共用同一个入口。

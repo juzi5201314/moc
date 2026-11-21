@@ -220,6 +220,14 @@ pub enum AppEvent {
     ImageEncoded {
         key: crate::render::image::ImageKey,
     },
+    /// 表格图表后台光栅化与编码完成（后台线程 → 主线程）。
+    ChartEncoded {
+        entry: usize,
+        table: usize,
+        image_id: u32,
+        px: (u32, u32),
+        payload: std::sync::Arc<crate::render::graphics::encode::Payload>,
+    },
     /// 打开后台任务列表弹窗。
     OpenJobsModal(Vec<moc_protocol::methods::JobInfo>),
     /// workflow 审批请求：打开审批窗（可最小化成胶囊）。

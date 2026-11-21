@@ -265,6 +265,20 @@ pub struct TableChartState {
     pub image_id: u32,
     /// kitty 像素数据是否已传给终端；被删除后需置 `false`，滚回视口时重新传输。
     pub transmitted: bool,
+    /// 后台正在渲染的 `(目标像素尺寸, 启动时刻)`；完成后回填 `payload` 并清为 `None`。
+    pub rendering: Option<((u32, u32), std::time::Instant)>,
+}
+
+impl TableChartState {
+    /// 是否正在后台光栅化/编码。
+    pub fn is_rendering(&self) -> bool {
+        self.rendering.is_some()
+    }
+
+    /// 后台渲染启动时刻（用于计算加载 spinner 帧）。
+    pub fn rendering_started_at(&self) -> Option<std::time::Instant> {
+        self.rendering.map(|(_, started)| started)
+    }
 }
 
 /// 一次工具调用的终态：`ToolFinished` 去掉 `prompt_id` 后的字段，回填用。
