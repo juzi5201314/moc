@@ -521,4 +521,62 @@ fn panels_preserve_tiny_value_ratios_and_negative_direction() {
         (origin..canvas.w() / 2).all(|x| rgb_at(&canvas, x, 3 * 18 + 9) != negative),
         "负值不得画到正侧"
     );
+
+    // 条形图同理：极小负值配超大正值时，负值不得被反向画到零轴正侧。
+    let signed_bar = spec(
+        ChartKind::Bar,
+        &["负", "正"],
+        vec![series("混合符号", &[(-1.0, "-1"), (1000.0, "1000")])],
+    );
+    let (canvas, _) = raster(&signed_bar);
+    let bar_color = chart_rgb(&theme, 0);
+    let bar_origin = (0..canvas.w())
+        .find(|&x| rgb_at(&canvas, x, 2 * 18 + 9) == bar_color)
+        .expect("正值条");
+    assert!(
+        (bar_origin..canvas.w()).all(|x| rgb_at(&canvas, x, 18 + 9) != bar_color),
+        "条形图负值不得画到正侧"
+    );
+}
+
+#[test]
+fn heatmap_and_scatter_handle_tiny_and_extreme_ranges() {
+    let theme = Theme::resolved(ColorLevel::TrueColor);
+    let hue = chart_rgb(&theme, 0);
+    let bg = theme.raw().bg_base;
+    let lowest = blend(bg, hue, heat_alpha(0));
+    let highest = blend(bg, hue, heat_alpha(HEAT_STEPS - 1));
+
+    // 热力图：极小跨度、跨符号极值与极端对数跨度都应落出最浅与最深两档色块。
+    for (lo, hi) in [(1e-18, 3e-18), (-1e308, 1e308), (1e-200, 1e200)] {
+        let chart = spec(
+            ChartKind::Heatmap,
+            &["低", "高"],
+            vec![series("列", &[(lo, "低"), (hi, "高")])],
+        );
+        let (canvas, _) = raster(&chart);
+        let has_low = (0..canvas.w()).any(|x| rgb_at(&canvas, x, 2 * 18 + 9) == lowest);
+        let has_high = (0..canvas.w()).any(|x| rgb_at(&canvas, x, 3 * 18 + 9) == highest);
+        assert!(has_low && has_high, "热力图区间 ({lo:e}, {hi:e}) 应区分极值档位");
+    }
+
+    // 散点图：极小值与跨符号极大值都应在绘图区左右两侧绘出不同位置的散点。
+    for (lo, hi) in [(1e-18, 3e-18), (-1e308, 1e308)] {
+        let chart = spec(
+            ChartKind::Scatter,
+            &["a", "b"],
+            vec![
+                series("x", &[(lo, "低"), (hi, "高")]),
+                series("y", &[(lo, "低"), (hi, "高")]),
+            ],
+        );
+        let (canvas, layout) = raster(&chart);
+        let top = 18;
+        let bottom = u32::from(layout.rows.saturating_sub(2)) * 18;
+        let xs: Vec<u32> = (0..canvas.w())
+            .filter(|&x| (top..bottom).any(|y| rgb_at(&canvas, x, y) == hue))
+            .collect();
+        let span = xs.last().copied().unwrap_or(0).saturating_sub(xs.first().copied().unwrap_or(0));
+        assert!(span > 100, "散点图区间 ({lo:e}, {hi:e}) 应拉开横向间距：{span}");
+    }
 }

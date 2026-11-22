@@ -72,7 +72,17 @@ pub(super) struct SvgBuilder {
 
 impl SvgBuilder {
     pub(super) fn new(w: u32, h: u32, css_family: &str, px: u32) -> Self {
-        let mut buf = String::with_capacity(4096);
+        Self::with_capacity(4096, w, h, css_family, px)
+    }
+
+    pub(super) fn with_capacity(
+        capacity: usize,
+        w: u32,
+        h: u32,
+        css_family: &str,
+        px: u32,
+    ) -> Self {
+        let mut buf = String::with_capacity(capacity);
         let escaped_font = xml_escape(css_family);
         let _ = write!(
             buf,
@@ -286,7 +296,12 @@ fn bounds(series: &[Series]) -> Option<(f64, f64)> {
     let mut max = 0.0f64;
     let mut any = false;
     for item in series {
-        for point in item.points.iter().flatten() {
+        for point in item
+            .points
+            .iter()
+            .flatten()
+            .filter(|point| point.value.is_finite())
+        {
             min = min.min(point.value);
             max = max.max(point.value);
             any = true;
@@ -346,14 +361,7 @@ impl ValueScale {
     fn ratio(self, value: f64) -> f64 {
         match self {
             Self::Linear { min, max } => linear_ratio(value, min, max),
-            Self::Log { min, max } => {
-                let span = max.ln() - min.ln();
-                if span == 0.0 {
-                    0.0
-                } else {
-                    ((value.max(min).ln() - min.ln()) / span).clamp(0.0, 1.0)
-                }
-            }
+            Self::Log { min, max } => log_ratio(value, min, max),
         }
     }
 
@@ -388,7 +396,7 @@ impl ValueScale {
 
 /// 非零跨度不设绝对下限；跨符号极值先减半，避免两个有限端点相减溢出。
 fn linear_ratio(value: f64, min: f64, max: f64) -> f64 {
-    if min == max {
+    if !value.is_finite() || !min.is_finite() || !max.is_finite() || min >= max {
         return 0.0;
     }
     let span = max - min;
@@ -398,6 +406,20 @@ fn linear_ratio(value: f64, min: f64, max: f64) -> f64 {
         (value * 0.5 - min * 0.5) / (max * 0.5 - min * 0.5)
     };
     ratio.clamp(0.0, 1.0)
+}
+
+/// 全正对数比例：用对数差替代比值取对数，避免极端正跨度 `max / min` 溢出。
+fn log_ratio(value: f64, min: f64, max: f64) -> f64 {
+    if !value.is_finite() || !min.is_finite() || !max.is_finite() || min <= 0.0 || min >= max {
+        return 0.0;
+    }
+    let min_ln = min.ln();
+    let span = max.ln() - min_ln;
+    if span == 0.0 {
+        0.0
+    } else {
+        ((value.max(min).ln() - min_ln) / span).clamp(0.0, 1.0)
+    }
 }
 
 /// 按 8 位 alpha 把前景混到背景上（热力图 5 档格色）。
@@ -662,7 +684,12 @@ fn data_bounds(series: &[Series]) -> Option<(f64, f64)> {
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
     for item in series {
-        for point in item.points.iter().flatten() {
+        for point in item
+            .points
+            .iter()
+            .flatten()
+            .filter(|point| point.value.is_finite())
+        {
             min = min.min(point.value);
             max = max.max(point.value);
         }
@@ -675,6 +702,7 @@ fn min_point(series: &[Series]) -> Option<&Point> {
     series
         .iter()
         .flat_map(|item| item.points.iter().flatten())
+        .filter(|point| point.value.is_finite())
         .min_by(|a, b| a.value.total_cmp(&b.value))
 }
 
@@ -683,22 +711,24 @@ fn max_point(series: &[Series]) -> Option<&Point> {
     series
         .iter()
         .flat_map(|item| item.points.iter().flatten())
+        .filter(|point| point.value.is_finite())
         .max_by(|a, b| a.value.total_cmp(&b.value))
 }
 
 /// 取最接近全部系列中值的点：轴上的中间刻度直接用真实单元格的写法。
 fn mid_point(series: &[Series]) -> Option<&Point> {
     let (min, max) = data_bounds(series)?;
-    if (max - min).abs() < f64::EPSILON {
+    if min == max {
         return series
             .iter()
             .flat_map(|item| item.points.iter().flatten())
-            .next();
+            .find(|point| point.value.is_finite());
     }
-    let middle = min + (max - min) / 2.0;
+    let middle = min * 0.5 + max * 0.5;
     series
         .iter()
         .flat_map(|item| item.points.iter().flatten())
+        .filter(|point| point.value.is_finite())
         .min_by(|a, b| {
             (a.value - middle)
                 .abs()
@@ -775,22 +805,6 @@ fn data_extent(pairs: &[(f64, f64)], pick: impl Fn(&(f64, f64)) -> f64) -> (f64,
     } else {
         (0.0, 1.0)
     }
-}
-
-/// 带 6% 内边距的区间：散点不让点贴在边框上。
-fn padded_bounds(pairs: &[(f64, f64)], pick: impl Fn(&(f64, f64)) -> f64) -> (f64, f64) {
-    let mut min = f64::INFINITY;
-    let mut max = f64::NEG_INFINITY;
-    for pair in pairs {
-        let value = pick(pair);
-        min = min.min(value);
-        max = max.max(value);
-    }
-    if !min.is_finite() || !max.is_finite() {
-        return (0.0, 1.0);
-    }
-    let span = (max - min).max(f64::EPSILON);
-    (min - span * 0.06, max + span * 0.06)
 }
 
 #[cfg(test)]

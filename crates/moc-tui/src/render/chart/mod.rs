@@ -96,8 +96,14 @@ pub(super) fn panel_columns(px_width: u32) -> usize {
     if px_width >= 384 { 2 } else { 1 }
 }
 
-/// 计算版式；放不下就返回 `None`（宁可不出图也不出读不懂的图）。
-pub fn layout(spec: &ChartSpec, cols: u16, cell: CellPixels) -> Option<ChartLayout> {
+/// 按图型与维度计算版式；放不下就返回 `None`（宁可不出图也不出读不懂的图）。
+pub fn layout_for(
+    kind: ChartKind,
+    categories: usize,
+    series: usize,
+    cols: u16,
+    cell: CellPixels,
+) -> Option<ChartLayout> {
     if cols < MIN_COLS || !cell_supported(cell) {
         return None;
     }
@@ -106,12 +112,7 @@ pub fn layout(spec: &ChartSpec, cols: u16, cell: CellPixels) -> Option<ChartLayo
         .unwrap_or(u16::MAX)
         .max(MIN_COLS);
     let cols = cols.min(max_cols);
-    let rows = rows_needed(
-        spec.kind,
-        spec.categories.len(),
-        spec.series.len(),
-        u32::from(cols) * cell.w,
-    );
+    let rows = rows_needed(kind, categories, series, u32::from(cols) * cell.w);
     if rows == 0 || rows > MAX_ROWS {
         return None;
     }
@@ -120,7 +121,7 @@ pub fn layout(spec: &ChartSpec, cols: u16, cell: CellPixels) -> Option<ChartLayo
     let px_size = ((f64::from(cell.h) * 0.68).round() as u32).clamp(10, 18);
     let baseline = ((f64::from(cell.h) * f64::from(BASELINE_RATIO)).round() as u32).min(cell.h);
     Some(ChartLayout {
-        kind: spec.kind,
+        kind,
         cols,
         rows,
         px,
@@ -128,6 +129,17 @@ pub fn layout(spec: &ChartSpec, cols: u16, cell: CellPixels) -> Option<ChartLayo
         baseline,
         cell,
     })
+}
+
+/// 计算版式；放不下就返回 `None`（宁可不出图也不出读不懂的图）。
+pub fn layout(spec: &ChartSpec, cols: u16, cell: CellPixels) -> Option<ChartLayout> {
+    layout_for(
+        spec.kind,
+        spec.categories.len(),
+        spec.series.len(),
+        cols,
+        cell,
+    )
 }
 
 /// 按目标图形协议栅格化图表：生成透明 SVG 后交给 `resvg` 光栅化为直通 RGBA；

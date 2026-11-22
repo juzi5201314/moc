@@ -86,7 +86,7 @@ impl Fonts {
         if let Some(&width) = self.width_cache.get(text) {
             return width;
         }
-        let mut svg = SvgBuilder::new(1, 1, &self.css_family, px);
+        let mut svg = SvgBuilder::with_capacity(256, 1, 1, &self.css_family, px);
         svg.text(0, 0, text, [0; 3]);
         let options = resvg::usvg::Options {
             fontdb: self.database(),
@@ -152,7 +152,7 @@ fn sanitize_font_name(raw: &str) -> Option<String> {
     let cleaned: String = raw
         .trim()
         .chars()
-        .filter(|ch| !ch.is_control() && !matches!(ch, '\'' | '"' | ';' | '<' | '>' | '&'))
+        .filter(|ch| !ch.is_control() && !matches!(ch, '\'' | '"' | '\\' | ';' | '<' | '>' | '&'))
         .collect();
     let trimmed = cleaned.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())

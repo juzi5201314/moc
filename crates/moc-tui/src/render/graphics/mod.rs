@@ -411,6 +411,15 @@ pub fn spawn_chart_encode(
         .map(|_| ())
 }
 
+/// 帧后启动后台图表线程失败时收起图表、写错误提示，并唤醒事件循环立刻重绘。
+fn abort_chart_encode(app: &mut App, entry: usize, table: usize, error: &std::io::Error) {
+    if let Some(block) = app.blocks.get_mut(entry) {
+        block.set_table_chart(table, None);
+    }
+    app.set_notice(rust_i18n::t!("tui.err.chart_start_fmt", err = error).into_owned());
+    let _ = app.events.send(AppEvent::LayoutReady);
+}
+
 /// 每帧放置图像：在 `terminal.draw()` 之后调用。
 ///
 /// 位置与内容都没变就跳过；kitty 换位时先删旧放置，永久消失的图像按图像 ID
@@ -490,10 +499,7 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
                             theme,
                         );
                         if let Err(error) = result {
-                            entry.set_table_chart(*table, None);
-                            app.set_notice(
-                                rust_i18n::t!("tui.err.chart_start_fmt", err = error).into_owned(),
-                            );
+                            abort_chart_encode(app, slot.entry, *table, &error);
                             continue;
                         }
                         state.rendering = Some((chart_layout.px, std::time::Instant::now()));

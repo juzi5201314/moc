@@ -360,3 +360,23 @@ fn chart_completion_follows_identity_and_rejects_obsolete_sizes() {
     app.toggle_table_chart(1, 0);
     assert!(!app.complete_chart_encode(0, id, second_px, payload));
 }
+
+#[test]
+fn abort_chart_encode_clears_state_sets_notice_and_requests_redraw() {
+    let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(crate::theme::Theme::global(), events);
+    app.push_block(Block::Assistant {
+        text: "| 项 | 值 |\n|---|---|\n| a | 10 |\n| b | 20 |".into(),
+    });
+    app.toggle_table_chart(0, 0);
+    assert!(app.blocks[0].table_chart(0).is_some());
+
+    abort_chart_encode(&mut app, 0, 0, &std::io::Error::other("resource temporarily unavailable"));
+
+    assert!(app.blocks[0].table_chart(0).is_none());
+    assert!(app.notice_visible());
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(crate::protocol::AppEvent::LayoutReady)
+    ));
+}

@@ -11,7 +11,7 @@ use super::data_extent;
 use super::format_value;
 use super::heat_alpha;
 use super::linear_ratio;
-use super::padded_bounds;
+use super::log_ratio;
 use super::point;
 
 impl Painter<'_> {
@@ -115,13 +115,12 @@ impl Painter<'_> {
         let columns = spec.series.len().max(1);
         let cell_w = ((grid_right - grid_left) / columns as u32).max(2);
         let (min_v, max_v) = data_bounds(&spec.series).unwrap_or((0.0, 1.0));
-        let span = (max_v - min_v).max(f64::EPSILON);
         let log = min_v > 0.0 && max_v / min_v >= LOG_SCALE_RATIO;
         let ratio = |value: f64| -> f64 {
             if log {
-                ((value.max(min_v) / min_v).ln() / (max_v / min_v).ln()).clamp(0.0, 1.0)
+                log_ratio(value, min_v, max_v)
             } else {
-                ((value - min_v) / span).clamp(0.0, 1.0)
+                linear_ratio(value, min_v, max_v)
             }
         };
         let hue = self.series_color(0);
@@ -180,7 +179,7 @@ impl Painter<'_> {
             let height = self.cell_h().saturating_sub(4).max(2);
             for (index, series) in spec.series.iter().enumerate() {
                 let x = grid_left + cell_w * index as u32;
-                let Some(value) = point(series, row) else {
+                let Some(value) = point(series, row).filter(|point| point.value.is_finite()) else {
                     continue;
                 };
                 let step = ((ratio(value.value) * (HEAT_STEPS - 1) as f64).round() as usize)
@@ -216,8 +215,8 @@ impl Painter<'_> {
         self.legend();
         let pairs: Vec<(f64, f64)> = (0..spec.categories.len())
             .filter_map(|row| {
-                let x = point(x_series, row)?;
-                let y = point(y_series, row)?;
+                let x = point(x_series, row).filter(|point| point.value.is_finite())?;
+                let y = point(y_series, row).filter(|point| point.value.is_finite())?;
                 Some((x.value, y.value))
             })
             .collect();
@@ -240,15 +239,19 @@ impl Painter<'_> {
             &y_labels[1],
             self.palette.gray_dim,
         );
-        let (x_min, x_max) = padded_bounds(&pairs, |pair| pair.0);
-        let (y_min, y_max) = padded_bounds(&pairs, |pair| pair.1);
-        let x_span = (x_max - x_min).max(f64::EPSILON);
-        let y_span = (y_max - y_min).max(f64::EPSILON);
+        // 在比例空间保留 6% 内边距：不给极值做数据空间加减，避免溢出或被 EPSILON 压扁。
+        let padded_ratio = |value: f64, (min, max): (f64, f64)| -> f64 {
+            if min == max {
+                0.5
+            } else {
+                (0.06 + linear_ratio(value, min, max)) / 1.12
+            }
+        };
         let map_x = |value: f64| -> f64 {
-            f64::from(plot_left) + (value - x_min) / x_span * f64::from(plot_right - plot_left)
+            f64::from(plot_left) + padded_ratio(value, raw_x) * f64::from(plot_right - plot_left)
         };
         let map_y = |value: f64| -> f64 {
-            f64::from(plot_bottom) - (value - y_min) / y_span * f64::from(plot_bottom - plot_top)
+            f64::from(plot_bottom) - padded_ratio(value, raw_y) * f64::from(plot_bottom - plot_top)
         };
         let color = self.series_color(0);
         let radius = (f64::from(self.cell_h()) * 0.14).clamp(2.2, 4.5);

@@ -298,7 +298,7 @@ impl Painter<'_> {
                 &(cat_idx + 1).to_string(),
                 self.series_color(cat_idx),
             );
-            let Some(val) = point(series, cat_idx) else {
+            let Some(val) = point(series, cat_idx).filter(|point| point.value.is_finite()) else {
                 self.text(row, track.0, "—", self.palette.gray_dim);
                 continue;
             };
@@ -354,17 +354,20 @@ impl Painter<'_> {
         left_w: u32,
         color: [u8; 3],
     ) {
-        let Some(value) = point else {
+        let Some(value) = point.filter(|point| point.value.is_finite()) else {
             return;
         };
         let x = scale.position(track, value.value);
         let bar_y = self.row_top(row) + bar_inset(self.cell_h());
-        let (left, right) = if x >= origin {
-            (origin, x)
+        let (left, width) = if value.value == 0.0 {
+            (origin, 2)
+        } else if value.value > 0.0 {
+            (origin, x.saturating_sub(origin).max(2))
         } else {
-            (x, origin)
+            // 负侧不足一个像素时不反向补条；有余量时向左保底 2px。
+            let left = x.min(origin.saturating_sub(2)).max(track.0);
+            (left, origin.saturating_sub(left))
         };
-        let width = (right - left).max(2);
         self.pill(left, bar_y, width, bar_height(self.cell_h()), color);
         if value.value >= 0.0 {
             self.text(
@@ -381,7 +384,7 @@ impl Painter<'_> {
             };
             self.text_end(
                 row,
-                x.saturating_sub(GAP),
+                left.saturating_sub(GAP),
                 &shown,
                 self.palette.text_secondary,
             );

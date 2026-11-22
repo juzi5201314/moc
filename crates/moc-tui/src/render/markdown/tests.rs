@@ -346,6 +346,10 @@ fn chart_state_keeps_table_and_appends_placeholder_below() {
     assert_eq!(chart.px, (80 * 8, u32::from(chart.rows) * 18));
     assert_eq!(button.row + 2, chart.row, "入口与图表之间应隔一个空行");
     assert!(
+        out[button.row].starts_with(t!(ENTRY_HIDE).as_ref()),
+        "表格下方是隐藏入口：{out:?}"
+    );
+    assert!(
         out[button.row + 1].trim().is_empty(),
         "入口与图表之间应为空行"
     );
@@ -407,6 +411,9 @@ fn multiple_tables_keep_chart_rows_aligned() {
         second_button.row > first_chart.row + usize::from(first_chart.rows),
         "第二张表的入口必须在第一张图之后"
     );
+    let out = text(&rendered.lines);
+    assert!(out[first_button.row].starts_with(t!(ENTRY_HIDE).as_ref()));
+    assert!(out[second_button.row].starts_with(t!(ENTRY_CHART).as_ref()));
 }
 
 /// 纯文本快照与屏幕上的单元格一致：装饰标记不会漏进分析（`**7648**` → `7648`）。
