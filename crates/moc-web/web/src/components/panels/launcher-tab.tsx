@@ -145,7 +145,11 @@ export function LauncherTab({ sessionId }: { sessionId: string }) {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") groups[0]?.items[0]?.run();
+              if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+              event.preventDefault();
+              const first = groups[0]?.items[0];
+              // 等本次按键结束再开弹窗，避免 Enter 落到弹窗内刚获焦的按钮上把它关掉。
+              if (first) setTimeout(first.run, 0);
             }}
             placeholder={t("nt.ph")}
             aria-label={t("nt.ph")}
@@ -169,7 +173,7 @@ export function LauncherTab({ sessionId }: { sessionId: string }) {
                   >
                     <Icon className="size-4 shrink-0 text-muted-foreground" />
                     <span className="shrink-0">{t(item.label)}</span>
-                    <span className="min-w-0 truncate text-xs text-text-tertiary">
+                    <span className="min-w-0 truncate text-xs text-text-tertiary group-hover/entry:text-muted-foreground group-focus-visible/entry:text-muted-foreground">
                       {t(item.hint)}
                     </span>
                   </button>

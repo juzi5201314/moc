@@ -56,7 +56,7 @@
   --sidebar-accent-foreground: #171717;
   --surface-raised: #ffffff;
   --surface-hover: rgba(0, 0, 0, 0.04);
-  --text-tertiary: #767676;
+  --text-tertiary: #707070;
   --code-bg: #f4f4f4;
   /* 行内代码/选区用半透明：叠在表格行、引用块、选区上都能自然混色，不会出现不透明色块 */
   --inline-code-bg: rgba(0, 0, 0, 0.045);
