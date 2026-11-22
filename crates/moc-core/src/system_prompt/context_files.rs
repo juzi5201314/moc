@@ -1,5 +1,6 @@
 //! 加载项目和全局的 AGENTS.md，并展开其中的 `@` 导入（有大小上限）。
 
+use rust_i18n::t;
 use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
@@ -41,9 +42,14 @@ impl LoadIssues {
     fn into_warning(self) -> Option<String> {
         let mut parts = Vec::new();
         if let Some((budget, omitted)) = self.token_budget {
-            parts.push(format!(
-                "AGENTS.md 超出 {budget} token 上限，已截断或省略 {omitted} 份文件（可在「设置 → 指令 → AGENTS.md token 上限」调高）"
-            ));
+            parts.push(
+                t!(
+                    "core.err.ctx_budget_warn",
+                    budget = budget,
+                    omitted = omitted
+                )
+                .into_owned(),
+            );
         }
         if !self.oversized.is_empty() {
             let names: Vec<_> = self
@@ -56,14 +62,17 @@ impl LoadIssues {
                         .into_owned()
                 })
                 .collect();
-            parts.push(format!(
-                "{} 份指令文件超过 1 MiB 单文件上限已跳过：{}",
-                names.len(),
-                names.join("、")
-            ));
+            parts.push(
+                t!(
+                    "core.err.ctx_oversized_warn",
+                    count = names.len(),
+                    names = names.join("、")
+                )
+                .into_owned(),
+            );
         }
         if self.import_budget_exceeded {
-            parts.push("AGENTS.md 中的 @ 导入累计超过 4 MiB 上限，部分导入已忽略".into());
+            parts.push(t!("core.err.ctx_import_warn").into_owned());
         }
         (!parts.is_empty()).then(|| parts.join("；"))
     }

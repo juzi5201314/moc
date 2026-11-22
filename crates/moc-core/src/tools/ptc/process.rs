@@ -5,7 +5,6 @@ use crate::{PtcWorkerCommand, config::PtcConfig};
 use moc_ptc_protocol::wire::{
     GuestMessage, GuestState, GuestStep, HostCompletion, HostMessage, MAX_FRAME_BYTES, StartRequest,
 };
-use rust_i18n::t;
 use std::{
     collections::HashMap,
     process::Stdio,
@@ -87,7 +86,7 @@ impl PtcHost {
         // 同一把锁覆盖 ID 分配、Start 入队和 shutdown 标记，避免关闭请求与新 execution 乱序。
         let mut next_id = self.next_id.lock().unwrap();
         if self.shutdown.requested.load(Ordering::Acquire) {
-            return Err(worker_error("PTC Host 已关闭"));
+            return Err(worker_error("PTC host is shut down"));
         }
         let id = *next_id;
         *next_id += 1;
@@ -99,7 +98,7 @@ impl PtcHost {
                 max_runs: config.max_concurrent_runs,
                 idle: Duration::from_secs(config.host_idle_timeout_secs),
             })
-            .map_err(|_| worker_error("PTC Host 已关闭"))?;
+            .map_err(|_| worker_error("PTC host is shut down"))?;
         Ok(Guest {
             tx: self.tx.clone(),
             id,
@@ -154,7 +153,7 @@ impl Guest {
                     id: self.id,
                     completions,
                 })
-                .map_err(|_| worker_error("PTC Host 已关闭"))?;
+                .map_err(|_| worker_error("PTC host is shut down"))?;
         }
         self.receive().await
     }
@@ -164,7 +163,7 @@ impl Guest {
             .rx
             .recv()
             .await
-            .unwrap_or_else(|| Err(worker_error("PTC execution 通道已关闭")));
+            .unwrap_or_else(|| Err(worker_error("PTC execution channel closed")));
         self.finished = !matches!(
             &result,
             Ok(GuestStep {
@@ -226,9 +225,7 @@ impl Process {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|error| {
-                worker_error(t!("core.err.ptc_host_start", error = error).into_owned())
-            })?;
+            .map_err(|error| worker_error(format!("failed to start PTC host: {error}")))?;
         let mut stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         let mut stderr = child.stderr.take().expect("piped stderr");
@@ -266,11 +263,14 @@ impl Process {
     fn send(&self, message: &HostMessage) -> Result<(), ToolError> {
         let bytes = serde_json::to_vec(message).map_err(|error| worker_error(error.to_string()))?;
         if bytes.len() + 1 > MAX_FRAME_BYTES {
-            return Err(ToolError::new("E_OUTPUT_LIMIT", "PTC 协议帧超过传输上限"));
+            return Err(ToolError::new(
+                "E_OUTPUT_LIMIT",
+                "PTC protocol frame exceeds transport limit",
+            ));
         }
         self.input
             .send(bytes)
-            .map_err(|_| worker_error("PTC Host 写入通道已关闭"))
+            .map_err(|_| worker_error("PTC host write channel closed"))
     }
 
     async fn stop(mut self) {
@@ -292,22 +292,21 @@ async fn read_frame(process: &mut Process) -> Result<GuestMessage, ToolError> {
             .await
             .map_err(|error| worker_error(error.to_string()))?;
         if available.is_empty() {
-            return Err(worker_error("PTC Host 输出结束"));
+            return Err(worker_error("PTC host output closed unexpectedly"));
         }
         let count = available
             .iter()
             .position(|byte| *byte == b'\n')
             .map_or(available.len(), |n| n + 1);
         if process.buffer.len() + count > MAX_FRAME_BYTES {
-            return Err(worker_error("PTC Host 输出帧超限"));
+            return Err(worker_error("PTC host output frame exceeds limit"));
         }
         let complete = available[count - 1] == b'\n';
         process.buffer.extend_from_slice(&available[..count]);
         process.output.consume(count);
         if complete {
-            let result = serde_json::from_slice(&process.buffer).map_err(|error| {
-                worker_error(t!("core.err.ptc_host_protocol", error = error).into_owned())
-            });
+            let result = serde_json::from_slice(&process.buffer)
+                .map_err(|error| worker_error(format!("PTC host protocol error: {error}")));
             process.buffer.clear();
             return result;
         }
@@ -358,7 +357,7 @@ async fn manage(
                 Some(Request::Start { id, request, steps, max_runs, idle: timeout }) => {
                     if steps.is_closed() { continue; }
                     if routes.len() >= max_runs {
-                        let _ = steps.send(Err(ToolError::new("E_QUEUE_LIMIT", "PTC Host 活跃 execution 已达并发上限")));
+                        let _ = steps.send(Err(ToolError::new("E_QUEUE_LIMIT", "PTC host concurrent execution limit reached")));
                         continue;
                     }
                     if process.is_none() {
@@ -396,7 +395,7 @@ async fn manage(
                 }
                 None | Some(Request::Shutdown) => {
                     requests.close();
-                    fail(&mut process, &mut routes, worker_error("PTC Host 已关闭")).await;
+                    fail(&mut process, &mut routes, worker_error("PTC host is shut down")).await;
                     shutdown.done.send_replace(true);
                     return;
                 }
@@ -411,7 +410,7 @@ async fn manage(
                 match message {
                     Ok(GuestMessage::Step { execution_id, step }) => {
                         let Some(route) = routes.get(&execution_id) else {
-                            fail(&mut process, &mut routes, worker_error("PTC Host 返回未知 execution ID")).await;
+                            fail(&mut process, &mut routes, worker_error("PTC host returned unknown execution ID")).await;
                             continue;
                         };
                         let terminal = !matches!(step.state, GuestState::Pending);
@@ -421,7 +420,7 @@ async fn manage(
                             };
                             let _ = route.steps.send(Err(ToolError::new(
                                 "E_OUTPUT_LIMIT",
-                                "PTC Host execution 输出超限",
+                                "PTC execution output exceeded limit",
                             )));
                             if terminal {
                                 routes.remove(&execution_id);
@@ -454,7 +453,7 @@ async fn manage(
                 if routes.is_empty() {
                     if let Some(process) = process.take() { process.stop().await; }
                 } else {
-                    fail(&mut process, &mut routes, worker_error("PTC Host 在中断宽限期内未回收 execution，已强制重启")).await;
+                    fail(&mut process, &mut routes, worker_error("PTC host did not stop execution within cancel grace period; restarted")).await;
                 }
             }
         }

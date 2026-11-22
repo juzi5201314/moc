@@ -264,7 +264,7 @@ impl Tool for MessageAgentTool {
         "message_agent"
     }
     fn description(&self) -> &'static str {
-        "Send necessary clarification or a blocker answer. target: agent id, parent, or all (running children/siblings). Running targets read messages at the next safe boundary without interruption; idle targets start a turn."
+        "Send clarification or blocker answers. target: agent id, \"parent\", or \"all\" (running children/siblings). Running targets receive at next safe boundary; idle targets wake."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -374,7 +374,7 @@ impl Tool for WaitAgentTool {
         "wait_agent"
     }
     fn description(&self) -> &'static str {
-        "Wait for completion, a message, or timeout (default 180 seconds). Results are announced automatically; wait only when blocked. agent_ids defaults to running children; completed snapshots include the full report."
+        "Wait for completion, a message, or timeout (default 180s). Wait only when blocked; defaults to running children and returns full reports when finished."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -437,7 +437,7 @@ impl Tool for SidekickTool {
         "sidekick"
     }
     fn description(&self) -> &'static str {
-        "Hand off work to your persistent sidekick (Fusion sessions only). Its context persists across handoffs. mode (default \"keep\"): \"keep\" continues its context; \"compact\" compacts its history then delivers your message; \"fresh\" spawns a new sidekick; \"retry\" resumes an interrupted run without a message. compact/fresh/retry require the sidekick to be idle. block=true (default) waits and returns its report; block=false returns at once, then collect the report with wait_agent. Calling it while the sidekick is running delivers the message as an interrupt."
+        "Delegate to your persistent sidekick (Fusion only). mode (default \"keep\"): keep=continue context; compact=compact then deliver; fresh=new sidekick; retry=resume interrupted run without message. compact/fresh/retry require idle sidekick. block=true (default) waits for report; block=false returns immediately (collect via wait_agent). Calling while running interrupts it."
     }
     fn tier(&self) -> Tier {
         Tier::Write

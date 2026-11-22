@@ -15,7 +15,6 @@ use crate::workflow::engine::JournalRecord;
 use crate::workflow::engine::RecordKind;
 use crate::workflow::engine::input_hash;
 use crate::workflow::facade;
-use rust_i18n::t;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
@@ -85,7 +84,7 @@ impl Engine {
                         request_id,
                         outcome: DriverOutcome::Failed {
                             code: "E_ARTIFACT".into(),
-                            message: t!("core.err.artifact_no_id", member = member).into_owned(),
+                            message: format!("artifact.{member} requires an id"),
                         },
                     });
                     return;

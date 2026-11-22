@@ -83,7 +83,7 @@ pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError>
             drop(state);
             candidates.push(Reminder::once(
                 reminder::key::TODO_STALL,
-                format!("{open_items} todo items still open. If you finished a task since the last todo update, mark it done now; otherwise keep working."),
+                format!("{open_items} todo items open. Mark finished tasks done now, or keep working."),
             ));
             update
                 .emit(
@@ -167,13 +167,13 @@ pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError>
     if let Some(detail) = cycle_redirect.take() {
         candidates.push(Reminder::once(
             reminder::key::CYCLE,
-            format!("<system-interrupt reason=\"tool_loop\">{detail}. Stop repeating it: gather new evidence or summarize and finish. Another no-progress loop ends this prompt.</system-interrupt>"),
+            format!("<system-interrupt reason=\"tool_loop\">{detail}. Stop repeating: gather new evidence or summarize and finish. Another no-progress loop ends this prompt.</system-interrupt>"),
         ));
     }
     if let Some(detail) = thinking_redirect.take() {
         candidates.push(Reminder::once(
             reminder::key::THINKING,
-            format!("<system-interrupt reason=\"thinking_loop\">{detail}. Your reasoning is repeating instead of progressing: stop restating the same analysis and either act on what you already know or state the blocker and finish.</system-interrupt>"),
+            format!("<system-interrupt reason=\"thinking_loop\">{detail}. Stop repeating the same reasoning; act on what you know or state the blocker and finish.</system-interrupt>"),
         ));
     }
     // notice 是一次性事实，drain 之后就不可重复获取。

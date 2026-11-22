@@ -17,7 +17,6 @@ use moc_protocol::methods::AgentWaitResult;
 use moc_protocol::methods::SessionInfo;
 use moc_protocol::methods::SessionUpdate;
 use moc_protocol::methods::ToolProgressRow;
-use rust_i18n::t;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::futures::OwnedNotified;
@@ -158,7 +157,7 @@ pub(super) async fn resolve_wait_targets(
                     .iter()
                     .find(|entry| entry.session.id == *id)
                     .map(|entry| entry.session.clone())
-                    .ok_or_else(|| invalid(t!("core.err.not_direct_child", id = id).into_owned()))
+                    .ok_or_else(|| invalid(format!("target `{id}` is not a direct child")))
             })
             .collect(),
         None => {
@@ -174,7 +173,7 @@ pub(super) async fn resolve_wait_targets(
             // 子代理全都结束了：直接回报它们的终态。否则「刚 spawn 就 wait」这种很快
             // 结束的子代理会撞上空目标错误，而这恰恰是最常见的收集结果时机。
             if peers.children.is_empty() {
-                return Err(invalid("没有可等待的子代理"));
+                return Err(invalid("no child agents to wait for"));
             }
             Ok(peers
                 .children

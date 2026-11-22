@@ -1,126 +1,90 @@
 # 沙盒与路径权限
 
-MOC 的会话权限分为 `full`、`workspace`、`workspace-only` 三档。默认是新会话使用
-`full`，保持既有 yolo 行为；需要隔离时用 `/permission` 或设置页切换。
+moc 为会话提供三档权限模式：`full`、`workspace` 与 `workspace-only`。新会话默认使用 `full`（不限制路径与网络）；需要收紧权限时，可在对话中用 `/permission` 或在设置页切换。
 
-CPU 与内存上限是另一套独立机制，不随沙盒模式变化，见 [limits.md](limits.md)。
+CPU 与内存上限属于另一套独立机制，不随沙盒模式变化，详见 [limits.md](limits.md)。
 
-用户亲手输入的 `!` / `!!` 手动命令始终以 `full` 权限运行，不受当前会话沙箱限制；下表的 bash 权限指模型发起的工具执行。
+> 你在输入框中亲手敲入的 `!` / `!!` 命令始终以 `full` 权限运行，不受当前会话沙盒限制；下表仅针对模型发起的工具调用。
 
-## 模式矩阵
+## 三档模式对比
 
-| 模式 | bash 文件系统 | bash 网络 | 内置文件工具 |
+| 模式 | Shell 文件系统 | Shell 网络 | 内置文件工具（`read`/`edit`/`write`） |
 |---|---|---|---|
-| `full` | 宿主全部 | 宿主全部 | 无边界 |
-| `workspace` | 宿主 `/` 只读；工作区、会话 scratch、额外写路径可写；`$HOME` 为会话 COW 层（Linux） | 由 `[sandbox].network` 决定 | 读宿主（除 deny）；写允许根，越界申请 |
-| `workspace-only` | 只读运行时系统路径 + 工作区 + scratch + 合成 HOME；宿主 HOME 不存在 | 由 `[sandbox].network` 决定 | 读允许根；宿主 HOME 越界申请 |
+| `full` | 宿主机全部目录 | 与宿主机相同 | 无路径限制 |
+| `workspace` | 宿主机根目录只读；工作区、会话临时目录与额外授权路径可写；Linux 下 `$HOME` 为写时复制隔离层 | 由 `[sandbox].network` 控制 | 可读宿主机（除拒绝列表）；仅允许写入工作区与授权目录，越界时弹窗确认 |
+| `workspace-only` | 仅挂载只读系统运行路径、工作区、会话临时目录与空白 `$HOME`；宿主机真实 `$HOME` 不可见 | 由 `[sandbox].network` 控制 | 仅允许读写工作区与授权目录；访问宿主机 `$HOME` 或其他目录时弹窗确认 |
 
-`workspace-only` 的“工作区外完全禁止”有三个必要例外：
+`workspace-only` 模式除工作区外，仅保留三类必要例外：
 
-1. 运行程序所需的只读系统路径（Linux：`/usr`、`/bin`、`/sbin`、`/lib*`、`/opt`、
-   `/nix`、`/etc`、`/run/systemd/resolve`；macOS：`/System`、`/Library`、`/usr`、
-   `/bin`、`/sbin`、`/private/etc` 等）。
-2. 会话 scratch：`/tmp`、`/var/tmp`、`XDG_CACHE_HOME`，workspace-only 下还包括合成
-   `$HOME`。宿主不可见，会话结束删除。
-3. 用户显式配置的 `extra_read_paths` / `extra_write_paths` 与会话授权。
+1. **只读系统运行路径**：维持命令行程序正常运行所需的系统目录（如 Linux 的 `/usr`、`/bin`、`/lib*`、`/opt`、`/nix`、`/etc`、`/run/systemd/resolve`；macOS 的 `/System`、`/Library`、`/usr`、`/bin`、`/private/etc` 等）。
+2. **会话临时目录**：独立的 `/tmp`、`/var/tmp`、`XDG_CACHE_HOME`（`workspace-only` 下还包括合成的 `$HOME`），对宿主机不可见，会话结束后清理。
+3. **显式放行路径**：配置中的 `extra_read_paths` / `extra_write_paths` 以及你在本会话中临时批准的路径。
 
-`deny_read_paths` / `deny_write_paths` 优先于所有允许规则；`full` 不执行路径与网络边界，
-但 `[tools.bash].deny_patterns` 仍然生效。默认规则覆盖两类：作用于整个文件环境的组合
-（对 `/`、`~`、`$HOME`、顶层系统目录及其一级子项的递归 `rm`、`find -delete`、
-`chmod -R` / `chown -R` 等）与必然毁灭性的命令（mkfs、写块设备、分区、覆写 `/etc`
-关键文件、关机、kill 全部进程等）；同一动词作用于普通路径不拦。匹配是 shell 感知的：
-引号内的纯数据（`grep "rm -rf /"`）不算命中；命令名加引号仍按命令处理。
-命令替换与进程替换内部单独检查执行上下文，存在执行型动词（`bash -c`、`eval`、
-`ssh`、解释器、管道进 shell 等）时，该上下文内的引号内容按代码处理。
-这些规则用于提醒明显的危险误操作，优先避免把搜索、打印等数据参数误判为待执行命令。
+## 危险命令拦截
 
-危险规则命中不是硬拒绝，而是向用户申请确认：允许一次、本会话始终允许该命令（按完整
-命令文本精确匹配，不提供前缀豁免）或拒绝；批准后命令仍按当前权限模式走沙盒管线。
-`sandbox.on_denied="deny"` 或前端不支持权限询问时维持拒绝。
+即使在 `full` 模式下，`[tools.bash].deny_patterns` 依然生效。默认规则会拦截两类高风险命令：
 
-## 配置
+- 作用于根目录、家目录或顶层系统目录的递归删除与权限变更（如 `rm -rf /`、`find -delete`、`chmod -R` / `chown -R`）。
+- 必然造成破坏的系统操作（如格式化磁盘、写块设备、改分区、覆写 `/etc` 关键文件、关机、杀掉全部进程）。
+
+规则能识别 Shell 语法：像 `grep "rm -rf /"` 这类引号里的普通搜索文本不会被误拦；而嵌套在 `bash -c`、`eval`、`ssh` 或管道进 Shell 中的命令仍会被检查。
+
+命中危险规则时，不会一概硬拒，而是弹出确认框让你选择「允许一次」「本会话始终允许该完整命令」或「拒绝」（若设为 `on_denied = "deny"` 或当前前端不支持弹窗，则直接拒绝）。批准后，命令仍受当前会话的沙盒模式约束。
+
+## 配置说明
 
 ```toml
 [sandbox]
 default_mode = "full"          # full | workspace | workspace_only
-network = true                 # 仅约束沙盒内 bash
-on_denied = "ask"              # ask | deny
-allow_unsandboxed = true       # 是否允许模型申请 full
-overlay_home = true            # Linux：$HOME 的会话 COW 层
-extra_read_paths = []          # 只读扩权，必须存在
-extra_write_paths = []         # 读写扩权，真实落盘，必须存在
-deny_read_paths = []           # 强制拒绝读取，优先于允许
-deny_write_paths = []          # 强制拒绝写入，优先于允许
+network = true                 # 仅约束沙盒内的 Shell 命令
+on_denied = "ask"              # ask（弹窗确认）| deny（直接拒绝）
+allow_unsandboxed = true       # 是否允许模型申请临时升级到 full
+overlay_home = true            # Linux：是否为 $HOME 启用写时复制隔离层
+extra_read_paths = []          # 额外只读路径（加载时必须已存在）
+extra_write_paths = []         # 额外可写路径（真实写盘，加载时必须已存在）
+deny_read_paths = []           # 强制禁止读取（优先级最高）
+deny_write_paths = []          # 强制禁止写入（优先级最高）
 ```
 
-- 路径支持 `~`，展开后必须是绝对路径；`extra_*` 在加载时必须存在。
-- `extra_write_paths` 隐含可读；`deny_*` 优先。
-- `network=false` 不影响 `web_fetch`、MCP，只影响 bash 子进程。
-- `allow_unsandboxed=false` 时模型不能申请 `full`，但路径授权仍可用。
-- `on_denied="deny"` 时越界直接返回 `E_SANDBOX_DENIED`，不弹权限窗。
-- `deny_read_paths` / `deny_write_paths` 不能等于或包含会话工作区，否则配置加载报错；
-  工作区内部的子路径可以单独遮蔽。指向不存在路径时，内置文件工具仍按词法拒绝，但 bash
-  沙盒无法预先挂载遮蔽。
-- Linux 下 `deny_write_paths` 把原路径只读重挂（读内容保留、写入 `EROFS`）；
-  `deny_read_paths` 用只读空文件或只读 tmpfs 遮蔽内容。
-- `[tools.bash].allow_patterns` 已移除：旧配置会因未知字段报错，删除该字段即可；所有
-  非 full 命令都先进沙盒，不再有“批准后以 full 执行”的旁路。
+配置要点：
 
-## 权限与升级
+- 路径支持 `~`，展开后必须为绝对路径；`extra_write_paths` 自动包含读取权限，`deny_*` 永远优先于允许规则。
+- `network = false` 只禁用沙盒内 Shell 子进程的网络，不影响 `web_fetch` 或 MCP 工具。
+- `allow_unsandboxed = false` 会禁止模型申请以 `full` 无沙盒运行，但单个路径授权不受影响。
+- `deny_read_paths` / `deny_write_paths` 不能直接覆盖整个会话工作区（工作区内的子路径可以单独屏蔽）。在 Linux 下，禁止写入的路径会以只读挂载，禁止读取的路径会用空白只读文件/目录遮蔽。
+- 旧配置中已废弃 `[tools.bash].allow_patterns`；如果加载时提示未知字段，直接删掉该项即可。
 
-所有非 full 的 bash 命令先进入沙盒。命令失败且 stderr 命中拒绝签名时，结果会提示模型
-重试一次，并带：
+## 权限升级与临时放行
 
-```json
-{
-  "sandbox_permissions": "workspace",
-  "justification": "cargo needs to write ~/.cargo"
-}
-```
-
-`sandbox_permissions` 只能是严格更宽的模式（`workspace-only < workspace < full`），
-且必须与 `justification` 同时出现。用户可：
+所有非 `full` 模式的命令都会先在沙盒内执行。若因权限不足失败，模型可以附带理由申请一次更宽松的权限（例如从 `workspace-only` 升级到 `workspace`，或申请 `full`），届时弹窗供你选择：
 
 - 允许一次；
 - 本会话始终允许该命令；
-- 本会话始终允许 `<prefix> *`（仅简单命令提供，如 `cargo *`）；
+- 本会话始终允许 `<前缀> *`（仅限简单命令，如 `cargo *`）；
 - 拒绝。
 
-路径越界弹窗提供“允许一次 / 本会话始终允许该路径 / 拒绝”。会话授权只存在内存中，
-切换模式或 `/permission clear` 即清空；子代理不继承父会话授权。
+路径越界同样提供「允许一次 / 本会话始终允许该路径 / 拒绝」。这些临时授权仅保存在当前会话内存中，切换权限模式或执行 `/permission clear` 即刻清空，且不会遗传给子代理。
 
-只有 `full` 是沙盒外执行；批准 `workspace` 只是重建更宽的沙盒 profile，不会跳过隔离。
+> 批准升级到 `workspace` 只是切换到更宽的沙盒配置，仍然受沙盒隔离；只有 `full` 才在沙盒外执行。
 
 ## 包管理器缓存
 
-不维护 `~/.cargo`、`~/.npm`、`~/.cache` 等清单：
+无需手动维护 `~/.cargo`、`~/.npm` 等缓存白名单：
 
-- Linux `workspace`：`$HOME` 以 `overlayfs` 的 COW 方式挂载；任何工具写 `$HOME` 都成功，
-  写入落在会话 scratch，宿主 HOME 不变。`overlay_home=false` 时 HOME 只读。
-- `workspace-only`：`$HOME` 指向会话合成目录，包管理器可正常写缓存并联网下载，但每次
-  会话重新下载，宿主不受影响。
-- 需要持久化某个缓存：加入 `extra_write_paths`（真实写）或切到 `full`。
-- macOS 没有 overlayfs：`workspace` 下真实 HOME 只读，需要 `extra_write_paths` 或
-  `full`；`workspace-only` 使用合成 HOME，可工作但重新下载。
+- **Linux `workspace`**：`$HOME` 默认以写时复制（overlayfs）挂载，包管理器可以正常写入缓存，改动落在会话临时目录，不污染宿主机 `$HOME`（关闭 `overlay_home` 后 `$HOME` 变为只读）。
+- **`workspace-only`**：`$HOME` 指向会话空白目录，允许联网时包管理器可正常下载，但每次新会话需重新拉取。
+- **macOS `workspace`**：系统不提供 overlayfs，真实 `$HOME` 为只读；如需持久化写入缓存，可将缓存目录加入 `extra_write_paths` 或切换为 `full`。
 
-## 平台
+## 平台支持
 
-- Linux：`bwrap`，`--ro-bind / /` / 最小根、`--overlay`、`--unshare-*`、`--cap-drop ALL`。
-- macOS：`/usr/bin/sandbox-exec` + SBPL；`workspace-only` 的读限制只到
-  `file-read-data`，目录元数据仍可见；`sandbox-exec` 已弃用。
-- 原生 Windows：不提供 OS 沙盒，`/permission` 只显示 `full`；WSL2 走 Linux 实现。
-- runner 或 scratch 不可用时返回 `E_SANDBOX_UNAVAILABLE`，不会静默无沙盒执行。
+- **Linux**：基于 `bwrap`（bubblewrap）隔离文件系统、命名空间与内核能力。
+- **macOS**：基于 `/usr/bin/sandbox-exec`；`workspace-only` 下文件内容不可读，但部分目录名仍可能可见。
+- **原生 Windows**：暂不提供操作系统级沙盒，`/permission` 仅提供 `full`；WSL2 自动走 Linux 沙盒。
+- 沙盒程序或临时目录不可用时直接返回错误，绝不静默降级为无沙盒执行。
 
-## 明确不覆盖
+## 边界说明
 
-- MCP 服务、`web_fetch`、PTC worker，以及 core 自身的配置、
-  `context_files`、skill 索引在 core 进程运行，不受 OS 沙盒约束。
-- `workspace` 可读宿主 Unix socket（如 Docker/SSH agent）；`workspace-only` 不挂载
-  宿主 `/run`（仅 `/run/systemd/resolve`）和 `/var`（仅 scratch `/var/tmp`），隔离更强。
-- 内置文件工具的路径检查是进程内策略围栏，存在解析到写入的 TOCTOU 窗口；执行前复校验
-  已缩小，未消除。
-- `workspace-only` 的合成 HOME 不含真实用户 dotfiles/工具链；rustup 安装在真实 HOME
-  时，用 `workspace`，或把工具链目录加入 `extra_read_paths` 并用 `RUSTUP_HOME` /
-  `CARGO_HOME` 指向真实路径。该模式下 bash 也不能读取会话 `artifact://` / `local://`
-  文件，改用 `read` 工具。
-- 无域名白名单代理、无 Landlock 降级、无 Windows ACL、无凭证 mask、无持久化会话授权。
+- MCP 服务器、`web_fetch`、PTC 代码运行环境及配置/技能索引运行在主进程中，不受操作系统沙盒约束。
+- `workspace` 模式下宿主机 Unix Socket（如 Docker、SSH Agent）仍可读；若需更强隔离，请使用 `workspace-only`（该模式不挂载宿主机 `/run` 与 `/var`，仅保留 DNS 解析与临时目录）。
+- 在 `workspace-only` 下，若 `rustup` 等工具链安装在真实 `$HOME` 中，请改用 `workspace` 模式，或将工具链目录加入 `extra_read_paths` 并配置 `RUSTUP_HOME` / `CARGO_HOME`。该模式下 Shell 也无法直接读取会话内部的 `artifact://` 与 `local://` 文件，需通过 `read` 工具访问。
+- 目前暂不支持域名级网络白名单、Landlock、Windows ACL、自动凭证遮罩与跨会话持久化授权。

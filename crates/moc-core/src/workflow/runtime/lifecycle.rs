@@ -16,7 +16,6 @@ use moc_protocol::WorkflowRunSummary;
 use moc_protocol::{SessionUpdate, UpdateSink};
 use moc_ptc_protocol::wire::WorkflowHostMessage;
 use parking_lot::Mutex;
-use rust_i18n::t;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -41,7 +40,7 @@ impl WorkflowManager {
         let run_id = meta.run_id.clone();
         let dir = self.run_dir(&run_id)?;
         std::fs::create_dir_all(dir.join("artifacts")).map_err(|e| {
-            CoreError::Session(t!("core.err.run_dir_create", error = e).into_owned())
+            CoreError::Session(format!("failed to create run directory: {e}"))
         })?;
         // approve→launch 窗口内经 set_role_model 记下的覆盖合并进 meta
         // （"inherit" 表示移除该 role 的覆盖）。
@@ -60,14 +59,14 @@ impl WorkflowManager {
             dir.join("run.json"),
             serde_json::to_vec_pretty(&meta).unwrap_or_default(),
         )
-        .map_err(|e| CoreError::Session(t!("core.err.run_json_write", error = e).into_owned()))?;
+        .map_err(|e| CoreError::Session(format!("failed to write run.json: {e}")))?;
         let mode = match meta.mode.as_str() {
             "resume" => RunMode::Resume,
             "amend" => RunMode::Amend,
             _ => RunMode::Fresh,
         };
         let journal = FileJournal::open(&dir)
-            .map_err(|e| CoreError::Session(t!("core.err.journal_open", error = e).into_owned()))?;
+            .map_err(|e| CoreError::Session(format!("failed to open journal: {e}")))?;
         let config = EngineConfig {
             max_concurrency: self.inner.config.read().workflow.max_concurrency_ceiling,
             label: meta.title.clone(),
@@ -283,9 +282,7 @@ impl WorkflowManager {
                 dir.join("run.json"),
                 serde_json::to_vec_pretty(&meta).unwrap_or_default(),
             )
-            .map_err(|e| {
-                CoreError::Session(t!("core.err.run_json_write", error = e).into_owned())
-            })?;
+            .map_err(|e| CoreError::Session(format!("failed to write run.json: {e}")))?;
             // run.json 已写盘但 status 仍 running：launch 的写盘→注册窗口，
             // 覆盖要进 pending，注册后二次应用到 handle.meta。
             if running {
@@ -307,9 +304,7 @@ impl WorkflowManager {
                 .insert(role_id.to_string(), model.to_string());
             return Ok(());
         }
-        Err(CoreError::Session(
-            t!("core.err.run_missing", run_id = run_id).into_owned(),
-        ))
+        Err(CoreError::Session(format!("workflow run {run_id} not found")))
     }
 
     /// 丢弃 run 的待合并 role 覆盖（launch 审批被 Reject 后不留孤儿条目）。
@@ -373,7 +368,7 @@ impl WorkflowManager {
     ) -> Result<(), CoreError> {
         let Some(handle) = self.runs.lock().get(run_id).cloned() else {
             return Err(CoreError::Session(format!(
-                "workflow run {run_id} 不在运行中"
+                "workflow run {run_id} is not running"
             )));
         };
         // 引擎按 hole 名找待决 HoleResolve。
@@ -391,7 +386,7 @@ impl WorkflowManager {
                         ))
                     })
                     .ok_or_else(|| {
-                        CoreError::Session(t!("core.err.hole_not_open", name = name).into_owned())
+                        CoreError::Session(format!("hole '{name}' is not open"))
                     })?
             };
             engine.fill_hole(&site_id, ordinal, code)

@@ -2,13 +2,13 @@ _version = 2
 
 [acp.mode]
 default = { zh = "默认", en = "Ask" }
-default_desc = { zh = "所有确认都等用户本人回答", en = "Every confirmation waits for your own answer" }
-dont_ask = { zh = "免询问", en = "Don't ask" }
-dont_ask_desc = { zh = "问题由代理代答：有推荐项选推荐项", en = "The agent answers questions itself: recommended option when available" }
+default_desc = { zh = "需要决策时向你询问，计划交给你审阅", en = "Asks you when input is needed and lets you review plans" }
+dont_ask = { zh = "不再询问", en = "Don't ask" }
+dont_ask_desc = { zh = "不再向你提问，自动采用推荐选项；计划仍交给你审阅", en = "Auto-answers questions with recommended options; plans still wait for review" }
 unattended = { zh = "无人值守", en = "Unattended" }
-unattended_desc = { zh = "在免询问之上，计划提交自动批准「压缩并执行」", en = "On top of don't-ask, plan submissions are auto-approved as “compact and run”" }
+unattended_desc = { zh = "自动处理提问，计划提交后自动压缩并执行", en = "Auto-answers questions and auto-approves submitted plans (compact and run)" }
 plan = { zh = "计划", en = "Plan" }
-plan_desc = { zh = "先产出实施计划，批准后才允许写入与执行", en = "Produce an implementation plan first; writes and execution require approval" }
+plan_desc = { zh = "先拟定实施计划，经你批准后再动手修改", en = "Draft an implementation plan first; writes and execution wait for approval" }
 
 [acp.model]
 context = { zh = "%{window} tokens 上下文", en = "%{window} tokens context" }
@@ -41,7 +41,7 @@ code_message = { zh = "%{code}：%{message}", en = "%{code}: %{message}" }
 unknown_mode = { zh = "未知会话模式 %{mode}", en = "Unknown session mode %{mode}" }
 unsupported_config = { zh = "不支持的配置项 %{id}", en = "Unsupported config option %{id}" }
 need_value_id = { zh = "model 选项需要 value id", en = "The model option requires a value id" }
-core_closed = { zh = "与 core 的连接已关闭", en = "Connection to core closed" }
+core_closed = { zh = "与后台服务的连接已断开", en = "Connection to the backend service closed" }
 blob_unsupported = { zh = "不支持二进制嵌入资源；请以文本或图片发送", en = "Binary embedded resources are not supported; send text or images instead" }
 resource_unsupported = { zh = "不支持该类型的嵌入资源", en = "Unsupported embedded resource type" }
 content_unsupported = { zh = "不支持该类型的内容块", en = "Unsupported content block type" }

@@ -5,11 +5,11 @@ use super::SkillIndex;
 use crate::compact::{estimate_tokens, prefix_within_tokens};
 use crate::config::SkillsConfig;
 
-const INTRO: &str = "Available skills. Before a task a skill covers, load it with the skill tool and follow it; never infer behavior from the name.";
+const INTRO: &str = "Available skills: load with `skill` before any covered task and follow it; never guess behavior from the name.";
 const SHORTENED: &str =
     "Some uncached descriptions were shortened; load the skill for full details.";
 const OVER_BUDGET: &str =
-    "The skills catalog exceeds its budget to preserve every skill's routing hint.";
+    "Catalog exceeds budget to keep every skill's routing hint.";
 const MIN_DESCRIPTION_CHARS: usize = 80;
 
 pub fn render(index: &SkillIndex, config: &SkillsConfig, context_window: u64) -> Option<String> {

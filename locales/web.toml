@@ -6,11 +6,11 @@ export.desc = { zh = "将会话历史脱敏导出为 Markdown", en = "Export red
 session.desc = { zh = "当前会话身份、文件路径与分类存储大小", en = "Current session identity, file path and per-category storage size" }
 new.desc = { zh = "新建会话", en = "Start a new session" }
 resume.desc = { zh = "搜索并切换到历史会话", en = "Search and switch to a previous session" }
-close.desc = { zh = "卸载当前会话并释放跨进程写租约", en = "Unload the current session and release the cross-process write lease" }
+close.desc = { zh = "关闭当前会话并释放编辑占用", en = "Close the current session and release the edit lock" }
 plan.usage = { zh = "[提示]", en = "[hint]" }
 plan.desc = { zh = "进入或退出计划状态，可附带提示", en = "Enter or exit plan mode, optionally with a hint" }
-confirm_plan.desc = { zh = "计划状态下重新审阅已写入的待审计划", en = "Re-review the pending plan written in plan mode" }
-goal.desc = { zh = "查看或设置会话目标；目标存在时每轮提示结束自动续跑，直到达成或叫停", en = "View or set the session goal; while set, each prompt auto-continues until it is met or stopped" }
+confirm_plan.desc = { zh = "重新审阅当前待审计划", en = "Re-review the pending plan" }
+goal.desc = { zh = "查看或设置会话目标，启用后自动续跑直到完成或停止", en = "View or set the session goal; auto-continues until completed or stopped" }
 autonomy.desc = { zh = "切换自主程度，无参数时循环", en = "Switch autonomy level; cycles without arguments" }
 permission.usage = { zh = "[<模式>|clear]", en = "[<mode>|clear]" }
 permission.desc = { zh = "切换命令权限模式，或清空本会话沙盒授权", en = "Switch the command permission mode, or clear this session's sandbox grants" }
@@ -31,8 +31,8 @@ settings.desc = { zh = "打开设置", en = "Open settings" }
 agents.desc = { zh = "查看当前会话的子代理", en = "List this session's subagents" }
 jobs.desc = { zh = "查看和管理后台任务", en = "View and manage background jobs" }
 workflow.usage = { zh = "[指令]", en = "[instructions]" }
-workflow.desc = { zh = "激活 workflow 功能，可附带指令", en = "Activate the workflow feature, optionally with instructions" }
-workflows.desc = { zh = "查看 workflow run 列表", en = "List workflow runs" }
+workflow.desc = { zh = "开启工作流，可附带指令", en = "Activate workflows, optionally with instructions" }
+workflows.desc = { zh = "查看工作流运行记录", en = "List workflow runs" }
 plugins.desc = { zh = "查看插件：来源、工具与斜杠命令", en = "Inspect plugins: sources, tools and slash commands" }
 features.desc = { zh = "特性开关一览：阶段、状态与上下文成本", en = "Feature flags overview: stages, states and context cost" }
 help.desc = { zh = "快捷键一览", en = "Keyboard shortcuts" }

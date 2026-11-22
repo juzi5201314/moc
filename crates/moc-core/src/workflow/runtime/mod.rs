@@ -11,7 +11,6 @@ pub mod tools;
 pub(crate) use driver::WorkflowDriver;
 pub use tools::WORKFLOW_TOOLS;
 
-use rust_i18n::t;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -42,7 +41,7 @@ pub(crate) fn worker_command(
         .boot
         .ptc_worker
         .as_ref()
-        .ok_or_else(|| CoreError::Session(t!("core.err.worker_not_configured").into_owned()))?;
+        .ok_or_else(|| CoreError::Session("workflow worker is not configured".into()))?;
     let mut args = worker.args.clone();
     let mut replaced = false;
     for arg in &mut args {
@@ -373,9 +372,9 @@ fn list_run_metas_with_errors(dir: &Path) -> (Vec<RunMeta>, usize) {
 
 pub(crate) fn read_run_meta(dir: &Path) -> Result<RunMeta, CoreError> {
     let data = std::fs::read(dir.join("run.json"))
-        .map_err(|e| CoreError::Session(t!("core.err.run_json_read", error = e).into_owned()))?;
+        .map_err(|e| CoreError::Session(format!("failed to read run.json: {e}")))?;
     serde_json::from_slice(&data)
-        .map_err(|e| CoreError::Session(t!("core.err.run_json_parse", error = e).into_owned()))
+        .map_err(|e| CoreError::Session(format!("failed to parse run.json: {e}")))
 }
 
 /// 持写租约扫描时，将孤儿 run 降级为 stopped(interrupted)，返回写回是否成功。

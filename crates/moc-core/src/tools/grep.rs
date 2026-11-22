@@ -81,7 +81,7 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &'static str {
-        "Search file contents with Rust regex; skip pages files, offset resumes lines in one file. Single-file searches use the total match budget; multi-file searches cap each file for diversity. Local results include [path#TAG] for editing fully shown lines; shortened lines are not editable. Context defaults to zero. Does not cross mounts unless cross_filesystems=true."
+        "Search contents with Rust regex (skip pages files; offset resumes lines in one file). Single-file searches use the full match budget; multi-file caps per file. Local results include [path#TAG] for editing complete lines (truncated lines are read-only). Context defaults to 0; stays on one filesystem unless cross_filesystems=true."
     }
     fn tier(&self) -> Tier {
         Tier::Read

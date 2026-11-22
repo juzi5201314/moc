@@ -328,7 +328,7 @@ impl Tool for JobTool {
         "job"
     }
     fn description(&self) -> &'static str {
-        "Manage background shell jobs: list, output (recent tail), kill, or wait (returns early when the job finishes or produces output you have not seen, up to timeout_secs). Completion of a background job is reported to you automatically."
+        "Manage background shell jobs: list, output (recent tail), kill, or wait (returns early on finish or unseen output)."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -344,7 +344,7 @@ impl Tool for JobTool {
                     "op":{"type":"string","enum":["list","output","kill","wait"]},
                     "job_id":{"type":"string","description":"Job id from list or a notice"},
                     "tail_lines":{"type":"integer","minimum":1,"maximum":2000,"description":"Log lines to return; default 200"},
-                    "timeout_secs":{"type":"integer","minimum":1,"description":"wait only: max seconds to block before returning; returns earlier on finish or unseen output; default 60, capped by tools.job.max_wait_secs"}
+                    "timeout_secs":{"type":"integer","minimum":1,"description":"wait only: max seconds to wait (default 60, capped by tools.job.max_wait_secs)"}
                 }),
                 &["op"],
             ),

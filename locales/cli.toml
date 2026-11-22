@@ -34,28 +34,28 @@ bad_checksum = { zh = "校验文件格式无效", en = "Checksum file format is 
 verify_failed = { zh = "下载的二进制校验失败（期望 %{expected}，实际 %{actual}）", en = "Downloaded binary failed checksum (expected %{expected}, got %{actual})" }
 
 [cli.args]
-about = { zh = "MOC 编码代理", en = "MOC coding agent" }
-prompt = { zh = "启动时发送的提示词。", en = "Prompt to send on startup." }
-model = { zh = "覆盖会话模型 selector。", en = "Override the session model selector." }
-engine = { zh = "新会话的引擎（模型与工具的交互形态；跑过首条提示后锁定）。", en = "Engine for the new session (how the model interacts with tools; locked after the first prompt)." }
-plan = { zh = "新会话直接进入 plan 模式（可与任意引擎共存）。", en = "Start the new session in plan mode (works with any engine)." }
-cwd = { zh = "会话工作目录。", en = "Working directory for the session." }
-config = { zh = "追加配置覆盖层，可重复。", en = "Additional config overlay; repeatable." }
-resume = { zh = "恢复指定会话；不带 ID 时恢复当前目录下最近会话。", en = "Resume a session; without an ID resumes the latest session in the current directory." }
-continue = { zh = "继续当前目录下最近会话。", en = "Continue the latest session in the current directory." }
-list = { zh = "列出已保存会话。", en = "List saved sessions." }
-models = { zh = "列出可用模型 selector。", en = "List available model selectors." }
-print = { zh = "单次提示模式：可从 stdin 读取提示词，只打印最终答案。", en = "One-shot mode: reads the prompt from stdin, prints only the final answer." }
-output_format = { zh = "--print 的输出格式：text 只打印最终答案；json 结束时输出一个汇总对象；stream-json 每条会话更新一行 NDJSON。", en = "Output format for --print: text prints only the final answer; json emits one summary object at the end; stream-json emits one NDJSON line per session update." }
-max_turns = { zh = "--print 下单次提示的模型请求轮数上限；超出后取消提示并以退出码 3 结束。", en = "Cap on model-request rounds for a --print prompt; the prompt is cancelled and the process exits with code 3 when exceeded." }
-allow_tools = { zh = "--print 下自动批准这些工具的权限申请（逗号分隔，可重复）；all 放行全部。", en = "Auto-approve permission requests for these tools under --print (comma-separated, repeatable); 'all' approves every tool." }
-repl = { zh = "强制使用行式 REPL（默认进入 TUI；无 TTY 时自动降级 REPL）。", en = "Force the line-mode REPL (TUI by default; auto-degrades without a TTY)." }
-hide_thinking = { zh = "行式／--print 输出不打印思维链增量（TUI 用 --detail）。", en = "Don't print reasoning deltas in line/--print output (TUI uses --detail)." }
-detail = { zh = "启动时的显示档位（full 只展开思考，工具仍为简略）。", en = "Display level at startup (full expands thinking only; tools stay brief)." }
-session_dir = { zh = "覆盖会话存储目录。", en = "Override the session storage directory." }
-port = { zh = "moc web 的监听端口；缺省优先 7432，被占用时改用随机端口。只绑定 127.0.0.1。", en = "Port for moc web; defaults to 7432, falling back to a random port. Binds 127.0.0.1 only." }
-token = { zh = "moc web 的访问令牌；缺省随机生成并打印在启动信息里。", en = "Access token for moc web; randomly generated and printed at startup by default." }
-no_open = { zh = "moc web 启动后不自动打开浏览器。", en = "Don't open a browser when moc web starts." }
+about = { zh = "MOC 智能编码助手", en = "MOC AI coding assistant" }
+prompt = { zh = "启动时直接发送的提示词。", en = "Prompt to send on startup." }
+model = { zh = "指定会话使用的模型（格式：供应商/模型）。", en = "Override the session model (provider/model)." }
+engine = { zh = "新会话的运行引擎（发出首条消息后锁定）。", en = "Engine for the new session (locked after the first message)." }
+plan = { zh = "新会话直接进入计划模式。", en = "Start the new session in plan mode." }
+cwd = { zh = "指定工作目录。", en = "Working directory for the session." }
+config = { zh = "追加配置文件覆盖层，可重复指定。", en = "Additional config file overlay; repeatable." }
+resume = { zh = "恢复指定会话；省略 ID 时恢复当前目录最近的会话。", en = "Resume a session; without an ID resumes the latest session in this directory." }
+continue = { zh = "继续当前目录最近的会话。", en = "Continue the latest session in this directory." }
+list = { zh = "列出已保存的会话。", en = "List saved sessions." }
+models = { zh = "列出可用的模型。", en = "List available models." }
+print = { zh = "单次运行模式：可从标准输入读取提示，只输出最终结果。", en = "One-shot mode: reads the prompt from stdin and prints only the final answer." }
+output_format = { zh = "--print 输出格式：text 输出最终文本；json 结束时输出汇总 JSON；stream-json 逐行输出事件。", en = "Output format for --print: text prints the final answer; json emits a summary object; stream-json emits one NDJSON line per update." }
+max_turns = { zh = "--print 下单次运行的最大请求轮数；超出后取消并以退出码 3 结束。", en = "Max model-request rounds for --print; cancels and exits with code 3 when exceeded." }
+allow_tools = { zh = "--print 下自动放行的工具（逗号分隔，可重复）；填 all 放行全部。", en = "Auto-approve these tools under --print (comma-separated, repeatable); 'all' approves every tool." }
+repl = { zh = "使用行式交互模式（默认进入 TUI；无终端时自动降级）。", en = "Use the line-mode REPL (TUI by default; auto-fallback without a TTY)." }
+hide_thinking = { zh = "行式或 --print 输出中不打印思考过程（TUI 请用 --detail）。", en = "Hide reasoning output in line/--print mode (use --detail in TUI)." }
+detail = { zh = "启动时的显示详细程度（full 展开思考，工具仍为简略）。", en = "Initial detail level (full expands thinking; tools stay brief)." }
+session_dir = { zh = "指定会话保存目录。", en = "Override the session storage directory." }
+port = { zh = "moc web 监听端口（默认优先 7432，被占用时改用随机端口，仅绑定 127.0.0.1）。", en = "Port for moc web (defaults to 7432, falls back to a random port; binds 127.0.0.1 only)." }
+token = { zh = "moc web 访问令牌（默认随机生成并在启动时打印）。", en = "Access token for moc web (randomly generated and printed at startup by default)." }
+no_open = { zh = "启动 moc web 后不自动打开浏览器。", en = "Do not open a browser when moc web starts." }
 
 [cli.repl]
 no_prompt = { zh = "--print 未收到提示词或 stdin 输入", en = "--print received no prompt or stdin input" }
@@ -188,7 +188,7 @@ compacted = { zh = "上下文压缩：%{method}，%{before} → %{after} token",
 trimmed = { zh = "上下文裁剪：%{before} → %{after} token（未生成摘要）", en = "Context trimmed: %{before} → %{after} tokens (no summary generated)" }
 usage_debuginfo = { zh = "用法：/debuginfo", en = "Usage: /debuginfo" }
 usage_session = { zh = "用法：/session", en = "Usage: /session" }
-usage_model = { zh = "用法：/model <selector>", en = "Usage: /model <selector>" }
+usage_model = { zh = "用法：/model <供应商/模型>", en = "Usage: /model <provider/model>" }
 usage_approve = { zh = "用法：/approve <execute|compact|new [引擎]|reject>", en = "Usage: /approve <execute|compact|new [engine]|reject>" }
 model_compact_notice = { zh = "%{notice}；切换会先用 %{model} 压缩上下文（压缩后不超过 %{target} token）", en = "%{notice}; switching compacts the context with %{model} first (down to %{target} tokens)" }
 model_confirm = { zh = "是否切换到 %{model} 并压缩？[y/N] ", en = "Switch to %{model} and compact? [y/N] " }
@@ -209,14 +209,14 @@ unknown = { zh = "未知命令 `/%{name}`；输入 /help 查看命令。", en = 
 [cli.render]
 agent_started = { zh = "\n[子代理已创建：%{title} · %{id}]", en = "\n[Subagent created: %{title} · %{id}]" }
 agent_status = { zh = "\n[子代理 %{id}：%{status}]", en = "\n[Subagent %{id}: %{status}]" }
-workflow_approval = { zh = "\n[workflow 审批 %{id}]", en = "\n[workflow approval %{id}]" }
-workflow_resolved = { zh = "[workflow 审批：%{decision}]", en = "[workflow approval: %{decision}]" }
+workflow_approval = { zh = "\n[工作流审批 %{id}]", en = "\n[Workflow approval %{id}]" }
+workflow_resolved = { zh = "[工作流审批：%{decision}]", en = "[Workflow approval: %{decision}]" }
 approved = { zh = "已批准", en = "approved" }
 rejected = { zh = "已拒绝", en = "rejected" }
-workflow_status = { zh = "[workflow %{run}：%{label}]", en = "[workflow %{run}: %{label}]" }
-workflow_phase = { zh = "[workflow %{run} phase → %{phase}]", en = "[workflow %{run} phase → %{phase}]" }
-hole_opened = { zh = "[workflow %{run} hole 打开：%{name}]", en = "[workflow %{run} hole opened: %{name}]" }
-hole_filled = { zh = "[workflow %{run} hole 已填：%{name}]", en = "[workflow %{run} hole filled: %{name}]" }
+workflow_status = { zh = "[工作流 %{run}：%{label}]", en = "[Workflow %{run}: %{label}]" }
+workflow_phase = { zh = "[工作流 %{run} 阶段 → %{phase}]", en = "[Workflow %{run} phase → %{phase}]" }
+hole_opened = { zh = "[工作流 %{run} 待补充步骤：%{name}]", en = "[Workflow %{run} step awaiting input: %{name}]" }
+hole_filled = { zh = "[工作流 %{run} 步骤已补充：%{name}]", en = "[Workflow %{run} step filled: %{name}]" }
 agent_message = { zh = "\n[代理消息 ◀ %{from}：%{body}]", en = "\n[Agent message ◀ %{from}: %{body}]" }
 retry = { zh = "\n[自动重试：本次生成的先前输出作废。%{message}]", en = "\n[Auto-retry: previous output of this generation discarded. %{message}]" }
 guard = { zh = "\n[保护机制：%{message}]", en = "\n[Guard: %{message}]" }

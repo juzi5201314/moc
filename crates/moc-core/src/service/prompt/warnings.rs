@@ -70,9 +70,7 @@ impl RequestWarning {
                     session_id,
                     SessionUpdate::GuardNotice {
                         prompt_id,
-                        message: format!(
-                            "本次请求已超过 {warn_secs} 秒，仍在等待模型响应，不会自动终止"
-                        ),
+                        message: t!("core.err.slow_request_warn", secs = warn_secs).into_owned(),
                         terminal: false,
                     },
                 )

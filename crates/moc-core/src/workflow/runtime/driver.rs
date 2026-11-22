@@ -11,7 +11,6 @@
 //! - `world.read` → files.* / git.* 只读实现（git 固定白名单子命令）；
 //! - `artifact.file/markdown` → 版本化写 `<run>/artifacts/`。
 
-use rust_i18n::t;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -238,7 +237,7 @@ impl WorkflowDriver {
             {
                 return DriverOutcome::Failed {
                     code: "E_ACTOR".into(),
-                    message: t!("core.err.actor_deliver", error = e).into_owned(),
+                    message: format!("failed to deliver message to actor: {e}"),
                 };
             }
             let result = crate::agents::wait(
@@ -253,17 +252,13 @@ impl WorkflowDriver {
             let Ok(result) = result else {
                 return DriverOutcome::Failed {
                     code: "E_ACTOR".into(),
-                    message: t!(
-                        "core.err.actor_wait",
-                        error = result.unwrap_err().to_string()
-                    )
-                    .into_owned(),
+                    message: format!("failed while waiting for actor: {}", result.unwrap_err()),
                 };
             };
             let Some(entry) = result.agents.first() else {
                 return DriverOutcome::Failed {
                     code: "E_ACTOR".into(),
-                    message: "actor 会话不可达".into(),
+                    message: "actor session unreachable".into(),
                 };
             };
             // 交付值：schema 化的取 structured_result（Null 视为未交付）；自由
@@ -291,11 +286,11 @@ impl WorkflowDriver {
                     if attempt == max_repairs {
                         return DriverOutcome::Failed {
                             code: "E_SCHEMA".into(),
-                            message: "ask 交付不满足 output_schema（修复重试耗尽）".into(),
+                            message: "ask output did not match output_schema after repair retries".into(),
                         };
                     }
                     text = Some(format!(
-                        "Your previous reply did not satisfy the required output schema. Respond ONLY with a JSON value matching:\n{}",
+                        "Previous reply failed output_schema validation. Return ONLY JSON matching:\n{}",
                         serde_json::to_string_pretty(schema).unwrap_or_default()
                     ));
                 }
@@ -334,7 +329,7 @@ impl WorkflowDriver {
                     Err(e) => {
                         return Err(DriverOutcome::Failed {
                             code: "E_ACTOR".into(),
-                            message: t!("core.err.seedfrom_unreadable", error = e).into_owned(),
+                            message: format!("failed to read predecessor actor session: {e}"),
                         });
                     }
                 };
@@ -358,7 +353,7 @@ impl WorkflowDriver {
                 _ => {
                     return Err(DriverOutcome::Failed {
                         code: "E_ARGS".into(),
-                        message: "persona.tools 必须是非空工具名称数组".into(),
+                        message: "persona.tools must be an array of non-empty tool names".into(),
                     });
                 }
             },
@@ -392,7 +387,7 @@ impl WorkflowDriver {
             Ok(result) => Ok(result.agent.id),
             Err(e) => Err(DriverOutcome::Failed {
                 code: "E_ACTOR".into(),
-                message: t!("core.err.actor_spawn", error = e).into_owned(),
+                message: format!("failed to spawn actor: {e}"),
             }),
         }
     }
@@ -413,7 +408,7 @@ impl WorkflowDriver {
         let Some(policy) = policy else {
             return DriverOutcome::Failed {
                 code: "E_SANDBOX".into(),
-                message: "world.run 无沙箱策略快照".into(),
+                message: "world.run missing sandbox policy snapshot".into(),
             };
         };
         world_run_impl(
@@ -444,7 +439,7 @@ impl WorkflowDriver {
         let Some(id) = args.first().and_then(|a| a.as_str()).map(str::to_string) else {
             return DriverOutcome::Failed {
                 code: "E_ARTIFACT".into(),
-                message: t!("core.err.artifact_no_id", member = member).into_owned(),
+                message: format!("artifact.{member} requires an id"),
             };
         };
         // id 参与拼路径：运行期也按编译期字符集校验。
@@ -517,7 +512,7 @@ impl WorkflowDriver {
                 let Some(path_arg) = args.get(1).and_then(|a| a.as_str()) else {
                     return DriverOutcome::Failed {
                         code: "E_ARTIFACT".into(),
-                        message: "artifact.file 缺 path".into(),
+                        message: "artifact.file requires path".into(),
                     };
                 };
                 let source = match workspace_file(&self.run.cwd, path_arg) {
@@ -560,7 +555,7 @@ impl WorkflowDriver {
                 let Some(content) = args.get(1).and_then(|a| a.as_str()) else {
                     return DriverOutcome::Failed {
                         code: "E_ARTIFACT".into(),
-                        message: "artifact.markdown 缺 content 字符串".into(),
+                        message: "artifact.markdown requires content string".into(),
                     };
                 };
                 if content.len() > facade::ARTIFACT_MAX_MARKDOWN_BYTES {

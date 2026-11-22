@@ -20,23 +20,18 @@ structured asks, sandboxed world commands, artifacts, and resumable journals.
 
 ## When to use workflows
 
-- The user explicitly asks for a workflow, pipeline, or multi-agent orchestration.
-- The task needs multiple named actors, staged phases, or gated shell commands.
-- Otherwise use an enabled fixed role via `spawn_agent(role, task)` or do the task yourself; ordinary spawn cannot define roles or override their prompts, tools, or models.
+- User explicitly requests a workflow, pipeline, or multi-agent orchestration.
+- Task requires named actors, staged phases, or gated shell commands.
+- Otherwise use an enabled fixed role via `spawn_agent(role, task)` or work directly (ordinary spawn cannot define roles or override prompts/tools/models).
 
-## Discipline
+## Rules
 
-- Only the workflow author in this activated session may define dynamic actors in the script. Set `agent({{system, model, tools}})` as needed; these definitions belong exclusively to this workflow run, never to the ordinary role catalog. Actors cannot create workflow definitions or escape their run via ordinary messaging or session retry.
-- Always load THIS skill before authoring a script (`create_workflow`/`amend_workflow`
-  refuse scripts without it).
-- `create_workflow`/`amend_workflow` submit for human approval; the run then executes
-  in the background — poll `workflow_status` or wait for the completion notice.
-- Scripts are deterministic: no `Date.now`, `Math.random`, `performance`, `new Date`,
-  no imports/exports, no node/bun globals. Values you need must come from `args`,
-  `ask`, or `world`.
-- `world.run` commands must be literal; the approver sees the command set up front.
-- `hole()` pauses the run until a human supplies a function body; use for points
-  where only a person can decide the algorithm.
+- Only this activated session's workflow author may define dynamic actors via `agent({{system, model, tools}})`; definitions are scoped to the run and never enter the global role catalog. Actors cannot create workflows or escape their run.
+- Load THIS skill before authoring (`create_workflow`/`amend_workflow` require it).
+- `create_workflow`/`amend_workflow` request human approval, then run in background—check `workflow_status` or wait for the completion notice.
+- Deterministic scripts only: no `Date.now`, `Math.random`, `performance`, `new Date`, imports/exports, or Node/Bun globals; get values from `args`, `ask`, or `world`.
+- `world.run` commands must be string literals (reviewed during approval).
+- `hole()` pauses for a human-supplied function body when only a human can decide the logic.
 
 ## Facade reference (verbatim)
 

@@ -1,7 +1,6 @@
 use super::OutputMode;
 use crate::workflow::engine::DriverOutcome;
 use crate::workflow::facade;
-use rust_i18n::t;
 use serde_json::Value;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -79,7 +78,7 @@ pub(super) async fn run_capped(
         Err(e) => {
             return DriverOutcome::Failed {
                 code: "E_WORLD".into(),
-                message: t!("core.err.world_run_start", error = e).into_owned(),
+                message: format!("failed to start command: {e}"),
             };
         }
     };
@@ -132,7 +131,7 @@ pub(super) async fn run_capped(
             Ok(Err(outcome)) => Some(outcome),
             Err(_) => Some(DriverOutcome::Failed {
                 code: "E_WORLD_TIMEOUT".into(),
-                message: t!("core.err.world_run_timeout", ms = timeout_ms).into_owned(),
+                message: format!("world.run timed out after {timeout_ms}ms"),
             }),
         };
     if let Some(outcome) = failure {
@@ -156,7 +155,7 @@ pub(super) async fn run_capped(
         Some(Err(e)) => {
             return DriverOutcome::Failed {
                 code: "E_WORLD".into(),
-                message: t!("core.err.world_run_wait", error = e).into_owned(),
+                message: format!("failed waiting for command: {e}"),
             };
         }
         None => unreachable!("collect 循环退出时三项必齐"),
@@ -166,7 +165,7 @@ pub(super) async fn run_capped(
         _ => {
             return DriverOutcome::Failed {
                 code: "E_WORLD".into(),
-                message: t!("core.err.world_run_cap", cap = cap).into_owned(),
+                message: format!("world.run output exceeded {cap} bytes"),
             };
         }
     };
@@ -264,13 +263,13 @@ pub(super) async fn git_stdout(
         .await
         .map_err(|e| DriverOutcome::Failed {
             code: "E_GIT".into(),
-            message: t!("core.err.git_failed", error = e).into_owned(),
+            message: format!("failed to run git: {e}"),
         })?;
     if !out.status.success() {
         return Err(DriverOutcome::Failed {
             code: "E_GIT".into(),
             message: format!(
-                "git {} 退出 {}：{}",
+                "git {} exited {}: {}",
                 argv.first().unwrap_or(&""),
                 out.status.code().unwrap_or(-1),
                 String::from_utf8_lossy(&out.stderr).trim()

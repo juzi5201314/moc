@@ -19,7 +19,6 @@ use moc_ptc_protocol::wire::WorkflowHostMessage;
 use moc_ptc_protocol::wire::WorkflowRunInfo as WireRunInfo;
 use moc_ptc_protocol::wire::WorkflowStartRequest;
 use parking_lot::Mutex;
-use rust_i18n::t;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -47,7 +46,9 @@ impl WorkflowManager {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| CoreError::Session(t!("core.err.worker_start", error = e).into_owned()))?;
+            .map_err(|e| {
+                CoreError::Session(format!("failed to start workflow worker: {e}"))
+            })?;
         let mut stdin = child
             .stdin
             .take()
@@ -108,7 +109,7 @@ impl WorkflowManager {
                     max_total_calls: cfg.max_total_calls,
                 },
             })
-            .map_err(|_| CoreError::Session(t!("core.err.worker_chan_closed").into_owned()))?;
+            .map_err(|_| CoreError::Session("worker channel closed".into()))?;
         drop(compiled);
         let meta_plan = meta.plan.clone();
         drop(meta);
@@ -127,9 +128,7 @@ impl WorkflowManager {
                 Ok(Some(line)) => line,
                 Ok(None) => break,
                 Err(e) => {
-                    return Err(CoreError::Session(
-                        t!("core.err.worker_read", error = e).into_owned(),
-                    ));
+                    return Err(CoreError::Session(format!("failed to read worker stdout: {e}")));
                 }
             };
             let message: WorkflowGuestMessage = match serde_json::from_str(&line) {
@@ -159,12 +158,9 @@ impl WorkflowManager {
             let detail = if stderr.is_empty() {
                 String::new()
             } else {
-                t!("core.err.worker_exited_stderr", stderr = stderr).into_owned()
+                format!(": {stderr}")
             };
-            self.fail_run(
-                handle,
-                &t!("core.err.worker_exited", detail = detail).into_owned(),
-            );
+            self.fail_run(handle, &format!("workflow worker exited unexpectedly{detail}"));
         }
         let _ = handle.to_worker.send(WorkflowHostMessage::Shutdown);
         let _ = child.kill().await;

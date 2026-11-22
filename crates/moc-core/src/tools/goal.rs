@@ -87,7 +87,7 @@ impl Tool for GetGoalTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read the current session goal: objective, phase, admitted rounds, and CAS revision for update_goal."
+        "Read current goal: objective, phase, rounds, and revision for update_goal."
     }
 
     fn tier(&self) -> Tier {
@@ -130,7 +130,7 @@ impl Tool for CreateGoalTool {
     }
 
     fn description(&self) -> &'static str {
-        "Create a persisted goal for a long-running objective: the session automatically continues new rounds until the goal is completed, blocked, paused, or cleared. Only valid in a direct user turn."
+        "Create a persistent goal; the session auto-continues rounds until complete, blocked, paused, or cleared. Direct user turns only."
     }
 
     fn tier(&self) -> Tier {
@@ -207,7 +207,7 @@ impl Tool for UpdateGoalTool {
     }
 
     fn description(&self) -> &'static str {
-        "Update the current goal by exact id+revision from get_goal. action=complete only with verified evidence for every deliverable; action=blocked only when the goal is truly unreachable (in a goal round it requires several sustained rounds first); action=edit/pause/resume only in direct user turns."
+        "Update the goal using goal_id+revision from get_goal. complete: verified evidence for all deliverables; blocked: truly unreachable (goal rounds require sustained attempts first); edit/pause/resume: direct user turns only."
     }
 
     fn tier(&self) -> Tier {

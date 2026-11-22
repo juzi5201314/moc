@@ -65,7 +65,7 @@ it("长行省略合并展示、可展开，父结果到达后子通知消失但�
   expect(getByRole("button", { expanded: true })).toBeTruthy();
   expect(container.textContent).toContain("Line 100");
   expect(container.textContent).toContain("Line 115");
-  expect(container.textContent).toContain("byte_offset=0");
+  expect(container.textContent).toContain("单行过长时仅展示部分预览");
   rerender(
     <NoticeScope result={result}>
       {toolBody({ ...tool, result: `${result}\n${unique}` }, "hidden", () => {})}

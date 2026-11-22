@@ -217,7 +217,7 @@ async fn deliver_handoff(
     }
     if receipt.outcome == AgentMessageOutcome::Failed {
         return Err(CoreError::Session(
-            receipt.error.unwrap_or_else(|| "投递失败".into()),
+            receipt.error.unwrap_or_else(|| "delivery failed".into()),
         ));
     }
     Ok(Delivery::Word(match receipt.outcome {

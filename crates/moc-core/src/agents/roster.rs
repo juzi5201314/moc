@@ -171,7 +171,7 @@ pub(crate) async fn stop(
         .get_mut(&agent_id)
         .ok_or_else(|| CoreError::Session(format!("SESSION_NOT_FOUND: {agent_id}")))?;
     if runtime.info.parent_id != session_id {
-        return Err(invalid("目标不是调用方的直接子代理"));
+        return Err(invalid("target is not a direct child of the caller"));
     }
     if live(runtime.info.status) {
         runtime.cancel.cancel();
@@ -208,7 +208,7 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
             .then_with(|| left.session.id.cmp(&right.session.id))
     });
     let mut block = String::from(
-        "<subagent>\nYou are a subagent. When the task is done, call `yield` with your complete report; the parent receives exactly that text. Never end with a plain message instead, unless the task is impossible.\nCoordinate via `message_agent`: target \"parent\", a sibling id, or \"all\" (running siblings). Incoming messages arrive as <agent-message from=\"...\" id=\"...\">. Message the parent only for questions, blockers, or decisions; progress and completion reports go through `yield`.\n",
+        "<subagent>\nYou are a subagent. Finish by calling `yield` with your complete report (sent verbatim to parent); never end with a plain message unless impossible.\nUse `message_agent` (target: \"parent\", sibling id, or \"all\" for running siblings); incoming messages arrive as <agent-message from=\"...\" id=\"...\">. Message parent only for blockers/decisions; reports go via `yield`.\n",
     );
     if let Some(meta) = &meta {
         if let Some(prompt) = &meta.prompt {
@@ -219,7 +219,7 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
         if let Some(schema) = &meta.output_schema {
             // schema 是会话级静态内容，附在系统块里不影响前缀缓存。
             block.push_str(
-                "\nOutput contract: this run declares an `output_schema`. `yield` must include a `result` value conforming to it, alongside the readable `report`.\nSchema: ",
+                "\nOutput contract: `yield` must include `result` matching this `output_schema`, plus `report`.\nSchema: ",
             );
             block.push_str(&schema.to_string());
             block.push('\n');

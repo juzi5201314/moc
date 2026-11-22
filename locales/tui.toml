@@ -32,9 +32,9 @@ queue_edit = { zh = "编辑排队中的消息", en = "Edit queued message" }
 
 [tui.settings]
 thinking_detail = { zh = "思考展示", en = "Thinking display" }
-thinking_detail_desc = { zh = "hidden 仅显示耗时；brief 显示末尾预览；full 显示完整思考。", en = "hidden: duration only; brief: trailing preview; full: complete thinking." }
+thinking_detail_desc = { zh = "隐藏只看耗时；简略预览末尾几行；完整展开全部思考。", en = "Hidden: duration only; brief: trailing preview; full: complete thinking." }
 tool_detail = { zh = "工具输出展示", en = "Tool output display" }
-tool_detail_desc = { zh = "hidden 仅显示标题；brief 显示简要预览；完整输出可点击展开。", en = "hidden: title only; brief: short preview; full output expands on click." }
+tool_detail_desc = { zh = "隐藏只看标题；简略展示摘要；点击单条可展开完整结果。", en = "Hidden: title only; brief: short preview; click to expand full output." }
 notify_complete = { zh = "完成时通知", en = "Notify on completion" }
 notify_complete_desc = { zh = "终端不在前台时，任务完成后发送桌面通知。", en = "Send a desktop notification when a task finishes while the terminal is unfocused." }
 notify_waiting = { zh = "等待确认时通知", en = "Notify on pending confirmation" }
@@ -112,10 +112,10 @@ alt_screen = { zh = "切换备用屏/鼠标捕获失败", en = "Failed to enter 
 term_buf = { zh = "初始化终端缓冲失败", en = "Failed to initialize the terminal buffer" }
 clear_screen = { zh = "清屏失败", en = "Failed to clear the screen" }
 term_rebuild = { zh = "重建终端双缓冲失败", en = "Failed to rebuild the terminal buffer" }
-hist_no_page = { zh = "历史传输未返回页面", en = "History transfer returned no page" }
-hist_type_changed = { zh = "历史传输中途改变结果类型", en = "History transfer changed result type mid-stream" }
-hist_offset_overflow = { zh = "历史块偏移溢出", en = "History chunk offset overflow" }
-hist_gap = { zh = "历史块不连续", en = "History chunks are not contiguous" }
+hist_no_page = { zh = "未收到历史记录内容", en = "No history page returned" }
+hist_type_changed = { zh = "历史记录格式异常", en = "Unexpected history data format" }
+hist_offset_overflow = { zh = "历史记录偏移异常", en = "History offset overflow" }
+hist_gap = { zh = "历史记录加载不完整", en = "Incomplete history data" }
 hist_read_fmt = { zh = "历史页读取失败：%{err}", en = "Failed to read history page: %{err}" }
 table_changed = { zh = "表格内容已变化，请重试", en = "Table content changed; please retry" }
 table_not_chartable = { zh = "这张表无法图表化", en = "This table can't be charted" }
@@ -254,8 +254,8 @@ plugins_usage = { zh = "用法：/plugins [reload]", en = "Usage: /plugins [relo
 usage_fmt = { zh = "用法：/%{name}", en = "Usage: /%{name}" }
 compact_done = { zh = "上下文压缩已完成", en = "Context compaction finished" }
 compact_failed_fmt = { zh = "上下文压缩失败：%{err}", en = "Context compaction failed: %{err}" }
-workflow_activated = { zh = "workflow 已激活", en = "Workflow activated" }
-workflow_failed_fmt = { zh = "workflow 激活失败：%{err}", en = "Failed to activate workflow: %{err}" }
+workflow_activated = { zh = "工作流已启用", en = "Workflow activated" }
+workflow_failed_fmt = { zh = "启用工作流失败：%{err}", en = "Failed to activate workflow: %{err}" }
 jobs_failed_fmt = { zh = "获取任务列表失败：%{err}", en = "Failed to fetch job list: %{err}" }
 engine_locked = { zh = "会话引擎已锁定；换引擎请新建会话", en = "Session engine is locked; start a new session to switch" }
 engine_failed_fmt = { zh = "切换引擎失败：%{err}", en = "Failed to switch engine: %{err}" }
@@ -325,7 +325,7 @@ view_all = { zh = "查看全部", en = "view all" }
 kill_task = { zh = "杀任务", en = "kill task" }
 submit_deny = { zh = "提交拒绝", en = "submit denial" }
 cancel_input = { zh = "取消输入", en = "cancel input" }
-choose_role = { zh = "选择 role", en = "select role" }
+choose_role = { zh = "选择角色", en = "select role" }
 pick_model = { zh = "选模型", en = "pick model" }
 pick_new_model = { zh = "新会话模型", en = "new-session model" }
 approve = { zh = "批准", en = "approve" }
@@ -387,7 +387,7 @@ switching = { zh = "正在切换并压缩…", en = "Switching and compacting…
 switch_and_compact = { zh = "切换并压缩", en = "Switch and compact" }
 no_jobs = { zh = "当前没有后台任务", en = "No background jobs" }
 kill_confirm = { zh = "[按 x 或点击确认杀掉]", en = "[press x or click to confirm kill]" }
-no_runs = { zh = "没有 workflow run", en = "No workflow runs" }
+no_runs = { zh = "暂无工作流运行记录", en = "No workflow runs yet" }
 loading_sessions = { zh = "正在加载会话…", en = "Loading sessions…" }
 no_sessions_here = { zh = "当前目录没有会话", en = "No sessions in this directory" }
 no_match_sessions = { zh = "没有匹配的会话", en = "No matching sessions" }
@@ -523,12 +523,12 @@ export.desc = { zh = "将会话历史脱敏导出为 Markdown", en = "Export red
 session.desc = { zh = "当前会话身份、文件路径与分类存储大小", en = "Current session identity, file paths, and storage breakdown" }
 new.desc = { zh = "新建会话", en = "Start a new session" }
 resume.desc = { zh = "恢复历史会话", en = "Resume a past session" }
-close.desc = { zh = "卸载当前会话并释放跨进程写租约", en = "Unload the session and release the cross-process write lease" }
+close.desc = { zh = "关闭当前会话并释放编辑占用", en = "Close the session and release the edit lock" }
 quit.desc = { zh = "退出 moc", en = "Quit moc" }
 plan.usage = { zh = "[提示词]", en = "[prompt]" }
 plan.desc = { zh = "进入／退出计划模式；带提示词时进入并发送", en = "Enter/exit plan mode; with a prompt, enters and sends it" }
-goal.desc = { zh = "查看或设置会话目标；目标存在时每轮提示结束自动续跑，直到达成或叫停", en = "Show or set the session goal; while set, each turn auto-continues until reached or stopped" }
-confirm_plan.desc = { zh = "计划模式下重新审阅已写入的待审计划", en = "Re-review the pending plan in plan mode" }
+goal.desc = { zh = "查看或设置会话目标，启用后自动续跑直到完成或停止", en = "Show or set the session goal; auto-continues until reached or stopped" }
+confirm_plan.desc = { zh = "重新审阅当前待审计划", en = "Re-review the pending plan" }
 model.desc = { zh = "切换模型", en = "Switch model" }
 engine.desc = { zh = "切换会话引擎（仅空白会话可切）", en = "Switch session engine (empty sessions only)" }
 clm.desc = { zh = "切换 CLM 实验引擎；启用后本会话固定使用 CLM", en = "Switch to the experimental CLM engine; once enabled the session stays on CLM" }
@@ -547,8 +547,8 @@ usage.desc = { zh = "查看当前会话模型用量", en = "Show current session
 agents.desc = { zh = "子代理侧栏：唤出、聚焦、查看", en = "Subagent sidebar: summon, focus, inspect" }
 jobs.desc = { zh = "后台任务列表", en = "Background job list" }
 workflow.usage = { zh = "[指令]", en = "[instruction]" }
-workflow.desc = { zh = "激活 workflow（可附指令）", en = "Activate a workflow (optional instruction)" }
-workflows.desc = { zh = "workflow run 列表", en = "Workflow run list" }
+workflow.desc = { zh = "开启工作流（可附指令）", en = "Activate workflows (optional instruction)" }
+workflows.desc = { zh = "查看工作流运行记录", en = "Workflow run list" }
 plugins.desc = { zh = "查看插件：来源、工具与斜杠命令", en = "Inspect plugins: origins, tools, and slash commands" }
 btw.usage = { zh = "[问题]", en = "[question]" }
 btw.desc = { zh = "旁路问答：带问题继续线程；不带问题重开面板", en = "Side-thread Q&A: with a question, continues the thread; without, reopens the panel" }
@@ -673,11 +673,11 @@ tools = { zh = "可用工具", en = "Available tools" }
 context = { zh = "上下文", en = "Context" }
 jobs = { zh = "后台任务", en = "Background jobs" }
 switch_model = { zh = "切换模型：需要压缩上下文", en = "Switch model: context compaction required" }
-wf_amend = { zh = "workflow 审批：amend", en = "Workflow approval: amend" }
-wf_hole = { zh = "workflow 审批：hole 填充", en = "Workflow approval: hole fill" }
-wf_approval = { zh = "workflow 审批", en = "Workflow approval" }
-wf_run_fmt = { zh = "run 面板：%{title}", en = "Run panel: %{title}" }
-wf_runs = { zh = "workflow run 列表", en = "workflow runs" }
+wf_amend = { zh = "工作流审批：修改重跑", en = "Workflow approval: revise & rerun" }
+wf_hole = { zh = "工作流审批：补充步骤", en = "Workflow approval: fill step" }
+wf_approval = { zh = "工作流审批", en = "Workflow approval" }
+wf_run_fmt = { zh = "工作流运行：%{title}", en = "Workflow run: %{title}" }
+wf_runs = { zh = "工作流运行记录", en = "Workflow runs" }
 monitor = { zh = "进程监控", en = "Process monitor" }
 
 [tui.role]
@@ -688,36 +688,36 @@ reminder = { zh = "运行时提醒", en = "Runtime reminder" }
 system = { zh = "系统消息", en = "System message" }
 
 [tui.rewind]
-title = { zh = " ⏪ 会话消息回退 (Rewind) ", en = " ⏪ Rewind Messages " }
+title = { zh = " ⏪ 消息回退 ", en = " ⏪ Rewind Messages " }
 untitled = { zh = "未命名会话", en = "Untitled session" }
 wizard = { zh = "会话回退向导", en = "Session rewind wizard" }
 session_fmt = { zh = "当前会话：「%{title}」", en = "Session: “%{title}”" }
 nodes_fmt = { zh = "共 %{count} 个历史节点", en = "%{count} history nodes" }
-guide = { zh = "确认后该条用户消息回到输入框重新编辑，之后的对话将被丢弃。", en = "After confirming, that user message returns to the input box for editing; the conversation after it is discarded." }
-loading = { zh = "正在加载会话消息历史，请稍候…", en = "Loading message history, please wait…" }
+guide = { zh = "确认后该条消息会回到输入框以便修改，之后的对话将被移除。", en = "After confirming, that message returns to the input box for editing; later turns are removed." }
+loading = { zh = "正在加载会话历史…", en = "Loading message history…" }
 load_failed_fmt = { zh = "❌ 加载失败：%{err}", en = "❌ Failed to load: %{err}" }
-retry_hint = { zh = "按 Enter 重试，或按 Esc 关闭窗口", en = "Press Enter to retry, or Esc to close" }
-empty = { zh = "当前会话暂无可以回退的消息记录", en = "No rewindable messages in this session" }
-timeline_title = { zh = " 节点时间线 (Timeline) ", en = " Timeline " }
+retry_hint = { zh = "按 Enter 重试，或按 Esc 关闭", en = "Press Enter to retry, or Esc to close" }
+empty = { zh = "当前会话暂无可回退的消息", en = "No rewindable messages in this session" }
+timeline_title = { zh = " 节点时间线 ", en = " Timeline " }
 no_match_fmt = { zh = "未找到匹配「%{query}」的节点", en = "No nodes matching “%{query}”" }
-clear_filter = { zh = "按 Esc 清空过滤条件", en = "Press Esc to clear the filter" }
+clear_filter = { zh = "按 Esc 清空过滤", en = "Press Esc to clear the filter" }
 tag_redo_target = { zh = "[前滚目标]", en = "[redo target]" }
 tag_rewind_target = { zh = "[回退目标]", en = "[rewind target]" }
 tag_rejoin = { zh = "[将接回]", en = "[rejoining]" }
 tag_rewound = { zh = "[已回退]", en = "[rewound]" }
 tag_kept = { zh = "[保留]", en = "[kept]" }
 tag_dropped = { zh = "[丢弃]", en = "[dropped]" }
-detail_title = { zh = " 回退影响与内容详情 ", en = " Impact & Preview " }
-redo_here = { zh = "前滚到此处 (Redo to here)", en = "Redo to here" }
+detail_title = { zh = " 回退影响与内容预览 ", en = " Impact & Preview " }
+redo_here = { zh = "前滚到此处", en = "Redo to here" }
 redo_restored_fmt = { zh = "• 将把已回退的历史向前接回，恢复该节点及之前共 %{count} 条", en = "• Rejoins rewound history forward, restoring this node and %{count} entries before it" }
 redo_remaining_fmt = { zh = "• 该节点之后仍有 %{count} 条保持回退状态，可继续前滚", en = "• %{count} entries after this node stay rewound; you can keep redoing" }
 redo_all_restored = { zh = "• 已回退的内容将全部接回，恢复到回退前的最新状态", en = "• All rewound content rejoins, restoring the latest state" }
-rewind_here = { zh = "回退到此处 (Rewind to here)", en = "Rewind to here" }
-rewind_restore = { zh = "• 该用户提问将完整恢复到底部输入框，供您修改后重新发送", en = "• This user prompt returns intact to the input box; edit and resend it" }
-dropped_fmt = { zh = "• 下方共 %{count} 条对话记录将被丢弃（不再计入会话历史）", en = "• %{count} entries below will be discarded (removed from session history)" }
-at_latest = { zh = "• 当前节点已经是最新消息，下方无多余对话丢弃", en = "• This node is already the latest; nothing below is discarded" }
-continue_here = { zh = "从此处继续 (Continue from here)", en = "Continue from here" }
-continue_truncate = { zh = "• 会话历史将截断至该回复节点，您可以继续向模型提问", en = "• Session history truncates at this reply node; you can keep asking the model" }
+rewind_here = { zh = "回退到此处", en = "Rewind to here" }
+rewind_restore = { zh = "• 该条消息将恢复到输入框，方便修改后重新发送", en = "• This message returns to the input box for editing and resending" }
+dropped_fmt = { zh = "• 下方共 %{count} 条对话记录将被移除（不再计入上下文）", en = "• %{count} entries below will be removed from context" }
+at_latest = { zh = "• 当前已是最新消息，下方没有需要移除的对话", en = "• Already at the latest message; nothing below will be removed" }
+continue_here = { zh = "从此处继续", en = "Continue from here" }
+continue_truncate = { zh = "• 对话历史将截断至该回复节点，你可以直接继续提问", en = "• Conversation history truncates at this reply; you can continue from here" }
 meta_node = { zh = "节点信息：", en = "Node: " }
 meta_time = { zh = "记录时间：", en = "Time: " }
 meta_id = { zh = "条目ID：", en = "Entry ID: " }
@@ -977,17 +977,17 @@ finished = { zh = "已结束", en = "finished" }
 exit_fmt = { zh = "退出码 %{code}", en = "exit %{code}" }
 
 [tui.event]
-unattended_approved = { zh = "unattended：已自动批准计划（压缩并执行）", en = "unattended: plan auto-approved (compact & execute)" }
+unattended_approved = { zh = "无人值守：已自动批准计划（压缩并执行）", en = "Unattended: plan auto-approved (compact & run)" }
 compacted_fmt = { zh = "上下文已压缩：%{before} → %{after}", en = "Context compacted: %{before} → %{after}" }
 trimmed_fmt = { zh = "上下文已裁剪：%{before} → %{after}（未生成摘要）", en = "Context trimmed: %{before} → %{after} (no summary generated)" }
 plugin_disabled_fmt = { zh = "插件 `%{plugin}` 已停用（%{code}）", en = "Plugin `%{plugin}` disabled (%{code})" }
 thinking_truncated = { zh = "\n\n[思考内容过长，已停止在界面展开]\n", en = "\n\n[thinking too long; expansion stopped]\n" }
-clm_enabled = { zh = "CLM 实验引擎已启用：模型将维护实时上下文；本会话首次请求后锁定引擎", en = "CLM experimental engine enabled: the model maintains live context; the engine locks after this session's first request" }
+clm_enabled = { zh = "CLM 实验引擎已启用：模型将自主管理实时上下文；首次请求后引擎锁定", en = "CLM experimental engine enabled: the model manages live context; locked after first request" }
 exit_code_fmt = { zh = "（退出码 %{code}）", en = " (exit code %{code})" }
 job_done_fmt = { zh = "后台任务结束：%{cmd}%{code}", en = "Background job finished: %{cmd}%{code}" }
 error_fmt = { zh = "错误：%{message}%{retryable}", en = "Error: %{message}%{retryable}" }
 retryable = { zh = "（可以重试）", en = " (retryable)" }
-session_unloaded = { zh = "会话已卸载，写租约已释放；旁路内存已清空", en = "Session unloaded; write lease released and side-channel memory cleared" }
+session_unloaded = { zh = "会话已关闭，编辑占用已释放，旁路记录已清空", en = "Session closed; edit lock released and aside memory cleared" }
 image_attached = { zh = "已附加剪贴板图片", en = "Clipboard image attached" }
 clipboard_empty = { zh = "剪贴板中没有可粘贴的图片或文本", en = "No image or text to paste in the clipboard" }
 notify_permission = { zh = "有操作等待你的确认", en = "An action is waiting for your confirmation" }
@@ -1022,18 +1022,18 @@ thinking_level_fmt = { zh = "思考等级：%{level}", en = "Thinking level: %{l
 thinking_failed_fmt = { zh = "切换思考等级失败：%{err}", en = "Failed to switch thinking level: %{err}" }
 fast_mode_failed_fmt = { zh = "切换 Fast Mode 失败：%{err}", en = "Failed to switch Fast Mode: %{err}" }
 ctx_failed_fmt = { zh = "读取上下文占用失败：%{err}", en = "Failed to read context usage: %{err}" }
-hole_opened_fmt = { zh = "workflow hole 打开：%{name}", en = "Workflow hole opened: %{name}" }
-runs_failed_fmt = { zh = "获取 run 列表失败：%{err}", en = "Failed to fetch run list: %{err}" }
+hole_opened_fmt = { zh = "工作流待补充步骤：%{name}", en = "Workflow step awaiting input: %{name}" }
+runs_failed_fmt = { zh = "获取运行记录失败：%{err}", en = "Failed to load workflow runs: %{err}" }
 denied_unauthorized = { zh = "未授权，已按拒绝处理", en = "Not authorized; treated as denied" }
 session_load_failed_fmt = { zh = "加载会话失败：%{err}", en = "Failed to load session: %{err}" }
 pick_lead_sidekick = { zh = "请先选择 Lead 与 Sidekick", en = "Pick a Lead and a Sidekick first" }
 option_copied = { zh = "已复制选项", en = "Option copied" }
-wf_approve_failed_fmt = { zh = "workflow 审批回传失败：%{err}", en = "Failed to submit workflow approval: %{err}" }
-wf_stop_failed_fmt = { zh = "workflow 停止失败：%{err}", en = "Failed to stop workflow: %{err}" }
-wf_resume_failed_fmt = { zh = "workflow 续跑失败：%{err}", en = "Failed to resume workflow: %{err}" }
-wf_run_failed_fmt = { zh = "读取 run 失败：%{err}", en = "Failed to load run: %{err}" }
-role_model_failed_fmt = { zh = "role 模型热改失败：%{err}", en = "Failed to hot-swap role model: %{err}" }
-artifact_failed_fmt = { zh = "读取 artifact 失败：%{err}", en = "Failed to load artifact: %{err}" }
+wf_approve_failed_fmt = { zh = "工作流审批发送失败：%{err}", en = "Failed to submit workflow approval: %{err}" }
+wf_stop_failed_fmt = { zh = "停止工作流失败：%{err}", en = "Failed to stop workflow: %{err}" }
+wf_resume_failed_fmt = { zh = "续跑工作流失败：%{err}", en = "Failed to resume workflow: %{err}" }
+wf_run_failed_fmt = { zh = "读取运行记录失败：%{err}", en = "Failed to load run: %{err}" }
+role_model_failed_fmt = { zh = "切换角色模型失败：%{err}", en = "Failed to switch role model: %{err}" }
+artifact_failed_fmt = { zh = "读取产物失败：%{err}", en = "Failed to load artifact: %{err}" }
 no_model_hint = { zh = "请先用 /model 选择模型；没有候选时到 /config 添加供应商", en = "Pick a model with /model first; if none are listed, add a provider in /config" }
 clm_notice = { zh = "CLM 实验模式已启用：模型将维护实时上下文", en = "CLM experimental mode enabled: the model maintains live context" }
 no_models_hint = { zh = "没有可用的模型，请先在设置中添加", en = "No models available; add one in settings first" }
@@ -1046,7 +1046,7 @@ stopped = { zh = "已停止", en = "Stopped" }
 model_saved_failed_fmt = { zh = "模型已保存，但会话创建失败：%{err}", en = "Model saved, but session creation failed: %{err}" }
 deliver_failed_fmt = { zh = "未能完成：%{err}；已排队的消息仍保留，可编辑后重发", en = "Couldn't finish: %{err}; queued messages are kept — edit and resend" }
 image_placeholder = { zh = "[图片]", en = "[image]" }
-no_withdraw_id = { zh = "内核未返回撤回 ID，消息已加入且无法撤回", en = "The kernel returned no withdrawal ID; the message was appended and can't be withdrawn" }
+no_withdraw_id = { zh = "消息已加入当前轮次，无法撤回", en = "The message already entered this turn and can't be withdrawn" }
 undelivered_draft = { zh = "补充消息未送达，草稿已恢复", en = "The steering message wasn't delivered; draft restored" }
 queued_instead = { zh = "补充消息未进入当前提示，已排到待发送", en = "The steering message didn't reach the current prompt; queued for sending" }
 withdrawn_undelivered_fmt = { zh = "撤回完成：消息未送达（%{err}）", en = "Withdrawn: message undelivered (%{err})" }
@@ -1087,17 +1087,17 @@ brief = { zh = "简略", en = "brief" }
 full = { zh = "完整", en = "full" }
 
 [tui.scroll]
-incomplete_fmt = { zh = "%{count} 行内容未完整显示%{hint}", en = "%{count} lines not fully shown%{hint}" }
-expand_hint = { zh = "；展开查看行号与续读方式", en = "; expand for line numbers and how to read on" }
-read_hint = { zh = "用 read 的 offset 指定行、limit=1、byte_offset=0 分片读取，并按 next 续读；省略内容不授权编辑。", en = "Read slices with read's offset, limit=1, byte_offset=0 and continue via next; omitted content does not authorize edits." }
+incomplete_fmt = { zh = "%{count} 行内容过长未完整显示%{hint}", en = "%{count} long lines truncated%{hint}" }
+expand_hint = { zh = "；点击展开详情", en = "; click for details" }
+read_hint = { zh = "单行过长时仅展示部分预览，省略部分不可直接修改。", en = "Long lines are shortened for preview; omitted text cannot be edited directly." }
 
 [tui.wf]
 orchestration = { zh = "编排", en = "orchestration" }
 hole_fill_label = { zh = "新增命令", en = "new commands" }
-run_cmds_label = { zh = "world.run 命令集", en = "world.run commands" }
-amend_note = { zh = "  （amend：增量修改既有 run）", en = "  (amend: incremental changes to the existing run)" }
+run_cmds_label = { zh = "待执行命令", en = "commands to run" }
+amend_note = { zh = "  （修改重跑：复用未变步骤）", en = "  (revise & rerun: reuses unchanged steps)" }
 script = { zh = "脚本", en = "script" }
-reject_fmt = { zh = "拒绝反馈：%{feedback}▌", en = "Rejection feedback: %{feedback}▌" }
+reject_fmt = { zh = "拒绝原因：%{feedback}▌", en = "Rejection reason: %{feedback}▌" }
 view_fmt = { zh = "查看：%{title}  （Esc/o 返回）", en = "View: %{title}  (Esc/o back)" }
 status_fmt = { zh = "状态：%{status}", en = "Status: %{status}" }
 usage_fmt = { zh = "用量：%{spent} tokens%{cost}", en = "Usage: %{spent} tokens%{cost}" }
@@ -1106,11 +1106,11 @@ no_points = { zh = "    （无数据点）", en = "    (no data points)" }
 
 [tui.menu]
 engine_standard = { zh = "默认引擎：模型直接调用工具", en = "Default engine: the model calls tools directly" }
-engine_ptc = { zh = "模型只调用 execute，全部工具经代码沙盒触达", en = "The model only calls execute; all tools go through the code sandbox" }
-engine_clm = { zh = "模型自主维护实时上下文（实验）", en = "The model maintains live context itself (experimental)" }
-perm_full = { zh = "宿主全部可读写，无沙盒边界", en = "Full host read-write access, no sandbox boundary" }
-perm_workspace = { zh = "工作区可写，宿主其余路径只读", en = "Workspace is writable; the rest of the host is read-only" }
-perm_workspace_only = { zh = "仅工作区与临时目录可见，隔离最强", en = "Only the workspace and temp dirs are visible; strongest isolation" }
+engine_ptc = { zh = "通过脚本批量调用工具，减少来回轮次", en = "Runs scripts to batch tool calls in fewer turns" }
+engine_clm = { zh = "由模型自主管理工作上下文（实验）", en = "Lets the model manage its working context (experimental)" }
+perm_full = { zh = "不设沙盒限制，可读写本机任意文件", en = "No sandbox limits; full read-write access" }
+perm_workspace = { zh = "可读取本机文件，仅允许修改工作区与临时目录", en = "Reads host files; writes only to workspace and temp folders" }
+perm_workspace_only = { zh = "仅限访问当前工作区与临时目录，隔离最强", en = "Only workspace and temp dirs are visible; strongest isolation" }
 
 [tui.monitor]
 too_narrow = { zh = "终端太窄", en = "Terminal too narrow" }

@@ -33,7 +33,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "Read files, images, directories or internal resources. history://transcript is a readable index; filter via /role/user or /tool/<name>, then read /entry/<id> for full text. Original JSONL: history://raw. Long lines show a read-only preview; continue with the byte_offset in the notice and follow next. Complete local lines have [path#TAG] and N│text for editing."
+        "Read files, images, directories, or internal resources. history://transcript indexes history (filter /role/user or /tool/<name>; full text at /entry/<id>; raw JSONL at history://raw). Long lines preview read-only (continue via byte_offset + limit=1). Complete local lines include [path#TAG] and N│text for edit."
     }
     fn tier(&self) -> Tier {
         Tier::Read

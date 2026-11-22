@@ -40,7 +40,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &'static str {
-        "Edit fully shown lines using a read/grep/edit tag. Untouched lines remain addressable through older tags. Successful edits return the new tag and line numbers. On rejection, use the current lines in the error; read any explicitly omitted ranges before retrying."
+        "Edit fully shown lines using a read/grep/edit tag. Untouched lines stay addressable via older tags. Returns new tag and line numbers; on rejection, use current lines from the error (read omitted ranges before retrying)."
     }
 
     fn tier(&self) -> Tier {

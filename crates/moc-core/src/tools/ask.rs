@@ -48,7 +48,7 @@ impl Tool for AskTool {
         "ask"
     }
     fn description(&self) -> &'static str {
-        "Ask the user decision questions; use only when the answer changes the implementation. Set recommended to 0-based option indexes to mark the model's preferred choices; single-select questions accept at most one index, multi-select questions may include multiple recommended indexes. Options may carry a preview, a monospace frame shown beside the focused option for visual comparison (single-select only)."
+        "Ask the user decision questions when the answer changes the implementation; mark preferred choices via recommended and use preview for single-select visual options."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -68,12 +68,12 @@ impl Tool for AskTool {
                             "question":{"type":"string"},
                             "header":{"type":"string"},
                             "multi":{"type":"boolean"},
-                            "recommended":{"type":"array","items":{"type":"integer","minimum":0},"uniqueItems":true,"description":"Recommended option indexes, 0-based; single-select questions accept at most one, multi-select questions may include multiple indexes"},
+                            "recommended":{"type":"array","items":{"type":"integer","minimum":0},"uniqueItems":true,"description":"0-based preferred option indexes (at most one for single-select; multiple indexes allowed when multi=true)."},
                             "options":{"type":"array","minItems":2,"items":{
                                 "type":"object","properties":{
-                                    "label":{"type":"string","description":"Display text, 1-5 words"},
-                                    "description":{"type":"string","description":"What choosing this option means"},
-                                    "preview":{"type":"string","description":"Markdown preview shown beside the focused option in a monospace frame: ASCII layout, code, or configuration to compare visually. Preserve multiline text; put alignment-sensitive ASCII art in a ``` code block. Supported only for single-select questions (multi=false or omitted)."}
+                                    "label":{"type":"string","description":"1-5 words"},
+                                    "description":{"type":"string","description":"What this option means"},
+                                    "preview":{"type":"string","description":"Supported only for single-select questions: Markdown monospace preview beside focused option (ASCII layout/code/config; wrap alignment-sensitive ASCII art in ```)."}
                                 },"required":["label"],"additionalProperties":false
                             }}
                         },"required":["id","question","options"],"additionalProperties":false

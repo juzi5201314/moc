@@ -44,9 +44,7 @@ fn edited_files(state: &SessionState) -> Option<String> {
     if files.is_empty() {
         return None;
     }
-    let mut section = String::from(
-        "## Files Edited This Session\nThese files were modified by you during this session:",
-    );
+    let mut section = String::from("## Files Edited This Session");
     for path in files {
         section.push_str("\n- ");
         section.push_str(&path);
@@ -73,7 +71,7 @@ async fn running_jobs(inner: &CoreInner, state: &SessionState) -> Option<String>
         return None;
     }
     Some(format!(
-        "## Running Background Tasks\nThese tasks are still running:\n{}",
+        "## Running Background Tasks\n{}",
         lines.join("\n")
     ))
 }
@@ -89,7 +87,7 @@ fn todo_list(state: &SessionState) -> Option<String> {
         return None;
     }
     let mut section = String::from(
-        "## TODO List\nThis is your task list from before the conversation was compacted — it is still active. Keep working through the items below and update their status as you make progress:",
+        "## TODO List\nActive task list from before compaction; update status as you progress:",
     );
     if !lines.is_empty() {
         section.push('\n');
@@ -132,7 +130,7 @@ async fn running_agents(inner: &CoreInner, state: &SessionState) -> Option<Strin
         return None;
     }
     Some(format!(
-        "## Running Subagents\nThese subagents were launched before this compaction and are still running. Use `wait_agent` with the agent_id to check their status or retrieve results. Use `stop_agent` with the agent_id to cancel a subagent.\n{}",
+        "## Running Subagents\nStill running from before compaction (use `wait_agent` or `stop_agent` with agent_id):\n{}",
         lines.join("\n")
     ))
 }
@@ -227,9 +225,7 @@ mod tests {
         );
         assert_eq!(
             edited_files(&state).as_deref(),
-            Some(
-                "## Files Edited This Session\nThese files were modified by you during this session:\n- a.rs\n- b.rs\n- d.rs"
-            ),
+            Some("## Files Edited This Session\n- a.rs\n- b.rs\n- d.rs"),
             "失败的工具调用不进清单，move 只取目标路径"
         );
     }
@@ -265,14 +261,14 @@ mod tests {
         assert_eq!(
             todo_list(&state).as_deref(),
             Some(
-                "## TODO List\nThis is your task list from before the conversation was compacted — it is still active. Keep working through the items below and update their status as you make progress:\n- [pending] todo-1-1: 实现\n- [in_progress] todo-1-2: 接线 (等待上游)\n(1 completed, 1 cancelled)"
+                "## TODO List\nActive task list from before compaction; update status as you progress:\n- [pending] todo-1-1: 实现\n- [in_progress] todo-1-2: 接线 (等待上游)\n(1 completed, 1 cancelled)"
             )
         );
         state.todos[0].items.truncate(1);
         assert_eq!(
             todo_list(&state).as_deref(),
             Some(
-                "## TODO List\nThis is your task list from before the conversation was compacted — it is still active. Keep working through the items below and update their status as you make progress:\n- [pending] todo-1-1: 实现"
+                "## TODO List\nActive task list from before compaction; update status as you progress:\n- [pending] todo-1-1: 实现"
             ),
             "没有已完成项时不出现统计尾注"
         );

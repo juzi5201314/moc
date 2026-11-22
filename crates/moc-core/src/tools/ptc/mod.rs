@@ -18,9 +18,9 @@ use std::time::Duration;
 pub struct ExecuteTool;
 
 /// `description` 参数的模型可见说明，用作前端执行卡片的摘要。
-const DESCRIPTION_PARAM: &str = "Clear, concise description of what this program does in active voice, 5-10 words (shown in the UI). Examples: \"Count TODO markers across crates\"; \"Read failing test and its fixture\"; \"Rename a config key across files\".";
+const DESCRIPTION_PARAM: &str = "Concise 5-10 word active-voice summary shown in the UI (e.g. \"Count TODO markers across crates\").";
 
-/// 模型为前端卡片提供的一句话说明；目前只校验非空，展示留给后续 UI 消费。
+/// 校验前端卡片摘要非空。
 fn validate_description(args: &Value) -> Result<(), ToolError> {
     if args
         .get("description")
@@ -89,7 +89,7 @@ impl Tool for ExecuteTool {
                 .boot
                 .ptc_worker
                 .clone()
-                .ok_or_else(|| ToolError::new("E_PTC_WORKER", "PTC worker 未配置"))?;
+                .ok_or_else(|| ToolError::new("E_PTC_WORKER", "PTC worker is not configured"))?;
             let host = {
                 let mut slot = ctx.core.ptc_host.lock().await;
                 Arc::clone(slot.get_or_insert_with(|| Arc::new(PtcHost::new(worker))))

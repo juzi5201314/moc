@@ -94,7 +94,7 @@ impl Tool for TodoTool {
         "todo"
     }
     fn description(&self) -> &'static str {
-        "Track multi-step work in this session's task list. Init when work needs 3+ steps, spans multiple files, or the user listed several items; skip single-step requests. Emit todo calls in the same batch as your real tool calls, never alone. Mark items done as they finish; tasks are addressed by their verbatim text."
+        "Track multi-step work (3+ steps, multi-file, or itemized requests; skip single-step work). Batch with real tool calls, never alone. Mark items done as they finish; reference tasks by verbatim text."
     }
     fn tier(&self) -> Tier {
         Tier::Read

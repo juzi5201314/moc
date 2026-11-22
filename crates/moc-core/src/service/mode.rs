@@ -562,7 +562,7 @@ pub fn compose_revision_prompt(
 ) -> String {
     let mut prompt = String::new();
     prompt.push_str(&format!(
-        "I reviewed plan {} (v{}: {}) and left the notes below. Revise the plan accordingly, change only what the notes require, and keep the rest intact. A fenced suggestion block inside a note is the exact replacement for the quoted lines; keep its content as written. Read the plan file for anchors, apply plan(edits) to produce the revised draft — or rewrite it with plan(markdown) — then call exit_plan to submit it for review again. The plan text is at {}.\n",
+        "Review notes for plan {} (v{}: {}) at {}. Revise only what the notes request and keep the rest intact. Apply fenced `suggestion` blocks verbatim for the quoted lines. Read the plan file for anchors, update with plan(edits) or plan(markdown), then call exit_plan.\n",
         plan.plan_id, plan.version, plan.title, plan.path
     ));
     let lines: Vec<&str> = plan.markdown.lines().collect();

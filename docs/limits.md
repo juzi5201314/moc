@@ -1,132 +1,78 @@
-# bash 资源限制
+# 命令资源限制与后台任务
 
-模型发起的每条 bash 可以各自套一层资源上限，避免 Rust 编译之类的任务吃光 CPU 和内存。
-限制与文件/网络沙盒相互独立：`full` 模式下同样生效，`workspace` / `workspace-only` 下叠加在
-沙盒之外。默认关闭。
+你可以为模型发起的 Shell 命令单独设置 CPU 和内存上限，避免大型编译或测试拖慢整台机器。资源限制与路径/网络沙盒相互独立：无论当前是否开启沙盒都能单独启用，默认关闭。
 
-## 配置
+## 资源限制配置
+
+在 `~/.moc/config.toml` 或项目 `.moc/config.toml` 中配置（也可在 `/config` 的「工具 → 命令执行 → 资源限制」中直接编辑）：
 
 ```toml
 [tools.bash.limits]
-enabled = false                # 总开关；关闭时完全不介入，无额外探测与延迟
-cpu_cores = 4                  # CPU 核数上限；0 = 不限
-memory_high_bytes = 8589934592 # 8 GiB 软限：超过就节流，慢但尽量不失败；0 = 不节流
-memory_max_bytes = 12884901888 # 12 GiB 硬顶：兜底 OOM；0 = 不设
-memory_swap_bytes = 4294967296 # 4 GiB swap 预算；0 = 不限制
+enabled = false                # 总开关；关闭时零额外探测与开销
+cpu_cores = 4                  # CPU 核数上限；0 表示不限
+memory_high_bytes = 8589934592 # 8 GiB 软限：超出后降速节流，尽量不杀进程；0 表示不设
+memory_max_bytes = 12884901888 # 12 GiB 硬限：兜底防爆内存；0 表示不设
+memory_swap_bytes = 4294967296 # 4 GiB swap 预算；0 表示不限
 ```
 
-字段说明同步出现在 `/config` 的「工具 → 命令执行 → 资源限制」，可直接在 TUI 里编辑。
-`enabled = true` 时至少要配置一项，否则加载配置会报错；`memory_high_bytes` 不得超过
-`memory_max_bytes`。
+开启 `enabled = true` 时至少需配置其中一项，且 `memory_high_bytes` 不能大于 `memory_max_bytes`。
 
-## 机制
+## 各平台机制
 
-### Linux
+### Linux（推荐）
 
-每条命令包装成一次 `systemd-run --user --scope`：
+Linux 下通过 `systemd-run --user --scope` 为每条命令创建独立 cgroup 作用域（每次调用约增加 25–30 ms 开销）：
 
-```
-systemd-run --user --scope --quiet --collect --expand-environment=no --unit=moc-bash-<uuid> \
-  -p CPUQuota=400% -p MemoryHigh=... -p MemoryMax=... -p MemorySwapMax=... \
-  -- <shell> <args>
-```
-
-启动器只从宿主 PATH 解析一次，探测与执行绑定同一个绝对路径；工具 `env.PATH` 只影响载荷，不会替换限流启动器。systemd 254 起显式传 `--expand-environment=no`，防止启动器先于 shell 展开 `${VARIABLE}`；更早版本的 scope 默认不展开，且不支持此选项。
-
-- `CPUQuota` 按核时间限速；`nproc` 与 Rust 的 `available_parallelism` 都会读取 cgroup 配额，
-  因此 `cargo` 会自动把并发降到该核数，rustc 线程也随之减少，内存峰值大致按比例下降。
-- `MemoryHigh` 是“慢但不杀”的关键：超过后内核开始回收与节流，编译会明显变慢但继续推进。
-- `MemoryMax` 限制驻留内存；是否触发 OOM 还受 swap 等条件影响。SIGKILL 或 shell 的退出码 137 会附上内存额度排查提示，但它们本身不证明 OOM；确认原因需检查系统/cgroup 日志。
-- `MemorySwapMax` 限制单条命令能占用的 swap，避免一个任务挤掉整机。
-- `--scope` 把载荷原地放进新 scope 后执行 shell，不保留额外的等待父进程；PTY、stdin/stdout 与进程组清理保持原语义。信号终止保留为信号，没有退出码，不显示伪造的 `exit -1` 或 PTY 占位码 `1`。
-- 每条命令一个独立 scope，额度不共享：并发的后台任务各自都有完整的配置额度。
-- 每次调用额外开销约 25–30 ms。
+- **CPU 配额**：`nproc` 与 Rust 的并发探测会自动识别配额，`cargo` 等构建工具会随之降低并行线程数，内存峰值也成比例回落。
+- **内存软限（`memory_high_bytes`）**：超过后内核优先回收与限速，编译会变慢但尽量保持成功。需要系统开启 swap；若检测到宿主机无 swap（`SwapTotal = 0`），会自动跳过软限以免进程卡死，只保留硬限。
+- **内存硬限与 swap 上限**：防止单条命令拖垮宿主机。若进程收到 `SIGKILL` 或返回 137，结果中会附带内存排查提示（具体原因仍需结合系统日志确认）。
+- **独立配额**：并行运行的多个后台任务各自享有完整额度，互不挤压。
 
 ### Windows
 
-使用现有 Job Object 的 CPU rate control：`CpuRate = cpu_cores / 逻辑核数`（占全部
-处理器时间的比例），`ENABLE | HARD_CAP`。只限制 CPU 时间份额，**不会**改变
-`GetSystemInfo`，所以 `cargo` 仍按全部核数开线程，内存峰值不会因此下降。Windows 没有
-“节流不杀”的内存机制，`memory_*` 字段在 Windows 直接忽略；需要压内存请减少 `cargo -j`。
-超过 64 个逻辑处理器的机器不支持 CPU rate control，此时会警告一次并按不限速执行。
+通过系统 Job Object 限制 CPU 时间比例（`cpu_cores / 逻辑核数`）。该机制不会改变程序读取到的核数，因此 `cargo` 仍可能按全部核数启动线程；Windows 也缺乏“只降速不杀进程”的内存软限，`memory_*` 字段会被忽略（压内存建议传 `cargo -j`）。超过 64 核的机器不支持此限制，启用时会给出一次提示并按不限速运行。
 
-### 其它平台
+### 其他平台
 
-没有可用的限流后端：请求限制时警告一次，命令按原样执行。
+macOS 等平台暂不提供限流后端，启用时会提示一次并按原样执行。
 
-## 为什么不用 ulimit / taskset / cpulimit
+### 为何不采用 `ulimit` / `taskset` / `cpulimit`
 
-- `RLIMIT_AS` / `RLIMIT_DATA` 是硬上限，超了直接分配失败，rustc 会以内存不足退出。
-- `taskset` 只限制亲和性，不限制 CPU 时间；多个编译线程仍能把绑定的核跑满，还会被钉死在固定核上。
-- `cpulimit` 需要额外守护进程，按采样周期发送 SIGSTOP/SIGCONT，对短命的编译子进程不友好。
+- `ulimit`（`RLIMIT_AS` / `RLIMIT_DATA`）属于硬性拒绝，触顶后分配直接失败，编译器容易立刻崩溃。
+- `taskset` 只绑核不限速，多线程任务仍会把绑定核心跑满。
+- `cpulimit` 靠外部采样频繁暂停/恢复进程，对大量短命编译子进程极不稳定。
 
-## swap 依赖
+## 限制边界
 
-`MemoryHigh` 需要宿主有 swap 才能把匿名页换出并继续推进。实测在没有 swap 的机器上，
-`MemoryHigh` 会让进程无限期停等（不是失败，而是永远不前进）。因此运行时检测到
-`SwapTotal = 0` 时会自动跳过 `MemoryHigh`，只保留 `MemoryMax`，系统提示里的那一行也会
-如实省略软限。
+- 覆盖所有由模型发起的 Shell 命令（前台、异步、持久终端、PTC 与子代理）。
+- 你亲手输入的 `!命令` 不受限制。
+- 模型无法通过参数绕过或修改配额。
+- 首次环境探测不可用（如容器内无 `systemd --user`）时会警告一次并放行；探测通过后若某次创建作用域失败，命令不会执行，并提示检查 `systemd --user` 或暂时关闭限制。
 
-## 行为边界
+## 后台任务与并发规则
 
-- 只约束模型发起的 bash（包括 async、persistent、PTY、自动转后台、PTC 与子代理内的调用）。
-- 用户手打的 `!命令` 不受限制：输入本身即授权。
-- 模型无法通过工具参数调整或绕过限制。
-- moc 被 SIGKILL 时 scope 可能残留，与现有孤儿进程行为一致；正常结束由 `--collect` 回收。
-- 探测失败（没有 systemd user manager、容器内没有 `systemd-run`）时警告一次，命令照常执行。
-- 探测成功后如果某次 scope 创建失败，命令不会执行，结果里会提示检查 `systemd --user` 或临时关闭限制。
+### 自动转后台与并发上限
 
-## 后台任务与并发限制
+- 前台 `bash` 命令运行超过 `tools.bash.foreground_after_secs`（默认 60 秒）会自动转入后台，并附带尾部输出立即返回，卡片标题显示 `· 后台 job_X`。
+- 每个会话默认最多同时运行 `tools.job.max_running`（默认 8）个后台任务。名额占满时，新的异步命令会被拒绝，前台命令则继续留在前台直到完成或被取消，并在输出中说明原因。
 
-### 自动转后台
+### 增量读取、停滞检测与空闲唤醒
 
-前台 bash 命令运行超过 `tools.bash.foreground_after_secs`（默认 60 秒）会自动转入后台，
-发起它的工具调用立即返回。转后台时结果附带输出尾部和优化建议。工具描述已披露该行为。
+- 模型通过 `job` 工具读取日志时按已读位置增量返回，避免重复消耗上下文；界面查看任务日志不影响模型的读取进度。
+- 后台任务超过 `tools.bash.stall_after_secs`（默认 120 秒）没有任何新输出时，会触发一次停滞提醒（同一段无输出只提醒一次，恢复输出后重新计时）。
+- 后台任务结束时，如果当前会话空闲，会自动开启新一轮对话将结果交给模型（若此前是你主动取消了对话，则不会自动唤醒）。
+- 随时可在界面输入 `/jobs` 查看任务状态、日志尾部或终止任务（TUI 中连按两次 `x` 确认终止）。
 
-### 增量等待与日志边界
-
-`job wait` 在任务结束、有未展示的新输出或等待超时时返回；输出按模型已读游标增量提供。
-`job output` 与转后台时的尾部预览也会推进这个游标，前端 RPC 读取日志不会影响它。
-跨读取块的 UTF-8 字符会等字节补齐后再展示；只收到残缺字符时继续等待，任务结束仍未补齐时输出替换字符。
-日志超出容量后只保留开头和尾部；定稿后的增量读取仍返回保留范围内的所有未读内容，容量丢弃与行数截断的省略量会在结果中提示。
-
-前台结果、后台完成通知、`job wait` 和 `job output` 共用信号及资源限制诊断。超时或主动取消优先显示对应原因，不误报为内存不足；scope 创建失败会明确说明命令没有执行。
-
-### 并发名额
-
-每个会话最多同时运行 `tools.job.max_running`（默认 8）个后台任务。名额满时：
-- 新的 `async=true` 命令会被拒绝，返回 `E_JOB_LIMIT` 错误
-- 前台命令无法自动转后台，继续留在前台直到完成或被取消
-- 结果中会明确说明"名额已满，留在前台"
-
-### 无输出检测
-
-后台任务超过 `tools.bash.stall_after_secs`（默认 120 秒）没有新输出时，会收到
-一次停滞通知。该通知会去重并仅在首次停滞时发送，不会重复提醒。
-
-### 空闲唤醒
-
-后台任务完成时，如果会话空闲（没有进行中的提示），会自动开启新一轮对话，
-将完成结果通知给模型。用户取消提示后不会自动唤醒。
-
-### TUI 交互
-
-- `/jobs`：打开后台任务列表弹窗
-- 运行中的 bash 卡片会显示实时输出（最后几行）
-- 转后台的任务标题显示 `· 后台 job_X`
-- 任务列表中按 `x` 两次确认杀掉任务
-
-
-## 排错
+## Linux 排错命令
 
 ```bash
-# 限制是否生效：应看到 moc-bash-*.scope
+# 确认命令已落入独立 scope（输出中应包含 moc-bash-*.scope）
 bash -c 'cat /proc/self/cgroup; nproc'
 
-# 查看当前值
+# 查看当前 cgroup 的内存硬限
 cat /sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)/memory.max
 
-# user manager 是否可用
+# 检查用户级 systemd 是否正常运行
 systemctl --user is-system-running
 systemd-run --user --scope --quiet -- true
 ```

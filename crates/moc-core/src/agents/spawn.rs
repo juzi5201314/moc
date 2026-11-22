@@ -23,7 +23,6 @@ use moc_protocol::methods::AgentInfo;
 use moc_protocol::methods::AgentSpawnResult;
 use moc_protocol::methods::AgentStatus;
 use moc_protocol::methods::SessionUpdate;
-use rust_i18n::t;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -86,7 +85,7 @@ pub(super) async fn resolve_profile(
                 .and_then(|meta| meta.tool_policy.as_ref())
                 .is_some_and(|policy| !policy.permits("spawn_agent"))
             {
-                return Err(invalid("当前角色不允许派发子代理"));
+                return Err(invalid("this role is not permitted to spawn subagents"));
             }
             let plugins = inner
                 .project_plugins(Path::new(&parent.session.cwd))
@@ -94,7 +93,7 @@ pub(super) async fn resolve_profile(
             let mut roles = roles::fixed_roles(inner, config, &plugins);
             let role = roles.remove(&name).ok_or_else(|| {
                 invalid(format!(
-                    "未知或已禁用的 role `{name}`；可用 roles：{}",
+                    "unknown or disabled role `{name}`; available roles: {}",
                     roles
                         .keys()
                         .map(String::as_str)
@@ -116,7 +115,7 @@ pub(super) async fn resolve_profile(
             if parent.session.is_subagent()
                 || !crate::config::model::is_fusion_selector(&parent.model)
             {
-                return Err(invalid("sidekick 只能由 Fusion lead 创建"));
+                return Err(invalid("sidekick can only be spawned by a Fusion lead"));
             }
             let role = inner
                 .agent_presets
@@ -141,7 +140,7 @@ pub(super) async fn resolve_profile(
             output_schema,
         } => {
             if !crate::workflow::workflows_active(parent, &config.workflow) {
-                return Err(invalid("动态角色只能由已激活的 workflow 创建"));
+                return Err(invalid("dynamic actors require an active workflow"));
             }
             workflow_scope::active_run(inner, &parent.session.id, &run_id).await?;
             // actor 只能执行脚本分配的 ask；新增 actor 与生命周期编排归 driver 所有。
@@ -173,7 +172,7 @@ pub(super) async fn resolve_profile(
 /// spawn 参数里的 `output_schema` 必须是合法的 JSON Schema 对象。
 pub(super) fn validate_output_schema(schema: &serde_json::Value) -> Result<(), CoreError> {
     jsonschema::validator_for(schema)
-        .map_err(|error| invalid(t!("core.err.output_schema_bad", error = error).into_owned()))?;
+        .map_err(|error| invalid(format!("invalid output_schema: {error}")))?;
     Ok(())
 }
 
@@ -189,7 +188,7 @@ pub(crate) async fn spawn(
     let depth = parent.session.delegation_depth + 1;
     if depth > config.agents.max_depth {
         return Err(invalid(format!(
-            "已达到最大委托深度 {}：该会话不能再 spawn 子代理",
+            "max delegation depth {} reached; cannot spawn subagents",
             config.agents.max_depth
         )));
     }

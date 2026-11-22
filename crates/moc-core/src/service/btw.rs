@@ -9,6 +9,7 @@ use crate::compact::{self, replay::model_messages};
 use moc_llm::{ContentPart, FinishReason, Message, Role, StreamEvent, Usage};
 use moc_protocol::methods::{BtwExchange, BtwParams, BtwResult, BtwUpdate, MAX_BTW_HISTORY_TURNS};
 use moc_protocol::{RequestContext, RpcError, RpcErrorCode};
+use rust_i18n::t;
 
 pub(crate) async fn run(
     inner: Arc<CoreInner>,
@@ -16,12 +17,12 @@ pub(crate) async fn run(
     params: BtwParams,
 ) -> Result<BtwResult, RpcError> {
     if params.question.trim().is_empty() {
-        return Err(invalid_params("旁路问题不能为空"));
+        return Err(invalid_params(t!("core.err.btw_empty").into_owned()));
     }
     if params.history.len() > MAX_BTW_HISTORY_TURNS {
-        return Err(invalid_params(format!(
-            "旁路历史最多保留 {MAX_BTW_HISTORY_TURNS} 轮"
-        )));
+        return Err(invalid_params(
+            t!("core.err.btw_max_turns", max = MAX_BTW_HISTORY_TURNS).into_owned(),
+        ));
     }
     let record = inner
         .sessions
@@ -46,7 +47,7 @@ pub(crate) async fn run(
     if !model.capabilities.text {
         return Err(RpcError::new(
             RpcErrorCode::NotSupported.code(),
-            "当前模型不支持旁路文本问答",
+            t!("core.err.btw_no_text").into_owned(),
         ));
     }
     let files = inner.project_context_files(&params.session_id, &cwd).await;
@@ -205,7 +206,7 @@ pub(crate) async fn run(
 fn tools_unavailable() -> RpcError {
     RpcError::new(
         RpcErrorCode::NotSupported.code(),
-        "旁路问答不能执行工具；模型返回了工具调用，请改为无需操作的文本问题",
+        t!("core.err.btw_no_tools").into_owned(),
     )
 }
 
@@ -215,7 +216,7 @@ fn llm_error(error: moc_llm::LlmError) -> RpcError {
         .is_some_and(|api| api.kind == moc_llm::ApiErrorKind::ContextLength)
     {
         return to_rpc(crate::CoreError::ContextOverflow(
-            "旁路上下文超出模型窗口；不会压缩或修改主会话，请缩短问题或在主会话中处理上下文".into(),
+            t!("core.err.btw_overflow").into_owned(),
         ));
     }
     to_rpc(error.into())
@@ -259,10 +260,14 @@ fn fit_history(
         .saturating_add(compact::message_tokens(&question))
         .saturating_add(u64::from(model.max_output_tokens));
     if fixed > model.context_window {
-        return Err(to_rpc(crate::CoreError::ContextOverflow(format!(
-            "主上下文与当前旁路问题需要约 {fixed} tokens，超过窗口 {}；旁路不会压缩主会话",
-            model.context_window
-        ))));
+        return Err(to_rpc(crate::CoreError::ContextOverflow(
+            t!(
+                "core.err.btw_budget_exceeded",
+                tokens = fixed,
+                window = model.context_window
+            )
+            .into_owned(),
+        )));
     }
     let turns: Vec<_> = history
         .iter()

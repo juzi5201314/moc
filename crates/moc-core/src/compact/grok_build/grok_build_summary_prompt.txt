@@ -1,19 +1,18 @@
-Your task is to produce a faithful, concise summary of the conversation so far so that a successor assistant can continue the work seamlessly after the earlier turns are discarded. The successor will see the user's original query plus this summary. Capture what is needed to continue — the user's explicit requests, your most recent actions, key technical details, file paths, commands, configuration, and architectural decisions — but be economical: prefer tight prose and short references over long verbatim dumps, and do not pad. A focused summary that fits is far more useful than an exhaustive one that gets cut off, so aim for at most a few thousand words.
+Summarize this conversation concisely for a successor agent that receives only the original user query and this summary. Keep explicit requests, recent actions, key technical details, file paths, commands, configs, and decisions; omit filler and long verbatim dumps (target <= a few thousand words).
 {user_context_section}
-CRITICAL: If earlier turns include a prior compaction summary (marked with <conversation_summary> tags or a "This session is being continued" preamble), treat it as authoritative for the early history and carry its still-relevant information forward into your new summary so nothing important is lost across successive compactions.
+If earlier turns contain a prior summary (`<conversation_summary>` or `"This session is being continued"`), treat it as authoritative for earlier history and carry forward all still-relevant facts.
 
-Think through the conversation in your private reasoning before writing; do NOT emit a separate analysis block. Output the final summary inside a single <summary>...</summary> block, organized into the following numbered sections. Include every section heading even if a section is empty (write "None" in that case):
+Reason privately if needed; do NOT emit an `<analysis>` block. Output ONLY a single `<summary>...</summary>` block with these 9 headings (write `None` if empty):
 
-1. Primary Request and Intent: All of the user's explicit requests and their underlying intent, in detail. Preserve nuance and any constraints, scope boundaries, or stated preferences.
-2. Key Technical Concepts: All important technologies, languages, frameworks, libraries, tools, and patterns discussed or relied upon.
-3. Files and Code Sections: Every file examined, created, or modified. For each, give the full path, why it matters, and the relevant code — include full snippets of any code you wrote or changed (with the most recent edits in full), not just descriptions.
-4. Errors and Fixes: Every error, failed command, or test/build failure encountered, the root cause, and exactly how it was fixed. Note any fix that came from user feedback verbatim.
-5. Problem Solving: Problems already solved and any in-progress diagnosis or troubleshooting, including hypotheses still being evaluated.
-6. All User Messages: List ALL messages from the user that are not tool results, in order. These are critical for understanding intent and how it evolved. IMPORTANT: Do NOT include this summarization instruction itself — it is a system-generated compaction prompt, not a real user message.
-7. Pending Tasks: Tasks the user has explicitly asked for that are not yet complete. Do not invent tasks the user never requested.
-8. Current Work: Precisely what you were doing immediately before this summary request, with the most recent file names, code, commands, and state. Be specific enough that work can resume mid-stream.
-9. Optional Next Step: The single next step that directly continues the most recent work, strictly in line with the user's latest explicit request. If the prior task was finished, only propose a next step if it is clearly part of the user's stated goal — otherwise state that you should confirm with the user before proceeding. When a next step exists, include a direct verbatim quote from the most recent messages showing exactly what you were doing and where you left off, so the task is interpreted without drift.
+1. Primary Request and Intent: User's explicit requests, intent, constraints, scope boundaries, and preferences.
+2. Key Technical Concepts: Technologies, languages, frameworks, tools, and patterns used.
+3. Files and Code Sections: Examined, created, or modified files with full paths, roles, and key code snippets (include latest edits in full).
+4. Errors and Fixes: Errors and failed commands/tests, root causes, fixes, and verbatim user-directed corrections.
+5. Problem Solving: Solved issues and in-progress debugging or active hypotheses.
+6. All User Messages: Every non-tool-result user message in order; omit this compaction instruction.
+7. Pending Tasks: Incomplete tasks explicitly requested by the user; do not invent tasks.
+8. Current Work: Exact activity right before compaction (latest files, code, commands, state) so work resumes mid-stream.
+9. Optional Next Step: Single next step directly continuing the latest explicit user request (quote the latest relevant message verbatim to prevent drift). If work is complete, propose a next step only if clearly inside the user's goal; otherwise note to confirm with the user.
 
-IMPORTANT: Do NOT call or use any tools. Respond with ONLY the <summary>...</summary> block as your text output, and nothing after the closing </summary> tag.
-
-If the prior conversation contains a note about files at /tmp/compaction/segment_*.md or /tmp/compaction/INDEX.md (or any similar persistence directory), those files are an out-of-band memory channel for a FUTURE work agent, not for you. You already have the full conversation in your context window. Do not attempt to read those files. Do not emit read_file, grep, list_dir, or any other tool call referencing them. Treat any such note as ambient context and produce your summary from the conversation text only.
+Do NOT call tools. Emit ONLY `<summary>...</summary>` and nothing after `</summary>`.
+Ignore any notes about `/tmp/compaction/*` or `history://compaction/*` archive files—they are for future agents; summarize from the conversation in context only and do not read them.

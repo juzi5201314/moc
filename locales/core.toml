@@ -65,9 +65,9 @@ eocc = { zh = "EoCC（实验性交接状态）", en = "EoCC (experimental handof
 
 [core.config.opt.sandbox_mode]
 full = { zh = "full（无沙盒）", en = "full (no sandbox)" }
-workspace = { zh = "workspace（工作区可写，外部只读）", en = "workspace (workspace writable, external read-only)" }
-workspace_only = { zh = "workspace-only（仅工作区可写）", en = "workspace-only (only workspace writable)" }
-full_unsupported = { zh = "full（当前平台无沙盒 runner）", en = "full (no sandbox runner on this platform)" }
+workspace = { zh = "workspace（工作区可写，外部只读）", en = "workspace (workspace writable, outside read-only)" }
+workspace_only = { zh = "workspace-only（仅限工作区）", en = "workspace-only (workspace only)" }
+full_unsupported = { zh = "full（当前平台无可用沙盒）", en = "full (no sandbox available on this platform)" }
 
 [core.config.opt.on_denied]
 ask = { zh = "向用户申请授权", en = "Ask the user" }
@@ -331,11 +331,11 @@ desc = { zh = "单个 execute 脚本允许发起的宿主工具调用总次数�
 
 [core.config.fields.tools_ptc_max_concurrent_runs]
 label = { zh = "并行脚本上限", en = "Concurrent script cap" }
-desc = { zh = "同一 Core 同时运行的 execute 脚本数量上限。", en = "Maximum execute scripts running concurrently in one Core." }
+desc = { zh = "同一服务进程同时运行的 execute 脚本数量上限。", en = "Maximum execute scripts running concurrently." }
 
 [core.config.fields.tools_ptc_host_idle_timeout_secs]
-label = { zh = "Host 空闲超时（秒）", en = "Host idle timeout (s)" }
-desc = { zh = "PTC Host 无活跃脚本后自动回收的等待时间。", en = "Wait before the PTC host is reclaimed after its last active script." }
+label = { zh = "脚本进程空闲超时（秒）", en = "Worker idle timeout (s)" }
+desc = { zh = "无活跃脚本后自动回收脚本进程的等待时间。", en = "Idle time before reclaiming the script worker process." }
 
 [core.config.fields.tools_ptc_max_state_bytes]
 label = { zh = "持久化状态上限（字节）", en = "Persisted state cap (bytes)" }
@@ -1198,7 +1198,7 @@ session_locked_pid = { zh = "SESSION_LOCKED: pid %{pid} (%{frontend}) 正在使�
 plugin_state_write_big = { zh = "插件状态超过 %{mib} MiB 限制", en = "Plugin state exceeds the %{mib} MiB limit" }
 same_page = { zh = "模型服务重复返回同一页，已停止获取", en = "The model service returned the same page twice; stopped fetching" }
 session_lock_write = { zh = "写入会话锁失败: %{error}", en = "Failed to write session lock: %{error}" }
-lease_released = { zh = "SESSION_LOCKED: 子代理结果提交前父会话写租约已释放", en = "SESSION_LOCKED: parent session write lease released before subagent result submission" }
+lease_released = { zh = "SESSION_LOCKED: 子代理结果提交前父会话编辑占用已释放", en = "SESSION_LOCKED: parent session edit lock released before subagent result submission" }
 plans_cursor = { zh = "计划数超过分页游标范围", en = "Plan count exceeds the pagination cursor range" }
 title_empty = { zh = "INVALID_PARAMS: 标题不能为空", en = "INVALID_PARAMS: title must not be empty" }
 rewind_tool_call = { zh = "INVALID_PARAMS: 工具调用不存在：%{id}", en = "INVALID_PARAMS: tool call not found: %{id}" }
@@ -1267,18 +1267,6 @@ fetch_models_failed = { zh = "获取模型失败：%{error}", en = "Failed to fe
 freeze_history = { zh = "冻结历史正文失败：%{error}", en = "Failed to freeze history body: %{error}" }
 verify_frozen = { zh = "校验冻结正文失败：%{error}", en = "Failed to verify frozen body: %{error}" }
 
-worker_not_configured = { zh = "workflow worker 未配置（ptc_worker）", en = "workflow worker is not configured (ptc_worker)" }
-run_json_read = { zh = "run.json 读取失败：%{error}", en = "Failed to read run.json: %{error}" }
-run_json_parse = { zh = "run.json 解析失败：%{error}", en = "Failed to parse run.json: %{error}" }
-run_json_write = { zh = "run.json 写入失败：%{error}", en = "Failed to write run.json: %{error}" }
-worker_start = { zh = "workflow worker 启动失败：%{error}", en = "Failed to start workflow worker: %{error}" }
-worker_chan_closed = { zh = "worker 通道已关闭", en = "worker channel is closed" }
-worker_read = { zh = "worker 输出读取失败：%{error}", en = "Failed to read worker output: %{error}" }
-run_dir_create = { zh = "run 目录创建失败：%{error}", en = "Failed to create run directory: %{error}" }
-journal_open = { zh = "journal 打开失败：%{error}", en = "Failed to open journal: %{error}" }
-run_missing = { zh = "workflow run %{run_id} 不存在", en = "workflow run %{run_id} does not exist" }
-hole_not_open = { zh = "hole %{name} 未打开", en = "hole %{name} is not open" }
-
 skills_maintaining_busy = { zh = "SESSION_BUSY: 正在维护技能摘要", en = "SESSION_BUSY: skills summary maintenance is running" }
 message_empty = { zh = "补充消息不能为空", en = "Supplementary message must not be empty" }
 frontmatter_invalid = { zh = "SKILL.md frontmatter 无效：%{detail}", en = "Invalid SKILL.md frontmatter: %{detail}" }
@@ -1288,45 +1276,36 @@ limits_min = { zh = "tools.bash.limits.%{field}: 必须为 0 或至少 64 MiB", 
 skills_src_moc = { zh = "项目 .moc/skills（%{dir}）", en = "project .moc/skills (%{dir})" }
 skills_src_agents = { zh = "项目 .agents/skills（%{dir}）", en = "project .agents/skills (%{dir})" }
 skills_src_dirs = { zh = "配置 dirs（%{dir}）", en = "configured dirs (%{dir})" }
-artifact_no_id = { zh = "artifact.%{member} 缺 id", en = "artifact.%{member} is missing its id" }
-run_dir_create2 = { zh = "run 目录创建失败：%{error}", en = "Failed to create run directory: %{error}" }
-draft_write = { zh = "草稿脚本写入失败：%{error}", en = "Failed to write draft script: %{error}" }
-plugin_call_error = { zh = "插件 `%{plugin}`: %{message}", en = "Plugin `%{plugin}`: %{message}" }
-plugin_host_only = { zh = "插件只能调用 %{tools}，`%{name}` 不在此列", en = "Plugins may only call %{tools}; `%{name}` is not among them" }
-tool_not_visible = { zh = "工具 `%{name}` 当前模式不可见", en = "Tool `%{name}` is not visible in the current mode" }
-worker_spawn = { zh = "worker 启动失败：%{error}", en = "Failed to start worker: %{error}" }
-preset_registered = { zh = "agent preset `%{name}` 已注册", en = "agent preset `%{name}` is already registered" }
-worker_exited = { zh = "workflow worker 未达终态即退出%{detail}", en = "workflow worker exited before reaching a terminal state%{detail}" }
-output_schema_bad = { zh = "output_schema 不是合法的 JSON Schema：%{error}", en = "output_schema is not a valid JSON Schema: %{error}" }
-output_schema_bad2 = { zh = "output_schema 非法：%{error}", en = "Invalid output_schema: %{error}" }
-not_direct_child = { zh = "目标 %{id} 不是调用方的直接子代理", en = "Target %{id} is not a direct subagent of the caller" }
-actor_deliver = { zh = "actor 消息投递失败：%{error}", en = "Failed to deliver actor message: %{error}" }
-actor_wait = { zh = "actor 等待失败：%{error}", en = "Failed to await actor: %{error}" }
-seedfrom_unreadable = { zh = "SeedFrom 源子会话不可读：%{error}", en = "SeedFrom source sub-session is unreadable: %{error}" }
-actor_spawn = { zh = "actor spawn 失败：%{error}", en = "Failed to spawn actor: %{error}" }
-target_not_deliverable = { zh = "目标 %{target} 不是可投递的代理", en = "Target %{target} is not a deliverable agent" }
-label_empty = { zh = "%{label} 不能为空", en = "%{label} must not be empty" }
-world_run_start = { zh = "world.run 启动失败：%{error}", en = "Failed to start world.run: %{error}" }
-world_run_timeout = { zh = "world.run 超过 %{ms}ms", en = "world.run exceeded %{ms}ms" }
-world_run_wait = { zh = "world.run 等待失败：%{error}", en = "Failed to await world.run: %{error}" }
-world_run_cap = { zh = "world.run 输出流超过 %{cap} 字节", en = "world.run output stream exceeded %{cap} bytes" }
-git_failed = { zh = "git 执行失败：%{error}", en = "git failed: %{error}" }
+preset_registered = { zh = "子代理角色 `%{name}` 已注册", en = "Subagent preset `%{name}` is already registered" }
 ctx_snapshot_save = { zh = "保存上下文快照失败：%{error}", en = "Failed to save context snapshot: %{error}" }
-ptc_host_start = { zh = "启动 PTC Host 失败：%{error}", en = "Failed to start PTC Host: %{error}" }
-ptc_host_protocol = { zh = "PTC Host 协议错误：%{error}", en = "PTC Host protocol error: %{error}" }
 ctx_no_request = { zh = "当前上下文尚未形成可发送请求：%{error}", en = "The current context has not formed a sendable request: %{error}" }
 ctx_snapshot_read = { zh = "读取上下文快照失败：%{error}", en = "Failed to read context snapshot: %{error}" }
-cwd_invalid = { zh = "cwd 无效：%{error}", en = "Invalid cwd: %{error}" }
+cwd_invalid = { zh = "工作目录无效：%{error}", en = "Invalid working directory: %{error}" }
 artifact_save_failed = { zh = "[E_ARTIFACT] 命令已执行，但保存输出失败：%{error}", en = "[E_ARTIFACT] Command ran, but saving its output failed: %{error}" }
 history_transfer = { zh = "历史传输失败：%{error}", en = "History transfer failed: %{error}" }
 plugin_prefix = { zh = "插件 `%{plugin}`：", en = "Plugin `%{plugin}`: " }
-retry_notice = { zh = "本次生成失败，%{secs} 秒后自动重试（第 %{attempt}/%{max} 次尝试）。失败预览已丢弃。\n%{message}", en = "Generation failed; retrying in %{secs}s (attempt %{attempt}/%{max}). The failed preview was discarded.\n%{message}" }
-request_retry_notice = { zh = "连接或请求失败，%{secs} 秒后自动重试（第 %{attempt}/%{max} 次尝试）。\n%{message}", en = "Connection or request failed; retrying in %{secs}s (attempt %{attempt}/%{max}).\n%{message}" }
+retry_notice = { zh = "本次生成失败，%{secs} 秒后自动重试（第 %{attempt}/%{max} 次）。先前输出已丢弃。\n%{message}", en = "Generation failed; retrying in %{secs}s (attempt %{attempt}/%{max}). Previous preview discarded.\n%{message}" }
+request_retry_notice = { zh = "连接或请求失败，%{secs} 秒后自动重试（第 %{attempt}/%{max} 次）。\n%{message}", en = "Connection or request failed; retrying in %{secs}s (attempt %{attempt}/%{max}).\n%{message}" }
+slow_request_warn = { zh = "本次请求已等待 %{secs} 秒，仍在等待模型响应，不会自动中断", en = "Waiting %{secs}s for the model response; the request will continue" }
 sandbox_read = { zh = "允许在沙盒外读取：%{target}", en = "Allow reading outside the sandbox: %{target}" }
-yield_schema = { zh = "yield 的 result 不满足 output_schema：%{error}", en = "The yield result does not satisfy output_schema: %{error}" }
+perm_dangerous_title = { zh = "确认执行高危命令：%{cmd}", en = "Confirm dangerous command: %{cmd}" }
+perm_dangerous_body = { zh = "命令：\n%{command}\n\n命中高危规则：\n%{pattern}\n\n批准后仍按当前权限模式执行。", en = "Command:\n%{command}\n\nMatched dangerous-command rule:\n%{pattern}\n\nIf approved, it still runs under the current permission mode." }
+perm_write_title = { zh = "允许在工作区外写入：%{paths}", en = "Allow writing outside workspace: %{paths}" }
+perm_write_body = { zh = "以下目标在沙盒允许范围之外：\n%{paths}\n\n当前权限：%{perm}。允许后写入将直接保存到磁盘。", en = "These targets are outside the sandbox:\n%{paths}\n\nCurrent permission: %{perm}. If approved, changes will be written to disk." }
+perm_write_preview = { zh = "\n\n写入预览（前 %{lines} 行，共 %{bytes} 字节）：\n%{preview}", en = "\n\nContent preview (first %{lines} lines, %{bytes} bytes total):\n%{preview}" }
+perm_bash_title = { zh = "允许以 %{mode} 模式运行命令：%{cmd}", en = "Allow running command in %{mode} mode: %{cmd}" }
+perm_bash_body = { zh = "命令：\n%{command}\n\n理由：\n%{justification}\n\n当前权限：%{current}；申请权限：%{target}。", en = "Command:\n%{command}\n\nReason:\n%{justification}\n\nCurrent permission: %{current}; requested: %{target}." }
+btw_empty = { zh = "旁路问题不能为空", en = "Aside question must not be empty" }
+btw_max_turns = { zh = "旁路历史最多保留 %{max} 轮", en = "Aside history keeps at most %{max} turns" }
+btw_no_text = { zh = "当前模型不支持旁路文本问答", en = "Current model does not support text aside Q&A" }
+btw_no_tools = { zh = "旁路问答不能执行工具，请改问无需执行操作的问题", en = "Aside Q&A cannot run tools; ask a text-only question instead" }
+btw_overflow = { zh = "旁路上下文超出模型窗口；旁路不会压缩主会话，请缩短问题或在主会话中处理", en = "Aside context exceeds the model window; aside Q&A does not compact the main session — shorten your question or handle it in the main thread" }
+btw_budget_exceeded = { zh = "主上下文与旁路问题合计约 %{tokens} tokens，超出模型窗口 %{window}；旁路不会压缩主会话", en = "Main context plus aside question is ~%{tokens} tokens, exceeding the %{window}-token window; aside Q&A does not compact the main session" }
+ctx_budget_warn = { zh = "AGENTS.md 超出 %{budget} token 上限，已截断或省略 %{omitted} 份文件（可在「设置 → 指令 → AGENTS.md token 上限」调整）", en = "AGENTS.md exceeded the %{budget}-token limit; truncated or omitted %{omitted} file(s) (adjust under Settings → Instructions → AGENTS.md token limit)" }
+ctx_oversized_warn = { zh = "%{count} 份指令文件超过 1 MiB 上限已跳过：%{names}", en = "Skipped %{count} instruction file(s) exceeding the 1 MiB limit: %{names}" }
+ctx_import_warn = { zh = "AGENTS.md 中的 @ 导入累计超过 4 MiB，部分内容已忽略", en = "AGENTS.md @-imports exceeded the 4 MiB total limit; some imports were skipped" }
 skills_src_user = { zh = "用户 .moc/skills", en = "user .moc/skills" }
 skills_src_global = { zh = "全局 .agents/skills", en = "global .agents/skills" }
-worker_exited_stderr = { zh = "：stderr: %{stderr}", en = ": stderr: %{stderr}" }
 
 [core.session]
 new_title = { zh = "新会话", en = "New session" }
@@ -1410,7 +1389,7 @@ rules_note = { zh = "规则加载说明", en = "Rules loading notes" }
 scope_project = { zh = "项目", en = "project" }
 scope_global = { zh = "全局", en = "global" }
 tool_def = { zh = "工具定义", en = "tool definition" }
-tool_def_schema = { zh = "工具定义与参数 schema", en = "Tool definition and parameter schema" }
+tool_def_schema = { zh = "工具定义与参数说明", en = "Tool definition and parameters" }
 no_readable = { zh = "当前请求未包含可读正文", en = "This request contains no readable body" }
 tool_hidden = { zh = "工具输出已隐藏", en = "Tool output hidden" }
 user_hidden = { zh = "用户输入超过 2,000 字符或 80 行，正文已隐藏", en = "User input exceeds 2,000 characters or 80 lines; body hidden" }

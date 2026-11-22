@@ -102,7 +102,7 @@ describe("RpcClient", () => {
       else call.mockRejectedValueOnce(new Error("断线"));
       call.mockResolvedValueOnce({ type: "closed" });
       await expect(loadHistoryPage(client, page)).rejects.toThrow(
-        failure === "错位" ? "不连续" : "断线",
+        failure === "错位" ? "不完整" : "断线",
       );
       expect(call.mock.calls.at(-1)).toEqual([
         "session/history",

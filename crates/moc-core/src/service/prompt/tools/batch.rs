@@ -156,7 +156,7 @@ pub(in super::super) async fn execute_tool_batch(
                 } else {
                     (
                         "E_TURN_ENDED",
-                        "The plan was submitted; later calls were not executed.",
+                        "Turn ended; later calls were not executed.",
                     )
                 };
                 let mut outcome = ToolOutcome::failure(code, message);

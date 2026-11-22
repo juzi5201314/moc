@@ -101,7 +101,7 @@ describe("WorkflowApprovalDialog", () => {
     expect(footer.contains(view.getByRole("button", { name: "批准" }))).toBe(true);
     fireEvent.click(view.getByRole("button", { name: "拒绝" }));
     expect(footer.contains(view.getByRole("button", { name: "确认拒绝" }))).toBe(true);
-    expect(body.contains(view.getByPlaceholderText(/拒绝反馈/))).toBe(true);
+    expect(body.contains(view.getByPlaceholderText(/拒绝原因/))).toBe(true);
     fireEvent.click(view.getByRole("button", { name: "取消" }));
     fireEvent.click(view.getByRole("button", { name: "批准" }));
     await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
@@ -177,7 +177,7 @@ describe("WorkflowApprovalDialog", () => {
       <WorkflowApprovalDialog sessionId="s1" approval={approval} open onOpenChange={() => {}} />,
     );
     fireEvent.click(getByText("拒绝"));
-    fireEvent.change(getByPlaceholderText(/拒绝反馈/), { target: { value: "改一下范围" } });
+    fireEvent.change(getByPlaceholderText(/拒绝原因/), { target: { value: "改一下范围" } });
     fireEvent.click(getByText("确认拒绝"));
     await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
     expect(approve.mock.calls[0][2]).toEqual({ action: "reject", feedback: "改一下范围" });

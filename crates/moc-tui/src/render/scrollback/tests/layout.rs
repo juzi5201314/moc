@@ -964,7 +964,9 @@ fn long_line_notices_group_expand_and_deduplicate_after_parent_finishes() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        full.contains("Line 100") && full.contains("Line 115") && full.contains("byte_offset=0")
+        full.contains("Line 100")
+            && full.contains("Line 115")
+            && full.contains("单行过长时仅展示部分预览")
     );
     let mut view = ScrollbackView::new();
     view.sync(&app, 120);

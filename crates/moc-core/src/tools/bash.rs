@@ -36,8 +36,8 @@ enum BashLifecycle {
     Persistent,
 }
 
-/// `description` 参数的模型可见说明；与 dsh 的 bash 工具保持同一前端卡片契约。
-const DESCRIPTION_PARAM: &str = "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"npm install\" → \"Install package dependencies\".";
+/// `description` 参数的模型可见说明。
+const DESCRIPTION_PARAM: &str = "Concise 5-10 word active-voice summary shown in the UI (e.g. \"Show working tree status\").";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -134,7 +134,7 @@ fn validate_escalation(
     }
 }
 
-/// 模型为前端卡片提供的一句话说明；目前只校验非空，展示留给后续 UI 消费。
+/// 校验前端卡片摘要非空。
 fn validate_description(args: &BashArgs) -> Result<(), ToolError> {
     if args
         .description
@@ -308,7 +308,7 @@ impl Tool for BashTool {
 }
 
 /// 工具描述里关于自动转后台的说明：模型应当预先知道长命令不会一直阻塞。
-const BACKGROUND_NOTE: &str = "A monitored command still running after the foreground threshold (tools.bash.foreground_after_secs) moves to the background as a job and the call returns early; its completion is reported to you automatically, so do not poll it. To watch a running job, use `job wait`: it returns as soon as the job finishes or produces output you have not seen, so prefer it over repeated `job output` polls. Prefer fast, narrow commands (one package, one test, a filtered path) and non-interactive flags; start known-long builds or test suites with async=true. Use async=true with lifecycle=persistent only for long-lived services; persistent jobs never complete on their own.";
+const BACKGROUND_NOTE: &str = "Long foreground commands move to background automatically after tools.bash.foreground_after_secs. Prefer narrow, non-interactive commands; start known-long runs with async=true. Use async=true + lifecycle=persistent only for long-lived services.";
 
 /// 转入后台时附在结果里的输出尾部行数。
 const BACKGROUNDED_TAIL_LINES: usize = 20;
@@ -338,7 +338,7 @@ fn backgrounded_outcome(ctx: &ToolCtx, job_id: &str, log: &JobLog, after: u64) -
         tail
     };
     ToolOutcome::success(format!(
-        "{lead}. Its completion is reported automatically; continue with other work instead of polling with job wait.\nOutput so far:\n{tail}\nLog: {uri}\nIf this command is routinely slow, make the next one cheaper: narrow its scope, avoid rebuilding or refetching what is already done, use non-interactive flags, or start it with async=true from the outset."
+        "{lead}. Completion is reported automatically; continue other work instead of polling.\nOutput so far:\n{tail}\nLog: {uri}\nFor routinely slow commands, narrow scope, use non-interactive flags, or start with async=true."
     ))
 }
 
@@ -353,7 +353,7 @@ pub(crate) async fn run_manual(
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<ToolOutcome, ToolError> {
     if cancel.is_cancelled() {
-        return Err(ToolError::new("E_CANCELLED", "命令已取消"));
+        return Err(ToolError::new("E_CANCELLED", "Command cancelled"));
     }
     let policy = crate::sandbox::SandboxPolicy::full(cwd.clone());
     let command = match urlfs::prepare(paths, skills, &command)? {
@@ -401,7 +401,7 @@ pub(crate) async fn run_manual(
             process.completion.await?;
             let mut outcome = ToolOutcome::success(ToolOutput::File {
                 path: output_path,
-                suffix: "\n（命令已取消）".into(),
+                suffix: "\n[Command cancelled]".into(),
             });
             outcome.is_error = true;
             outcome.status = Some(moc_protocol::ToolStatus::Cancelled);

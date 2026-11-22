@@ -48,20 +48,24 @@ pub(super) async fn confirm_dangerous(
 ) -> Result<Authorization, CoreError> {
     if ctx.config.sandbox.on_denied == crate::config::OnDenied::Deny {
         return Ok(Authorization::SandboxDenied(
-            "sandbox.on_denied=deny；命令命中危险规则".into(),
+            "sandbox.on_denied=deny: command matched a dangerous-command rule".into(),
         ));
     }
-    let body = format!(
-        "命令：\n{command}\n\n命中危险命令规则：\n{pattern}\n\n批准后命令仍按当前权限模式执行。",
-    );
+    let body = t!(
+        "core.err.perm_dangerous_body",
+        command = command,
+        pattern = pattern
+    )
+    .into_owned();
     match ask_permission(
         ctx,
         tool_call_id,
         "bash",
-        format!(
-            "命令命中危险规则：{}",
-            command.lines().next().unwrap_or(command)
-        ),
+        t!(
+            "core.err.perm_dangerous_title",
+            cmd = command.lines().next().unwrap_or(command)
+        )
+        .into_owned(),
         Some(body),
         None,
         moc_protocol::methods::command_options(None),
@@ -217,25 +221,29 @@ pub(super) async fn authorize_write(
         },
         _ => (crate::tools::edit::preview_arguments(ctx, arguments), None),
     };
-    let mut body = format!(
-        "以下写入目标在沙盒允许范围之外：\n{paths}\n\n当前权限：{}。允许后本次写入会真实落盘。",
-        ctx.permission.as_str()
-    );
+    let mut body = t!(
+        "core.err.perm_write_body",
+        paths = paths,
+        perm = ctx.permission.as_str()
+    )
+    .into_owned();
     if let Some(content) = &content {
-        body.push_str(&format!(
-            "\n\n将写入的内容（前 {WRITE_PREVIEW_LINES} 行，共 {} 字节）：\n{}",
-            content.len(),
-            write_preview(content)
+        body.push_str(&t!(
+            "core.err.perm_write_preview",
+            lines = WRITE_PREVIEW_LINES,
+            bytes = content.len(),
+            preview = write_preview(content)
         ));
     }
-    let title = format!(
-        "允许在工作区外写入：{}",
-        outside
+    let title = t!(
+        "core.err.perm_write_title",
+        paths = outside
             .iter()
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(", ")
-    );
+    )
+    .into_owned();
     request_paths(
         ctx,
         tool_call_id,
@@ -262,7 +270,7 @@ pub(super) async fn request_paths(
 ) -> Result<Authorization, CoreError> {
     if ctx.config.sandbox.on_denied == crate::config::OnDenied::Deny {
         return Ok(Authorization::SandboxDenied(format!(
-            "sandbox.on_denied=deny；已拒绝以下路径的访问：\n{}",
+            "sandbox.on_denied=deny: access denied for:\n{}",
             targets
                 .iter()
                 .map(|path| path.display().to_string())
@@ -333,13 +341,13 @@ pub(super) async fn authorize_bash(
     }
     if ctx.config.sandbox.on_denied == crate::config::OnDenied::Deny {
         return Ok(Authorization::SandboxDenied(format!(
-            "sandbox.on_denied=deny；命令不能升级到 {} 执行",
+            "sandbox.on_denied=deny: cannot escalate command to {}",
             target.as_str()
         )));
     }
     if target == moc_protocol::SessionPermission::Full && !ctx.config.sandbox.allow_unsandboxed {
         return Ok(Authorization::SandboxDenied(
-            "sandbox.allow_unsandboxed=false；不能申请沙盒外执行".into(),
+            "sandbox.allow_unsandboxed=false: unsandboxed execution is disabled".into(),
         ));
     }
     if let Some(granted) = ctx.sandbox_grants.read().mode_for_command(command)
@@ -352,20 +360,24 @@ pub(super) async fn authorize_bash(
     }
 
     let prefix = crate::sandbox::command_prefix(command);
-    let body = format!(
-        "命令：\n{command}\n\n理由：\n{justification}\n\n当前权限：{}；申请权限：{}。",
-        ctx.permission.as_str(),
-        target.as_str()
-    );
+    let body = t!(
+        "core.err.perm_bash_body",
+        command = command,
+        justification = justification,
+        current = ctx.permission.as_str(),
+        target = target.as_str()
+    )
+    .into_owned();
     match ask_permission(
         ctx,
         tool_call_id,
         "bash",
-        format!(
-            "允许以 {} 执行命令：{}",
-            target.as_str(),
-            command.lines().next().unwrap_or(command)
-        ),
+        t!(
+            "core.err.perm_bash_title",
+            mode = target.as_str(),
+            cmd = command.lines().next().unwrap_or(command)
+        )
+        .into_owned(),
         Some(body),
         None,
         moc_protocol::methods::command_options(prefix.as_deref()),

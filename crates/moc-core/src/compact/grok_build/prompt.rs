@@ -26,7 +26,7 @@ const CONTROL_TOKENS: [&str; 6] = [
 pub(crate) fn build_summary_prompt(instructions: Option<&str>) -> String {
     let section = match instructions {
         Some(context) => format!(
-            "\n\n**User-provided context for this compaction:**\n{context}\n\nPlease incorporate this context into your summary, ensuring it is prominently addressed in the relevant sections.\n\n"
+            "\n\nUser compaction focus:\n{context}\nReflect this focus in the relevant sections.\n\n"
         ),
         None => String::new(),
     };

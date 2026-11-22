@@ -1,23 +1,23 @@
-# ACP 前端使用说明
+# 编辑器接入（ACP）使用说明
 
-`moc acp` 把 moc 以 ACP（Agent Client Protocol）agent 的身份跑在 stdio 上（NDJSON，
-一行一条 JSON-RPC），供 Zed、Neovim 等编辑器内置 agent 面板直接接入——与
-`codex acp`、`gemini --acp` 同一角色。
+`moc acp` 通过标准输入输出（stdio / NDJSON）提供 ACP（Agent Client Protocol）代理服务，可直接接入 Zed、Neovim 等支持 ACP 的编辑器代理面板。
+
+## 启动参数
 
 ```bash
-moc acp                       # 服务 stdio 直到客户端断开（stdin EOF）
-moc acp --model <selector>    # 新会话的默认模型
-moc acp --engine ptc          # 新会话的引擎
-moc acp --plan                # 新会话直接进入 plan 模式
-moc acp --cwd ~/project       # 会话默认工作目录（编辑器一般每次请求都带 cwd）
-moc acp --config extra.toml   # 追加配置覆盖层（与 TUI 共用同一套配置）
+moc acp                       # 启动 ACP 服务，直到客户端断开
+moc acp --model <selector>    # 指定新会话的默认模型
+moc acp --engine ptc          # 指定新会话的默认引擎
+moc acp --plan                # 新会话默认进入计划模式
+moc acp --cwd ~/project       # 指定默认工作目录（编辑器通常会在每次请求中附带目录）
+moc acp --config extra.toml   # 追加配置文件覆盖层
 ```
 
-stdout 只走 ACP 报文；日志写 stderr，`RUST_LOG=debug moc acp` 即可调试而不污染协议。
+`stdout` 专用于传输 ACP 协议报文，日志统一写入 `stderr`；需要排查问题时直接运行 `RUST_LOG=debug moc acp`，不会干扰协议通信。
 
-## 编辑器接入（Zed 示例）
+## 在 Zed 中接入
 
-`settings.json`：
+在 Zed 的 `settings.json` 中添加：
 
 ```json
 {
@@ -31,44 +31,34 @@ stdout 只走 ACP 报文；日志写 stderr，`RUST_LOG=debug moc acp` 即可调
 }
 ```
 
-之后在 agent 面板的 「+ / New Thread」 里选择 moc。
+保存后，在 Zed 代理面板点击「+ / New Thread」并选择 `moc` 即可使用。
 
-## 与 moc 的关系
+## 与终端 / 浏览器端互通
 
-`moc acp` 内部照旧起一个进程内 core + 协议客户端——它和 TUI、web 是平级的第三种
-前端，不是第二个内核。因此：
+`moc acp` 与 TUI、Web 使用同一套会话存储、配置、权限沙盒、工具与压缩机制：
 
-- **会话互通**：ACP 会话 ID 就是 moc 的 `ses_*`。编辑器里建的会话可以用
-  `moc --resume <id>`、TUI、web 打开继续聊，反过来也成立。
-- **持久化、权限、工具、压缩、计划全部复用**：编辑器看到的 diff 确认走
-  `session/request_permission`，`ask` 工具走 ACP elicitation 表单。
-- **写租约照旧生效**：同一会话被 TUI 和编辑器同时打开时，只有一个写者。
+- **会话完全互通**：编辑器中创建的会话（`ses_*`）可以直接在终端用 `moc --resume <id>` 或在浏览器中继续对话，反之亦然。
+- **权限与提问复用**：编辑器内的改动确认与模型提问分别映射到 ACP 的权限确认与表单交互。
+- **编辑占用一致**：同一会话同时在编辑器和 TUI/Web 中打开时，同一时刻只有一个窗口可写。
 
-## 协议覆盖
+## 协议能力一览
 
-| ACP | moc 侧行为 |
+| ACP 方法 | moc 对应行为 |
 |---|---|
-| `initialize` | 声明能力：`loadSession`、`sessionCapabilities`(list/resume/close/delete)、`promptCapabilities`(image+embeddedContext) |
-| `session/new` | `session/new`；响应附带 modes 与模型 `configOptions`（来自 `config/get`） |
-| `session/load` | `session/load`；响应前按序重放全部 transcript 为 `user_message_chunk`/`agent_message_chunk`/`agent_thought_chunk`/`tool_call*` |
-| `session/resume` | `session/load`（`max_entries=0`），不重放历史 |
-| `session/list` | `session/list`，cwd 过滤 + 游标分页 |
-| `session/close` / `session/delete` | `session/unload` / `session/delete` |
-| `session/prompt` | `session/prompt`；文本与图片输入转成 moc `InputPart` |
-| `session/cancel` | `session/cancel`——prompt 响应挂在独立任务里，dispatch 循环随时能收 cancel |
-| `session/set_mode` | `default`/`dont_ask`/`unattended` → `session/set_autonomy`；`plan` → `session/plan_mode` |
-| `session/set_config_option` | `model` 一项 → `session/set_model`（溢出动作直接 Switch） |
-| `session/request_permission`（agent→client） | moc 权限询问，选项映射 allow_once/allow_always/reject_once |
-| `elicit`（agent→client） | moc `ask` 工具；客户端无 form elicitation 能力时返回 MethodNotFound 由 core 降级 |
-| `session/update` | `AssistantDelta`→文本/思维 chunk，`ToolStarted/Finished/Progress`→`tool_call*`，diff→unified diff 文本（hunks 省略了未变区域，无法重建整文件故发文本），todo/plan→`plan`，用量→`usage` |
+| `initialize` | 声明会话加载、列举、恢复、关闭、删除以及图片与内嵌上下文能力 |
+| `session/new` | 创建新会话，并返回可用模式及模型配置项 |
+| `session/load` / `session/resume` | 加载会话（`load` 按序重放完整历史，`resume` 不重放历史） |
+| `session/list` / `close` / `delete` | 按工作目录分页列举、卸载或删除会话 |
+| `session/prompt` / `session/cancel` | 提交文本与图片提示，或随时取消运行中的提示 |
+| `session/set_mode` | 切换自主程度（`default` / `dont_ask` / `unattended`）或计划模式（`plan`） |
+| `session/set_config_option` | 切换会话模型 |
+| `session/request_permission` | 向编辑器请求工具执行或越界路径权限（允许一次 / 始终允许 / 拒绝） |
+| `elicit` | 向编辑器弹出模型提问表单（客户端不支持时自动降级） |
+| `session/update` | 推送流式正文、思考片段、工具状态、unified diff、待办/计划与用量统计 |
 
-## 明确不支持
+## 当前不支持项
 
-- **客户端下挂 MCP**：`mcpCapabilities.http/sse=false`，`session/new` 里附带的
-  `mcpServers` 会被忽略（记一条警告日志）。要扩工具请用 moc 自己的 MCP/插件配置。
-- **`authenticate`**：`authMethods` 为空——供应商密钥由 moc 自己的 `/config` 管。
-- **`fs/*` 与 `terminal/*`**：moc 的 read/edit/bash 全部本地执行，不委托客户端，
-  客户端是否声明这些能力不影响功能。
-- ACP 语义下无意义的 CLI 参数会被拒绝：`PROMPT`、`--resume`、`--continue`、
-  `--list`、`--models`、`--print`、`--repl`、`--detail`、`--hide-thinking` 以及
-  web 专用选项。
+- **编辑器透传的 MCP 服务器**：忽略 `session/new` 中附带的 `mcpServers`；扩展 MCP 请在 moc 自身配置中设置。
+- **`authenticate`**：供应商与 API 密钥统一由 moc 的 `/config` 或配置文件管理。
+- **委托客户端的 `fs/*` 与 `terminal/*`**：moc 的文件读写与命令执行均在本地完成，不依赖客户端提供这些能力。
+- **非 ACP 专用 CLI 参数**：`PROMPT`、`--resume`、`--continue`、`--list`、`--models`、`--print`、`--repl`、`--detail`、`--hide-thinking` 以及 Web 专用参数在 `moc acp` 下会被直接拒绝。

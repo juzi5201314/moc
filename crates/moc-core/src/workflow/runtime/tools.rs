@@ -1,7 +1,6 @@
 //! workflow 工具：仅会话激活后进入 catalog（激活不造工具，只放行执行与可见性）。
 //! 路由纪律写进描述：仅当用户点名 workflow/工作流 时调用，且先加载 workflow-authoring skill。
 
-use rust_i18n::t;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -575,12 +574,7 @@ async fn eval_loop(
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| {
-            ToolError::new(
-                "E_HOST",
-                t!("core.err.worker_spawn", error = e).into_owned(),
-            )
-        })?;
+        .map_err(|e| ToolError::new("E_HOST", format!("failed to spawn workflow worker: {e}")))?;
     let mut stdin = child
         .stdin
         .take()
@@ -621,7 +615,7 @@ async fn eval_loop(
         },
     };
     if !send(&start, &mut stdin).await {
-        return Err(ToolError::new("E_HOST", "worker 写 Start 失败"));
+        return Err(ToolError::new("E_HOST", "failed to write Start frame to worker"));
     }
     let mut lines = BufReader::new(stdout).lines();
     let mut logs: Vec<String> = Vec::new();
@@ -630,7 +624,7 @@ async fn eval_loop(
             .next_line()
             .await
             .map_err(|e| ToolError::new("E_HOST", e.to_string()))?
-            .ok_or_else(|| ToolError::new("E_HOST", "worker 提前退出"))?;
+            .ok_or_else(|| ToolError::new("E_HOST", "worker exited unexpectedly"))?;
         let Ok(WorkflowGuestMessage::Step { step }) =
             serde_json::from_str::<WorkflowGuestMessage>(&line)
         else {
@@ -696,7 +690,7 @@ async fn eval_loop(
         if !completions.is_empty() {
             let complete = WorkflowHostMessage::Complete { completions };
             if !send(&complete, &mut stdin).await {
-                return Err(ToolError::new("E_HOST", "worker 写 Complete 失败"));
+                return Err(ToolError::new("E_HOST", "failed to write Complete frame to worker"));
             }
         }
         match step.state {

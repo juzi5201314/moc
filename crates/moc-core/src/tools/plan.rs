@@ -36,7 +36,7 @@ impl Tool for PlanTool {
     }
 
     fn description(&self) -> &'static str {
-        "Save or refine the session plan draft. markdown writes or overwrites the working draft (title required on the first save). tag plus edits patches the plan with line-number edits from read of the plan file — on the working draft in place, or on the last reviewed plan to produce the next draft. Call exit_plan to submit the draft for review."
+        "Save or refine the plan draft: pass markdown (title required first time) to write/overwrite, or tag+edits (from read) to patch the working draft or last reviewed plan. Submit via exit_plan."
     }
 
     fn tier(&self) -> Tier {
@@ -52,12 +52,12 @@ impl Tool for PlanTool {
             "plan",
             schema(
                 serde_json::json!({
-                    "title": {"type":"string","description":"Plan title; required for the first draft, afterwards kept or overridden."},
-                    "markdown": {"type":"string","description":"Full plan text; writes or overwrites the working draft. Mutually exclusive with edits."},
-                    "tag": {"type":"string","description":"Required with edits: the 4-hex tag from the [local://<id>.md#TAG] header of the latest read of the plan."},
+                    "title": {"type":"string","description":"Required for first draft; optional afterwards."},
+                    "markdown": {"type":"string","description":"Full plan text (mutually exclusive with edits)."},
+                    "tag": {"type":"string","description":"4-hex tag from latest read of [local://<id>.md#TAG] (required with edits)."},
                     "edits": {
                         "type":"array","minItems":1,
-                        "description":"Line-number edits like the edit tool's, applied together; patches the working draft in place, or turns the latest reviewed plan into the next draft. Mutually exclusive with markdown.",
+                        "description":"Line-number edits like edit tool (mutually exclusive with markdown).",
                         "items": edits_items_schema()
                     },
                 }),

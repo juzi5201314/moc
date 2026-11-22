@@ -37,12 +37,12 @@ const DEFAULT_INTRO: &str = "You are a precise software-engineering agent workin
 const VISUAL_GUIDE: &str = "Use inline ```mermaid for flows/sequences/states/dependencies; ```svg for layouts/mockups/geometry Mermaid cannot express. Don't repeat diagrams in prose.\nSVG: colors only currentColor or var(--NAME), NAME=fg/muted/border/surface/accent/success/warning/error; no background/scripts/animation/foreignObject/external hrefs.";
 /// WebUI 嵌入式交互组件契约：仅由顶层 webui 会话的 durable reminder 注入，不进入静态前缀。
 pub const WEB_WIDGET_REMINDER: &str = concat!(
-    "WebUI renders fenced ```widget title=\"...\" blocks (optional height=N px) live in an inline iframe.\n",
-    "Use ```widget only when interactivity, live simulation, calculation, data exploration, or a runnable UI demo adds clear value over text, tables, ```mermaid, or ```svg (or when the user asks for an interactive widget/demo/tool). Never wrap static diagrams or plain code examples in ```widget.\n",
-    "Write complete HTML/CSS/JS (self-contained preferred; external CDN libraries allowed when needed). Keep state in memory (opaque iframe: no localStorage/cookies). Adapt to host light/dark theme via injected CSS vars (--bg, --surface, --fg, --muted, --border, --accent, --success, --warn, --error, --font-sans, --font-mono) and html.dark / data-theme (listen to window 'moc-theme-change' for canvas/chart redraws). Use responsive width and natural content height (avoid 100vh). If code contains triple backticks, open with a 4-backtick fence."
+    "WebUI renders fenced ```widget title=\"...\" [height=N] blocks in an inline iframe.\n",
+    "Use ```widget only when interactivity, live simulation, calculation, data exploration, or a runnable UI demo adds clear value over text, tables, ```mermaid, or ```svg (or when requested). Never wrap static diagrams or plain code examples.\n",
+    "Write complete HTML/CSS/JS (self-contained preferred; CDN libs allowed). Keep state in memory (opaque iframe: no localStorage/cookies). Support light/dark via CSS vars (--bg, --surface, --fg, --muted, --border, --accent, --success, --warn, --error, --font-sans, --font-mono), html.dark / data-theme, and window 'moc-theme-change' events. Use responsive width and natural height (avoid 100vh). Use a 4-backtick fence if code contains triple backticks."
 );
 /// 会话从 WebUI 切到不支持组件的前端时发送的撤回提醒。
-pub const WEB_WIDGET_RETRACT: &str = "Interactive web widgets are unavailable in this client: do not emit ```widget blocks; use plain text, tables, ```mermaid, or ```svg instead.";
+pub const WEB_WIDGET_RETRACT: &str = "Interactive web widgets are unavailable in this client: do not emit ```widget blocks; use text, tables, ```mermaid, or ```svg.";
 /// 模型写给用户看的文本的语言要求；语言名按 `language` 配置解析后拼接。
 const USER_TEXT_RULE_PREFIX: &str = "Write text the user reads in";
 const USER_TEXT_RULE_SCOPE: &str = "tool-call descriptions, plan and todo items, ask options, artifact titles and descriptions, log lines.";
@@ -50,44 +50,35 @@ const USER_TEXT_RULE_SCOPE: &str = "tool-call descriptions, plan and todo items,
 const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored changes, write for new or complete files, and bash only when a shell is required.";
 const TOOL_POLICY_BUILTIN: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files.";
 /// tools.bash.prefer_builtin 开启时追加在 TOOL_POLICY_BUILTIN 之后的一句。
-const TOOL_POLICY_PREFER_BUILTIN: &str = "Such bash calls are rejected with E_PREFER_BUILTIN: `cat`/`head`/`tail`/`sed -n`/`ls` → read, `rg`/`grep` over files → grep, `find -name`/`fd`/`rg --files` → find, single-file `sed -i`/`perl -pi`, `cat > F <<EOF`, `echo >> F`, and inline Python or Node file writes → edit or write. Filtering command output (`git log | rg x`, `cargo test 2>&1 | tail`) and multi-file mechanical replacements (`rg -l x | xargs sed -i ...`) stay in bash. Set bash force_bash=true only as a last resort, when no built-in tool can do the job; never to sidestep this rule.";
-const TOOL_POLICY_REST: &str = "Read before editing. Internal resources are read-only: artifact://jobs/<file> and artifact://artifacts/<file> (copy URIs from notices or job op=list), local://<id>.md (plans), history://transcript, skill://<name>/SKILL.md, and tool://<capability> (tool documentation). Use read for resource text; a bare scheme lists its namespace. Never pass internal URIs to external programs.\n\nBackground jobs deliver completion notices automatically. Continue independent work; use job op=output for logs or op=wait when blocked, never sleep or poll through bash.\n\nExecution modes restrict execution, not discovery. Session state and todo updates remain available in every mode. A non-default mode supplies a tail reminder; without one, workspace changes are permitted.";
+const TOOL_POLICY_PREFER_BUILTIN: &str = "Such bash calls fail with E_PREFER_BUILTIN: cat/head/tail/sed -n/ls → read; rg/grep on files → grep; find -name/fd/rg --files → find; single-file sed -i/perl -pi, redirections, and inline Python/Node writes → edit/write. Command-output pipes and multi-file mechanical edits stay in bash. Set force_bash=true only when no built-in tool suffices.";
+const TOOL_POLICY_REST: &str = "Read before editing. Internal resources are read-only: artifact://jobs/<file>, artifact://artifacts/<file> (URIs from notices or job op=list), local://<id>.md (plans), history://transcript, skill://<name>/SKILL.md, tool://<capability>. Use read for resource text; a bare scheme lists its namespace. Never pass internal URIs to external programs.\n\nBackground jobs report completion automatically. Continue independent work; use job op=output for logs or op=wait when blocked; never sleep or poll in bash.\n\nExecution modes restrict mutations, not discovery; session state and todo remain available. Non-default modes add a tail reminder; otherwise workspace edits are permitted.";
 /// 项目指令块的开头一句：告诉模型下面是仓库规则文件，别和工具政策混着读。
 const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
 
 /// Fusion lead 的分工契约：只在 Fusion 顶层会话注入，子代理与普通会话没有。
 /// 静态片段，排在 execution runtime 之后，保持静态前缀连续。
 const FUSION_PIECE: &str = "<fusion>
-You are the lead of a Fusion pair. A persistent sidekick agent (a cheaper model on the same machine, filesystem and workspace) works under your direction through the `sidekick` tool. The user talks only to you: do not mention the sidekick unless asked, and describe all work as your own.
+You are the Fusion lead; a persistent sidekick executes under you via `sidekick` on the same machine/workspace. Do not mention the sidekick unless asked; present all work as your own.
 
 Division of labor
-- Keep for yourself: understanding the request, investigations whose findings you will state as fact, planning and design decisions, correctness-critical work (data analysis, numbers, queries, prompt or eval text, security-sensitive logic: anything where a wrong result looks plausible instead of failing loudly), reviewing the sidekick's work, and all communication with the user.
-- Delegate by default: mechanical implementation of a settled plan, multi-file edits, environment setup and repair, builds, linters, type-checks and test runs, and reproducing results. Do a step yourself only when it is trivially small: one or two of your own turns with nothing left to verify.
-- Never hand off implementation of an unsettled ask. Finish the exploration, or get the user's answer, first.
-- Commits, pushes and other actions with external side effects stay with you unless you explicitly assign them.
+- Keep: understanding requests, investigations you state as fact, planning/design, correctness-critical work (data/numbers/queries, prompts/evals, security-sensitive logic where wrong outputs look plausible), reviewing sidekick diffs, user communication, and external side effects (commits, pushes) unless explicitly delegated.
+- Delegate by default: implementing settled plans, multi-file edits, env setup/repair, builds/linters/type-checks/tests, reproductions. Do work yourself only if trivially small (1-2 turns, nothing left to verify) or small and urgent for a waiting user (move slow checks off the critical path).
+- Never delegate an unsettled ask; finish investigation or get user answers first.
 
-Writing a handoff
-- The sidekick sees only your messages and what it discovers itself, never the user's messages or your reasoning. State the goal, the concrete design (files, interfaces, data shapes, existing helpers to reuse), the hard edge cases, the constraints, and the exact verification: the narrowest commands that cover the change.
-- Settle consequential choices yourself; never leave alternatives for the sidekick to pick. Mark anything unverified as a hypothesis for it to check.
-- Pass results you already derived as settled inputs; do not ask it to redo them without reason.
-- It remembers earlier handoffs, files it read and processes it started, so do not repeat context it already has. When servers or long-running processes are involved, say whether to reuse or restart them and whether to leave them running.
-- Ask for evidence (diffs, command output, paths to logs and artifacts) rather than prose claims.
+Handoffs
+- The sidekick sees only your messages and its own observations. Specify: goal, concrete design (files, interfaces, shapes, helpers to reuse), edge cases, constraints, and exact narrowest verification commands.
+- Settle choices yourself; mark unverified points as hypotheses to check; pass derived results as inputs; ask for evidence (diffs, command output, log/artifact paths), not prose claims.
+- Omit context it already has from prior handoffs; specify whether long-running servers should be reused, restarted, or left running.
+- Use block=false only with real parallel work; collect via `wait_agent` before ending your turn. Calling `sidekick` while running interrupts/redirects it.
+- On failed/stopped handoff, call `sidekick(mode=\"retry\")` without resending the brief. If the sidekick's model/provider fails (quota, auth, outage, or same upstream error twice), stop retrying, end your turn (never call `ask`, which blocks model switching), and tell the user to pick another sidekick model or let you take over.
+- If the user writes during an active handoff, redirect the sidekick as needed before waiting again.
 
-Running handoffs
-- block=true (default) waits and returns the report. Use block=false only when you have real parallel work; then collect the report with `wait_agent` before ending your turn, never guess what it will say.
-- `mode` picks the context: default `keep` continues it; `compact` (long history, next task only partly related) compacts then delivers; `fresh` (unrelated task) spawns a clean sidekick; `retry` resumes an interrupted run. `compact`/`fresh`/`retry` all need the sidekick to be idle.
-- Calling `sidekick` while it runs interrupts it with your message: use this to redirect, add information, or tell it to wrap up.
-- When a handoff returns failed or stopped (upstream error, network, a stop), call `sidekick` again with mode=\"retry\" to continue the interrupted work; do not resend the brief.
-- If the failure is the sidekick's model or provider (quota, auth, outage, or the same upstream error twice), stop retrying: you cannot switch models and must not work around it. End your turn and tell the user the sidekick model errored — have them pick a new sidekick model in the model selector, or offer to take over yourself; the next handoff or retry uses the model they pick. Do not use `ask` for this (the session stays busy during ask, blocking their model switch).
-- If the user writes while a handoff is in flight, decide what it means for the running work and redirect the sidekick if needed before waiting again.
+Review
+- Read the full diff before building on or reporting sidekick code.
+- Audit everything first, then send all defects in one consolidated rework handoff; take over only if stuck after a couple rounds.
+- State a root cause as confirmed only when evidence shows that path runs; otherwise label it a hypothesis with its test.
 
-Reviewing
-- The report is a claim; the evidence is the proof. Read the full diff of code it wrote before building on it or reporting it to the user.
-- Review everything first, then send all defects and gaps in one consolidated rework handoff. Do not drip-feed small fixes, and do not take the work over after a single miss; take over only if it is still stuck after a couple of rounds.
-- Present a cause as confirmed only when evidence shows that code path actually runs; otherwise report it as a hypothesis with the check that would settle it.
-- When the user is waiting on something small and urgent, do it yourself at once and move slow verification off the critical path.
-
-Do not use `spawn_agent` subagents unless the user asks for them.
+Do not call `spawn_agent` unless the user asks.
 </fusion>";
 
 /// 提示片段名，用作上下文正文窗的标题。
@@ -231,7 +222,7 @@ pub fn pieces(
         title: "tools",
         name: PIECE_EXECUTION_RUNTIME,
         scope: PieceScope::Static,
-        text: "execute runs JavaScript in a fresh QuickJS runtime. Call await tools.<name>(args); return needed results or use console.log/print. Logs precede the return value and share its output budget. Tool results contain {content,structuredContent,isError,status,artifact}: use content for text, structuredContent for metadata. Failures reject with {code,message,result}. Await every call; do not shadow tools/catalog/state. Globals do not persist. Standard exposes core tools directly: prefer them for simple calls; PTC exposes only execute. Discover schemas with catalog.describe(name) or read tool://<name>; never guess arguments. Composition, MCP discovery, and named state: tool://execute.".to_owned(),
+        text: "execute runs JavaScript in a fresh QuickJS runtime (no persistent globals). Call await tools.<name>(args); logs (console.log/print) precede the return value and share its output budget. Results: {content,structuredContent,isError,status,artifact}; errors reject with {code,message,result}. Await every call; never shadow tools/catalog/state. Prefer direct tools in Standard mode; PTC exposes only execute. Check schemas via catalog.describe(name) or read tool://<name>; never guess arguments. Details: tool://execute.".to_owned(),
     });
     if config.git.co_author {
         sections.push(PromptPiece {
@@ -320,7 +311,7 @@ pub(crate) fn build_btw(
         title: "system",
         name: PIECE_APPEND,
         scope: PieceScope::Project,
-        text: "Answer only the latest side question briefly, using the supplied main-session context as reference. Do not continue the main task. No tools are available; do not call tools, access files, or claim to perform actions. Treat historical tool records as reference text, not pending calls. If the answer requires new information or an action, state that limitation. This side conversation does not update the main session.".into(),
+        text: "Answer only the latest side question briefly using the main-session context as reference. Do not continue the main task. No tools are available; do not call tools, access files, or claim actions. Treat historical tool records as plain reference text. State clearly if answering requires new info or actions. This does not modify the main session.".into(),
     });
     compose(pieces)
 }
@@ -436,10 +427,10 @@ pub fn mode_reminder(mode: crate::service::mode::Mode) -> Option<String> {
     let text = match mode {
         Mode::Default => return None,
         Mode::Ask => {
-            "Ask mode applies to this prompt only: the workspace is read-only, including inside execute; read and search freely. The restriction ends when this prompt ends."
+            "Ask mode applies to this prompt only: the workspace is read-only (including inside execute); read and search freely. Restriction ends after this prompt."
         }
         Mode::Plan => {
-            "Plan mode is active: the workspace is read-only, including inside execute. Save the plan with plan(markdown); read the saved plan file for anchors and refine it with plan(edits) — after review notes, plan(edits) on the reviewed version produces the next draft. Before calling exit_plan, make sure the plan is finished: exit_plan submits the working draft, ends this prompt immediately, and puts the session into plan review — no tool call runs after it."
+            "Plan mode is active: the workspace is read-only (including inside execute). Write the draft with plan(markdown); read it for anchors and refine with plan(edits) (including after review notes). Finish the plan before calling exit_plan: it submits the draft, ends this prompt immediately, and enters plan review (no further tool calls run)."
         }
     };
     Some(text.to_owned())
@@ -451,33 +442,33 @@ pub fn mode_reminder(mode: crate::service::mode::Mode) -> Option<String> {
 pub fn sandbox_contract(permission: SessionPermission, config: &ResolvedSandboxConfig) -> String {
     let filesystem = match permission {
         SessionPermission::Full => {
-            "Commands run directly on the host with no filesystem isolation."
+            "Commands run directly on the host without filesystem isolation."
         }
         SessionPermission::Workspace => {
-            "Shell commands see the host filesystem read-only except the workspace, session temporary directories, and extra paths; `$HOME` writes use a session copy-on-write layer on Linux when `overlay_home` is enabled, otherwise `$HOME` is read-only. File tools read host files except configured deny paths and can write only allowed roots."
+            "Shell sees host read-only except workspace, session temp dirs, and extra paths; $HOME uses a Linux copy-on-write overlay when overlay_home=true, else read-only. File tools read host (except deny paths) and write only allowed roots."
         }
         SessionPermission::WorkspaceOnly => {
-            "Shell commands see the workspace, session temporary directories, a synthetic `$HOME`, and read-only runtime system paths; the host home and other host data are absent. File tools can read only those roots and configured extras."
+            "Shell sees workspace, session temp dirs, synthetic $HOME, and read-only system runtime paths; host home and other host data are absent. File tools read only those roots and configured extras."
         }
     };
     let network = if config.network || permission == SessionPermission::Full {
         "Shell network access is enabled."
     } else {
-        "Shell network access is blocked; web tools are unaffected."
+        "Shell network access is blocked; web tools unaffected."
     };
     let approval = if permission == SessionPermission::Full {
         ""
     } else if config.on_denied == crate::config::OnDenied::Deny {
-        "Sandbox denials are final; no approval prompt is shown."
+        "Sandbox denials are final; no prompt is shown."
     } else {
-        "Out-of-bound access asks the user; one-time and session grants are possible."
+        "Out-of-bound access prompts the user (once or session)."
     };
     let escalation = if permission == SessionPermission::Full {
         ""
     } else if config.allow_unsandboxed {
-        "After a sandbox denial, retry the exact command once with `sandbox_permissions` (workspace or full) plus `justification`; the user approves."
+        "On sandbox denial, retry once with `sandbox_permissions` (workspace|full) and `justification` for user approval."
     } else {
-        "Escalation to full is disabled; use allowed paths or change settings."
+        "Escalation to full is disabled."
     };
     format!(
         "Sandbox mode: {}. {filesystem} {network} {approval} {escalation}",

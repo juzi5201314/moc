@@ -30,7 +30,7 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetch and save page documents. Returns a bounded outline or query excerpts with source line numbers and artifact URIs. Reuses session snapshots; read/grep artifacts for more content. Query is not an exhaustive field inventory."
+        "Fetch and save page documents as session artifacts; returns bounded outline or query excerpts with line numbers and URIs. Read/grep artifacts for full details; query is not an exhaustive inventory."
     }
 
     fn tier(&self) -> Tier {

@@ -32,7 +32,6 @@ use moc_protocol::methods::AgentStatus;
 use moc_protocol::methods::InputPart;
 use moc_protocol::methods::PromptParams;
 use moc_protocol::methods::SessionUpdate;
-use rust_i18n::t;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -58,20 +57,20 @@ pub(super) fn resolve_targets(
             })
             .collect();
         if targets.is_empty() {
-            return Err(invalid("没有正在运行的可投递代理"));
+            return Err(invalid("no running agents available to message"));
         }
         return Ok(targets);
     }
     if target == PARENT_TARGET {
         let Some(parent) = &peers.parent else {
-            return Err(invalid("顶层会话没有父代理"));
+            return Err(invalid("top-level session has no parent agent"));
         };
         return Ok(vec![MessageTarget {
             session: parent.session.clone(),
         }]);
     }
     if target == peers.me.id {
-        return Err(invalid("不能向会话自身投递消息"));
+        return Err(invalid("cannot message self"));
     }
     let matched = peers
         .parent
@@ -86,9 +85,7 @@ pub(super) fn resolve_targets(
         Some(entry) => Ok(vec![MessageTarget {
             session: entry.session.clone(),
         }]),
-        None => Err(invalid(
-            t!("core.err.target_not_deliverable", target = target).into_owned(),
-        )),
+        None => Err(invalid(format!("target `{target}` is not deliverable"))),
     }
 }
 
@@ -135,7 +132,7 @@ pub(super) async fn message_scoped(
             .contains(&peers.me.id)
     {
         return Err(CoreError::Session(format!(
-            "AGENT_ORPHANED: {} 已被父会话回退孤立，不能投递消息",
+            "AGENT_ORPHANED: {} was orphaned by parent rewind and cannot send messages",
             peers.me.id
         )));
     }
@@ -196,7 +193,7 @@ pub(super) async fn deliver(
             _ => receipt(
                 target,
                 AgentMessageOutcome::Failed,
-                Some("目标会话正在收尾，请稍后重试".into()),
+                Some("target session is finishing; retry shortly".into()),
             ),
         };
     };
@@ -271,7 +268,7 @@ pub(super) fn push_inbox(
         return receipt(
             target,
             AgentMessageOutcome::Failed,
-            Some("收件箱已满（64 条待投递），请稍后重试".into()),
+            Some("inbox full (64 pending); retry shortly".into()),
         );
     }
     inbox.messages.push_back(PendingAgentMessage {
@@ -403,33 +400,34 @@ pub(crate) async fn record_yield(
         .and_then(|meta| meta.output_schema.clone());
     let result = match (&schema, result) {
         (Some(schema), Some(result)) => {
-            let validator = jsonschema::validator_for(schema).map_err(|error| {
-                invalid(t!("core.err.output_schema_bad2", error = error).into_owned())
-            })?;
+            let validator = jsonschema::validator_for(schema)
+                .map_err(|error| invalid(format!("invalid output_schema: {error}")))?;
             if let Err(error) = validator.validate(&result) {
-                return Err(invalid(
-                    t!("core.err.yield_schema", error = error).into_owned(),
-                ));
+                return Err(invalid(format!(
+                    "yield result failed output_schema validation: {error}"
+                )));
             }
             Some(result)
         }
         (Some(_), None) => {
             return Err(invalid(
-                "该子代理声明了 output_schema，yield 必须提供 result",
+                "this subagent declares output_schema; yield requires `result`",
             ));
         }
         (None, Some(_)) => {
-            return Err(invalid("该子代理未声明 output_schema，不能交付结构化结果"));
+            return Err(invalid(
+                "this subagent has no output_schema; omit `result`",
+            ));
         }
         (None, None) => None,
     };
     let report = validate_text(&report, "report")?;
     let mut registry = inner.agents.lock().await;
     let Some(runtime) = registry.items.get_mut(session_id) else {
-        return Err(invalid("yield 仅能在子代理运行中调用"));
+        return Err(invalid("yield can only be called while running as a subagent"));
     };
     if !live(runtime.info.status) {
-        return Err(invalid("yield 仅能在子代理运行中调用"));
+        return Err(invalid("yield can only be called while running as a subagent"));
     }
     runtime.yielded = Some(Yielded { report, result });
     Ok(())

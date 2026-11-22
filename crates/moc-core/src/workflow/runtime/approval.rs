@@ -5,7 +5,6 @@ use crate::workflow::compile::Diagnostic;
 use crate::workflow::compile::compile;
 use moc_protocol::UpdateSink;
 use moc_protocol::WorkflowEvent;
-use rust_i18n::t;
 use tokio::sync::oneshot;
 
 impl WorkflowManager {
@@ -94,7 +93,7 @@ impl WorkflowManager {
         std::fs::create_dir_all(&dir).map_err(|e| {
             vec![Diagnostic {
                 code: "E_IO",
-                message: t!("core.err.run_dir_create2", error = e).into_owned(),
+                message: format!("failed to create run directory: {e}"),
                 line: 0,
                 col: 0,
             }]
@@ -102,7 +101,7 @@ impl WorkflowManager {
         std::fs::write(dir.join("script.ts"), source).map_err(|e| {
             vec![Diagnostic {
                 code: "E_IO",
-                message: t!("core.err.draft_write", error = e).into_owned(),
+                message: format!("failed to write script draft: {e}"),
                 line: 0,
                 col: 0,
             }]

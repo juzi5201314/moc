@@ -18,13 +18,13 @@ declare class ModelRef { private constructor(); private readonly modelRef: never
  */
 declare function model(id: string): ModelRef;
 
-/** 仅当前 workflow run 有效的动态角色，提示、模型与工具在创建时固定。 */
+/** Dynamic persona scoped to this workflow run; prompt, model, and tools are frozen at spawn. */
 declare interface AgentPersona {
   /** System prompt describing the actor's role. */
   system?: string;
   /** Model id literal or ModelRef; omitted = the run's subagent model. */
   model?: ModelRef | string;
-  /** 固定工具允许列表；省略沿用受控默认工具面，yield 始终可用。 */
+  /** Allowed tool names; omit for the default restricted set. `yield` is always permitted. */
   tools?: readonly string[];
 }
 
