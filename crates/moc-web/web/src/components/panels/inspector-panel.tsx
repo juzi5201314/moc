@@ -1,7 +1,16 @@
 // 右侧检查面板：文件 / 终端 / 变更 / 旁路。
 // 计数徽标只保留 changes；需要远端数据的分页只在打开时拉取。
 
-import { Columns2Icon, RowsIcon, XIcon } from "lucide-react";
+import {
+  Columns2Icon,
+  FolderIcon,
+  GitCompareArrowsIcon,
+  type LucideIcon,
+  MessagesSquareIcon,
+  PanelRightIcon,
+  RowsIcon,
+  SquareTerminalIcon,
+} from "lucide-react";
 import { lazy, Suspense, useMemo } from "react";
 import { IconButton } from "@/components/common/icon-button";
 import { FilesTab } from "@/components/files/files-tab";
@@ -19,11 +28,11 @@ const TerminalTab = lazy(() =>
   import("@/components/terminal/terminal-tab").then((module) => ({ default: module.TerminalTab })),
 );
 
-const TABS: { id: InspectorTab; label: MsgKey }[] = [
-  { id: "files", label: "insp.files" },
-  { id: "terminal", label: "insp.terminal" },
-  { id: "changes", label: "insp.changes" },
-  { id: "btw", label: "insp.btw" },
+const TABS: { id: InspectorTab; label: MsgKey; icon: LucideIcon }[] = [
+  { id: "files", label: "insp.files", icon: FolderIcon },
+  { id: "terminal", label: "insp.terminal", icon: SquareTerminalIcon },
+  { id: "changes", label: "insp.changes", icon: GitCompareArrowsIcon },
+  { id: "btw", label: "insp.btw", icon: MessagesSquareIcon },
 ];
 
 export function InspectorPanel({ sessionId }: { sessionId: string }) {
@@ -37,23 +46,25 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <div className="flex h-full w-full min-w-0 flex-col bg-panel text-foreground">
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border-subtle px-2">
+    <div className="flex h-full w-full min-w-0 flex-col bg-background text-foreground">
+      <div className="flex h-11 shrink-0 items-center gap-1 px-2">
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]">
           {TABS.map((item) => {
             const count = counts[item.id] ?? 0;
+            const Icon = item.icon;
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => useLayout.getState().openInspector(item.id)}
                 className={cn(
-                  "inline-flex h-[30px] shrink-0 items-center gap-1.5 rounded-md px-2.5 text-ui transition-colors",
+                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui transition-colors [&_svg]:size-3.5",
                   tab === item.id
-                    ? "bg-accent font-medium text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
                 )}
               >
+                <Icon />
                 {t(item.label)}
                 {count > 0 && (
                   <span className="min-w-4 rounded-full bg-foreground/10 px-1 text-center text-2xs leading-4 tabular-nums text-muted-foreground">
@@ -70,7 +81,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
           size="sm"
           onClick={() => useLayout.getState().toggleRightbar(false)}
         >
-          <XIcon />
+          <PanelRightIcon />
         </IconButton>
       </div>
 

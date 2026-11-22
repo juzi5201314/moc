@@ -1,6 +1,7 @@
 // 文件分页顶部：左「工作区 | 会话」分段切换，右操作按钮。
 
 import {
+  ChevronDownIcon,
   FilePlus2Icon,
   FolderPlusIcon,
   MoreHorizontalIcon,
@@ -18,7 +19,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { type MsgKey, useT } from "@/lib/i18n";
-import { cn } from "@/lib/utils";
 import {
   type FileRoot,
   refreshExpanded,
@@ -43,6 +43,10 @@ export function FilesToolbar({
   const cwd = workspaceRoot?.kind === "workspace" ? workspaceRoot.cwd : null;
 
   const sessionRoot: FileRoot = { kind: "session", sessionId };
+  const rootLabel =
+    root === "workspace"
+      ? (cwd?.split("/").filter(Boolean).at(-1) ?? t("ft.workspace"))
+      : t("ft.session");
 
   const refresh = () => {
     const target = root === "workspace" ? workspaceRoot : sessionRoot;
@@ -68,29 +72,34 @@ export function FilesToolbar({
     });
 
   return (
-    <div className="flex h-9 shrink-0 items-center gap-1 px-2">
-      <div className="flex items-center rounded-lg bg-muted p-0.5">
-        {(
-          [
-            ["workspace", "ft.workspace" as MsgKey],
-            ["session", "ft.session" as MsgKey],
-          ] as const
-        ).map(([id, label]) => (
+    <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border-subtle px-2">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
           <button
-            key={id}
             type="button"
-            onClick={() => setFileRoot(sessionId, id)}
-            className={cn(
-              "h-6 rounded-md px-2 text-ui transition-colors",
-              root === id
-                ? "bg-background font-medium text-foreground shadow-xs"
-                : "text-muted-foreground hover:text-foreground",
-            )}
+            className="flex h-7 min-w-0 items-center gap-1 rounded-md px-2 text-ui font-medium text-foreground transition-colors hover:bg-surface-hover data-[state=open]:bg-accent"
           >
-            {t(label)}
+            <span className="truncate">{rootLabel}</span>
+            <ChevronDownIcon className="size-3.5 shrink-0 text-text-tertiary" />
           </button>
-        ))}
-      </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-44">
+          {(
+            [
+              ["workspace", "ft.workspace" as MsgKey],
+              ["session", "ft.session" as MsgKey],
+            ] as const
+          ).map(([id, label]) => (
+            <DropdownMenuCheckboxItem
+              key={id}
+              checked={root === id}
+              onCheckedChange={() => setFileRoot(sessionId, id)}
+            >
+              {t(label)}
+            </DropdownMenuCheckboxItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
       <div className="ml-auto flex items-center gap-0.5">
         {root === "workspace" && (
           <>

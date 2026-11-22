@@ -5,6 +5,7 @@
 import Ansi from "ansi-to-react";
 import {
   ArrowLeftIcon,
+  ChevronRightIcon,
   CodeIcon,
   CopyIcon,
   DownloadIcon,
@@ -77,7 +78,7 @@ export function EditorArea({
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       {/* 标签条 */}
-      <div className="flex h-9 shrink-0 items-center overflow-x-auto px-1 [scrollbar-width:none]">
+      <div className="flex h-10 shrink-0 items-center gap-0.5 overflow-x-auto px-1.5 [scrollbar-width:none]">
         {stacked && (
           <IconButton
             label={t("fe.back_tree")}
@@ -101,10 +102,10 @@ export function EditorArea({
               }}
               onDoubleClick={() => pinTab(sessionId, key)}
               className={cn(
-                "group/tab flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-lg px-2.5 text-ui",
+                "group/tab flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-md px-2 text-ui transition-colors",
                 key === files?.active
                   ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
+                  : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
                 tab.preview && "italic",
               )}
             >
@@ -130,6 +131,31 @@ export function EditorArea({
       ) : null}
       <CloseConfirm sessionId={sessionId} />
     </div>
+  );
+}
+
+/** 面包屑：路径段用细箭头分隔，前段淡、末段正文色，过长时从左侧截掉。 */
+function Breadcrumb({ path }: { path: string }) {
+  const parts = path.split("/").filter(Boolean);
+  return (
+    <span
+      title={path}
+      className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden text-xs text-muted-foreground"
+    >
+      {parts.map((part, index) => {
+        const last = index === parts.length - 1;
+        return (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: 路径段可重名，顺序即身份
+            key={index}
+            className={cn("flex min-w-0 items-center gap-0.5", last ? "shrink-0" : "shrink")}
+          >
+            {index > 0 && <ChevronRightIcon className="size-3 shrink-0 text-text-tertiary" />}
+            <span className={cn("truncate", last && "text-foreground")}>{part}</span>
+          </span>
+        );
+      })}
+    </span>
   );
 }
 
@@ -177,9 +203,7 @@ function FileView({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* 头部：面包屑 + 操作 */}
       <div className="flex h-8 shrink-0 items-center gap-1 px-3">
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-text-tertiary">
-          {breadcrumb}
-        </span>
+        <Breadcrumb path={breadcrumb} />
         {newer && (
           <button
             type="button"

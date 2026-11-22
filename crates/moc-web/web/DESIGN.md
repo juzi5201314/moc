@@ -122,9 +122,12 @@
 ### 文件面板
 
 - 右侧检查面板的默认分页；宽 ≥640px 时左树右编辑区并排（树宽 200–360 可拖，默认 240），更窄时编辑区替换树、头部给返回按钮。
-- 树行高 `h-7`、`text-ui`、每级缩进 12px，只有极淡的缩进引导；目录 chevron + Folder/FolderOpen，文件按扩展名映射少量 lucide 图标，全部 muted 灰；agent 改过的文件行尾一个 brand 小圆点。
+- 宽屏时检查面板是窗框里独立的一张圆角卡片（`bg-background` + `--elevation-ring` 发丝轮廓），与主舞台之间留 4px chrome 缝；标签带 3.5 号 lucide 图标，选中 `bg-accent`，标签条下不画分隔线，右端是面板开关（主舞台头部此时隐藏同一开关）。
+- 文件工具栏左侧是根目录下拉（工作区显示目录名 / 会话），不用分段控件；工具栏下与树右侧各一条 `border-border-subtle`。
+- 树行高 26px、`text-ui` 正文色、每级缩进 12px，行左右各缩 6px 并带 `rounded-md`：悬停 `surface-hover`、选中 `bg-accent`；目录只留 chevron，不放文件夹图标，文件按扩展名映射少量 tertiary lucide 图标；agent 改过的文件行尾一个 brand 小圆点。
 - 会话空间命名空间（计划 / 任务日志 / 工具归档 / 历史 / 技能）显示中文标签，行尾用 tertiary 等宽字回显原始 URI；整体只读。
-- 编辑区标签条复用「选中 `bg-accent`、未选中只改文字色」的语言：预览标签斜体、未保存一个 brand 圆点、× 只在悬停浮现。
+- 文件头部的路径是 sans 面包屑：细箭头分隔，前段 muted、末段正文色。
+- 编辑区标签条复用「选中 `bg-accent`、未选中悬停浅底」的语言：预览标签斜体、未保存一个 brand 圆点、× 只在悬停浮现。
 - CodeMirror 主题从令牌派生（系统等宽字体、tertiary 行号、gutter 无描边、当前行极淡底色、选区 `--selection`、光标 brand）；Markdown 默认渲染 `.moc-prose` 预览，可切源码。
 
 ### 终端

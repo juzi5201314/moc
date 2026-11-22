@@ -73,6 +73,9 @@ export function InspectorToggle({ sessionId }: { sessionId: string }) {
   const t = useT();
   const open = useLayout((state) => state.rightbarOpen);
   const pending = useTranscript((state) => attentionCount(state, sessionId));
+  const narrow = useNarrow();
+  // 宽屏面板打开时，开关已在面板标签条右端，主舞台不再重复一个。
+  if (open && !narrow) return null;
   return (
     <div className="relative">
       <IconButton

@@ -56,7 +56,10 @@ export function FilesTab({ sessionId }: { sessionId: string }) {
         <PanelEmpty title={t("ft.no_cwd")} />
       ) : wide ? (
         <div className="flex min-h-0 flex-1">
-          <div className="min-w-0 shrink-0 overflow-y-auto" style={{ width: treeWidth }}>
+          <div
+            className="min-w-0 shrink-0 overflow-y-auto border-r border-border-subtle"
+            style={{ width: treeWidth }}
+          >
             <FileTree sessionId={sessionId} workspaceRoot={workspaceRoot} />
           </div>
           <TreeResizer />
@@ -88,7 +91,7 @@ function TreeResizer() {
     <div
       role="separator"
       aria-orientation="vertical"
-      className="group relative w-2 shrink-0 cursor-col-resize"
+      className="group relative -ml-1 w-2 shrink-0 cursor-col-resize"
       onPointerDown={(event) => {
         drag.current = event.clientX;
         setDragging(true);

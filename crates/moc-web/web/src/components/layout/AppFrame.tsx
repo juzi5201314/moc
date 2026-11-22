@@ -134,30 +134,31 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
       >
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">{main}</main>
 
-        {rightbar &&
-          rightbarOpen &&
-          (narrow ? (
-            <>
-              <button
-                type="button"
-                aria-label={t("layout.close_inspector")}
-                className="absolute inset-0 z-30 bg-black/20 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-160"
-                onClick={() => toggleRightbar(false)}
-              />
-              <aside className="absolute inset-y-0 right-0 z-40 w-[min(420px,92%)] overflow-hidden rounded-l-xl bg-panel shadow-[var(--elevation-popover)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-right-2 motion-safe:duration-160">
-                {rightbar}
-              </aside>
-            </>
-          ) : (
-            <aside
-              style={{ width: rightbarWidth }}
-              className="relative h-full max-w-[max(320px,calc(100%-360px))] shrink-0 border-l border-border bg-panel"
-            >
-              <ResizeHandle side="right" width={rightbarWidth} onResize={setRightbarWidth} />
+        {rightbar && rightbarOpen && narrow && (
+          <>
+            <button
+              type="button"
+              aria-label={t("layout.close_inspector")}
+              className="absolute inset-0 z-30 bg-black/20 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-160"
+              onClick={() => toggleRightbar(false)}
+            />
+            <aside className="absolute inset-y-0 right-0 z-40 w-[min(420px,92%)] overflow-hidden rounded-l-xl bg-panel shadow-[var(--elevation-popover)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-right-2 motion-safe:duration-160">
               {rightbar}
             </aside>
-          ))}
+          </>
+        )}
       </div>
+
+      {/* 宽屏检查面板是窗框里独立的一张卡片，与主舞台之间留 chrome 缝隙。 */}
+      {rightbar && rightbarOpen && !narrow && (
+        <aside
+          style={{ width: rightbarWidth }}
+          className="relative ml-1 h-full max-w-[max(320px,calc(100%-560px))] shrink-0 rounded-xl bg-background shadow-[var(--elevation-ring)]"
+        >
+          <ResizeHandle side="right" width={rightbarWidth} onResize={setRightbarWidth} />
+          <div className="h-full overflow-hidden rounded-xl">{rightbar}</div>
+        </aside>
+      )}
     </div>
   );
 }
