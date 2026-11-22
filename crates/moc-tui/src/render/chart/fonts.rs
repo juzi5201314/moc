@@ -5,10 +5,13 @@
 //! - 支持通过 `MOC_CHART_FONT` 指定首选字体族；
 //! - 随 crate 内嵌的 `Noto Sans Mono CJK SC` 子集始终注入 `fontdb`，无系统字体环境下也能正常出字。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
-use resvg::usvg::fontdb::{Database, Family, ID, Query, Source};
+use resvg::usvg::fontdb::{Database, Family, Query, Source};
+use unicode_segmentation::UnicodeSegmentation;
+
+use super::draw::SvgBuilder;
 
 /// 内嵌字体子集（Noto Sans Mono CJK SC，CFF/OTF，含 GB2312 汉字与拉丁区）。
 ///
@@ -17,15 +20,15 @@ use resvg::usvg::fontdb::{Database, Family, ID, Query, Source};
 pub const EMBEDDED_FONT: &[u8] =
     include_bytes!("../../../assets/fonts/NotoSansMonoCJKsc-Regular.subset.otf");
 
-/// 字符 advance 缓存上限；超过整表清空。
-const ADVANCE_CACHE_LIMIT: usize = 8192;
+/// 整段文本测宽缓存上限；字号变化或达到上限时清空。
+const WIDTH_CACHE_LIMIT: usize = 1024;
 
-/// 字体集：共享 `fontdb::Database`、CSS `font-family` 回退链与字符宽度缓存。
+/// 字体库和整段文本测宽缓存；布局与绘制都交给 usvg，避免另写一套字形回退规则。
 pub struct Fonts {
     db: Arc<Database>,
     css_family: String,
-    face_order: Vec<ID>,
-    advance_cache: HashMap<(char, u32), u32>,
+    width_px: u32,
+    width_cache: HashMap<String, u32>,
 }
 
 impl Fonts {
@@ -53,12 +56,11 @@ impl Fonts {
             .ok()
             .and_then(|raw| sanitize_font_name(&raw));
         let css_family = build_css_family(custom.as_deref(), &embedded_family);
-        let face_order = resolve_face_order(&db, custom.as_deref(), &embedded_family);
         Self {
             db: Arc::new(db),
             css_family,
-            face_order,
-            advance_cache: HashMap::new(),
+            width_px: 0,
+            width_cache: HashMap::new(),
         }
     }
 
@@ -72,62 +74,59 @@ impl Fonts {
         &self.css_family
     }
 
-    /// 文本宽度：逐字符累加整数像素 advance。
+    /// 用实际 SVG 排版测量整段文本，只在最终边界向上取整。
     pub fn width(&mut self, text: &str, px: u32) -> u32 {
-        let mut pen = 0u32;
-        for ch in text.chars() {
-            pen += self.advance_of(ch, px);
+        if text.is_empty() {
+            return 0;
         }
-        pen
+        if self.width_px != px || self.width_cache.len() >= WIDTH_CACHE_LIMIT {
+            self.width_cache.clear();
+            self.width_px = px;
+        }
+        if let Some(&width) = self.width_cache.get(text) {
+            return width;
+        }
+        let mut svg = SvgBuilder::new(1, 1, &self.css_family, px);
+        svg.text(0, 0, text, [0; 3]);
+        let options = resvg::usvg::Options {
+            fontdb: self.database(),
+            ..Default::default()
+        };
+        let tree = resvg::usvg::Tree::from_str(&svg.finish(), &options)
+            .expect("SVG 构建器已转义文本并替换非法 XML 字符");
+        // 文本包围盒非负；像素预算向上取整，超出 u32 的文本按最大宽度处理。
+        let width = tree.root().bounding_box().width().ceil() as u32;
+        self.width_cache.insert(text.to_owned(), width);
+        width
     }
 
-    /// 按像素宽度截断文本，超宽时以 `…` 结尾（`…` 自身的宽度计入预算）。
+    /// 截断只在字素边界进行；每个候选整体排版，保留连字、回退字体与小数推进量。
     pub fn truncate(&mut self, text: &str, max_px: u32, px: u32) -> String {
         if self.width(text, px) <= max_px {
-            return text.to_string();
+            return text.to_owned();
         }
-        let ellipsis = self.width("…", px);
-        let mut out = String::new();
-        let mut used = 0u32;
-        for ch in text.chars() {
-            let advance = self.advance_of(ch, px);
-            if used + advance + ellipsis > max_px {
-                break;
-            }
-            out.push(ch);
-            used += advance;
+        if self.width("…", px) > max_px {
+            return String::new();
         }
-        out.push('…');
-        out
-    }
-
-    /// 单字符在指定字号下的整数像素推进量。
-    fn advance_of(&mut self, ch: char, px: u32) -> u32 {
-        let key = (ch, px);
-        if let Some(&cached) = self.advance_cache.get(&key) {
-            return cached;
-        }
-        let measured = self.measure_advance(ch, px);
-        if self.advance_cache.len() >= ADVANCE_CACHE_LIMIT {
-            self.advance_cache.clear();
-        }
-        self.advance_cache.insert(key, measured);
-        measured
-    }
-
-    /// 按与 SVG 回退链一致的优先级在 `fontdb` 中测量字符 advance。
-    fn measure_advance(&self, ch: char, px: u32) -> u32 {
-        for &id in &self.face_order {
-            if let Some(advance) = face_char_advance(&self.db, id, ch, px) {
-                return advance;
+        let boundaries: Vec<usize> = text.grapheme_indices(true).map(|(at, _)| at).collect();
+        let mut low = 0;
+        let mut high = boundaries.len();
+        let mut candidate = String::with_capacity(text.len() + '…'.len_utf8());
+        while low + 1 < high {
+            let mid = low + (high - low) / 2;
+            candidate.clear();
+            candidate.push_str(&text[..boundaries[mid]]);
+            candidate.push('…');
+            if self.width(&candidate, px) <= max_px {
+                low = mid;
+            } else {
+                high = mid;
             }
         }
-        for face in self.db.faces() {
-            if let Some(advance) = face_char_advance(&self.db, face.id, ch, px) {
-                return advance;
-            }
-        }
-        if ch.is_ascii() { px / 2 } else { px }
+        candidate.clear();
+        candidate.push_str(&text[..boundaries[low]]);
+        candidate.push('…');
+        candidate
     }
 }
 
@@ -180,72 +179,32 @@ fn build_css_family(custom: Option<&str>, embedded: &str) -> String {
     parts.join(", ")
 }
 
-/// 按与 CSS 回退链同序解析 `fontdb::ID` 列表，供精确测宽。
-fn resolve_face_order(db: &Database, custom: Option<&str>, embedded: &str) -> Vec<ID> {
-    let mut families: Vec<Family<'_>> = Vec::with_capacity(10);
-    if let Some(name) = custom {
-        families.push(Family::Name(name));
-    }
-    families.push(Family::Monospace);
-    for name in [
-        "PingFang SC",
-        "Microsoft YaHei",
-        "Noto Sans CJK SC",
-        "WenQuanYi Zen Hei Mono",
-        "WenQuanYi Zen Hei",
-        embedded,
-    ] {
-        families.push(Family::Name(name));
-    }
-    families.push(Family::SansSerif);
-
-    let mut seen = HashSet::new();
-    let mut out = Vec::with_capacity(families.len());
-    for family in families {
-        if let Some(id) = db.query(&Query {
-            families: &[family],
-            ..Default::default()
-        }) && seen.insert(id)
-        {
-            out.push(id);
-        }
-    }
-    out
-}
-
-/// 用 `ttf_parser` 读取指定字体面中 `ch` 的水平 advance（像素，四舍五入）。
-fn face_char_advance(db: &Database, id: ID, ch: char, px: u32) -> Option<u32> {
-    db.with_face_data(id, |data, index| {
-        let face = ttf_parser::Face::parse(data, index).ok()?;
-        let gid = face.glyph_index(ch)?;
-        let raw = face.glyph_hor_advance(gid)?;
-        let upem = u32::from(face.units_per_em());
-        if upem == 0 {
-            return None;
-        }
-        let scaled = f64::from(raw) * f64::from(px) / f64::from(upem);
-        Some(scaled.round().max(0.0) as u32)
-    })
-    .flatten()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 宽度随文本变长单调增加，空串为 0（ASCII 与中文同一规则）。
     #[test]
-    fn width_grows_with_text() {
-        with_fonts(|fonts| {
-            assert_eq!(fonts.width("", 16), 0);
-            let one = fonts.width("A", 16);
-            let two = fonts.width("AA", 16);
-            let four = fonts.width("AAAA", 16);
-            assert!(one > 0 && one < two && two < four);
-            let cjk_one = fonts.width("中", 16);
-            let cjk_two = fonts.width("中文", 16);
-            assert!(cjk_one > 0 && cjk_one < cjk_two);
-        });
+    fn fractional_advances_round_only_after_shaping_the_whole_label() {
+        let mut db = Database::new();
+        let ids = db.load_font_source(Source::Binary(Arc::new(EMBEDDED_FONT)));
+        let family = db.face(ids[0]).expect("内嵌字体").families[0].0.clone();
+        let mut fonts = Fonts {
+            db: Arc::new(db),
+            css_family: format!("'{family}'"),
+            width_px: 0,
+            width_cache: HashMap::new(),
+        };
+        let face = ttf_parser::Face::parse(EMBEDDED_FONT, 0).expect("内嵌字体面");
+        let glyph = face.glyph_index('A').expect("拉丁字形");
+        let advance = f64::from(face.glyph_hor_advance(glyph).expect("水平推进量")) * 13.0
+            / f64::from(face.units_per_em());
+        assert_ne!(advance.fract(), 0.0, "该字号应覆盖非整数推进量");
+        let text = "A".repeat(40);
+        assert_eq!(f64::from(fonts.width(&text, 13)), (advance * 40.0).ceil());
+        for budget in [0, 5, 40, 100, 200] {
+            let cut = fonts.truncate("中文ABC123与长标签ABCDEFGHIJKLMNOPQRSTUVWXYZ", budget, 13);
+            assert!(fonts.width(&cut, 13) <= budget);
+        }
     }
 
     /// 截断结果不超预算、以省略号结尾；放得下时原样返回。

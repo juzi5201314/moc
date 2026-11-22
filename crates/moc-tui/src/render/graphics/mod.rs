@@ -380,23 +380,20 @@ fn image_covered(app: &App) -> bool {
 }
 
 /// 在后台线程执行图表光栅化与协议编码，完成后通过 [`AppEvent::ChartEncoded`] 回传主线程。
-#[expect(clippy::too_many_arguments, reason = "后台线程入口，直接传递上下文快照")]
 pub fn spawn_chart_encode(
     events: tokio::sync::mpsc::UnboundedSender<AppEvent>,
-    entry: usize,
     table: usize,
     image_id: u32,
     spec: moc_core::chart::ChartSpec,
     chart_layout: ChartLayout,
     proto: GraphicsProto,
     theme: &'static crate::theme::Theme,
-) {
+) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("moc-chart-encode".into())
         .spawn(move || {
-            let canvas = with_fonts(|fonts| {
-                rasterize_for_proto(&spec, &chart_layout, theme, fonts, proto)
-            });
+            let canvas =
+                with_fonts(|fonts| rasterize_for_proto(&spec, &chart_layout, theme, fonts, proto));
             let payload = Arc::new(encode::encode(
                 &canvas,
                 proto,
@@ -405,14 +402,13 @@ pub fn spawn_chart_encode(
                 chart_layout.rows,
             ));
             let _ = events.send(AppEvent::ChartEncoded {
-                entry,
                 table,
                 image_id,
                 px: chart_layout.px,
                 payload,
             });
         })
-        .ok();
+        .map(|_| ())
 }
 
 /// 每帧放置图像：在 `terminal.draw()` 之后调用。
@@ -470,20 +466,22 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
                 let Some(chart_layout) = layout(&state.spec, slot.cols, support.cell) else {
                     continue;
                 };
-                if let Some(payload) = state.payload.as_ref().filter(|_| state.px == chart_layout.px)
+                if let Some(payload) = state
+                    .payload
+                    .as_ref()
+                    .filter(|_| state.px == chart_layout.px)
                 {
+                    // 当前尺寸已有载荷时，作废仍在途的其他尺寸任务。
+                    state.rendering = None;
                     let transmit = !state.transmitted;
                     state.transmitted = true;
                     (Arc::clone(payload), state.image_id, transmit)
                 } else {
-                    let already_rendering = state
-                        .rendering
-                        .is_some_and(|(px, _)| px == chart_layout.px);
+                    let already_rendering =
+                        state.rendering.is_some_and(|(px, _)| px == chart_layout.px);
                     if !already_rendering {
-                        state.rendering = Some((chart_layout.px, std::time::Instant::now()));
-                        spawn_chart_encode(
+                        let result = spawn_chart_encode(
                             events.clone(),
-                            slot.entry,
                             *table,
                             state.image_id,
                             state.spec.clone(),
@@ -491,6 +489,14 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
                             support.proto,
                             theme,
                         );
+                        if let Err(error) = result {
+                            entry.set_table_chart(*table, None);
+                            app.set_notice(
+                                rust_i18n::t!("tui.err.chart_start_fmt", err = error).into_owned(),
+                            );
+                            continue;
+                        }
+                        state.rendering = Some((chart_layout.px, std::time::Instant::now()));
                     }
                     continue;
                 }

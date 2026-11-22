@@ -119,6 +119,7 @@ hist_gap = { zh = "历史块不连续", en = "History chunks are not contiguous"
 hist_read_fmt = { zh = "历史页读取失败：%{err}", en = "Failed to read history page: %{err}" }
 table_changed = { zh = "表格内容已变化，请重试", en = "Table content changed; please retry" }
 table_not_chartable = { zh = "这张表无法图表化", en = "This table can't be charted" }
+chart_start_fmt = { zh = "图表渲染线程启动失败，请重试：%{err}", en = "Chart rendering could not start; please retry: %{err}" }
 
 [tui.tabs]
 models = { zh = "模型角色", en = "Model Roles" }

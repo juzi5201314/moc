@@ -71,18 +71,17 @@ impl<'a> MdRenderer<'a> {
         });
         // 入口只在「终端能画像素图 + 格子放得下字 + 这张表确实能图表化」时出现；
         // 已经切换过图表的表格必须保留隐藏入口，哪怕当前画不出图。
-        let fits = self.width >= usize::from(crate::render::chart::MIN_COLS)
-            && self
-                .views
-                .graphics
-                .is_some_and(|graphics| crate::render::graphics::cell_supported(graphics.cell));
-        let plannable = fits && {
+        let plannable = self.views.graphics.is_some_and(|graphics| {
             let analysis = chart::analyze(&raw);
             chart::plan(&analysis).is_some_and(|plan| {
-                crate::render::chart::rows_needed(plan.kind, analysis.rows.len(), plan.series.len())
-                    <= crate::render::chart::MAX_ROWS
+                crate::render::chart::layout(
+                    &chart::build(&analysis, &plan),
+                    self.cols(),
+                    graphics.cell,
+                )
+                .is_some()
             })
-        };
+        });
         let offers = charted.is_some() || plannable;
         if offers {
             // 用户可能马上点入口：后台先把字体解析好，别让第一张图卡在解析上

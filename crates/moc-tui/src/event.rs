@@ -464,13 +464,12 @@ async fn event_loop(
                     // 下一次 emit 就能取到载荷；事件本身已经把 dirty 置上了。
                     Some(AppEvent::ImageEncoded { .. } | AppEvent::LayoutReady) => {}
                     Some(AppEvent::ChartEncoded {
-                        entry,
                         table,
                         image_id,
                         px,
                         payload,
                     }) => {
-                        app.complete_chart_encode(entry, table, image_id, px, payload);
+                        app.complete_chart_encode(table, image_id, px, payload);
                     }
                     Some(AppEvent::PickerError(error)) => {
                         let shown = app

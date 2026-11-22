@@ -13,14 +13,13 @@ fn settle_chart(
     for _ in 0..1000 {
         while let Ok(event) = receiver.try_recv() {
             if let crate::protocol::AppEvent::ChartEncoded {
-                entry,
                 table,
                 image_id,
                 px,
                 payload,
             } = event
             {
-                app.complete_chart_encode(entry, table, image_id, px, payload);
+                app.complete_chart_encode(table, image_id, px, payload);
             }
         }
         if !app.has_rendering_charts()
@@ -55,6 +54,7 @@ fn app_with_chart(proto: GraphicsProto) -> (App, ImageSlot) {
         state.spec.kind,
         state.spec.categories.len(),
         state.spec.series.len(),
+        71 * 8,
     );
     let slot = ImageSlot {
         entry: 0,
@@ -273,6 +273,7 @@ fn async_chart_renders_without_blocking_and_drops_stale_results() {
         state.spec.kind,
         state.spec.categories.len(),
         state.spec.series.len(),
+        71 * 8,
     );
     app.image_slots = vec![ImageSlot {
         entry: 0,
@@ -297,14 +298,13 @@ fn async_chart_renders_without_blocking_and_drops_stale_results() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if let Ok(crate::protocol::AppEvent::ChartEncoded {
-            entry,
             table,
             image_id,
             px,
             payload,
         }) = receiver.try_recv()
         {
-            assert!(!app.complete_chart_encode(entry, table, image_id, px, payload));
+            assert!(!app.complete_chart_encode(table, image_id, px, payload));
             break;
         }
         assert!(std::time::Instant::now() < deadline, "未在预算内收到回执");
@@ -318,4 +318,45 @@ fn async_chart_renders_without_blocking_and_drops_stale_results() {
     let mut ready_out = Vec::new();
     emit(&mut app, &mut ready_out).expect("写内存不会失败");
     assert!(contains(&ready_out, b"\x1bP0;1q"));
+}
+
+/// 在事件队列边界控制回调顺序，不依赖线程完成速度。
+#[test]
+fn chart_completion_follows_identity_and_rejects_obsolete_sizes() {
+    let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(crate::theme::Theme::global(), events);
+    app.push_block(Block::Assistant {
+        text: "| 项 | 值 |\n|---|---|\n| a | 10 |\n| b | 20 |".into(),
+    });
+    app.toggle_table_chart(0, 0);
+    let state = app.blocks[0].table_chart_mut(0).expect("图表态");
+    let id = state.image_id;
+    let first_px = (100, 40);
+    let second_px = (200, 40);
+    state.rendering = Some((second_px, std::time::Instant::now()));
+    let canvas = crate::render::canvas::Canvas::new(200, 40, [0; 3]);
+    let payload = Arc::new(encode::encode(&canvas, GraphicsProto::Kitty, id, 25, 2));
+
+    // 历史页前插后，原图表从下标 0 移到 1。
+    app.blocks.insert(
+        0,
+        crate::transcript::Entry::new(Block::Assistant {
+            text: "历史".into(),
+        }),
+    );
+    assert!(!app.complete_chart_encode(0, id, first_px, Arc::clone(&payload)));
+    assert!(app.has_rendering_charts());
+    assert!(app.complete_chart_encode(0, id, second_px, Arc::clone(&payload)));
+    assert!(!app.has_rendering_charts());
+    // 新尺寸已经完成时，旧回执不能因为 rendering=None 而被接收。
+    assert!(!app.complete_chart_encode(0, id, first_px, Arc::clone(&payload)));
+    assert!(!app.complete_chart_encode(0, id, second_px, Arc::clone(&payload)));
+    let state = app.blocks[1].table_chart(0).expect("前插后图表仍存在");
+    assert_eq!(state.px, second_px);
+    assert!(Arc::ptr_eq(
+        state.payload.as_ref().expect("新载荷"),
+        &payload
+    ));
+    app.toggle_table_chart(1, 0);
+    assert!(!app.complete_chart_encode(0, id, second_px, payload));
 }

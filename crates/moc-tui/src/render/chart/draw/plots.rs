@@ -10,6 +10,7 @@ use super::data_bounds;
 use super::data_extent;
 use super::format_value;
 use super::heat_alpha;
+use super::linear_ratio;
 use super::padded_bounds;
 use super::point;
 
@@ -36,7 +37,6 @@ impl Painter<'_> {
         self.text_end(1, PAD_X + y_w, &y_labels[0], gray);
         let last_plot_row = rows.saturating_sub(2);
         self.text_end(last_plot_row, PAD_X + y_w, &y_labels[1], gray);
-        let span = (max_v - min_v).max(f64::EPSILON);
         let count = spec.categories.len().max(1);
         let x_of = |index: usize| -> f64 {
             if count <= 1 {
@@ -48,14 +48,14 @@ impl Painter<'_> {
         };
         let y_of = |value: f64| -> f64 {
             let height = f64::from((plot_bottom - plot_top).max(1));
-            f64::from(plot_bottom) - (value - min_v) / span * height
+            f64::from(plot_bottom) - linear_ratio(value, min_v, max_v) * height
         };
         let draw_dots = spec.categories.len() <= 12;
         for (index, series) in spec.series.iter().enumerate() {
             let color = self.series_color(index);
             let mut run: Vec<(f64, f64)> = Vec::new();
             for category in 0..spec.categories.len() {
-                match point(series, category) {
+                match point(series, category).filter(|point| point.value.is_finite()) {
                     Some(value) => run.push((x_of(category), y_of(value.value))),
                     None => {
                         self.svg.polyline(&run, 2.0, color);
@@ -146,8 +146,13 @@ impl Painter<'_> {
         let segments: Vec<(u32, [u8; 3])> = (0..HEAT_STEPS)
             .map(|step| (segment, blend(self.palette.bg_base, hue, heat_alpha(step))))
             .collect();
-        self.svg
-            .clipped_segments(bar_left, bar_y, segment * HEAT_STEPS as u32, bar_h, &segments);
+        self.svg.clipped_segments(
+            bar_left,
+            bar_y,
+            segment * HEAT_STEPS as u32,
+            bar_h,
+            &segments,
+        );
         self.text(0, PAD_X, &legend, self.palette.text_secondary);
         self.text(0, PAD_X + legend_w + GAP, &low, self.palette.gray_dim);
         self.text_end(0, grid_right, &high, self.palette.gray_dim);

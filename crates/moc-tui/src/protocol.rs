@@ -222,7 +222,6 @@ pub enum AppEvent {
     },
     /// 表格图表后台光栅化与编码完成（后台线程 → 主线程）。
     ChartEncoded {
-        entry: usize,
         table: usize,
         image_id: u32,
         px: (u32, u32),

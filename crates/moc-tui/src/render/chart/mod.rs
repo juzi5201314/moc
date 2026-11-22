@@ -59,7 +59,7 @@ pub struct ChartLayout {
 ///
 /// 与 [`layout`] 共用同一份公式：渲染层据此判定「这张表放不放得下」，
 /// 不通过就不出入口，避免出现点了没反应的死按钮。
-pub fn rows_needed(kind: ChartKind, categories: usize, series: usize) -> u16 {
+pub fn rows_needed(kind: ChartKind, categories: usize, series: usize, px_width: u32) -> u16 {
     let rows = match kind {
         // 图例 + 每类别一行 + 轴
         ChartKind::Bar | ChartKind::Stacked => categories.saturating_add(2),
@@ -75,10 +75,25 @@ pub fn rows_needed(kind: ChartKind, categories: usize, series: usize) -> u16 {
         ChartKind::Scatter => 1 + 12 + 2,
         // 顶部色标 + 列头 + 每类别一行（底部不再有伪数据行）
         ChartKind::Heatmap => 2 + categories,
-        // 顶部类别图例 + ceil(series/2) 排分面（每排：面板标题 + 类别行 + 留白）
-        ChartKind::Panels => 1 + series.div_ceil(2).max(1).saturating_mul(categories.saturating_add(2)),
+        // 类别图例按网格换行，另占一行刻度说明；窄图用单列面板。
+        ChartKind::Panels => {
+            let columns = panel_columns(px_width);
+            categories
+                .div_ceil(columns)
+                .saturating_add(1)
+                .saturating_add(
+                    series
+                        .div_ceil(columns)
+                        .saturating_mul(categories.saturating_add(2)),
+                )
+        }
     };
     u16::try_from(rows).unwrap_or(u16::MAX)
+}
+
+/// 每个面板至少约 180px；不足两列时连同类别图例一起改为单列。
+pub(super) fn panel_columns(px_width: u32) -> usize {
+    if px_width >= 384 { 2 } else { 1 }
 }
 
 /// 计算版式；放不下就返回 `None`（宁可不出图也不出读不懂的图）。
@@ -91,7 +106,12 @@ pub fn layout(spec: &ChartSpec, cols: u16, cell: CellPixels) -> Option<ChartLayo
         .unwrap_or(u16::MAX)
         .max(MIN_COLS);
     let cols = cols.min(max_cols);
-    let rows = rows_needed(spec.kind, spec.categories.len(), spec.series.len());
+    let rows = rows_needed(
+        spec.kind,
+        spec.categories.len(),
+        spec.series.len(),
+        u32::from(cols) * cell.w,
+    );
     if rows == 0 || rows > MAX_ROWS {
         return None;
     }

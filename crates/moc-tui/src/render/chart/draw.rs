@@ -65,13 +65,13 @@ pub fn render_svg(
 }
 
 /// 轻量 SVG 矢量构建器（无背景矩形，保留透明通道）。
-struct SvgBuilder {
+pub(super) struct SvgBuilder {
     buf: String,
     clip_seq: u32,
 }
 
 impl SvgBuilder {
-    fn new(w: u32, h: u32, css_family: &str, px: u32) -> Self {
+    pub(super) fn new(w: u32, h: u32, css_family: &str, px: u32) -> Self {
         let mut buf = String::with_capacity(4096);
         let escaped_font = xml_escape(css_family);
         let _ = write!(
@@ -82,7 +82,7 @@ impl SvgBuilder {
         Self { buf, clip_seq: 0 }
     }
 
-    fn finish(mut self) -> String {
+    pub(super) fn finish(mut self) -> String {
         self.buf.push_str("</g></svg>");
         self.buf
     }
@@ -118,6 +118,19 @@ impl SvgBuilder {
         );
     }
 
+    /// 按底槽轮廓裁切填充，满值时与轨道的圆角完全重合。
+    fn progress_fill(&mut self, x: u32, y: u32, w: u32, h: u32, filled: u32, rgb: [u8; 3]) {
+        self.clip_seq += 1;
+        let id = self.clip_seq;
+        let rx = f64::from(h) / 2.0;
+        let _ = write!(
+            self.buf,
+            "<defs><clipPath id=\"c{id}\"><rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"{rx:.2}\"/></clipPath></defs><g clip-path=\"url(#c{id})\">"
+        );
+        self.rect(x, y, filled.min(w), h, 0.0, rgb);
+        self.buf.push_str("</g>");
+    }
+
     /// 圆角胶囊条：圆角半径取 `min(h/2, w/2, 4.0)`，兼顾短条与长条比例。
     fn pill(&mut self, x: u32, y: u32, w: u32, h: u32, rgb: [u8; 3]) {
         if w == 0 || h == 0 {
@@ -128,7 +141,14 @@ impl SvgBuilder {
     }
 
     /// 堆叠分段：用外层圆角 clipPath 裁出胶囊两端，内部各整数段紧密相邻不留缝。
-    fn clipped_segments(&mut self, x: u32, y: u32, total_w: u32, h: u32, segments: &[(u32, [u8; 3])]) {
+    fn clipped_segments(
+        &mut self,
+        x: u32,
+        y: u32,
+        total_w: u32,
+        h: u32,
+        segments: &[(u32, [u8; 3])],
+    ) {
         if total_w == 0 || h == 0 || segments.is_empty() {
             return;
         }
@@ -184,7 +204,7 @@ impl SvgBuilder {
         self.buf.push_str("\"/>");
     }
 
-    fn text(&mut self, x: u32, baseline: i32, content: &str, rgb: [u8; 3]) {
+    pub(super) fn text(&mut self, x: u32, baseline: i32, content: &str, rgb: [u8; 3]) {
         if content.is_empty() {
             return;
         }
@@ -210,7 +230,13 @@ fn xml_escape(text: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
-            other => out.push(other),
+            '\u{9}'
+            | '\u{a}'
+            | '\u{d}'
+            | '\u{20}'..='\u{d7ff}'
+            | '\u{e000}'..='\u{fffd}'
+            | '\u{10000}'..='\u{10ffff}' => out.push(ch),
+            _ => out.push('\u{fffd}'),
         }
     }
     out
@@ -319,16 +345,13 @@ impl ValueScale {
     /// 数值在横向轨道里的比例（0..1）。
     fn ratio(self, value: f64) -> f64 {
         match self {
-            Self::Linear { min, max } => {
-                let span = (max - min).max(f64::EPSILON);
-                ((value - min) / span).clamp(0.0, 1.0)
-            }
+            Self::Linear { min, max } => linear_ratio(value, min, max),
             Self::Log { min, max } => {
-                let span = (max / min).ln();
-                if span.abs() < f64::EPSILON {
+                let span = max.ln() - min.ln();
+                if span == 0.0 {
                     0.0
                 } else {
-                    ((value.max(min) / min).ln() / span).clamp(0.0, 1.0)
+                    ((value.max(min).ln() - min.ln()) / span).clamp(0.0, 1.0)
                 }
             }
         }
@@ -361,6 +384,20 @@ impl ValueScale {
             ),
         }
     }
+}
+
+/// 非零跨度不设绝对下限；跨符号极值先减半，避免两个有限端点相减溢出。
+fn linear_ratio(value: f64, min: f64, max: f64) -> f64 {
+    if min == max {
+        return 0.0;
+    }
+    let span = max - min;
+    let ratio = if span.is_finite() {
+        (value - min) / span
+    } else {
+        (value * 0.5 - min * 0.5) / (max * 0.5 - min * 0.5)
+    };
+    ratio.clamp(0.0, 1.0)
 }
 
 /// 按 8 位 alpha 把前景混到背景上（热力图 5 档格色）。
@@ -446,15 +483,27 @@ impl Painter<'_> {
     fn hline(&mut self, x0: u32, x1: u32, y: u32, rgb: [u8; 3]) {
         let lo = x0.min(x1);
         let hi = x0.max(x1);
-        self.svg
-            .line(f64::from(lo), f64::from(y) + 0.5, f64::from(hi), f64::from(y) + 0.5, 1.0, rgb);
+        self.svg.line(
+            f64::from(lo),
+            f64::from(y) + 0.5,
+            f64::from(hi),
+            f64::from(y) + 0.5,
+            1.0,
+            rgb,
+        );
     }
 
     fn vline(&mut self, x: u32, y0: u32, y1: u32, rgb: [u8; 3]) {
         let lo = y0.min(y1);
         let hi = y0.max(y1);
-        self.svg
-            .line(f64::from(x) + 0.5, f64::from(lo), f64::from(x) + 0.5, f64::from(hi), 1.0, rgb);
+        self.svg.line(
+            f64::from(x) + 0.5,
+            f64::from(lo),
+            f64::from(x) + 0.5,
+            f64::from(hi),
+            1.0,
+            rgb,
+        );
     }
 
     /// 图例圆点：与该行文本中心对齐。

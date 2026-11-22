@@ -85,8 +85,6 @@ const STACKED_NORMALIZE_RATIO: f64 = 4.0;
 const PROGRESS_MAX_PERCENT: f64 = 100.0;
 /// `Panels` 的类别行数上限：超过 6 个类别在 2 列小面板里图例和条行都会过密。
 const PANELS_MAX_ROWS: usize = 6;
-/// `Panels` 最多展示的指标面板数。
-const PANELS_MAX_SERIES: usize = 8;
 /// `Panels` 同组量纲跨度门槛：正数极差达到 100 倍即拆面，避免被迫走对数刻度。
 const PANELS_SPAN_RATIO: f64 = 100.0;
 /// `Panels` 同组列峰值倍率门槛：各列最大正值相差 10 倍以上即拆面各自定标。
@@ -208,7 +206,14 @@ pub fn plan(table: &TableAnalysis) -> Option<ChartPlan> {
     }
     // 规则 8.5：多量纲指标或同组跨量级悬殊 → 分面小面板（独立线性刻度）
     if let Some(series) = panels_series(table, &main) {
-        return Some(finish(table, ChartKind::Panels, label, series, false, false));
+        return Some(finish(
+            table,
+            ChartKind::Panels,
+            label,
+            series,
+            false,
+            false,
+        ));
     }
     // 规则 9：2–4 个同组系列 → 分组条形
     if (2..=GROUP_MAX).contains(&main.len()) {
@@ -389,17 +394,8 @@ fn panels_series(table: &TableAnalysis, main: &[usize]) -> Option<Vec<usize>> {
         return None;
     }
     if table.measures.len() > main.len() {
-        return Some(
-            table
-                .measures
-                .iter()
-                .copied()
-                .take(PANELS_MAX_SERIES)
-                .collect(),
-        );
-    }
-    if !(2..=PANELS_MAX_SERIES).contains(&main.len()) {
-        return None;
+        // 保留所有指标；是否放得下由前端按实际布局判断，不在规划层截掉数据。
+        return Some(table.measures.clone());
     }
     let mut global_min = f64::INFINITY;
     let mut global_max = 0.0f64;
@@ -631,6 +627,33 @@ mod tests {
         assert_eq!(planned.kind, ChartKind::Bar);
         assert!(planned.diverging);
         assert_eq!(planned.polarity, vec![Some(Polarity::Lower)]);
+    }
+
+    #[test]
+    fn panels_keep_all_metrics_beyond_eight_columns() {
+        let raw = table(
+            &[
+                "地区",
+                "a ms",
+                "b ms",
+                "c ms",
+                "d ms",
+                "e ms",
+                "f ms",
+                "g ms",
+                "h ms",
+                "内存 MiB",
+            ],
+            &[
+                &["北", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+                &["南", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+            ],
+        );
+        let (planned, spec) = chart(&raw);
+        assert_eq!(planned.kind, ChartKind::Panels);
+        assert_eq!(planned.series, (1..=9).collect::<Vec<_>>());
+        assert_eq!(spec.series[8].name, "内存 MiB");
+        assert_eq!(spec.series[8].points[1].as_ref().unwrap().text, "10");
     }
 
     #[test]

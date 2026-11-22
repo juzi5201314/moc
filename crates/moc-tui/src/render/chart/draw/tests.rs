@@ -321,21 +321,204 @@ fn panels_render_transparent_rgba_with_four_facets() {
         vec![
             series("s1", &[(4.6, "4.6 ms"), (150.0, "150 ms"), (64.0, "64 ms")]),
             series("s2", &[(4.2, "4.2 ms"), (3.8, "3.8 ms"), (127.0, "127 ms")]),
-            series("s3", &[(339.0, "339 ms"), (488.0, "488 ms"), (1040.0, "1.04 s")]),
-            series("s4", &[(40.2, "40.2 MiB"), (51.1, "51.1 MiB"), (158.0, "158 MiB")]),
+            series(
+                "s3",
+                &[(339.0, "339 ms"), (488.0, "488 ms"), (1040.0, "1.04 s")],
+            ),
+            series(
+                "s4",
+                &[(40.2, "40.2 MiB"), (51.1, "51.1 MiB"), (158.0, "158 MiB")],
+            ),
         ],
     );
-    let (canvas, layout) = raster(&panels_spec);
-    assert_eq!(layout.rows, 1 + 2 * (3 + 2));
+    let (canvas, _) = raster(&panels_spec);
     let rgba = canvas.rgba().expect("SVG 光栅化应保留直通 RGBA 通道");
     assert_eq!(rgba[3], 0, "左上角背景像素必须全透明");
     // 四个面板的最后一行（cat 2，用 chart_rgb(2)）都应落出实色像素
     let cat2 = chart_rgb(&theme, 2);
     for (grid_row, grid_col) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-        let y = (1 + grid_row * 5 + 3) * 18 + 9;
+        let y = (3 + grid_row * 5 + 3) * 18 + 9;
         let x0 = if grid_col == 0 { 0 } else { canvas.w() / 2 };
-        let x1 = if grid_col == 0 { canvas.w() / 2 } else { canvas.w() };
+        let x1 = if grid_col == 0 {
+            canvas.w() / 2
+        } else {
+            canvas.w()
+        };
         let painted = (x0..x1).filter(|&x| rgb_at(&canvas, x, y) == cat2).count();
-        assert!(painted >= 4, "面板 ({grid_row}, {grid_col}) 应画出第 3 类胶囊条");
+        assert!(
+            painted >= 4,
+            "面板 ({grid_row}, {grid_col}) 应画出第 3 类胶囊条"
+        );
     }
+}
+
+/// 线性刻度对极小跨度与跨符号极值都保持真实比例。
+#[test]
+fn linear_scale_handles_tiny_and_extreme_finite_ranges() {
+    for (min, max, middle) in [(0.0, 2e-18, 1e-18), (-1e308, 1e308, 0.0)] {
+        assert_eq!(linear_ratio(min, min, max), 0.0);
+        assert_eq!(linear_ratio(max, min, max), 1.0);
+        assert!((linear_ratio(middle, min, max) - 0.5).abs() < 1e-12);
+    }
+    assert_eq!(linear_ratio(0.0, 0.0, 0.0), 0.0);
+}
+
+fn rendered_texts(group: &resvg::usvg::Group) -> Vec<(String, resvg::usvg::Rect)> {
+    let mut texts = Vec::new();
+    for node in group.children() {
+        match node {
+            resvg::usvg::Node::Text(text) => texts.push((
+                text.chunks().iter().map(|chunk| chunk.text()).collect(),
+                text.abs_bounding_box(),
+            )),
+            resvg::usvg::Node::Group(group) => texts.extend(rendered_texts(group)),
+            _ => {}
+        }
+    }
+    texts
+}
+
+#[test]
+fn narrow_panels_keep_every_category_and_zero_label_in_bounds() {
+    let mut values = series("负数与零", &[(-40.0, "-40"), (0.0, "0")]);
+    values.points.extend([
+        None,
+        point(-20.0, "-20"),
+        point(-1.0, "-1"),
+        point(-30.0, "-30"),
+    ]);
+    let chart = spec(
+        ChartKind::Panels,
+        &["甲", "乙", "丙", "丁", "戊", "己"],
+        vec![values],
+    );
+    let theme = Theme::resolved(ColorLevel::TrueColor);
+    let layout = super::super::layout(&chart, 24, cell()).expect("窄图应采用单列面板");
+    with_fonts(|fonts| {
+        let svg = render_svg(&chart, &layout, theme.raw(), fonts);
+        let tree = resvg::usvg::Tree::from_str(
+            &svg,
+            &resvg::usvg::Options {
+                fontdb: fonts.database(),
+                ..Default::default()
+            },
+        )
+        .expect("图表 SVG");
+        let texts = rendered_texts(tree.root());
+        for (index, name) in chart.categories.iter().enumerate() {
+            assert!(
+                texts
+                    .iter()
+                    .any(|(text, _)| text == &format!("{} {name}", index + 1))
+            );
+        }
+        for value in ["0", "-40", "—"] {
+            let (_, bounds) = texts
+                .iter()
+                .find(|(text, _)| text == value)
+                .expect("保留数值与缺失值");
+            assert!(bounds.left() >= 0.0 && f64::from(bounds.right()) <= f64::from(layout.px.0));
+        }
+    });
+}
+
+#[test]
+fn invalid_xml_label_does_not_erase_the_chart() {
+    let mut chart = bar_spec();
+    chart.categories[0] = "a\u{fffe}\u{1}".into();
+    let (canvas, _) = raster(&chart);
+    let theme = Theme::resolved(ColorLevel::TrueColor);
+    assert!(width_of(&canvas, 18 + 9, chart_rgb(&theme, 0)) > 10);
+}
+
+#[test]
+fn extreme_line_keeps_all_finite_points_visible() {
+    let mut chart = spec(
+        ChartKind::Line,
+        &["首", "尾"],
+        vec![series("值", &[(1e308, "高"), (-1e308, "低")])],
+    );
+    chart.categories = (0..13).map(|i| i.to_string()).collect();
+    chart.series[0]
+        .points
+        .extend((2..13).map(|_| point(0.0, "0")));
+    let (canvas, layout) = raster(&chart);
+    let color = chart_rgb(&Theme::resolved(ColorLevel::TrueColor), 0);
+    let y = (u32::from(layout.rows) * 18) / 2;
+    assert!(width_of(&canvas, y, color) > 50, "后续零值折线应贯穿绘图区");
+}
+
+#[test]
+fn progress_fill_stays_inside_the_rounded_track() {
+    let render = |filled| {
+        let mut svg = SvgBuilder::new(100, 16, "sans-serif", 12);
+        svg.track_pill(0, 0, 100, 16, [128; 3]);
+        if filled > 0 {
+            svg.progress_fill(0, 0, 100, 16, filled, [255; 3]);
+        }
+        let tree =
+            resvg::usvg::Tree::from_str(&svg.finish(), &Default::default()).expect("进度 SVG");
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(100, 16).expect("有效尺寸");
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::identity(),
+            &mut pixmap.as_mut(),
+        );
+        pixmap
+    };
+    let track = render(0);
+    for filled in [1, 50, 100] {
+        let image = render(filled);
+        for (background, pixel) in track.pixels().iter().zip(image.pixels()) {
+            if background.alpha() == 0 {
+                assert_eq!(pixel.alpha(), 0, "填充不能越过轨道外缘");
+            }
+        }
+    }
+}
+
+#[test]
+fn panels_preserve_tiny_value_ratios_and_negative_direction() {
+    let theme = Theme::resolved(ColorLevel::TrueColor);
+    let tiny = spec(
+        ChartKind::Panels,
+        &["a", "b", "c"],
+        vec![series(
+            "极小值",
+            &[(1e-18, "a"), (2e-18, "b"), (3e-18, "c")],
+        )],
+    );
+    let (canvas, _) = raster(&tiny);
+    // 双列图例占两行，刻度说明占一行，标题之后才是数值条。
+    let widths: Vec<u32> = (0..3)
+        .map(|index| {
+            let y = (4 + u32::try_from(index).expect("三行类别")) * 18 + 9;
+            u32::try_from(
+                (30..canvas.w() / 2)
+                    .filter(|&x| rgb_at(&canvas, x, y) == chart_rgb(&theme, index))
+                    .count(),
+            )
+            .expect("像素数不超过画布宽度")
+        })
+        .collect();
+    assert!(
+        widths[0] > 6 && widths[1] > widths[0] && widths[2] > widths[1],
+        "极小值必须保持比例：{widths:?}"
+    );
+
+    let signed = spec(
+        ChartKind::Panels,
+        &["负", "正"],
+        vec![series("混合符号", &[(-1.0, "-1"), (1000.0, "1000")])],
+    );
+    let (canvas, _) = raster(&signed);
+    let negative = chart_rgb(&theme, 0);
+    let positive = chart_rgb(&theme, 1);
+    let origin = (30..canvas.w() / 2)
+        .find(|&x| rgb_at(&canvas, x, 4 * 18 + 9) == positive)
+        .expect("正值条");
+    assert!(
+        (origin..canvas.w() / 2).all(|x| rgb_at(&canvas, x, 3 * 18 + 9) != negative),
+        "负值不得画到正侧"
+    );
 }

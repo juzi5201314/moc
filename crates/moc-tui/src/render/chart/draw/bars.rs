@@ -48,11 +48,7 @@ impl Painter<'_> {
         } else {
             0
         };
-        let right_w = if scale.has_positive() || neg.is_empty() {
-            self.widest(&pos).min(max_side)
-        } else {
-            0
-        };
+        let right_w = self.widest(&pos).min(max_side);
         (left_w, right_w)
     }
 
@@ -170,8 +166,8 @@ impl Painter<'_> {
         let (left_w, right_w) = self.split_value_widths(&spec.series, scale, self.w() / 5);
         let deltas = paired_deltas(&spec.series);
         let delta_w = self.widest(&deltas).min(self.w() / 4);
-        let right_pad =
-            if right_w > 0 { right_w + GAP } else { 0 } + if delta_w > 0 { delta_w + GAP } else { 0 };
+        let right_pad = if right_w > 0 { right_w + GAP } else { 0 }
+            + if delta_w > 0 { delta_w + GAP } else { 0 };
         let track = self.bar_track(label_w, left_w, right_pad);
         let origin = scale.origin(track);
         let legend_end = self.legend();
@@ -214,66 +210,54 @@ impl Painter<'_> {
         self.value_axis(axis_row, track, scale, &min_text, &mid_text, &max_text);
     }
 
-    /// 分面小面板（对标 omp autoGraph）：顶部类别圆点图例 + 2 列网格，各指标独立线性比例尺。
+    /// 分面小面板：类别图例换行，窄图改为单列；各指标独立线性定标。
     pub(super) fn panels(&mut self) {
         let spec = self.spec;
         if spec.series.is_empty() || spec.categories.is_empty() {
             return;
         }
-        self.panel_legend();
+        let columns = super::super::panel_columns(self.w());
+        let top = self.panel_legend(columns);
         let inner_w = self.w().saturating_sub(2 * PAD_X);
-        let col_gap = PANEL_COL_GAP.min(inner_w / 6);
-        let panel_w = inner_w.saturating_sub(col_gap) / 2;
-        if panel_w < 24 {
-            return;
-        }
+        let col_gap = if columns == 1 {
+            0
+        } else {
+            PANEL_COL_GAP.min(inner_w / 6)
+        };
+        let panel_w =
+            inner_w.saturating_sub(col_gap) / u32::try_from(columns).expect("面板列数为 1 或 2");
         let stride = spec.categories.len() + 2;
         for (idx, series) in spec.series.iter().enumerate() {
-            let grid_row = idx / 2;
-            let grid_col = idx % 2;
-            let x0 = PAD_X + (grid_col as u32) * (panel_w + col_gap);
-            let top_row = u16::try_from(1 + grid_row * stride).unwrap_or(u16::MAX);
+            let grid_row = idx / columns;
+            let grid_col = idx % columns;
+            let x0 =
+                PAD_X + u32::try_from(grid_col).expect("面板列号最多为 1") * (panel_w + col_gap);
+            let top_row = top + u16::try_from(grid_row * stride).expect("布局已限制总行数");
             self.draw_panel(x0, panel_w, top_row, series);
         }
     }
 
-    /// 分面顶行：左侧灰字 `各面板独立刻度` + 右侧（空间允许时右对齐）类别圆点图例。
-    fn panel_legend(&mut self) {
+    /// 类别图例优先占位；编号与条行一致，长名称截断后仍可区分。
+    fn panel_legend(&mut self, columns: usize) -> u16 {
         let spec = self.spec;
-        let note = t!("tui.chart.scaled_per_panel").into_owned();
-        let note_w = self.text_width(&note);
-        let right = self.w().saturating_sub(PAD_X);
-        self.text(0, PAD_X, &note, self.palette.gray_dim);
-
-        let mut x = PAD_X + note_w + 3 * GAP;
-        if x >= right {
-            return;
+        let cell_w =
+            self.w().saturating_sub(2 * PAD_X) / u32::try_from(columns).expect("图例列数为 1 或 2");
+        for (index, name) in spec.categories.iter().enumerate() {
+            let row = u16::try_from(index / columns).expect("类别数受规划层限制");
+            let x = PAD_X + u32::try_from(index % columns).expect("图例列号最多为 1") * cell_w;
+            let label = format!("{} {name}", index + 1);
+            let shown = self.fit(&label, cell_w.saturating_sub(SWATCH + 2 * GAP));
+            self.dot(x, row, self.series_color(index));
+            self.text(row, x + SWATCH + GAP, &shown, self.palette.text_secondary);
         }
-        let mut items: Vec<(usize, String, u32)> = Vec::with_capacity(spec.categories.len());
-        let mut total_w = 0u32;
-        let max_item_w = (right - x) / (spec.categories.len().max(1) as u32);
-        for (cat_idx, name) in spec.categories.iter().enumerate() {
-            let room = max_item_w.saturating_sub(SWATCH + GAP + 2 * GAP);
-            let shown = self.fit(name, room.max(1));
-            let text_w = self.text_width(&shown);
-            let item_w = SWATCH + GAP + text_w;
-            total_w += item_w + if cat_idx > 0 { 2 * GAP } else { 0 };
-            items.push((cat_idx, shown, item_w));
-        }
-        if x + total_w <= right {
-            x = right - total_w;
-        }
-        for (idx, (cat_idx, shown, item_w)) in items.into_iter().enumerate() {
-            if idx > 0 {
-                x += 2 * GAP;
-            }
-            if x + SWATCH + GAP >= right {
-                break;
-            }
-            self.dot(x, 0, self.series_color(cat_idx));
-            self.text(0, x + SWATCH + GAP, &shown, self.palette.text_secondary);
-            x += item_w;
-        }
+        let note_row =
+            u16::try_from(spec.categories.len().div_ceil(columns)).expect("类别数受规划层限制");
+        let note = self.fit(
+            &t!("tui.chart.scaled_per_panel"),
+            self.w().saturating_sub(2 * PAD_X),
+        );
+        self.text(note_row, PAD_X, &note, self.palette.gray_dim);
+        note_row + 1
     }
 
     /// 单个分面小面板：顶行系列名（含单位），下方每类别一条圆角胶囊 + 数值。
@@ -283,24 +267,37 @@ impl Painter<'_> {
 
         let slice = std::slice::from_ref(series);
         let scale = ValueScale::linear(slice);
-        let (left_w, right_w) = self.split_value_widths(slice, scale, (panel_w * 2) / 5);
-        let track_left = x0 + if left_w > 0 { left_w + GAP } else { 0 };
-        let right_pad = if right_w > 0 { right_w + GAP } else { 0 };
-        let track_right = (x0 + panel_w)
-            .saturating_sub(right_pad)
-            .max(track_left + PANEL_MIN_BAR_W + 1);
+        let number_w = self.text_width(&self.spec.categories.len().to_string()) + GAP;
+        let track_area = panel_w.saturating_sub(number_w);
+        let (left_w, right_w) =
+            self.split_value_widths(slice, scale, track_area.saturating_sub(3 * GAP + 2) / 2);
+        let track_left = x0 + number_w + if left_w > 0 { left_w + GAP } else { 0 };
+        let right_pad = if right_w > 0 { right_w + GAP + 2 } else { 0 };
+        let track_right = (x0 + panel_w).saturating_sub(right_pad).max(track_left + 1);
         let track = (track_left, track_right);
         let origin = scale.origin(track);
 
         if scale.has_negative() && scale.has_positive() {
-            let bottom = self.row_top(top_row + 1 + u16::try_from(self.spec.categories.len()).unwrap_or(0));
-            self.vline(origin, self.row_top(top_row + 1), bottom, self.palette.border_subtle);
+            let bottom =
+                self.row_top(top_row + 1 + u16::try_from(self.spec.categories.len()).unwrap_or(0));
+            self.vline(
+                origin,
+                self.row_top(top_row + 1),
+                bottom,
+                self.palette.border_subtle,
+            );
         }
 
         let bar_h = bar_height(self.cell_h());
         let inset = bar_inset(self.cell_h());
         for cat_idx in 0..self.spec.categories.len() {
             let row = top_row + 1 + u16::try_from(cat_idx).unwrap_or(0);
+            self.text(
+                row,
+                x0,
+                &(cat_idx + 1).to_string(),
+                self.series_color(cat_idx),
+            );
             let Some(val) = point(series, cat_idx) else {
                 self.text(row, track.0, "—", self.palette.gray_dim);
                 continue;
@@ -313,8 +310,13 @@ impl Painter<'_> {
                 x = origin.saturating_sub(PANEL_MIN_BAR_W).max(track.0);
             }
             let bar_y = self.row_top(row) + inset;
-            let (left, right) = if x >= origin { (origin, x) } else { (x, origin) };
-            let width = if val.value == 0.0 { 2 } else { (right - left).max(1) };
+            let (left, right) = if x >= origin {
+                (origin, x)
+            } else {
+                (x, origin)
+            };
+            // 负侧不足一个像素时不反向补条；保留负号数值标签表达该数据。
+            let width = if val.value == 0.0 { 2 } else { right - left };
             self.pill(left, bar_y, width, bar_h, color);
             if val.value >= 0.0 {
                 let text_x = left + width + GAP;
@@ -327,13 +329,21 @@ impl Painter<'_> {
                 } else {
                     val.text.clone()
                 };
-                self.text_end(row, x.saturating_sub(GAP), &shown, self.palette.text_secondary);
+                self.text_end(
+                    row,
+                    x.saturating_sub(GAP),
+                    &shown,
+                    self.palette.text_secondary,
+                );
             }
         }
     }
 
     /// 一行条形（条形 / 分组 / 成对共用；负值标签按预留左侧宽度截断，避免压入类别列）。
-    #[expect(clippy::too_many_arguments, reason = "内部行绘制复用，参数与轨道几何一一对应")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "内部行绘制复用，参数与轨道几何一一对应"
+    )]
     pub(super) fn bar_row(
         &mut self,
         row: u16,
@@ -357,7 +367,12 @@ impl Painter<'_> {
         let width = (right - left).max(2);
         self.pill(left, bar_y, width, bar_height(self.cell_h()), color);
         if value.value >= 0.0 {
-            self.text(row, left + width + GAP, &value.text, self.palette.text_secondary);
+            self.text(
+                row,
+                left + width + GAP,
+                &value.text,
+                self.palette.text_secondary,
+            );
         } else {
             let shown = if left_w > 0 {
                 self.fit(&value.text, left_w)
@@ -442,9 +457,7 @@ impl Painter<'_> {
             let target_len = if spec.normalized {
                 length
             } else {
-                ((total / max_total) * f64::from(length))
-                    .round()
-                    .max(1.0) as u32
+                ((total / max_total) * f64::from(length)).round().max(1.0) as u32
             }
             .min(length);
             // 段宽先各自取整，再把舍入误差补给占比最大的一段：条长在归一化时
@@ -547,7 +560,8 @@ impl Painter<'_> {
             let ratio = progress_ratio(value);
             let filled = ((f64::from(length) * ratio).round() as u32).min(length);
             if filled > 0 {
-                self.pill(track.0, y, filled, track_h, color);
+                self.svg
+                    .progress_fill(track.0, y, length, track_h, filled, color);
             }
             self.text_end(
                 line,

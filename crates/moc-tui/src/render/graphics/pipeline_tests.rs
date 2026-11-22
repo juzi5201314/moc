@@ -51,17 +51,19 @@ fn emitted_image_matches_the_reserved_cell_area() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if let Ok(crate::protocol::AppEvent::ChartEncoded {
-            entry,
             table,
             image_id,
             px,
             payload,
         }) = receiver.try_recv()
         {
-            assert!(app.complete_chart_encode(entry, table, image_id, px, payload));
+            assert!(app.complete_chart_encode(table, image_id, px, payload));
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "图表未在预算内完成编码");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "图表未在预算内完成编码"
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 

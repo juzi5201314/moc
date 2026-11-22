@@ -71,17 +71,19 @@ impl App {
         let rendering = immediate_layout
             .as_ref()
             .map(|(_, l)| (l.px, std::time::Instant::now()));
-        if let Some((proto, chart_layout)) = immediate_layout {
-            crate::render::graphics::spawn_chart_encode(
+        if let Some((proto, chart_layout)) = immediate_layout
+            && let Err(error) = crate::render::graphics::spawn_chart_encode(
                 self.events.clone(),
-                entry,
                 table,
                 image_id,
                 spec.clone(),
                 chart_layout,
                 proto,
                 theme,
-            );
+            )
+        {
+            self.set_notice(t!("tui.err.chart_start_fmt", err = error).into_owned());
+            return;
         }
         if let Some(block) = self.blocks.get_mut(entry) {
             block.set_table_chart(
@@ -101,24 +103,23 @@ impl App {
     /// 回填后台完成的图表渲染载荷；若该图表已被收起、替换或尺寸已过期则静默丢弃。
     pub fn complete_chart_encode(
         &mut self,
-        entry: usize,
         table: usize,
         image_id: u32,
         px: (u32, u32),
         payload: std::sync::Arc<crate::render::graphics::encode::Payload>,
     ) -> bool {
-        let Some(block) = self.blocks.get_mut(entry) else {
+        // 历史分页会前插 blocks；图像 ID 在进程内唯一，不依赖启动时的条目下标。
+        let Some(state) = self
+            .blocks
+            .iter_mut()
+            .filter_map(|block| block.table_chart_mut(table))
+            .find(|state| state.image_id == image_id)
+        else {
             return false;
         };
-        let Some(state) = block.table_chart_mut(table) else {
-            return false;
-        };
-        if state.image_id != image_id {
-            return false;
-        }
-        if state
+        if !state
             .rendering
-            .is_some_and(|(target_px, _)| target_px != px)
+            .is_some_and(|(target_px, _)| target_px == px)
         {
             return false;
         }
