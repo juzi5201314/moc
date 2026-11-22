@@ -118,15 +118,6 @@ export function WelcomeView({ sessionId }: { sessionId: string }) {
       </header>
       <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-4 pt-4 pb-16 sm:px-6">
         <div className="my-auto flex w-full max-w-[688px] flex-col">
-          <h1 className="mb-4 flex items-center gap-2.5 px-2 text-2xl font-semibold tracking-tight">
-            <span
-              aria-hidden="true"
-              className="flex size-6 items-center justify-center rounded-[6px] bg-foreground text-ui text-background"
-            >
-              m
-            </span>
-            moc
-          </h1>
           <ComposerBar sessionId={sessionId} inline />
           <div className="mt-1 px-1">
             <WorkspaceSwitch sessionId={sessionId} />

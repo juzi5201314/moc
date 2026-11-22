@@ -32,6 +32,7 @@ import {
   AttachmentRemove,
   Attachments,
 } from "@/components/ai-elements/attachments";
+import { ImagePreviewDialog } from "@/components/chat/image-preview-dialog";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverAnchor } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -155,6 +156,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const suggestionsId = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [cursor, setCursor] = useState(0);
+  const [previewImage, setPreviewImage] = useState<{ src: string; name: string } | null>(null);
   const [reading, setReading] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -638,7 +640,16 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     }}
                     onRemove={() => useComposer.getState().removeImage(sessionId, image.id)}
                   >
-                    <AttachmentPreview />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPreviewImage({ src: imageUrl(image.source), name: image.name })
+                      }
+                      aria-label={t("th.image_preview")}
+                      className="flex size-8 items-center justify-center rounded-md bg-muted focus-visible:outline-2 focus-visible:outline-brand"
+                    >
+                      <AttachmentPreview className="size-8 bg-muted" />
+                    </button>
                     <AttachmentRemove label={t("cb.remove_image", { name: image.name })} />
                   </Attachment>
                 ))}
@@ -768,8 +779,14 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               </div>
             </div>
           </div>
+          <ImagePreviewDialog
+            open={previewImage !== null}
+            src={previewImage?.src ?? null}
+            alt={previewImage?.name ?? t("th.image_preview")}
+            title={t("th.image_preview")}
+            onOpenChange={(open) => !open && setPreviewImage(null)}
+          />
         </div>
-        {inline && <ComposerStatus sessionId={sessionId} todos={todos} />}
       </div>
     </ComposerDock>
   );

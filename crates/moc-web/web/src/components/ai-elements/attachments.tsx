@@ -91,7 +91,7 @@ const renderAttachmentImage = (url: string, filename: string | undefined, isGrid
   ) : (
     <img
       alt={filename || "Image"}
-      className="size-full rounded object-cover"
+      className="size-full rounded object-contain"
       height={20}
       src={url}
       width={20}
@@ -329,9 +329,9 @@ export const AttachmentRemove = ({
           "[&>svg]:size-3",
         ],
         variant === "inline" && [
-          "size-5 rounded p-0",
-          "opacity-0 transition-opacity group-hover:opacity-100",
-          "[&>svg]:size-2.5",
+          "absolute top-0 left-full z-10 flex h-8 w-0 shrink-0 overflow-hidden rounded-r-md bg-muted p-0",
+          "opacity-0 transition-[width,opacity] group-hover:w-6 group-hover:opacity-100",
+          "group-focus-within:w-6 group-focus-within:opacity-100 focus-visible:w-6 focus-visible:opacity-100 [@media(hover:none)]:w-6 [@media(hover:none)]:opacity-100 [&>svg]:size-3",
         ],
         variant === "list" && ["size-8 shrink-0 rounded p-0", "[&>svg]:size-4"],
         className,

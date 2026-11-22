@@ -38,10 +38,10 @@ import {
   imageSrc,
   JobNoticeCard,
 } from "@/components/chat/activity";
+import { ImagePreviewDialog } from "@/components/chat/image-preview-dialog";
 import { AskCard, PermissionCard } from "@/components/chat/requests";
 import { IconButton } from "@/components/common/icon-button";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { clockTime } from "@/lib/format";
 import { type MsgKey, t, useT } from "@/lib/i18n";
 import { modelName } from "@/lib/models";
@@ -403,18 +403,13 @@ const ImageThumbs = memo(function ImageThumbs({
           </button>
         ))}
       </div>
-      <Dialog open={preview !== null} onOpenChange={(open) => !open && setPreview(null)}>
-        <DialogContent className="max-w-[min(92vw,1100px)] border-0 bg-transparent p-0 shadow-none sm:max-w-[min(92vw,1100px)]">
-          <DialogTitle className="sr-only">{t("th.image_preview")}</DialogTitle>
-          {preview && (
-            <img
-              src={preview}
-              alt={t("th.image_preview")}
-              className="max-h-[86vh] w-full rounded-xl object-contain"
-            />
-          )}
-        </DialogContent>
-      </Dialog>
+      <ImagePreviewDialog
+        open={preview !== null}
+        src={preview}
+        alt={t("th.image_preview")}
+        title={t("th.image_preview")}
+        onOpenChange={(open) => !open && setPreview(null)}
+      />
     </>
   );
 });
