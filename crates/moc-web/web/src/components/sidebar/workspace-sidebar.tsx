@@ -590,7 +590,11 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
       <span
         className={cn(
           "pointer-events-none shrink-0 text-2xs tabular-nums group-hover/session:invisible group-focus-within/session:invisible group-has-[[data-state=open]]/session:invisible pointer-coarse:invisible",
-          attention && !running ? "text-warn" : "text-text-tertiary",
+          attention && !running
+            ? "text-warn"
+            : active
+              ? "text-muted-foreground"
+              : "text-text-tertiary",
         )}
       >
         {running
