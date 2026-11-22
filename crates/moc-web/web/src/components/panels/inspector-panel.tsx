@@ -8,6 +8,7 @@ import {
   type LucideIcon,
   MessagesSquareIcon,
   PanelRightIcon,
+  PlusIcon,
   RowsIcon,
   SquareTerminalIcon,
 } from "lucide-react";
@@ -22,18 +23,22 @@ import { type InspectorTab, useLayout } from "@/store/layout";
 import { usePrefs } from "@/store/prefs";
 import { useTranscript } from "@/store/transcript";
 import { BtwTab, PanelEmpty } from "./inspector-tabs";
+import { LauncherTab } from "./launcher-tab";
 
 // 终端整页懒加载：xterm 依赖大，不进主路径。
 const TerminalTab = lazy(() =>
   import("@/components/terminal/terminal-tab").then((module) => ({ default: module.TerminalTab })),
 );
 
-const TABS: { id: InspectorTab; label: MsgKey; icon: LucideIcon }[] = [
+const TABS: { id: Exclude<InspectorTab, "launcher">; label: MsgKey; icon: LucideIcon }[] = [
   { id: "files", label: "insp.files", icon: FolderIcon },
   { id: "terminal", label: "insp.terminal", icon: SquareTerminalIcon },
   { id: "changes", label: "insp.changes", icon: GitCompareArrowsIcon },
   { id: "btw", label: "insp.btw", icon: MessagesSquareIcon },
 ];
+
+const TAB_CLASS =
+  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui transition-colors [&_svg]:size-3.5";
 
 export function InspectorPanel({ sessionId }: { sessionId: string }) {
   const t = useT();
@@ -58,7 +63,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
                 type="button"
                 onClick={() => useLayout.getState().openInspector(item.id)}
                 className={cn(
-                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui transition-colors [&_svg]:size-3.5",
+                  TAB_CLASS,
                   tab === item.id
                     ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
@@ -74,6 +79,20 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
               </button>
             );
           })}
+          {tab === "launcher" && (
+            <span className={cn(TAB_CLASS, "bg-accent text-foreground")}>
+              <PlusIcon />
+              {t("nt.title")}
+            </span>
+          )}
+          <IconButton
+            label={t("nt.open")}
+            size="sm"
+            className="size-7 shrink-0"
+            onClick={() => useLayout.getState().openInspector("launcher")}
+          >
+            <PlusIcon />
+          </IconButton>
         </div>
         <IconButton
           label={t("insp.close")}
@@ -99,6 +118,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
         )}
         {tab === "changes" && <ChangesTab sessionId={sessionId} />}
         {tab === "btw" && <BtwTab key={sessionId} sessionId={sessionId} />}
+        {tab === "launcher" && <LauncherTab key={sessionId} sessionId={sessionId} />}
       </div>
     </div>
   );

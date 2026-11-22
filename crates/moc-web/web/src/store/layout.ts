@@ -12,9 +12,10 @@ export const RIGHTBAR_MIN = 320;
 export const RIGHTBAR_DEFAULT = 420;
 export const RIGHTBAR_MAX_RATIO = 0.6;
 
-export type InspectorTab = "files" | "terminal" | "changes" | "btw";
+/** `launcher` 是「新标签页」：搜索并打开其它分页或工具弹窗。 */
+export type InspectorTab = "files" | "terminal" | "changes" | "btw" | "launcher";
 
-export const INSPECTOR_TABS: InspectorTab[] = ["files", "terminal", "changes", "btw"];
+export const INSPECTOR_TABS: InspectorTab[] = ["files", "terminal", "changes", "btw", "launcher"];
 
 type Persisted = {
   sidebarCollapsed: boolean;
