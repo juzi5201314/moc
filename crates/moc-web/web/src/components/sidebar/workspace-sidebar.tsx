@@ -525,7 +525,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
 
   if (renaming !== null) {
     return (
-      <div className={cn(ROW, "h-11 bg-sidebar-accent pl-[26px]")}>
+      <div className={cn(ROW, "h-[30px] bg-sidebar-accent pl-[26px]")}>
         <input
           // biome-ignore lint/a11y/noAutofocus: 进入重命名后立即编辑
           autoFocus
@@ -552,7 +552,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
     <div
       className={cn(
         ROW,
-        "group/session relative h-11 gap-2 pr-1 pl-2.5 has-[[data-state=open]]:bg-sidebar-accent",
+        "group/session relative h-[30px] gap-2 pr-1 pl-2.5 has-[[data-state=open]]:bg-sidebar-accent",
         active
           ? "bg-sidebar-accent text-sidebar-foreground"
           : "text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
@@ -583,22 +583,23 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
           />
         )}
       </span>
-      <span className="pointer-events-none flex min-w-0 flex-1 flex-col leading-tight">
-        <span className="truncate text-sidebar-foreground">{title}</span>
-        <span
-          className={cn(
-            "mt-0.5 truncate text-xs tabular-nums",
-            attention && !running ? "text-warn" : "text-text-tertiary",
-          )}
-        >
-          {running
-            ? t("sb.running")
-            : attention
-              ? t("sb.attention")
-              : relativeTime(session.updated_at_ms)}
-        </span>
+      <span className="pointer-events-none min-w-0 flex-1 truncate text-sidebar-foreground">
+        {title}
       </span>
-      <div className="pointer-events-none relative shrink-0 opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100 group-has-[[data-state=open]]/session:pointer-events-auto group-has-[[data-state=open]]/session:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
+      {/* 时间与悬停操作共用行尾：悬停/聚焦/触屏时让位给「更多」按钮。 */}
+      <span
+        className={cn(
+          "pointer-events-none shrink-0 text-2xs tabular-nums group-hover/session:invisible group-focus-within/session:invisible group-has-[[data-state=open]]/session:invisible pointer-coarse:invisible",
+          attention && !running ? "text-warn" : "text-text-tertiary",
+        )}
+      >
+        {running
+          ? t("sb.running")
+          : attention
+            ? t("sb.attention")
+            : relativeTime(session.updated_at_ms)}
+      </span>
+      <div className="pointer-events-none absolute right-1 shrink-0 opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100 group-has-[[data-state=open]]/session:pointer-events-auto group-has-[[data-state=open]]/session:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button

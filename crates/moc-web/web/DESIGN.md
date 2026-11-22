@@ -96,7 +96,7 @@
 
 ### 浮层
 
-- 菜单、下拉、右键菜单、`/` 与 `@` 补全统一：`rounded-xl bg-popover p-1 shadow-[var(--elevation-popover)]`，无 border。
+- 菜单、下拉、右键菜单、`/` 与 `@` 补全统一：`rounded-[10px] bg-popover/95 backdrop-blur-md p-1 shadow-[var(--elevation-popover)]`，无 border；菜单项 `rounded-md`，图标 muted。
 - 补全对齐输入文字一侧，欢迎页向下、会话页向上优先，空间不足时翻转；说明取当前高亮项，不夺取输入焦点。
 - 分隔线 `bg-border-subtle`；分组标题 `text-xs font-medium text-muted-foreground`（补全里用 `text-2xs text-text-tertiary`）。
 - 选中标记用 `muted-foreground` 的勾，不用强调色。
@@ -123,6 +123,7 @@
 
 - 右侧检查面板的默认分页；宽 ≥640px 时左树右编辑区并排（树宽 200–360 可拖，默认 240），更窄时编辑区替换树、头部给返回按钮。
 - 宽屏时检查面板是窗框里独立的一张圆角卡片（`bg-background` + `--elevation-ring` 发丝轮廓），与主舞台之间留 4px chrome 缝；标签带 3.5 号 lucide 图标，选中 `bg-accent`，标签条下不画分隔线，右端是面板开关（主舞台头部此时隐藏同一开关）。
+- 标签条末尾 `+` 打开「新标签页」（`launcher` 分页）：居中搜索框（同 composer 柔影）+「分页 / 工具」两组 32px 行，行内图标 muted、说明 tertiary；回车打开首个命中项。
 - 文件工具栏左侧是根目录下拉（工作区显示目录名 / 会话），不用分段控件；工具栏下与树右侧各一条 `border-border-subtle`。
 - 树行高 26px、`text-ui` 正文色、每级缩进 12px，行左右各缩 6px 并带 `rounded-md`：悬停 `surface-hover`、选中 `bg-accent`；目录只留 chevron，不放文件夹图标，文件按扩展名映射少量 tertiary lucide 图标；agent 改过的文件行尾一个 brand 小圆点。
 - 会话空间命名空间（计划 / 任务日志 / 工具归档 / 历史 / 技能）显示中文标签，行尾用 tertiary 等宽字回显原始 URI；整体只读。
