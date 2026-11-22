@@ -33,7 +33,7 @@
   --secondary: #f0f0f0;
   --secondary-foreground: #171717;
   --muted: #f0f0f0;
-  --muted-foreground: #6e6e6e;
+  --muted-foreground: #616161;
   --accent: rgba(23, 23, 23, 0.065);
   --accent-foreground: #171717;
   --bubble: #f0f0f0;
@@ -56,7 +56,7 @@
   --sidebar-accent-foreground: #171717;
   --surface-raised: #ffffff;
   --surface-hover: rgba(23, 23, 23, 0.04);
-  --text-tertiary: #9a9a9a;
+  --text-tertiary: #767676;
   --code-bg: #f4f4f4;
   /* 行内代码/选区用半透明：叠在表格行、引用块、选区上都能自然混色，不会出现不透明色块 */
   --inline-code-bg: rgba(0, 0, 0, 0.045);
@@ -123,7 +123,7 @@
   --sidebar-accent-foreground: #ededef;
   --surface-raised: #1f1f22;
   --surface-hover: rgba(255, 255, 255, 0.045);
-  --text-tertiary: #76767e;
+  --text-tertiary: #8b8b94;
   --code-bg: #1b1b1e;
   --inline-code-bg: rgba(255, 255, 255, 0.075);
   --selection: rgba(109, 151, 255, 0.28);
