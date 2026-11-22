@@ -20,9 +20,9 @@
 
 :root {
   color-scheme: light;
-  --chrome: #ececec;
-  --background: #f9f9f9;
-  --foreground: #171717;
+  --chrome: #f0f0f0;
+  --background: #fcfcfc;
+  --foreground: #191919;
   --panel: #f7f7f7;
   --card: #ffffff;
   --card-foreground: #171717;
@@ -33,18 +33,18 @@
   --secondary: #f0f0f0;
   --secondary-foreground: #171717;
   --muted: #f0f0f0;
-  --muted-foreground: #676767;
+  --muted-foreground: #6e6e6e;
   --accent: rgba(23, 23, 23, 0.065);
   --accent-foreground: #171717;
-  --bubble: #ededed;
+  --bubble: #f0f0f0;
   --brand: #3b6ff5;
   --brand-foreground: #ffffff;
   --destructive: #dc2626;
   --success: #16a34a;
   --warn: #d97706;
-  --border: rgba(23, 23, 23, 0.08);
-  --border-strong: rgba(23, 23, 23, 0.14);
-  --border-subtle: rgba(23, 23, 23, 0.05);
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.13);
+  --border-subtle: rgba(0, 0, 0, 0.055);
   --input: rgba(23, 23, 23, 0.12);
   --ring: rgba(59, 111, 245, 0.45);
   --diff-insert: rgba(22, 163, 74, 0.1);
@@ -56,20 +56,21 @@
   --sidebar-accent-foreground: #171717;
   --surface-raised: #ffffff;
   --surface-hover: rgba(23, 23, 23, 0.04);
-  --text-tertiary: #737373;
-  --code-bg: #f1f1f1;
+  --text-tertiary: #9a9a9a;
+  --code-bg: #f4f4f4;
   /* 行内代码/选区用半透明：叠在表格行、引用块、选区上都能自然混色，不会出现不透明色块 */
-  --inline-code-bg: rgba(23, 23, 23, 0.055);
+  --inline-code-bg: rgba(0, 0, 0, 0.045);
   --selection: rgba(59, 111, 245, 0.14);
   /* GitHub btn 质感：顶部内高光 + 底部轻投影 */
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(23, 23, 23, 0.08);
   --elevation-ring: 0 0 0 1px rgba(23, 23, 23, 0.08);
   /* composer：扁平取向，只留发丝级轮廓，不做长投影 */
-  --elevation-composer: 0 0 0 1px rgba(23, 23, 23, 0.05), 0 1px 3px rgba(23, 23, 23, 0.04);
+  --elevation-composer: 0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03);
   /* 灰托盘内的白卡：一层贴身软影把它和托盘分开，外投影交给托盘 */
-  --elevation-composer-inset: 0 1px 2px rgba(23, 23, 23, 0.05), 0 2px 8px rgba(23, 23, 23, 0.04);
+  --elevation-composer-inset:
+    0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
   /* 托盘比白卡暗一级：浅色是浅灰，深色要比卡片更深，否则层级会反过来 */
-  --composer-tray: #f4f4f5;
+  --composer-tray: #f5f5f5;
   --elevation-popover:
     0 0 0 1px rgba(23, 23, 23, 0.09), 0 20px 42px -10px rgba(23, 23, 23, 0.2),
     0 2px 6px rgba(23, 23, 23, 0.05);
@@ -122,14 +123,15 @@
   --sidebar-accent-foreground: #ededef;
   --surface-raised: #1f1f22;
   --surface-hover: rgba(255, 255, 255, 0.045);
-  --text-tertiary: #8b8b94;
+  --text-tertiary: #76767e;
   --code-bg: #1b1b1e;
   --inline-code-bg: rgba(255, 255, 255, 0.075);
   --selection: rgba(109, 151, 255, 0.28);
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.45);
   --elevation-ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
-  --elevation-composer: 0 0 0 1px rgba(255, 255, 255, 0.06);
-  --elevation-composer-inset: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
+  --elevation-composer: 0 0 0 0.5px rgba(255, 255, 255, 0.05);
+  --elevation-composer-inset:
+    0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
   --composer-tray: #121214;
   --elevation-popover:
     0 0 0 1px rgba(255, 255, 255, 0.09), 0 12px 32px -6px rgba(0, 0, 0, 0.6),
@@ -202,11 +204,11 @@
   --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.06);
   --shadow-xl: 0 18px 48px -12px rgba(0, 0, 0, 0.25), 0 4px 12px rgba(0, 0, 0, 0.08);
   --font-sans:
-    "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-mono:
-    "Geist Mono Variable", ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo,
-    Consolas, monospace;
+    ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas,
+    monospace;
   /* 字号阶梯：组件里只用这七级，不再写 text-[Npx]。新增名字须同步登记到 lib/utils.ts 的 cn。
      2xs 徽标/计数/kbd · xs 次要说明/元信息 · ui 菜单项/列表行/控件 · sm 正文/标题行
      chat 对话正文与输入框 · title 区块标题 · heading 弹窗标题 */
@@ -214,8 +216,8 @@
   --text-2xs--line-height: 16px;
   --text-ui: 13px;
   --text-ui--line-height: 20px;
-  --text-chat: 14.5px;
-  --text-chat--line-height: 1.65;
+  --text-chat: 14px;
+  --text-chat--line-height: 1.6;
   --text-title: 15px;
   --text-title--line-height: 1.4;
   --text-heading: 17px;
@@ -239,7 +241,6 @@
     font-size: 14px;
     line-height: 1.5;
     text-rendering: optimizeLegibility;
-    font-feature-settings: "ss01", "cv11";
   }
   button,
   input,
@@ -366,14 +367,14 @@
    产品化排版（对齐主流 agent UI）：标题无下边框、表格只留水平分隔线、
    无边框代码块 + 大圆角、行内代码灰底 + 发丝内描边，按 data-streamdown 标记统一收敛。 */
 .moc-prose {
-  font-size: var(--moc-prose-size, 14.5px);
-  line-height: var(--moc-prose-leading, 1.75);
+  font-size: var(--moc-prose-size, 14px);
+  line-height: var(--moc-prose-leading, 1.65);
   color: var(--moc-prose-color, var(--foreground));
   overflow-wrap: anywhere;
 }
 
 .moc-prose > * + * {
-  margin-top: 1em;
+  margin-top: 0.7em;
 }
 
 .moc-prose p {
@@ -386,21 +387,21 @@
 .moc-prose [data-streamdown="heading-4"],
 .moc-prose [data-streamdown="heading-5"],
 .moc-prose [data-streamdown="heading-6"] {
-  margin: 1.4em 0 0.6em;
+  margin: 1.25em 0 0.45em;
   font-weight: 600;
-  line-height: 1.3;
-  letter-spacing: -0.01em;
+  line-height: 1.4;
+  letter-spacing: -0.005em;
   color: var(--foreground);
 }
 
 .moc-prose [data-streamdown="heading-1"] {
-  font-size: 1.5em;
-}
-.moc-prose [data-streamdown="heading-2"] {
   font-size: 1.3em;
 }
+.moc-prose [data-streamdown="heading-2"] {
+  font-size: 1.14em;
+}
 .moc-prose [data-streamdown="heading-3"] {
-  font-size: 1.12em;
+  font-size: 1.04em;
 }
 .moc-prose [data-streamdown="heading-4"] {
   font-size: 1em;
@@ -415,8 +416,8 @@
 
 .moc-prose [data-streamdown="unordered-list"],
 .moc-prose [data-streamdown="ordered-list"] {
-  margin: 0.6em 0;
-  padding-left: 1.4em;
+  margin: 0.45em 0;
+  padding-left: 1.35em;
   list-style-position: outside;
 }
 .moc-prose [data-streamdown="unordered-list"] {
@@ -426,8 +427,8 @@
   list-style-type: decimal;
 }
 .moc-prose [data-streamdown="list-item"] {
-  margin: 0.2em 0;
-  padding-left: 0.2em;
+  margin: 0.1em 0;
+  padding-left: 0.15em;
 }
 .moc-prose [data-streamdown="list-item"]::marker {
   color: var(--text-tertiary);
@@ -449,7 +450,7 @@
 }
 
 .moc-prose [data-streamdown="link"] {
-  font-weight: 500;
+  font-weight: 450;
   color: var(--brand);
   text-decoration: none;
 }
@@ -463,11 +464,11 @@
 }
 
 .moc-prose [data-streamdown="inline-code"] {
-  padding: 0.1em 0.32em;
+  padding: 0.05em 0.3em;
   border-radius: 4px;
   background: var(--inline-code-bg);
   font-family: var(--font-mono);
-  font-size: 0.88em;
+  font-size: 0.86em;
   color: var(--foreground);
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
@@ -476,7 +477,7 @@
 .moc-prose [data-streamdown="blockquote"] {
   margin: 0.9em 0;
   padding: 0 1em;
-  border-left: 2px solid var(--text-tertiary);
+  border-left: 2px solid var(--border-strong);
   color: var(--muted-foreground);
   font-style: normal;
 }
@@ -509,7 +510,7 @@
   border: 0;
   border-radius: 0;
   border-collapse: collapse;
-  font-size: 13.5px;
+  font-size: 13px;
 }
 /* streamdown 给 thead 自带 bg-muted/80 灰底，与"只留横线"冲突，去掉 */
 .moc-prose [data-streamdown="table-header"] {
@@ -517,11 +518,11 @@
 }
 .moc-prose [data-streamdown="table-header-cell"],
 .moc-prose [data-streamdown="table-cell"] {
-  padding: 8px 20px 8px 16px;
+  padding: 7px 24px 7px 16px;
   border: 0;
   border-bottom: 1px solid var(--border-subtle);
-  font-size: 13.5px;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.55;
   vertical-align: top;
 }
 /* 表头做成弱化的列标签：中等字重、次级色，比行线稍深的一条线与数据区分开 */
@@ -550,7 +551,7 @@
   gap: 0;
   padding: 0;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--code-bg);
   overflow: hidden;
 }
@@ -583,11 +584,11 @@
   border-radius: 5px;
 }
 .moc-prose [data-streamdown="code-block-body"] {
-  padding: 14px 18px;
+  padding: 12px 16px;
   border: 0;
   border-radius: 0;
   background: transparent;
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.6;
 }
 .moc-prose [data-streamdown="code-block-body"] pre {

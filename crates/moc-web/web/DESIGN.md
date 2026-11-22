@@ -68,12 +68,13 @@
 | `text-xs`      | 12px   | 次要说明、元信息            |
 | `text-ui`      | 13px   | 菜单项、列表行、控件、侧栏  |
 | `text-sm`      | 14px   | 标题行、普通正文            |
-| `text-chat`    | 14.5px | 对话正文、用户气泡、输入框  |
+| `text-chat`    | 14px   | 对话正文、用户气泡、输入框  |
 | `text-title`   | 15px   | 区块标题                    |
 | `text-heading` | 17px   | 弹窗标题                    |
 - 新增阶梯名必须同时登记到 `src/lib/utils.ts` 的 `cn` 配置，否则会被当成颜色类合并掉。
 - 字重克制：正文 400，标题与选中项 500–600，不用 700 以上（logo 例外）。
-- 字体：`Geist Variable` + 中文系统字体；等宽 `Geist Mono Variable`。
+- 字体：`Inter Variable` + 中文系统字体；等宽用系统等宽栈（SF Mono / Cascadia Mono / Consolas），不打包几何感强的宽等宽字体。
+- 正文 14px / 1.65，段距 0.7em，标题只比正文大一到两级，列表项几乎不留额外间距。
 
 ## 5. 形状与间距
 
@@ -115,7 +116,8 @@
 
 - 用户消息：右对齐灰色气泡 `bg-bubble`，无边框。
 - 助手正文直接落在主舞台上，不套卡片。
-- 过程（思考、工具调用）默认折叠成一行 tertiary 摘要「处理用时 X · 活动摘要」，展开后左侧一条发丝线收纳。悬停只变文字色。
+- 过程（思考、工具调用）默认折叠成一行 tertiary 摘要「处理用时 X · 活动摘要」，展开后左侧一条 `border-border-subtle` 发丝线收纳。悬停只变文字色，不出现底色块。
+- 活动行只有文字：动作 + tertiary 对象，常态不放图标、不用等宽字体；只有失败时在行首出现告警图标。
 
 ### 文件面板
 
@@ -123,7 +125,7 @@
 - 树行高 `h-7`、`text-ui`、每级缩进 12px，只有极淡的缩进引导；目录 chevron + Folder/FolderOpen，文件按扩展名映射少量 lucide 图标，全部 muted 灰；agent 改过的文件行尾一个 brand 小圆点。
 - 会话空间命名空间（计划 / 任务日志 / 工具归档 / 历史 / 技能）显示中文标签，行尾用 tertiary 等宽字回显原始 URI；整体只读。
 - 编辑区标签条复用「选中 `bg-accent`、未选中只改文字色」的语言：预览标签斜体、未保存一个 brand 圆点、× 只在悬停浮现。
-- CodeMirror 主题从令牌派生（Geist Mono、tertiary 行号、gutter 无描边、当前行极淡底色、选区 `--selection`、光标 brand）；Markdown 默认渲染 `.moc-prose` 预览，可切源码。
+- CodeMirror 主题从令牌派生（系统等宽字体、tertiary 行号、gutter 无描边、当前行极淡底色、选区 `--selection`、光标 brand）；Markdown 默认渲染 `.moc-prose` 预览，可切源码。
 
 ### 终端
 

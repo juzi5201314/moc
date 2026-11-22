@@ -9,11 +9,11 @@ export function mermaidConfig(tokens: FigureTokens, dark: boolean): MermaidConfi
     theme: "base",
     securityLevel: "strict",
     suppressErrorRendering: true,
-    fontFamily: "Geist, sans-serif",
+    fontFamily: "\"Inter Variable\", sans-serif",
     themeVariables: {
       darkMode: dark,
       background: "transparent",
-      fontFamily: "Geist, sans-serif",
+      fontFamily: "\"Inter Variable\", sans-serif",
       primaryColor: tokens.surface,
       primaryTextColor: tokens.fg,
       primaryBorderColor: tokens.border,

@@ -333,7 +333,7 @@ it("虚拟轮次以布局偏移定位，展开过程中的工具标题在正文�
     const header = toggle.parentElement;
     if (!header) throw new Error("缺少工具标题行");
     const row = header.closest<HTMLElement>("[data-index]");
-    expect(row?.style.top).toBe("40px");
+    expect(row?.style.top).toBe("32px");
     expect(row?.style.transform).toBe("");
     expect(header.classList.contains("sticky")).toBe(true);
     expect(header.parentElement?.firstElementChild).toBe(header);
