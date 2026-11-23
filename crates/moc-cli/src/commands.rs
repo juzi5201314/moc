@@ -32,6 +32,7 @@ pub enum CommandId {
     Export,
     Session,
     Model,
+    Mcp,
     Plugins,
     Features,
 }
@@ -337,6 +338,20 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         hidden: false,
         args: ArgCompletion::None,
         flag: None,
+    },
+    CommandSpec {
+        id: CommandId::Mcp,
+        name: "mcp",
+        aliases: &[],
+        usage: "[reconnect [server]]",
+        description: "cli.commands.mcp.desc",
+        group: CommandGroup::Plugins,
+        needs_session: true,
+        available_during_task: true,
+        available_in_side: true,
+        hidden: false,
+        args: ArgCompletion::Choices(&["reconnect"]),
+        flag: Some(FeatureFlag::Mcp),
     },
     CommandSpec {
         id: CommandId::Plugins,

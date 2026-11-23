@@ -46,6 +46,7 @@ pub mod history;
 pub mod initialize;
 pub mod job;
 pub mod management;
+pub mod mcp;
 pub mod permission;
 pub mod plan;
 pub mod plugin;
@@ -108,6 +109,10 @@ pub use management::{
     FieldKind, MaintenanceReport, SessionSteer, SessionUnsteer, SettingsDocument, SteerParams,
     SteerResult, UnsteerParams, UnsteerResult,
 };
+pub use mcp::{
+    McpList, McpListParams, McpReconnect, McpReconnectParams, McpServerInfo, McpServerPhase,
+    McpStatusSnapshot, McpStatusUpdated,
+};
 pub use permission::{
     PermissionOption, PermissionOptionKind, PermissionRequestParams, PermissionResult,
     SessionRequestPermission, command_options, default_options, path_options,
@@ -135,8 +140,8 @@ pub use resources::{
 pub use session::{
     CompactResult, ContextContentResult, ContextContentSection, ContextReadResult,
     ContextUsageResult, ContextUsageSection, GoalAction, GoalBlockReason, GoalPhase, GoalRoundMeta,
-    GoalView, ModelSwitchOverflow, ModelUsageSummary, ReminderItem, ReminderStamp, SessionAutonomy,
-    SessionCompact, SessionCompactParams, SessionContext, SessionContextClose,
+    GoalView, ModelSwitchOverflow, ModelUsageSummary, ReminderItem, ReminderStamp, ResponseMeta,
+    SessionAutonomy, SessionCompact, SessionCompactParams, SessionContext, SessionContextClose,
     SessionContextCloseParams, SessionContextContent, SessionContextContentParams,
     SessionContextParams, SessionContextRead, SessionContextReadParams, SessionDelete,
     SessionDeleteParams, SessionEngine, SessionGoal, SessionGoalParams, SessionGoalResult,
@@ -150,8 +155,8 @@ pub use session::{
     SessionSetFastModeParams, SessionSetModel, SessionSetModelParams, SessionSetModelResult,
     SessionSetPermission, SessionSetPermissionParams, SessionTools, SessionToolsParams,
     SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage,
-    SessionUsageParams, SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall,
-    TranscriptEntry, UsageSource,
+    SessionUsageParams, SessionUsageResult, TextSpan, ToolExecution, ToolStatus,
+    TranscriptChildCall, TranscriptEntry, UsageSource,
 };
 pub use skills::{
     SkillsCancel, SkillsCompact, SkillsCompactAction, SkillsCompactParams, SkillsCompactResult,
@@ -254,6 +259,8 @@ mod tests {
             (<PluginList as Method>::NAME, "plugin/list"),
             (<PluginReload as Method>::NAME, "plugin/reload"),
             (<PluginRunCommand as Method>::NAME, "plugin/run_command"),
+            (<McpList as Method>::NAME, "mcp/list"),
+            (<McpReconnect as Method>::NAME, "mcp/reconnect"),
             (<ResourceComplete as Method>::NAME, "resource/complete"),
             (<ResourceList as Method>::NAME, "resource/list"),
             (<ResourceRead as Method>::NAME, "resource/read"),
@@ -292,6 +299,7 @@ mod tests {
             (<SessionUpdateMethod as Method>::NAME, "session/update"),
             (<BtwUpdateMethod as Method>::NAME, "session/btw_update"),
             (<WebStateUpdated as Method>::NAME, "web/state_updated"),
+            (<McpStatusUpdated as Method>::NAME, "mcp/status_updated"),
         ];
         for (actual, expected) in server_methods {
             assert_eq!(actual, expected);
@@ -335,6 +343,9 @@ mod tests {
         server_notification::<SessionUpdateMethod>();
         server_notification::<BtwUpdateMethod>();
         server_notification::<WebStateUpdated>();
+        client::<McpList>();
+        client::<McpReconnect>();
+        server_notification::<McpStatusUpdated>();
         client::<ChartAnalyze>();
         client::<WorkspaceGitBranch>();
         assert_eq!(Empty {}, Empty::default());

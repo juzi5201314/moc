@@ -126,6 +126,9 @@ pub enum Entry {
         /// 已送达模型的任务通知的任务快照；`None` 表示非任务通知消息。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         job_notice: Option<JobInfo>,
+        /// 模型响应的展示元信息；其它消息与旧日志没有这个字段。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response: Option<moc_protocol::ResponseMeta>,
     },
     /// 会话目标的完整快照（`session/goal` 与 `update_goal` 工具的每次变更写一条）；
     /// `goal` 为 `None` 是清除墓碑。
@@ -312,6 +315,12 @@ pub enum EntryPayload {
         agent: Option<moc_protocol::methods::AgentMessageMeta>,
         /// goal 续跑轮的来源信息；普通输入为 `None`。
         goal: Option<moc_protocol::methods::GoalRoundMeta>,
+    },
+    /// 一次完整的模型响应；比普通消息多带模型与正文段时间窗等展示元信息。
+    Response {
+        message: Message,
+        finish_reason: FinishReason,
+        meta: moc_protocol::ResponseMeta,
     },
     /// 完整结果与模型提醒分离，避免长报告重复进入上下文。
     AgentResult {

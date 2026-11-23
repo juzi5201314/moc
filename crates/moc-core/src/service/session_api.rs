@@ -104,6 +104,7 @@ pub(super) async fn session_new(
         .ensure_write_lease(&info.id, &record, &ctx.client().frontend)
         .await
         .map_err(|error| write_lease_error(core, &info.id, &record, error))?;
+    core.inner.warm_mcp(&cwd).await;
     if params.plan_active {
         info = core
             .inner
@@ -182,6 +183,12 @@ pub(super) async fn session_load(
     result.session.permission = core.inner.effective_permission(result.session.permission);
     if result.goal.is_some() {
         result.goal = goal_with_armed(&core.inner, &params.session_id, &record).await;
+    }
+    // 只读查看不会在这里发提示，不为它拉起 MCP。
+    if !params.read_only {
+        core.inner
+            .warm_mcp(std::path::Path::new(&result.session.cwd))
+            .await;
     }
     Ok(result)
 }

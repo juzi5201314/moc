@@ -1,6 +1,7 @@
 // 轮次重组：把扁平的 block 流切成「用户提示 → 按时间排列的片段」的轮次结构。
 // 片段保留原始先后：连续的思考/工具/命令合成一个活动组，中间穿插的正文、
-// 计划卡与告警各自成段；完成后的轮次只露出最后一段正文，其余收进「处理过程」。
+// 计划卡与告警各自成段；正文再把片段切成一个个「工作了」段，完成后的轮次只露出
+// 最后一段正文，其余整体收进外层「工作了」。
 
 import { firstChangedBlock } from "@/lib/block-changes";
 import { currentLocale, type MsgKey, t } from "@/lib/i18n";
@@ -327,23 +328,82 @@ export function formatDuration(ms: number): string {
   return minutes > 0 ? t("dur.minsec", { m: minutes, s: seconds }) : t("dur.sec", { s: seconds });
 }
 
+/** 轮次开始的时刻：用户块优先，续接轮退回首个带时间戳的块。 */
+function turnStartMs(turn: Turn): number | undefined {
+  if (turn.user) return turn.user.atMs;
+  for (const block of turn.activity) {
+    if ("atMs" in block && block.atMs !== undefined) return block.atMs;
+  }
+  return undefined;
+}
+
 /**
  * 一轮的耗时。实时轮带 footer.durationMs；回放历史会话没有这一项，
- * 用 footer 与首个带时间戳的块（用户块优先）推算。
+ * 用 footer 与轮次开始的时刻推算。
  */
 export function turnDurationMs(turn: Turn): number | undefined {
   if (turn.footer?.durationMs !== undefined) return turn.footer.durationMs;
   if (!turn.footer) return undefined;
-  let startedAt = turn.user?.atMs;
-  if (startedAt === undefined) {
-    for (const block of turn.activity) {
-      if ("atMs" in block) {
-        startedAt = block.atMs;
-        break;
-      }
-    }
-  }
+  const startedAt = turnStartMs(turn);
   return startedAt === undefined ? undefined : Math.max(1000, turn.footer.atMs - startedAt);
+}
+
+/**
+ * 外层「工作了」的时长：与内层同一口径，算到最终回复的首个增量；
+ * 没有最终回复或缺时间窗（旧会话）时取整轮耗时。
+ */
+export function workDurationMs(turn: Turn, final: TextBlock | undefined): number | undefined {
+  const startedAt = turnStartMs(turn);
+  if (final?.startMs === undefined || startedAt === undefined) return turnDurationMs(turn);
+  return Math.max(1000, final.startMs - startedAt);
+}
+
+/** 常显片段：计划卡、告警、交付结果与任务通知不进任何折叠，按原位显示。 */
+export function pinnedSegment(segment: Segment): boolean {
+  return segment.kind !== "activity" && segment.kind !== "text";
+}
+
+/** 「工作了」段：两段正文之间的全部活动与常显片段。 */
+export type WorkRun = {
+  kind: "work";
+  id: string;
+  segments: Segment[];
+  /** 段内全部活动块，供标题合计改动。 */
+  blocks: Block[];
+  durationMs?: number;
+};
+
+export type TurnPart = WorkRun | Extract<Segment, { kind: "text" }>;
+
+/**
+ * 以正文为界把片段切成「工作了」段。时长从上一段正文的末个增量（首段从轮次开始）
+ * 算到下一段正文的首个增量，没有后续正文时止于 footer；与整轮耗时一样不足 1 秒按 1 秒计，
+ * 缺时间戳的旧会话给不出时长。
+ */
+export function workParts(turn: Turn): TurnPart[] {
+  const parts: TurnPart[] = [];
+  let from = turnStartMs(turn);
+  let run: WorkRun | undefined;
+  const close = (to: number | undefined) => {
+    if (run && from !== undefined && to !== undefined) run.durationMs = Math.max(1000, to - from);
+    run = undefined;
+  };
+  for (const segment of turn.segments) {
+    if (segment.kind === "text") {
+      close(segment.block.startMs);
+      parts.push(segment);
+      from = segment.block.endMs;
+      continue;
+    }
+    if (!run) {
+      run = { kind: "work", id: segment.id, segments: [], blocks: [] };
+      parts.push(run);
+    }
+    run.segments.push(segment);
+    if (segment.kind === "activity") run.blocks.push(...segment.blocks);
+  }
+  close(turn.footer?.atMs);
+  return parts;
 }
 
 /** 从工具参数里挑一个最能说明动作的字段；description 优先（工具侧的语义化行标题）。 */
@@ -376,7 +436,8 @@ export function activitySnippet(block: Block, limit = 80): string {
 
   switch (block.kind) {
     case "reasoning":
-      return clip(block.text);
+      // 模型常用 `**小标题**` 与 `# 标题` 起头；摘要是纯文本，去掉这类标记免得原样露出。
+      return clip(block.text.replace(/\*\*|^#+\s+/gm, ""));
     case "bash":
       return clip(block.command);
     case "tool": {

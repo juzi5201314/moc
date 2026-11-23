@@ -26,6 +26,8 @@ use crate::methods::JobBackground;
 use crate::methods::JobKill;
 use crate::methods::JobList;
 use crate::methods::JobReadOutput;
+use crate::methods::McpList;
+use crate::methods::McpReconnect;
 use crate::methods::PluginList;
 use crate::methods::PluginReload;
 use crate::methods::PluginRunCommand;
@@ -187,6 +189,24 @@ impl<S: AgentService> ServerDispatch<S> {
                     self.server
                         .service
                         .plugin_run_command(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <McpList as Method>::NAME => {
+                let params = params_from_value::<McpList>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .mcp_list(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <McpReconnect as Method>::NAME => {
+                let params = params_from_value::<McpReconnect>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .mcp_reconnect(self.context(client, cancel), params)
                         .await?,
                 )
             }

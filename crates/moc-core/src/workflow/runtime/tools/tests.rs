@@ -44,7 +44,7 @@ fn zero_leak_definitions_and_signatures() {
         scope,
     )
     .unwrap();
-    let active_names: Vec<_> = active
+    let active_names: Vec<String> = active
         .visible(
             moc_protocol::SessionEngine::Standard,
             crate::service::mode::Mode::Default,
@@ -52,7 +52,7 @@ fn zero_leak_definitions_and_signatures() {
             true,
             &config,
         )
-        .map(|tool| tool.name())
+        .map(|tool| tool.name().to_owned())
         .collect();
     for tool in WORKFLOW_TOOLS {
         assert!(

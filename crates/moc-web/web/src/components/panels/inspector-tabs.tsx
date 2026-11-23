@@ -69,7 +69,7 @@ export function PanelEmpty({ title, hint }: { title: string; hint?: string }) {
   return (
     <div className="flex flex-col items-center gap-1 px-6 py-16 text-center">
       <p className="text-ui text-muted-foreground">{title}</p>
-      {hint && <p className="max-w-64 text-xs leading-5 text-text-tertiary">{hint}</p>}
+      {hint && <p className="max-w-64 text-xs leading-5 text-balance text-text-tertiary">{hint}</p>}
     </div>
   );
 }
@@ -248,7 +248,9 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
               <li key={agent.id} className="group/agent relative">
                 <button
                   type="button"
-                  onClick={() => void openSession(agent.id, { readOnly: true })}
+                  onClick={() =>
+                    void openSession(agent.id, { readOnly: true }).catch(() => undefined)
+                  }
                   className="flex w-full flex-col gap-1 rounded-lg px-2.5 py-2 text-left hover:bg-surface-hover"
                 >
                   <span className="flex w-full min-w-0 items-center gap-2 pr-7">

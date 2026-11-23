@@ -3108,6 +3108,166 @@
       ],
       "type": "object"
     },
+    "McpListParams": {
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "default": null,
+          "description": "显式工作目录（草稿会话或会话前查询）；与 `session_id` 都缺省时使用 core 启动目录。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "default": null,
+          "description": "会话 ID；非空时使用该会话的 cwd。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "McpReconnectParams": {
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "default": null,
+          "description": "显式工作目录；与 `session_id` 都缺省时使用 core 启动目录。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server": {
+          "default": null,
+          "description": "指定重连的 server 名；`None` 重连该目录全部已启用的 server。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "default": null,
+          "description": "会话 ID；非空时使用该会话的 cwd。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "McpServerInfo": {
+      "additionalProperties": false,
+      "description": "单个 MCP server 的对外状态摘要。",
+      "properties": {
+        "attempts": {
+          "default": 0,
+          "description": "当前中断内的连续失败次数（仅 `reconnecting` 时非零）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "error": {
+          "default": null,
+          "description": "最近一次连接失败、超时或协议错误原因。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/McpServerPhase"
+        },
+        "recent_stderr": {
+          "default": [],
+          "description": "stdio 子进程最近的 stderr 行（有界环形缓冲）。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "started_at_ms": {
+          "default": null,
+          "description": "当前握手尝试开始的 UNIX 毫秒时间戳；前端据此本地计算已耗时。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "命令摘要或端点 URL。",
+          "type": "string"
+        },
+        "tool_count": {
+          "default": 0,
+          "description": "已发现的工具数（仅 `connected` 时有值）。",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transport": {
+          "description": "传输方式：`stdio` 或 `http`。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "transport",
+        "target",
+        "phase"
+      ],
+      "type": "object"
+    },
+    "McpServerPhase": {
+      "description": "单个 MCP server 的连接阶段。",
+      "enum": [
+        "connecting",
+        "connected",
+        "reconnecting",
+        "failed",
+        "disabled"
+      ],
+      "type": "string"
+    },
+    "McpStatusSnapshot": {
+      "additionalProperties": false,
+      "description": "一个工作目录的 MCP 全量状态快照；`mcp/list`、`mcp/reconnect` 与 `mcp/status_updated` 共用。",
+      "properties": {
+        "config_error": {
+          "default": null,
+          "description": "配置文件解析失败时的诊断；非空时不阻断其它会话能力。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "description": "规范化后的项目目录。",
+          "type": "string"
+        },
+        "servers": {
+          "default": [],
+          "description": "各 server 的状态（按名称排序）。",
+          "items": {
+            "$ref": "#/$defs/McpServerInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "cwd"
+      ],
+      "type": "object"
+    },
     "Message": {
       "description": "一条对话消息。\n\n角色与内容块合法组合（编码器在历史完整性校验中强制执行）：\n\n| 角色 | 允许的内容块 |\n|---|---|\n| `System` / `Developer` | `Text` |\n| `User` | `Text`、`Image` |\n| `Assistant` | `Text`、`Reasoning`、`ToolCall` |\n| `Tool` | 恰好一个 `ToolResult` |\n| `Custom` | `Text` |",
       "properties": {
@@ -4325,6 +4485,27 @@
         "size",
         "encoding",
         "truncated"
+      ],
+      "type": "object"
+    },
+    "ResponseMeta": {
+      "additionalProperties": false,
+      "description": "一次模型响应的展示元信息。",
+      "properties": {
+        "model": {
+          "description": "生成该响应的模型选择器（`provider/model[:level]`）。",
+          "type": "string"
+        },
+        "text_spans": {
+          "description": "各正文段的流式时间窗，与 `message` 中的 Text 部分按序一一对应。",
+          "items": {
+            "$ref": "#/$defs/TextSpan"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "model"
       ],
       "type": "object"
     },
@@ -6204,6 +6385,30 @@
           "type": "object"
         },
         {
+          "description": "本次提示在等这些 MCP server 完成首次握手；空列表、随后的\n[`SessionUpdate::GenerationStarted`] 或提示结束表示等待已结束。",
+          "properties": {
+            "prompt_id": {
+              "type": "string"
+            },
+            "servers": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "mcp_connecting",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "prompt_id",
+            "servers"
+          ],
+          "type": "object"
+        },
+        {
           "description": "新一轮模型生成开始；前端据此限定失败预览的清除边界。",
           "properties": {
             "prompt_id": {
@@ -7480,6 +7685,29 @@
       ],
       "type": "object"
     },
+    "TextSpan": {
+      "additionalProperties": false,
+      "description": "一段 assistant 正文从首个到末个流式增量的墙钟时间窗。",
+      "properties": {
+        "end_ms": {
+          "description": "末个增量到达的 UNIX 毫秒时间戳。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start_ms": {
+          "description": "首个增量到达的 UNIX 毫秒时间戳。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start_ms",
+        "end_ms"
+      ],
+      "type": "object"
+    },
     "TodoItem": {
       "additionalProperties": false,
       "description": "一个 todo 任务。",
@@ -7963,6 +8191,17 @@
             }
           ],
           "description": "运行时提醒的来源标记；`None` 表示普通对话消息。"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResponseMeta"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "模型响应的展示元信息；其它消息与旧会话日志没有此字段。"
         },
         "tool": {
           "anyOf": [
@@ -9199,6 +9438,24 @@
         },
         "type": "JobReadOutput"
       },
+      "mcp/list": {
+        "params": {
+          "$ref": "#/$defs/McpListParams"
+        },
+        "result": {
+          "$ref": "#/$defs/McpStatusSnapshot"
+        },
+        "type": "McpList"
+      },
+      "mcp/reconnect": {
+        "params": {
+          "$ref": "#/$defs/McpReconnectParams"
+        },
+        "result": {
+          "$ref": "#/$defs/McpStatusSnapshot"
+        },
+        "type": "McpReconnect"
+      },
       "ping": {
         "params": {
           "$ref": "#/$defs/EmptyParams"
@@ -9753,6 +10010,15 @@
       }
     },
     "server_notification": {
+      "mcp/status_updated": {
+        "params": {
+          "$ref": "#/$defs/McpStatusSnapshot"
+        },
+        "result": {
+          "$ref": "#/$defs/Empty"
+        },
+        "type": "McpStatusUpdated"
+      },
       "session/btw_update": {
         "params": {
           "$ref": "#/$defs/BtwUpdateParams"

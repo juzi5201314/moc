@@ -72,8 +72,9 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     app.startup_plan = opts.plan;
     app.startup_pending = opts.initial_prompt.clone();
     bootstrap(&connection.client, &mut app, &opts).await;
-    // 启动时把会话累计用量拉回来，第一帧的右下角就是整个会话的 total。
+    // 启动时把会话累计用量与当前工作区 MCP 状态拉回来，用户发消息前就能看到慢/失败的 MCP。
     refresh_usage(&mut app, &connection, false);
+    refresh_mcp(&app, &connection, false);
     // 启动目录在 bootstrap 才拿到；无会话时按它过滤「按项目」历史。
     app.refresh_input_history();
     if app.session.is_none() && app.models.is_empty() {
@@ -113,6 +114,8 @@ use context::apply_context_content;
 use context::refresh_context;
 mod plugins;
 use plugins::refresh_plugins;
+pub(crate) mod mcp;
+use mcp::refresh_mcp;
 mod agents;
 use agents::apply_focus_loaded;
 use agents::load_subagents_for_parent;
@@ -221,6 +224,7 @@ async fn event_loop(
             || app.compaction_progress.is_some()
             || app.retry_wait.is_some()
             || app.has_rendering_charts()
+            || app.has_active_mcp_handshake()
             || matches!(app.modal, Some(Modal::Monitor));
         // 通知、告警与选区复制反馈到期时重绘；选区操作提示本身不计时。
         let notice_deadline = app.notice_deadline().map(tokio::time::Instant::from_std);
@@ -254,6 +258,7 @@ async fn event_loop(
                 next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
                 if app.prompt_running
                     || app.has_rendering_charts()
+                    || app.has_active_mcp_handshake()
                     || matches!(app.modal, Some(Modal::Monitor))
                 {
                     dirty = true;
@@ -337,6 +342,12 @@ async fn event_loop(
                     Some(AppEvent::Plugins(plugins)) => {
                         app.commands.set_plugins(&plugins);
                         app.plugins = plugins;
+                    }
+                    Some(AppEvent::McpStatus(snapshot)) => {
+                        app.apply_mcp_status(snapshot);
+                    }
+                    Some(AppEvent::McpReport { text, error }) => {
+                        app.push_note(text, NoteTone::from_error(error));
                     }
                     Some(AppEvent::PluginOutput { name, text, error }) => {
                         let text = if text.trim().is_empty() {
@@ -646,6 +657,7 @@ fn apply_loaded(app: &mut App, connection: &EmbeddedConnection, event: AppEvent)
     refresh_context(app, connection, false);
     refresh_usage(app, connection, false);
     refresh_plugins(app, connection, false, false);
+    refresh_mcp(app, connection, false);
     load_subagents_for_parent(app, &connection.client, Some(id));
     if let Some(text) = app.startup_pending.take() {
         app.prompt.insert_str_raw(&text);

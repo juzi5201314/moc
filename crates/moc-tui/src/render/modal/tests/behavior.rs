@@ -24,6 +24,7 @@ fn rewind_modal_draws_omp_timeline_and_dock_in_buffer() {
                 goal_round: None,
                 reminder: None,
                 job_notice: None,
+                response: None,
             },
             TranscriptEntry {
                 id: "a1".into(),
@@ -36,6 +37,7 @@ fn rewind_modal_draws_omp_timeline_and_dock_in_buffer() {
                 goal_round: None,
                 reminder: None,
                 job_notice: None,
+                response: None,
             },
         ],
         vec![],

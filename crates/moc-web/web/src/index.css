@@ -312,26 +312,37 @@
   }
 }
 
-/* ---------------- 滚动条：细、半透明、只在悬停时加深 ---------------- */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 22%, transparent) transparent;
-}
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 9999px;
-  background: color-mix(in srgb, var(--muted-foreground) 22%, transparent) padding-box;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--muted-foreground) 40%, transparent) padding-box;
-}
-::-webkit-scrollbar-track,
-::-webkit-scrollbar-corner {
-  background: transparent;
+/* ---------------- 滚动条：细、半透明，指针进入滚动区才显现 ----------------
+   常驻滑块会在每张代码卡、diff 卡底部留一道灰条；改成类似 macOS 浮层滚动条，
+   悬停滚动区（含其子元素）时出现，离开即隐去，占位宽度不变所以不引起重排。
+   放进 base 层：未分层的规则会压过所有 utilities，`[scrollbar-width:none]` 之类的局部覆盖会失效。 */
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  *:hover {
+    scrollbar-color: color-mix(in srgb, var(--muted-foreground) 22%, transparent) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background: transparent;
+  }
+  :hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--muted-foreground) 22%, transparent) padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--muted-foreground) 40%, transparent) padding-box;
+  }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
 }
 
 /* ---------------- 会话列宽 ----------------
@@ -581,6 +592,10 @@
 .moc-prose [data-streamdown="table-header-cell"]:last-child,
 .moc-prose [data-streamdown="table-cell"]:last-child {
   padding-right: 0;
+}
+/* 单元格里的行内代码多是路径与标识符，不在连字符处折断；整表放不下时由外层横向滚动 */
+.moc-prose [data-streamdown="table-cell"] [data-streamdown="inline-code"] {
+  white-space: nowrap;
 }
 
 /* 代码块：填充灰底 + 大圆角，无语言头/行号/卡片边框，仅右上角线框复制按钮 */

@@ -417,6 +417,10 @@ desc = { zh = "单页原始响应的最大读取字节数；超出截断。", en
 label = { zh = "单页预览字符上限", en = "Preview char cap" }
 desc = { zh = "只限制网页预览，不裁切已保存正文；多页共享 16 KiB 展示预算。", en = "Limits only the page preview, not the saved body; multiple pages share a 16 KiB display budget." }
 
+[core.config.overrides.mcp_server_connect_timeout_secs]
+label = { zh = "连接超时（秒）", en = "Connect timeout (s)" }
+desc = { zh = "该服务单次握手连接的最长等待时间；留空用全局设置。", en = "Maximum wait for a single handshake to this server; empty falls back to the global setting." }
+
 [core.config.overrides.mcp_server_timeout_secs]
 label = { zh = "调用超时（秒）", en = "Call timeout (s)" }
 desc = { zh = "该服务单次工具调用的最长等待时间；留空用全局设置。", en = "Maximum wait for a single tool call to this server; empty falls back to the global setting." }

@@ -290,9 +290,12 @@ pub(super) async fn manage(
             .await
             .map_err(|error| CoreError::Config(error.to_string()))??;
             let managers = std::mem::take(&mut *inner.mcp_managers.lock().await);
-            for manager in managers.into_values() {
+            let old_cwds: Vec<std::path::PathBuf> = managers.keys().cloned().collect();
+            futures_util::future::join_all(managers.into_values().map(|manager| async move {
                 manager.shutdown().await;
-            }
+            }))
+            .await;
+            inner.mcp_config_errors.write().clear();
             *inner.config.write() = Arc::new(resolved);
             inner.project_configs.write().clear();
             inner.skill_indexes.write().clear();
@@ -305,6 +308,15 @@ pub(super) async fn manage(
             }
             // 清缓存后插件会重新激活并可能写入配置；激活完成后再取最终 revision。
             let _ = inner.project_plugins(Path::new(&cwd)).await;
+            // 配置重载后立刻重新预热并广播最新 MCP 状态（含清空已删除 server 的旧状态）。
+            let current_key =
+                std::fs::canonicalize(Path::new(&cwd)).unwrap_or_else(|_| Path::new(&cwd).into());
+            inner.broadcast_mcp_snapshot(&current_key).await;
+            for old in old_cwds {
+                if old != current_key {
+                    inner.broadcast_mcp_snapshot(&old).await;
+                }
+            }
             let view = editor::inspect(&inner.boot, scope, Path::new(&cwd))?;
             super::plugin_persistence::settings(inner, Path::new(&cwd), view)
                 .await

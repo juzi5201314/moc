@@ -37,7 +37,8 @@ use crate::methods::{
     FsCreateFileResult, FsDeleteParams, FsListDirParams, FsListDirResult, FsReadFileParams,
     FsReadFileResult, FsRenameParams, FsRenameResult, FsWriteFileParams, FsWriteFileResult,
     InitializeParams, InitializeResult, JobListParams, JobListResult, JobOutputParams,
-    JobOutputResult, JobResult, JobTarget, PermissionRequestParams, PermissionResult,
+    JobOutputResult, JobResult, JobTarget, McpListParams, McpReconnectParams, McpStatusSnapshot,
+    PermissionRequestParams, PermissionResult,
     PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
     PluginRunCommandParams, PluginRunCommandResult, PromptParams, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, ResourceListParams, ResourceListResult,
@@ -286,6 +287,24 @@ pub trait AgentService: Send + Sync + 'static {
         _ctx: RequestContext,
         _params: PluginReloadParams,
     ) -> impl Future<Output = Result<PluginReloadResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 查询工作目录的 MCP server 状态快照（启动前与会话中均可调用）。
+    fn mcp_list(
+        &self,
+        _ctx: RequestContext,
+        _params: McpListParams,
+    ) -> impl Future<Output = Result<McpStatusSnapshot, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 手动重连指定或全部已启用的 MCP server 并返回最新快照。
+    fn mcp_reconnect(
+        &self,
+        _ctx: RequestContext,
+        _params: McpReconnectParams,
+    ) -> impl Future<Output = Result<McpStatusSnapshot, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 

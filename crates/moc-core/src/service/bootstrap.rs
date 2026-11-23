@@ -221,6 +221,9 @@ impl Core {
                 runtimes: Mutex::new(HashMap::new()),
                 project_configs: RwLock::new(HashMap::new()),
                 mcp_managers: Mutex::new(HashMap::new()),
+                mcp_config_errors: RwLock::new(HashMap::new()),
+                mcp_status_sinks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                mcp_watchers: Mutex::new(tokio::task::JoinSet::new()),
                 skill_indexes: RwLock::new(HashMap::new()),
                 plugin_hosts: Mutex::new(HashMap::new()),
                 ptc_host: Mutex::new(None),
@@ -250,16 +253,18 @@ impl Core {
                 tracing::error!(%error, "提示任务异常退出");
             }
         }
-        let managers: Vec<_> = self
-            .inner
-            .mcp_managers
-            .lock()
-            .await
-            .values()
-            .cloned()
+        let managers: Vec<_> = std::mem::take(&mut *self.inner.mcp_managers.lock().await)
+            .into_values()
             .collect();
-        for manager in managers {
+        futures_util::future::join_all(managers.into_iter().map(|manager| async move {
             manager.shutdown().await;
+        }))
+        .await;
+        let mut watchers = std::mem::take(&mut *self.inner.mcp_watchers.lock().await);
+        while let Some(result) = watchers.join_next().await {
+            if let Err(error) = result {
+                tracing::error!(%error, "MCP 状态监听任务异常退出");
+            }
         }
         let runtimes: Vec<_> = self.inner.runtimes.lock().await.values().cloned().collect();
         for runtime in runtimes {

@@ -1,9 +1,16 @@
 //! PTC 的工具目录：每次提示固定一份快照，工具发现和子工具执行都用它。
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+};
 
 use moc_mcp::{McpManager, McpSnapshot, ServerStatus};
 use moc_protocol::SessionEngine;
+use parking_lot::RwLock;
 use serde_json::{Value, json};
 
 use super::{Tier, Tool, ToolError, ToolRegistry};
@@ -31,10 +38,20 @@ pub(super) fn quote_mcp_text(text: &str) -> String {
     escaped
 }
 
-pub struct ToolCatalog {
+struct CatalogState {
     tools: Vec<Arc<dyn Tool>>,
     servers: BTreeMap<String, ServerStatus>,
     instructions: BTreeMap<String, Arc<str>>,
+    /// 提示开始时仍处于 `Connecting` / `Reconnecting` 的 server；
+    /// 它们在后台完成后由本目录单调吸收一次，已就绪的 server 仍在整条提示内保持固定。
+    pending_servers: BTreeSet<String>,
+}
+
+pub struct ToolCatalog {
+    manager: Arc<McpManager>,
+    has_pending: AtomicBool,
+    last_version: AtomicU64,
+    state: RwLock<CatalogState>,
     /// 声明、PTC 发现与执行共享相同的角色和权限快照。
     pub(super) scope: super::ToolScope,
 }
@@ -64,19 +81,112 @@ impl ToolCatalog {
                 ));
             }
         }
+        let pending_servers: BTreeSet<String> = snapshot
+            .statuses
+            .iter()
+            .filter(|(_, status)| {
+                matches!(
+                    status,
+                    ServerStatus::Connecting | ServerStatus::Reconnecting { .. }
+                )
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        let has_pending = !pending_servers.is_empty();
         Ok(Self {
-            tools,
-            servers: snapshot.statuses.clone(),
-            instructions: snapshot.instructions.clone(),
+            manager,
+            has_pending: AtomicBool::new(has_pending),
+            // 初始设为哨兵值，避免 snapshot 与 new 之间发生的状态变更被跳过。
+            last_version: AtomicU64::new(u64::MAX),
+            state: RwLock::new(CatalogState {
+                tools,
+                servers: snapshot.statuses.clone(),
+                instructions: snapshot.instructions.clone(),
+                pending_servers,
+            }),
             scope,
         })
     }
 
+    /// 吸收提示开始时尚在握手中的慢 MCP server；已就绪 server 保持冻结不变。
+    /// 无待就绪 server 或状态版本号未变化时仅做原子读取，不加锁不分配。
+    pub fn absorb_pending(&self) -> bool {
+        if !self.has_pending.load(Ordering::Acquire) {
+            return false;
+        }
+        let version = self.manager.status_version();
+        if version == self.last_version.load(Ordering::Acquire) {
+            return false;
+        }
+        let snapshot = self.manager.snapshot_now();
+        let mut state = self.state.write();
+        let mut changed = false;
+        let mut tools_added = false;
+        let pending: Vec<String> = state.pending_servers.iter().cloned().collect();
+        for name in pending {
+            let Some(next) = snapshot.statuses.get(&name).cloned() else {
+                state.pending_servers.remove(&name);
+                continue;
+            };
+            if state.servers.get(&name) == Some(&next) {
+                continue;
+            }
+            changed = true;
+            let settled = !matches!(
+                next,
+                ServerStatus::Connecting | ServerStatus::Reconnecting { .. }
+            );
+            if matches!(next, ServerStatus::Connected { .. }) {
+                for info in snapshot.tools.iter().filter(|tool| tool.server == name) {
+                    if state
+                        .tools
+                        .iter()
+                        .any(|existing| existing.name() == info.qualified)
+                    {
+                        tracing::warn!(
+                            tool = %info.qualified,
+                            server = %name,
+                            "延迟就绪的 MCP 工具与现有工具重名，已跳过"
+                        );
+                        continue;
+                    }
+                    state.tools.push(Arc::new(super::mcp::McpTool::new(
+                        Arc::clone(&self.manager),
+                        Arc::clone(info),
+                    )) as Arc<dyn Tool>);
+                    tools_added = true;
+                }
+                if let Some(instructions) = snapshot.instructions.get(&name) {
+                    state
+                        .instructions
+                        .insert(name.clone(), Arc::clone(instructions));
+                }
+            }
+            state.servers.insert(name.clone(), next);
+            if settled {
+                state.pending_servers.remove(&name);
+            }
+        }
+        if tools_added {
+            state
+                .tools
+                .sort_unstable_by(|left, right| left.name().cmp(right.name()));
+        }
+        if state.pending_servers.is_empty() {
+            self.has_pending.store(false, Ordering::Release);
+        }
+        self.last_version.store(version, Ordering::Release);
+        changed
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools
+        self.absorb_pending();
+        let state = self.state.read();
+        state
+            .tools
             .binary_search_by(|tool| tool.name().cmp(name))
             .ok()
-            .map(|index| Arc::clone(&self.tools[index]))
+            .map(|index| Arc::clone(&state.tools[index]))
     }
 
     pub(crate) fn definition(&self, tool: &dyn Tool) -> moc_llm::ToolDef {
@@ -107,35 +217,46 @@ impl ToolCatalog {
 
     /// 代码调用的工具目录与 Standard 共用能力面，只排除 `execute` 自身。
     /// 模式、角色和配置照常收紧；未激活的 workflow 工具不可见。
-    pub fn visible<'a>(
-        &'a self,
+    pub fn visible(
+        &self,
         engine: SessionEngine,
         mode: Mode,
         ask_supported: bool,
         workflows_active: bool,
-        config: &'a ResolvedConfig,
-    ) -> impl Iterator<Item = &'a Arc<dyn Tool>> + 'a {
+        config: &ResolvedConfig,
+    ) -> std::vec::IntoIter<Arc<dyn Tool>> {
+        let nested = mode::nested_engine(engine);
         self.declared(engine, ask_supported, workflows_active, config)
-            .filter(move |tool| tool.permitted_in(mode::nested_engine(engine), mode))
+            .filter(|tool| tool.permitted_in(nested, mode))
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     /// PTC 常驻声明不随 ask/plan 改变；包括只允许特定模式执行的插件。
-    pub(super) fn declared<'a>(
-        &'a self,
+    pub(super) fn declared(
+        &self,
         engine: SessionEngine,
         ask_supported: bool,
         workflows_active: bool,
-        config: &'a ResolvedConfig,
-    ) -> impl Iterator<Item = &'a Arc<dyn Tool>> + 'a {
+        config: &ResolvedConfig,
+    ) -> std::vec::IntoIter<Arc<dyn Tool>> {
+        self.absorb_pending();
         let engine = mode::nested_engine(engine);
-        self.tools.iter().filter(move |tool| {
-            self.scope.permits(tool.name())
-                && tool.name() != "execute"
-                && (workflows_active
-                    || !crate::workflow::runtime::WORKFLOW_TOOLS.contains(&tool.name()))
-                && tool.declared_in(engine)
-                && mode::tool_enabled(tool.name(), tool.origin(), ask_supported, config)
-        })
+        let state = self.state.read();
+        state
+            .tools
+            .iter()
+            .filter(|tool| {
+                self.scope.permits(tool.name())
+                    && tool.name() != "execute"
+                    && (workflows_active
+                        || !crate::workflow::runtime::WORKFLOW_TOOLS.contains(&tool.name()))
+                    && tool.declared_in(engine)
+                    && mode::tool_enabled(tool.name(), tool.origin(), ask_supported, config)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     pub fn servers(
@@ -145,17 +266,33 @@ impl ToolCatalog {
         ask_supported: bool,
         config: &ResolvedConfig,
     ) -> Value {
-        let mut counts = BTreeMap::<&str, usize>::new();
+        let mut counts = BTreeMap::<String, usize>::new();
         for tool in self.visible(engine, mode, ask_supported, self.scope.workflows, config) {
             if let Some(server) = tool.mcp_server() {
-                *counts.entry(server).or_default() += 1;
+                *counts.entry(server.to_owned()).or_default() += 1;
             }
         }
-        Value::Array(self.servers.iter().map(|(name, status)| json!({
-            "name": name, "status": status_name(status), "toolCount": counts.get(name.as_str()).copied().unwrap_or(0),
-            "instructionsUri": (counts.contains_key(name.as_str()) && self.instructions.contains_key(name))
-                .then(|| format!("tool://mcp/{name}"))
-        })).collect())
+        let state = self.state.read();
+        Value::Array(
+            state
+                .servers
+                .iter()
+                .map(|(name, status)| {
+                    let count = counts.get(name.as_str()).copied().unwrap_or(0);
+                    let mut entry = json!({
+                        "name": name,
+                        "status": status_name(status),
+                        "toolCount": count,
+                        "instructionsUri": (count > 0 && state.instructions.contains_key(name))
+                            .then(|| format!("tool://mcp/{name}")),
+                    });
+                    if let Some(error) = status_error(status) {
+                        entry["error"] = Value::String(quote_mcp_text(error));
+                    }
+                    entry
+                })
+                .collect(),
+        )
     }
 
     pub(super) fn server_documentation(
@@ -166,17 +303,17 @@ impl ToolCatalog {
         ask_supported: bool,
         config: &ResolvedConfig,
     ) -> Result<String, ToolError> {
-        if !self.servers.contains_key(server)
-            || !self
-                .visible(engine, mode, ask_supported, self.scope.workflows, config)
-                .any(|tool| tool.mcp_server() == Some(server))
-        {
+        let visible = self
+            .visible(engine, mode, ask_supported, self.scope.workflows, config)
+            .any(|tool| tool.mcp_server() == Some(server));
+        let state = self.state.read();
+        if !state.servers.contains_key(server) || !visible {
             return Err(ToolError::new(
                 "E_TOOL_NOT_FOUND",
                 "MCP server has no tools available in the current scope or mode",
             ));
         }
-        let instructions = self
+        let instructions = state
             .instructions
             .get(server)
             .map_or("No server instructions provided.", |text| text.as_ref());
@@ -187,17 +324,18 @@ impl ToolCatalog {
     }
 
     pub fn summary(&self) -> String {
-        if self.servers.is_empty() {
+        let state = self.state.read();
+        if state.servers.is_empty() {
             return String::new();
         }
         let mut lines = vec!["<mcp-servers>".to_owned()];
-        for name in self.servers.keys().take(32) {
+        for name in state.servers.keys().take(32) {
             lines.push(name.clone());
         }
-        if self.servers.len() > 32 {
+        if state.servers.len() > 32 {
             lines.push(format!(
                 "{} more servers; call catalog.servers() for this prompt's snapshot status",
-                self.servers.len() - 32
+                state.servers.len() - 32
             ));
         }
         lines.push("</mcp-servers>".into());
@@ -221,8 +359,9 @@ impl ToolCatalog {
         if !(1..=100).contains(&limit) {
             return Err(ToolError::new("E_ARGUMENT", "limit must be in 1..100"));
         }
+        self.absorb_pending();
         if let Some(name) = server
-            && !self.servers.contains_key(name)
+            && !self.state.read().servers.contains_key(name)
         {
             return Err(ToolError::new("E_ARGUMENT", "unknown MCP server"));
         }
@@ -300,6 +439,15 @@ fn status_name(status: &ServerStatus) -> &'static str {
         ServerStatus::Reconnecting { .. } => "reconnecting",
         ServerStatus::Failed { .. } => "failed",
         ServerStatus::Disabled => "disabled",
+    }
+}
+
+fn status_error(status: &ServerStatus) -> Option<&str> {
+    match status {
+        ServerStatus::Reconnecting { error, .. } | ServerStatus::Failed { error } => {
+            Some(error.as_str())
+        }
+        _ => None,
     }
 }
 
@@ -428,17 +576,17 @@ mod tests {
         )
         .expect("Explorer 工具目录");
         for engine in [SessionEngine::Standard, SessionEngine::Ptc] {
-            let names: Vec<_> = catalog
+            let names: Vec<String> = catalog
                 .visible(engine, Mode::Default, false, false, &config)
-                .map(|tool| tool.name())
+                .map(|tool| tool.name().to_owned())
                 .collect();
-            assert!(names.contains(&"bash"), "{engine:?} 必须保留 shell");
+            assert!(names.iter().any(|n| n == "bash"), "{engine:?} 必须保留 shell");
             assert!(
-                names.contains(&"mcp__demo__lookup"),
+                names.iter().any(|n| n == "mcp__demo__lookup"),
                 "{engine:?} 必须保留 MCP"
             );
-            assert!(!names.contains(&"write"));
-            assert!(!names.contains(&"edit"));
+            assert!(!names.iter().any(|n| n == "write"));
+            assert!(!names.iter().any(|n| n == "edit"));
         }
     }
 
@@ -519,6 +667,46 @@ mod tests {
                         .is_err()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn catalog_exposes_server_errors_and_absorbs_pending_servers() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let config = ResolvedConfig::load(&crate::CoreConfig {
+            home: root.path().join("home"),
+            cwd: root.path().to_owned(),
+            ..Default::default()
+        })
+        .expect("默认配置");
+        let snapshot = McpSnapshot {
+            tools: Vec::new(),
+            statuses: BTreeMap::from([
+                ("slow".into(), ServerStatus::Connecting),
+                (
+                    "broken".into(),
+                    ServerStatus::Failed {
+                        error: "connect timeout <15s>".into(),
+                    },
+                ),
+            ]),
+            instructions: BTreeMap::new(),
+        };
+        let manager = McpManager::new(Vec::new(), tokio_util::sync::CancellationToken::new());
+        let catalog = ToolCatalog::new(
+            &ToolRegistry::new(),
+            &snapshot,
+            manager,
+            Vec::new(),
+            super::super::ToolScope::top(),
+        )
+        .expect("目录构建");
+        for engine in [SessionEngine::Standard, SessionEngine::Ptc] {
+            let servers = catalog.servers(engine, Mode::Default, false, &config);
+            let list = servers.as_array().unwrap();
+            let broken = list.iter().find(|s| s["name"] == "broken").unwrap();
+            assert_eq!(broken["status"], "failed");
+            assert_eq!(broken["error"], "connect timeout &lt;15s&gt;");
         }
     }
 }

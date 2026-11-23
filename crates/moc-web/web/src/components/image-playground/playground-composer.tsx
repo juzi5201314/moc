@@ -158,7 +158,11 @@ export function PlaygroundComposer({
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = [...event.clipboardData.files].filter((f) => f.type.startsWith("image/"));
     if (files.length === 0) return;
-    event.preventDefault();
+    // 图文混贴时保留文字原生插入；纯图片或文件管理器带上的同名文本则拦截，避免把文件名贴进输入框。
+    const plain = event.clipboardData.getData("text/plain").replace(/\r\n/g, "\n").trim();
+    if (!plain || plain === files.map((file) => file.name).join("\n")) {
+      event.preventDefault();
+    }
     addUploadFiles(sessionId, files);
   };
 
@@ -178,7 +182,10 @@ export function PlaygroundComposer({
         event.preventDefault();
         setDragging(true);
       }}
-      onDragLeave={() => setDragging(false)}
+      onDragLeave={(event) => {
+        // 进出子元素也会触发 dragleave；只有真正离开拖放区才收起高亮，避免闪烁。
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+      }}
       onDrop={onDrop}
       className={cn(
         "relative",
@@ -199,7 +206,7 @@ export function PlaygroundComposer({
       >
         {/* 附件预览条：已选收藏/历史参考图 + 本次本地上传图 */}
         {totalRefs > 0 && (
-          <Attachments variant="inline" className="px-3 pt-3">
+          <Attachments variant="grid" className="px-3 pt-3">
             {refImageIds.map((id) => {
               const img = imagesById[id];
               return (

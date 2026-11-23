@@ -3,6 +3,8 @@
 use super::agents::open_subagents;
 use super::context::open_context;
 use super::context::open_tools;
+use super::mcp::reconnect_mcp;
+use super::mcp::refresh_mcp;
 use super::plan::confirm_plan;
 use super::plugins::refresh_plugins;
 use super::usage::refresh_usage;
@@ -199,6 +201,23 @@ pub(super) fn dispatch_command(
                     }
                 }
             });
+        }
+        CommandId::Mcp => {
+            let trimmed = rest.trim();
+            if trimmed.is_empty() {
+                refresh_mcp(app, connection, true);
+            } else if let Some(target) = trimmed.strip_prefix("reconnect")
+                && (target.is_empty() || target.starts_with(char::is_whitespace))
+            {
+                let server = target.trim();
+                reconnect_mcp(
+                    app,
+                    connection,
+                    (!server.is_empty()).then(|| server.to_owned()),
+                );
+            } else {
+                app.set_notice(t!("tui.cmd.mcp_usage"));
+            }
         }
         CommandId::Plugins => match rest.trim() {
             "" => refresh_plugins(app, connection, true, false),

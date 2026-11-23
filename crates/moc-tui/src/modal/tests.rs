@@ -232,6 +232,7 @@ fn rewind_navigation_moves_within_turns_and_between_users() {
         reminder: None,
         agent_result: None,
         job_notice: None,
+        response: None,
     };
     let mut state = RewindState::default();
     state.set_entries(
@@ -269,6 +270,7 @@ fn test_rewind_omp_style_navigation_and_filtering() {
         reminder: None,
         agent_result: None,
         job_notice: None,
+        response: None,
     };
     let mut state = RewindState::default();
     state.set_entries(

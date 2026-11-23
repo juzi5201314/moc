@@ -6,11 +6,11 @@ use anyhow::{Context, bail};
 use moc_core::{Core, CoreConfig, PtcWorkerCommand, resolve_models};
 use moc_protocol::features::FeatureStates;
 use moc_protocol::methods::{
-    ClientCapabilities, ClientInfo, ConfigGet, ConfigGetParams, PlanAction, SessionAutonomy,
-    SessionInfo, SessionList, SessionListParams, SessionLoad, SessionLoadParams,
-    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPlanApprove,
-    SessionPlanApproveParams, SessionRequestAsk, SessionRequestPermission, SessionSetModel,
-    SessionSetModelParams, SessionUpdate, SessionUpdateMethod,
+    ClientCapabilities, ClientInfo, ConfigGet, ConfigGetParams, McpServerPhase, McpStatusUpdated,
+    PlanAction, SessionAutonomy, SessionInfo, SessionList, SessionListParams, SessionLoad,
+    SessionLoadParams, SessionModelOverflowAction, SessionNew, SessionNewParams,
+    SessionPlanApprove, SessionPlanApproveParams, SessionRequestAsk, SessionRequestPermission,
+    SessionSetModel, SessionSetModelParams, SessionUpdate, SessionUpdateMethod,
 };
 use moc_protocol::{ClientBuilder, ClientHandle, RpcError, RpcErrorCode, ServerOptions};
 use rust_i18n::t;
@@ -298,6 +298,11 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
     // 通知回调在 client 建立前注册；槽位在握手完成后填充。
     let notification_client = Arc::new(std::sync::Mutex::new(Option::<ClientHandle>::None));
     let update_client = Arc::clone(&notification_client);
+    // 交互 REPL 下对首次出现的 MCP 配置错误或连接失败做一次去重提示；print 模式静默，不污染输出流。
+    let mcp_reported = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+        String,
+        String,
+    >::new()));
     let builder = ClientBuilder::new(ClientInfo {
         name: "moc-cli".into(),
         version: env!("CARGO_PKG_VERSION").into(),
@@ -341,6 +346,36 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
             });
         }
         update_renderer.handle(params);
+        std::future::ready(())
+    })
+    .on_notification::<McpStatusUpdated, _, _>(move |snapshot, _ctx| {
+        if !print_mode {
+            let mut reported = mcp_reported.lock().expect("mcp reported map");
+            if let Some(err) = &snapshot.config_error {
+                let key = format!("config:{}", snapshot.cwd);
+                if reported.get(&key) != Some(err) {
+                    reported.insert(key, err.clone());
+                    eprintln!("{}", t!("cli.repl.mcp_config_error", err = err.as_str()));
+                }
+            }
+            for server in &snapshot.servers {
+                if server.phase == McpServerPhase::Failed {
+                    let err = server.error.clone().unwrap_or_default();
+                    let key = format!("server:{}:{}", snapshot.cwd, server.name);
+                    if reported.get(&key) != Some(&err) {
+                        reported.insert(key, err.clone());
+                        eprintln!(
+                            "{}",
+                            t!(
+                                "cli.repl.mcp_server_failed",
+                                name = server.name.as_str(),
+                                err = err.as_str()
+                            )
+                        );
+                    }
+                }
+            }
+        }
         std::future::ready(())
     })
     .on_request::<SessionRequestPermission, _, _>(move |params, ctx| {

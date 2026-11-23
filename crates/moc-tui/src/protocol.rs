@@ -97,6 +97,13 @@ pub enum AppEvent {
     ClipboardPaste(Option<ClipboardPayload>),
     /// 本工作区的插件清单；同时刷新斜杠命令补全。
     Plugins(Vec<moc_protocol::methods::PluginInfo>),
+    /// 当前工作区的 MCP 状态快照（由 `mcp/list`、`mcp/reconnect` 或 `mcp/status_updated` 投递）。
+    McpStatus(moc_protocol::methods::McpStatusSnapshot),
+    /// `/mcp` 命令的输出便签。
+    McpReport {
+        text: String,
+        error: bool,
+    },
     /// 插件斜杠命令的输出；`None` 表示执行失败，文本是给用户看的错误。
     PluginOutput {
         /// 命令名（不含斜杠），用于回显。
@@ -316,6 +323,16 @@ pub async fn connect_embedded(
                 let _ = events.send(AppEvent::SkillsProgress(params));
             }
         });
+
+    let mcp_events = events.clone();
+    let builder = builder.on_notification::<moc_protocol::methods::McpStatusUpdated, _, _>(
+        move |params, _ctx| {
+            let events = mcp_events.clone();
+            async move {
+                let _ = events.send(AppEvent::McpStatus(params));
+            }
+        },
+    );
 
     let permission_events = events.clone();
     let builder = builder.on_request::<SessionRequestPermission, _, _>(

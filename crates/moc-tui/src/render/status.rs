@@ -314,6 +314,17 @@ pub(super) fn activity(app: &App) -> Option<Activity> {
             color: app.theme.accent_warning,
         });
     }
+    if !app.mcp_connecting.is_empty() {
+        return Some(Activity {
+            label: t!(
+                "tui.status.mcp_connecting",
+                servers = app.mcp_connecting.join(", ")
+            )
+            .into_owned()
+            .into(),
+            color: app.theme.accent_running,
+        });
+    }
     if app
         .blocks
         .iter()
@@ -407,6 +418,8 @@ pub(super) fn statusline_builtin(app: &App, width: usize) -> (Line<'static>, usi
                 Style::new().fg(theme.gray),
             ));
         }
+    } else if let Some(indicator) = idle_mcp_indicator(app) {
+        spans.extend(indicator);
     }
     // 右侧统计段：in/out 都是 0 时整段（连同 cost）不显示，空闲不刷一串 0。
     let right = if data.tokens_in == 0 && data.tokens_out == 0 {
@@ -522,5 +535,104 @@ pub(super) fn format_context_percent(percent: f64) -> String {
         "<1%".into()
     } else {
         format!("{percent:.0}%")
+    }
+}
+
+/// 空闲（含首条消息前）状态栏 MCP 静默/预警指示：
+/// 全健康或快速握手（<2s）时完全静默；慢连接（≥2s）、重连、失败或配置异常时给出简洁提示与 `/mcp` 入口。
+fn idle_mcp_indicator(app: &App) -> Option<Vec<Span<'static>>> {
+    use moc_protocol::methods::McpServerPhase;
+    const SLOW_THRESHOLD_MS: u64 = 2_000;
+    const WARN_THRESHOLD_SECS: u64 = 8;
+
+    let snapshot = app.mcp_status.as_ref()?;
+    let active = app.active_cwd();
+    if !active.is_empty() && active != snapshot.cwd {
+        return None;
+    }
+    let theme = app.theme;
+    if snapshot.config_error.is_some() {
+        return Some(vec![
+            Span::styled(
+                t!("tui.status.mcp_config_error").into_owned(),
+                Style::new().fg(theme.accent_error),
+            ),
+            Span::styled(" · /mcp".to_owned(), Style::new().fg(theme.gray)),
+        ]);
+    }
+    let failed: Vec<&str> = snapshot
+        .servers
+        .iter()
+        .filter(|server| server.phase == McpServerPhase::Failed)
+        .map(|server| server.name.as_str())
+        .collect();
+    let reconnecting: Vec<&str> = snapshot
+        .servers
+        .iter()
+        .filter(|server| server.phase == McpServerPhase::Reconnecting)
+        .map(|server| server.name.as_str())
+        .collect();
+    if !failed.is_empty() || !reconnecting.is_empty() {
+        let mut names = Vec::with_capacity(failed.len() + reconnecting.len());
+        names.extend(failed.iter().copied());
+        names.extend(reconnecting.iter().copied());
+        let summary = summarize_names(&names);
+        let color = if !failed.is_empty() {
+            theme.accent_error
+        } else {
+            theme.accent_warning
+        };
+        return Some(vec![
+            Span::styled(
+                t!("tui.status.mcp_unhealthy", servers = summary.as_str()).into_owned(),
+                Style::new().fg(color),
+            ),
+            Span::styled(" · /mcp".to_owned(), Style::new().fg(theme.gray)),
+        ]);
+    }
+    let now_ms = crate::event::mcp::now_unix_ms();
+    let slow: Vec<(&str, u64)> = snapshot
+        .servers
+        .iter()
+        .filter(|server| server.phase == McpServerPhase::Connecting)
+        .filter_map(|server| {
+            let elapsed_ms = now_ms.saturating_sub(server.started_at_ms?);
+            (elapsed_ms >= SLOW_THRESHOLD_MS).then_some((server.name.as_str(), elapsed_ms / 1000))
+        })
+        .collect();
+    if slow.is_empty() {
+        return None;
+    }
+    let max_secs = slow.iter().map(|(_, secs)| *secs).max().unwrap_or(0);
+    let names: Vec<&str> = slow.iter().map(|(name, _)| *name).collect();
+    let summary = summarize_names(&names);
+    let frame_count = u64::try_from(SPINNER_FRAMES.len()).expect("spinner frame count fits u64");
+    let frame = usize::try_from((now_ms / 120) % frame_count).expect("spinner index fits usize");
+    let color = if max_secs >= WARN_THRESHOLD_SECS {
+        theme.accent_warning
+    } else {
+        theme.accent_running
+    };
+    Some(vec![
+        Span::styled(SPINNER_FRAMES[frame], Style::new().fg(color)),
+        Span::styled(" ".to_owned(), Style::new()),
+        Span::styled(
+            t!(
+                "tui.status.mcp_slow",
+                servers = summary.as_str(),
+                secs = max_secs
+            )
+            .into_owned(),
+            Style::new().fg(color),
+        ),
+        Span::styled(" · /mcp".to_owned(), Style::new().fg(theme.gray)),
+    ])
+}
+
+fn summarize_names(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => (*only).to_owned(),
+        [first, rest @ ..] => format!("{first} (+{})", rest.len()),
     }
 }

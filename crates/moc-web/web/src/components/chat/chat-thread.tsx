@@ -1,5 +1,6 @@
 // 对话流：用户气泡 + 助手轮次（按时间排列的思考/工具/正文片段）+ 末尾的授权与提问卡片。
-// 完成的轮次把过程收进「处理过程」，只露出最后一段正文；进行中的轮次全部展开。
+// 正文把过程切成一个个「工作了」段：进行中的轮次收起已结束的段、当前段保持展开；
+// 完成的轮次再整体收进外层「工作了」，只露出最后一段正文。
 
 import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -15,7 +16,7 @@ import {
   RotateCcwIcon,
   Undo2Icon,
 } from "lucide-react";
-import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent, memo, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { useShallow } from "zustand/react/shallow";
@@ -37,10 +38,13 @@ import {
   AgentResultCard,
   imageSrc,
   JobNoticeCard,
+  toggleKeepingHeader,
+  turnDiffTotal,
 } from "@/components/chat/activity";
 import { ImagePreviewDialog } from "@/components/chat/image-preview-dialog";
 import { AskCard, PermissionCard } from "@/components/chat/requests";
 import { IconButton } from "@/components/common/icon-button";
+import { DiffStat } from "@/components/panels/diff-file";
 import { Button } from "@/components/ui/button";
 import { clockTime } from "@/lib/format";
 import { type MsgKey, t, useT } from "@/lib/i18n";
@@ -48,10 +52,13 @@ import { modelName } from "@/lib/models";
 import { type Block, finishLabel } from "@/lib/transcript-model";
 import {
   formatDuration,
+  pinnedSegment,
   type Segment,
   summarizeActivity,
   type Turn,
-  turnDurationMs,
+  type WorkRun,
+  workDurationMs,
+  workParts,
 } from "@/lib/turn";
 import { cn } from "@/lib/utils";
 import type { AskParams, ImageSource, PermissionRequestParams } from "@/protocol/types";
@@ -160,7 +167,7 @@ export function ChatThread({ sessionId }: { sessionId: string }) {
           permissions={permissions}
           asks={asks}
         />
-        <ConversationScrollButton className="bottom-4 size-8 border-0 bg-popover text-muted-foreground shadow-[var(--elevation-popover)] hover:bg-popover hover:text-foreground dark:bg-popover" />
+        <ConversationScrollButton className="bottom-4 z-30 size-8 border-0 bg-popover text-muted-foreground shadow-[var(--elevation-popover)] hover:bg-popover hover:text-foreground dark:bg-popover" />
       </Conversation>
     </div>
   );
@@ -219,7 +226,9 @@ function TranscriptRows({
   asks: readonly AskParams[];
 }) {
   const t = useT();
-  const { scrollRef } = useStickToBottomContext();
+  const { scrollRef, stopScroll } = useStickToBottomContext();
+  // 点开折叠的那一刻暂停虚拟器的末尾锚定，见 keepViewOnExpand。
+  const [anchorEnd, setAnchorEnd] = useState(true);
   const lastIndex = turnIds.length - 1;
   const rows = useMemo<Row[]>(() => {
     const rows: Row[] = [];
@@ -238,7 +247,7 @@ function TranscriptRows({
     getScrollElement: () => scrollRef.current,
     estimateSize: (index) => rows[index].estimate,
     getItemKey: (index) => rowKey(rows[index]),
-    anchorTo: "end",
+    anchorTo: anchorEnd ? "end" : "start",
     overscan: 5,
     gap: 32,
     paddingStart: 32,
@@ -281,8 +290,36 @@ function TranscriptRows({
     }
   };
 
+  // 点开折叠时内容应向下展开。贴底时有两处会把刚点的标题顶出视口：stick-to-bottom 的
+  // 跟随（解除后用户回到底部自动恢复）与虚拟器的末尾锚定（只在这次展开的测量期间改锚顶部，
+  // 两帧后恢复，向前翻页仍按末尾锚定）。弹出菜单的触发器（aria-haspopup）不改变正文高度。
+  const anchorFrame = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (anchorFrame.current !== null) cancelAnimationFrame(anchorFrame.current);
+    },
+    [],
+  );
+  const keepViewOnExpand = (event: MouseEvent) => {
+    if (
+      !(event.target instanceof Element) ||
+      !event.target.closest('button[aria-expanded="false"]:not([aria-haspopup])')
+    ) {
+      return;
+    }
+    stopScroll();
+    setAnchorEnd(false);
+    if (anchorFrame.current !== null) cancelAnimationFrame(anchorFrame.current);
+    anchorFrame.current = requestAnimationFrame(() => {
+      anchorFrame.current = requestAnimationFrame(() => {
+        anchorFrame.current = null;
+        setAnchorEnd(true);
+      });
+    });
+  };
+
   return (
-    <ConversationContent className="moc-chat-column gap-0 p-0">
+    <ConversationContent className="moc-chat-column gap-0 p-0" onClickCapture={keepViewOnExpand}>
       <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
         {virtualizer.getVirtualItems().map((item) => (
           <div
@@ -516,6 +553,105 @@ function liveLabel(turn: Turn): string {
   return summarizeActivity(turn.activity, false);
 }
 
+/**
+ * 「工作了」折叠：标题是时长与改动数，展开后列出其中的活动。外层展开时内层再嵌一级，
+ * 钉住位置与行时间槽的缩进都让出外层的一级。
+ */
+function WorkFold({
+  durationMs,
+  blocks,
+  nested = false,
+  children,
+}: {
+  durationMs?: number;
+  blocks: readonly Block[];
+  nested?: boolean;
+  children: ReactNode;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const header = useRef<HTMLDivElement>(null);
+  const changes = useMemo(() => turnDiffTotal(blocks), [blocks]);
+  return (
+    <div>
+      {/* 展开后滚动时钉在顶端，随时一键收起整段过程，不必滚回开头。 */}
+      <div
+        ref={header}
+        className={cn("sticky bg-background", nested ? "top-7 z-[15] scroll-mt-7" : "top-0 z-20")}
+      >
+        <button
+          type="button"
+          onClick={() =>
+            toggleKeepingHeader(header.current, open, () => setOpen((value) => !value))
+          }
+          aria-expanded={open}
+          className="group/proc flex h-7 max-w-full items-center gap-1.5 rounded-md text-ui text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ChevronRightIcon
+            className={cn(
+              "size-3.5 shrink-0 motion-safe:transition-transform",
+              open && "rotate-90",
+            )}
+          />
+          <span className="shrink-0">
+            {durationMs !== undefined
+              ? t("th.duration", { n: formatDuration(durationMs) })
+              : t("th.process")}
+          </span>
+          {/* 与「工作了」同字体同字号才共用基线；改动数是附注，降一档不透明度免得压过标题。 */}
+          {(changes.added > 0 || changes.removed > 0) && (
+            <DiffStat {...changes} className="font-sans text-ui opacity-75" />
+          )}
+        </button>
+      </div>
+      {open && (
+        <div
+          className={cn(
+            "mt-1 ml-[7px] flex flex-col gap-2 border-l border-border-subtle pl-3",
+            nested
+              ? "[--moc-row-indent:2.5rem] [--moc-sticky-top:3.5rem]"
+              : "[--moc-row-indent:1.25rem] [--moc-sticky-top:1.75rem]",
+          )}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 进行中轮次的状态行；每秒的计时刷新限制在这一行，不带动整轮重渲染。 */
+function LiveStatus({
+  sessionId,
+  turn,
+  startedAt,
+}: {
+  sessionId: string;
+  turn: Turn;
+  startedAt?: number;
+}) {
+  const t = useT();
+  const now = useNow(true);
+  const mcp = useTranscript((state) => state.bySession[sessionId]?.live?.mcpConnecting);
+  return (
+    <div className="flex h-7 items-center gap-2 text-sm">
+      <span className="moc-dots flex gap-[3px]">
+        <span className="size-1.5 rounded-full bg-text-tertiary" />
+        <span className="size-1.5 rounded-full bg-text-tertiary" />
+        <span className="size-1.5 rounded-full bg-text-tertiary" />
+      </span>
+      <Shimmer as="span" duration={1.8} className="font-medium">
+        {mcp?.length ? t("th.mcp_connecting", { servers: mcp.join(", ") }) : liveLabel(turn)}
+      </Shimmer>
+      {startedAt !== undefined && (
+        <span className="text-xs tabular-nums text-text-tertiary">
+          {formatDuration(Math.max(0, now - startedAt))}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function AssistantTurn({
   turn,
   last,
@@ -530,9 +666,8 @@ function AssistantTurn({
   context: TurnContext;
 }) {
   const t = useT();
-  const now = useNow(live);
-  const [processOpen, setProcessOpen] = useState(false);
   const segments = turn.segments;
+  const parts = useMemo(() => workParts(turn), [turn]);
   const userShell = turn.activity[0]?.kind === "bash" && !turn.user;
   let finalIndex = -1;
   for (let index = segments.length - 1; index >= 0; index--) {
@@ -548,13 +683,13 @@ function AssistantTurn({
       index !== finalIndex &&
       (segment.kind === "activity" || segment.kind === "text"),
   ).length;
-  const durationMs = turnDurationMs(turn);
   // 两个空文本块拼接后也有分隔换行，保持原复制入口的显示条件。
   const hasCopyText = turn.texts.length > 1 || turn.texts.some((block) => block.text.length > 0);
   const finalBlock =
     finalIndex >= 0
       ? (segments[finalIndex] as Extract<Segment, { kind: "text" }>).block
       : undefined;
+  const durationMs = workDurationMs(turn, finalBlock);
   const finish = turn.footer?.finishReason;
   const finishText = finishLabel(finish);
   const abnormal =
@@ -571,7 +706,7 @@ function AssistantTurn({
     );
   const canRetry = abnormal && !commandOnly && !context.readOnly && !context.running;
 
-  const renderSegment = (segment: Segment, index: number): ReactNode => {
+  const renderSegment = (segment: Segment): ReactNode => {
     switch (segment.kind) {
       case "activity":
         return (
@@ -583,7 +718,7 @@ function AssistantTurn({
           />
         );
       case "text": {
-        const isAnimating = live && index === segments.length - 1;
+        const isAnimating = live && segment === segments.at(-1);
         return (
           <MessageResponse
             key={segment.id}
@@ -617,82 +752,53 @@ function AssistantTurn({
     }
   };
 
+  const activityOf = (run: WorkRun): ReactNode[] =>
+    run.segments.filter((segment) => segment.kind === "activity").map(renderSegment);
+  const foldRun = (run: WorkRun, nested: boolean): ReactNode => (
+    <WorkFold key={run.id} durationMs={run.durationMs} blocks={run.blocks} nested={nested}>
+      {activityOf(run)}
+    </WorkFold>
+  );
+  // 外层收起的是最后一段正文之外的全部内容；常显片段提到外层之外，内层只剩活动与中间正文。
+  // 排除仅含常显片段的空工作段，避免在无中间正文时破坏 innerFlat、平白多套一层折叠。
+  const inner = parts.filter((part) =>
+    part.kind === "text" ? finalIndex < 0 || part !== segments[finalIndex] : part.blocks.length > 0,
+  );
+  const innerFlat = inner.length === 1 && inner[0].kind === "work";
+
   return (
     <div className="flex flex-col gap-4">
       {live ? (
-        segments.map(renderSegment)
+        // 已被正文收尾的段收起，常显片段紧随其标题；当前段还在进行，保持展开。
+        parts.flatMap((part, index) => {
+          if (part.kind === "text") return [renderSegment(part)];
+          if (index === parts.length - 1 || part.blocks.length === 0) {
+            return part.segments.map(renderSegment);
+          }
+          return [foldRun(part, false), ...part.segments.filter(pinnedSegment).map(renderSegment)];
+        })
       ) : (
         <>
           {processCount > 0 && (
-            <div>
-              <button
-                type="button"
-                onClick={() => setProcessOpen((value) => !value)}
-                aria-expanded={processOpen}
-                className="group/proc flex h-7 max-w-full items-center gap-1.5 rounded-md text-ui text-muted-foreground transition-colors hover:text-foreground"
-              >
-                <ChevronRightIcon
-                  className={cn(
-                    "size-3.5 shrink-0 motion-safe:transition-transform",
-                    processOpen && "rotate-90",
+            <WorkFold durationMs={durationMs} blocks={turn.activity}>
+              {innerFlat
+                ? activityOf(inner[0] as WorkRun)
+                : inner.map((part) =>
+                    part.kind === "text"
+                      ? renderSegment(part)
+                      : part.blocks.length > 0 && foldRun(part, true),
                   )}
-                />
-                <span className="shrink-0">
-                  {durationMs !== undefined
-                    ? t("th.duration", { n: formatDuration(durationMs) })
-                    : t("th.process")}
-                </span>
-                <span className="text-text-tertiary/60">·</span>
-                <span className="min-w-0 truncate text-text-tertiary">
-                  {summarizeActivity(turn.activity)}
-                </span>
-              </button>
-              {processOpen && (
-                <div className="mt-1 ml-[7px] flex flex-col gap-2 border-l border-border-subtle pl-4">
-                  {segments.map((segment, index) =>
-                    index === finalIndex ||
-                    segment.kind === "plan" ||
-                    segment.kind === "notice" ||
-                    segment.kind === "agent-result" ||
-                    segment.kind === "job-notice"
-                      ? null
-                      : renderSegment(segment, index),
-                  )}
-                </div>
-              )}
-            </div>
+            </WorkFold>
           )}
           {segments.map((segment, index) =>
-            index === finalIndex ||
-            segment.kind === "plan" ||
-            segment.kind === "notice" ||
-            segment.kind === "agent-result" ||
-            segment.kind === "job-notice"
-              ? renderSegment(segment, index)
-              : processCount === 0
-                ? renderSegment(segment, index)
-                : null,
+            index === finalIndex || pinnedSegment(segment) || processCount === 0
+              ? renderSegment(segment)
+              : null,
           )}
         </>
       )}
 
-      {live && (
-        <div className="flex h-7 items-center gap-2 text-sm">
-          <span className="moc-dots flex gap-[3px]">
-            <span className="size-1.5 rounded-full bg-text-tertiary" />
-            <span className="size-1.5 rounded-full bg-text-tertiary" />
-            <span className="size-1.5 rounded-full bg-text-tertiary" />
-          </span>
-          <Shimmer as="span" duration={1.8} className="font-medium">
-            {liveLabel(turn)}
-          </Shimmer>
-          {liveStartedAt !== undefined && (
-            <span className="text-xs tabular-nums text-text-tertiary">
-              {formatDuration(Math.max(0, now - liveStartedAt))}
-            </span>
-          )}
-        </div>
-      )}
+      {live && <LiveStatus sessionId={context.sessionId} turn={turn} startedAt={liveStartedAt} />}
 
       {!live && (hasCopyText || turn.footer || canRetry) && (
         <div

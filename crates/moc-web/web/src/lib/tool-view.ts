@@ -176,8 +176,6 @@ export type Headline = {
   target: string;
   /** 主体之后的次级范围（grep/find 的搜索根）。 */
   scope?: string;
-  /** 主体是代码性质（路径、模式），用等宽字体。 */
-  mono: boolean;
   /** 右侧尾注：数量、退出码。 */
   stat?: string;
   /** 尾注是失败信息。 */
@@ -190,7 +188,6 @@ export function toolHeadline(tool: ToolBlock): Headline {
   if (tool.preview)
     return {
       target: tool.preview.target || tool.preview.summary,
-      mono: Boolean(tool.preview.target),
     };
   const args = parseArgs(tool.arguments);
   const result = tool.result;
@@ -198,20 +195,18 @@ export function toolHeadline(tool: ToolBlock): Headline {
   switch (tool.name) {
     case "read": {
       const range = readRange(args, result);
-      return { target: `${str(args, "path")}${range}`, mono: true };
+      return { target: `${str(args, "path")}${range}` };
     }
     case "grep":
       return {
         target: str(args, "pattern"),
         scope: str(args, "path") || undefined,
-        mono: true,
         stat: result !== undefined && !failed ? grepCountText(result) : undefined,
       };
     case "find":
       return {
         target: strings(args, "glob").join(" "),
         scope: str(args, "path") || undefined,
-        mono: true,
         stat:
           result !== undefined && !failed
             ? count(findFiles(result).paths.length, "file", "files")
@@ -222,16 +217,15 @@ export function toolHeadline(tool: ToolBlock): Headline {
       const exit = result === undefined ? null : commandExit(result);
       return {
         target: description || (str(args, "command").trim().split("\n", 1)[0] ?? ""),
-        mono: !description,
         stat: exit ?? undefined,
         statError: exit !== null,
       };
     }
     case "execute":
-      return { target: str(args, "description"), mono: false };
+      return { target: str(args, "description") };
     case "edit":
     case "write":
-      return { target: str(args, "path"), mono: true };
+      return { target: str(args, "path") };
     case "todo": {
       const op = str(args, "op");
       const phases = result !== undefined && !failed ? parseTodo(result) : [];
@@ -239,7 +233,6 @@ export function toolHeadline(tool: ToolBlock): Headline {
       return {
         verb: t(op === "view" ? "tool.todo_view" : "tool.todo_update"),
         target: "",
-        mono: false,
         stat: items.length
           ? `${items.filter((item) => item.status === "completed").length}/${items.length}`
           : undefined,
@@ -249,7 +242,6 @@ export function toolHeadline(tool: ToolBlock): Headline {
       const urls = strings(args, "urls");
       return {
         target: urls.map(displayUrl).join(" "),
-        mono: true,
         stat: urls.length > 1 ? count(urls.length, "page", "pages") : undefined,
       };
     }
@@ -258,17 +250,16 @@ export function toolHeadline(tool: ToolBlock): Headline {
         target: Array.isArray(args.tasks)
           ? args.tasks.map((task: Record<string, unknown>) => str(task, "title")).join(" · ")
           : str(args, "title"),
-        mono: false,
         stat: Array.isArray(args.tasks) ? t("tool.tasks_n", { n: args.tasks.length }) : undefined,
       };
     case "yield":
-      return { target: t("tool.report"), mono: false };
+      return { target: t("tool.report") };
     case "skill":
-      return { target: str(args, "name"), mono: true };
+      return { target: str(args, "name") };
     case "clm_context":
-      return { target: str(args, "op"), mono: true };
+      return { target: str(args, "op") };
     case "stop_agent":
-      return { target: str(args, "agent_id"), mono: true };
+      return { target: str(args, "agent_id") };
     case "ask": {
       const questions = Array.isArray(args.questions) ? args.questions : [];
       const first = questions[0] as { question?: unknown } | undefined;
@@ -277,12 +268,11 @@ export function toolHeadline(tool: ToolBlock): Headline {
           typeof first?.question === "string"
             ? (first.question.trim().split("\n", 1)[0] ?? "")
             : "",
-        mono: false,
         stat: questions.length > 1 ? t("tool.questions_n", { n: questions.length }) : undefined,
       };
     }
     default:
-      return { target: activitySnippet(tool, 200), mono: true };
+      return { target: activitySnippet(tool, 200) };
   }
 }
 

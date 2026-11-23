@@ -193,15 +193,15 @@ describe("summarizeActivity", () => {
 
 describe("activityVerb / activitySnippet", () => {
   it("识别常见工具动词", () => {
-    expect(activityVerb(tool("bash"))).toBe("运行命令");
+    expect(activityVerb(tool("bash"))).toBe("运行");
     expect(activityVerb(tool("execute"))).toBe("运行代码");
     expect(activityVerb(tool("sidekick"))).toBe("协调子代理");
-    expect(activityVerb(tool("read_file"))).toBe("读取文件");
-    expect(activityVerb(tool("write_file"))).toBe("写入文件");
-    expect(activityVerb(tool("mcp__fs__str_replace_editor"))).toBe("编辑文件");
-    expect(activityVerb(tool("grep"))).toBe("搜索代码");
+    expect(activityVerb(tool("read_file"))).toBe("读取");
+    expect(activityVerb(tool("write_file"))).toBe("写入");
+    expect(activityVerb(tool("mcp__fs__str_replace_editor"))).toBe("编辑");
+    expect(activityVerb(tool("grep"))).toBe("搜索");
     expect(activityVerb(tool("web_search"))).toBe("搜索网页");
-    expect(activityVerb(tool("web_fetch"))).toBe("访问网页");
+    expect(activityVerb(tool("web_fetch"))).toBe("访问");
     expect(activityVerb(tool("some_unknown_tool"))).toBe("调用工具");
     expect(activityVerb({ kind: "text", id: "t1", text: "x" })).toBeNull();
   });
@@ -209,6 +209,9 @@ describe("activityVerb / activitySnippet", () => {
   it("摘要折叠空白并截断", () => {
     const long = "a".repeat(120);
     expect(activitySnippet({ kind: "reasoning", id: "r1", text: long })).toHaveLength(81);
+    expect(
+      activitySnippet({ kind: "reasoning", id: "r2", text: "## 计划\n**先检查**工作区" }),
+    ).toBe("计划 先检查工作区");
     expect(
       activitySnippet({ kind: "bash", id: "b1", command: "git  status\n--short", atMs: 1 }),
     ).toBe("git status --short");
@@ -271,5 +274,15 @@ describe("turnDurationMs", () => {
   it("缺少 footer 时给不出用时", () => {
     const turn = firstTurn([userBlock("u1"), { kind: "text", id: "t1", text: "进行中" }]);
     expect(turnDurationMs(turn)).toBeUndefined();
+  });
+
+  it("续接轮跳过 atMs 为 undefined 的工具块继续寻找起始时间", () => {
+    const turn = firstTurn([
+      tool("read", { atMs: undefined }),
+      tool("bash", { id: "t2", atMs: 10_000 }),
+      { kind: "text", id: "txt", text: "完成" },
+      { kind: "footer", id: "f1", atMs: 40_000 },
+    ]);
+    expect(turnDurationMs(turn)).toBe(30_000);
   });
 });

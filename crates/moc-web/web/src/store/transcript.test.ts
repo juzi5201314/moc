@@ -16,6 +16,7 @@ vi.mock("@/protocol/client", () => ({
 vi.mock("./prefs", () => ({ usePrefs: { getState: () => ({ workspaces: [] }) } }));
 
 import { rpc } from "@/protocol/client";
+import { ErrorCode, RpcError } from "@/protocol/errors";
 import { hasOwnPrompt, reanswerAsk, retrySession, sendPrompt } from "./actions";
 import { closeSession, loadOlder, openSession, reloadReadOnly } from "./lifecycle";
 import { useTabs } from "./tabs";
@@ -303,5 +304,16 @@ describe("流式合帧", () => {
       live.unmount();
       unsubscribe();
     }
+  });
+
+  it("打开会话遇到瞬时断连保留标签，非瞬时失败才关闭标签", async () => {
+    const call = vi.mocked(rpc.call);
+    call.mockRejectedValueOnce(new RpcError(ErrorCode.ConnectionClosed, "closed"));
+    await expect(openSession(info.id)).rejects.toThrow("closed");
+    expect(useTabs.getState().open).toContain(info.id);
+
+    call.mockRejectedValueOnce(new RpcError(ErrorCode.SessionNotFound, "missing"));
+    await expect(openSession(info.id)).rejects.toThrow("missing");
+    expect(useTabs.getState().open).not.toContain(info.id);
   });
 });

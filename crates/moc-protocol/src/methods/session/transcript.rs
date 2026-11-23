@@ -42,6 +42,27 @@ pub struct ReminderStamp {
     pub items: Vec<ReminderItem>,
 }
 
+/// 一段 assistant 正文从首个到末个流式增量的墙钟时间窗。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextSpan {
+    /// 首个增量到达的 UNIX 毫秒时间戳。
+    pub start_ms: u64,
+    /// 末个增量到达的 UNIX 毫秒时间戳。
+    pub end_ms: u64,
+}
+
+/// 一次模型响应的展示元信息。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseMeta {
+    /// 生成该响应的模型选择器（`provider/model[:level]`）。
+    pub model: String,
+    /// 各正文段的流式时间窗，与 `message` 中的 Text 部分按序一一对应。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_spans: Vec<TextSpan>,
+}
+
 /// 一条 transcript 条目。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -76,6 +97,9 @@ pub struct TranscriptEntry {
     /// 前端把投递渲染成卡片用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_notice: Option<JobInfo>,
+    /// 模型响应的展示元信息；其它消息与旧会话日志没有此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<ResponseMeta>,
 }
 
 impl TranscriptEntry {

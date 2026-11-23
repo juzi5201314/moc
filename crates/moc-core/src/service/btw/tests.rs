@@ -221,6 +221,8 @@ async fn readonly_snapshot_works_while_main_lock_is_held_and_never_loads_hosts()
             "不得消费的主提醒".into(),
         ));
     let before = h.unchanged_snapshot().await;
+    // 新建会话时会预热该目录的 MCP；旁路本身不得再加载任何管理器。
+    let mcp_before = h.core.inner.mcp_managers.lock().await.len();
     let lock = h.record.try_prompt_lock().expect("模拟主提示占用");
     let mut params = h.params("解释 @does-not-exist.png 的含义，不读取文件");
     params.history.push(BtwExchange {
@@ -235,7 +237,7 @@ async fn readonly_snapshot_works_while_main_lock_is_held_and_never_loads_hosts()
     assert_eq!(result.usage.input_tokens, 19);
     assert_eq!(h.unchanged_snapshot().await, before);
     assert!(h.core.inner.plugin_hosts.lock().await.is_empty());
-    assert!(h.core.inner.mcp_managers.lock().await.is_empty());
+    assert_eq!(h.core.inner.mcp_managers.lock().await.len(), mcp_before);
     assert!(h.core.inner.skill_indexes.read().is_empty());
     assert!(h.main_updates.lock().is_empty());
     assert!(matches!(h.event().await, BtwUpdate::Started));

@@ -113,6 +113,10 @@ fn register_all(
     client::<JobKill>(generator, client_map);
     // management.rs
     client::<ConfigManage>(generator, client_map);
+    // mcp.rs
+    client::<McpList>(generator, client_map);
+    client::<McpReconnect>(generator, client_map);
+    server_notification::<McpStatusUpdated>(generator, server_ntf);
     // permission.rs
     server_request::<SessionRequestPermission>(generator, server_req);
     // plan.rs

@@ -10,7 +10,7 @@ import { NoticeScope, toolBody } from "@/components/chat/tool-views";
 import { DiffStat, diffStats } from "@/components/panels/diff-file";
 import { Button } from "@/components/ui/button";
 import { parseLinkTarget } from "@/lib/file-target";
-import { formatDuration } from "@/lib/format";
+import { clockTime, formatDuration } from "@/lib/format";
 import { t, useT } from "@/lib/i18n";
 import {
   BRIEF_BODY_ROWS,
@@ -58,12 +58,31 @@ function useNow(active: boolean): number {
   return now;
 }
 
+/**
+ * 折叠钉住的标题时把它滚回视口顶端：否则正文收起后标题的原位远在视口之上，视口落到无关内容。
+ * 标题是父容器首个子元素，比父容器顶缘低即为钉住；scroll-margin 让出外层钉住标题的高度。
+ */
+export function toggleKeepingHeader(
+  header: HTMLElement | null,
+  collapsing: boolean,
+  toggle: () => void,
+) {
+  const parent = header?.parentElement;
+  const stuck =
+    collapsing &&
+    header != null &&
+    parent != null &&
+    header.getBoundingClientRect().top - parent.getBoundingClientRect().top > 0.5;
+  toggle();
+  if (stuck) requestAnimationFrame(() => header.scrollIntoView({ block: "start" }));
+}
+
 /** 标题行：图标 · 动作 · 对象 · 次级范围 · 尾注；可展开时整行可点。 */
 function RowHeader({
   verb,
   target,
+  targetTitle,
   scope,
-  mono,
   failed,
   emphasized,
   suffix,
@@ -73,14 +92,18 @@ function RowHeader({
   pulse,
   sticky,
   inlineSuffix,
+  atMs,
   onToggle,
   onTargetClick,
 }: {
+  /** 顶层活动的发生时刻：悬停时显示在正文列左侧槽。 */
+  atMs?: number;
   verb: string;
   target?: string;
+  /** 目标被缩写显示时（如文件只留文件名），悬停提示里的完整文本。 */
+  targetTitle?: string;
   onTargetClick?: () => void;
   scope?: string;
-  mono?: boolean;
   failed?: boolean;
   emphasized?: boolean;
   suffix?: ReactNode;
@@ -94,13 +117,19 @@ function RowHeader({
   inlineSuffix?: boolean;
   onToggle: () => void;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
   return (
     <div
+      ref={ref}
       className={cn(
-        "group/row flex h-7 w-full min-w-0 items-center gap-1.5 rounded-md text-left text-ui text-muted-foreground transition-colors",
-        interactive && "hover:text-foreground",
+        // 参照 Devin：整行同一档 tertiary 灰、26px 行距，悬停整行提到 muted；「过程」标题保持 muted，高出一级。
+        "group/row flex h-6.5 w-full min-w-0 items-center gap-1.5 rounded-md text-left text-ui text-text-tertiary transition-colors",
+        interactive && "hover:text-muted-foreground",
         // 钉住时正文从行底滚过，需要不透明背景与层级；嵌套行不钉，避免多层叠头。
-        sticky ? "sticky top-0 z-10 bg-background" : "relative",
+        // 位于已展开的「过程」内时，--moc-sticky-top 让出过程标题的高度，两级标题叠放不互相遮挡。
+        sticky
+          ? "sticky top-[var(--moc-sticky-top,0px)] z-10 scroll-mt-[var(--moc-sticky-top,0px)] bg-background"
+          : "relative",
       )}
     >
       <button
@@ -109,19 +138,23 @@ function RowHeader({
         aria-label={target ? `${verb} ${target}` : verb}
         aria-expanded={interactive ? open : undefined}
         title={onTargetClick ? undefined : target}
-        onClick={onToggle}
+        onClick={() => toggleKeepingHeader(ref.current, Boolean(sticky) && open, onToggle)}
         className="absolute inset-0 rounded-md"
       />
-      {/* 参照 Devin 活动日志：常态只留文字，图标仅在失败时出现，避免整列图标堆出机械感。 */}
-      {failed && (
-        <span className="flex size-4 shrink-0 items-center justify-center text-destructive [&_svg]:size-3.5">
-          <CircleAlertIcon />
+      {/* 参照 Devin：时间落在正文列左外侧的固定槽，--moc-row-indent 抵消「过程」缩进让各级对齐；
+          列外留白不足（主舞台 <56rem）时不显示，免得被裁切。 */}
+      {atMs !== undefined && (
+        <span className="pointer-events-none absolute right-full mr-[calc(var(--moc-row-indent,0px)+0.75rem)] hidden whitespace-nowrap text-2xs tabular-nums text-text-tertiary opacity-0 transition-opacity group-hover/row:opacity-100 @min-[56rem]:block">
+          {clockTime(atMs)}
         </span>
       )}
+      {/* 参照 Devin 活动日志：常态只留文字。失败只把动词染成 destructive，告警图标放到尾注前，
+          行首不插图标，整列动词左缘保持对齐。 */}
       <span
         className={cn(
           "shrink-0",
           emphasized && "font-medium text-foreground",
+          failed && "text-destructive",
           pulse && "animate-pulse",
         )}
       >
@@ -132,23 +165,16 @@ function RowHeader({
           (onTargetClick ? (
             <button
               type="button"
-              className={cn(
-                "relative min-w-0 truncate text-left text-text-tertiary hover:text-foreground",
-                mono && "tabular-nums",
-              )}
-              title={target}
+              className={cn("relative min-w-0 truncate text-left hover:text-foreground")}
+              title={targetTitle ?? target}
               onClick={onTargetClick}
             >
               {target}
             </button>
           ) : (
             <span
-              className={cn(
-                "min-w-0 truncate",
-                emphasized ? "text-muted-foreground" : "text-text-tertiary",
-                mono && "tabular-nums",
-              )}
-              title={target}
+              className={cn("min-w-0 truncate", emphasized && "text-muted-foreground")}
+              title={targetTitle ?? target}
             >
               {target}
             </span>
@@ -157,6 +183,7 @@ function RowHeader({
       </span>
       {!inlineSuffix && action && <span className="relative shrink-0">{action}</span>}
       <span className="flex shrink-0 items-center gap-1.5">
+        {failed && <CircleAlertIcon className="size-3.5 text-destructive" />}
         {suffix}
         {interactive && (
           <ChevronRightIcon
@@ -243,6 +270,7 @@ function ReasoningRow({
   return (
     <div>
       <RowHeader
+        atMs={block.atMs}
         verb={streaming ? t("verb.thinking_ing") : t("verb.thinking")}
         target={body || level === "hidden" ? undefined : activitySnippet(block, 160)}
         pulse={streaming}
@@ -265,6 +293,31 @@ function ReasoningRow({
 }
 
 // ---------- 工具 ----------
+
+type DiffTotal = { added: number; removed: number };
+
+/** 把工具块自身 diff（不含子调用）的行数累加进 total。 */
+function addDiffTotals(tools: readonly ToolBlock[], total: DiffTotal): DiffTotal {
+  for (const tool of tools) {
+    for (const file of tool.diff?.files ?? []) {
+      const stats = diffStats(file);
+      total.added += stats.added;
+      total.removed += stats.removed;
+    }
+  }
+  return total;
+}
+
+/** 本轮全部工具（含子调用）的改动行数合计：过程标题的 +N −M。 */
+export function turnDiffTotal(blocks: readonly Block[]): DiffTotal {
+  const total = { added: 0, removed: 0 };
+  const visit = (tools: readonly ToolBlock[]) => {
+    addDiffTotals(tools, total);
+    for (const tool of tools) visit(tool.children);
+  };
+  visit(blocks.filter((block): block is ToolBlock => block.kind === "tool"));
+  return total;
+}
 
 function toolSuffix(
   tool: ToolBlock,
@@ -296,14 +349,7 @@ function toolSuffix(
     return <span className="text-2xs text-warn">{t("act.denied")}</span>;
   if (tool.status === "cancelled")
     return <span className="text-2xs text-text-tertiary">{t("act.cancelled")}</span>;
-  const files = tool.diff?.files ?? [];
-  const total = files.reduce(
-    (sum, file) => {
-      const stats = diffStats(file);
-      return { added: sum.added + stats.added, removed: sum.removed + stats.removed };
-    },
-    { added: 0, removed: 0 },
-  );
+  const total = addDiffTotals([tool], { added: 0, removed: 0 });
   return (
     <>
       {stat && (
@@ -414,10 +460,19 @@ function ToolRow({
   return (
     <div>
       <RowHeader
+        atMs={sticky ? tool.atMs : undefined}
         verb={headline.verb ?? activityVerb(tool) ?? t("verb.tools")}
-        target={headline.target}
+        // 可点击的文件目标只显示文件名（含行范围），与合并组一致；完整路径留给悬停提示，点击仍按完整路径打开。
+        target={
+          targetClick
+            ? headline.target
+                .replace(/[\\/]+$/, "")
+                .split(/[\\/]/)
+                .pop() || headline.target
+            : headline.target
+        }
+        targetTitle={targetClick ? headline.target : undefined}
         scope={headline.scope}
-        mono={headline.mono}
         failed={failed}
         pulse={tool.status === "generating"}
         suffix={toolSuffix(tool, headline.stat, headline.statError, now)}
@@ -568,9 +623,9 @@ function ToolGroupRow({
   return (
     <div>
       <RowHeader
+        atMs={tools[0]?.atMs}
         verb={verb}
         target={targets}
-        mono
         failed={failedCount > 0}
         interactive
         open={open}
@@ -627,6 +682,7 @@ function bashAsTool(block: Extract<Block, { kind: "bash" }>): ToolBlock {
     job: block.job,
     liveOutput: block.liveOutput,
     durationMs: block.durationMs,
+    atMs: block.atMs,
   };
 }
 
@@ -678,6 +734,7 @@ function JobNoticeRow({
   return (
     <div>
       <RowHeader
+        atMs={block.atMs}
         verb={t("act.job_notice")}
         target={job.job_id}
         failed={failed}
@@ -728,6 +785,7 @@ function AgentReportRow({
   return (
     <div>
       <RowHeader
+        atMs={block.atMs}
         verb={result ? t("act.agent_result") : t("act.agent_msg")}
         target={result ? block.meta.title : block.from}
         failed={result && block.meta.status === "failed"}
@@ -777,6 +835,7 @@ function GoalRoundRow({
   return (
     <div>
       <RowHeader
+        atMs={block.atMs}
         verb={t("act.goal_round", { n: block.round })}
         interactive
         open={level === "full"}

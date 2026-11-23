@@ -33,6 +33,7 @@ jobs.desc = { zh = "查看和管理后台任务", en = "View and manage backgrou
 workflow.usage = { zh = "[指令]", en = "[instructions]" }
 workflow.desc = { zh = "开启工作流，可附带指令", en = "Activate workflows, optionally with instructions" }
 workflows.desc = { zh = "查看工作流运行记录", en = "List workflow runs" }
+mcp.desc = { zh = "查看 MCP 服务状态或手动重连", en = "Inspect MCP server status or reconnect" }
 plugins.desc = { zh = "查看插件：来源、工具与斜杠命令", en = "Inspect plugins: sources, tools and slash commands" }
 features.desc = { zh = "特性开关一览：阶段、状态与上下文成本", en = "Feature flags overview: stages, states and context cost" }
 help.desc = { zh = "快捷键一览", en = "Keyboard shortcuts" }

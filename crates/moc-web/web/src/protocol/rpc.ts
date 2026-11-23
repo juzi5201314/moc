@@ -12,6 +12,7 @@ import {
   BTW_UPDATE_TYPES,
   type BtwUpdateParams,
   type InitializeResult,
+  type McpStatusSnapshot,
   type PermissionRequestParams,
   type PermissionResult,
   PROTOCOL_VERSION,
@@ -44,6 +45,7 @@ type NotificationMap = {
   "session/btw_update": BtwUpdateParams;
   "skills/progress": SkillsProgressParams;
   "web/state_updated": WebStateDocument;
+  "mcp/status_updated": McpStatusSnapshot;
 };
 
 type RequestMap = {

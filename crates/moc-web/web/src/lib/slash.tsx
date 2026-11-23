@@ -31,6 +31,7 @@ import {
   setSessionPermission,
   togglePlanMode,
 } from "@/store/lifecycle";
+import { useMcp } from "@/store/mcp";
 import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { openSettings, useUi } from "@/store/ui";
@@ -489,6 +490,36 @@ export function runSlash(
     case "jobs":
       useUi.getState().set({ jobsSession: sessionId });
       break;
+    case "mcp": {
+      const rest = args.trim();
+      const cwd = view?.info.cwd;
+      if (rest === "") {
+        void useMcp
+          .getState()
+          .refresh(sessionId !== "draft-session" ? { sessionId, cwd } : { cwd })
+          .catch(() => undefined);
+        useUi.getState().set({ statusPopover: { sessionId, kind: "mcp" } });
+      } else if (rest === "reconnect" || rest.startsWith("reconnect ")) {
+        const server = rest.slice("reconnect".length).trim() || undefined;
+        useUi.getState().set({ statusPopover: { sessionId, kind: "mcp" } });
+        void useMcp
+          .getState()
+          .reconnect({ sessionId, cwd, server })
+          .then(() => {
+            toast.success(
+              server
+                ? t("slash.mcp_reconnecting_one", { name: server })
+                : t("slash.mcp_reconnecting"),
+            );
+          })
+          .catch((error) =>
+            toast.error(t("slash.mcp_reconnect_failed", { error: errorText(error) })),
+          );
+      } else {
+        toast(t("slash.usage", { cmd: `/mcp ${command.usage}` }));
+      }
+      break;
+    }
     case "plugins": {
       const rest = args.trim();
       if (rest === "reload") {

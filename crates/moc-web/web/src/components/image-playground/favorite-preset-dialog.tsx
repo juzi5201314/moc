@@ -203,7 +203,7 @@ export function FavoritePresetDialog() {
     <Dialog open={Boolean(editor)} onOpenChange={(open) => !open && closePresetEditor()}>
       <DialogContent className="max-w-lg rounded-2xl border-0 bg-popover shadow-[var(--elevation-dialog)]">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-base">
+          <DialogTitle className="flex items-center gap-2">
             <SparklesIcon className="size-4 text-brand" />
             {isEditing ? t("ip.preset_edit_title") : t("ip.preset_new_title")}
           </DialogTitle>

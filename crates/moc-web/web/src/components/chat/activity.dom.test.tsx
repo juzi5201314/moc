@@ -181,7 +181,7 @@ it("可折叠行的标题钉在滚动容器顶部，嵌套子工具与状态行�
   expect(thinking.parentElement?.className).toContain("sticky");
   const bash = view.getByRole("button", { name: /ls/ });
   expect(bash.parentElement?.className).toContain("sticky");
-  const nested = view.getByRole("button", { name: /读取文件 a\.rs/ });
+  const nested = view.getByRole("button", { name: /读取 a\.rs/ });
   expect(nested.parentElement?.className).not.toContain("sticky");
   expect(nested.parentElement?.querySelector("button button")).toBeNull();
   const status = view.getByRole("button", { name: /就绪/ });

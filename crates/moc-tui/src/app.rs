@@ -315,6 +315,10 @@ pub struct App {
     pub compaction_progress: Option<CompactionProgress>,
     /// 等待自动重试的倒数便签；`None` = 当前不在重试等待中。
     pub retry_wait: Option<RetryWait>,
+    /// 本次提示正在等首次握手的 MCP server；生成开始或提示收尾时清空。
+    pub mcp_connecting: Vec<String>,
+    /// 当前工作区的实时 MCP 状态快照；空闲时用于状态栏慢/失败预警及 `/mcp` 展示。
+    pub mcp_status: Option<moc_protocol::methods::McpStatusSnapshot>,
     /// 当前 thinking block 开始时间（用于计算 duration_ms）。
     pub thinking_started_at: Option<std::time::Instant>,
     /// 本次模型响应是否已有思考块：usage 的 reasoning_tokens 只回填它，
@@ -640,6 +644,8 @@ impl App {
             prompt_started_at: None,
             compaction_progress: None,
             retry_wait: None,
+            mcp_connecting: Vec::new(),
+            mcp_status: None,
             thinking_started_at: None,
             thinking_has_block: false,
             usage: Usage::default(),
@@ -761,6 +767,36 @@ impl App {
     /// 是否有配置写入在途或排队。
     pub fn saving_config(&self) -> bool {
         self.config_flight.is_some() || self.config_queue.is_some()
+    }
+
+    /// 当前活跃工作目录：优先取当前会话目录，无会话时退回启动目录。
+    pub fn active_cwd(&self) -> &str {
+        self.session
+            .as_ref()
+            .map_or(self.startup_cwd.as_str(), |session| session.cwd.as_str())
+    }
+
+    /// 更新当前工作区的 MCP 运行态快照，忽略不属于当前工作区的迟到推送。
+    pub fn apply_mcp_status(&mut self, snapshot: moc_protocol::methods::McpStatusSnapshot) {
+        let active = self.active_cwd();
+        if active.is_empty() || active == snapshot.cwd {
+            self.mcp_status = Some(snapshot);
+        }
+    }
+
+    /// 当前工作区是否存在正在握手或重连中的 MCP server（仅在此阶段开启空闲状态栏计时刷新）。
+    pub fn has_active_mcp_handshake(&self) -> bool {
+        self.mcp_status.as_ref().is_some_and(|snapshot| {
+            let active = self.active_cwd();
+            (active.is_empty() || active == snapshot.cwd)
+                && snapshot.servers.iter().any(|server| {
+                    matches!(
+                        server.phase,
+                        moc_protocol::methods::McpServerPhase::Connecting
+                            | moc_protocol::methods::McpServerPhase::Reconnecting
+                    )
+                })
+        })
     }
 
     /// 换窗时作废绘制状态，避免旧卡片的输入误答新请求。

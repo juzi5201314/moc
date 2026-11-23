@@ -127,7 +127,7 @@ export function WorkspacePicker() {
     <Dialog open={picker.open} onOpenChange={(open) => !open && close()}>
       <DialogContent className="gap-3 sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle className="text-base font-semibold">{t("wsp.title")}</DialogTitle>
+          <DialogTitle>{t("wsp.title")}</DialogTitle>
         </DialogHeader>
 
         {/* 当前目录：常驻显示，点铅笔改成手输路径 */}

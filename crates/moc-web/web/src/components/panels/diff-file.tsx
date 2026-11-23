@@ -33,7 +33,7 @@ export function DiffStat({
     <span className={cn("shrink-0 font-mono text-2xs tabular-nums", className)}>
       {added > 0 && <span className="text-diff-add-fg">+{added}</span>}
       {added > 0 && removed > 0 && " "}
-      {removed > 0 && <span className="text-diff-del-fg">-{removed}</span>}
+      {removed > 0 && <span className="text-diff-del-fg">−{removed}</span>}
     </span>
   );
 }
@@ -146,21 +146,42 @@ export function DiffBody({
   );
 }
 
+/** 会话目录下的路径转相对路径（兼容尾斜杠、根目录与 Windows 分隔符）。 */
+function relativeToCwd(filePath: string, cwd: string | undefined): string {
+  if (!cwd) return filePath;
+  const trimmed = cwd.replace(/[\\/]+$/, "");
+  if (!trimmed) {
+    // 根目录 `/`
+    return filePath.startsWith("/") ? filePath.slice(1) : filePath;
+  }
+  if (
+    filePath.startsWith(trimmed) &&
+    (filePath[trimmed.length] === "/" || filePath[trimmed.length] === "\\")
+  ) {
+    return filePath.slice(trimmed.length + 1);
+  }
+  return filePath;
+}
+
 /** 可折叠的单文件卡片：头部是路径与增删统计。 */
 export function DiffFile({
   file,
+  cwd,
   defaultOpen = true,
   maxHeight,
 }: {
   file: ToolFileDiff;
+  /** 会话目录：其下的文件显示相对路径，完整路径留在悬停提示。 */
+  cwd?: string;
   defaultOpen?: boolean;
   maxHeight?: number;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const stats = diffStats(file);
-  const slash = file.path.lastIndexOf("/");
-  const dir = slash >= 0 ? file.path.slice(0, slash + 1) : "";
-  const name = slash >= 0 ? file.path.slice(slash + 1) : file.path;
+  const path = relativeToCwd(file.path, cwd);
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const dir = slash >= 0 ? path.slice(0, slash + 1) : "";
+  const name = slash >= 0 ? path.slice(slash + 1) : path;
 
   return (
     <section className="overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-border-subtle">
@@ -177,9 +198,10 @@ export function DiffFile({
           )}
         />
         <FileCodeIcon className="size-3.5 shrink-0 text-text-tertiary" />
-        <span className="min-w-0 flex-1 truncate font-mono">
-          <span className="text-text-tertiary">{dir}</span>
-          <span className="text-foreground">{name}</span>
+        {/* 目录先截断、文件名完整保留：窄面板里末尾的文件名才是辨认依据。 */}
+        <span className="flex min-w-0 flex-1 font-mono">
+          <span className="min-w-0 truncate text-text-tertiary">{dir}</span>
+          <span className="max-w-full shrink-0 truncate text-foreground">{name}</span>
         </span>
         <DiffStat {...stats} />
       </button>

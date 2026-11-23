@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 25e7660115dc68b0
+// schema sha256: 0c6fdec813e03d63
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -432,6 +432,13 @@ export type JobOrigin = "foreground" | "explicit" | "auto_background" | "user_ba
  */
 export type JobStatus = ("running" | "exited" | "killed" | "timed_out") | "killing";
 /**
+ * 单个 MCP server 的连接阶段。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "McpServerPhase".
+ */
+export type McpServerPhase = "connecting" | "connected" | "reconnecting" | "failed" | "disabled";
+/**
  * 选项语义分类。
  *
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
@@ -680,6 +687,11 @@ export type SessionUpdate =
       calls: ToolPreviewResolution[];
       prompt_id: string;
       type: "tool_previews_resolved";
+    }
+  | {
+      prompt_id: string;
+      servers: string[];
+      type: "mcp_connecting";
     }
   | {
       prompt_id: string;
@@ -2761,6 +2773,96 @@ export interface JobTarget {
   session_id: string;
 }
 /**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "McpListParams".
+ */
+export interface McpListParams {
+  /**
+   * 显式工作目录（草稿会话或会话前查询）；与 `session_id` 都缺省时使用 core 启动目录。
+   */
+  cwd?: string | null;
+  /**
+   * 会话 ID；非空时使用该会话的 cwd。
+   */
+  session_id?: string | null;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "McpReconnectParams".
+ */
+export interface McpReconnectParams {
+  /**
+   * 显式工作目录；与 `session_id` 都缺省时使用 core 启动目录。
+   */
+  cwd?: string | null;
+  /**
+   * 指定重连的 server 名；`None` 重连该目录全部已启用的 server。
+   */
+  server?: string | null;
+  /**
+   * 会话 ID；非空时使用该会话的 cwd。
+   */
+  session_id?: string | null;
+}
+/**
+ * 单个 MCP server 的对外状态摘要。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "McpServerInfo".
+ */
+export interface McpServerInfo {
+  /**
+   * 当前中断内的连续失败次数（仅 `reconnecting` 时非零）。
+   */
+  attempts?: number;
+  /**
+   * 最近一次连接失败、超时或协议错误原因。
+   */
+  error?: string | null;
+  name: string;
+  phase: McpServerPhase;
+  /**
+   * stdio 子进程最近的 stderr 行（有界环形缓冲）。
+   */
+  recent_stderr?: string[];
+  /**
+   * 当前握手尝试开始的 UNIX 毫秒时间戳；前端据此本地计算已耗时。
+   */
+  started_at_ms?: number | null;
+  /**
+   * 命令摘要或端点 URL。
+   */
+  target: string;
+  /**
+   * 已发现的工具数（仅 `connected` 时有值）。
+   */
+  tool_count?: number;
+  /**
+   * 传输方式：`stdio` 或 `http`。
+   */
+  transport: string;
+}
+/**
+ * 一个工作目录的 MCP 全量状态快照；`mcp/list`、`mcp/reconnect` 与 `mcp/status_updated` 共用。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "McpStatusSnapshot".
+ */
+export interface McpStatusSnapshot {
+  /**
+   * 配置文件解析失败时的诊断；非空时不阻断其它会话能力。
+   */
+  config_error?: string | null;
+  /**
+   * 规范化后的项目目录。
+   */
+  cwd: string;
+  /**
+   * 各 server 的状态（按名称排序）。
+   */
+  servers?: McpServerInfo[];
+}
+/**
  * 一次模型切换检查出的容量缺口。
  *
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
@@ -3420,6 +3522,38 @@ export interface ResourceReadResult {
   uri: string;
 }
 /**
+ * 一次模型响应的展示元信息。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ResponseMeta".
+ */
+export interface ResponseMeta {
+  /**
+   * 生成该响应的模型选择器（`provider/model[:level]`）。
+   */
+  model: string;
+  /**
+   * 各正文段的流式时间窗，与 `message` 中的 Text 部分按序一一对应。
+   */
+  text_spans?: TextSpan[];
+}
+/**
+ * 一段 assistant 正文从首个到末个流式增量的墙钟时间窗。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "TextSpan".
+ */
+export interface TextSpan {
+  /**
+   * 末个增量到达的 UNIX 毫秒时间戳。
+   */
+  end_ms: number;
+  /**
+   * 首个增量到达的 UNIX 毫秒时间戳。
+   */
+  start_ms: number;
+}
+/**
  * 服务端能力。
  *
  * `session_locking = false` 的 core：`SessionInfo.lock` 恒为 `None`，
@@ -3720,6 +3854,10 @@ export interface TranscriptEntry {
    * 运行时提醒的来源标记；`None` 表示普通对话消息。
    */
   reminder?: ReminderStamp | null;
+  /**
+   * 模型响应的展示元信息；其它消息与旧会话日志没有此字段。
+   */
+  response?: ResponseMeta | null;
   /**
    * 该消息对应的工具执行状态；`None` 表示与工具无关。
    */
@@ -5135,6 +5273,11 @@ export interface SessionUpdateParams {
         calls: ToolPreviewResolution[];
         prompt_id: string;
         type: "tool_previews_resolved";
+      }
+    | {
+        prompt_id: string;
+        servers: string[];
+        type: "mcp_connecting";
       }
     | {
         prompt_id: string;

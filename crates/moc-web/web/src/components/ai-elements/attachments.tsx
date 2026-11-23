@@ -91,7 +91,7 @@ const renderAttachmentImage = (url: string, filename: string | undefined, isGrid
   ) : (
     <img
       alt={filename || "Image"}
-      className="size-full rounded object-contain"
+      className="size-full rounded object-cover"
       height={20}
       src={url}
       width={20}
@@ -153,8 +153,10 @@ export const Attachments = ({
       <div
         className={cn(
           "flex items-start",
-          variant === "list" ? "flex-col gap-2" : "flex-wrap gap-2",
-          variant === "grid" && "ml-auto w-fit",
+          variant === "list" && "flex-col gap-2",
+          variant === "inline" && "flex-wrap gap-2",
+          // grid 用作输入框缩略图条：删除徽标外凸 6px，间距留够不压到相邻缩略图。
+          variant === "grid" && "flex-wrap gap-3",
           className,
         )}
         {...props}
@@ -188,7 +190,8 @@ export const Attachment = ({ data, onRemove, className, children, ...props }: At
       <div
         className={cn(
           "group relative",
-          variant === "grid" && "size-24 overflow-hidden rounded-lg",
+          // 外层不裁剪，删除徽标才能骑在右上角；裁剪交给 AttachmentPreview。
+          variant === "grid" && "size-10 rounded-lg",
           variant === "inline" && [
             "flex h-8 cursor-pointer select-none items-center gap-1.5",
             "rounded-md bg-muted px-1.5",
@@ -247,7 +250,7 @@ export const AttachmentPreview = ({
     <div
       className={cn(
         "flex shrink-0 items-center justify-center overflow-hidden",
-        variant === "grid" && "size-full bg-muted",
+        variant === "grid" && "size-full rounded-lg bg-muted ring-1 ring-border-subtle",
         variant === "inline" && "size-5 rounded bg-background",
         variant === "list" && "size-12 rounded bg-muted",
         className,
@@ -321,22 +324,23 @@ export const AttachmentRemove = ({
     <Button
       aria-label={label}
       className={cn(
+        // 浮起的灰阶小圆钮骑在缩略图右上角，沿用计划批注钮与回到底部钮的 popover 柔影；悬停只变文字色。
         variant === "grid" && [
-          "absolute top-2 right-2 size-6 rounded-full p-0",
-          "bg-background/80 backdrop-blur-sm",
-          "opacity-0 transition-opacity group-hover:opacity-100",
-          "hover:bg-background",
+          "absolute -top-1.5 -right-1.5 z-10 size-5 rounded-full",
+          "bg-popover text-muted-foreground shadow-[var(--elevation-popover)] hover:bg-popover hover:text-foreground dark:hover:bg-popover",
+          "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100",
           "[&>svg]:size-3",
         ],
         variant === "inline" && [
-          "absolute top-0 left-full z-10 flex h-8 w-0 shrink-0 overflow-hidden rounded-r-md bg-muted p-0",
-          "opacity-0 transition-[width,opacity] group-hover:w-6 group-hover:opacity-100",
-          "group-focus-within:w-6 group-focus-within:opacity-100 focus-visible:w-6 focus-visible:opacity-100 [@media(hover:none)]:w-6 [@media(hover:none)]:opacity-100 [&>svg]:size-3",
+          "size-5 rounded p-0",
+          "opacity-0 transition-opacity group-hover:opacity-100",
+          "[&>svg]:size-2.5",
         ],
         variant === "list" && ["size-8 shrink-0 rounded p-0", "[&>svg]:size-4"],
         className,
       )}
       onClick={handleClick}
+      size={variant === "grid" ? "icon-xs" : "default"}
       type="button"
       variant="ghost"
       {...props}

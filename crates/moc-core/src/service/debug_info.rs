@@ -181,6 +181,7 @@ mod tests {
             goal_round: None,
             reminder: None,
             job_notice: None,
+            response: None,
         })
     }
 

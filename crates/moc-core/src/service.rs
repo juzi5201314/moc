@@ -90,6 +90,12 @@ pub(crate) struct CoreInner {
     pub project_configs: RwLock<HashMap<PathBuf, Arc<ResolvedConfig>>>,
     /// 每个项目（cwd）一个 MCP 管理器，键与 `project_configs` 相同。
     pub mcp_managers: Mutex<HashMap<PathBuf, Arc<moc_mcp::McpManager>>>,
+    /// 每个项目的 MCP 配置解析错误（例如 `mcp.json` 语法错误）；成功解析后清除。
+    pub mcp_config_errors: RwLock<HashMap<PathBuf, String>>,
+    /// 接收 `mcp/status_updated` 扇出的连接表；死连接在发送失败时惰性剔除。
+    pub mcp_status_sinks: Arc<parking_lot::Mutex<HashMap<u64, UpdateSink>>>,
+    /// 监听各项目 MCP 状态版本号并扇出给前端的后台任务。
+    pub mcp_watchers: Mutex<tokio::task::JoinSet<()>>,
     pub skill_indexes: RwLock<HashMap<PathBuf, Arc<crate::skills::SkillIndex>>>,
     /// 每个项目一个插件宿主，键与 `project_configs` 相同。
     pub plugin_hosts: Mutex<HashMap<PathBuf, Arc<moc_plugin::PluginHost>>>,
@@ -184,6 +190,7 @@ mod config_api;
 mod debug_info;
 mod export;
 mod inspect;
+mod mcp_api;
 mod plugin_api;
 mod resource_api;
 mod session_api;

@@ -2,8 +2,9 @@
 
 use super::errors::{invalid_params, job_error, to_rpc, write_lease_error};
 use super::{
-    Core, bash, btw, config_api, context, debug_info, export, history, inspect, management, mode,
-    plugin_api, prompt, resource_api, session_api, session_config, usage, workflow_api,
+    Core, bash, btw, config_api, context, debug_info, export, history, inspect, management,
+    mcp_api, mode, plugin_api, prompt, resource_api, session_api, session_config, usage,
+    workflow_api,
 };
 use crate::compact;
 use moc_protocol::methods::{
@@ -14,7 +15,8 @@ use moc_protocol::methods::{
     FsCreateFileParams, FsCreateFileResult, FsDeleteParams, FsFileEncoding, FsListDirParams,
     FsListDirResult, FsReadFileParams, FsReadFileResult, FsRenameParams, FsRenameResult,
     FsWriteFileParams, FsWriteFileResult, InitializeParams, InitializeResult, JobListParams,
-    JobListResult, JobOutputParams, JobOutputResult, JobResult, JobTarget, PluginListParams,
+    JobListResult, JobOutputParams, JobOutputResult, JobResult, JobTarget, McpListParams,
+    McpReconnectParams, McpStatusSnapshot, PluginListParams,
     PluginListResult, PluginReloadParams, PluginReloadResult, PluginRunCommandParams,
     PluginRunCommandResult, PromptResult, ResourceCompleteParams, ResourceCompleteResult,
     ResourceListParams, ResourceListResult, ResourceReadParams, ResourceReadResult,
@@ -45,6 +47,11 @@ impl AgentService for Core {
             .capabilities
             .write()
             .insert(ctx.connection_id(), params.capabilities);
+        // 登记 MCP 状态扇出并预热启动目录的 MCP；其它目录在新建/打开会话或查询 `mcp/list` 时预热。
+        self.inner
+            .register_mcp_sink(ctx.connection_id(), ctx.updates());
+        let cwd = self.inner.config().cwd.clone();
+        self.inner.warm_mcp(&cwd).await;
         Ok(InitializeResult {
             protocol_version: moc_protocol::PROTOCOL_VERSION.into(),
             server: ServerInfo {
@@ -289,6 +296,22 @@ impl AgentService for Core {
         params: PluginRunCommandParams,
     ) -> Result<PluginRunCommandResult, RpcError> {
         plugin_api::plugin_run_command(self, ctx, params).await
+    }
+
+    async fn mcp_list(
+        &self,
+        ctx: RequestContext,
+        params: McpListParams,
+    ) -> Result<McpStatusSnapshot, RpcError> {
+        mcp_api::mcp_list(self, ctx, params).await
+    }
+
+    async fn mcp_reconnect(
+        &self,
+        ctx: RequestContext,
+        params: McpReconnectParams,
+    ) -> Result<McpStatusSnapshot, RpcError> {
+        mcp_api::mcp_reconnect(self, ctx, params).await
     }
 
     async fn resource_complete(

@@ -39,10 +39,8 @@ export function PluginsPage() {
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[760px] space-y-8 px-6 pt-6 pb-16">
-          <div>
-            <h2 className="text-xl font-semibold tracking-tight">{t("sd.plugins")}</h2>
-            <p className="mt-1.5 text-sm text-muted-foreground">{t("sd.plugins_desc")}</p>
-          </div>
+          {/* 页头已有「插件」标题，正文只留一句说明，不再重复大标题。 */}
+          <p className="text-sm text-muted-foreground">{t("sd.plugins_desc")}</p>
           <PluginsOverview />
           {error ? (
             <p className="rounded-lg bg-destructive/5 px-3 py-2 text-ui text-destructive">

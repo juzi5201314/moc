@@ -13,6 +13,8 @@ type AppFrameProps = {
   sidebar?: ReactNode;
   main: ReactNode;
   rightbar: ReactNode;
+  /** 主舞台当前展示的对象（会话、视图）；窄窗口下它一变就收起侧栏浮层，点选后直接露出结果。 */
+  location?: string;
 };
 
 /** 列宽拖拽柄：只在指针按下期间跟踪，松开即提交。 */
@@ -70,7 +72,7 @@ function ResizeHandle({
   );
 }
 
-export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
+export function AppFrame({ sidebar, main, rightbar, location }: AppFrameProps) {
   const t = useT();
   const narrow = useNarrow();
   const sidebarCollapsed = useLayout((state) => state.sidebarCollapsed);
@@ -87,6 +89,35 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
   useEffect(() => {
     if (!narrow) setSidebarOverlay(false);
   }, [narrow, setSidebarOverlay]);
+
+  const shownLocation = useRef(location);
+  useEffect(() => {
+    if (shownLocation.current === location) return;
+    shownLocation.current = location;
+    setSidebarOverlay(false);
+  }, [location, setSidebarOverlay]);
+
+  // 窄窗口的浮层按 Esc 收起，先收叠在最上层的侧栏（z-50，盖过检查面板）。
+  // 输入框处理过的 Esc 带 defaultPrevented；弹窗与菜单的 Esc 只关它们自己
+  // （Radix 不标记事件，按仍处于打开态的浮层判断）。
+  const inspectorOverlay = narrow && Boolean(rightbar) && rightbarOpen;
+  const sidebarFloating = narrow && Boolean(sidebar) && sidebarOverlay;
+  useEffect(() => {
+    if (!inspectorOverlay && !sidebarFloating) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      if (
+        document.querySelector(
+          '[data-state="open"]:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])',
+        )
+      )
+        return;
+      if (sidebarFloating) setSidebarOverlay(false);
+      else toggleRightbar(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [inspectorOverlay, sidebarFloating, toggleRightbar, setSidebarOverlay]);
 
   return (
     <div className="flex h-dvh w-screen overflow-hidden bg-chrome text-foreground md:py-1.5 md:pr-1.5">

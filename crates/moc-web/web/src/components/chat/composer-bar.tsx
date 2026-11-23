@@ -352,7 +352,11 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = [...event.clipboardData.files];
     if (files.length === 0) return;
-    event.preventDefault();
+    // 图文混贴时保留文字原生插入；纯图片或文件管理器带上的同名文本（如 macOS Finder 复制文件）则拦截，避免把文件名贴进输入框。
+    const plain = event.clipboardData.getData("text/plain").replace(/\r\n/g, "\n").trim();
+    if (!plain || plain === files.map((file) => file.name).join("\n")) {
+      event.preventDefault();
+    }
     void addFiles(files);
   };
 
@@ -584,7 +588,11 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
             event.preventDefault();
             setDragging(true);
           }}
-          onDragLeave={() => setDragging(false)}
+          onDragLeave={(event) => {
+            // 进出子元素也会触发 dragleave；只有真正离开拖放区才收起高亮，避免闪烁。
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+              setDragging(false);
+          }}
           onDrop={onDrop}
           className={cn(
             "relative",
@@ -624,7 +632,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
             />
 
             {images.length > 0 && (
-              <Attachments variant="inline" className="px-3 pt-3">
+              <Attachments variant="grid" className="px-3 pt-3">
                 {images.map((image) => (
                   <Attachment
                     key={image.id}
@@ -644,9 +652,9 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                         setPreviewImage({ src: imageUrl(image.source), name: image.name })
                       }
                       aria-label={t("th.image_preview")}
-                      className="flex size-8 items-center justify-center rounded-md bg-muted focus-visible:outline-2 focus-visible:outline-brand"
+                      className="size-full rounded-lg focus-visible:outline-2 focus-visible:outline-brand"
                     >
-                      <AttachmentPreview className="size-8 bg-muted" />
+                      <AttachmentPreview />
                     </button>
                     <AttachmentRemove label={t("cb.remove_image", { name: image.name })} />
                   </Attachment>

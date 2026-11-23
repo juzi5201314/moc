@@ -78,6 +78,8 @@ session_word = { zh = "会话", en = "Session" }
 command_failed = { zh = "命令失败", en = "Command failed" }
 arg_sep = { zh = "、", en = ", " }
 banner = { zh = "会话 %{id} · %{model} · %{state} · %{cwd} · permission=%{permission}", en = "Session %{id} · %{model} · %{state} · %{cwd} · permission=%{permission}" }
+mcp_config_error = { zh = "⚠ MCP 配置异常：%{err}（输入 /mcp 查看）", en = "⚠ MCP config error: %{err} (run /mcp to inspect)" }
+mcp_server_failed = { zh = "⚠ MCP `%{name}` 连接失败：%{err}（输入 /mcp 查看或 /mcp reconnect 重试）", en = "⚠ MCP `%{name}` failed to connect: %{err} (run /mcp or /mcp reconnect)" }
 
 [cli.help]
 group_fmt = { zh = "%{group}：", en = "%{group}:" }
@@ -150,6 +152,9 @@ desc = { zh = "切换模型（装不下当前上下文时先询问再压缩）",
 [cli.commands.agents]
 desc = { zh = "列出当前会话的直接子代理（创建、交流、停止都在 TUI）", en = "List direct subagents of the current session (create/talk/stop live in the TUI)" }
 
+[cli.commands.mcp]
+desc = { zh = "查看当前工作区 MCP 服务状态；reconnect [server] 手动重连", en = "Show MCP server status for this workspace; reconnect [server] to retry" }
+
 [cli.commands.plugins]
 desc = { zh = "查看已加载的插件；reload 重载插件宿主并重新发现", en = "Show loaded plugins; reload restarts the plugin host and rediscovers" }
 
@@ -171,6 +176,7 @@ flag_disabled = { zh = "/%{name} 依赖的特性 %{flag} 已禁用（见 /featur
 cancelled = { zh = "提示取消请求已发送", en = "Prompt cancellation sent" }
 no_prompt_running = { zh = "当前没有进行中的提示", en = "No prompt is running" }
 usage_plugins = { zh = "用法：/plugins [reload]", en = "Usage: /plugins [reload]" }
+usage_mcp = { zh = "用法：/mcp [reconnect [server]]", en = "Usage: /mcp [reconnect [server]]" }
 new_session = { zh = "新会话：%{id}", en = "New session: %{id}" }
 engine_locked = { zh = "会话引擎已锁定；换引擎请新建会话", en = "Session engine is locked; start a new session to switch" }
 clm_enabled = { zh = "CLM 实验引擎已启用；本会话首次请求后引擎锁定", en = "CLM experimental engine enabled; the engine locks after this session's first request" }
@@ -197,6 +203,15 @@ model_compact_failed = { zh = "已切换到 %{model}，但上下文压缩失败"
 model_switched = { zh = "模型已切换为 %{model}", en = "Model switched to %{model}" }
 plugins_reloaded = { zh = "插件已重载：%{ok} 个可用 / %{disabled} 个仍不可用", en = "Plugins reloaded: %{ok} available / %{disabled} still unavailable" }
 no_plugins = { zh = "当前工作区没有插件。把插件放进 .moc/plugins/<name>/（或 $MOC_HOME/plugins）即可自动启用。", en = "No plugins in this workspace. Drop plugins into .moc/plugins/<name>/ (or $MOC_HOME/plugins) to enable them automatically." }
+no_mcp = { zh = "当前工作区未配置任何 MCP 服务。", en = "No MCP servers configured for this workspace." }
+mcp_config_error = { zh = "MCP 配置解析失败：%{err}", en = "MCP config failed to load: %{err}" }
+mcp_header = { zh = "MCP 服务（共 %{total} 个：%{connected} 已连接，%{connecting} 连接中，%{failed} 失败）：", en = "MCP servers (%{total} total: %{connected} connected, %{connecting} connecting, %{failed} failed):" }
+mcp_reconnected = { zh = "已触发 MCP 重连（共 %{total} 个：%{connected} 已连接，%{connecting} 连接中，%{failed} 失败）：", en = "Triggered MCP reconnect (%{total} total: %{connected} connected, %{connecting} connecting, %{failed} failed):" }
+mcp_connected = { zh = "已连接（%{tools} 个工具）", en = "connected (%{tools} tools)" }
+mcp_connecting = { zh = "连接中", en = "connecting" }
+mcp_reconnecting = { zh = "重连中 #%{attempts}：%{err}", en = "reconnecting #%{attempts}: %{err}" }
+mcp_failed = { zh = "失败：%{err}", en = "failed: %{err}" }
+mcp_disabled = { zh = "已禁用", en = "disabled" }
 plugins_loaded = { zh = "已加载 %{n} 个插件：", en = "%{n} plugin(s) loaded:" }
 plugin_row = { zh = "- %{name}%{version}（%{source}）%{desc}", en = "- %{name}%{version} (%{source}) %{desc}" }
 plugin_unavailable = { zh = "  不可用：%{error}", en = "  unavailable: %{error}" }
@@ -219,6 +234,7 @@ hole_opened = { zh = "[工作流 %{run} 待补充步骤：%{name}]", en = "[Work
 hole_filled = { zh = "[工作流 %{run} 步骤已补充：%{name}]", en = "[Workflow %{run} step filled: %{name}]" }
 agent_message = { zh = "\n[代理消息 ◀ %{from}：%{body}]", en = "\n[Agent message ◀ %{from}: %{body}]" }
 retry = { zh = "\n[自动重试：本次生成的先前输出作废。%{message}]", en = "\n[Auto-retry: previous output of this generation discarded. %{message}]" }
+mcp_connecting = { zh = "\n[正在连接 MCP：%{servers}]", en = "\n[Connecting MCP: %{servers}]" }
 guard = { zh = "\n[保护机制：%{message}]", en = "\n[Guard: %{message}]" }
 plugin_disabled = { zh = "\n[插件停用：%{plugin}（%{code}）%{message}]", en = "\n[Plugin disabled: %{plugin} (%{code}) %{message}]" }
 usage = { zh = "\n[用量：输入 %{input}，输出 %{output} token]", en = "\n[Usage: %{input} input, %{output} output tokens]" }

@@ -20,6 +20,7 @@ fn rewind_modal_panels_render_with_rounded_borders() {
                 goal_round: None,
                 reminder: None,
                 job_notice: None,
+                response: None,
             },
             TranscriptEntry {
                 id: "entry-2".into(),
@@ -32,6 +33,7 @@ fn rewind_modal_panels_render_with_rounded_borders() {
                 goal_round: None,
                 reminder: None,
                 job_notice: None,
+                response: None,
             },
         ],
         vec![],

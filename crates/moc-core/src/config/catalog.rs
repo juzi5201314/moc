@@ -69,7 +69,7 @@ pub fn complete_view(value: &mut Value) {
         .and_then(Value::as_object_mut)
     {
         for server in servers.values_mut() {
-            let mut defaults = json!({"type":null,"command":null,"args":[],"env":{},"cwd":null,"url":null,"headers":{},"enabled":true,"timeout_secs":null,"tools":{"allow":[],"deny":[]}});
+            let mut defaults = json!({"type":null,"command":null,"args":[],"env":{},"cwd":null,"url":null,"headers":{},"enabled":true,"connect_timeout_secs":null,"timeout_secs":null,"tools":{"allow":[],"deny":[]}});
             merge_json(&mut defaults, std::mem::take(server));
             *server = defaults;
         }
@@ -541,6 +541,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (Cow<'static, str>, Cow<'static,
     }
     if path.starts_with("mcp.servers.") {
         let specialized = match key {
+            "connect_timeout_secs" => "mcp_server_connect_timeout_secs",
             "timeout_secs" => "mcp_server_timeout_secs",
             "max_concurrent_calls" => "mcp_server_max_concurrent_calls",
             _ => "",

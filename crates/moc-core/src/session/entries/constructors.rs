@@ -80,6 +80,26 @@ impl Entry {
                 goal,
                 reminder: None,
                 job_notice: None,
+                response: None,
+            },
+            EntryPayload::Response {
+                message,
+                finish_reason,
+                meta,
+            } => Self::Message {
+                id,
+                parent_id,
+                at_ms,
+                message,
+                tool: None,
+                finish_reason: Some(finish_reason),
+                bash: None,
+                agent: None,
+                agent_result: None,
+                goal: None,
+                reminder: None,
+                job_notice: None,
+                response: Some(meta),
             },
             EntryPayload::AgentResult { meta, report } => Self::Message {
                 id,
@@ -94,6 +114,7 @@ impl Entry {
                 goal: None,
                 reminder: None,
                 job_notice: None,
+                response: None,
             },
             EntryPayload::Reminder { message, items } => Self::Message {
                 id,
@@ -108,6 +129,7 @@ impl Entry {
                 goal: None,
                 reminder: Some(moc_protocol::ReminderStamp { items }),
                 job_notice: None,
+                response: None,
             },
             EntryPayload::JobNotice { job, body } => Self::Message {
                 id,
@@ -122,6 +144,7 @@ impl Entry {
                 goal: None,
                 reminder: None,
                 job_notice: Some(job),
+                response: None,
             },
             EntryPayload::Bash {
                 command,
@@ -140,6 +163,7 @@ impl Entry {
                 goal: None,
                 reminder: None,
                 job_notice: None,
+                response: None,
             },
             EntryPayload::Compaction {
                 method,
@@ -425,6 +449,7 @@ impl Entry {
                 goal,
                 reminder,
                 job_notice,
+                response,
                 ..
             } => Some(TranscriptEntry {
                 id: id.clone(),
@@ -437,6 +462,7 @@ impl Entry {
                 goal_round: goal.clone(),
                 reminder: reminder.clone(),
                 job_notice: job_notice.clone(),
+                response: response.clone(),
             }),
             _ => None,
         }

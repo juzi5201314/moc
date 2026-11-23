@@ -161,10 +161,11 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
           </button>
         )}
 
-        <div className="hidden min-w-0 items-center gap-2.5 text-xs text-muted-foreground md:flex">
+        {/* 目录与分支各自封顶宽度且不让位：空间不足时先截断标题，免得两枚 chip 被挤成「m…」。 */}
+        <div className="hidden shrink-0 items-center gap-2.5 text-xs text-muted-foreground md:flex">
           <span className="flex min-w-0 items-center gap-1" title={view.info.cwd}>
             <FolderIcon className="size-3.5 shrink-0" />
-            <span className="truncate">{workspaceName(view.info.cwd)}</span>
+            <span className="max-w-[160px] truncate">{workspaceName(view.info.cwd)}</span>
           </span>
           {branch && (
             <span className="flex min-w-0 items-center gap-1" title={t("hd.branch", { branch })}>

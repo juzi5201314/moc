@@ -586,6 +586,7 @@ mod tests {
             reminder: None,
             agent_result: None,
             job_notice: None,
+            response: None,
         }
     }
 

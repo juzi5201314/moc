@@ -298,6 +298,7 @@ fn transcript(session_id: &str) -> Vec<TranscriptEntry> {
             agent: None,
             goal_round: None,
             job_notice: None,
+            response: None,
             reminder: None,
             agent_result: None,
         })
@@ -495,6 +496,7 @@ impl ScriptedService {
                     reminder: None,
                     agent_result: None,
                     job_notice: None,
+                    response: None,
                 });
             }
         });
@@ -1048,6 +1050,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::ToolBatchStarted { .. } => "tool_batch_started",
         SessionUpdate::PromptStarted { .. } => "prompt_started",
         SessionUpdate::GenerationStarted { .. } => "generation_started",
+        SessionUpdate::McpConnecting { .. } => "mcp_connecting",
         SessionUpdate::GenerationRetry { .. } => "generation_retry",
         SessionUpdate::GuardNotice { .. } => "guard_notice",
         SessionUpdate::PluginNotice { .. } => "plugin_notice",

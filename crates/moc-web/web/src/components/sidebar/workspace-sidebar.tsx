@@ -309,7 +309,7 @@ export function WorkspaceSidebar() {
                   <button
                     key={hit.session.id}
                     type="button"
-                    onClick={() => void openSession(hit.session.id)}
+                    onClick={() => void openSession(hit.session.id).catch(() => undefined)}
                     className={cn(
                       ROW,
                       "h-auto flex-col items-start gap-0 py-2 pl-[30px] text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
@@ -380,7 +380,7 @@ export function WorkspaceSidebar() {
                           onClick={() => useTabs.getState().add("draft-session")}
                           className={cn(
                             ROW,
-                            "pl-[30px]",
+                            "pl-[30px] text-ui",
                             active === "draft-session"
                               ? "bg-sidebar-accent text-sidebar-foreground"
                               : "text-muted-foreground hover:bg-sidebar-accent",
@@ -538,7 +538,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
       key: "open",
       icon: <ArrowUpRightIcon />,
       label: t("sb.open"),
-      onSelect: () => void openSession(session.id),
+      onSelect: () => void openSession(session.id).catch(() => undefined),
     },
     {
       key: "rename",
@@ -576,7 +576,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
 
   if (renaming !== null) {
     return (
-      <div className={cn(ROW, "h-12 bg-sidebar-accent pl-[30px]")}>
+      <div className={cn(ROW, "h-11 bg-sidebar-accent pl-[30px]")}>
         <input
           // biome-ignore lint/a11y/noAutofocus: 进入重命名后立即编辑
           autoFocus
@@ -593,7 +593,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
             requestAnimationFrame(() => sessionButton.current?.focus());
           }}
           onBlur={commitRename}
-          className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+          className="min-w-0 flex-1 bg-transparent text-ui outline-none"
         />
       </div>
     );
@@ -610,14 +610,14 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
       <ContextMenuTrigger asChild>
         <div
           className={cn(
-            "group/session relative flex h-12 w-full items-center gap-2.5 rounded-lg pr-1.5 pl-3 transition-colors data-[state=open]:bg-sidebar-accent has-[[data-state=open]]:bg-sidebar-accent",
+            "group/session relative flex h-11 w-full items-center gap-2.5 rounded-lg pr-1.5 pl-3 transition-colors data-[state=open]:bg-sidebar-accent has-[[data-state=open]]:bg-sidebar-accent",
             active ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/70",
           )}
         >
           <button
             ref={sessionButton}
             type="button"
-            onClick={() => void openSession(session.id)}
+            onClick={() => void openSession(session.id).catch(() => undefined)}
             onDoubleClick={() => setRenaming(title)}
             className="absolute inset-0 rounded-lg"
             aria-label={title}
@@ -640,10 +640,10 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
             )}
           </span>
           <span className="pointer-events-none flex min-w-0 flex-1 flex-col group-hover/session:pr-7 group-focus-within/session:pr-7 group-has-[[data-state=open]]/session:pr-7 pointer-coarse:pr-7">
-            <span className="truncate text-sm leading-5 text-sidebar-foreground">{title}</span>
+            <span className="truncate text-ui text-sidebar-foreground">{title}</span>
             <span
               className={cn(
-                "truncate text-ui leading-[18px] tabular-nums",
+                "truncate text-xs tabular-nums",
                 attention && !running
                   ? "text-warn"
                   : active
@@ -654,7 +654,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
               {status}
             </span>
           </span>
-          <div className="pointer-events-none absolute top-1.5 right-1.5 opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100 group-has-[[data-state=open]]/session:pointer-events-auto group-has-[[data-state=open]]/session:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
+          <div className="pointer-events-none absolute top-0.5 right-1.5 opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100 group-has-[[data-state=open]]/session:pointer-events-auto group-has-[[data-state=open]]/session:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button

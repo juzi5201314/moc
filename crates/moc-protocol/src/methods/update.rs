@@ -165,6 +165,12 @@ pub enum SessionUpdate {
         prompt_id: String,
         calls: Vec<ToolPreviewResolution>,
     },
+    /// 本次提示在等这些 MCP server 完成首次握手；空列表、随后的
+    /// [`SessionUpdate::GenerationStarted`] 或提示结束表示等待已结束。
+    McpConnecting {
+        prompt_id: String,
+        servers: Vec<String>,
+    },
     /// 新一轮模型生成开始；前端据此限定失败预览的清除边界。
     GenerationStarted { prompt_id: String },
     /// 丢弃当前生成的未提交预览，等待自动重试；已完成的工具和会话内容不受影响。

@@ -15,6 +15,12 @@ use anyhow::bail;
 use moc_protocol::ClientHandle;
 use moc_protocol::commands::CommandRef;
 use moc_protocol::features::FeatureStates;
+use moc_protocol::methods::McpList;
+use moc_protocol::methods::McpListParams;
+use moc_protocol::methods::McpReconnect;
+use moc_protocol::methods::McpReconnectParams;
+use moc_protocol::methods::McpServerPhase;
+use moc_protocol::methods::McpStatusSnapshot;
 use moc_protocol::methods::PluginInfo;
 use moc_protocol::methods::PluginList;
 use moc_protocol::methods::PluginListParams;
@@ -108,6 +114,23 @@ pub(super) async fn run_command(
         CommandId::Help => print!("{}", crate::commands::help_text(features)),
         CommandId::Features => {
             print!("{}", moc_protocol::features::format_features(features))
+        }
+        CommandId::Mcp => {
+            if argument.is_empty() {
+                print_mcp(client, &session.id).await?;
+            } else if let Some(rest) = argument.strip_prefix("reconnect")
+                && (rest.is_empty() || rest.starts_with(char::is_whitespace))
+            {
+                let target = rest.trim();
+                reconnect_mcp(
+                    client,
+                    &session.id,
+                    (!target.is_empty()).then(|| target.to_owned()),
+                )
+                .await?;
+            } else {
+                bail!("{}", t!("cli.cmd.usage_mcp"));
+            }
         }
         CommandId::Plugins => match argument {
             "" => print_plugins(client, &session.id).await?,
@@ -466,6 +489,108 @@ pub(super) async fn run_plugin_command(
         .await?;
     println!("{}", result.text);
     Ok(true)
+}
+
+pub(super) async fn print_mcp(client: &ClientHandle, session_id: &str) -> anyhow::Result<()> {
+    let snapshot = client
+        .call::<McpList>(McpListParams {
+            session_id: Some(session_id.to_owned()),
+            cwd: None,
+        })
+        .await?;
+    print_mcp_status(&snapshot, false);
+    Ok(())
+}
+
+pub(super) async fn reconnect_mcp(
+    client: &ClientHandle,
+    session_id: &str,
+    server: Option<String>,
+) -> anyhow::Result<()> {
+    let snapshot = client
+        .call::<McpReconnect>(McpReconnectParams {
+            session_id: Some(session_id.to_owned()),
+            cwd: None,
+            server,
+        })
+        .await?;
+    print_mcp_status(&snapshot, true);
+    Ok(())
+}
+
+fn print_mcp_status(snapshot: &McpStatusSnapshot, reconnected: bool) {
+    if let Some(error) = &snapshot.config_error {
+        println!("{}", t!("cli.cmd.mcp_config_error", err = error.as_str()));
+    }
+    if snapshot.servers.is_empty() {
+        if snapshot.config_error.is_none() {
+            println!("{}", t!("cli.cmd.no_mcp"));
+        }
+        return;
+    }
+    let connected = snapshot
+        .servers
+        .iter()
+        .filter(|server| server.phase == McpServerPhase::Connected)
+        .count();
+    let connecting = snapshot
+        .servers
+        .iter()
+        .filter(|server| {
+            matches!(
+                server.phase,
+                McpServerPhase::Connecting | McpServerPhase::Reconnecting
+            )
+        })
+        .count();
+    let failed = snapshot
+        .servers
+        .iter()
+        .filter(|server| server.phase == McpServerPhase::Failed)
+        .count();
+    let header_key = if reconnected {
+        "cli.cmd.mcp_reconnected"
+    } else {
+        "cli.cmd.mcp_header"
+    };
+    println!(
+        "{}",
+        t!(
+            header_key,
+            total = snapshot.servers.len(),
+            connected = connected,
+            connecting = connecting,
+            failed = failed
+        )
+    );
+    for server in &snapshot.servers {
+        let status = match server.phase {
+            McpServerPhase::Connected => {
+                t!("cli.cmd.mcp_connected", tools = server.tool_count).into_owned()
+            }
+            McpServerPhase::Connecting => t!("cli.cmd.mcp_connecting").into_owned(),
+            McpServerPhase::Reconnecting => t!(
+                "cli.cmd.mcp_reconnecting",
+                attempts = server.attempts,
+                err = server.error.as_deref().unwrap_or("")
+            )
+            .into_owned(),
+            McpServerPhase::Failed => {
+                t!("cli.cmd.mcp_failed", err = server.error.as_deref().unwrap_or("")).into_owned()
+            }
+            McpServerPhase::Disabled => t!("cli.cmd.mcp_disabled").into_owned(),
+        };
+        println!(
+            "- {} [{}] {} — {}",
+            server.name, server.transport, server.target, status
+        );
+        if server.phase != McpServerPhase::Connected && !server.recent_stderr.is_empty() {
+            let start = server.recent_stderr.len().saturating_sub(3);
+            for line in &server.recent_stderr[start..] {
+                println!("  stderr: {line}");
+            }
+        }
+    }
 }
 
 pub(super) async fn print_plugins(client: &ClientHandle, session_id: &str) -> anyhow::Result<()> {

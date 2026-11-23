@@ -299,6 +299,7 @@ impl App {
     }
 
     pub fn start_generation(&mut self) {
+        self.mcp_connecting.clear();
         self.resolve_tool_previews(Vec::new());
         // 新一轮生成开始：上一响应若没有正文/工具收尾，思考块在这里定稿。
         self.finish_thinking();

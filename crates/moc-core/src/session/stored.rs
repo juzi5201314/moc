@@ -64,6 +64,7 @@ impl StoredEntry {
                 goal: entry.goal_round.clone(),
                 reminder: entry.reminder.clone(),
                 job_notice: entry.job_notice.clone(),
+                response: entry.response.clone(),
             },
             Self::Other(entry) => (**entry).clone(),
         }

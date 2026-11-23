@@ -236,7 +236,7 @@ export function CommandPalette() {
                 icon={<MessageSquareIcon />}
                 label={session.title || t("hd.untitled")}
                 hint={`${workspaceName(session.cwd)} · ${relativeTime(session.updated_at_ms)}`}
-                onSelect={() => void openSession(session.id)}
+                onSelect={() => void openSession(session.id).catch(() => undefined)}
               />
             ))}
             {hiddenSessions > 0 && (
@@ -255,7 +255,7 @@ export function CommandPalette() {
                 value={`${t("sb.content_hits")} ${hit.session.id}`}
                 onSelect={() => {
                   useUi.getState().set({ palette: false });
-                  void openSession(hit.session.id);
+                  void openSession(hit.session.id).catch(() => undefined);
                 }}
                 className="h-auto gap-2.5 rounded-lg px-2.5 py-1.5 text-ui [&_svg]:size-4 [&_svg]:text-muted-foreground"
               >

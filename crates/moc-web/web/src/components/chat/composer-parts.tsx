@@ -64,7 +64,7 @@ import {
 import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
-import { AgentsPopover, UsagePopover } from "./status-popovers";
+import { AgentsPopover, McpPopover, UsagePopover } from "./status-popovers";
 
 export function ShellModeNotice({
   text,
@@ -254,9 +254,14 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
             title={t("cp.changes")}
           >
             <span>{t("cp.files_n", { n: changes.files })}</span>
-            <DiffStat added={changes.added} removed={changes.removed} />
+            <DiffStat
+              added={changes.added}
+              removed={changes.removed}
+              className="font-sans text-ui"
+            />
           </button>
         )}
+        <McpPopover sessionId={sessionId} />
         {(agents > 0 || agentTotal > 0 || agentsOpen) && (
           <AgentsPopover sessionId={sessionId} running={agents} total={agentTotal} />
         )}

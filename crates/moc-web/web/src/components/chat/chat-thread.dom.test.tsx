@@ -254,8 +254,8 @@ it("处理摘要在中英文中插入耗时，缺少耗时或异常结束时仍�
             ? "过程"
             : "Process"
           : language === "zh"
-            ? `用时 ${durationMs / 1000}秒`
-            : `${durationMs / 1000}s`;
+            ? `工作了 ${durationMs / 1000}秒`
+            : `Worked for ${durationMs / 1000}s`;
       expect(thread.getByText(expected)).toBeTruthy();
       expect(thread.container.textContent).not.toContain("{n}");
       thread.unmount();
@@ -464,4 +464,101 @@ it("实时与恢复的子代理结果独立显示，展开后保留尾部并响�
     expect(thread.queryByText("报告末尾")).toBeNull();
     thread.unmount();
   }
+});
+
+it("正文把过程切成「工作了」段，完成后整体再折叠一层", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  useI18n.setState({ locale: "zh" });
+  const call = (id: string, command: string) => ({
+    ToolCall: { id, name: "bash", arguments: JSON.stringify({ command }) },
+  });
+  const result = (id: string, at_ms: number) => ({
+    id: `${id}-result`,
+    at_ms,
+    message: {
+      role: "Tool" as const,
+      content: [{ ToolResult: { tool_call_id: id, content: "ok", is_error: false } }],
+    },
+  });
+  const entries = [
+    { id: "user", at_ms: 0, message: { role: "User" as const, content: [{ Text: "问题" }] } },
+    {
+      id: "a1",
+      at_ms: 1000,
+      message: { role: "Assistant" as const, content: [call("c1", "printf ONE")] },
+    },
+    result("c1", 2000),
+    {
+      id: "a2",
+      at_ms: 6500,
+      message: {
+        role: "Assistant" as const,
+        content: [{ Text: "中途说明" }, call("c2", "printf TWO")],
+      },
+      response: { model: "test/gpt-test", text_spans: [{ start_ms: 5000, end_ms: 6000 }] },
+    },
+    result("c2", 8000),
+    {
+      id: "a3",
+      at_ms: 10_000,
+      message: { role: "Assistant" as const, content: [{ Text: "最终回复" }] },
+      response: { model: "test/gpt-test", text_spans: [{ start_ms: 9000, end_ms: 9500 }] },
+    },
+  ];
+  for (const running of [true, false]) {
+    const view = createView(info);
+    view.blocks = entriesToBlocks(running ? entries.slice(0, -1) : entries);
+    view.running = running;
+    useTranscript.setState({ bySession: { [info.id]: view } });
+    const thread = render(
+      <TooltipProvider>
+        <ChatThread sessionId={info.id} />
+      </TooltipProvider>,
+    );
+    await act(async () => {});
+    if (running) {
+      expect(thread.getByRole("button", { name: "工作了 5秒" })).toBeTruthy();
+      expect(thread.queryByRole("button", { name: /printf ONE/ })).toBeNull();
+      expect(thread.getByText("中途说明")).toBeTruthy();
+      expect(thread.getByRole("button", { name: /printf TWO/ })).toBeTruthy();
+    } else {
+      expect(thread.queryByText("中途说明")).toBeNull();
+      expect(thread.getByText("最终回复")).toBeTruthy();
+      expect(thread.getByText("gpt-test")).toBeTruthy();
+      fireEvent.click(thread.getByRole("button", { name: "工作了 9秒" }));
+      expect(thread.getByText("中途说明")).toBeTruthy();
+      expect(thread.queryByRole("button", { name: /printf/ })).toBeNull();
+      fireEvent.click(thread.getByRole("button", { name: "工作了 3秒" }));
+      expect(thread.getByRole("button", { name: /printf TWO/ })).toBeTruthy();
+      expect(thread.getByRole("button", { name: "工作了 5秒" })).toBeTruthy();
+    }
+    thread.unmount();
+  }
+
+  // 最终回复之后存在常显告警时，不产生空工作段导致外层内再套一层折叠。
+  const withTrailingNotice = createView(info);
+  withTrailingNotice.blocks = [
+    ...entriesToBlocks([entries[0], entries[1], entries[2], entries[5]]),
+    { kind: "status", id: "warn-1", tone: "warn", text: "末尾告警" },
+  ];
+  withTrailingNotice.running = false;
+  useTranscript.setState({ bySession: { [info.id]: withTrailingNotice } });
+  const trailing = render(
+    <TooltipProvider>
+      <ChatThread sessionId={info.id} />
+    </TooltipProvider>,
+  );
+  await act(async () => {});
+  expect(trailing.getByText("末尾告警")).toBeTruthy();
+  fireEvent.click(trailing.getByRole("button", { name: "工作了 9秒" }));
+  expect(trailing.getByRole("button", { name: /printf ONE/ })).toBeTruthy();
+  expect(trailing.getAllByRole("button", { name: /工作了/ })).toHaveLength(1);
+  trailing.unmount();
 });

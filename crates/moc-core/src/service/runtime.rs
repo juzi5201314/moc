@@ -172,29 +172,192 @@ impl CoreInner {
         self.client_supports_ask(connection_id) || autonomy >= SessionAutonomy::DontAsk
     }
 
-    /// 获取该项目的 MCP 管理器，没有就创建。这里不建立连接，连接在执行提示时才启动。
+    /// 获取该项目的 MCP 管理器，没有就创建。这里不建立连接，连接在执行提示或预热时才启动。
     pub(crate) async fn project_mcp(
         &self,
         cwd: &Path,
     ) -> Result<Arc<moc_mcp::McpManager>, CoreError> {
-        let config = self.project_config(cwd)?;
+        self.mcp_manager(cwd, true, || self.project_config(cwd))
+            .await
+    }
+
+    /// 取或建该项目的 MCP 管理器；`config` 只在需要新建时调用。
+    /// `cache_empty` 为假时若解析出空 server 列表则不写入缓存，避免预热把空项目锁死在缓存里。
+    /// 配置解析失败时不缓存空管理器，而是记录错误供前端展示与 `/mcp reconnect` 重试。
+    async fn mcp_manager(
+        &self,
+        cwd: &Path,
+        cache_empty: bool,
+        config: impl FnOnce() -> Result<Arc<ResolvedConfig>, CoreError>,
+    ) -> Result<Arc<moc_mcp::McpManager>, CoreError> {
         let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
-        if let Some(manager) = self.mcp_managers.lock().await.get(&key).cloned() {
-            return Ok(manager);
+        if let Some(manager) = self.mcp_managers.lock().await.get(&key) {
+            return Ok(Arc::clone(manager));
         }
-        let servers = match config.mcp_servers() {
-            Ok(servers) => servers,
+        // 同步读取配置与 `mcp.json` 放在锁外执行，避免慢盘阻塞其它工作区的 MCP 查询。
+        let resolved = config()?;
+        let (servers, config_ok) = match resolved.mcp_servers() {
+            Ok(servers) => {
+                self.mcp_config_errors.write().remove(&key);
+                (servers, true)
+            }
             Err(error) => {
-                tracing::error!(%error, "MCP 配置解析失败，跳过全部 server");
-                Vec::new()
+                tracing::error!(%error, cwd = %key.display(), "MCP 配置解析失败，跳过全部 server");
+                self.mcp_config_errors
+                    .write()
+                    .insert(key.clone(), error.to_string());
+                (Vec::new(), false)
             }
         };
+        let mut managers = self.mcp_managers.lock().await;
+        if let Some(existing) = managers.get(&key) {
+            return Ok(Arc::clone(existing));
+        }
         let manager = moc_mcp::McpManager::new(servers, self.shutdown.child_token());
-        self.mcp_managers
-            .lock()
-            .await
-            .insert(key, Arc::clone(&manager));
+        let watch = !manager.is_empty();
+        if config_ok && (cache_empty || watch) {
+            managers.insert(key.clone(), Arc::clone(&manager));
+        }
+        drop(managers);
+        if watch {
+            self.spawn_mcp_watcher(key, &manager).await;
+        }
         Ok(manager)
+    }
+
+    async fn spawn_mcp_watcher(&self, key: std::path::PathBuf, manager: &Arc<moc_mcp::McpManager>) {
+        let mut rx = manager.subscribe_status();
+        let weak = Arc::downgrade(manager);
+        let cancel = manager.shutdown_token();
+        let sinks = Arc::clone(&self.mcp_status_sinks);
+        let cwd = key.to_string_lossy().into_owned();
+        let mut watchers = self.mcp_watchers.lock().await;
+        while watchers.try_join_next().is_some() {}
+        watchers.spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    changed = rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                    }
+                }
+                let Some(manager) = weak.upgrade() else {
+                    break;
+                };
+                let snapshot = mcp_snapshot_from_manager(&cwd, &manager, None);
+                broadcast_mcp_status(&sinks, snapshot).await;
+            }
+        });
+    }
+
+    /// 登记接收 `mcp/status_updated` 通知的连接。
+    pub(crate) fn register_mcp_sink(&self, connection_id: u64, sink: moc_protocol::UpdateSink) {
+        self.mcp_status_sinks.lock().insert(connection_id, sink);
+    }
+
+    /// 在后台拉起该项目的 MCP 连接而不等待，让首次握手与用户输入重叠，首条提示不必干等。
+    /// 不经项目配置缓存读取配置，且无 server 时不落入管理器缓存：避免在首个会话之前锁死项目配置；
+    /// 已配置的 server 会进入管理器缓存供后续提示复用，配置变更经设置保存重载。
+    pub(crate) async fn warm_mcp(&self, cwd: &Path) {
+        let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+        let manager = self
+            .mcp_manager(&key, false, || Ok(Arc::new(self.config().for_project(&key)?)))
+            .await;
+        if let Ok(manager) = manager
+            && !manager.is_empty()
+        {
+            manager.start().await;
+            return;
+        }
+        // 配置错误不会创建非空管理器，因此没有状态监听任务；主动推送一次让前端立即可见。
+        if let Some(config_error) = self.mcp_config_errors.read().get(&key).cloned() {
+            let snapshot = moc_protocol::methods::McpStatusSnapshot {
+                cwd: key.to_string_lossy().into_owned(),
+                servers: Vec::new(),
+                config_error: Some(config_error),
+            };
+            self.spawn_broadcast_mcp_status(snapshot);
+        }
+    }
+
+    /// 构造指定目录的 MCP 运行态快照；`warm` 为真时顺便在后台启动尚未开始的 server。
+    pub(crate) async fn mcp_status_snapshot(
+        &self,
+        cwd: &Path,
+        warm: bool,
+    ) -> Result<moc_protocol::methods::McpStatusSnapshot, CoreError> {
+        let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+        let manager = self
+            .mcp_manager(&key, false, || Ok(Arc::new(self.config().for_project(&key)?)))
+            .await?;
+        if warm && !manager.is_empty() {
+            manager.start().await;
+        }
+        let config_error = self.mcp_config_errors.read().get(&key).cloned();
+        Ok(mcp_snapshot_from_manager(
+            &key.to_string_lossy(),
+            &manager,
+            config_error,
+        ))
+    }
+
+    /// 手动重连指定或全部已启用的 MCP server；若此前因配置错误或空配置未建立管理器，
+    /// 会先丢弃空缓存重新解析 `mcp.json`。
+    pub(crate) async fn mcp_reconnect(
+        &self,
+        cwd: &Path,
+        server: Option<&str>,
+    ) -> Result<moc_protocol::methods::McpStatusSnapshot, CoreError> {
+        let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+        if server.is_none() {
+            let mut managers = self.mcp_managers.lock().await;
+            if managers.get(&key).is_some_and(|manager| manager.is_empty()) {
+                managers.remove(&key);
+            }
+        }
+        let manager = self
+            .mcp_manager(&key, false, || Ok(Arc::new(self.config().for_project(&key)?)))
+            .await?;
+        if manager.is_empty() {
+            if let Some(name) = server {
+                return Err(CoreError::Tool(format!("unknown MCP server `{name}`")));
+            }
+            let config_error = self.mcp_config_errors.read().get(&key).cloned();
+            let snapshot = moc_protocol::methods::McpStatusSnapshot {
+                cwd: key.to_string_lossy().into_owned(),
+                servers: Vec::new(),
+                config_error,
+            };
+            self.spawn_broadcast_mcp_status(snapshot.clone());
+            return Ok(snapshot);
+        }
+        manager
+            .reconnect(server)
+            .await
+            .map_err(|error| CoreError::Tool(error.to_string()))?;
+        let config_error = self.mcp_config_errors.read().get(&key).cloned();
+        Ok(mcp_snapshot_from_manager(
+            &key.to_string_lossy(),
+            &manager,
+            config_error,
+        ))
+    }
+
+    /// 在配置保存等全局变更后向全部已登记连接异步广播该目录的最新 MCP 状态。
+    pub(crate) async fn broadcast_mcp_snapshot(&self, cwd: &Path) {
+        if let Ok(snapshot) = self.mcp_status_snapshot(cwd, true).await {
+            self.spawn_broadcast_mcp_status(snapshot);
+        }
+    }
+
+    fn spawn_broadcast_mcp_status(&self, snapshot: moc_protocol::methods::McpStatusSnapshot) {
+        let sinks = Arc::clone(&self.mcp_status_sinks);
+        tokio::spawn(async move {
+            broadcast_mcp_status(&sinks, snapshot).await;
+        });
     }
 
     pub(crate) async fn mcp_summary(&self, config: &ResolvedConfig) -> Result<String, CoreError> {
@@ -403,5 +566,82 @@ impl CoreInner {
     ) {
         let cached = self.cached_context_files(session_id, cwd, true).await;
         (cached.files, cached.warning)
+    }
+}
+
+fn mcp_snapshot_from_manager(
+    cwd: &str,
+    manager: &moc_mcp::McpManager,
+    config_error: Option<String>,
+) -> moc_protocol::methods::McpStatusSnapshot {
+    use moc_mcp::ServerStatus;
+    use moc_protocol::methods::{McpServerInfo, McpServerPhase, McpStatusSnapshot};
+    let servers = manager
+        .server_states()
+        .into_iter()
+        .map(|state| {
+            let (phase, tool_count, attempts, error) = match state.status {
+                ServerStatus::Connecting => (McpServerPhase::Connecting, 0, 0, None),
+                ServerStatus::Connected { tool_count } => {
+                    (McpServerPhase::Connected, tool_count, 0, None)
+                }
+                ServerStatus::Reconnecting { attempts, error } => {
+                    (McpServerPhase::Reconnecting, 0, attempts, Some(error))
+                }
+                ServerStatus::Failed { error } => (McpServerPhase::Failed, 0, 0, Some(error)),
+                ServerStatus::Disabled => (McpServerPhase::Disabled, 0, 0, None),
+            };
+            McpServerInfo {
+                name: state.name,
+                transport: state.transport.to_owned(),
+                target: state.target,
+                phase,
+                tool_count,
+                attempts,
+                started_at_ms: state.started_at_ms,
+                error,
+                recent_stderr: state.recent_stderr,
+            }
+        })
+        .collect();
+    McpStatusSnapshot {
+        cwd: cwd.to_owned(),
+        servers,
+        config_error,
+    }
+}
+
+async fn broadcast_mcp_status(
+    sinks: &Arc<parking_lot::Mutex<std::collections::HashMap<u64, moc_protocol::UpdateSink>>>,
+    snapshot: moc_protocol::methods::McpStatusSnapshot,
+) {
+    let targets: Vec<(u64, moc_protocol::UpdateSink)> = sinks
+        .lock()
+        .iter()
+        .map(|(id, sink)| (*id, sink.clone()))
+        .collect();
+    if targets.is_empty() {
+        return;
+    }
+    let dead: Vec<u64> = futures_util::future::join_all(targets.into_iter().map(|(id, sink)| {
+        let snapshot = snapshot.clone();
+        async move {
+            matches!(
+                sink.notify::<moc_protocol::methods::McpStatusUpdated>(snapshot)
+                    .await,
+                Err(moc_protocol::ProtocolError::ConnectionClosed)
+            )
+            .then_some(id)
+        }
+    }))
+    .await
+    .into_iter()
+    .flatten()
+    .collect();
+    if !dead.is_empty() {
+        let mut table = sinks.lock();
+        for id in dead {
+            table.remove(&id);
+        }
     }
 }

@@ -89,6 +89,7 @@ export function App() {
         <>
           <AppFrame
             sidebar={<WorkspaceSidebar />}
+            location={sessionId}
             main={
               stage === "welcome" ? (
                 <WelcomeView sessionId={sessionId} />

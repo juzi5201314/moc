@@ -12,6 +12,7 @@ import {
   Streamdown,
   type Components,
   type MermaidErrorComponentProps,
+  type StreamdownTranslations,
 } from "streamdown";
 
 import { Button } from "@/components/ui/button";
@@ -24,7 +25,7 @@ import {
   resolveAnchorTarget,
   splitLineRef,
 } from "@/lib/file-target";
-import { useT } from "@/lib/i18n";
+import { type Locale, t, useI18n, useT } from "@/lib/i18n";
 import { codePlugin, mermaidPlugin } from "@/lib/streamdown-plugins";
 import { useIsDark } from "@/lib/use-dark";
 import { openFile } from "@/store/files";
@@ -307,6 +308,26 @@ export const streamdownControls = {
   mermaid: { download: false, copy: false, fullscreen: false, panZoom: false },
 } as const;
 
+// 每种语言一份稳定对象：Streamdown 把文案放进 context，引用不变才不触发子块重渲染。
+const streamdownTranslations = new Map<Locale, Partial<StreamdownTranslations>>();
+
+/** streamdown 内置控件的文案随界面语言切换；只覆盖当前配置会露出的几项。 */
+export function useStreamdownTranslations(): Partial<StreamdownTranslations> {
+  const locale = useI18n((state) => state.locale);
+  let translations = streamdownTranslations.get(locale);
+  if (!translations) {
+    translations = {
+      copyCode: t("msg.copy_code"),
+      copied: t("th.copied"),
+      downloadImage: t("msg.download_image"),
+      imageNotAvailable: t("msg.image_unavailable"),
+      mermaidAriaLabel: t("mermaid"),
+    };
+    streamdownTranslations.set(locale, translations);
+  }
+  return translations;
+}
+
 function MermaidFallback({ chart }: MermaidErrorComponentProps) {
   return (
     <pre className="moc-mermaid-fallback">
@@ -446,6 +467,7 @@ export const MessageResponse = memo(
     ...props
   }: MessageResponseProps) => {
     const dark = useIsDark();
+    const translations = useStreamdownTranslations();
     const tokens = useMemo(() => readFigureTokens(dark), [dark]);
     const mermaid = useMemo(
       () => ({ config: mermaidConfig(tokens, dark), errorComponent: MermaidFallback }),
@@ -475,6 +497,7 @@ export const MessageResponse = memo(
           mermaid={mermaid}
           plugins={streamdownPlugins}
           remarkPlugins={messageRemarkPlugins}
+          translations={translations}
           {...props}
         >
           {source}

@@ -107,6 +107,7 @@ impl App {
         self.resolve_tool_previews(Vec::new());
         // 提示收尾或切会话：在途的重试倒数先定稿，不留悬挂状态。
         self.finish_retry_wait();
+        self.mcp_connecting.clear();
         self.thinking_started_at = None;
         self.thinking_has_block = false;
         self.generation_start = None;

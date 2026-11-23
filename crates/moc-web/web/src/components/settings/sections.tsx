@@ -207,7 +207,6 @@ export function GeneralSection() {
             </div>
           </SettingRow>
         </Card>
-        <p className="px-1 text-xs text-text-tertiary">{t("ss.prefs_note")}</p>
       </section>
 
       <section className="space-y-2">

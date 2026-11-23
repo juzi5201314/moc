@@ -27,6 +27,7 @@ import { PlaygroundSidebar } from "./playground-sidebar";
 export default function ImagePlaygroundApp() {
   const t = useT();
   const view = useImagePlayground((s) => s.view);
+  const activeSessionId = useImagePlayground((s) => s.activeSessionId);
   const bootstrap = useImagePlayground((s) => s.bootstrap);
   const refreshModels = useImagePlayground((s) => s.refreshModels);
   const settingsOpen = useUi((s) => s.settings.open);
@@ -70,6 +71,7 @@ export default function ImagePlaygroundApp() {
     <>
       <AppFrame
         sidebar={<PlaygroundSidebar />}
+        location={`${view}:${activeSessionId}`}
         main={
           view === "gallery" ? (
             <PlaygroundGalleryView />

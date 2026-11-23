@@ -110,7 +110,7 @@ export function ContextViewer({
       {!node && snapshot.view && (
         <div className="px-5 pb-3">
           <div className="flex items-baseline gap-2 font-mono tabular-nums">
-            <span className="text-lg font-semibold">{compactTokens(total)}</span>
+            <span className="text-heading font-semibold">{compactTokens(total)}</span>
             <span className="text-sm text-muted-foreground">/ {compactTokens(window)}</span>
             <span className="ml-auto text-xs text-muted-foreground">
               {window > 0 ? `${((total / window) * 100).toFixed(1)}%` : "—"}

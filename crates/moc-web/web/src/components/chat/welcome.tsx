@@ -25,6 +25,7 @@ import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 import { ComposerBar } from "./composer-bar";
 import { InspectorToggle, SidebarReveal } from "./session-header";
+import { McpPopover } from "./status-popovers";
 
 function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
   const t = useT();
@@ -108,6 +109,7 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
 }
 
 export function WelcomeView({ sessionId }: { sessionId: string }) {
+  const cwd = useTranscript((state) => state.bySession[sessionId]?.info.cwd ?? "");
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
       <header className="flex h-12 shrink-0 items-center gap-2 px-3">
@@ -119,8 +121,9 @@ export function WelcomeView({ sessionId }: { sessionId: string }) {
       <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-4 pt-4 pb-16 sm:px-6">
         <div className="my-auto flex w-full max-w-[688px] flex-col">
           <ComposerBar sessionId={sessionId} inline />
-          <div className="mt-1 px-1">
+          <div className="mt-1 flex flex-wrap items-center justify-between gap-2 px-1">
             <WorkspaceSwitch sessionId={sessionId} />
+            <McpPopover sessionId={sessionId} cwd={cwd} side="bottom" align="end" />
           </div>
         </div>
       </div>

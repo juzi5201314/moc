@@ -7,7 +7,11 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
-import { streamdownControls, streamdownPlugins } from "@/components/ai-elements/message";
+import {
+  streamdownControls,
+  streamdownPlugins,
+  useStreamdownTranslations,
+} from "@/components/ai-elements/message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -83,6 +87,7 @@ function ArtifactBlock({
   versions: Record<string, unknown>[];
   sessionId: string;
 }) {
+  const translations = useStreamdownTranslations();
   const member = String(artifact.member ?? "file");
   const id = String(artifact.artifact_id ?? "");
   const spec = (artifact.spec ?? {}) as Record<string, unknown>;
@@ -144,7 +149,11 @@ function ArtifactBlock({
             {t("wfr.view")}
           </Button>
         ) : member === "markdown" ? (
-          <Streamdown plugins={streamdownPlugins} controls={streamdownControls}>
+          <Streamdown
+            plugins={streamdownPlugins}
+            controls={streamdownControls}
+            translations={translations}
+          >
             {content}
           </Streamdown>
         ) : (
@@ -251,11 +260,16 @@ function BoardArtifact({ spec, items }: { spec: Record<string, unknown>; items: 
 
 function ChartArtifact({ spec, items }: { spec: Record<string, unknown>; items: unknown[] }) {
   const t = useT();
+  const translations = useStreamdownTranslations();
   // 经现有 Streamdown/Mermaid 管线渲染（xychart-beta / quadrantChart）。
   const source = chartToMermaid(spec as ChartSpecLite, items);
   if (!source) return <div className="text-ui text-text-tertiary">{t("wfr.no_data")}</div>;
   return (
-    <Streamdown plugins={streamdownPlugins} controls={streamdownControls}>
+    <Streamdown
+      plugins={streamdownPlugins}
+      controls={streamdownControls}
+      translations={translations}
+    >
       {`\`\`\`mermaid
 ${source}
 \`\`\``}

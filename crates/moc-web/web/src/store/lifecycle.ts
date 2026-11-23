@@ -5,7 +5,7 @@
 
 import { toast } from "sonner";
 import { t } from "@/lib/i18n";
-import { attachEntryIds, entriesToBlocks } from "@/lib/transcript-model";
+import { attachEntryIds, entriesToBlocks, historyDiffs } from "@/lib/transcript-model";
 import { clientListeners, rpc } from "@/protocol/client";
 import { ErrorCode, RpcError } from "@/protocol/errors";
 import { type HistoryPageParams, loadHistoryPage } from "@/protocol/history";
@@ -24,6 +24,7 @@ import type {
 } from "@/protocol/types";
 import { useComposer } from "./composer";
 import { useConnection } from "./connection";
+import { useMcp } from "./mcp";
 import { usePrefs } from "./prefs";
 import { type DraftSession, useSessions } from "./sessions";
 import { useTabs } from "./tabs";
@@ -39,8 +40,8 @@ const CLOSE_WAIT_MS = 5000;
 const opening = new Map<string, { signal: AbortSignal; task: Promise<void> }>();
 const closing = new Map<string, Promise<void>>();
 
-/** `readOnly`：强制只读打开（子代理会话不抢父进程的写租约）。 */
-export type OpenOptions = { activate?: boolean; readOnly?: boolean };
+/** `readOnly`：强制只读打开（子代理会话不抢父进程的写租约）；`notify`：失败时弹错误提示（默认开启）。 */
+export type OpenOptions = { activate?: boolean; readOnly?: boolean; notify?: boolean };
 
 /** 打开会话：加入标签并加载；已加载的只切换。若此前有未提交的空白新会话，自动丢弃。 */
 export function openSession(sessionId: string, options: OpenOptions = {}): Promise<void> {
@@ -67,9 +68,12 @@ export function openSession(sessionId: string, options: OpenOptions = {}): Promi
       });
   }
   const signal = startViewReads(sessionId);
-  const task = loadSession(sessionId, options.readOnly ?? false, signal).finally(() =>
-    opening.delete(sessionId),
-  );
+  const task = loadSession(
+    sessionId,
+    options.readOnly ?? false,
+    options.notify ?? true,
+    signal,
+  ).finally(() => opening.delete(sessionId));
   opening.set(sessionId, { signal, task });
   return task;
 }
@@ -77,6 +81,7 @@ export function openSession(sessionId: string, options: OpenOptions = {}): Promi
 async function loadSession(
   sessionId: string,
   requestedReadOnly: boolean,
+  notify: boolean,
   signal: AbortSignal,
 ): Promise<void> {
   let leased = false;
@@ -97,12 +102,7 @@ async function loadSession(
       });
     } catch (error) {
       signal.throwIfAborted();
-      if (!(error instanceof RpcError) || error.code !== ErrorCode.SessionLocked) {
-        if (error instanceof RpcError && error.code === ErrorCode.SessionNotFound) {
-          useTabs.getState().close(sessionId);
-        }
-        throw error;
-      }
+      if (!(error instanceof RpcError) || error.code !== ErrorCode.SessionLocked) throw error;
       readOnly = true;
       loaded = await rpc.call<SessionLoadResult>("session/load", {
         session_id: sessionId,
@@ -151,6 +151,7 @@ async function loadSession(
       view.readOnly = readOnly;
       view.holder = readOnly ? (loaded.session.lock ?? null) : null;
       view.blocks = entriesToBlocks(page.entries, page.child_calls ?? [], "p0-");
+      view.diffs = historyDiffs(view.blocks);
       view.hasMore = page.has_more;
       view.beforeEntryId = page.entries[0]?.id;
       view.todos = page.todos ?? [];
@@ -162,7 +163,23 @@ async function loadSession(
     void refreshJobs(sessionId).catch(() => undefined);
     void refreshSideData(sessionId);
   } catch (error) {
-    if (!signal.aborted) throw error;
+    if (signal.aborted) return;
+    // 连接中断/尚未初始化属于瞬时状态，重连后会自动重开当前标签，不撤掉用户的持久化标签。
+    const transient =
+      error instanceof RpcError &&
+      (error.code === ErrorCode.ConnectionClosed || error.code === ErrorCode.ServerNotInitialized);
+    if (!transient) {
+      // 打不开就撤掉标签并说明原因：否则主舞台停在加载占位，刷新后还会从持久化的标签重来一遍。
+      useTabs.getState().close(sessionId);
+      if (notify) {
+        toast.error(
+          t("session.open_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    }
+    throw error;
   } finally {
     if (!committed) {
       if (leased)
@@ -188,6 +205,11 @@ async function readViewPage(params: HistoryPageParams) {
 export async function refreshSideData(sessionId: string): Promise<void> {
   const signal = viewReadSignal(sessionId);
   if (!signal) return;
+  const cwd = useTranscript.getState().bySession[sessionId]?.info.cwd;
+  void useMcp
+    .getState()
+    .refresh({ sessionId, cwd })
+    .catch(() => undefined);
   const mutate = useTranscript.getState().mutate;
   const [context, plugins] = await Promise.allSettled([
     rpc.call<ContextUsageResult>("session/context", { session_id: sessionId }),
@@ -230,10 +252,9 @@ export async function loadOlder(sessionId: string): Promise<void> {
     const { page } = result;
     mutate(sessionId, (draft) => {
       const prefix = `p${page.entries[0]?.id ?? draft.seq}-`;
-      draft.blocks = [
-        ...entriesToBlocks(page.entries, page.child_calls ?? [], prefix),
-        ...draft.blocks,
-      ];
+      const older = entriesToBlocks(page.entries, page.child_calls ?? [], prefix);
+      draft.blocks = [...older, ...draft.blocks];
+      draft.diffs = [...historyDiffs(older), ...draft.diffs];
       draft.hasMore = page.has_more;
       draft.beforeEntryId = page.entries[0]?.id;
     });
@@ -275,15 +296,16 @@ export async function reloadReadOnly(sessionId: string): Promise<void> {
   useTranscript.getState().mutate(sessionId, (view) => {
     view.info = page.session;
     view.blocks = entriesToBlocks(page.entries, page.child_calls ?? [], "p0-");
+    view.diffs = historyDiffs(view.blocks);
     view.hasMore = page.has_more;
     view.beforeEntryId = page.entries[0]?.id;
   });
 }
 
-/** 只读横幅「重新获取写权限」：丢掉视图后按写模式重开。 */
+/** 只读横幅「重新获取写权限」：丢掉视图后按写模式重开（调用方自行弹出获取失败提示）。 */
 export async function reacquire(sessionId: string): Promise<void> {
   useTranscript.getState().drop(sessionId);
-  await openSession(sessionId);
+  await openSession(sessionId, { notify: false });
 }
 
 function waitForIdle(sessionId: string): Promise<void> {
@@ -438,9 +460,15 @@ function applyInfo(info: SessionInfo): void {
   });
 }
 
-/** 欢迎页切换工作目录：只改草稿的 cwd，保留已选的模型、权限与输入。 */
+/** 欢迎页切换工作目录：只改草稿的 cwd，保留已选的模型、权限与输入，并预热新目录的 MCP 状态。 */
 export function setDraftCwd(cwd: string): void {
   patchDraft({ cwd }, { cwd });
+  if (cwd) {
+    void useMcp
+      .getState()
+      .refresh({ cwd })
+      .catch(() => undefined);
+  }
 }
 
 /** 切换 plan 叠加态：草稿会话只改本地标记，真实会话走 `session/plan_mode`。 */

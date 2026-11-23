@@ -259,6 +259,8 @@ pub use usage::UsageSource;
 mod transcript;
 pub use transcript::ReminderItem;
 pub use transcript::ReminderStamp;
+pub use transcript::ResponseMeta;
+pub use transcript::TextSpan;
 pub use transcript::ToolExecution;
 pub use transcript::ToolStatus;
 pub use transcript::TranscriptChildCall;

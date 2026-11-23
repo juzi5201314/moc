@@ -43,6 +43,8 @@ export type ToolBlock = {
   images: ImageSource[];
   durationMs?: number;
   diff?: ToolDiff;
+  /** 调用发出的时刻（历史取 assistant 条目时间）；活动行悬停时在左侧槽显示。 */
+  atMs?: number;
   children: ToolBlock[];
   progress?: ToolProgressRow[];
   awaitingPermission: boolean;
@@ -100,10 +102,20 @@ export type Block =
       text: string;
       startedAt?: number;
       durationMs?: number;
+      /** 思考开始的时刻（历史取 assistant 条目时间）；活动行悬停时在左侧槽显示。 */
+      atMs?: number;
       /** 本次模型响应 usage 报告的思考 token 数；与本端实测的 durationMs 合算速率。 */
       tokens?: number;
     }
-  | { kind: "text"; id: string; entryId?: string; text: string }
+  | {
+      kind: "text";
+      id: string;
+      entryId?: string;
+      text: string;
+      /** 首个与末个正文增量到达的时刻；划分轮内工作段用，旧会话历史没有。 */
+      startMs?: number;
+      endMs?: number;
+    }
   | ToolBlock
   | {
       kind: "status";
@@ -150,6 +162,8 @@ export type LiveTurn = {
   usage?: Usage;
   /** tool_call_id → batch_id，来自 tool_batch_started。 */
   batchOf: Record<string, string>;
+  /** 正在等首次握手的 MCP server；生成开始即清空。 */
+  mcpConnecting?: string[];
 };
 
 type RewindableGeneration = {
@@ -272,11 +286,12 @@ export function reasoningText(part: ContentPart): string {
   if ("Item" in block && block.Item && typeof block.Item === "object") {
     const item = block.Item as Record<string, unknown>;
     if (typeof item._moc_display_text === "string") return item._moc_display_text;
+    // 与 core `ReasoningItem::visible_text` 一致：多段摘要按段落拼接，否则 `**A**` `**B**` 会粘成 `**A****B**`。
     for (const parts of [item.summary, item.content]) {
       if (!Array.isArray(parts)) continue;
       const text = parts
         .flatMap((part) => (typeof part?.text === "string" ? [part.text] : []))
-        .join("");
+        .join("\n\n");
       if (text) return text;
     }
   }
@@ -292,6 +307,7 @@ function newTool(
   toolCallId: string,
   name: string,
   args: string,
+  atMs: number | undefined,
   batchId?: string,
 ): ToolBlock {
   return {
@@ -300,6 +316,7 @@ function newTool(
     toolCallId,
     name,
     arguments: args,
+    atMs,
     status: "running",
     isError: false,
     images: [],
@@ -341,6 +358,26 @@ function applyJob(view: SessionView, job: JobInfo): void {
 }
 
 // ---------- 历史 → 块 ----------
+
+/**
+ * 从历史块（含子调用）收集改动记录，与直播时 `tool_finished` 逐条推入 `view.diffs` 的内容一致；
+ * 子调用先于父调用完成，按完成先后排列。刷新或重开会话后变更分页与状态条据此复原。
+ */
+export function historyDiffs(blocks: readonly Block[]): ToolDiffRecord[] {
+  const records: ToolDiffRecord[] = [];
+  const visit = (tool: ToolBlock) => {
+    for (const child of tool.children) visit(child);
+    if (tool.diff)
+      records.push({
+        toolCallId: tool.toolCallId,
+        name: tool.name,
+        atMs: tool.atMs ?? 0,
+        diff: tool.diff,
+      });
+  };
+  for (const block of blocks) if (block.kind === "tool") visit(block);
+  return records;
+}
 
 /**
  * 把 transcript 条目转成块序列。`idPrefix` 让同一会话多次分页的 id 不冲突。
@@ -429,24 +466,45 @@ export function entriesToBlocks(
       case "Assistant": {
         let hasToolCall = false;
         let hasText = false;
+        let textIndex = 0;
         for (const part of message.content) {
           if ("Reasoning" in part) {
             const text = reasoningText(part);
-            if (text) blocks.push({ kind: "reasoning", id: nextId(), text });
+            if (text) blocks.push({ kind: "reasoning", id: nextId(), text, atMs: entry.at_ms });
           } else if ("Text" in part) {
             if (!part.Text) continue;
             hasText = true;
-            blocks.push({ kind: "text", id: nextId(), entryId: entry.id, text: part.Text });
+            const span = entry.response?.text_spans?.[textIndex++];
+            blocks.push({
+              kind: "text",
+              id: nextId(),
+              entryId: entry.id,
+              text: part.Text,
+              startMs: span?.start_ms,
+              endMs: span?.end_ms,
+            });
           } else if ("ToolCall" in part) {
             hasToolCall = true;
             const call = part.ToolCall;
-            const block = newTool(nextId(), call.id, call.name, call.arguments, entry.id);
+            const block = newTool(
+              nextId(),
+              call.id,
+              call.name,
+              call.arguments,
+              entry.at_ms,
+              entry.id,
+            );
             tools.set(call.id, block);
             blocks.push(block);
           }
         }
         if (hasText && !hasToolCall) {
-          blocks.push({ kind: "footer", id: nextId(), atMs: entry.at_ms });
+          blocks.push({
+            kind: "footer",
+            id: nextId(),
+            model: entry.response?.model,
+            atMs: entry.at_ms,
+          });
         }
         break;
       }
@@ -456,7 +514,7 @@ export function entriesToBlocks(
           const result = part.ToolResult;
           let block = tools.get(result.tool_call_id);
           if (!block) {
-            block = newTool(nextId(), result.tool_call_id, t("tm.tool_result"), "");
+            block = newTool(nextId(), result.tool_call_id, t("tm.tool_result"), "", entry.at_ms);
             blocks.push(block);
           }
           block.result = result.content;
@@ -492,7 +550,7 @@ export function entriesToBlocks(
   for (const child of childCalls) {
     const parent = tools.get(child.parent_tool_call_id);
     if (!parent) continue;
-    const block = newTool(nextId(), child.id, child.name, child.arguments);
+    const block = newTool(nextId(), child.id, child.name, child.arguments, parent.atMs);
     block.result = child.result;
     block.status = child.status;
     block.isError = child.status === "error";
@@ -741,11 +799,17 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       view.running = true;
       view.mismatch = null;
       break;
+    case "mcp_connecting":
+      ensureLive(view, update.prompt_id, now).mcpConnecting = update.servers.length
+        ? update.servers
+        : undefined;
+      break;
     case "generation_started": {
       clearRetryNotice(view, update.prompt_id);
       resolveToolPreviews(view);
       closeReasoning(view, now);
       const live = ensureLive(view, update.prompt_id, now);
+      live.mcpConnecting = undefined;
       live.reasoningId = undefined;
       live.textId = undefined;
       live.generationBlockIds = [];
@@ -804,7 +868,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         let block = liveBlock(view, "reasoning");
         if (block?.kind !== "reasoning") {
           const id = nextId(view);
-          view.blocks.push({ kind: "reasoning", id, text: "", startedAt: now });
+          view.blocks.push({ kind: "reasoning", id, text: "", startedAt: now, atMs: now });
           live.reasoningId = id;
           live.reasoningIndex = view.blocks.length - 1;
           trackLiveBlock(view, id);
@@ -816,13 +880,16 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         let block = live.textId ? liveBlock(view, "text") : undefined;
         if (block?.kind !== "text") {
           const id = nextId(view);
-          view.blocks.push({ kind: "text", id, text: "" });
+          view.blocks.push({ kind: "text", id, text: "", startMs: now, endMs: now });
           live.textId = id;
           live.textIndex = view.blocks.length - 1;
           trackLiveBlock(view, id);
           block = view.blocks.at(-1);
         }
-        if (block?.kind === "text") block.text += delta.delta;
+        if (block?.kind === "text") {
+          block.text += delta.delta;
+          block.endMs = now;
+        }
       }
       break;
     }
@@ -835,7 +902,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         live.textIndex = undefined;
         live.reasoningId = undefined;
         live.reasoningIndex = undefined;
-        block = newTool(nextId(view), update.preview_id, update.name ?? t("tm.tool"), "");
+        block = newTool(nextId(view), update.preview_id, update.name ?? t("tm.tool"), "", now);
         view.blocks.push(block);
         trackLiveBlock(view, block.id);
       }
@@ -873,6 +940,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         update.tool_call_id,
         update.name,
         update.arguments,
+        now,
         view.live?.batchOf[update.tool_call_id],
       );
       const parent = update.parent_tool_call_id
@@ -901,7 +969,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
           bash.isError = update.result.is_error;
           break;
         }
-        block = newTool(nextId(view), update.tool_call_id, update.name, update.arguments);
+        block = newTool(nextId(view), update.tool_call_id, update.name, update.arguments, now);
         const parent = update.parent_tool_call_id
           ? findTool(view.blocks, update.parent_tool_call_id)
           : undefined;
@@ -967,16 +1035,16 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       if (live) {
         if (!reconcileGenerationText(view, "text", text) && text) {
           const id = nextId(view);
-          view.blocks.push({ kind: "text", id, text });
+          view.blocks.push({ kind: "text", id, text, startMs: now, endMs: now });
           live.generationBlockIds.push(id);
         }
         if (reasoning && !reconcileGenerationText(view, "reasoning", reasoning)) {
           const id = nextId(view);
-          view.blocks.push({ kind: "reasoning", id, text: reasoning });
+          view.blocks.push({ kind: "reasoning", id, text: reasoning, atMs: now });
           live.generationBlockIds.push(id);
         }
       } else if (text) {
-        view.blocks.push({ kind: "text", id: nextId(view), text });
+        view.blocks.push({ kind: "text", id: nextId(view), text, startMs: now, endMs: now });
       }
       // 还挂着的工具调用随提示一起收尾。
       for (const block of view.blocks) {

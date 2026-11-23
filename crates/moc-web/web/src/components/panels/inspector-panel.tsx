@@ -12,11 +12,11 @@ import {
   RowsIcon,
   SquareTerminalIcon,
 } from "lucide-react";
-import { lazy, Suspense, useMemo } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { IconButton } from "@/components/common/icon-button";
 import { FilesTab } from "@/components/files/files-tab";
 import { DiffFile } from "@/components/panels/diff-file";
-import { type MsgKey, useT } from "@/lib/i18n";
+import { type MsgKey, useI18n, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { ToolFileDiff } from "@/protocol/types";
 import { type InspectorTab, useLayout } from "@/store/layout";
@@ -40,8 +40,45 @@ const TABS: { id: Exclude<InspectorTab, "launcher">; label: MsgKey; icon: Lucide
 const TAB_CLASS =
   "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui transition-colors [&_svg]:size-3.5";
 
+/**
+ * 标签条两端被裁掉时对应边缘渐隐：滚动条是隐藏的，渐隐是还能横向滑动的唯一提示。
+ * `content` 变化（标签增减、计数变宽）时重新测量。
+ */
+function useEdgeFade(content: string) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [fade, setFade] = useState({ start: false, end: false });
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 标签增减不改变容器尺寸，靠 content 触发重测
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const update = () => {
+      const start = node.scrollLeft > 1;
+      const end = node.scrollLeft + node.clientWidth < node.scrollWidth - 1;
+      setFade((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    node.addEventListener("scroll", update, { passive: true });
+    return () => {
+      observer.disconnect();
+      node.removeEventListener("scroll", update);
+    };
+  }, [content]);
+  const mask =
+    fade.start && fade.end
+      ? "[mask-image:linear-gradient(to_right,transparent,black_1.5rem,black_calc(100%-1.5rem),transparent)]"
+      : fade.start
+        ? "[mask-image:linear-gradient(to_right,transparent,black_1.5rem)]"
+        : fade.end
+          ? "[mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]"
+          : undefined;
+  return { ref, mask };
+}
+
 export function InspectorPanel({ sessionId }: { sessionId: string }) {
   const t = useT();
+  const locale = useI18n((state) => state.locale);
   const tab = useLayout((state) => state.inspectorTab);
   const view = useTranscript((state) => state.bySession[sessionId]);
 
@@ -49,11 +86,18 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
     changes: new Set(view?.diffs.flatMap((record) => record.diff.files.map((file) => file.path)))
       .size,
   };
+  const strip = useEdgeFade(`${locale}:${tab}:${counts.changes}`);
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col bg-background text-foreground">
       <div className="flex h-11 shrink-0 items-center gap-1 px-2">
-        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]">
+        <div
+          ref={strip.ref}
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]",
+            strip.mask,
+          )}
+        >
           {TABS.map((item) => {
             const count = counts[item.id] ?? 0;
             const Icon = item.icon;
@@ -130,6 +174,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
 function ChangesTab({ sessionId }: { sessionId: string }) {
   const t = useT();
   const diffs = useTranscript((state) => state.bySession[sessionId]?.diffs);
+  const cwd = useTranscript((state) => state.bySession[sessionId]?.info.cwd);
   const diffMode = usePrefs((state) => state.diffMode);
   const files = useMemo(() => {
     const byPath = new Map<string, ToolFileDiff>();
@@ -169,7 +214,13 @@ function ChangesTab({ sessionId }: { sessionId: string }) {
       </div>
       <div className="space-y-2 px-3 pb-4">
         {files.map((file) => (
-          <DiffFile key={file.path} file={file} defaultOpen={files.length <= 3} maxHeight={480} />
+          <DiffFile
+            key={file.path}
+            file={file}
+            cwd={cwd}
+            defaultOpen={files.length <= 3}
+            maxHeight={480}
+          />
         ))}
       </div>
     </div>

@@ -52,6 +52,7 @@ export const SESSION_UPDATE_TYPES: Record<SessionUpdateType, true> = {
   tool_batch_started: true,
   prompt_started: true,
   assistant_delta: true,
+  mcp_connecting: true,
   generation_started: true,
   generation_retry: true,
   bash_started: true,

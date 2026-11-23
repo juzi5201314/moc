@@ -136,16 +136,45 @@ pub(super) async fn run_prompt_locked(
         .await
         .map_err(protocol_to_rpc)?;
 
+    // 提示前给仍在首次握手的 MCP 极短宽限窗口，快服务首轮即可用，慢/卡死服务不阻塞任何模式（Standard/PTC/CLM）的提示。
+    const MCP_PROMPT_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
     let cancel = ctx.cancel();
-    // 一次提示内 MCP 的工具发现和执行用同一份目录，服务器刷新到下一次提示才生效。
+    // 一次提示内已就绪 MCP 的工具集合保持固定；宽限期内未完成握手的慢服务在后台继续连接，就绪后由目录惰性吸收。
     let mcp = inner
         .project_mcp(std::path::Path::new(&state_snapshot.session.cwd))
         .await
         .map_err(to_rpc)?;
     mcp.start().await;
-    mcp.wait_ready(&cancel)
+    let connecting = mcp.connecting();
+    let notified_mcp = !connecting.is_empty();
+    if notified_mcp {
+        update
+            .emit(
+                params.session_id.clone(),
+                SessionUpdate::McpConnecting {
+                    prompt_id: prompt_id.clone(),
+                    servers: connecting,
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
+    }
+    mcp.wait_ready_within(&cancel, MCP_PROMPT_GRACE)
         .await
         .map_err(|_| to_rpc(crate::CoreError::Cancelled))?;
+    if notified_mcp {
+        // 宽限等待已结束：后续可能进入工具重放、自动压缩或请求重试，不能等 GenerationStarted 再清。
+        update
+            .emit(
+                params.session_id.clone(),
+                SessionUpdate::McpConnecting {
+                    prompt_id: prompt_id.clone(),
+                    servers: Vec::new(),
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
+    }
     for notice in mcp.drain_notices().await {
         record
             .state
@@ -153,7 +182,7 @@ pub(super) async fn run_prompt_locked(
             .await
             .notices
             .push(crate::session::state::SessionNotice::new(format!(
-                "MCP `{}`：{}",
+                "MCP `{}`: {}",
                 notice.server, notice.message
             )));
     }
@@ -218,8 +247,8 @@ pub(super) async fn run_prompt_locked(
         &project_config,
     )
     .unwrap_or_default();
-    // 目录、模式和窗口在本次提示内固定；压缩后重用同一正文补回提醒。
-    let mcp_index = crate::tools::declarations::render_mcp_index(
+    // 目录、模式和窗口在本次提示内固定；若首轮宽限期内未完成握手的慢 MCP 在后续轮次就绪，PTC 索引同步补全。
+    let mut mcp_index = crate::tools::declarations::render_mcp_index(
         &catalog,
         engine,
         mode,
@@ -298,6 +327,27 @@ pub(super) async fn run_prompt_locked(
                 crate::agents::drain_inbox(&inner, &update, &params.session_id, false)
                     .await
                     .map_err(to_rpc)?;
+                for notice in mcp.drain_notices().await {
+                    record
+                        .state
+                        .lock()
+                        .await
+                        .notices
+                        .push(crate::session::state::SessionNotice::new(format!(
+                            "MCP `{}`: {}",
+                            notice.server, notice.message
+                        )));
+                }
+                if catalog.absorb_pending() {
+                    mcp_index = crate::tools::declarations::render_mcp_index(
+                        &catalog,
+                        engine,
+                        mode,
+                        ask_supported,
+                        &project_config,
+                        model.context_window,
+                    );
+                }
                 let candidates = reminders::prepare(reminders::Scope {
                     inner: &inner,
                     record: &record,
@@ -629,6 +679,7 @@ pub(super) async fn run_prompt_locked(
                 let mut preview_tick = tokio::time::interval(super::preview::INTERVAL);
                 preview_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut preview_identities = Vec::new();
+                let mut text_spans = super::stream::TextSpans::default();
                 let response: Result<_, StreamRecovery> = loop {
                     tokio::select! {
                         biased;
@@ -656,6 +707,7 @@ pub(super) async fn run_prompt_locked(
                                                 as u64,
                                         );
                                     }
+                                    text_spans.observe(&event, crate::session::store::now_ms());
                                     let forwarded = async {
                                         if previews.apply(&event) {
                                             previews.flush(&update, &params.session_id, &prompt_id).await?;
@@ -903,11 +955,14 @@ pub(super) async fn run_prompt_locked(
                 // 完整响应先落库，再发通知和记用量：辅助步骤失败不能吞掉已经完整收到的模型响应。
                 inner
                     .sessions
-                    .append_message(
+                    .append_response(
                         &params.session_id,
                         response.message.clone(),
-                        None,
-                        Some(final_reason.clone()),
+                        final_reason.clone(),
+                        moc_protocol::ResponseMeta {
+                            model: model.selector.clone(),
+                            text_spans: text_spans.into_spans(),
+                        },
                     )
                     .await
                     .map_err(to_rpc)?;

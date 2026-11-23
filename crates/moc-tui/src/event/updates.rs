@@ -276,6 +276,7 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
         } => {
             app.register_tool_batch(batch_id, calls.into_iter().map(|call| call.tool_call_id));
         }
+        SessionUpdate::McpConnecting { servers, .. } => app.mcp_connecting = servers,
         SessionUpdate::GenerationStarted { .. } => {
             // 新一轮尝试开始：重试倒数便签定稿回 core 原文。
             app.finish_retry_wait();

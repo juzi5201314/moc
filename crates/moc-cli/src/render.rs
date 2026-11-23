@@ -230,6 +230,14 @@ impl Renderer {
             }
             SessionUpdate::ToolProgress { .. } => {}
             SessionUpdate::ToolBatchStarted { .. } => {}
+            SessionUpdate::McpConnecting { servers, .. } if !servers.is_empty() => {
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("cli.render.mcp_connecting", servers = servers.join(", "))
+                );
+            }
+            SessionUpdate::McpConnecting { .. } => {}
             SessionUpdate::GenerationStarted { .. } => state.calls.clear(),
             SessionUpdate::GenerationRetry { message, .. } => {
                 state.calls.clear();

@@ -150,6 +150,18 @@ limits = { zh = "资源限制", en = "Resource limits" }
 [tui.mcp]
 local = { zh = "本地程序：%{command}", en = "Local program: %{command}" }
 remote = { zh = "远程服务：%{url}", en = "Remote service: %{url}" }
+empty_hint = { zh = "当前工作区未配置任何 MCP 服务。", en = "No MCP servers configured for this workspace." }
+config_error_fmt = { zh = "MCP 配置解析失败：%{err}", en = "MCP config failed to load: %{err}" }
+header_fmt = { zh = "MCP 服务（共 %{total} 个：%{connected} 已连接，%{connecting} 连接中，%{failed} 失败）", en = "MCP servers (%{total} total: %{connected} connected, %{connecting} connecting, %{failed} failed)" }
+reconnected_header_fmt = { zh = "已触发 MCP 重连（共 %{total} 个：%{connected} 已连接，%{connecting} 连接中，%{failed} 失败）", en = "Triggered MCP reconnect (%{total} total: %{connected} connected, %{connecting} connecting, %{failed} failed)" }
+phase_connected_fmt = { zh = "已连接（%{tools} 个工具）", en = "connected (%{tools} tools)" }
+phase_connecting_fmt = { zh = "连接中%{elapsed}", en = "connecting%{elapsed}" }
+phase_reconnecting_fmt = { zh = "重连中 #%{attempts}%{elapsed}：%{err}", en = "reconnecting #%{attempts}%{elapsed}: %{err}" }
+phase_failed_fmt = { zh = "失败：%{err}", en = "failed: %{err}" }
+phase_disabled = { zh = "已禁用", en = "disabled" }
+reconnect_hint = { zh = "提示：输入 /mcp reconnect [server] 可手动重连并重置重试预算。", en = "Tip: run /mcp reconnect [server] to reconnect and reset retry budget." }
+list_failed_fmt = { zh = "查询 MCP 状态失败：%{err}", en = "Failed to query MCP status: %{err}" }
+reconnect_failed_fmt = { zh = "重连 MCP 失败：%{err}", en = "Failed to reconnect MCP: %{err}" }
 
 [tui.level]
 off = { zh = "关闭", en = "off" }
@@ -251,6 +263,7 @@ unknown_fmt = { zh = "未知命令：%{name}", en = "Unknown command: %{name}" }
 unload_failed_fmt = { zh = "卸载会话失败：%{err}", en = "Failed to unload session: %{err}" }
 new_failed_fmt = { zh = "新建会话失败：%{err}", en = "Failed to create session: %{err}" }
 plugins_usage = { zh = "用法：/plugins [reload]", en = "Usage: /plugins [reload]" }
+mcp_usage = { zh = "用法：/mcp [reconnect [server]]", en = "Usage: /mcp [reconnect [server]]" }
 usage_fmt = { zh = "用法：/%{name}", en = "Usage: /%{name}" }
 compact_done = { zh = "上下文压缩已完成", en = "Context compaction finished" }
 compact_failed_fmt = { zh = "上下文压缩失败：%{err}", en = "Context compaction failed: %{err}" }
@@ -550,6 +563,7 @@ workflow.usage = { zh = "[指令]", en = "[instruction]" }
 workflow.desc = { zh = "开启工作流（可附指令）", en = "Activate workflows (optional instruction)" }
 workflows.desc = { zh = "查看工作流运行记录", en = "Workflow run list" }
 plugins.desc = { zh = "查看插件：来源、工具与斜杠命令", en = "Inspect plugins: origins, tools, and slash commands" }
+mcp.desc = { zh = "查看 MCP 服务状态或手动重连", en = "Inspect MCP server status or reconnect" }
 btw.usage = { zh = "[问题]", en = "[question]" }
 btw.desc = { zh = "旁路问答：带问题继续线程；不带问题重开面板", en = "Side-thread Q&A: with a question, continues the thread; without, reopens the panel" }
 config.desc = { zh = "打开设置：模型、供应商、界面等", en = "Open settings: models, providers, UI, etc." }
@@ -1133,6 +1147,10 @@ waiting = { zh = "等待中", en = "Waiting" }
 running = { zh = "运行中", en = "Running" }
 thinking = { zh = "思考中", en = "Thinking" }
 responding = { zh = "回复中", en = "Responding" }
+mcp_connecting = { zh = "正在连接 MCP：%{servers}", en = "Connecting MCP: %{servers}" }
+mcp_slow = { zh = "MCP 连接中：%{servers} (%{secs}s)", en = "MCP connecting: %{servers} (%{secs}s)" }
+mcp_unhealthy = { zh = "⚠ MCP 异常：%{servers}", en = "⚠ MCP issue: %{servers}" }
+mcp_config_error = { zh = "⚠ MCP 配置异常", en = "⚠ MCP config error" }
 
 [tui.key]
 kill_selected = { zh = "x x/点击已选", en = "x x/click item" }

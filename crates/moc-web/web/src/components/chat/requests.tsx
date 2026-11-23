@@ -15,7 +15,7 @@ import { Card } from "@/components/ui/card";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { AskParams, PermissionOption, PermissionRequestParams } from "@/protocol/types";
-import { resolveAsk, resolvePermission } from "@/store/transcript";
+import { resolveAsk, resolvePermission, useTranscript } from "@/store/transcript";
 
 const OPTION_ORDER: Record<PermissionOption["kind"], number> = {
   reject_once: 0,
@@ -37,6 +37,7 @@ export function PermissionCard({
   request: PermissionRequestParams;
 }) {
   const t = useT();
+  const cwd = useTranscript((state) => state.bySession[sessionId]?.info.cwd);
   const options = request.options.toSorted((a, b) => OPTION_ORDER[a.kind] - OPTION_ORDER[b.kind]);
   return (
     <Confirmation
@@ -69,7 +70,7 @@ export function PermissionCard({
         {request.diff && request.diff.files.length > 0 && (
           <div className="mx-4 mb-3 space-y-2">
             {request.diff.files.map((file) => (
-              <DiffFile key={file.path} file={file} maxHeight={280} />
+              <DiffFile key={file.path} file={file} cwd={cwd} maxHeight={280} />
             ))}
           </div>
         )}

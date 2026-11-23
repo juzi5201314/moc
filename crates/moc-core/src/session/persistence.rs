@@ -164,6 +164,25 @@ impl SessionTable {
         .await
     }
 
+    /// 追加一次完整的模型响应 entry（带模型与正文段时间窗等展示元信息）。
+    pub async fn append_response(
+        &self,
+        session_id: &str,
+        message: Message,
+        finish_reason: FinishReason,
+        meta: moc_protocol::ResponseMeta,
+    ) -> Result<Entry, CoreError> {
+        self.append(
+            session_id,
+            EntryPayload::Response {
+                message,
+                finish_reason,
+                meta,
+            },
+        )
+        .await
+    }
+
     /// 追加一条代理间消息 entry（带来源信息）。
     pub async fn append_agent_message(
         &self,

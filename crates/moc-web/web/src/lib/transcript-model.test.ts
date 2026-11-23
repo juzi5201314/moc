@@ -12,6 +12,7 @@ import {
   applyUpdate,
   createView,
   entriesToBlocks,
+  historyDiffs,
   interruptLive,
   type ToolBlock,
 } from "./transcript-model";
@@ -174,7 +175,10 @@ describe("entriesToBlocks", () => {
                 Reasoning: {
                   Item: {
                     type: "reasoning",
-                    summary: [{ type: "summary_text", text: "完整摘要" }],
+                    summary: [
+                      { type: "summary_text", text: "完整摘要" },
+                      { type: "summary_text", text: "第二段" },
+                    ],
                   },
                 },
               },
@@ -190,7 +194,7 @@ describe("entriesToBlocks", () => {
       [],
     );
     expect(blocks.filter((block) => block.kind === "reasoning").map((block) => block.text)).toEqual(
-      ["流式摘要", "完整摘要"],
+      ["流式摘要", "完整摘要\n\n第二段"],
     );
   });
 
@@ -265,6 +269,17 @@ describe("entriesToBlocks", () => {
     const orphan = blocks[5] as ToolBlock;
     expect(orphan.name).toBe("工具结果");
     expect(orphan.status).toBe("error");
+  });
+
+  it("历史改动（含子调用）复原为变更记录，刷新后变更分页不丢", () => {
+    const withDiff = entries.map((entry) =>
+      entry.id === "e3" && entry.tool ? { ...entry, tool: { ...entry.tool, diff: DIFF } } : entry,
+    );
+    const blocks = entriesToBlocks(withDiff, [{ ...childCalls[0], diff: DIFF }]);
+    expect(historyDiffs(blocks).map((record) => [record.toolCallId, record.atMs])).toEqual([
+      ["child_1", 2],
+      ["call_1", 2],
+    ]);
   });
 
   it("运行时提醒不进对话流", () => {
