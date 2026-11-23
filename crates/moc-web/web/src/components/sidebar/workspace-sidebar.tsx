@@ -656,7 +656,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
                   ? "text-warn"
                   : active
                     ? "text-muted-foreground"
-                    : "text-text-tertiary",
+                    : "text-text-tertiary group-hover/session:text-muted-foreground group-focus-within/session:text-muted-foreground group-has-[[data-state=open]]/session:text-muted-foreground group-data-[state=open]/session:text-muted-foreground",
               )}
             >
               {status}
