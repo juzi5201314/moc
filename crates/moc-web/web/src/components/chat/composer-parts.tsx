@@ -202,7 +202,7 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
 
   return (
     <div className="text-ui">
-      <div className="flex h-9 items-center gap-2 px-4 text-text-tertiary">
+      <div className="flex h-9 items-center gap-2 px-2.5 text-muted-foreground">
         <div className="flex min-w-0 flex-1 items-center">
           {todos.length > 0 ? (
             <button
@@ -213,7 +213,7 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
             >
               <ListChecksIcon className="size-3.5 shrink-0" />
               <span className="shrink-0 font-medium text-foreground">{t("cp.tasks")}</span>
-              <span className="shrink-0 tabular-nums text-text-tertiary">
+              <span className="shrink-0 tabular-nums text-muted-foreground">
                 {done}/{todos.length}
               </span>
               {!open && current && <span className="min-w-0 truncate">{current.task}</span>}
@@ -236,7 +236,7 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
                 className="min-w-0 truncate px-1.5 animate-in fade-in-0 duration-300"
                 title={tip.replaceAll("`", "")}
               >
-                <span className="mr-1 text-muted-foreground">{t("cp.tips")}</span>
+                <span className="mr-1 font-medium">{t("cp.tips")}</span>
                 <TipText tip={tip} />
               </p>
             )
@@ -246,7 +246,7 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
           <button
             type="button"
             onClick={() => inspect("changes")}
-            className="h-6 shrink-0 rounded-md px-1.5 text-brand transition-colors hover:text-brand/80"
+            className="h-6 shrink-0 rounded-md px-1.5 text-link transition-colors hover:text-link/80"
           >
             {t("cp.view_changes")}
           </button>
