@@ -222,12 +222,16 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
               />
             </button>
           ) : changes.files > 0 ? (
-            <div className="flex min-w-0 items-center gap-1.5 px-1.5 text-muted-foreground">
-              <PencilIcon className="size-3.5 shrink-0" />
+            <div className="flex min-w-0 items-center gap-2 px-1.5 text-sm leading-5">
+              <PencilIcon className="size-4 shrink-0 text-muted-foreground" />
               <span className="truncate text-foreground">
                 {t("cp.files_changed", { n: changes.files })}
               </span>
-              <DiffStat added={changes.added} removed={changes.removed} />
+              <DiffStat
+                added={changes.added}
+                removed={changes.removed}
+                className="font-sans text-sm"
+              />
             </div>
           ) : (
             tip && (
@@ -242,15 +246,6 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
             )
           )}
         </div>
-        {todos.length === 0 && changes.files > 0 && (
-          <button
-            type="button"
-            onClick={() => inspect("changes")}
-            className="h-6 shrink-0 rounded-md px-1.5 text-link underline-offset-2 transition-colors hover:underline"
-          >
-            {t("cp.view_changes")}
-          </button>
-        )}
         {todos.length > 0 && changes.files > 0 && (
           <button
             type="button"

@@ -190,7 +190,6 @@ export const zh = {
   "cp.changes": "查看本会话改动",
   "cp.files_n": "{n} 个文件",
   "cp.files_changed": "{n} 个文件已更改",
-  "cp.view_changes": "查看变更",
   "cp.tips": "Tips:",
   "cp.options": "会话权限、自主程度与引擎",
   "cp.perm_default": "默认权限",

@@ -41,10 +41,9 @@
   --brand-foreground: #ffffff;
   --destructive: #dc2626;
   --success: #16a34a;
-  /* 文字用的增删色与链接色：比 success/destructive/brand 深一档，灰托盘上也满足 AA */
+  /* 文字用的增删色：比 success/destructive 深一档，灰托盘上也满足 AA */
   --diff-add-fg: #167a3b;
   --diff-del-fg: #c42020;
-  --link: #2f5fd9;
   --warn: #d97706;
   --border: rgba(0, 0, 0, 0.08);
   --border-strong: rgba(0, 0, 0, 0.13);
@@ -93,7 +92,6 @@
 .dark {
   --diff-add-fg: var(--success);
   --diff-del-fg: var(--destructive);
-  --link: var(--brand);
   color-scheme: dark;
   --chrome: #0f0f0f;
   --background: #141414;
@@ -178,7 +176,6 @@
   --color-success: var(--success);
   --color-diff-add-fg: var(--diff-add-fg);
   --color-diff-del-fg: var(--diff-del-fg);
-  --color-link: var(--link);
   --color-warn: var(--warn);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
@@ -215,7 +212,7 @@
   --shadow-xl: 0 18px 48px -12px rgba(0, 0, 0, 0.25), 0 4px 12px rgba(0, 0, 0, 0.08);
   --font-sans:
     "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-mono:
     ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas,
     monospace;
