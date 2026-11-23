@@ -1,14 +1,11 @@
 // Image Playground 左侧导航栏：三大平行视图（生成 / 画廊 / 收藏）+ 会话列表 + 底部设置入口。
 
 import {
-  ArrowLeftIcon,
   ImagesIcon,
   MoreHorizontalIcon,
-  PanelLeftCloseIcon,
   PencilIcon,
   SearchIcon,
   ServerIcon,
-  SettingsIcon,
   SparklesIcon,
   SquarePenIcon,
   StarIcon,
@@ -18,6 +15,7 @@ import {
 import { type ReactNode, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { IconButton } from "@/components/common/icon-button";
+import { ConnectionBadge } from "@/components/sidebar/workspace-sidebar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,7 +28,6 @@ import { useT } from "@/lib/i18n";
 import type { PlaygroundSessionSummary } from "@/lib/image-playground-api";
 import { cn } from "@/lib/utils";
 import { type PlaygroundView, useImagePlayground } from "@/store/image-playground";
-import { useLayout } from "@/store/layout";
 import { openSettings } from "@/store/ui";
 
 const ROW = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-ui transition-colors";
@@ -70,7 +67,7 @@ function NavRow({
   );
 }
 
-export function PlaygroundSidebar({ onBackToAgent }: { onBackToAgent: () => void }) {
+export function PlaygroundSidebar() {
   const t = useT();
   const view = useImagePlayground((s) => s.view);
   const setView = useImagePlayground((s) => s.setView);
@@ -96,13 +93,8 @@ export function PlaygroundSidebar({ onBackToAgent }: { onBackToAgent: () => void
   return (
     <nav className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-sidebar text-sidebar-foreground select-none">
       {/* 顶栏 */}
-      <div className="flex h-11 shrink-0 items-center justify-between gap-1 pr-2 pl-2">
-        <div className="flex min-w-0 items-center gap-1">
-          <IconButton label={t("ip.back_agent")} size="md" onClick={onBackToAgent}>
-            <ArrowLeftIcon />
-          </IconButton>
-          <h2 className="truncate text-sm font-medium">Image Playground</h2>
-        </div>
+      <div className="flex h-12 shrink-0 items-center justify-between gap-1 pr-2.5 pl-5">
+        <h2 className="truncate text-sm font-medium">Image Playground</h2>
         <div className="flex shrink-0 items-center gap-0.5">
           <IconButton
             label={t("common.search")}
@@ -114,13 +106,6 @@ export function PlaygroundSidebar({ onBackToAgent }: { onBackToAgent: () => void
             }}
           >
             <SearchIcon />
-          </IconButton>
-          <IconButton
-            label={t("layout.close_sidebar")}
-            size="md"
-            onClick={() => useLayout.getState().toggleSidebar()}
-          >
-            <PanelLeftCloseIcon />
           </IconButton>
         </div>
       </div>
@@ -214,26 +199,16 @@ export function PlaygroundSidebar({ onBackToAgent }: { onBackToAgent: () => void
       </div>
 
       {/* 底部栏 */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-t border-border-subtle pr-2 pl-4">
-        <span className="text-xs font-medium text-muted-foreground">moc · studio</span>
-        <div className="flex items-center gap-0.5">
-          <IconButton
-            label={t("sd.providers")}
-            side="top"
-            size="md"
-            onClick={() => openSettings("providers")}
-          >
-            <ServerIcon />
-          </IconButton>
-          <IconButton
-            label={t("ip.settings")}
-            side="top"
-            size="md"
-            onClick={() => openSettings("image_playground")}
-          >
-            <SettingsIcon />
-          </IconButton>
-        </div>
+      <div className="flex h-12 shrink-0 items-center justify-between pr-2.5 pl-5">
+        <ConnectionBadge />
+        <IconButton
+          label={t("sd.providers")}
+          side="top"
+          size="md"
+          onClick={() => openSettings("providers")}
+        >
+          <ServerIcon />
+        </IconButton>
       </div>
     </nav>
   );

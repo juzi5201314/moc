@@ -8,7 +8,6 @@ import {
   FolderInputIcon,
   FolderPlusIcon,
   ImageIcon,
-  PanelLeftOpenIcon,
   PencilIcon,
   PlayIcon,
   SearchIcon,
@@ -19,7 +18,6 @@ import {
 } from "lucide-react";
 import { type DragEvent, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { IconButton } from "@/components/common/icon-button";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -33,10 +31,8 @@ import {
 } from "@/components/ui/context-menu";
 import { useT } from "@/lib/i18n";
 import { type FavoriteFolder, type FavoritePreset, pgImageUrl } from "@/lib/image-playground-api";
-import { useNarrow } from "@/lib/use-narrow";
 import { cn } from "@/lib/utils";
 import { useImagePlayground } from "@/store/image-playground";
-import { useLayout } from "@/store/layout";
 import { FAV_DRAG_MIME, ImageCard } from "./image-card";
 
 type FolderFilter = "all" | "root" | string;
@@ -75,9 +71,6 @@ export function PlaygroundFavoritesView() {
   const deleteFavoritePreset = useImagePlayground((s) => s.deleteFavoritePreset);
   const openPresetEditor = useImagePlayground((s) => s.openPresetEditor);
   const applyFavoritePreset = useImagePlayground((s) => s.applyFavoritePreset);
-  const collapsed = useLayout((s) => s.sidebarCollapsed);
-  const overlay = useLayout((s) => s.sidebarOverlay);
-  const narrow = useNarrow();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -155,7 +148,6 @@ export function PlaygroundFavoritesView() {
   }, [allFavoriteImages, activeFolder, query]);
 
   const listIds = useMemo(() => filteredImages.map((i) => i.id), [filteredImages]);
-  const showReveal = narrow ? !overlay : collapsed;
   const totalVisible = filteredPresets.length + filteredImages.length;
 
   const handleFiles = async (files: File[]) => {
@@ -258,11 +250,6 @@ export function PlaygroundFavoritesView() {
       )}
     >
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
-        {showReveal && (
-          <IconButton label={t("hd.sidebar")} onClick={() => useLayout.getState().toggleSidebar()}>
-            <PanelLeftOpenIcon />
-          </IconButton>
-        )}
         <h1 className="text-sm font-medium text-foreground">{t("ip.nav_favorites")}</h1>
         <span className="font-mono text-xs tabular-nums text-text-tertiary">{totalVisible}</span>
 

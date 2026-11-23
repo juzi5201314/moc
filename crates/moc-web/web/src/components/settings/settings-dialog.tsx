@@ -182,7 +182,7 @@ const LOCAL_SECTIONS: Partial<Record<SettingsSection, true>> = {
   image_playground: true,
 };
 
-function SaveStatus() {
+export function SaveStatus() {
   const t = useT();
   const saving = useSettings((state) => state.saving);
   const savedAt = useSettings((state) => state.savedAt);
@@ -210,21 +210,21 @@ function SaveStatus() {
   );
 }
 
-function ScopeSwitch({ doc }: { doc?: SettingsDocument }) {
+export function ScopeSwitch({ doc }: { doc?: SettingsDocument }) {
   const t = useT();
   const scope = useSettings((state) => state.scope);
   return (
     <div className="flex min-w-0 items-center gap-2">
-      <div className="flex shrink-0 rounded-lg bg-muted p-0.5">
+      <div className="flex shrink-0 gap-0.5">
         {(["global", "project"] as ConfigScope[]).map((item) => (
           <button
             key={item}
             type="button"
             onClick={() => useSettings.getState().setScope(item)}
             className={cn(
-              "h-6 rounded-md px-2.5 text-xs transition-colors",
+              "h-7 rounded-lg px-2.5 text-xs transition-colors",
               scope === item
-                ? "bg-background text-foreground shadow-xs"
+                ? "bg-accent text-foreground"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >

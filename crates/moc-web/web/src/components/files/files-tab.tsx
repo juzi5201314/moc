@@ -1,9 +1,10 @@
 // 文件分页：左树右编辑区（宽 ≥640px），窄时上下层叠、打开文件后树被替换。
 // 树按需加载；工作区可写，会话空间整体只读。
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { PanelEmpty } from "@/components/panels/inspector-tabs";
 import { useT } from "@/lib/i18n";
+import { SHORTCUTS } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import { useFiles } from "@/store/files";
 import { useLayout } from "@/store/layout";
@@ -56,15 +57,18 @@ export function FilesTab({ sessionId }: { sessionId: string }) {
         <PanelEmpty title={t("ft.no_cwd")} />
       ) : wide ? (
         <div className="flex min-h-0 flex-1">
-          <div className="min-w-0 shrink-0 overflow-y-auto" style={{ width: treeWidth }}>
+          <div
+            className="min-w-0 shrink-0 overflow-y-auto border-r border-border-subtle"
+            style={{ width: treeWidth }}
+          >
             <FileTree sessionId={sessionId} workspaceRoot={workspaceRoot} />
           </div>
           <TreeResizer />
-          <div className={cn("min-w-0 flex-1", !hasTabs && "flex items-start justify-center")}>
+          <div className={cn("min-w-0 flex-1", !hasTabs && "flex items-center justify-center")}>
             {hasTabs ? (
               <EditorArea sessionId={sessionId} workspaceRoot={workspaceRoot} stacked={false} />
             ) : (
-              <PanelEmpty title={t("ft.no_files")} hint={t("ft.pick_hint")} />
+              <ShortcutHints />
             )}
           </div>
         </div>
@@ -88,7 +92,7 @@ function TreeResizer() {
     <div
       role="separator"
       aria-orientation="vertical"
-      className="group relative w-2 shrink-0 cursor-col-resize"
+      className="group relative -ml-1 w-2 shrink-0 cursor-col-resize"
       onPointerDown={(event) => {
         drag.current = event.clientX;
         setDragging(true);
@@ -112,5 +116,22 @@ function TreeResizer() {
         )}
       />
     </div>
+  );
+}
+
+const HINT_KEYS = new Set(["keys.palette", "keys.terminal", "keys.inspector", "keys.sidebar"]);
+
+/** 未打开文件时的编辑区：几条常用快捷键，代替空状态文案。 */
+function ShortcutHints() {
+  const t = useT();
+  return (
+    <dl className="grid w-56 grid-cols-[1fr_auto] gap-x-6 gap-y-2.5 text-xs">
+      {SHORTCUTS.filter((item) => HINT_KEYS.has(item.label)).map((item) => (
+        <Fragment key={item.label}>
+          <dt className="text-text-tertiary">{t(item.label)}</dt>
+          <dd className="text-right text-text-tertiary tabular-nums">{item.keys}</dd>
+        </Fragment>
+      ))}
+    </dl>
   );
 }

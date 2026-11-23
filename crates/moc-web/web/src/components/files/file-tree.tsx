@@ -1,14 +1,7 @@
 // 文件树：按需加载、键盘导航、右键菜单、inline 命名、拖拽移动与外部拖入上传。
 // 会话空间根固定 5 个命名空间，中文标签 + 行尾原文 URI。
 
-import {
-  ChevronRightIcon,
-  FileCode2Icon,
-  FileIcon,
-  FileTextIcon,
-  FolderIcon,
-  FolderOpenIcon,
-} from "lucide-react";
+import { ChevronRightIcon, FileCode2Icon, FileIcon, FileTextIcon } from "lucide-react";
 import { type DragEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -92,11 +85,13 @@ function Row({
   depth,
   changed,
   sessionRoot,
+  selected,
   children,
 }: {
   node: TreeNode;
   depth: number;
   changed: boolean;
+  selected: boolean;
   sessionRoot: boolean;
   children?: React.ReactNode;
 }) {
@@ -106,7 +101,7 @@ function Row({
   const naming = files?.naming;
   const isRenaming = naming?.kind === "rename" && naming.fromKey === node.key;
   const isDir = node.kind === "dir";
-  const Icon = isDir ? (open ? FolderOpenIcon : FolderIcon) : fileIcon(node.name);
+  const Icon = isDir ? null : fileIcon(node.name);
   const isNsRoot = sessionRoot && depth === 0;
   const nsKey = isNsRoot ? NS_LABEL[node.key] : undefined;
   const label = nsKey ? t(nsKey) : node.name;
@@ -117,10 +112,10 @@ function Row({
       role="treeitem"
       aria-expanded={isDir ? open : undefined}
       className={cn(
-        "group/row flex h-7 cursor-default items-center gap-1 pr-2 text-ui text-muted-foreground hover:text-foreground",
-        "border-l border-transparent",
+        "group/row mx-1.5 flex h-[26px] cursor-default items-center gap-1.5 rounded-md pr-2 text-ui text-foreground/85 hover:bg-surface-hover hover:text-foreground",
+        selected && "bg-accent text-foreground hover:bg-accent",
       )}
-      style={{ paddingLeft: 8 + depth * 12 }}
+      style={{ paddingLeft: 4 + depth * 12 }}
       data-key={node.key}
     >
       {isDir ? (
@@ -133,7 +128,7 @@ function Row({
       ) : (
         <span className="w-3.5 shrink-0" />
       )}
-      <Icon className="size-3.5 shrink-0 text-text-tertiary" />
+      {Icon && <Icon className="size-3.5 shrink-0 text-text-tertiary" />}
       {isRenaming ? (
         <NamingInput initial={node.name} nodeKey={node.key} />
       ) : (
@@ -467,10 +462,10 @@ export function FileTree({
                 onDragStart={(event) => event.dataTransfer.setData("moc/tree-key", node.key)}
                 onDragOver={(event) => onDragOver(event, node)}
                 onDrop={(event) => onDrop(event, node)}
-                className={cn(selected === node.key && "text-foreground")}
               >
                 <Row
                   node={node}
+                  selected={selected === node.key}
                   depth={depth}
                   changed={changed.has(node.key)}
                   sessionRoot={root === "session"}
@@ -531,7 +526,7 @@ export function FileTree({
                   activateTab(sessionId, key);
                   setStackedView(sessionId, "editor");
                 }}
-                className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg bg-muted px-2.5 text-ui text-muted-foreground hover:text-foreground"
+                className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui text-muted-foreground hover:bg-surface-hover hover:text-foreground"
               >
                 <span className="max-w-32 truncate">
                   {(tab.target.kind === "fs" ? tab.target.path : tab.target.uri)

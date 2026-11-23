@@ -240,8 +240,8 @@ function TranscriptRows({
     getItemKey: (index) => rowKey(rows[index]),
     anchorTo: "end",
     overscan: 5,
-    gap: 40,
-    paddingStart: 40,
+    gap: 32,
+    paddingStart: 32,
     paddingEnd: 64,
     // jsdom 与尚未完成布局的容器都测得 0 高，此时 range=null 一行不挂；
     // 0 高时给个兜底视口，真实尺寸一到就会被覆盖。
@@ -463,7 +463,7 @@ function UserMessage({
         </Attachments>
       )}
       {block.text && (
-        <div className="relative max-w-[92%] rounded-2xl bg-bubble px-4 py-2.5 text-chat text-foreground sm:max-w-[80%]">
+        <div className="relative max-w-[92%] rounded-2xl bg-bubble px-3.5 py-2 text-chat text-foreground sm:max-w-[80%]">
           <div
             className={cn(
               "whitespace-pre-wrap break-words",
@@ -629,7 +629,7 @@ function AssistantTurn({
                 type="button"
                 onClick={() => setProcessOpen((value) => !value)}
                 aria-expanded={processOpen}
-                className="group/proc -ml-1.5 flex h-7 max-w-full items-center gap-1.5 rounded-md px-1.5 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="group/proc flex h-7 max-w-full items-center gap-1.5 rounded-md text-ui text-muted-foreground transition-colors hover:text-foreground"
               >
                 <ChevronRightIcon
                   className={cn(
@@ -648,7 +648,7 @@ function AssistantTurn({
                 </span>
               </button>
               {processOpen && (
-                <div className="mt-1.5 ml-[7px] flex flex-col gap-3 border-l border-border pl-4">
+                <div className="mt-1 ml-[7px] flex flex-col gap-2 border-l border-border-subtle pl-4">
                   {segments.map((segment, index) =>
                     index === finalIndex ||
                     segment.kind === "plan" ||
@@ -828,7 +828,7 @@ function PlanCard({
   const status = PLAN_STATUS[plan?.status ?? "draft"];
   const pending = plan?.status === "submitted";
   return (
-    <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-3.5 py-3 shadow-xs">
+    <div className="flex items-center gap-3 rounded-xl bg-card px-3.5 py-3 shadow-[var(--elevation-composer-inset)]">
       <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
         <ListChecksIcon className="size-4" />
       </span>

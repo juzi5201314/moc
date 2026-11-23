@@ -1,5 +1,5 @@
 import { Loader2Icon } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { ChatThread } from "@/components/chat/chat-thread";
 import { ComposerBar } from "@/components/chat/composer-bar";
 import { SessionHeader } from "@/components/chat/session-header";
@@ -15,12 +15,14 @@ import { ToolsDialog } from "@/components/dialogs/tools-dialog";
 import { WorkspacePicker } from "@/components/dialogs/workspace-picker";
 import { AppFrame } from "@/components/layout/AppFrame";
 import { InspectorPanel } from "@/components/panels/inspector-panel";
+import { PluginsPage } from "@/components/settings/plugins-page";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { WorkspaceSidebar } from "@/components/sidebar/workspace-sidebar";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WorkflowApprovalDialog } from "@/components/workflow/workflow-approval-dialog";
 import { WorkflowRunPanel } from "@/components/workflow/workflow-run-panel";
+import { useRoute } from "@/lib/route";
 import { useGlobalShortcuts } from "@/lib/shortcuts";
 import { useThemeSync } from "@/lib/theme";
 import { rpc } from "@/protocol/client";
@@ -34,26 +36,13 @@ import "@/store/dispatch";
 
 const ImagePlaygroundApp = lazy(() => import("@/components/image-playground/playground-app"));
 
-function isImagePlaygroundPath(): boolean {
-  return window.location.pathname.startsWith("/image-playground");
-}
-
 export function App() {
   useThemeSync();
   useGlobalShortcuts();
   // files store 只读 cwd，避免 store 间循环依赖。
 
-  const [inPlayground, setInPlayground] = useState(isImagePlaygroundPath);
-  useEffect(() => {
-    const onPop = () => setInPlayground(isImagePlaygroundPath());
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, []);
-
-  const backToAgent = useCallback(() => {
-    window.history.pushState(null, "", "/");
-    setInPlayground(false);
-  }, []);
+  const route = useRoute();
+  const inPlayground = route === "image";
 
   const jobsSession = useUi((state) => state.jobsSession);
   const toolsSession = useUi((state) => state.toolsSession);
@@ -91,8 +80,10 @@ export function App() {
             </div>
           }
         >
-          <ImagePlaygroundApp onBackToAgent={backToAgent} />
+          <ImagePlaygroundApp />
         </Suspense>
+      ) : route === "plugins" ? (
+        <AppFrame main={<PluginsPage />} rightbar={null} />
       ) : (
         <>
           <AppFrame

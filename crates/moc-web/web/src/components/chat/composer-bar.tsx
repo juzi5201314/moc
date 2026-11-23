@@ -571,7 +571,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         : t("cb.ph_steer")
       : inline
         ? t("cb.ph_draft")
-        : t("cb.ph_cont");
+        : "";
 
   return (
     <ComposerDock inline={inline}>
@@ -588,14 +588,13 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           onDrop={onDrop}
           className={cn(
             "relative",
-            !inline &&
-              "rounded-[22px] bg-[var(--composer-tray)] p-1 shadow-[var(--elevation-composer)]",
+            !inline && "rounded-[22px] bg-[var(--composer-tray)] p-1.5",
             dragging && "ring-2 ring-brand/40",
           )}
         >
           {!inline && <ComposerStatus sessionId={sessionId} todos={todos} />}
           {pending.length > 0 && (
-            <div className="px-1 pb-0.5">
+            <div className="pb-1.5">
               <PendingList
                 items={pending}
                 onRemove={(item) => void removePending(item)}
@@ -615,8 +614,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               if (event.target === event.currentTarget) textareaRef.current?.focus();
             }}
             className={cn(
-              "relative rounded-[20px] border border-border bg-card transition-shadow",
-              !inline && "shadow-[var(--elevation-composer-inset)]",
+              "relative rounded-[16px] bg-card shadow-[var(--elevation-composer-inset)] transition-shadow",
               bashMode && "ring-1 ring-inset ring-warn/50",
             )}
           >
@@ -684,9 +682,9 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                       menu?.items[activeIndex] ? `${suggestionsId}-${activeIndex}` : undefined
                     }
                     className={cn(
-                      "block w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-sm leading-6 text-foreground outline-none placeholder:text-text-tertiary",
+                      "block w-full resize-none bg-transparent px-4 pt-4 pb-1.5 text-sm leading-6 text-foreground outline-none placeholder:text-text-tertiary",
                       bashMode && "font-mono text-sm",
-                      inline ? "min-h-[72px]" : "min-h-[60px]",
+                      inline ? "min-h-[76px]" : "min-h-[64px]",
                     )}
                     style={{ maxHeight: MAX_HEIGHT }}
                   />
@@ -706,7 +704,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               )}
             </Popover>
 
-            <div className="flex min-h-11 flex-wrap items-center gap-1 px-2.5 pb-1.5 sm:px-3">
+            <div className="flex min-h-12 flex-wrap items-center gap-1 px-2.5 pb-2 sm:px-3">
               <input
                 ref={fileInputRef}
                 type="file"

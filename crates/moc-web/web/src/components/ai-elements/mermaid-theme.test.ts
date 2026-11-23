@@ -19,7 +19,7 @@ describe("mermaid 主题", () => {
     expect(config.theme).toBe("base");
     expect(config.securityLevel).toBe("strict");
     expect(config.suppressErrorRendering).toBe(true);
-    expect(config.fontFamily).toContain("Geist");
+    expect(config.fontFamily).toContain("Inter");
     const theme = config.themeVariables;
     expect(theme?.background).toBe("transparent");
     expect(theme?.darkMode).toBe(true);

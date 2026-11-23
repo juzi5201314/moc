@@ -271,6 +271,20 @@ export function CommandPalette() {
           </CommandGroup>
         )}
       </CommandList>
+      <div className="flex h-9 shrink-0 items-center gap-4 border-t border-border-subtle px-4 text-2xs text-text-tertiary">
+        <span className="flex items-center gap-1.5">
+          <Kbd>↑↓</Kbd>
+          {t("pal.nav")}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <Kbd>↵</Kbd>
+          {t("pal.select")}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <Kbd>Esc</Kbd>
+          {t("pal.close")}
+        </span>
+      </div>
     </CommandDialog>
   );
 }

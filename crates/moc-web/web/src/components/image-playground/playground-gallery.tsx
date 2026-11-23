@@ -1,13 +1,10 @@
 // 画廊视图：平铺大图按时间倒序展示全部会话中生成的图片。
 
-import { PanelLeftOpenIcon, SearchIcon } from "lucide-react";
+import { SearchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
-import { IconButton } from "@/components/common/icon-button";
 import { useT } from "@/lib/i18n";
-import { useNarrow } from "@/lib/use-narrow";
 import { cn } from "@/lib/utils";
 import { useImagePlayground } from "@/store/image-playground";
-import { useLayout } from "@/store/layout";
 import { ImageCard } from "./image-card";
 
 type FilterMode = "all" | "animated";
@@ -16,9 +13,6 @@ export function PlaygroundGalleryView() {
   const t = useT();
   const galleryIds = useImagePlayground((s) => s.galleryIds);
   const imagesById = useImagePlayground((s) => s.imagesById);
-  const collapsed = useLayout((s) => s.sidebarCollapsed);
-  const overlay = useLayout((s) => s.sidebarOverlay);
-  const narrow = useNarrow();
 
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FilterMode>("all");
@@ -36,30 +30,24 @@ export function PlaygroundGalleryView() {
   }, [galleryIds, imagesById, query, filter]);
 
   const listIds = useMemo(() => items.map((i) => i.id), [items]);
-  const showReveal = narrow ? !overlay : collapsed;
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
-        {showReveal && (
-          <IconButton label={t("hd.sidebar")} onClick={() => useLayout.getState().toggleSidebar()}>
-            <PanelLeftOpenIcon />
-          </IconButton>
-        )}
         <h1 className="text-sm font-medium text-foreground">{t("ip.nav_gallery")}</h1>
         <span className="font-mono text-xs tabular-nums text-text-tertiary">{items.length}</span>
 
         <div className="ml-auto flex items-center gap-2">
-          <div className="flex rounded-lg bg-muted p-0.5">
+          <div className="flex gap-0.5">
             {(["all", "animated"] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
                 onClick={() => setFilter(mode)}
                 className={cn(
-                  "h-6 rounded-md px-2 text-xs transition-colors",
+                  "h-7 rounded-lg px-2.5 text-xs transition-colors",
                   filter === mode
-                    ? "bg-background text-foreground shadow-xs"
+                    ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >

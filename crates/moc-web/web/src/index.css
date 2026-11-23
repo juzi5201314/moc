@@ -18,12 +18,43 @@
    强调色只出现在选中、链接、进行中，其余一律灰阶。
    ========================================================================= */
 
+/* 中文字重：系统中文字体只有少数几档，500/600 会落到 Medium/Bold，比 Inter 同字重粗得多。
+   这里给 CJK 字符单独声明两档：400 与 560。按 CSS 字重匹配规则，≤500 落到 400（Regular），
+   ≥600 落到 510（苹方是可变字体，从 Regular 字面钳到 wght 510，约等于 Medium；雅黑等非可变字体用 Bold 字面），
+   让中文靠清晰而不是笔画粗细来分层。拉丁字母仍走 Inter。 */
+@font-face {
+  font-family: "moc CJK";
+  font-style: normal;
+  font-weight: 400;
+  src:
+    local("PingFangSC-Regular"), local("PingFang SC Regular"), local("HiraginoSansGB-W3"),
+    local("MicrosoftYaHeiUI"), local("Microsoft YaHei UI"), local("MicrosoftYaHei"),
+    local("Microsoft YaHei"), local("NotoSansSC-Regular"), local("NotoSansCJKsc-Regular"),
+    local("SourceHanSansSC-Regular");
+  unicode-range:
+    U+2E80-2FDF, U+3000-303F, U+3040-30FF, U+3100-312F, U+31A0-31FF, U+3400-4DBF, U+4E00-9FFF,
+    U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF, U+20000-2FA1F;
+}
+@font-face {
+  font-family: "moc CJK";
+  font-style: normal;
+  font-weight: 510;
+  src:
+    local("PingFangSC-Regular"), local("PingFang SC Regular"), local("HiraginoSansGB-W6"),
+    local("MicrosoftYaHeiUI-Bold"), local("Microsoft YaHei UI Bold"), local("MicrosoftYaHei-Bold"),
+    local("Microsoft YaHei Bold"), local("NotoSansSC-Medium"), local("NotoSansCJKsc-Medium"),
+    local("SourceHanSansSC-Medium");
+  unicode-range:
+    U+2E80-2FDF, U+3000-303F, U+3040-30FF, U+3100-312F, U+31A0-31FF, U+3400-4DBF, U+4E00-9FFF,
+    U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF, U+20000-2FA1F;
+}
+
 :root {
   color-scheme: light;
-  --chrome: #ececec;
-  --background: #f9f9f9;
-  --foreground: #171717;
-  --panel: #f7f7f7;
+  --chrome: #ededed;
+  --background: #fcfcfc;
+  --foreground: #191919;
+  --panel: #f8f8f8;
   --card: #ffffff;
   --card-foreground: #171717;
   --popover: #ffffff;
@@ -33,46 +64,50 @@
   --secondary: #f0f0f0;
   --secondary-foreground: #171717;
   --muted: #f0f0f0;
-  --muted-foreground: #676767;
-  --accent: rgba(23, 23, 23, 0.065);
+  --muted-foreground: #616161;
+  --accent: rgba(0, 0, 0, 0.06);
   --accent-foreground: #171717;
-  --bubble: #ededed;
+  --bubble: #f0f0f0;
   --brand: #3b6ff5;
   --brand-foreground: #ffffff;
   --destructive: #dc2626;
   --success: #16a34a;
+  /* 文字用的增删色：比 success/destructive 深一档，灰托盘上也满足 AA */
+  --diff-add-fg: #167a3b;
+  --diff-del-fg: #c42020;
   --warn: #d97706;
-  --border: rgba(23, 23, 23, 0.08);
-  --border-strong: rgba(23, 23, 23, 0.14);
-  --border-subtle: rgba(23, 23, 23, 0.05);
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.13);
+  --border-subtle: rgba(0, 0, 0, 0.06);
   --input: rgba(23, 23, 23, 0.12);
   --ring: rgba(59, 111, 245, 0.45);
   --diff-insert: rgba(22, 163, 74, 0.1);
   --diff-delete: rgba(220, 38, 38, 0.09);
   --radius: 0.625rem;
-  --sidebar: #f7f7f7;
+  --sidebar: #f8f8f8;
   --sidebar-foreground: #171717;
-  --sidebar-accent: rgba(23, 23, 23, 0.07);
+  --sidebar-accent: rgba(0, 0, 0, 0.06);
   --sidebar-accent-foreground: #171717;
   --surface-raised: #ffffff;
-  --surface-hover: rgba(23, 23, 23, 0.04);
-  --text-tertiary: #737373;
-  --code-bg: #f1f1f1;
+  --surface-hover: rgba(0, 0, 0, 0.04);
+  --text-tertiary: #707070;
+  --code-bg: #f4f4f4;
   /* 行内代码/选区用半透明：叠在表格行、引用块、选区上都能自然混色，不会出现不透明色块 */
-  --inline-code-bg: rgba(23, 23, 23, 0.055);
+  --inline-code-bg: rgba(0, 0, 0, 0.045);
   --selection: rgba(59, 111, 245, 0.14);
   /* GitHub btn 质感：顶部内高光 + 底部轻投影 */
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(23, 23, 23, 0.08);
   --elevation-ring: 0 0 0 1px rgba(23, 23, 23, 0.08);
   /* composer：扁平取向，只留发丝级轮廓，不做长投影 */
-  --elevation-composer: 0 0 0 1px rgba(23, 23, 23, 0.05), 0 1px 3px rgba(23, 23, 23, 0.04);
+  --elevation-composer: 0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03);
   /* 灰托盘内的白卡：一层贴身软影把它和托盘分开，外投影交给托盘 */
-  --elevation-composer-inset: 0 1px 2px rgba(23, 23, 23, 0.05), 0 2px 8px rgba(23, 23, 23, 0.04);
+  --elevation-composer-inset:
+    0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
   /* 托盘比白卡暗一级：浅色是浅灰，深色要比卡片更深，否则层级会反过来 */
-  --composer-tray: #f4f4f5;
+  --composer-tray: #f3f3f3;
   --elevation-popover:
-    0 0 0 1px rgba(23, 23, 23, 0.09), 0 20px 42px -10px rgba(23, 23, 23, 0.2),
-    0 2px 6px rgba(23, 23, 23, 0.05);
+    0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 10px 15px -3px rgba(0, 0, 0, 0.08),
+    0 4px 6px -4px rgba(0, 0, 0, 0.05);
   /* 模态框：比 popover 更高一层，投影更长更散，仍以发丝描边勾边而非实线 border */
   --elevation-dialog:
     0 0 0 1px rgba(23, 23, 23, 0.07), 0 24px 64px -16px rgba(23, 23, 23, 0.22),
@@ -86,24 +121,26 @@
 }
 
 .dark {
+  --diff-add-fg: var(--success);
+  --diff-del-fg: var(--destructive);
   color-scheme: dark;
-  --chrome: #101011;
-  --background: #161618;
-  --foreground: #ededef;
-  --panel: #111113;
-  --card: #1c1c1f;
-  --card-foreground: #ededef;
-  --popover: #1f1f22;
-  --popover-foreground: #ededef;
-  --primary: #ededef;
-  --primary-foreground: #161618;
-  --secondary: #26262a;
-  --secondary-foreground: #ededef;
-  --muted: #222225;
-  --muted-foreground: #a0a0a8;
+  --chrome: #0f0f0f;
+  --background: #141414;
+  --foreground: #e6e6e6;
+  --panel: #141414;
+  --card: #1f1f1f;
+  --card-foreground: #e6e6e6;
+  --popover: #1f1f1f;
+  --popover-foreground: #e6e6e6;
+  --primary: #e6e6e6;
+  --primary-foreground: #141414;
+  --secondary: #262626;
+  --secondary-foreground: #e6e6e6;
+  --muted: #1f1f1f;
+  --muted-foreground: #a3a3a3;
   --accent: rgba(255, 255, 255, 0.06);
-  --accent-foreground: #ededef;
-  --bubble: #222225;
+  --accent-foreground: #e6e6e6;
+  --bubble: #232323;
   --brand: #6d97ff;
   --brand-foreground: #0b0b0c;
   --destructive: #f26161;
@@ -116,24 +153,25 @@
   --ring: rgba(109, 151, 255, 0.5);
   --diff-insert: rgba(63, 197, 111, 0.13);
   --diff-delete: rgba(242, 97, 97, 0.13);
-  --sidebar: #111113;
-  --sidebar-foreground: #ededef;
-  --sidebar-accent: rgba(255, 255, 255, 0.07);
-  --sidebar-accent-foreground: #ededef;
-  --surface-raised: #1f1f22;
+  --sidebar: #141414;
+  --sidebar-foreground: #e6e6e6;
+  --sidebar-accent: rgba(255, 255, 255, 0.06);
+  --sidebar-accent-foreground: #e6e6e6;
+  --surface-raised: #1f1f1f;
   --surface-hover: rgba(255, 255, 255, 0.045);
-  --text-tertiary: #8b8b94;
-  --code-bg: #1b1b1e;
+  --text-tertiary: #8c8c8c;
+  --code-bg: #1a1a1a;
   --inline-code-bg: rgba(255, 255, 255, 0.075);
   --selection: rgba(109, 151, 255, 0.28);
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.45);
   --elevation-ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
-  --elevation-composer: 0 0 0 1px rgba(255, 255, 255, 0.06);
-  --elevation-composer-inset: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
-  --composer-tray: #121214;
+  --elevation-composer: 0 0 0 0.5px rgba(255, 255, 255, 0.05);
+  --elevation-composer-inset:
+    0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --composer-tray: #101010;
   --elevation-popover:
-    0 0 0 1px rgba(255, 255, 255, 0.09), 0 12px 32px -6px rgba(0, 0, 0, 0.6),
-    0 2px 6px rgba(0, 0, 0, 0.3);
+    0 0 0 1px rgba(255, 255, 255, 0.08), 0 10px 15px -3px rgba(0, 0, 0, 0.64),
+    0 4px 6px -4px rgba(0, 0, 0, 0.3);
   --elevation-dialog:
     0 0 0 1px rgba(255, 255, 255, 0.09), 0 24px 64px -12px rgba(0, 0, 0, 0.7),
     0 4px 12px rgba(0, 0, 0, 0.35);
@@ -167,6 +205,8 @@
   --color-brand-foreground: var(--brand-foreground);
   --color-destructive: var(--destructive);
   --color-success: var(--success);
+  --color-diff-add-fg: var(--diff-add-fg);
+  --color-diff-del-fg: var(--diff-del-fg);
   --color-warn: var(--warn);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
@@ -202,11 +242,11 @@
   --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.06);
   --shadow-xl: 0 18px 48px -12px rgba(0, 0, 0, 0.25), 0 4px 12px rgba(0, 0, 0, 0.08);
   --font-sans:
-    "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    "Inter Variable", "moc CJK", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-mono:
-    "Geist Mono Variable", ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo,
-    Consolas, monospace;
+    ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas,
+    monospace;
   /* 字号阶梯：组件里只用这七级，不再写 text-[Npx]。新增名字须同步登记到 lib/utils.ts 的 cn。
      2xs 徽标/计数/kbd · xs 次要说明/元信息 · ui 菜单项/列表行/控件 · sm 正文/标题行
      chat 对话正文与输入框 · title 区块标题 · heading 弹窗标题 */
@@ -214,8 +254,8 @@
   --text-2xs--line-height: 16px;
   --text-ui: 13px;
   --text-ui--line-height: 20px;
-  --text-chat: 14.5px;
-  --text-chat--line-height: 1.65;
+  --text-chat: 14px;
+  --text-chat--line-height: 1.6;
   --text-title: 15px;
   --text-title--line-height: 1.4;
   --text-heading: 17px;
@@ -239,7 +279,8 @@
     font-size: 14px;
     line-height: 1.5;
     text-rendering: optimizeLegibility;
-    font-feature-settings: "ss01", "cv11";
+    /* 中文 600 档用的是钳到 wght 510 的苹方字面，禁止浏览器再叠加伪粗体。 */
+    font-synthesis-weight: none;
   }
   button,
   input,
@@ -265,9 +306,9 @@
   textarea::placeholder {
     color: var(--text-tertiary);
   }
-  /* lucide 默认 stroke-width 2 偏重；1.75 更接近主流 agent UI 的轻盈线性图标。 */
+  /* lucide 默认 stroke-width 2 偏重；1.5 在 16–20px 下约 1–1.25px 实线，接近 Devin 的细线图标。 */
   .lucide {
-    stroke-width: 1.75px;
+    stroke-width: 1.5px;
   }
 }
 
@@ -366,14 +407,14 @@
    产品化排版（对齐主流 agent UI）：标题无下边框、表格只留水平分隔线、
    无边框代码块 + 大圆角、行内代码灰底 + 发丝内描边，按 data-streamdown 标记统一收敛。 */
 .moc-prose {
-  font-size: var(--moc-prose-size, 14.5px);
-  line-height: var(--moc-prose-leading, 1.75);
+  font-size: var(--moc-prose-size, 14px);
+  line-height: var(--moc-prose-leading, 1.65);
   color: var(--moc-prose-color, var(--foreground));
   overflow-wrap: anywhere;
 }
 
 .moc-prose > * + * {
-  margin-top: 1em;
+  margin-top: 0.7em;
 }
 
 .moc-prose p {
@@ -386,21 +427,21 @@
 .moc-prose [data-streamdown="heading-4"],
 .moc-prose [data-streamdown="heading-5"],
 .moc-prose [data-streamdown="heading-6"] {
-  margin: 1.4em 0 0.6em;
+  margin: 1.25em 0 0.45em;
   font-weight: 600;
-  line-height: 1.3;
-  letter-spacing: -0.01em;
+  line-height: 1.4;
+  letter-spacing: -0.005em;
   color: var(--foreground);
 }
 
 .moc-prose [data-streamdown="heading-1"] {
-  font-size: 1.5em;
-}
-.moc-prose [data-streamdown="heading-2"] {
   font-size: 1.3em;
 }
+.moc-prose [data-streamdown="heading-2"] {
+  font-size: 1.14em;
+}
 .moc-prose [data-streamdown="heading-3"] {
-  font-size: 1.12em;
+  font-size: 1.04em;
 }
 .moc-prose [data-streamdown="heading-4"] {
   font-size: 1em;
@@ -415,8 +456,8 @@
 
 .moc-prose [data-streamdown="unordered-list"],
 .moc-prose [data-streamdown="ordered-list"] {
-  margin: 0.6em 0;
-  padding-left: 1.4em;
+  margin: 0.45em 0;
+  padding-left: 1.35em;
   list-style-position: outside;
 }
 .moc-prose [data-streamdown="unordered-list"] {
@@ -426,8 +467,8 @@
   list-style-type: decimal;
 }
 .moc-prose [data-streamdown="list-item"] {
-  margin: 0.2em 0;
-  padding-left: 0.2em;
+  margin: 0.1em 0;
+  padding-left: 0.15em;
 }
 .moc-prose [data-streamdown="list-item"]::marker {
   color: var(--text-tertiary);
@@ -449,7 +490,7 @@
 }
 
 .moc-prose [data-streamdown="link"] {
-  font-weight: 500;
+  font-weight: 450;
   color: var(--brand);
   text-decoration: none;
 }
@@ -463,11 +504,11 @@
 }
 
 .moc-prose [data-streamdown="inline-code"] {
-  padding: 0.1em 0.32em;
+  padding: 0.05em 0.3em;
   border-radius: 4px;
   background: var(--inline-code-bg);
   font-family: var(--font-mono);
-  font-size: 0.88em;
+  font-size: 0.86em;
   color: var(--foreground);
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
@@ -476,7 +517,7 @@
 .moc-prose [data-streamdown="blockquote"] {
   margin: 0.9em 0;
   padding: 0 1em;
-  border-left: 2px solid var(--text-tertiary);
+  border-left: 2px solid var(--border-strong);
   color: var(--muted-foreground);
   font-style: normal;
 }
@@ -509,7 +550,7 @@
   border: 0;
   border-radius: 0;
   border-collapse: collapse;
-  font-size: 13.5px;
+  font-size: 13px;
 }
 /* streamdown 给 thead 自带 bg-muted/80 灰底，与"只留横线"冲突，去掉 */
 .moc-prose [data-streamdown="table-header"] {
@@ -517,11 +558,11 @@
 }
 .moc-prose [data-streamdown="table-header-cell"],
 .moc-prose [data-streamdown="table-cell"] {
-  padding: 8px 20px 8px 16px;
+  padding: 7px 24px 7px 16px;
   border: 0;
   border-bottom: 1px solid var(--border-subtle);
-  font-size: 13.5px;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.55;
   vertical-align: top;
 }
 /* 表头做成弱化的列标签：中等字重、次级色，比行线稍深的一条线与数据区分开 */
@@ -550,7 +591,7 @@
   gap: 0;
   padding: 0;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--code-bg);
   overflow: hidden;
 }
@@ -583,11 +624,11 @@
   border-radius: 5px;
 }
 .moc-prose [data-streamdown="code-block-body"] {
-  padding: 14px 18px;
+  padding: 12px 16px;
   border: 0;
   border-radius: 0;
   background: transparent;
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.6;
 }
 .moc-prose [data-streamdown="code-block-body"] pre {

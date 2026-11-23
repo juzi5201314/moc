@@ -2,24 +2,7 @@
 // 正文按显示档位（隐藏 / 简略 / 完整，见 lib/tool-view.ts）露出；点标题在「完整 ↔
 // 当前档位的收起形态」之间切换。全局档位一变，行按新档位重建，手动展开随之收回。
 
-import {
-  BotIcon,
-  BrainIcon,
-  ChevronRightIcon,
-  CircleAlertIcon,
-  CodeIcon,
-  FileTextIcon,
-  GlobeIcon,
-  ImageIcon,
-  InfoIcon,
-  ListChecksIcon,
-  Loader2Icon,
-  MessageCircleQuestionIcon,
-  PencilLineIcon,
-  SearchIcon,
-  SquareTerminalIcon,
-  WrenchIcon,
-} from "lucide-react";
+import { ChevronRightIcon, CircleAlertIcon, Loader2Icon } from "lucide-react";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { MessageResponse } from "@/components/ai-elements/message";
@@ -44,7 +27,7 @@ import {
   toolHeadline,
 } from "@/lib/tool-view";
 import type { Block, ToolBlock } from "@/lib/transcript-model";
-import { type ActivityKind, activityKind, activitySnippet, activityVerb } from "@/lib/turn";
+import { activitySnippet, activityVerb } from "@/lib/turn";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type { ImageSource, JobInfo, JobResult } from "@/protocol/types";
@@ -52,29 +35,6 @@ import { reanswerAsk } from "@/store/actions";
 import { openFile } from "@/store/files";
 import { usePrefs } from "@/store/prefs";
 import { useTranscript } from "@/store/transcript";
-
-const KIND_ICON: Record<ActivityKind, ReactNode> = {
-  thinking: <BrainIcon />,
-  commands: <SquareTerminalIcon />,
-  code: <CodeIcon />,
-  read: <FileTextIcon />,
-  readImage: <ImageIcon />,
-  write: <PencilLineIcon />,
-  edit: <PencilLineIcon />,
-  search: <SearchIcon />,
-  webSearch: <GlobeIcon />,
-  webFetch: <GlobeIcon />,
-  subagents: <BotIcon />,
-  plan: <ListChecksIcon />,
-  questions: <MessageCircleQuestionIcon />,
-  tools: <WrenchIcon />,
-  showcase: <WrenchIcon />,
-};
-
-function iconFor(block: Block): ReactNode {
-  const kind = activityKind(block);
-  return kind ? KIND_ICON[kind] : <WrenchIcon />;
-}
 
 export function imageSrc(source: ImageSource): string {
   return "Url" in source
@@ -100,7 +60,6 @@ function useNow(active: boolean): number {
 
 /** 标题行：图标 · 动作 · 对象 · 次级范围 · 尾注；可展开时整行可点。 */
 function RowHeader({
-  icon,
   verb,
   target,
   scope,
@@ -117,7 +76,6 @@ function RowHeader({
   onToggle,
   onTargetClick,
 }: {
-  icon: ReactNode;
   verb: string;
   target?: string;
   onTargetClick?: () => void;
@@ -139,7 +97,7 @@ function RowHeader({
   return (
     <div
       className={cn(
-        "group/row flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-ui text-muted-foreground transition-colors",
+        "group/row flex h-7 w-full min-w-0 items-center gap-1.5 rounded-md text-left text-ui text-muted-foreground transition-colors",
         interactive && "hover:text-foreground",
         // 钉住时正文从行底滚过，需要不透明背景与层级；嵌套行不钉，避免多层叠头。
         sticky ? "sticky top-0 z-10 bg-background" : "relative",
@@ -154,14 +112,12 @@ function RowHeader({
         onClick={onToggle}
         className="absolute inset-0 rounded-md"
       />
-      <span
-        className={cn(
-          "flex size-4 shrink-0 items-center justify-center [&_svg]:size-3.5",
-          failed ? "text-destructive" : "text-text-tertiary",
-        )}
-      >
-        {failed ? <CircleAlertIcon /> : icon}
-      </span>
+      {/* 参照 Devin 活动日志：常态只留文字，图标仅在失败时出现，避免整列图标堆出机械感。 */}
+      {failed && (
+        <span className="flex size-4 shrink-0 items-center justify-center text-destructive [&_svg]:size-3.5">
+          <CircleAlertIcon />
+        </span>
+      )}
       <span
         className={cn(
           "shrink-0",
@@ -178,7 +134,7 @@ function RowHeader({
               type="button"
               className={cn(
                 "relative min-w-0 truncate text-left text-text-tertiary hover:text-foreground",
-                mono && "font-mono text-xs",
+                mono && "tabular-nums",
               )}
               title={target}
               onClick={onTargetClick}
@@ -190,18 +146,14 @@ function RowHeader({
               className={cn(
                 "min-w-0 truncate",
                 emphasized ? "text-muted-foreground" : "text-text-tertiary",
-                mono && "font-mono text-xs",
+                mono && "tabular-nums",
               )}
               title={target}
             >
               {target}
             </span>
           ))}
-        {scope && (
-          <span className="shrink-0 truncate font-mono text-2xs text-text-tertiary/70">
-            {scope}
-          </span>
-        )}
+        {scope && <span className="shrink-0 truncate text-xs text-text-tertiary/70">{scope}</span>}
       </span>
       {!inlineSuffix && action && <span className="relative shrink-0">{action}</span>}
       <span className="flex shrink-0 items-center gap-1.5">
@@ -221,7 +173,7 @@ function RowHeader({
 }
 
 function Body({ children }: { children: ReactNode }) {
-  return <div className="space-y-1.5 pt-0.5 pb-2 pl-7">{children}</div>;
+  return <div className="space-y-1.5 pt-0.5 pb-2">{children}</div>;
 }
 
 // ---------- 思考 ----------
@@ -291,7 +243,6 @@ function ReasoningRow({
   return (
     <div>
       <RowHeader
-        icon={<BrainIcon />}
         verb={streaming ? t("verb.thinking_ing") : t("verb.thinking")}
         target={body || level === "hidden" ? undefined : activitySnippet(block, 160)}
         pulse={streaming}
@@ -308,7 +259,7 @@ function ReasoningRow({
           </>
         }
       />
-      {body && <div className="border-l border-border pt-0.5 pb-2 ml-[13px] pl-[13px]">{body}</div>}
+      {body && <div className="ml-0.5 border-l border-border-subtle pt-0.5 pb-2 pl-3">{body}</div>}
     </div>
   );
 }
@@ -463,7 +414,6 @@ function ToolRow({
   return (
     <div>
       <RowHeader
-        icon={iconFor(tool)}
         verb={headline.verb ?? activityVerb(tool) ?? t("verb.tools")}
         target={headline.target}
         scope={headline.scope}
@@ -486,7 +436,7 @@ function ToolRow({
         </Body>
       )}
       {tool.children.length > 0 && (
-        <div className="ml-[13px] border-l border-border pl-2.5">
+        <div className="ml-0.5 border-l border-border-subtle pl-3">
           <NoticeScope result={tool.result}>
             {tool.children.map((child) => (
               <ToolRow key={`${child.id}:${axis}`} tool={child} axis={axis} sessionId={sessionId} />
@@ -514,7 +464,7 @@ function ToolExtras({ tool }: { tool: ToolBlock }) {
   return (
     <>
       {tool.progress && tool.progress.length > 0 && (
-        <div className="space-y-1 rounded-xl bg-code px-3 py-2 text-xs">
+        <div className="space-y-1 rounded-lg bg-code px-3 py-2 text-xs">
           {tool.progress.map((row) => (
             <div key={row.agent_id} className="flex items-center gap-2">
               {row.status === "running" || row.status === "queued" ? (
@@ -545,7 +495,7 @@ function ToolExtras({ tool }: { tool: ToolBlock }) {
               href={imageSrc(image)}
               target="_blank"
               rel="noreferrer"
-              className="overflow-hidden rounded-xl bg-code"
+              className="overflow-hidden rounded-lg bg-code"
             >
               <img
                 src={imageSrc(image)}
@@ -618,7 +568,6 @@ function ToolGroupRow({
   return (
     <div>
       <RowHeader
-        icon={iconFor(tools[0])}
         verb={verb}
         target={targets}
         mono
@@ -644,7 +593,7 @@ function ToolGroupRow({
         }
       />
       {open && (
-        <div className="ml-[13px] border-l border-border pl-2.5">
+        <div className="ml-0.5 border-l border-border-subtle pl-3">
           {tools.map((tool) => (
             <ToolRow key={`${tool.id}:${axis}`} tool={tool} axis={axis} sessionId={sessionId} />
           ))}
@@ -729,7 +678,6 @@ function JobNoticeRow({
   return (
     <div>
       <RowHeader
-        icon={<SquareTerminalIcon />}
         verb={t("act.job_notice")}
         target={job.job_id}
         failed={failed}
@@ -747,7 +695,7 @@ function JobNoticeRow({
       />
       {level !== "hidden" && (
         <Body>
-          <div className="rounded-xl bg-code px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground">
+          <div className="rounded-lg bg-code px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground">
             {lines}
             {level === "brief" && head.hidden > 0 && (
               <button
@@ -780,7 +728,6 @@ function AgentReportRow({
   return (
     <div>
       <RowHeader
-        icon={<BotIcon />}
         verb={result ? t("act.agent_result") : t("act.agent_msg")}
         target={result ? block.meta.title : block.from}
         failed={result && block.meta.status === "failed"}
@@ -795,7 +742,7 @@ function AgentReportRow({
         <Body>
           <div
             className={cn(
-              "rounded-xl bg-code px-3.5 py-2.5 text-sm",
+              "rounded-lg bg-code px-3.5 py-2.5 text-sm",
               result ? "text-foreground" : "whitespace-pre-wrap text-muted-foreground",
             )}
           >
@@ -830,7 +777,6 @@ function GoalRoundRow({
   return (
     <div>
       <RowHeader
-        icon={<BotIcon />}
         verb={t("act.goal_round", { n: block.round })}
         interactive
         open={level === "full"}
@@ -839,7 +785,7 @@ function GoalRoundRow({
       />
       {level !== "hidden" && (
         <Body>
-          <div className="rounded-xl bg-code px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground">
+          <div className="rounded-lg bg-code px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground">
             {lines}
             {level === "brief" && head.hidden > 0 && (
               <button
@@ -872,7 +818,7 @@ export function ActivityGroup({
   const tools = usePrefs((state) => state.toolDetail);
   const items = useMemo(() => groupActivity(blocks), [blocks]);
   return (
-    <div className="-mx-1.5">
+    <div>
       {items.map((item) => {
         if (item.kind === "group") {
           return (
@@ -924,7 +870,6 @@ export function ActivityGroup({
             return (
               <RowHeader
                 key={block.id}
-                icon={<InfoIcon />}
                 verb={t("verb.status")}
                 target={block.text}
                 interactive={false}

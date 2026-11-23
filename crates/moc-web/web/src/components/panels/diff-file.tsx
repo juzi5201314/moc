@@ -20,12 +20,20 @@ export function diffStats(file: ToolFileDiff): { added: number; removed: number 
   return { added, removed };
 }
 
-export function DiffStat({ added, removed }: { added: number; removed: number }) {
+export function DiffStat({
+  added,
+  removed,
+  className,
+}: {
+  added: number;
+  removed: number;
+  className?: string;
+}) {
   return (
-    <span className="shrink-0 font-mono text-2xs tabular-nums">
-      {added > 0 && <span className="text-success">+{added}</span>}
+    <span className={cn("shrink-0 font-mono text-2xs tabular-nums", className)}>
+      {added > 0 && <span className="text-diff-add-fg">+{added}</span>}
       {added > 0 && removed > 0 && " "}
-      {removed > 0 && <span className="text-destructive">-{removed}</span>}
+      {removed > 0 && <span className="text-diff-del-fg">-{removed}</span>}
     </span>
   );
 }

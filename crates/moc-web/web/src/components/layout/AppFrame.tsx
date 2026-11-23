@@ -6,9 +6,11 @@ import { useT } from "@/lib/i18n";
 import { useNarrow } from "@/lib/use-narrow";
 import { cn } from "@/lib/utils";
 import { SIDEBAR_DEFAULT, useLayout } from "@/store/layout";
+import { AppRail } from "./app-rail";
 
 type AppFrameProps = {
-  sidebar: ReactNode;
+  /** 不传时只有主舞台（如插件页），标签栏不显示折叠按钮。 */
+  sidebar?: ReactNode;
   main: ReactNode;
   rightbar: ReactNode;
 };
@@ -87,19 +89,20 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
   }, [narrow, setSidebarOverlay]);
 
   return (
-    <div className="flex h-dvh w-screen overflow-hidden bg-chrome text-foreground md:px-1 md:py-1.5">
-      {narrow ? (
+    <div className="flex h-dvh w-screen overflow-hidden bg-chrome text-foreground md:py-1.5 md:pr-1.5">
+      <AppRail hasSidebar={Boolean(sidebar)} />
+      {!sidebar ? null : narrow ? (
         sidebarVisible && (
           <>
             <button
               type="button"
               aria-label={t("layout.close_sidebar")}
-              className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-160"
+              className="fixed inset-y-0 right-0 left-[52px] z-40 bg-black/30 backdrop-blur-[1px] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-160"
               onClick={() => setSidebarOverlay(false)}
             />
             <aside
               style={{ width: SIDEBAR_DEFAULT }}
-              className="fixed inset-y-0 left-0 z-50 max-w-[calc(100%-24px)] overflow-hidden rounded-r-xl bg-sidebar shadow-[var(--elevation-popover)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-left-2 motion-safe:duration-160"
+              className="fixed inset-y-0 left-[52px] z-50 max-w-[calc(100%-76px)] overflow-hidden rounded-r-xl bg-sidebar shadow-[var(--elevation-popover)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-left-2 motion-safe:duration-160"
             >
               {sidebar}
             </aside>
@@ -129,35 +132,36 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
       <div
         className={cn(
           "relative flex min-w-0 flex-1 overflow-hidden bg-background md:rounded-r-xl",
-          !narrow && sidebarVisible ? "border-l border-border" : "md:rounded-l-xl",
+          sidebar && !narrow && sidebarVisible ? "border-l border-border" : "md:rounded-l-xl",
         )}
       >
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">{main}</main>
 
-        {rightbar &&
-          rightbarOpen &&
-          (narrow ? (
-            <>
-              <button
-                type="button"
-                aria-label={t("layout.close_inspector")}
-                className="absolute inset-0 z-30 bg-black/20 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-160"
-                onClick={() => toggleRightbar(false)}
-              />
-              <aside className="absolute inset-y-0 right-0 z-40 w-[min(420px,92%)] overflow-hidden rounded-l-xl bg-panel shadow-[var(--elevation-popover)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-right-2 motion-safe:duration-160">
-                {rightbar}
-              </aside>
-            </>
-          ) : (
-            <aside
-              style={{ width: rightbarWidth }}
-              className="relative h-full max-w-[max(320px,calc(100%-360px))] shrink-0 border-l border-border bg-panel"
-            >
-              <ResizeHandle side="right" width={rightbarWidth} onResize={setRightbarWidth} />
+        {rightbar && rightbarOpen && narrow && (
+          <>
+            <button
+              type="button"
+              aria-label={t("layout.close_inspector")}
+              className="absolute inset-0 z-30 bg-black/20 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-160"
+              onClick={() => toggleRightbar(false)}
+            />
+            <aside className="absolute inset-y-0 right-0 z-40 w-[min(420px,92%)] overflow-hidden rounded-l-xl bg-panel shadow-[var(--elevation-popover)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-right-2 motion-safe:duration-160">
               {rightbar}
             </aside>
-          ))}
+          </>
+        )}
       </div>
+
+      {/* 宽屏检查面板是窗框里独立的一张卡片，与主舞台之间留 chrome 缝隙。 */}
+      {rightbar && rightbarOpen && !narrow && (
+        <aside
+          style={{ width: rightbarWidth }}
+          className="relative ml-1 h-full max-w-[max(320px,calc(100%-560px))] shrink-0 rounded-xl bg-background shadow-[var(--elevation-ring)]"
+        >
+          <ResizeHandle side="right" width={rightbarWidth} onResize={setRightbarWidth} />
+          <div className="h-full overflow-hidden rounded-xl">{rightbar}</div>
+        </aside>
+      )}
     </div>
   );
 }

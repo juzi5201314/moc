@@ -4,7 +4,6 @@ import {
   AlertCircleIcon,
   BookmarkPlusIcon,
   CopyIcon,
-  PanelLeftOpenIcon,
   RotateCcwIcon,
   SquarePenIcon,
 } from "lucide-react";
@@ -16,7 +15,6 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { IconButton } from "@/components/common/icon-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
@@ -26,25 +24,10 @@ import {
   pgImageUrl,
   pgUploadUrl,
 } from "@/lib/image-playground-api";
-import { useNarrow } from "@/lib/use-narrow";
 import { cn } from "@/lib/utils";
 import { useImagePlayground } from "@/store/image-playground";
-import { useLayout } from "@/store/layout";
 import { formatFileSize, ImageCard } from "./image-card";
 import { PlaygroundComposer } from "./playground-composer";
-
-function SidebarToggleIfHidden() {
-  const t = useT();
-  const collapsed = useLayout((s) => s.sidebarCollapsed);
-  const overlay = useLayout((s) => s.sidebarOverlay);
-  const narrow = useNarrow();
-  if (!(narrow ? !overlay : collapsed)) return null;
-  return (
-    <IconButton label={t("hd.sidebar")} onClick={() => useLayout.getState().toggleSidebar()}>
-      <PanelLeftOpenIcon />
-    </IconButton>
-  );
-}
 
 function paramChips(params: ImageGenParams): string[] {
   const chips: string[] = [];
@@ -73,7 +56,6 @@ export function PlaygroundChatView() {
     return (
       <div className="flex h-full flex-1 flex-col">
         <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
-          <SidebarToggleIfHidden />
           <span className="text-sm font-medium text-foreground">Image Playground</span>
         </header>
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
@@ -100,7 +82,6 @@ export function PlaygroundChatView() {
     return (
       <div className="flex h-full flex-1 flex-col">
         <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
-          <SidebarToggleIfHidden />
           <span className="truncate text-sm font-medium text-foreground">{session.title}</span>
         </header>
         <div className="flex flex-1 flex-col items-center justify-center px-6 pb-12">
@@ -119,7 +100,6 @@ export function PlaygroundChatView() {
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
-        <SidebarToggleIfHidden />
         <span className="truncate text-sm font-medium text-foreground">{session.title}</span>
         <span className="ml-auto text-xs text-text-tertiary tabular-nums">
           {t("ip.turns_count", { n: session.turns.length })}

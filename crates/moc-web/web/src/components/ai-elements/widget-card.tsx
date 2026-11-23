@@ -349,7 +349,7 @@ export const WidgetCard = memo(function WidgetCard({
         )}
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        <div className="flex items-center rounded-md bg-muted p-0.5">
+        <div className="flex items-center gap-0.5">
           {(["preview", "code"] as const).map((tab) => {
             const selected = effectiveMode === tab;
             const disabled = !complete && tab === "preview";
@@ -363,9 +363,9 @@ export const WidgetCard = memo(function WidgetCard({
                   setMode(tab);
                 }}
                 className={cn(
-                  "rounded-sm px-2 py-0.5 text-xs transition-colors",
+                  "rounded-md px-2 py-0.5 text-xs transition-colors",
                   selected
-                    ? "bg-background font-medium text-foreground shadow-xs"
+                    ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                   disabled && "cursor-not-allowed opacity-45 hover:text-muted-foreground",
                 )}

@@ -1,7 +1,17 @@
 // 右侧检查面板：文件 / 终端 / 变更 / 旁路。
 // 计数徽标只保留 changes；需要远端数据的分页只在打开时拉取。
 
-import { Columns2Icon, RowsIcon, XIcon } from "lucide-react";
+import {
+  Columns2Icon,
+  FolderIcon,
+  GitCompareArrowsIcon,
+  type LucideIcon,
+  MessagesSquareIcon,
+  PanelRightIcon,
+  PlusIcon,
+  RowsIcon,
+  SquareTerminalIcon,
+} from "lucide-react";
 import { lazy, Suspense, useMemo } from "react";
 import { IconButton } from "@/components/common/icon-button";
 import { FilesTab } from "@/components/files/files-tab";
@@ -13,18 +23,22 @@ import { type InspectorTab, useLayout } from "@/store/layout";
 import { usePrefs } from "@/store/prefs";
 import { useTranscript } from "@/store/transcript";
 import { BtwTab, PanelEmpty } from "./inspector-tabs";
+import { LauncherTab } from "./launcher-tab";
 
 // 终端整页懒加载：xterm 依赖大，不进主路径。
 const TerminalTab = lazy(() =>
   import("@/components/terminal/terminal-tab").then((module) => ({ default: module.TerminalTab })),
 );
 
-const TABS: { id: InspectorTab; label: MsgKey }[] = [
-  { id: "files", label: "insp.files" },
-  { id: "terminal", label: "insp.terminal" },
-  { id: "changes", label: "insp.changes" },
-  { id: "btw", label: "insp.btw" },
+const TABS: { id: Exclude<InspectorTab, "launcher">; label: MsgKey; icon: LucideIcon }[] = [
+  { id: "files", label: "insp.files", icon: FolderIcon },
+  { id: "terminal", label: "insp.terminal", icon: SquareTerminalIcon },
+  { id: "changes", label: "insp.changes", icon: GitCompareArrowsIcon },
+  { id: "btw", label: "insp.btw", icon: MessagesSquareIcon },
 ];
+
+const TAB_CLASS =
+  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui transition-colors [&_svg]:size-3.5";
 
 export function InspectorPanel({ sessionId }: { sessionId: string }) {
   const t = useT();
@@ -37,23 +51,25 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <div className="flex h-full w-full min-w-0 flex-col bg-panel text-foreground">
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border-subtle px-2">
+    <div className="flex h-full w-full min-w-0 flex-col bg-background text-foreground">
+      <div className="flex h-11 shrink-0 items-center gap-1 px-2">
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]">
           {TABS.map((item) => {
             const count = counts[item.id] ?? 0;
+            const Icon = item.icon;
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => useLayout.getState().openInspector(item.id)}
                 className={cn(
-                  "inline-flex h-[30px] shrink-0 items-center gap-1.5 rounded-md px-2.5 text-ui transition-colors",
+                  TAB_CLASS,
                   tab === item.id
-                    ? "bg-accent font-medium text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
                 )}
               >
+                <Icon />
                 {t(item.label)}
                 {count > 0 && (
                   <span className="min-w-4 rounded-full bg-foreground/10 px-1 text-center text-2xs leading-4 tabular-nums text-muted-foreground">
@@ -63,6 +79,20 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
               </button>
             );
           })}
+          {tab === "launcher" && (
+            <span className={cn(TAB_CLASS, "bg-accent text-foreground")}>
+              <PlusIcon />
+              {t("nt.title")}
+            </span>
+          )}
+          <IconButton
+            label={t("nt.open")}
+            size="sm"
+            className="size-7 shrink-0"
+            onClick={() => useLayout.getState().openInspector("launcher")}
+          >
+            <PlusIcon />
+          </IconButton>
         </div>
         <IconButton
           label={t("insp.close")}
@@ -70,7 +100,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
           size="sm"
           onClick={() => useLayout.getState().toggleRightbar(false)}
         >
-          <XIcon />
+          <PanelRightIcon />
         </IconButton>
       </div>
 
@@ -88,6 +118,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
         )}
         {tab === "changes" && <ChangesTab sessionId={sessionId} />}
         {tab === "btw" && <BtwTab key={sessionId} sessionId={sessionId} />}
+        {tab === "launcher" && <LauncherTab key={sessionId} sessionId={sessionId} />}
       </div>
     </div>
   );
@@ -121,7 +152,7 @@ function ChangesTab({ sessionId }: { sessionId: string }) {
         <span className="text-xs font-medium text-muted-foreground">
           {t("cp.files_n", { n: files.length })}
         </span>
-        <div className="flex items-center rounded-md bg-muted p-0.5">
+        <div className="flex items-center gap-0.5">
           {(["unified", "split"] as const).map((mode) => (
             <IconButton
               key={mode}
@@ -129,7 +160,7 @@ function ChangesTab({ sessionId }: { sessionId: string }) {
               size="xs"
               active={diffMode === mode}
               onClick={() => usePrefs.getState().set({ diffMode: mode })}
-              className={cn("size-5", diffMode === mode && "bg-background shadow-xs")}
+              className="size-6"
             >
               {mode === "unified" ? <RowsIcon /> : <Columns2Icon />}
             </IconButton>

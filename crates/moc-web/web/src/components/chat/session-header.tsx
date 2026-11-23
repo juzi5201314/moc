@@ -8,7 +8,6 @@ import {
   LockIcon,
   MinimizeIcon,
   MoreHorizontalIcon,
-  PanelLeftOpenIcon,
   PanelRightIcon,
   PencilIcon,
   SquarePenIcon,
@@ -55,13 +54,6 @@ export function SidebarReveal() {
   if (!(narrow ? !overlay : collapsed)) return null;
   return (
     <div className="flex items-center gap-0.5">
-      <IconButton
-        label={t("hd.sidebar")}
-        shortcut="Ctrl B"
-        onClick={() => useLayout.getState().toggleSidebar()}
-      >
-        <PanelLeftOpenIcon />
-      </IconButton>
       <IconButton label={t("hd.new")} shortcut="Alt N" onClick={() => createQuickSession()}>
         <SquarePenIcon />
       </IconButton>
@@ -73,6 +65,9 @@ export function InspectorToggle({ sessionId }: { sessionId: string }) {
   const t = useT();
   const open = useLayout((state) => state.rightbarOpen);
   const pending = useTranscript((state) => attentionCount(state, sessionId));
+  const narrow = useNarrow();
+  // 宽屏面板打开时，开关已在面板标签条右端，主舞台不再重复一个。
+  if (open && !narrow) return null;
   return (
     <div className="relative">
       <IconButton
@@ -131,7 +126,7 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
+    <header className="flex h-12 shrink-0 items-center gap-2 px-4">
       <SidebarReveal />
 
       <div className="flex min-w-0 flex-1 items-center gap-2.5">

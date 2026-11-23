@@ -15,9 +15,9 @@ export type WidgetTokens = {
 };
 
 const DEFAULT_FONT_SANS =
-  '"Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif';
+  '"Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif';
 const DEFAULT_FONT_MONO =
-  '"Geist Mono Variable", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace';
+  'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace';
 
 const LIGHT_FALLBACK: WidgetTokens = {
   bg: "#ffffff",

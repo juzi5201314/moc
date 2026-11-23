@@ -34,6 +34,7 @@ import type {
 import { selectModels, useConnection } from "@/store/connection";
 import { refreshSideData } from "@/store/lifecycle";
 import { type Theme, usePrefs } from "@/store/prefs";
+import { allSessions, useSessions } from "@/store/sessions";
 import { useTabs } from "@/store/tabs";
 import { fieldValues, SettingRow } from "./field";
 import { writeField } from "./settings-store";
@@ -80,7 +81,7 @@ function Segmented<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div className="flex w-fit max-w-full flex-wrap rounded-lg bg-muted p-0.5 md:ml-auto">
+    <div className="flex w-fit max-w-full flex-wrap gap-0.5 md:ml-auto">
       {options.map((option) => (
         <button
           key={option.value}
@@ -89,7 +90,7 @@ function Segmented<T extends string>({
           className={cn(
             "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors",
             value === option.value
-              ? "bg-background text-foreground shadow-xs"
+              ? "bg-accent text-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
@@ -370,13 +371,21 @@ export function RolesSection({ doc }: { doc: SettingsDocument }) {
 export function PluginsOverview() {
   const t = useT();
   const active = useTabs((state) => state.active);
-  // 草稿会话在 core 里不存在：传空 id，由 core 按自身工作目录发现插件。
-  const sessionId = active && active !== "draft-session" ? active : "";
+  // plugin/list 按会话 cwd 发现插件，core 只认已存在的会话：草稿时退回最近一次会话。
+  const latest = useSessions((state) => allSessions(state)[0]?.id);
+  const sessionId = active && active !== "draft-session" ? active : (latest ?? "");
+  // 直接打开 /plugins 时握手可能还没完成，等连上再读，避免「连接已关闭」。
+  const online = useConnection((state) => state.status === "online");
   const [plugins, setPlugins] = useState<PluginInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = async (reload: boolean) => {
+    if (!sessionId) {
+      setPlugins(null);
+      return;
+    }
+    if (!online) return;
     setBusy(true);
     setError(null);
     try {
@@ -398,7 +407,7 @@ export function PluginsOverview() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: 进入分区或切换会话时读取一次
   useEffect(() => {
     void load(false);
-  }, [sessionId]);
+  }, [sessionId, online]);
 
   return (
     <section className="space-y-2">
@@ -406,13 +415,23 @@ export function PluginsOverview() {
         <h3 className="text-xs font-medium text-text-tertiary">
           {t("ss.plugins_loaded", { n: plugins?.length ?? 0 })}
         </h3>
-        <Button size="xs" variant="outline" disabled={busy} onClick={() => void load(true)}>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy || !sessionId}
+          onClick={() => void load(true)}
+        >
           {busy ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
           {t("ss.reload")}
         </Button>
       </div>
       {error && <p className="text-xs text-destructive">{error}</p>}
       <Card>
+        {!sessionId && (
+          <p className="py-6 text-center text-ui text-text-tertiary">
+            {t("ss.plugins_no_session")}
+          </p>
+        )}
         {plugins?.length === 0 && (
           <p className="py-6 text-center text-ui text-text-tertiary">{t("ss.no_plugins")}</p>
         )}

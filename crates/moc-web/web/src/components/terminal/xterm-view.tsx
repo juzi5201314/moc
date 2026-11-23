@@ -132,7 +132,8 @@ export default function XtermView({ terminal }: { terminal: PtyInfo }) {
       ]);
       if (disposed) return;
       term = new Terminal({
-        fontFamily: '"Geist Mono Variable", ui-monospace, monospace',
+        fontFamily:
+          'ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace',
         fontSize: 13,
         lineHeight: 1.35,
         cursorBlink: true,

@@ -159,8 +159,9 @@ function formatCost(value: number): string {
 }
 
 /**
- * 托盘顶部 32px 状态条：左侧有任务时显示任务进度（可展开清单），否则显示随机提示；
- * 右侧依次是本会话改动、后台子代理与会话费用，各自有值才出现。
+ * 托盘顶部 36px 状态条：左侧有任务时显示任务进度（可展开清单），右侧显示本会话改动；
+ * 没有任务但有改动时左侧显示改动汇总、右侧「查看变更」；都没有时显示随机提示。
+ * 后台子代理与会话费用始终排在最右，各自有值才出现。
  */
 export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos: TodoItem[] }) {
   const t = useT();
@@ -200,8 +201,8 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
   const agentsOpen = popoverOpen === "agents";
 
   return (
-    <div className="text-xs">
-      <div className="flex h-7 items-center gap-2 px-3.5 text-text-tertiary">
+    <div className="text-ui">
+      <div className="flex h-9 items-center gap-2 px-2.5 text-muted-foreground">
         <div className="flex min-w-0 flex-1 items-center">
           {todos.length > 0 ? (
             <button
@@ -212,7 +213,7 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
             >
               <ListChecksIcon className="size-3.5 shrink-0" />
               <span className="shrink-0 font-medium text-foreground">{t("cp.tasks")}</span>
-              <span className="shrink-0 tabular-nums text-text-tertiary">
+              <span className="shrink-0 tabular-nums text-muted-foreground">
                 {done}/{todos.length}
               </span>
               {!open && current && <span className="min-w-0 truncate">{current.task}</span>}
@@ -220,6 +221,18 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
                 className={cn("size-3 shrink-0 transition-transform", !open && "rotate-180")}
               />
             </button>
+          ) : changes.files > 0 ? (
+            <div className="flex min-w-0 items-center gap-2 px-1.5 text-sm leading-5">
+              <PencilIcon className="size-4 shrink-0 text-muted-foreground" />
+              <span className="truncate text-foreground">
+                {t("cp.files_changed", { n: changes.files })}
+              </span>
+              <DiffStat
+                added={changes.added}
+                removed={changes.removed}
+                className="font-sans text-sm"
+              />
+            </div>
           ) : (
             tip && (
               <p
@@ -227,12 +240,13 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
                 className="min-w-0 truncate px-1.5 animate-in fade-in-0 duration-300"
                 title={tip.replaceAll("`", "")}
               >
+                <span className="mr-1 font-medium">{t("cp.tips")}</span>
                 <TipText tip={tip} />
               </p>
             )
           )}
         </div>
-        {changes.files > 0 && (
+        {todos.length > 0 && changes.files > 0 && (
           <button
             type="button"
             onClick={() => inspect("changes")}
@@ -325,12 +339,12 @@ export function PendingList({
   };
 
   return (
-    <div className="mx-1 mb-1 rounded-[20px] border border-border bg-card shadow-[var(--elevation-composer-inset)]">
+    <div className="rounded-[16px] bg-card shadow-[var(--elevation-composer-inset)]">
       <button
         type="button"
         onClick={() => setCollapsed((value) => !value)}
         aria-expanded={!collapsed}
-        className="flex h-8 w-full items-center gap-1.5 rounded-[20px] px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        className="flex h-8 w-full items-center gap-1.5 rounded-[16px] px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
       >
         <span className="font-medium">{t("q.count", { n: items.length })}</span>
         <ChevronDownIcon
