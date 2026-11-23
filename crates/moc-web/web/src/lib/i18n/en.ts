@@ -827,6 +827,7 @@ export const en: Record<MsgKey, string> = {
   "sb.reconnecting": "Disconnected; retrying",
   "sb.remove_ws": "Remove from list",
   "sb.running": "Working",
+  "sb.open": "Open",
   "sb.session_actions": "Session actions",
   "sb.sessions": "Sessions",
   "sb.settings": "Settings",

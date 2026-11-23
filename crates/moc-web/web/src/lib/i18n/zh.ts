@@ -813,6 +813,7 @@ export const zh = {
   "sb.reconnecting": "连接已断开，正在重试",
   "sb.remove_ws": "从列表移除",
   "sb.running": "处理中",
+  "sb.open": "打开",
   "sb.session_actions": "会话操作",
   "sb.sessions": "会话",
   "sb.settings": "设置",

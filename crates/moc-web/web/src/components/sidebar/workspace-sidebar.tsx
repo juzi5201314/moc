@@ -1,6 +1,7 @@
 // 左侧会话栏：搜索、新会话、按目录分组的会话树，以及底部全局设置。
 
 import {
+  ArrowUpRightIcon,
   ChevronRightIcon,
   CopyIcon,
   FolderPlusIcon,
@@ -16,10 +17,17 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { type ReactNode, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { IconButton } from "@/components/common/icon-button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -52,7 +60,7 @@ const SEARCH_VISIBLE_SESSIONS = 20;
 /** 侧栏内容匹配展示的会话数上限。 */
 const SEARCH_CONTENT_ITEMS = 8;
 
-const ROW = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-ui transition-colors";
+const ROW = "flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm transition-colors";
 
 /** 状态点提示：握手错误优先于通用状态文案，版本不兼容给出双端版本与动作。 */
 function connectionTip(
@@ -212,7 +220,7 @@ export function WorkspaceSidebar() {
 
   return (
     <nav className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-sidebar text-sidebar-foreground select-none">
-      <div className="flex h-11 shrink-0 items-center justify-between gap-2 pr-2 pl-4">
+      <div className="flex h-12 shrink-0 items-center justify-between gap-2 pr-2.5 pl-5">
         <h2 className="truncate text-sm font-medium">{t("sb.sessions")}</h2>
         <div className="flex shrink-0 items-center gap-0.5">
           <IconButton
@@ -247,7 +255,7 @@ export function WorkspaceSidebar() {
               onKeyDown={(event) => event.key === "Escape" && closeSearch()}
               aria-label={t("sb.filter_ph")}
               placeholder={t("sb.filter_ph")}
-              className="min-w-0 flex-1 bg-transparent text-ui outline-none"
+              className="min-w-0 flex-1 bg-transparent text-sm outline-none"
             />
             <IconButton label={t("sb.filter_close")} size="xs" onClick={closeSearch}>
               <XIcon />
@@ -257,8 +265,8 @@ export function WorkspaceSidebar() {
       )}
 
       {/* 原生滚动容器：Radix ScrollArea 的 table 布局会让 truncate 失效 */}
-      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-2">
-        <div className="space-y-1">
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2.5 pb-3">
+        <div className="space-y-0.5">
           <NavRow
             icon={<SquarePenIcon />}
             label={t("hd.new")}
@@ -267,7 +275,7 @@ export function WorkspaceSidebar() {
           />
           <WorkflowNavRow />
         </div>
-        <div className="mt-2 flex h-8 items-center justify-between pl-2">
+        <div className="mt-4 mb-0.5 flex h-8 items-center justify-between pl-2.5">
           <span className="text-xs text-text-tertiary">{t("sb.workspaces")}</span>
           <IconButton label={t("sb.add_workspace")} onClick={addWorkspace}>
             <FolderPlusIcon />
@@ -291,7 +299,7 @@ export function WorkspaceSidebar() {
                     onClick={() => void openSession(hit.session.id)}
                     className={cn(
                       ROW,
-                      "h-auto flex-col items-start gap-0 py-1.5 pl-[26px] text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
+                      "h-auto flex-col items-start gap-0 py-2 pl-[30px] text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
                     )}
                   >
                     <span className="w-full truncate">{hit.session.title || t("hd.untitled")}</span>
@@ -315,7 +323,7 @@ export function WorkspaceSidebar() {
               const hidden = group.sessions.length - visible.length;
               const hasDraft = draft?.cwd === group.cwd;
               return (
-                <div key={group.cwd} className="mb-1">
+                <div key={group.cwd} className="mb-2">
                   <div
                     className={cn(ROW, "group/ws cursor-pointer pr-1 hover:bg-sidebar-accent")}
                     title={group.cwd}
@@ -348,14 +356,14 @@ export function WorkspaceSidebar() {
                   </div>
 
                   {!isFolded && (
-                    <div className="mt-px space-y-px">
+                    <div className="mt-0.5 space-y-0.5">
                       {hasDraft && (
                         <button
                           type="button"
                           onClick={() => useTabs.getState().add("draft-session")}
                           className={cn(
                             ROW,
-                            "pl-[26px]",
+                            "pl-[30px]",
                             active === "draft-session"
                               ? "bg-sidebar-accent text-sidebar-foreground"
                               : "text-muted-foreground hover:bg-sidebar-accent",
@@ -377,7 +385,7 @@ export function WorkspaceSidebar() {
                           onClick={() => setExpanded((state) => ({ ...state, [group.cwd]: true }))}
                           className={cn(
                             ROW,
-                            "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
+                            "pl-[30px] text-ui text-text-tertiary hover:text-foreground",
                           )}
                         >
                           {t("sb.more", { n: hidden })}
@@ -393,14 +401,14 @@ export function WorkspaceSidebar() {
                             }
                             className={cn(
                               ROW,
-                              "pl-[26px] text-xs text-text-tertiary hover:text-foreground",
+                              "pl-[30px] text-ui text-text-tertiary hover:text-foreground",
                             )}
                           >
                             {t("th.collapse")}
                           </button>
                         )}
                       {!hasDraft && group.sessions.length === 0 && (
-                        <div className="py-1.5 pl-[26px] text-xs text-text-tertiary">
+                        <div className="py-1.5 pl-[30px] text-ui text-text-tertiary">
                           {t("sb.no_sessions")}
                         </div>
                       )}
@@ -500,6 +508,16 @@ function WorkspaceMenu({ cwd, removable }: { cwd: string; removable: boolean }) 
   );
 }
 
+/** 会话行菜单项：「…」下拉与右键菜单共用一份。 */
+type SessionAction = {
+  key: string;
+  icon: ReactNode;
+  label: string;
+  onSelect: () => void;
+  destructive?: boolean;
+  separated?: boolean;
+};
+
 function SessionRow({ session, active }: { session: SessionInfo; active: boolean }) {
   const t = useT();
   const running = useTranscript((state) => Boolean(state.activity[session.id]?.running));
@@ -523,9 +541,50 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
     }
   };
 
+  const actions: SessionAction[] = [
+    {
+      key: "open",
+      icon: <ArrowUpRightIcon />,
+      label: t("sb.open"),
+      onSelect: () => void openSession(session.id),
+    },
+    {
+      key: "rename",
+      icon: <PencilIcon />,
+      label: t("hd.rename"),
+      onSelect: () => {
+        renamingFromMenu.current = true;
+      },
+    },
+    {
+      key: "copy",
+      icon: <CopyIcon />,
+      label: t("hd.copy_id"),
+      onSelect: () => {
+        void navigator.clipboard.writeText(session.id);
+        toast.success(t("hd.id_copied"));
+      },
+    },
+    {
+      key: "delete",
+      icon: <Trash2Icon />,
+      label: t("common.delete"),
+      destructive: true,
+      separated: true,
+      onSelect: () => useUi.getState().set({ confirmDelete: { id: session.id, title } }),
+    },
+  ];
+  // 等菜单关闭再挂载输入框，避免菜单的焦点管理抢回焦点。
+  const onMenuCloseAutoFocus = (event: Event) => {
+    if (!renamingFromMenu.current) return;
+    event.preventDefault();
+    renamingFromMenu.current = false;
+    setRenaming(title);
+  };
+
   if (renaming !== null) {
     return (
-      <div className={cn(ROW, "h-[30px] bg-sidebar-accent pl-[26px]")}>
+      <div className={cn(ROW, "h-12 bg-sidebar-accent pl-[30px]")}>
         <input
           // biome-ignore lint/a11y/noAutofocus: 进入重命名后立即编辑
           autoFocus
@@ -542,117 +601,114 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
             requestAnimationFrame(() => sessionButton.current?.focus());
           }}
           onBlur={commitRename}
-          className="min-w-0 flex-1 bg-transparent text-ui outline-none"
+          className="min-w-0 flex-1 bg-transparent text-sm outline-none"
         />
       </div>
     );
   }
 
+  const status = running
+    ? t("sb.running")
+    : attention
+      ? t("sb.attention")
+      : relativeTime(session.updated_at_ms);
+
   return (
-    <div
-      className={cn(
-        ROW,
-        "group/session relative h-[30px] gap-2 pr-1 pl-2.5 has-[[data-state=open]]:bg-sidebar-accent",
-        active
-          ? "bg-sidebar-accent text-sidebar-foreground"
-          : "text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground",
-      )}
-    >
-      <button
-        ref={sessionButton}
-        type="button"
-        onClick={() => void openSession(session.id)}
-        onDoubleClick={() => setRenaming(title)}
-        className="absolute inset-0 rounded-md"
-        aria-label={title}
-        title={title}
-        aria-current={active || undefined}
-      />
-      <span
-        aria-hidden="true"
-        className="pointer-events-none mt-0.5 flex size-3 shrink-0 self-center items-center justify-center"
-      >
-        {running ? (
-          <span className="size-2.5 rounded-full border border-text-tertiary/40 border-t-foreground motion-safe:animate-spin" />
-        ) : (
-          <span
-            className={cn(
-              "rounded-full",
-              attention ? "size-1.5 bg-warn" : "size-1 bg-text-tertiary/40",
-            )}
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          className={cn(
+            "group/session relative flex h-12 w-full items-center gap-2.5 rounded-lg pr-1.5 pl-3 transition-colors data-[state=open]:bg-sidebar-accent has-[[data-state=open]]:bg-sidebar-accent",
+            active ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/70",
+          )}
+        >
+          <button
+            ref={sessionButton}
+            type="button"
+            onClick={() => void openSession(session.id)}
+            onDoubleClick={() => setRenaming(title)}
+            className="absolute inset-0 rounded-lg"
+            aria-label={title}
+            title={title}
+            aria-current={active || undefined}
           />
-        )}
-      </span>
-      <span className="pointer-events-none min-w-0 flex-1 truncate text-sidebar-foreground">
-        {title}
-      </span>
-      {/* 时间与悬停操作共用行尾：悬停/聚焦/触屏时让位给「更多」按钮。 */}
-      <span
-        className={cn(
-          "pointer-events-none shrink-0 text-2xs tabular-nums group-hover/session:invisible group-focus-within/session:invisible group-has-[[data-state=open]]/session:invisible pointer-coarse:invisible",
-          attention && !running
-            ? "text-warn"
-            : active
-              ? "text-muted-foreground"
-              : "text-text-tertiary",
-        )}
-      >
-        {running
-          ? t("sb.running")
-          : attention
-            ? t("sb.attention")
-            : relativeTime(session.updated_at_ms)}
-      </span>
-      <div className="pointer-events-none absolute right-1 shrink-0 opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100 group-has-[[data-state=open]]/session:pointer-events-auto group-has-[[data-state=open]]/session:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              aria-label={t("sb.session_actions")}
-              className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <MoreHorizontalIcon className="size-3.5" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="start"
-            className="w-44"
-            onCloseAutoFocus={(event) => {
-              if (!renamingFromMenu.current) return;
-              // 等菜单关闭再挂载输入框，避免菜单的焦点管理抢回焦点。
-              event.preventDefault();
-              renamingFromMenu.current = false;
-              setRenaming(title);
-            }}
+          <span
+            aria-hidden="true"
+            className="pointer-events-none flex size-2.5 shrink-0 items-center justify-center self-start mt-[9px]"
           >
-            <DropdownMenuItem
-              onSelect={() => {
-                renamingFromMenu.current = true;
-              }}
+            {running ? (
+              <span className="size-2.5 rounded-full border border-text-tertiary/40 border-t-foreground motion-safe:animate-spin" />
+            ) : (
+              <span
+                className={cn(
+                  "rounded-full",
+                  attention ? "size-1.5 bg-warn" : "size-1 bg-text-tertiary/50",
+                )}
+              />
+            )}
+          </span>
+          <span className="pointer-events-none flex min-w-0 flex-1 flex-col group-hover/session:pr-7 group-focus-within/session:pr-7 group-has-[[data-state=open]]/session:pr-7 pointer-coarse:pr-7">
+            <span className="truncate text-sm leading-5 text-sidebar-foreground">{title}</span>
+            <span
+              className={cn(
+                "truncate text-ui leading-[18px] tabular-nums",
+                attention && !running
+                  ? "text-warn"
+                  : active
+                    ? "text-muted-foreground"
+                    : "text-text-tertiary",
+              )}
             >
-              <PencilIcon />
-              {t("hd.rename")}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => {
-                void navigator.clipboard.writeText(session.id);
-                toast.success(t("hd.id_copied"));
-              }}
+              {status}
+            </span>
+          </span>
+          <div className="pointer-events-none absolute top-1.5 right-1.5 opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100 group-has-[[data-state=open]]/session:pointer-events-auto group-has-[[data-state=open]]/session:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={t("sb.session_actions")}
+                  className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <MoreHorizontalIcon className="size-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="w-48"
+                onCloseAutoFocus={onMenuCloseAutoFocus}
+              >
+                {actions.map((action) => (
+                  <Fragment key={action.key}>
+                    {action.separated && <DropdownMenuSeparator />}
+                    <DropdownMenuItem
+                      variant={action.destructive ? "destructive" : "default"}
+                      onSelect={action.onSelect}
+                    >
+                      {action.icon}
+                      {action.label}
+                    </DropdownMenuItem>
+                  </Fragment>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-48" onCloseAutoFocus={onMenuCloseAutoFocus}>
+        {actions.map((action) => (
+          <Fragment key={action.key}>
+            {action.separated && <ContextMenuSeparator />}
+            <ContextMenuItem
+              variant={action.destructive ? "destructive" : "default"}
+              onSelect={action.onSelect}
             >
-              <CopyIcon />
-              {t("hd.copy_id")}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              variant="destructive"
-              onSelect={() => useUi.getState().set({ confirmDelete: { id: session.id, title } })}
-            >
-              <Trash2Icon />
-              {t("common.delete")}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-    </div>
+              {action.icon}
+              {action.label}
+            </ContextMenuItem>
+          </Fragment>
+        ))}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
