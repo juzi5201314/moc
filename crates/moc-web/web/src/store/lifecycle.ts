@@ -601,15 +601,35 @@ export async function compactSkills(sessionId: string, action: SkillsCompactActi
   }
 }
 
-export async function deleteSession(sessionId: string): Promise<void> {
-  await rpc.call("session/delete", { session_id: sessionId });
-  useTabs.getState().close(sessionId);
-  useTranscript.getState().drop(sessionId);
-  useSessions.getState().remove(sessionId);
+/** 删除成功后的统一收尾：关标签页、丢 transcript、从列表移除并重列。 */
+function finalizeDeleted(sessionIds: string[]): void {
+  for (const id of sessionIds) {
+    useTabs.getState().close(id);
+    useTranscript.getState().drop(id);
+    useSessions.getState().remove(id);
+  }
   void useSessions
     .getState()
     .refresh()
     .catch(() => undefined);
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await rpc.call("session/delete", { session_id: sessionId });
+  finalizeDeleted([sessionId]);
+}
+
+/**
+ * 批量删除工作区下的会话。被锁（运行中 / 其他前端持有）的会话会失败，
+ * 返回失败数量；成功的已从本地移除。
+ */
+export async function deleteSessions(sessionIds: string[]): Promise<number> {
+  const results = await Promise.allSettled(
+    sessionIds.map((id) => rpc.call("session/delete", { session_id: id })),
+  );
+  const removed = sessionIds.filter((_, index) => results[index].status === "fulfilled");
+  if (removed.length > 0) finalizeDeleted(removed);
+  return results.length - removed.length;
 }
 
 export async function renameSession(sessionId: string, title: string): Promise<void> {

@@ -549,6 +549,10 @@ export const zh = {
   "session.deleted": "会话已删除",
   "session.delete_failed": "删除会话失败：{error}",
   "session.model_read_failed": "读取会话模型失败：{error}",
+  "ws.delete_description":
+    "确定删除「{name}」下的 {n} 个会话吗？会话记录删除后无法恢复，磁盘文件不受影响。",
+  "ws.deleted": "已删除 {n} 个会话",
+  "ws.delete_partial": "已删除 {ok} 个会话，{n} 个失败",
   "files.op_failed": "操作失败：{error}",
   "files.rename_unsaved_destination":
     "无法重命名或移动：{path} 有未保存的更改，请先保存或放弃更改。",
@@ -799,6 +803,7 @@ export const zh = {
   "sb.badge_run": "{n}跑",
   "sb.content_hits": "内容匹配",
   "sb.copy_path": "复制路径",
+  "sb.delete_ws": "删除工作区",
   "sb.empty": "添加一个工作区目录开始",
   "sb.filter_close": "关闭筛选",
   "sb.filter_ph": "筛选会话与目录",

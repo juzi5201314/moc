@@ -559,6 +559,10 @@ export const en: Record<MsgKey, string> = {
   "session.deleted": "Session deleted",
   "session.delete_failed": "Failed to delete session: {error}",
   "session.model_read_failed": "Failed to read session model: {error}",
+  "ws.delete_description":
+    "Delete the {n} sessions under “{name}”? Session records cannot be recovered; files on disk are not affected.",
+  "ws.deleted": "{n} sessions deleted",
+  "ws.delete_partial": "{ok} sessions deleted; {n} failed",
   "files.op_failed": "Operation failed: {error}",
   "files.rename_unsaved_destination":
     "Cannot rename or move: {path} has unsaved changes. Save or discard them first.",
@@ -813,6 +817,7 @@ export const en: Record<MsgKey, string> = {
   "sb.badge_run": "{n} run",
   "sb.content_hits": "Content matches",
   "sb.copy_path": "Copy path",
+  "sb.delete_ws": "Delete workspace",
   "sb.empty": "Add a workspace directory to start",
   "sb.filter_close": "Close filter",
   "sb.filter_ph": "Filter sessions and directories",

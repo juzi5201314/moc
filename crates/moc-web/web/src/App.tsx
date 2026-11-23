@@ -7,6 +7,7 @@ import { WelcomeView } from "@/components/chat/welcome";
 import { ContextDialog } from "@/components/context/context-dialog";
 import { CommandPalette } from "@/components/dialogs/command-palette";
 import { DeleteSessionDialog } from "@/components/dialogs/delete-session-dialog";
+import { DeleteWorkspaceDialog } from "@/components/dialogs/delete-workspace-dialog";
 import { DoctorDialog } from "@/components/dialogs/doctor-dialog";
 import { FeaturesDialog } from "@/components/dialogs/features-dialog";
 import { JobsDialog } from "@/components/dialogs/jobs-dialog";
@@ -115,6 +116,7 @@ export function App() {
           <WorkspacePicker />
           <CommandPalette />
           <DeleteSessionDialog />
+          <DeleteWorkspaceDialog />
           {jobsSession && (
             <JobsDialog
               sessionId={jobsSession}

@@ -28,6 +28,8 @@ export type UiState = {
   modelPicker: string | null;
   /** 删除确认对话框的目标会话。 */
   confirmDelete: { id: string; title: string } | null;
+  /** 删除工作区确认对话框的目标目录。 */
+  confirmDeleteWorkspace: { cwd: string } | null;
   /** 当前打开的后台任务弹窗所属会话。 */
   jobsSession: string | null;
   /** 当前打开的实际工具列表弹窗所属会话。 */
@@ -55,6 +57,7 @@ export const useUi = create<UiState>()((set) => ({
   palette: false,
   modelPicker: null,
   confirmDelete: null,
+  confirmDeleteWorkspace: null,
   jobsSession: null,
   toolsSession: null,
   features: false,

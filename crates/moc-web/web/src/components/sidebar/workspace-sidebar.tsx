@@ -364,7 +364,11 @@ export function WorkspaceSidebar() {
                       >
                         <PlusIcon />
                       </IconButton>
-                      <WorkspaceMenu cwd={group.cwd} removable={workspaces.includes(group.cwd)} />
+                      <WorkspaceMenu
+                        cwd={group.cwd}
+                        removable={workspaces.includes(group.cwd)}
+                        sessionCount={group.sessions.length}
+                      />
                     </div>
                   </div>
 
@@ -441,7 +445,15 @@ export function WorkspaceSidebar() {
   );
 }
 
-function WorkspaceMenu({ cwd, removable }: { cwd: string; removable: boolean }) {
+function WorkspaceMenu({
+  cwd,
+  removable,
+  sessionCount,
+}: {
+  cwd: string;
+  removable: boolean;
+  sessionCount: number;
+}) {
   const t = useT();
   return (
     <DropdownMenu>
@@ -464,14 +476,24 @@ function WorkspaceMenu({ cwd, removable }: { cwd: string; removable: boolean }) 
           <CopyIcon />
           {t("sb.copy_path")}
         </DropdownMenuItem>
-        {removable && (
+        {sessionCount > 0 ? (
           <DropdownMenuItem
             variant="destructive"
-            onSelect={() => usePrefs.getState().removeWorkspace(cwd)}
+            onSelect={() => useUi.getState().set({ confirmDeleteWorkspace: { cwd } })}
           >
-            <XIcon />
-            {t("sb.remove_ws")}
+            <Trash2Icon />
+            {t("sb.delete_ws")}
           </DropdownMenuItem>
+        ) : (
+          removable && (
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => usePrefs.getState().removeWorkspace(cwd)}
+            >
+              <XIcon />
+              {t("sb.remove_ws")}
+            </DropdownMenuItem>
+          )
         )}
       </DropdownMenuContent>
     </DropdownMenu>
