@@ -571,7 +571,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         : t("cb.ph_steer")
       : inline
         ? t("cb.ph_draft")
-        : t("cb.ph_cont");
+        : "";
 
   return (
     <ComposerDock inline={inline}>

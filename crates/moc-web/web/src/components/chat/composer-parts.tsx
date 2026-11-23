@@ -159,8 +159,9 @@ function formatCost(value: number): string {
 }
 
 /**
- * 托盘顶部 32px 状态条：左侧有任务时显示任务进度（可展开清单），否则显示随机提示；
- * 右侧依次是本会话改动、后台子代理与会话费用，各自有值才出现。
+ * 托盘顶部 36px 状态条：左侧有任务时显示任务进度（可展开清单），右侧显示本会话改动；
+ * 没有任务但有改动时左侧显示改动汇总、右侧「查看变更」；都没有时显示随机提示。
+ * 后台子代理与会话费用始终排在最右，各自有值才出现。
  */
 export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos: TodoItem[] }) {
   const t = useT();
@@ -220,6 +221,14 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
                 className={cn("size-3 shrink-0 transition-transform", !open && "rotate-180")}
               />
             </button>
+          ) : changes.files > 0 ? (
+            <div className="flex min-w-0 items-center gap-1.5 px-1.5 text-muted-foreground">
+              <PencilIcon className="size-3.5 shrink-0" />
+              <span className="truncate text-foreground">
+                {t("cp.files_changed", { n: changes.files })}
+              </span>
+              <DiffStat added={changes.added} removed={changes.removed} />
+            </div>
           ) : (
             tip && (
               <p
@@ -227,12 +236,22 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
                 className="min-w-0 truncate px-1.5 animate-in fade-in-0 duration-300"
                 title={tip.replaceAll("`", "")}
               >
+                <span className="mr-1 text-muted-foreground">{t("cp.tips")}</span>
                 <TipText tip={tip} />
               </p>
             )
           )}
         </div>
-        {changes.files > 0 && (
+        {todos.length === 0 && changes.files > 0 && (
+          <button
+            type="button"
+            onClick={() => inspect("changes")}
+            className="h-6 shrink-0 rounded-md px-1.5 text-brand transition-colors hover:text-brand/80"
+          >
+            {t("cp.view_changes")}
+          </button>
+        )}
+        {todos.length > 0 && changes.files > 0 && (
           <button
             type="button"
             onClick={() => inspect("changes")}
