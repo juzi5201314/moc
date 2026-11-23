@@ -188,7 +188,7 @@ export function ConnectionBadge() {
           moc
         </span>
       </TooltipTrigger>
-      <TooltipContent side="top">
+      <TooltipContent side="right" align="end" className="pointer-events-none">
         {connectionTip(status, handshakeError, everOnline, server)}
       </TooltipContent>
     </Tooltip>
