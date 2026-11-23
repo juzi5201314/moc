@@ -488,13 +488,13 @@
   border-top: 1px solid var(--border-subtle);
 }
 
-/* 表格：一张发丝描边的圆角卡片，行间不画线；表头弱化为次级色列标签。 */
+/* 表格：只留水平分隔线——表头下划常规发丝线、行下划更淡的发丝线、首末列贴边。 */
 .moc-prose [data-streamdown="table-wrapper"] {
   margin: 1em 0;
   gap: 0;
-  padding: 6px 16px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   background: transparent;
   overflow-x: auto;
 }
@@ -505,34 +505,38 @@
   background: transparent;
 }
 .moc-prose [data-streamdown="table"] {
-  width: 100%;
+  width: max-content;
+  max-width: 100%;
   border: 0;
   border-radius: 0;
   border-collapse: collapse;
   font-size: 13px;
 }
-/* streamdown 给 thead 自带 bg-muted/80 灰底、thead/tbody/tr 带 divide-y 分隔线，一并去掉 */
+/* streamdown 给 thead 自带 bg-muted/80 灰底，与"只留横线"冲突，去掉 */
 .moc-prose [data-streamdown="table-header"] {
   background: transparent;
 }
-.moc-prose [data-streamdown="table"] > *,
-.moc-prose [data-streamdown="table-header"] > *,
-.moc-prose [data-streamdown="table-body"] > * {
-  border-width: 0;
-}
 .moc-prose [data-streamdown="table-header-cell"],
 .moc-prose [data-streamdown="table-cell"] {
-  padding: 8px 24px 8px 0;
+  padding: 7px 24px 7px 16px;
   border: 0;
+  border-bottom: 1px solid var(--border-subtle);
   font-size: 13px;
   line-height: 1.55;
   vertical-align: top;
 }
+/* 表头做成弱化的列标签：中等字重、次级色，比行线稍深的一条线与数据区分开 */
 .moc-prose [data-streamdown="table-header-cell"] {
+  padding-block: 6px;
+  border-bottom-color: var(--border);
   font-size: 12.5px;
   font-weight: 500;
   color: var(--muted-foreground);
   text-align: left;
+}
+.moc-prose [data-streamdown="table-header-cell"]:first-child,
+.moc-prose [data-streamdown="table-cell"]:first-child {
+  padding-left: 0;
 }
 .moc-prose [data-streamdown="table-header-cell"]:last-child,
 .moc-prose [data-streamdown="table-cell"]:last-child {
