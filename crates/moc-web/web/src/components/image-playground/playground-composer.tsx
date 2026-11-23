@@ -182,8 +182,7 @@ export function PlaygroundComposer({
       onDrop={onDrop}
       className={cn(
         "relative",
-        !inline &&
-          "rounded-[22px] bg-[var(--composer-tray)] p-1 shadow-[var(--elevation-composer)]",
+        !inline && "rounded-[22px] bg-[var(--composer-tray)] p-1.5",
         dragging && "ring-2 ring-brand/40",
       )}
     >
@@ -194,7 +193,7 @@ export function PlaygroundComposer({
           if (e.target === e.currentTarget) textareaRef.current?.focus();
         }}
         className={cn(
-          "relative rounded-[20px] border border-border bg-card transition-shadow",
+          "relative rounded-2xl bg-card transition-shadow",
           !inline && "shadow-[var(--elevation-composer-inset)]",
         )}
       >

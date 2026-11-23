@@ -200,8 +200,8 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
   const agentsOpen = popoverOpen === "agents";
 
   return (
-    <div className="text-xs">
-      <div className="flex h-7 items-center gap-2 px-3.5 text-text-tertiary">
+    <div className="text-ui">
+      <div className="flex h-9 items-center gap-2 px-4 text-text-tertiary">
         <div className="flex min-w-0 flex-1 items-center">
           {todos.length > 0 ? (
             <button
@@ -325,12 +325,12 @@ export function PendingList({
   };
 
   return (
-    <div className="mx-1 mb-1 rounded-[20px] border border-border bg-card shadow-[var(--elevation-composer-inset)]">
+    <div className="rounded-2xl bg-card shadow-[var(--elevation-composer-inset)]">
       <button
         type="button"
         onClick={() => setCollapsed((value) => !value)}
         aria-expanded={!collapsed}
-        className="flex h-8 w-full items-center gap-1.5 rounded-[20px] px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        className="flex h-8 w-full items-center gap-1.5 rounded-2xl px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
       >
         <span className="font-medium">{t("q.count", { n: items.length })}</span>
         <ChevronDownIcon
