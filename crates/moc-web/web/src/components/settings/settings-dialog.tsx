@@ -182,7 +182,7 @@ const LOCAL_SECTIONS: Partial<Record<SettingsSection, true>> = {
   image_playground: true,
 };
 
-function SaveStatus() {
+export function SaveStatus() {
   const t = useT();
   const saving = useSettings((state) => state.saving);
   const savedAt = useSettings((state) => state.savedAt);
@@ -210,7 +210,7 @@ function SaveStatus() {
   );
 }
 
-function ScopeSwitch({ doc }: { doc?: SettingsDocument }) {
+export function ScopeSwitch({ doc }: { doc?: SettingsDocument }) {
   const t = useT();
   const scope = useSettings((state) => state.scope);
   return (

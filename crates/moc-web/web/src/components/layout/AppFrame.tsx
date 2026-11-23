@@ -6,9 +6,11 @@ import { useT } from "@/lib/i18n";
 import { useNarrow } from "@/lib/use-narrow";
 import { cn } from "@/lib/utils";
 import { SIDEBAR_DEFAULT, useLayout } from "@/store/layout";
+import { AppRail } from "./app-rail";
 
 type AppFrameProps = {
-  sidebar: ReactNode;
+  /** 不传时只有主舞台（如插件页），标签栏不显示折叠按钮。 */
+  sidebar?: ReactNode;
   main: ReactNode;
   rightbar: ReactNode;
 };
@@ -87,8 +89,9 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
   }, [narrow, setSidebarOverlay]);
 
   return (
-    <div className="flex h-dvh w-screen overflow-hidden bg-chrome text-foreground md:px-1 md:py-1.5">
-      {narrow ? (
+    <div className="flex h-dvh w-screen overflow-hidden bg-chrome text-foreground md:py-1.5 md:pr-1.5">
+      <AppRail hasSidebar={Boolean(sidebar)} />
+      {!sidebar ? null : narrow ? (
         sidebarVisible && (
           <>
             <button
@@ -129,7 +132,7 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
       <div
         className={cn(
           "relative flex min-w-0 flex-1 overflow-hidden bg-background md:rounded-r-xl",
-          !narrow && sidebarVisible ? "border-l border-border" : "md:rounded-l-xl",
+          sidebar && !narrow && sidebarVisible ? "border-l border-border" : "md:rounded-l-xl",
         )}
       >
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">{main}</main>

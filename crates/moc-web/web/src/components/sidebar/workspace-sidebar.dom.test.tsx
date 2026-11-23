@@ -13,7 +13,7 @@ afterEach(() => {
   useUi.setState({ settings: initialSettings });
 });
 
-it("会话栏内可打开搜索、设置及插件，并在退出搜索后恢复焦点", () => {
+it("会话栏内可打开搜索，并在退出搜索后恢复焦点", () => {
   const sidebar = render(
     <TooltipProvider>
       <WorkspaceSidebar />
@@ -28,12 +28,6 @@ it("会话栏内可打开搜索、设置及插件，并在退出搜索后恢复�
   expect(document.activeElement).toBe(search);
   fireEvent.click(search);
   expect(sidebar.getByRole("textbox", { name: "筛选会话与目录" })).toHaveProperty("value", "");
-
-  fireEvent.click(sidebar.getByRole("button", { name: "插件" }));
-  expect(useUi.getState().settings).toEqual({ open: true, section: "plugins" });
-  fireEvent.click(sidebar.getByRole("button", { name: "设置" }));
-  expect(useUi.getState().settings.open).toBe(true);
-  expect(useUi.getState().settings.section).toBeUndefined();
 });
 
 it("空 workflow 侧栏正常挂载，徽标变化后仍能更新", () => {

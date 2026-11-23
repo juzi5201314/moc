@@ -5,14 +5,10 @@ import {
   ChevronRightIcon,
   CopyIcon,
   FolderPlusIcon,
-  ImageIcon,
   MoreHorizontalIcon,
-  PanelLeftCloseIcon,
   PencilIcon,
   PlusIcon,
-  PuzzleIcon,
   SearchIcon,
-  SettingsIcon,
   SquarePenIcon,
   Trash2Icon,
   XIcon,
@@ -44,13 +40,12 @@ import { ErrorCode, type RpcError } from "@/protocol/errors";
 import type { ConnectionStatus } from "@/protocol/rpc";
 import { type InitializeResult, PROTOCOL_VERSION, type SessionInfo } from "@/protocol/types";
 import { useConnection } from "@/store/connection";
-import { useLayout } from "@/store/layout";
 import { createQuickSession, openSession, renameSession } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
 import { allSessions, groupWorkspaces, useSessions } from "@/store/sessions";
 import { useTabs } from "@/store/tabs";
 import { attentionCount, useTranscript } from "@/store/transcript";
-import { openSettings, useUi } from "@/store/ui";
+import { useUi } from "@/store/ui";
 import { selectWorkflowBadges, useWorkflow, workflowRuns } from "@/store/workflow";
 
 /** 每个工作区默认展示的会话数；更多的折叠在「显示更多」后面。 */
@@ -170,6 +165,36 @@ function NavRow({
   );
 }
 
+/** 侧栏底部的连接状态：绿点 + moc，悬停给出连接详情。 */
+export function ConnectionBadge() {
+  const status = useConnection((state) => state.status);
+  const server = useConnection((state) => state.server);
+  const handshakeError = useConnection((state) => state.handshakeError);
+  const everOnline = useConnection((state) => state.everOnline);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex h-7 items-center gap-2 text-sm font-medium text-sidebar-foreground">
+          <span
+            className={cn(
+              "size-2 rounded-full",
+              status === "online"
+                ? "bg-success"
+                : status === "connecting"
+                  ? "animate-pulse bg-warn"
+                  : "bg-destructive",
+            )}
+          />
+          moc
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        {connectionTip(status, handshakeError, everOnline, server)}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function WorkspaceSidebar() {
   const t = useT();
   const list = useSessions((state) => state.list);
@@ -177,10 +202,6 @@ export function WorkspaceSidebar() {
   const workspaces = usePrefs((state) => state.workspaces);
   const draft = useSessions((state) => state.draftSession);
   const active = useTabs((state) => state.active);
-  const status = useConnection((state) => state.status);
-  const server = useConnection((state) => state.server);
-  const handshakeError = useConnection((state) => state.handshakeError);
-  const everOnline = useConnection((state) => state.everOnline);
 
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -232,14 +253,6 @@ export function WorkspaceSidebar() {
             onClick={() => (searching ? closeSearch() : setSearching(true))}
           >
             <SearchIcon />
-          </IconButton>
-          <IconButton
-            label={t("layout.close_sidebar")}
-            shortcut="Ctrl B"
-            size="md"
-            onClick={() => useLayout.getState().toggleSidebar()}
-          >
-            <PanelLeftCloseIcon />
           </IconButton>
         </div>
       </div>
@@ -421,51 +434,8 @@ export function WorkspaceSidebar() {
         )}
       </div>
 
-      <div className="flex h-11 shrink-0 items-center justify-between border-t border-border-subtle pr-2 pl-4">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex h-6 items-center gap-2 text-xs font-medium text-muted-foreground">
-              <span
-                className={cn(
-                  "size-2 rounded-full",
-                  status === "online"
-                    ? "bg-success"
-                    : status === "connecting"
-                      ? "animate-pulse bg-warn"
-                      : "bg-destructive",
-                )}
-              />
-              moc
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            {connectionTip(status, handshakeError, everOnline, server)}
-          </TooltipContent>
-        </Tooltip>
-        <div className="flex items-center gap-0.5">
-          <IconButton
-            label="Image Playground"
-            side="top"
-            size="md"
-            onClick={() => {
-              window.history.pushState(null, "", "/image-playground");
-              window.dispatchEvent(new PopStateEvent("popstate"));
-            }}
-          >
-            <ImageIcon />
-          </IconButton>
-          <IconButton
-            label={t("sd.plugins")}
-            side="top"
-            size="md"
-            onClick={() => openSettings("plugins")}
-          >
-            <PuzzleIcon />
-          </IconButton>
-          <IconButton label={t("sb.settings")} side="top" size="md" onClick={() => openSettings()}>
-            <SettingsIcon />
-          </IconButton>
-        </div>
+      <div className="flex h-12 shrink-0 items-center pr-2.5 pl-5">
+        <ConnectionBadge />
       </div>
     </nav>
   );

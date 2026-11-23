@@ -829,6 +829,8 @@ export const en: Record<MsgKey, string> = {
   "sb.running": "Working",
   "sb.open": "Open",
   "sb.session_actions": "Session actions",
+  "rail.label": "Pages",
+  "rail.image": "Image Playground",
   "sb.sessions": "Sessions",
   "sb.settings": "Settings",
   "sb.unknown": "unknown",

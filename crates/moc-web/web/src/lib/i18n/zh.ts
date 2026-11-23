@@ -815,6 +815,8 @@ export const zh = {
   "sb.running": "处理中",
   "sb.open": "打开",
   "sb.session_actions": "会话操作",
+  "rail.label": "页面",
+  "rail.image": "Image Playground",
   "sb.sessions": "会话",
   "sb.settings": "设置",
   "sb.unknown": "未知",

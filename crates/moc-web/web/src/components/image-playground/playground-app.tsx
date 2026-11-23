@@ -24,7 +24,7 @@ import { PlaygroundFavoritesView } from "./playground-favorites";
 import { PlaygroundGalleryView } from "./playground-gallery";
 import { PlaygroundSidebar } from "./playground-sidebar";
 
-export default function ImagePlaygroundApp({ onBackToAgent }: { onBackToAgent: () => void }) {
+export default function ImagePlaygroundApp() {
   const t = useT();
   const view = useImagePlayground((s) => s.view);
   const bootstrap = useImagePlayground((s) => s.bootstrap);
@@ -69,7 +69,7 @@ export default function ImagePlaygroundApp({ onBackToAgent }: { onBackToAgent: (
   return (
     <>
       <AppFrame
-        sidebar={<PlaygroundSidebar onBackToAgent={onBackToAgent} />}
+        sidebar={<PlaygroundSidebar />}
         main={
           view === "gallery" ? (
             <PlaygroundGalleryView />

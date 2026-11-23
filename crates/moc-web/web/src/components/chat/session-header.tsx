@@ -8,7 +8,6 @@ import {
   LockIcon,
   MinimizeIcon,
   MoreHorizontalIcon,
-  PanelLeftOpenIcon,
   PanelRightIcon,
   PencilIcon,
   SquarePenIcon,
@@ -55,13 +54,6 @@ export function SidebarReveal() {
   if (!(narrow ? !overlay : collapsed)) return null;
   return (
     <div className="flex items-center gap-0.5">
-      <IconButton
-        label={t("hd.sidebar")}
-        shortcut="Ctrl B"
-        onClick={() => useLayout.getState().toggleSidebar()}
-      >
-        <PanelLeftOpenIcon />
-      </IconButton>
       <IconButton label={t("hd.new")} shortcut="Alt N" onClick={() => createQuickSession()}>
         <SquarePenIcon />
       </IconButton>
