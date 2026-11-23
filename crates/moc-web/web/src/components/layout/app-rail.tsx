@@ -43,7 +43,7 @@ function RailButton({
           aria-pressed={pressed}
           onClick={onClick}
           className={cn(
-            "flex size-9 items-center justify-center rounded-[10px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-[18px]",
+            "flex size-9 items-center justify-center rounded-[10px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-5",
             active || pressed
               ? "bg-black/[0.07] text-foreground dark:bg-white/[0.09]"
               : "text-muted-foreground hover:bg-black/[0.045] hover:text-foreground dark:hover:bg-white/[0.06]",

@@ -18,6 +18,37 @@
    强调色只出现在选中、链接、进行中，其余一律灰阶。
    ========================================================================= */
 
+/* 中文字重：系统中文字体只有少数几档，500/600 会落到 Medium/Bold，比 Inter 同字重粗得多。
+   这里给 CJK 字符单独声明两档：400 与 560。按 CSS 字重匹配规则，≤500 落到 400（Regular），
+   ≥600 落到 510（苹方是可变字体，从 Regular 字面钳到 wght 510，约等于 Medium；雅黑等非可变字体用 Bold 字面），
+   让中文靠清晰而不是笔画粗细来分层。拉丁字母仍走 Inter。 */
+@font-face {
+  font-family: "moc CJK";
+  font-style: normal;
+  font-weight: 400;
+  src:
+    local("PingFangSC-Regular"), local("PingFang SC Regular"), local("HiraginoSansGB-W3"),
+    local("MicrosoftYaHeiUI"), local("Microsoft YaHei UI"), local("MicrosoftYaHei"),
+    local("Microsoft YaHei"), local("NotoSansSC-Regular"), local("NotoSansCJKsc-Regular"),
+    local("SourceHanSansSC-Regular");
+  unicode-range:
+    U+2E80-2FDF, U+3000-303F, U+3040-30FF, U+3100-312F, U+31A0-31FF, U+3400-4DBF, U+4E00-9FFF,
+    U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF, U+20000-2FA1F;
+}
+@font-face {
+  font-family: "moc CJK";
+  font-style: normal;
+  font-weight: 510;
+  src:
+    local("PingFangSC-Regular"), local("PingFang SC Regular"), local("HiraginoSansGB-W6"),
+    local("MicrosoftYaHeiUI-Bold"), local("Microsoft YaHei UI Bold"), local("MicrosoftYaHei-Bold"),
+    local("Microsoft YaHei Bold"), local("NotoSansSC-Medium"), local("NotoSansCJKsc-Medium"),
+    local("SourceHanSansSC-Medium");
+  unicode-range:
+    U+2E80-2FDF, U+3000-303F, U+3040-30FF, U+3100-312F, U+31A0-31FF, U+3400-4DBF, U+4E00-9FFF,
+    U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF, U+20000-2FA1F;
+}
+
 :root {
   color-scheme: light;
   --chrome: #ededed;
@@ -211,7 +242,7 @@
   --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.06);
   --shadow-xl: 0 18px 48px -12px rgba(0, 0, 0, 0.25), 0 4px 12px rgba(0, 0, 0, 0.08);
   --font-sans:
-    "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Inter Variable", "moc CJK", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-mono:
     ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas,
@@ -248,6 +279,8 @@
     font-size: 14px;
     line-height: 1.5;
     text-rendering: optimizeLegibility;
+    /* 中文 600 档用的是钳到 wght 510 的苹方字面，禁止浏览器再叠加伪粗体。 */
+    font-synthesis-weight: none;
   }
   button,
   input,
@@ -273,9 +306,9 @@
   textarea::placeholder {
     color: var(--text-tertiary);
   }
-  /* lucide 默认 stroke-width 2 偏重；1.75 更接近主流 agent UI 的轻盈线性图标。 */
+  /* lucide 默认 stroke-width 2 偏重；1.5 在 16–20px 下约 1–1.25px 实线，接近 Devin 的细线图标。 */
   .lucide {
-    stroke-width: 1.75px;
+    stroke-width: 1.5px;
   }
 }
 

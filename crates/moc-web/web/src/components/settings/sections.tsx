@@ -81,7 +81,7 @@ function Segmented<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div className="flex w-fit max-w-full flex-wrap rounded-lg bg-muted p-0.5 md:ml-auto">
+    <div className="flex w-fit max-w-full flex-wrap gap-0.5 md:ml-auto">
       {options.map((option) => (
         <button
           key={option.value}
@@ -90,7 +90,7 @@ function Segmented<T extends string>({
           className={cn(
             "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors",
             value === option.value
-              ? "bg-background text-foreground shadow-xs"
+              ? "bg-accent text-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
@@ -374,6 +374,8 @@ export function PluginsOverview() {
   // plugin/list 按会话 cwd 发现插件，core 只认已存在的会话：草稿时退回最近一次会话。
   const latest = useSessions((state) => allSessions(state)[0]?.id);
   const sessionId = active && active !== "draft-session" ? active : (latest ?? "");
+  // 直接打开 /plugins 时握手可能还没完成，等连上再读，避免「连接已关闭」。
+  const online = useConnection((state) => state.status === "online");
   const [plugins, setPlugins] = useState<PluginInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -383,6 +385,7 @@ export function PluginsOverview() {
       setPlugins(null);
       return;
     }
+    if (!online) return;
     setBusy(true);
     setError(null);
     try {
@@ -404,7 +407,7 @@ export function PluginsOverview() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: 进入分区或切换会话时读取一次
   useEffect(() => {
     void load(false);
-  }, [sessionId]);
+  }, [sessionId, online]);
 
   return (
     <section className="space-y-2">

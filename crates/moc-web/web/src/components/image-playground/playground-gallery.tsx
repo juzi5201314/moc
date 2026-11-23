@@ -38,16 +38,16 @@ export function PlaygroundGalleryView() {
         <span className="font-mono text-xs tabular-nums text-text-tertiary">{items.length}</span>
 
         <div className="ml-auto flex items-center gap-2">
-          <div className="flex rounded-lg bg-muted p-0.5">
+          <div className="flex gap-0.5">
             {(["all", "animated"] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
                 onClick={() => setFilter(mode)}
                 className={cn(
-                  "h-6 rounded-md px-2 text-xs transition-colors",
+                  "h-7 rounded-lg px-2.5 text-xs transition-colors",
                   filter === mode
-                    ? "bg-background text-foreground shadow-xs"
+                    ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >

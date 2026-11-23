@@ -152,7 +152,7 @@ function ChangesTab({ sessionId }: { sessionId: string }) {
         <span className="text-xs font-medium text-muted-foreground">
           {t("cp.files_n", { n: files.length })}
         </span>
-        <div className="flex items-center rounded-md bg-muted p-0.5">
+        <div className="flex items-center gap-0.5">
           {(["unified", "split"] as const).map((mode) => (
             <IconButton
               key={mode}
@@ -160,7 +160,7 @@ function ChangesTab({ sessionId }: { sessionId: string }) {
               size="xs"
               active={diffMode === mode}
               onClick={() => usePrefs.getState().set({ diffMode: mode })}
-              className={cn("size-5", diffMode === mode && "bg-background shadow-xs")}
+              className="size-6"
             >
               {mode === "unified" ? <RowsIcon /> : <Columns2Icon />}
             </IconButton>
