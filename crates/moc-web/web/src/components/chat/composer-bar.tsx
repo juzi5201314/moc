@@ -614,7 +614,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               if (event.target === event.currentTarget) textareaRef.current?.focus();
             }}
             className={cn(
-              "relative rounded-2xl bg-card shadow-[var(--elevation-composer-inset)] transition-shadow",
+              "relative rounded-[16px] bg-card shadow-[var(--elevation-composer-inset)] transition-shadow",
               bashMode && "ring-1 ring-inset ring-warn/50",
             )}
           >

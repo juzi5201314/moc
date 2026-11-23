@@ -193,7 +193,7 @@ export function PlaygroundComposer({
           if (e.target === e.currentTarget) textareaRef.current?.focus();
         }}
         className={cn(
-          "relative rounded-2xl bg-card transition-shadow",
+          "relative rounded-[16px] bg-card transition-shadow",
           !inline && "shadow-[var(--elevation-composer-inset)]",
         )}
       >

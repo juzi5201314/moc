@@ -344,12 +344,12 @@ export function PendingList({
   };
 
   return (
-    <div className="rounded-2xl bg-card shadow-[var(--elevation-composer-inset)]">
+    <div className="rounded-[16px] bg-card shadow-[var(--elevation-composer-inset)]">
       <button
         type="button"
         onClick={() => setCollapsed((value) => !value)}
         aria-expanded={!collapsed}
-        className="flex h-8 w-full items-center gap-1.5 rounded-2xl px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        className="flex h-8 w-full items-center gap-1.5 rounded-[16px] px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
       >
         <span className="font-medium">{t("q.count", { n: items.length })}</span>
         <ChevronDownIcon
