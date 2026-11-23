@@ -246,7 +246,7 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
           <button
             type="button"
             onClick={() => inspect("changes")}
-            className="h-6 shrink-0 rounded-md px-1.5 text-link transition-colors hover:text-link/80"
+            className="h-6 shrink-0 rounded-md px-1.5 text-link underline-offset-2 transition-colors hover:underline"
           >
             {t("cp.view_changes")}
           </button>
