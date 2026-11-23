@@ -60,6 +60,9 @@ pub struct RawServerSpec {
     pub headers: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// 覆盖全局 `connect_timeout_secs` 的单 server 握手/列工具时限。
+    #[serde(default)]
+    pub connect_timeout_secs: Option<u64>,
     /// 覆盖全局 `call_timeout_secs` 的单 server 调用时限。
     #[serde(default)]
     pub timeout_secs: Option<u64>,
@@ -147,6 +150,30 @@ pub enum Transport {
         url: String,
         headers: BTreeMap<String, String>,
     },
+}
+
+impl Transport {
+    /// 传输类型的稳定短名（`stdio` / `http`）。
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Stdio { .. } => "stdio",
+            Self::Http { .. } => "http",
+        }
+    }
+
+    /// 供状态面板展示的目标摘要（命令或 URL）。
+    pub fn target_summary(&self) -> String {
+        match self {
+            Self::Stdio { command, args, .. } => {
+                if args.is_empty() {
+                    command.clone()
+                } else {
+                    format!("{command} {}", args.join(" "))
+                }
+            }
+            Self::Http { url, .. } => url.clone(),
+        }
+    }
 }
 
 /// 解析完成的单个 server 配置。
@@ -360,6 +387,21 @@ pub fn resolve_server(
         )));
     }
 
+    let connect_timeout_secs = spec
+        .connect_timeout_secs
+        .unwrap_or(global_connect_timeout_secs);
+    if connect_timeout_secs == 0 {
+        return Err(McpError::Config(format!(
+            "server `{name}` connect_timeout_secs must be greater than 0"
+        )));
+    }
+    let call_timeout_secs = spec.timeout_secs.unwrap_or(global_call_timeout_secs);
+    if call_timeout_secs == 0 {
+        return Err(McpError::Config(format!(
+            "server `{name}` timeout_secs must be greater than 0"
+        )));
+    }
+
     let kind = spec.kind.as_deref().map(str::to_ascii_lowercase);
     let transport = match (&spec.command, &spec.url, kind.as_deref()) {
         (Some(_), _, Some("http" | "sse" | "remote")) => {
@@ -410,8 +452,8 @@ pub fn resolve_server(
             Some(filter) => filter.compile()?,
             None => None,
         },
-        connect_timeout_secs: global_connect_timeout_secs,
-        call_timeout_secs: spec.timeout_secs.unwrap_or(global_call_timeout_secs),
+        connect_timeout_secs,
+        call_timeout_secs,
         max_concurrent_calls,
     })
 }

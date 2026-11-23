@@ -2971,6 +2971,7 @@ dependencies = [
  "futures-util",
  "globset",
  "http",
+ "libc",
  "parking_lot",
  "reqwest",
  "rmcp",

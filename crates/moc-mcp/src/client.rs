@@ -4,11 +4,13 @@
 //! 测试由此可以注入内存 transport 而无需拉起真实子进程。
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::future::BoxFuture;
+use parking_lot::Mutex;
 use rmcp::ClientServiceExt;
 use rmcp::handler::client::ClientHandler;
 use rmcp::model::{
@@ -30,6 +32,11 @@ pub(crate) type Connection = RunningService<RoleClient, ClientHandlerBridge>;
 /// 建立一条新连接的异步闭包；监督任务在每次（重）连接时调用。
 pub(crate) type ConnectFuture = BoxFuture<'static, Result<Connection, McpError>>;
 pub(crate) type Connector = Arc<dyn Fn(mpsc::Sender<()>) -> ConnectFuture + Send + Sync>;
+/// stdio server 最近的 stderr 尾部缓冲（有界环形队列，供状态诊断展示）。
+pub(crate) type StderrTail = Arc<Mutex<VecDeque<String>>>;
+
+const MAX_STDERR_TAIL_LINES: usize = 8;
+const MAX_STDERR_TAIL_CHARS: usize = 240;
 
 /// 客户端 handler：只做两件事——自报身份、把 `tools/list_changed` 转发出去。
 pub(crate) struct ClientHandlerBridge {
@@ -97,12 +104,28 @@ impl ClientHandler for ClientHandlerBridge {
 }
 
 /// 按配置构建真实的 stdio / streamable HTTP 连接器。
-pub(crate) fn default_connector(server: &str, transport: &Transport) -> Connector {
+///
+/// HTTP 传输在连接器级别复用同一个带 `connect_timeout` 的 `reqwest::Client`，
+/// 避免每次重连重建 TLS 根证书库和连接池。
+pub(crate) fn default_connector(
+    server: &str,
+    transport: &Transport,
+    connect_timeout: Duration,
+    stderr_tail: StderrTail,
+) -> Connector {
     let server = server.to_owned();
     let transport = transport.clone();
+    let http_client = matches!(transport, Transport::Http { .. }).then(|| {
+        reqwest::Client::builder()
+            .connect_timeout(connect_timeout)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    });
     Arc::new(move |tool_list_changed| {
         let server = server.clone();
         let transport = transport.clone();
+        let http_client = http_client.clone();
+        let stderr_tail = Arc::clone(&stderr_tail);
         Box::pin(async move {
             match &transport {
                 Transport::Stdio {
@@ -118,15 +141,95 @@ pub(crate) fn default_connector(server: &str, transport: &Transport) -> Connecto
                         env,
                         cwd.as_deref(),
                         tool_list_changed,
+                        stderr_tail,
                     )
                     .await
                 }
                 Transport::Http { url, headers } => {
-                    connect_http(&server, url, headers, tool_list_changed).await
+                    connect_http(
+                        &server,
+                        url,
+                        headers,
+                        http_client.unwrap_or_else(reqwest::Client::new),
+                        tool_list_changed,
+                    )
+                    .await
                 }
             }
         })
     })
+}
+
+#[cfg(unix)]
+struct StdioGroupTransport {
+    inner: TokioChildProcess,
+    pgid: Option<libc::pid_t>,
+}
+
+#[cfg(unix)]
+impl StdioGroupTransport {
+    fn new(inner: TokioChildProcess) -> Self {
+        let pgid = inner
+            .id()
+            .and_then(|pid| libc::pid_t::try_from(pid).ok())
+            .filter(|pid| *pid > 1);
+        Self { inner, pgid }
+    }
+}
+
+#[cfg(unix)]
+fn signal_group(pgid: libc::pid_t, sig: libc::c_int) -> bool {
+    // SAFETY: 子进程经 `process_group(0)` 独占进程组且 `pgid > 1`；
+    // 负 PID 只作用于该 MCP 子进程及其孙进程（如 `npx`/`uvx` 拉起的真实服务）。
+    unsafe { libc::kill(-pgid, sig) == 0 }
+}
+
+#[cfg(unix)]
+impl Drop for StdioGroupTransport {
+    fn drop(&mut self) {
+        if let Some(pgid) = self.pgid.take() {
+            // 超时或取消丢弃时立刻回收整组进程，防止孙进程泄漏为孤儿。
+            let _ = signal_group(pgid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(unix)]
+impl rmcp::transport::Transport<RoleClient> for StdioGroupTransport {
+    type Error = std::io::Error;
+
+    fn send(
+        &mut self,
+        item: rmcp::service::TxJsonRpcMessage<RoleClient>,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    fn receive(
+        &mut self,
+    ) -> impl std::future::Future<Output = Option<rmcp::service::RxJsonRpcMessage<RoleClient>>> + Send
+    {
+        self.inner.receive()
+    }
+
+    fn close(&mut self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        async move {
+            let result = self.inner.graceful_shutdown().await;
+            if let Some(pgid) = self.pgid.take()
+                && signal_group(pgid, 0)
+            {
+                let _ = signal_group(pgid, libc::SIGTERM);
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+                while tokio::time::Instant::now() < deadline && signal_group(pgid, 0) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                if signal_group(pgid, 0) {
+                    let _ = signal_group(pgid, libc::SIGKILL);
+                }
+            }
+            result
+        }
+    }
 }
 
 async fn connect_stdio(
@@ -136,6 +239,7 @@ async fn connect_stdio(
     env: &BTreeMap<String, String>,
     cwd: Option<&Path>,
     tool_list_changed: mpsc::Sender<()>,
+    stderr_tail: StderrTail,
 ) -> Result<Connection, McpError> {
     let mut child = tokio::process::Command::new(command);
     child.args(args);
@@ -145,6 +249,13 @@ async fn connect_stdio(
     if let Some(cwd) = cwd {
         child.current_dir(cwd);
     }
+    // Unix 下让子进程独占进程组：超时取消或关闭时可一并清理 `npx`/`uvx` 等派生孙进程，
+    // 同时也避免终端作业控制信号把无控制台的 stdio server 挂起。
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        child.as_std_mut().process_group(0);
+    }
     // stderr 默认继承会污染前端终端，必须接管后转入日志。
     let (transport, stderr) = TokioChildProcess::builder(child)
         .stderr(std::process::Stdio::piped())
@@ -153,11 +264,18 @@ async fn connect_stdio(
     if let Some(stderr) = stderr {
         let server = server.to_owned();
         tokio::spawn(async move {
-            drain_stderr(tokio::io::BufReader::new(stderr), &server).await;
+            drain_stderr(tokio::io::BufReader::new(stderr), &server, Some(stderr_tail)).await;
         });
     }
     let handler = ClientHandlerBridge::new(tool_list_changed);
-    serve_bridge(server, handler, transport).await
+    #[cfg(unix)]
+    {
+        serve_bridge(server, handler, StdioGroupTransport::new(transport)).await
+    }
+    #[cfg(not(unix))]
+    {
+        serve_bridge(server, handler, transport).await
+    }
 }
 
 // 限制单条 stderr 日志的内存占用，同时仍完整排空超长行，避免阻塞子进程。
@@ -244,7 +362,28 @@ fn render_log_line(buf: &[u8], truncated: bool) -> Cow<'_, str> {
     }
 }
 
-async fn drain_stderr(mut reader: impl tokio::io::AsyncBufRead + Unpin, server: &str) {
+fn push_stderr_tail(tail: &StderrTail, line: &str) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let mut chars = trimmed.chars();
+    let mut clipped: String = chars.by_ref().take(MAX_STDERR_TAIL_CHARS).collect();
+    if chars.next().is_some() {
+        clipped.push('…');
+    }
+    let mut guard = tail.lock();
+    if guard.len() >= MAX_STDERR_TAIL_LINES {
+        guard.pop_front();
+    }
+    guard.push_back(clipped);
+}
+
+async fn drain_stderr(
+    mut reader: impl tokio::io::AsyncBufRead + Unpin,
+    server: &str,
+    tail: Option<StderrTail>,
+) {
     let mut buf = Vec::new();
     let mut truncated = false;
     loop {
@@ -259,6 +398,9 @@ async fn drain_stderr(mut reader: impl tokio::io::AsyncBufRead + Unpin, server: 
                 }
                 // 非 UTF-8 日志也必须持续读取，避免提前关闭管道导致子进程写入失败。
                 let line = render_log_line(&buf, truncated);
+                if let Some(tail) = &tail {
+                    push_stderr_tail(tail, &line);
+                }
                 tracing::debug!(target: "moc_mcp", server, "{line}");
             }
             Err(error) => {
@@ -273,6 +415,7 @@ async fn connect_http(
     server: &str,
     url: &str,
     headers: &BTreeMap<String, String>,
+    client: reqwest::Client,
     tool_list_changed: mpsc::Sender<()>,
 ) -> Result<Connection, McpError> {
     let mut custom_headers = HashMap::with_capacity(headers.len());
@@ -291,7 +434,7 @@ async fn connect_http(
     }
     let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_owned());
     config.custom_headers = custom_headers;
-    let transport = StreamableHttpClientTransport::with_client(reqwest::Client::new(), config);
+    let transport = StreamableHttpClientTransport::with_client(client, config);
     let handler = ClientHandlerBridge::new(tool_list_changed);
     serve_bridge(server, handler, transport).await
 }
@@ -449,7 +592,7 @@ mod tests {
         let input = b"before\ninvalid \xff\r\nafter\nlast \xff".to_vec();
         let mut reader = std::io::Cursor::new(input);
 
-        drain_stderr(&mut reader, "test").await;
+        drain_stderr(&mut reader, "test", None).await;
 
         assert_eq!(reader.position(), reader.get_ref().len() as u64);
     }

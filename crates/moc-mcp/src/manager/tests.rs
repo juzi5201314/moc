@@ -933,3 +933,206 @@ async fn mrtr_round_cap_fails_instead_of_spinning() {
     );
     manager.shutdown().await;
 }
+
+/// 已进入 `Failed` 的 server 不会被后续 `start()` 自动复活或再次阻塞；`reconnect()` 重置预算并恢复。
+#[tokio::test]
+async fn failed_server_does_not_resurrect_on_start_but_recovers_on_reconnect() {
+    let fail = Arc::new(AtomicBool::new(true));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let state = Arc::new(TestState::default());
+    let fail_c = Arc::clone(&fail);
+    let attempts_c = Arc::clone(&attempts);
+    let state_c = Arc::clone(&state);
+    let manager = McpManager::build_with_policy(
+        vec![test_server("flaky", true)],
+        CancellationToken::new(),
+        move |_| {
+            let fail = Arc::clone(&fail_c);
+            let attempts = Arc::clone(&attempts_c);
+            let inner = test_connector(Arc::clone(&state_c));
+            Arc::new(move |tool_list_changed| {
+                let fail = Arc::clone(&fail);
+                let attempts = Arc::clone(&attempts);
+                let inner = Arc::clone(&inner);
+                Box::pin(async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    if fail.load(Ordering::Acquire) {
+                        Err(McpError::Transport("simulated handshake failure".to_owned()))
+                    } else {
+                        inner(tool_list_changed).await
+                    }
+                })
+            })
+        },
+        fast_policy(2, Duration::from_secs(30)),
+    );
+    let mut status_rx = manager.subscribe_status();
+    manager.start().await;
+    // 等到预算耗尽进入 Failed。
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if matches!(
+                manager.snapshot_now().statuses.get("flaky"),
+                Some(ServerStatus::Failed { .. })
+            ) {
+                break;
+            }
+            status_rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("应耗尽重连预算进入 Failed");
+    let count_after_fail = attempts.load(Ordering::SeqCst);
+    assert!(count_after_fail >= 2);
+
+    // 后续提示再次调用 `start()`：不得复活 Failed server，也不得增加尝试次数。
+    manager.start().await;
+    manager.wait_ready(&CancellationToken::new()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        count_after_fail,
+        "start() 不得复活已 Failed 的 server"
+    );
+
+    // 故障排除后手动 reconnect 应立即恢复到 Connected。
+    fail.store(false, Ordering::Release);
+    manager.reconnect(Some("flaky")).await.unwrap();
+    let tools = connected_tools(&manager, Duration::from_secs(3)).await;
+    assert_eq!(tools.len(), 7);
+    manager.shutdown().await;
+}
+
+/// 宽限期满后 `wait_ready_within` 立刻返回，慢 server 仍在后台完成握手并推送状态版本号。
+#[tokio::test]
+async fn wait_ready_within_grace_returns_early_and_slow_server_finishes_in_background() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let state = Arc::new(TestState::default());
+    let gate_c = Arc::clone(&gate);
+    let state_c = Arc::clone(&state);
+    let manager = McpManager::build(
+        vec![test_server("slow", true)],
+        CancellationToken::new(),
+        move |_| {
+            let gate = Arc::clone(&gate_c);
+            let inner = test_connector(Arc::clone(&state_c));
+            Arc::new(move |tool_list_changed| {
+                let gate = Arc::clone(&gate);
+                let inner = Arc::clone(&inner);
+                Box::pin(async move {
+                    gate.notified().await;
+                    inner(tool_list_changed).await
+                })
+            })
+        },
+    );
+    let mut status_rx = manager.subscribe_status();
+    manager.start().await;
+    let started = Instant::now();
+    manager
+        .wait_ready_within(&CancellationToken::new(), Duration::from_millis(50))
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(400),
+        "宽限期等待不应长时间阻塞"
+    );
+    assert!(matches!(
+        manager.snapshot_now().statuses.get("slow"),
+        Some(ServerStatus::Connecting)
+    ));
+
+    // 放行慢握手：后台应继续完成并递增状态版本号。
+    gate.notify_one();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if matches!(
+                manager.snapshot_now().statuses.get("slow"),
+                Some(ServerStatus::Connected { tool_count: 7 })
+            ) {
+                break;
+            }
+            status_rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("慢 server 应在后台完成连接");
+    manager.shutdown().await;
+}
+
+/// Unix stdio 进程组隔离：握手超时后不仅杀掉直接子进程，连其派生的孙进程也一并回收，且保留 stderr 诊断尾部。
+#[cfg(unix)]
+#[tokio::test]
+async fn stdio_process_group_kills_grandchild_on_timeout_and_captures_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("grandchild.pid");
+    let script = format!(
+        "echo 'booting hanging server' >&2; sleep 30 & echo $! > '{}'; wait",
+        pid_file.display()
+    );
+    let server = ServerConfig {
+        name: "hang".into(),
+        transport: Transport::Stdio {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            env: BTreeMap::new(),
+            cwd: None,
+        },
+        enabled: true,
+        connect_timeout_secs: 1,
+        call_timeout_secs: 5,
+        max_concurrent_calls: 1,
+        tools: None,
+    };
+    let manager = McpManager::new(vec![server], CancellationToken::new());
+    let mut status_rx = manager.subscribe_status();
+    manager.start().await;
+
+    // 等到首次 1s 连接超时进入 Reconnecting。
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let states = manager.server_states();
+            if matches!(
+                states.first().map(|s| &s.status),
+                Some(ServerStatus::Reconnecting { .. } | ServerStatus::Failed { .. })
+            ) {
+                break;
+            }
+            status_rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("挂起 stdio server 应在 connect_timeout_secs 后超时");
+
+    let states = manager.server_states();
+    assert!(
+        states[0]
+            .recent_stderr
+            .iter()
+            .any(|line| line.contains("booting hanging server")),
+        "应捕获子进程 stderr 尾部：{:?}",
+        states[0].recent_stderr
+    );
+    let grandchild_pid: i32 = std::fs::read_to_string(&pid_file)
+        .expect("应已写入孙进程 PID")
+        .trim()
+        .parse()
+        .expect("有效 PID");
+    manager.shutdown().await;
+
+    // 给内核一点回收时间后验证孙进程已不存在（ESRCH）。
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let rc = unsafe { libc::kill(grandchild_pid, 0) };
+        if rc != 0 {
+            let err = std::io::Error::last_os_error();
+            assert_eq!(err.raw_os_error(), Some(libc::ESRCH));
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "孙进程 {grandchild_pid} 未被进程组清理"
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+}
