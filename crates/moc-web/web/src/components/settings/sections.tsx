@@ -34,6 +34,7 @@ import type {
 import { selectModels, useConnection } from "@/store/connection";
 import { refreshSideData } from "@/store/lifecycle";
 import { type Theme, usePrefs } from "@/store/prefs";
+import { allSessions, useSessions } from "@/store/sessions";
 import { useTabs } from "@/store/tabs";
 import { fieldValues, SettingRow } from "./field";
 import { writeField } from "./settings-store";
@@ -370,13 +371,18 @@ export function RolesSection({ doc }: { doc: SettingsDocument }) {
 export function PluginsOverview() {
   const t = useT();
   const active = useTabs((state) => state.active);
-  // 草稿会话在 core 里不存在：传空 id，由 core 按自身工作目录发现插件。
-  const sessionId = active && active !== "draft-session" ? active : "";
+  // plugin/list 按会话 cwd 发现插件，core 只认已存在的会话：草稿时退回最近一次会话。
+  const latest = useSessions((state) => allSessions(state)[0]?.id);
+  const sessionId = active && active !== "draft-session" ? active : (latest ?? "");
   const [plugins, setPlugins] = useState<PluginInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = async (reload: boolean) => {
+    if (!sessionId) {
+      setPlugins(null);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -406,13 +412,23 @@ export function PluginsOverview() {
         <h3 className="text-xs font-medium text-text-tertiary">
           {t("ss.plugins_loaded", { n: plugins?.length ?? 0 })}
         </h3>
-        <Button size="xs" variant="outline" disabled={busy} onClick={() => void load(true)}>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy || !sessionId}
+          onClick={() => void load(true)}
+        >
           {busy ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
           {t("ss.reload")}
         </Button>
       </div>
       {error && <p className="text-xs text-destructive">{error}</p>}
       <Card>
+        {!sessionId && (
+          <p className="py-6 text-center text-ui text-text-tertiary">
+            {t("ss.plugins_no_session")}
+          </p>
+        )}
         {plugins?.length === 0 && (
           <p className="py-6 text-center text-ui text-text-tertiary">{t("ss.no_plugins")}</p>
         )}

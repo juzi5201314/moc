@@ -97,12 +97,12 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
             <button
               type="button"
               aria-label={t("layout.close_sidebar")}
-              className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-160"
+              className="fixed inset-y-0 right-0 left-[52px] z-40 bg-black/30 backdrop-blur-[1px] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-160"
               onClick={() => setSidebarOverlay(false)}
             />
             <aside
               style={{ width: SIDEBAR_DEFAULT }}
-              className="fixed inset-y-0 left-0 z-50 max-w-[calc(100%-24px)] overflow-hidden rounded-r-xl bg-sidebar shadow-[var(--elevation-popover)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-left-2 motion-safe:duration-160"
+              className="fixed inset-y-0 left-[52px] z-50 max-w-[calc(100%-76px)] overflow-hidden rounded-r-xl bg-sidebar shadow-[var(--elevation-popover)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-left-2 motion-safe:duration-160"
             >
               {sidebar}
             </aside>

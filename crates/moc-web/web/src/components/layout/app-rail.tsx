@@ -21,12 +21,15 @@ function RailButton({
   label,
   shortcut,
   active,
+  pressed,
   onClick,
   children,
 }: {
   label: string;
   shortcut?: string;
   active?: boolean;
+  /** 开关型按钮（折叠）：只表达按下态，不是当前页。 */
+  pressed?: boolean;
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -37,10 +40,11 @@ function RailButton({
           type="button"
           aria-label={label}
           aria-current={active ? "page" : undefined}
+          aria-pressed={pressed}
           onClick={onClick}
           className={cn(
             "flex size-9 items-center justify-center rounded-[10px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-[18px]",
-            active
+            active || pressed
               ? "bg-black/[0.07] text-foreground dark:bg-white/[0.09]"
               : "text-muted-foreground hover:bg-black/[0.045] hover:text-foreground dark:hover:bg-white/[0.06]",
           )}
@@ -85,7 +89,10 @@ export function AppRail({ hasSidebar }: { hasSidebar: boolean }) {
             key={tab.route}
             label={t(tab.label)}
             active={route === tab.route}
-            onClick={() => navigate(tab.route)}
+            onClick={() => {
+              if (narrow) useLayout.getState().setSidebarOverlay(false);
+              navigate(tab.route);
+            }}
           >
             {tab.icon}
           </RailButton>
@@ -102,7 +109,7 @@ export function AppRail({ hasSidebar }: { hasSidebar: boolean }) {
           <RailButton
             label={sidebarShown ? t("layout.close_sidebar") : t("hd.sidebar")}
             shortcut="Ctrl B"
-            active={sidebarShown && !narrow}
+            pressed={sidebarShown}
             onClick={() => useLayout.getState().toggleSidebar()}
           >
             <PanelLeftIcon />

@@ -1010,6 +1010,7 @@ export const zh = {
   "ss.notify_denied": "浏览器拒绝了通知权限，请在站点设置里允许",
   "ss.notify_desc": "页面在后台时，有授权请求或提问需要处理会弹出系统通知。",
   "ss.notify_unsupported": "当前浏览器不支持桌面通知",
+  "ss.plugins_no_session": "还没有会话。新建一个会话后可查看已加载的插件。",
   "ss.plugins_loaded": "已加载 · {n}",
   "ss.prefs_note": "以上偏好保存在 web.toml，对所有连接本服务的浏览器生效。",
   "ss.protocol": "协议版本",

@@ -1032,6 +1032,7 @@ export const en: Record<MsgKey, string> = {
   "ss.notify_desc":
     "Shows a system notification when an approval request or question needs attention while the page is in the background.",
   "ss.notify_unsupported": "This browser does not support desktop notifications",
+  "ss.plugins_no_session": "No sessions yet. Start one to see loaded plugins.",
   "ss.plugins_loaded": "Loaded · {n}",
   "ss.prefs_note":
     "The preferences above are saved to web.toml and apply to all browsers connected to this moc.",
