@@ -511,9 +511,14 @@
   border-collapse: collapse;
   font-size: 13px;
 }
-/* streamdown 给 thead 自带 bg-muted/80 灰底，去掉 */
+/* streamdown 给 thead 自带 bg-muted/80 灰底、thead/tbody/tr 带 divide-y 分隔线，一并去掉 */
 .moc-prose [data-streamdown="table-header"] {
   background: transparent;
+}
+.moc-prose [data-streamdown="table"] > *,
+.moc-prose [data-streamdown="table-header"] > *,
+.moc-prose [data-streamdown="table-body"] > * {
+  border-width: 0;
 }
 .moc-prose [data-streamdown="table-header-cell"],
 .moc-prose [data-streamdown="table-cell"] {
