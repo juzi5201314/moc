@@ -438,7 +438,10 @@ async fn workflow_activate_requires_ask_capability() {
         })
         .await
         .expect_err("无 ask 能力必须拒绝");
-    assert!(error.to_string().contains("approval capability"));
+    assert!(
+        error.to_string().contains("审批能力") || error.to_string().contains("approval capability"),
+        "{error}"
+    );
     harness.close().await;
 }
 

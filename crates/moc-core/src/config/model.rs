@@ -314,9 +314,9 @@ impl std::str::FromStr for ThinkingLevel {
             {
                 Ok(Self::Custom(value.to_owned()))
             }
-            _ => Err(CoreError::Config(format!(
-                "思考等级“{value}”不合法：只能使用小写字母、数字和 - _ .，最长 32 个字符"
-            ))),
+            _ => Err(CoreError::Config(
+                t!("core.err.thinking_level_invalid", value = value).into_owned(),
+            )),
         }
     }
 }
@@ -467,21 +467,32 @@ impl ResolvedProvider {
                 continue;
             }
             if model.context_window == 0 {
-                return Err(CoreError::Config(format!(
-                    "providers.{id}.models.{model_id}.context_window 必须大于 0"
-                )));
+                return Err(CoreError::Config(
+                    t!("core.err.model_ctx_positive", provider = id, model = model_id)
+                        .into_owned(),
+                ));
             }
             if model.max_request_bytes == Some(0) {
-                return Err(CoreError::Config(format!(
-                    "providers.{id}.models.{model_id}.max_request_bytes 必须大于 0"
-                )));
+                return Err(CoreError::Config(
+                    t!(
+                        "core.err.model_req_bytes_positive",
+                        provider = id,
+                        model = model_id
+                    )
+                    .into_owned(),
+                ));
             }
             if let Some(levels) = &model.thinking_levels
                 && (levels.is_empty() || levels.contains(&ThinkingLevel::Off))
             {
-                return Err(CoreError::Config(format!(
-                    "providers.{id}.models.{model_id}.thinking_levels 必须包含至少一个非 off 等级"
-                )));
+                return Err(CoreError::Config(
+                    t!(
+                        "core.err.model_thinking_non_off",
+                        provider = id,
+                        model = model_id
+                    )
+                    .into_owned(),
+                ));
             }
             let body =
                 super::parameters::merge_body(&document.extra_body, &model.compat.extra_body);
@@ -496,10 +507,15 @@ impl ResolvedProvider {
                 && level != ThinkingLevel::Off
                 && !effective_thinking_levels(model).contains(&level)
             {
-                return Err(CoreError::Config(format!(
-                    "providers.{id}.models.{model_id} 的 API 默认思考强度 {} 不在 thinking_levels 中",
-                    level.as_str()
-                )));
+                return Err(CoreError::Config(
+                    t!(
+                        "core.err.model_default_effort_missing",
+                        provider = id,
+                        model = model_id,
+                        level = level.as_str()
+                    )
+                    .into_owned(),
+                ));
             }
         }
 
@@ -720,21 +736,29 @@ pub(super) fn resolve_one(
 ) -> Result<ResolvedModel, CoreError> {
     let parsed = ModelSelector::parse(selector)?;
     let provider = providers.get(parsed.provider_id).ok_or_else(|| {
-        CoreError::Config(format!(
-            "模型 selector `{selector}` 引用了不存在的 provider `{}`",
-            parsed.provider_id
-        ))
+        CoreError::Config(
+            t!(
+                "core.err.model_unknown_provider",
+                selector = selector,
+                provider = parsed.provider_id
+            )
+            .into_owned(),
+        )
     })?;
     let model = provider.models.get(parsed.model_id).ok_or_else(|| {
-        CoreError::Config(format!(
-            "模型 selector `{selector}` 引用了不存在的模型 `{}`",
-            parsed.model_id
-        ))
+        CoreError::Config(
+            t!(
+                "core.err.model_unknown_model",
+                selector = selector,
+                model = parsed.model_id
+            )
+            .into_owned(),
+        )
     })?;
     if model.image_gen {
-        return Err(CoreError::Config(format!(
-            "模型 `{selector}` 已标记为图片生成模型，仅可在 Image Playground 中使用"
-        )));
+        return Err(CoreError::Config(
+            t!("core.err.model_is_image_gen", selector = selector).into_owned(),
+        ));
     }
     let resolved = provider.resolve_model(
         parsed.provider_id,
@@ -746,10 +770,14 @@ pub(super) fn resolve_one(
         && resolved.thinking_level != ThinkingLevel::Off
         && !resolved.thinking_levels.contains(&resolved.thinking_level)
     {
-        return Err(CoreError::Config(format!(
-            "模型 {selector} 不支持思考等级 {}；可在模型的“可选思考等级”中调整",
-            resolved.thinking_level.as_str()
-        )));
+        return Err(CoreError::Config(
+            t!(
+                "core.err.model_unsupported_level",
+                selector = selector,
+                level = resolved.thinking_level.as_str()
+            )
+            .into_owned(),
+        ));
     }
     Ok(resolved)
 }
@@ -768,19 +796,29 @@ pub(super) fn resolve_image_one(
         ));
     }
     let provider = providers.get(provider_id).ok_or_else(|| {
-        CoreError::Config(format!(
-            "图片模型 `{selector}` 引用了不存在的 provider `{provider_id}`"
-        ))
+        CoreError::Config(
+            t!(
+                "core.err.image_model_unknown_provider",
+                selector = selector,
+                provider = provider_id
+            )
+            .into_owned(),
+        )
     })?;
     let model = provider.models.get(model_id).ok_or_else(|| {
-        CoreError::Config(format!(
-            "图片模型 `{selector}` 引用了不存在的模型 `{model_id}`"
-        ))
+        CoreError::Config(
+            t!(
+                "core.err.image_model_unknown_model",
+                selector = selector,
+                model = model_id
+            )
+            .into_owned(),
+        )
     })?;
     if !model.image_gen {
-        return Err(CoreError::Config(format!(
-            "模型 `{selector}` 未勾选为图片生成模型"
-        )));
+        return Err(CoreError::Config(
+            t!("core.err.image_model_not_flagged", selector = selector).into_owned(),
+        ));
     }
     Ok(provider.resolve_model(provider_id, model_id, model, None))
 }
@@ -796,16 +834,16 @@ pub(super) fn resolve_selector(
     if selector == FUSION_ALIAS {
         if fusion.lead.is_empty() || fusion.sidekick.is_empty() {
             return Err(CoreError::Config(
-                "尚未配置 Fusion 组合：请在 models.fusion 中同时选择 lead 与 sidekick 模型".into(),
+                t!("core.err.fusion_not_configured").into_owned(),
             ));
         }
         return resolve_fusion(providers, &fusion.lead, &fusion.sidekick);
     }
     if let Some(rest) = selector.strip_prefix(FUSION_PREFIX) {
         let Some((lead, sidekick)) = rest.split_once('+') else {
-            return Err(CoreError::Config(format!(
-                "Fusion 写法“{selector}”不正确，应为 fusion:主导模型+执行模型"
-            )));
+            return Err(CoreError::Config(
+                t!("core.err.fusion_fmt_bad", selector = selector).into_owned(),
+            ));
         };
         return resolve_fusion(providers, lead, sidekick);
     }
@@ -821,9 +859,9 @@ fn resolve_fusion(
 ) -> Result<ResolvedModel, CoreError> {
     for side in [lead_selector, sidekick_selector] {
         if is_fusion_selector(side) {
-            return Err(CoreError::Config(format!(
-                "Fusion 组合的两侧必须是普通模型选择器，不能嵌套 Fusion：{side}"
-            )));
+            return Err(CoreError::Config(
+                t!("core.err.fusion_no_nesting", side = side).into_owned(),
+            ));
         }
     }
     let mut lead = resolve_one(providers, lead_selector, None)?;

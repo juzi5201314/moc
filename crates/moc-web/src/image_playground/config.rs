@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
+use moc_i18n::t;
 use moc_llm::EditEncoding;
 use serde::{Deserialize, Serialize};
 
@@ -114,14 +115,14 @@ impl PlaygroundConfig {
     pub fn validate(&mut self) -> anyhow::Result<()> {
         let dir = self.storage_dir.trim();
         if dir.is_empty() {
-            anyhow::bail!("图片存放路径不能为空");
+            anyhow::bail!("{}", t!("web.playground.storage_dir_empty"));
         }
         self.storage_dir = dir.to_owned();
         self.compression.quality = self.compression.quality.clamp(1, 100);
         self.compression.animated_quality = self.compression.animated_quality.clamp(1, 100);
         if !self.input_compress.max_bytes_mb.is_finite() || self.input_compress.max_bytes_mb <= 0.0
         {
-            anyhow::bail!("上传图片体积上限必须大于 0");
+            anyhow::bail!("{}", t!("web.playground.max_bytes_positive"));
         }
         Ok(())
     }
@@ -153,7 +154,7 @@ pub fn load(config_home: &Path) -> anyhow::Result<PlaygroundConfig> {
         Ok(text) if text.trim().is_empty() => Ok(PlaygroundConfig::default()),
         Ok(text) => {
             let mut cfg: PlaygroundConfig = toml::from_str(&text)
-                .with_context(|| format!("解析 {} 失败", path.display()))?;
+                .with_context(|| t!("web.playground.parse_file_failed", path = path.display()).into_owned())?;
             cfg.validate()?;
             Ok(cfg)
         }

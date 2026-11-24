@@ -50,16 +50,20 @@ pub(super) fn validate_features(features: &FeaturesConfig) -> Result<(), CoreErr
                 let FlagToggle::Existing(path) = spec.toggle else {
                     unreachable!("刚判过非 Features")
                 };
-                return Err(CoreError::Config(format!(
-                    "features.{key}: 该特性由 {path} 控制，请直接配置它"
-                )));
+                return Err(CoreError::Config(
+                    t!("core.err.features_controlled_by", key = key, path = path).into_owned(),
+                ));
             }
             None => {
                 let keys: Vec<_> = features_owned_keys().collect();
-                return Err(CoreError::Config(format!(
-                    "features.{key}: 未知特性开关（可用键: {}）",
-                    keys.join(", ")
-                )));
+                return Err(CoreError::Config(
+                    t!(
+                        "core.err.features_unknown_key",
+                        key = key,
+                        keys = keys.join(", ")
+                    )
+                    .into_owned(),
+                ));
             }
         }
     }
@@ -298,7 +302,7 @@ pub(super) fn validate_compaction(config: &CompactionConfig) -> Result<(), CoreE
     match config.threshold {
         CompactionThreshold::Percent(1..=100) | CompactionThreshold::Tokens(1..) => Ok(()),
         _ => Err(CoreError::Config(
-            "压缩阈值：百分比须为 1–100，token 数须大于 0".into(),
+            t!("core.err.compaction_threshold_invalid").into_owned(),
         )),
     }
 }
@@ -306,7 +310,7 @@ pub(super) fn validate_compaction(config: &CompactionConfig) -> Result<(), CoreE
 pub(super) fn validate_skills(config: &SkillsConfig) -> Result<(), CoreError> {
     if config.catalog_budget_percent > 100 {
         return Err(CoreError::Config(
-            "技能列表预算比例：百分比须为 0–100".into(),
+            t!("core.err.skills_budget_percent_invalid").into_owned(),
         ));
     }
     Ok(())
@@ -413,12 +417,12 @@ impl LimitsConfig {
 pub(super) fn validate_limits(config: &LimitsConfig) -> Result<(), CoreError> {
     if config.connect_deadline_secs == 0 || config.request_warn_secs == 0 {
         return Err(CoreError::Config(
-            "limits：连接与重试时限和请求耗时警告必须大于 0".into(),
+            t!("core.err.limits_positive").into_owned(),
         ));
     }
     if config.connect_deadline_secs > 604_800 {
         return Err(CoreError::Config(
-            "limits：连接与重试时限不得超过 7 天".into(),
+            t!("core.err.limits_max_days").into_owned(),
         ));
     }
     Ok(())

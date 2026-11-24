@@ -515,7 +515,7 @@ mod tests {
         let err = validate_tool_history(&messages).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "构建请求失败: assistant 消息中的工具调用 [get_weather, get_date] 缺少对应的工具结果消息（缺失: get_date）"
+            "构建请求失败：assistant 消息中的工具调用 [get_weather, get_date] 缺少对应的工具结果消息（缺失：get_date）"
         );
 
         // 一个结果都没有时，错误里同样点名全部调用。
@@ -524,7 +524,7 @@ mod tests {
             Message::user_text("算了"),
         ];
         let err = validate_tool_history(&messages).unwrap_err();
-        assert!(err.to_string().contains("缺失: get_weather"), "{err}");
+        assert!(err.to_string().contains("缺失：get_weather"), "{err}");
     }
 
     #[test]
@@ -539,7 +539,7 @@ mod tests {
         let err = validate_tool_history(&messages).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "构建请求失败: 工具结果消息的 tool_call_id \"call_x\" 不在前一条 assistant 消息的工具调用中"
+            "构建请求失败：工具结果消息的 tool_call_id \"call_x\" 不在前一条 assistant 消息的工具调用中"
         );
     }
 

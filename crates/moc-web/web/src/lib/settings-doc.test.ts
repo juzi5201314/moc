@@ -63,7 +63,7 @@ describe("field parsing", () => {
 
   it("shows choice labels once when equal to the value", () => {
     expect(choiceDisplay({ value: "on", label: "on" })).toBe("on");
-    expect(choiceDisplay({ value: "on", label: "开启" })).toBe("开启（on）");
+    expect(choiceDisplay({ value: "on", label: "On" })).toBe("On (on)");
   });
 });
 

@@ -97,11 +97,11 @@ fn usage_table_aligns_columns_with_units() {
         12,
         "会话统计标题 + 四行统计 + 空行 + 表头/分隔线/两个模型/分隔线/合计：\n{table}"
     );
-    assert_eq!(lines[0], "会话统计");
+    assert_eq!(lines[0], "Session Usage");
     assert!(
         lines[1].contains("1m02s")
-            && lines[1].contains("生成 50.0s")
-            && lines[1].contains("网络等待 12.0s"),
+            && lines[1].contains("gen 50.0s")
+            && lines[1].contains("wait 12.0s"),
         "模型用时必须拆成生成与网络等待：{table}"
     );
     assert!(lines[2].contains("4m08s"), "工具调用用时：{table}");
@@ -121,8 +121,8 @@ fn usage_table_aligns_columns_with_units() {
         );
     }
     assert!(
-        table_lines[0].contains("模型")
-            && table_lines[0].contains("生成")
+        table_lines[0].contains("Model")
+            && table_lines[0].contains("Gen")
             && table_lines[0].contains("TTFT")
             && table_lines[0].contains("TPS")
     );
@@ -132,7 +132,7 @@ fn usage_table_aligns_columns_with_units() {
     );
     assert!(table.contains('…'), "超宽模型名应截断：{table}");
     let total = table_lines.last().expect("合计行");
-    assert!(total.trim_start().starts_with("合计"), "{table}");
+    assert!(total.trim_start().starts_with("Total"), "{table}");
     assert!(total.contains("15"), "合计行用 total 的调用次数：{table}");
     // note 渲染时按 71 列折行：换行必须是硬断行，表格才能逐行保持对齐。
     assert_eq!(
@@ -154,8 +154,8 @@ fn usage_table_aligns_columns_with_units() {
     }
     assert!(
         narrow_table[0].contains("TTFT")
-            && !narrow_table[0].contains("思考")
-            && !narrow_table[0].contains("缓存率"),
+            && !narrow_table[0].contains("Thinking")
+            && !narrow_table[0].contains("Cache"),
         "窄终端保留 TTFT，丢掉低优先级列：{narrow}"
     );
 
@@ -325,7 +325,7 @@ async fn plugin_commands_complete_and_run_through_core() {
     assert_eq!(plugins[0].name, "demo");
     assert_eq!(plugins[0].commands[0].name, "demo");
     assert!(
-        listing.expect("列出插件").contains("命令 /demo"),
+        listing.expect("列出插件").contains("command /demo"),
         "清单里要列出插件命令"
     );
     // 清单顺带刷新补全表；插件命令与内置命令一起参与前缀匹配。
@@ -358,7 +358,7 @@ async fn plugin_commands_complete_and_run_through_core() {
 fn plugin_notice_note_keeps_cause_and_recovery_hint() {
     assert_eq!(
         plugin_notice_note("demo", "E_PLUGIN_DISABLED", "TypeError: x\n  at y"),
-        "插件 `demo` 已停用（E_PLUGIN_DISABLED）：TypeError: x\n  at y\n修复后 /plugins reload 可重载"
+        "plugin `demo` 已停用（E_PLUGIN_DISABLED）：TypeError: x\n  at y\n修复后运行 /plugins reload 可重新加载。"
     );
 }
 
@@ -678,7 +678,7 @@ async fn retry_is_rejected_while_a_prompt_is_running() {
 
     assert_eq!(
         app.notice.as_deref(),
-        Some("正在运行中，暂时不能执行 /retry")
+        Some("任务运行中，暂时无法执行 /retry。")
     );
     assert!(app.inflight_prompts.is_empty(), "被拒的重试不得占通道");
 
@@ -739,7 +739,7 @@ async fn lone_dot_is_rejected_while_running() {
 
     assert_eq!(
         app.notice.as_deref(),
-        Some("正在运行中，暂时不能执行 /retry")
+        Some("任务运行中，暂时无法执行 /retry。")
     );
     assert!(app.inflight_prompts.is_empty(), "被拒的 `. ` 不得占通道");
 

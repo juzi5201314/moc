@@ -19,15 +19,15 @@ it("会话栏内可打开搜索，并在退出搜索后恢复焦点", () => {
       <WorkspaceSidebar />
     </TooltipProvider>,
   );
-  const search = sidebar.getByRole("button", { name: "搜索" });
+  const search = sidebar.getByRole("button", { name: "Search" });
   fireEvent.click(search);
-  const input = sidebar.getByRole("textbox", { name: "筛选会话与目录" });
+  const input = sidebar.getByRole("textbox", { name: "筛选 session 与目录" });
   expect(document.activeElement).toBe(input);
   fireEvent.change(input, { target: { value: "moc" } });
   fireEvent.keyDown(input, { key: "Escape" });
   expect(document.activeElement).toBe(search);
   fireEvent.click(search);
-  expect(sidebar.getByRole("textbox", { name: "筛选会话与目录" })).toHaveProperty("value", "");
+  expect(sidebar.getByRole("textbox", { name: "筛选 session 与目录" })).toHaveProperty("value", "");
 });
 
 it("空 workflow 侧栏正常挂载，徽标变化后仍能更新", () => {
@@ -36,8 +36,8 @@ it("空 workflow 侧栏正常挂载，徽标变化后仍能更新", () => {
       <WorkspaceSidebar />
     </TooltipProvider>,
   );
-  expect(sidebar.getByRole("button", { name: /新会话/ })).toBeTruthy();
-  expect(sidebar.queryByRole("button", { name: /workflow/ })).toBeNull();
+  expect(sidebar.getByRole("button", { name: /New session/ })).toBeTruthy();
+  expect(sidebar.queryByRole("button", { name: /Workflow/ })).toBeNull();
   act(() =>
     useWorkflow.setState({
       runs: {
@@ -59,5 +59,5 @@ it("空 workflow 侧栏正常挂载，徽标变化后仍能更新", () => {
       },
     }),
   );
-  expect(sidebar.getByRole("button", { name: /workflow.*1跑/ })).toBeTruthy();
+  expect(sidebar.getByRole("button", { name: /Workflow.*1 running/ })).toBeTruthy();
 });

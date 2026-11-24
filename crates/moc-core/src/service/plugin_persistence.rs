@@ -65,14 +65,14 @@ fn snapshot(
     }
     let entry = entry
         .as_object()
-        .ok_or_else(|| config_error("插件配置项必须是表"))?;
+        .ok_or_else(|| config_error(t!("core.err.plugin_cfg_item_table")))?;
     if entry.keys().any(|key| key != "config") {
-        return Err(config_error("插件条目只接受 config 表"));
+        return Err(config_error(t!("core.err.plugin_entry_only_config_generic")));
     }
     match entry.get("config") {
         None => Ok(json!({})),
         Some(value) if value.is_object() => Ok(value.clone()),
-        Some(_) => Err(config_error("插件 config 必须是表")),
+        Some(_) => Err(config_error(t!("core.err.plugin_config_table_generic"))),
     }
 }
 
@@ -116,7 +116,10 @@ impl PersistenceBridge for Bridge {
                 }
                 state_op => {
                     let context = context.ok_or_else(|| {
-                        PluginError::new("E_PLUGIN_STATE", "持久化 state 需要当前会话")
+                        PluginError::new(
+                            "E_PLUGIN_STATE",
+                            t!("core.err.plugin_state_needs_session").into_owned(),
+                        )
                     })?;
                     self.state(plugin, &context.session_id, state_op).await
                 }
@@ -164,13 +167,14 @@ pub(super) async fn settings(
             let kind = field_kind(&declaration);
             view.fields.push(moc_protocol::ConfigField {
                 path,
-                tab: "插件".into(),
+                tab: t!("core.config.tabs.plugins").into_owned(),
                 label: declaration.label,
-                description: format!(
-                    "{}\n配置写入：{}",
-                    declaration.description,
-                    source.display()
-                ),
+                description: t!(
+                    "core.err.plugin_cfg_write_target",
+                    desc = declaration.description,
+                    path = source.display().to_string()
+                )
+                .into_owned(),
                 kind,
                 advanced: false,
             });
@@ -232,10 +236,14 @@ pub(super) fn validate_changes(
             let before = previous.get("plugins").and_then(|p| p.get(&name));
             let after = candidate.get("plugins").and_then(|p| p.get(&name));
             if before != after {
-                return Err(CoreError::Config(format!(
-                    "插件 `{name}` 配置应写入 `{}`，当前设置层不会写入该文件",
-                    source.display()
-                )));
+                return Err(CoreError::Config(
+                    t!(
+                        "core.err.plugin_cfg_wrong_layer",
+                        name = name,
+                        path = source.display().to_string()
+                    )
+                    .into_owned(),
+                ));
             }
             continue;
         }

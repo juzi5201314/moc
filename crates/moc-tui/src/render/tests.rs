@@ -172,7 +172,7 @@ fn terminal_title_reflects_app_state() {
         scroll_offset: 0,
         reply: None,
     });
-    assert!(terminal_title(&app).contains("需人工"));
+    assert!(terminal_title(&app).contains("needs input"));
 }
 
 /// 拖拽换算：轨道顶端对应历史顶端，轨道末端对应跟随尾部；抓取点保持。

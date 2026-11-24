@@ -14,7 +14,7 @@ hint = { zh = "输入历史或输出预留超过模型上下文限制；请压�
 
 [llm.status.kind_thinking_sig]
 title = { zh = "思考签名验证失败", en = "Thinking signature invalid" }
-hint = { zh = "历史加密思考内容与当前上游渠道或密钥来源不一致；剥离旧思考块后重试，或切回原渠道。", en = "Historical encrypted thinking doesn't match the current upstream channel or key source; strip old thinking blocks and retry, or switch back to the original channel." }
+hint = { zh = "历史加密思考内容与当前上游渠道或 API Key 来源不一致；剥离旧思考块后重试，或切回原渠道。", en = "Historical encrypted thinking does not match the current upstream channel or API Key source; strip old thinking blocks and retry, or switch back to the original channel." }
 
 [llm.status.kind_filter]
 title = { zh = "内容策略拒绝", en = "Content policy rejected" }
@@ -329,12 +329,12 @@ title = { zh = "非标准状态码", en = "Non-standard status code" }
 hint = { zh = "此状态码不属于标准 HTTP 状态范围；请检查代理转译和供应商文档。", en = "This status is outside the standard HTTP range; check proxy translation and provider docs." }
 
 [llm.err]
-encode = { zh = "构建请求失败: %{detail}", en = "Failed to build request: %{detail}" }
-transport = { zh = "网络传输失败: %{detail}", en = "Transport failed: %{detail}" }
-decode = { zh = "响应体解析失败: %{detail}", en = "Failed to decode response body: %{detail}" }
-api = { zh = "上游返回错误: %{detail}", en = "Upstream error: %{detail}" }
-stream = { zh = "流式响应异常: %{detail}", en = "Stream error: %{detail}" }
-retries_exhausted = { zh = "共尝试 %{attempts} 次（含首次）后仍失败: %{last}", en = "Failed after %{attempts} attempts (including the first): %{last}" }
+encode = { zh = "构建请求失败：%{detail}", en = "Failed to build request: %{detail}" }
+transport = { zh = "网络传输失败：%{detail}", en = "Transport failed: %{detail}" }
+decode = { zh = "响应体解析失败：%{detail}", en = "Failed to decode response body: %{detail}" }
+api = { zh = "上游返回错误：%{detail}", en = "Upstream error: %{detail}" }
+stream = { zh = "流式响应异常：%{detail}", en = "Stream error: %{detail}" }
+retries_exhausted = { zh = "共尝试 %{attempts} 次（含首次）后仍失败：%{last}", en = "Failed after %{attempts} attempts (including the first): %{last}" }
 diagnostics_fmt = { zh = "\n请求诊断：%{stats}。", en = "\nRequest diagnostics: %{stats}." }
 upstream_msg = { zh = "\n上游消息：%{message}", en = "\nUpstream message: %{message}" }
 retry_after_fmt = { zh = "\n上游建议等待：%{secs} 秒（Retry-After）", en = "\nUpstream suggests waiting %{secs}s (Retry-After)" }
@@ -347,51 +347,76 @@ channel_tool = { zh = "工具", en = "tool" }
 prose_similar = { zh = "近期段落中出现 %{cluster} 段高度相似且没有新引用的内容", en = "%{cluster} highly similar paragraphs with no new citations appeared recently" }
 prose_repeated = { zh = "连续 12 段复用已有词汇，未增加具体信息", en = "12 consecutive paragraphs reused existing wording without adding specifics" }
 period_repeat = { zh = "同一段 %{period} 字符内容连续重复 %{count} 次", en = "The same %{period}-character segment repeated %{count} times in a row" }
-incomplete = { zh = "上游响应在协议终态之前结束，本次响应不完整", en = "The upstream response ended before the protocol's terminal state; the response is incomplete" }
-read_body_failed = { zh = "读取响应体失败: %{err}", en = "Failed to read response body: %{err}" }
+incomplete = { zh = "上游响应在协议终态之前结束，本次响应不完整", en = "The upstream response ended before the protocol terminal state; the response is incomplete" }
+read_body_failed = { zh = "读取响应体失败：%{err}", en = "Failed to read response body: %{err}" }
+sse_buffer_limit = { zh = "SSE 缓冲区超过 %{max} 字节上限", en = "SSE buffer exceeded the %{max}-byte limit" }
 stream_json = { zh = "流式请求返回了非流式 JSON 响应", en = "The streaming request returned a non-streaming JSON response" }
-nonstream_deadline = { zh = "非流式请求在 %{secs} 秒连接与重试时限内没有完成", en = "The non-streaming request didn't finish within the %{secs}s connect-and-retry window" }
-stream_deadline = { zh = "流式请求在 %{secs} 秒连接与重试时限内没有完成", en = "The streaming request didn't finish within the %{secs}s connect-and-retry window" }
+nonstream_deadline = { zh = "非流式请求在 %{secs} 秒连接与重试时限内没有完成", en = "The non-streaming request did not finish within the %{secs}s connect-and-retry window" }
+stream_deadline = { zh = "流式请求在 %{secs} 秒连接与重试时限内没有完成", en = "The streaming request did not finish within the %{secs}s connect-and-retry window" }
 image_prepare = { zh = "图片请求准备失败：%{error}", en = "Failed to prepare image request: %{error}" }
 timeout_cfg = { zh = "连接超时配置无效：%{error}", en = "Invalid connect-timeout config: %{error}" }
 no_headers = { zh = "上游在 %{secs} 秒内没有返回响应头", en = "The upstream returned no response headers within %{secs}s" }
-tool_args_json = { zh = "工具调用 %{name} 的参数不是合法 JSON: %{err}", en = "Tool call %{name}'s arguments are not valid JSON: %{err}" }
-body_serialize = { zh = "%{protocol} 请求体序列化失败: %{error}", en = "Failed to serialize %{protocol} request body: %{error}" }
-body_not_json = { zh = "响应体不是合法 JSON: %{err}", en = "Response body is not valid JSON: %{err}" }
+tool_args_json = { zh = "工具调用 %{name} 的参数不是合法 JSON：%{err}", en = "Tool call %{name} arguments are not valid JSON: %{err}" }
+body_serialize = { zh = "%{protocol} 请求体序列化失败：%{error}", en = "Failed to serialize %{protocol} request body: %{error}" }
+body_not_json = { zh = "响应体不是合法 JSON：%{err}", en = "Response body is not valid JSON: %{err}" }
 missing_toolresult = { zh = "工具结果消息缺少 ToolResult 内容块", en = "Tool-result message is missing its ToolResult content block" }
-tool_call_unmatched = { zh = "assistant 消息中的工具调用 [%{names}] 缺少对应的工具结果消息（缺失: %{missing}）", en = "Tool calls [%{names}] in the assistant message lack matching tool-result messages (missing: %{missing})" }
-tool_result_orphan = { zh = "工具结果消息的 tool_call_id \"%{tool_call_id}\" 不在前一条 assistant 消息的工具调用中", en = "The tool-result message's tool_call_id \"%{tool_call_id}\" isn't among the previous assistant message's tool calls" }
-env_read = { zh = "读取环境变量 %{var} 失败", en = "Failed to read env var %{var}" }
-env_empty = { zh = "环境变量 %{var} 为空", en = "Env var %{var} is empty" }
+tool_call_unmatched = { zh = "assistant 消息中的工具调用 [%{names}] 缺少对应的工具结果消息（缺失：%{missing}）", en = "Tool calls [%{names}] in the assistant message lack matching tool-result messages (missing: %{missing})" }
+tool_result_orphan = { zh = "工具结果消息的 tool_call_id \"%{tool_call_id}\" 不在前一条 assistant 消息的工具调用中", en = "The tool-result message tool_call_id \"%{tool_call_id}\" is not among the previous assistant message's tool calls" }
+env_read = { zh = "读取环境变量 %{var} 失败", en = "Failed to read environment variable %{var}" }
+env_empty = { zh = "环境变量 %{var} 为空", en = "Environment variable %{var} is empty" }
 resp_cache_ttl = { zh = "Responses 协议的显式缓存只支持 30m，收到 %{value}", en = "The Responses protocol's explicit cache only supports 30m; got %{value}" }
 cache_index_range = { zh = "缓存断点下标 %{index} 超出消息范围（共 %{message_count} 条）", en = "Cache breakpoint index %{index} is out of range (%{message_count} messages)" }
-resp_item_kind = { zh = "%{role} 消息不能编码为 Responses 的 message item", en = "%{role} messages can't be encoded as Responses message items" }
+resp_item_kind = { zh = "%{role} 消息不能编码为 Responses 的 message item", en = "%{role} messages cannot be encoded as Responses message items" }
 resp_cache_assistant = { zh = "Responses 的缓存断点只能落在 assistant 消息的文本内容块上", en = "Responses cache breakpoints can only land on text content blocks of assistant messages" }
 tool_missing_result = { zh = "tool 消息缺少 ToolResult 内容块", en = "The tool message is missing its ToolResult content block" }
 resp_cache_text = { zh = "Responses 的缓存断点只能落在文本内容块上", en = "Responses cache breakpoints can only land on text content blocks" }
 cache_empty_msg = { zh = "缓存断点落在空消息上", en = "The cache breakpoint landed on an empty message" }
-role_block_kind = { zh = "%{role} 消息不允许出现 %{kind} 内容块", en = "%{role} messages can't contain %{kind} content blocks" }
+role_block_kind = { zh = "%{role} 消息不允许出现 %{kind} 内容块", en = "%{role} messages cannot contain %{kind} content blocks" }
 resp_failed = { zh = "Responses 请求失败", en = "Responses request failed" }
 resp_stream_error = { zh = "Responses 流错误", en = "Responses stream error" }
-resp_stream_json = { zh = "Responses 流数据不是合法 JSON: %{err}", en = "Responses stream data is not valid JSON: %{err}" }
+resp_stream_json = { zh = "Responses 流数据不是合法 JSON：%{err}", en = "Responses stream data is not valid JSON: %{err}" }
 chat_cache_ttl = { zh = "Chat 协议的显式缓存只支持 30m，收到 %{value}", en = "The Chat protocol's explicit cache only supports 30m; got %{value}" }
 chat_index_missing = { zh = "Chat 工具调用增量缺少 index", en = "Chat tool-call delta is missing its index" }
-chat_index_range = { zh = "Chat 工具调用 index 超出范围: %{raw_index}", en = "Chat tool-call index out of range: %{raw_index}" }
+chat_index_range = { zh = "Chat 工具调用 index 超出范围：%{raw_index}", en = "Chat tool-call index out of range: %{raw_index}" }
 chat_index_cap = { zh = "Chat 工具调用 index %{index} 超过本地上限 %{max}", en = "Chat tool-call index %{index} exceeds the local cap %{max}" }
-chat_stream_json = { zh = "Chat 流数据不是合法 JSON: %{err}", en = "Chat stream data is not valid JSON: %{err}" }
+chat_stream_json = { zh = "Chat 流数据不是合法 JSON：%{err}", en = "Chat stream data is not valid JSON: %{err}" }
 chat_stream_nomsg = { zh = "Chat 流返回了错误，但没有提供消息", en = "Chat stream returned an error without a message" }
-anthropic_stream_json = { zh = "Anthropic 流数据不是合法 JSON: %{err}", en = "Anthropic stream data is not valid JSON: %{err}" }
+anthropic_stream_json = { zh = "Anthropic 流数据不是合法 JSON：%{err}", en = "Anthropic stream data is not valid JSON: %{err}" }
 cache_block_oob = { zh = "线上消息只有 %{len} 个内容块，缓存断点块下标 %{block} 越界", en = "The wire message has only %{len} content blocks; cache breakpoint block index %{block} is out of bounds" }
 cache_no_instr = { zh = "缓存断点下标 %{message} 没有对应的指令消息", en = "Cache breakpoint index %{message} has no matching instruction message" }
-anthropic_cache_system = { zh = "Anthropic 缓存断点需要非空系统提示才能落位（系统提示为空）", en = "Anthropic cache breakpoints need a non-empty system prompt to land on (system prompt is empty)" }
+anthropic_cache_system = { zh = "Anthropic 缓存断点需要非空系统提示才能落位（系统提示为空）", en = "Anthropic cache breakpoints require a non-empty system prompt (system prompt is empty)" }
 system_block_oob = { zh = "系统提示只有 %{len} 个内容块，缓存断点块下标 %{target} 越界", en = "The system prompt has only %{len} content blocks; cache breakpoint block index %{target} is out of bounds" }
 anthropic_max_tokens = { zh = "Anthropic 协议的 max_output_tokens 是必填项", en = "max_output_tokens is required by the Anthropic protocol" }
-anthropic_json_object = { zh = "Anthropic 不支持 json_object 响应格式，请提供 JsonSchema", en = "Anthropic doesn't support the json_object response format; provide a JsonSchema" }
-anthropic_reasoning_item = { zh = "Anthropic 协议不支持 Responses 的 reasoning item", en = "The Anthropic protocol doesn't support the Responses reasoning item" }
-tool_args_object = { zh = "工具调用 %{name} 的参数必须是 JSON 对象，收到 %{value}", en = "Tool call %{name}'s arguments must be a JSON object; got %{value}" }
+anthropic_json_object = { zh = "Anthropic 不支持 json_object 响应格式，请提供 JsonSchema", en = "Anthropic does not support the json_object response format; provide a JsonSchema" }
+anthropic_reasoning_item = { zh = "Anthropic 协议不支持 Responses 的 reasoning item", en = "The Anthropic protocol does not support the Responses reasoning item" }
+tool_args_object = { zh = "工具调用 %{name} 的参数必须是 JSON 对象，收到 %{value}", en = "Tool call %{name} arguments must be a JSON object; got %{value}" }
 anthropic_cache_ttl = { zh = "Anthropic 的缓存 TTL 只支持 5m 与 1h", en = "Anthropic cache TTL only supports 5m and 1h" }
 cache_no_block = { zh = "缓存断点下标 %{index} 没有对应的线上内容块", en = "Cache breakpoint index %{index} has no matching wire content block" }
-tool_args_serialize = { zh = "工具调用参数序列化失败: %{err}", en = "Failed to serialize tool-call arguments: %{err}" }
+tool_args_serialize = { zh = "工具调用参数序列化失败：%{err}", en = "Failed to serialize tool-call arguments: %{err}" }
+
+[llm.image_gen]
+json_parse = { zh = "无法解析上游 JSON 响应：%{error}（响应片段：%{preview}）", en = "Failed to parse upstream JSON response: %{error} (snippet: %{preview})" }
+empty_data = { zh = "上游返回了空的 data 数组", en = "Upstream returned an empty data array" }
+b64_decode = { zh = "Base64 解码失败：%{error}", en = "Failed to decode Base64: %{error}" }
+missing_payload = { zh = "上游响应条目既不包含 b64_json 也不包含 url", en = "Upstream response item contains neither b64_json nor url" }
+unsupported_scheme = { zh = "拒绝下载不受支持的图片协议：%{scheme}", en = "Refused to download image with unsupported scheme: %{scheme}" }
+embedded_creds = { zh = "拒绝下载包含内嵌凭据的图片 URL", en = "Refused to download image URL with embedded credentials" }
+missing_port = { zh = "图片 URL 缺少有效端口", en = "Image URL is missing a valid port" }
+missing_host = { zh = "图片 URL 缺少有效主机名", en = "Image URL is missing a valid host" }
+non_public_ip = { zh = "拒绝访问非公网图片地址：%{ip}", en = "Refused to access non-public image address: %{ip}" }
+dns_failed = { zh = "解析图片域名失败：%{error}", en = "Failed to resolve image host: %{error}" }
+dns_empty = { zh = "图片域名未解析出任何地址：%{host}", en = "Image host resolved to no addresses: %{host}" }
+dns_non_public = { zh = "拒绝访问解析到非公网地址的图片域名：%{host} -> %{ip}", en = "Refused to access image host resolving to non-public address: %{host} -> %{ip}" }
+download_timeout_secs = { zh = "下载生成图片超时（超过 %{secs}s）", en = "Timed out downloading generated image (over %{secs}s)" }
+invalid_url = { zh = "无效的生成图片 URL：%{error}", en = "Invalid generated image URL: %{error}" }
+download_timeout = { zh = "下载生成图片超时", en = "Timed out downloading generated image" }
+client_build = { zh = "构建图片下载客户端失败：%{error}", en = "Failed to build image download client: %{error}" }
+download_failed = { zh = "下载生成图片失败：%{error}", en = "Failed to download generated image: %{error}" }
+too_many_redirects = { zh = "下载生成图片重定向次数超过上限（%{max}）", en = "Generated image download exceeded redirect limit (%{max})" }
+redirect_no_location = { zh = "下载生成图片收到重定向但缺少 Location 头", en = "Generated image redirect is missing Location header" }
+redirect_bad_target = { zh = "下载生成图片重定向目标无效：%{error}", en = "Generated image redirect target is invalid: %{error}" }
+download_http_status = { zh = "下载生成图片失败：HTTP %{status}", en = "Failed to download generated image: HTTP %{status}" }
+body_too_large = { zh = "图片响应体超过大小上限（%{mib} MiB）", en = "Image response body exceeded size limit (%{mib} MiB)" }
 
 [llm.img]
 diagnostics = { zh = "请求体 %{bytes} 字节（%{kib} KiB），图片 %{images} 张（历史 %{history} 张），图片 Base64 %{b64_before} → %{b64_after} 字节，非图片部分 %{other} 字节，本地请求上限 %{limit} 字节，等待 %{wait} 秒", en = "request body %{bytes} bytes (%{kib} KiB), %{images} images (%{history} from history), image Base64 %{b64_before} → %{b64_after} bytes, %{other} bytes outside images, local cap %{limit} bytes, waited %{wait}s" }

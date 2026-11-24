@@ -766,11 +766,11 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         let compact = surface.replace(' ', "");
-        assert!(compact.contains("待发送2"), "surface:\n{surface}");
+        assert!(compact.contains("Pending2"), "surface:\n{surface}");
         assert!(compact.contains("插队内容"), "surface:\n{surface}");
         assert!(compact.contains("排队内容"), "surface:\n{surface}");
-        assert!(compact.contains("插队1."), "surface:\n{surface}");
-        assert!(compact.contains("队列1."), "surface:\n{surface}");
+        assert!(compact.contains("Steer1."), "surface:\n{surface}");
+        assert!(compact.contains("Queue1."), "surface:\n{surface}");
     }
 
     #[test]

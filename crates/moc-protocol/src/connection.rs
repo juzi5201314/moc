@@ -678,8 +678,12 @@ impl EncodeFailure {
     /// 中文描述，用于日志与降级错误消息。
     fn detail(&self) -> String {
         match self {
-            Self::Serialize(message) => format!("出站报文序列化失败：{message}"),
-            Self::TooLarge { len, max } => format!("出站报文 {len} 字节超过上限 {max}"),
+            Self::Serialize(message) => {
+                moc_i18n::t!("protocol.err.outbound_serialize", error = message).into_owned()
+            }
+            Self::TooLarge { len, max } => {
+                moc_i18n::t!("protocol.err.outbound_too_large", len = len, max = max).into_owned()
+            }
         }
     }
 }
@@ -843,7 +847,7 @@ fn serialize_params<M: Method>(params: M::Params) -> Result<Value, RpcCallError>
     M::encode_params(params).map_err(|error| {
         RpcCallError::Rpc(RpcError::new(
             RpcErrorCode::InternalError.code(),
-            format!("请求参数序列化失败：{error}"),
+            moc_i18n::t!("protocol.err.params_serialize", error = error).into_owned(),
         ))
     })
 }
@@ -853,7 +857,7 @@ fn deserialize_result<M: Method>(value: Value) -> Result<M::Result, RpcCallError
     M::decode_result(value).map_err(|error| {
         RpcCallError::Rpc(RpcError::new(
             RpcErrorCode::InternalError.code(),
-            format!("响应结果解析失败：{error}"),
+            moc_i18n::t!("protocol.err.result_deserialize", error = error).into_owned(),
         ))
     })
 }
@@ -864,7 +868,7 @@ pub(crate) fn params_from_value<M: Method>(params: Option<Value>) -> Result<M::P
     M::decode_params(value).map_err(|error| {
         RpcError::new(
             RpcErrorCode::InvalidParams.code(),
-            format!("参数非法：{error}"),
+            moc_i18n::t!("protocol.err.params_invalid_detail", error = error).into_owned(),
         )
     })
 }
@@ -874,7 +878,7 @@ pub(crate) fn value_from<T: Serialize>(value: T) -> Result<Value, RpcError> {
     serde_json::to_value(value).map_err(|error| {
         RpcError::new(
             RpcErrorCode::InternalError.code(),
-            format!("结果序列化失败：{error}"),
+            moc_i18n::t!("protocol.err.result_serialize", error = error).into_owned(),
         )
     })
 }

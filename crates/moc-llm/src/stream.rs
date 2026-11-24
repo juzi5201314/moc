@@ -589,10 +589,13 @@ impl ChatStream {
             }
         }
         if self.sse.is_overflowed() {
-            self.stop_with(LlmError::Stream(format!(
-                "SSE 缓冲区超过 {} 字节上限",
-                crate::codec::sse::MAX_BUFFERED_BYTES
-            )));
+            self.stop_with(LlmError::Stream(
+                moc_i18n::t!(
+                    "llm.err.sse_buffer_limit",
+                    max = crate::codec::sse::MAX_BUFFERED_BYTES
+                )
+                .into_owned(),
+            ));
         }
     }
 

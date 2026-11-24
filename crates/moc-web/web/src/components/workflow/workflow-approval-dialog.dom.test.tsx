@@ -98,12 +98,12 @@ describe("WorkflowApprovalDialog", () => {
     expect(body.nextElementSibling).toBe(footer);
     expect(footer.classList.contains("shrink-0")).toBe(true);
     fireEvent.scroll(body, { target: { scrollTop: 10000 } });
-    expect(footer.contains(view.getByRole("button", { name: "批准" }))).toBe(true);
-    fireEvent.click(view.getByRole("button", { name: "拒绝" }));
-    expect(footer.contains(view.getByRole("button", { name: "确认拒绝" }))).toBe(true);
+    expect(footer.contains(view.getByRole("button", { name: "Approve" }))).toBe(true);
+    fireEvent.click(view.getByRole("button", { name: "Reject" }));
+    expect(footer.contains(view.getByRole("button", { name: "Confirm reject" }))).toBe(true);
     expect(body.contains(view.getByPlaceholderText(/拒绝原因/))).toBe(true);
-    fireEvent.click(view.getByRole("button", { name: "取消" }));
-    fireEvent.click(view.getByRole("button", { name: "批准" }));
+    fireEvent.click(view.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(view.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
   });
 
@@ -125,7 +125,7 @@ describe("WorkflowApprovalDialog", () => {
     expect(code?.classList.contains("[&_pre]:whitespace-pre-wrap")).toBe(true);
     expect(code?.classList.contains("[&_pre]:[overflow-wrap:anywhere]")).toBe(true);
     expect(code?.querySelector("pre")?.textContent).toBe(script);
-    expect(view.getByText("批准")).toBeTruthy();
+    expect(view.getByText("Approve")).toBeTruthy();
     view.rerender(
       <WorkflowApprovalDialog
         sessionId="s1"
@@ -144,7 +144,7 @@ describe("WorkflowApprovalDialog", () => {
     // 两个 role + 一个 ref 的桩按钮：只点第一个（planner/r1）。
     const pickers = getAllByText(/select|default/);
     fireEvent.click(pickers[0]);
-    fireEvent.click(getByText("批准"));
+    fireEvent.click(getByText("Approve"));
     await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
     const call = approve.mock.calls[0];
     expect(call[0]).toBe("s1");
@@ -166,7 +166,7 @@ describe("WorkflowApprovalDialog", () => {
     const pickers = getAllByText(/select|default/);
     // 三个选择器：r1、r2、m1 —— 只点 m1。
     fireEvent.click(pickers[2]);
-    fireEvent.click(getByText("批准"));
+    fireEvent.click(getByText("Approve"));
     await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
     const decision = approve.mock.calls[0][2] as { model_ref_map: Record<string, string> };
     expect(decision.model_ref_map).toEqual({ m1: "default/ref:high" });
@@ -176,9 +176,9 @@ describe("WorkflowApprovalDialog", () => {
     const { getByText, getByPlaceholderText } = render(
       <WorkflowApprovalDialog sessionId="s1" approval={approval} open onOpenChange={() => {}} />,
     );
-    fireEvent.click(getByText("拒绝"));
+    fireEvent.click(getByText("Reject"));
     fireEvent.change(getByPlaceholderText(/拒绝原因/), { target: { value: "改一下范围" } });
-    fireEvent.click(getByText("确认拒绝"));
+    fireEvent.click(getByText("Confirm reject"));
     await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
     expect(approve.mock.calls[0][2]).toEqual({ action: "reject", feedback: "改一下范围" });
   });
@@ -193,7 +193,7 @@ describe("WorkflowApprovalDialog", () => {
     for (const picker of getAllByRole("button", { name: /select|default/ })) {
       expect(picker.hasAttribute("disabled")).toBe(true);
     }
-    expect(getByText("批准").hasAttribute("disabled")).toBe(true);
-    expect(getByText("拒绝").hasAttribute("disabled")).toBe(true);
+    expect(getByText("Approve").hasAttribute("disabled")).toBe(true);
+    expect(getByText("Reject").hasAttribute("disabled")).toBe(true);
   });
 });

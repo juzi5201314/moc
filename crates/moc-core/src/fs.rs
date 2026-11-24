@@ -4,6 +4,8 @@
 //! 判定类型。读不出元信息的项直接跳过（权限不足、悬空链接），不让单个坏项
 //! 拖垮整个列表。
 
+use moc_i18n::t;
+use std::fmt;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
@@ -14,100 +16,292 @@ use moc_protocol::{
 };
 
 /// 路径解析失败：两种原因都对应前端的 `-32602`。
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum PathError {
-    #[error("无法解析主目录")]
     NoHome,
-    #[error("需要绝对路径")]
     NotAbsolute,
 }
 
+impl fmt::Display for PathError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoHome => f.write_str(&t!("core.fs.no_home")),
+            Self::NotAbsolute => f.write_str(&t!("core.fs.not_absolute")),
+        }
+    }
+}
+
+impl std::error::Error for PathError {}
+
 /// 目录列举失败的原因；`Display` 文案直接回给前端。
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub(crate) enum ListDirError {
-    #[error(transparent)]
-    Path(#[from] PathError),
-    #[error("目录无效：{}：{source}", path.display())]
+    Path(PathError),
     Io {
         path: PathBuf,
-        #[source]
         source: std::io::Error,
     },
-    #[error("目录无效：{}：不是目录", path.display())]
-    NotDirectory { path: PathBuf },
+    NotDirectory {
+        path: PathBuf,
+    },
+}
+
+impl From<PathError> for ListDirError {
+    fn from(error: PathError) -> Self {
+        Self::Path(error)
+    }
+}
+
+impl fmt::Display for ListDirError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(error) => error.fmt(f),
+            Self::Io { path, source } => f.write_str(&t!(
+                "core.fs.dir_io",
+                path = path.display().to_string(),
+                source = source
+            )),
+            Self::NotDirectory { path } => {
+                f.write_str(&t!("core.fs.not_dir", path = path.display().to_string()))
+            }
+        }
+    }
+}
+
+impl std::error::Error for ListDirError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Path(error) => Some(error),
+            Self::Io { source, .. } => Some(source),
+            Self::NotDirectory { .. } => None,
+        }
+    }
 }
 
 /// 新建目录失败的原因；`Display` 文案直接回给前端。
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub(crate) enum CreateDirError {
-    #[error(transparent)]
-    Path(#[from] PathError),
-    #[error("目录名无效：{0}")]
+    Path(PathError),
     InvalidName(String),
-    #[error("目录无效：{}：{source}", path.display())]
     Io {
         path: PathBuf,
-        #[source]
         source: std::io::Error,
     },
-    #[error("目录无效：{}：不是目录", path.display())]
-    NotDirectory { path: PathBuf },
-    #[error("目录已存在：{}", path.display())]
-    Exists { path: PathBuf },
+    NotDirectory {
+        path: PathBuf,
+    },
+    Exists {
+        path: PathBuf,
+    },
+}
+
+impl From<PathError> for CreateDirError {
+    fn from(error: PathError) -> Self {
+        Self::Path(error)
+    }
+}
+
+impl fmt::Display for CreateDirError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(error) => error.fmt(f),
+            Self::InvalidName(name) => f.write_str(&t!("core.fs.invalid_dir_name", name = name)),
+            Self::Io { path, source } => f.write_str(&t!(
+                "core.fs.dir_io",
+                path = path.display().to_string(),
+                source = source
+            )),
+            Self::NotDirectory { path } => {
+                f.write_str(&t!("core.fs.not_dir", path = path.display().to_string()))
+            }
+            Self::Exists { path } => f.write_str(&t!(
+                "core.fs.dir_exists",
+                path = path.display().to_string()
+            )),
+        }
+    }
+}
+
+impl std::error::Error for CreateDirError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Path(error) => Some(error),
+            Self::Io { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
 
 /// 新建文件失败的原因；与 [`CreateDirError`] 同构，文案指向文件。
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub(crate) enum CreateFileError {
-    #[error(transparent)]
-    Path(#[from] PathError),
-    #[error("文件名无效：{0}")]
+    Path(PathError),
     InvalidName(String),
-    #[error("目录无效：{}：{source}", path.display())]
     Io {
         path: PathBuf,
-        #[source]
         source: std::io::Error,
     },
-    #[error("目录无效：{}：不是目录", path.display())]
-    NotDirectory { path: PathBuf },
-    #[error("文件已存在：{}", path.display())]
-    Exists { path: PathBuf },
+    NotDirectory {
+        path: PathBuf,
+    },
+    Exists {
+        path: PathBuf,
+    },
+}
+
+impl From<PathError> for CreateFileError {
+    fn from(error: PathError) -> Self {
+        Self::Path(error)
+    }
+}
+
+impl fmt::Display for CreateFileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(error) => error.fmt(f),
+            Self::InvalidName(name) => f.write_str(&t!("core.fs.invalid_file_name", name = name)),
+            Self::Io { path, source } => f.write_str(&t!(
+                "core.fs.dir_io",
+                path = path.display().to_string(),
+                source = source
+            )),
+            Self::NotDirectory { path } => {
+                f.write_str(&t!("core.fs.not_dir", path = path.display().to_string()))
+            }
+            Self::Exists { path } => f.write_str(&t!(
+                "core.fs.file_exists",
+                path = path.display().to_string()
+            )),
+        }
+    }
+}
+
+impl std::error::Error for CreateFileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Path(error) => Some(error),
+            Self::Io { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
 
 /// 文件读取/写入/重命名共用的失败原因；`Display` 文案直接回给前端。
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub(crate) enum FileIoError {
-    #[error(transparent)]
-    Path(#[from] PathError),
-    #[error("路径无效：{}：{source}", path.display())]
+    Path(PathError),
     Io {
         path: PathBuf,
-        #[source]
         source: std::io::Error,
     },
-    #[error("路径无效：{}：不是普通文件", path.display())]
-    NotFile { path: PathBuf },
-    #[error("路径已存在：{}", path.display())]
-    Exists { path: PathBuf },
+    NotFile {
+        path: PathBuf,
+    },
+    Exists {
+        path: PathBuf,
+    },
+}
+
+impl From<PathError> for FileIoError {
+    fn from(error: PathError) -> Self {
+        Self::Path(error)
+    }
+}
+
+impl fmt::Display for FileIoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(error) => error.fmt(f),
+            Self::Io { path, source } => f.write_str(&t!(
+                "core.fs.path_io",
+                path = path.display().to_string(),
+                source = source
+            )),
+            Self::NotFile { path } => {
+                f.write_str(&t!("core.fs.not_file", path = path.display().to_string()))
+            }
+            Self::Exists { path } => f.write_str(&t!(
+                "core.fs.path_exists",
+                path = path.display().to_string()
+            )),
+        }
+    }
+}
+
+impl std::error::Error for FileIoError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Path(error) => Some(error),
+            Self::Io { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
 
 /// 覆盖写失败；`Conflict` 单独成变体，service 层映射 `-32016`。
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub(crate) enum WriteFileError {
-    #[error(transparent)]
-    Io(#[from] FileIoError),
-    #[error("文件已被修改（磁盘 mtime 与 expected_modified_ms 不一致）")]
+    Io(FileIoError),
     Conflict { modified_ms: Option<u64> },
 }
 
+impl From<FileIoError> for WriteFileError {
+    fn from(error: FileIoError) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl fmt::Display for WriteFileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => error.fmt(f),
+            Self::Conflict { .. } => f.write_str(&t!("core.fs.conflict")),
+        }
+    }
+}
+
+impl std::error::Error for WriteFileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Conflict { .. } => None,
+        }
+    }
+}
+
 /// 移入回收站失败。
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub(crate) enum DeleteError {
-    #[error(transparent)]
-    Path(#[from] PathError),
-    #[error("无法移入回收站：{}：{message}", path.display())]
+    Path(PathError),
     Trash { path: PathBuf, message: String },
+}
+
+impl From<PathError> for DeleteError {
+    fn from(error: PathError) -> Self {
+        Self::Path(error)
+    }
+}
+
+impl fmt::Display for DeleteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(error) => error.fmt(f),
+            Self::Trash { path, message } => f.write_str(&t!(
+                "core.fs.trash_failed",
+                path = path.display().to_string(),
+                message = message
+            )),
+        }
+    }
+}
+
+impl std::error::Error for DeleteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Path(error) => Some(error),
+            Self::Trash { .. } => None,
+        }
+    }
 }
 
 /// 列出 `path` 下的目录项；`None` 取 `default_cwd`。

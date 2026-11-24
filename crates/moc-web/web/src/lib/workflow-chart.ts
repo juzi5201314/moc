@@ -85,7 +85,7 @@ export function chartToMermaid(spec: ChartSpecLite, items: unknown[]): string | 
 
   // xychart-beta：line/bar；baseline = 常值 series。
   const kind = type === "bar" ? "bar" : "line";
-  const title = `${spec.title ?? "chart"}${spec.scale === "log" ? t("chart.linear_axis") : ""}`;
+  const title = `${spec.title ?? "chart"}${spec.scale === "log" ? ` (${t("chart.linear_axis")})` : ""}`;
   const ys = series.flatMap((s) => s.points.map((p) => p.y));
   if (baseline !== undefined) ys.push(baseline);
   const lo = Math.min(0, Math.min(...ys));

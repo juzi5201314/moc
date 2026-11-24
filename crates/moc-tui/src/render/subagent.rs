@@ -349,8 +349,7 @@ mod tests {
             dump.push('\n');
         }
         eprintln!("\n{dump}");
-        // dump 按 cell 逐格输出，CJK 双宽字符后带一个空 cell。
-        assert!(dump.contains("子 代 理  2"), "标题计数：{dump}");
+        assert!(dump.contains("Subagents 2"), "标题计数：{dump}");
         assert!(dump.contains("· 1 running"), "运行中计数：{dump}");
         assert!(dump.contains("●"), "running 符号：{dump}");
         assert!(dump.contains("✓"), "完成符号：{dump}");

@@ -195,9 +195,9 @@ impl WorkflowManager {
     /// 停止 run：引擎终态 + worker cancel + 进程回收。
     pub async fn stop(self: &Arc<Self>, run_id: &str) -> Result<WorkflowRunSummary, CoreError> {
         let Some(handle) = self.runs.lock().get(run_id).cloned() else {
-            return Err(CoreError::Session(format!(
-                "workflow run {run_id} 不在运行中"
-            )));
+            return Err(CoreError::Session(
+                moc_i18n::t!("core.err.workflow_run_not_running", id = run_id).into_owned(),
+            ));
         };
         self.cancel_run(&handle, "E_STOPPED");
         // 终态落盘在 run_loop 异步完成；summary 先按已记录的终态投影。

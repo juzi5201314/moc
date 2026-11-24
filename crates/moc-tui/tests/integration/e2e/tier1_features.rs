@@ -58,7 +58,7 @@ fn test_f1_02_model_picker_background_has_solid_panel_fill() {
     let rows = buffer_compact_rows(&terminal);
     let title_row = rows
         .iter()
-        .find(|r| r.contains("选择模型"))
+        .find(|r| r.contains("Select Model"))
         .expect("model picker header");
     assert!(
         !title_row.contains("ZZZZ"),
@@ -80,7 +80,7 @@ fn test_f1_03_sessions_modal_background_clears_underlying_buffer() {
     let rows = buffer_compact_rows(&terminal);
     let title = rows
         .iter()
-        .find(|r| r.contains("恢复会话"))
+        .find(|r| r.contains("Resume Session"))
         .expect("sessions title");
     assert!(
         !title.contains("####"),
@@ -208,7 +208,7 @@ fn test_f2_04_rewind_modal_outer_dialog_uses_rounded_borders() {
     let rows = buffer_compact_rows(&terminal);
     let title_line = rows
         .iter()
-        .find(|r| r.contains("消息回退"))
+        .find(|r| r.contains("Rewind"))
         .expect("rewind title");
     assert!(
         title_line.contains("╭") || title_line.contains("─"),
@@ -297,7 +297,7 @@ fn test_f4_03_toast_clear_input_notice_is_chinese() {
 }
 
 #[test]
-fn test_f4_04_prompt_legend_stopping_is_chinese() {
+fn test_f4_04_prompt_legend_stopping_is_english() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 25);
     app.prompt_running = true;
     app.cancel_requested = true;
@@ -308,11 +308,11 @@ fn test_f4_04_prompt_legend_stopping_is_chinese() {
     let rows = buffer_compact_rows(&terminal);
     let prompt_border = rows
         .iter()
-        .find(|r| r.contains("停止") || r.contains("Stop"))
-        .unwrap_or(&rows[rows.len() - 3]);
+        .find(|r| r.contains("Stopping"))
+        .expect("prompt border should show English 'Stopping' status");
     assert!(
-        !prompt_border.contains("Stopping"),
-        "Prompt border legend should not contain English 'Stopping'"
+        !prompt_border.contains("正在停止"),
+        "Prompt border legend should use English 'Stopping'"
     );
 }
 
@@ -632,10 +632,9 @@ fn test_f8_01_help_modal_contains_three_distinct_sections() {
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     let text = rows.join("\n");
-    let has_session_sec =
-        text.contains("会话") || text.contains("系统命令") || text.contains("Session");
-    let has_editing_sec = text.contains("编辑") || text.contains("输入") || text.contains("Edit");
-    let has_bypass_sec = text.contains("旁路") || text.contains("Bypass");
+    let has_session_sec = text.contains("Session & General");
+    let has_editing_sec = text.contains("Input & Editing");
+    let has_bypass_sec = text.contains("Aside (BTW)");
     assert!(
         has_session_sec && has_editing_sec && has_bypass_sec,
         "Help modal must partition into 3 distinct sections"
@@ -673,7 +672,7 @@ fn test_f8_04_help_modal_bypass_interaction_included() {
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     let text = rows.join("\n");
-    assert!(text.contains("/btw") || text.contains("旁路"));
+    assert!(text.contains("BTW") || text.contains("Aside"));
     assert!(text.contains("Alt+B") || text.contains("Tab"));
 }
 
@@ -684,8 +683,8 @@ fn test_f8_05_help_modal_sections_rendered_with_header_styling() {
     app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("快捷键")));
-    assert!(rows.iter().any(|r| r.contains("输入与编辑")));
+    assert!(rows.iter().any(|r| r.contains("Shortcuts")));
+    assert!(rows.iter().any(|r| r.contains("Input & Editing")));
 }
 
 // ============================================================================

@@ -3,12 +3,16 @@
 use std::path::Path;
 use std::process::Stdio;
 
+use moc_i18n::t;
 use tokio::process::Command;
 
 /// 在系统文件管理器中打开并高亮选中目标文件（若为目录则直接打开目录）。
 pub async fn reveal_in_file_manager(path: &Path) -> anyhow::Result<()> {
     if !path.exists() {
-        anyhow::bail!("文件不存在：{}", path.display());
+        anyhow::bail!(
+            "{}",
+            t!("web.playground.reveal_file_missing", path = path.display())
+        );
     }
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     reveal_impl(&canonical).await
@@ -53,7 +57,7 @@ async fn reveal_impl(path: &Path) -> anyhow::Result<()> {
         .iter()
         .any(|key| std::env::var_os(key).is_some_and(|v| !v.is_empty()));
     if !graphical {
-        anyhow::bail!("当前环境没有图形桌面会话，无法打开系统文件管理器");
+        anyhow::bail!("{}", t!("web.playground.reveal_no_gui"));
     }
     // 优先通过 freedesktop FileManager1 DBus 接口高亮选中目标文件。
     if path.is_file() {
@@ -90,7 +94,7 @@ async fn reveal_impl(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(not(any(unix, windows)))]
 async fn reveal_impl(_path: &Path) -> anyhow::Result<()> {
-    anyhow::bail!("当前平台不支持打开系统文件管理器")
+    anyhow::bail!("{}", t!("web.playground.reveal_unsupported"))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]

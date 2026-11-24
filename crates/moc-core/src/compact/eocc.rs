@@ -213,7 +213,7 @@ pub(crate) async fn compact(input: SoftInput<'_>) -> Result<CompactResult, CoreE
     let recap_budget = target.saturating_sub(base + 256).min(MAX_RECAP_TOKENS);
     if recap_budget < 128 {
         return Err(CoreError::ContextOverflow(
-            "EoCC：系统、任务和运行状态占满压缩预算；请提高触发阈值或减少固定上下文".into(),
+            moc_i18n::t!("core.err.eocc_budget_full").into_owned(),
         ));
     }
     let output_tokens = model.max_output_tokens.min(8192);
@@ -255,14 +255,14 @@ pub(crate) async fn compact(input: SoftInput<'_>) -> Result<CompactResult, CoreE
             let fixed = messages_tokens(&messages);
             if fixed >= available {
                 return Err(CoreError::ContextOverflow(
-                    "EoCC：先前状态与任务无法放入摘要模型输入窗口".into(),
+                    moc_i18n::t!("core.err.eocc_input_overflow").into_owned(),
                 ));
             }
             messages.extend(fit::fit_conversation_to_budget(complete, available - fixed));
         }
         if messages_tokens(&messages) > available {
             return Err(CoreError::ContextOverflow(
-                "EoCC：完整工具组无法放入摘要请求".into(),
+                moc_i18n::t!("core.err.eocc_tool_group_overflow").into_owned(),
             ));
         }
         let raw = sampler
@@ -281,7 +281,7 @@ pub(crate) async fn compact(input: SoftInput<'_>) -> Result<CompactResult, CoreE
                     base - message_tokens(&carrier("")) + message_tokens(&carrier(&summary));
                 if tokens_after > target {
                     return Err(CoreError::ContextOverflow(
-                        "EoCC：交接状态超过恢复预算，未替换历史".into(),
+                        moc_i18n::t!("core.err.eocc_handoff_overflow").into_owned(),
                     ));
                 }
                 return super::record_compaction(
@@ -305,10 +305,13 @@ pub(crate) async fn compact(input: SoftInput<'_>) -> Result<CompactResult, CoreE
             Err(reason) => repair = Some(reason),
         }
     }
-    Err(CoreError::ContextOverflow(format!(
-        "EoCC：无法生成合格交接状态：{}",
-        repair.expect("每次被拒收都会记录原因")
-    )))
+    Err(CoreError::ContextOverflow(
+        moc_i18n::t!(
+            "core.err.eocc_handoff_failed",
+            reason = repair.expect("每次被拒收都会记录原因")
+        )
+        .into_owned(),
+    ))
 }
 
 #[cfg(test)]

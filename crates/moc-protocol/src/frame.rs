@@ -142,7 +142,7 @@ impl FrameDecoder {
             if line.is_empty() {
                 let Some(len) = content_length else {
                     return Err(FrameError::InvalidContentLength(
-                        "缺少 Content-Length 头".to_owned(),
+                        moc_i18n::t!("protocol.err.frame_missing_length").into_owned(),
                     ));
                 };
                 if len > self.max_frame_bytes {
@@ -299,7 +299,11 @@ fn parse_decimal(bytes: &[u8]) -> Result<usize, FrameError> {
         value = value
             .checked_mul(10)
             .and_then(|value| value.checked_add(usize::from(byte - b'0')))
-            .ok_or_else(|| FrameError::InvalidContentLength("长度超出 usize 范围".to_owned()))?;
+            .ok_or_else(|| {
+                FrameError::InvalidContentLength(
+                    moc_i18n::t!("protocol.err.frame_length_overflow").into_owned(),
+                )
+            })?;
     }
     Ok(value)
 }

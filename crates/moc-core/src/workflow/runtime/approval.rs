@@ -44,9 +44,9 @@ impl WorkflowManager {
         sink: &UpdateSink,
     ) -> Result<String, CoreError> {
         let Some(tx) = self.approvals.lock().remove(request_id) else {
-            return Err(CoreError::Session(format!(
-                "workflow approval {request_id} 不存在或已解决"
-            )));
+            return Err(CoreError::Session(
+                moc_i18n::t!("core.err.workflow_approval_missing", id = request_id).into_owned(),
+            ));
         };
         let approved = matches!(decision, moc_protocol::WorkflowDecision::Approve { .. });
         let feedback = match &decision {

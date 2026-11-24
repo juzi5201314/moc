@@ -322,7 +322,7 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
       <Dialog open onOpenChange={(o) => useWorkflow.setState({ runsOpen: o })}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>workflow runs</DialogTitle>
+            <DialogTitle>{t("wfr.runs_title")}</DialogTitle>
           </DialogHeader>
           <div className="max-h-[60vh] space-y-1 overflow-y-auto">
             {runList.length === 0 && (
@@ -380,7 +380,7 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
         </div>
 
         <div className="space-y-2">
-          <div className="text-ui text-muted-foreground">roles</div>
+          <div className="text-ui text-muted-foreground">{t("wfr.roles")}</div>
           {view.roles.map((role) => (
             <Card
               key={role.role_id}
@@ -414,7 +414,7 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
 
         {view.reports.length > 0 && (
           <div className="space-y-1">
-            <div className="text-ui text-muted-foreground">reports</div>
+            <div className="text-ui text-muted-foreground">{t("wfr.reports")}</div>
             {view.reports.slice(-20).map((report) => (
               <div
                 key={JSON.stringify(report.item)}
@@ -428,7 +428,7 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
 
         {view.artifacts.length > 0 && (
           <div className="space-y-2">
-            <div className="text-ui text-muted-foreground">artifacts</div>
+            <div className="text-ui text-muted-foreground">{t("wfr.artifacts")}</div>
             {(() => {
               // 同一 artifact_id 多次声明=版本；展示取最新声明，版本序列全传给块。
               const groups = new Map<string, Record<string, unknown>[]>();
@@ -453,7 +453,7 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
 
         {view.holes.length > 0 && (
           <div className="space-y-1">
-            <div className="text-ui text-muted-foreground">holes</div>
+            <div className="text-ui text-muted-foreground">{t("wfr.holes")}</div>
             {view.holes.map((hole) => (
               <div key={String(hole.name)} className="text-ui text-warn">
                 ? {String(hole.name)} {typeof hole.prompt === "string" ? `— ${hole.prompt}` : ""}
@@ -464,7 +464,7 @@ export function WorkflowRunPanel({ sessionId }: { sessionId: string }) {
 
         {view.log.length > 0 && (
           <div className="space-y-1">
-            <div className="text-ui text-muted-foreground">log</div>
+            <div className="text-ui text-muted-foreground">{t("wfr.log")}</div>
             <pre className="max-h-40 overflow-auto whitespace-pre-wrap text-ui text-text-tertiary">
               {view.log.join("\n")}
             </pre>

@@ -51,7 +51,7 @@ export function PlaygroundGalleryView() {
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {mode === "all" ? t("common.all") : "GIF / Anim"}
+                {mode === "all" ? t("common.all") : t("ip.filter_animated")}
               </button>
             ))}
           </div>

@@ -26,18 +26,18 @@ fn ask_recommendations_render_after_option_labels() {
         .collect();
     let first = texts
         .iter()
-        .find(|text| text.contains("上中下（推荐）"))
+        .find(|text| text.contains("上中下 (Recommended)"))
         .expect("第一个推荐项应带推荐后缀");
     assert!(
-        first.contains("☑ 上中下（推荐）"),
+        first.contains("☑ 上中下 (Recommended)"),
         "已选推荐项仍应保留推荐后缀：{first}"
     );
     let second = texts
         .iter()
-        .find(|text| text.contains("左右（推荐）"))
+        .find(|text| text.contains("左右 (Recommended)"))
         .expect("第二个推荐项应带推荐后缀");
     assert!(
-        second.contains("☐ 左右（推荐）"),
+        second.contains("☐ 左右 (Recommended)"),
         "未选推荐项也应显示推荐后缀：{second}"
     );
 }
@@ -134,7 +134,7 @@ fn ask_parked_collapses_to_strip_over_prompt() {
     let compact = text.replace(' ', "");
     assert!(compact.contains("布局偏好"), "细条应显示当前问：{text:?}");
     assert!(
-        compact.contains("Tab展开作答") && compact.contains("Esc取消"),
+        compact.contains("TabExpand") && compact.contains("EscCancel"),
         "细条应给出返回与取消的路：{text:?}"
     );
 }
@@ -222,7 +222,7 @@ fn ask_preview_scrolls_and_reports_position() {
     assert!(head.iter().any(|text| text.contains("L01")), "{head:?}");
     let status = head
         .iter()
-        .position(|text| text.contains("PgUp/PgDn 滚动"))
+        .position(|text| text.contains("PgUp/PgDn Scroll"))
         .unwrap_or_else(|| panic!("超窗详情区应给滚动提示：{head:?}"));
     assert_eq!(
         status,
@@ -281,12 +281,12 @@ fn ask_windows_overflowing_question_and_options() {
     assert!(
         texts
             .iter()
-            .any(|text| text.contains("行 · PgUp/PgDn 滚动")),
+            .any(|text| text.contains("lines ") && text.contains("PgUp/PgDn Scroll")),
         "超窗问题应给滚动状态行：{texts:?}"
     );
     assert!(layout.question_area.is_some(), "溢出时问题区登记命中");
     assert!(
-        texts.iter().any(|text| text.contains("▼ 还有 6 项")),
+        texts.iter().any(|text| text.contains("▼ 6 more items")),
         "选项窗口尾部应提示隐藏项数：{texts:?}"
     );
     assert_eq!(
@@ -302,7 +302,7 @@ fn ask_windows_overflowing_question_and_options() {
     let layout = ask_layout(theme, &modal, 40, 15);
     let texts: Vec<String> = layout.lines.iter().map(line_text).collect();
     assert!(
-        texts.iter().any(|text| text.contains("▲ 还有 7 项")),
+        texts.iter().any(|text| text.contains("▲ 7 more items")),
         "滚到底后头部应提示隐藏项数：{texts:?}"
     );
 
@@ -319,7 +319,7 @@ fn ask_windows_overflowing_question_and_options() {
     let layout = ask_layout(theme, &modal, 40, 15);
     let texts: Vec<String> = layout.lines.iter().map(line_text).collect();
     assert!(
-        texts.iter().any(|text| text.contains("⋯ 3-6/6 行")),
+        texts.iter().any(|text| text.contains("⋯ lines 3-6/6")),
         "问题窗应显示钳取后的行区间：{texts:?}"
     );
 }
@@ -362,7 +362,7 @@ fn ask_preview_draws_side_by_side_in_terminal_buffer() {
         "聚焦项预览应与选项同行：{option_row:?}"
     );
     assert!(
-        compact.iter().any(|text| text.contains("Esc折叠问题卡")),
+        compact.iter().any(|text| text.contains("EscCollapsecard")),
         "底部按键行应留在卡片内：{compact:?}"
     );
 }
@@ -472,7 +472,7 @@ fn ask_nav_strip_marks_answered_and_records_hits() {
     assert!(texts[0].contains("✓1.布局"), "已答带 ✓：{texts:?}");
     assert!(texts[1].contains("2.配色"), "第二问 header：{texts:?}");
     assert!(texts[2].contains("3.交互"), "第三问 header：{texts:?}");
-    assert_eq!(texts[3], "确认", "导航条末尾是确认页：{texts:?}");
+    assert_eq!(texts[3], "Confirm", "导航条末尾是确认页：{texts:?}");
     assert_eq!(app.ask_nav_hits[3].0, 3, "确认项的下标是 questions.len()");
     assert!(
         app.ask_nav_hits[0].1.x < app.ask_nav_hits[1].1.x
@@ -527,9 +527,9 @@ fn ask_confirm_page_lists_answers_and_flags_unanswered() {
         .map(line_text)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(body.contains("确认回答"), "确认页标题：{body}");
+    assert!(body.contains("Confirm Answers"), "确认页标题：{body}");
     assert!(body.contains("主题    : 纸张白"), "key 列补齐对齐：{body}");
-    assert!(body.contains("features: 未回答"), "未回答醒目标记：{body}");
+    assert!(body.contains("features: Unanswered"), "未回答醒目标记：{body}");
     assert!(body.contains("lang    : Rust"), "第三问回答：{body}");
-    assert!(body.contains("Enter 确认提交"), "确认页页脚：{body}");
+    assert!(body.contains("Enter Submit"), "确认页页脚：{body}");
 }

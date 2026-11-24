@@ -237,7 +237,7 @@ pub fn approval_lines(
     lines.push(Line::from(String::new()));
 
     // role 行：role_id + fan-out + 当前选定模型。
-    lines.push(Line::from(Span::styled("roles", dim)));
+    lines.push(Line::from(Span::styled("Roles", dim)));
     let roles = state
         .request
         .plan
@@ -436,7 +436,7 @@ pub fn run_lines(
     ));
     lines.push(Line::from(String::new()));
 
-    lines.push(Line::from(Span::styled("roles", dim)));
+    lines.push(Line::from(Span::styled("Roles", dim)));
     for (index, role) in state.roles.iter().enumerate() {
         hits.push((index, lines.len()));
         let model = role.model.as_deref().unwrap_or("inherit");
@@ -472,7 +472,7 @@ pub fn run_lines(
     }
     if !state.reports.is_empty() {
         lines.push(Line::from(String::new()));
-        lines.push(Line::from(Span::styled("reports", dim)));
+        lines.push(Line::from(Span::styled("Reports", dim)));
         for report in &state.reports {
             let text = serde_json::to_string(report).unwrap_or_default();
             lines.push(Line::from(Span::styled(
@@ -486,7 +486,7 @@ pub fn run_lines(
     }
     if !state.artifacts.is_empty() {
         lines.push(Line::from(String::new()));
-        lines.push(Line::from(Span::styled("artifacts", dim)));
+        lines.push(Line::from(Span::styled("Artifacts", dim)));
         // 同一 artifact_id 的多条声明即版本序列；只渲染选中版本（默认最新，v 切换）。
         let mut ids: Vec<String> = Vec::new();
         let mut by_id: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
@@ -522,7 +522,7 @@ pub fn run_lines(
     }
     if !state.holes.is_empty() {
         lines.push(Line::from(String::new()));
-        lines.push(Line::from(Span::styled("holes", dim)));
+        lines.push(Line::from(Span::styled("Holes", dim)));
         for hole in &state.holes {
             let name = hole.get("name").and_then(|v| v.as_str()).unwrap_or("?");
             lines.push(Line::from(Span::styled(
@@ -533,7 +533,7 @@ pub fn run_lines(
     }
     if !state.log.is_empty() {
         lines.push(Line::from(String::new()));
-        lines.push(Line::from(Span::styled("log", dim)));
+        lines.push(Line::from(Span::styled("Log", dim)));
         for line in state.log.iter().rev().take(8).rev() {
             lines.push(Line::from(Span::styled(format!("  {line}"), dim)));
         }

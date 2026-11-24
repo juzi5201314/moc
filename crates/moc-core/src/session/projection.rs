@@ -19,7 +19,7 @@ pub(super) fn page_plans(
     let end = page.before.map_or(plans.len(), |index| index as usize);
     if end > plans.len() {
         return Err(CoreError::Session(
-            "INVALID_PARAMS: 计划分页游标已失效".into(),
+            t!("core.err.plan_cursor_invalid").into_owned(),
         ));
     }
     let limit = (page.max_entries as usize).min(32);
@@ -72,7 +72,7 @@ pub(super) fn project_parts(role: Role, parts: &[ContentPart], budget: usize) ->
             }
             ContentPart::Image { .. } => {
                 truncated = true;
-                ContentPart::Text("[图片内容已省略]".into())
+                ContentPart::Text("[image omitted]".into())
             }
             ContentPart::Reasoning(ReasoningBlock::Text { text, .. }) => {
                 let (text, was_truncated) = truncate_text(text, remaining);
@@ -130,7 +130,7 @@ pub(super) fn truncate_text(text: &str, limit: usize) -> (String, bool) {
     if text.len() <= limit {
         return (text.to_owned(), false);
     }
-    const MARKER: &str = "…[内容已截断]…";
+    const MARKER: &str = "…[truncated]…";
     if limit <= MARKER.len() {
         let mut end = limit;
         while !MARKER.is_char_boundary(end) {

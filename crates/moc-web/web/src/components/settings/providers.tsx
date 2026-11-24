@@ -207,7 +207,7 @@ function AddProvider({
             className="h-8 rounded-lg text-ui shadow-none"
           />
         </Labeled>
-        <Labeled label={t("sp.api")}>
+        <Labeled label={t("sp.api")} hint={t("sp.api_desc")}>
           <Select value={api} onValueChange={setApi}>
             <SelectTrigger size="sm" className="h-8 w-full rounded-lg text-ui shadow-none">
               <SelectValue />
@@ -221,7 +221,7 @@ function AddProvider({
             </SelectContent>
           </Select>
         </Labeled>
-        <Labeled label={t("sp.base_url")}>
+        <Labeled label={t("sp.base_url")} hint={t("sp.base_url_desc")}>
           <Input
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}

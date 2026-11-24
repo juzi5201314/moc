@@ -149,16 +149,16 @@ describe("summarizeActivity", () => {
       tool("read_file"),
       { kind: "reasoning", id: "r1", text: "想想" },
     ]);
-    // read 出现两次排在 commands 之前；两类用「并」连接。
-    expect(summary).toBe("已读取文件并执行了命令");
+    // read 出现两次排在 commands 之前；两类用 "and" 连接。
+    expect(summary).toBe("Read files and Ran command");
   });
 
-  it("两类都带「已」前缀时，后者去掉重复前缀", () => {
+  it("两类动作按频次连接", () => {
     const summary = summarizeActivity([tool("read_file"), tool("grep")]);
-    expect(summary).toBe("已读取文件并搜索代码");
+    expect(summary).toBe("Read files and Searched code");
   });
 
-  it("三类并列用「，」，类别超过三个时补「等」", () => {
+  it("三类并列用逗号，类别超过三个时补 and more", () => {
     const summary = summarizeActivity([
       { kind: "bash", id: "b1", command: "ls", atMs: 1 },
       tool("read_file"),
@@ -166,13 +166,13 @@ describe("summarizeActivity", () => {
       tool("grep"),
       { kind: "reasoning", id: "r1", text: "想想" },
     ]);
-    expect(summary).toBe("执行了命令，已读取文件，已写入文件等");
+    expect(summary).toBe("Ran command, Read files, Wrote files, and more");
   });
 
-  it("纯思考时归纳成「已完成分析」", () => {
-    expect(summarizeActivity([{ kind: "reasoning", id: "r1", text: "想想" }])).toBe("已完成分析");
-    expect(summarizeActivity([])).toBe("已完成分析");
-    expect(summarizeActivity([{ kind: "text", id: "t1", text: "只有正文" }])).toBe("已完成分析");
+  it("纯思考时归纳成 Thought", () => {
+    expect(summarizeActivity([{ kind: "reasoning", id: "r1", text: "想想" }])).toBe("Thought");
+    expect(summarizeActivity([])).toBe("Thought");
+    expect(summarizeActivity([{ kind: "text", id: "t1", text: "只有正文" }])).toBe("Thought");
   });
 
   it("进行中的组标题取最近动作的进行式", () => {
@@ -184,25 +184,25 @@ describe("summarizeActivity", () => {
         ],
         false,
       ),
-    ).toBe("正在运行命令");
+    ).toBe("Running command");
     expect(summarizeActivity([{ kind: "reasoning", id: "r1", text: "想想" }], false)).toBe(
-      "正在分析请求",
+      "Thinking",
     );
   });
 });
 
 describe("activityVerb / activitySnippet", () => {
   it("识别常见工具动词", () => {
-    expect(activityVerb(tool("bash"))).toBe("运行");
-    expect(activityVerb(tool("execute"))).toBe("运行代码");
-    expect(activityVerb(tool("sidekick"))).toBe("协调子代理");
-    expect(activityVerb(tool("read_file"))).toBe("读取");
-    expect(activityVerb(tool("write_file"))).toBe("写入");
-    expect(activityVerb(tool("mcp__fs__str_replace_editor"))).toBe("编辑");
-    expect(activityVerb(tool("grep"))).toBe("搜索");
-    expect(activityVerb(tool("web_search"))).toBe("搜索网页");
-    expect(activityVerb(tool("web_fetch"))).toBe("访问");
-    expect(activityVerb(tool("some_unknown_tool"))).toBe("调用工具");
+    expect(activityVerb(tool("bash"))).toBe("Run");
+    expect(activityVerb(tool("execute"))).toBe("Run code");
+    expect(activityVerb(tool("sidekick"))).toBe("Subagent");
+    expect(activityVerb(tool("read_file"))).toBe("Read");
+    expect(activityVerb(tool("write_file"))).toBe("Write");
+    expect(activityVerb(tool("mcp__fs__str_replace_editor"))).toBe("Edit");
+    expect(activityVerb(tool("grep"))).toBe("Search");
+    expect(activityVerb(tool("web_search"))).toBe("Web search");
+    expect(activityVerb(tool("web_fetch"))).toBe("Fetch");
+    expect(activityVerb(tool("some_unknown_tool"))).toBe("Call tool");
     expect(activityVerb({ kind: "text", id: "t1", text: "x" })).toBeNull();
   });
 
@@ -240,9 +240,9 @@ describe("activityVerb / activitySnippet", () => {
 
 describe("formatDuration", () => {
   it("按分秒输出", () => {
-    expect(formatDuration(23_000)).toBe("23秒");
-    expect(formatDuration(737_000)).toBe("12分17秒");
-    expect(formatDuration(0)).toBe("0秒");
+    expect(formatDuration(23_000)).toBe("23s");
+    expect(formatDuration(737_000)).toBe("12m 17s");
+    expect(formatDuration(0)).toBe("0s");
   });
 });
 

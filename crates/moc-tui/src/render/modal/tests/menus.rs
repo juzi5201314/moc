@@ -133,14 +133,14 @@ fn help_layout_has_no_gaps_or_fake_ellipsis() {
         assert_eq!(last, "输入 / 查看全部斜杠命令");
     }
 
-    // 「选择模型」出现在键位列上限之内。
+    // 「Select model」出现在键位列上限之内。
     let (lines, _) = super::super::help_lines(&app, 92);
     let row = lines
         .iter()
         .map(line_text)
-        .find(|text| text.contains("选择模型"))
+        .find(|text| text.contains("Select model"))
         .expect("选择模型行");
-    let offset = row.find("选择模型").expect("描述在行内");
+    let offset = row.find("Select model").expect("描述在行内");
     let column = line_width(&row[..offset]);
     assert!(
         column

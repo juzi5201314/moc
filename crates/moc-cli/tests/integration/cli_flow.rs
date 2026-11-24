@@ -190,14 +190,14 @@ async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
     assert!(stdout.contains("# 可审阅计划"));
     assert!(stdout.contains("执行完成"));
     assert!(stdout.contains("上下文压缩"));
-    assert!(stdout.contains("模型 p/gpt-test:off：调用"), "{stdout}");
+    assert!(stdout.contains("Model p/gpt-test:off:"), "{stdout}");
     assert!(
         stdout.contains("→ plan: {"),
         "工具行必须带上参数摘要：{stdout}"
     );
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("用法：/ask <问题>"),
+        stderr.contains("用法：/ask <question>"),
         "问答命令必须被识别并校验参数：{stderr}"
     );
 }
@@ -279,7 +279,7 @@ async fn repl_model_switch_confirms_before_compacting() {
         "{stdout}"
     );
     assert!(stdout.contains("已取消切换，模型仍为"), "{stdout}");
-    assert!(stdout.contains("上下文压缩"), "{stdout}");
+    assert!(stdout.contains("Context compacted"), "{stdout}");
     assert!(stdout.contains("模型已切换为 p/small:off"), "{stdout}");
 }
 

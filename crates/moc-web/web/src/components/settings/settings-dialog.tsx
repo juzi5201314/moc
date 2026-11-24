@@ -23,7 +23,7 @@ import {
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { ImagePlaygroundSettingsSection } from "@/components/image-playground/playground-settings";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { type MsgKey, useT } from "@/lib/i18n";
+import { type MsgKey, useI18n, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { ConfigField, ConfigScope, SettingsDocument } from "@/protocol/types";
 import { useConnection } from "@/store/connection";
@@ -65,6 +65,7 @@ const NAV: { group: MsgKey; items: SectionMeta[] }[] = [
         label: "sd.general",
         description: "sd.general_desc",
         icon: <Settings2Icon />,
+        fields: byPath("general"),
       },
       {
         id: "shortcuts",
@@ -283,6 +284,7 @@ function SearchResults({ query, doc }: { query: string; doc: SettingsDocument })
 
 export function SettingsDialog() {
   const t = useT();
+  const locale = useI18n((state) => state.locale);
   const settings = useUi((state) => state.settings);
   const [section, setSection] = useState<SettingsSection>("general");
   const [query, setQuery] = useState("");
@@ -305,8 +307,9 @@ export function SettingsDialog() {
   }, [settings.open, settings.section]);
 
   useEffect(() => {
+    void locale;
     if (settings.open && cwd) void loadSettings(cwd);
-  }, [settings.open, cwd]);
+  }, [settings.open, cwd, locale]);
 
   const meta = SECTIONS.find((item) => item.id === section) ?? SECTIONS[0];
   const local = Boolean(LOCAL_SECTIONS[section]) && !query;

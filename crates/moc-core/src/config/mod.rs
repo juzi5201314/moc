@@ -173,11 +173,8 @@ impl ResolvedConfig {
     }
 
     pub fn require_last_model(&self) -> Result<ResolvedModel, CoreError> {
-        self.last_model()?.ok_or_else(|| {
-            CoreError::Config(
-                "请先选择模型；上次选择为空或已不可用，非交互调用请传入 --model".into(),
-            )
-        })
+        self.last_model()?
+            .ok_or_else(|| CoreError::Config(t!("core.err.select_model_first").into_owned()))
     }
 
     /// 列出 provider 配置中的全部模型（不含图片生成模型），顺序按 provider 与模型 ID 稳定排序。
@@ -230,7 +227,7 @@ impl ResolvedConfig {
         let features = resolve_features(&document)?;
         if document.tools.job.max_running == 0 || document.tools.job.max_wait_secs == 0 {
             return Err(CoreError::Config(
-                "tools.job: max_running 与 max_wait_secs 必须大于 0".into(),
+                t!("core.err.tools_job_positive").into_owned(),
             ));
         }
         let session_dir = expand_config_path(&document.session.dir, &home)?;
@@ -477,11 +474,15 @@ fn validate_sandbox_boundaries(
     ] {
         for path in paths {
             if path == &workspace || crate::sandbox::is_within(&workspace, path) {
-                return Err(CoreError::Config(format!(
-                    "{field}: 不能等于或包含会话工作区 {}（{path}）",
-                    workspace.display(),
-                    path = path.display()
-                )));
+                return Err(CoreError::Config(
+                    t!(
+                        "core.err.sandbox_deny_workspace",
+                        field = field,
+                        workspace = workspace.display().to_string(),
+                        path = path.display().to_string()
+                    )
+                    .into_owned(),
+                ));
             }
         }
     }
@@ -497,15 +498,19 @@ fn resolve_sandbox_paths(
     for value in values {
         let expanded = expand_home_path(Path::new(value));
         if !expanded.is_absolute() {
-            return Err(CoreError::Config(format!(
-                "{field}: 路径必须是绝对路径或 ~ 开头：{value}"
-            )));
+            return Err(CoreError::Config(
+                t!("core.err.sandbox_path_abs", field = field, value = value).into_owned(),
+            ));
         }
         if must_exist && !expanded.exists() {
-            return Err(CoreError::Config(format!(
-                "{field}: 路径不存在：{}",
-                expanded.display()
-            )));
+            return Err(CoreError::Config(
+                t!(
+                    "core.err.sandbox_path_missing",
+                    field = field,
+                    path = expanded.display().to_string()
+                )
+                .into_owned(),
+            ));
         }
         let canonical = std::fs::canonicalize(&expanded).unwrap_or(expanded);
         if !paths.contains(&canonical) {
@@ -603,9 +608,14 @@ fn apply_model_defaults(raw: &mut Value) -> Result<(), CoreError> {
             .literal_separator(false)
             .build()
             .map_err(|error| {
-                CoreError::Config(format!(
-                    "defaults.models.{pattern} 不是合法模型匹配模式：{error}"
-                ))
+                CoreError::Config(
+                    t!(
+                        "core.err.defaults_models_glob",
+                        pattern = pattern,
+                        error = error
+                    )
+                    .into_owned(),
+                )
             })?;
     }
 

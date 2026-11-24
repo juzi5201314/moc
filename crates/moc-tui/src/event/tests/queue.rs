@@ -193,7 +193,7 @@ async fn ask_command_queues_a_read_only_prompt() {
     );
 
     execute_command(&mut app, &connection, "/ask".into());
-    assert_eq!(app.notice.as_deref(), Some("用法：/ask <问题>"));
+    assert_eq!(app.notice.as_deref(), Some("用法：/ask <question>"));
     assert_eq!(
         app.queues.get(&session_id).map(|queue| queue.len()),
         Some(1),

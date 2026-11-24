@@ -99,8 +99,9 @@ function TerminalChip({
       </span>
       {item.exited && (
         <span className="text-2xs text-text-tertiary">
-          {t("term.exited")}
-          {item.exit_code !== null ? ` (${item.exit_code})` : ""}
+          {item.exit_code !== null
+            ? t("term.exited", { code: item.exit_code })
+            : t("term.exited_plain")}
         </span>
       )}
       <button

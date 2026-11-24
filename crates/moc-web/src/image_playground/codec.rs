@@ -17,6 +17,7 @@ use image::{
     AnimationDecoder as _, DynamicImage, Frames, ImageDecoder, ImageEncoder as _, ImageFormat,
     ImageReader, RgbaImage,
 };
+use moc_i18n::t;
 use webpx::{AnimationEncoder, Encoder as WebpEncoder, Unstoppable};
 
 use super::config::{
@@ -68,7 +69,7 @@ pub struct PreparedInput {
 pub fn inspect_image(bytes: &[u8], _mime_hint: Option<&str>) -> anyhow::Result<ImageMeta> {
     let reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
-        .context("无法读取图片头")?;
+        .with_context(|| t!("web.playground.codec.header_read").into_owned())?;
     let detected = reader.format();
     if !matches!(
         detected,
@@ -80,24 +81,38 @@ pub fn inspect_image(bytes: &[u8], _mime_hint: Option<&str>) -> anyhow::Result<I
                 | ImageFormat::Bmp
         )
     ) {
-        anyhow::bail!("不支持或无法识别的图片格式（仅支持 PNG、JPEG、WebP、GIF、BMP）");
+        anyhow::bail!("{}", t!("web.playground.codec.unsupported_format"));
     }
 
     let mut dim_reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
-        .context("无法读取图片")?;
+        .with_context(|| t!("web.playground.codec.image_read").into_owned())?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     dim_reader.limits(limits);
 
     let (width, height) = dim_reader
         .into_dimensions()
-        .context("无法解析图片尺寸，文件可能已损坏或格式不受支持")?;
+        .with_context(|| t!("web.playground.codec.dimensions_parse").into_owned())?;
     if width == 0 || height == 0 {
-        anyhow::bail!("图片尺寸无效（{width}×{height}）");
+        anyhow::bail!(
+            "{}",
+            t!(
+                "web.playground.codec.invalid_dimensions",
+                width = width,
+                height = height
+            )
+        );
     }
     if u64::from(width) * u64::from(height) > MAX_INPUT_PIXELS {
-        anyhow::bail!("图片像素总数超限（{width}x{height}）");
+        anyhow::bail!(
+            "{}",
+            t!(
+                "web.playground.codec.pixels_exceeded",
+                width = width,
+                height = height
+            )
+        );
     }
 
     let is_animated = detect_animated(bytes, detected);
@@ -395,19 +410,25 @@ fn detect_animated(bytes: &[u8], format: Option<ImageFormat>) -> bool {
 fn decode_static_image(bytes: &[u8]) -> anyhow::Result<DynamicImage> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
-        .context("无法识别图片格式")?;
+        .with_context(|| t!("web.playground.codec.format_unknown").into_owned())?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     reader.limits(limits);
-    let mut decoder = reader.into_decoder().context("创建图片解码器失败")?;
+    let mut decoder = reader
+        .into_decoder()
+        .with_context(|| t!("web.playground.codec.decoder_create").into_owned())?;
     let (w, h) = decoder.dimensions();
     if u64::from(w) * u64::from(h) > MAX_INPUT_PIXELS {
-        anyhow::bail!("图片像素总数超限（{w}x{h}）");
+        anyhow::bail!(
+            "{}",
+            t!("web.playground.codec.pixels_exceeded", width = w, height = h)
+        );
     }
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
-    let mut img = DynamicImage::from_decoder(decoder).context("解码图片像素失败")?;
+    let mut img = DynamicImage::from_decoder(decoder)
+        .with_context(|| t!("web.playground.codec.decode_pixels").into_owned())?;
     img.apply_orientation(orientation);
     Ok(img)
 }
@@ -418,15 +439,36 @@ fn validate_animation_dimensions(
     max_total_bytes: usize,
 ) -> anyhow::Result<()> {
     if width == 0 || height == 0 {
-        anyhow::bail!("动图尺寸无效（{width}×{height}）");
+        anyhow::bail!(
+            "{}",
+            t!(
+                "web.playground.codec.anim_invalid_dimensions",
+                width = width,
+                height = height
+            )
+        );
     }
     let pixels = u64::from(width) * u64::from(height);
     if pixels > MAX_INPUT_PIXELS {
-        anyhow::bail!("动图单帧像素总数超限（{width}x{height}）");
+        anyhow::bail!(
+            "{}",
+            t!(
+                "web.playground.codec.anim_frame_pixels_exceeded",
+                width = width,
+                height = height
+            )
+        );
     }
     let frame_bytes = pixels.saturating_mul(4);
     if frame_bytes > max_total_bytes as u64 {
-        anyhow::bail!("动图单帧解码内存超出上限（{width}x{height}）");
+        anyhow::bail!(
+            "{}",
+            t!(
+                "web.playground.codec.anim_frame_memory_exceeded",
+                width = width,
+                height = height
+            )
+        );
     }
     Ok(())
 }
@@ -445,9 +487,13 @@ fn collect_bounded_frames(
 
     for frame_result in frames {
         if out.len() >= max_frames {
-            anyhow::bail!("动图帧数超过上限（最多 {max_frames} 帧）");
+            anyhow::bail!(
+                "{}",
+                t!("web.playground.codec.anim_frames_exceeded", max = max_frames)
+            );
         }
-        let frame = frame_result.context("读取动图帧失败")?;
+        let frame = frame_result
+            .with_context(|| t!("web.playground.codec.anim_frame_read").into_owned())?;
         let (num, den) = frame.delay().numer_denom_ms();
         let delay_ms = if den == 0 {
             100
@@ -463,21 +509,30 @@ fn collect_bounded_frames(
         let frame_pixels = u64::from(fw) * u64::from(fh);
         total_pixels = total_pixels.saturating_add(frame_pixels);
         if total_pixels > max_total_pixels {
-            anyhow::bail!("动图累计解码像素超过上限（{max_total_pixels}）");
+            anyhow::bail!(
+                "{}",
+                t!(
+                    "web.playground.codec.anim_total_pixels_exceeded",
+                    max = max_total_pixels
+                )
+            );
         }
         let rgba = buf.into_raw();
         total_bytes = total_bytes.saturating_add(rgba.len());
         if total_bytes > max_total_bytes {
             anyhow::bail!(
-                "动图累计解码内存超过上限（{} MiB）",
-                max_total_bytes / (1024 * 1024)
+                "{}",
+                t!(
+                    "web.playground.codec.anim_total_memory_exceeded",
+                    max_mib = max_total_bytes / (1024 * 1024)
+                )
             );
         }
         out.push(AnimFrame { rgba, delay_ms });
     }
 
     if out.is_empty() {
-        anyhow::bail!("动图不包含任何帧");
+        anyhow::bail!("{}", t!("web.playground.codec.anim_no_frames"));
     }
     Ok((width, height, out))
 }
@@ -505,12 +560,13 @@ fn decode_animation_frames_with_limits(
 
     match format {
         Some(ImageFormat::Gif) => {
-            let mut decoder = GifDecoder::new(Cursor::new(bytes)).context("解码 GIF 动图失败")?;
+            let mut decoder = GifDecoder::new(Cursor::new(bytes))
+                .with_context(|| t!("web.playground.codec.gif_decode").into_owned())?;
             let (w, h) = decoder.dimensions();
             validate_animation_dimensions(w, h, max_total_bytes)?;
             decoder
                 .set_limits(limits)
-                .context("GIF 动图尺寸超出解码限制")?;
+                .with_context(|| t!("web.playground.codec.gif_limits").into_owned())?;
             collect_bounded_frames(
                 decoder.into_frames(),
                 max_frames,
@@ -519,13 +575,16 @@ fn decode_animation_frames_with_limits(
             )
         }
         Some(ImageFormat::Png) => {
-            let mut decoder = PngDecoder::new(Cursor::new(bytes)).context("解码 APNG 失败")?;
+            let mut decoder = PngDecoder::new(Cursor::new(bytes))
+                .with_context(|| t!("web.playground.codec.apng_decode").into_owned())?;
             let (w, h) = decoder.dimensions();
             validate_animation_dimensions(w, h, max_total_bytes)?;
             decoder
                 .set_limits(limits)
-                .context("APNG 动图尺寸超出解码限制")?;
-            let apng = decoder.apng().context("并非有效 APNG")?;
+                .with_context(|| t!("web.playground.codec.apng_limits").into_owned())?;
+            let apng = decoder
+                .apng()
+                .with_context(|| t!("web.playground.codec.apng_invalid").into_owned())?;
             collect_bounded_frames(
                 apng.into_frames(),
                 max_frames,
@@ -534,7 +593,8 @@ fn decode_animation_frames_with_limits(
             )
         }
         Some(ImageFormat::WebP) => {
-            let decoder = WebPDecoder::new(Cursor::new(bytes)).context("解码动图 WebP 失败")?;
+            let decoder = WebPDecoder::new(Cursor::new(bytes))
+                .with_context(|| t!("web.playground.codec.webp_anim_decode").into_owned())?;
             let (w, h) = decoder.dimensions();
             validate_animation_dimensions(w, h, max_total_bytes)?;
             collect_bounded_frames(
@@ -544,7 +604,7 @@ fn decode_animation_frames_with_limits(
                 max_total_bytes,
             )
         }
-        _ => anyhow::bail!("不支持的动图输入格式"),
+        _ => anyhow::bail!("{}", t!("web.playground.codec.anim_unsupported_format")),
     }
 }
 
@@ -559,7 +619,7 @@ fn encode_webp_static(img: &DynamicImage, quality: u8, lossless: bool) -> anyhow
         .quality(f32::from(quality.clamp(1, 100)));
     let bytes = encoder
         .encode(Unstoppable)
-        .map_err(|error| anyhow::anyhow!("WebP 编码失败：{error}"))?;
+        .map_err(|error| anyhow::anyhow!("{}", t!("web.playground.codec.webp_encode", error = error)))?;
     Ok(bytes)
 }
 
@@ -570,18 +630,20 @@ fn encode_animated_webp(
     quality: u8,
 ) -> anyhow::Result<Vec<u8>> {
     let mut encoder = AnimationEncoder::new(width, height)
-        .map_err(|error| anyhow::anyhow!("初始化动图 WebP 编码器失败：{error}"))?;
+        .map_err(|error| anyhow::anyhow!("{}", t!("web.playground.codec.webp_anim_init", error = error)))?;
     encoder.set_quality(f32::from(quality.clamp(1, 100)));
     let mut timestamp_ms: i32 = 0;
     for frame in frames {
         encoder
             .add_frame_rgba(&frame.rgba, timestamp_ms)
-            .map_err(|error| anyhow::anyhow!("写入动图 WebP 帧失败：{error}"))?;
+            .map_err(|error| {
+                anyhow::anyhow!("{}", t!("web.playground.codec.webp_anim_frame", error = error))
+            })?;
         timestamp_ms = timestamp_ms.saturating_add(frame.delay_ms.min(60_000) as i32);
     }
     encoder
         .finish(timestamp_ms)
-        .map_err(|error| anyhow::anyhow!("封装动图 WebP 失败：{error}"))
+        .map_err(|error| anyhow::anyhow!("{}", t!("web.playground.codec.webp_anim_finish", error = error)))
 }
 
 fn encode_apng(width: u32, height: u32, frames: &[AnimFrame]) -> anyhow::Result<Vec<u8>> {
@@ -593,18 +655,22 @@ fn encode_apng(width: u32, height: u32, frames: &[AnimFrame]) -> anyhow::Result<
         encoder.set_compression(png::Compression::Balanced);
         encoder
             .set_animated(frames.len() as u32, 0)
-            .context("设置 APNG 动画头失败")?;
-        let mut writer = encoder.write_header().context("写入 APNG 头失败")?;
+            .with_context(|| t!("web.playground.codec.apng_anim_header").into_owned())?;
+        let mut writer = encoder
+            .write_header()
+            .with_context(|| t!("web.playground.codec.apng_write_header").into_owned())?;
         for frame in frames {
             let delay = frame.delay_ms.min(u32::from(u16::MAX)) as u16;
             writer
                 .set_frame_delay(delay, 1000)
-                .context("设置 APNG 帧延迟失败")?;
+                .with_context(|| t!("web.playground.codec.apng_frame_delay").into_owned())?;
             writer
                 .write_image_data(&frame.rgba)
-                .context("写入 APNG 帧数据失败")?;
+                .with_context(|| t!("web.playground.codec.apng_frame_data").into_owned())?;
         }
-        writer.finish().context("结束 APNG 写入失败")?;
+        writer
+            .finish()
+            .with_context(|| t!("web.playground.codec.apng_finish").into_owned())?;
     }
     Ok(out)
 }
@@ -621,7 +687,7 @@ fn encode_avif(img: &DynamicImage, quality: u8) -> anyhow::Result<Vec<u8>> {
             rgba.height(),
             image::ExtendedColorType::Rgba8,
         )
-        .context("AVIF 编码失败")?;
+        .with_context(|| t!("web.playground.codec.avif_encode").into_owned())?;
     Ok(out)
 }
 
@@ -640,7 +706,7 @@ fn encode_jpeg(img: &DynamicImage, quality: u8) -> anyhow::Result<Vec<u8>> {
     let mut out = Vec::new();
     JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100))
         .encode_image(&rgb)
-        .context("JPEG 编码失败")?;
+        .with_context(|| t!("web.playground.codec.jpeg_encode").into_owned())?;
     Ok(out)
 }
 
@@ -655,7 +721,7 @@ fn encode_png(img: &DynamicImage) -> anyhow::Result<Vec<u8>> {
             rgba.height(),
             image::ExtendedColorType::Rgba8,
         )
-        .context("PNG 编码失败")?;
+        .with_context(|| t!("web.playground.codec.png_encode").into_owned())?;
     Ok(out)
 }
 

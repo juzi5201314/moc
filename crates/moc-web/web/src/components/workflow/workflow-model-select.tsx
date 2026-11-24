@@ -31,7 +31,7 @@ export function WorkflowModelSelect({ value, onSelect, disabled }: WorkflowModel
   const models = useConnection(selectModels);
   const parsed = parseSelector(value, models);
   const levels = reasoningLevels(parsed.model);
-  const label = value ? modelName(parsed.id) || value : "inherit";
+  const label = value ? modelName(parsed.id) || value : t("wfm.inherit");
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

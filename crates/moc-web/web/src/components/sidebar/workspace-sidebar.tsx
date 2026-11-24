@@ -94,7 +94,7 @@ function WorkflowNavRow() {
   return (
     <NavRow
       icon={<WorkflowIcon />}
-      label="workflow"
+      label={t("wfr.nav_label")}
       hint={
         <span className="text-ui text-muted-foreground">
           {badges.approvals > 0 ? t("sb.badge_approval", { n: badges.approvals }) : ""}
@@ -405,7 +405,7 @@ export function WorkspaceSidebar() {
                             "pl-[30px] text-ui text-text-tertiary hover:text-foreground",
                           )}
                         >
-                          {t("sb.more", { n: hidden })}
+                          {t("sb.more_n", { n: hidden })}
                         </button>
                       )}
                       {expanded[group.cwd] &&

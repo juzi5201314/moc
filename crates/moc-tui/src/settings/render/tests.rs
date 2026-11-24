@@ -209,15 +209,15 @@ fn group_description_follows_grouping_path() {
     );
     select_group(&mut panel, "models/roles");
     let rows = screen(&mut panel, 120, 40);
-    assert!(locate(&rows, "各会话角色使用的模型").is_some());
+    assert!(locate(&rows, "各 session 角色使用的 model").is_some());
 
     let mut tools = loaded(
         "tools",
         json!({}),
         vec![ConfigField {
             path: vec!["web_fetch".into(), "timeout_secs".into()],
-            tab: "工具".into(),
-            label: "超时".into(),
+            tab: "Tools".into(),
+            label: "Timeout".into(),
             description: "测试用".into(),
             kind: FieldKind::Text,
             advanced: false,
@@ -225,7 +225,7 @@ fn group_description_follows_grouping_path() {
     );
     select_group(&mut tools, "web_fetch");
     let rows = screen(&mut tools, 120, 40);
-    assert!(locate(&rows, "网页抓取策略与截断限制").is_some());
+    assert!(locate(&rows, "网页抓取策略与内容截断限制").is_some());
 }
 
 /// 取消顶部快捷键芯片条，只在底部渲染简洁提示条。
@@ -233,8 +233,8 @@ fn group_description_follows_grouping_path() {
 fn top_toolbar_removed_and_bottom_hints_clean() {
     let mut panel = loaded("models", models_config(), Vec::new());
     let rows = screen(&mut panel, 80, 30);
-    // 顶部第 0 行是标题“全局配置”，第 1 行是页签，紧接着就是正文而非工具芯片条。
-    assert!(locate(&rows, "全局配置").is_some());
+    // 顶部第 0 行是标题“Settings · Global”，第 1 行是页签，紧接着就是正文而非工具芯片条。
+    assert!(locate(&rows, "Settings · Global").is_some());
     assert!(locate(&rows, "作用域").is_none());
     assert!(locate(&rows, "高级tab").is_none());
     assert!(
@@ -256,7 +256,7 @@ fn hint_bar_keys_are_clickable_where_drawn() {
     let mut panel = loaded("models", models_config(), Vec::new());
     select_group(&mut panel, "models/roles");
     let rows = screen(&mut panel, 120, 40);
-    let (y, x) = locate(&rows, "Esc 返回").expect("提示条有 Esc 返回");
+    let (y, x) = locate(&rows, "Esc Back").expect("提示条有 Esc Back");
     let hit = panel
         .hits
         .iter()
@@ -264,7 +264,7 @@ fn hint_bar_keys_are_clickable_where_drawn() {
             Hit::Hint(KeyCode::Esc, KeyModifiers::NONE) => Some(*area),
             _ => None,
         })
-        .expect("Esc 返回 登记为提示条键位");
+        .expect("Esc Back 登记为提示条键位");
     let y = u16::try_from(y).expect("行号");
     assert_eq!((hit.y, hit.x, hit.width), (y, x, 8));
 }
@@ -358,7 +358,7 @@ fn mcp_group_shows_server_address() {
     );
     let rows = screen(&mut panel, 120, 40);
     assert!(locate(&rows, "srv").is_some(), "MCP 分组可见");
-    assert!(locate(&rows, "本地程序：npx").is_some());
+    assert!(locate(&rows, "stdio: npx").is_some());
 }
 
 #[test]
@@ -424,14 +424,14 @@ fn provider_field_footer_exposes_reset() {
     );
     let rows = screen(&mut panel, 120, 40);
     assert!(
-        locate(&rows, "r 恢复默认").is_some(),
+        locate(&rows, "r Reset").is_some(),
         "字段行提示条应露出恢复默认"
     );
 
     panel.select_action(ProviderAction::More);
     let rows = screen(&mut panel, 120, 40);
     assert!(
-        locate(&rows, "r 恢复默认").is_none(),
+        locate(&rows, "r Reset").is_none(),
         "非字段行不显示恢复默认"
     );
 }

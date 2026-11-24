@@ -1,43 +1,70 @@
 _version = 2
 
-# moc-protocol 用户面文案：命令分组标题、补全兜底、/features 一览。
+# moc-protocol 用户面文案：命令分组标题、补全兜底、/features 一览、权限按钮与协议错误。
 
 [commands.group]
-session = { zh = "会话", en = "Session" }
-mode = { zh = "模式与引擎", en = "Modes & engine" }
-context = { zh = "上下文", en = "Context" }
-agents = { zh = "子代理与任务", en = "Subagents & tasks" }
-plugins = { zh = "插件", en = "Plugins" }
-ui = { zh = "界面", en = "Interface" }
+session = { zh = "Session", en = "Session" }
+mode = { zh = "Modes & Engine", en = "Modes & Engine" }
+context = { zh = "Context", en = "Context" }
+agents = { zh = "Subagents & Tasks", en = "Subagents & Tasks" }
+plugins = { zh = "Plugins", en = "Plugins" }
+ui = { zh = "Interface", en = "Interface" }
 
 [commands]
-plugin_fallback = { zh = "插件命令", en = "Plugin command" }
+plugin_fallback = { zh = "plugin 命令", en = "Plugin command" }
 
 [features]
-header = { zh = "特性开关（生效值 = [features] 覆盖或原配置段）：", en = "Feature flags (effective = [features] override or the original config section):" }
-on = { zh = "开", en = "on" }
-off = { zh = "关", en = "off" }
-cost_dynamic = { zh = "随环境", en = "varies" }
+header = { zh = "特性开关（生效值 = [features] 覆盖或原配置段）：", en = "Feature flags (effective = [features] override or original config section):" }
+on = { zh = "on", en = "on" }
+off = { zh = "off", en = "off" }
+cost_dynamic = { zh = "varies", en = "varies" }
 row = { zh = "  %{key} %{stage} %{state} %{cost} %{summary}（%{toggle}）", en = "  %{key} %{stage} %{state} %{cost} %{summary} (%{toggle})" }
 
 [features.item]
 clm = { zh = "CLM 实验引擎：由模型自主管理工作上下文", en = "CLM experimental engine: lets the model manage its working context" }
 ptc = { zh = "PTC 引擎：通过脚本批量调用工具，减少来回轮次", en = "PTC engine: runs scripts to batch tool calls in fewer turns" }
-workflow = { zh = "动态工作流：以 TypeScript 编排多阶段协作", en = "Dynamic workflow: orchestrate multi-stage work with TypeScript" }
-plugins = { zh = "插件系统：扩展自定义工具、斜杠命令、钩子与提示词", en = "Plugins: add custom tools, slash commands, hooks, and prompts" }
+workflow = { zh = "动态 workflow：以 TypeScript 编排多阶段协作", en = "Dynamic workflow: orchestrate multi-stage work with TypeScript" }
+plugins = { zh = "plugin 系统：扩展自定义工具、slash command、钩子与提示词", en = "Plugins: add custom tools, slash commands, hooks, and prompts" }
 mcp = { zh = "MCP 服务器：接入外部工具（mcp__*）", en = "MCP servers: connect external tools (mcp__*)" }
-skills = { zh = "技能系统：自动发现技能目录并按需加载", en = "Skills: discover skill directories and load them on demand" }
+skills = { zh = "skills 系统：自动发现 skill 目录并按需加载", en = "Skills: discover skill directories and load them on demand" }
 web_fetch = { zh = "网页抓取工具（web_fetch）", en = "Web fetch tool (web_fetch)" }
+
+[protocol.perm]
+allow_once = { zh = "Allow once", en = "Allow once" }
+allow_path = { zh = "Allow path for session", en = "Allow path for session" }
+allow_command = { zh = "Allow command for session", en = "Allow command for session" }
+allow_prefix = { zh = "Allow %{prefix} * for session", en = "Allow %{prefix} * for session" }
+deny = { zh = "Deny", en = "Deny" }
+
+[protocol.skills]
+usage = { zh = "用法：/compact-skills [compact | force | cleanup [all]]", en = "Usage: /compact-skills [compact | force | cleanup [all]]" }
 
 [protocol.err]
 parse = { zh = "报文不是合法 JSON", en = "Message is not valid JSON" }
+parse_detail = { zh = "报文不是合法 JSON：%{error}", en = "Message is not valid JSON: %{error}" }
+top_level_object = { zh = "报文顶层必须是 JSON 对象（不支持 batch）", en = "Top-level message must be a JSON object (batching is not supported)" }
+jsonrpc_version = { zh = "jsonrpc 字段必须为 \"%{version}\"", en = "jsonrpc field must be \"%{version}\"" }
+unknown_field = { zh = "报文包含未知字段 %{key}", en = "Message contains unknown field %{key}" }
+request_has_result_or_error = { zh = "请求报文（method = %{method}）不得携带 result 或 error", en = "Request message (method = %{method}) must not carry result or error" }
+invalid_error_object = { zh = "error 字段不是合法错误对象：%{error}", en = "error field is not a valid error object: %{error}" }
+response_both_result_and_error = { zh = "响应不得同时携带 result 与 error", en = "Response must not carry both result and error" }
+missing_method_or_payload = { zh = "报文必须包含 method 或 result / error", en = "Message must contain method or result / error" }
+method_must_be_string = { zh = "method 必须是字符串", en = "method must be a string" }
+method_empty = { zh = "method 不能为空", en = "method cannot be empty" }
+params_must_be_container = { zh = "params 必须是对象或数组", en = "params must be an object or array" }
+request_id_null = { zh = "请求的 id 不能为 null", en = "Request id cannot be null" }
+response_id_null = { zh = "携带 result 的响应必须有非 null 的 id", en = "Response with result must have a non-null id" }
+id_expecting = { zh = "整数或字符串 ID", en = "an integer or string ID" }
+id_invalid = { zh = "id 必须是整数或字符串：%{error}", en = "id must be an integer or string: %{error}" }
 invalid_request = { zh = "报文结构非法", en = "Malformed request envelope" }
 method_not_found = { zh = "未知方法", en = "Unknown method" }
 invalid_params = { zh = "参数非法", en = "Invalid params" }
+params_invalid_detail = { zh = "参数非法：%{error}", en = "Invalid params: %{error}" }
 internal = { zh = "服务端内部错误", en = "Internal server error" }
 server_busy = { zh = "服务端并发请求已达上限", en = "Server request concurrency limit reached" }
 cancelled = { zh = "请求已被取消", en = "Request cancelled" }
 not_initialized = { zh = "连接尚未完成 initialize", en = "Connection has not finished initialize" }
+dup_initialize = { zh = "重复 initialize", en = "Duplicate initialize" }
 version_mismatch = { zh = "协议主版本不兼容", en = "Incompatible protocol major version" }
 session_not_found = { zh = "会话不存在", en = "Session not found" }
 session_busy = { zh = "该会话已有进行中的提示", en = "The session already has a prompt in flight" }
@@ -47,12 +74,19 @@ file_conflict = { zh = "目标内容已被修改", en = "Target content has been
 unclassified = { zh = "未分类的协议错误", en = "Unclassified protocol error" }
 frame_header = { zh = "分帧头部超过 8 KiB", en = "Frame header exceeded 8 KiB" }
 frame_bad_length = { zh = "Content-Length 非法：%{value}", en = "Invalid Content-Length: %{value}" }
+frame_missing_length = { zh = "缺少 Content-Length 头", en = "Missing Content-Length header" }
+frame_length_overflow = { zh = "长度超出 usize 范围", en = "Length exceeds usize range" }
 frame_too_large = { zh = "报文长度 %{len} 超过上限 %{max}", en = "Message length %{len} exceeds limit %{max}" }
 frame_non_numeric = { zh = "Content-Length 不是十进制数字", en = "Content-Length is not a decimal number" }
-frame_prefix = { zh = "报文前出现非分帧字节，连接无法重新同步", en = "Non-frame bytes precede the message; connection can't resynchronize" }
+frame_prefix = { zh = "报文前出现非分帧字节，连接无法重新同步", en = "Non-frame bytes precede the message; connection cannot resynchronize" }
 io = { zh = "连接 I/O 失败（%{kind}）：%{message}", en = "Connection I/O failed (%{kind}): %{message}" }
 frame = { zh = "分帧失败：%{error}", en = "Framing failed: %{error}" }
 encode = { zh = "本地报文序列化失败：%{error}", en = "Failed to serialize local message: %{error}" }
+outbound_serialize = { zh = "出站报文序列化失败：%{error}", en = "Failed to serialize outbound message: %{error}" }
+outbound_too_large = { zh = "出站报文 %{len} 字节超过上限 %{max}", en = "Outbound message of %{len} bytes exceeds limit %{max}" }
+params_serialize = { zh = "请求参数序列化失败：%{error}", en = "Failed to serialize request params: %{error}" }
+result_deserialize = { zh = "响应结果解析失败：%{error}", en = "Failed to decode response result: %{error}" }
+result_serialize = { zh = "结果序列化失败：%{error}", en = "Failed to serialize result: %{error}" }
 closed = { zh = "连接已关闭", en = "Connection closed" }
 dup_handler = { zh = "重复注册方法处理器：%{method}", en = "Duplicate method handler: %{method}" }
 call_cancelled = { zh = "请求已被取消", en = "Request cancelled" }

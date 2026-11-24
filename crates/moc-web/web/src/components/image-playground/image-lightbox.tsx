@@ -187,7 +187,7 @@ export function ImageLightbox() {
                 <dt className="text-text-tertiary">{t("ip.format")}</dt>
                 <dd className="font-mono text-foreground uppercase">
                   {image.format}
-                  {image.is_animated ? " (animated)" : ""}
+                  {image.is_animated ? t("ip.animated_tag") : ""}
                 </dd>
               </div>
               <div className="flex justify-between gap-2">

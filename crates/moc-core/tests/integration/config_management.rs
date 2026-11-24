@@ -471,11 +471,11 @@ fn web_fetch_fields_are_in_tool_tab_and_round_trip() {
         })
     };
     let enabled = web_fetch_field("enabled").expect("enabled 字段出现在设置目录");
-    assert_eq!(enabled.tab, "工具");
-    assert_eq!(enabled.label, "启用");
+    assert_eq!(enabled.tab, "Tools");
+    assert_eq!(enabled.label, "Enable");
     let max_bytes = web_fetch_field("max_bytes").expect("max_bytes 字段出现在设置目录");
-    assert_eq!(max_bytes.tab, "工具");
-    assert_eq!(max_bytes.label, "响应字节上限");
+    assert_eq!(max_bytes.tab, "Tools");
+    assert_eq!(max_bytes.label, "Response Byte Cap");
     let resolved = editor::save(
         &boot,
         ConfigScope::Global,

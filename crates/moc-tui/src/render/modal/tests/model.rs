@@ -117,15 +117,15 @@ fn model_picker_fits_short_terminals() {
                 "{text:?} 超过 {width} 列"
             );
         }
-        assert!(texts[0].starts_with("搜索："), "搜索置顶：{texts:?}");
+        assert!(texts[0].starts_with("Search: "), "搜索置顶：{texts:?}");
         assert!(
             texts.iter().any(|text| text.starts_with("❯ Model")),
             "{texts:?}"
         );
-        assert!(
-            footer.contains("Enter 确认") && footer.contains("Esc 关闭"),
-            "{footer:?}"
-        );
+        assert!(footer.contains("Esc Close"), "{footer:?}");
+        if width >= 25 {
+            assert!(footer.contains("Enter Confirm"), "{footer:?}");
+        }
     }
 }
 
@@ -234,14 +234,14 @@ fn session_picker_hints_tab_when_current_folder_is_empty() {
                 .collect()
         })
         .collect();
-    assert_eq!(modal.title(), "恢复会话（当前目录）");
+    assert_eq!(modal.title(), "Resume Session (Workspace)");
     assert!(
         rows.iter()
-            .any(|row| row.contains("当前目录没有会话 · Tab 查看全部")),
+            .any(|row| row.contains("当前目录没有 session。 · Tab View all")),
         "{rows:?}"
     );
     assert!(
-        rows.iter().any(|row| row.contains("Tab 切换范围")),
+        rows.iter().any(|row| row.contains("Tab Switch scope")),
         "页脚应提示 Tab 的范围切换：{rows:?}"
     );
 }

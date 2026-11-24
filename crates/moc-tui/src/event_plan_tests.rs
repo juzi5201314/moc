@@ -955,7 +955,7 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
     assert!(!h.app.session.as_ref().expect("标准会话").plan_active);
     assert_eq!(
         h.app.notice.as_deref().expect("状态门控提示"),
-        "只有计划状态可以重新审阅计划"
+        "仅在 plan 模式下可重新打开计划审阅。"
     );
     let empty = h
         .connection
@@ -989,7 +989,7 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
             .notice
             .as_deref()
             .expect("空计划提示")
-            .contains("没有已写入的待审计划")
+            .contains("没有待审阅的计划")
     );
     assert!(!h.app.prompt_running);
     assert!(h.app.inflight_prompts.is_empty());
@@ -997,7 +997,7 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
     execute_command(&mut h.app, &h.connection, "/confirm-plan".into());
     assert_eq!(
         h.app.notice.as_deref().expect("无会话提示"),
-        "当前没有活动会话"
+        "当前没有活动的 session。"
     );
     assert_eq!(
         h._upstream

@@ -1156,9 +1156,11 @@ pub(super) async fn run_prompt_locked(
                             params.session_id.clone(),
                             SessionUpdate::GuardNotice {
                                 prompt_id: prompt_id.clone(),
-                                message: format!(
-                                    "检测到无进展的工具循环，已提醒模型纠正一次：{detail}"
-                                ),
+                                message: moc_i18n::t!(
+                                    "core.err.tool_loop_redirect",
+                                    detail = detail
+                                )
+                                .into_owned(),
                                 terminal: false,
                             },
                         )
@@ -1233,9 +1235,7 @@ async fn try_strip_old_reasoning(
             session_id.to_owned(),
             SessionUpdate::GuardNotice {
                 prompt_id: prompt_id.to_owned(),
-                message:
-                    "上游拒绝历史加密思考内容（thinking_signature_invalid），已自动剥离旧思考块并原地重试"
-                        .into(),
+                message: moc_i18n::t!("core.err.thinking_sig_stripped").into_owned(),
                 terminal: false,
             },
         )

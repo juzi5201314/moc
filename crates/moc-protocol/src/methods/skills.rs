@@ -15,14 +15,14 @@ pub enum SkillsCompactAction {
 }
 
 impl SkillsCompactAction {
-    pub fn parse_args(args: &str) -> Result<Self, &'static str> {
+    pub fn parse_args(args: &str) -> Result<Self, std::borrow::Cow<'static, str>> {
         let mut words = args.split_whitespace();
         match (words.next(), words.next(), words.next()) {
             (None, None, None) | (Some("compact"), None, None) => Ok(Self::Missing),
             (Some("force"), None, None) => Ok(Self::Force),
             (Some("cleanup"), None, None) => Ok(Self::Cleanup),
             (Some("cleanup"), Some("all"), None) => Ok(Self::Clear),
-            _ => Err("用法：/compact-skills [compact | force | cleanup [all]]"),
+            _ => Err(moc_i18n::t!("protocol.skills.usage")),
         }
     }
 }

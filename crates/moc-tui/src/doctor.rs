@@ -126,14 +126,14 @@ mod tests {
         let app = App::new(crate::theme::Theme::global(), events);
         let text = report(&app);
         for section in [
-            "环境",
-            "色彩",
-            "键盘",
-            "同步输出",
-            "图形",
-            "剪贴板",
-            "通知",
-            "沙盒",
+            "Environment",
+            "Color",
+            "Keyboard",
+            "Sync output",
+            "Graphics",
+            "Clipboard",
+            "Notifications",
+            "Sandbox",
         ] {
             assert!(text.contains(section), "缺少分区「{section}」：{text}");
         }

@@ -180,7 +180,11 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
         } else {
             Style::new().fg(theme.gray)
         };
-        (format!(" {key}{tab} "), style, Hit::Tab(index))
+        (
+            format!(" {key}{} ", super::tab_title(tab)),
+            style,
+            Hit::Tab(index),
+        )
     });
     let compact = panel.provider_page() && (area.width < 72 || area.height < 24);
     let gap = if compact { 1 } else { 2 };
@@ -194,7 +198,7 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
             area.y + gap,
             [
                 (" ‹ ".into(), style, Hit::Tab(previous)),
-                (TABS[current].into(), style, Hit::Tab(current)),
+                (super::tab_title(TABS[current]).into(), style, Hit::Tab(current)),
                 (" › ".into(), style, Hit::Tab(next)),
             ],
             &mut hits,

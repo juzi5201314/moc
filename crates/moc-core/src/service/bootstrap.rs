@@ -195,8 +195,11 @@ impl Core {
             && !sandbox_support.supports(resolved.sandbox.default_mode)
         {
             anyhow::bail!(
-                "sandbox.default_mode={} 在当前平台不可用；请改用 full，或在 WSL2/macOS 中提供 sandbox runner",
-                resolved.sandbox.default_mode.as_str()
+                "{}",
+                moc_i18n::t!(
+                    "core.err.sandbox_mode_unavailable",
+                    mode = resolved.sandbox.default_mode.as_str()
+                )
             );
         }
         if let Some(session_dir) = &config.session_dir {

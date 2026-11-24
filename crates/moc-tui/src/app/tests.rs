@@ -129,7 +129,7 @@ fn engine_menu_requires_an_active_session() {
     let mut app = super::App::new(crate::theme::Theme::global(), events);
     app.open_engine_menu();
     assert!(app.engine_menu.is_none());
-    assert_eq!(app.notice.as_deref(), Some("当前没有活动会话"));
+    assert_eq!(app.notice.as_deref(), Some("当前没有活动的 session。"));
 }
 
 /// 权限菜单：无会话只提示；打开时按平台快照给出候选并高亮当前模式。
@@ -142,7 +142,7 @@ fn permission_menu_highlights_current_mode() {
     let mut app = super::App::new(crate::theme::Theme::global(), events);
     app.open_permission_menu();
     assert!(app.permission_menu.is_none());
-    assert_eq!(app.notice.as_deref(), Some("当前没有活动会话"));
+    assert_eq!(app.notice.as_deref(), Some("当前没有活动的 session。"));
 
     app.session = Some(SessionInfo {
         id: "ses_perm".into(),
@@ -264,7 +264,7 @@ fn finish_turn_reports_stop_after_cancel_request() {
 
     assert!(!app.prompt_running);
     assert!(!app.cancel_requested);
-    assert_eq!(app.notice.as_deref(), Some("已停止"));
+    assert_eq!(app.notice.as_deref(), Some("Stopped"));
 }
 
 #[test]

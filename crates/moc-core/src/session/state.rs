@@ -287,10 +287,9 @@ impl SessionState {
 
     pub(super) fn replay_entry(&mut self, entry: Entry) -> Result<(), CoreError> {
         if entry.parent_id() != Some(self.last_entry_id.as_str()) {
-            return Err(CoreError::Session(format!(
-                "entry {} 的 parent_id 与 transcript 链不匹配",
-                entry.id()
-            )));
+            return Err(CoreError::Session(
+                moc_i18n::t!("core.err.transcript_parent_mismatch", id = entry.id()).into_owned(),
+            ));
         }
         self.apply_entry(entry);
         Ok(())

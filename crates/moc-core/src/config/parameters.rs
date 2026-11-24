@@ -183,8 +183,8 @@ fn headers(api: Protocol) -> Vec<Parameter> {
     }
 }
 
-/// 参数的 label/desc：先查 API 专属键 `core.params.<api>.<stem>`，
-/// 再查通用键 `core.params.<name_下划线>`，缺 label 退回参数名。
+/// 参数的 label/desc：label 直接使用精确 wire 键名；desc 先查 API 专属键
+/// `core.params.<api>.<stem>.desc`，再查通用键 `core.params.<name_下划线>.desc`。
 fn describe(api: Protocol, name: &'static str) -> (Cow<'static, str>, Cow<'static, str>) {
     let stem = name.replace('.', "_");
     let api_stem = match api {
@@ -192,17 +192,14 @@ fn describe(api: Protocol, name: &'static str) -> (Cow<'static, str>, Cow<'stati
         Protocol::OpenAiResponses => "openai_responses",
         Protocol::AnthropicMessages => "anthropic",
     };
-    let lookup = |suffix: &str| {
-        [
-            format!("core.params.{api_stem}.{stem}.{suffix}"),
-            format!("core.params.{stem}.{suffix}"),
-        ]
-        .into_iter()
-        .find_map(|key| crate::i18n::try_t(&key))
-    };
-    let label = lookup("label").unwrap_or_else(|| Cow::Borrowed(name));
-    let desc = lookup("desc").unwrap_or_else(|| t!("core.config.fallback_desc"));
-    (label, desc)
+    let desc = [
+        format!("core.params.{api_stem}.{stem}.desc"),
+        format!("core.params.{stem}.desc"),
+    ]
+    .into_iter()
+    .find_map(|key| crate::i18n::try_t(&key))
+    .unwrap_or_else(|| t!("core.config.fallback_desc"));
+    (Cow::Borrowed(name), desc)
 }
 
 impl Kind {
@@ -315,8 +312,7 @@ fn append(
             path,
             tab: tab.to_string(),
             label: label.into(),
-            description: t!("core.config.desc_fmt", name = *name, desc = desc.as_ref())
-                .into_owned(),
+            description: desc.into_owned(),
             kind: kind.field(),
             advanced: true,
         });
@@ -467,7 +463,11 @@ mod tests {
                 .iter()
                 .find(|field| field.path == path)
                 .expect("每个模型都有参数入口");
-            assert!(field.description.contains(&format!("`{name}`")));
+            assert_eq!(field.label, name, "API 请求参数 label 应保持精确 wire 键名");
+            assert!(
+                !field.description.is_empty() && !field.description.starts_with(&format!("`{name}`")),
+                "API 请求参数描述应直接提供说明，不再重复键名前缀"
+            );
             assert!(field.advanced, "请求参数默认收纳到高级选项");
         }
         assert!(

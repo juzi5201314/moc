@@ -1,45 +1,45 @@
 _version = 2
 
 [acp.mode]
-default = { zh = "默认", en = "Ask" }
-default_desc = { zh = "需要决策时向你询问，计划交给你审阅", en = "Asks you when input is needed and lets you review plans" }
-dont_ask = { zh = "不再询问", en = "Don't ask" }
-dont_ask_desc = { zh = "不再向你提问，自动采用推荐选项；计划仍交给你审阅", en = "Auto-answers questions with recommended options; plans still wait for review" }
-unattended = { zh = "无人值守", en = "Unattended" }
-unattended_desc = { zh = "自动处理提问，计划提交后自动压缩并执行", en = "Auto-answers questions and auto-approves submitted plans (compact and run)" }
-plan = { zh = "计划", en = "Plan" }
+default = { zh = "Ask", en = "Ask" }
+default_desc = { zh = "需要决策时向你询问，计划交由你审阅", en = "Asks you when input is needed and lets you review plans" }
+dont_ask = { zh = "Don't ask", en = "Don't ask" }
+dont_ask_desc = { zh = "不再向你提问，自动采用推荐选项；计划仍交由你审阅", en = "Auto-answers questions with recommended options; plans still wait for review" }
+unattended = { zh = "Unattended", en = "Unattended" }
+unattended_desc = { zh = "自动应答提问，计划提交后自动压缩并执行", en = "Auto-answers questions and auto-approves submitted plans (compact and run)" }
+plan = { zh = "Plan", en = "Plan" }
 plan_desc = { zh = "先拟定实施计划，经你批准后再动手修改", en = "Draft an implementation plan first; writes and execution wait for approval" }
 
 [acp.model]
-context = { zh = "%{window} tokens 上下文", en = "%{window} tokens context" }
-label = { zh = "模型", en = "Model" }
-desc = { zh = "本次会话使用的模型", en = "Model used by this session" }
+context = { zh = "%{window} tokens context", en = "%{window} tokens context" }
+label = { zh = "Model", en = "Model" }
+desc = { zh = "当前会话使用的模型", en = "Model used by this session" }
 
 [acp.diff]
-truncated = { zh = "差异已截断，部分改动未显示。", en = "Diff truncated; some changes are not shown." }
+truncated = { zh = "Diff truncated; some changes are not shown.", en = "Diff truncated; some changes are not shown." }
 
 [acp.plan]
-blocked = { zh = "%{content}（阻塞：%{reason}）", en = "%{content} (blocked: %{reason})" }
-approved = { zh = "计划「%{title}」已批准", en = "Plan “%{title}” approved" }
-rejected = { zh = "计划「%{title}」已拒绝", en = "Plan “%{title}” rejected" }
-superseded = { zh = "计划「%{title}」已被新版本取代", en = "Plan “%{title}” superseded by a newer version" }
-mismatch_row = { zh = "- %{field}：请求 %{requested}，上游实际 %{reported}", en = "- %{field}: requested %{requested}, upstream reported %{reported}" }
+blocked = { zh = "%{content} (blocked: %{reason})", en = "%{content} (blocked: %{reason})" }
+approved = { zh = "Plan \"%{title}\" approved", en = "Plan \"%{title}\" approved" }
+rejected = { zh = "Plan \"%{title}\" rejected", en = "Plan \"%{title}\" rejected" }
+superseded = { zh = "Plan \"%{title}\" superseded by a newer version", en = "Plan \"%{title}\" superseded by a newer version" }
+mismatch_row = { zh = "- %{field}: requested %{requested}, upstream reported %{reported}", en = "- %{field}: requested %{requested}, upstream reported %{reported}" }
 
 [acp.notice]
-retry_title = { zh = "自动重试", en = "Auto retry" }
-retry_body = { zh = "本次生成的先前输出作废，已完成的工具结果保留。%{message}", en = "Earlier output of this generation was discarded; completed tool results are kept. %{message}" }
-guard_title = { zh = "循环守卫", en = "Loop guard" }
-plugin_disabled = { zh = "插件 %{plugin} 已停用", en = "Plugin %{plugin} disabled" }
-mismatch_title = { zh = "上游与请求不一致", en = "Upstream differs from request" }
-compacting = { zh = "正在压缩上下文…", en = "Compacting context…" }
-compacted = { zh = "上下文压缩完成：%{before} → %{after} tokens", en = "Context compaction done: %{before} → %{after} tokens" }
-compact_failed = { zh = "上下文压缩失败", en = "Context compaction failed" }
-error_title = { zh = "提示错误", en = "Prompt error" }
-code_message = { zh = "%{code}：%{message}", en = "%{code}: %{message}" }
+retry_title = { zh = "Auto retry", en = "Auto retry" }
+retry_body = { zh = "Earlier output of this generation was discarded; completed tool results are kept. %{message}", en = "Earlier output of this generation was discarded; completed tool results are kept. %{message}" }
+guard_title = { zh = "Loop guard", en = "Loop guard" }
+plugin_disabled = { zh = "Plugin %{plugin} disabled", en = "Plugin %{plugin} disabled" }
+mismatch_title = { zh = "Upstream differs from request", en = "Upstream differs from request" }
+compacting = { zh = "Compacting context...", en = "Compacting context..." }
+compacted = { zh = "Context compaction done: %{before} → %{after} tokens", en = "Context compaction done: %{before} → %{after} tokens" }
+compact_failed = { zh = "Context compaction failed", en = "Context compaction failed" }
+error_title = { zh = "Prompt error", en = "Prompt error" }
+code_message = { zh = "%{code}: %{message}", en = "%{code}: %{message}" }
 
 [acp.err]
-unknown_mode = { zh = "未知会话模式 %{mode}", en = "Unknown session mode %{mode}" }
-unsupported_config = { zh = "不支持的配置项 %{id}", en = "Unsupported config option %{id}" }
+unknown_mode = { zh = "未知会话模式：%{mode}", en = "Unknown session mode: %{mode}" }
+unsupported_config = { zh = "不支持的配置项：%{id}", en = "Unsupported config option: %{id}" }
 need_value_id = { zh = "model 选项需要 value id", en = "The model option requires a value id" }
 core_closed = { zh = "与后台服务的连接已断开", en = "Connection to the backend service closed" }
 blob_unsupported = { zh = "不支持二进制嵌入资源；请以文本或图片发送", en = "Binary embedded resources are not supported; send text or images instead" }

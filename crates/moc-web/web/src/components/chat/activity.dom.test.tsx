@@ -14,7 +14,7 @@ it("execute 生成时简略可见，原位执行后保留单条展开", () => {
     preview: { target: "", summary: "检查代码", body: code, language: null, truncated: false },
   });
   const view = render(<ActivityGroup blocks={[draft]} live sessionId="preview" />);
-  expect(view.getByText("生成中")).toBeTruthy();
+  expect(view.getByText("Generating")).toBeTruthy();
   expect(view.container.textContent).toContain("const n9");
   expect(view.container.textContent).not.toContain("const n0");
   const toggle = view.getByRole("button", { name: /检查代码/ });
@@ -35,7 +35,7 @@ it("execute 生成时简略可见，原位执行后保留单条展开", () => {
       sessionId="preview"
     />,
   );
-  expect(view.queryByText("生成中")).toBeNull();
+  expect(view.queryByText("Generating")).toBeNull();
   expect(view.container.textContent).toContain("const n0");
 });
 
@@ -110,12 +110,12 @@ it("网页摘要逐页保留标题、估算 token、截断和部分失败，错�
     />,
   );
   expect(view.getByText("Rust 文档")).toBeTruthy();
-  expect(view.getByText(/约 1,234 tokens/)).toBeTruthy();
-  expect(view.getByText("警告：内容已截断")).toBeTruthy();
-  expect(view.getByText("抓取失败：HTTP 403")).toBeTruthy();
+  expect(view.getByText(/~1,234 tokens/)).toBeTruthy();
+  expect(view.getByText("Warning: content truncated")).toBeTruthy();
+  expect(view.getByText("Fetch failed: HTTP 403")).toBeTruthy();
   expect(view.queryByText(/secret-page-body/)).toBeNull();
   expect(view.getByText("文件不存在")).toBeTruthy();
-  fireEvent.click(view.getByRole("button", { name: /读取/ }));
+  fireEvent.click(view.getByRole("button", { name: /Read/ }));
   expect(view.getByText(/错误详情/)).toBeTruthy();
   view.unmount();
 });
@@ -177,11 +177,11 @@ it("可折叠行的标题钉在滚动容器顶部，嵌套子工具与状态行�
     />,
   );
   // 顶层可折叠行钉住；点击仍走原有折叠路径。
-  const thinking = view.getByRole("button", { name: /思考/ });
+  const thinking = view.getByRole("button", { name: /Think/ });
   expect(thinking.parentElement?.className).toContain("sticky");
   const bash = view.getByRole("button", { name: /ls/ });
   expect(bash.parentElement?.className).toContain("sticky");
-  const nested = view.getByRole("button", { name: /读取 a\.rs/ });
+  const nested = view.getByRole("button", { name: /Read a\.rs/ });
   expect(nested.parentElement?.className).not.toContain("sticky");
   expect(nested.parentElement?.querySelector("button button")).toBeNull();
   const status = view.getByRole("button", { name: /就绪/ });
@@ -258,12 +258,12 @@ it("todo 简略档保留已完成项，跨阶段超过五项时只显示前三�
         count <= 5 || index < 3 || index >= count - 2,
       );
     }
-    expect(Boolean(view.queryByText(`⋯ 已省略 ${count - 5} 项`))).toBe(count > 5);
+    expect(Boolean(view.queryByText(`... ${count - 5} items omitted`))).toBe(count > 5);
     fireEvent.click(view.getByRole("button"));
     for (let index = 0; index < count; index++) {
       expect(view.getByText(`任务${index}`)).toBeTruthy();
     }
-    expect(view.queryByText(/已省略/)).toBeNull();
+    expect(view.queryByText(/items omitted/)).toBeNull();
     view.unmount();
   }
 });

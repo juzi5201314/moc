@@ -37,7 +37,7 @@ describe("slash 注册表语义", () => {
       for (const language of ["zh", "en"] as const) {
         useI18n.setState({ locale: language });
         const expected =
-          language === "zh" ? "暂无可压缩的对话历史" : "No conversation history to compact yet";
+          language === "zh" ? "暂无可压缩的对话历史。" : "No conversation history to compact yet.";
         vi.mocked(toast).mockClear();
         call.mockClear();
         runSlash("draft-session", "/compact", commands);

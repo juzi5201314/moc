@@ -141,7 +141,9 @@ pub(super) async fn resource_read(
                 });
             }
             crate::resources::ResourceBacking::Namespace { .. } => {
-                return Err(invalid_params("该 URI 是命名空间，请用 resource/list 列举"));
+                return Err(invalid_params(
+                    moc_i18n::t!("core.err.uri_is_namespace").into_owned(),
+                ));
             }
         };
         let read = crate::fs::read_path(&path, params.max_bytes)

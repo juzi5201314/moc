@@ -387,12 +387,14 @@ async fn parse_json_response(
 ) -> Result<ImageGenResponse, ImageGenError> {
     let wire: WireResponse = serde_json::from_slice(body).map_err(|error| {
         let preview = String::from_utf8_lossy(&body[..body.len().min(512)]);
-        ImageGenError::Decode(format!(
-            "无法解析上游 JSON 响应：{error}（响应片段：{preview}）"
-        ))
+        ImageGenError::Decode(
+            moc_i18n::t!("llm.image_gen.json_parse", error = error, preview = preview).into_owned(),
+        )
     })?;
     if wire.data.is_empty() {
-        return Err(ImageGenError::Decode("上游返回了空的 data 数组".into()));
+        return Err(ImageGenError::Decode(
+            moc_i18n::t!("llm.image_gen.empty_data").into_owned(),
+        ));
     }
     let default_mime = wire
         .output_format
@@ -409,9 +411,11 @@ async fn parse_json_response(
             .filter(|s| !s.is_empty())
         {
             let (data_mime, b64) = strip_data_url(raw_b64);
-            let bytes = STANDARD
-                .decode(b64.trim())
-                .map_err(|error| ImageGenError::Decode(format!("Base64 解码失败：{error}")))?;
+            let bytes = STANDARD.decode(b64.trim()).map_err(|error| {
+                ImageGenError::Decode(
+                    moc_i18n::t!("llm.image_gen.b64_decode", error = error).into_owned(),
+                )
+            })?;
             images.push(GeneratedImage {
                 bytes,
                 mime_hint: data_mime
@@ -431,7 +435,7 @@ async fn parse_json_response(
             });
         } else {
             return Err(ImageGenError::Decode(
-                "上游响应条目既不包含 b64_json 也不包含 url".into(),
+                moc_i18n::t!("llm.image_gen.missing_payload").into_owned(),
             ));
         }
     }
@@ -622,24 +626,24 @@ async fn validate_and_pin_target(
     upstream: Option<&AllowedUpstreamOrigin>,
 ) -> Result<Option<(String, Vec<SocketAddr>)>, ImageGenError> {
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(ImageGenError::Transport(format!(
-            "拒绝下载不受支持的图片协议：{}",
-            url.scheme()
-        )));
+        return Err(ImageGenError::Transport(
+            moc_i18n::t!("llm.image_gen.unsupported_scheme", scheme = url.scheme()).into_owned(),
+        ));
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(ImageGenError::Transport(
-            "拒绝下载包含内嵌凭据的图片 URL".into(),
+            moc_i18n::t!("llm.image_gen.embedded_creds").into_owned(),
         ));
     }
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| ImageGenError::Transport("图片 URL 缺少有效端口".into()))?;
-    let (host_key, ip_opt) = canonical_host_and_ip(url)
-        .ok_or_else(|| ImageGenError::Transport("图片 URL 缺少有效主机名".into()))?;
-    let raw_host = url
-        .host_str()
-        .ok_or_else(|| ImageGenError::Transport("图片 URL 缺少有效主机名".into()))?;
+    let port = url.port_or_known_default().ok_or_else(|| {
+        ImageGenError::Transport(moc_i18n::t!("llm.image_gen.missing_port").into_owned())
+    })?;
+    let (host_key, ip_opt) = canonical_host_and_ip(url).ok_or_else(|| {
+        ImageGenError::Transport(moc_i18n::t!("llm.image_gen.missing_host").into_owned())
+    })?;
+    let raw_host = url.host_str().ok_or_else(|| {
+        ImageGenError::Transport(moc_i18n::t!("llm.image_gen.missing_host").into_owned())
+    })?;
 
     let is_same_upstream_origin = upstream
         .is_some_and(|u| u.scheme == url.scheme() && u.host_key == host_key && u.port == port);
@@ -649,21 +653,25 @@ async fn validate_and_pin_target(
             || (is_same_upstream_origin
                 && upstream.is_some_and(|u| u.kind == SameOriginAllowance::LiteralNonPublicIp));
         if !allowed {
-            return Err(ImageGenError::Transport(format!(
-                "拒绝访问非公网图片地址：{ip}"
-            )));
+            return Err(ImageGenError::Transport(
+                moc_i18n::t!("llm.image_gen.non_public_ip", ip = ip).into_owned(),
+            ));
         }
         return Ok(None);
     }
 
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host((raw_host, port))
         .await
-        .map_err(|error| ImageGenError::Transport(format!("解析图片域名失败：{error}")))?
+        .map_err(|error| {
+            ImageGenError::Transport(
+                moc_i18n::t!("llm.image_gen.dns_failed", error = error).into_owned(),
+            )
+        })?
         .collect();
     if addrs.is_empty() {
-        return Err(ImageGenError::Transport(format!(
-            "图片域名未解析出任何地址：{raw_host}"
-        )));
+        return Err(ImageGenError::Transport(
+            moc_i18n::t!("llm.image_gen.dns_empty", host = raw_host).into_owned(),
+        ));
     }
 
     let allow_localhost_loopback = is_same_upstream_origin
@@ -677,9 +685,9 @@ async fn validate_and_pin_target(
             is_public_ip(ip)
         };
         if !ok {
-            return Err(ImageGenError::Transport(format!(
-                "拒绝访问解析到非公网地址的图片域名：{raw_host} -> {ip}"
-            )));
+            return Err(ImageGenError::Transport(
+                moc_i18n::t!("llm.image_gen.dns_non_public", host = raw_host, ip = ip).into_owned(),
+            ));
         }
     }
 
@@ -699,10 +707,13 @@ async fn download_remote_image(
     .await
     {
         Ok(result) => result,
-        Err(_) => Err(ImageGenError::Transport(format!(
-            "下载生成图片超时（超过 {:.1}s）",
-            timeout.as_secs_f64()
-        ))),
+        Err(_) => Err(ImageGenError::Transport(
+            moc_i18n::t!(
+                "llm.image_gen.download_timeout_secs",
+                secs = format!("{:.1}", timeout.as_secs_f64())
+            )
+            .into_owned(),
+        )),
     }
 }
 
@@ -711,15 +722,20 @@ async fn download_remote_image_inner(
     raw_url: &str,
     deadline: Instant,
 ) -> Result<(Vec<u8>, Option<String>), ImageGenError> {
-    let mut current_url = Url::parse(raw_url)
-        .map_err(|error| ImageGenError::Transport(format!("无效的生成图片 URL：{error}")))?;
+    let mut current_url = Url::parse(raw_url).map_err(|error| {
+        ImageGenError::Transport(
+            moc_i18n::t!("llm.image_gen.invalid_url", error = error).into_owned(),
+        )
+    })?;
     let upstream = allowed_upstream_origin(cfg);
     let base_connect_timeout = remote_image_connect_timeout(cfg);
 
     for redirects in 0..=MAX_REMOTE_IMAGE_REDIRECTS {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(ImageGenError::Transport("下载生成图片超时".into()));
+            return Err(ImageGenError::Transport(
+                moc_i18n::t!("llm.image_gen.download_timeout").into_owned(),
+            ));
         }
 
         let pinned = validate_and_pin_target(&current_url, upstream.as_ref()).await?;
@@ -730,7 +746,9 @@ async fn download_remote_image_inner(
             builder = builder.resolve_to_addrs(&domain, &addrs);
         }
         let hop_client = builder.build().map_err(|error| {
-            ImageGenError::Transport(format!("构建图片下载客户端失败：{error}"))
+            ImageGenError::Transport(
+                moc_i18n::t!("llm.image_gen.client_build", error = error).into_owned(),
+            )
         })?;
 
         let response = hop_client
@@ -738,30 +756,42 @@ async fn download_remote_image_inner(
             .timeout(remaining)
             .send()
             .await
-            .map_err(|error| ImageGenError::Transport(format!("下载生成图片失败：{error}")))?;
+            .map_err(|error| {
+                ImageGenError::Transport(
+                    moc_i18n::t!("llm.image_gen.download_failed", error = error).into_owned(),
+                )
+            })?;
         let status = response.status();
         if status.is_redirection() {
             if redirects >= MAX_REMOTE_IMAGE_REDIRECTS {
-                return Err(ImageGenError::Transport(format!(
-                    "下载生成图片重定向次数超过上限（{MAX_REMOTE_IMAGE_REDIRECTS}）"
-                )));
+                return Err(ImageGenError::Transport(
+                    moc_i18n::t!(
+                        "llm.image_gen.too_many_redirects",
+                        max = MAX_REMOTE_IMAGE_REDIRECTS
+                    )
+                    .into_owned(),
+                ));
             }
             let location = response
                 .headers()
                 .get(LOCATION)
                 .and_then(|value| value.to_str().ok())
                 .ok_or_else(|| {
-                    ImageGenError::Transport("下载生成图片收到重定向但缺少 Location 头".into())
+                    ImageGenError::Transport(
+                        moc_i18n::t!("llm.image_gen.redirect_no_location").into_owned(),
+                    )
                 })?;
             current_url = current_url.join(location).map_err(|error| {
-                ImageGenError::Transport(format!("下载生成图片重定向目标无效：{error}"))
+                ImageGenError::Transport(
+                    moc_i18n::t!("llm.image_gen.redirect_bad_target", error = error).into_owned(),
+                )
             })?;
             continue;
         }
         if !status.is_success() {
-            return Err(ImageGenError::Transport(format!(
-                "下载生成图片失败：HTTP {status}"
-            )));
+            return Err(ImageGenError::Transport(
+                moc_i18n::t!("llm.image_gen.download_http_status", status = status).into_owned(),
+            ));
         }
         let mime = response
             .headers()
@@ -834,10 +864,10 @@ async fn read_limited_checked(
     {
         record_rx(chunk.len() as u64);
         if out.len() + chunk.len() > limit {
-            return Err(ImageGenError::Decode(format!(
-                "图片响应体超过大小上限（{} MiB）",
-                limit / (1024 * 1024)
-            )));
+            return Err(ImageGenError::Decode(
+                moc_i18n::t!("llm.image_gen.body_too_large", mib = limit / (1024 * 1024))
+                    .into_owned(),
+            ));
         }
         out.extend_from_slice(&chunk);
     }

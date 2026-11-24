@@ -4,7 +4,7 @@
 // 最后一段正文，其余整体收进外层「工作了」。
 
 import { firstChangedBlock } from "@/lib/block-changes";
-import { currentLocale, type MsgKey, t } from "@/lib/i18n";
+import { type MsgKey, t } from "@/lib/i18n";
 import type { Block } from "@/lib/transcript-model";
 
 type UserBlock = Extract<Block, { kind: "user" }>;
@@ -310,11 +310,7 @@ export function summarizeActivity(blocks: Block[], done = true): string {
   const second = labels[1];
   if (!second) return first;
   if (labels.length === 2) {
-    const stripped =
-      currentLocale() === "zh" && first.startsWith("已") && second.startsWith("已")
-        ? second.slice(1)
-        : second;
-    return t("act.pair", { a: first, b: stripped });
+    return t("act.pair", { a: first, b: second });
   }
   const title = labels.join(t("act.sep"));
   return counts.size > 3 ? t("act.more", { list: title }) : title;

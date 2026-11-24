@@ -693,7 +693,7 @@ fn todo_call_renders_snapshot_tree_per_level() {
                     );
                 }
                 assert_eq!(
-                    text.contains("已省略"),
+                    text.contains("items omitted"),
                     level == DetailLevel::Brief && count > 5
                 );
                 if level == DetailLevel::Hidden {

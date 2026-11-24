@@ -66,7 +66,9 @@ impl<W: Write> Write for Counted<W> {
         self.bytes = self
             .bytes
             .checked_add(written)
-            .ok_or_else(|| std::io::Error::other("冻结正文超过可寻址范围"))?;
+            .ok_or_else(|| {
+                std::io::Error::other(moc_i18n::t!("core.err.frozen_body_overflow").into_owned())
+            })?;
         Ok(written)
     }
     fn flush(&mut self) -> std::io::Result<()> {

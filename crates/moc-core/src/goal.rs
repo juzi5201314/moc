@@ -116,7 +116,10 @@ pub(crate) async fn apply_action(
     // 目标操作串行化：读-改-写之间不能有第二个目标变更插队（含工具侧）。
     let _op = runtime.goal_op.lock().await;
     if record.state.lock().await.session.is_subagent() {
-        return Err(err("GOAL_NOT_SUPPORTED", "子代理会话不支持目标"));
+        return Err(err(
+            "GOAL_NOT_SUPPORTED",
+            moc_i18n::t!("core.goal.not_supported"),
+        ));
     }
     // `show` 是只读：不取写租约，别的进程写会话时也能查。
     if !matches!(action, GoalAction::Show) {
@@ -134,14 +137,17 @@ pub(crate) async fn apply_action(
             GoalAction::Create { objective } => {
                 let objective = objective.trim();
                 if objective.is_empty() {
-                    return Err(err("GOAL_INVALID_OBJECTIVE", "objective 不能为空"));
+                    return Err(err(
+                        "GOAL_INVALID_OBJECTIVE",
+                        moc_i18n::t!("core.goal.empty_objective"),
+                    ));
                 }
                 if let Some(goal) = &state.goal
                     && goal.phase != GoalPhase::Complete
                 {
                     return Err(err(
                         "GOAL_ALREADY_EXISTS",
-                        "已有进行中的目标；/goal edit 修改或 /goal clear 清除后再建",
+                        moc_i18n::t!("core.goal.already_exists"),
                     ));
                 }
                 Some(GoalSnapshot {
@@ -157,15 +163,21 @@ pub(crate) async fn apply_action(
             GoalAction::Edit { objective } => {
                 let objective = objective.trim();
                 if objective.is_empty() {
-                    return Err(err("GOAL_INVALID_OBJECTIVE", "objective 不能为空"));
+                    return Err(err(
+                        "GOAL_INVALID_OBJECTIVE",
+                        moc_i18n::t!("core.goal.empty_objective"),
+                    ));
                 }
                 let Some(goal) = &state.goal else {
-                    return Err(err("GOAL_NOT_FOUND", "当前没有目标可编辑"));
+                    return Err(err(
+                        "GOAL_NOT_FOUND",
+                        moc_i18n::t!("core.goal.no_goal_edit"),
+                    ));
                 };
                 if goal.phase == GoalPhase::Complete {
                     return Err(err(
                         "GOAL_INVALID_TRANSITION",
-                        "目标已完成；/goal <objective> 可直接建立新目标",
+                        moc_i18n::t!("core.goal.complete_edit"),
                     ));
                 }
                 Some(GoalSnapshot {
@@ -177,7 +189,10 @@ pub(crate) async fn apply_action(
             }
             GoalAction::Pause => {
                 let Some(goal) = &state.goal else {
-                    return Err(err("GOAL_NOT_FOUND", "当前没有目标可暂停"));
+                    return Err(err(
+                        "GOAL_NOT_FOUND",
+                        moc_i18n::t!("core.goal.no_goal_pause"),
+                    ));
                 };
                 match goal.phase {
                     GoalPhase::Active => Some(GoalSnapshot {
@@ -188,13 +203,19 @@ pub(crate) async fn apply_action(
                     // paused/blocked 下 pause 幂等返回原状；complete 拒绝。
                     GoalPhase::Paused | GoalPhase::Blocked => None,
                     GoalPhase::Complete => {
-                        return Err(err("GOAL_INVALID_TRANSITION", "目标已完成，无法暂停"));
+                        return Err(err(
+                            "GOAL_INVALID_TRANSITION",
+                            moc_i18n::t!("core.goal.complete_pause"),
+                        ));
                     }
                 }
             }
             GoalAction::Resume => {
                 let Some(goal) = &state.goal else {
-                    return Err(err("GOAL_NOT_FOUND", "当前没有目标可恢复"));
+                    return Err(err(
+                        "GOAL_NOT_FOUND",
+                        moc_i18n::t!("core.goal.no_goal_resume"),
+                    ));
                 };
                 match goal.phase {
                     GoalPhase::Paused | GoalPhase::Blocked => Some(GoalSnapshot {
@@ -205,7 +226,10 @@ pub(crate) async fn apply_action(
                     }),
                     GoalPhase::Active => None,
                     GoalPhase::Complete => {
-                        return Err(err("GOAL_INVALID_TRANSITION", "目标已完成，无法恢复"));
+                        return Err(err(
+                            "GOAL_INVALID_TRANSITION",
+                            moc_i18n::t!("core.goal.complete_resume"),
+                        ));
                     }
                 }
             }

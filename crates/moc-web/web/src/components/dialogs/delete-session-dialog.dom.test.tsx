@@ -82,7 +82,7 @@ it("全局挂载读取删除请求，取消不会发起 RPC", () => {
   requestDelete();
   expect(view.getByRole("alertdialog").textContent).toContain(session.title);
   expect(rpc.call).not.toHaveBeenCalled();
-  fireEvent.click(view.getByRole("button", { name: "取消" }));
+  fireEvent.click(view.getByRole("button", { name: "Cancel" }));
   expect(view.queryByRole("alertdialog")).toBeNull();
   expect(useUi.getState().confirmDelete).toBeNull();
   expect(rpc.call).not.toHaveBeenCalled();
@@ -93,11 +93,11 @@ it("确认后调用真实删除 action，移除当前会话并切换到剩余会
   vi.mocked(rpc.call).mockImplementationOnce(() => pending.promise);
   const view = render(<App />);
   requestDelete();
-  const remove = view.getByRole("button", { name: "删除" });
+  const remove = view.getByRole("button", { name: "Delete" });
   fireEvent.click(remove);
   expect(rpc.call).toHaveBeenCalledWith("session/delete", { session_id: session.id });
   expect(remove.hasAttribute("disabled")).toBe(true);
-  expect(view.getByRole("button", { name: "取消" }).hasAttribute("disabled")).toBe(true);
+  expect(view.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
   expect(useTabs.getState().active).toBe(session.id);
   await act(async () => pending.resolve({}));
   await waitFor(() => expect(view.queryByRole("alertdialog")).toBeNull());
@@ -105,15 +105,15 @@ it("确认后调用真实删除 action，移除当前会话并切换到剩余会
   expect(useTabs.getState().open).toEqual([other.id]);
   expect(useTranscript.getState().bySession[session.id]).toBeUndefined();
   expect(useSessions.getState().list).toEqual([other]);
-  expect(toast.success).toHaveBeenCalledWith("会话已删除");
+  expect(toast.success).toHaveBeenCalledWith("session 已删除。");
 });
 
 it("删除非当前会话不改变当前会话，空标题使用后备文案", async () => {
   useTabs.setState({ active: other.id });
   const view = render(<App />);
   requestDelete("");
-  expect(view.getByRole("alertdialog").textContent).toContain("新会话");
-  fireEvent.click(view.getByRole("button", { name: "删除" }));
+  expect(view.getByRole("alertdialog").textContent).toContain("New session");
+  fireEvent.click(view.getByRole("button", { name: "Delete" }));
   await waitFor(() => expect(toast.success).toHaveBeenCalled());
   expect(useTabs.getState().active).toBe(other.id);
 });
@@ -122,7 +122,7 @@ it("删除最后一个打开的会话后显示新草稿", async () => {
   useTabs.setState({ open: [session.id] });
   const view = render(<App />);
   requestDelete();
-  fireEvent.click(view.getByRole("button", { name: "删除" }));
+  fireEvent.click(view.getByRole("button", { name: "Delete" }));
   await waitFor(() => expect(toast.success).toHaveBeenCalled());
   expect(useTabs.getState().active).toBe("draft-session");
   expect(useTranscript.getState().bySession[session.id]).toBeUndefined();
@@ -132,14 +132,16 @@ it("RPC 失败提示错误并保留会话与确认框，允许取消", async () 
   vi.mocked(rpc.call).mockRejectedValueOnce(new Error("SESSION_LOCKED"));
   const view = render(<App />);
   requestDelete();
-  fireEvent.click(view.getByRole("button", { name: "删除" }));
-  await waitFor(() => expect(toast.error).toHaveBeenCalledWith("删除会话失败：SESSION_LOCKED"));
+  fireEvent.click(view.getByRole("button", { name: "Delete" }));
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith("删除 session 失败：SESSION_LOCKED"),
+  );
   expect(view.getByRole("alertdialog")).toBeTruthy();
   expect(useTabs.getState().active).toBe(session.id);
   expect(useTranscript.getState().bySession[session.id]).toBeTruthy();
   expect(useSessions.getState().list).toContainEqual(session);
   expect(toast.success).not.toHaveBeenCalled();
-  fireEvent.click(view.getByRole("button", { name: "取消" }));
+  fireEvent.click(view.getByRole("button", { name: "Cancel" }));
   expect(useUi.getState().confirmDelete).toBeNull();
 });
 
@@ -151,8 +153,8 @@ it("删除成功后立即关闭，即使列表刷新挂起或失败也不误报�
   });
   const view = render(<App />);
   requestDelete();
-  fireEvent.click(view.getByRole("button", { name: "删除" }));
-  await waitFor(() => expect(toast.success).toHaveBeenCalledWith("会话已删除"));
+  fireEvent.click(view.getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(toast.success).toHaveBeenCalledWith("session 已删除。"));
   expect(view.queryByRole("alertdialog")).toBeNull();
   expect(useTabs.getState().active).toBe(other.id);
   expect(useTranscript.getState().bySession[session.id]).toBeUndefined();

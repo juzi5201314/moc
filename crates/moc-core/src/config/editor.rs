@@ -137,7 +137,7 @@ pub fn save(
         crate::session::lock::SessionLockGuard::acquire(parent.join("config.lock"), "config")?;
     if revision(&contents(&target)?) != expected {
         return Err(CoreError::Config(
-            "配置文件已被其他窗口修改；按 Ctrl+Z 撤回这次改动，或重新打开设置页读取最新配置".into(),
+            t!("core.err.config_conflict").into_owned(),
         ));
     }
     remove_nulls(&mut document);
@@ -238,9 +238,9 @@ pub fn patch_plugin(
             .entry(plugin.to_owned())
             .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
         if !plugin_entry.is_table() {
-            return Err(CoreError::Config(format!(
-                "插件 `{plugin}` 的配置必须是 TOML 表"
-            )));
+            return Err(CoreError::Config(
+                t!("core.err.plugin_table_required", plugin = plugin).into_owned(),
+            ));
         }
         let config = plugin_entry
             .as_table_mut()

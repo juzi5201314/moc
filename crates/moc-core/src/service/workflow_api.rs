@@ -5,6 +5,7 @@ use super::errors::write_lease_error;
 use super::workflow_manager;
 use crate::error::CoreError;
 use crate::service::to_rpc;
+use moc_i18n::t;
 use moc_protocol::RequestContext;
 use moc_protocol::RpcError;
 use moc_protocol::methods::SessionInfo;
@@ -28,14 +29,14 @@ pub(super) async fn session_workflow_activate(
             .map_err(to_rpc)?;
         if !config.workflow.enabled {
             return Err(to_rpc(CoreError::Config(
-                "workflow is disabled ([workflow] enabled = false)".into(),
+                t!("core.err.workflow_disabled").into_owned(),
             )));
         }
     }
     // 审批流依赖 ask 反向请求能力；无审批能力的连接（--print 等）不给激活。
     if !core.inner.client_supports_ask(ctx.connection_id()) {
         return Err(to_rpc(CoreError::Session(
-            "workflows require approval capability; this connection cannot answer approvals".into(),
+            t!("core.err.workflow_no_approval_cap").into_owned(),
         )));
     }
     core.inner
@@ -168,7 +169,7 @@ pub(super) async fn session_workflow_resume(
         .map_err(to_rpc)?;
     if !config.workflow.enabled {
         return Err(to_rpc(CoreError::Config(
-            "workflow is disabled ([workflow] enabled = false)".into(),
+            t!("core.err.workflow_disabled").into_owned(),
         )));
     }
     // resume 与工具走同一条 prepare_resume：stopped-only + 命令集一致性校验。
@@ -243,10 +244,13 @@ pub(super) async fn session_workflow_artifact(
     let manager = workflow_manager(&core.inner, &record).await;
     // artifact_id 参与拼路径：与编译期同一字符集校验，run_id 走 run_dir 校验。
     if !crate::workflow::compile::valid_artifact_id(&params.artifact_id) {
-        return Err(to_rpc(CoreError::Session(format!(
-            "invalid artifact id \"{}\"",
-            params.artifact_id
-        ))));
+        return Err(to_rpc(CoreError::Session(
+            t!(
+                "core.err.workflow_artifact_invalid_id",
+                id = params.artifact_id
+            )
+            .into_owned(),
+        )));
     }
     let dir = manager
         .run_dir(&params.run_id)
@@ -254,7 +258,11 @@ pub(super) async fn session_workflow_artifact(
         .join("artifacts")
         .join(&params.artifact_id);
     let mut versions: Vec<(u32, std::path::PathBuf)> = std::fs::read_dir(&dir)
-        .map_err(|e| to_rpc(CoreError::Session(format!("artifact dir unreadable: {e}"))))?
+        .map_err(|e| {
+            to_rpc(CoreError::Session(
+                t!("core.err.workflow_artifact_dir_unreadable", error = e).into_owned(),
+            ))
+        })?
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
@@ -271,20 +279,30 @@ pub(super) async fn session_workflow_artifact(
             .into_iter()
             .find(|(found, _)| *found == v)
             .ok_or_else(|| {
-                to_rpc(CoreError::Session(format!(
-                    "artifact {} version {v} not found",
-                    params.artifact_id
-                )))
+                to_rpc(CoreError::Session(
+                    t!(
+                        "core.err.workflow_artifact_version_missing",
+                        id = params.artifact_id,
+                        version = v
+                    )
+                    .into_owned(),
+                ))
             })?,
         None => versions.last().cloned().ok_or_else(|| {
-            to_rpc(CoreError::Session(format!(
-                "artifact {} has no versions",
-                params.artifact_id
-            )))
+            to_rpc(CoreError::Session(
+                t!(
+                    "core.err.workflow_artifact_no_versions",
+                    id = params.artifact_id
+                )
+                .into_owned(),
+            ))
         })?,
     };
-    let data = std::fs::read(&path)
-        .map_err(|e| to_rpc(CoreError::Session(format!("artifact unreadable: {e}"))))?;
+    let data = std::fs::read(&path).map_err(|e| {
+        to_rpc(CoreError::Session(
+            t!("core.err.workflow_artifact_unreadable", error = e).into_owned(),
+        ))
+    })?;
     let content = serde_json::from_slice::<serde_json::Value>(&data)
         .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&data).to_string()));
     Ok(moc_protocol::WorkflowArtifactResult {

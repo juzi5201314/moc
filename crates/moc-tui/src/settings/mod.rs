@@ -59,9 +59,22 @@ fn tab_of(path: &[String]) -> &'static str {
     }
 }
 
-/// 选项卡的本地化显示名。
-pub fn tab_label(tab: &str) -> std::borrow::Cow<'static, str> {
-    moc_i18n::t!(format!("tui.tabs.{tab}")).into_owned().into()
+/// 选项卡展示名（全 locale 统一英文 Title Case）。
+pub(super) fn tab_title(tab: &str) -> &str {
+    match tab {
+        "models" => "Models",
+        "providers" => "Providers",
+        "instructions" => "Instructions",
+        "skills" => "Skills",
+        "tools" => "Tools",
+        "sandbox" => "Sandbox",
+        "context" => "Context",
+        "session" => "Session",
+        "mcp" => "MCP",
+        "ui" => "UI",
+        "plugins" => "Plugins",
+        other => other,
+    }
 }
 
 pub struct SettingsPanel {

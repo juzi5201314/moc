@@ -6,7 +6,12 @@ import { setLanguage, t } from "@/lib/i18n";
 import { clientListeners, rpc } from "@/protocol/client";
 import { ErrorCode, type RpcError } from "@/protocol/errors";
 import type { ConnectionStatus } from "@/protocol/rpc";
-import type { CommandMeta, ConfigGetResult, InitializeResult } from "@/protocol/types";
+import {
+  type CommandMeta,
+  type ConfigGetResult,
+  type InitializeResult,
+  PROTOCOL_VERSION,
+} from "@/protocol/types";
 
 export type ConnectionState = {
   status: ConnectionStatus;
@@ -29,9 +34,13 @@ export const useConnection = create<ConnectionState>()((set) => ({
   handshakeError: null,
   everOnline: false,
   refreshConfig: async () => {
+    const prevLang = useConnection.getState().config?.language;
     const config = await rpc.call<ConfigGetResult>("config/get", {});
     setLanguage(config.language);
     set({ config });
+    if (prevLang !== undefined && prevLang !== config.language) {
+      void useConnection.getState().refreshCommands();
+    }
   },
   refreshCommands: async () => {
     const response = await fetch("/commands.json");
@@ -59,6 +68,13 @@ clientListeners.handshakeError.add((handshakeError) => {
   useConnection.setState({ handshakeError });
   // 版本不兼容不再自动重连，是用户必须干预的终态，不能只靠状态点传达。
   if (handshakeError.code === ErrorCode.UnsupportedProtocolVersion) {
-    toast.error(t("conn.version_mismatch"));
+    const serverVersion = (handshakeError.data as { server_version?: string } | undefined)
+      ?.server_version;
+    toast.error(
+      t("conn.version_mismatch", {
+        server: serverVersion ?? t("sb.unknown"),
+        client: PROTOCOL_VERSION,
+      }),
+    );
   }
 });

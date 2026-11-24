@@ -807,7 +807,7 @@ function ParamsPopover({
         align="start"
         side="top"
         sideOffset={8}
-        className="max-h-[75vh] w-80 overflow-y-auto rounded-xl border-0 bg-popover p-3 shadow-[var(--elevation-popover)]"
+        className="max-h-[75vh] w-96 overflow-y-auto rounded-xl border-0 bg-popover p-3 shadow-[var(--elevation-popover)]"
       >
         <div className="mb-2.5 flex items-center justify-between">
           <span className="text-xs font-medium text-muted-foreground">{t("ip.params")}</span>
@@ -826,10 +826,13 @@ function ParamsPopover({
           )}
         </div>
 
-        <div className="space-y-2.5 text-xs">
+        <div className="space-y-3 text-xs">
           {/* size：支持预设或自由输入 */}
           <div className="space-y-1">
-            <span className="text-text-tertiary">size</span>
+            <div>
+              <div className="font-mono text-foreground">size</div>
+              <p className="text-2xs leading-4 text-text-tertiary">{t("ip.param_size_desc")}</p>
+            </div>
             <Input
               value={params.size ?? ""}
               onChange={(e) => patch({ size: e.target.value || undefined })}
@@ -844,10 +847,13 @@ function ParamsPopover({
             </datalist>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2.5">
             {/* n */}
             <div className="space-y-1">
-              <span className="text-text-tertiary">n</span>
+              <div>
+                <div className="font-mono text-foreground">n</div>
+                <p className="text-2xs leading-4 text-text-tertiary">{t("ip.param_n_desc")}</p>
+              </div>
               <Input
                 type="number"
                 min={1}
@@ -864,7 +870,12 @@ function ParamsPopover({
 
             {/* quality */}
             <div className="space-y-1">
-              <span className="text-text-tertiary">quality</span>
+              <div>
+                <div className="font-mono text-foreground">quality</div>
+                <p className="text-2xs leading-4 text-text-tertiary">
+                  {t("ip.param_quality_desc")}
+                </p>
+              </div>
               <Select
                 value={params.quality ?? UNSET}
                 onValueChange={(v) => patch({ quality: v === UNSET ? undefined : v })}
@@ -884,10 +895,15 @@ function ParamsPopover({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2.5">
             {/* output_format（含 gif） */}
             <div className="space-y-1">
-              <span className="text-text-tertiary">output_format</span>
+              <div>
+                <div className="font-mono text-foreground">output_format</div>
+                <p className="text-2xs leading-4 text-text-tertiary">
+                  {t("ip.param_output_format_desc")}
+                </p>
+              </div>
               <Select
                 value={params.output_format ?? UNSET}
                 onValueChange={(v) => patch({ output_format: v === UNSET ? undefined : v })}
@@ -908,7 +924,12 @@ function ParamsPopover({
 
             {/* aspect_ratio（第三方兼容网关常用） */}
             <div className="space-y-1">
-              <span className="text-text-tertiary">aspect_ratio</span>
+              <div>
+                <div className="font-mono text-foreground">aspect_ratio</div>
+                <p className="text-2xs leading-4 text-text-tertiary">
+                  {t("ip.param_aspect_ratio_desc")}
+                </p>
+              </div>
               <Select
                 value={params.aspect_ratio ?? UNSET}
                 onValueChange={(v) => patch({ aspect_ratio: v === UNSET ? undefined : v })}
@@ -940,10 +961,15 @@ function ParamsPopover({
           </button>
 
           {showAdvanced && (
-            <div className="space-y-2.5 border-t border-border-subtle pt-2.5">
-              <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-3 border-t border-border-subtle pt-2.5">
+              <div className="grid grid-cols-2 gap-2.5">
                 <div className="space-y-1">
-                  <span className="text-text-tertiary">background</span>
+                  <div>
+                    <div className="font-mono text-foreground">background</div>
+                    <p className="text-2xs leading-4 text-text-tertiary">
+                      {t("ip.param_background_desc")}
+                    </p>
+                  </div>
                   <Select
                     value={params.background ?? UNSET}
                     onValueChange={(v) => patch({ background: v === UNSET ? undefined : v })}
@@ -963,7 +989,12 @@ function ParamsPopover({
                 </div>
 
                 <div className="space-y-1">
-                  <span className="text-text-tertiary">image_size</span>
+                  <div>
+                    <div className="font-mono text-foreground">image_size</div>
+                    <p className="text-2xs leading-4 text-text-tertiary">
+                      {t("ip.param_image_size_desc")}
+                    </p>
+                  </div>
                   <Select
                     value={params.image_size ?? UNSET}
                     onValueChange={(v) => patch({ image_size: v === UNSET ? undefined : v })}
@@ -983,9 +1014,14 @@ function ParamsPopover({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2.5">
                 <div className="space-y-1">
-                  <span className="text-text-tertiary">input_fidelity</span>
+                  <div>
+                    <div className="font-mono text-foreground">input_fidelity</div>
+                    <p className="text-2xs leading-4 text-text-tertiary">
+                      {t("ip.param_input_fidelity_desc")}
+                    </p>
+                  </div>
                   <Select
                     value={params.input_fidelity ?? UNSET}
                     onValueChange={(v) => patch({ input_fidelity: v === UNSET ? undefined : v })}
@@ -1005,7 +1041,12 @@ function ParamsPopover({
                 </div>
 
                 <div className="space-y-1">
-                  <span className="text-text-tertiary">response_format</span>
+                  <div>
+                    <div className="font-mono text-foreground">response_format</div>
+                    <p className="text-2xs leading-4 text-text-tertiary">
+                      {t("ip.param_response_format_desc")}
+                    </p>
+                  </div>
                   <Select
                     value={params.response_format ?? UNSET}
                     onValueChange={(v) => patch({ response_format: v === UNSET ? undefined : v })}
@@ -1025,9 +1066,14 @@ function ParamsPopover({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2.5">
                 <div className="space-y-1">
-                  <span className="text-text-tertiary">output_compression</span>
+                  <div>
+                    <div className="font-mono text-foreground">output_compression</div>
+                    <p className="text-2xs leading-4 text-text-tertiary">
+                      {t("ip.param_output_compression_desc")}
+                    </p>
+                  </div>
                   <Input
                     type="number"
                     min={0}
@@ -1047,7 +1093,12 @@ function ParamsPopover({
                 </div>
 
                 <div className="space-y-1">
-                  <span className="text-text-tertiary">edit_encoding</span>
+                  <div>
+                    <div className="font-mono text-foreground">edit_encoding</div>
+                    <p className="text-2xs leading-4 text-text-tertiary">
+                      {t("ip.param_edit_encoding_desc")}
+                    </p>
+                  </div>
                   <Select
                     value={params.edit_encoding ?? UNSET}
                     onValueChange={(v) =>
@@ -1068,7 +1119,12 @@ function ParamsPopover({
               </div>
 
               <div className="space-y-1">
-                <span className="text-text-tertiary">extra_params (JSON)</span>
+                <div>
+                  <div className="font-mono text-foreground">extra_params (JSON)</div>
+                  <p className="text-2xs leading-4 text-text-tertiary">
+                    {t("ip.param_extra_params_desc")}
+                  </p>
+                </div>
                 <Textarea
                   value={extraText}
                   onChange={(e) => setExtraText(e.target.value)}

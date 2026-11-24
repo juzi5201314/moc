@@ -45,7 +45,7 @@ describe("chartToMermaid", () => {
       { type: "line", x: { field: "x" }, y: { field: "v" }, scale: "log" },
       items,
     );
-    expect(out).toContain("按线性");
+    expect(out).toContain("linear scale");
     expect(chartToMermaid({ x: { field: "x" }, y: { field: "v" } }, [])).toBeNull();
   });
 });

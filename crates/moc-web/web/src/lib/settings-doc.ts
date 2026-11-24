@@ -118,7 +118,7 @@ export function parseField(text: string, kind: FieldKind): ParseResult {
 
 /** Choice 选项展示：标签与取值相同时只显示一次（同 `ChoiceOption::display`）。 */
 export function choiceDisplay(option: { value: string; label: string }): string {
-  return option.label === option.value ? option.value : `${option.label}（${option.value}）`;
+  return option.label === option.value ? option.value : `${option.label} (${option.value})`;
 }
 
 /**

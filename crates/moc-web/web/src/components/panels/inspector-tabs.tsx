@@ -374,7 +374,7 @@ export function UsageTab({ sessionId }: { sessionId: string }) {
               title={
                 modelName(summary.model) +
                 (summary.source === "sidekick"
-                  ? " (sidekick)"
+                  ? t("it.src_sidekick")
                   : summary.source === "subagent"
                     ? t("it.src_subagent")
                     : "")

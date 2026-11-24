@@ -70,7 +70,9 @@ pub(super) async fn prepare(
         }
         PromptRun::Retry => {
             if !state_snapshot.has_history {
-                return Err(crate::service::invalid_params("当前会话没有可重试的上下文"));
+                return Err(crate::service::invalid_params(
+                    moc_i18n::t!("core.err.retry_no_context").into_owned(),
+                ));
             }
             match trim_failed_tail(inner, &params.session_id).await? {
                 RetryTrim::Nothing => {}
@@ -225,7 +227,11 @@ pub(super) async fn prepare(
                 }
             },
         }
-        if state_snapshot.session.title == "新会话" && goal_meta.is_none() {
+        if matches!(
+            state_snapshot.session.title.as_str(),
+            "New session" | "新会话"
+        ) && goal_meta.is_none()
+        {
             let title = user_message
                 .text()
                 .lines()

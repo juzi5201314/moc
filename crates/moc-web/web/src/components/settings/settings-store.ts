@@ -67,8 +67,12 @@ let queue: Promise<unknown> = Promise.resolve();
  * 修改当前范围的文档并保存。`mutate` 拿到的是排队轮到时的最新文档。
  * 保存成功后刷新 `config/get`，让模型选择器等处立刻看到新配置。
  */
-export function writeSettings(mutate: (doc: Doc) => Doc, label?: string): Promise<boolean> {
-  const scope = useSettings.getState().scope;
+export function writeSettings(
+  mutate: (doc: Doc) => Doc,
+  label?: string,
+  targetScope?: ConfigScope,
+): Promise<boolean> {
+  const scope = targetScope ?? useSettings.getState().scope;
   useSettings.setState((state) => ({ saving: state.saving + 1 }));
   const task = queue.then(async () => {
     const { docs, cwd } = useSettings.getState();
@@ -112,6 +116,10 @@ export function writeSettings(mutate: (doc: Doc) => Doc, label?: string): Promis
 }
 
 /** 写一个字段；`undefined` 删除该键（回落到继承值 / 默认值）。 */
-export function writeField(path: string[], value: unknown): Promise<boolean> {
-  return writeSettings((doc) => setPath(doc, path, value));
+export function writeField(
+  path: string[],
+  value: unknown,
+  targetScope?: ConfigScope,
+): Promise<boolean> {
+  return writeSettings((doc) => setPath(doc, path, value), undefined, targetScope);
 }

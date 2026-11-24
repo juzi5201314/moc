@@ -489,16 +489,16 @@ fn list_summaries_show_defaults_and_choices() {
     let control = controls::control(&field);
     assert_eq!(
         controls::summary(&control, &Value::Null).as_deref(),
-        Some("默认（low、medium、high、xhigh、max）")
+        Some("Default (low, medium, high, xhigh, max)")
     );
     assert_eq!(
         controls::summary(&control, &json!(["low", "ultra-2"])).as_deref(),
-        Some("low、ultra-2")
+        Some("low, ultra-2")
     );
     let field = model_field("input", FieldKind::Strings);
     assert_eq!(
         controls::summary(&controls::control(&field), &json!(["text", "image"])).as_deref(),
-        Some("text、image")
+        Some("text, image")
     );
 }
 
@@ -572,7 +572,7 @@ fn advanced_group_collapses_by_default_and_expands_on_filter() {
             _ => None,
         })
         .expect("存在高级选项折叠行");
-    assert_eq!(adv_title, "高级选项");
+    assert_eq!(adv_title, "Advanced");
     assert!(!panel.expanded.contains(&adv_key), "高级选项分组默认折叠");
     assert!(
         !panel.rows.iter().any(|row| matches!(

@@ -299,10 +299,15 @@ pub(super) fn read_entries_sync(
     log::for_each_line(path, &mut |line| {
         line_number += 1;
         let entry = serde_json::from_slice(line).map_err(|error| {
-            CoreError::Session(format!(
-                "解析 {} 第 {line_number} 行失败: {error}",
-                path.display()
-            ))
+            CoreError::Session(
+                moc_i18n::t!(
+                    "core.err.transcript_parse_line",
+                    path = path.display().to_string(),
+                    line = line_number,
+                    error = error
+                )
+                .into_owned(),
+            )
         })?;
         on_entry(entry)
     })

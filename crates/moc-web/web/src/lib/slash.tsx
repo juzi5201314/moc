@@ -167,7 +167,7 @@ export function runSlash(
     return true;
   }
   if (!command.plugin && command.usage?.startsWith("<") && !args) {
-    toast(t("slash.usage", { cmd: `/${command.name} ${command.usage}` }));
+    toast(t("slash.usage", { usage: `/${command.name} ${command.usage}` }));
     return true;
   }
   composer.clearDraft(sessionId);
@@ -231,7 +231,7 @@ export function runSlash(
     case "debuginfo":
     case "session": {
       if (args) {
-        toast(t("slash.usage", { cmd: `/${command.name}` }));
+        toast(t("slash.usage", { usage: `/${command.name}` }));
         break;
       }
       const method = command.name === "debuginfo" ? "session/debug_info" : "session/inspect";
@@ -266,7 +266,9 @@ export function runSlash(
         } as Record<string, SkillsCompactAction>
       )[normalized];
       if (!action) {
-        toast.error(t("slash.usage", { cmd: "/compact-skills [compact | force | cleanup [all]]" }));
+        toast.error(
+          t("slash.usage", { usage: "/compact-skills [compact | force | cleanup [all]]" }),
+        );
         break;
       }
       // 请求中的结果/错误由行内状态显示；这里只提示启动前被拒绝的情况。
@@ -312,7 +314,7 @@ export function runSlash(
         ? AUTONOMY.find((item) => item.id === args)
         : AUTONOMY[(index + 1) % AUTONOMY.length];
       if (!next) {
-        toast(t("slash.usage", { cmd: `/autonomy ${command.usage}` }));
+        toast(t("slash.usage", { usage: `/autonomy ${command.usage}` }));
         break;
       }
       void setSessionAutonomy(sessionId, next.id)
@@ -336,7 +338,7 @@ export function runSlash(
             label: current ? t(PERMISSION_LABEL[current]) : t("slash.perm_default"),
           }),
           {
-            description: t("slash.usage", { cmd: `/permission ${command.usage}` }),
+            description: t("slash.usage", { usage: `/permission ${command.usage}` }),
           },
         );
         break;
@@ -353,7 +355,7 @@ export function runSlash(
       }
       const mode = rest === "workspace-only" ? "workspace_only" : rest;
       if (!PERMISSION_MODES.includes(mode as SessionPermission)) {
-        toast(t("slash.usage", { cmd: `/permission ${command.usage}` }));
+        toast(t("slash.usage", { usage: `/permission ${command.usage}` }));
         break;
       }
       void setSessionPermission(sessionId, mode as SessionPermission)
@@ -418,7 +420,7 @@ export function runSlash(
         return { action: "create", objective: rest };
       })();
       if (!action) {
-        toast(t("slash.usage", { cmd: "/goal edit <objective>" }));
+        toast(t("slash.usage", { usage: "/goal edit <objective>" }));
         break;
       }
       void rpc
@@ -516,7 +518,7 @@ export function runSlash(
             toast.error(t("slash.mcp_reconnect_failed", { error: errorText(error) })),
           );
       } else {
-        toast(t("slash.usage", { cmd: `/mcp ${command.usage}` }));
+        toast(t("slash.usage", { usage: `/mcp ${command.usage}` }));
       }
       break;
     }
@@ -536,7 +538,7 @@ export function runSlash(
       } else if (rest === "") {
         openSettings("plugins");
       } else {
-        toast(t("slash.usage", { cmd: `/plugins ${command.usage}` }));
+        toast(t("slash.usage", { usage: `/plugins ${command.usage}` }));
       }
       break;
     }

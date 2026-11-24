@@ -567,7 +567,7 @@ impl Painter<'_> {
             self.dot(x, 0, self.series_color(index));
             x += SWATCH + GAP;
             let label = if spec.series.len() == 1 && !series.unit.is_empty() {
-                format!("{}（{}）", series.name, series.unit)
+                format!("{} ({})", series.name, series.unit)
             } else {
                 series.name.clone()
             };
@@ -750,7 +750,7 @@ fn paired_deltas(series: &[Series]) -> Vec<String> {
             (Some(first), Some(second)) => {
                 let delta = second.value - first.value;
                 let change = if first.value.abs() > f64::EPSILON {
-                    format!("（{:+.0}%）", delta / first.value.abs() * 100.0)
+                    format!(" ({:+.0}%)", delta / first.value.abs() * 100.0)
                 } else {
                     String::new()
                 };
@@ -777,18 +777,18 @@ fn progress_ratio(point: &Point) -> f64 {
     (point.value / total).clamp(0.0, 1.0)
 }
 
-/// 进度条右侧文本：分式补上百分比（`12/12（100%）`），已是百分比的只写一次。
+/// 进度条右侧文本：分式补上百分比（`12/12 (100%)`），已是百分比的只写一次。
 fn progress_label(series: &Series, row: usize) -> String {
     let Some(value) = point(series, row) else {
         return String::new();
     };
     if value.text.contains('/') {
-        return format!("{}（{:.0}%）", value.text, progress_ratio(value) * 100.0);
+        return format!("{} ({:.0}%)", value.text, progress_ratio(value) * 100.0);
     }
     if value.text.ends_with('%') {
         return value.text.clone();
     }
-    format!("{}（{:.0}%）", value.text, progress_ratio(value) * 100.0)
+    format!("{} ({:.0}%)", value.text, progress_ratio(value) * 100.0)
 }
 
 /// 数据本身的区间（不内缩）：轴标签写真实极值，便于和表格逐格对照。

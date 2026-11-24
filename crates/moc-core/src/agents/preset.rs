@@ -117,23 +117,25 @@ impl PresetRegistry {
     /// 模型侧永远看不到它。
     pub fn register(&mut self, preset: AgentPreset) -> Result<(), CoreError> {
         if !valid_preset_name(&preset.name) {
-            return Err(invalid(format!(
-                "agent preset 名 `{}` 非法：须为小写字母开头的小写字母/数字/连字符",
-                preset.name
-            )));
+            return Err(invalid(
+                t!("core.err.preset_name_invalid", name = preset.name).into_owned(),
+            ));
         }
         let prompt = preset.system_prompt.trim();
         if prompt.is_empty() {
-            return Err(invalid(format!(
-                "agent preset `{}` 的 system_prompt 不能为空",
-                preset.name
-            )));
+            return Err(invalid(
+                t!("core.err.preset_prompt_empty", name = preset.name).into_owned(),
+            ));
         }
         if prompt.chars().count() > MAX_PRESET_PROMPT_CHARS {
-            return Err(invalid(format!(
-                "agent preset `{}` 的 system_prompt 超过 {} 字符上限",
-                preset.name, MAX_PRESET_PROMPT_CHARS
-            )));
+            return Err(invalid(
+                t!(
+                    "core.err.preset_prompt_too_long",
+                    name = preset.name,
+                    max = MAX_PRESET_PROMPT_CHARS
+                )
+                .into_owned(),
+            ));
         }
         if self.presets.contains_key(&preset.name) {
             return Err(invalid(

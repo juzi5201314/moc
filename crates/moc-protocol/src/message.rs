@@ -82,7 +82,7 @@ impl<'de> Deserialize<'de> for Id {
             type Value = Id;
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("整数或字符串 ID")
+                f.write_str(&moc_i18n::t!("protocol.err.id_expecting"))
             }
 
             fn visit_i64<E: de::Error>(self, value: i64) -> Result<Id, E> {
@@ -252,14 +252,14 @@ impl RpcMessage {
         let value: Value = serde_json::from_slice(bytes).map_err(|error| {
             ParseFailure::new(
                 RpcErrorCode::ParseError,
-                format!("报文不是合法 JSON：{error}"),
+                moc_i18n::t!("protocol.err.parse_detail", error = error).into_owned(),
                 None,
             )
         })?;
         let Value::Object(mut fields) = value else {
             return Err(ParseFailure::new(
                 RpcErrorCode::InvalidRequest,
-                "报文顶层必须是 JSON 对象（不支持 batch）".to_owned(),
+                moc_i18n::t!("protocol.err.top_level_object").into_owned(),
                 None,
             ));
         };
@@ -267,7 +267,8 @@ impl RpcMessage {
             let id = recover_id(&fields);
             return Err(ParseFailure::new(
                 RpcErrorCode::InvalidRequest,
-                format!("jsonrpc 字段必须为 \"{JSONRPC_VERSION}\""),
+                moc_i18n::t!("protocol.err.jsonrpc_version", version = JSONRPC_VERSION)
+                    .into_owned(),
                 id,
             ));
         }
@@ -281,7 +282,7 @@ impl RpcMessage {
         if let Some(key) = fields.keys().next() {
             return Err(ParseFailure::new(
                 RpcErrorCode::InvalidRequest,
-                format!("报文包含未知字段 {key}"),
+                moc_i18n::t!("protocol.err.unknown_field", key = key).into_owned(),
                 recover_id_from(id_field.as_ref()),
             ));
         }
@@ -289,7 +290,11 @@ impl RpcMessage {
             (Some(method), None, None) => parse_request(method, id_field, params),
             (Some(method), _, _) => Err(ParseFailure::new(
                 RpcErrorCode::InvalidRequest,
-                format!("请求报文（method = {method:?}）不得携带 result / error"),
+                moc_i18n::t!(
+                    "protocol.err.request_has_result_or_error",
+                    method = format!("{method:?}")
+                )
+                .into_owned(),
                 recover_id_from(id_field.as_ref()),
             )),
             (None, Some(result), None) => parse_response(id_field, result),
@@ -306,18 +311,18 @@ impl RpcMessage {
                 }
                 Err(error) => Err(ParseFailure::new(
                     RpcErrorCode::InvalidRequest,
-                    format!("error 字段不是合法错误对象：{error}"),
+                    moc_i18n::t!("protocol.err.invalid_error_object", error = error).into_owned(),
                     recover_id_from(id_field.as_ref()),
                 )),
             },
             (None, Some(_), Some(_)) => Err(ParseFailure::new(
                 RpcErrorCode::InvalidRequest,
-                "响应不得同时携带 result 与 error".to_owned(),
+                moc_i18n::t!("protocol.err.response_both_result_and_error").into_owned(),
                 recover_id_from(id_field.as_ref()),
             )),
             (None, None, None) => Err(ParseFailure::new(
                 RpcErrorCode::InvalidRequest,
-                "报文必须包含 method 或 result / error".to_owned(),
+                moc_i18n::t!("protocol.err.missing_method_or_payload").into_owned(),
                 recover_id_from(id_field.as_ref()),
             )),
         }
@@ -360,7 +365,7 @@ fn parse_request(
     let Value::String(method) = method else {
         return Err(ParseFailure::new(
             RpcErrorCode::InvalidRequest,
-            "method 必须是字符串".to_owned(),
+            moc_i18n::t!("protocol.err.method_must_be_string").into_owned(),
             id,
         ));
     };
@@ -368,7 +373,7 @@ fn parse_request(
     if method.is_empty() {
         return Err(ParseFailure::new(
             RpcErrorCode::InvalidRequest,
-            "method 不能为空".to_owned(),
+            moc_i18n::t!("protocol.err.method_empty").into_owned(),
             id,
         ));
     }
@@ -378,7 +383,7 @@ fn parse_request(
         Some(_) => {
             return Err(ParseFailure::new(
                 RpcErrorCode::InvalidRequest,
-                "params 必须是对象或数组".to_owned(),
+                moc_i18n::t!("protocol.err.params_must_be_container").into_owned(),
                 id,
             ));
         }
@@ -387,7 +392,7 @@ fn parse_request(
         None => Ok(RpcMessage::Notification(Notification { method, params })),
         Some(Value::Null) => Err(ParseFailure::new(
             RpcErrorCode::InvalidRequest,
-            "请求的 id 不能为 null".to_owned(),
+            moc_i18n::t!("protocol.err.request_id_null").into_owned(),
             None,
         )),
         Some(value) => {
@@ -401,7 +406,7 @@ fn parse_response(id_field: Option<Value>, result: Value) -> Result<RpcMessage, 
     match id_field {
         None | Some(Value::Null) => Err(ParseFailure::new(
             RpcErrorCode::InvalidRequest,
-            "携带 result 的响应必须有非 null 的 id".to_owned(),
+            moc_i18n::t!("protocol.err.response_id_null").into_owned(),
             None,
         )),
         Some(value) => Ok(RpcMessage::Response(Response {
@@ -416,7 +421,7 @@ fn parse_id(value: Value) -> Result<Id, ParseFailure> {
     serde_json::from_value::<Id>(value).map_err(|error| {
         ParseFailure::new(
             RpcErrorCode::InvalidRequest,
-            format!("id 必须是整数或字符串：{error}"),
+            moc_i18n::t!("protocol.err.id_invalid", error = error).into_owned(),
             None,
         )
     })

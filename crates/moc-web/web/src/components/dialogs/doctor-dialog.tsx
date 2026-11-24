@@ -101,7 +101,7 @@ export function DoctorDialog() {
       label: t("dr.sandbox"),
       ok: info.sandbox.runner !== null ? true : null,
       text: info.sandbox.runner
-        ? `${info.sandbox.runner} · ${t("dr.sandbox_modes", { modes: info.sandbox.modes.join(", ") })}${info.sandbox.homeOverlay ? " · home overlay" : ""}`
+        ? `${info.sandbox.runner} · ${t("dr.sandbox_modes", { modes: info.sandbox.modes.join(", ") })}${info.sandbox.homeOverlay ? t("dr.home_overlay") : ""}`
         : t("dr.no_sandbox", { modes: info.sandbox.modes.join(", ") }),
     },
     {

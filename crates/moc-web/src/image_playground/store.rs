@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
+use moc_i18n::t;
 use moc_llm::ImageGenParams;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -168,7 +169,7 @@ pub fn load_index(storage_dir: &Path) -> anyhow::Result<PlaygroundIndex> {
             ..Default::default()
         }),
         Ok(text) => serde_json::from_str(&text)
-            .with_context(|| format!("解析 {} 失败", path.display())),
+            .with_context(|| t!("web.playground.parse_file_failed", path = path.display()).into_owned()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(PlaygroundIndex {
             version: 1,
             ..Default::default()
@@ -315,12 +316,12 @@ impl PlaygroundIndex {
         folder_id: Option<String>,
     ) -> anyhow::Result<()> {
         if !self.images.contains_key(image_id) {
-            anyhow::bail!("图片不存在");
+            anyhow::bail!("{}", t!("web.playground.image_not_found"));
         }
         if let Some(ref fid) = folder_id
             && !self.has_favorite_folder(fid)
         {
-            anyhow::bail!("目标收藏文件夹不存在");
+            anyhow::bail!("{}", t!("web.playground.target_folder_not_found"));
         }
         if !self.is_favorite(image_id) {
             self.favorites.insert(0, image_id.to_owned());

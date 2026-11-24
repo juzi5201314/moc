@@ -442,7 +442,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
             >
               {submitting && <Loader2Icon className="animate-spin" />}
               {t("pr.submit")}
-              {drafts.length > 0 ? `（${drafts.length}）` : ""}
+              {drafts.length > 0 ? ` (${drafts.length})` : ""}
             </Button>
             <Button
               size="sm"

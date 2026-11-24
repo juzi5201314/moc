@@ -1,5 +1,6 @@
 use super::JobConfig;
 use super::OutputConfig;
+use moc_i18n::t;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -24,7 +25,7 @@ pub(in super::super) fn validate_tools(
 ) -> Result<(), crate::error::CoreError> {
     if config.max_concurrent_calls == 0 {
         return Err(crate::error::CoreError::Config(
-            "tools.max_concurrent_calls: 必须大于 0".into(),
+            t!("core.err.tools_max_concurrent_positive").into_owned(),
         ));
     }
     if config.bash.monitored_timeout_secs == 0
@@ -35,12 +36,12 @@ pub(in super::super) fn validate_tools(
         || config.bash.monitored_timeout_secs > config.bash.max_timeout_secs
     {
         return Err(crate::error::CoreError::Config(
-            "tools.bash: monitored_timeout_secs、stall_after_secs、max_timeout_secs、max_output_bytes、persistent_log_bytes 必须大于 0，且 monitored_timeout_secs 不得超过 max_timeout_secs".into(),
+            t!("core.err.tools_bash_invalid").into_owned(),
         ));
     }
     if config.todo.reminders_after == 0 || config.todo.reminders_max == 0 {
         return Err(crate::error::CoreError::Config(
-            "tools.todo: reminders_after 与 reminders_max 必须大于 0".into(),
+            t!("core.err.tools_todo_positive").into_owned(),
         ));
     }
     config
@@ -87,45 +88,41 @@ impl Default for PtcConfig {
 
 pub(in super::super) fn validate_ptc(config: &PtcConfig) -> Result<(), crate::error::CoreError> {
     let fail = |field: &str, reason: &str| {
-        crate::error::CoreError::Config(format!("tools.ptc.{field}: {reason}"))
+        crate::error::CoreError::Config(
+            t!("core.err.ptc_field_err", field = field, reason = reason).into_owned(),
+        )
     };
     if config.default_timeout_secs == 0 || config.default_timeout_secs > config.max_timeout_secs {
-        return Err(fail(
-            "default_timeout_secs",
-            "必须大于 0 且不超过 max_timeout_secs",
-        ));
+        return Err(fail("default_timeout_secs", &t!("core.err.ptc_default_timeout")));
     }
     if config.max_timeout_secs == 0 {
-        return Err(fail("max_timeout_secs", "必须大于 0"));
+        return Err(fail("max_timeout_secs", &t!("core.err.ptc_positive")));
     }
     // `Instant + Duration` 在超过平台可表示范围时会 panic，配置加载阶段直接拒绝。
     const MAX_INSTANT_SECS: u64 = u64::MAX / 1_000_000_000;
     if config.max_timeout_secs > MAX_INSTANT_SECS {
-        return Err(fail("max_timeout_secs", "超出系统时间范围"));
+        return Err(fail("max_timeout_secs", &t!("core.err.ptc_time_range")));
     }
     if config.max_concurrent_calls == 0 {
-        return Err(fail("max_concurrent_calls", "必须大于 0"));
+        return Err(fail("max_concurrent_calls", &t!("core.err.ptc_positive")));
     }
     if config.max_pending_calls < config.max_concurrent_calls || config.max_pending_calls > 65536 {
-        return Err(fail(
-            "max_pending_calls",
-            "必须不小于并发上限且不超过 65536",
-        ));
+        return Err(fail("max_pending_calls", &t!("core.err.ptc_pending_range")));
     }
     if config.max_total_calls == 0 || config.max_total_calls > 1_000_000 {
-        return Err(fail("max_total_calls", "必须在 1..=1000000 范围内"));
+        return Err(fail("max_total_calls", &t!("core.err.ptc_total_range")));
     }
     if config.max_concurrent_runs == 0 {
-        return Err(fail("max_concurrent_runs", "必须大于 0"));
+        return Err(fail("max_concurrent_runs", &t!("core.err.ptc_positive")));
     }
     if config.host_idle_timeout_secs == 0 {
-        return Err(fail("host_idle_timeout_secs", "必须大于 0"));
+        return Err(fail("host_idle_timeout_secs", &t!("core.err.ptc_positive")));
     }
     if config.host_idle_timeout_secs > MAX_INSTANT_SECS {
-        return Err(fail("host_idle_timeout_secs", "超出系统时间范围"));
+        return Err(fail("host_idle_timeout_secs", &t!("core.err.ptc_time_range")));
     }
     if !(8 * 1024 * 1024..=u32::MAX as usize).contains(&config.memory_limit_bytes) {
-        return Err(fail("memory_limit_bytes", "必须在 8 MiB..=u32::MAX 范围内"));
+        return Err(fail("memory_limit_bytes", &t!("core.err.ptc_memory_range")));
     }
     for (name, value) in [
         ("max_output_bytes", config.max_output_bytes),
@@ -133,7 +130,7 @@ pub(in super::super) fn validate_ptc(config: &PtcConfig) -> Result<(), crate::er
         ("max_state_bytes", config.max_state_bytes),
     ] {
         if value == 0 || value > config.memory_limit_bytes {
-            return Err(fail(name, "必须大于 0 且不超过 memory_limit_bytes"));
+            return Err(fail(name, &t!("core.err.ptc_under_memory")));
         }
     }
     Ok(())

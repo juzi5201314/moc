@@ -263,7 +263,7 @@ fn table_entry_appears_only_with_graphics_support() {
     let width = str_width(ENTRY_CHART);
     assert_eq!(button.w as usize, width);
     assert_eq!(button.x, 0, "与正文左缘对齐");
-    assert_eq!(text(&with.lines)[button.row], "▸ 可视化图表");
+    assert_eq!(text(&with.lines)[button.row], "▸ Show chart");
 
     let without = render(
         NUMERIC_TABLE,
@@ -823,7 +823,7 @@ fn reference_links_filter_local_paths_and_relativize() {
     let out = text(&rendered.lines);
     let appendix: Vec<&String> = out
         .iter()
-        .skip_while(|line| !line.contains("参考链接："))
+        .skip_while(|line| !line.contains("References:"))
         .collect();
     assert_eq!(appendix.len(), 4, "附录头部 + 3 条：{out:?}");
     assert!(appendix[1].contains("src/lib.rs"), "{out:?}");
@@ -863,10 +863,10 @@ fn reference_links_fold_beyond_limit_with_clickable_entry() {
         let refs = out.iter().filter(|line| line.contains("https://e")).count();
         if expanded {
             assert_eq!(refs, 8, "{out:?}");
-            assert_eq!(entry.trim(), "▾ 收起链接", "{out:?}");
+            assert_eq!(entry.trim(), "▾ Collapse links", "{out:?}");
         } else {
             assert_eq!(refs, 5, "{out:?}");
-            assert_eq!(entry.trim(), "▸ 还有 3 条链接", "{out:?}");
+            assert_eq!(entry.trim(), "▸ 3 more links", "{out:?}");
         }
         // 命中的行/列区间就是入口文字本身：正文缩进之外从 x=2 起算。
         assert_eq!(button.x, 2);

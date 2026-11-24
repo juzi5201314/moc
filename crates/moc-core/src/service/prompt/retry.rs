@@ -154,7 +154,7 @@ pub(super) async fn trim_failed_tail(
     // 上一轮正常结束就没有可重试的东西；这一步先于任何模型请求与 transcript 改写。
     if turn_completed(&entries) {
         return Err(crate::service::invalid_params(
-            "上一轮已正常结束，没有可重试的内容；请直接发送新消息",
+            moc_i18n::t!("core.err.retry_turn_completed").into_owned(),
         ));
     }
     // 尾部先剥掉不属于模型上下文、但同属这一轮的东西：取消路径给「模型请求过、一个都

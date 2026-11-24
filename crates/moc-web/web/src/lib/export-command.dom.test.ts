@@ -65,7 +65,7 @@ it("/export 共用 RPC，下载返回正文并显示路径，失败时不下载"
       await vi.waitFor(() =>
         expect(toast.success).toHaveBeenCalledWith(
           locale === "zh"
-            ? "会话已导出至 /workspace/large.md；内容较大，请从该路径获取文件"
+            ? "session 已导出至 /workspace/large.md；文件较大，请直接从该路径获取。"
             : "Session exported to /workspace/large.md; too large to download here. Retrieve the file from that path.",
         ),
       );

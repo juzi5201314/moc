@@ -185,23 +185,30 @@ fn decode_frame(
     loop {
         line.clear();
         let read = output.read_until(b'\n', line).map_err(|error| {
-            FrameFailure::frame(CoreError::Session(format!(
-                "解压 {} 的 zstd 帧（字节 {}..{}）失败: {error}",
-                path.display(),
-                frame.start,
-                frame.end
-            )))
+            FrameFailure::frame(CoreError::Session(
+                moc_i18n::t!(
+                    "core.err.zstd_decompress",
+                    path = path.display().to_string(),
+                    start = frame.start,
+                    end = frame.end,
+                    error = error
+                )
+                .into_owned(),
+            ))
         })?;
         if read == 0 {
             return Ok(());
         }
         if line.last() != Some(&b'\n') {
-            return Err(FrameFailure::frame(CoreError::Session(format!(
-                "{} 的 zstd 帧（字节 {}..{}）没有以换行结束",
-                path.display(),
-                frame.start,
-                frame.end
-            ))));
+            return Err(FrameFailure::frame(CoreError::Session(
+                moc_i18n::t!(
+                    "core.err.zstd_no_newline",
+                    path = path.display().to_string(),
+                    start = frame.start,
+                    end = frame.end
+                )
+                .into_owned(),
+            )));
         }
         line.pop();
         if line.last() == Some(&b'\r') {
@@ -230,7 +237,7 @@ fn scan_zstd(path: &Path) -> Result<FrameScan, CoreError> {
             return Ok(torn(frames, start));
         }
         if u32::from_le_bytes(magic) != ZSTD_MAGIC {
-            return Err(corrupt(path, offset, "不是 zstd 帧的 magic"));
+            return Err(corrupt(path, offset, &moc_i18n::t!("core.err.zstd_bad_magic")));
         }
         offset += 4;
         // 帧头最多再 13 字节（descriptor + window + dict-id + FCS）。
@@ -243,7 +250,11 @@ fn scan_zstd(path: &Path) -> Result<FrameScan, CoreError> {
         let fcs_flag = descriptor >> 6;
         let single_segment = descriptor & 0x20 != 0;
         if descriptor & 0x18 != 0 {
-            return Err(corrupt(path, offset, "帧头保留位非零"));
+            return Err(corrupt(
+                path,
+                offset,
+                &moc_i18n::t!("core.err.zstd_reserved_bit"),
+            ));
         }
         let checksum = descriptor & 0x04 != 0;
         let dict_flag = descriptor & 0x03;
@@ -281,7 +292,13 @@ fn scan_zstd(path: &Path) -> Result<FrameScan, CoreError> {
             let payload = match block_type {
                 0 | 2 => block_size,
                 1 => 1,
-                _ => return Err(corrupt(path, offset - 3, "保留的 zstd 块类型")),
+                _ => {
+                    return Err(corrupt(
+                        path,
+                        offset - 3,
+                        &moc_i18n::t!("core.err.zstd_reserved_block"),
+                    ));
+                }
             };
             if length - offset < payload {
                 return Ok(torn(frames, start));
@@ -298,7 +315,11 @@ fn scan_zstd(path: &Path) -> Result<FrameScan, CoreError> {
             offset += 4;
         }
         if offset <= start {
-            return Err(corrupt(path, start, "zstd 帧长度为零"));
+            return Err(corrupt(
+                path,
+                start,
+                &moc_i18n::t!("core.err.zstd_zero_frame"),
+            ));
         }
         frames.push(start..offset);
     }
@@ -316,10 +337,15 @@ fn torn(frames: Vec<Range<u64>>, start: u64) -> FrameScan {
 }
 
 fn corrupt(path: &Path, offset: u64, reason: &str) -> CoreError {
-    CoreError::Session(format!(
-        "transcript {} 在字节 {offset} 处损坏：{reason}",
-        path.display()
-    ))
+    CoreError::Session(
+        moc_i18n::t!(
+            "core.err.zstd_corrupt",
+            path = path.display().to_string(),
+            offset = offset,
+            reason = reason
+        )
+        .into_owned(),
+    )
 }
 
 fn read_at(file: &mut File, offset: u64, buffer: &mut [u8]) -> io::Result<usize> {

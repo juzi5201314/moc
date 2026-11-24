@@ -194,7 +194,7 @@ fn test_f2_b4_nested_border_contrast() {
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(
-        rows.iter().any(|r| r.contains("选择模型")),
+        rows.iter().any(|r| r.contains("Select Model")),
         "model modal header intact"
     );
 }
@@ -281,7 +281,7 @@ fn test_f4_b1_help_modal_empty_bindings() {
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
     assert!(
-        rows.iter().any(|r| r.contains("快捷键")),
+        rows.iter().any(|r| r.contains("Shortcuts")),
         "help modal title rendered"
     );
 }
@@ -293,7 +293,7 @@ fn test_f4_b2_help_modal_scroll_clamp() {
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
     assert!(
-        rows.iter().any(|r| r.contains("快捷键")),
+        rows.iter().any(|r| r.contains("Shortcuts")),
         "help modal survives draw"
     );
 }
@@ -305,7 +305,7 @@ fn test_f4_b3_help_modal_top_render() {
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
     assert!(
-        rows.iter().any(|r| r.contains("快捷键")),
+        rows.iter().any(|r| r.contains("Shortcuts")),
         "help modal rendered at top scroll offset"
     );
 }

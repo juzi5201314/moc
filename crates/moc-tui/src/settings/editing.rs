@@ -158,7 +158,7 @@ impl SettingsPanel {
         let next =
             controls::current_pick(picks, value).map_or(0, |current| (current + 1) % picks.len());
         let pick = &picks[next];
-        let label = format!("{}：{}", field.label, pick.label);
+        let label = format!("{}: {}", field.label, pick.label);
         let path = field.path.clone();
         let value = match &pick.action {
             PickAction::Set(value) => Some(Some(value.clone())),

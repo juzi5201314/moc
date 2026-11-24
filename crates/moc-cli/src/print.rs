@@ -350,17 +350,17 @@ mod tests {
         vec![
             PermissionOption {
                 id: "allow_once".into(),
-                label: "允许一次".into(),
+                label: "Allow once".into(),
                 kind: PermissionOptionKind::AllowOnce,
             },
             PermissionOption {
                 id: "allow_session".into(),
-                label: "本会话始终允许".into(),
+                label: "Allow session".into(),
                 kind: PermissionOptionKind::AllowSession,
             },
             PermissionOption {
                 id: "reject_once".into(),
-                label: "拒绝".into(),
+                label: "Deny".into(),
                 kind: PermissionOptionKind::RejectOnce,
             },
         ]

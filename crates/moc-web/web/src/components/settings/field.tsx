@@ -254,9 +254,9 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
           <SelectItem value={INHERIT}>
             {t("common.default")}
             {fallbackOption
-              ? t("sf.inherit_of", { label: fallbackOption.label })
+              ? ` · ${t("sf.inherit_of", { label: fallbackOption.label })}`
               : fallbackText
-                ? t("sf.inherit_of", { label: fallbackText })
+                ? ` · ${t("sf.inherit_of", { label: fallbackText })}`
                 : ""}
           </SelectItem>
           {options.map((option) => (

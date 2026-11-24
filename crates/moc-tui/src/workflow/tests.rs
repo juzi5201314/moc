@@ -121,7 +121,7 @@ fn approval_lines_have_role_rows_and_hits() {
     hole.request.new_commands = Some(vec!["ls".into()]);
     let (lines, _) = approval_lines(&hole, 60, crate::theme::Theme::global());
     let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-    assert!(text.iter().any(|l| l.contains("新增命令")));
+    assert!(text.iter().any(|l| l.contains("New commands")));
     assert!(text.iter().any(|l| l.contains("ls")));
     assert!(
         !text.iter().any(|l| l.contains("phase(\"plan\")")),
@@ -245,9 +245,9 @@ fn run_lines_version_switch_and_view() {
     state.artifact_view = Some(("doc".into(), vec![Line::raw("hello")]));
     let (lines, _) = run_lines(&state, 60, crate::theme::Theme::global());
     let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-    assert!(text.iter().any(|l| l.contains("查看：doc")));
+    assert!(text.iter().any(|l| l.contains("View: doc")));
     assert!(text.iter().any(|l| l.contains("hello")));
-    assert!(!text.iter().any(|l| l.contains("状态：")));
+    assert!(!text.iter().any(|l| l.contains("Status:")));
 }
 
 #[test]

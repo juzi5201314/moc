@@ -15,8 +15,8 @@ missing_field = { zh = "缺少必填字段 `%{name}`", en = "Missing required fi
 closed_field = { zh = "不允许字段 `%{name}`", en = "Field `%{name}` is not allowed" }
 field_prefix = { zh = "`%{name}` %{error}", en = "`%{name}` %{error}" }
 undeclared = { zh = "未声明", en = "undeclared" }
-read_file = { zh = "读取 %{file}: %{error}", en = "Failed to read %{file}: %{error}" }
-parse_file = { zh = "解析 %{file}: %{error}", en = "Failed to parse %{file}: %{error}" }
+read_file = { zh = "读取 %{file} 失败：%{error}", en = "Failed to read %{file}: %{error}" }
+parse_file = { zh = "解析 %{file} 失败：%{error}", en = "Failed to parse %{file}: %{error}" }
 plugin_name_invalid = { zh = "插件名 `%{name}` 不合法：需为 1-64 位小写字母、数字或连字符，且以字母开头", en = "Plugin name `%{name}` is invalid: 1-64 lowercase letters, digits or hyphens, starting with a letter" }
 main_path = { zh = "main `%{main}` 必须是插件目录内的 .js/.mjs 相对路径", en = "main `%{main}` must be a .js/.mjs relative path inside the plugin directory" }
 entry_missing = { zh = "入口文件不存在：%{file}", en = "Entry file does not exist: %{file}" }
@@ -28,7 +28,7 @@ thread_gone = { zh = "插件 `%{name}` 的线程已退出", en = "Plugin `%{name
 thread_spawn = { zh = "无法启动插件线程：%{error}", en = "Failed to start the plugin thread: %{error}" }
 watchdog_spawn = { zh = "无法启动加载看门狗：%{error}", en = "Failed to start the load watchdog: %{error}" }
 load_timeout = { zh = "插件在 %{ms} ms 内没有完成加载（模块求值 + activate）", en = "Plugin did not finish loading within %{ms} ms (module evaluation + activate)" }
-entry_read = { zh = "读取 %{file}: %{error}", en = "Failed to read %{file}: %{error}" }
+entry_read = { zh = "读取 %{file} 失败：%{error}", en = "Failed to read %{file}: %{error}" }
 await_unsettled = { zh = "模块顶层 await 没有落定：插件里没有定时器或事件循环", en = "The module's top-level await never settled: plugins have no timers or event loop" }
 default_export = { zh = "`export default` 必须是对象；导出形状见 docs/plugins.md", en = "`export default` must be an object; see docs/plugins.md for the export shape" }
 export_unknown_field = { zh = "`export default` 里有未知字段 `%{key}`", en = "`export default` contains unknown field `%{key}`" }
@@ -49,7 +49,7 @@ field_object = { zh = "`%{key}` 必须是对象", en = "`%{key}` must be an obje
 field_bool = { zh = "`%{key}` 必须是布尔值", en = "`%{key}` must be a boolean" }
 modes_array = { zh = "工具 `%{owner}` 的 modes 必须是字符串数组", en = "Tool `%{owner}`'s modes must be an array of strings" }
 modes_unknown = { zh = "工具 `%{owner}` 的 modes 含未知模式 `%{name}`（default/ask/plan）", en = "Tool `%{owner}`'s modes contain unknown mode `%{name}` (default/ask/plan)" }
-modes_empty = { zh = "工具 `%{owner}` 的 modes 不能是空数组；不想暴露就删掉这个工具", en = "Tool `%{owner}`'s modes can't be empty; remove the tool if it shouldn't be exposed" }
+modes_empty = { zh = "工具 `%{owner}` 的 modes 不能是空数组；不想暴露就删掉这个工具", en = "Tool `%{owner}`'s modes cannot be empty; remove the tool if it should not be exposed" }
 config_key_invalid = { zh = "配置键必须是 1–128 字节且不含控制字符", en = "Config keys must be 1-128 bytes without control characters" }
 config_decl_object = { zh = "配置声明必须是对象", en = "Config declaration must be an object" }
 config_unknown_field = { zh = "配置声明包含未知字段", en = "Config declaration contains unknown fields" }
@@ -64,7 +64,7 @@ preset_name = { zh = "preset name 须为小写字母开头的小写字母/数字
 preset_desc = { zh = "固定角色必须提供非空 description", en = "A preset must provide a non-empty description" }
 preset_model = { zh = "角色 model 必须是非空字符串", en = "The preset's model must be a non-empty string" }
 preset_prompt = { zh = "preset 必须提供 systemPrompt 字符串", en = "preset must provide a systemPrompt string" }
-preset_prompt_empty = { zh = "systemPrompt 不能为空", en = "systemPrompt can't be empty" }
+preset_prompt_empty = { zh = "systemPrompt 不能为空", en = "systemPrompt cannot be empty" }
 preset_prompt_long = { zh = "systemPrompt 超过 4000 字符上限", en = "systemPrompt exceeds the 4000-character limit" }
 preset_tools_object = { zh = "tools 必须是对象", en = "tools must be an object" }
 preset_tools_fields = { zh = "tools 只允许 allow / deny 字段", en = "tools only allows allow / deny fields" }
@@ -77,9 +77,9 @@ args_json = { zh = "工具参数不是合法 JSON：%{error}", en = "Tool argume
 call_channel_closed = { zh = "宿主调用通道已关闭", en = "The host call channel is closed" }
 host_call_timeout = { zh = "宿主工具调用超时", en = "Host tool call timed out" }
 config_top_level = { zh = "配置只能在模块顶层注册", en = "Config can only be registered at module top level" }
-config_dup = { zh = "配置键不能重复注册", en = "Config keys can't be registered twice" }
+config_dup = { zh = "配置键不能重复注册", en = "Config keys cannot be registered twice" }
 preset_top_level = { zh = "preset 只能在模块顶层注册", en = "presets can only be registered at module top level" }
-preset_dup = { zh = "agent preset `%{name}` 不能重复注册", en = "agent preset `%{name}` can't be registered twice" }
+preset_dup = { zh = "agent preset `%{name}` 不能重复注册", en = "agent preset `%{name}` cannot be registered twice" }
 persistence_unavailable = { zh = "持久化桥不可用", en = "The persistence bridge is unavailable" }
 persistence_unknown_op = { zh = "未知持久化操作", en = "Unknown persistence operation" }
 persistence_closed = { zh = "持久化桥已关闭", en = "The persistence bridge is closed" }
@@ -90,27 +90,27 @@ call_missing_name = { zh = "工具调用缺少 name", en = "Tool call is missing
 tool_unregistered = { zh = "工具 `%{name}` 未注册", en = "Tool `%{name}` is not registered" }
 command_missing_name = { zh = "命令调用缺少 name", en = "Command call is missing its name" }
 command_unregistered = { zh = "命令 `%{name}` 未注册", en = "Command `%{name}` is not registered" }
-no_hooks = { zh = "模块没有导出 hooks", en = "The module doesn't export hooks" }
-hook_missing = { zh = "钩子 `%{name}` 不存在", en = "Hook `%{name}` doesn't exist" }
-no_prompt = { zh = "模块没有导出 prompt", en = "The module doesn't export prompt" }
+no_hooks = { zh = "模块没有导出 hooks", en = "The module does not export hooks" }
+hook_missing = { zh = "钩子 `%{name}` 不存在", en = "Hook `%{name}` does not exist" }
+no_prompt = { zh = "模块没有导出 prompt", en = "The module does not export prompt" }
 field_fn = { zh = "`%{key}` 必须是函数", en = "`%{key}` must be a function" }
 promise_unsettled = { zh = "函数返回的 Promise 没有落定：插件里没有定时器或事件循环，Promise 必须能自行完成", en = "The function's returned Promise never settled: plugins have no timers or event loop, so the Promise must complete on its own" }
 threw_exception = { zh = "插件脚本抛出异常", en = "The plugin script threw an exception" }
 threw_unserializable = { zh = "插件抛出了无法序列化的值", en = "The plugin threw an unserializable value" }
 threw_error_object = { zh = "插件抛出了错误对象", en = "The plugin threw an error object" }
-tool_not_found = { zh = "插件工具 `%{name}` 不存在", en = "Plugin tool `%{name}` doesn't exist" }
-args_schema = { zh = "工具 `%{name}` 的参数不符合 schema：%{error}", en = "Tool `%{name}`'s arguments don't match the schema: %{error}" }
-command_not_found = { zh = "插件命令 `/%{name}` 不存在", en = "Plugin command `/%{name}` doesn't exist" }
+tool_not_found = { zh = "插件工具 `%{name}` 不存在", en = "Plugin tool `%{name}` does not exist" }
+args_schema = { zh = "工具 `%{name}` 的参数不符合 schema：%{error}", en = "Tool `%{name}`'s arguments do not match the schema: %{error}" }
+command_not_found = { zh = "插件命令 `/%{name}` 不存在", en = "Plugin command `/%{name}` does not exist" }
 config_read_timeout = { zh = "读取插件配置超时", en = "Timed out reading the plugin config" }
 budget_exhausted = { zh = "插件调用预算已耗尽", en = "The plugin invocation budget is exhausted" }
 thread_not_running = { zh = "插件 `%{name}` 没有运行中的线程", en = "Plugin `%{name}` has no running thread" }
 waiting_host_tool = { zh = "插件 `%{name}` 等待宿主工具超过 %{elapsed} ms；本次调用失败", en = "Plugin `%{name}` waited on a host tool for over %{elapsed} ms; this invocation failed" }
-plugin_timed_out = { zh = "插件 `%{name}` 超过 %{elapsed} ms 未返回；本进程内不再调用", en = "Plugin `%{name}` didn't return within %{elapsed} ms; it won't be invoked again in this process" }
+plugin_timed_out = { zh = "插件 `%{name}` 超过 %{elapsed} ms 未返回；本进程内不再调用", en = "Plugin `%{name}` did not return within %{elapsed} ms; it will not be invoked again in this process" }
 tools_bridge_unavailable = { zh = "工具桥不可用", en = "The tools bridge is unavailable" }
 config_object = { zh = "插件配置必须是对象", en = "Plugin config must be an object" }
-config_unregistered = { zh = "配置 `%{key}` 未注册", en = "Config `%{key}` isn't registered" }
+config_unregistered = { zh = "配置 `%{key}` 未注册", en = "Config `%{key}` is not registered" }
 config_write_denied = { zh = "当前调用禁止修改插件配置", en = "The current invocation may not modify plugin config" }
 no_session = { zh = "当前调用没有会话", en = "The current invocation has no session" }
 state_write_denied = { zh = "当前调用禁止修改插件状态", en = "The current invocation may not modify plugin state" }
-host_task_abnormal = { zh = "宿主工具任务没有正常结束：%{error}", en = "The host tool task didn't finish normally: %{error}" }
+host_task_abnormal = { zh = "宿主工具任务没有正常结束：%{error}", en = "The host tool task did not finish normally: %{error}" }
 thread_exit_early = { zh = "插件线程在报告加载结果前退出", en = "The plugin thread exited before reporting its load result" }

@@ -61,10 +61,10 @@ impl BashLimitsConfig {
             && self.memory_max_bytes == 0
             && self.memory_swap_bytes == 0
         {
-            return Err("tools.bash.limits: 启用后至少要配置一项限制（cpu_cores 或内存项）".into());
+            return Err(t!("core.err.bash_limits_empty").into_owned());
         }
         if self.cpu_cores > 256 {
-            return Err("tools.bash.limits.cpu_cores: 不得超过 256".into());
+            return Err(t!("core.err.bash_limits_cpu").into_owned());
         }
         for (field, value) in [
             ("memory_high_bytes", self.memory_high_bytes),
@@ -78,7 +78,7 @@ impl BashLimitsConfig {
             && self.memory_max_bytes != 0
             && self.memory_high_bytes > self.memory_max_bytes
         {
-            return Err("tools.bash.limits.memory_high_bytes: 不得超过 memory_max_bytes".into());
+            return Err(t!("core.err.bash_limits_mem_order").into_owned());
         }
         Ok(())
     }

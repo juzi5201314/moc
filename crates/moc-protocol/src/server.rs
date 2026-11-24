@@ -452,7 +452,7 @@ impl<S: AgentService> ServerDispatch<S> {
                 _ => {
                     return Err(RpcError::new(
                         RpcErrorCode::InvalidRequest.code(),
-                        "重复 initialize",
+                        moc_i18n::t!("protocol.err.dup_initialize").into_owned(),
                     ));
                 }
             }

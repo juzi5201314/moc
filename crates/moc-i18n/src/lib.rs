@@ -144,8 +144,8 @@ mod tests {
     fn catalog_is_sorted_non_empty_and_resolves_both_locales() {
         assert!(!CATALOG.is_empty());
         assert!(CATALOG.windows(2).all(|pair| pair[0].0 < pair[1].0));
-        let zh = try_translate("zh", "tui.status.running").expect("存在中文键");
-        let en = try_translate("en", "tui.status.running").expect("存在英文键");
+        let zh = try_translate("zh", "core.err.cancelled").expect("存在中文键");
+        let en = try_translate("en", "core.err.cancelled").expect("存在英文键");
         assert_ne!(zh, en);
         assert!(try_translate("zh", "definitely.missing.key").is_none());
     }

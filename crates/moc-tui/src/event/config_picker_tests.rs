@@ -812,6 +812,6 @@ fn usage_table_marks_descendant_sources() {
         100,
     );
     let text = lines.join("\n");
-    assert!(text.contains("p/lead (子代理)"), "{text}");
+    assert!(text.contains("p/lead (subagent)"), "{text}");
     assert!(text.contains("p/cheap (sidekick)"), "{text}");
 }

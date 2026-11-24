@@ -114,7 +114,7 @@ export function WorkflowApprovalDialog({
           </div>
 
           <div className="space-y-2">
-            <div className="text-ui text-muted-foreground">roles</div>
+            <div className="text-ui text-muted-foreground">{t("wfr.roles")}</div>
             {roles.map((role) => {
               const id = role.role_id ?? "";
               return (

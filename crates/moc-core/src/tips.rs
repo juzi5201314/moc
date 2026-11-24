@@ -3,24 +3,31 @@
 //! 文案约定：一句话、不提具体按键（各前端键位不同），只讲命令、配置与概念；
 //! 反引号包住的片段由前端按代码样式渲染。
 
-pub const TIPS: &[&str] = &[
-    "`!命令` 的输出会进入对话，助手可见；`!!命令` 只在界面显示，不进入上下文",
-    "生成中断或出错时，输入 `.` 或 `/retry` 可接着继续，不用再发一句「继续」",
-    "Fusion 让前沿模型规划与评审、高性价比模型执行：配好 `models.fusion` 后选择 `fusion`",
-    "PTC 引擎通过脚本批量调用工具，适合多步查询与处理，减少来回轮次",
-    "会话引擎只能在发送首条消息前切换，之后随会话锁定",
-    "`/btw 问题` 可随时旁路提问，不打断主任务，也不写入会话历史",
-    "`/ask 问题` 只读回答本轮，不会改动任何文件",
-    "`/plan` 先生成实施计划，经你审阅批准后再动手修改",
-    "进入、退出和批准计划都会保持当前模型；需要切换请用 `/model`",
-    "上下文快满时可先执行 `/compact` 手动压缩，再开始下一段任务",
-    "`/usage` 查看本会话各模型的调用次数、token、缓存命中与耗时",
-    "`/context` 查看实际送给模型的内容：系统提示、工具定义与每条消息",
-    "`/autonomy` 调整自主程度：无人值守时自动回答提问，并自动批准执行计划",
-    "回复生成中发出的消息会直接补充进当前轮次，无需等它跑完",
-    "在模型配置中填写 `pricing`，即可显示单价与会话费用",
-    "在模型配置中开启 `fast_mode = true`，模型选择器会出现 Fast Mode 开关",
-    "消息中单独写 `@path/to/image.png`，可直接附带本地图片发给支持图片的模型",
-    "放在项目 `.moc/plugins` 中的插件会自动加载，可扩展工具与斜杠命令",
-    "CLM 实验引擎让模型自主整理上下文，不必等到上限再统一压缩",
+const TIP_KEYS: &[&str] = &[
+    "core.tips.tip_01",
+    "core.tips.tip_02",
+    "core.tips.tip_03",
+    "core.tips.tip_04",
+    "core.tips.tip_05",
+    "core.tips.tip_06",
+    "core.tips.tip_07",
+    "core.tips.tip_08",
+    "core.tips.tip_09",
+    "core.tips.tip_10",
+    "core.tips.tip_11",
+    "core.tips.tip_12",
+    "core.tips.tip_13",
+    "core.tips.tip_14",
+    "core.tips.tip_15",
+    "core.tips.tip_16",
+    "core.tips.tip_17",
+    "core.tips.tip_18",
+    "core.tips.tip_19",
 ];
+
+pub fn tips() -> Vec<String> {
+    TIP_KEYS
+        .iter()
+        .map(|key| moc_i18n::t!(*key).into_owned())
+        .collect()
+}

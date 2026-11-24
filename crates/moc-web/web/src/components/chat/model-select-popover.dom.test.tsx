@@ -73,7 +73,7 @@ it("空模型列表仍显示搜索和模型管理入口", () => {
   state.models = [];
   const view = render(<ModelPicker sessionId="mobile-picker" />);
   expect(view.getByRole("combobox")).toBeTruthy();
-  expect(view.getByRole("button", { name: /管理/ })).toBeTruthy();
+  expect(view.getByRole("button", { name: /Manage providers/ })).toBeTruthy();
   expect(view.queryByRole("option", { name: "first" })).toBeNull();
 });
 

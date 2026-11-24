@@ -52,14 +52,17 @@ pub(super) async fn session_new(
     if let Some(flag) = flag_for_engine(params.engine)
         && !config.feature_enabled(flag)
     {
-        return Err(invalid_params(format!(
-            "引擎 {} 已被特性开关 [features] {} = false 禁用",
-            serde_json::to_value(params.engine)
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .unwrap_or_default(),
-            flag.spec().key,
-        )));
+        return Err(invalid_params(
+            t!(
+                "core.err.engine_feature_disabled",
+                engine = serde_json::to_value(params.engine)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_default(),
+                flag = flag.spec().key
+            )
+            .into_owned(),
+        ));
     }
     let model = match params.model.as_deref() {
         Some(selector) => config.resolve_model(selector),
@@ -79,10 +82,13 @@ pub(super) async fn session_new(
     })?;
     let permission = config.sandbox.default_mode;
     if !core.inner.sandbox_support.supports(permission) {
-        return Err(invalid_params(format!(
-            "sandbox.default_mode={} 在当前平台不可用，请改用 full 或调整配置",
-            permission.as_str()
-        )));
+        return Err(invalid_params(
+            t!(
+                "core.err.sandbox_mode_unavailable_short",
+                mode = permission.as_str()
+            )
+            .into_owned(),
+        ));
     }
     let mut info = core
         .inner
@@ -495,10 +501,12 @@ pub(super) async fn session_unlock(
     {
         return Err(RpcError::new(
             RpcErrorCode::SessionLocked.code(),
-            format!(
-                "会话正被 pid {} ({}) 持有；请先让持有者卸载或退出",
-                info.pid, info.frontend
-            ),
+            t!(
+                "core.err.session_unlock_held",
+                pid = info.pid,
+                frontend = info.frontend
+            )
+            .into_owned(),
         )
         .with_data(json!({ "lock": info })));
     }

@@ -27,7 +27,7 @@ fn paint_registers_entry_hits_and_bitmap_slots() {
     let hit = *app.chart_hits.first().expect("表格下应有入口命中");
     assert_eq!(hit.entry, 0);
     assert_eq!(hit.table, 0);
-    assert_eq!(hit.w as usize, str_width("▸ 可视化图表"));
+    assert_eq!(hit.w as usize, str_width("▸ Show chart"));
     assert_eq!(
         hit.x,
         app.scrollback_area.x + super::super::PROSE_INDENT as u16,
@@ -40,7 +40,7 @@ fn paint_registers_entry_hits_and_bitmap_slots() {
         .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
         .expect("切换后绘制成功");
     let hit = *app.chart_hits.first().expect("展开后仍有入口");
-    assert_eq!(hit.w as usize, str_width("▾ 隐藏图表"), "按钮变成隐藏");
+    assert_eq!(hit.w as usize, str_width("▾ Hide chart"), "按钮变成隐藏");
     let slot = app.image_slots.first().expect("图表应登记位图槽位").clone();
     let kind = app.blocks[0]
         .table_chart(0)
@@ -130,12 +130,12 @@ fn brief_diff_stops_at_six_rows() {
     // 标题 + 6 行 diff + 省略提示 + 留白
     assert_eq!(brief.len(), 9, "简略档 diff 限 6 行");
     assert_eq!(
-        text_of(&brief).matches("还有").count(),
+        text_of(&brief).matches("more lines").count(),
         1,
         "省略提示只出现一次"
     );
     assert!(
-        text_of(&brief).contains("⋯ 还有 3 行"),
+        text_of(&brief).contains("⋯ 3 more lines"),
         "{}",
         text_of(&brief)
     );
@@ -143,7 +143,7 @@ fn brief_diff_stops_at_six_rows() {
     app.tool_detail = DetailLevel::Full;
     let full = render_entry(0, &app.blocks[0], &app, width).lines;
     assert_eq!(full.len(), total + 2, "完整档 = 全部 diff 行 + 留白 + 标题");
-    assert!(!text_of(&full).contains("还有"));
+    assert!(!text_of(&full).contains("more lines"));
     assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
 }
 
@@ -300,7 +300,7 @@ fn truncated_diff_marks_partial_and_prints_notice_once() {
     let body = text_of(&lines[1..]);
     assert!(title.contains("+2 -0 …"), "部分统计要带 …：{title}");
     assert_eq!(
-        body.matches("其余改动超出").count(),
+        body.matches("exceed diff limit").count(),
         1,
         "截断提示只出现一次：{body}"
     );
@@ -347,7 +347,7 @@ fn ask_answer_pairs_parses_headers_answers_and_sentinels() {
         pairs,
         vec![
             ("主题".to_owned(), "墨黑".to_owned(), false),
-            ("features".to_owned(), "未回答".to_owned(), true),
+            ("features".to_owned(), "Unanswered".to_owned(), true),
             ("lang".to_owned(), "Rust, 日语".to_owned(), false),
         ],
         "header 优先、空 header 与缺 header 都回落到 id"
@@ -374,7 +374,7 @@ fn ask_answer_pairs_parses_headers_answers_and_sentinels() {
     // 整单哨兵。
     assert_eq!(
         ask_answer_pairs(&block("The user did not answer."), &args),
-        vec![(String::new(), "未回答".to_owned(), true)],
+        vec![(String::new(), "Unanswered".to_owned(), true)],
         "取消/跳过整单"
     );
     assert_eq!(
@@ -382,7 +382,11 @@ fn ask_answer_pairs_parses_headers_answers_and_sentinels() {
             &block("The user did not answer within the time limit; continue without an answer."),
             &args
         ),
-        vec![(String::new(), "超时未回答".to_owned(), true)],
+        vec![(
+            String::new(),
+            "Timed out without an answer".to_owned(),
+            true
+        )],
         "超时哨兵"
     );
 }
@@ -768,8 +772,8 @@ fn fixed_fetch_summary_preserves_page_metadata_and_failures() {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("Rust 文档"), "{text}");
-        assert!(text.contains("约 1234 tokens"), "{text}");
-        assert!(text.contains("内容已截断"), "{text}");
+        assert!(text.contains("~1234 tokens"), "{text}");
+        assert!(text.contains("content truncated"), "{text}");
         assert!(text.contains("HTTP 403"), "{text}");
         assert!(!text.contains("secret-body"), "{text}");
         assert_eq!(estimate_entry_height_at(&app, 0, 80), rendered.height);

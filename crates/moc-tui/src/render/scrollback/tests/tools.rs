@@ -27,11 +27,11 @@ fn tool_preview_execute_is_visible_in_brief_and_hidden_has_only_title() {
     };
     app.tool_detail = DetailLevel::Brief;
     let brief = text(&app);
-    assert!(brief.contains("生成中") && brief.contains("const n9"));
+    assert!(brief.contains("generating") && brief.contains("const n9"));
     assert!(!brief.contains("const n0"));
     app.tool_detail = DetailLevel::Hidden;
     let hidden = text(&app);
-    assert!(hidden.contains("生成中") && !hidden.contains("const n9"));
+    assert!(hidden.contains("generating") && !hidden.contains("const n9"));
 }
 
 /// 工具正文的简略预算：6 行内容 + 一行省略提示；完整档不截断。
@@ -98,7 +98,7 @@ fn tool_brief_preview_marks_omission() {
     );
     let brief_text = text_of(&brief);
     assert!(
-        brief_text.contains("⋯ 还有 196 行"),
+        brief_text.contains("⋯ 196 more lines"),
         "略去行数按源行计：{brief_text}"
     );
     assert!(
@@ -122,7 +122,7 @@ fn tool_brief_preview_marks_omission() {
         200 + 2,
         "完整档 = 标题 + 全部 200 行 + 留白（命令已在标题）"
     );
-    assert!(!text_of(&full).contains("还有"), "完整档不出现省略提示");
+    assert!(!text_of(&full).contains("more lines"), "完整档不出现省略提示");
     assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
 
     app.tool_detail = DetailLevel::Hidden;
@@ -469,7 +469,7 @@ fn bash_brief_uses_description_and_single_line_command() {
         "只留末尾 4 行：{brief_text}"
     );
     assert!(!brief_text.contains("out-5"), "更早输出被省略");
-    assert!(brief_text.contains("⋯ 还有 6 行"));
+    assert!(brief_text.contains("⋯ 6 more lines"));
     assert_eq!(estimate_entry_height_at(&app, 0, width), brief.len());
 
     app.tool_detail = DetailLevel::Hidden;
@@ -637,7 +637,7 @@ fn ask_tool_card_styles_answers_and_clamps_rows() {
     assert!(full_text.contains("标题0"), "key 用 header 不用 id");
     assert!(!full_text.contains("q0"), "裸 id 不出现在卡片里");
     assert!(
-        full_text.contains("标题1: 未回答"),
+        full_text.contains("标题1: Unanswered"),
         "未回答标记:{full_text}"
     );
     assert!(full_text.contains("标题2: A, B (自定义)"));
@@ -666,7 +666,7 @@ fn ask_tool_card_styles_answers_and_clamps_rows() {
         !brief_text.contains("标题6") && !brief_text.contains("标题7"),
         "超出简略档的答案行被省略"
     );
-    assert!(brief_text.contains("⋯ 还有 2 行"), "省略提示:{brief_text}");
+    assert!(brief_text.contains("⋯ 2 more lines"), "省略提示:{brief_text}");
     assert_eq!(estimate_entry_height_at(&app, 0, width), brief.len());
 }
 

@@ -649,10 +649,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             let footer = overlay::footer(
                 &[
                     ("↑↓", t!("tui.hint.choose")),
-                    (
-                        t!("tui.key.kill_selected").as_ref(),
-                        t!("tui.hint.kill_task"),
-                    ),
+                    ("x x/click", t!("tui.hint.kill_task")),
                     ("esc", t!("tui.hint.close")),
                 ],
                 width,

@@ -861,7 +861,7 @@ mod tests {
         prompt.seed_history(vec!["[image#9]配个图 [image#bad] 手打的".into()]);
         assert!(prompt.history_up());
         assert_eq!(
-            prompt.text, "[图片]配个图 [image#bad] 手打的",
+            prompt.text, "[image]配个图 [image#bad] 手打的",
             "无图占位显示为普通文本，非法占位原样保留"
         );
         assert!(!prompt.has_attached_images());

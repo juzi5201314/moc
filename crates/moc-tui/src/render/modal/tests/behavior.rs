@@ -63,11 +63,11 @@ fn rewind_modal_draws_omp_timeline_and_dock_in_buffer() {
     let full_output: String = rows.join("\n").replace(' ', "");
 
     assert!(
-        full_output.contains("回退"),
+        full_output.contains("Rewind"),
         "应包含回退标识：{full_output}"
     );
     assert!(
-        full_output.contains("回退到此处") || full_output.contains("从此处继续"),
+        full_output.contains("Rewindtohere") || full_output.contains("Continuefromhere"),
         "应包含 omp 风格的回退横幅或按钮动作：{full_output}"
     );
     assert!(

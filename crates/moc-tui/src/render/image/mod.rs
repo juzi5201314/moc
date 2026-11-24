@@ -465,12 +465,14 @@ impl ImageStore {
                     Err(mpsc::TrySendError::Disconnected(_)) => Self::record_completion(
                         &mut inner,
                         key,
-                        Err("图片解码池不可用或已关闭".into()),
+                        Err("image decode pool unavailable or closed".into()),
                     ),
                 },
-                None => {
-                    Self::record_completion(&mut inner, key, Err("图片解码池不可用或已关闭".into()))
-                }
+                None => Self::record_completion(
+                    &mut inner,
+                    key,
+                    Err("image decode pool unavailable or closed".into()),
+                ),
             }
         }
     }
@@ -730,10 +732,10 @@ impl ImageStore {
                     }
                 }
                 Err(mpsc::TrySendError::Disconnected(_)) => {
-                    self.complete(key, Err("图片解码池不可用或已关闭".into()));
+                    self.complete(key, Err("image decode pool unavailable or closed".into()));
                 }
             },
-            None => self.complete(key, Err("图片解码池不可用或已关闭".into())),
+            None => self.complete(key, Err("image decode pool unavailable or closed".into())),
         }
     }
 }

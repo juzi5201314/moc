@@ -219,7 +219,7 @@ async fn agents_action_summons_sidebar_not_modal() {
     assert!(app.modal.is_none(), "Ctrl+N 不得打开模态");
     assert_eq!(app.subagent_sidebar, Some(true), "记录唤出意图");
     assert!(!app.subagent_sidebar_visible(), "空名册仍不可见");
-    assert_eq!(app.notice.as_deref(), Some("当前没有子代理"));
+    assert_eq!(app.notice.as_deref(), Some("当前没有 subagent。"));
 
     // 名册有代理：Ctrl+N 后立即可见，先前手动关掉的也能再唤出。
     app.notice = None;

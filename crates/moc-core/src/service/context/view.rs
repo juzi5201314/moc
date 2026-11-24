@@ -103,7 +103,7 @@ impl View {
     ) -> Result<(Vec<ContextContentSection>, Option<u64>), RpcError> {
         let start = cursor.unwrap_or(0) as usize;
         if start > ids.len() {
-            return Err(invalid("目录游标越界"));
+            return Err(invalid(&t!("core.err.ctx_cursor_oob")));
         }
         let end = start
             .saturating_add(limit.unwrap_or(PAGE as u32).clamp(1, PAGE as u32) as usize)
@@ -164,8 +164,11 @@ impl View {
         let index = params
             .node_id
             .parse::<usize>()
-            .map_err(|_| invalid("无效节点"))?;
-        let node = self.nodes.get(index).ok_or_else(|| invalid("节点不存在"))?;
+            .map_err(|_| invalid(&t!("core.err.ctx_invalid_node")))?;
+        let node = self
+            .nodes
+            .get(index)
+            .ok_or_else(|| invalid(&t!("core.err.ctx_node_missing")))?;
         if let Some(reason) = &node.meta.hidden {
             return Err(invalid(reason));
         }
@@ -183,7 +186,7 @@ impl View {
             let (text, len) = if let Some(text) = &node.text {
                 let text = text.as_str();
                 if start > text.len() || !text.is_char_boundary(start) {
-                    return Err(invalid("正文游标必须位于 UTF-8 字符边界"));
+                    return Err(invalid(&t!("core.err.ctx_utf8_cursor")));
                 }
                 let mut end = start.saturating_add(limit).min(text.len());
                 while !text.is_char_boundary(end) {
@@ -194,7 +197,7 @@ impl View {
                 use std::io::{Read, Seek, SeekFrom};
                 let (offset, len) = node.spilled.expect("正文已写入快照");
                 if start > len {
-                    return Err(invalid("正文游标必须位于 UTF-8 字符边界"));
+                    return Err(invalid(&t!("core.err.ctx_utf8_cursor")));
                 }
                 let mut bytes = vec![0; limit.min(len - start)];
                 let mut file = self.spool.as_ref().expect("正文快照文件").lock();
@@ -202,7 +205,7 @@ impl View {
                     .map_err(io_error)?;
                 file.read_exact(&mut bytes).map_err(io_error)?;
                 if bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
-                    return Err(invalid("正文游标必须位于 UTF-8 字符边界"));
+                    return Err(invalid(&t!("core.err.ctx_utf8_cursor")));
                 }
                 if let Err(error) = std::str::from_utf8(&bytes) {
                     if error.error_len().is_some() {
@@ -253,7 +256,7 @@ impl Views {
             .entries
             .get_mut(&(connection, session.to_owned()))
             .filter(|view| view.id == id)
-            .ok_or_else(|| invalid("上下文视图已过期或已释放，请刷新"))?;
+            .ok_or_else(|| invalid(&t!("core.err.ctx_view_expired")))?;
         view.touched = Instant::now();
         Ok(view)
     }

@@ -84,7 +84,7 @@ pub(super) async fn run_prompt_entry(
         .is_some_and(|meta| meta.workflow_run.is_some())
     {
         return Err(to_rpc(crate::CoreError::Session(
-            "workflow actor 不能通过 session/prompt 或 session/retry 单独执行；请继续所属 workflow run".into(),
+            moc_i18n::t!("core.err.workflow_actor_no_prompt").into_owned(),
         )));
     }
     let prompt = record.try_prompt_lock().map_err(to_rpc)?;

@@ -365,7 +365,7 @@ pub(crate) fn todo_plan(phases: &[TodoPhase]) -> Plan {
             .flat_map(|phase| {
                 phase.items.iter().map(move |item| {
                     let mut content = if multi_phase {
-                        format!("{}：{}", phase.phase, item.task)
+                        format!("{}: {}", phase.phase, item.task)
                     } else {
                         item.task.clone()
                     };
@@ -952,7 +952,7 @@ mod tests {
         let plan = todo_plan(&phases);
         assert_eq!(plan.entries.len(), 3);
         assert_eq!(plan.entries[1].status, PlanEntryStatus::InProgress);
-        assert!(plan.entries[2].content.contains("阻塞"));
+        assert!(plan.entries[2].content.contains("blocked"));
     }
 
     // `AskQuestion`/`PermissionOption` 在 reverse.rs 中翻译；这里只为保持 import 有效性。

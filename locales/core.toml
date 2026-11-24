@@ -4,24 +4,24 @@ _version = 2
 # 给模型看的文本（prompt / reminder / 工具描述）不入此文件，按规则保持英文。
 
 [core.config]
-invalid_language = { zh = "language: 仅支持 auto、zh、en", en = "language: only auto, zh and en are supported" }
+invalid_language = { zh = "language 仅支持 auto、zh、en", en = "language only supports auto, zh, and en" }
 fallback_desc = { zh = "自定义配置项。", en = "Custom option." }
 desc_fmt = { zh = "`%{name}`：%{desc}", en = "`%{name}`: %{desc}" }
 
 [core.config.tabs]
-models = { zh = "模型", en = "Models" }
-providers = { zh = "供应商", en = "Providers" }
-tools = { zh = "工具", en = "Tools" }
-sandbox = { zh = "沙盒", en = "Sandbox" }
-context = { zh = "上下文", en = "Context" }
-instructions = { zh = "指令", en = "Instructions" }
-skills = { zh = "技能", en = "Skills" }
+models = { zh = "Models", en = "Models" }
+providers = { zh = "Providers", en = "Providers" }
+tools = { zh = "Tools", en = "Tools" }
+sandbox = { zh = "Sandbox", en = "Sandbox" }
+context = { zh = "Context", en = "Context" }
+instructions = { zh = "Instructions", en = "Instructions" }
+skills = { zh = "Skills", en = "Skills" }
 mcp = { zh = "MCP", en = "MCP" }
-plugins = { zh = "插件", en = "Plugins" }
-session = { zh = "会话", en = "Session" }
+plugins = { zh = "Plugins", en = "Plugins" }
+session = { zh = "Session", en = "Session" }
 
 [core.config.opt.language]
-auto = { zh = "跟随系统", en = "Follow system" }
+auto = { zh = "Auto", en = "Auto" }
 zh = { zh = "中文", en = "中文" }
 en = { zh = "English", en = "English" }
 
@@ -31,32 +31,32 @@ openai_responses = { zh = "OpenAI Responses", en = "OpenAI Responses" }
 anthropic_messages = { zh = "Anthropic Messages", en = "Anthropic Messages" }
 
 [core.config.opt.cache]
-auto = { zh = "自动", en = "Auto" }
-short = { zh = "短缓存", en = "Short-lived" }
-long = { zh = "长缓存", en = "Long-lived" }
-off = { zh = "不缓存", en = "Off" }
+auto = { zh = "Auto", en = "Auto" }
+short = { zh = "Short", en = "Short" }
+long = { zh = "Long", en = "Long" }
+off = { zh = "Off", en = "Off" }
 
 [core.config.opt.overflow]
-error = { zh = "直接报错", en = "Fail immediately" }
-wait = { zh = "等待空位", en = "Wait for a slot" }
+error = { zh = "Error", en = "Error" }
+wait = { zh = "Wait", en = "Wait" }
 
 [core.config.opt.motf]
 max_tokens = { zh = "max_tokens", en = "max_tokens" }
 max_completion_tokens = { zh = "max_completion_tokens", en = "max_completion_tokens" }
 
 [core.config.opt.tool_choice]
-standard = { zh = "标准", en = "Standard" }
-any_for_required = { zh = "required 改写为 any", en = "Rewrite required as any" }
-unsupported = { zh = "不发送", en = "Don't send" }
+standard = { zh = "Standard", en = "Standard" }
+any_for_required = { zh = "any_for_required", en = "any_for_required" }
+unsupported = { zh = "Unsupported", en = "Unsupported" }
 
 [core.config.opt.echo_reasoning]
-protocol = { zh = "按协议默认", en = "Protocol default" }
-always = { zh = "总是", en = "Always" }
-never = { zh = "从不", en = "Never" }
+protocol = { zh = "Protocol default", en = "Protocol default" }
+always = { zh = "Always", en = "Always" }
+never = { zh = "Never", en = "Never" }
 
 [core.config.opt.threshold_mode]
-percent = { zh = "按上下文比例", en = "By context percentage" }
-tokens = { zh = "按固定长度", en = "By fixed token count" }
+percent = { zh = "Percent (%)", en = "Percent (%)" }
+tokens = { zh = "Tokens", en = "Tokens" }
 
 [core.config.opt.compaction_method]
 moc = { zh = "Moc（本地修剪 + 摘要）", en = "Moc (local trim + summary)" }
@@ -64,1097 +64,1047 @@ grok_build = { zh = "Grok Build", en = "Grok Build" }
 eocc = { zh = "EoCC（实验性交接状态）", en = "EoCC (experimental handoff state)" }
 
 [core.config.opt.sandbox_mode]
-full = { zh = "full（无沙盒）", en = "full (no sandbox)" }
-workspace = { zh = "workspace（工作区可写，外部只读）", en = "workspace (workspace writable, outside read-only)" }
-workspace_only = { zh = "workspace-only（仅限工作区）", en = "workspace-only (workspace only)" }
-full_unsupported = { zh = "full（当前平台无可用沙盒）", en = "full (no sandbox available on this platform)" }
+full = { zh = "full（无 sandbox 隔离）", en = "full (no sandbox)" }
+workspace = { zh = "workspace（workspace 可写，外部只读）", en = "workspace (workspace writable, outside read-only)" }
+workspace_only = { zh = "workspace-only（仅限 workspace）", en = "workspace-only (workspace only)" }
+full_unsupported = { zh = "full（当前平台无可用 sandbox）", en = "full (no sandbox available on this platform)" }
 
 [core.config.opt.on_denied]
-ask = { zh = "向用户申请授权", en = "Ask the user" }
-deny = { zh = "直接拒绝", en = "Deny outright" }
+ask = { zh = "Ask", en = "Ask" }
+deny = { zh = "Deny", en = "Deny" }
 
 [core.config.opt.model_input]
-text = { zh = "仅文本 (text)", en = "Text only (text)" }
-text_image = { zh = "文本与图片 / 多模态 (text, image)", en = "Text and images / multimodal (text, image)" }
+text = { zh = "text（仅文本）", en = "text (text only)" }
+text_image = { zh = "text, image（多模态）", en = "text, image (multimodal)" }
 
 [core.config.fields.features_clm]
-label = { zh = "CLM 引擎", en = "CLM engine" }
-desc = { zh = "启用实验性 CLM 会话引擎。", en = "Enable the experimental CLM session engine." }
+label = { zh = "CLM Engine", en = "CLM Engine" }
+desc = { zh = "启用实验性 CLM session 引擎，由 model 自主维护工作 context。", en = "Enable the experimental CLM session engine, letting the model manage its working context." }
 
 [core.config.fields.features_ptc]
-label = { zh = "PTC 代码沙盒", en = "PTC code sandbox" }
-desc = { zh = "启用 PTC（Programmatic Tool Calling）模式：模型通过 execute 沙盒编排工具调用。", en = "Enable PTC (Programmatic Tool Calling): the model orchestrates tool calls through the execute sandbox." }
+label = { zh = "PTC Sandbox", en = "PTC Sandbox" }
+desc = { zh = "启用 PTC（Programmatic Tool Calling）模式：model 通过 execute sandbox 批量编排工具调用。", en = "Enable PTC (Programmatic Tool Calling): the model orchestrates tool calls via the execute sandbox." }
 
 [core.config.fields.agents_max_depth]
-label = { zh = "最大嵌套深度", en = "Max nesting depth" }
-desc = { zh = "允许子代理嵌套委托的最大层数；1 表示仅主会话可派发子代理。", en = "Maximum sub-agent delegation depth; 1 means only the main session may spawn sub-agents." }
+label = { zh = "Max Nesting Depth", en = "Max Nesting Depth" }
+desc = { zh = "允许 subagent 嵌套委托的最大层数；1 表示仅主 session 可派发 subagent。", en = "Maximum subagent delegation depth; 1 means only the main session may spawn subagents." }
+
+[core.config.fields.models_roles_default]
+label = { zh = "Default Model", en = "Default Model" }
+desc = { zh = "新 session 默认使用的 model（格式：provider/model[:level]）。", en = "Default model for new sessions (format: provider/model[:level])." }
 
 [core.config.fields.models_roles_explore]
-label = { zh = "探索", en = "Explore" }
-desc = { zh = "Explore 角色使用的模型；inherit 沿用主模型，none 禁用。", en = "Model for the Explore role; inherit reuses the main model, none disables it." }
+label = { zh = "Explore", en = "Explore" }
+desc = { zh = "Explore 角色使用的 model；inherit 沿用主 model，none 禁用。", en = "Model for the Explore role; inherit reuses the main model, none disables it." }
 
 [core.config.fields.models_fusion_lead]
-label = { zh = "Fusion Lead 模型", en = "Fusion Lead model" }
-desc = { zh = "负责规划、调查与评审的主导模型（格式：供应商/模型[:等级]）。", en = "Lead model for planning, investigation and review (format: provider/model[:level])." }
+label = { zh = "Fusion Lead", en = "Fusion Lead" }
+desc = { zh = "负责规划、调查与评审的主导 model（格式：provider/model[:level]）。", en = "Lead model for planning, investigation, and review (format: provider/model[:level])." }
 
 [core.config.fields.models_fusion_sidekick]
-label = { zh = "Fusion Sidekick 模型", en = "Fusion Sidekick model" }
-desc = { zh = "负责具体实现与测试的执行模型（格式：供应商/模型[:等级]）。", en = "Execution model for implementation and testing (format: provider/model[:level])." }
+label = { zh = "Fusion Sidekick", en = "Fusion Sidekick" }
+desc = { zh = "负责具体实现与测试的执行 model（格式：provider/model[:level]）。", en = "Execution model for implementation and testing (format: provider/model[:level])." }
 
 [core.config.fields.context_files_enabled]
-label = { zh = "启用 AGENTS.md", en = "Enable AGENTS.md" }
-desc = { zh = "关闭后不再自动加载 AGENTS.md。", en = "When off, AGENTS.md is no longer loaded automatically." }
+label = { zh = "Enable AGENTS.md", en = "Enable AGENTS.md" }
+desc = { zh = "关闭后不再自动加载 AGENTS.md。", en = "When off, AGENTS.md is not loaded automatically." }
 
 [core.config.fields.context_files_user]
-label = { zh = "全局 AGENTS.md", en = "Global AGENTS.md" }
-desc = { zh = "加载用户全局目录（~/.moc/AGENTS.md 等）中的上下文文件。", en = "Load context files from the user-global directory (~/.moc/AGENTS.md etc.)." }
+label = { zh = "Global AGENTS.md", en = "Global AGENTS.md" }
+desc = { zh = "加载用户全局目录（~/.moc/AGENTS.md 等）中的指令文件。", en = "Load instruction files from the user-global directory (~/.moc/AGENTS.md, etc.)." }
 
 [core.config.fields.context_files_project]
-label = { zh = "项目 AGENTS.md", en = "Project AGENTS.md" }
-desc = { zh = "加载工作区中的 AGENTS.md 及其 @引用的文件。", en = "Load AGENTS.md files in the workspace, including their @-referenced files." }
+label = { zh = "Project AGENTS.md", en = "Project AGENTS.md" }
+desc = { zh = "加载 workspace 中的 AGENTS.md 及其 @ 引用的文件。", en = "Load AGENTS.md files in the workspace, including their @-referenced files." }
 
 [core.config.fields.context_files_max_tokens]
-label = { zh = "AGENTS.md token 上限", en = "AGENTS.md token limit" }
-desc = { zh = "所有 AGENTS.md 合计的最大 token 数，超出部分省略。", en = "Maximum total tokens across all AGENTS.md files; the excess is omitted." }
+label = { zh = "AGENTS.md Max Tokens", en = "AGENTS.md Max Tokens" }
+desc = { zh = "所有 AGENTS.md 合计的最大 token 数，超出部分省略。", en = "Maximum total tokens across all AGENTS.md files; excess content is omitted." }
 
 [core.config.fields.context_files_import_depth]
-label = { zh = "@引用展开层数", en = "@-reference expansion depth" }
-desc = { zh = "AGENTS.md 中 @文件引用的最大递归展开层数。", en = "Maximum recursive expansion depth for @-file references in AGENTS.md." }
+label = { zh = "@-Import Depth", en = "@-Import Depth" }
+desc = { zh = "AGENTS.md 中 @ 文件引用的最大递归展开层数。", en = "Maximum recursive expansion depth for @-file references in AGENTS.md." }
 
 [core.config.fields.system_prompt_override]
-label = { zh = "覆盖 System Prompt", en = "Override system prompt" }
-desc = { zh = "完全替换默认的 System Prompt。", en = "Fully replace the default system prompt." }
+label = { zh = "System Prompt Override", en = "System Prompt Override" }
+desc = { zh = "完全替换默认的 System Prompt。", en = "Completely replace the default system prompt." }
 
 [core.config.fields.system_prompt_append]
-label = { zh = "追加 System Prompt", en = "Append to system prompt" }
-desc = { zh = "在默认 System Prompt 末尾追加自定义指令。", en = "Append custom instructions to the default system prompt." }
+label = { zh = "System Prompt Append", en = "System Prompt Append" }
+desc = { zh = "在默认 System Prompt 末尾追加自定义指令。", en = "Append custom instructions to the end of the default system prompt." }
 
 [core.config.fields.git_co_author]
-label = { zh = "将 Moc 添加为协作者", en = "Add Moc as co-author" }
-desc = { zh = "开启后，在创建 git commit 时自动追加 Co-authored-by: myowncode-agent[bot] 协作者信息。", en = "When enabled, append Co-authored-by: myowncode-agent[bot] as a trailer when creating git commits." }
+label = { zh = "Git Co-Author", en = "Git Co-Author" }
+desc = { zh = "开启后，创建 git commit 时自动追加 Co-authored-by: myowncode-agent[bot] 协作者信息。", en = "When enabled, append Co-authored-by: myowncode-agent[bot] when creating git commits." }
 
 [core.config.fields.skills_enabled]
-label = { zh = "启用 Skills", en = "Enable Skills" }
-desc = { zh = "关闭后不再加载任何 Skill。", en = "When off, no skills are loaded." }
+label = { zh = "Enable Skills", en = "Enable Skills" }
+desc = { zh = "关闭后不再加载任何 skill。", en = "When off, no skills are loaded." }
 
 [core.config.fields.skills_moc_user]
-label = { zh = "全局 moc Skills", en = "Global moc Skills" }
-desc = { zh = "加载 ~/.moc/skills 中的 Skill。", en = "Load skills from ~/.moc/skills." }
+label = { zh = "Global moc Skills", en = "Global moc Skills" }
+desc = { zh = "加载 ~/.moc/skills 中的 skill。", en = "Load skills from ~/.moc/skills." }
 
 [core.config.fields.skills_moc_project]
-label = { zh = "项目 moc Skills", en = "Project moc Skills" }
-desc = { zh = "加载工作区 .moc/skills 中的 Skill，同名优先。", en = "Load skills from .moc/skills in the workspace; same-named skills take precedence." }
+label = { zh = "Project moc Skills", en = "Project moc Skills" }
+desc = { zh = "加载 workspace 内 .moc/skills 中的 skill，同名优先。", en = "Load skills from .moc/skills in the workspace; same-named skills take precedence." }
 
 [core.config.fields.skills_agents_user]
-label = { zh = "全局共享 Skills", en = "Global shared Skills" }
-desc = { zh = "加载 ~/.agents/skills 中的共享 Skill。", en = "Load shared skills from ~/.agents/skills." }
+label = { zh = "Global Shared Skills", en = "Global Shared Skills" }
+desc = { zh = "加载 ~/.agents/skills 中的共享 skill。", en = "Load shared skills from ~/.agents/skills." }
 
 [core.config.fields.skills_agents_project]
-label = { zh = "项目共享 Skills", en = "Project shared Skills" }
-desc = { zh = "加载工作区 .agents/skills 中的共享 Skill。", en = "Load shared skills from .agents/skills in the workspace." }
+label = { zh = "Project Shared Skills", en = "Project Shared Skills" }
+desc = { zh = "加载 workspace 内 .agents/skills 中的共享 skill。", en = "Load shared skills from .agents/skills in the workspace." }
 
 [core.config.fields.skills_dirs]
-label = { zh = "额外 Skills 目录", en = "Extra Skills directories" }
-desc = { zh = "逐行填写额外扫描的目录路径，支持 ~。", en = "One directory per line to additionally scan; ~ is supported." }
+label = { zh = "Extra Skills Dirs", en = "Extra Skills Dirs" }
+desc = { zh = "逐行填写额外扫描的目录路径，支持 ~。", en = "One extra directory per line to scan; ~ is supported." }
 
 [core.config.fields.skills_disable]
-label = { zh = "禁用的 Skills", en = "Disabled Skills" }
-desc = { zh = "逐行填写要禁用的 Skill 名称。", en = "One skill name per line to disable." }
+label = { zh = "Disabled Skills", en = "Disabled Skills" }
+desc = { zh = "逐行填写要禁用的 skill 名称。", en = "One skill name per line to disable." }
 
 [core.config.fields.skills_catalog_budget_percent]
-label = { zh = "目录预算比例 (%)", en = "Catalog budget (%)" }
-desc = { zh = "Skills 目录最多占用上下文窗口的百分比；0 表示仅使用下限。", en = "Maximum percentage of the context window the skills catalog may occupy; 0 means only the floor applies." }
+label = { zh = "Catalog Budget (%)", en = "Catalog Budget (%)" }
+desc = { zh = "skills 目录最多占用 Context Window 的百分比；0 表示仅使用下限。", en = "Maximum percentage of the context window the skills catalog may use; 0 applies only the floor." }
 
 [core.config.fields.skills_catalog_budget_min_tokens]
-label = { zh = "目录预算下限 (token)", en = "Catalog budget floor (tokens)" }
-desc = { zh = "按比例计算的预算低于此值时使用此下限。", en = "Used as the floor when the percentage-based budget computes lower." }
+label = { zh = "Catalog Budget Floor (tokens)", en = "Catalog Budget Floor (tokens)" }
+desc = { zh = "按比例计算的预算低于此值时采用此 token 下限。", en = "Token floor used when the percentage-based budget computes lower." }
 
 [core.config.fields.skills_description_max_chars]
-label = { zh = "单个描述字符上限", en = "Per-description char limit" }
-desc = { zh = "每条 Skill 描述在目录中最多显示的字符数。", en = "Maximum characters shown per skill description in the catalog." }
+label = { zh = "Description Max Chars", en = "Description Max Chars" }
+desc = { zh = "每条 skill 描述在目录中最多显示的字符数。", en = "Maximum characters shown per skill description in the catalog." }
 
 [core.config.fields.mcp_enabled]
-label = { zh = "启用 MCP", en = "Enable MCP" }
-desc = { zh = "关闭后不再连接任何 MCP 服务。", en = "When off, no MCP servers are contacted." }
+label = { zh = "Enable MCP", en = "Enable MCP" }
+desc = { zh = "关闭后不再连接任何 MCP 服务。", en = "When off, no MCP servers are connected." }
 
 [core.config.fields.mcp_user_config]
-label = { zh = "全局 MCP 配置", en = "Global MCP config" }
+label = { zh = "Global MCP Config", en = "Global MCP Config" }
 desc = { zh = "加载 ~/.moc/mcp.json 等用户级 MCP 配置。", en = "Load user-level MCP config such as ~/.moc/mcp.json." }
 
 [core.config.fields.mcp_project_config]
-label = { zh = "项目 MCP 配置", en = "Project MCP config" }
-desc = { zh = "加载工作区 .mcp.json、mcp.json 等项目级 MCP 配置；启用前请确认仓库可信。", en = "Load project-level MCP config (.mcp.json, mcp.json, etc.); enable only in trusted repositories." }
+label = { zh = "Project MCP Config", en = "Project MCP Config" }
+desc = { zh = "加载 workspace 内 .mcp.json、mcp.json 等项目级 MCP 配置；启用前请确认仓库可信。", en = "Load project-level MCP config (.mcp.json, mcp.json, etc.); enable only in trusted repositories." }
 
 [core.config.fields.mcp_connect_timeout_secs]
-label = { zh = "连接超时（秒）", en = "Connect timeout (s)" }
-desc = { zh = "启动 MCP 服务并拉取工具列表的最长等待时间。", en = "Maximum wait for starting an MCP server and listing its tools." }
+label = { zh = "Connect Timeout (s)", en = "Connect Timeout (s)" }
+desc = { zh = "启动 MCP 服务并拉取工具列表的最长等待时间（秒）。", en = "Maximum wait in seconds to start an MCP server and list its tools." }
 
 [core.config.fields.mcp_call_timeout_secs]
-label = { zh = "调用超时（秒）", en = "Call timeout (s)" }
-desc = { zh = "单次 MCP 工具调用的最长等待时间。", en = "Maximum wait for a single MCP tool call." }
+label = { zh = "Call Timeout (s)", en = "Call Timeout (s)" }
+desc = { zh = "单次 MCP 工具调用的最长等待时间（秒）。", en = "Maximum wait in seconds for a single MCP tool call." }
 
 [core.config.fields.mcp_max_concurrent_calls]
-label = { zh = "单服务并发上限", en = "Per-server concurrency" }
+label = { zh = "Per-Server Concurrency", en = "Per-Server Concurrency" }
 desc = { zh = "同一 MCP server 同时执行工具调用的上限；1 表示串行。", en = "Maximum simultaneous tool calls per MCP server; 1 means serial." }
 
 [core.config.fields.workflow_enabled]
-label = { zh = "启用 Workflow", en = "Enable Workflow" }
+label = { zh = "Enable Workflow", en = "Enable Workflow" }
 desc = { zh = "关闭后 /workflow 与相关调用不可用。", en = "When off, /workflow and related calls are unavailable." }
 
 [core.config.fields.workflow_max_concurrency_ceiling]
-label = { zh = "并发执行上限", en = "Concurrency ceiling" }
-desc = { zh = "Workflow 同时运行的并发子任务数上限。", en = "Maximum number of concurrent sub-tasks a workflow may run." }
+label = { zh = "Concurrency Ceiling", en = "Concurrency Ceiling" }
+desc = { zh = "workflow 同时运行的并发子任务数上限。", en = "Maximum concurrent sub-tasks a workflow may run." }
 
 [core.config.fields.workflow_world_run_timeout_ms]
-label = { zh = "脚本默认超时（毫秒）", en = "Script timeout (ms)" }
-desc = { zh = "单次 Workflow 脚本运行的默认超时时间。", en = "Default timeout for a single workflow script run." }
+label = { zh = "Script Timeout (ms)", en = "Script Timeout (ms)" }
+desc = { zh = "单次 workflow 脚本运行的默认超时时间（毫秒）。", en = "Default timeout in milliseconds for a single workflow script run." }
 
 [core.config.fields.workflow_file_read_bytes]
-label = { zh = "读取文件上限（字节）", en = "File read limit (bytes)" }
-desc = { zh = "Workflow 内单次读取文件的最大字节数。", en = "Maximum bytes read per file inside a workflow." }
+label = { zh = "File Read Cap (bytes)", en = "File Read Cap (bytes)" }
+desc = { zh = "workflow 内单次读取文件的最大字节数。", en = "Maximum bytes read per file inside a workflow." }
 
 [core.config.fields.workflow_log_bytes]
-label = { zh = "单条日志上限（字节）", en = "Log line limit (bytes)" }
-desc = { zh = "Workflow 输出单条日志的最大字节数。", en = "Maximum bytes per workflow log line." }
+label = { zh = "Log Line Cap (bytes)", en = "Log Line Cap (bytes)" }
+desc = { zh = "workflow 输出单条日志的最大字节数。", en = "Maximum bytes per workflow log line." }
 
 [core.config.fields.workflow_ask_max_repairs]
-label = { zh = "Schema 修复重试上限", en = "Schema repair retries" }
-desc = { zh = "子任务结构化交付校验失败时的最大自动修复次数。", en = "Maximum automatic repairs when a sub-task's structured delivery fails validation." }
+label = { zh = "Schema Repair Retries", en = "Schema Repair Retries" }
+desc = { zh = "子任务结构化交付校验失败时的最大自动修复次数。", en = "Maximum automatic repair retries when a sub-task's structured delivery fails validation." }
 
 [core.config.fields.plugins_enabled]
-label = { zh = "启用插件系统", en = "Enable plugins" }
-desc = { zh = "关闭后不再扫描与加载本地插件。", en = "When off, local plugins are neither scanned nor loaded." }
+label = { zh = "Enable Plugins", en = "Enable Plugins" }
+desc = { zh = "关闭后不再扫描与加载本地 plugin。", en = "When off, local plugins are neither scanned nor loaded." }
 
 [core.config.fields.plugins_user]
-label = { zh = "全局插件目录", en = "Global plugin dir" }
-desc = { zh = "扫描 ~/.moc/plugins 中的本地插件。", en = "Scan local plugins in ~/.moc/plugins." }
+label = { zh = "Global Plugin Dir", en = "Global Plugin Dir" }
+desc = { zh = "扫描 ~/.moc/plugins 中的本地 plugin。", en = "Scan local plugins in ~/.moc/plugins." }
 
 [core.config.fields.plugins_project]
-label = { zh = "项目插件目录", en = "Project plugin dir" }
-desc = { zh = "扫描 .moc/plugins 中的项目插件（仅在可信仓库开启）。", en = "Scan project plugins in .moc/plugins (enable only in trusted repositories)." }
+label = { zh = "Project Plugin Dir", en = "Project Plugin Dir" }
+desc = { zh = "扫描 .moc/plugins 中的项目 plugin（仅在可信仓库开启）。", en = "Scan project plugins in .moc/plugins (enable only in trusted repositories)." }
 
 [core.config.fields.plugins_dirs]
-label = { zh = "额外插件目录", en = "Extra plugin dirs" }
-desc = { zh = "逐行填写额外扫描的插件目录，支持 ~。", en = "One plugin directory per line to additionally scan; ~ is supported." }
+label = { zh = "Extra Plugin Dirs", en = "Extra Plugin Dirs" }
+desc = { zh = "逐行填写额外扫描的 plugin 目录，支持 ~。", en = "One extra plugin directory per line to scan; ~ is supported." }
 
 [core.config.fields.plugins_disable]
-label = { zh = "禁用插件列表", en = "Disabled plugins" }
-desc = { zh = "逐行填写要禁用的插件名称。", en = "One plugin name per line to disable." }
+label = { zh = "Disabled Plugins", en = "Disabled Plugins" }
+desc = { zh = "逐行填写要禁用的 plugin 名称。", en = "One plugin name per line to disable." }
 
 [core.config.fields.plugins_max_plugins]
-label = { zh = "最大插件数", en = "Max plugins" }
-desc = { zh = "允许同时加载的插件数量上限。", en = "Maximum number of plugins loaded at once." }
+label = { zh = "Max Plugins", en = "Max Plugins" }
+desc = { zh = "允许同时加载的 plugin 数量上限。", en = "Maximum number of plugins loaded simultaneously." }
 
 [core.config.fields.plugins_memory_limit_bytes]
-label = { zh = "插件内存上限（字节）", en = "Plugin memory limit (bytes)" }
-desc = { zh = "QuickJS 宿主为插件分配的最大堆内存。", en = "Maximum heap the QuickJS host allocates per plugin." }
+label = { zh = "Plugin Memory Limit (bytes)", en = "Plugin Memory Limit (bytes)" }
+desc = { zh = "QuickJS 宿主为单个 plugin 分配的最大堆内存（字节）。", en = "Maximum heap in bytes the QuickJS host allocates per plugin." }
 
 [core.config.fields.plugins_load_timeout_ms]
-label = { zh = "加载超时（毫秒）", en = "Load timeout (ms)" }
-desc = { zh = "初始化单个插件模块的最长等待时间。", en = "Maximum wait for initializing a single plugin module." }
+label = { zh = "Load Timeout (ms)", en = "Load Timeout (ms)" }
+desc = { zh = "初始化单个 plugin 模块的最长等待时间（毫秒）。", en = "Maximum wait in milliseconds to initialize a single plugin module." }
 
 [core.config.fields.plugins_call_timeout_ms]
-label = { zh = "调用超时（毫秒）", en = "Call timeout (ms)" }
-desc = { zh = "插件钩子或工具单次调用的超时时间；超时后本进程内禁用该插件。", en = "Timeout for a single plugin hook or tool call; the plugin is disabled in this process after timing out." }
+label = { zh = "Call Timeout (ms)", en = "Call Timeout (ms)" }
+desc = { zh = "plugin 钩子或工具单次调用的超时时间（毫秒）；超时后本进程内禁用该 plugin。", en = "Timeout in milliseconds for a single plugin hook or tool call; the plugin is disabled in this process on timeout." }
 
 [core.config.fields.plugins_max_prompt_chars]
-label = { zh = "提示词贡献上限（字符）", en = "Prompt budget (chars)" }
-desc = { zh = "所有插件向 System Prompt 注入文本的总字符上限。", en = "Total character cap for text all plugins inject into the system prompt." }
+label = { zh = "Prompt Budget (chars)", en = "Prompt Budget (chars)" }
+desc = { zh = "所有 plugin 向 System Prompt 注入文本的总字符上限。", en = "Total character cap for text all plugins inject into the system prompt." }
 
 [core.config.fields.compaction_enabled]
-label = { zh = "启用自动压缩", en = "Enable auto-compaction" }
-desc = { zh = "关闭后不再自动压缩对话历史。", en = "When off, conversation history is no longer compacted automatically." }
+label = { zh = "Auto Compaction", en = "Auto Compaction" }
+desc = { zh = "关闭后不再自动压缩对话历史。", en = "When off, conversation history is not compacted automatically." }
 
 [core.config.fields.sandbox_default_mode]
-label = { zh = "默认沙盒模式", en = "Default sandbox mode" }
-desc = { zh = "新会话初始模式：full 无隔离；workspace 工作区可写、外部只读；workspace-only 仅工作区可读写。", en = "Initial mode for new sessions: full = no isolation; workspace = writable workspace, read-only outside; workspace-only = outside unreadable and unwritable." }
+label = { zh = "Default Mode", en = "Default Mode" }
+desc = { zh = "新 session 初始 sandbox 模式：full 无隔离；workspace 可写 workspace、外部只读；workspace-only 仅 workspace 可读写。", en = "Initial sandbox mode for new sessions: full = no isolation; workspace = workspace writable, outside read-only; workspace-only = workspace only." }
 
 [core.config.fields.sandbox_network]
-label = { zh = "允许沙盒网络", en = "Allow sandboxed network" }
-desc = { zh = "仅约束沙盒内 bash；web_fetch 与 MCP 不受影响。", en = "Only constrains bash inside the sandbox; web_fetch and MCP are unaffected." }
+label = { zh = "Allow Network", en = "Allow Network" }
+desc = { zh = "仅约束 sandbox 内的 bash；web_fetch 与 MCP 不受影响。", en = "Only constrains bash inside the sandbox; web_fetch and MCP are unaffected." }
 
 [core.config.fields.sandbox_on_denied]
-label = { zh = "越界处理策略", en = "Out-of-bounds policy" }
-desc = { zh = "沙盒拦截时：ask 弹窗申请授权；deny 直接拒绝。", en = "When the sandbox blocks an operation: ask prompts for authorization; deny rejects it." }
+label = { zh = "On Denied", en = "On Denied" }
+desc = { zh = "sandbox 拦截越界操作时的策略：ask 弹窗申请授权；deny 直接拒绝。", en = "Policy when the sandbox blocks an action: ask prompts for approval; deny rejects immediately." }
 
 [core.config.fields.sandbox_allow_unsandboxed]
-label = { zh = "允许沙盒外重试", en = "Allow unsandboxed retry" }
-desc = { zh = "允许模型在失败后申请以 full 模式在沙盒外重试一次。", en = "Let the model request one retry in full mode outside the sandbox after a failure." }
+label = { zh = "Allow Unsandboxed Retry", en = "Allow Unsandboxed Retry" }
+desc = { zh = "允许 model 在失败后申请以 full 模式在 sandbox 外重试一次。", en = "Allow the model to request one retry in full mode outside the sandbox after a failure." }
 
 [core.config.fields.sandbox_overlay_home]
-label = { zh = "HOME Copy-on-Write", en = "HOME copy-on-write" }
-desc = { zh = "Linux 专属：将 $HOME 挂为会话级写时复制层，缓存可写但不污染真实主目录。", en = "Linux only: mount $HOME as a session-scoped copy-on-write layer so caches stay writable without touching the real home." }
+label = { zh = "HOME Copy-on-Write", en = "HOME Copy-on-Write" }
+desc = { zh = "Linux 专属：将 $HOME 挂载为 session 级写时复制层，cache 可写但不污染真实主目录。", en = "Linux only: mount $HOME as a session-scoped copy-on-write layer so caches stay writable without modifying the real home." }
 
 [core.config.fields.sandbox_extra_read_paths]
-label = { zh = "额外只读路径", en = "Extra read-only paths" }
-desc = { zh = "逐行填写允许读取的目录或文件；支持 ~，必须存在。", en = "One readable directory or file per line; ~ is supported and paths must exist." }
+label = { zh = "Extra Read Paths", en = "Extra Read Paths" }
+desc = { zh = "逐行填写额外允许读取的目录或文件；支持 ~，路径必须存在。", en = "One extra readable directory or file per line; ~ is supported and paths must exist." }
 
 [core.config.fields.sandbox_extra_write_paths]
-label = { zh = "额外可写路径", en = "Extra writable paths" }
-desc = { zh = "逐行填写允许写入的目录或文件；支持 ~，必须存在，写入直接落盘。", en = "One writable directory or file per line; ~ is supported, paths must exist, writes hit disk directly." }
+label = { zh = "Extra Write Paths", en = "Extra Write Paths" }
+desc = { zh = "逐行填写额外允许写入的目录或文件；支持 ~，路径必须存在，写入直接落盘。", en = "One extra writable directory or file per line; ~ is supported, paths must exist, and writes hit disk directly." }
 
 [core.config.fields.sandbox_deny_read_paths]
-label = { zh = "强制拒绝读取", en = "Deny read paths" }
-desc = { zh = "逐行填写路径；优先级高于允许列表，工作区内同样生效。", en = "One path per line; takes precedence over the allow list and applies inside the workspace too." }
+label = { zh = "Deny Read Paths", en = "Deny Read Paths" }
+desc = { zh = "逐行填写禁止读取的路径；优先级高于允许列表，workspace 内同样生效。", en = "One path per line to block reads; takes precedence over allow lists and applies inside the workspace too." }
 
 [core.config.fields.sandbox_deny_write_paths]
-label = { zh = "强制拒绝写入", en = "Deny write paths" }
-desc = { zh = "逐行填写路径；优先级高于允许列表，工作区内同样生效。", en = "One path per line; takes precedence over the allow list and applies inside the workspace too." }
+label = { zh = "Deny Write Paths", en = "Deny Write Paths" }
+desc = { zh = "逐行填写禁止写入的路径；优先级高于允许列表，workspace 内同样生效。", en = "One path per line to block writes; takes precedence over allow lists and applies inside the workspace too." }
 
 [core.config.fields.tools_ptc_default_timeout_secs]
-label = { zh = "默认脚本超时（秒）", en = "Default script timeout (s)" }
-desc = { zh = "单次 execute 脚本的默认超时时间。", en = "Default timeout for a single execute script." }
+label = { zh = "Default Timeout (s)", en = "Default Timeout (s)" }
+desc = { zh = "单次 execute 脚本的默认超时时间（秒）。", en = "Default timeout in seconds for a single execute script." }
 
 [core.config.fields.tools_ptc_max_timeout_secs]
-label = { zh = "最大脚本超时（秒）", en = "Max script timeout (s)" }
-desc = { zh = "单次 execute 脚本允许设置的最大超时秒数。", en = "Maximum timeout a single execute script may request." }
+label = { zh = "Max Timeout (s)", en = "Max Timeout (s)" }
+desc = { zh = "单次 execute 脚本允许设置的最大超时秒数。", en = "Maximum timeout in seconds a single execute script may request." }
 
 [core.config.fields.tools_ptc_memory_limit_bytes]
-label = { zh = "沙盒内存上限（字节）", en = "Sandbox memory limit (bytes)" }
-desc = { zh = "QuickJS 实例的最大堆内存限制。", en = "Maximum heap of a QuickJS instance." }
+label = { zh = "Memory Limit (bytes)", en = "Memory Limit (bytes)" }
+desc = { zh = "QuickJS sandbox 实例的最大堆内存限制（字节）。", en = "Maximum heap in bytes for a QuickJS sandbox instance." }
 
 [core.config.fields.tools_ptc_max_output_bytes]
-label = { zh = "脚本输出字节上限", en = "Script output cap (bytes)" }
-desc = { zh = "单次 execute 的日志与返回值预算，也限制脚本源码和挂起请求字节数。", en = "Log and return-value budget per execute run; also bounds script source and pending-request bytes." }
+label = { zh = "Output Cap (bytes)", en = "Output Cap (bytes)" }
+desc = { zh = "单次 execute 的日志与返回值字节预算，同时限制脚本源码和挂起请求大小。", en = "Log and return-value byte budget per execute run; also caps script source and pending-request size." }
 
 [core.config.fields.tools_ptc_max_result_bytes]
-label = { zh = "子调用结果字节上限", en = "Sub-call result cap (bytes)" }
-desc = { zh = "单个宿主调用交给 execute 脚本读取的结果上限，超出时提供归档引用。", en = "Maximum result a single host call hands to the execute script; larger results are referenced as archives." }
+label = { zh = "Sub-Call Result Cap (bytes)", en = "Sub-Call Result Cap (bytes)" }
+desc = { zh = "单个宿主工具调用交给 execute 脚本读取的结果上限，超出时返回归档引用。", en = "Maximum result bytes a single host call passes to the execute script; larger results return an archive reference." }
 
 [core.config.fields.tools_ptc_max_pending_calls]
-label = { zh = "挂起调用上限", en = "Pending call cap" }
+label = { zh = "Pending Call Cap", en = "Pending Call Cap" }
 desc = { zh = "单个脚本同时处于等待状态的宿主工具调用数上限。", en = "Maximum host tool calls simultaneously pending in one script." }
 
 [core.config.fields.tools_ptc_max_total_calls]
-label = { zh = "累计调用上限", en = "Total call cap" }
-desc = { zh = "单个 execute 脚本允许发起的宿主工具调用总次数。", en = "Total host tool calls a single execute script may issue." }
+label = { zh = "Total Call Cap", en = "Total Call Cap" }
+desc = { zh = "单个 execute 脚本允许发起的宿主工具调用总次数。", en = "Maximum total host tool calls a single execute script may issue." }
 
 [core.config.fields.tools_ptc_max_concurrent_runs]
-label = { zh = "并行脚本上限", en = "Concurrent script cap" }
-desc = { zh = "同一服务进程同时运行的 execute 脚本数量上限。", en = "Maximum execute scripts running concurrently." }
+label = { zh = "Concurrent Run Cap", en = "Concurrent Run Cap" }
+desc = { zh = "同一服务进程同时运行的 execute 脚本数量上限。", en = "Maximum execute scripts running concurrently in one process." }
 
 [core.config.fields.tools_ptc_host_idle_timeout_secs]
-label = { zh = "脚本进程空闲超时（秒）", en = "Worker idle timeout (s)" }
-desc = { zh = "无活跃脚本后自动回收脚本进程的等待时间。", en = "Idle time before reclaiming the script worker process." }
+label = { zh = "Worker Idle Timeout (s)", en = "Worker Idle Timeout (s)" }
+desc = { zh = "无活跃脚本后自动回收 worker 进程的等待时间（秒）。", en = "Idle wait in seconds before reclaiming the script worker process." }
 
 [core.config.fields.tools_ptc_max_state_bytes]
-label = { zh = "持久化状态上限（字节）", en = "Persisted state cap (bytes)" }
-desc = { zh = "PTC 会话跨脚本持久化状态的最大字节数。", en = "Maximum bytes of cross-script persisted state per PTC session." }
+label = { zh = "Persisted State Cap (bytes)", en = "Persisted State Cap (bytes)" }
+desc = { zh = "PTC session 跨脚本持久化状态的最大字节数。", en = "Maximum bytes of cross-script persisted state per PTC session." }
 
 [core.config.fields.tools_bash_limits_enabled]
-label = { zh = "限制 Bash 资源", en = "Limit Bash resources" }
-desc = { zh = "为模型发起的每条 bash 命令单独限制 CPU 与内存；手动 !命令不受影响。", en = "Limit CPU and memory per model-issued bash command; manual !commands are unaffected." }
+label = { zh = "Limit Bash Resources", en = "Limit Bash Resources" }
+desc = { zh = "为 model 发起的每条 bash 命令单独限制 CPU 与内存；手动 !command 不受影响。", en = "Limit CPU and memory per model-issued bash command; manual !commands are unaffected." }
 
 [core.config.fields.tools_bash_limits_cpu_cores]
-label = { zh = "CPU 核数上限", en = "CPU core cap" }
+label = { zh = "CPU Core Cap", en = "CPU Core Cap" }
 desc = { zh = "0 表示不限；Linux 通过 cgroup CPUQuota 限核，Windows 通过 Job Object 限速。", en = "0 means unlimited; Linux caps cores via cgroup CPUQuota, Windows throttles via Job Objects." }
 
 [core.config.fields.tools_bash_limits_memory_high_bytes]
-label = { zh = "内存软限（字节）", en = "Memory soft limit (bytes)" }
+label = { zh = "Memory Soft Limit (bytes)", en = "Memory Soft Limit (bytes)" }
 desc = { zh = "超过后节流减速，0 表示不节流（仅 Linux，无 swap 时自动忽略）。", en = "Throttles the process once exceeded; 0 disables throttling (Linux only, ignored without swap)." }
 
 [core.config.fields.tools_bash_limits_memory_max_bytes]
-label = { zh = "内存硬顶（字节）", en = "Memory hard limit (bytes)" }
-desc = { zh = "超过按 OOM 终止，0 表示不设，非 0 时须 ≥ 软限（仅 Linux）。", en = "Exceeding it kills the process as OOM; 0 means unset and a non-zero value must be ≥ the soft limit (Linux only)." }
+label = { zh = "Memory Hard Limit (bytes)", en = "Memory Hard Limit (bytes)" }
+desc = { zh = "超过按 OOM 终止，0 表示不设，非 0 时须 ≥ 软限（仅 Linux）。", en = "Kills the process as OOM when exceeded; 0 means unset, and non-zero must be >= soft limit (Linux only)." }
 
 [core.config.fields.tools_bash_limits_memory_swap_bytes]
-label = { zh = "Swap 预算（字节）", en = "Swap budget (bytes)" }
-desc = { zh = "单条命令最多可占用的 swap，0 表示不限（仅 Linux）。", en = "Maximum swap a single command may occupy; 0 means unlimited (Linux only)." }
+label = { zh = "Swap Budget (bytes)", en = "Swap Budget (bytes)" }
+desc = { zh = "单条命令最多可占用的 swap 字节数，0 表示不限（仅 Linux）。", en = "Maximum swap bytes a single command may occupy; 0 means unlimited (Linux only)." }
 
 [core.config.fields.tools_read_default_limit]
-label = { zh = "默认读取行数", en = "Default read lines" }
-desc = { zh = "未指定 limit 时每次读取文件的默认行数。", en = "Lines read per call when limit is not specified." }
+label = { zh = "Default Read Lines", en = "Default Read Lines" }
+desc = { zh = "未指定 limit 时每次 read 文件的默认行数。", en = "Default lines read per call when limit is not specified." }
 
 [core.config.fields.tools_read_max_bytes]
-label = { zh = "单次读取字节上限", en = "Read byte cap" }
-desc = { zh = "read 单次返回的最大字节数。", en = "Maximum bytes a single read call returns." }
+label = { zh = "Read Byte Cap", en = "Read Byte Cap" }
+desc = { zh = "单次 read 调用返回的最大字节数。", en = "Maximum bytes returned by a single read call." }
 
 [core.config.fields.tools_read_line_max_bytes]
-label = { zh = "单行字节上限", en = "Line byte cap" }
-desc = { zh = "超过此字节数的行以占位符加只读预览显示，续读块按共享输出预算切分。", en = "Lines exceeding this show a placeholder plus read-only preview; continuations share the output budget." }
+label = { zh = "Line Byte Cap", en = "Line Byte Cap" }
+desc = { zh = "超过此字节数的行以占位符加只读预览展示，续读块共享输出预算。", en = "Lines exceeding this show a placeholder and read-only preview; continuations share the output budget." }
 
 [core.config.fields.tools_todo_enabled]
-label = { zh = "启用 Todo 工具", en = "Enable Todo tool" }
-desc = { zh = "允许模型维护任务清单与进度追踪。", en = "Let the model maintain a task list and track progress." }
+label = { zh = "Enable Todo", en = "Enable Todo" }
+desc = { zh = "允许 model 维护任务清单并追踪进度。", en = "Allow the model to maintain a task list and track progress." }
 
 [core.config.fields.tools_todo_reminders]
-label = { zh = "闲置提醒", en = "Idle reminders" }
-desc = { zh = "连续多轮未更新 Todo 时自动提醒模型。", en = "Automatically remind the model after several turns without a Todo update." }
+label = { zh = "Idle Reminders", en = "Idle Reminders" }
+desc = { zh = "连续多轮未更新 Todo 时自动提醒 model。", en = "Automatically remind the model after several turns without a Todo update." }
 
 [core.config.fields.tools_todo_reminders_after]
-label = { zh = "触发提醒轮数", en = "Reminder after N turns" }
-desc = { zh = "连续多少次调用未更新清单后触发首次提醒。", en = "Consecutive calls without a list update before the first reminder fires." }
+label = { zh = "Reminder After N Calls", en = "Reminder After N Calls" }
+desc = { zh = "连续多少次工具调用未更新清单后触发首次提醒。", en = "Consecutive tool calls without a Todo update before the first reminder fires." }
 
 [core.config.fields.tools_todo_reminders_max]
-label = { zh = "最多提醒次数", en = "Max reminders" }
-desc = { zh = "同一轮任务内最多触发提醒的次数。", en = "Maximum reminders within a single task turn." }
+label = { zh = "Max Reminders", en = "Max Reminders" }
+desc = { zh = "同一轮任务内最多触发提醒的次数。", en = "Maximum reminders fired within a single task turn." }
 
 [core.config.fields.session_retention_enabled]
-label = { zh = "自动清理过期数据", en = "Auto-clean stale data" }
+label = { zh = "Auto-Clean Stale Data", en = "Auto-Clean Stale Data" }
 desc = { zh = "定期清理超过保留天数的临时产物与日志。", en = "Periodically remove temporary artifacts and logs older than their retention days." }
 
 [core.config.fields.compaction_threshold_mode]
-label = { zh = "触发方式", en = "Trigger mode" }
-desc = { zh = "按上下文占用百分比，或按固定 token 阈值触发。", en = "Trigger by context-usage percentage or a fixed token threshold." }
+label = { zh = "Trigger Mode", en = "Trigger Mode" }
+desc = { zh = "按 context 占用百分比，或按固定 token 阈值触发压缩。", en = "Trigger compaction by context-usage percentage or a fixed token threshold." }
 
 [core.config.fields.compaction_threshold_value]
-label = { zh = "触发阈值", en = "Trigger threshold" }
+label = { zh = "Trigger Threshold", en = "Trigger Threshold" }
 desc = { zh = "百分比模式填 1–100，固定模式填 token 数。", en = "1–100 in percentage mode; token count in fixed mode." }
 
 [core.config.fields.web_fetch_enabled]
-label = { zh = "启用", en = "Enable" }
-desc = { zh = "关闭后 web_fetch 工具不再向模型开放。", en = "When off, the web_fetch tool is no longer offered to the model." }
+label = { zh = "Enable", en = "Enable" }
+desc = { zh = "关闭后 web_fetch 工具不再向 model 开放。", en = "When off, the web_fetch tool is not offered to the model." }
 
 [core.config.fields.web_fetch_timeout_secs]
-label = { zh = "请求超时（秒）", en = "Request timeout (s)" }
-desc = { zh = "单次页面抓取的最长等待时间。", en = "Maximum wait for a single page fetch." }
+label = { zh = "Request Timeout (s)", en = "Request Timeout (s)" }
+desc = { zh = "单次页面抓取的最长等待时间（秒）。", en = "Maximum wait in seconds for a single page fetch." }
 
 [core.config.fields.web_fetch_max_bytes]
-label = { zh = "响应字节上限", en = "Response byte cap" }
-desc = { zh = "单页原始响应的最大读取字节数；超出截断。", en = "Maximum raw bytes read per page; larger responses are truncated." }
+label = { zh = "Response Byte Cap", en = "Response Byte Cap" }
+desc = { zh = "单页原始响应的最大读取字节数，超出截断。", en = "Maximum raw bytes read per page; larger responses are truncated." }
 
 [core.config.fields.web_fetch_max_chars]
-label = { zh = "单页预览字符上限", en = "Preview char cap" }
-desc = { zh = "只限制网页预览，不裁切已保存正文；多页共享 16 KiB 展示预算。", en = "Limits only the page preview, not the saved body; multiple pages share a 16 KiB display budget." }
+label = { zh = "Preview Char Cap", en = "Preview Char Cap" }
+desc = { zh = "仅限制网页预览字符数，不裁切已保存正文；多页共享 16 KiB 展示预算。", en = "Caps only the page preview, not the saved body; multiple pages share a 16 KiB display budget." }
 
 [core.config.overrides.mcp_server_connect_timeout_secs]
-label = { zh = "连接超时（秒）", en = "Connect timeout (s)" }
-desc = { zh = "该服务单次握手连接的最长等待时间；留空用全局设置。", en = "Maximum wait for a single handshake to this server; empty falls back to the global setting." }
+label = { zh = "Connect Timeout (s)", en = "Connect Timeout (s)" }
+desc = { zh = "该服务单次握手连接的最长等待时间（秒）；留空沿用全局设置。", en = "Maximum wait in seconds for a single handshake to this server; empty inherits the global setting." }
 
 [core.config.overrides.mcp_server_timeout_secs]
-label = { zh = "调用超时（秒）", en = "Call timeout (s)" }
-desc = { zh = "该服务单次工具调用的最长等待时间；留空用全局设置。", en = "Maximum wait for a single tool call to this server; empty falls back to the global setting." }
+label = { zh = "Call Timeout (s)", en = "Call Timeout (s)" }
+desc = { zh = "该服务单次工具调用的最长等待时间（秒）；留空沿用全局设置。", en = "Maximum wait in seconds for a single tool call to this server; empty inherits the global setting." }
 
 [core.config.overrides.mcp_server_max_concurrent_calls]
-label = { zh = "单服务并发上限", en = "Per-server concurrency" }
-desc = { zh = "该 MCP server 同时执行工具调用的上限；留空用全局设置。", en = "Maximum simultaneous tool calls on this MCP server; empty falls back to the global setting." }
+label = { zh = "Per-Server Concurrency", en = "Per-Server Concurrency" }
+desc = { zh = "该 MCP server 同时执行工具调用的上限；留空沿用全局设置。", en = "Maximum simultaneous tool calls on this MCP server; empty inherits the global setting." }
 
 [core.config.keys.enabled]
-label = { zh = "启用", en = "Enable" }
-desc = { zh = "关闭后不再使用该功能。", en = "When off, this feature is not used." }
+label = { zh = "Enable", en = "Enable" }
+desc = { zh = "关闭后不再启用该功能。", en = "When off, this feature is disabled." }
 
 [core.config.keys.api]
-label = { zh = "API 协议", en = "API protocol" }
-desc = { zh = "按供应商支持的协议格式选择。", en = "Choose per the protocol format the provider supports." }
+label = { zh = "API", en = "API" }
+desc = { zh = "选择 provider 支持的 API 协议格式。", en = "Select the API protocol format supported by the provider." }
 
 [core.config.keys.base_url]
 label = { zh = "Base URL", en = "Base URL" }
-desc = { zh = "服务端 API 地址；OpenAI 兼容接口通常自动补全 /v1。", en = "Server API endpoint; OpenAI-compatible APIs usually auto-complete /v1." }
+desc = { zh = "服务端 API 地址；OpenAI 兼容接口通常会自动补全 /v1。", en = "Server API endpoint; OpenAI-compatible APIs usually auto-complete /v1." }
 
 [core.config.keys.api_key]
-label = { zh = "API Key", en = "API key" }
-desc = { zh = "直接填写密钥，或写 env:变量名 / !命令读取。", en = "Enter the key directly, or read it via env:VAR / !command." }
+label = { zh = "API Key", en = "API Key" }
+desc = { zh = "直接填写 API Key，或通过 env:VAR / !command 动态读取。", en = "Enter the API Key directly, or read it dynamically via env:VAR / !command." }
 
 [core.config.keys.headers]
-label = { zh = "附加请求头", en = "Extra headers" }
-desc = { zh = "JSON 格式的自定义 HTTP 请求头。", en = "Custom HTTP headers as JSON." }
+label = { zh = "headers", en = "headers" }
+desc = { zh = "JSON 格式的自定义 HTTP 请求头。", en = "Custom HTTP headers as a JSON object." }
 
 [core.config.keys.extra_body]
-label = { zh = "扩展请求体（JSON）", en = "Extra body (JSON)" }
-desc = { zh = "编辑完整请求参数或供应商扩展；已列出的参数也可在下方单独编辑。模型逐层覆盖供应商默认值，对象合并、数组替换。", en = "Edit full request parameters or provider extensions; listed parameters can also be edited individually below. A model overrides provider defaults layer by layer — objects merge, arrays replace." }
+label = { zh = "extra_body", en = "extra_body" }
+desc = { zh = "编辑完整请求参数或 provider 扩展；已列出的参数也可在下方单独编辑。model 逐层覆盖 provider 默认值，对象合并、数组替换。", en = "Edit full request parameters or provider extensions; listed parameters can also be edited individually below. Models override provider defaults layer by layer (objects merge, arrays replace)." }
 
 [core.config.keys.timeout_secs]
-label = { zh = "请求超时（秒）", en = "Request timeout (s)" }
-desc = { zh = "单次请求的最长等待时间；留空不限。", en = "Maximum wait for a single request; empty means unlimited." }
+label = { zh = "Request Timeout (s)", en = "Request Timeout (s)" }
+desc = { zh = "单次请求的最长等待时间（秒）；留空表示不限。", en = "Maximum wait in seconds for a single request; empty means unlimited." }
 
 [core.config.keys.connect_timeout_secs]
-label = { zh = "连接超时（秒）", en = "Connect timeout (s)" }
-desc = { zh = "建立网络连接的最长等待时间；留空用默认值。", en = "Maximum wait for establishing a connection; empty uses the default." }
+label = { zh = "Connect Timeout (s)", en = "Connect Timeout (s)" }
+desc = { zh = "建立网络连接的最长等待时间（秒）；留空使用默认值。", en = "Maximum wait in seconds to establish a connection; empty uses the default." }
 
 [core.config.keys.max_concurrency]
-label = { zh = "并发请求上限", en = "Concurrency cap" }
-desc = { zh = "同时向该供应商发起的请求数；0 表示不限。", en = "Simultaneous requests to this provider; 0 means unlimited." }
+label = { zh = "Max Concurrency", en = "Max Concurrency" }
+desc = { zh = "同时向该 provider 发起的并发请求上限；0 表示不限。", en = "Maximum simultaneous requests to this provider; 0 means unlimited." }
 
 [core.config.keys.cache]
-label = { zh = "提示缓存策略", en = "Prompt cache policy" }
-desc = { zh = "auto 自动缓存，short 短缓存，long 长缓存；off 不发送缓存键、缓存选项或显式断点，上游仍可能自动缓存。", en = "auto caches automatically, short/long pick the TTL; off sends no cache key, options or explicit breakpoints — the upstream may still cache on its own." }
+label = { zh = "Prompt Cache", en = "Prompt Cache" }
+desc = { zh = "auto 自动缓存，short 短缓存，long 长缓存；off 不发送 cache 键、选项或显式断点（上游仍可能自动缓存）。", en = "auto caches automatically, short/long select TTL; off sends no cache key, options, or explicit breakpoints (upstream may still cache automatically)." }
 
 [core.config.keys.max_attempts]
-label = { zh = "最大尝试次数", en = "Max attempts" }
-desc = { zh = "单次请求总尝试次数（含首次）。", en = "Total attempts per request including the first." }
+label = { zh = "Max Attempts", en = "Max Attempts" }
+desc = { zh = "单次请求的总尝试次数上限（含首次）。", en = "Total attempts allowed per request, including the first." }
 
 [core.config.keys.initial_backoff_secs]
-label = { zh = "初始退避（秒）", en = "Initial backoff (s)" }
-desc = { zh = "首次重试前的等待时间。", en = "Wait before the first retry." }
+label = { zh = "Initial Backoff (s)", en = "Initial Backoff (s)" }
+desc = { zh = "首次重试前的等待时间（秒）。", en = "Wait time in seconds before the first retry." }
 
 [core.config.keys.max_backoff_secs]
-label = { zh = "最大退避（秒）", en = "Max backoff (s)" }
-desc = { zh = "退避等待时间的上限。", en = "Upper bound for backoff waits." }
+label = { zh = "Max Backoff (s)", en = "Max Backoff (s)" }
+desc = { zh = "指数退避等待时间的上限（秒）。", en = "Upper bound in seconds for exponential backoff waits." }
 
 [core.config.keys.jitter]
-label = { zh = "退避抖动", en = "Backoff jitter" }
-desc = { zh = "为重试等待加入随机抖动，避免并发雪崩。", en = "Add random jitter to retry waits to avoid a thundering herd." }
+label = { zh = "Backoff Jitter", en = "Backoff Jitter" }
+desc = { zh = "为重试等待加入随机抖动，避免并发雪崩。", en = "Add random jitter to retry delays to prevent a thundering herd." }
 
 [core.config.keys.endpoint]
-label = { zh = "服务端点", en = "Endpoint" }
+label = { zh = "Endpoint", en = "Endpoint" }
 desc = { zh = "一般保持默认；Azure 需填写 api-version。", en = "Usually keep the default; Azure requires an api-version." }
 
 [core.config.keys.context_window]
-label = { zh = "Context Window", en = "Context window" }
-desc = { zh = "模型最大上下文 token 数，用于估算压缩时机。", en = "The model's maximum context tokens, used to estimate compaction timing." }
+label = { zh = "Context Window", en = "Context Window" }
+desc = { zh = "model 的最大 context token 数，用于估算压缩时机。", en = "Maximum context tokens for the model, used to estimate compaction timing." }
 
 [core.config.keys.max_output_tokens]
-label = { zh = "回复 token 上限", en = "Response token cap" }
-desc = { zh = "单次回复的输出上限；Chat 对应 `max_tokens` 或 `max_completion_tokens`，Responses 对应 `max_output_tokens`，Anthropic 对应 `max_tokens`（含思考预算）。", en = "Output cap per response: `max_tokens`/`max_completion_tokens` for Chat, `max_output_tokens` for Responses, `max_tokens` (incl. thinking budget) for Anthropic." }
+label = { zh = "Max Output Tokens", en = "Max Output Tokens" }
+desc = { zh = "单次回复的输出 token 上限；Chat 对应 `max_tokens` 或 `max_completion_tokens`，Responses 对应 `max_output_tokens`，Anthropic 对应 `max_tokens`（含 thinking 预算）。", en = "Output token cap per response: `max_tokens` or `max_completion_tokens` for Chat, `max_output_tokens` for Responses, `max_tokens` (including thinking budget) for Anthropic." }
 
 [core.config.keys.max_request_bytes]
-label = { zh = "请求体字节上限", en = "Request body cap" }
-desc = { zh = "HTTP 请求体硬上限（默认 50 MiB，图片 Base64 合计另限 8 MiB）。", en = "Hard HTTP request-body cap (default 50 MiB; base64 images are additionally capped at 8 MiB total)." }
+label = { zh = "Max Request Bytes", en = "Max Request Bytes" }
+desc = { zh = "HTTP 请求体字节硬上限（默认 50 MiB，图片 Base64 合计另限 8 MiB）。", en = "Hard HTTP request-body byte cap (default 50 MiB; base64 images are additionally capped at 8 MiB total)." }
 
 [core.config.keys.reasoning]
-label = { zh = "思考推理", en = "Reasoning" }
-desc = { zh = "模型是否支持思维链推理。", en = "Whether the model supports chain-of-thought reasoning." }
+label = { zh = "Reasoning", en = "Reasoning" }
+desc = { zh = "标识该 model 是否支持思维链推理。", en = "Whether the model supports chain-of-thought reasoning." }
 
 [core.config.keys.thinking_levels]
-label = { zh = "可选思考等级", en = "Thinking levels" }
-desc = { zh = "支持预设或自定义等级；未配置 API 默认强度时使用第一项，off 始终可用，会话显式选择优先。", en = "Preset or custom levels; without an API default the first entry applies, off is always available, and an explicit session choice wins." }
+label = { zh = "Thinking Levels", en = "Thinking Levels" }
+desc = { zh = "可选 thinking 等级列表（预设或自定义）；未配置 API 默认 effort 时取首项，off 始终可用，session 显式选择优先。", en = "Selectable thinking levels (preset or custom); defaults to the first entry when no API default effort is set, off is always available, and explicit session choices win." }
 
 [core.config.keys.input]
-label = { zh = "输入模态", en = "Input modalities" }
-desc = { zh = "模型支持接收 text 或 text + image 多模态输入。", en = "The model accepts text or multimodal text + image input." }
+label = { zh = "Input", en = "Input" }
+desc = { zh = "model 支持接收 text 或 text + image 多模态输入。", en = "Whether the model accepts text only or multimodal text + image input." }
 
 [core.config.keys.fast_mode]
-label = { zh = "Fast Mode", en = "Fast mode" }
-desc = { zh = "开启后模型选择器显示 Fast Mode 开关（请求携带 service_tier = \"fast\"）。", en = "When on, the model picker shows a fast-mode switch (requests carry service_tier = \"fast\")." }
+label = { zh = "Fast Mode", en = "Fast Mode" }
+desc = { zh = "开启后 model 选择器显示 Fast Mode 开关（请求携带 service_tier = \"fast\"）。", en = "When on, the model picker shows a Fast Mode switch (requests send service_tier = \"fast\")." }
 
 [core.config.keys.image_gen]
-label = { zh = "图片生成模型", en = "Image generation model" }
-desc = { zh = "勾选后该模型仅在 Image Playground 可见，并在 Agent 对话界面隐藏。", en = "When enabled, this model is only visible in Image Playground and hidden from the Agent interface." }
+label = { zh = "Image Gen", en = "Image Gen" }
+desc = { zh = "开启后该 model 仅在 Image Playground 可见，并在 Agent 对话界面隐藏。", en = "When enabled, this model appears only in Image Playground and is hidden from the Agent interface." }
 
 [core.config.keys.pricing]
-label = { zh = "Pricing（每百万 token）", en = "Pricing (per million tokens)" }
-desc = { zh = "JSON：input/output 必填，cache_read/cache_write 可选，单位 USD。", en = "JSON: input/output required, cache_read/cache_write optional, in USD." }
+label = { zh = "Pricing", en = "Pricing" }
+desc = { zh = "每百万 token 单价（USD）JSON：input/output 必填，cache_read/cache_write 可选。", en = "Per-million-token pricing JSON in USD: input and output required, cache_read and cache_write optional." }
 
 [core.config.keys.prefer_builtin]
-label = { zh = "内置工具优先", en = "Prefer builtin tools" }
-desc = { zh = "拒绝可由 read/grep/find/edit/write 等价完成的 bash 调用，过滤输出等正常命令不受影响。", en = "Reject bash calls that read/grep/find/edit/write could do equivalently; normal commands like filtering output are unaffected." }
+label = { zh = "Prefer Builtin", en = "Prefer Builtin" }
+desc = { zh = "拒绝可由 read/grep/find/edit/write 等价完成的 bash 调用，过滤输出等常规命令不受影响。", en = "Reject bash calls that read/grep/find/edit/write can do directly; normal commands such as piping output are unaffected." }
 
 [core.config.keys.deny_patterns]
-label = { zh = "高危命令正则", en = "Dangerous-command regexes" }
-desc = { zh = "逐行填写正则表达式；命中的命令须先经用户确认方可执行。", en = "One regex per line; matched commands require user confirmation before running." }
+label = { zh = "Deny Patterns", en = "Deny Patterns" }
+desc = { zh = "逐行填写高危命令正则表达式；命中的命令须经用户确认后方可执行。", en = "One regex per line for dangerous commands; matched commands require user confirmation before running." }
 
 [core.config.keys.head_bytes]
-label = { zh = "超长输出保留开头", en = "Keep output head" }
-desc = { zh = "输出截断时保留开头的字节预算。", en = "Byte budget kept from the start when output is truncated." }
+label = { zh = "Head Bytes", en = "Head Bytes" }
+desc = { zh = "超长输出截断时保留开头的字节预算。", en = "Byte budget preserved from the start when output is truncated." }
 
 [core.config.keys.tail_bytes]
-label = { zh = "超长输出保留结尾", en = "Keep output tail" }
-desc = { zh = "输出截断时保留结尾的字节数。", en = "Bytes kept from the end when output is truncated." }
+label = { zh = "Tail Bytes", en = "Tail Bytes" }
+desc = { zh = "超长输出截断时保留结尾的字节数。", en = "Bytes preserved from the end when output is truncated." }
 
 [core.config.keys.max_file_bytes]
-label = { zh = "单文件大小上限", en = "File size cap" }
-desc = { zh = "工具处理单个文件的最大字节数。", en = "Maximum bytes a tool handles for a single file." }
+label = { zh = "Max File Bytes", en = "Max File Bytes" }
+desc = { zh = "工具处理单个文件的最大字节数。", en = "Maximum bytes a tool processes for a single file." }
 
 [core.config.keys.foreground_after_secs]
-label = { zh = "前台转后台阈值（秒）", en = "Foreground→background threshold (s)" }
-desc = { zh = "前台命令超过该时间后自动转为后台；tools.job.enabled 关闭时保持前台。", en = "A foreground command goes background after this time; stays foreground when tools.job.enabled is off." }
+label = { zh = "Foreground→Background (s)", en = "Foreground→Background (s)" }
+desc = { zh = "前台命令超过该秒数后自动转入后台；tools.job.enabled 关闭时保持前台。", en = "Seconds before a foreground command moves to background; stays foreground when tools.job.enabled is off." }
 
 [core.config.keys.monitored_timeout_secs]
-label = { zh = "命令默认超时（秒）", en = "Default command timeout (s)" }
-desc = { zh = "后台受控命令的默认超时上限（不可超过 max_timeout_secs）。", en = "Default timeout for monitored background commands (must not exceed max_timeout_secs)." }
+label = { zh = "Default Timeout (s)", en = "Default Timeout (s)" }
+desc = { zh = "后台受控命令的默认超时秒数（不可超过 max_timeout_secs）。", en = "Default timeout in seconds for monitored background commands (must not exceed max_timeout_secs)." }
 
 [core.config.keys.stall_after_secs]
-label = { zh = "无输出停滞提醒（秒）", en = "Stall reminder (s)" }
-desc = { zh = "连续无新输出超过该时间后提醒模型检查状态；每次停滞仅提醒一次。", en = "Remind the model to check status after this long without new output; fires once per stall." }
+label = { zh = "Stall Reminder (s)", en = "Stall Reminder (s)" }
+desc = { zh = "连续无新输出超过该秒数后提醒 model 检查状态；每次停滞仅提醒一次。", en = "Remind the model to check status after this many seconds without new output; fires once per stall." }
 
 [core.config.keys.max_timeout_secs]
-label = { zh = "命令最大超时（秒）", en = "Max command timeout (s)" }
-desc = { zh = "单条受控命令允许设置的最大超时秒数。", en = "Maximum timeout a monitored command may set." }
+label = { zh = "Max Timeout (s)", en = "Max Timeout (s)" }
+desc = { zh = "单条受控命令允许设置的最大超时秒数。", en = "Maximum timeout in seconds a monitored command may set." }
 
 [core.config.keys.max_output_bytes]
-label = { zh = "受控命令输出上限", en = "Monitored output cap" }
-desc = { zh = "命令日志保留字节上限，超出时保留首尾各半并丢弃中段。", en = "Byte cap for command logs; beyond it the head and tail halves are kept and the middle dropped." }
+label = { zh = "Max Output Bytes", en = "Max Output Bytes" }
+desc = { zh = "命令日志保留字节上限，超出时保留首尾各半并丢弃中段。", en = "Byte cap for command logs; excess keeps head and tail halves and drops the middle." }
 
 [core.config.keys.persistent_log_bytes]
-label = { zh = "常驻任务日志上限", en = "Persistent log cap" }
-desc = { zh = "persistent 进程日志保留字节上限，超出时保留首尾各半。", en = "Byte cap for persistent-process logs; beyond it head and tail halves are kept." }
+label = { zh = "Persistent Log Cap", en = "Persistent Log Cap" }
+desc = { zh = "persistent 进程日志保留字节上限，超出时保留首尾各半。", en = "Byte cap for persistent-process logs; excess keeps head and tail halves." }
 
 [core.config.keys.cross_filesystems]
-label = { zh = "跨文件系统扫描", en = "Cross filesystems" }
-desc = { zh = "grep/find 是否进入扫描根下的挂载点。", en = "Whether grep/find descend into mount points under the scan root." }
+label = { zh = "Cross Filesystems", en = "Cross Filesystems" }
+desc = { zh = "grep/find 是否跨越扫描根下的挂载点。", en = "Whether grep and find descend into mount points under the scan root." }
 
 [core.config.keys.line_max_bytes]
-label = { zh = "单行字节上限", en = "Line byte cap" }
-desc = { zh = "超过该长度的行显示占位符和只读预览、不可编辑，续读按共享输出预算分块。", en = "Longer lines show a placeholder with a read-only preview and can't be edited; continuations share the output budget." }
+label = { zh = "Line Byte Cap", en = "Line Byte Cap" }
+desc = { zh = "超过该字节数的行显示占位符与只读预览、不可编辑，续读按共享输出预算分块。", en = "Longer lines show a placeholder with a read-only preview and cannot be edited; continuations share the output budget." }
 
 [core.config.keys.max_edits]
-label = { zh = "单次编辑处数上限", en = "Edits per call" }
-desc = { zh = "单次 edit 工具调用允许包含的修改处数上限。", en = "Maximum edits a single edit-tool call may contain." }
+label = { zh = "Max Edits", en = "Max Edits" }
+desc = { zh = "单次 edit 工具调用允许包含的修改处数上限。", en = "Maximum edit operations allowed in a single edit tool call." }
 
 [core.config.keys.noop_loop_threshold]
-label = { zh = "无效编辑提醒阈值", en = "No-op edit threshold" }
-desc = { zh = "同一处编辑连续无变更达到此次数时提醒模型重新读取文件。", en = "Remind the model to re-read the file after this many consecutive no-change edits to the same spot." }
+label = { zh = "No-Op Edit Threshold", en = "No-Op Edit Threshold" }
+desc = { zh = "同一处编辑连续无变更达到此次数时提醒 model 重新读取文件。", en = "Remind the model to re-read the file after this many consecutive no-change edits to the same spot." }
 
 [core.config.keys.hash_echo_min_hits]
-label = { zh = "行号前缀误写保护", en = "Line-prefix write guard" }
-desc = { zh = "检测到写回内容疑似误带 read 行号前缀达到此次数时拒绝写入。", en = "Reject the write when content apparently carrying read line-number prefixes is detected this many times." }
+label = { zh = "Line-Prefix Write Guard", en = "Line-Prefix Write Guard" }
+desc = { zh = "检测到写回内容疑似误带 read 行号前缀达到此次数时拒绝写入。", en = "Reject a write when content carrying read line-number prefixes is detected this many times." }
 
 [core.config.keys.max_files]
-label = { zh = "结果文件数上限", en = "Result file cap" }
-desc = { zh = "单次 grep 最多返回的文件数。", en = "Maximum files a single grep call returns." }
+label = { zh = "Max Files", en = "Max Files" }
+desc = { zh = "单次 grep 最多返回的文件数。", en = "Maximum files returned by a single grep call." }
 
 [core.config.keys.max_matches_per_file]
-label = { zh = "多文件搜索的每文件匹配上限", en = "Matches per file (multi-file)" }
-desc = { zh = "搜索目录时，每个文件最多返回的匹配处数；单独搜索一个文件采用总匹配上限。", en = "Maximum matches returned per file when searching a directory; a single-file search uses the total match cap." }
+label = { zh = "Matches per File", en = "Matches per File" }
+desc = { zh = "搜索目录时每个文件最多返回的匹配处数；单文件搜索采用总匹配上限。", en = "Maximum matches per file when searching a directory; single-file searches use the total match cap." }
 
 [core.config.keys.max_matches_total]
-label = { zh = "总匹配上限", en = "Total match cap" }
-desc = { zh = "单次 grep 最多返回的匹配总数，也是单文件搜索的匹配上限。", en = "Maximum total matches per grep call; also the cap for single-file searches." }
+label = { zh = "Total Match Cap", en = "Total Match Cap" }
+desc = { zh = "单次 grep 最多返回的匹配总数，同时作为单文件搜索的匹配上限。", en = "Maximum total matches per grep call; also caps single-file searches." }
 
 [core.config.keys.line_max_chars]
-label = { zh = "匹配行字符上限", en = "Match line char cap" }
+label = { zh = "Match Line Char Cap", en = "Match Line Char Cap" }
 desc = { zh = "搜索结果单行最多显示的字符数。", en = "Maximum characters shown per search-result line." }
 
 [core.config.keys.context_before]
-label = { zh = "上文行数", en = "Context lines before" }
+label = { zh = "Context Before", en = "Context Before" }
 desc = { zh = "每处匹配上方附带的上下文行数。", en = "Context lines shown above each match." }
 
 [core.config.keys.context_after]
-label = { zh = "下文行数", en = "Context lines after" }
+label = { zh = "Context After", en = "Context After" }
 desc = { zh = "每处匹配下方附带的上下文行数。", en = "Context lines shown below each match." }
 
 [core.config.keys.output_bytes]
-label = { zh = "输出字节上限", en = "Output byte cap" }
-desc = { zh = "单次搜索最多返回的字节数，超出后通过 skip 翻页。", en = "Maximum bytes returned per search; beyond it, page with skip." }
+label = { zh = "Output Byte Cap", en = "Output Byte Cap" }
+desc = { zh = "单次搜索最多返回的字节数，超出后可通过 skip 翻页。", en = "Maximum bytes returned per search; page beyond it using skip." }
 
 [core.config.keys.timeout_ms]
-label = { zh = "搜索超时（毫秒）", en = "Search timeout (ms)" }
-desc = { zh = "单次搜索允许运行的最长时间。", en = "Maximum time a single search may run." }
+label = { zh = "Timeout (ms)", en = "Timeout (ms)" }
+desc = { zh = "单次搜索允许运行的最长时间（毫秒）。", en = "Maximum duration in milliseconds for a single search." }
 
 [core.config.keys.max_concurrent_calls]
-label = { zh = "工具并发上限", en = "Tool concurrency cap" }
-desc = { zh = "单次工具批次中同时执行的只读工具数量上限。", en = "Maximum read-only tools running simultaneously in one batch." }
+label = { zh = "Tool Concurrency Cap", en = "Tool Concurrency Cap" }
+desc = { zh = "单次工具批次中同时执行的只读工具数量上限。", en = "Maximum read-only tools executed simultaneously in one batch." }
 
 [core.config.keys.max_candidate_files]
-label = { zh = "扫描文件数上限", en = "Candidate file cap" }
-desc = { zh = "搜索时最多遍历的候选文件总数。", en = "Maximum candidate files traversed per search." }
+label = { zh = "Candidate File Cap", en = "Candidate File Cap" }
+desc = { zh = "搜索时最多遍历的候选文件总数。", en = "Maximum candidate files scanned per search." }
 
 [core.config.keys.limit]
-label = { zh = "默认返回条数", en = "Default result count" }
-desc = { zh = "find 未指定 limit 时的默认最大结果数。", en = "Default maximum results for find when limit is unspecified." }
+label = { zh = "Default Limit", en = "Default Limit" }
+desc = { zh = "find 未指定 limit 时的默认最大结果条数。", en = "Default maximum results for find when limit is omitted." }
 
 [core.config.keys.max_running]
-label = { zh = "后台任务上限", en = "Background job cap" }
-desc = { zh = "每个会话同时运行的后台任务数上限。", en = "Maximum background jobs running per session." }
+label = { zh = "Max Running Jobs", en = "Max Running Jobs" }
+desc = { zh = "每个 session 同时运行的后台任务数上限。", en = "Maximum concurrent background jobs per session." }
 
 [core.config.keys.max_wait_secs]
-label = { zh = "job wait 超时（秒）", en = "job wait timeout (s)" }
-desc = { zh = "单次 job wait 最长阻塞等待秒数。", en = "Maximum blocking seconds per job wait." }
+label = { zh = "Wait Timeout (s)", en = "Wait Timeout (s)" }
+desc = { zh = "单次 job wait 最长阻塞等待秒数。", en = "Maximum blocking wait in seconds per job wait call." }
 
 [core.config.keys.overflow]
-label = { zh = "超出并发策略", en = "Overflow policy" }
-desc = { zh = "超出后台任务上限时直接报错或排队等待。", en = "Fail or queue when the background-job cap is exceeded." }
+label = { zh = "Overflow Policy", en = "Overflow Policy" }
+desc = { zh = "超出后台任务上限时的策略：error 直接报错，wait 排队等待空位。", en = "Policy when the background-job cap is reached: error fails immediately, wait queues for a slot." }
 
 [core.config.keys.method]
-label = { zh = "压缩算法", en = "Compaction method" }
+label = { zh = "Compaction Method", en = "Compaction Method" }
 desc = { zh = "moc：本地修剪 + 摘要；grok_build：9 段摘要；eocc：交接状态压缩（后两者忽略保留 token 与本地修剪参数）。", en = "moc: local trim + summary; grok_build: 9-section summary; eocc: handoff-state compaction (the latter two ignore retained-token and local-trim settings)." }
 
 [core.config.keys.keep_recent_tokens]
-label = { zh = "保留最近对话 (token)", en = "Keep recent tokens" }
-desc = { zh = "压缩后保留的最近对话预算。", en = "Recent-conversation budget kept after compaction." }
+label = { zh = "Keep Recent Tokens", en = "Keep Recent Tokens" }
+desc = { zh = "压缩后保留的最近对话 token 预算。", en = "Recent-conversation token budget retained after compaction." }
 
 [core.config.keys.protect_recent_tool_tokens]
-label = { zh = "保护最近工具结果 (token)", en = "Protect recent tool tokens" }
-desc = { zh = "压缩时不清理最近该预算内的工具结果。", en = "Tool results within this recent budget are not cleaned during compaction." }
+label = { zh = "Protect Recent Tool Tokens", en = "Protect Recent Tool Tokens" }
+desc = { zh = "压缩时不清理最近该 token 预算内的工具结果。", en = "Tool results within this recent token budget are protected during compaction." }
 
 [core.config.keys.mid_prompt]
-label = { zh = "回合中途压缩", en = "Mid-turn compaction" }
+label = { zh = "Mid-Turn Compaction", en = "Mid-Turn Compaction" }
 desc = { zh = "长工具链执行期间也检查并触发压缩。", en = "Also check and trigger compaction during long tool chains." }
 
 [core.config.keys.auto]
-label = { zh = "自动压缩", en = "Auto compaction" }
-desc = { zh = "上下文接近上限时自动触发压缩；关闭后仅手动触发。", en = "Trigger compaction automatically near the context limit; when off it is manual only." }
+label = { zh = "Auto Compaction", en = "Auto Compaction" }
+desc = { zh = "context 接近上限时自动触发压缩；关闭后仅手动触发。", en = "Automatically trigger compaction near the context limit; when off, compaction is manual only." }
 
 [core.config.keys.auto_continue]
-label = { zh = "压缩后自动继续", en = "Continue after compaction" }
+label = { zh = "Auto Continue", en = "Auto Continue" }
 desc = { zh = "自动压缩完成后继续当前回合执行。", en = "Continue the current turn after automatic compaction finishes." }
 
 [core.config.keys.soft_trim_chars]
-label = { zh = "软修剪字符阈值", en = "Soft-trim char threshold" }
-desc = { zh = "超过该长度的旧工具结果将被保留首尾、折叠中间内容。", en = "Old tool results longer than this keep head and tail with the middle folded." }
+label = { zh = "Soft-Trim Threshold (chars)", en = "Soft-Trim Threshold (chars)" }
+desc = { zh = "超过该字符数的旧工具结果将保留首尾并折叠中段。", en = "Old tool results exceeding this character count keep head and tail with the middle folded." }
 
 [core.config.keys.head_chars]
-label = { zh = "软修剪保留开头", en = "Soft-trim head chars" }
-desc = { zh = "软修剪时保留开头的字符数。", en = "Characters kept at the start during soft trimming." }
+label = { zh = "Soft-Trim Head (chars)", en = "Soft-Trim Head (chars)" }
+desc = { zh = "软修剪时保留开头的字符数。", en = "Characters kept from the start during soft trimming." }
 
 [core.config.keys.tail_chars]
-label = { zh = "软修剪保留结尾", en = "Soft-trim tail chars" }
-desc = { zh = "软修剪时保留结尾的字符数。", en = "Characters kept at the end during soft trimming." }
+label = { zh = "Soft-Trim Tail (chars)", en = "Soft-Trim Tail (chars)" }
+desc = { zh = "软修剪时保留结尾的字符数。", en = "Characters kept from the end during soft trimming." }
 
 [core.config.keys.hard_clear_prompts]
-label = { zh = "硬清理轮数阈值", en = "Hard-clear turn threshold" }
-desc = { zh = "距今超过该用户轮次的旧工具结果将被完全清空内容。", en = "Tool results older than this many user turns are fully cleared." }
+label = { zh = "Hard-Clear After Turns", en = "Hard-Clear After Turns" }
+desc = { zh = "距今超过该用户轮次的旧工具结果将被完全清空内容。", en = "Tool results older than this many user turns are completely cleared." }
 
 [core.config.keys.keep_last_prompts]
-label = { zh = "保护最近轮数", en = "Protect recent turns" }
-desc = { zh = "最近这些用户轮次内的工具结果不会被硬清理。", en = "Tool results within the last N user turns are never hard-cleared." }
+label = { zh = "Protect Recent Turns", en = "Protect Recent Turns" }
+desc = { zh = "最近这些用户轮次内的工具结果不会被硬清理。", en = "Tool results within the most recent N user turns are never hard-cleared." }
 
 [core.config.keys.supersede_reads]
-label = { zh = "去重旧文件读取", en = "Supersede old file reads" }
-desc = { zh = "同一文件被重新读取后，自动清理更早的读取结果。", en = "After a file is re-read, earlier read results for it are cleaned automatically." }
+label = { zh = "Supersede Old Reads", en = "Supersede Old Reads" }
+desc = { zh = "同一文件被重新读取后，自动清理更早的读取结果。", en = "Automatically clear older read results once the same file is read again." }
 
 [core.config.keys.max_length_continues]
-label = { zh = "截断自动续写次数", en = "Auto-continue after cutoff" }
-desc = { zh = "回复因输出上限截断后自动续写的最大次数。", en = "Maximum automatic continuations after a response is cut off by the output cap." }
+label = { zh = "Max Cutoff Continues", en = "Max Cutoff Continues" }
+desc = { zh = "回复因输出上限截断后自动续写的最大次数。", en = "Maximum automatic continuations after a response hits the output limit." }
 
 [core.config.keys.loop_detection]
-label = { zh = "死循环检测", en = "Loop detection" }
-desc = { zh = "检测思考、正文与工具参数中出现的重复死循环。", en = "Detect repeated loops in thinking, body text and tool arguments." }
+label = { zh = "Loop Detection", en = "Loop Detection" }
+desc = { zh = "检测 thinking、正文与工具参数中出现的重复死循环。", en = "Detect repetition loops in thinking, body text, and tool arguments." }
 
 [core.config.keys.connect_deadline_secs]
-label = { zh = "连接与重试硬时限（秒）", en = "Connect & retry deadline (s)" }
-desc = { zh = "流式请求收到响应头前或非流式全流程的硬超时（流式生成阶段不限时）。", en = "Hard timeout before response headers for streaming, or for the whole non-streaming request (the streaming phase itself is unbounded)." }
+label = { zh = "Connect Deadline (s)", en = "Connect Deadline (s)" }
+desc = { zh = "流式请求收到响应头前或非流式全流程的硬超时（秒）；流式生成阶段不限时。", en = "Hard timeout in seconds before response headers for streaming, or for the entire non-streaming request (streaming itself is unbounded)." }
 
 [core.config.keys.request_warn_secs]
-label = { zh = "请求慢响应提醒（秒）", en = "Slow-request reminder (s)" }
-desc = { zh = "单次请求耗时超过该值时发出提醒通知，不中断请求。", en = "Emit a reminder notification when a request takes longer than this; the request continues." }
+label = { zh = "Slow-Request Warn (s)", en = "Slow-Request Warn (s)" }
+desc = { zh = "单次请求耗时超过该秒数时发出慢响应提醒，不中断请求。", en = "Emit a slow-request notice after this many seconds without cancelling the request." }
 
 [core.config.keys.max_scan_entries]
-label = { zh = "文件查找扫描上限", en = "Find scan cap" }
+label = { zh = "Max Scan Entries", en = "Max Scan Entries" }
 desc = { zh = "find 工具单次查找最多扫描的条目数。", en = "Maximum entries scanned per find call." }
 
 [core.config.keys.url]
-label = { zh = "服务 URL", en = "Service URL" }
-desc = { zh = "远程 MCP 服务的 HTTP 地址。", en = "HTTP address of a remote MCP server." }
+label = { zh = "URL", en = "URL" }
+desc = { zh = "远程 MCP 服务的 HTTP 地址。", en = "HTTP endpoint of a remote MCP server." }
 
 [core.config.keys.compress]
-label = { zh = "压缩会话日志", en = "Compress session logs" }
-desc = { zh = "新会话以 zstd 格式保存（.jsonl.zst）；读取自动兼容未压缩历史。", en = "New sessions are stored zstd-compressed (.jsonl.zst); uncompressed history still reads fine." }
+label = { zh = "Compress Logs", en = "Compress Logs" }
+desc = { zh = "新 session 以 zstd 格式保存（.jsonl.zst）；读取自动兼容未压缩历史。", en = "Store new sessions compressed with zstd (.jsonl.zst); uncompressed history still reads seamlessly." }
 
 [core.config.keys.dir]
-label = { zh = "会话存储目录", en = "Session store dir" }
-desc = { zh = "会话历史与运行记录存储路径（重启生效）。", en = "Where session history and run records are stored (applies after restart)." }
+label = { zh = "Session Dir", en = "Session Dir" }
+desc = { zh = "session 历史与运行记录的存储目录（重启生效）。", en = "Directory where session history and run records are stored (applies after restart)." }
 
 [core.config.keys.artifacts_days]
-label = { zh = "临时产物保留天数", en = "Artifact retention days" }
-desc = { zh = "超过该天数且无引用的产物可被清理。", en = "Artifacts older than this with no references may be cleaned." }
+label = { zh = "Artifact Retention (days)", en = "Artifact Retention (days)" }
+desc = { zh = "超过该天数且无引用的临时产物可被清理。", en = "Unreferenced temporary artifacts older than this many days may be cleaned." }
 
 [core.config.keys.logs_days]
-label = { zh = "任务日志保留天数", en = "Job log retention days" }
-desc = { zh = "超过该天数的日志可被清理。", en = "Logs older than this may be cleaned." }
+label = { zh = "Job Log Retention (days)", en = "Job Log Retention (days)" }
+desc = { zh = "超过该天数的任务日志可被清理。", en = "Job logs older than this many days may be cleaned." }
 
 [core.config.keys.command]
-label = { zh = "启动命令", en = "Command" }
-desc = { zh = "stdio 模式下运行的本地可执行程序。", en = "Local executable run in stdio mode." }
+label = { zh = "Command", en = "Command" }
+desc = { zh = "stdio 模式下运行的本地可执行程序。", en = "Local executable launched in stdio mode." }
 
 [core.config.keys.args]
-label = { zh = "启动参数", en = "Arguments" }
+label = { zh = "Args", en = "Args" }
 desc = { zh = "逐行填写命令行参数。", en = "One command-line argument per line." }
 
 [core.config.keys.env]
-label = { zh = "环境变量", en = "Environment" }
+label = { zh = "Env", en = "Env" }
 desc = { zh = "JSON 键值对，附加到该进程的运行环境。", en = "JSON key-value pairs added to the process environment." }
 
 [core.config.keys.cwd]
-label = { zh = "工作目录", en = "Working directory" }
+label = { zh = "Working Dir", en = "Working Dir" }
 desc = { zh = "MCP 进程的工作目录。", en = "Working directory of the MCP process." }
 
 [core.config.keys.type]
-label = { zh = "传输方式", en = "Transport" }
-desc = { zh = "stdio 为本地进程，http 为远程服务。", en = "stdio is a local process, http a remote service." }
+label = { zh = "Transport", en = "Transport" }
+desc = { zh = "stdio 为本地进程，http 为远程服务。", en = "stdio runs a local process; http connects to a remote service." }
 
 [core.config.keys.allow]
-label = { zh = "工具白名单", en = "Tool allowlist" }
-desc = { zh = "逐行填写允许暴露的工具名，支持 * 通配；留空不限制。", en = "One tool name per line allowed to be exposed, * wildcards supported; empty means unrestricted." }
+label = { zh = "Tool Allowlist", en = "Tool Allowlist" }
+desc = { zh = "逐行填写允许暴露的工具名，支持 * 通配；留空表示不限制。", en = "One tool name per line allowed to be exposed (* wildcards supported); empty means unrestricted." }
 
 [core.config.keys.deny]
-label = { zh = "工具黑名单", en = "Tool denylist" }
-desc = { zh = "逐行填写禁用的工具名，支持 * 通配。", en = "One tool name per line to disable, * wildcards supported." }
+label = { zh = "Tool Denylist", en = "Tool Denylist" }
+desc = { zh = "逐行填写禁用的工具名，支持 * 通配。", en = "One tool name per line to disable (* wildcards supported)." }
 
 [core.config.keys.supports_stop]
-label = { zh = "支持停止序列", en = "Stop sequences" }
-desc = { zh = "关闭后不发送 `stop` / `stop_sequences`，包括扩展请求体中的设置。", en = "When off, neither `stop`/`stop_sequences` nor matching fields in the extra body are sent." }
+label = { zh = "supports_stop", en = "supports_stop" }
+desc = { zh = "关闭后不发送 `stop` / `stop_sequences`，包括 extra_body 中的设置。", en = "When off, neither `stop`/`stop_sequences` nor matching fields in extra_body are sent." }
 
 [core.config.keys.supports_prompt_cache_key]
-label = { zh = "支持提示缓存键", en = "Prompt cache key" }
-desc = { zh = "关闭后不发送 `prompt_cache_key`、`prompt_cache_options` 和 `prompt_cache_retention`。", en = "When off, `prompt_cache_key`, `prompt_cache_options` and `prompt_cache_retention` are not sent." }
+label = { zh = "supports_prompt_cache_key", en = "supports_prompt_cache_key" }
+desc = { zh = "关闭后不发送 `prompt_cache_key`、`prompt_cache_options` 与 `prompt_cache_retention`。", en = "When off, `prompt_cache_key`, `prompt_cache_options`, and `prompt_cache_retention` are not sent." }
 
 [core.config.keys.max_output_tokens_field]
-label = { zh = "Chat 输出上限字段名", en = "Chat output-cap field" }
-desc = { zh = "Chat 使用 `max_tokens` 或 `max_completion_tokens`；不影响 Responses 与 Anthropic。", en = "Chat uses `max_tokens` or `max_completion_tokens`; Responses and Anthropic are unaffected." }
+label = { zh = "max_output_tokens_field", en = "max_output_tokens_field" }
+desc = { zh = "Chat 使用 `max_tokens` 或 `max_completion_tokens`；不影响 Responses 与 Anthropic。", en = "Field name used by Chat (`max_tokens` or `max_completion_tokens`); Responses and Anthropic are unaffected." }
 
 [core.config.keys.reasoning_field]
-label = { zh = "Reasoning 字段名", en = "Reasoning field" }
-desc = { zh = "回传思考内容时使用的 JSON 字段名。", en = "JSON field carrying returned thinking content." }
+label = { zh = "reasoning_field", en = "reasoning_field" }
+desc = { zh = "回传 thinking 内容时使用的 JSON 字段名。", en = "JSON field name used when echoing thinking content." }
 
 [core.config.keys.reasoning_field_aliases]
-label = { zh = "Reasoning 响应别名", en = "Reasoning aliases" }
-desc = { zh = "逐行填写解析响应思考内容时识别的字段别名。", en = "One field alias per line recognized when parsing thinking content." }
+label = { zh = "reasoning_field_aliases", en = "reasoning_field_aliases" }
+desc = { zh = "逐行填写解析响应 thinking 内容时识别的字段别名。", en = "One field alias per line recognized when parsing thinking content from responses." }
 
 [core.config.keys.tool_choice_dialect]
-label = { zh = "tool_choice 方言", en = "tool_choice dialect" }
-desc = { zh = "按网关兼容性选择标准、改写或不发送。", en = "Choose standard, rewritten, or omitted per gateway compatibility." }
+label = { zh = "tool_choice_dialect", en = "tool_choice_dialect" }
+desc = { zh = "按网关兼容性选择标准发送、将 required 改写为 any 或不发送。", en = "Choose standard, rewrite required as any, or omit per gateway compatibility." }
 
 [core.config.keys.parallel_tool_calls]
-label = { zh = "并行工具调用", en = "Parallel tool calls" }
-desc = { zh = "上游接口是否支持 parallel_tool_calls。", en = "Whether the upstream API supports parallel_tool_calls." }
+label = { zh = "parallel_tool_calls", en = "parallel_tool_calls" }
+desc = { zh = "标识上游 API 是否支持 parallel_tool_calls。", en = "Whether the upstream API supports parallel_tool_calls." }
 
 [core.config.keys.developer_role]
-label = { zh = "支持 developer 角色", en = "developer role" }
-desc = { zh = "关闭后将 developer 消息降级为 system 角色发送。", en = "When off, developer messages are sent downgraded to the system role." }
+label = { zh = "developer_role", en = "developer_role" }
+desc = { zh = "关闭后将 developer 消息降级为 system 角色发送。", en = "When off, developer messages are downgraded to the system role." }
 
 [core.config.keys.response_format_dialect]
-label = { zh = "response_format 方言", en = "response_format dialect" }
-desc = { zh = "结构化输出协议兼容模式。", en = "Compatibility mode for structured-output protocols." }
+label = { zh = "response_format_dialect", en = "response_format_dialect" }
+desc = { zh = "结构化输出 response_format 的协议兼容模式。", en = "Compatibility mode for structured-output response_format." }
 
 [core.config.keys.echo_reasoning]
-label = { zh = "回传历史思考", en = "Echo past reasoning" }
-desc = { zh = "多轮工具调用时是否按协议回传历史思考内容。", en = "Whether past thinking is echoed back per protocol during multi-turn tool calls." }
+label = { zh = "echo_reasoning", en = "echo_reasoning" }
+desc = { zh = "多轮工具调用时是否按协议回传历史 thinking 内容。", en = "Whether historical thinking content is echoed back during multi-turn tool calls." }
 
 [core.config.keys.requires_reasoning_content_for_tool_calls]
-label = { zh = "工具消息需携带思考字段", en = "Tool calls need reasoning field" }
-desc = { zh = "发送工具调用历史时强制保留思考内容字段。", en = "Force-keep the reasoning field when sending tool-call history." }
+label = { zh = "requires_reasoning_content_for_tool_calls", en = "requires_reasoning_content_for_tool_calls" }
+desc = { zh = "发送含工具调用的历史消息时强制保留 thinking 内容字段。", en = "Always include the reasoning field on historical messages containing tool calls." }
 
 [core.config.keys.requires_reasoning_content_for_all_assistant_turns]
-label = { zh = "全助手轮次需携带思考字段", en = "All turns need reasoning field" }
-desc = { zh = "所有历史助手消息都强制携带思考内容字段。", en = "Force every historical assistant message to carry the reasoning field." }
+label = { zh = "requires_reasoning_content_for_all_assistant_turns", en = "requires_reasoning_content_for_all_assistant_turns" }
+desc = { zh = "所有历史 assistant 消息均强制携带 thinking 内容字段。", en = "Always include the reasoning field on every historical assistant message." }
 
 [core.config.keys.requires_assistant_content_for_tool_calls]
-label = { zh = "工具消息需携带 content", en = "Tool calls need content" }
-desc = { zh = "包含工具调用的历史消息强制携带非空 content 字段。", en = "Force non-empty content on historical messages containing tool calls." }
+label = { zh = "requires_assistant_content_for_tool_calls", en = "requires_assistant_content_for_tool_calls" }
+desc = { zh = "包含工具调用的历史消息强制携带非空 content 字段。", en = "Always include non-empty content on historical messages containing tool calls." }
 
 [core.config.keys.toggle_field]
-label = { zh = "思考开关字段名", en = "Thinking toggle field" }
-desc = { zh = "请求体中控制思考开关的字段名；留空不发送。", en = "Request-body field toggling thinking; empty means not sent." }
+label = { zh = "toggle_field", en = "toggle_field" }
+desc = { zh = "请求体中控制 thinking 开关的字段名；留空不发送。", en = "Request-body field toggling thinking; empty means omitted." }
 
 [core.config.keys.enabled_value]
-label = { zh = "开启取值", en = "Enabled value" }
-desc = { zh = "请求体中表示开启思考的字段值。", en = "Field value that enables thinking in the request body." }
+label = { zh = "enabled_value", en = "enabled_value" }
+desc = { zh = "请求体中表示开启 thinking 的字段值。", en = "Field value enabling thinking in the request body." }
 
 [core.config.keys.disabled_value]
-label = { zh = "关闭取值", en = "Disabled value" }
-desc = { zh = "请求体中表示关闭思考的字段值。", en = "Field value that disables thinking in the request body." }
+label = { zh = "disabled_value", en = "disabled_value" }
+desc = { zh = "请求体中表示关闭 thinking 的字段值。", en = "Field value disabling thinking in the request body." }
 
 [core.config.keys.effort_field]
-label = { zh = "思考强度字段名", en = "Thinking effort field" }
-desc = { zh = "请求体中控制思考强度的字段名；留空不发送。", en = "Request-body field controlling thinking effort; empty means not sent." }
+label = { zh = "effort_field", en = "effort_field" }
+desc = { zh = "请求体中控制 thinking effort 的字段名；留空不发送。", en = "Request-body field controlling thinking effort; empty means omitted." }
 
 [core.config.keys.effort_map]
-label = { zh = "思考等级映射", en = "Thinking-level map" }
-desc = { zh = "将思考等级映射为上游接口接受的值；未配置项原样发送。", en = "Map thinking levels to values the upstream accepts; unmapped levels are sent as-is." }
+label = { zh = "effort_map", en = "effort_map" }
+desc = { zh = "将 thinking 等级映射为上游 API 接受的值；未配置项原样发送。", en = "Map thinking levels to upstream-accepted values; unmapped levels are sent as-is." }
 
 [core.config.keys.toggle_extra]
-label = { zh = "思考附加字段", en = "Thinking extra fields" }
-desc = { zh = "JSON：合并到思考开关对象中的附加字段。", en = "JSON merged into the thinking-toggle object." }
+label = { zh = "toggle_extra", en = "toggle_extra" }
+desc = { zh = "JSON 对象：合并到 thinking 开关对象中的附加字段。", en = "JSON object merged into the thinking-toggle object." }
 
 [core.config.keys.language]
-label = { zh = "界面语言", en = "Language" }
-desc = { zh = "auto 跟随系统环境；zh/en 强制指定，重启前端进程后生效。", en = "auto follows the system locale; zh/en force a language and apply after restarting the frontend." }
+label = { zh = "Language", en = "Language" }
+desc = { zh = "auto 跟随系统环境；zh/en 强制指定界面语言，重启前端进程后生效。", en = "auto follows the system locale; zh/en force a language and apply after restarting the frontend." }
 
-# ---- 请求参数（parameters.rs），键 = 参数名点号转下划线 ----
+# ---- 请求参数（parameters.rs）：label 直接使用精确 wire API 键名，此处仅维护双语 desc ----
 
 [core.params]
-invalid_value = { zh = "%{label}.%{name} 的值或类型不正确：%{desc}", en = "%{label}.%{name} has an invalid value or type: %{desc}" }
-invalid_effort = { zh = "%{label}.%{effort} 需要小写思考等级名", en = "%{label}.%{effort} requires a lowercase thinking-level name" }
-invalid_stop = { zh = "%{label}.%{name} 需要字符串数组；stop 也允许单个字符串，最多 4 项", en = "%{label}.%{name} requires a string array; stop also accepts a single string, up to 4 items" }
+invalid_value = { zh = "%{label}.%{name} 的值或类型无效：%{desc}", en = "%{label}.%{name} has an invalid value or type: %{desc}" }
+invalid_effort = { zh = "%{label}.%{effort} 须为小写 thinking 等级名", en = "%{label}.%{effort} requires a lowercase thinking-level name" }
+invalid_stop = { zh = "%{label}.%{name} 须为字符串数组；stop 也接受单个字符串，最多 4 项", en = "%{label}.%{name} requires a string array; stop also accepts a single string, up to 4 items" }
 
 [core.params.temperature]
-label = { zh = "采样温度", en = "Sampling temperature" }
-desc = { zh = "越低越稳定，越高越随机；仅支持此参数的模型可用，通常与 top_p 二选一。", en = "Lower is steadier, higher more random; only on models that support it, and usually chosen instead of top_p." }
+desc = { zh = "采样温度：越低越确定，越高越随机；仅支持此参数的 model 可用，通常与 top_p 二选一。", en = "Sampling temperature: lower is more deterministic, higher more random; only for models supporting it, usually chosen instead of top_p." }
 
 [core.params.top_p]
-label = { zh = "核采样比例", en = "Nucleus sampling" }
-desc = { zh = "仅从累计概率达到此比例的候选中采样；通常与 temperature 二选一。", en = "Sample only from candidates up to this cumulative probability; usually chosen instead of temperature." }
+desc = { zh = "核采样比例：仅从累计概率达到此值的候选中采样；通常与 temperature 二选一。", en = "Nucleus sampling: sample only from candidates up to this cumulative probability; usually chosen instead of temperature." }
 
 [core.params.store]
-label = { zh = "上游保存响应", en = "Store responses upstream" }
-desc = { zh = "控制上游是否保存请求与响应；可能涉及数据留存。Chat 默认 false，Responses 默认 true。", en = "Whether the upstream stores requests and responses; may involve data retention. Chat defaults to false, Responses to true." }
+desc = { zh = "控制上游是否保存请求与响应（可能涉及数据留存）；Chat 默认 false，Responses 默认 true。", en = "Whether the upstream stores requests and responses (may involve data retention); defaults to false on Chat and true on Responses." }
 
 [core.params.metadata]
-label = { zh = "请求元数据", en = "Request metadata" }
-desc = { zh = "附加键值信息；最多 16 项，键不超过 64 字符，字符串值不超过 512 字符。不要填写敏感信息。", en = "Extra key-value data; up to 16 entries, keys ≤ 64 chars, string values ≤ 512 chars. Do not put sensitive data here." }
+desc = { zh = "附加键值元数据；最多 16 项，键不超过 64 字符，值不超过 512 字符，勿填敏感信息。", en = "Extra key-value metadata; up to 16 entries, keys <= 64 chars, values <= 512 chars. Do not include sensitive data." }
 
 [core.params.user]
-label = { zh = "旧版用户标识", en = "Legacy user ID" }
-desc = { zh = "已弃用；优先使用 safety_identifier 和 prompt_cache_key，不要填写姓名或邮箱。", en = "Deprecated; prefer safety_identifier and prompt_cache_key. Do not put names or emails here." }
+desc = { zh = "旧版用户标识（已弃用）；优先使用 safety_identifier 与 prompt_cache_key，勿填姓名或邮箱。", en = "Legacy user ID (deprecated); prefer safety_identifier and prompt_cache_key. Do not enter names or emails." }
 
 [core.params.safety_identifier]
-label = { zh = "安全用户标识", en = "Safety identifier" }
 desc = { zh = "用于上游滥用检测的稳定标识，最长 128 字符；建议使用不可逆哈希。", en = "Stable ID for upstream abuse detection, up to 128 chars; an irreversible hash is recommended." }
 
 [core.params.service_tier]
-label = { zh = "服务档位", en = "Service tier" }
-desc = { zh = "选择处理速度与计费档位；需要模型和账号支持。会话 Fast Mode 开启时优先使用 fast。", en = "Processing speed and billing tier; requires model and account support. Session fast mode takes precedence with fast." }
+desc = { zh = "选择处理速度与计费档位；需 model 与账号支持。session 开启 Fast Mode 时优先使用 fast。", en = "Processing speed and billing tier; requires model and account support. Session Fast Mode takes precedence with fast." }
 
 [core.params.parallel_tool_calls]
-label = { zh = "并行工具调用", en = "Parallel tool calls" }
-desc = { zh = "允许一次请求调用多个函数；协议兼容开关关闭时不发送此字段。", en = "Allow multiple function calls per request; not sent when the protocol-compat switch is off." }
+desc = { zh = "允许单次请求并发调用多个工具；协议兼容开关关闭时不发送此字段。", en = "Allow multiple tool calls per request; omitted when the protocol-compat switch is off." }
 
 [core.params.prompt_cache_key]
-label = { zh = "提示缓存路由键", en = "Prompt cache key" }
-desc = { zh = "覆盖 moc 默认的会话缓存键，让相同前缀使用同一缓存路由。", en = "Overrides moc's default session cache key so identical prefixes share a cache route." }
+desc = { zh = "覆盖 moc 默认的 session cache 路由键，使相同前缀复用同一缓存路由。", en = "Override moc's default session cache key so identical prefixes share a cache route." }
 
 [core.params.prompt_cache_options_mode]
-label = { zh = "缓存匹配模式", en = "Cache match mode" }
-desc = { zh = "implicit 自动选择缓存前缀；explicit 只使用显式断点，没有断点时不使用提示缓存。", en = "implicit picks a cache prefix automatically; explicit uses only explicit breakpoints — no breakpoint, no prompt cache." }
+desc = { zh = "cache 匹配模式：implicit 自动选择前缀；explicit 仅使用显式断点，无断点时不缓存。", en = "Cache matching mode: implicit chooses prefixes automatically; explicit uses only explicit breakpoints." }
 
 [core.params.prompt_cache_options_ttl]
-label = { zh = "缓存最短存活时间", en = "Cache minimum TTL" }
-desc = { zh = "30m 为 30 分钟；Responses 还支持 12h（12 小时），具体需要上游支持。", en = "30m means 30 minutes; Responses also supports 12h (12 hours), subject to upstream support." }
+desc = { zh = "cache 最短存活时间：30m 为 30 分钟；Responses 另支持 12h（12 小时），视上游支持而定。", en = "Minimum cache TTL: 30m for 30 minutes; Responses also supports 12h (12 hours), subject to upstream support." }
 
 [core.params.prompt_cache_retention]
-label = { zh = "旧版缓存保留策略", en = "Legacy cache retention" }
-desc = { zh = "已弃用；in_memory 使用内存缓存，24h 延长保留时间，优先使用 prompt_cache_options.ttl。", en = "Deprecated; in_memory caches in memory, 24h extends retention — prefer prompt_cache_options.ttl." }
+desc = { zh = "旧版 cache 保留策略（已弃用）：in_memory 使用内存缓存，24h 延长保留；优先使用 prompt_cache_options.ttl。", en = "Legacy cache retention (deprecated): in_memory caches in memory, 24h extends retention; prefer prompt_cache_options.ttl." }
 
 [core.params.stream_options_include_obfuscation]
-label = { zh = "流式传输混淆", en = "Stream obfuscation" }
-desc = { zh = "增加随机填充以减少侧信道信息；关闭可节省带宽，但会降低此保护。", en = "Adds random padding to reduce side-channel leakage; disabling saves bandwidth at the cost of this protection." }
+desc = { zh = "流式传输随机填充以减少侧信道泄露；关闭可节省带宽，但会降低此项防护。", en = "Add random padding to streams to reduce side-channel leakage; disabling saves bandwidth at the cost of this protection." }
 
 [core.params.top_logprobs]
-label = { zh = "候选 token 概率数量", en = "Top token logprobs" }
-desc = { zh = "返回每个位置最多 0–20 个候选概率；Chat 还需开启 logprobs。moc 不单独展示概率表。", en = "Return up to 0–20 candidate probabilities per position; Chat also needs logprobs. moc does not display a probability table." }
+desc = { zh = "每个位置返回 0–20 个候选 token 概率；Chat 还需开启 logprobs。moc 不单独展示概率表。", en = "Return 0–20 candidate token log probabilities per position; Chat also requires logprobs. moc does not render a probability table." }
 
 [core.params.moderation_model]
-label = { zh = "内容审核模型", en = "Moderation model" }
-desc = { zh = "审核输入与输出使用的模型，例如 omni-moderation-latest；需要上游支持。", en = "Model used to moderate input and output, e.g. omni-moderation-latest; requires upstream support." }
+desc = { zh = "审核输入与输出使用的 model（如 omni-moderation-latest）；需上游支持。", en = "Model used to moderate input and output (e.g. omni-moderation-latest); requires upstream support." }
 
 [core.params.moderation_policy_input_mode]
-label = { zh = "输入审核策略", en = "Input moderation policy" }
-desc = { zh = "score 只评分，block 拦截违规输入。", en = "score only rates, block rejects violating input." }
+desc = { zh = "输入审核策略：score 仅评分，block 拦截违规输入。", en = "Input moderation policy: score rates only, block rejects violating input." }
 
 [core.params.moderation_policy_output_mode]
-label = { zh = "输出审核策略", en = "Output moderation policy" }
-desc = { zh = "score 只评分，block 拦截违规输出。", en = "score only rates, block rejects violating output." }
+desc = { zh = "输出审核策略：score 仅评分，block 拦截违规输出。", en = "Output moderation policy: score rates only, block rejects violating output." }
 
 [core.params.tool_choice]
-label = { zh = "工具选择策略", en = "Tool choice" }
-desc = { zh = "JSON：\"auto\" 自动选择、\"none\" 禁用、\"required\" 必须调用；指定函数时 Chat 使用 {\"type\":\"function\",\"function\":{\"name\":\"read\"}}，Responses 使用 {\"type\":\"function\",\"name\":\"read\"}。仅选择 moc 已提供的函数。", en = "JSON: \"auto\" picks automatically, \"none\" disables, \"required\" forces a call; for a specific function Chat takes {\"type\":\"function\",\"function\":{\"name\":\"read\"}}, Responses takes {\"type\":\"function\",\"name\":\"read\"}. Only choose among functions moc already provides." }
+desc = { zh = "工具选择策略 JSON：\"auto\" 自动、\"none\" 禁用、\"required\" 必调；指定函数时 Chat 用 {\"type\":\"function\",\"function\":{\"name\":\"read\"}}，Responses 用 {\"type\":\"function\",\"name\":\"read\"}。", en = "Tool choice JSON: \"auto\", \"none\", or \"required\"; for a pinned function Chat uses {\"type\":\"function\",\"function\":{\"name\":\"read\"}}, Responses uses {\"type\":\"function\",\"name\":\"read\"}." }
 
 [core.params.frequency_penalty]
-label = { zh = "重复频率惩罚", en = "Frequency penalty" }
-desc = { zh = "范围 -2–2；正值减少重复词句，负值增加重复倾向。", en = "Range -2 to 2; positive reduces repeated phrases, negative encourages them." }
+desc = { zh = "重复频率惩罚（-2 至 2）：正值抑制重复词句，负值增强重复倾向。", en = "Frequency penalty (-2 to 2): positive reduces repeated phrases, negative encourages them." }
 
 [core.params.presence_penalty]
-label = { zh = "重复主题惩罚", en = "Presence penalty" }
-desc = { zh = "范围 -2–2；正值鼓励新话题，负值更倾向已有话题。", en = "Range -2 to 2; positive encourages new topics, negative sticks to existing ones." }
+desc = { zh = "重复主题惩罚（-2 至 2）：正值鼓励新话题，负值倾向延续已有话题。", en = "Presence penalty (-2 to 2): positive encourages new topics, negative sticks to existing ones." }
 
 [core.params.logit_bias]
-label = { zh = "token 概率偏置", en = "Logit bias" }
-desc = { zh = "JSON 对象：token ID 映射到 -100–100 的偏置；例如 {\"123\":-10}。", en = "JSON object mapping token IDs to -100–100 bias, e.g. {\"123\":-10}." }
+desc = { zh = "token 概率偏置 JSON：将 token ID 映射到 -100 至 100 的偏置值，例如 {\"123\":-10}。", en = "Token logit bias JSON mapping token IDs to values in -100..100, e.g. {\"123\":-10}." }
 
 [core.params.logprobs]
-label = { zh = "返回 token 概率", en = "Return logprobs" }
-desc = { zh = "请求输出 token 的对数概率；moc 不单独展示概率表。", en = "Request output-token log probabilities; moc does not display a probability table." }
+desc = { zh = "请求返回输出 token 的对数概率；moc 不单独展示概率表。", en = "Request output-token log probabilities; moc does not render a probability table." }
 
 [core.params.n]
-label = { zh = "生成候选数量", en = "Candidate count" }
-desc = { zh = "范围 1–128；moc 只消费第一个候选，其余候选仍会产生费用，通常保持 1。", en = "Range 1–128; moc only consumes the first candidate while the rest still cost — usually keep 1." }
+desc = { zh = "生成候选数量（1–128）；moc 仅消费首个候选，其余仍计费，通常保持 1。", en = "Number of completions to generate (1–128); moc consumes only the first while the rest still bill — usually keep 1." }
 
 [core.params.seed]
-label = { zh = "采样随机种子", en = "Sampling seed" }
-desc = { zh = "有符号整数；相同种子仅尽力保持一致，并不保证确定性。Web 编辑器仅接受精确可表示的整数。", en = "Signed integer; the same seed is only best-effort consistent, not deterministic. The web editor accepts exactly representable integers only." }
+desc = { zh = "采样随机种子（有符号整数）；相同种子尽力保持一致，不保证严格确定性。", en = "Signed integer sampling seed; best-effort consistency only, not strictly deterministic." }
 
 [core.params.reasoning_effort]
-label = { zh = "默认思考强度", en = "Default thinking effort" }
-desc = { zh = "none 关闭，或填写 minimal、low、medium、high、xhigh、max／自定义等级；会话显式选择优先，需包含在模型的可选思考等级中。", en = "none disables, or use minimal/low/medium/high/xhigh/max or a custom level; an explicit session choice wins and the level must be among the model's thinking_levels." }
+desc = { zh = "默认 thinking effort：none 关闭，或填写 minimal、low、medium、high、xhigh、max 及自定义等级；session 显式选择优先，须位于 model 的 thinking_levels 中。", en = "Default thinking effort: none disables, or use minimal/low/medium/high/xhigh/max or a custom level; explicit session choices win and the level must be in thinking_levels." }
 
 [core.params.verbosity]
-label = { zh = "回复详细程度", en = "Response verbosity" }
-desc = { zh = "low 更简洁，medium 适中，high 更详细；仅支持此参数的模型可用。", en = "low is terser, medium balanced, high more detailed; only on models that support it." }
+desc = { zh = "回复详细程度：low 更简洁，medium 适中，high 更详尽；仅支持此参数的 model 可用。", en = "Response verbosity: low is terser, medium balanced, high more detailed; only on models supporting it." }
 
 [core.params.stop]
-label = { zh = "停止序列", en = "Stop sequences" }
-desc = { zh = "JSON 字符串或字符串数组，最多 4 项；保留逗号和换行，命中后停止生成。部分推理模型不支持。", en = "JSON string or string array, up to 4 items; commas and newlines preserved, generation stops on hit. Some reasoning models don't support it." }
+desc = { zh = "停止序列（JSON 字符串或最多 4 项字符串数组）；保留逗号与换行，命中即停止生成。部分推理 model 不支持。", en = "Stop sequences (JSON string or array of up to 4 strings); commas and newlines preserved, stops on match. Unsupported by some reasoning models." }
 
 [core.params.stream_options_include_usage]
-label = { zh = "流式用量统计", en = "Stream usage stats" }
-desc = { zh = "moc 默认 true；关闭后可能缺少准确的 token 用量和费用统计。", en = "moc defaults to true; disabling may lose accurate token-usage and cost stats." }
+desc = { zh = "流式响应末尾附带 token 用量统计；moc 默认 true，关闭后可能缺少准确用量与费用。", en = "Include token usage at the end of streamed responses; moc defaults to true, disabling may lose accurate usage and cost." }
 
 [core.params.prediction_type]
-label = { zh = "预期输出类型", en = "Prediction type" }
-desc = { zh = "预期输出内容的类型，固定为 content；仅支持 Predicted Outputs 的模型可用。", en = "Type of the predicted output, fixed to content; only on models supporting Predicted Outputs." }
+desc = { zh = "预期输出类型，固定为 content；仅支持 Predicted Outputs 的 model 可用。", en = "Predicted output type, fixed to content; only on models supporting Predicted Outputs." }
 
 [core.params.prediction_content]
-label = { zh = "预期输出内容", en = "Prediction content" }
-desc = { zh = "JSON 字符串或文本内容块数组，用于大部分输出已知的场景；会发送给上游。", en = "JSON string or array of text content blocks for when most of the output is known; sent to the upstream." }
+desc = { zh = "预期输出内容（JSON 字符串或文本块数组），用于大部分输出已知的场景；会发送至上游。", en = "Predicted output content (JSON string or array of text blocks) when most output is known; sent upstream." }
 
 [core.params.response_format_type]
-label = { zh = "输出格式", en = "Response format" }
-desc = { zh = "text 普通文本、json_object JSON 对象、json_schema 按指定结构输出；JSON 模式需要提示词说明。", en = "text for plain text, json_object for a JSON object, json_schema for a given structure; JSON modes need the prompt to describe it." }
+desc = { zh = "响应格式：text 普通文本、json_object JSON 对象、json_schema 按 schema 输出；JSON 模式需在 prompt 中说明。", en = "Response format: text, json_object, or json_schema; JSON modes require describing the format in the prompt." }
 
 [core.params.response_format_json_schema_name]
-label = { zh = "输出结构名称", en = "Schema name" }
-desc = { zh = "JSON Schema 的名称，最长 64 字符，仅使用字母、数字、下划线和连字符。", en = "JSON Schema name, up to 64 chars: letters, digits, underscores and hyphens only." }
+desc = { zh = "JSON Schema 名称，最长 64 字符，仅允许字母、数字、下划线与连字符。", en = "JSON Schema name, up to 64 chars: letters, digits, underscores, and hyphens only." }
 
 [core.params.response_format_json_schema_description]
-label = { zh = "输出结构说明", en = "Schema description" }
-desc = { zh = "解释此结构的用途，帮助模型理解期望输出。", en = "Explain what this structure is for so the model understands the expected output." }
+desc = { zh = "解释该输出结构的用途，帮助 model 理解预期格式。", en = "Explain this schema's purpose so the model understands the expected output." }
 
 [core.params.response_format_json_schema_schema]
-label = { zh = "输出 JSON Schema", en = "Output JSON Schema" }
-desc = { zh = "JSON 对象，定义期望的输出结构；例如 {\"type\":\"object\",\"properties\":{}}。", en = "JSON object defining the expected output structure, e.g. {\"type\":\"object\",\"properties\":{}}." }
+desc = { zh = "定义预期输出结构的 JSON Schema 对象，例如 {\"type\":\"object\",\"properties\":{}}。", en = "JSON Schema object defining the expected output structure, e.g. {\"type\":\"object\",\"properties\":{}}." }
 
 [core.params.response_format_json_schema_strict]
-label = { zh = "严格遵循输出结构", en = "Strict schema" }
-desc = { zh = "开启后严格遵循 schema；只支持上游允许的 JSON Schema 子集。", en = "When on, follow the schema strictly; only the upstream-supported JSON Schema subset applies." }
+desc = { zh = "开启后严格遵循 schema；仅支持上游允许的 JSON Schema 子集。", en = "When on, strictly enforce the schema; limited to the upstream-supported JSON Schema subset." }
 
 [core.params.reasoning_summary]
-label = { zh = "思考摘要详细程度", en = "Reasoning summary detail" }
-desc = { zh = "auto 由模型决定，concise 简洁，detailed 详细；moc 默认 auto，关闭思考时不发送摘要请求。", en = "auto lets the model decide, concise is brief, detailed is thorough; moc defaults to auto and sends no summary request when thinking is off." }
+desc = { zh = "thinking 摘要粒度：auto 自动、concise 简洁、detailed 详尽；moc 默认 auto，关闭 thinking 时不发送。", en = "Reasoning summary detail: auto, concise, or detailed; moc defaults to auto and omits it when thinking is off." }
 
 [core.params.reasoning_generate_summary]
-label = { zh = "旧版思考摘要", en = "Legacy reasoning summary" }
-desc = { zh = "已弃用，优先使用 reasoning.summary；未配置 summary 时使用此值。", en = "Deprecated; prefer reasoning.summary — used only when summary is unset." }
+desc = { zh = "旧版 thinking 摘要参数（已弃用）；优先使用 reasoning.summary，仅在未配置 summary 时生效。", en = "Legacy reasoning summary parameter (deprecated); prefer reasoning.summary — used only when summary is unset." }
 
 [core.params.reasoning_context]
-label = { zh = "历史思考范围", en = "Reasoning context" }
-desc = { zh = "auto 由模型决定，current_turn 仅当前轮，all_turns 包含全部轮次。", en = "auto lets the model decide, current_turn is this turn only, all_turns includes every turn." }
+desc = { zh = "历史 thinking 上下文范围：auto 自动、current_turn 仅当前轮、all_turns 全部轮次。", en = "Historical reasoning context scope: auto, current_turn, or all_turns." }
 
 [core.params.reasoning_mode]
-label = { zh = "思考执行模式", en = "Reasoning mode" }
-desc = { zh = "例如 standard 或 pro；原样发送，是否支持由模型与上游决定。", en = "e.g. standard or pro; sent as-is, support depends on the model and upstream." }
+desc = { zh = "thinking 执行模式（如 standard 或 pro）；原样发送，是否支持取决于 model 与上游。", en = "Reasoning execution mode (e.g. standard or pro); sent as-is, support depends on the model and upstream." }
 
 [core.params.text_verbosity]
-label = { zh = "回复详细程度", en = "Response verbosity" }
-desc = { zh = "low 更简洁，medium 适中，high 更详细；与 reasoning.summary 的思考摘要粒度无关。", en = "low is terser, medium balanced, high more detailed; independent of the reasoning.summary granularity." }
+desc = { zh = "回复详细程度：low 更简洁，medium 适中，high 更详尽；与 reasoning.summary 粒度无关。", en = "Response verbosity: low, medium, or high; independent of reasoning.summary detail." }
 
 [core.params.text_format_type]
-label = { zh = "输出格式", en = "Response format" }
-desc = { zh = "text 普通文本、json_object JSON 对象、json_schema 按指定结构输出；JSON 模式需要提示词说明。", en = "text for plain text, json_object for a JSON object, json_schema for a given structure; JSON modes need the prompt to describe it." }
+desc = { zh = "输出格式：text 普通文本、json_object JSON 对象、json_schema 按 schema 输出；JSON 模式需在 prompt 中说明。", en = "Output format: text, json_object, or json_schema; JSON modes require describing the format in the prompt." }
 
 [core.params.text_format_name]
-label = { zh = "输出结构名称", en = "Schema name" }
-desc = { zh = "JSON Schema 的名称，最长 64 字符，仅使用字母、数字、下划线和连字符。", en = "JSON Schema name, up to 64 chars: letters, digits, underscores and hyphens only." }
+desc = { zh = "JSON Schema 名称，最长 64 字符，仅允许字母、数字、下划线与连字符。", en = "JSON Schema name, up to 64 chars: letters, digits, underscores, and hyphens only." }
 
 [core.params.text_format_description]
-label = { zh = "输出结构说明", en = "Schema description" }
-desc = { zh = "解释此结构的用途，帮助模型理解期望输出。", en = "Explain what this structure is for so the model understands the expected output." }
+desc = { zh = "解释该输出结构的用途，帮助 model 理解预期格式。", en = "Explain this schema's purpose so the model understands the expected output." }
 
 [core.params.text_format_schema]
-label = { zh = "输出 JSON Schema", en = "Output JSON Schema" }
-desc = { zh = "JSON 对象，定义期望的输出结构。", en = "JSON object defining the expected output structure." }
+desc = { zh = "定义预期输出结构的 JSON Schema 对象。", en = "JSON Schema object defining the expected output structure." }
 
 [core.params.text_format_strict]
-label = { zh = "严格遵循输出结构", en = "Strict schema" }
-desc = { zh = "开启后严格遵循 schema；只支持上游允许的 JSON Schema 子集。", en = "When on, follow the schema strictly; only the upstream-supported JSON Schema subset applies." }
+desc = { zh = "开启后严格遵循 schema；仅支持上游允许的 JSON Schema 子集。", en = "When on, strictly enforce the schema; limited to the upstream-supported JSON Schema subset." }
 
 [core.params.include]
-label = { zh = "附加返回数据", en = "Extra returned data" }
-desc = { zh = "字符串列表，例如 message.output_text.logprobs、message.input_image.image_url；moc 会按思考回传策略追加 reasoning.encrypted_content。", en = "String list, e.g. message.output_text.logprobs, message.input_image.image_url; moc appends reasoning.encrypted_content per the reasoning-echo policy." }
+desc = { zh = "附加返回字段列表（如 message.output_text.logprobs、message.input_image.image_url）；moc 会按回传策略自动追加 reasoning.encrypted_content。", en = "Extra returned fields (e.g. message.output_text.logprobs, message.input_image.image_url); moc appends reasoning.encrypted_content per the echo policy." }
 
 [core.params.truncation]
-label = { zh = "上游超长输入处理", en = "Upstream truncation" }
-desc = { zh = "disabled 超长时报错，auto 允许上游丢弃开头的历史；auto 可能丢失早期指令。", en = "disabled errors on overlong input, auto lets the upstream drop the earliest history — which may lose early instructions." }
+desc = { zh = "上游超长输入处理策略：disabled 超长报错；auto 允许上游丢弃开头历史（可能丢失早期指令）。", en = "Upstream over-length handling: disabled errors; auto lets the upstream drop earliest history (may lose early instructions)." }
 
 [core.params.prompt_id]
-label = { zh = "上游提示模板 ID", en = "Upstream prompt template ID" }
-desc = { zh = "使用已经在上游创建的提示模板；模板可能改变请求指令。", en = "Use a prompt template already created upstream; the template may alter request instructions." }
+desc = { zh = "引用已在上游创建的 prompt 模板 ID；模板可能改写请求指令。", en = "Reference an upstream prompt template ID; the template may alter request instructions." }
 
 [core.params.prompt_version]
-label = { zh = "提示模板版本", en = "Prompt template version" }
-desc = { zh = "指定已创建模板的版本；留空使用上游默认版本。", en = "Pin a created template's version; empty uses the upstream default." }
+desc = { zh = "指定 prompt 模板版本；留空使用上游默认版本。", en = "Pin a prompt template version; empty uses the upstream default." }
 
 [core.params.prompt_variables]
-label = { zh = "提示模板变量", en = "Prompt template variables" }
-desc = { zh = "JSON 对象：变量名映射到字符串或上游支持的文本／图片输入对象。", en = "JSON object mapping variable names to strings or upstream-supported text/image input objects." }
+desc = { zh = "prompt 模板变量 JSON 对象：将变量名映射为字符串或文本/图片输入对象。", en = "JSON object mapping prompt template variable names to strings or text/image input objects." }
 
 [core.params.prompt_cache_options_comparison_response_id]
-label = { zh = "缓存对比响应 ID", en = "Cache-compare response ID" }
-desc = { zh = "填写已有响应 ID，请求上游诊断与该响应的缓存差异；moc 不自动维护此 ID。", en = "Fill in an existing response ID to ask the upstream to diagnose cache differences against it; moc does not maintain this ID." }
+desc = { zh = "填写已有响应 ID，请求上游诊断与该响应的 cache 差异；moc 不自动维护此 ID。", en = "Existing response ID used to ask the upstream to diagnose cache differences against it; moc does not track this ID." }
 
 [core.params.image_context_compression]
-label = { zh = "上游图片上下文压缩", en = "Upstream image compression" }
-desc = { zh = "auto 自动决定、enabled 要求支持压缩、disabled 关闭；不改变 moc 本地图片预算。", en = "auto decides automatically, enabled requires compression support, disabled turns it off; does not change moc's local image budget." }
+desc = { zh = "上游图片上下文压缩：auto 自动、enabled 强制要求支持、disabled 关闭；不改变 moc 本地图片预算。", en = "Upstream image context compression: auto, enabled (required), or disabled; does not alter moc's local image budget." }
 
 [core.params.access_programs_cyber]
-label = { zh = "Cyber 访问计划", en = "Cyber access program" }
-desc = { zh = "standard、daybreak_blue 或 daybreak_red；需账号与模型授权，否则上游会拒绝。", en = "standard, daybreak_blue or daybreak_red; requires account and model authorization or the upstream rejects it." }
+desc = { zh = "Cyber 访问计划（standard / daybreak_blue / daybreak_red）；需账号与 model 授权，否则上游拒绝。", en = "Cyber access program (standard, daybreak_blue, or daybreak_red); requires account and model authorization." }
 
 [core.params.top_k]
-label = { zh = "采样候选数量", en = "Top-k candidates" }
-desc = { zh = "仅从概率最高的 K 个候选中采样；只对支持此参数的模型发送。", en = "Sample only from the K most likely candidates; sent only to models supporting it." }
+desc = { zh = "仅从概率最高的 K 个候选中采样；仅向支持此参数的 model 发送。", en = "Sample only from the K most likely candidates; sent only to models supporting it." }
 
 [core.params.stop_sequences]
-label = { zh = "停止序列", en = "Stop sequences" }
-desc = { zh = "字符串列表；JSON 数组可精确保留逗号和换行，命中后停止生成。", en = "String list; a JSON array preserves commas and newlines exactly, generation stops on hit." }
+desc = { zh = "停止序列字符串数组；使用 JSON 数组可精确保留逗号与换行，命中即停止生成。", en = "Array of stop sequences; JSON array preserves commas and newlines exactly, stopping on match." }
 
 [core.params.thinking_type]
-label = { zh = "思考模式", en = "Thinking mode" }
-desc = { zh = "adaptive 自适应、enabled 使用预算、disabled 关闭、between_tools 在工具间思考；会话 off 优先，取值需模型支持。", en = "adaptive adapts, enabled uses a budget, disabled turns off, between_tools thinks between tools; session off wins and the value needs model support." }
+desc = { zh = "thinking 模式：adaptive 自适应、enabled 固定预算、disabled 关闭、between_tools 工具间思考；session 选 off 时优先，取值需 model 支持。", en = "Thinking mode: adaptive, enabled (budgeted), disabled, or between_tools; session off wins and value must be supported by the model." }
 
 [core.params.thinking_budget_tokens]
-label = { zh = "思考 token 预算", en = "Thinking token budget" }
-desc = { zh = "enabled 模式下至少 1024，且小于回复 token 上限；预算计入 max_tokens。", en = "At least 1024 in enabled mode and below the response token cap; the budget counts toward max_tokens." }
+desc = { zh = "thinking token 预算：enabled 模式下至少 1024，且须小于 Max Output Tokens；预算计入 max_tokens。", en = "Thinking token budget: at least 1024 in enabled mode and below Max Output Tokens; counts toward max_tokens." }
 
 [core.params.thinking_display]
-label = { zh = "思考返回方式", en = "Thinking display" }
-desc = { zh = "summarized 返回思考摘要，omitted 隐藏内容但保留签名；moc 默认 summarized。", en = "summarized returns a thinking summary, omitted hides content but keeps the signature; moc defaults to summarized." }
+desc = { zh = "thinking 返回方式：summarized 返回摘要，omitted 隐藏正文但保留签名；moc 默认 summarized。", en = "Thinking display mode: summarized returns a summary, omitted hides text while keeping signatures; moc defaults to summarized." }
 
 [core.params.output_config_effort]
-label = { zh = "默认思考强度", en = "Default thinking effort" }
-desc = { zh = "low、medium、high、xhigh、max／自定义等级；会话显式选择优先。enabled + budget_tokens 模式使用此值，不自动附加会话强度。", en = "low/medium/high/xhigh/max or a custom level; an explicit session choice wins. The enabled + budget_tokens mode uses this value and does not auto-append the session level." }
+desc = { zh = "默认 thinking effort（low / medium / high / xhigh / max 或自定义等级）；session 显式选择优先。enabled + budget_tokens 模式下直接使用此值。", en = "Default thinking effort (low/medium/high/xhigh/max or custom); explicit session choices win. Used directly under enabled + budget_tokens." }
 
 [core.params.output_config_format_type]
-label = { zh = "输出格式", en = "Output format" }
 desc = { zh = "结构化输出类型，固定为 json_schema。", en = "Structured output type, fixed to json_schema." }
 
 [core.params.output_config_format_schema]
-label = { zh = "输出 JSON Schema", en = "Output JSON Schema" }
-desc = { zh = "JSON 对象，定义期望的输出结构。", en = "JSON object defining the expected output structure." }
+desc = { zh = "定义预期输出结构的 JSON Schema 对象。", en = "JSON Schema object defining the expected output structure." }
 
 [core.params.metadata_user_id]
-label = { zh = "外部用户标识", en = "External user ID" }
-desc = { zh = "使用 UUID、哈希或其他不透明标识；不要发送姓名、邮箱、电话号码等个人信息。", en = "Use a UUID, hash or other opaque ID; do not send personal info such as names, emails or phone numbers." }
+desc = { zh = "外部用户标识：请使用 UUID、哈希或其他不透明 ID，勿发送姓名、邮箱或手机号等个人信息。", en = "External user ID: use a UUID, hash, or opaque ID; do not send personal info such as names, emails, or phone numbers." }
 
 [core.params.anthropic.service_tier]
-label = { zh = "服务容量档位", en = "Service capacity tier" }
-desc = { zh = "auto 可使用优先容量，standard_only 只使用标准容量；需账号支持。", en = "auto may use prioritized capacity, standard_only sticks to standard capacity; requires account support." }
+desc = { zh = "服务容量档位：auto 可用优先容量，standard_only 仅用标准容量；需账号支持。", en = "Service capacity tier: auto may use prioritized capacity, standard_only sticks to standard; requires account support." }
 
 [core.params.speed]
-label = { zh = "推理速度模式", en = "Inference speed mode" }
-desc = { zh = "standard 标准、fast 高速；部分模型需要 anthropic-beta 中的 fast-mode-2026-02-01。", en = "standard or fast; some models need fast-mode-2026-02-01 in anthropic-beta." }
+desc = { zh = "推理速度模式：standard 标准、fast 高速；部分 model 需在 anthropic-beta 中添加 fast-mode-2026-02-01。", en = "Inference speed mode: standard or fast; some models require fast-mode-2026-02-01 in anthropic-beta." }
 
 [core.params.inference_geo]
-label = { zh = "推理处理区域", en = "Inference region" }
-desc = { zh = "指定上游推理区域；留空使用工作区默认区域，需要账号支持。", en = "Pin the upstream inference region; empty uses the workspace default and requires account support." }
+desc = { zh = "指定上游推理区域；留空使用 workspace 默认区域，需账号支持。", en = "Pin the upstream inference region; empty uses the workspace default and requires account support." }
 
 [core.params.cache_control_type]
-label = { zh = "自动缓存类型", en = "Auto cache type" }
-desc = { zh = "固定为 ephemeral，让上游在最后一个可缓存块设置断点；与 moc 显式缓存断点可同时存在。", en = "Fixed to ephemeral so the upstream sets a breakpoint on the last cacheable block; may coexist with moc's explicit breakpoints." }
+desc = { zh = "自动 cache 类型，固定为 ephemeral，让上游在最后一个可缓存块设置断点；可与 moc 显式断点共存。", en = "Auto cache type, fixed to ephemeral so the upstream places a breakpoint on the last cacheable block; coexists with moc's explicit breakpoints." }
 
 [core.params.cache_control_ttl]
-label = { zh = "自动缓存存活时间", en = "Auto cache TTL" }
-desc = { zh = "5m 为 5 分钟，1h 为 1 小时；长缓存可能改变费用。", en = "5m is 5 minutes, 1h is 1 hour; longer caching may change billing." }
+desc = { zh = "自动 cache 存活时间：5m 为 5 分钟，1h 为 1 小时；更长缓存可能影响计费。", en = "Auto cache TTL: 5m for 5 minutes, 1h for 1 hour; longer caching may affect billing." }
 
 [core.params.diagnostics_previous_message_id]
-label = { zh = "缓存对比消息 ID", en = "Cache-compare message ID" }
-desc = { zh = "填写已有 msg_… ID，诊断与该消息的缓存差异；moc 不自动维护此 ID。", en = "Fill in an existing msg_… ID to diagnose cache differences against it; moc does not maintain this ID." }
+desc = { zh = "填写已有 msg_… ID，用于诊断与该消息的 cache 差异；moc 不自动维护此 ID。", en = "Existing msg_… ID used to diagnose cache differences against that message; moc does not track this ID." }
 
 [core.params.tool_choice_type]
-label = { zh = "工具选择策略", en = "Tool choice" }
-desc = { zh = "auto 自动、none 禁用、any 必须调用、tool 指定函数；仅选择 moc 已提供的函数。", en = "auto picks automatically, none disables, any forces a call, tool pins a function; only choose among functions moc already provides." }
+desc = { zh = "工具选择策略：auto 自动、none 禁用、any 必调、tool 指定函数；仅可选 moc 已提供的函数。", en = "Tool choice mode: auto, none, any (force a call), or tool (pin a function); choose only among functions moc provides." }
 
 [core.params.tool_choice_name]
-label = { zh = "指定函数名称", en = "Pinned function name" }
-desc = { zh = "tool_choice.type 为 tool 时填写，例如 read；函数必须在本轮可用工具中。", en = "Fill in when tool_choice.type is tool, e.g. read; the function must be among this turn's available tools." }
+desc = { zh = "当 tool_choice.type 为 tool 时填写目标函数名（如 read）；须属于本轮可用工具。", en = "Target function name when tool_choice.type is tool (e.g. read); must be among this turn's available tools." }
 
 [core.params.tool_choice_disable_parallel_tool_use]
-label = { zh = "禁用并行工具调用", en = "Disable parallel tool use" }
-desc = { zh = "true 每次最多调用一个工具，false 允许并行；并行兼容开关关闭时不发送此字段。", en = "true allows at most one tool call per request, false allows parallel; not sent when the parallel-compat switch is off." }
+desc = { zh = "true 每次最多调用一个工具，false 允许并行；并行兼容开关关闭时不发送此字段。", en = "true allows at most one tool call per request, false allows parallel; omitted when the parallel-compat switch is off." }
 
 [core.params.anthropic-version]
-label = { zh = "Anthropic API 版本", en = "Anthropic API version" }
-desc = { zh = "使用的 API 版本，例如 2023-06-01；留空使用 moc 的协议版本。", en = "API version to use, e.g. 2023-06-01; empty uses moc's protocol version." }
+desc = { zh = "Anthropic API 版本头（如 2023-06-01）；留空使用 moc 默认协议版本。", en = "Anthropic API version header (e.g. 2023-06-01); empty uses moc's default protocol version." }
 
 [core.params.anthropic-beta]
-label = { zh = "Anthropic 实验功能", en = "Anthropic beta features" }
-desc = { zh = "逗号分隔的 beta 功能名，例如 fast-mode-2026-02-01；需模型和账号支持。", en = "Comma-separated beta feature names, e.g. fast-mode-2026-02-01; requires model and account support." }
+desc = { zh = "逗号分隔的 Anthropic beta 特性名（如 fast-mode-2026-02-01）；需 model 与账号支持。", en = "Comma-separated Anthropic beta feature flags (e.g. fast-mode-2026-02-01); requires model and account support." }
 
 [core.params.anthropic-workspace-id]
-label = { zh = "Anthropic 工作区 ID", en = "Anthropic workspace ID" }
-desc = { zh = "多工作区凭据使用的工作区，例如 wrkspc_…；必须与凭据权限匹配。", en = "Workspace for multi-workspace credentials, e.g. wrkspc_…; must match the credential's permissions." }
+desc = { zh = "多 workspace 凭据使用的目标 workspace（如 wrkspc_…）；须与 API Key 权限匹配。", en = "Target workspace for multi-workspace credentials (e.g. wrkspc_…); must match the API Key permissions." }
 
 [core.params.anthropic-user-profile-id]
-label = { zh = "Anthropic 用户档案 ID", en = "Anthropic user profile ID" }
-desc = { zh = "代其他主体请求时用于归属标识；不要填写不必要的个人信息。", en = "Attribution ID when requesting on behalf of another party; don't put unnecessary personal info." }
+desc = { zh = "代其他主体发起请求时的归属标识；勿填写非必要的个人信息。", en = "Attribution ID when requesting on behalf of another party; avoid unnecessary personal info." }
 
 [core.params.OpenAI-Organization]
-label = { zh = "OpenAI 组织 ID", en = "OpenAI organization ID" }
-desc = { zh = "为多组织凭据选择组织；必须与密钥权限匹配。", en = "Pick the organization for multi-org credentials; must match the key's permissions." }
+desc = { zh = "为多组织凭据指定 OpenAI 组织 ID；须与 API Key 权限匹配。", en = "OpenAI organization ID for multi-org credentials; must match the API Key permissions." }
 
 [core.params.OpenAI-Project]
-label = { zh = "OpenAI 项目 ID", en = "OpenAI project ID" }
-desc = { zh = "为凭据选择上游项目；必须与密钥权限匹配。", en = "Pick the upstream project for the credential; must match the key's permissions." }
+desc = { zh = "为凭据指定上游 OpenAI 项目 ID；须与 API Key 权限匹配。", en = "Upstream OpenAI project ID for the credential; must match the API Key permissions." }
+
+# ---- 空闲 Tips（initialize 下发至 TUI / Web）----
+
+[core.tips]
+tip_01 = { zh = "`!command` 的输出会进入对话并让 model 可见；`!!command` 仅在界面显示，不进入 context", en = "`!command` output enters the conversation for the model; `!!command` displays only in the UI and stays out of context" }
+tip_02 = { zh = "生成中断或出错时，输入 `.` 或 `/retry` 即可原地继续，无需再发送「继续」", en = "When a generation is interrupted or fails, enter `.` or `/retry` to continue without sending another message" }
+tip_03 = { zh = "Fusion 让前沿 model 规划与评审、高性价比 model 执行：配好 `models.fusion` 后选择 `fusion`", en = "Fusion pairs a frontier lead model with a fast sidekick: configure `models.fusion` and select `fusion`" }
+tip_04 = { zh = "PTC 引擎通过脚本批量调用工具，适合多步查询与处理，显著减少往返轮次", en = "The PTC engine batches tool calls via scripts, cutting round trips on multi-step queries and edits" }
+tip_05 = { zh = "session 引擎只能在发送首条消息前切换，首条消息后即随 session 锁定", en = "The session engine can only be switched before the first message; it locks once the session starts" }
+tip_06 = { zh = "`/btw <question>` 可随时旁路提问，不打断主任务，也不写入 session 历史", en = "`/btw <question>` asks a quick side question without interrupting the main task or polluting session history" }
+tip_07 = { zh = "`/ask <question>` 仅本轮以只读问答模式运行，不会改动任何文件", en = "`/ask <question>` handles only this turn in read-only Q&A mode without modifying files" }
+tip_08 = { zh = "`/plan` 先拟定实施计划，经你审阅批准后再动手修改", en = "`/plan` drafts an implementation plan first and waits for your approval before making changes" }
+tip_09 = { zh = "进入、退出或批准计划都会保持当前 model；如需切换请使用 `/model`", en = "Entering, exiting, or approving a plan keeps the current model; use `/model` to switch" }
+tip_10 = { zh = "context 接近上限时可先执行 `/compact` 手动压缩，再开始下一阶段任务", en = "Run `/compact` when context gets full before starting the next phase of work" }
+tip_11 = { zh = "`/usage` 查看当前 session 各 model 的调用次数、token、cache 命中与耗时", en = "`/usage` shows per-model calls, tokens, cache hits, and timing for this session" }
+tip_12 = { zh = "`/context` 查看实际发送给 model 的内容：system prompt、工具定义与每条消息", en = "`/context` inspects what is actually sent to the model: system prompt, tool definitions, and every message" }
+tip_13 = { zh = "`/autonomy` 调整自主级别：unattended 模式下自动回答提问，并自动批准执行计划", en = "`/autonomy` adjusts autonomy: unattended auto-answers questions and auto-approves submitted plans" }
+tip_14 = { zh = "回复生成中发出的消息会直接补充进当前轮次，无需等待完成", en = "Messages sent while a reply is streaming steer the current turn directly without waiting" }
+tip_15 = { zh = "在 model 配置中填写 `pricing`，即可显示单价与 session 费用估算", en = "Set `pricing` in a model config to show unit prices and estimated session cost" }
+tip_16 = { zh = "在 model 配置中开启 `fast_mode = true`，model 选择器将显示 Fast Mode 开关", en = "Set `fast_mode = true` on a model to show a Fast Mode toggle in the model picker" }
+tip_17 = { zh = "在消息中单独写 `@path/to/image.png`，可直接附带本地图片发给多模态 model", en = "Write `@path/to/image.png` on its own in a message to attach a local image for multimodal models" }
+tip_18 = { zh = "放入项目 `.moc/plugins` 的 plugin 会自动加载，可扩展自定义工具与斜杠命令", en = "Plugins placed in `.moc/plugins` load automatically to add custom tools and slash commands" }
+tip_19 = { zh = "CLM 实验引擎让 model 自主维护工作 context，不必等到上限再统一压缩", en = "The experimental CLM engine lets the model curate its working context continuously instead of waiting for compaction" }
 
 # ---- CoreError 分类前缀与内嵌消息 ----
 
@@ -1166,236 +1116,373 @@ prefix_protocol = { zh = "协议错误：", en = "Protocol error: " }
 prefix_overflow = { zh = "上下文溢出：", en = "Context overflow: " }
 cancelled = { zh = "操作已取消", en = "Operation cancelled" }
 
-skills_cache_invalid = { zh = "技能摘要缓存无效：%{error}", en = "Invalid skills summary cache: %{error}" }
-skills_cache_version = { zh = "技能摘要缓存版本或内容无效", en = "Skills summary cache version or content is invalid" }
-skills_busy = { zh = "SESSION_BUSY: 已有技能缓存操作正在进行", en = "SESSION_BUSY: a skills cache operation is already running" }
-skills_cache_serialize = { zh = "技能摘要缓存序列化失败：%{error}", en = "Failed to serialize skills summary cache: %{error}" }
-skills_no_model = { zh = "请先选择用于技能压缩的模型", en = "Select a model for skills compaction first" }
-skills_json_invalid = { zh = "技能摘要 JSON 无效，未提交缓存：%{error}", en = "Skills summary JSON is invalid; cache not committed: %{error}" }
-skills_unknown_id = { zh = "技能摘要包含未知 ID，未提交缓存", en = "Skills summary contains unknown IDs; cache not committed" }
-skills_missing = { zh = "技能摘要遗漏条目，未提交缓存", en = "Skills summary is missing entries; cache not committed" }
-skills_ctx_insufficient = { zh = "模型上下文不足以压缩技能 %{name}", en = "Model context is too small to compact skill %{name}" }
-skills_incomplete = { zh = "技能摘要未正常完成，未提交任何缓存", en = "Skills summarization did not finish; no cache committed" }
-skills_changed = { zh = "技能 %{name} 在压缩期间已变化，未提交任何缓存", en = "Skill %{name} changed during compaction; no cache committed" }
-skills_dup = { zh = "技能摘要重复、为空或超出长度，未提交缓存", en = "Skills summary has duplicates, empty entries, or over-length entries; cache not committed" }
+skills_cache_invalid = { zh = "skills 摘要缓存无效：%{error}", en = "Invalid skills summary cache: %{error}" }
+skills_cache_version = { zh = "skills 摘要缓存版本或内容无效", en = "Skills summary cache version or content is invalid" }
+skills_busy = { zh = "SESSION_BUSY: 已有 skills 缓存操作正在进行", en = "SESSION_BUSY: a skills cache operation is already running" }
+skills_cache_serialize = { zh = "skills 摘要缓存序列化失败：%{error}", en = "Failed to serialize skills summary cache: %{error}" }
+skills_no_model = { zh = "请先选择用于 skills 压缩的 model", en = "Select a model for skills compaction first" }
+skills_json_invalid = { zh = "skills 摘要 JSON 无效，未提交缓存：%{error}", en = "Skills summary JSON is invalid; cache not committed: %{error}" }
+skills_unknown_id = { zh = "skills 摘要包含未知 ID，未提交缓存", en = "Skills summary contains unknown IDs; cache not committed" }
+skills_missing = { zh = "skills 摘要遗漏条目，未提交缓存", en = "Skills summary is missing entries; cache not committed" }
+skills_ctx_insufficient = { zh = "model context 不足以压缩 skill %{name}", en = "Model context is too small to compact skill %{name}" }
+skills_incomplete = { zh = "skills 摘要未正常完成，未提交任何缓存", en = "Skills summarization did not finish; no cache committed" }
+skills_changed = { zh = "skill %{name} 在压缩期间已变化，未提交任何缓存", en = "Skill %{name} changed during compaction; no cache committed" }
+skills_dup = { zh = "skills 摘要存在重复、空项或超长条目，未提交缓存", en = "Skills summary has duplicate, empty, or over-length entries; cache not committed" }
 skills_keep = { zh = "保留 %{path}：%{error}", en = "Keeping %{path}: %{error}" }
-skills_summary_fmt = { zh = "技能摘要：压缩 %{compacted} 个，缓存跳过 %{cached} 个，清理 %{removed} 个；目录预估 %{before} → %{after} tokens（%{direction} %{delta}，%{pct}%）", en = "Skills summary: %{compacted} compacted, %{cached} cache-skipped, %{removed} removed; catalog estimate %{before} → %{after} tokens (%{direction} %{delta}, %{pct}%)" }
-skills_decrease = { zh = "减少", en = "decrease" }
-skills_increase = { zh = "增加", en = "increase" }
+skills_summary_fmt = { zh = "skills 摘要完成：压缩 %{compacted} 个，缓存跳过 %{cached} 个，清理 %{removed} 个；目录预估 %{before} → %{after} tokens（%{direction} %{delta}，%{pct}%）", en = "Skills summary: %{compacted} compacted, %{cached} cache-skipped, %{removed} removed; catalog estimate %{before} → %{after} tokens (%{direction} %{delta}, %{pct}%)" }
+skills_decrease = { zh = "-", en = "-" }
+skills_increase = { zh = "+", en = "+" }
 
 transcript_no_parent = { zh = "transcript 路径缺少父目录", en = "Transcript path has no parent directory" }
-transcript_serialize = { zh = "序列化 transcript entry 失败: %{error}", en = "Failed to serialize transcript entry: %{error}" }
+transcript_serialize = { zh = "序列化 transcript entry 失败：%{error}", en = "Failed to serialize transcript entry: %{error}" }
 transcript_no_header = { zh = "transcript 缺少 header", en = "Transcript is missing its header" }
-transcript_first_not_header = { zh = "transcript 第一条不是 header", en = "The first transcript entry is not a header" }
-transcript_no_session_header = { zh = "transcript 缺少会话头部", en = "Transcript is missing the session header" }
+transcript_first_not_header = { zh = "transcript 首条记录不是 header", en = "The first transcript entry is not a header" }
+transcript_no_session_header = { zh = "transcript 缺少 session header", en = "Transcript is missing the session header" }
 header_no_info = { zh = "header 无法生成 session info", en = "Header cannot produce session info" }
-transcript_id_mismatch = { zh = "transcript session_id %{id} 与文件名 %{name} 不匹配", en = "transcript session_id %{id} does not match file name %{name}" }
+transcript_id_mismatch = { zh = "transcript session_id %{id} 与文件名 %{name} 不匹配", en = "Transcript session_id %{id} does not match file name %{name}" }
 transcript_msg_missing = { zh = "transcript 消息不存在：%{id}", en = "Transcript message not found: %{id}" }
-rollforward_msg_missing = { zh = "前滚消息不存在：%{id}", en = "Roll-forward message not found: %{id}" }
-transcript_exists = { zh = "transcript 已存在：%{path}", en = "transcript already exists: %{path}" }
+rollforward_msg_missing = { zh = "前滚目标消息不存在：%{id}", en = "Roll-forward target message not found: %{id}" }
+transcript_exists = { zh = "transcript 已存在：%{path}", en = "Transcript already exists: %{path}" }
 transcript_version = { zh = "不支持 transcript 版本 %{version}", en = "Unsupported transcript version %{version}" }
-session_unloaded = { zh = "SESSION_NOT_FOUND: 会话已卸载或删除", en = "SESSION_NOT_FOUND: the session was unloaded or deleted" }
+transcript_parse_line = { zh = "解析 %{path} 第 %{line} 行失败：%{error}", en = "Failed to parse %{path} line %{line}: %{error}" }
+transcript_parent_mismatch = { zh = "entry %{id} 的 parent_id 与 transcript 链不匹配", en = "Entry %{id}'s parent_id does not match the transcript chain" }
+zstd_decompress = { zh = "解压 %{path} 的 zstd 帧（字节 %{start}..%{end}）失败：%{error}", en = "Failed to decompress zstd frame in %{path} (bytes %{start}..%{end}): %{error}" }
+zstd_no_newline = { zh = "%{path} 的 zstd 帧（字节 %{start}..%{end}）未以换行结束", en = "zstd frame in %{path} (bytes %{start}..%{end}) does not end with a newline" }
+zstd_corrupt = { zh = "transcript %{path} 在字节 %{offset} 处损坏：%{reason}", en = "Transcript %{path} is corrupt at byte %{offset}: %{reason}" }
+zstd_bad_magic = { zh = "不是有效的 zstd 帧魔数", en = "invalid zstd frame magic" }
+zstd_reserved_bit = { zh = "帧头保留位非零", en = "non-zero reserved bit in frame header" }
+zstd_reserved_block = { zh = "出现保留的 zstd 块类型", en = "reserved zstd block type" }
+zstd_zero_frame = { zh = "zstd 帧长度为零", en = "zero-length zstd frame" }
+frozen_body_overflow = { zh = "冻结正文超过可寻址范围", en = "Frozen body exceeds addressable range" }
+session_unloaded = { zh = "SESSION_NOT_FOUND: session 已卸载或删除", en = "SESSION_NOT_FOUND: session was unloaded or deleted" }
+session_id_mismatch = { zh = "INVALID_PARAMS: session_id 不匹配", en = "INVALID_PARAMS: session_id mismatch" }
+engine_locked_history = { zh = "INVALID_PARAMS: session 已有对话历史，引擎已锁定；请新建 session 选择引擎", en = "INVALID_PARAMS: session already has prompt history and the engine is locked; start a new session to switch engines" }
+plan_cursor_invalid = { zh = "INVALID_PARAMS: 计划分页游标已失效", en = "INVALID_PARAMS: plan pagination cursor is invalid" }
+rewind_msg_missing = { zh = "INVALID_PARAMS: transcript 消息不存在：%{id}", en = "INVALID_PARAMS: transcript message not found: %{id}" }
+rewind_not_message = { zh = "INVALID_PARAMS: 回退目标不是 transcript 消息", en = "INVALID_PARAMS: rewind target is not a transcript message" }
+redo_empty = { zh = "INVALID_PARAMS: 没有可前滚的回退历史", en = "INVALID_PARAMS: no rewound history available to redo" }
+redo_target_missing = { zh = "INVALID_PARAMS: 前滚目标不在已回退尾部：%{id}", en = "INVALID_PARAMS: redo target is not in the rewound tail: %{id}" }
+reask_not_ask = { zh = "INVALID_PARAMS: 只能重新作答 ask 调用，%{id} 是 %{name}", en = "INVALID_PARAMS: only ask calls can be re-answered; %{id} is %{name}" }
+reask_no_result = { zh = "INVALID_PARAMS: 该提问还没有结果，无需重新作答", en = "INVALID_PARAMS: this question has no result yet and cannot be re-answered" }
 
-session_busy = { zh = "SESSION_BUSY: 会话已有进行中的提示", en = "SESSION_BUSY: the session already has a prompt in flight" }
-session_locked = { zh = "SESSION_LOCKED: 会话正被其它进程使用", en = "SESSION_LOCKED: the session is in use by another process" }
-session_locked_pid = { zh = "SESSION_LOCKED: pid %{pid} (%{frontend}) 正在使用会话", en = "SESSION_LOCKED: session is in use by pid %{pid} (%{frontend})" }
-plugin_state_write_big = { zh = "插件状态超过 %{mib} MiB 限制", en = "Plugin state exceeds the %{mib} MiB limit" }
+session_busy = { zh = "SESSION_BUSY: session 已有进行中的 prompt", en = "SESSION_BUSY: session already has a prompt in flight" }
+session_locked = { zh = "SESSION_LOCKED: session 正被其他进程使用", en = "SESSION_LOCKED: session is in use by another process" }
+session_locked_pid = { zh = "SESSION_LOCKED: pid %{pid} (%{frontend}) 正在使用此 session", en = "SESSION_LOCKED: session is in use by pid %{pid} (%{frontend})" }
+session_unlock_held = { zh = "session 正被 pid %{pid} (%{frontend}) 持有；请先让持有者卸载或退出", en = "Session is held by pid %{pid} (%{frontend}); unload or exit that client first" }
+plugin_state_write_big = { zh = "plugin state 超过 %{mib} MiB 限制", en = "Plugin state exceeds the %{mib} MiB limit" }
 same_page = { zh = "模型服务重复返回同一页，已停止获取", en = "The model service returned the same page twice; stopped fetching" }
-session_lock_write = { zh = "写入会话锁失败: %{error}", en = "Failed to write session lock: %{error}" }
-lease_released = { zh = "SESSION_LOCKED: 子代理结果提交前父会话编辑占用已释放", en = "SESSION_LOCKED: parent session edit lock released before subagent result submission" }
-plans_cursor = { zh = "计划数超过分页游标范围", en = "Plan count exceeds the pagination cursor range" }
+session_lock_write = { zh = "写入 session 锁失败：%{error}", en = "Failed to write session lock: %{error}" }
+lease_released = { zh = "SESSION_LOCKED: subagent 结果提交前父 session 写租约已释放", en = "SESSION_LOCKED: parent session write lease released before subagent result submission" }
+plans_cursor = { zh = "计划数量超出分页游标范围", en = "Plan count exceeds pagination cursor range" }
 title_empty = { zh = "INVALID_PARAMS: 标题不能为空", en = "INVALID_PARAMS: title must not be empty" }
 rewind_tool_call = { zh = "INVALID_PARAMS: 工具调用不存在：%{id}", en = "INVALID_PARAMS: tool call not found: %{id}" }
-no_undo = { zh = "[E_NO_UNDO] 当前会话没有可撤销的编辑", en = "[E_NO_UNDO] No edit in this session can be undone" }
+no_undo = { zh = "[E_NO_UNDO] 当前 session 没有可撤销的编辑", en = "[E_NO_UNDO] No edit in this session can be undone" }
 
-config_toml_invalid = { zh = "配置文件格式有误：%{error}", en = "Config file has invalid TOML: %{error}" }
+config_toml_invalid = { zh = "配置文件 TOML 格式有误：%{error}", en = "Config file has invalid TOML: %{error}" }
 config_no_parent = { zh = "配置路径缺少父目录", en = "Config path has no parent directory" }
-config_root_table = { zh = "配置根必须是 TOML 表", en = "Config root must be a TOML table" }
+config_root_table = { zh = "配置根节点必须是 TOML 表", en = "Config root must be a TOML table" }
 config_serialize = { zh = "配置序列化失败：%{error}", en = "Failed to serialize config: %{error}" }
-defaults_invalid = { zh = "内置默认配置无效: %{error}", en = "Bundled default config is invalid: %{error}" }
-field_invalid = { zh = "配置字段无效: %{error}", en = "Invalid config field: %{error}" }
-parse_path = { zh = "解析 %{path}: %{error}", en = "Failed to parse %{path}: %{error}" }
-read_path = { zh = "读取 %{path}: %{error}", en = "Failed to read %{path}: %{error}" }
-expand_home = { zh = "无法展开配置路径：用户主目录未设置", en = "Cannot expand config path: user home is not set" }
-read_config = { zh = "读取配置 %{path} 失败: %{error}", en = "Failed to read config %{path}: %{error}" }
-parse_config = { zh = "解析配置 %{path} 失败: %{error}", en = "Failed to parse config %{path}: %{error}" }
+config_conflict = { zh = "配置文件已被其他窗口修改；按 Ctrl+Z 撤回本次改动，或重新打开 Settings 读取最新配置", en = "Config file was modified in another window; press Ctrl+Z to undo or reopen Settings to reload" }
+defaults_invalid = { zh = "内置默认配置无效：%{error}", en = "Bundled default config is invalid: %{error}" }
+field_invalid = { zh = "配置字段无效：%{error}", en = "Invalid config field: %{error}" }
+parse_path = { zh = "解析 %{path} 失败：%{error}", en = "Failed to parse %{path}: %{error}" }
+read_path = { zh = "读取 %{path} 失败：%{error}", en = "Failed to read %{path}: %{error}" }
+expand_home = { zh = "无法展开配置路径：未设置用户主目录", en = "Cannot expand config path: user home directory is not set" }
+read_config = { zh = "读取配置 %{path} 失败：%{error}", en = "Failed to read config %{path}: %{error}" }
+parse_config = { zh = "解析配置 %{path} 失败：%{error}", en = "Failed to parse config %{path}: %{error}" }
 defaults_models_table = { zh = "defaults.models 必须是表", en = "defaults.models must be a table" }
+defaults_models_glob = { zh = "defaults.models.%{pattern} 不是合法的 model 匹配模式：%{error}", en = "defaults.models.%{pattern} is not a valid model glob pattern: %{error}" }
 providers_table = { zh = "providers 必须是表", en = "providers must be a table" }
 must_be_positive = { zh = "%{name} 必须大于 0", en = "%{name} must be greater than 0" }
 plugins_must_table = { zh = "配置中的 plugins 必须是表", en = "plugins in config must be a table" }
+plugins_unknown_key = { zh = "plugins 下存在未知宿主字段或非法 plugin 名 `%{name}`", en = "Unknown host field or invalid plugin name `%{name}` under plugins" }
+plugin_table_required = { zh = "plugin `%{plugin}` 的配置必须是 TOML 表", en = "Config for plugin `%{plugin}` must be a TOML table" }
 
-webfetch_timeout = { zh = "web_fetch.timeout_secs: 必须大于 0", en = "web_fetch.timeout_secs: must be greater than 0" }
-webfetch_max_bytes = { zh = "web_fetch.max_bytes: 必须大于 0", en = "web_fetch.max_bytes: must be greater than 0" }
-webfetch_max_chars = { zh = "web_fetch.max_chars: 必须大于 0", en = "web_fetch.max_chars: must be greater than 0" }
-agents_max_depth = { zh = "agents：max_depth 必须大于 0", en = "agents: max_depth must be greater than 0" }
+features_controlled_by = { zh = "features.%{key} 由 %{path} 控制，请直接配置该项", en = "features.%{key} is controlled by %{path}; configure it there directly" }
+features_unknown_key = { zh = "features.%{key} 不是已知特性开关（可用键：%{keys}）", en = "features.%{key} is not a known feature flag (available: %{keys})" }
+compaction_threshold_invalid = { zh = "压缩阈值无效：百分比须为 1–100，token 数须大于 0", en = "Invalid compaction threshold: percentage must be 1–100 and token count must be > 0" }
+skills_budget_percent_invalid = { zh = "skills 目录预算比例须为 0–100", en = "Skills catalog budget percentage must be 0–100" }
+limits_positive = { zh = "limits 的 connect_deadline_secs 与 request_warn_secs 必须大于 0", en = "limits.connect_deadline_secs and limits.request_warn_secs must be greater than 0" }
+limits_max_days = { zh = "limits.connect_deadline_secs 不得超过 7 天", en = "limits.connect_deadline_secs must not exceed 7 days" }
+tools_job_positive = { zh = "tools.job 的 max_running 与 max_wait_secs 必须大于 0", en = "tools.job.max_running and tools.job.max_wait_secs must be greater than 0" }
+tools_max_concurrent_positive = { zh = "tools.max_concurrent_calls 必须大于 0", en = "tools.max_concurrent_calls must be greater than 0" }
+tools_bash_invalid = { zh = "tools.bash 的 monitored_timeout_secs、stall_after_secs、max_timeout_secs、max_output_bytes、persistent_log_bytes 必须大于 0，且 monitored_timeout_secs 不得超过 max_timeout_secs", en = "tools.bash monitored_timeout_secs, stall_after_secs, max_timeout_secs, max_output_bytes, and persistent_log_bytes must be > 0, and monitored_timeout_secs must not exceed max_timeout_secs" }
+tools_todo_positive = { zh = "tools.todo 的 reminders_after 与 reminders_max 必须大于 0", en = "tools.todo.reminders_after and tools.todo.reminders_max must be greater than 0" }
+ptc_field_err = { zh = "tools.ptc.%{field}：%{reason}", en = "tools.ptc.%{field}: %{reason}" }
+ptc_default_timeout = { zh = "必须大于 0 且不超过 max_timeout_secs", en = "must be > 0 and <= max_timeout_secs" }
+ptc_positive = { zh = "必须大于 0", en = "must be > 0" }
+ptc_time_range = { zh = "超出系统时间表示范围", en = "exceeds system time range" }
+ptc_pending_range = { zh = "不得小于并发上限且不能超过 65536", en = "must be >= max_concurrent_calls and <= 65536" }
+ptc_total_range = { zh = "必须在 1..=1000000 范围内", en = "must be within 1..=1000000" }
+ptc_memory_range = { zh = "必须在 8 MiB..=u32::MAX 范围内", en = "must be within 8 MiB..=u32::MAX" }
+ptc_under_memory = { zh = "必须大于 0 且不超过 memory_limit_bytes", en = "must be > 0 and <= memory_limit_bytes" }
+bash_limits_empty = { zh = "tools.bash.limits：启用后至少要配置一项限制（cpu_cores 或内存项）", en = "tools.bash.limits requires at least one limit (cpu_cores or memory) when enabled" }
+bash_limits_cpu = { zh = "tools.bash.limits.cpu_cores 不得超过 256", en = "tools.bash.limits.cpu_cores must not exceed 256" }
+bash_limits_mem_order = { zh = "tools.bash.limits.memory_high_bytes 不得超过 memory_max_bytes", en = "tools.bash.limits.memory_high_bytes must not exceed memory_max_bytes" }
+sandbox_deny_workspace = { zh = "%{field} 不能等于或包含 session workspace %{workspace}（%{path}）", en = "%{field} cannot equal or enclose session workspace %{workspace} (%{path})" }
+sandbox_path_abs = { zh = "%{field} 路径必须是绝对路径或以 ~ 开头：%{value}", en = "%{field} path must be absolute or start with ~: %{value}" }
+sandbox_path_missing = { zh = "%{field} 路径不存在：%{path}", en = "%{field} path does not exist: %{path}" }
+sandbox_mode_unavailable = { zh = "sandbox.default_mode=%{mode} 在当前平台不可用；请改用 full，或在 WSL2/macOS 中提供 sandbox runner", en = "sandbox.default_mode=%{mode} is unavailable on this platform; use full or provide a sandbox runner on WSL2/macOS" }
+sandbox_mode_unavailable_short = { zh = "sandbox.default_mode=%{mode} 在当前平台不可用，请改用 full 或调整配置", en = "sandbox.default_mode=%{mode} is unavailable on this platform; use full or update config" }
+permission_unsupported = { zh = "当前平台不支持 %{mode} permission；可用模式：%{available}", en = "Permission %{mode} is not supported on this platform; available: %{available}" }
+engine_feature_disabled = { zh = "引擎 %{engine} 已被 [features] %{flag} = false 禁用", en = "Engine %{engine} is disabled by [features] %{flag} = false" }
+select_model_first = { zh = "请先选择 model；上次选择为空或已不可用，非交互调用请传入 --model", en = "Select a model first; the last selection is empty or unavailable — pass --model for non-interactive runs" }
 
-plugin_name_invalid = { zh = "插件名 `%{name}` 不合法", en = "Plugin name `%{name}` is invalid" }
-plugin_key_len = { zh = "插件配置键长度必须为 1..256 字节", en = "Plugin config keys must be 1..256 bytes long" }
-plugin_cfg_no_parent = { zh = "插件配置路径缺少父目录", en = "Plugin config path has no parent directory" }
-plugin_cfg_write = { zh = "插件配置值无法写入 TOML：%{error}", en = "Plugin config value cannot be serialized to TOML: %{error}" }
-plugin_cfg_must_table = { zh = "插件 `%{name}` 的配置项必须是表", en = "Config items of plugin `%{name}` must be a table" }
-plugin_config_must_table = { zh = "插件 `%{name}` 的 config 必须是表", en = "config of plugin `%{name}` must be a table" }
-plugin_cfg_unregistered = { zh = "插件 `%{name}` 未注册配置项 `%{key}`", en = "Plugin `%{name}` has no registered config item `%{key}`" }
-plugin_cfg_error = { zh = "插件 `%{name}` 配置 `%{key}`：%{error}", en = "Plugin `%{name}` config `%{key}`: %{error}" }
-plugin_entry_only_config = { zh = "插件 `%{name}` 的条目只接受 config 表", en = "Entries of plugin `%{name}` only accept a config table" }
-plugin_state_read = { zh = "读取插件状态失败：%{error}", en = "Failed to read plugin state: %{error}" }
-plugin_state_too_big = { zh = "插件状态文件超过 1 MiB 限制", en = "Plugin state file exceeds the 1 MiB limit" }
-plugin_state_corrupt = { zh = "插件状态文件损坏（%{path}）：%{error}", en = "Plugin state file is corrupt (%{path}): %{error}" }
-plugin_state_serialize = { zh = "序列化插件状态失败：%{error}", en = "Failed to serialize plugin state: %{error}" }
-plugin_state_no_parent = { zh = "插件状态路径缺少父目录", en = "Plugin state path has no parent directory" }
+webfetch_timeout = { zh = "web_fetch.timeout_secs 必须大于 0", en = "web_fetch.timeout_secs must be greater than 0" }
+webfetch_max_bytes = { zh = "web_fetch.max_bytes 必须大于 0", en = "web_fetch.max_bytes must be greater than 0" }
+webfetch_max_chars = { zh = "web_fetch.max_chars 必须大于 0", en = "web_fetch.max_chars must be greater than 0" }
+agents_max_depth = { zh = "agents.max_depth 必须大于 0", en = "agents.max_depth must be greater than 0" }
+
+plugin_name_invalid = { zh = "plugin 名 `%{name}` 不合法", en = "Plugin name `%{name}` is invalid" }
+plugin_key_len = { zh = "plugin 配置键长度必须为 1..256 字节", en = "Plugin config keys must be 1..256 bytes long" }
+plugin_cfg_no_parent = { zh = "plugin 配置路径缺少父目录", en = "Plugin config path has no parent directory" }
+plugin_cfg_write = { zh = "plugin 配置值无法写入 TOML：%{error}", en = "Plugin config value cannot be serialized to TOML: %{error}" }
+plugin_cfg_must_table = { zh = "plugin `%{name}` 的配置项必须是表", en = "Config entry for plugin `%{name}` must be a table" }
+plugin_cfg_item_table = { zh = "plugin 配置项必须是表", en = "Plugin config entry must be a table" }
+plugin_entry_only_config_generic = { zh = "plugin 条目仅接受 config 表", en = "Plugin entries only accept a config table" }
+plugin_config_table_generic = { zh = "plugin config 必须是表", en = "Plugin config must be a table" }
+plugin_state_needs_session = { zh = "持久化 plugin state 需要当前 session", en = "Persisting plugin state requires an active session" }
+plugin_cfg_write_target = { zh = "%{desc}\n写入文件：%{path}", en = "%{desc}\nSaved to: %{path}" }
+plugin_cfg_wrong_layer = { zh = "plugin `%{name}` 配置应写入 `%{path}`，当前设置层不会写入该文件", en = "Config for plugin `%{name}` belongs in `%{path}`, which the current settings layer does not write" }
+plugin_config_must_table = { zh = "plugin `%{name}` 的 config 必须是表", en = "config of plugin `%{name}` must be a table" }
+plugin_cfg_unregistered = { zh = "plugin `%{name}` 未注册配置项 `%{key}`", en = "Plugin `%{name}` has no registered config item `%{key}`" }
+plugin_cfg_error = { zh = "plugin `%{name}` 配置 `%{key}`：%{error}", en = "Plugin `%{name}` config `%{key}`: %{error}" }
+plugin_entry_only_config = { zh = "plugin `%{name}` 的条目仅接受 config 表", en = "Entries of plugin `%{name}` only accept a config table" }
+plugin_state_read = { zh = "读取 plugin state 失败：%{error}", en = "Failed to read plugin state: %{error}" }
+plugin_state_too_big = { zh = "plugin state 文件超过 1 MiB 限制", en = "Plugin state file exceeds the 1 MiB limit" }
+plugin_state_corrupt = { zh = "plugin state 文件损坏（%{path}）：%{error}", en = "Plugin state file is corrupt (%{path}): %{error}" }
+plugin_state_serialize = { zh = "序列化 plugin state 失败：%{error}", en = "Failed to serialize plugin state: %{error}" }
+plugin_state_no_parent = { zh = "plugin state 路径缺少父目录", en = "Plugin state path has no parent directory" }
 
 web_toml_invalid = { zh = "web.toml 格式有误：%{error}", en = "web.toml has invalid TOML: %{error}" }
 web_toml_conflict = { zh = "web.toml 已被其他窗口修改，请刷新后重试", en = "web.toml was modified by another window; refresh and retry" }
-web_toml_serialize = { zh = "web.toml 无法序列化：%{error}", en = "Failed to serialize web.toml: %{error}" }
+web_toml_serialize = { zh = "web.toml 序列化失败：%{error}", en = "Failed to serialize web.toml: %{error}" }
 
-eocc_nothing = { zh = "EoCC：没有可压缩的历史", en = "EoCC: no history available to compact" }
+eocc_nothing = { zh = "EoCC：暂无可压缩的历史", en = "EoCC: no history available to compact" }
+eocc_budget_full = { zh = "EoCC：系统、任务与运行状态已占满压缩预算，请提高触发阈值或精简固定 context", en = "EoCC: system, task, and runtime state fill the compaction budget; raise the threshold or trim fixed context" }
+eocc_input_overflow = { zh = "EoCC：先前状态与任务无法放入摘要 model 的输入窗口", en = "EoCC: prior state and task do not fit in the summary model input window" }
+eocc_tool_group_overflow = { zh = "EoCC：完整工具调用组无法放入摘要请求", en = "EoCC: complete tool group does not fit in the summary request" }
+eocc_handoff_overflow = { zh = "EoCC：交接状态超出恢复预算，未替换历史", en = "EoCC: handoff state exceeds the recovery budget; history left unchanged" }
+eocc_handoff_failed = { zh = "EoCC：无法生成合格的交接状态：%{reason}", en = "EoCC: failed to produce a valid handoff state: %{reason}" }
 
-provider_no_api = { zh = "供应商 %{id} 没有选择 API 格式", en = "Provider %{id} has no API format selected" }
-provider_base_url = { zh = "供应商 %{id} 的服务地址必须以 http:// 或 https:// 开头", en = "Provider %{id} base URL must start with http:// or https://" }
+provider_no_api = { zh = "provider %{id} 尚未选择 API 协议", en = "Provider %{id} has no API protocol selected" }
+provider_base_url = { zh = "provider %{id} 的 Base URL 必须以 http:// 或 https:// 开头", en = "Provider %{id} Base URL must start with http:// or https://" }
 cmd_status = { zh = "%{label} 命令以状态 %{status} 失败", en = "%{label} command failed with status %{status}" }
-model_fmt_bad = { zh = "模型写法「%{value}」不正确，应为 供应商/模型", en = "Model selector \"%{value}\" is invalid; expected provider/model" }
-model_fmt_incomplete = { zh = "模型写法「%{value}」不完整", en = "Model selector \"%{value}\" is incomplete" }
-no_shell_keys = { zh = "没有可用的 shell，无法解析以 ! 开头的密钥命令", en = "No shell available to resolve `!` key commands" }
+model_fmt_bad = { zh = "model 写法「%{value}」无效，应为 provider/model", en = "Model selector \"%{value}\" is invalid; expected provider/model" }
+model_fmt_incomplete = { zh = "model 写法「%{value}」不完整", en = "Model selector \"%{value}\" is incomplete" }
+thinking_level_invalid = { zh = "thinking 等级「%{value}」无效：仅允许小写字母、数字与 - _ .，最长 32 字符", en = "Thinking level \"%{value}\" is invalid: lowercase letters, digits, and - _ . only, up to 32 chars" }
+model_ctx_positive = { zh = "providers.%{provider}.models.%{model}.context_window 必须大于 0", en = "providers.%{provider}.models.%{model}.context_window must be greater than 0" }
+model_req_bytes_positive = { zh = "providers.%{provider}.models.%{model}.max_request_bytes 必须大于 0", en = "providers.%{provider}.models.%{model}.max_request_bytes must be greater than 0" }
+model_thinking_non_off = { zh = "providers.%{provider}.models.%{model}.thinking_levels 必须包含至少一个非 off 等级", en = "providers.%{provider}.models.%{model}.thinking_levels must include at least one non-off level" }
+model_default_effort_missing = { zh = "providers.%{provider}.models.%{model} 的 API 默认 thinking effort %{level} 不在 thinking_levels 中", en = "API default thinking effort %{level} for providers.%{provider}.models.%{model} is not in thinking_levels" }
+model_unknown_provider = { zh = "model selector `%{selector}` 引用了不存在的 provider `%{provider}`", en = "Model selector `%{selector}` references unknown provider `%{provider}`" }
+model_unknown_model = { zh = "model selector `%{selector}` 引用了不存在的 model `%{model}`", en = "Model selector `%{selector}` references unknown model `%{model}`" }
+model_is_image_gen = { zh = "model `%{selector}` 已标记为 Image Gen，仅可在 Image Playground 中使用", en = "Model `%{selector}` is marked as Image Gen and can only be used in Image Playground" }
+model_unsupported_level = { zh = "model %{selector} 不支持 thinking 等级 %{level}；可在该 model 的 Thinking Levels 中调整", en = "Model %{selector} does not support thinking level %{level}; adjust it under Thinking Levels" }
+image_model_unknown_provider = { zh = "图片 model `%{selector}` 引用了不存在的 provider `%{provider}`", en = "Image model `%{selector}` references unknown provider `%{provider}`" }
+image_model_unknown_model = { zh = "图片 model `%{selector}` 引用了不存在的 model `%{model}`", en = "Image model `%{selector}` references unknown model `%{model}`" }
+image_model_not_flagged = { zh = "model `%{selector}` 未启用 Image Gen", en = "Model `%{selector}` does not have Image Gen enabled" }
+fusion_not_configured = { zh = "尚未配置 Fusion 组合：请在 models.fusion 中同时设置 lead 与 sidekick model", en = "Fusion is not configured: set both lead and sidekick models under models.fusion" }
+fusion_fmt_bad = { zh = "Fusion 写法「%{selector}」无效，应为 fusion:<lead>+<sidekick>", en = "Fusion selector \"%{selector}\" is invalid; expected fusion:<lead>+<sidekick>" }
+fusion_no_nesting = { zh = "Fusion 两侧必须是普通 model selector，不能嵌套 Fusion：%{side}", en = "Both sides of Fusion must be plain model selectors; nesting is not allowed: %{side}" }
+no_shell_keys = { zh = "没有可用的 shell，无法解析以 ! 开头的 API Key 命令", en = "No shell available to resolve `!` API Key commands" }
 env_missing = { zh = "%{label} 环境变量 %{name} 不存在", en = "%{label} environment variable %{name} does not exist" }
-cmd_start = { zh = "%{label} 命令无法启动: %{error}", en = "%{label} command failed to start: %{error}" }
-cmd_not_utf8 = { zh = "%{label} 命令输出不是 UTF-8: %{error}", en = "%{label} command output is not UTF-8: %{error}" }
-parse_empty = { zh = "%{label} 解析为空", en = "%{label} resolved to an empty value" }
+cmd_start = { zh = "%{label} 命令无法启动：%{error}", en = "%{label} command failed to start: %{error}" }
+cmd_not_utf8 = { zh = "%{label} 命令输出不是有效 UTF-8：%{error}", en = "%{label} command output is not valid UTF-8: %{error}" }
+parse_empty = { zh = "%{label} 解析结果为空", en = "%{label} resolved to an empty value" }
 label_unparsable = { zh = "%{label} 无法解析：%{detail}", en = "%{label} cannot be resolved: %{detail}" }
-explore_agent_unparsable = { zh = "探索子代理模型无法解析：%{detail}", en = "Explore subagent model cannot be resolved: %{detail}" }
-selection_invalid = { zh = "模型选择记录无效：%{error}", en = "Model selection record is invalid: %{error}" }
-no_model_list = { zh = "模型服务没有返回模型列表", en = "The model service returned no model list" }
-model_entry_no_id = { zh = "模型列表里有条目缺少模型 ID", en = "An entry in the model list is missing its model ID" }
-pagination_incomplete = { zh = "模型列表的分页数据不完整", en = "Model list pagination data is incomplete" }
-fetch_models_failed = { zh = "获取模型失败：%{error}", en = "Failed to fetch models: %{error}" }
+explore_agent_unparsable = { zh = "Explore subagent model 无法解析：%{detail}", en = "Explore subagent model cannot be resolved: %{detail}" }
+selection_invalid = { zh = "model 选择记录无效：%{error}", en = "Model selection record is invalid: %{error}" }
+no_model_list = { zh = "上游服务未返回 model 列表", en = "The upstream service returned no model list" }
+model_entry_no_id = { zh = "model 列表中存在缺少 ID 的条目", en = "An entry in the model list is missing its ID" }
+pagination_incomplete = { zh = "model 列表分页数据不完整", en = "Model list pagination data is incomplete" }
+fetch_models_failed = { zh = "获取 model 列表失败：%{error}", en = "Failed to fetch models: %{error}" }
 
 freeze_history = { zh = "冻结历史正文失败：%{error}", en = "Failed to freeze history body: %{error}" }
 verify_frozen = { zh = "校验冻结正文失败：%{error}", en = "Failed to verify frozen body: %{error}" }
 
-skills_maintaining_busy = { zh = "SESSION_BUSY: 正在维护技能摘要", en = "SESSION_BUSY: skills summary maintenance is running" }
-message_empty = { zh = "补充消息不能为空", en = "Supplementary message must not be empty" }
+skills_maintaining_busy = { zh = "SESSION_BUSY: 正在维护 skills 摘要", en = "SESSION_BUSY: skills summary maintenance is running" }
+message_empty = { zh = "补充消息不能为空", en = "Steering message must not be empty" }
+bash_empty = { zh = "bash 命令不能为空", en = "Bash command must not be empty" }
+uri_is_namespace = { zh = "该 URI 是命名空间，请使用 resource/list 列举", en = "This URI is a namespace; use resource/list to enumerate it" }
+retry_no_context = { zh = "当前 session 没有可重试的 context", en = "Current session has no context to retry" }
+retry_turn_completed = { zh = "上一轮已正常结束，没有可重试的内容；请直接发送新消息", en = "The previous turn completed normally with nothing to retry; send a new message instead" }
+workflow_actor_no_prompt = { zh = "workflow actor 不能通过 session/prompt 或 session/retry 单独执行；请继续所属 workflow run", en = "A workflow actor cannot run directly via session/prompt or session/retry; continue its workflow run instead" }
+workflow_disabled = { zh = "workflow 已禁用（[workflow] enabled = false）", en = "Workflow is disabled ([workflow] enabled = false)" }
+workflow_no_approval_cap = { zh = "workflow 需要审批能力，当前连接不支持审批交互", en = "Workflows require approval capability; this connection cannot answer approvals" }
+workflow_approval_missing = { zh = "workflow approval %{id} 不存在或已处理", en = "Workflow approval %{id} does not exist or was already resolved" }
+workflow_run_not_running = { zh = "workflow run %{id} 未在运行中", en = "Workflow run %{id} is not running" }
+workflow_artifact_invalid_id = { zh = "无效的 artifact ID「%{id}」", en = "Invalid artifact ID \"%{id}\"" }
+workflow_artifact_dir_unreadable = { zh = "无法读取 artifact 目录：%{error}", en = "Artifact directory unreadable: %{error}" }
+workflow_artifact_version_missing = { zh = "未找到 artifact %{id} 的版本 %{version}", en = "Artifact %{id} version %{version} not found" }
+workflow_artifact_no_versions = { zh = "artifact %{id} 没有任何版本", en = "Artifact %{id} has no versions" }
+workflow_artifact_unreadable = { zh = "无法读取 artifact：%{error}", en = "Artifact unreadable: %{error}" }
+
 frontmatter_invalid = { zh = "SKILL.md frontmatter 无效：%{detail}", en = "Invalid SKILL.md frontmatter: %{detail}" }
 frontmatter_unclosed = { zh = "frontmatter 缺少闭合的 `---` 行", en = "frontmatter is missing its closing `---` line" }
 frontmatter_yaml = { zh = "YAML 解析失败：%{error}", en = "Failed to parse YAML: %{error}" }
-limits_min = { zh = "tools.bash.limits.%{field}: 必须为 0 或至少 64 MiB", en = "tools.bash.limits.%{field}: must be 0 or at least 64 MiB" }
-skills_src_moc = { zh = "项目 .moc/skills（%{dir}）", en = "project .moc/skills (%{dir})" }
-skills_src_agents = { zh = "项目 .agents/skills（%{dir}）", en = "project .agents/skills (%{dir})" }
-skills_src_dirs = { zh = "配置 dirs（%{dir}）", en = "configured dirs (%{dir})" }
-preset_registered = { zh = "子代理角色 `%{name}` 已注册", en = "Subagent preset `%{name}` is already registered" }
-ctx_snapshot_save = { zh = "保存上下文快照失败：%{error}", en = "Failed to save context snapshot: %{error}" }
-ctx_no_request = { zh = "当前上下文尚未形成可发送请求：%{error}", en = "The current context has not formed a sendable request: %{error}" }
-ctx_snapshot_read = { zh = "读取上下文快照失败：%{error}", en = "Failed to read context snapshot: %{error}" }
+limits_min = { zh = "tools.bash.limits.%{field} 必须为 0 或至少 64 MiB", en = "tools.bash.limits.%{field} must be 0 or at least 64 MiB" }
+skills_src_moc = { zh = "project .moc/skills (%{dir})", en = "project .moc/skills (%{dir})" }
+skills_src_agents = { zh = "project .agents/skills (%{dir})", en = "project .agents/skills (%{dir})" }
+skills_src_dirs = { zh = "configured dirs (%{dir})", en = "configured dirs (%{dir})" }
+preset_name_invalid = { zh = "agent preset 名 `%{name}` 无效：须以小写字母开头，仅含小写字母、数字或连字符", en = "Agent preset name `%{name}` is invalid: must start with a lowercase letter and contain only lowercase letters, digits, or hyphens" }
+preset_prompt_empty = { zh = "agent preset `%{name}` 的 system_prompt 不能为空", en = "Agent preset `%{name}` system_prompt must not be empty" }
+preset_prompt_too_long = { zh = "agent preset `%{name}` 的 system_prompt 超过 %{max} 字符上限", en = "Agent preset `%{name}` system_prompt exceeds the %{max}-character limit" }
+preset_registered = { zh = "subagent preset `%{name}` 已注册", en = "Subagent preset `%{name}` is already registered" }
+ctx_snapshot_save = { zh = "保存 context 快照失败：%{error}", en = "Failed to save context snapshot: %{error}" }
+ctx_no_request = { zh = "当前 context 尚未形成可发送请求：%{error}", en = "Current context has not formed a sendable request: %{error}" }
+ctx_snapshot_read = { zh = "读取 context 快照失败：%{error}", en = "Failed to read context snapshot: %{error}" }
+ctx_cursor_oob = { zh = "目录游标越界", en = "Directory cursor out of bounds" }
+ctx_invalid_node = { zh = "无效的节点 ID", en = "Invalid node ID" }
+ctx_node_missing = { zh = "节点不存在", en = "Node not found" }
+ctx_utf8_cursor = { zh = "正文游标必须位于 UTF-8 字符边界", en = "Text cursor must lie on a UTF-8 character boundary" }
+ctx_view_expired = { zh = "context 视图已过期或已释放，请刷新", en = "Context view has expired or been released; please refresh" }
 cwd_invalid = { zh = "工作目录无效：%{error}", en = "Invalid working directory: %{error}" }
 artifact_save_failed = { zh = "[E_ARTIFACT] 命令已执行，但保存输出失败：%{error}", en = "[E_ARTIFACT] Command ran, but saving its output failed: %{error}" }
 history_transfer = { zh = "历史传输失败：%{error}", en = "History transfer failed: %{error}" }
 plugin_prefix = { zh = "插件 `%{plugin}`：", en = "Plugin `%{plugin}`: " }
-retry_notice = { zh = "本次生成失败，%{secs} 秒后自动重试（第 %{attempt}/%{max} 次）。先前输出已丢弃。\n%{message}", en = "Generation failed; retrying in %{secs}s (attempt %{attempt}/%{max}). Previous preview discarded.\n%{message}" }
-request_retry_notice = { zh = "连接或请求失败，%{secs} 秒后自动重试（第 %{attempt}/%{max} 次）。\n%{message}", en = "Connection or request failed; retrying in %{secs}s (attempt %{attempt}/%{max}).\n%{message}" }
-slow_request_warn = { zh = "本次请求已等待 %{secs} 秒，仍在等待模型响应，不会自动中断", en = "Waiting %{secs}s for the model response; the request will continue" }
-sandbox_read = { zh = "允许在沙盒外读取：%{target}", en = "Allow reading outside the sandbox: %{target}" }
-perm_dangerous_title = { zh = "确认执行高危命令：%{cmd}", en = "Confirm dangerous command: %{cmd}" }
-perm_dangerous_body = { zh = "命令：\n%{command}\n\n命中高危规则：\n%{pattern}\n\n批准后仍按当前权限模式执行。", en = "Command:\n%{command}\n\nMatched dangerous-command rule:\n%{pattern}\n\nIf approved, it still runs under the current permission mode." }
-perm_write_title = { zh = "允许在工作区外写入：%{paths}", en = "Allow writing outside workspace: %{paths}" }
-perm_write_body = { zh = "以下目标在沙盒允许范围之外：\n%{paths}\n\n当前权限：%{perm}。允许后写入将直接保存到磁盘。", en = "These targets are outside the sandbox:\n%{paths}\n\nCurrent permission: %{perm}. If approved, changes will be written to disk." }
-perm_write_preview = { zh = "\n\n写入预览（前 %{lines} 行，共 %{bytes} 字节）：\n%{preview}", en = "\n\nContent preview (first %{lines} lines, %{bytes} bytes total):\n%{preview}" }
-perm_bash_title = { zh = "允许以 %{mode} 模式运行命令：%{cmd}", en = "Allow running command in %{mode} mode: %{cmd}" }
-perm_bash_body = { zh = "命令：\n%{command}\n\n理由：\n%{justification}\n\n当前权限：%{current}；申请权限：%{target}。", en = "Command:\n%{command}\n\nReason:\n%{justification}\n\nCurrent permission: %{current}; requested: %{target}." }
+# 会话工作区运行态通知：双语全英文，且保留 `%{secs}s (attempt %{attempt}/%{max})` 兼容 TUI 与 Web 倒计时解析
+retry_notice = { zh = "Generation failed; retrying in %{secs}s (attempt %{attempt}/%{max}). Previous preview discarded.\n%{message}", en = "Generation failed; retrying in %{secs}s (attempt %{attempt}/%{max}). Previous preview discarded.\n%{message}" }
+request_retry_notice = { zh = "Connection or request failed; retrying in %{secs}s (attempt %{attempt}/%{max}).\n%{message}", en = "Connection or request failed; retrying in %{secs}s (attempt %{attempt}/%{max}).\n%{message}" }
+slow_request_warn = { zh = "Waiting %{secs}s for model response; request continues", en = "Waiting %{secs}s for model response; request continues" }
+tool_loop_redirect = { zh = "No-progress tool loop detected; redirected model once: %{detail}", en = "No-progress tool loop detected; redirected model once: %{detail}" }
+thinking_sig_stripped = { zh = "Upstream rejected historical thinking signature (thinking_signature_invalid); stripped old thinking blocks and retried", en = "Upstream rejected historical thinking signature (thinking_signature_invalid); stripped old thinking blocks and retried" }
+# 权限请求：标题与预览头全英文，说明正文走双语 i18n
+sandbox_read = { zh = "Allow read outside sandbox: %{target}", en = "Allow read outside sandbox: %{target}" }
+perm_dangerous_title = { zh = "Confirm dangerous command: %{cmd}", en = "Confirm dangerous command: %{cmd}" }
+perm_dangerous_body = { zh = "Command:\n%{command}\n\nMatched rule:\n%{pattern}\n\n批准后仍按当前 permission 模式执行。", en = "Command:\n%{command}\n\nMatched rule:\n%{pattern}\n\nIf approved, it still runs under the current permission mode." }
+perm_write_title = { zh = "Allow write outside workspace: %{paths}", en = "Allow write outside workspace: %{paths}" }
+perm_write_body = { zh = "以下目标位于 sandbox 允许范围之外：\n%{paths}\n\n当前 permission：%{perm}。批准后改动将直接写入磁盘。", en = "These targets are outside the sandbox:\n%{paths}\n\nCurrent permission: %{perm}. If approved, changes will be written directly to disk." }
+perm_write_preview = { zh = "\n\nPreview (first %{lines} lines, %{bytes} bytes total):\n%{preview}", en = "\n\nPreview (first %{lines} lines, %{bytes} bytes total):\n%{preview}" }
+perm_bash_title = { zh = "Allow command in %{mode} mode: %{cmd}", en = "Allow command in %{mode} mode: %{cmd}" }
+perm_bash_body = { zh = "Command:\n%{command}\n\nReason:\n%{justification}\n\n当前 permission：%{current}；申请：%{target}。", en = "Command:\n%{command}\n\nReason:\n%{justification}\n\nCurrent permission: %{current}; requested: %{target}." }
 btw_empty = { zh = "旁路问题不能为空", en = "Aside question must not be empty" }
 btw_max_turns = { zh = "旁路历史最多保留 %{max} 轮", en = "Aside history keeps at most %{max} turns" }
-btw_no_text = { zh = "当前模型不支持旁路文本问答", en = "Current model does not support text aside Q&A" }
+btw_no_text = { zh = "当前 model 不支持文本旁路问答", en = "Current model does not support text aside Q&A" }
 btw_no_tools = { zh = "旁路问答不能执行工具，请改问无需执行操作的问题", en = "Aside Q&A cannot run tools; ask a text-only question instead" }
-btw_overflow = { zh = "旁路上下文超出模型窗口；旁路不会压缩主会话，请缩短问题或在主会话中处理", en = "Aside context exceeds the model window; aside Q&A does not compact the main session — shorten your question or handle it in the main thread" }
-btw_budget_exceeded = { zh = "主上下文与旁路问题合计约 %{tokens} tokens，超出模型窗口 %{window}；旁路不会压缩主会话", en = "Main context plus aside question is ~%{tokens} tokens, exceeding the %{window}-token window; aside Q&A does not compact the main session" }
-ctx_budget_warn = { zh = "AGENTS.md 超出 %{budget} token 上限，已截断或省略 %{omitted} 份文件（可在「设置 → 指令 → AGENTS.md token 上限」调整）", en = "AGENTS.md exceeded the %{budget}-token limit; truncated or omitted %{omitted} file(s) (adjust under Settings → Instructions → AGENTS.md token limit)" }
+btw_overflow = { zh = "旁路上下文超出模型窗口；旁路不会压缩主会话，请缩短问题或在主对话中处理", en = "Aside context exceeds the model window; aside Q&A does not compact the main session — shorten your question or handle it in the main thread" }
+btw_budget_exceeded = { zh = "主 context 与旁路问题合计约 %{tokens} tokens，超出模型窗口 %{window}；旁路不会压缩主会话", en = "Main context plus aside question is ~%{tokens} tokens, exceeding the %{window}-token window; aside Q&A does not compact the main session" }
+ctx_budget_warn = { zh = "AGENTS.md 超出 %{budget} tokens 上限，已截断或省略 %{omitted} 份文件（可在 Settings → Instructions → AGENTS.md Max Tokens 调整）", en = "AGENTS.md exceeded the %{budget}-token limit; truncated or omitted %{omitted} file(s) (adjust under Settings → Instructions → AGENTS.md Max Tokens)" }
 ctx_oversized_warn = { zh = "%{count} 份指令文件超过 1 MiB 上限已跳过：%{names}", en = "Skipped %{count} instruction file(s) exceeding the 1 MiB limit: %{names}" }
 ctx_import_warn = { zh = "AGENTS.md 中的 @ 导入累计超过 4 MiB，部分内容已忽略", en = "AGENTS.md @-imports exceeded the 4 MiB total limit; some imports were skipped" }
-skills_src_user = { zh = "用户 .moc/skills", en = "user .moc/skills" }
-skills_src_global = { zh = "全局 .agents/skills", en = "global .agents/skills" }
+skills_src_user = { zh = "user .moc/skills", en = "user .moc/skills" }
+skills_src_global = { zh = "global .agents/skills", en = "global .agents/skills" }
+
+# ---- fs/* 文件系统错误 ----
+
+[core.fs]
+no_home = { zh = "无法解析用户主目录", en = "Cannot resolve user home directory" }
+not_absolute = { zh = "需要绝对路径", en = "An absolute path is required" }
+dir_io = { zh = "目录无效：%{path}：%{source}", en = "Invalid directory: %{path}: %{source}" }
+not_dir = { zh = "目录无效（%{path}）：不是目录", en = "Invalid directory (%{path}): not a directory" }
+invalid_dir_name = { zh = "目录名无效：%{name}", en = "Invalid directory name: %{name}" }
+dir_exists = { zh = "目录已存在：%{path}", en = "Directory already exists: %{path}" }
+invalid_file_name = { zh = "文件名无效：%{name}", en = "Invalid file name: %{name}" }
+file_exists = { zh = "文件已存在：%{path}", en = "File already exists: %{path}" }
+path_io = { zh = "路径无效（%{path}）：%{source}", en = "Invalid path (%{path}): %{source}" }
+not_file = { zh = "路径无效（%{path}）：不是普通文件", en = "Invalid path (%{path}): not a regular file" }
+path_exists = { zh = "路径已存在：%{path}", en = "Path already exists: %{path}" }
+conflict = { zh = "文件已被修改（磁盘 mtime 与 expected_modified_ms 不一致）", en = "File was modified on disk (mtime differs from expected_modified_ms)" }
+trash_failed = { zh = "无法移入回收站（%{path}）：%{message}", en = "Failed to move to trash (%{path}): %{message}" }
+
+# ---- /goal RPC 错误 ----
+
+[core.goal]
+not_supported = { zh = "subagent session 不支持 goal", en = "Subagent sessions do not support goals" }
+empty_objective = { zh = "objective 不能为空", en = "Objective must not be empty" }
+already_exists = { zh = "已有进行中的 goal；请用 /goal edit 修改或 /goal clear 清除后再建", en = "An active goal already exists; use /goal edit to update or /goal clear before creating a new one" }
+no_goal_edit = { zh = "当前没有可编辑的 goal", en = "No goal to edit" }
+complete_edit = { zh = "goal 已完成；可直接用 /goal <objective> 建立新 goal", en = "Goal is complete; create a new one with /goal <objective>" }
+no_goal_pause = { zh = "当前没有可暂停的 goal", en = "No goal to pause" }
+complete_pause = { zh = "goal 已完成，无法暂停", en = "Goal is complete and cannot be paused" }
+no_goal_resume = { zh = "当前没有可恢复的 goal", en = "No goal to resume" }
+complete_resume = { zh = "goal 已完成，无法恢复", en = "Goal is complete and cannot be resumed" }
 
 [core.session]
-new_title = { zh = "新会话", en = "New session" }
+new_title = { zh = "New session", en = "New session" }
 
 # ---- /session 与 /debuginfo 输出 ----
 
 [core.inspect]
-space_fmt = { zh = "%{files} 个文件 · %{size}%{incomplete}", en = "%{files} files · %{size}%{incomplete}" }
+space_fmt = { zh = "%{files} files · %{size}%{incomplete}", en = "%{files} files · %{size}%{incomplete}" }
 space_incomplete = { zh = "（统计不完整）", en = " (stats incomplete)" }
 log_not_file = { zh = "非普通文件，未计入", en = "not a regular file; excluded" }
 log_not_written = { zh = "尚未落盘", en = "not persisted yet" }
 log_unreadable = { zh = "无法读取大小", en = "size unreadable" }
-header = { zh = "会话信息\nID：%{id}\n标题：%{title}\n工作目录：%{cwd}\n创建时间：%{created}\n最近更新：%{updated}\n", en = "Session info\nID: %{id}\nTitle: %{title}\nWorking directory: %{cwd}\nCreated: %{created}\nUpdated: %{updated}\n" }
-parent = { zh = "父会话：%{id}", en = "Parent session: %{id}" }
-forked = { zh = "分叉来源：%{id}", en = "Forked from: %{id}" }
-file_line = { zh = "\n会话文件：%{path}", en = "\nSession file: %{path}" }
-size_line = { zh = "文件大小：%{size}%{sep}%{state}", en = "File size: %{size}%{sep}%{state}" }
-format_line = { zh = "格式：%{format}", en = "Format: %{format}" }
-fmt_zst = { zh = "JSONL · zstd 压缩", en = "JSONL · zstd compressed" }
-fmt_plain = { zh = "JSONL · 未压缩", en = "JSONL · uncompressed" }
-sidecar_line = { zh = "附属目录：%{path}", en = "Sidecar directory: %{path}" }
-group_line = { zh = "\n%{label}：%{space}\n  %{path}", en = "\n%{label}: %{space}\n  %{path}" }
+header = { zh = "Session Info\nID: %{id}\nTitle: %{title}\nWorking Dir: %{cwd}\nCreated: %{created}\nUpdated: %{updated}\n", en = "Session Info\nID: %{id}\nTitle: %{title}\nWorking Dir: %{cwd}\nCreated: %{created}\nUpdated: %{updated}\n" }
+parent = { zh = "Parent: %{id}", en = "Parent: %{id}" }
+forked = { zh = "Forked from: %{id}", en = "Forked from: %{id}" }
+file_line = { zh = "\nSession File: %{path}", en = "\nSession File: %{path}" }
+size_line = { zh = "File Size: %{size}%{sep}%{state}", en = "File Size: %{size}%{sep}%{state}" }
+format_line = { zh = "Format: %{format}", en = "Format: %{format}" }
+fmt_zst = { zh = "JSONL · zstd", en = "JSONL · zstd" }
+fmt_plain = { zh = "JSONL · plain", en = "JSONL · plain" }
+sidecar_line = { zh = "Sidecar Dir: %{path}", en = "Sidecar Dir: %{path}" }
+group_line = { zh = "\n%{label}: %{space}\n  %{path}", en = "\n%{label}: %{space}\n  %{path}" }
 own_line = { zh = "\n自身持久数据：%{desc}", en = "\nOwn persistent data: %{desc}" }
-children_line = { zh = "子会话持久数据：%{desc}", en = "Child-session persistent data: %{desc}" }
-children_hint = { zh = "  %{path} 下的子会话日志与目录", en = "  Child-session logs and directories under %{path}" }
+children_line = { zh = "子 session 持久数据：%{desc}", en = "Child-session persistent data: %{desc}" }
+children_hint = { zh = "  %{path} 下的子 session 日志与目录", en = "  Child-session logs and directories under %{path}" }
 cache_line = { zh = "临时缓存合计：%{desc}", en = "Temporary cache total: %{desc}" }
-cache_hint = { zh = "  会话及子会话附属目录中的 history/、urlfs/", en = "  history/ and urlfs/ under session and child sidecars" }
-footer = { zh = "文件大小合计不含临时缓存，不跟随符号链接。", en = "File-size totals exclude temporary caches and do not follow symlinks." }
+cache_hint = { zh = "  session 及子 session 附属目录中的 history/、urlfs/", en = "  history/ and urlfs/ under session and child sidecars" }
+footer = { zh = "文件大小合计不含临时缓存，且不跟随符号链接。", en = "File-size totals exclude temporary caches and do not follow symlinks." }
 
 [core.inspect.group]
-plans = { zh = "计划文件 · local://", en = "Plan files · local://" }
-artifacts = { zh = "工具产物 · artifact://artifacts/", en = "Tool artifacts · artifact://artifacts/" }
-jobs = { zh = "任务输出 · artifact://jobs/", en = "Job output · artifact://jobs/" }
-compaction = { zh = "压缩数据", en = "Compaction data" }
-workflows = { zh = "工作流数据", en = "Workflow data" }
-plugins = { zh = "插件状态", en = "Plugin state" }
-history = { zh = "历史临时缓存", en = "History temp cache" }
-urlfs = { zh = "URI 映射缓存", en = "URI mapping cache" }
+plans = { zh = "Plans · local://", en = "Plans · local://" }
+artifacts = { zh = "Artifacts · artifact://artifacts/", en = "Artifacts · artifact://artifacts/" }
+jobs = { zh = "Jobs · artifact://jobs/", en = "Jobs · artifact://jobs/" }
+compaction = { zh = "Compaction", en = "Compaction" }
+workflows = { zh = "Workflows", en = "Workflows" }
+plugins = { zh = "Plugins", en = "Plugins" }
+history = { zh = "History Cache", en = "History Cache" }
+urlfs = { zh = "URI Cache", en = "URI Cache" }
 
 [core.export]
 path_empty = { zh = "导出路径不能为空", en = "Export path must not be empty" }
-failed = { zh = "会话导出失败：%{error}", en = "Session export failed: %{error}" }
-model = { zh = "模型", en = "Model" }
-session = { zh = "会话", en = "Session" }
-created = { zh = "创建时间（Unix 毫秒）", en = "Created (Unix milliseconds)" }
+failed = { zh = "session 导出失败：%{error}", en = "Session export failed: %{error}" }
+model = { zh = "Model", en = "Model" }
+session = { zh = "Session", en = "Session" }
+created = { zh = "Created (Unix ms)", en = "Created (Unix ms)" }
 empty = { zh = "暂无对话历史", en = "No conversation history yet" }
-user = { zh = "用户", en = "User" }
-assistant = { zh = "助手", en = "Assistant" }
-image = { zh = "[图片附件未导出]", en = "[Image attachment omitted]" }
-arguments = { zh = "参数", en = "Arguments" }
-output = { zh = "输出", en = "Output" }
-truncated = { zh = "[内容已截断]", en = "[Content truncated]" }
+user = { zh = "User", en = "User" }
+assistant = { zh = "Assistant", en = "Assistant" }
+image = { zh = "[Image attachment omitted]", en = "[Image attachment omitted]" }
+arguments = { zh = "Arguments", en = "Arguments" }
+output = { zh = "Output", en = "Output" }
+truncated = { zh = "[Content truncated]", en = "[Content truncated]" }
 
 [core.debug]
-title = { zh = "工具使用统计\n", en = "Tool usage statistics\n" }
-total = { zh = "总计", en = "total" }
+title = { zh = "Tool Usage\n", en = "Tool Usage\n" }
+total = { zh = "Total", en = "Total" }
 compactions = { zh = "上下文压缩：%{n} 次", en = "Context compactions: %{n}" }
-row = { zh = "%{name}：%{calls} 次 · 成功 %{ok} · 失败 %{err} · 成功率 %{rate}", en = "%{name}: %{calls} calls · %{ok} ok · %{err} failed · %{rate} success" }
-denied = { zh = "拒绝", en = "denied" }
-cancelled = { zh = "取消", en = "cancelled" }
-pending = { zh = "未结束", en = "pending" }
+row = { zh = "%{name}: %{calls} calls · %{ok} OK · %{err} failed · %{rate} success", en = "%{name}: %{calls} calls · %{ok} OK · %{err} failed · %{rate} success" }
+denied = { zh = "Denied", en = "Denied" }
+cancelled = { zh = "Cancelled", en = "Cancelled" }
+pending = { zh = "Pending", en = "Pending" }
 
 [core.mode]
-plan_done = { zh = "计划已经处理过", en = "The plan has already been resolved" }
-plan_not_submitted = { zh = "计划不在待审阅状态", en = "The plan is not in the submitted state" }
+plan_done = { zh = "该计划已处理完成", en = "This plan has already been resolved" }
+plan_not_submitted = { zh = "该计划不处于待审阅状态", en = "This plan is not awaiting review" }
 note_and_review_empty = { zh = "批注与整体意见不能同时为空", en = "Annotations and overall feedback cannot both be empty" }
 notes_too_many = { zh = "批注条数超过上限", en = "Too many annotations" }
-review_too_long = { zh = "整体意见超过上限", en = "Overall feedback exceeds the limit" }
-note_id_invalid = { zh = "批注 id 无效", en = "Invalid annotation id" }
-note_line_range = { zh = "批注行号超出计划范围", en = "Annotation line is out of the plan's range" }
+review_too_long = { zh = "整体意见超过长度上限", en = "Overall feedback exceeds the length limit" }
+note_id_invalid = { zh = "批注 ID 无效", en = "Invalid annotation ID" }
+note_line_range = { zh = "批注行号超出计划范围", en = "Annotation line is out of range for the plan" }
 note_body_empty = { zh = "批注正文不能为空", en = "Annotation body must not be empty" }
-note_body_too_long = { zh = "批注正文超过上限", en = "Annotation body exceeds the limit" }
-note_quote_too_long = { zh = "批注引用超过上限", en = "Annotation quote exceeds the limit" }
-notes_total_too_long = { zh = "批注总量超过上限", en = "Total annotation size exceeds the limit" }
+note_body_too_long = { zh = "批注正文超过长度上限", en = "Annotation body exceeds the length limit" }
+note_quote_too_long = { zh = "批注引用超过长度上限", en = "Annotation quote exceeds the length limit" }
+notes_total_too_long = { zh = "批注总长度超过上限", en = "Total annotation size exceeds the limit" }
 
 [core.preset]
 agent_default = { zh = "通用编码代理", en = "General-purpose coding agent" }
 
 [core.outline]
-rules_note = { zh = "规则加载说明", en = "Rules loading notes" }
-scope_project = { zh = "项目", en = "project" }
-scope_global = { zh = "全局", en = "global" }
-tool_def = { zh = "工具定义", en = "tool definition" }
-tool_def_schema = { zh = "工具定义与参数说明", en = "Tool definition and parameters" }
+rules_note = { zh = "Rules loading notes", en = "Rules loading notes" }
+scope_project = { zh = "project", en = "project" }
+scope_global = { zh = "global", en = "global" }
+tool_def = { zh = "tool", en = "tool" }
+tool_def_schema = { zh = "Tool definition & schema", en = "Tool definition & schema" }
 no_readable = { zh = "当前请求未包含可读正文", en = "This request contains no readable body" }
-tool_hidden = { zh = "工具输出已隐藏", en = "Tool output hidden" }
+tool_hidden = { zh = "Tool output hidden", en = "Tool output hidden" }
 user_hidden = { zh = "用户输入超过 2,000 字符或 80 行，正文已隐藏", en = "User input exceeds 2,000 characters or 80 lines; body hidden" }
 
 [core.history]
@@ -1403,6 +1490,6 @@ nothing_to_compact = { zh = "暂无可压缩的对话历史", en = "No conversat
 closed = { zh = "历史传输已关闭或过期，请重新读取", en = "History transfer closed or expired; read it again" }
 expired = { zh = "历史传输已过期，请重新读取", en = "History transfer expired; read it again" }
 offset_oob = { zh = "历史块偏移越界", en = "History chunk offset out of bounds" }
-offset_utf8 = { zh = "历史块偏移必须位于 UTF-8 边界", en = "History chunk offset must lie on a UTF-8 boundary" }
+offset_utf8 = { zh = "历史块偏移必须位于 UTF-8 字符边界", en = "History chunk offset must lie on a UTF-8 character boundary" }
 busy = { zh = "历史传输繁忙，请在当前读取完成后重试", en = "History transfer busy; retry after the current read finishes" }
 cancelled = { zh = "历史读取已取消", en = "History read cancelled" }

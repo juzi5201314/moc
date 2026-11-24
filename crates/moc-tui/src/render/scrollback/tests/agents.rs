@@ -34,7 +34,7 @@ fn agent_message_card_renders_irc_header_and_preview() {
     let text = text_of(&preview);
     assert!(text.contains("IRC ◀ 探查者"), "标题必须标明来源：{text}");
     assert!(text.contains("injected"), "标题必须标出投递结果：{text}");
-    assert!(text.contains("⋯ 还有 3 行"), "简略档只留预览行：{text}");
+    assert!(text.contains("⋯ 3 more lines"), "简略档只留预览行：{text}");
     assert!(text.contains("第 0 行消息") && text.contains("第 2 行消息"));
     assert!(!text.contains("第 3 行消息"));
     assert_eq!(
@@ -48,7 +48,7 @@ fn agent_message_card_renders_irc_header_and_preview() {
     let expanded = render_entry(0, &app.blocks[0], &app, width).lines;
     let text = text_of(&expanded);
     assert!(text.contains("第 5 行消息"));
-    assert!(!text.contains("还有"));
+    assert!(!text.contains("more lines"));
     assert_eq!(
         estimate_entry_height_at(&app, 0, width),
         expanded.len(),
@@ -132,7 +132,7 @@ fn message_agent_card_lists_receipt_rows() {
         "正文必须带消息预览：{text}"
     );
     assert!(text.contains("甲 injected"));
-    assert!(text.contains("乙 failed：收件箱已满"));
+    assert!(text.contains("乙 failed: 收件箱已满"));
     assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
 }
 
@@ -177,7 +177,7 @@ fn wait_agent_renders_progress_rows() {
         .flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref())
         .collect::<String>();
-    assert!(text.contains("等待 2 个代理"));
+    assert!(text.contains("Waiting for 2 agents"));
     assert!(
         text.contains("▸ 甲 · running · 3.2s · cargo test"),
         "运行行带耗时与活动摘要：{text}"
@@ -282,13 +282,13 @@ fn sidekick_card_renders_model_result_and_mode() {
         .flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref())
         .collect::<String>();
-    assert!(text.contains("跑一轮验证 · 压缩后"), "摘要带 mode：{text}");
+    assert!(text.contains("跑一轮验证 · compacted"), "摘要带 mode：{text}");
     assert!(
         text.contains("◆ Sidekick · compacted · completed · test/gpt-cheap:off"),
         "{text}"
     );
     assert!(
-        text.contains("结果 done · 改动 1 个文件 · 验证 1 通过 1 未跑"),
+        text.contains("Result done · 1 files changed · checks 1 passed 1 not run"),
         "{text}"
     );
     assert!(text.contains("! 还有一个待定项"), "{text}");
@@ -331,7 +331,7 @@ fn fixed_agent_previews_show_tasks_and_reports_not_receipts() {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            text.contains("解析器") && text.contains("渲染器") && text.contains("交付报告"),
+            text.contains("解析器") && text.contains("渲染器") && text.contains("Final report"),
             "{text}"
         );
         assert_eq!(

@@ -195,7 +195,7 @@ it("空原因及零等待也显示倒计时，取消或 RPC 失败会移除重�
       </TooltipProvider>,
     );
     await act(async () => {});
-    expect(thread.getByText("0.0 秒后重试")).toBeTruthy();
+    expect(thread.getByText("Retry in 0.0s")).toBeTruthy();
     await act(async () => {
       if (failed) useTranscript.getState().failPrompt(info.id);
       else
@@ -209,7 +209,7 @@ it("空原因及零等待也显示倒计时，取消或 RPC 失败会移除重�
           }),
         );
     });
-    expect(thread.queryByText("0.0 秒后重试")).toBeNull();
+    expect(thread.queryByText("Retry in 0.0s")).toBeNull();
     expect(useTranscript.getState().bySession[info.id].running).toBe(false);
     thread.unmount();
   }
@@ -248,14 +248,7 @@ it("处理摘要在中英文中插入耗时，缺少耗时或异常结束时仍�
         </TooltipProvider>,
       );
       await act(async () => {});
-      const expected =
-        durationMs == null
-          ? language === "zh"
-            ? "过程"
-            : "Process"
-          : language === "zh"
-            ? `工作了 ${durationMs / 1000}秒`
-            : `Worked for ${durationMs / 1000}s`;
+      const expected = durationMs == null ? "Process" : `Worked ${durationMs / 1000}s`;
       expect(thread.getByText(expected)).toBeTruthy();
       expect(thread.container.textContent).not.toContain("{n}");
       thread.unmount();
@@ -288,7 +281,7 @@ it("用户 shell 独立展示且不折叠上一轮最终回复", async () => {
   await act(async () => {});
   expect(thread.getByText("上一轮最终回复")).toBeTruthy();
   expect(thread.getByText("BASH-CHECK")).toBeTruthy();
-  expect(thread.queryByRole("button", { name: "重试" })).toBeNull();
+  expect(thread.queryByRole("button", { name: "Retry" })).toBeNull();
   thread.unmount();
 });
 
@@ -328,7 +321,7 @@ it("虚拟轮次以布局偏移定位，展开过程中的工具标题在正文�
       </TooltipProvider>,
     );
     await act(async () => {});
-    fireEvent.click(thread.getByRole("button", { name: /过程/ }));
+    fireEvent.click(thread.getByRole("button", { name: /Process/ }));
     const toggle = thread.getByRole("button", { name: /printf CHECK/ });
     const header = toggle.parentElement;
     if (!header) throw new Error("缺少工具标题行");
@@ -388,7 +381,7 @@ it("复制回复按需拼接全部正文，保留空段、顺序和流式入口"
     );
     await act(async () => {});
     expect(replyJoins).toBe(0);
-    const button = thread.queryByRole("button", { name: "复制回复" });
+    const button = thread.queryByRole("button", { name: "Copy reply" });
     expect(Boolean(button)).toBe(Boolean(expected));
     if (button) {
       fireEvent.click(button);
@@ -400,13 +393,13 @@ it("复制回复按需拼接全部正文，保留空段、顺序和流式入口"
         draft.running = true;
       }),
     );
-    expect(thread.queryByRole("button", { name: "复制回复" })).toBeNull();
+    expect(thread.queryByRole("button", { name: "Copy reply" })).toBeNull();
     act(() =>
       useTranscript.getState().mutate(info.id, (draft) => {
         draft.running = false;
       }),
     );
-    expect(Boolean(thread.queryByRole("button", { name: "复制回复" }))).toBe(Boolean(expected));
+    expect(Boolean(thread.queryByRole("button", { name: "Copy reply" }))).toBe(Boolean(expected));
     thread.unmount();
     spy.mockRestore();
   }
@@ -524,7 +517,7 @@ it("正文把过程切成「工作了」段，完成后整体再折叠一层", a
     );
     await act(async () => {});
     if (running) {
-      expect(thread.getByRole("button", { name: "工作了 5秒" })).toBeTruthy();
+      expect(thread.getByRole("button", { name: "Worked 5s" })).toBeTruthy();
       expect(thread.queryByRole("button", { name: /printf ONE/ })).toBeNull();
       expect(thread.getByText("中途说明")).toBeTruthy();
       expect(thread.getByRole("button", { name: /printf TWO/ })).toBeTruthy();
@@ -532,12 +525,12 @@ it("正文把过程切成「工作了」段，完成后整体再折叠一层", a
       expect(thread.queryByText("中途说明")).toBeNull();
       expect(thread.getByText("最终回复")).toBeTruthy();
       expect(thread.getByText("gpt-test")).toBeTruthy();
-      fireEvent.click(thread.getByRole("button", { name: "工作了 9秒" }));
+      fireEvent.click(thread.getByRole("button", { name: "Worked 9s" }));
       expect(thread.getByText("中途说明")).toBeTruthy();
       expect(thread.queryByRole("button", { name: /printf/ })).toBeNull();
-      fireEvent.click(thread.getByRole("button", { name: "工作了 3秒" }));
+      fireEvent.click(thread.getByRole("button", { name: "Worked 3s" }));
       expect(thread.getByRole("button", { name: /printf TWO/ })).toBeTruthy();
-      expect(thread.getByRole("button", { name: "工作了 5秒" })).toBeTruthy();
+      expect(thread.getByRole("button", { name: "Worked 5s" })).toBeTruthy();
     }
     thread.unmount();
   }
@@ -557,8 +550,8 @@ it("正文把过程切成「工作了」段，完成后整体再折叠一层", a
   );
   await act(async () => {});
   expect(trailing.getByText("末尾告警")).toBeTruthy();
-  fireEvent.click(trailing.getByRole("button", { name: "工作了 9秒" }));
+  fireEvent.click(trailing.getByRole("button", { name: "Worked 9s" }));
   expect(trailing.getByRole("button", { name: /printf ONE/ })).toBeTruthy();
-  expect(trailing.getAllByRole("button", { name: /工作了/ })).toHaveLength(1);
+  expect(trailing.getAllByRole("button", { name: /Worked/ })).toHaveLength(1);
   trailing.unmount();
 });

@@ -182,7 +182,7 @@ async fn model_picker_asks_before_compacting() {
         .collect::<String>();
     // 宽字符在缓冲区里占两个单元，拼接后每个汉字后面留一个占位空格。
     let compact: String = surface.chars().filter(|ch| !ch.is_whitespace()).collect();
-    assert!(compact.contains("超过test/tiny的窗口"), "{surface}");
+    assert!(compact.contains("超过test/tiny的ContextWindow"), "{surface}");
 
     handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
     let event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -316,7 +316,7 @@ async fn manual_compaction_queues_messages_until_settled() {
     h.gate.open();
     let event = h.settle().await;
     crate::interaction::handle_event(&mut h.app, &h.connection, event);
-    assert_eq!(h.app.notice.as_deref(), Some("上下文压缩已完成"));
+    assert_eq!(h.app.notice.as_deref(), Some("context 压缩已完成。"));
     assert!(h.app.prompt_running && h.app.inflight_prompts.contains(&h.session));
     let event = h
         .next_event(|event| matches!(event, AppEvent::PromptReturned { .. }))

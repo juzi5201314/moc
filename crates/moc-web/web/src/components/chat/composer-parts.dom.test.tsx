@@ -79,8 +79,8 @@ it("手动命令在非 full 权限下提示例外，普通文本和 full 模式�
       useI18n.setState({ locale });
       const hint =
         locale === "zh"
-          ? "手动命令不受沙箱限制，以完整权限运行"
-          : "Manual commands bypass the sandbox and run with full access";
+          ? "手动 command 不受 sandbox 限制，将以 full 权限运行。"
+          : "Manual commands bypass the sandbox and run with full access.";
       for (const permission of [undefined, "full", "workspace", "workspace_only"] as const) {
         for (const text of ["!echo ok", "!!echo ok", "ordinary", ""]) {
           view.rerender(<ShellModeNotice text={text} permission={permission} />);

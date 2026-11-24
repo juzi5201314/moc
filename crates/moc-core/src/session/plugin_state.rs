@@ -3,6 +3,7 @@ use super::SessionTable;
 use super::validate_plugin_state_component;
 use super::validate_plugin_state_key;
 use crate::error::CoreError;
+use moc_i18n::t;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -59,7 +60,7 @@ impl SessionTable {
         let _append = record.append_lock.lock().await;
         if !record.active.load(Ordering::Acquire) {
             return Err(CoreError::Session(
-                "SESSION_NOT_FOUND: 会话已卸载或删除".into(),
+                t!("core.err.session_unloaded").into_owned(),
             ));
         }
         self.ensure_transcript_header(&record).await?;
@@ -84,7 +85,7 @@ impl SessionTable {
         let _append = record.append_lock.lock().await;
         if !record.active.load(Ordering::Acquire) {
             return Err(CoreError::Session(
-                "SESSION_NOT_FOUND: 会话已卸载或删除".into(),
+                t!("core.err.session_unloaded").into_owned(),
             ));
         }
         let mut state = self.read_plugin_state(&record, plugin).await?;
@@ -107,7 +108,7 @@ impl SessionTable {
                 Ok(())
             } else {
                 Err(CoreError::Session(
-                    "SESSION_NOT_FOUND: 会话已卸载或删除".into(),
+                    t!("core.err.session_unloaded").into_owned(),
                 ))
             }
         };

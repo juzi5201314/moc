@@ -77,7 +77,7 @@ function PhaseNode({ data }: { data: Record<string, unknown> }) {
           {info.hole && <CircleHelpIcon className="size-3.5 shrink-0 text-warn" />}
         </NodeTitle>
         <NodeDescription className="space-y-0.5 break-words rounded-lg bg-code px-2 py-1.5 text-xs">
-          {info.roles.length > 0 && <div>{info.roles.join("、")}</div>}
+          {info.roles.length > 0 && <div>{info.roles.join(", ")}</div>}
           <div>
             ask×{info.asks} world×{info.worlds}
           </div>

@@ -247,7 +247,14 @@ pub(super) fn draw_provider_draft(
         description: if draft.pending.is_some() {
             t!("tui.providers.saving")
         } else {
-            t!("tui.providers.url_example")
+            t!([
+                "tui.providers.field_id_desc",
+                "tui.providers.field_api_desc",
+                "tui.providers.field_url_desc",
+                "tui.providers.field_key_desc",
+                "tui.providers.field_add_fetch_desc",
+                "tui.providers.field_add_only_desc",
+            ][draft.focus.min(CONTROLS - 1)])
         }
         .into_owned(),
         source: None,

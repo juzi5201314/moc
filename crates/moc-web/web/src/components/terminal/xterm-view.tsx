@@ -93,7 +93,7 @@ export default function XtermView({ terminal }: { terminal: PtyInfo }) {
                 };
               });
               term?.writeln(
-                `\r\n\x1b[2m${t("term.exited_line")}${code !== null ? ` (${code})` : ""}\x1b[0m`,
+                `\r\n\x1b[2m${code !== null ? t("term.exited_line", { code }) : t("term.exited_line_plain")}\x1b[0m`,
               );
             }
           } catch {

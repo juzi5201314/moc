@@ -61,7 +61,12 @@ pub(super) fn stop_agent_operation(app: &App, connection: &EmbeddedConnection, a
             .await
             .map(|result| crate::subagent::AgentOperationNotice {
                 target: agent_id,
-                message: t!("tui.event.stopped_fmt", n = result.stopped).into_owned(),
+                message: if result.stopped {
+                    t!("tui.event.subagent_stopped")
+                } else {
+                    t!("tui.event.subagent_already_stopped")
+                }
+                .into_owned(),
             })
             .map_err(anyhow::Error::from);
         let _ = events.send(AppEvent::SubagentOperation(result));

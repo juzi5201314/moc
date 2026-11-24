@@ -74,15 +74,15 @@ it("隐藏项无法进入，阅读后返回恢复目录焦点，更新不替换�
   await ui.findByText("提醒正文");
   const notify = on.mock.calls[0][1];
   act(() => notify({ session_id: "s1", update: { type: "prompt_finished" } }));
-  expect(ui.getByLabelText("有更新，刷新上下文")).toBeTruthy();
+  expect(ui.getByLabelText("context 已有更新，点击刷新")).toBeTruthy();
   expect(ui.getByText("提醒正文")).toBeTruthy();
   expect(call.mock.calls.filter(([method]) => method === "session/context_content")).toHaveLength(
     1,
   );
-  fireEvent.click(ui.getByLabelText("返回上一级"));
+  fireEvent.click(ui.getByLabelText("Back"));
   expect(ui.queryByText("提醒正文")).toBeNull();
   expect(document.activeElement).toBe(ui.getByRole("button", { name: /运行时提醒/ }));
-  fireEvent.click(ui.getByLabelText("有更新，刷新上下文"));
+  fireEvent.click(ui.getByLabelText("context 已有更新，点击刷新"));
   await ui.findByText("messages");
   expect(call).toHaveBeenCalledWith("session/context_close", { session_id: "s1", view_id: "v1" });
   ui.unmount();

@@ -200,7 +200,7 @@ async fn prompted_session_appends_message_blocks_after_context() {
         .find(|node| {
             node.source
                 .as_deref()
-                .is_some_and(|source| source.starts_with("用户输入"))
+                .is_some_and(|source| source.starts_with("User input"))
         })
         .unwrap();
     let page = read(&harness, &id, &result.view_id, &user.id, None, None).await;
@@ -214,7 +214,7 @@ async fn prompted_session_appends_message_blocks_after_context() {
         .find(|node| {
             node.source
                 .as_deref()
-                .is_some_and(|source| source.starts_with("模型输出"))
+                .is_some_and(|source| source.starts_with("Assistant output"))
         })
         .unwrap();
     assert_eq!(
@@ -229,7 +229,7 @@ async fn prompted_session_appends_message_blocks_after_context() {
         .find(|node| {
             node.source
                 .as_deref()
-                .is_some_and(|source| source.starts_with("运行时注入"))
+                .is_some_and(|source| source.starts_with("Runtime injection"))
         })
         .unwrap();
     assert!(
@@ -294,7 +294,7 @@ async fn long_user_inputs_stay_counted_but_cannot_be_read() {
         .find(|node| {
             node.source
                 .as_deref()
-                .is_some_and(|source| source.starts_with("用户输入"))
+                .is_some_and(|source| source.starts_with("User input"))
         })
         .unwrap();
     assert!(node.hidden.is_some());

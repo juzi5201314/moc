@@ -11,6 +11,7 @@ use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use moc_i18n::t;
 use moc_llm::{ImageGenParams, ImageInputFile};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -55,7 +56,7 @@ fn err_response(status: StatusCode, message: impl Into<String>) -> Response {
 
 fn check_origin(headers: &HeaderMap) -> Result<(), Response> {
     if !origin_allowed(headers) {
-        return Err(err_response(StatusCode::FORBIDDEN, "拒绝跨站写请求"));
+        return Err(err_response(StatusCode::FORBIDDEN, t!("web.err.write_denied")));
     }
     Ok(())
 }
@@ -215,7 +216,7 @@ pub async fn create_session(
                 .title
                 .map(|t| t.trim().to_owned())
                 .filter(|t| !t.is_empty())
-                .unwrap_or_else(|| "新生成会话".into()),
+                .unwrap_or_else(|| t!("web.playground.default_session_title").into_owned()),
             created_at_ms: now,
             updated_at_ms: now,
             model: body.model,
@@ -282,7 +283,7 @@ pub async fn get_session(State(state): State<AppState>, Path(id): Path<String>) 
     .await
     {
         Ok(Ok(Some(detail))) => Json(detail).into_response(),
-        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "会话不存在"),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, t!("web.playground.session_not_found")),
         Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -337,7 +338,7 @@ pub async fn patch_session(
     .await
     {
         Ok(Ok(Some(session))) => Json(serde_json::json!({ "session": session })).into_response(),
-        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "会话不存在"),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, t!("web.playground.session_not_found")),
         Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -427,7 +428,7 @@ pub async fn generate(
     let upload_permit = match UPLOAD_READ_SEMAPHORE.acquire().await {
         Ok(permit) => permit,
         Err(_) => {
-            return err_response(StatusCode::INTERNAL_SERVER_ERROR, "上传读取许可不可用");
+            return err_response(StatusCode::INTERNAL_SERVER_ERROR, t!("web.playground.upload_permit_unavailable"));
         }
     };
 
@@ -443,7 +444,7 @@ pub async fn generate(
             Ok(Some(field)) => field,
             Ok(None) => break,
             Err(error) => {
-                return err_response(error.status(), format!("读取表单数据失败：{error}"));
+                return err_response(error.status(), t!("web.playground.multipart_read_failed", error = error));
             }
         };
         let name = field.name().unwrap_or_default().to_owned();
@@ -452,7 +453,7 @@ pub async fn generate(
                 prompt = match field.text().await {
                     Ok(text) => text,
                     Err(error) => {
-                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
+                        return err_response(error.status(), t!("web.playground.field_read_failed", error = error));
                     }
                 };
             }
@@ -460,7 +461,7 @@ pub async fn generate(
                 model_selector = match field.text().await {
                     Ok(text) => text.trim().to_owned(),
                     Err(error) => {
-                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
+                        return err_response(error.status(), t!("web.playground.field_read_failed", error = error));
                     }
                 };
             }
@@ -468,7 +469,7 @@ pub async fn generate(
                 let text = match field.text().await {
                     Ok(text) => text,
                     Err(error) => {
-                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
+                        return err_response(error.status(), t!("web.playground.field_read_failed", error = error));
                     }
                 };
                 if !text.trim().is_empty() {
@@ -477,7 +478,7 @@ pub async fn generate(
                         Err(error) => {
                             return err_response(
                                 StatusCode::BAD_REQUEST,
-                                format!("生成参数 JSON 无效：{error}"),
+                                t!("web.playground.invalid_params_json", error = error),
                             );
                         }
                     }
@@ -487,7 +488,7 @@ pub async fn generate(
                 let text = match field.text().await {
                     Ok(text) => text,
                     Err(error) => {
-                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
+                        return err_response(error.status(), t!("web.playground.field_read_failed", error = error));
                     }
                 };
                 if !text.trim().is_empty() {
@@ -496,7 +497,7 @@ pub async fn generate(
                         Err(error) => {
                             return err_response(
                                 StatusCode::BAD_REQUEST,
-                                format!("参考图 ID 列表无效：{error}"),
+                                t!("web.playground.invalid_ref_ids", error = error),
                             );
                         }
                     }
@@ -506,7 +507,7 @@ pub async fn generate(
                 let text = match field.text().await {
                     Ok(text) => text,
                     Err(error) => {
-                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
+                        return err_response(error.status(), t!("web.playground.field_read_failed", error = error));
                     }
                 };
                 if !text.trim().is_empty() {
@@ -515,7 +516,7 @@ pub async fn generate(
                         Err(error) => {
                             return err_response(
                                 StatusCode::BAD_REQUEST,
-                                format!("上传参考图引用无效：{error}"),
+                                t!("web.playground.invalid_upload_refs", error = error),
                             );
                         }
                     }
@@ -536,7 +537,7 @@ pub async fn generate(
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        return err_response(error.status(), format!("读取上传图片失败：{error}"));
+                        return err_response(error.status(), t!("web.playground.upload_read_failed", error = error));
                     }
                 }
             }
@@ -546,10 +547,10 @@ pub async fn generate(
 
     let prompt_trimmed = prompt.trim().to_owned();
     if prompt_trimmed.is_empty() {
-        return err_response(StatusCode::BAD_REQUEST, "请输入提示词");
+        return err_response(StatusCode::BAD_REQUEST, t!("web.playground.prompt_required"));
     }
     if model_selector.is_empty() {
-        return err_response(StatusCode::BAD_REQUEST, "请先选择图片生成模型");
+        return err_response(StatusCode::BAD_REQUEST, t!("web.playground.model_required"));
     }
 
     let core_cfg = state.core.config_snapshot();
@@ -594,7 +595,7 @@ pub async fn generate(
         {
             Ok(Ok(refs)) => refs,
             Ok(Err(error)) if error.to_string() == "NOT_FOUND" => {
-                return err_response(StatusCode::NOT_FOUND, "会话不存在");
+                return err_response(StatusCode::NOT_FOUND, t!("web.playground.session_not_found"));
             }
             Ok(Err(error)) if error.to_string().starts_with("AVIF_UNSUPPORTED:") => {
                 let filename = error
@@ -603,7 +604,7 @@ pub async fn generate(
                     .to_owned();
                 return err_response(
                     StatusCode::BAD_REQUEST,
-                    format!("图片 {filename} 为 AVIF 格式，暂不支持作为编辑参考图"),
+                    t!("web.playground.avif_ref_unsupported", filename = filename),
                 );
             }
             Ok(Err(error)) => {
@@ -634,7 +635,12 @@ pub async fn generate(
                 return Ok(PrepOutcome::Cancelled);
             }
             let raw = std::fs::read(&path)
-                .map_err(|e| anyhow::anyhow!("读取参考图 {filename} 失败：{e}"))?;
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "{}",
+                        t!("web.playground.ref_read_failed", filename = filename, error = e)
+                    )
+                })?;
             let prepared = codec::prepare_edit_input(&raw, Some(&mime), &input_compress)?;
             api_inputs.push(ImageInputFile {
                 filename: replace_ext(&filename, &prepared.extension),
@@ -654,11 +660,20 @@ pub async fn generate(
                 return Ok(PrepOutcome::Cancelled);
             }
             if !is_safe_upload_id(&up_ref.upload_id) {
-                anyhow::bail!("非法参考图上传 ID");
+                anyhow::bail!("{}", t!("web.playground.invalid_upload_id"));
             }
             let path = dir_for_inputs.join("uploads").join(&up_ref.upload_id);
             let raw = std::fs::read(&path)
-                .map_err(|e| anyhow::anyhow!("读取临时参考图 {} 失败：{e}", up_ref.upload_id))?;
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "{}",
+                        t!(
+                            "web.playground.temp_ref_read_failed",
+                            id = up_ref.upload_id,
+                            error = e
+                        )
+                    )
+                })?;
             let meta = codec::inspect_image(&raw, None)?;
             let prepared = codec::prepare_edit_input(&raw, Some(&meta.mime_type), &input_compress)?;
             let filename = up_ref
@@ -713,7 +728,7 @@ pub async fn generate(
     let started = Instant::now();
     let (call_result, turn_inputs, mode) = match prep_outcome {
         PrepOutcome::Cancelled => (
-            Err(moc_llm::ImageGenError::Transport("已取消生成".into())),
+            Err(moc_llm::ImageGenError::Transport(t!("web.playground.generation_cancelled").into_owned())),
             Vec::new(),
             if has_requested_inputs {
                 "edit"
@@ -735,11 +750,11 @@ pub async fn generate(
             let llm_client = state.core.llm_client();
             let llm_cfg = resolved_model.llm.clone();
             let res = if flight.cancel.is_cancelled() {
-                Err(moc_llm::ImageGenError::Transport("已取消生成".into()))
+                Err(moc_llm::ImageGenError::Transport(t!("web.playground.generation_cancelled").into_owned()))
             } else {
                 tokio::select! {
                     biased;
-                    _ = flight.cancel.cancelled() => Err(moc_llm::ImageGenError::Transport("已取消生成".into())),
+                    _ = flight.cancel.cancelled() => Err(moc_llm::ImageGenError::Transport(t!("web.playground.generation_cancelled").into_owned())),
                     res = llm_client.generate_images(&llm_cfg, &prompt_trimmed, &api_inputs, &effective_params) => res,
                 }
             };
@@ -810,7 +825,7 @@ pub async fn generate(
                 Ok(Err(error)) => {
                     return err_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("保存或压缩生成图失败：{error}"),
+                        t!("web.playground.save_or_compress_failed", error = error),
                     );
                 }
                 Err(error) => {
@@ -820,13 +835,13 @@ pub async fn generate(
 
             match transcode_outcome {
                 TranscodeOutcome::Cancelled => {
-                    Some(moc_llm::ImageGenError::Transport("已取消生成".into()))
+                    Some(moc_llm::ImageGenError::Transport(t!("web.playground.generation_cancelled").into_owned()))
                 }
                 TranscodeOutcome::Ready(encoded_items) if flight.cancel.is_cancelled() => {
                     for img in &encoded_items {
                         let _ = std::fs::remove_file(&img.file_path);
                     }
-                    Some(moc_llm::ImageGenError::Transport("已取消生成".into()))
+                    Some(moc_llm::ImageGenError::Transport(t!("web.playground.generation_cancelled").into_owned()))
                 }
                 TranscodeOutcome::Ready(encoded_items) => {
                     let revised_prompt = encoded_items
@@ -868,7 +883,7 @@ pub async fn generate(
                             }
                             return Ok::<_, anyhow::Error>(None);
                         };
-                        if session.turns.is_empty() && session.title == "新生成会话" {
+                        if session.turns.is_empty() && matches!(session.title.as_str(), "New session" | "新生成会话") {
                             session.title = derive_title(&prompt_trimmed);
                         }
                         session.model = Some(model_selector);
@@ -889,7 +904,7 @@ pub async fn generate(
                             session_title,
                         })
                         .into_response(),
-                        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "会话不存在"),
+                        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, t!("web.playground.session_not_found")),
                         Ok(Err(error)) => {
                             err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
                         }
@@ -932,7 +947,7 @@ pub async fn generate(
         let Some(session) = index.sessions.iter_mut().find(|s| s.id == sid_for_save) else {
             return Ok::<_, anyhow::Error>(None);
         };
-        if session.turns.is_empty() && session.title == "新生成会话" {
+        if session.turns.is_empty() && matches!(session.title.as_str(), "New session" | "新生成会话") {
             session.title = derive_title(&prompt_trimmed);
         }
         session.model = Some(model_selector);
@@ -950,7 +965,7 @@ pub async fn generate(
             session_title,
         })
         .into_response(),
-        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "会话不存在"),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, t!("web.playground.session_not_found")),
         Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -1058,7 +1073,7 @@ pub async fn upload_favorites(
     let upload_permit = match UPLOAD_READ_SEMAPHORE.acquire().await {
         Ok(permit) => permit,
         Err(_) => {
-            return err_response(StatusCode::INTERNAL_SERVER_ERROR, "上传读取许可不可用");
+            return err_response(StatusCode::INTERNAL_SERVER_ERROR, t!("web.playground.upload_permit_unavailable"));
         }
     };
     let mut files: Vec<(String, String, Vec<u8>)> = Vec::new();
@@ -1068,7 +1083,7 @@ pub async fn upload_favorites(
             Ok(Some(field)) => field,
             Ok(None) => break,
             Err(error) => {
-                return err_response(error.status(), format!("读取表单数据失败：{error}"));
+                return err_response(error.status(), t!("web.playground.multipart_read_failed", error = error));
             }
         };
         match field.name() {
@@ -1076,7 +1091,7 @@ pub async fn upload_favorites(
                 let text = match field.text().await {
                     Ok(text) => text,
                     Err(error) => {
-                        return err_response(error.status(), format!("读取表单字段失败：{error}"));
+                        return err_response(error.status(), t!("web.playground.field_read_failed", error = error));
                     }
                 };
                 let trimmed = text.trim();
@@ -1099,7 +1114,7 @@ pub async fn upload_favorites(
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        return err_response(error.status(), format!("读取上传图片失败：{error}"));
+                        return err_response(error.status(), t!("web.playground.upload_read_failed", error = error));
                     }
                 }
             }
@@ -1107,7 +1122,7 @@ pub async fn upload_favorites(
         }
     }
     if files.is_empty() {
-        return err_response(StatusCode::BAD_REQUEST, "请选择至少一张图片");
+        return err_response(StatusCode::BAD_REQUEST, t!("web.playground.at_least_one_image"));
     }
 
     let dir = match resolve_storage_dir(&state).await {
@@ -1241,7 +1256,7 @@ pub async fn toggle_favorite(
             "removed": removed,
         }))
         .into_response(),
-        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "图片不存在"),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, t!("web.playground.image_not_found")),
         Ok(Err(error)) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -1308,7 +1323,7 @@ pub async fn create_favorite_folder(
     }
     let name = body.name.trim().to_owned();
     if name.is_empty() {
-        return err_response(StatusCode::BAD_REQUEST, "文件夹名称不能为空");
+        return err_response(StatusCode::BAD_REQUEST, t!("web.playground.folder_name_empty"));
     }
     let dir = match resolve_storage_dir(&state).await {
         Ok(dir) => dir,
@@ -1347,7 +1362,7 @@ pub async fn rename_favorite_folder(
     }
     let name = body.name.trim().to_owned();
     if name.is_empty() {
-        return err_response(StatusCode::BAD_REQUEST, "文件夹名称不能为空");
+        return err_response(StatusCode::BAD_REQUEST, t!("web.playground.folder_name_empty"));
     }
     let dir = match resolve_storage_dir(&state).await {
         Ok(dir) => dir,
@@ -1368,7 +1383,7 @@ pub async fn rename_favorite_folder(
     .await
     {
         Ok(Ok(Some(folder))) => Json(folder).into_response(),
-        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "文件夹不存在"),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, t!("web.playground.folder_not_found")),
         Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -1398,7 +1413,7 @@ pub async fn delete_favorite_folder(
     .await
     {
         Ok(Ok(true)) => Json(serde_json::json!({ "ok": true })).into_response(),
-        Ok(Ok(false)) => err_response(StatusCode::NOT_FOUND, "文件夹不存在"),
+        Ok(Ok(false)) => err_response(StatusCode::NOT_FOUND, t!("web.playground.folder_not_found")),
         Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -1428,7 +1443,7 @@ pub async fn create_favorite_preset(
     let prompt = body.prompt.trim().to_owned();
     let title = body.title.trim().to_owned();
     if prompt.is_empty() && body.image_ids.is_empty() && body.source_uploads.is_empty() {
-        return err_response(StatusCode::BAD_REQUEST, "提示词与参考图不能同时为空");
+        return err_response(StatusCode::BAD_REQUEST, t!("web.playground.preset_empty"));
     }
     let dir = match resolve_storage_dir(&state).await {
         Ok(dir) => dir,
@@ -1444,7 +1459,7 @@ pub async fn create_favorite_preset(
         if let Some(ref fid) = folder_id
             && !index.has_favorite_folder(fid)
         {
-            anyhow::bail!("目标收藏文件夹不存在");
+            anyhow::bail!("{}", t!("web.playground.target_folder_not_found"));
         }
         let mut deduped_ids = Vec::new();
         for img_id in body.image_ids {
@@ -1456,11 +1471,20 @@ pub async fn create_favorite_preset(
         let mut prepared_uploads = Vec::with_capacity(body.source_uploads.len());
         for up_ref in body.source_uploads {
             if !is_safe_upload_id(&up_ref.upload_id) {
-                anyhow::bail!("非法参考图上传 ID");
+                anyhow::bail!("{}", t!("web.playground.invalid_upload_id"));
             }
             let path = dir.join("uploads").join(&up_ref.upload_id);
             let raw = std::fs::read(&path)
-                .map_err(|e| anyhow::anyhow!("读取临时参考图 {} 失败：{e}", up_ref.upload_id))?;
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "{}",
+                        t!(
+                            "web.playground.temp_ref_read_failed",
+                            id = up_ref.upload_id,
+                            error = e
+                        )
+                    )
+                })?;
             let meta = codec::inspect_image(&raw, None)?;
             let filename = up_ref
                 .filename
@@ -1473,7 +1497,7 @@ pub async fn create_favorite_preset(
         }
 
         if prompt.is_empty() && deduped_ids.is_empty() && prepared_uploads.is_empty() {
-            anyhow::bail!("提示词与有效参考图不能同时为空");
+            anyhow::bail!("{}", t!("web.playground.preset_valid_empty"));
         }
 
         let now = store::now_ms();
@@ -1510,7 +1534,7 @@ pub async fn create_favorite_preset(
         } else if !prompt.is_empty() {
             derive_title(&prompt)
         } else {
-            format!("{} 张参考图", deduped_ids.len())
+            t!("web.playground.preset_refs_title", count = deduped_ids.len()).into_owned()
         };
         let preset = FavoritePreset {
             id: store::new_id(),
@@ -1575,7 +1599,7 @@ pub async fn patch_favorite_preset(
                 .filter(|s| !s.is_empty())
             && !index.has_favorite_folder(fid)
         {
-            anyhow::bail!("目标收藏文件夹不存在");
+            anyhow::bail!("{}", t!("web.playground.target_folder_not_found"));
         }
         let next_image_ids = body.image_ids.map(|ids| {
             let mut out = Vec::new();
@@ -1613,7 +1637,7 @@ pub async fn patch_favorite_preset(
                 });
             }
             if preset.prompt.is_empty() && preset.image_ids.is_empty() {
-                anyhow::bail!("提示词与参考图不能同时为空");
+                anyhow::bail!("{}", t!("web.playground.preset_empty"));
             }
             preset.updated_at_ms = store::now_ms();
             preset.clone()
@@ -1633,7 +1657,7 @@ pub async fn patch_favorite_preset(
     .await
     {
         Ok(Ok(Some(resp))) => Json(resp).into_response(),
-        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "收藏组合不存在"),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, t!("web.playground.preset_not_found")),
         Ok(Err(error)) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -1674,7 +1698,7 @@ pub async fn delete_favorite_preset(
             "removed_image_ids": removed_image_ids,
         }))
         .into_response(),
-        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "收藏组合不存在"),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, t!("web.playground.preset_not_found")),
         Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -1705,7 +1729,7 @@ pub async fn delete_image(
     .await
     {
         Ok(Ok(true)) => Json(serde_json::json!({ "ok": true })).into_response(),
-        Ok(Ok(false)) => err_response(StatusCode::NOT_FOUND, "图片不存在"),
+        Ok(Ok(false)) => err_response(StatusCode::NOT_FOUND, t!("web.playground.image_not_found")),
         Ok(Err(error)) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -1757,11 +1781,12 @@ pub async fn convert_image(
             return Ok(None);
         };
         if existing.format.eq_ignore_ascii_case("avif") {
-            anyhow::bail!("当前构建不支持解码 AVIF，无法将 AVIF 图片再次转换格式");
+            anyhow::bail!("{}", t!("web.playground.avif_convert_unsupported"));
         }
         let old_path = PathBuf::from(&existing.file_path);
-        let raw_bytes = std::fs::read(&old_path)
-            .map_err(|error| anyhow::anyhow!("读取原图文件失败：{error}"))?;
+        let raw_bytes = std::fs::read(&old_path).map_err(|error| {
+            anyhow::anyhow!("{}", t!("web.playground.source_read_failed", error = error))
+        })?;
 
         let static_q = body
             .quality
@@ -1778,7 +1803,7 @@ pub async fn convert_image(
                     AnimatedOutputFormat::WebpAnimated
                 }
                 ConvertFormat::Apng | ConvertFormat::Png => AnimatedOutputFormat::Apng,
-                _ => anyhow::bail!("动图仅支持转换为动图 WebP 或 APNG"),
+                _ => anyhow::bail!("{}", t!("web.playground.animated_convert_only")),
             };
             OutputCompressionConfig {
                 format: OutputCompressionFormat::Original,
@@ -1844,7 +1869,7 @@ pub async fn convert_image(
     .await
     {
         Ok(Ok(Some(resp))) => Json(resp).into_response(),
-        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, "图片不存在"),
+        Ok(Ok(None)) => err_response(StatusCode::NOT_FOUND, t!("web.playground.image_not_found")),
         Ok(Err(error)) => err_response(StatusCode::BAD_REQUEST, error.to_string()),
         Err(error) => err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -1869,7 +1894,7 @@ pub async fn reveal_image(
     .await
     {
         Ok(Ok(Some(path))) => path,
-        Ok(Ok(None)) => return err_response(StatusCode::NOT_FOUND, "图片不存在"),
+        Ok(Ok(None)) => return err_response(StatusCode::NOT_FOUND, t!("web.playground.image_not_found")),
         Ok(Err(error)) => {
             return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
         }
@@ -1902,7 +1927,7 @@ pub async fn get_image_file(
     .await
     {
         Ok(Ok(Some(img))) => img,
-        Ok(Ok(None)) => return err_response(StatusCode::NOT_FOUND, "图片不存在"),
+        Ok(Ok(None)) => return err_response(StatusCode::NOT_FOUND, t!("web.playground.image_not_found")),
         Ok(Err(error)) => {
             return err_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
         }
@@ -1924,7 +1949,7 @@ pub async fn get_upload_file(
     Path(upload_id): Path<String>,
 ) -> Response {
     if !is_safe_upload_id(&upload_id) {
-        return err_response(StatusCode::BAD_REQUEST, "非法文件名");
+        return err_response(StatusCode::BAD_REQUEST, t!("web.playground.invalid_filename"));
     }
     let dir = match resolve_storage_dir(&state).await {
         Ok(dir) => dir,
@@ -1966,10 +1991,12 @@ async fn stream_file(
 ) -> Response {
     let file = match tokio::fs::File::open(&path).await {
         Ok(file) => file,
-        Err(_) => return err_response(StatusCode::NOT_FOUND, "本地图片文件不存在"),
+        Err(_) => {
+            return err_response(StatusCode::NOT_FOUND, t!("web.playground.local_file_not_found"));
+        }
     };
     let Ok(metadata) = file.metadata().await else {
-        return err_response(StatusCode::NOT_FOUND, "无法读取文件信息");
+        return err_response(StatusCode::NOT_FOUND, t!("web.err.file_stat"));
     };
     let mut headers = HeaderMap::new();
     if let Ok(ct) = HeaderValue::from_str(mime) {

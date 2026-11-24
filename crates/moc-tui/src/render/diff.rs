@@ -340,7 +340,7 @@ mod tests {
         assert!(text_of(&lines[0]).contains("let value = 1;"));
         assert!(text_of(&lines[1]).contains("let value = 2;"));
         assert!(
-            text_of(&lines[2]).contains("行未变"),
+            text_of(&lines[2]).contains("unchanged lines"),
             "hunk 之间给出未变行数"
         );
         for (line, changed) in [(&lines[0], '1'), (&lines[1], '2')] {
@@ -419,9 +419,9 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("⋯ 8 行未变"), "只应省略 8 行：{text}");
+        assert!(text.contains("⋯ 8 unchanged lines"), "只应省略 8 行：{text}");
         assert!(
-            !text.contains("⋯ 14 行未变"),
+            !text.contains("⋯ 14 unchanged lines"),
             "不能把前一个 hunk 自身的行也算进去"
         );
     }
@@ -454,7 +454,7 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert_eq!(
-            text.matches("其余改动超出").count(),
+            text.matches("exceed diff limit").count(),
             1,
             "截断提示只出现一次：{text}"
         );
@@ -467,7 +467,7 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(
-            limited_text.contains("还有 2 行"),
+            limited_text.contains("2 more lines"),
             "被行数上限挤掉的行仍要报数：{limited_text}"
         );
     }

@@ -37,7 +37,7 @@ import { type Theme, usePrefs } from "@/store/prefs";
 import { allSessions, useSessions } from "@/store/sessions";
 import { useTabs } from "@/store/tabs";
 import { fieldValues, SettingRow } from "./field";
-import { writeField } from "./settings-store";
+import { useSettings, writeField } from "./settings-store";
 
 const INHERIT = "__inherit__";
 
@@ -109,6 +109,12 @@ export function GeneralSection() {
   const prefs = usePrefs();
   const server = useConnection((state) => state.server);
   const cwd = useConnection((state) => state.config?.cwd);
+  const globalDoc = useSettings((state) => state.docs.global);
+  const langField = globalDoc?.fields.find(
+    (field) => field.path[0] === "general" && field.path[1] === "language",
+  );
+  const langValues = globalDoc ? fieldValues(globalDoc, ["general", "language"]) : null;
+  const langCurrent = String(langValues?.explicit ?? langValues?.fallback ?? "auto") || "auto";
 
   const toggleNotify = async (on: boolean) => {
     if (!on) {
@@ -135,6 +141,22 @@ export function GeneralSection() {
       <section className="space-y-2">
         <h3 className="text-xs font-medium text-text-tertiary">{t("ss.appearance")}</h3>
         <Card>
+          {globalDoc && langField && (
+            <SettingRow
+              label={langField.label || t("ss.language")}
+              description={langField.description || t("ss.language_desc")}
+            >
+              <Segmented
+                value={langCurrent}
+                onChange={(value) => void writeField(["general", "language"], value, "global")}
+                options={[
+                  { value: "auto", label: t("common.auto") },
+                  { value: "zh", label: "中文" },
+                  { value: "en", label: "English" },
+                ]}
+              />
+            </SettingRow>
+          )}
           <SettingRow label={t("ss.theme")} description={t("ss.theme_desc")}>
             <Segmented<Theme>
               value={prefs.theme}

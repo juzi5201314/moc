@@ -111,7 +111,7 @@ pub(super) fn message_agent_tool_rows(
             Span::styled(word.to_owned(), Style::new().fg(color)),
         ];
         if let Some(error) = receipt.error {
-            spans.push(Span::styled(format!("：{error}"), Style::new().fg(color)));
+            spans.push(Span::styled(format!(": {error}"), Style::new().fg(color)));
         }
         lines.push(Line::from(spans));
     }

@@ -80,11 +80,12 @@ pub(super) fn build(
                 .pointer("/function/name")
                 .or_else(|| tool.get("name"))
                 .and_then(Value::as_str)
-                .unwrap_or_else(|| t!("core.outline.tool_def").into_owned().leak());
+                .map(str::to_owned)
+                .unwrap_or_else(|| t!("core.outline.tool_def").into_owned());
             add_text(
                 &mut view,
                 "tools",
-                name.into(),
+                name,
                 Some(t!("core.outline.tool_def_schema").into_owned()),
                 "json",
                 serde_json::to_string_pretty(tool).expect("JSON 值总能序列化"),
@@ -105,12 +106,21 @@ pub(super) fn build(
         let message_sources = &sources[..end];
         sources = &sources[end..];
         let source = &snapshot.sources[index];
-        let name = source.label.split(" · ").next().unwrap_or(&source.label);
+        let (name, display_source) = match source.label.split_once(" · ") {
+            Some((head, rest)) => {
+                let normalized = normalize_origin_label(head);
+                (normalized, format!("{normalized} · {rest}"))
+            }
+            None => {
+                let normalized = normalize_origin_label(&source.label);
+                (normalized, normalized.to_owned())
+            }
+        };
         let hidden = hidden_reason(message, source.origin);
         let mut meta = ContextContentSection {
             name: format!("{} · {name}", index + 1 - snapshot.system.messages.len()),
             kind: "markdown".into(),
-            source: Some(source.label.clone()),
+            source: Some(display_source),
             tokens: compact::messages_tokens(std::slice::from_ref(message)),
             hidden: hidden.as_ref().map(|h| h.to_string()),
             ..Default::default()
@@ -168,6 +178,24 @@ pub(super) fn build(
         view.add("messages", meta, text);
     }
     view
+}
+
+/// 将回放器写入的内部来源标签规范为英文工作区标签。
+fn normalize_origin_label(label: &str) -> &str {
+    match label {
+        "系统提示" => "System prompt",
+        "CLM 上下文" => "CLM context",
+        "会话状态生成" => "Session state",
+        "代理消息" => "Agent message",
+        "手动命令" => "Manual command",
+        "目标续跑" => "Goal round",
+        "运行时注入" => "Runtime injection",
+        "用户输入" => "User input",
+        "模型输出" => "Assistant output",
+        "工具结果" => "Tool result",
+        "指令" => "Instruction",
+        other => other,
+    }
 }
 
 fn add_text(

@@ -19,7 +19,7 @@ impl SessionTable {
     ) -> Result<SessionInfo, CoreError> {
         if params.session_id != session_id {
             return Err(CoreError::Session(
-                "INVALID_PARAMS: session_id 不匹配".into(),
+                t!("core.err.session_id_mismatch").into_owned(),
             ));
         }
         let record = self.get(session_id).await?;
@@ -49,7 +49,7 @@ impl SessionTable {
             let state = record.state.lock().await;
             if state.prompt_sequence > 0 && engine != state.engine {
                 return Err(CoreError::Session(
-                    "INVALID_PARAMS: 会话已有提示历史，引擎已锁定；请新建会话选择引擎".into(),
+                    t!("core.err.engine_locked_history").into_owned(),
                 ));
             }
             state.plan_active

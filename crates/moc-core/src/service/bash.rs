@@ -17,7 +17,7 @@ pub(super) async fn run(
     params: BashParams,
 ) -> Result<BashResult, RpcError> {
     if params.command.command.trim().is_empty() {
-        return Err(invalid_params("Bash 命令不能为空"));
+        return Err(invalid_params(t!("core.err.bash_empty").into_owned()));
     }
     let session_id = &params.session_id;
     let record = inner.sessions.get(session_id).await.map_err(to_rpc)?;

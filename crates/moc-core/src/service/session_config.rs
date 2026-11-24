@@ -8,6 +8,7 @@ use crate::service::emit_session_config_changed;
 use crate::service::invalid_params;
 use crate::service::protocol_to_rpc;
 use crate::service::to_rpc;
+use moc_i18n::t;
 use moc_protocol::RequestContext;
 use moc_protocol::RpcError;
 use moc_protocol::features::flag_for_engine;
@@ -34,10 +35,14 @@ pub(super) async fn session_set_permission(
             .map(|mode| mode.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(invalid_params(format!(
-            "当前平台不支持 {} 权限；可用模式：{available}",
-            params.permission.as_str()
-        )));
+        return Err(invalid_params(
+            t!(
+                "core.err.permission_unsupported",
+                mode = params.permission.as_str(),
+                available = available
+            )
+            .into_owned(),
+        ));
     }
     let record = core
         .inner
@@ -114,14 +119,17 @@ pub(super) async fn session_set_engine(
             .project_config(std::path::Path::new(&cwd))
             .map_err(to_rpc)?;
         if !config.feature_enabled(flag) {
-            return Err(invalid_params(format!(
-                "引擎 {} 已被特性开关 [features] {} = false 禁用",
-                serde_json::to_value(params.engine)
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_owned))
-                    .unwrap_or_default(),
-                flag.spec().key,
-            )));
+            return Err(invalid_params(
+                t!(
+                    "core.err.engine_feature_disabled",
+                    engine = serde_json::to_value(params.engine)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .unwrap_or_default(),
+                    flag = flag.spec().key
+                )
+                .into_owned(),
+            ));
         }
     }
     let from = record.state.lock().await.engine;

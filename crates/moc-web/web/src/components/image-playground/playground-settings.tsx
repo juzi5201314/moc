@@ -137,7 +137,11 @@ export function ImagePlaygroundSettingsSection() {
         <Card>
           <SettingRow
             label={t("ip.set_storage_dir")}
-            description={resolvedDir || t("ip.set_storage_dir_desc")}
+            description={
+              resolvedDir
+                ? t("ip.set_storage_dir_resolved", { path: resolvedDir })
+                : t("ip.set_storage_dir_desc")
+            }
           >
             <div className="flex items-center gap-1.5">
               <Input

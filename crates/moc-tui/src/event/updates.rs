@@ -573,7 +573,7 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
                     }
                 })
                 .collect::<Vec<_>>()
-                .join(" ｜ ");
+                .join(" | ");
             app.set_warning(detail);
         }
         SessionUpdate::Error {

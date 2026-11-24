@@ -517,7 +517,7 @@ fn agent_summary_spans(tool: &ToolCallBlock, args: &Value, theme: &Theme) -> Vec
             // 摘要只占一行：handoff 首行；mode 与后台执行（block=false）附注。
             let mode = args.get("mode").and_then(Value::as_str).unwrap_or("keep");
             let first = if mode == "retry" {
-                t!("tui.hint.retry").into_owned()
+                "retry".to_owned()
             } else {
                 args.get("message")
                     .and_then(Value::as_str)

@@ -55,26 +55,26 @@ it("分类在窄屏横向滚动，内容与控件占满一行，桌面保留侧�
   expect(nav.parentElement?.className).toContain("flex-col");
   expect(nav.parentElement?.className).toContain("md:flex-row");
   expect(nav.querySelector(".overflow-x-auto")).not.toBeNull();
-  const theme = view.getByRole("button", { name: "深色" });
+  const theme = view.getByRole("button", { name: "Dark" });
   expect(theme.parentElement?.className).toContain("max-w-full");
   expect(theme.parentElement?.className).toContain("flex-wrap");
   expect(theme.parentElement?.parentElement?.className).toContain("w-full");
   fireEvent.click(theme);
   expect(usePrefs.getState().theme).toBe("dark");
-  fireEvent.click(within(nav).getByRole("button", { name: "快捷键" }));
-  expect(view.getByRole("heading", { name: "快捷键" })).toBeTruthy();
-  expect(within(nav).getByRole("button", { name: "快捷键" }).getAttribute("aria-current")).toBe(
-    "page",
-  );
+  fireEvent.click(within(nav).getByRole("button", { name: "Keybindings" }));
+  expect(view.getByRole("heading", { name: "Keybindings" })).toBeTruthy();
+  expect(
+    within(nav).getByRole("button", { name: "Keybindings" }).getAttribute("aria-current"),
+  ).toBe("page");
 });
 
 it("空分区和读取错误仍可导航，供应商表单使用可收缩的单列布局", () => {
   useSettings.setState({ docs: { global: doc } });
   const view = openDialog();
   const nav = within(view.getByRole("navigation"));
-  fireEvent.click(nav.getByRole("button", { name: "工具" }));
-  expect(view.getByText("这个分区没有可编辑的项。")).toBeTruthy();
-  fireEvent.click(nav.getByRole("button", { name: "供应商与模型" }));
+  fireEvent.click(nav.getByRole("button", { name: "Tools" }));
+  expect(view.getByText("当前分区暂无可编辑的配置项。")).toBeTruthy();
+  fireEvent.click(nav.getByRole("button", { name: "Providers" }));
   const input = view.getByPlaceholderText("https://api.example.com/v1");
   expect(input.parentElement?.className).toContain("min-w-0");
   expect(input.parentElement?.parentElement?.className).toContain("grid-cols-1");
@@ -87,8 +87,8 @@ it("加载失败或未连接时保留完整分类导航", () => {
   useSettings.setState({ errors: { global: "offline" } });
   const view = openDialog();
   const nav = within(view.getByRole("navigation"));
-  fireEvent.click(nav.getByRole("button", { name: "供应商与模型" }));
+  fireEvent.click(nav.getByRole("button", { name: "Providers" }));
   expect(view.getByText(/offline/)).toBeTruthy();
-  fireEvent.click(nav.getByRole("button", { name: "通用" }));
-  expect(view.getByRole("button", { name: "深色" })).toBeTruthy();
+  fireEvent.click(nav.getByRole("button", { name: "General" }));
+  expect(view.getByRole("button", { name: "Dark" })).toBeTruthy();
 });

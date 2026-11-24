@@ -135,7 +135,7 @@ fn test_combo_07_help_modal_over_expanded_btw() {
     let rows = buffer_squashed_rows(&terminal);
     let help_row = rows
         .iter()
-        .find(|r| r.contains("快捷键"))
+        .find(|r| r.contains("Shortcuts"))
         .expect("help modal header");
     assert!(!help_row.contains("####"));
 }
@@ -164,7 +164,7 @@ fn test_combo_08_model_picker_with_subagents_running() {
     let rows = buffer_squashed_rows(&terminal);
     let model_row = rows
         .iter()
-        .find(|r| r.contains("选择模型"))
+        .find(|r| r.contains("SelectModel"))
         .expect("model header");
     assert!(!model_row.contains("++++"));
     assert_eq!(app.subagents.len(), 2);

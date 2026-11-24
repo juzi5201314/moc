@@ -267,7 +267,7 @@ describe("entriesToBlocks", () => {
     const bash = blocks[4];
     expect(bash.kind === "bash" && bash.command).toBe("ls");
     const orphan = blocks[5] as ToolBlock;
-    expect(orphan.name).toBe("工具结果");
+    expect(orphan.name).toBe("Tool result");
     expect(orphan.status).toBe("error");
   });
 
@@ -533,7 +533,9 @@ describe("applyUpdate", () => {
       job: { ...job, status: "exited", exit_code: 0, duration_ms: 2_500 },
     });
     const status = view.blocks.find((block) => block.kind === "status");
-    expect(status?.kind === "status" && status.text).toBe("后台任务结束：cargo build（退出码 0）");
+    expect(status?.kind === "status" && status.text).toBe(
+      "Background job finished: cargo build (exit code 0)",
+    );
   });
 
   it("流式两段生成，最后一段以 message 为准", () => {

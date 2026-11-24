@@ -652,7 +652,7 @@ async fn submitting_without_session_keeps_the_draft() {
     assert_eq!(app.prompt.text, "别丢了我", "被拒绝的草稿要回到输入框");
     assert_eq!(
         app.notice.as_deref(),
-        Some("请先用 /model 选择模型；没有候选时到 /config 添加供应商")
+        Some("请先用 /model 选择 model；若无候选项，请到 /config 添加 provider。")
     );
     connection.shutdown().await;
     core.shutdown().await;
@@ -702,7 +702,7 @@ async fn slash_command_with_image_keeps_input() {
     assert!(app.modal.is_none(), "带图片时不得执行命令");
     assert_eq!(
         app.notice.as_deref(),
-        Some("斜杠命令不支持图片，请移除图片后执行")
+        Some("斜杠命令不支持附带图片，请先移除图片。")
     );
     assert_eq!(app.prompt.text, "/help [image#1]", "输入原样保留");
 

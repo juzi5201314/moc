@@ -41,10 +41,9 @@ impl SessionTable {
                 .iter()
                 .position(|entry| entry.id() == entry_id.as_str())
             else {
-                return Err(CoreError::Session(format!(
-                    "INVALID_PARAMS: transcript 消息不存在：{}",
-                    entry_id.as_str()
-                )));
+                return Err(CoreError::Session(
+                    t!("core.err.rewind_msg_missing", id = entry_id.as_str()).into_owned(),
+                ));
             };
             let Some(TranscriptEntry {
                 message,
@@ -54,7 +53,7 @@ impl SessionTable {
             }) = state.entries[target].message_entry()
             else {
                 return Err(CoreError::Session(
-                    "INVALID_PARAMS: 回退目标不是 transcript 消息".into(),
+                    t!("core.err.rewind_not_message").into_owned(),
                 ));
             };
             let mut end = if message.role == Role::User && bash.is_none() && agent.is_none() {
@@ -155,15 +154,14 @@ impl SessionTable {
             if !chained {
                 stash.clear();
                 return Err(CoreError::Session(
-                    "INVALID_PARAMS: 没有可向前滚的回退历史".into(),
+                    t!("core.err.redo_empty").into_owned(),
                 ));
             }
             let tail = stash.last().expect("栈顶已校验非空");
             let Some(pos) = tail.position(entry_id.as_str()) else {
-                return Err(CoreError::Session(format!(
-                    "INVALID_PARAMS: 前滚目标不在已回退尾部：{}",
-                    entry_id.as_str()
-                )));
+                return Err(CoreError::Session(
+                    t!("core.err.redo_target_missing", id = entry_id.as_str()).into_owned(),
+                ));
             };
             let mut restored = state.log_entries();
             restored.extend_from_slice(&tail[..=pos]);
@@ -235,10 +233,9 @@ impl SessionTable {
                 .expect("position 已锁定调用")
                 .clone();
             if call.name != "ask" {
-                return Err(CoreError::Session(format!(
-                    "INVALID_PARAMS: 只能重新作答 ask 调用，{} 是 {}",
-                    call.id, call.name
-                )));
+                return Err(CoreError::Session(
+                    t!("core.err.reask_not_ask", id = call.id, name = call.name).into_owned(),
+                ));
             }
             // 结果条目：调用消息之后、装着该调用结果的第一条 Tool 消息。
             // 找不到说明这次提问还没收场——卡片仍挂着，没有可「重新」的回答。
@@ -253,7 +250,7 @@ impl SessionTable {
                 )
             }) else {
                 return Err(CoreError::Session(
-                    "INVALID_PARAMS: 该提问还没有结果，无需重新作答".into(),
+                    t!("core.err.reask_no_result").into_owned(),
                 ));
             };
             let end = pos_call + 1 + offset;
