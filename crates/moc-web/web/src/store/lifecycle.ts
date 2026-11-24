@@ -741,17 +741,24 @@ clientListeners.status.add((status) => {
 
 clientListeners.ready.add(() => {
   void (async () => {
-    await useSessions
-      .getState()
-      .refresh()
-      .catch(() => undefined);
+    await Promise.all(
+      [useSessions.getState().refresh(), useConnection.getState().refreshConfig()].map((task) =>
+        task.catch(() => undefined),
+      ),
+    );
     // 重连后视图已失效：全部丢掉，只重开当前标签；其余开着的标签切到时再走
     // openSession 的懒加载，避免断线恢复瞬间对每个标签串行 load+分页的 RPC 风暴，
     // 也让写租约按需重取而不是在抢占窗口期集中争抢。
+    // 草稿只存在于前端，core 里没有可重开的会话：保留视图，否则 session/load 必然 SESSION_NOT_FOUND。
     for (const id of Object.keys(useTranscript.getState().bySession)) {
-      useTranscript.getState().drop(id);
+      if (id !== "draft-session") useTranscript.getState().drop(id);
     }
     const { active } = useTabs.getState();
-    if (active) await openSession(active).catch(() => undefined);
+    if (active !== "draft-session") {
+      if (active) await openSession(active).catch(() => undefined);
+      return;
+    }
+    // 首屏草稿建于连上之前，那时没有会话列表与 config.cwd 可选默认目录；连上后按同一规则重建。
+    if (!useSessions.getState().draftSession?.cwd) createQuickSession();
   })();
 });
