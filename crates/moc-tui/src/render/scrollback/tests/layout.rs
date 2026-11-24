@@ -966,7 +966,7 @@ fn long_line_notices_group_expand_and_deduplicate_after_parent_finishes() {
     assert!(
         full.contains("Line 100")
             && full.contains("Line 115")
-            && full.contains("Long lines are shortened for preview")
+            && full.contains("预览中长行已缩短")
     );
     let mut view = ScrollbackView::new();
     view.sync(&app, 120);

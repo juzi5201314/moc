@@ -1346,19 +1346,19 @@ artifact_save_failed = { zh = "[E_ARTIFACT] 命令已执行，但保存输出失
 history_transfer = { zh = "历史传输失败：%{error}", en = "History transfer failed: %{error}" }
 plugin_prefix = { zh = "插件 `%{plugin}`：", en = "Plugin `%{plugin}`: " }
 # 会话工作区运行态通知：双语全英文，且保留 `%{secs}s (attempt %{attempt}/%{max})` 兼容 TUI 与 Web 倒计时解析
-retry_notice = { zh = "Generation failed; retrying in %{secs}s (attempt %{attempt}/%{max}). Previous preview discarded.\n%{message}", en = "Generation failed; retrying in %{secs}s (attempt %{attempt}/%{max}). Previous preview discarded.\n%{message}" }
-request_retry_notice = { zh = "Connection or request failed; retrying in %{secs}s (attempt %{attempt}/%{max}).\n%{message}", en = "Connection or request failed; retrying in %{secs}s (attempt %{attempt}/%{max}).\n%{message}" }
-slow_request_warn = { zh = "Waiting %{secs}s for model response; request continues", en = "Waiting %{secs}s for model response; request continues" }
-tool_loop_redirect = { zh = "No-progress tool loop detected; redirected model once: %{detail}", en = "No-progress tool loop detected; redirected model once: %{detail}" }
-thinking_sig_stripped = { zh = "Upstream rejected historical thinking signature (thinking_signature_invalid); stripped old thinking blocks and retried", en = "Upstream rejected historical thinking signature (thinking_signature_invalid); stripped old thinking blocks and retried" }
+retry_notice = { zh = "生成失败，%{secs}s 后重试（第 %{attempt}/%{max} 次），已丢弃之前的预览。\n%{message}", en = "Generation failed; retrying in %{secs}s (attempt %{attempt}/%{max}). Previous preview discarded.\n%{message}" }
+request_retry_notice = { zh = "连接或请求失败，%{secs}s 后重试（第 %{attempt}/%{max} 次）。\n%{message}", en = "Connection or request failed; retrying in %{secs}s (attempt %{attempt}/%{max}).\n%{message}" }
+slow_request_warn = { zh = "已等待 model 响应 %{secs}s，请求仍在进行", en = "Waiting %{secs}s for model response; request continues" }
+tool_loop_redirect = { zh = "检测到无进展的工具循环，已引导 model 一次：%{detail}", en = "No-progress tool loop detected; redirected model once: %{detail}" }
+thinking_sig_stripped = { zh = "上游拒绝了历史 thinking 签名（thinking_signature_invalid），已移除旧 thinking 块并重试", en = "Upstream rejected historical thinking signature (thinking_signature_invalid); stripped old thinking blocks and retried" }
 # 权限请求：标题与预览头全英文，说明正文走双语 i18n
-sandbox_read = { zh = "Allow read outside sandbox: %{target}", en = "Allow read outside sandbox: %{target}" }
-perm_dangerous_title = { zh = "Confirm dangerous command: %{cmd}", en = "Confirm dangerous command: %{cmd}" }
+sandbox_read = { zh = "允许读取沙盒外路径：%{target}", en = "Allow read outside sandbox: %{target}" }
+perm_dangerous_title = { zh = "确认危险命令：%{cmd}", en = "Confirm dangerous command: %{cmd}" }
 perm_dangerous_body = { zh = "Command:\n%{command}\n\nMatched rule:\n%{pattern}\n\n批准后仍按当前 permission 模式执行。", en = "Command:\n%{command}\n\nMatched rule:\n%{pattern}\n\nIf approved, it still runs under the current permission mode." }
-perm_write_title = { zh = "Allow write outside workspace: %{paths}", en = "Allow write outside workspace: %{paths}" }
+perm_write_title = { zh = "允许写入工作区外路径：%{paths}", en = "Allow write outside workspace: %{paths}" }
 perm_write_body = { zh = "以下目标位于 sandbox 允许范围之外：\n%{paths}\n\n当前 permission：%{perm}。批准后改动将直接写入磁盘。", en = "These targets are outside the sandbox:\n%{paths}\n\nCurrent permission: %{perm}. If approved, changes will be written directly to disk." }
-perm_write_preview = { zh = "\n\nPreview (first %{lines} lines, %{bytes} bytes total):\n%{preview}", en = "\n\nPreview (first %{lines} lines, %{bytes} bytes total):\n%{preview}" }
-perm_bash_title = { zh = "Allow command in %{mode} mode: %{cmd}", en = "Allow command in %{mode} mode: %{cmd}" }
+perm_write_preview = { zh = "\n\n预览（前 %{lines} 行，共 %{bytes} 字节）：\n%{preview}", en = "\n\nPreview (first %{lines} lines, %{bytes} bytes total):\n%{preview}" }
+perm_bash_title = { zh = "允许在 %{mode} 模式下运行命令：%{cmd}", en = "Allow command in %{mode} mode: %{cmd}" }
 perm_bash_body = { zh = "Command:\n%{command}\n\nReason:\n%{justification}\n\n当前 permission：%{current}；申请：%{target}。", en = "Command:\n%{command}\n\nReason:\n%{justification}\n\nCurrent permission: %{current}; requested: %{target}." }
 btw_empty = { zh = "旁路问题不能为空", en = "Aside question must not be empty" }
 btw_max_turns = { zh = "旁路历史最多保留 %{max} 轮", en = "Aside history keeps at most %{max} turns" }
@@ -1449,10 +1449,10 @@ created = { zh = "Created (Unix ms)", en = "Created (Unix ms)" }
 empty = { zh = "暂无对话历史", en = "No conversation history yet" }
 user = { zh = "User", en = "User" }
 assistant = { zh = "Assistant", en = "Assistant" }
-image = { zh = "[Image attachment omitted]", en = "[Image attachment omitted]" }
+image = { zh = "[已省略图片附件]", en = "[Image attachment omitted]" }
 arguments = { zh = "Arguments", en = "Arguments" }
 output = { zh = "Output", en = "Output" }
-truncated = { zh = "[Content truncated]", en = "[Content truncated]" }
+truncated = { zh = "[内容已截断]", en = "[Content truncated]" }
 
 [core.debug]
 title = { zh = "Tool Usage\n", en = "Tool Usage\n" }

@@ -534,7 +534,7 @@ describe("applyUpdate", () => {
     });
     const status = view.blocks.find((block) => block.kind === "status");
     expect(status?.kind === "status" && status.text).toBe(
-      "Background job finished: cargo build (exit code 0)",
+      "后台任务已结束：cargo build（退出码 0）",
     );
   });
 

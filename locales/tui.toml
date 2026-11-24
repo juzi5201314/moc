@@ -141,10 +141,10 @@ empty_hint = { zh = "当前 workspace 未配置任何 MCP server。", en = "No M
 config_error_fmt = { zh = "MCP 配置解析失败：%{err}", en = "Failed to load MCP config: %{err}" }
 header_fmt = { zh = "MCP servers（共 %{total} 个：%{connected} connected，%{connecting} connecting，%{failed} failed）", en = "MCP servers (%{total} total: %{connected} connected, %{connecting} connecting, %{failed} failed)" }
 reconnected_header_fmt = { zh = "已触发 MCP 重连（共 %{total} 个：%{connected} connected，%{connecting} connecting，%{failed} failed）", en = "Triggered MCP reconnect (%{total} total: %{connected} connected, %{connecting} connecting, %{failed} failed)" }
-phase_connected_fmt = { zh = "connected (%{tools} tools)", en = "connected (%{tools} tools)" }
+phase_connected_fmt = { zh = "已连接（%{tools} 个工具）", en = "connected (%{tools} tools)" }
 phase_connecting_fmt = { zh = "connecting%{elapsed}", en = "connecting%{elapsed}" }
-phase_reconnecting_fmt = { zh = "reconnecting #%{attempts}%{elapsed}: %{err}", en = "reconnecting #%{attempts}%{elapsed}: %{err}" }
-phase_failed_fmt = { zh = "failed: %{err}", en = "failed: %{err}" }
+phase_reconnecting_fmt = { zh = "第 %{attempts} 次重连%{elapsed}：%{err}", en = "reconnecting #%{attempts}%{elapsed}: %{err}" }
+phase_failed_fmt = { zh = "失败：%{err}", en = "failed: %{err}" }
 phase_disabled = { zh = "disabled", en = "disabled" }
 reconnect_hint = { zh = "提示：输入 /mcp reconnect [server] 可手动重连并重置重试计数。", en = "Tip: run /mcp reconnect [server] to reconnect and reset the retry budget." }
 list_failed_fmt = { zh = "查询 MCP 状态失败：%{err}", en = "Failed to query MCP status: %{err}" }
@@ -262,7 +262,7 @@ goal_edit_usage = { zh = "用法：/goal edit <objective>", en = "Usage: /goal e
 goal_none = { zh = "当前未设定目标；使用 /goal <objective> 创建。", en = "No goal set; create one with /goal <objective>." }
 goal_blocked_fmt = { zh = "\nBlocked: %{code}: %{message}\n", en = "\nBlocked: %{code}: %{message}\n" }
 goal_armed_auto = { zh = "auto", en = "auto" }
-goal_armed_off = { zh = "stopped (/goal resume to resume)", en = "stopped (/goal resume to resume)" }
+goal_armed_off = { zh = "已停止（/goal resume 可恢复）", en = "stopped (/goal resume to resume)" }
 goal_note_fmt = { zh = "Goal: %{objective}\nStatus: %{phase}%{blocked}Rounds: %{rounds}\nResume: %{armed}", en = "Goal: %{objective}\nStatus: %{phase}%{blocked}Rounds: %{rounds}\nResume: %{armed}" }
 goal_cmds = { zh = "\nCommands: /goal edit <objective> | /goal pause | /goal resume | /goal clear", en = "\nCommands: /goal edit <objective> | /goal pause | /goal resume | /goal clear" }
 goal_failed_fmt = { zh = "目标操作失败：%{err}", en = "Goal operation failed: %{err}" }
@@ -384,7 +384,7 @@ switch_compact_fmt = { zh = "确认后将先切换至 %{selector}，再由其压
 switching = { zh = "正在切换并压缩…", en = "Switching and compacting…" }
 switch_and_compact = { zh = "Switch & Compact", en = "Switch & Compact" }
 no_jobs = { zh = "当前没有后台任务。", en = "No background jobs." }
-kill_confirm = { zh = "[press x or click to kill]", en = "[press x or click to kill]" }
+kill_confirm = { zh = "[按 x 或点击以终止]", en = "[press x or click to kill]" }
 no_runs = { zh = "暂无 workflow 运行记录。", en = "No workflow runs yet." }
 loading_sessions = { zh = "正在加载 session 列表…", en = "Loading sessions…" }
 no_sessions_here = { zh = "当前目录没有 session。", en = "No sessions in this directory." }
@@ -463,7 +463,7 @@ no_match = { zh = "没有匹配的 model，按 Backspace 修改过滤词。", en
 added = { zh = " (added)", en = " (added)" }
 fetch_title = { zh = "Fetch Models · %{id}", en = "Fetch Models · %{id}" }
 more_fmt = { zh = "%{mark} Advanced", en = "%{mark} Advanced" }
-fetching_short = { zh = "Fetching models…", en = "Fetching models…" }
+fetching_short = { zh = "正在获取 model 列表…", en = "Fetching models…" }
 refetch = { zh = "Refetch models", en = "Refetch models" }
 fetch = { zh = "Fetch models", en = "Fetch models" }
 manual = { zh = "+ Add model ID", en = "+ Add model ID" }
@@ -508,17 +508,17 @@ add_provider = { zh = "Add provider %{id}", en = "Add provider %{id}" }
 azure_endpoint = { zh = "Endpoint: Azure OpenAI", en = "Endpoint: Azure OpenAI" }
 
 [tui.image_err]
-base64 = { zh = "base64 decode failed: %{err}", en = "base64 decode failed: %{err}" }
-format = { zh = "unrecognized image format: %{err}", en = "unrecognized image format: %{err}" }
-image = { zh = "image decode failed: %{err}", en = "image decode failed: %{err}" }
-read = { zh = "cannot read %{path}: %{err}", en = "cannot read %{path}: %{err}" }
-not_file = { zh = "%{path} is not a regular file", en = "%{path} is not a regular file" }
-too_large = { zh = "%{path} exceeds %{mb} MB", en = "%{path} exceeds %{mb} MB" }
-too_large_inline = { zh = "inline image (%{len} bytes) exceeds %{mb} MB limit", en = "inline image (%{len} bytes) exceeds %{mb} MB limit" }
-svg = { zh = "SVG parse failed: %{err}", en = "SVG parse failed: %{err}" }
-svg_size = { zh = "invalid SVG size", en = "invalid SVG size" }
-svg_too_large = { zh = "SVG intrinsic size %{w}x%{h} exceeds %{max}px", en = "SVG intrinsic size %{w}x%{h} exceeds %{max}px" }
-empty_svg = { zh = "SVG content is empty", en = "SVG content is empty" }
+base64 = { zh = "base64 解码失败：%{err}", en = "base64 decode failed: %{err}" }
+format = { zh = "无法识别的图片格式：%{err}", en = "unrecognized image format: %{err}" }
+image = { zh = "图片解码失败：%{err}", en = "image decode failed: %{err}" }
+read = { zh = "无法读取 %{path}：%{err}", en = "cannot read %{path}: %{err}" }
+not_file = { zh = "%{path} 不是普通文件", en = "%{path} is not a regular file" }
+too_large = { zh = "%{path} 超过 %{mb} MB", en = "%{path} exceeds %{mb} MB" }
+too_large_inline = { zh = "内联图片（%{len} 字节）超过 %{mb} MB 上限", en = "inline image (%{len} bytes) exceeds %{mb} MB limit" }
+svg = { zh = "SVG 解析失败：%{err}", en = "SVG parse failed: %{err}" }
+svg_size = { zh = "SVG 尺寸无效", en = "invalid SVG size" }
+svg_too_large = { zh = "SVG 固有尺寸 %{w}x%{h} 超过 %{max}px", en = "SVG intrinsic size %{w}x%{h} exceeds %{max}px" }
+empty_svg = { zh = "SVG 内容为空", en = "SVG content is empty" }
 
 [tui.commands]
 debuginfo.desc = { zh = "查看工具调用统计、成功率与 context 压缩次数", en = "Tool call stats, success rates, and compaction count" }
@@ -563,14 +563,14 @@ doctor.desc = { zh = "诊断终端能力探测结果并给出修复建议", en =
 monitor.desc = { zh = "查看近 10 分钟进程内存、CPU、磁盘与网络折线", en = "Process memory, CPU, disk, and network over the last 10 minutes" }
 
 [tui.skills]
-op_prepare = { zh = "Checking skills and cache, preparing compaction…", en = "Checking skills and cache, preparing compaction…" }
-op_cleanup = { zh = "Cleaning caches of removed skills…", en = "Cleaning caches of removed skills…" }
-op_clear = { zh = "Clearing skills summary cache…", en = "Clearing skills summary cache…" }
-working_fmt = { zh = "Skills compaction: %{op}", en = "Skills compaction: %{op}" }
-working_prefix = { zh = "Skills compaction: ", en = "Skills compaction: " }
+op_prepare = { zh = "正在检查 skills 与缓存，准备压缩…", en = "Checking skills and cache, preparing compaction…" }
+op_cleanup = { zh = "正在清理已移除 skills 的缓存…", en = "Cleaning caches of removed skills…" }
+op_clear = { zh = "正在清空 skills 摘要缓存…", en = "Clearing skills summary cache…" }
+working_fmt = { zh = "Skills 压缩：%{op}", en = "Skills compaction: %{op}" }
+working_prefix = { zh = "Skills 压缩：", en = "Skills compaction: " }
 phase_generate = { zh = "Compacting skills", en = "Compacting skills" }
 phase_commit = { zh = "Committing cache atomically", en = "Committing cache atomically" }
-progress_fmt = { zh = "Skills compaction: %{stage}\n%{done} / %{total} generated and verified · %{skipped} cache-skipped\nProgress updates per batch; cache is published only if all succeed.", en = "Skills compaction: %{stage}\n%{done} / %{total} generated and verified · %{skipped} cache-skipped\nProgress updates per batch; cache is published only if all succeed." }
+progress_fmt = { zh = "Skills 压缩：%{stage}\n已生成并校验 %{done} / %{total} · 命中缓存跳过 %{skipped}\n进度按批次更新；全部成功后才发布缓存。", en = "Skills compaction: %{stage}\n%{done} / %{total} generated and verified · %{skipped} cache-skipped\nProgress updates per batch; cache is published only if all succeed." }
 failed_fmt = { zh = "skills 摘要操作未完成：%{err}\n本次操作未发布缓存。", en = "Skills summary operation did not finish: %{err}\nNo cache was published." }
 
 [tui.compaction]
@@ -857,12 +857,12 @@ custom_fmt = { zh = " %{marker} ✎ Custom: %{text}", en = " %{marker} ✎ Custo
 scroll_status_fmt = { zh = "%{omitted} lines %{from}-%{to}/%{total}%{sep}%{hints}", en = "%{omitted} lines %{from}-%{to}/%{total}%{sep}%{hints}" }
 more_items_fmt = { zh = "   %{arrow} %{count} more items", en = "   %{arrow} %{count} more items" }
 unanswered = { zh = "Unanswered", en = "Unanswered" }
-timeout_unanswered = { zh = "Timed out without an answer", en = "Timed out without an answer" }
+timeout_unanswered = { zh = "超时未作答", en = "Timed out without an answer" }
 answer = { zh = "Answer", en = "Answer" }
 
 [tui.ctx]
 title = { zh = "Context", en = "Context" }
-stale = { zh = "Updated · r Refresh", en = "Updated · r Refresh" }
+stale = { zh = "内容已更新 · r 刷新", en = "Updated · r Refresh" }
 loading_root = { zh = "正在读取 context 占用…", en = "Loading context…" }
 loading = { zh = "正在读取…", en = "Loading…" }
 empty = { zh = "暂无内容。", en = "Nothing here yet." }
@@ -906,7 +906,7 @@ bash_excluded = { zh = "!! bash · excluded from context", en = "!! bash · excl
 queued = { zh = "queued", en = "queued" }
 generating = { zh = "generating", en = "generating" }
 yield_report = { zh = "Final report", en = "Final report" }
-todo_reminder = { zh = "Implicit reminder: sync todo progress", en = "Implicit reminder: sync todo progress" }
+todo_reminder = { zh = "隐式提醒：同步 todo 进度", en = "Implicit reminder: sync todo progress" }
 flag_compact = { zh = "compacted", en = "compacted" }
 flag_fresh = { zh = "fresh", en = "fresh" }
 flag_background = { zh = "background", en = "background" }
@@ -918,9 +918,9 @@ question_count_fmt = { zh = "%{count} questions", en = "%{count} questions" }
 preview_tail = { zh = "… preview tail only", en = "… preview tail only" }
 preview_head = { zh = "⋯ beginning only", en = "⋯ beginning only" }
 image_fmt = { zh = "[image %{kind}]", en = "[image %{kind}]" }
-image_dropped = { zh = "image payload dropped", en = "image payload dropped" }
+image_dropped = { zh = "图片数据已丢弃", en = "image payload dropped" }
 image_decoding = { zh = "Decoding image…", en = "Decoding image…" }
-image_failed_fmt = { zh = "Cannot display image: %{err}", en = "Cannot display image: %{err}" }
+image_failed_fmt = { zh = "无法显示图片：%{err}", en = "Cannot display image: %{err}" }
 more_images_fmt = { zh = "%{omitted} %{count} more images", en = "%{omitted} %{count} more images" }
 subagent_task = { zh = "Subagent task", en = "Subagent task" }
 fetch_failed_fmt = { zh = "Fetch failed: %{url} - %{err}", en = "Fetch failed: %{url} - %{err}" }
@@ -953,8 +953,8 @@ rendering_chart = { zh = "Rendering chart…", en = "Rendering chart…" }
 ref_links = { zh = "References:", en = "References:" }
 more_links_fmt = { zh = "▸ %{count} more links", en = "▸ %{count} more links" }
 collapse_links = { zh = "▾ Collapse links", en = "▾ Collapse links" }
-widget_placeholder = { zh = "[Widget: %{title} - preview in WebUI only, %{lines} lines]", en = "[Widget: %{title} - preview in WebUI only, %{lines} lines]" }
-widget_placeholder_untitled = { zh = "[Widget - preview in WebUI only, %{lines} lines]", en = "[Widget - preview in WebUI only, %{lines} lines]" }
+widget_placeholder = { zh = "[Widget：%{title} - 仅可在 WebUI 中预览，共 %{lines} 行]", en = "[Widget: %{title} - preview in WebUI only, %{lines} lines]" }
+widget_placeholder_untitled = { zh = "[Widget - 仅可在 WebUI 中预览，共 %{lines} 行]", en = "[Widget - preview in WebUI only, %{lines} lines]" }
 
 [tui.subagent]
 title = { zh = "Subagents", en = "Subagents" }
@@ -982,13 +982,13 @@ exit_fmt = { zh = "exit %{code}", en = "exit %{code}" }
 
 [tui.event]
 unattended_approved = { zh = "无人值守模式：已自动批准计划并开始压缩执行。", en = "Unattended: plan auto-approved (compact & run)." }
-compacted_fmt = { zh = "Compacted: %{before} → %{after}", en = "Compacted: %{before} → %{after}" }
-trimmed_fmt = { zh = "Trimmed: %{before} → %{after} (no summary)", en = "Trimmed: %{before} → %{after} (no summary)" }
+compacted_fmt = { zh = "已压缩：%{before} → %{after}", en = "Compacted: %{before} → %{after}" }
+trimmed_fmt = { zh = "已裁剪：%{before} → %{after}（未生成摘要）", en = "Trimmed: %{before} → %{after} (no summary)" }
 plugin_disabled_fmt = { zh = "plugin `%{plugin}` 已停用（%{code}）。", en = "Plugin `%{plugin}` disabled (%{code})." }
-thinking_truncated = { zh = "\n\n[thinking truncated in UI]\n", en = "\n\n[thinking truncated in UI]\n" }
+thinking_truncated = { zh = "\n\n[界面中的 thinking 已截断]\n", en = "\n\n[thinking truncated in UI]\n" }
 clm_enabled = { zh = "CLM 实验引擎已启用：model 将自主维护实时 context，首次请求后引擎锁定。", en = "CLM experimental engine enabled: the model manages live context; locked after the first request." }
 exit_code_fmt = { zh = " (exit %{code})", en = " (exit %{code})" }
-job_done_fmt = { zh = "Background job finished: %{cmd}%{code}", en = "Background job finished: %{cmd}%{code}" }
+job_done_fmt = { zh = "后台任务已结束：%{cmd}%{code}", en = "Background job finished: %{cmd}%{code}" }
 error_fmt = { zh = "错误：%{message}%{retryable}", en = "Error: %{message}%{retryable}" }
 retryable = { zh = "（可重试）", en = " (retryable)" }
 session_unloaded = { zh = "session 已关闭，编辑占用已释放，旁路记录已清空。", en = "Session closed; edit lock released and aside memory cleared." }
@@ -1011,7 +1011,7 @@ esc_clear = { zh = "再次按 Esc 清空输入", en = "Press Esc again to clear 
 esc_rewind = { zh = "再次按 Esc 打开 Rewind", en = "Press Esc again to open Rewind" }
 skills_compacting = { zh = "正在维护 skills 摘要，输入已保留；完成或取消后即可发送。", en = "Skills summary maintenance is running; your input is kept and can be sent once it finishes or is cancelled." }
 slash_no_images = { zh = "斜杠命令不支持附带图片，请先移除图片。", en = "Slash commands do not accept images; remove the image and retry." }
-skills_cancel_wait = { zh = "Skills compaction: cancelling, waiting for request to end…", en = "Skills compaction: cancelling, waiting for request to end…" }
+skills_cancel_wait = { zh = "Skills 压缩：正在取消，等待请求结束…", en = "Skills compaction: cancelling, waiting for request to end…" }
 stopping = { zh = "Stopping…", en = "Stopping…" }
 thinking_display_fmt = { zh = "Thinking Detail: %{label}", en = "Thinking Detail: %{label}" }
 tool_display_fmt = { zh = "Tool Detail: %{label}", en = "Tool Detail: %{label}" }
@@ -1090,9 +1090,9 @@ brief = { zh = "brief", en = "brief" }
 full = { zh = "full", en = "full" }
 
 [tui.scroll]
-incomplete_fmt = { zh = "%{count} long lines truncated%{hint}", en = "%{count} long lines truncated%{hint}" }
-expand_hint = { zh = "; click for details", en = "; click for details" }
-read_hint = { zh = "Long lines are shortened for preview; omitted text cannot be edited directly.", en = "Long lines are shortened for preview; omitted text cannot be edited directly." }
+incomplete_fmt = { zh = "%{count} 行长文本已截断%{hint}", en = "%{count} long lines truncated%{hint}" }
+expand_hint = { zh = "；点击查看详情", en = "; click for details" }
+read_hint = { zh = "预览中长行已缩短；被省略的文本无法直接编辑。", en = "Long lines are shortened for preview; omitted text cannot be edited directly." }
 
 [tui.wf]
 orchestration = { zh = "Orchestration", en = "Orchestration" }
@@ -1104,8 +1104,8 @@ reject_fmt = { zh = "Reject feedback: %{feedback}▌", en = "Reject feedback: %{
 view_fmt = { zh = "View: %{title}  (Esc/o Back)", en = "View: %{title}  (Esc/o Back)" }
 status_fmt = { zh = "Status: %{status}", en = "Status: %{status}" }
 usage_fmt = { zh = "Usage: %{spent} tokens%{cost}", en = "Usage: %{spent} tokens%{cost}" }
-no_data = { zh = "    (no data)", en = "    (no data)" }
-no_points = { zh = "    (no data points)", en = "    (no data points)" }
+no_data = { zh = "    （无数据）", en = "    (no data)" }
+no_points = { zh = "    （无数据点）", en = "    (no data points)" }
 
 [tui.menu]
 engine_standard = { zh = "默认引擎：model 直接调用工具", en = "Default engine: the model calls tools directly" }
@@ -1138,8 +1138,8 @@ thinking = { zh = "Thinking", en = "Thinking" }
 responding = { zh = "Responding", en = "Responding" }
 mcp_connecting = { zh = "Connecting MCP: %{servers}", en = "Connecting MCP: %{servers}" }
 mcp_slow = { zh = "MCP connecting: %{servers} (%{secs}s)", en = "MCP connecting: %{servers} (%{secs}s)" }
-mcp_unhealthy = { zh = "⚠ MCP issue: %{servers}", en = "⚠ MCP issue: %{servers}" }
-mcp_config_error = { zh = "⚠ MCP config error", en = "⚠ MCP config error" }
+mcp_unhealthy = { zh = "⚠ MCP 异常：%{servers}", en = "⚠ MCP issue: %{servers}" }
+mcp_config_error = { zh = "⚠ MCP 配置错误", en = "⚠ MCP config error" }
 
 [tui.complete]
 args_fmt = { zh = "/%{name} args", en = "/%{name} args" }

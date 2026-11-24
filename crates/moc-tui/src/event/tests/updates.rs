@@ -224,7 +224,7 @@ fn foreground_job_updates_do_not_masquerade_as_background() {
         panic!("后台任务结束应追加便签");
     };
     assert_eq!(*tone, crate::transcript::NoteTone::Info);
-    assert_eq!(text, "Background job finished: cargo build (exit 0)");
+    assert_eq!(text, "后台任务已结束：cargo build (exit 0)");
 
     // 非零退出的后台任务是警告便签。
     apply_update(
@@ -377,7 +377,7 @@ fn compaction_note_ticks_then_replaces_in_place() {
     assert_eq!(
         note(&app),
         (
-            "Compacted: 426.07k → 247.96k".into(),
+            "已压缩：426.07k → 247.96k".into(),
             crate::transcript::NoteTone::Info
         )
     );
@@ -425,7 +425,7 @@ fn pruning_compaction_is_labelled_as_trim() {
     let Some(Block::Note { text, tone }) = app.blocks.last().map(|entry| &entry.block) else {
         panic!("裁剪提示应为 Note");
     };
-    assert_eq!(text, "Trimmed: 426.07k → 247.96k (no summary)");
+    assert_eq!(text, "已裁剪：426.07k → 247.96k（未生成摘要）");
     assert_eq!(*tone, crate::transcript::NoteTone::Info);
     assert_eq!(app.blocks.len(), 1, "裁剪只留一条终态提示");
     assert!(app.compaction_progress.is_none());
@@ -444,7 +444,7 @@ fn pruning_compaction_is_labelled_as_trim() {
     let Some(Block::Note { text, .. }) = app.blocks.last().map(|entry| &entry.block) else {
         panic!("裁剪完成应为 Note");
     };
-    assert_eq!(text, "Trimmed: 426.07k → 247.96k (no summary)");
+    assert_eq!(text, "已裁剪：426.07k → 247.96k（未生成摘要）");
     assert_eq!(app.blocks.len(), 1);
 }
 
@@ -708,7 +708,7 @@ fn automatic_retry_discards_only_current_preview() {
         text: "失败正文".into(),
     });
     let message =
-        "Generation failed; retrying in 2.5s (attempt 2/10). Previous preview discarded.\n上游超时";
+        "生成失败，2.5s 后重试（第 2/10 次），已丢弃之前的预览。\n上游超时";
     apply_update(
         &mut app,
         SessionUpdate::GenerationRetry {
@@ -740,7 +740,7 @@ fn automatic_retry_discards_only_current_preview() {
     assert!(app.tick_retry_wait());
     let (text, tone) = note(&app);
     assert_eq!(tone, NoteTone::Warn);
-    assert!(text.contains("retrying in 1.4s (attempt 2/10)"), "{text}");
+    assert!(text.contains("1.4s 后重试（第 2/10 次）"), "{text}");
     assert_eq!(app.blocks.len(), 2, "倒数刷新不应追加新块");
 
     // 新一轮生成开始：便签定稿回 core 原文，倒数状态清掉。
@@ -759,7 +759,7 @@ fn connection_retry_before_generation_uses_existing_countdown() {
     use crate::transcript::{Block, NoteTone};
     let mut app = app_with_completion();
     app.prompt_running = true;
-    let message = "Connection or request failed; retrying in 60.0s (attempt 2/10).\n网络传输失败";
+    let message = "连接或请求失败，60.0s 后重试（第 2/10 次）。\n网络传输失败";
     apply_update(
         &mut app,
         SessionUpdate::GenerationRetry {
@@ -774,7 +774,7 @@ fn connection_retry_before_generation_uses_existing_countdown() {
         std::time::Instant::now() + std::time::Duration::from_millis(1400);
     assert!(app.tick_retry_wait());
     assert!(
-        matches!(&app.blocks.last().unwrap().block, Block::Note { text, tone: NoteTone::Warn } if text.contains("retrying in 1.4s (attempt 2/10)"))
+        matches!(&app.blocks.last().unwrap().block, Block::Note { text, tone: NoteTone::Warn } if text.contains("1.4s 后重试（第 2/10 次）"))
     );
     apply_update(
         &mut app,

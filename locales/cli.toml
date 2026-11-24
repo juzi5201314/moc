@@ -187,7 +187,7 @@ permission_set = { zh = "权限已切换为 %{mode}", en = "Permission switched 
 plan_state = { zh = "Plan mode: %{state}", en = "Plan mode: %{state}" }
 usage_goal_edit = { zh = "用法：/goal edit <objective>", en = "Usage: /goal edit <objective>" }
 usage_ask = { zh = "用法：/ask <question>", en = "Usage: /ask <question>" }
-skills_working = { zh = "Working: maintaining skills summaries (Ctrl+C to cancel)", en = "Working: maintaining skills summaries (Ctrl+C to cancel)" }
+skills_working = { zh = "处理中：正在维护 skills 摘要（Ctrl+C 取消）", en = "Working: maintaining skills summaries (Ctrl+C to cancel)" }
 skills_busy = { zh = "skills 摘要操作尚未完成，输入未发送也未排队", en = "The skills operation has not finished; input was neither sent nor queued" }
 warning = { zh = "警告：%{msg}", en = "Warning: %{msg}" }
 compacted = { zh = "上下文压缩：%{method}，%{before} → %{after} tokens", en = "Context compacted: %{method}, %{before} → %{after} tokens" }
@@ -205,16 +205,16 @@ plugins_reloaded = { zh = "plugin 已重载：%{ok} 个可用 / %{disabled} 个�
 no_plugins = { zh = "当前工作区没有 plugin。将 plugin 放进 .moc/plugins/<name>/（或 $MOC_HOME/plugins）即可自动启用。", en = "No plugins in this workspace. Drop plugins into .moc/plugins/<name>/ (or $MOC_HOME/plugins) to enable them automatically." }
 no_mcp = { zh = "当前工作区未配置任何 MCP 服务。", en = "No MCP servers configured for this workspace." }
 mcp_config_error = { zh = "MCP 配置解析失败：%{err}", en = "MCP config failed to load: %{err}" }
-mcp_header = { zh = "MCP servers (%{total} total: %{connected} connected, %{connecting} connecting, %{failed} failed):", en = "MCP servers (%{total} total: %{connected} connected, %{connecting} connecting, %{failed} failed):" }
+mcp_header = { zh = "MCP servers（共 %{total} 个：%{connected} 已连接，%{connecting} 连接中，%{failed} 失败）：", en = "MCP servers (%{total} total: %{connected} connected, %{connecting} connecting, %{failed} failed):" }
 mcp_reconnected = { zh = "已触发 MCP 重连（共 %{total} 个：%{connected} connected，%{connecting} connecting，%{failed} failed）：", en = "Triggered MCP reconnect (%{total} total: %{connected} connected, %{connecting} connecting, %{failed} failed):" }
-mcp_connected = { zh = "connected (%{tools} tools)", en = "connected (%{tools} tools)" }
+mcp_connected = { zh = "已连接（%{tools} 个工具）", en = "connected (%{tools} tools)" }
 mcp_connecting = { zh = "connecting", en = "connecting" }
-mcp_reconnecting = { zh = "reconnecting #%{attempts}: %{err}", en = "reconnecting #%{attempts}: %{err}" }
-mcp_failed = { zh = "failed: %{err}", en = "failed: %{err}" }
+mcp_reconnecting = { zh = "第 %{attempts} 次重连：%{err}", en = "reconnecting #%{attempts}: %{err}" }
+mcp_failed = { zh = "失败：%{err}", en = "failed: %{err}" }
 mcp_disabled = { zh = "disabled", en = "disabled" }
 plugins_loaded = { zh = "已加载 %{n} 个 plugin：", en = "%{n} plugin(s) loaded:" }
 plugin_row = { zh = "- %{name}%{version} (%{source}) %{desc}", en = "- %{name}%{version} (%{source}) %{desc}" }
-plugin_unavailable = { zh = "  unavailable: %{error}", en = "  unavailable: %{error}" }
+plugin_unavailable = { zh = "  不可用：%{error}", en = "  unavailable: %{error}" }
 plugin_tool = { zh = "  tool %{name} [%{modes}]", en = "  tool %{name} [%{modes}]" }
 plugin_command = { zh = "  command /%{name}", en = "  command /%{name}" }
 unknown = { zh = "未知命令 `/%{name}`；输入 /help 查看命令列表。", en = "Unknown command `/%{name}`; type /help to list commands." }
@@ -233,25 +233,25 @@ workflow_phase = { zh = "[Workflow %{run} phase → %{phase}]", en = "[Workflow 
 hole_opened = { zh = "[Workflow %{run} step awaiting input: %{name}]", en = "[Workflow %{run} step awaiting input: %{name}]" }
 hole_filled = { zh = "[Workflow %{run} step filled: %{name}]", en = "[Workflow %{run} step filled: %{name}]" }
 agent_message = { zh = "\n[Agent message ◀ %{from}: %{body}]", en = "\n[Agent message ◀ %{from}: %{body}]" }
-retry = { zh = "\n[Auto-retry: previous output of this generation discarded. %{message}]", en = "\n[Auto-retry: previous output of this generation discarded. %{message}]" }
+retry = { zh = "\n[自动重试：本次生成之前的输出已丢弃。%{message}]", en = "\n[Auto-retry: previous output of this generation discarded. %{message}]" }
 mcp_connecting = { zh = "\n[Connecting MCP: %{servers}]", en = "\n[Connecting MCP: %{servers}]" }
 guard = { zh = "\n[Guard: %{message}]", en = "\n[Guard: %{message}]" }
 plugin_disabled = { zh = "\n[Plugin disabled: %{plugin} (%{code}) %{message}]", en = "\n[Plugin disabled: %{plugin} (%{code}) %{message}]" }
 usage = { zh = "\n[Usage: %{input} input, %{output} output tokens]", en = "\n[Usage: %{input} input, %{output} output tokens]" }
 todo = { zh = "\n[todo: %{done}/%{total} done]", en = "\n[todo: %{done}/%{total} done]" }
-todo_reminder = { zh = "\n[TodoReminder: %{open} open items remain]", en = "\n[TodoReminder: %{open} open items remain]" }
+todo_reminder = { zh = "\n[TodoReminder：仍有 %{open} 项未完成]", en = "\n[TodoReminder: %{open} open items remain]" }
 plan_submitted = { zh = "\n[Plan submitted (v%{version}): %{title} (%{id}), %{path}]", en = "\n[Plan submitted (v%{version}): %{title} (%{id}), %{path}]" }
 plan_status = { zh = "\n[Plan status: %{title} (%{id}) → %{status}]", en = "\n[Plan status: %{title} (%{id}) → %{status}]" }
 compacting = { zh = "\n[Compacting context...]", en = "\n[Compacting context...]" }
-compacted = { zh = "\n[Context compacted: %{method}, %{before} → %{after} tokens]", en = "\n[Context compacted: %{method}, %{before} → %{after} tokens]" }
-trimmed = { zh = "\n[Context trimmed: %{before} → %{after} tokens (no summary generated)]", en = "\n[Context trimmed: %{before} → %{after} tokens (no summary generated)]" }
-compact_failed = { zh = "\n[Context compaction failed: %{message}]", en = "\n[Context compaction failed: %{message}]" }
-job_finished = { zh = "\n[Job %{id} finished: %{command} %{status}%{code}, log %{log}]", en = "\n[Job %{id} finished: %{command} %{status}%{code}, log %{log}]" }
+compacted = { zh = "\n[Context 已压缩：%{method}，%{before} → %{after} tokens]", en = "\n[Context compacted: %{method}, %{before} → %{after} tokens]" }
+trimmed = { zh = "\n[Context 已裁剪：%{before} → %{after} tokens（未生成摘要）]", en = "\n[Context trimmed: %{before} → %{after} tokens (no summary generated)]" }
+compact_failed = { zh = "\n[Context 压缩失败：%{message}]", en = "\n[Context compaction failed: %{message}]" }
+job_finished = { zh = "\n[任务 %{id} 已结束：%{command} %{status}%{code}，日志 %{log}]", en = "\n[Job %{id} finished: %{command} %{status}%{code}, log %{log}]" }
 field_model = { zh = "model", en = "model" }
 field_effort = { zh = "thinking effort", en = "thinking effort" }
 mismatch_field = { zh = "%{label} %{requested} → %{reported}", en = "%{label} %{requested} → %{reported}" }
-upstream_mismatch = { zh = "\n[Warning: upstream effective config differs from request: %{detail}]", en = "\n[Warning: upstream effective config differs from request: %{detail}]" }
-error = { zh = "\n[Error: %{message}]", en = "\n[Error: %{message}]" }
+upstream_mismatch = { zh = "\n[警告：上游生效配置与请求不一致：%{detail}]", en = "\n[Warning: upstream effective config differs from request: %{detail}]" }
+error = { zh = "\n[错误：%{message}]", en = "\n[Error: %{message}]" }
 engine = { zh = "\n[Engine: %{engine}]", en = "\n[Engine: %{engine}]" }
 autonomy = { zh = "\n[Autonomy: %{autonomy}]", en = "\n[Autonomy: %{autonomy}]" }
 fast_mode = { zh = "\n[Fast Mode: %{state}]", en = "\n[Fast Mode: %{state}]" }
@@ -260,11 +260,11 @@ model = { zh = "\n[Model: %{model}]", en = "\n[Model: %{model}]" }
 permission = { zh = "\n[Permission: %{permission}]", en = "\n[Permission: %{permission}]" }
 title = { zh = "\n[Session title: %{title}]", en = "\n[Session title: %{title}]" }
 permission_wait = { zh = "\n[Awaiting tool permission: %{id}]", en = "\n[Awaiting tool permission: %{id}]" }
-goal_cleared = { zh = "\n[Goal cleared]", en = "\n[Goal cleared]" }
+goal_cleared = { zh = "\n[已清除 Goal]", en = "\n[Goal cleared]" }
 goal = { zh = "\n[Goal: %{objective} · round %{rounds}]", en = "\n[Goal: %{objective} · round %{rounds}]" }
 goal_round = { zh = "\n[Goal continuation: round %{round}]", en = "\n[Goal continuation: round %{round}]" }
-approve_prompt = { zh = "Approve [y/n/<role=model>]: ", en = "Approve [y/n/<role=model>]: " }
-override_recorded = { zh = "Override recorded; enter y to approve.", en = "Override recorded; enter y to approve." }
+approve_prompt = { zh = "是否批准 [y/n/<role=model>]：", en = "Approve [y/n/<role=model>]: " }
+override_recorded = { zh = "已记录覆盖；输入 y 批准。", en = "Override recorded; enter y to approve." }
 
 [cli.render.plan]
 draft = { zh = "draft", en = "draft" }
@@ -294,13 +294,13 @@ goal_head = { zh = "Goal: %{objective}\nStatus: %{phase}\n", en = "Goal: %{objec
 goal_blocked_by = { zh = "Blocked: %{code}: %{message}\n", en = "Blocked: %{code}: %{message}\n" }
 goal_tail = { zh = "Rounds: %{rounds}\nContinuation: %{armed}\nCommands: /goal edit <objective> | /goal pause | /goal resume | /goal clear\n", en = "Rounds: %{rounds}\nContinuation: %{armed}\nCommands: /goal edit <objective> | /goal pause | /goal resume | /goal clear\n" }
 goal_armed = { zh = "auto", en = "auto" }
-goal_disarmed = { zh = "stopped (/goal resume to resume)", en = "stopped (/goal resume to resume)" }
+goal_disarmed = { zh = "已停止（/goal resume 可恢复）", en = "stopped (/goal resume to resume)" }
 
 # ---- 审批与问答交互 ----
 
 [cli.inter]
 no_plan = { zh = "当前会话没有等待批准的计划", en = "No plan is awaiting approval in this session" }
-choose = { zh = "Choose [default: reject]: ", en = "Choose [default: reject]: " }
+choose = { zh = "请选择 [默认：reject]：", en = "Choose [default: reject]: " }
 recommended = { zh = " (recommended)", en = " (recommended)" }
 input_number = { zh = "输入编号%{multi}或自定义内容：", en = "Enter a number%{multi} or custom text: " }
 multi_hint = { zh = "（可用逗号多选）", en = " (comma-separated for multiple)" }

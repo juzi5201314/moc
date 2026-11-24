@@ -279,7 +279,7 @@ async fn repl_model_switch_confirms_before_compacting() {
         "{stdout}"
     );
     assert!(stdout.contains("已取消切换，模型仍为"), "{stdout}");
-    assert!(stdout.contains("Context compacted"), "{stdout}");
+    assert!(stdout.contains("Context 已压缩"), "{stdout}");
     assert!(stdout.contains("模型已切换为 p/small:off"), "{stdout}");
 }
 

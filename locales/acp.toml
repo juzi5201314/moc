@@ -16,24 +16,24 @@ label = { zh = "Model", en = "Model" }
 desc = { zh = "当前会话使用的模型", en = "Model used by this session" }
 
 [acp.diff]
-truncated = { zh = "Diff truncated; some changes are not shown.", en = "Diff truncated; some changes are not shown." }
+truncated = { zh = "Diff 已截断，部分改动未显示。", en = "Diff truncated; some changes are not shown." }
 
 [acp.plan]
 blocked = { zh = "%{content} (blocked: %{reason})", en = "%{content} (blocked: %{reason})" }
 approved = { zh = "Plan \"%{title}\" approved", en = "Plan \"%{title}\" approved" }
 rejected = { zh = "Plan \"%{title}\" rejected", en = "Plan \"%{title}\" rejected" }
 superseded = { zh = "Plan \"%{title}\" superseded by a newer version", en = "Plan \"%{title}\" superseded by a newer version" }
-mismatch_row = { zh = "- %{field}: requested %{requested}, upstream reported %{reported}", en = "- %{field}: requested %{requested}, upstream reported %{reported}" }
+mismatch_row = { zh = "- %{field}：请求 %{requested}，上游返回 %{reported}", en = "- %{field}: requested %{requested}, upstream reported %{reported}" }
 
 [acp.notice]
 retry_title = { zh = "Auto retry", en = "Auto retry" }
-retry_body = { zh = "Earlier output of this generation was discarded; completed tool results are kept. %{message}", en = "Earlier output of this generation was discarded; completed tool results are kept. %{message}" }
+retry_body = { zh = "本次生成之前的输出已丢弃，已完成的工具结果保留。%{message}", en = "Earlier output of this generation was discarded; completed tool results are kept. %{message}" }
 guard_title = { zh = "Loop guard", en = "Loop guard" }
-plugin_disabled = { zh = "Plugin %{plugin} disabled", en = "Plugin %{plugin} disabled" }
-mismatch_title = { zh = "Upstream differs from request", en = "Upstream differs from request" }
+plugin_disabled = { zh = "Plugin %{plugin} 已停用", en = "Plugin %{plugin} disabled" }
+mismatch_title = { zh = "上游生效配置与请求不一致", en = "Upstream differs from request" }
 compacting = { zh = "Compacting context...", en = "Compacting context..." }
-compacted = { zh = "Context compaction done: %{before} → %{after} tokens", en = "Context compaction done: %{before} → %{after} tokens" }
-compact_failed = { zh = "Context compaction failed", en = "Context compaction failed" }
+compacted = { zh = "Context 压缩完成：%{before} → %{after} tokens", en = "Context compaction done: %{before} → %{after} tokens" }
+compact_failed = { zh = "Context 压缩失败", en = "Context compaction failed" }
 error_title = { zh = "Prompt error", en = "Prompt error" }
 code_message = { zh = "%{code}: %{message}", en = "%{code}: %{message}" }
 

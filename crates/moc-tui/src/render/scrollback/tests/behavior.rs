@@ -384,7 +384,7 @@ fn ask_answer_pairs_parses_headers_answers_and_sentinels() {
         ),
         vec![(
             String::new(),
-            "Timed out without an answer".to_owned(),
+            "超时未作答".to_owned(),
             true
         )],
         "超时哨兵"
