@@ -382,11 +382,7 @@ fn ask_answer_pairs_parses_headers_answers_and_sentinels() {
             &block("The user did not answer within the time limit; continue without an answer."),
             &args
         ),
-        vec![(
-            String::new(),
-            "超时未作答".to_owned(),
-            true
-        )],
+        vec![(String::new(), "超时未作答".to_owned(), true)],
         "超时哨兵"
     );
 }

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use moc_core::Core;
+use moc_i18n::t;
 use moc_protocol::{
     ClientBuilder, ClientHandle, ClientInfo, ClientRequestContext, RpcError, RpcErrorCode,
     ServerConnection, ServerOptions,
@@ -17,7 +18,6 @@ use moc_protocol::{
         SessionUpdateParams,
     },
 };
-use moc_i18n::t;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender, channel};
 use tokio_util::sync::CancellationToken;
 

@@ -8,11 +8,11 @@ use crate::app::App;
 use crate::render::labels;
 use crate::render::wrap::clip_line;
 use crate::render::wrap::str_width;
+use moc_i18n::t;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use moc_i18n::t;
 
 /// 快捷键一览：通用键位、输入与编辑、旁路交互三组，组标题加粗着色；
 /// 末尾一行指路斜杠命令（输入 `/` 即见全表，不占本表篇幅）。

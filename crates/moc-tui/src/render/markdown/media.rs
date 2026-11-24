@@ -11,10 +11,10 @@ use crate::render::markdown::is_mermaid_fence_info;
 use crate::render::markdown::is_svg_fence_info;
 use crate::render::markdown::is_widget_fence_info;
 use crate::render::markdown::widget_fence_title;
+use moc_i18n::t;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use moc_i18n::t;
 use std::path::PathBuf;
 
 impl<'a> MdRenderer<'a> {
@@ -119,7 +119,9 @@ impl<'a> MdRenderer<'a> {
         }
         let lines = code.lines().count().max(1);
         let label = match widget_fence_title(info) {
-            Some(title) => t!("tui.md.widget_placeholder", title = title, lines = lines).into_owned(),
+            Some(title) => {
+                t!("tui.md.widget_placeholder", title = title, lines = lines).into_owned()
+            }
             None => t!("tui.md.widget_placeholder_untitled", lines = lines).into_owned(),
         };
         let clipped = super::super::wrap::truncate(label, self.width.saturating_sub(2).max(1));

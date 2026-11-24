@@ -17,13 +17,13 @@ use crate::render::wrap::str_width;
 use crate::render::wrap::truncate;
 use crate::settings::providers::APIS;
 use crate::theme::Theme;
+use moc_i18n::t;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use moc_i18n::t;
 
 /// 供应商列表和详情共用一个页面，窄终端用可切换的单栏布局。
 pub(super) fn draw_providers(

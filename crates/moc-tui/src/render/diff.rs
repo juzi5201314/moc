@@ -5,10 +5,10 @@
 //! 扩展名做语法高亮；hunk 之间用 `⋯ N 行未变` 分隔，整份 diff 超出构造
 //! 上限时在末尾补一行提示（只补一次，不按文件重复）。
 
+use moc_i18n::t;
 use moc_protocol::methods::{DiffLineKind, ToolDiff, ToolFileDiff};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use moc_i18n::t;
 
 use super::highlight;
 use crate::theme::Theme;
@@ -419,7 +419,10 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("⋯ 8 unchanged lines"), "只应省略 8 行：{text}");
+        assert!(
+            text.contains("⋯ 8 unchanged lines"),
+            "只应省略 8 行：{text}"
+        );
         assert!(
             !text.contains("⋯ 14 unchanged lines"),
             "不能把前一个 hunk 自身的行也算进去"

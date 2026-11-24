@@ -12,10 +12,10 @@ use super::tool_content::tool_is_error;
 use crate::theme::Theme;
 use crate::transcript::DetailLevel;
 use crate::transcript::ToolCallBlock;
+use moc_i18n::t;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use moc_i18n::t;
 use serde_json::Value;
 use std::borrow::Cow;
 

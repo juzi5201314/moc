@@ -11,9 +11,9 @@ use moc_protocol::methods::{
     PermissionRequestParams, PermissionResult, SessionInfo, TranscriptEntry,
 };
 
+use moc_i18n::t;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use moc_i18n::t;
 
 /// 可搜索列表模态的状态。
 #[derive(Debug, Clone, Default)]

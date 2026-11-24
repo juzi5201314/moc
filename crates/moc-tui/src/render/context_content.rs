@@ -9,6 +9,7 @@ use crate::{
     modal::{ContextContentState, ContextLayout, ContextScrollbar, Modal},
     theme::Theme,
 };
+use moc_i18n::t;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -16,7 +17,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use moc_i18n::t;
 
 fn modal_area(area: Rect, detail: bool, rows: usize) -> Rect {
     let width = if detail {

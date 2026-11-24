@@ -122,7 +122,10 @@ fn tool_brief_preview_marks_omission() {
         200 + 2,
         "完整档 = 标题 + 全部 200 行 + 留白（命令已在标题）"
     );
-    assert!(!text_of(&full).contains("more lines"), "完整档不出现省略提示");
+    assert!(
+        !text_of(&full).contains("more lines"),
+        "完整档不出现省略提示"
+    );
     assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
 
     app.tool_detail = DetailLevel::Hidden;
@@ -666,7 +669,10 @@ fn ask_tool_card_styles_answers_and_clamps_rows() {
         !brief_text.contains("标题6") && !brief_text.contains("标题7"),
         "超出简略档的答案行被省略"
     );
-    assert!(brief_text.contains("⋯ 2 more lines"), "省略提示:{brief_text}");
+    assert!(
+        brief_text.contains("⋯ 2 more lines"),
+        "省略提示:{brief_text}"
+    );
     assert_eq!(estimate_entry_height_at(&app, 0, width), brief.len());
 }
 

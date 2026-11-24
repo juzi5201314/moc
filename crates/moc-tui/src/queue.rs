@@ -10,12 +10,12 @@ use crate::{
     protocol::{AppEvent, EmbeddedConnection},
     widgets::prompt::PromptState,
 };
+use moc_i18n::t;
 use moc_protocol::{
     BashCommand, BashParams, ClientHandle, InputPart, PromptParams, SessionBash, SessionPrompt,
     SessionRetry, SessionRetryParams, SessionSteer, SessionUnsteer, SteerParams, UnsteerParams,
     methods::PromptMode,
 };
-use moc_i18n::t;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub struct QueuedPrompt {

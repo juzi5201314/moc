@@ -430,10 +430,7 @@ fn provider_field_footer_exposes_reset() {
 
     panel.select_action(ProviderAction::More);
     let rows = screen(&mut panel, 120, 40);
-    assert!(
-        locate(&rows, "r Reset").is_none(),
-        "非字段行不显示恢复默认"
-    );
+    assert!(locate(&rows, "r Reset").is_none(), "非字段行不显示恢复默认");
 }
 
 /// 字段树的滚动条与主界面同一字形，贴终端右缘。

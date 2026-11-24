@@ -17,11 +17,11 @@ use crate::{
 use controls::Control;
 use crossterm::event::{KeyCode, KeyModifiers};
 use editors::{Editor, Outcome, TextEditor};
+use moc_i18n::t;
 use moc_protocol::{
     CatalogModel, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope, FieldKind,
     MaintenanceReport, SettingsDocument,
 };
-use moc_i18n::t;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 

@@ -1,9 +1,9 @@
 use super::ModelScroll;
 use super::RewindItem;
 use super::RewindState;
+use moc_i18n::t;
 use moc_protocol::Role;
 use moc_protocol::methods::TranscriptEntry;
-use moc_i18n::t;
 
 impl RewindState {
     pub fn set_entries(&mut self, entries: Vec<TranscriptEntry>, future: Vec<TranscriptEntry>) {

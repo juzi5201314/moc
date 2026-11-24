@@ -14,6 +14,7 @@ use crate::commands::CommandId;
 use crate::modal::Modal;
 use crate::protocol::AppEvent;
 use crate::protocol::EmbeddedConnection;
+use moc_i18n::t;
 use moc_protocol::PluginRunCommand;
 use moc_protocol::PluginRunCommandParams;
 use moc_protocol::SessionCompact;
@@ -32,7 +33,6 @@ use moc_protocol::SessionSetPermission;
 use moc_protocol::SessionSetPermissionParams;
 use moc_protocol::commands::CommandRef;
 use moc_protocol::commands::CommandSpec;
-use moc_i18n::t;
 
 /// `execute_command` 的解析结果：先把借用 `app.commands` 的部分取出成自有值，
 /// 分派阶段才能对 `app` 做可变操作。

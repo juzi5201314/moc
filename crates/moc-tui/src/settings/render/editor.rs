@@ -19,6 +19,7 @@ use crate::render::wrap::str_width;
 use crate::render::wrap::wrap_text;
 use crate::theme::Theme;
 use crate::widgets::prompt::PromptState;
+use moc_i18n::t;
 use moc_protocol::FieldKind;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -26,7 +27,6 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use moc_i18n::t;
 
 /// 弹窗编辑器：单选、清单、键值表与多行文本共用一张居中卡片；单行文本在字段行内编辑。
 pub(super) fn draw_edit_popup(

@@ -11,10 +11,10 @@
 
 use moc_core::chart::RawTable;
 
+use moc_i18n::t;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use moc_i18n::t;
 
 use super::graphics::GraphicsSupport;
 use super::image::{ImagePlacement, ImageStore};

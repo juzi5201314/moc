@@ -22,13 +22,13 @@ use crate::render::wrap::clip_line;
 use crate::render::wrap::str_width;
 use crate::settings::render::display_value;
 use crate::theme::Theme;
+use moc_i18n::t;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use moc_i18n::t;
 use serde_json::Value;
 
 /// 标签列宽：取整页最宽标签（含光标、缩进与自定义标记），夹在 24–44 列，

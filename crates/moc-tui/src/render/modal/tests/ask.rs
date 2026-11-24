@@ -529,7 +529,10 @@ fn ask_confirm_page_lists_answers_and_flags_unanswered() {
         .join("\n");
     assert!(body.contains("Confirm Answers"), "确认页标题：{body}");
     assert!(body.contains("主题    : 纸张白"), "key 列补齐对齐：{body}");
-    assert!(body.contains("features: Unanswered"), "未回答醒目标记：{body}");
+    assert!(
+        body.contains("features: Unanswered"),
+        "未回答醒目标记：{body}"
+    );
     assert!(body.contains("lang    : Rust"), "第三问回答：{body}");
     assert!(body.contains("Enter Submit"), "确认页页脚：{body}");
 }

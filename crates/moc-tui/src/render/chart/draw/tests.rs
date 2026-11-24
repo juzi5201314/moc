@@ -557,7 +557,10 @@ fn heatmap_and_scatter_handle_tiny_and_extreme_ranges() {
         let (canvas, _) = raster(&chart);
         let has_low = (0..canvas.w()).any(|x| rgb_at(&canvas, x, 2 * 18 + 9) == lowest);
         let has_high = (0..canvas.w()).any(|x| rgb_at(&canvas, x, 3 * 18 + 9) == highest);
-        assert!(has_low && has_high, "热力图区间 ({lo:e}, {hi:e}) 应区分极值档位");
+        assert!(
+            has_low && has_high,
+            "热力图区间 ({lo:e}, {hi:e}) 应区分极值档位"
+        );
     }
 
     // 散点图：极小值与跨符号极大值都应在绘图区左右两侧绘出不同位置的散点。
@@ -576,7 +579,14 @@ fn heatmap_and_scatter_handle_tiny_and_extreme_ranges() {
         let xs: Vec<u32> = (0..canvas.w())
             .filter(|&x| (top..bottom).any(|y| rgb_at(&canvas, x, y) == hue))
             .collect();
-        let span = xs.last().copied().unwrap_or(0).saturating_sub(xs.first().copied().unwrap_or(0));
-        assert!(span > 100, "散点图区间 ({lo:e}, {hi:e}) 应拉开横向间距：{span}");
+        let span = xs
+            .last()
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(xs.first().copied().unwrap_or(0));
+        assert!(
+            span > 100,
+            "散点图区间 ({lo:e}, {hi:e}) 应拉开横向间距：{span}"
+        );
     }
 }

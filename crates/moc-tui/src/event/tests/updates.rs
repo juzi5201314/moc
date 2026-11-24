@@ -707,8 +707,7 @@ fn automatic_retry_discards_only_current_preview() {
     app.push_block(Block::Assistant {
         text: "失败正文".into(),
     });
-    let message =
-        "生成失败，2.5s 后重试（第 2/10 次），已丢弃之前的预览。\n上游超时";
+    let message = "生成失败，2.5s 后重试（第 2/10 次），已丢弃之前的预览。\n上游超时";
     apply_update(
         &mut app,
         SessionUpdate::GenerationRetry {

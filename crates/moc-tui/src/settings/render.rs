@@ -198,7 +198,11 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
             area.y + gap,
             [
                 (" ‹ ".into(), style, Hit::Tab(previous)),
-                (super::tab_title(TABS[current]).into(), style, Hit::Tab(current)),
+                (
+                    super::tab_title(TABS[current]).into(),
+                    style,
+                    Hit::Tab(current),
+                ),
                 (" › ".into(), style, Hit::Tab(next)),
             ],
             &mut hits,

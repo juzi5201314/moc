@@ -371,7 +371,12 @@ fn abort_chart_encode_clears_state_sets_notice_and_requests_redraw() {
     app.toggle_table_chart(0, 0);
     assert!(app.blocks[0].table_chart(0).is_some());
 
-    abort_chart_encode(&mut app, 0, 0, &std::io::Error::other("resource temporarily unavailable"));
+    abort_chart_encode(
+        &mut app,
+        0,
+        0,
+        &std::io::Error::other("resource temporarily unavailable"),
+    );
 
     assert!(app.blocks[0].table_chart(0).is_none());
     assert!(app.notice_visible());

@@ -182,7 +182,10 @@ async fn model_picker_asks_before_compacting() {
         .collect::<String>();
     // 宽字符在缓冲区里占两个单元，拼接后每个汉字后面留一个占位空格。
     let compact: String = surface.chars().filter(|ch| !ch.is_whitespace()).collect();
-    assert!(compact.contains("超过test/tiny的ContextWindow"), "{surface}");
+    assert!(
+        compact.contains("超过test/tiny的ContextWindow"),
+        "{surface}"
+    );
 
     handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
     let event = tokio::time::timeout(std::time::Duration::from_secs(3), async {

@@ -3,12 +3,12 @@
 use std::collections::{HashMap, VecDeque};
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use moc_i18n::t;
 use moc_protocol::{
     BtwCancelParams, BtwExchange, BtwParams, BtwResult, BtwUpdate, BtwUpdateParams, FinishReason,
     MAX_BTW_HISTORY_TURNS, SessionBtw, SessionBtwCancel, Usage,
 };
 use ratatui::layout::Rect;
-use moc_i18n::t;
 
 use crate::{
     app::{App, Focus},

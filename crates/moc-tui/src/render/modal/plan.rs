@@ -20,6 +20,7 @@ use crate::render::wrap::clip_line;
 use crate::render::wrap::str_width;
 use crate::render::wrap::truncate;
 use crate::theme::Theme;
+use moc_i18n::t;
 use moc_protocol::methods::PlanStatus;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -28,7 +29,6 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use moc_i18n::t;
 
 /// 计划标签正文左侧的 gutter 宽度（列）：`▎`/`+`/空白。
 const GUTTER: usize = 2;

@@ -2,11 +2,11 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use moc_i18n::t;
 use moc_protocol::methods::{
     McpList, McpListParams, McpReconnect, McpReconnectParams, McpServerInfo, McpServerPhase,
     McpStatusSnapshot,
 };
-use moc_i18n::t;
 
 use crate::app::App;
 use crate::protocol::{AppEvent, EmbeddedConnection};

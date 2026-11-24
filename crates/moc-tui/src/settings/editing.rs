@@ -21,10 +21,10 @@ use crate::app::App;
 use crate::config::TuiConfig;
 use crate::protocol::AppEvent;
 use crate::protocol::EmbeddedConnection;
+use moc_i18n::t;
 use moc_protocol::ConfigAction;
 use moc_protocol::ConfigManage;
 use moc_protocol::FieldKind;
-use moc_i18n::t;
 use serde_json::Value;
 use serde_json::json;
 

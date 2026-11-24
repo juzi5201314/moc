@@ -705,8 +705,9 @@ impl ScrollbackView {
                     if row >= area.y
                         && end <= bottom
                         && from >= cached.line_start
-                        && let Some(slot_lines) =
-                            cached.lines.get(from - cached.line_start..to - cached.line_start)
+                        && let Some(slot_lines) = cached
+                            .lines
+                            .get(from - cached.line_start..to - cached.line_start)
                     {
                         slots.push(ImageSlot {
                             entry: index,

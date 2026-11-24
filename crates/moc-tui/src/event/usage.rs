@@ -4,9 +4,9 @@ use crate::app::App;
 use crate::protocol::AppEvent;
 use crate::protocol::EmbeddedConnection;
 use crate::render::wrap::str_width;
+use moc_i18n::t;
 use moc_protocol::SessionUsage;
 use moc_protocol::SessionUsageParams;
-use moc_i18n::t;
 
 /// 刷新会话累计用量：状态栏与 `/usage` 读同一份 core replay 出的统计。
 ///

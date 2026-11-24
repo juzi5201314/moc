@@ -7,9 +7,9 @@
 //! 历史文本保留 `[image#N]` 占位；提交时把被引用的 chip 收进
 //! [`PromptState::archived_images`]，召回时按占位 id 换发新 id 挂回。
 
+use moc_i18n::t;
 use moc_protocol::ImageSource;
 use moc_protocol::methods::InputPart;
-use moc_i18n::t;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::history::HISTORY_MAX;

@@ -282,7 +282,10 @@ fn sidekick_card_renders_model_result_and_mode() {
         .flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref())
         .collect::<String>();
-    assert!(text.contains("跑一轮验证 · compacted"), "摘要带 mode：{text}");
+    assert!(
+        text.contains("跑一轮验证 · compacted"),
+        "摘要带 mode：{text}"
+    );
     assert!(
         text.contains("◆ Sidekick · compacted · completed · test/gpt-cheap:off"),
         "{text}"

@@ -2,9 +2,9 @@ use super::Job;
 use super::Store;
 use crate::app::App;
 use crate::protocol::EmbeddedConnection;
+use moc_i18n::t;
 use moc_protocol::ConfigReply;
 use moc_protocol::SettingsDocument;
-use moc_i18n::t;
 use serde_json::json;
 
 pub fn response(

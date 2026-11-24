@@ -17,6 +17,7 @@ use crate::render::wrap::str_width;
 use crate::render::wrap::truncate;
 use crate::theme::Theme;
 use crate::widgets::prompt::clamp_cursor;
+use moc_i18n::t;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -26,7 +27,6 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Padding;
 use ratatui::widgets::Paragraph;
-use moc_i18n::t;
 
 /// 提问卡片：渲染的同时把每个选项（含自定义行）的命中矩形记到 `ask_option_hits`，
 /// 鼠标点选据此换算。带选项预览时放宽到 [`overlay::CARD_WIDE_MAX_WIDTH`]。
