@@ -15,6 +15,7 @@ Rust 编写的终端 AI 编码助手（Cargo workspace，edition 2024，Rust 1.8
 - `moc-web` 的 build.rs 会自动 `pnpm install && pnpm build` 前端，**cargo build/test 需要 pnpm + Node ≥22 在 PATH**
 - Linux 构建需要 `nasm`（aws-lc-sys 汇编）
 - `.cargo/config.toml` 已限制 `jobs = 6` 防链接峰值爆内存；全速构建用 `cargo --jobs N` 覆盖
+- `moc-web` 的 PTY 测试（`terminal::tests`）启动 `$SHELL`，在部分登录 shell 下会超时失败，用 `SHELL=/bin/bash` 跑
 
 ## Workspace 结构
 
@@ -39,7 +40,7 @@ Rust 编写的终端 AI 编码助手（Cargo workspace，edition 2024，Rust 1.8
 
 ## 生成文件边界（不要手改）
 
-- `crates/moc-web/web/src/protocol/types.gen.ts` — 由 schema 生成。流程：Rust 侧改 DTO → `MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol` → `cd crates/moc-web/web && pnpm gen:protocol`（`schema.test.ts` 校验新鲜度）
+- `crates/moc-web/web/src/protocol/types.gen.ts` — 由 schema 生成。流程：Rust 侧改 DTO → `MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol` → `cd crates/moc-web/web && pnpm gen:protocol`（`schema.test.ts` 校验新鲜度）。单独 `-p moc-protocol` 时 serde_json 可能开启 `preserve_order`，导致 `protocol.schema.json` 整文件改成另一种键顺序；已提交版本按键字典序排列，出现整文件 diff 时先把 JSON 按键排序（`indent=2`、不转义非 ASCII）再跑 `pnpm gen:protocol`
 - `crates/moc-web/web/dist/` — 构建产物，已 gitignore
 
 ## 边界
