@@ -15,6 +15,7 @@ mod commands;
 mod fsraw;
 mod image_playground;
 mod terminal;
+mod uploads;
 mod widget_host;
 
 use std::net::Ipv4Addr;
@@ -139,6 +140,13 @@ fn routes(state: AppState) -> Router {
                 .put(fsraw::write)
                 // 上传单独放宽 body 上限；超限在 handler 流式计数里兜底拦截。
                 .route_layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+                .route_layer(authed.clone()),
+        )
+        .route(
+            "/uploads",
+            get(uploads::lookup)
+                .put(uploads::store)
+                .route_layer(DefaultBodyLimit::max(uploads::UPLOAD_MAX_BYTES as usize))
                 .route_layer(authed.clone()),
         )
         .route("/pty", post(terminal::create).route_layer(authed.clone()))

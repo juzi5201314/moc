@@ -57,6 +57,8 @@ not_regular_path = { zh = "路径不是普通文件", en = "Not a regular file p
 staging_create = { zh = "无法创建临时文件：%{error}", en = "Cannot create staging file: %{error}" }
 body_read = { zh = "读取请求体失败：%{error}", en = "Failed to read request body: %{error}" }
 upload_too_large = { zh = "文件超过上传体积上限", en = "File exceeds the upload size limit" }
+upload_digest_invalid = { zh = "上传摘要必须是 64 位小写十六进制 SHA-256", en = "Upload digest must be a 64-character lowercase hex SHA-256" }
+upload_digest_mismatch = { zh = "上传内容与声明的 SHA-256 不符", en = "Uploaded content does not match the declared SHA-256" }
 write_failed = { zh = "写入文件失败：%{error}", en = "Write failed: %{error}" }
 publish_failed = { zh = "落盘保存文件失败：%{error}", en = "Failed to commit uploaded file: %{error}" }
 io_broken = { zh = "连接已中断", en = "Connection interrupted" }
