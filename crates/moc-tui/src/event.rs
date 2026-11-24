@@ -388,7 +388,9 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::ContextUsage(usage)) => {
-                        app.context_usage = Some(usage);
+                        app.context_reading = false;
+                        if usage.is_some() { app.context_usage = usage; }
+                        if std::mem::take(&mut app.context_reread) { refresh_context(app, connection); }
                     }
                     Some(AppEvent::ContextContent { request, session_id, result }) => {
                         if !matches!(&app.modal, Some(Modal::ContextContent{state}) if state.request==request) {
@@ -521,7 +523,7 @@ async fn event_loop(
                     Some(AppEvent::SkillsCompacted(result)) => {
                         let succeeded = result.is_ok();
                         app.finish_skills_compaction(result);
-                        if succeeded { refresh_context(app, connection, false); }
+                        if succeeded { refresh_context(app, connection); }
                     }
                     Some(AppEvent::GoalResult { goal, text }) => {
                         app.goal = goal;
@@ -653,7 +655,7 @@ fn apply_loaded(app: &mut App, connection: &EmbeddedConnection, event: AppEvent)
     app.todos = todos;
     app.set_history_cursor(has_more, before_entry_id);
     refresh_git_branch(app, &cwd);
-    refresh_context(app, connection, false);
+    refresh_context(app, connection);
     refresh_usage(app, connection, false);
     refresh_plugins(app, connection, false, false);
     refresh_mcp(app, connection, false);

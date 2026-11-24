@@ -1080,7 +1080,7 @@ pub(crate) fn apply_plan_execution_loaded(
             app.goal = loaded.goal;
             app.set_history_cursor(loaded.truncated, before);
             refresh_git_branch(app, &cwd);
-            refresh_context(app, connection, false);
+            refresh_context(app, connection);
             refresh_usage(app, connection, false);
             load_subagents_for_parent(app, &connection.client, Some(id));
             start_auto_prompt(app, connection, auto_prompt);

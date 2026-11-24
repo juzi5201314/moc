@@ -1026,7 +1026,6 @@ model_switch_failed_fmt = { zh = "切换 model 失败：%{err}", en = "Failed to
 thinking_level_fmt = { zh = "Effort: %{level}", en = "Effort: %{level}" }
 thinking_failed_fmt = { zh = "切换 effort 失败：%{err}", en = "Failed to switch effort: %{err}" }
 fast_mode_failed_fmt = { zh = "切换 Fast Mode 失败：%{err}", en = "Failed to switch Fast Mode: %{err}" }
-ctx_failed_fmt = { zh = "读取 context 占用失败：%{err}", en = "Failed to read context usage: %{err}" }
 hole_opened_fmt = { zh = "workflow 有步骤待补充：%{name}", en = "Workflow step awaiting input: %{name}" }
 runs_failed_fmt = { zh = "读取 workflow 运行记录失败：%{err}", en = "Failed to load workflow runs: %{err}" }
 denied_unauthorized = { zh = "未授权，已按拒绝处理。", en = "Not authorized; treated as denied." }

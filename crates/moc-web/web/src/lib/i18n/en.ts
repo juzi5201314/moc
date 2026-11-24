@@ -359,7 +359,6 @@ export const en: Record<MsgKey, string> = {
   "hd.jobs": "Jobs",
   "hd.more": "More",
   "hd.rename": "Rename",
-  "hd.compact": "Compact",
   "hd.copy_id": "Copy ID",
   "hd.id_copied": "Session ID copied.",
   "hd.release_lease": "Release lock",
@@ -369,6 +368,9 @@ export const en: Record<MsgKey, string> = {
 
   // ---------- status popovers ----------
   "pop.context": "Context {n}%",
+  "pop.ctx_used": "{n} used",
+  "pop.ctx_free": "Free space",
+  "pop.ctx_details": "Details",
   "pop.usage": "View session usage",
   "pop.agents": "View subagents",
   "pop.agents_running": "{n} running",
@@ -607,8 +609,6 @@ export const en: Record<MsgKey, string> = {
 
   // ---------- context viewer ----------
   "cv.back": "Back",
-  "cv.compact": "Compact",
-  "cv.compacted": "Context compacted; refresh to view the new snapshot.",
   "cv.copied": "Copied",
   "cv.copy": "Copy",
   "cv.empty": "Nothing here yet.",

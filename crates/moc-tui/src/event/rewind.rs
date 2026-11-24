@@ -101,7 +101,7 @@ pub(super) fn apply_rewound(
         }
         .into_owned(),
     );
-    refresh_context(app, connection, false);
+    refresh_context(app, connection);
     // 回退会截断历史，重放出来的累计用量随之缩水，必须重新取一次。
     refresh_usage(app, connection, false);
     load_subagents_for_parent(
@@ -145,7 +145,7 @@ pub(super) fn apply_reasked(
     app.goal = loaded.goal;
     app.usage = Default::default();
     app.set_notice(t!("tui.rewind.retried").into_owned());
-    refresh_context(app, connection, false);
+    refresh_context(app, connection);
     refresh_usage(app, connection, false);
     load_subagents_for_parent(
         app,

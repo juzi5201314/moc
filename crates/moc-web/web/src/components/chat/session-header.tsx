@@ -6,7 +6,6 @@ import {
   GitBranchIcon,
   ListTodoIcon,
   LockIcon,
-  MinimizeIcon,
   MoreHorizontalIcon,
   PanelRightIcon,
   PencilIcon,
@@ -30,13 +29,7 @@ import { useT } from "@/lib/i18n";
 import { useGitBranch } from "@/lib/use-git-branch";
 import { useNarrow } from "@/lib/use-narrow";
 import { useLayout } from "@/store/layout";
-import {
-  compactSession,
-  createQuickSession,
-  reacquire,
-  releaseSession,
-  renameSession,
-} from "@/store/lifecycle";
+import { createQuickSession, reacquire, releaseSession, renameSession } from "@/store/lifecycle";
 import { workspaceName } from "@/store/sessions";
 import { attentionCount, useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
@@ -92,7 +85,6 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
   const [editing, setEditing] = useState<string | null>(null);
   const renamingFromMenu = useRef(false);
   const titleButton = useRef<HTMLButtonElement>(null);
-  const [compacting, setCompacting] = useState(false);
 
   if (!view) return null;
   const title = view.info.title || t("hd.untitled");
@@ -105,23 +97,6 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
       renameSession(sessionId, next).catch((error) =>
         toast.error(t("hd.rename_failed", { error: errorText(error) })),
       );
-    }
-  };
-
-  const compact = async () => {
-    setCompacting(true);
-    try {
-      const result = await compactSession(sessionId);
-      toast.success(
-        t("slash.compacted", {
-          before: result.tokens_before.toLocaleString(),
-          after: result.tokens_after.toLocaleString(),
-        }),
-      );
-    } catch (error) {
-      toast.error(t("slash.compact_failed", { error: errorText(error) }));
-    } finally {
-      setCompacting(false);
     }
   };
 
@@ -245,13 +220,6 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
               >
                 <PencilIcon />
                 {t("hd.rename")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={view.readOnly || view.running || compacting}
-                onSelect={() => void compact()}
-              >
-                <MinimizeIcon />
-                {t("hd.compact")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 onSelect={() => {

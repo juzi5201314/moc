@@ -206,7 +206,7 @@ pub(super) fn apply_focus_loaded(
     }
     app.set_history_cursor(has_more, before_entry_id);
     refresh_git_branch(app, &cwd);
-    refresh_context(app, connection, false);
+    refresh_context(app, connection);
     refresh_usage(app, connection, false);
     load_subagents(app, connection);
 }

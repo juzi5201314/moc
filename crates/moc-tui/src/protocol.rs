@@ -134,8 +134,8 @@ pub enum AppEvent {
         request: u64,
         result: anyhow::Result<Vec<moc_protocol::ToolDef>>,
     },
-    /// 上下文估算完成。
-    ContextUsage(ContextUsageResult),
+    /// 上下文估算完成；读取失败为 `None`（保留旧值，只结束在途状态）。
+    ContextUsage(Option<ContextUsageResult>),
     /// 上下文正文读取完成。
     ContextContent {
         request: u64,

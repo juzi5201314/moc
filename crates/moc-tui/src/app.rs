@@ -301,6 +301,9 @@ pub struct App {
     pub transient_mode: Option<moc_protocol::methods::PromptMode>,
     /// Core 估算的上下文组成与总量。
     pub context_usage: Option<ContextUsageResult>,
+    /// 上下文占用读取在途；期间的变动只置 `context_reread`，读完再补读一次。
+    pub context_reading: bool,
+    pub context_reread: bool,
     /// 滚动偏移（自尾部算起的行数；0 = 跟随尾部）。
     pub scroll_offset: usize,
     /// 是否有进行中的提示。
@@ -637,6 +640,8 @@ impl App {
             permission_menu: None,
             transient_mode: None,
             context_usage: None,
+            context_reading: false,
+            context_reread: false,
             scroll_offset: 0,
             prompt_running: false,
             skills_compacting: false,

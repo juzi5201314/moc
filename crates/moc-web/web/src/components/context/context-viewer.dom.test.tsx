@@ -6,8 +6,6 @@ import { useUi } from "@/store/ui";
 const { call, on } = vi.hoisted(() => ({ call: vi.fn(), on: vi.fn() }));
 vi.mock("@/protocol/client", () => ({ rpc: { call, on } }));
 vi.mock("@/store/connection", () => ({ useConnection: { subscribe: () => () => {} } }));
-vi.mock("@/store/lifecycle", () => ({ compactSession: vi.fn() }));
-vi.mock("@/store/transcript", () => ({ useTranscript: () => false }));
 
 import { ContextDialog } from "./context-dialog";
 import { ContextViewer } from "./context-viewer";

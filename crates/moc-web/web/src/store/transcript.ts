@@ -20,11 +20,13 @@ import { rpc } from "@/protocol/client";
 import type {
   AskParams,
   AskResult,
+  ContextUsageResult,
   ImageSource,
   JobListResult,
   PermissionRequestParams,
   PermissionResult,
   SessionInfo,
+  SessionUpdate,
   SessionUpdateParams,
 } from "@/protocol/types";
 import { usePrefs } from "./prefs";
@@ -225,7 +227,58 @@ rpc.on("session/update", (params: SessionUpdateParams) => {
       if (view) applyUpdate(view, update);
     }),
   );
+  if (
+    CONTEXT_EVENTS.has(update.type) ||
+    (update.type === "assistant_delta" && update.delta.type === "usage")
+  ) {
+    scheduleContextRefresh(sessionId);
+  }
 });
+
+/** 改变上下文组成或窗口的会话事件：每次模型请求结束（usage）、消息与工具结果写入、压缩、回退、模式与模型切换。 */
+const CONTEXT_EVENTS = new Set<SessionUpdate["type"]>([
+  "prompt_started",
+  "steering_applied",
+  "tool_finished",
+  "prompt_finished",
+  "prompt_rewound",
+  "context_compacted",
+  "model_changed",
+  "engine_changed",
+  "plan_mode_changed",
+  "permission_changed",
+  "autonomy_changed",
+]);
+
+/** 每个会话最多一个在途读取；期间再有事件只记一次，读完补读最新值，连续工具结果不会堆积请求。 */
+const contextReads = new Map<string, { again: boolean }>();
+
+function scheduleContextRefresh(sessionId: string): void {
+  const pending = contextReads.get(sessionId);
+  if (pending) {
+    pending.again = true;
+    return;
+  }
+  const state = { again: false };
+  contextReads.set(sessionId, state);
+  void refreshContext(sessionId)
+    .catch(() => undefined)
+    .finally(() => {
+      contextReads.delete(sessionId);
+      if (state.again) scheduleContextRefresh(sessionId);
+    });
+}
+
+/** 只重读上下文占用（圆环与简略上下文窗口）；视图已关闭时不发请求，读不到保留旧值。 */
+export async function refreshContext(sessionId: string): Promise<void> {
+  const signal = viewReadSignal(sessionId);
+  if (!signal) return;
+  const context = await rpc.call<ContextUsageResult>("session/context", { session_id: sessionId });
+  if (signal.aborted) return;
+  useTranscript.getState().mutate(sessionId, (view) => {
+    view.context = context;
+  });
+}
 
 export async function refreshJobs(sessionId: string): Promise<void> {
   const signal = viewReadSignal(sessionId);

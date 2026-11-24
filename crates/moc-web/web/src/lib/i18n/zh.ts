@@ -352,7 +352,6 @@ export const zh = {
   "hd.jobs": "Jobs",
   "hd.more": "More",
   "hd.rename": "Rename",
-  "hd.compact": "Compact",
   "hd.copy_id": "Copy ID",
   "hd.id_copied": "已复制 session ID。",
   "hd.release_lease": "Release lock",
@@ -362,6 +361,9 @@ export const zh = {
 
   // ---------- 状态浮层（status-popovers.tsx） ----------
   "pop.context": "Context {n}%",
+  "pop.ctx_used": "{n} used",
+  "pop.ctx_free": "Free space",
+  "pop.ctx_details": "Details",
   "pop.usage": "查看本 session 用量",
   "pop.agents": "查看 subagent 状态",
   "pop.agents_running": "{n} running",
@@ -597,8 +599,6 @@ export const zh = {
 
   // ---------- 上下文查看器 ----------
   "cv.back": "Back",
-  "cv.compact": "Compact",
-  "cv.compacted": "context 已压缩，点击刷新即可查看最新快照。",
   "cv.copied": "Copied",
   "cv.copy": "Copy",
   "cv.empty": "暂无内容。",

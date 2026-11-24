@@ -22,6 +22,7 @@ import { closeSession, loadOlder, openSession, reloadReadOnly } from "./lifecycl
 import { useTabs } from "./tabs";
 import { useTranscript } from "./transcript";
 import { useTurn, useTurnIds } from "./turns";
+import { cancelViewReads, startViewReads } from "./view-reads";
 
 const info: SessionInfo = {
   id: "batch-test",
@@ -37,6 +38,8 @@ const info: SessionInfo = {
   created_at_ms: 0,
   updated_at_ms: 0,
 };
+/** 上下文事件会顺带重读 `session/context`；只关心提示 RPC 的用例用它应答。 */
+const CONTEXT = { context_window: 100, total_tokens: 0, sections: [] };
 function send(update: SessionUpdate): void {
   handlers.get("session/update")?.({ session_id: info.id, update });
 }
@@ -78,7 +81,8 @@ describe("提示失败收尾", () => {
 
   it.each([true, false])("认证失败只显示一个错误，兼容缺少结束事件：%s", async (emitFinished) => {
     useTranscript.getState().ensureView(info);
-    vi.mocked(rpc.call).mockImplementation(async () => {
+    vi.mocked(rpc.call).mockImplementation(async (method) => {
+      if (method === "session/context") return CONTEXT;
       send({ type: "prompt_started", prompt_id: "p", model: "m", at_ms: Date.now() });
       send({ type: "error", prompt_id: "p", message: authenticationError, retryable: false });
       if (emitFinished) send(finished());
@@ -91,10 +95,12 @@ describe("提示失败收尾", () => {
     await retrySession(info.id);
     expectIdle();
     expect(errors()).toHaveLength(2);
-    expect(vi.mocked(rpc.call).mock.calls.map(([method]) => method)).toEqual([
-      "session/prompt",
-      "session/retry",
-    ]);
+    expect(
+      vi
+        .mocked(rpc.call)
+        .mock.calls.map(([method]) => method)
+        .filter((method) => method !== "session/context"),
+    ).toEqual(["session/prompt", "session/retry"]);
     expect(
       useTranscript.getState().bySession[info.id].blocks.filter((block) => block.kind === "footer"),
     ).toHaveLength(2);
@@ -105,7 +111,8 @@ describe("提示失败收尾", () => {
     async (action) => {
       useTranscript.getState().ensureView(info);
       useTranscript.getState().localStatus(info.id, "error", "上次错误");
-      vi.mocked(rpc.call).mockImplementation(async () => {
+      vi.mocked(rpc.call).mockImplementation(async (method) => {
+        if (method === "session/context") return CONTEXT;
         send({ type: "prompt_started", prompt_id: "p", model: "m", at_ms: Date.now() });
         throw new Error(authenticationError);
       });
@@ -316,4 +323,38 @@ describe("流式合帧", () => {
     await expect(openSession(info.id)).rejects.toThrow("missing");
     expect(useTabs.getState().open).not.toContain(info.id);
   });
+});
+
+it("上下文事件合并重读：在途期间的多次事件只补读一次，流式文本不触发", async () => {
+  useTranscript.getState().ensureView(info);
+  startViewReads(info.id);
+  const reads: Array<(value: unknown) => void> = [];
+  const call = vi.mocked(rpc.call);
+  call.mockImplementation(
+    (method) => new Promise((resolve) => method === "session/context" && reads.push(resolve)),
+  );
+  const contextCalls = () => call.mock.calls.filter(([method]) => method === "session/context");
+  const usage = { context_window: 100, total_tokens: 10, sections: [] };
+  try {
+    delta("x");
+    expect(contextCalls()).toHaveLength(0);
+    send({
+      type: "assistant_delta",
+      prompt_id: "p",
+      delta: { type: "usage", usage: { input_tokens: 1, output_tokens: 1 } },
+    });
+    send({ type: "plan_mode_changed", active: true });
+    send({ type: "autonomy_changed", autonomy: "default" });
+    expect(contextCalls()).toHaveLength(1);
+    reads[0](usage);
+    await vi.waitFor(() => expect(contextCalls()).toHaveLength(2));
+    reads[1]({ ...usage, total_tokens: 20 });
+    await vi.waitFor(() =>
+      expect(useTranscript.getState().bySession[info.id].context?.total_tokens).toBe(20),
+    );
+    expect(contextCalls()).toHaveLength(2);
+  } finally {
+    cancelViewReads(info.id);
+    call.mockReset();
+  }
 });

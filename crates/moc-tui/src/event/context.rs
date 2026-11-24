@@ -12,27 +12,25 @@ use moc_protocol::SessionContext;
 use moc_protocol::SessionContextContent;
 use moc_protocol::SessionContextContentParams;
 
-pub(super) fn refresh_context(app: &App, connection: &EmbeddedConnection, notify_failure: bool) {
+/// 重读当前会话的上下文占用。最多一个读取在途：期间再有变动只记一次，
+/// 读完补读最新值，连续工具结果不会堆积请求；读取失败保留旧值。
+pub(super) fn refresh_context(app: &mut App, connection: &EmbeddedConnection) {
+    if app.context_reading {
+        app.context_reread = true;
+        return;
+    }
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
         return;
     };
+    app.context_reading = true;
     let client = connection.client.clone();
     let events = app.events.clone();
     tokio::spawn(async move {
-        match client
+        let usage = client
             .call::<SessionContext>(moc_protocol::SessionContextParams { session_id })
             .await
-        {
-            Ok(usage) => {
-                let _ = events.send(AppEvent::ContextUsage(usage));
-            }
-            Err(error) if notify_failure => {
-                let _ = events.send(AppEvent::Notice(
-                    t!("tui.event.ctx_failed_fmt", err = error.to_string()).into_owned(),
-                ));
-            }
-            Err(_) => {}
-        }
+            .ok();
+        let _ = events.send(AppEvent::ContextUsage(usage));
     });
 }
 

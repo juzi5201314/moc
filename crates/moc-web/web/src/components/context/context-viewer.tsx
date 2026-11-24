@@ -8,8 +8,7 @@ import { useT } from "@/lib/i18n";
 import { compactTokens } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import type { ContextNode } from "@/protocol/types";
-import { compactSession } from "@/store/lifecycle";
-import { useTranscript } from "@/store/transcript";
+import { sectionTone } from "./section-tone";
 import { useContextView } from "./use-context-view";
 
 type Location = { node: ContextNode | null; scroll: number; focus?: string };
@@ -23,9 +22,6 @@ export function ContextViewer({
 }) {
   const t = useT();
   const snapshot = useContextView(sessionId);
-  const compactDisabled = useTranscript(
-    (state) => !!state.bySession[sessionId]?.running || !!state.bySession[sessionId]?.readOnly,
-  );
   const [navigation, setNavigation] = useState<{ current: Location; parents: Location[] }>({
     current: { node: null, scroll: 0 },
     parents: [],
@@ -117,16 +113,19 @@ export function ContextViewer({
             </span>
           </div>
           <div className="mt-3 flex h-1 overflow-hidden rounded-full bg-muted" aria-hidden="true">
-            {snapshot.view.sections.map((section, index) => (
-              <div
-                key={section.id}
-                className={section.name === "messages" ? "bg-brand/60" : "bg-foreground/25"}
-                style={{
-                  width: `${window > 0 ? (section.tokens / window) * 100 : 0}%`,
-                  opacity: section.name === "messages" ? 1 : 1 - index * 0.1,
-                }}
-              />
-            ))}
+            {snapshot.view.sections.map((section, index) => {
+              const tone = sectionTone(section.name, index);
+              return (
+                <div
+                  key={section.id}
+                  className={tone.className}
+                  style={{
+                    width: `${window > 0 ? (section.tokens / window) * 100 : 0}%`,
+                    opacity: tone.opacity,
+                  }}
+                />
+              );
+            })}
           </div>
         </div>
       )}
@@ -250,24 +249,6 @@ export function ContextViewer({
             />
           ))}
       </div>
-      {!node && snapshot.view && (
-        <div className="px-5 pb-4">
-          <Button
-            variant="outline"
-            size="xs"
-            disabled={compactDisabled}
-            onClick={() => {
-              void compactSession(sessionId)
-                .then(() => toast.success(t("cv.compacted")))
-                .catch((error) =>
-                  toast.error(error instanceof Error ? error.message : String(error)),
-                );
-            }}
-          >
-            {t("cv.compact")}
-          </Button>
-        </div>
-      )}
       {node && page && (page.previous.length > 0 || page.result?.next_cursor != null) && (
         <div className="flex justify-between border-t px-5 py-2">
           <Button

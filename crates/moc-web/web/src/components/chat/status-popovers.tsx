@@ -1,20 +1,27 @@
-// 状态条入口：上下文圆环打开统一面板，费用与子代理保留轻量浮层。
+// 状态条入口：上下文圆环弹简略上下文窗口（再进详细模态），费用与子代理保留轻量浮层。
 // 子代理 chip → 子代理 Popover（承载原 AgentsTab 全部功能）。
 // 受控状态在 useUi.statusPopover；打开时对应 chip 必须渲染出来（计数可为 0）。
 
-import { AlertCircleIcon, Loader2Icon, RefreshCwIcon, Settings2Icon } from "lucide-react";
+import {
+  AlertCircleIcon,
+  ChevronRightIcon,
+  Loader2Icon,
+  RefreshCwIcon,
+  Settings2Icon,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { sectionTone } from "@/components/context/section-tone";
 import { AgentsTab, UsageTab } from "@/components/panels/inspector-tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useT } from "@/lib/i18n";
 import { compactTokens } from "@/lib/models";
 import { cn } from "@/lib/utils";
-import type { McpServerInfo, McpServerPhase } from "@/protocol/types";
+import type { ContextUsageResult, McpServerInfo, McpServerPhase } from "@/protocol/types";
 import { selectFeatures, useConnection } from "@/store/connection";
 import { mcpReconnectPending, useMcp } from "@/store/mcp";
-import { useTranscript } from "@/store/transcript";
+import { refreshContext, useTranscript } from "@/store/transcript";
 import { openSettings, useUi } from "@/store/ui";
 
 function popoverFor(sessionId: string, kind: "usage" | "agents" | "mcp") {
@@ -27,75 +34,158 @@ function popoverFor(sessionId: string, kind: "usage" | "agents" | "mcp") {
   };
 }
 
-/** 上下文圆环：与 /context 使用同一入口。 */
+/**
+ * 上下文圆环：点击弹出简略上下文窗口（占用条 + 分块图例），点别处收起；
+ * 底部入口进入详细上下文窗口（与 /context 同一个模态）。
+ */
 export function ContextRing({
   sessionId,
-  used,
-  window: windowSize,
+  context,
 }: {
   sessionId: string;
-  used: number;
-  window: number;
+  context: ContextUsageResult;
 }) {
   const t = useT();
+  const [open, setOpen] = useState(false);
+  const used = context.total_tokens;
+  const windowSize = context.context_window;
   const percent = Math.min(100, Math.round((used / windowSize) * 100));
+  const share = (tokens: number) => `${((tokens / windowSize) * 100).toFixed(1)}%`;
   const size = 18;
   const stroke = 2;
   const radius = (size - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          className="flex size-7 items-center justify-center rounded-lg hover:bg-accent"
-          aria-label={t("pop.context", { n: percent })}
-          disabled={sessionId === "draft-session"}
-          onClick={() => useUi.getState().set({ contextDialog: sessionId })}
-        >
-          <svg
-            width={size}
-            height={size}
-            viewBox={`0 0 ${size} ${size}`}
-            className={cn(
-              "-rotate-90",
-              percent >= 90
-                ? "text-destructive"
-                : percent >= 75
-                  ? "text-warn"
-                  : "text-muted-foreground",
-            )}
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        // 圆环数据只在会话事件后刷新，打开时重读一次，读不到沿用旧值。
+        if (next) void refreshContext(sessionId).catch(() => undefined);
+      }}
+    >
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="flex size-7 items-center justify-center rounded-lg hover:bg-accent data-[state=open]:bg-accent"
+              aria-label={t("pop.context", { n: percent })}
+              disabled={sessionId === "draft-session"}
+            >
+              <svg
+                width={size}
+                height={size}
+                viewBox={`0 0 ${size} ${size}`}
+                className={cn(
+                  "-rotate-90",
+                  percent >= 90
+                    ? "text-destructive"
+                    : percent >= 75
+                      ? "text-warn"
+                      : "text-muted-foreground",
+                )}
+                aria-hidden="true"
+              >
+                <circle
+                  cx={size / 2}
+                  cy={size / 2}
+                  r={radius}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeOpacity={0.2}
+                  strokeWidth={stroke}
+                />
+                <circle
+                  cx={size / 2}
+                  cy={size / 2}
+                  r={radius}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={stroke}
+                  strokeLinecap="round"
+                  strokeDasharray={circumference}
+                  strokeDashoffset={circumference * (1 - percent / 100)}
+                />
+              </svg>
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        {/* 圆环只有弧长，悬停给出精确用量，不必打开上下文窗口。 */}
+        <TooltipContent side="top">
+          {`${t("pop.context", { n: percent })} · ${compactTokens(used) || 0} / ${compactTokens(windowSize)}`}
+        </TooltipContent>
+      </Tooltip>
+      <PopoverContent side="top" align="end" sideOffset={8} className="w-72 p-0">
+        <div className="px-3.5 pt-3 pb-2">
+          <div className="text-xs text-muted-foreground">{t("cv.title")}</div>
+          <div className="mt-1 flex items-baseline justify-between gap-3 text-ui tabular-nums">
+            <span className="font-medium text-foreground">
+              {t("pop.ctx_used", { n: share(used) })}
+            </span>
+            <span className="text-muted-foreground">
+              {compactTokens(used) || 0} / {compactTokens(windowSize)}
+            </span>
+          </div>
+          {/* 轨道与 Free space 用前景色透明度：bg-muted 在深色下与浮层同色，会整段消失。 */}
+          <div
+            className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-foreground/10"
             aria-hidden="true"
           >
-            <circle
-              cx={size / 2}
-              cy={size / 2}
-              r={radius}
-              fill="none"
-              stroke="currentColor"
-              strokeOpacity={0.2}
-              strokeWidth={stroke}
-            />
-            <circle
-              cx={size / 2}
-              cy={size / 2}
-              r={radius}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={stroke}
-              strokeLinecap="round"
-              strokeDasharray={circumference}
-              strokeDashoffset={circumference * (1 - percent / 100)}
-            />
-          </svg>
+            {context.sections.map((section, index) => {
+              const tone = sectionTone(section.name, index);
+              return (
+                <div
+                  key={section.name}
+                  className={tone.className}
+                  style={{ width: share(section.tokens), opacity: tone.opacity }}
+                />
+              );
+            })}
+          </div>
+        </div>
+        <ul className="px-3.5 pb-2">
+          {[
+            ...context.sections.map((section, index) => ({
+              name: section.name,
+              tokens: section.tokens,
+              tone: sectionTone(section.name, index),
+            })),
+            {
+              name: t("pop.ctx_free"),
+              tokens: Math.max(0, windowSize - used),
+              tone: { className: "bg-foreground/10", opacity: 1 },
+            },
+          ].map((row) => (
+            <li key={row.name} className="flex h-7 items-center gap-2.5 text-ui">
+              <span
+                className={cn("size-2 shrink-0 rounded-[3px]", row.tone.className)}
+                style={{ opacity: row.tone.opacity }}
+              />
+              <span className="min-w-0 flex-1 truncate text-foreground">{row.name}</span>
+              <span className="tabular-nums text-muted-foreground">
+                {compactTokens(row.tokens) || 0}
+              </span>
+              <span className="w-12 text-right tabular-nums text-foreground">
+                {share(row.tokens)}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false);
+            useUi.getState().set({ contextDialog: sessionId });
+          }}
+          className="flex h-9 w-full items-center gap-2 border-t border-border-subtle px-3.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          {t("pop.ctx_details")}
+          <ChevronRightIcon className="ml-auto size-3.5" />
         </button>
-      </TooltipTrigger>
-      {/* 圆环只有弧长，悬停给出精确用量，不必打开上下文面板。 */}
-      <TooltipContent side="top">
-        {`${t("pop.context", { n: percent })} · ${compactTokens(used) || 0} / ${compactTokens(windowSize)}`}
-      </TooltipContent>
-    </Tooltip>
+      </PopoverContent>
+    </Popover>
   );
 }
 

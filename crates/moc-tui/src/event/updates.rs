@@ -65,6 +65,7 @@ pub(super) fn apply_update_and_refresh(
     if let SessionUpdate::SteeringApplied { id, text } = &update {
         crate::queue::steering_applied(app, &session_id, *id, text, is_current);
         if is_current {
+            refresh_context(app, connection);
             // pending 清空后才能安全启动下一条提示，保证用户块先于新提示落地。
             crate::queue::dispatch(app, connection);
         }
@@ -124,16 +125,25 @@ pub(super) fn apply_update_and_refresh(
         &update,
         SessionUpdate::PromptStarted { .. } | SessionUpdate::BashStarted { .. }
     );
+    // 改变上下文组成或窗口的事件：每次模型请求结束（usage）、消息与工具结果写入、
+    // 压缩、回退、模式与模型切换；与 WebUI 圆环同一口径，流式文本不触发。
     let refresh = matches!(
         &update,
-        SessionUpdate::PromptFinished { .. }
+        SessionUpdate::PromptStarted { .. }
+            | SessionUpdate::ToolFinished { .. }
+            | SessionUpdate::PromptFinished { .. }
+            | SessionUpdate::PromptRewound { .. }
             | SessionUpdate::EngineChanged { .. }
             | SessionUpdate::AutonomyChanged { .. }
             | SessionUpdate::PlanModeChanged { .. }
             | SessionUpdate::ModelChanged { .. }
             | SessionUpdate::PermissionChanged { .. }
             | SessionUpdate::ContextCompacted { .. }
-    ) || matches!(&update, SessionUpdate::ToolFinished { prompt_id, .. } if prompt_id.starts_with("bash_"));
+            | SessionUpdate::AssistantDelta {
+                delta: moc_protocol::methods::AssistantDelta::Usage { .. },
+                ..
+            }
+    );
     // 用量只在这些事件后变化：一次提示（含工具轮次）结束，或压缩本身花掉一次调用；
     // 非阻塞的 sidekick/子代理到达终态（完成/停止/失败/空闲）时同样刷新——
     // 它们的用量记在后代会话上，不等下一次提示。
@@ -206,7 +216,7 @@ pub(super) fn apply_update_and_refresh(
         cancel_prompt(&connection.client, app);
     }
     if refresh {
-        refresh_context(app, connection, false);
+        refresh_context(app, connection);
     }
     if usage_changed {
         refresh_usage(app, connection, false);
