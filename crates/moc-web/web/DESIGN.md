@@ -101,6 +101,7 @@
 - 输入卡常态用中性发丝轮廓，点击输入不改变轮廓。状态描边 `ring-warn/50` 表达 `!` 命令模式而非焦点。
 - 点击卡片空白处聚焦输入；拖拽文件时外层出现 `ring-brand/40`。
 - 发送按钮：`size-8` 圆形、`bg-foreground` 反色，禁用时降为 tertiary。
+- Plan chip（`bg-brand/10 text-brand`）只在 plan 模式下出现，点击退出；入口是 `/plan` 与 Alt+J。`/plan` 补全选中或其后键入空白即切换（再输一次退出），命令不留在输入框，其后文字保留为草稿。
 - 图片附件：40px 方形缩略图（`object-cover` 铺满、`rounded-lg`、发丝 ring），点击放大；删除是 20px 灰阶浮起圆钮（`bg-popover` + `--elevation-popover`，muted 图标，悬停变正文色），骑在右上角外凸 6px，悬停、键盘聚焦或触屏时出现，缩略图间距 12px 保证徽标不压邻图。
 
 ### 浮层

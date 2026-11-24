@@ -18,10 +18,12 @@ import {
   XIcon,
 } from "lucide-react";
 import {
+  type CSSProperties,
   type DragEvent,
   type ReactNode,
   type RefObject,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -101,13 +103,64 @@ const STAT =
 function TipText({ tip }: { tip: string }) {
   return tip.split("`").map((part, index) =>
     index % 2 === 1 ? (
+      // leading-none：等宽字体的上下伸部与正文不同，继承行高会撑高行盒，使整行偏离状态条中线。
       // biome-ignore lint/suspicious/noArrayIndexKey: 片段由同一句文案切出，位置即身份
-      <code key={index} className="font-mono text-muted-foreground">
+      <code key={index} className="font-mono leading-none text-muted-foreground">
         {part}
       </code>
     ) : (
       part
     ),
+  );
+}
+
+/**
+ * 状态条提示：放不下时右缘渐隐示意还有后文，悬停后整行匀速平移到末尾，移开复位。
+ * 量内层的 offsetWidth：平移走 transform 不改变它，悬停中重测也不会归零。
+ */
+function TipLine({ tip }: { tip: string }) {
+  const t = useT();
+  const box = useRef<HTMLParagraphElement>(null);
+  const line = useRef<HTMLSpanElement>(null);
+  const [overflow, setOverflow] = useState(0);
+
+  useLayoutEffect(() => {
+    const outer = box.current;
+    const inner = line.current;
+    if (!outer || !inner) return;
+    const measure = () =>
+      setOverflow(Math.max(0, Math.ceil(inner.offsetWidth - outer.clientWidth)));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(outer);
+    observer.observe(inner);
+    return () => observer.disconnect();
+  }, []);
+
+  // 平移与渐隐没有现成组件，用最少的 Tailwind 组合；速度 50px/s，减弱动效时直接跳到末尾。
+  return (
+    <p
+      ref={box}
+      className={cn(
+        "group/tip mx-1.5 min-w-0 overflow-hidden whitespace-nowrap animate-in fade-in-0 duration-300",
+        overflow > 0 && "mask-r-from-[calc(100%-1.5rem)] hover:mask-none",
+      )}
+      title={tip.replaceAll("`", "")}
+    >
+      <span
+        ref={line}
+        className="inline-block transition-transform duration-300 group-hover/tip:translate-x-(--tip-shift) group-hover/tip:delay-300 group-hover/tip:duration-(--tip-duration) group-hover/tip:ease-linear motion-reduce:transition-none"
+        style={
+          {
+            "--tip-shift": `-${overflow}px`,
+            "--tip-duration": `${overflow * 20}ms`,
+          } as CSSProperties
+        }
+      >
+        <span className="mr-1 font-medium">{t("cp.tips")}</span>
+        <TipText tip={tip} />
+      </span>
+    </p>
   );
 }
 
@@ -234,16 +287,7 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
               />
             </div>
           ) : (
-            tip && (
-              <p
-                key={tip}
-                className="min-w-0 truncate px-1.5 animate-in fade-in-0 duration-300"
-                title={tip.replaceAll("`", "")}
-              >
-                <span className="mr-1 font-medium">{t("cp.tips")}</span>
-                <TipText tip={tip} />
-              </p>
-            )
+            tip && <TipLine key={tip} tip={tip} />
           )}
         </div>
         {todos.length > 0 && changes.files > 0 && (
@@ -621,33 +665,29 @@ function OptionItem({
 
 // ---------- 计划开关 ----------
 
+/** 只在 plan 模式下出现，点击退出；进入走 `/plan` 或 Alt+J。 */
 export function PlanToggle({ sessionId, disabled }: { sessionId: string; disabled?: boolean }) {
   const t = useT();
   const active = useTranscript((state) => Boolean(state.bySession[sessionId]?.info.plan_active));
+  if (!active) return null;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
           disabled={disabled}
-          aria-pressed={active}
           onClick={() =>
-            void togglePlanMode(sessionId, !active).catch((error) =>
+            void togglePlanMode(sessionId, false).catch((error) =>
               toast.error(t("slash.plan_failed", { error: errorText(error) })),
             )
           }
-          className={cn(
-            CHIP,
-            active && "bg-brand/10 text-brand hover:bg-brand/15 hover:text-brand",
-          )}
+          className={cn(CHIP, "bg-brand/10 text-brand hover:bg-brand/15 hover:text-brand")}
         >
           <ListChecksIcon className="size-3.5" />
           <span>{t("cp.plan")}</span>
         </button>
       </TooltipTrigger>
-      <TooltipContent side="top">
-        {active ? t("cp.plan_exit") : t("cp.plan_enter")} · Alt+J
-      </TooltipContent>
+      <TooltipContent side="top">{t("cp.plan_exit")} · Alt+J</TooltipContent>
     </Tooltip>
   );
 }

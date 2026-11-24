@@ -50,7 +50,7 @@ import {
   useComposer,
 } from "@/store/composer";
 import { selectCommands, selectFeatures, selectModels, useConnection } from "@/store/connection";
-import { reacquire } from "@/store/lifecycle";
+import { reacquire, togglePlanMode } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
 import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
@@ -71,6 +71,8 @@ import { ModelPicker } from "./model-select-popover";
 
 const EMPTY_PENDING: PendingItem[] = [];
 const MAX_HEIGHT = 320;
+/** 输入以 `/plan` 加空白开头即视为确认命令；其后的文本留作 plan 模式下的草稿。 */
+const PLAN_PREFIX = /^\/plan\s+/;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -310,12 +312,26 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     }
   };
 
+  /** `/plan` 一经确认（补全选中或其后键入空白）即切换 plan 叠加态，命令本身不留在输入框。 */
+  const consumePlan = (rest: string): boolean => {
+    if (running) {
+      toast(skillsWorking ? t("slash.skills_busy") : t("slash.running", { name: "plan" }));
+      return false;
+    }
+    setText(rest, rest.length);
+    void togglePlanMode(sessionId, !info?.plan_active).catch((error) =>
+      toast.error(t("slash.plan_failed", { error: errorText(error) })),
+    );
+    return true;
+  };
+
   const pick = (index: number) => {
     if (!menu) return;
     if (menu.heading === t("cb.cmds")) {
       const command = slashItems[index];
       if (!command) return;
-      if (command.usage) setText(`/${command.name} `, command.name.length + 2);
+      if (!command.plugin && command.name === "plan") consumePlan("");
+      else if (command.usage) setText(`/${command.name} `, command.name.length + 2);
       else if (runSlash(sessionId, `/${command.name}`, commands, features)) setCursor(0);
       return;
     }
@@ -676,6 +692,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     value={text}
                     rows={1}
                     onChange={(event) => {
+                      const plan = PLAN_PREFIX.exec(event.target.value);
+                      if (plan && consumePlan(event.target.value.slice(plan[0].length))) return;
                       setText(event.target.value);
                       setCursor(event.target.selectionStart);
                     }}
@@ -750,11 +768,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
 
               <div className="ml-auto flex min-w-0 items-center gap-1">
                 {context && context.context_window > 0 && (
-                  <ContextRing
-                    sessionId={sessionId}
-                    used={context.total_tokens}
-                    window={context.context_window}
-                  />
+                  <ContextRing sessionId={sessionId} context={context} />
                 )}
                 <ModelPicker sessionId={sessionId} />
                 {running && !canSend ? (

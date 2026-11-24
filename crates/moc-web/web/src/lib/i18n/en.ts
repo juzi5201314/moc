@@ -200,7 +200,6 @@ export const en: Record<MsgKey, string> = {
     "Engine is locked after the first message; create a new session to switch.",
   "cp.plan": "Plan",
   "cp.plan_exit": "Exit plan mode",
-  "cp.plan_enter": "Write a plan first and execute after review.",
   "q.steer": "Steer",
   "q.ask": "Ask",
   "q.queue": "Queue",

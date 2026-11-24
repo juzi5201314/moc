@@ -196,7 +196,6 @@ export const zh = {
   "cp.engine_locked_hint": "首条消息发出后引擎已锁定，如需切换请新建 session。",
   "cp.plan": "Plan",
   "cp.plan_exit": "退出 plan 模式",
-  "cp.plan_enter": "先制定计划，审阅通过后再执行。",
   "q.steer": "Steer",
   "q.ask": "Ask",
   "q.queue": "Queue",
