@@ -606,6 +606,9 @@ export const zh = {
   "msg.image_unavailable": "图片不可用",
 
   // ---------- 上下文查看器 ----------
+  "cv.hide_tools": "Hide tool results",
+  "cv.filtered_empty": "本页条目都是已隐藏的工具结果。",
+  "cv.no_args": "无参数",
   "cv.back": "Back",
   "cv.copied": "Copied",
   "cv.copy": "Copy",

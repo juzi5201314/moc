@@ -1588,6 +1588,20 @@
         "name": {
           "type": "string"
         },
+        "origin": {
+          "description": "消息条目的来源分类，如 `user_input`、`assistant_output`、`tool_result`、`runtime_injection`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "description": "消息条目编码进请求后的角色：`system`、`developer`、`user`、`assistant` 或 `tool`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
           "type": [
             "string",
@@ -8408,6 +8422,11 @@
           "description": "后台中弹出需要处理的授权/提问时，发一条系统通知。",
           "type": "boolean"
         },
+        "queue_on_enter": {
+          "default": false,
+          "description": "运行中互换 Enter 与 Ctrl+Enter：`true` 时 Enter 排队，Ctrl+Enter 按 `active_submit` 发送。",
+          "type": "boolean"
+        },
         "theme": {
           "$ref": "#/$defs/WebTheme",
           "default": "system",
@@ -8422,11 +8441,6 @@
           "$ref": "#/$defs/WebDetailLevel",
           "default": "brief",
           "description": "工具块的显示档位：隐藏只留标题行，简略按工具给少量预览，完整显示全部输出。"
-        "queue_on_enter": {
-          "default": false,
-          "description": "运行中互换 Enter 与 Ctrl+Enter：`true` 时 Enter 排队，Ctrl+Enter 按 `active_submit` 发送。",
-          "type": "boolean"
-        },
         },
         "workspaces": {
           "default": [],

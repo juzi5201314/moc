@@ -3,12 +3,15 @@ import { ArrowLeftIcon, ChevronRightIcon, CopyIcon, RefreshCwIcon } from "lucide
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PlanMarkdown } from "@/components/plan/plan-markdown";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { useT } from "@/lib/i18n";
 import { compactTokens } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import type { ContextNode } from "@/protocol/types";
-import { sectionTone } from "./section-tone";
+import { originTone, sectionTone } from "./section-tone";
+import { splitToolCalls, ToolCallCard } from "./tool-call-card";
 import { useContextView } from "./use-context-view";
 
 type Location = { node: ContextNode | null; scroll: number; focus?: string };
@@ -27,6 +30,8 @@ export function ContextViewer({
     parents: [],
   });
   const [raw, setRaw] = useState(false);
+  // 临时过滤：只在本窗口生效，不落盘
+  const [hideTools, setHideTools] = useState(false);
   const [copying, setCopying] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
   const location = navigation.current;
@@ -34,6 +39,12 @@ export function ContextViewer({
   const page = node ? snapshot.pages.get(node.id) : undefined;
   const body = node !== null && node.kind !== "category";
   const rows = node ? (page?.result?.children ?? []) : (snapshot.view?.sections ?? []);
+  // 消息目录的条目带来源分类；只有这里提供「隐藏工具结果」开关
+  const messageList = !body && rows.some((row) => row.origin);
+  const shown =
+    messageList && hideTools
+      ? rows.filter((row) => !(row.hidden && row.origin === "tool_result"))
+      : rows;
   const total = snapshot.view?.total_tokens ?? 0;
   const window = snapshot.view?.context_window ?? 0;
 
@@ -129,8 +140,18 @@ export function ContextViewer({
           </div>
         </div>
       )}
+      {messageList && (
+        <div className="flex items-center justify-end border-b px-5 pb-2">
+          {/* biome-ignore lint/a11y/noLabelWithoutControl: Switch 是 Radix button，label 包裹即关联 */}
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+            {t("cv.hide_tools")}
+            <Switch size="sm" checked={hideTools} onCheckedChange={setHideTools} />
+          </label>
+        </div>
+      )}
       {body && node && (
         <div className="flex flex-wrap items-center gap-2 border-b px-5 pb-3">
+          {node.role && <RoleBadge role={node.role} />}
           <span className="min-w-0 flex-1 break-all text-xs text-muted-foreground">
             {node.source ?? compactTokens(node.tokens)}
           </span>
@@ -186,7 +207,7 @@ export function ContextViewer({
           <p className="py-4 text-sm text-muted-foreground">{t("cv.reading")}</p>
         )}
         {!body &&
-          rows.map((row) => {
+          shown.map((row) => {
             const disabled = !!row.hidden || (row.kind === "category" && row.children === 0);
             return (
               <button
@@ -197,16 +218,23 @@ export function ContextViewer({
                 className="flex w-full items-start gap-3 rounded-md py-3 text-left transition-colors enabled:hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
                 onClick={() => enter(row)}
               >
-                {!node && (
+                {(!node || row.origin) && (
                   <span
                     className={cn(
                       "mt-1.5 size-1.5 shrink-0 rounded-full",
-                      row.name === "messages" ? "bg-brand/60" : "bg-foreground/25",
+                      row.origin
+                        ? originTone(row.origin)
+                        : row.name === "messages"
+                          ? "bg-brand/60"
+                          : "bg-foreground/25",
                     )}
                   />
                 )}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm">{row.name}</span>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-sm">{row.name}</span>
+                    {row.role && <RoleBadge role={row.role} />}
+                  </span>
                   {(row.hidden || (node && row.source)) && (
                     <span
                       className="mt-1 block truncate text-xs text-muted-foreground"
@@ -233,8 +261,10 @@ export function ContextViewer({
               </button>
             );
           })}
-        {node && !body && page?.result && rows.length === 0 && (
-          <p className="py-6 text-sm text-muted-foreground">{t("cv.empty")}</p>
+        {node && !body && page?.result && shown.length === 0 && (
+          <p className="py-6 text-sm text-muted-foreground">
+            {rows.length > 0 ? t("cv.filtered_empty") : t("cv.empty")}
+          </p>
         )}
         {body &&
           page?.result?.text &&
@@ -243,10 +273,20 @@ export function ContextViewer({
               {page.result.text}
             </pre>
           ) : (
-            <PlanMarkdown
-              className="py-4"
-              markdown={page.result.text.replace(/^([ \t]*<[^>\n]+>)[ \t]*$/gm, "`$1`")}
-            />
+            <div className="py-4">
+              {splitToolCalls(page.result.text).map((segment, index) =>
+                segment.kind === "tool" ? (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: 片段按正文顺序切分，不会重排
+                  <ToolCallCard key={index} call={segment.call} />
+                ) : (
+                  <PlanMarkdown
+                    // biome-ignore lint/suspicious/noArrayIndexKey: 同上
+                    key={index}
+                    markdown={segment.text.replace(/^([ \t]*<[^>\n]+>)[ \t]*$/gm, "`$1`")}
+                  />
+                ),
+              )}
+            </div>
           ))}
       </div>
       {node && page && (page.previous.length > 0 || page.result?.next_cursor != null) && (
@@ -276,5 +316,17 @@ export function ContextViewer({
         </div>
       )}
     </div>
+  );
+}
+
+/** 消息条目编码进请求后的角色（system / developer / user / assistant / tool）。 */
+function RoleBadge({ role }: { role: string }) {
+  return (
+    <Badge
+      variant="secondary"
+      className="shrink-0 rounded px-1.5 py-px font-mono text-2xs font-normal"
+    >
+      {role}
+    </Badge>
   );
 }

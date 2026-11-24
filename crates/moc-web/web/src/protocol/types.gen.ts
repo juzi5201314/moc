@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 0843d28be7c06dc6
+// schema sha256: b8bd545933d05b92
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -2124,6 +2124,14 @@ export interface ContextContentSection {
    */
   kind: string;
   name: string;
+  /**
+   * 消息条目的来源分类，如 `user_input`、`assistant_output`、`tool_result`、`runtime_injection`。
+   */
+  origin?: string | null;
+  /**
+   * 消息条目编码进请求后的角色：`system`、`developer`、`user`、`assistant` 或 `tool`。
+   */
+  role?: string | null;
   source?: string | null;
   tokens: number;
 }
@@ -5954,6 +5962,10 @@ export interface WebState {
    */
   notify?: boolean;
   /**
+   * 运行中互换 Enter 与 Ctrl+Enter：`true` 时 Enter 排队，Ctrl+Enter 按 `active_submit` 发送。
+   */
+  queue_on_enter?: boolean;
+  /**
    * 界面主题；`system` 跟随系统明暗。
    */
   theme?: "system" | "light" | "dark";
@@ -5961,10 +5973,6 @@ export interface WebState {
    * 思考块的显示档位：隐藏只留标题行，简略显示末尾预览，完整显示全文。
    */
   thinking_detail?: "hidden" | "brief" | "full";
-  /**
-   * 运行中互换 Enter 与 Ctrl+Enter：`true` 时 Enter 排队，Ctrl+Enter 按 `active_submit` 发送。
-   */
-  queue_on_enter?: boolean;
   /**
    * 工具块的显示档位：隐藏只留标题行，简略按工具给少量预览，完整显示全部输出。
    */

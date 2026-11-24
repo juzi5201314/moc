@@ -118,6 +118,8 @@
   --chart-4: #d4d4d8;
   --chart-5: #16a34a;
   --chart-6: #d97706;
+  /* 运行时注入等合成消息：与用户蓝、输出绿、工具琥珀区分开的低饱和紫 */
+  --chart-7: #8b5cf6;
 }
 
 .dark {
@@ -181,6 +183,7 @@
   --chart-4: #3a3a40;
   --chart-5: #3fc56f;
   --chart-6: #f0a33a;
+  --chart-7: #a78bfa;
 }
 
 @theme inline {
@@ -214,6 +217,7 @@
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
   --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
   --color-border-subtle: var(--border-subtle);

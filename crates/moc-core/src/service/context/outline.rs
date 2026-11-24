@@ -2,9 +2,9 @@
 use super::{Snapshot, view::View};
 use crate::compact;
 use crate::compact::replay::ContextOrigin;
+use moc_i18n::t;
 use moc_llm::{ChatRequest, ContentPart, Message, RequestInspection, Role};
 use moc_protocol::methods::{ContextContentSection, ContextUsageResult};
-use moc_i18n::t;
 use serde_json::Value;
 
 pub(super) fn build(
@@ -106,15 +106,14 @@ pub(super) fn build(
         let message_sources = &sources[..end];
         sources = &sources[end..];
         let source = &snapshot.sources[index];
-        let (name, display_source) = match source.label.split_once(" · ") {
-            Some((head, rest)) => {
-                let normalized = normalize_origin_label(head);
-                (normalized, format!("{normalized} · {rest}"))
-            }
-            None => {
-                let normalized = normalize_origin_label(&source.label);
-                (normalized, normalized.to_owned())
-            }
+        let (head, rest) = match source.label.split_once(" · ") {
+            Some((head, rest)) => (head, Some(rest)),
+            None => (source.label.as_str(), None),
+        };
+        let (name, origin) = normalize_origin_label(head);
+        let display_source = match rest {
+            Some(rest) => format!("{name} · {rest}"),
+            None => name.to_owned(),
         };
         let hidden = hidden_reason(message, source.origin);
         let mut meta = ContextContentSection {
@@ -123,6 +122,8 @@ pub(super) fn build(
             source: Some(display_source),
             tokens: compact::messages_tokens(std::slice::from_ref(message)),
             hidden: hidden.as_ref().map(|h| h.to_string()),
+            role: Some(wire_role(&inspection.body, message_sources, message)),
+            origin: Some(origin.into()),
             ..Default::default()
         };
         let text = if hidden.is_some() {
@@ -180,22 +181,46 @@ pub(super) fn build(
     view
 }
 
-/// 将回放器写入的内部来源标签规范为英文工作区标签。
-fn normalize_origin_label(label: &str) -> &str {
+/// 将回放器写入的内部来源标签规范为英文工作区标签与来源分类；其余标签是合成的会话状态消息。
+fn normalize_origin_label(label: &str) -> (&str, &'static str) {
     match label {
-        "系统提示" => "System prompt",
-        "CLM 上下文" => "CLM context",
-        "会话状态生成" => "Session state",
-        "代理消息" => "Agent message",
-        "手动命令" => "Manual command",
-        "目标续跑" => "Goal round",
-        "运行时注入" => "Runtime injection",
-        "用户输入" => "User input",
-        "模型输出" => "Assistant output",
-        "工具结果" => "Tool result",
-        "指令" => "Instruction",
-        other => other,
+        "系统提示" => ("System prompt", "system_prompt"),
+        "CLM 上下文" => ("CLM context", "clm_context"),
+        "会话状态生成" => ("Session state", "session_state"),
+        "代理消息" => ("Agent message", "agent_message"),
+        "手动命令" => ("Manual command", "manual_command"),
+        "目标续跑" => ("Goal round", "goal_round"),
+        "运行时注入" => ("Runtime injection", "runtime_injection"),
+        "用户输入" => ("User input", "user_input"),
+        "模型输出" => ("Assistant output", "assistant_output"),
+        "工具结果" => ("Tool result", "tool_result"),
+        "指令" => ("Instruction", "instruction"),
+        other => (other, "session_state"),
     }
+}
+
+/// 消息编码进请求后的线上角色：取首个可定位条目的 `role`；Responses 的工具条目只有 `type`。
+/// 定位不到线上条目时退回 IR 角色。
+fn wire_role(body: &Value, sources: &[moc_llm::RequestSource], message: &Message) -> String {
+    sources
+        .iter()
+        .find_map(|source| {
+            let item = source
+                .pointer
+                .match_indices('/')
+                .nth(2)
+                .map_or(source.pointer.as_str(), |(end, _)| &source.pointer[..end]);
+            let value = body.pointer(item)?;
+            if let Some(role) = value.get("role").and_then(Value::as_str) {
+                return Some(role.to_owned());
+            }
+            match value.get("type")?.as_str()? {
+                "function_call_output" => Some("tool".to_owned()),
+                "function_call" | "reasoning" => Some("assistant".to_owned()),
+                _ => None,
+            }
+        })
+        .unwrap_or_else(|| message.role.as_str().to_owned())
 }
 
 fn add_text(
@@ -263,6 +288,9 @@ fn render_content(value: &Value, out: &mut String) {
             }
         }
         Value::Object(object) => {
+            if render_tool_call(object, out) {
+                return;
+            }
             let mut readable = false;
             for key in [
                 "content",
@@ -276,8 +304,13 @@ fn render_content(value: &Value, out: &mut String) {
                     readable = true;
                 }
             }
-            if let Some(calls) = object.get("tool_calls") {
-                render_json(calls, out);
+            if let Some(calls) = object.get("tool_calls").and_then(Value::as_array) {
+                for call in calls {
+                    match call.as_object() {
+                        Some(call) if render_tool_call(call, out) => {}
+                        _ => render_json(call, out),
+                    }
+                }
                 readable = true;
             }
             if !readable {
@@ -286,6 +319,49 @@ fn render_content(value: &Value, out: &mut String) {
         }
         _ => render_json(value, out),
     }
+}
+
+/// 三种协议的工具调用（Chat `tool_calls[]`、Responses `function_call`、Anthropic `tool_use`）
+/// 统一写成 `tool-call` 代码块：`{name, id, arguments}`，字符串参数先按 JSON 解析，前端据此渲染卡片。
+fn render_tool_call(object: &serde_json::Map<String, Value>, out: &mut String) -> bool {
+    let (id, name, arguments) = match object.get("type").and_then(Value::as_str) {
+        Some("function_call") => (
+            object.get("call_id"),
+            object.get("name"),
+            object.get("arguments"),
+        ),
+        Some("tool_use") => (object.get("id"), object.get("name"), object.get("input")),
+        _ => match object.get("function") {
+            Some(function) => (
+                object.get("id"),
+                function.get("name"),
+                function.get("arguments"),
+            ),
+            None => return false,
+        },
+    };
+    let Some(name) = name.and_then(Value::as_str) else {
+        return false;
+    };
+    let arguments = match arguments {
+        Some(Value::String(text)) => {
+            serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.clone()))
+        }
+        Some(value) => value.clone(),
+        None => Value::Null,
+    };
+    let card = serde_json::json!({
+        "name": name,
+        "id": id.cloned().unwrap_or(Value::Null),
+        "arguments": arguments,
+    });
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str("```tool-call\n");
+    out.push_str(&serde_json::to_string_pretty(&card).expect("JSON 值总能序列化"));
+    out.push_str("\n```");
+    true
 }
 
 fn render_json(value: &Value, out: &mut String) {
@@ -300,6 +376,20 @@ fn render_json(value: &Value, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_calls_render_as_one_card_shape_across_protocols() {
+        let expected = "```tool-call\n{\n  \"name\": \"read\",\n  \"id\": \"call_1\",\n  \"arguments\": {\n    \"path\": \"a.rs\"\n  }\n}\n```";
+        for wire in [
+            serde_json::json!({"type": "function_call", "call_id": "call_1", "name": "read", "arguments": "{\"path\":\"a.rs\"}"}),
+            serde_json::json!({"type": "tool_use", "id": "call_1", "name": "read", "input": {"path": "a.rs"}}),
+            serde_json::json!({"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{\"path\":\"a.rs\"}"}}]}),
+        ] {
+            let mut out = String::new();
+            render_content(&wire, &mut out);
+            assert_eq!(out, expected);
+        }
+    }
 
     #[test]
     fn user_limits_use_unicode_characters_and_either_boundary() {

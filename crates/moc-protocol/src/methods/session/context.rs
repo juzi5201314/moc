@@ -59,6 +59,12 @@ pub struct ContextContentSection {
     pub children: u64,
     /// 隐藏原因；有值时不可读取正文或子节点，仍计入上下文用量。
     pub hidden: Option<String>,
+    /// 消息条目编码进请求后的角色：`system`、`developer`、`user`、`assistant` 或 `tool`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// 消息条目的来源分类，如 `user_input`、`assistant_output`、`tool_result`、`runtime_injection`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -203,6 +203,10 @@ async fn prompted_session_appends_message_blocks_after_context() {
                 .is_some_and(|source| source.starts_with("User input"))
         })
         .unwrap();
+    assert_eq!(
+        (user.role.as_deref(), user.origin.as_deref()),
+        (Some("user"), Some("user_input"))
+    );
     let page = read(&harness, &id, &result.view_id, &user.id, None, None).await;
     assert_eq!(
         page.text.as_deref(),
@@ -217,6 +221,10 @@ async fn prompted_session_appends_message_blocks_after_context() {
                 .is_some_and(|source| source.starts_with("Assistant output"))
         })
         .unwrap();
+    assert_eq!(
+        (assistant.role.as_deref(), assistant.origin.as_deref()),
+        (Some("assistant"), Some("assistant_output"))
+    );
     assert_eq!(
         read(&harness, &id, &result.view_id, &assistant.id, None, None)
             .await

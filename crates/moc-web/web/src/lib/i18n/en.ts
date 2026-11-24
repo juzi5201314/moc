@@ -616,6 +616,9 @@ export const en: Record<MsgKey, string> = {
   "msg.image_unavailable": "Image unavailable",
 
   // ---------- context viewer ----------
+  "cv.hide_tools": "Hide tool results",
+  "cv.filtered_empty": "Every item on this page is a hidden tool result.",
+  "cv.no_args": "No arguments",
   "cv.back": "Back",
   "cv.copied": "Copied",
   "cv.copy": "Copy",

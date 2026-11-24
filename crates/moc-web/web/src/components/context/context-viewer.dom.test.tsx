@@ -23,6 +23,8 @@ const visible: ContextNode = {
   kind: "markdown",
   tokens: 20,
   children: 0,
+  role: "developer",
+  origin: "runtime_injection",
 };
 const hidden: ContextNode = {
   id: "2",
@@ -31,7 +33,11 @@ const hidden: ContextNode = {
   tokens: 80,
   children: 0,
   hidden: "工具输出已隐藏",
+  role: "tool",
+  origin: "tool_result",
 };
+const body =
+  '提醒正文\n\n```tool-call\n{\n  "name": "read",\n  "id": "call_1",\n  "arguments": {\n    "path": "a.rs"\n  }\n}\n```';
 const snapshot: ContextContentResult = {
   view_id: "v1",
   model: "test/model",
@@ -50,7 +56,7 @@ beforeEach(() => {
         view_id: "v1",
         node_id: params.node_id,
         children: params.node_id === "0" ? [visible, hidden] : [],
-        text: params.node_id === "1" ? "提醒正文" : null,
+        text: params.node_id === "1" ? body : null,
       };
     return {};
   });
@@ -83,6 +89,21 @@ it("隐藏项无法进入，阅读后返回恢复目录焦点，更新不替换�
   fireEvent.click(ui.getByLabelText("context 已有更新，点击刷新"));
   await ui.findByText("messages");
   expect(call).toHaveBeenCalledWith("session/context_close", { session_id: "s1", view_id: "v1" });
+  ui.unmount();
+});
+
+it("消息目录可临时隐藏工具结果，正文里的工具调用渲染为卡片", async () => {
+  const ui = render(<ContextViewer sessionId="s1" />);
+  fireEvent.click(await ui.findByText("messages"));
+  await ui.findByRole("button", { name: /工具结果/ });
+  expect(ui.getByText("tool")).toBeTruthy();
+  fireEvent.click(ui.getByRole("switch"));
+  expect(ui.queryByRole("button", { name: /工具结果/ })).toBeNull();
+  fireEvent.click(ui.getByText("运行时提醒"));
+  await ui.findByText("提醒正文");
+  expect(ui.getByText("call_1")).toBeTruthy();
+  expect(ui.getByText("a.rs")).toBeTruthy();
+  expect(ui.container.textContent).not.toContain("tool-call");
   ui.unmount();
 });
 

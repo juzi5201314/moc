@@ -107,7 +107,8 @@
 ### 浮层
 
 - 菜单、下拉、右键菜单、`/` 与 `@` 补全统一：`rounded-[10px] bg-popover/95 backdrop-blur-md p-1 shadow-[var(--elevation-popover)]`，无 border；菜单项 `rounded-md`，图标 muted。
-- 补全对齐输入文字一侧，欢迎页向下、会话页向上优先，空间不足时翻转；说明取当前高亮项，不夺取输入焦点。
+- 补全对齐输入文字一侧，欢迎页向下、会话页向上优先，空间不足时翻转；说明取当前高亮项，不夺取输入焦点。命令名不截断，参数提示让出剩余宽度；底部详情区给出完整的命令 + 参数与说明，各项叠放在同一格、高度取最高一项，切换高亮时不跳动。
+- Context 模态的消息目录：每条前的小圆点按来源着色（用户输入 `chart-1`、模型输出 `chart-5`、工具结果与手动命令 `chart-6`、运行时注入等合成消息 `chart-7`、其余 `chart-3`），标题后跟线上 role 的等宽灰徽标；目录顶部有临时开关隐藏不可展开的工具结果。正文里的工具调用渲染为卡片（工具名、call id、逐项参数），不显示协议原始 JSON。
 - 分隔线 `bg-border-subtle`；分组标题 `text-xs font-medium text-muted-foreground`（补全里用 `text-2xs text-text-tertiary`）。
 - 选中标记用 `muted-foreground` 的勾，不用强调色。
 - 模态框 `rounded-2xl p-6`，标题 `text-heading`，描述 `text-ui text-muted-foreground`。
