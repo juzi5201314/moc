@@ -957,7 +957,9 @@ async fn failed_server_does_not_resurrect_on_start_but_recovers_on_reconnect() {
                 Box::pin(async move {
                     attempts.fetch_add(1, Ordering::SeqCst);
                     if fail.load(Ordering::Acquire) {
-                        Err(McpError::Transport("simulated handshake failure".to_owned()))
+                        Err(McpError::Transport(
+                            "simulated handshake failure".to_owned(),
+                        ))
                     } else {
                         inner(tool_list_changed).await
                     }

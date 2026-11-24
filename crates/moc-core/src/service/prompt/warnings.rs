@@ -1,8 +1,8 @@
 use super::RequestWarning;
 use crate::service::protocol_to_rpc;
+use moc_i18n::t;
 use moc_protocol::RpcError;
 use moc_protocol::methods::SessionUpdate;
-use moc_i18n::t;
 use std::time::Duration;
 
 pub(super) async fn emit_request_retry(

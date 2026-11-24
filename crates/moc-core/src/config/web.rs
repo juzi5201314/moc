@@ -7,8 +7,8 @@
 use super::editor::{contents, revision, write_atomic};
 use crate::CoreError;
 use crate::session::lock::SessionLockGuard;
-use moc_protocol::{WebState, WebStateDocument, WebStateSaveParams};
 use moc_i18n::t;
+use moc_protocol::{WebState, WebStateDocument, WebStateSaveParams};
 use std::path::Path;
 
 const FILE_NAME: &str = "web.toml";

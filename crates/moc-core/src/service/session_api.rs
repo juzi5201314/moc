@@ -11,6 +11,7 @@ use crate::service::protocol_to_rpc;
 use crate::service::to_rpc;
 use crate::session::TranscriptEntryId;
 use crate::session::entries::SessionOrigin;
+use moc_i18n::t;
 use moc_protocol::RequestContext;
 use moc_protocol::RpcError;
 use moc_protocol::RpcErrorCode;
@@ -32,7 +33,6 @@ use moc_protocol::methods::SessionRewindParams;
 use moc_protocol::methods::SessionUnloadParams;
 use moc_protocol::methods::SessionUnlockParams;
 use moc_protocol::methods::SessionUpdate;
-use moc_i18n::t;
 use serde_json::json;
 use std::path::PathBuf;
 

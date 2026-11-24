@@ -12,6 +12,7 @@ use super::interaction::send_retry;
 use crate::commands::CommandId;
 use crate::commands::Registry;
 use anyhow::bail;
+use moc_i18n::t;
 use moc_protocol::ClientHandle;
 use moc_protocol::commands::CommandRef;
 use moc_protocol::features::FeatureStates;
@@ -56,7 +57,6 @@ use moc_protocol::methods::SessionSetPermissionParams;
 use moc_protocol::methods::SessionUsage;
 use moc_protocol::methods::SessionUsageParams;
 use moc_protocol::methods::prompt::PromptMode;
-use moc_i18n::t;
 use std::io::Write;
 
 pub(super) async fn run_command(
@@ -575,9 +575,11 @@ fn print_mcp_status(snapshot: &McpStatusSnapshot, reconnected: bool) {
                 err = server.error.as_deref().unwrap_or("")
             )
             .into_owned(),
-            McpServerPhase::Failed => {
-                t!("cli.cmd.mcp_failed", err = server.error.as_deref().unwrap_or("")).into_owned()
-            }
+            McpServerPhase::Failed => t!(
+                "cli.cmd.mcp_failed",
+                err = server.error.as_deref().unwrap_or("")
+            )
+            .into_owned(),
             McpServerPhase::Disabled => t!("cli.cmd.mcp_disabled").into_owned(),
         };
         println!(

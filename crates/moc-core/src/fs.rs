@@ -114,10 +114,9 @@ impl fmt::Display for CreateDirError {
             Self::NotDirectory { path } => {
                 f.write_str(&t!("core.fs.not_dir", path = path.display().to_string()))
             }
-            Self::Exists { path } => f.write_str(&t!(
-                "core.fs.dir_exists",
-                path = path.display().to_string()
-            )),
+            Self::Exists { path } => {
+                f.write_str(&t!("core.fs.dir_exists", path = path.display().to_string()))
+            }
         }
     }
 }

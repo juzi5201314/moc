@@ -100,9 +100,10 @@ impl<'de> Deserialize<'de> for PluginsConfig {
             }
             let value = values.remove(&name).expect("刚从键列表取出的插件值");
             if !is_plugin_key(&name) {
-                return Err(serde::de::Error::custom(
-                    moc_i18n::t!("core.err.plugins_unknown_key", name = name),
-                ));
+                return Err(serde::de::Error::custom(moc_i18n::t!(
+                    "core.err.plugins_unknown_key",
+                    name = name
+                )));
             }
             configs.insert(name, value);
         }

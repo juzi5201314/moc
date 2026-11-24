@@ -615,7 +615,10 @@ async fn eval_loop(
         },
     };
     if !send(&start, &mut stdin).await {
-        return Err(ToolError::new("E_HOST", "failed to write Start frame to worker"));
+        return Err(ToolError::new(
+            "E_HOST",
+            "failed to write Start frame to worker",
+        ));
     }
     let mut lines = BufReader::new(stdout).lines();
     let mut logs: Vec<String> = Vec::new();
@@ -690,7 +693,10 @@ async fn eval_loop(
         if !completions.is_empty() {
             let complete = WorkflowHostMessage::Complete { completions };
             if !send(&complete, &mut stdin).await {
-                return Err(ToolError::new("E_HOST", "failed to write Complete frame to worker"));
+                return Err(ToolError::new(
+                    "E_HOST",
+                    "failed to write Complete frame to worker",
+                ));
             }
         }
         match step.state {

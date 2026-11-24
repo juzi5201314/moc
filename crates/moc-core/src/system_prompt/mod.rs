@@ -89,8 +89,7 @@ pub const PIECE_EXECUTION_RUNTIME: &str = "execution runtime";
 pub const PIECE_GIT: &str = "git";
 pub const PIECE_FUSION: &str = "fusion";
 
-const MOC_CO_AUTHOR_TRAILER: &str =
-    "Co-authored-by: myowncode-agent[bot] <359507523+myowncode-agent[bot]@users.noreply.github.com>";
+const MOC_CO_AUTHOR_TRAILER: &str = "Co-authored-by: myowncode-agent[bot] <359507523+myowncode-agent[bot]@users.noreply.github.com>";
 pub const PIECE_TOOL_DECLS: &str = "tool declarations";
 pub const PIECE_MCP_SERVERS: &str = "mcp servers";
 pub const PIECE_REPO_RULES: &str = "repo rules";

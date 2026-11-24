@@ -3,11 +3,11 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
+use moc_i18n::t;
 use moc_llm::{
     Auth, Effort, EndpointStyle, LlmConfig, MaxTokensField, Protocol, ReasoningEcho,
     ResponseFormatDialect, RetryPolicy, ThinkingWire, ToolChoiceDialect, WireConfig,
 };
-use moc_i18n::t;
 use serde::Deserialize;
 
 use crate::error::CoreError;
@@ -480,8 +480,12 @@ impl ResolvedProvider {
             }
             if model.context_window == 0 {
                 return Err(CoreError::Config(
-                    t!("core.err.model_ctx_positive", provider = id, model = model_id)
-                        .into_owned(),
+                    t!(
+                        "core.err.model_ctx_positive",
+                        provider = id,
+                        model = model_id
+                    )
+                    .into_owned(),
                 ));
             }
             if model.max_request_bytes == Some(0) {

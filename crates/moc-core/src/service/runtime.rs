@@ -264,7 +264,9 @@ impl CoreInner {
     pub(crate) async fn warm_mcp(&self, cwd: &Path) {
         let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
         let manager = self
-            .mcp_manager(&key, false, || Ok(Arc::new(self.config().for_project(&key)?)))
+            .mcp_manager(&key, false, || {
+                Ok(Arc::new(self.config().for_project(&key)?))
+            })
             .await;
         if let Ok(manager) = manager
             && !manager.is_empty()
@@ -291,7 +293,9 @@ impl CoreInner {
     ) -> Result<moc_protocol::methods::McpStatusSnapshot, CoreError> {
         let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
         let manager = self
-            .mcp_manager(&key, false, || Ok(Arc::new(self.config().for_project(&key)?)))
+            .mcp_manager(&key, false, || {
+                Ok(Arc::new(self.config().for_project(&key)?))
+            })
             .await?;
         if warm && !manager.is_empty() {
             manager.start().await;
@@ -319,7 +323,9 @@ impl CoreInner {
             }
         }
         let manager = self
-            .mcp_manager(&key, false, || Ok(Arc::new(self.config().for_project(&key)?)))
+            .mcp_manager(&key, false, || {
+                Ok(Arc::new(self.config().for_project(&key)?))
+            })
             .await?;
         if manager.is_empty() {
             if let Some(name) = server {

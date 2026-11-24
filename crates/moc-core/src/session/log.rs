@@ -237,7 +237,11 @@ fn scan_zstd(path: &Path) -> Result<FrameScan, CoreError> {
             return Ok(torn(frames, start));
         }
         if u32::from_le_bytes(magic) != ZSTD_MAGIC {
-            return Err(corrupt(path, offset, &moc_i18n::t!("core.err.zstd_bad_magic")));
+            return Err(corrupt(
+                path,
+                offset,
+                &moc_i18n::t!("core.err.zstd_bad_magic"),
+            ));
         }
         offset += 4;
         // 帧头最多再 13 字节（descriptor + window + dict-id + FCS）。

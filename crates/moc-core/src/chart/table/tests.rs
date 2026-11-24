@@ -392,7 +392,10 @@ fn digit_prefixed_labels_stay_text_while_parenthesized_numbers_parse() {
         Cell::Text(_)
     ));
     assert!(matches!(parse_cell("1. 安装依赖", None), Cell::Text(_)));
-    assert!(matches!(parse_cell("10k plain messages", None), Cell::Text(_)));
+    assert!(matches!(
+        parse_cell("10k plain messages", None),
+        Cell::Text(_)
+    ));
     assert!(matches!(parse_cell("1st", None), Cell::Text(_)));
     assert_eq!(number("100 条").value, 100.0);
     assert_eq!(number("127 ms (33 块)").value, 0.127);

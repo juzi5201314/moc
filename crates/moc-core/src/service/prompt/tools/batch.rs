@@ -154,10 +154,7 @@ pub(in super::super) async fn execute_tool_batch(
                 let (code, message) = if stop_reason.is_some() {
                     ("E_CANCELLED", "Prompt aborted; this call was not executed.")
                 } else {
-                    (
-                        "E_TURN_ENDED",
-                        "Turn ended; later calls were not executed.",
-                    )
+                    ("E_TURN_ENDED", "Turn ended; later calls were not executed.")
                 };
                 let mut outcome = ToolOutcome::failure(code, message);
                 outcome.status = Some(ToolStatus::Cancelled);

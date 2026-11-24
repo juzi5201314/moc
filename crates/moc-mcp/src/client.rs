@@ -264,7 +264,12 @@ async fn connect_stdio(
     if let Some(stderr) = stderr {
         let server = server.to_owned();
         tokio::spawn(async move {
-            drain_stderr(tokio::io::BufReader::new(stderr), &server, Some(stderr_tail)).await;
+            drain_stderr(
+                tokio::io::BufReader::new(stderr),
+                &server,
+                Some(stderr_tail),
+            )
+            .await;
         });
     }
     let handler = ClientHandlerBridge::new(tool_list_changed);

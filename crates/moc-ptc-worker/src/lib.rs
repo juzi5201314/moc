@@ -3,12 +3,12 @@
 mod workflow;
 pub use workflow::{run_workflow, run_workflow_stdio};
 
+use moc_i18n::t;
 use moc_ptc_protocol::wire::{
     GuestMessage, GuestState, GuestStep, HostCompletion, HostMessage, MAX_FRAME_BYTES, ScriptError,
     StartRequest,
 };
 use rquickjs::{Context, Function, Object, Persistent, Runtime};
-use moc_i18n::t;
 use std::{
     collections::HashMap,
     io::{BufRead, Read, Write},

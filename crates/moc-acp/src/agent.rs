@@ -342,8 +342,8 @@ impl<B: Backend> Bridge<B> {
             .skip(offset)
             .take(LIST_PAGE + 1)
             .collect();
-        let next_cursor = (page.len() > LIST_PAGE)
-            .then(|| offset.saturating_add(LIST_PAGE).to_string());
+        let next_cursor =
+            (page.len() > LIST_PAGE).then(|| offset.saturating_add(LIST_PAGE).to_string());
         page.truncate(LIST_PAGE);
         let sessions = page
             .into_iter()

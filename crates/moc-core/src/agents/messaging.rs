@@ -415,19 +415,21 @@ pub(crate) async fn record_yield(
             ));
         }
         (None, Some(_)) => {
-            return Err(invalid(
-                "this subagent has no output_schema; omit `result`",
-            ));
+            return Err(invalid("this subagent has no output_schema; omit `result`"));
         }
         (None, None) => None,
     };
     let report = validate_text(&report, "report")?;
     let mut registry = inner.agents.lock().await;
     let Some(runtime) = registry.items.get_mut(session_id) else {
-        return Err(invalid("yield can only be called while running as a subagent"));
+        return Err(invalid(
+            "yield can only be called while running as a subagent",
+        ));
     };
     if !live(runtime.info.status) {
-        return Err(invalid("yield can only be called while running as a subagent"));
+        return Err(invalid(
+            "yield can only be called while running as a subagent",
+        ));
     }
     runtime.yielded = Some(Yielded { report, result });
     Ok(())

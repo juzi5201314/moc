@@ -669,7 +669,9 @@ async fn web_widget_reminder_is_scoped_to_webui_and_retracted_in_tui() {
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(text_stream("ok"), "text/event-stream"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(text_stream("ok"), "text/event-stream"),
+        )
         .mount(&upstream)
         .await;
 
@@ -761,7 +763,9 @@ async fn web_widget_reminder_is_scoped_to_webui_and_retracted_in_tui() {
     tui_client
         .call::<SessionPrompt>(PromptParams {
             session_id: web_session.id.clone(),
-            input: vec![InputPart::Text { text: "follow up".into() }],
+            input: vec![InputPart::Text {
+                text: "follow up".into(),
+            }],
             mode: None,
             agent_message: None,
             goal_round: None,

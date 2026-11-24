@@ -407,8 +407,8 @@ pub fn registry() -> Registry {
 
 /// `/help` 文本：按组生成，命令与别名都成行；flag 关闭的命令仍列出并注明。
 pub fn help_text(features: &moc_protocol::features::FeatureStates) -> String {
-    use moc_protocol::commands::{description_text, usage_text};
     use moc_i18n::t;
+    use moc_protocol::commands::{description_text, usage_text};
     use std::fmt::Write;
     let mut text = String::new();
     for group in [

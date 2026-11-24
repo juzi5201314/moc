@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use moc_core::{Core, CoreConfig, PtcWorkerCommand, resolve_models};
+use moc_i18n::t;
 use moc_protocol::features::FeatureStates;
 use moc_protocol::methods::{
     ClientCapabilities, ClientInfo, ConfigGet, ConfigGetParams, McpServerPhase, McpStatusUpdated,
@@ -13,7 +14,6 @@ use moc_protocol::methods::{
     SessionSetModel, SessionSetModelParams, SessionUpdate, SessionUpdateMethod,
 };
 use moc_protocol::{ClientBuilder, ClientHandle, RpcError, RpcErrorCode, ServerOptions};
-use moc_i18n::t;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::args::CliArgs;

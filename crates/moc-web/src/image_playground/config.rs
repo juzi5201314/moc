@@ -153,8 +153,9 @@ pub fn load(config_home: &Path) -> anyhow::Result<PlaygroundConfig> {
     match std::fs::read_to_string(&path) {
         Ok(text) if text.trim().is_empty() => Ok(PlaygroundConfig::default()),
         Ok(text) => {
-            let mut cfg: PlaygroundConfig = toml::from_str(&text)
-                .with_context(|| t!("web.playground.parse_file_failed", path = path.display()).into_owned())?;
+            let mut cfg: PlaygroundConfig = toml::from_str(&text).with_context(|| {
+                t!("web.playground.parse_file_failed", path = path.display()).into_owned()
+            })?;
             cfg.validate()?;
             Ok(cfg)
         }

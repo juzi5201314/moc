@@ -156,9 +156,7 @@ pub fn prepare_edit_input(
     }
 
     let dim_ok = cfg.max_dimension == 0
-        || (meta.width > 0
-            && meta.height > 0
-            && meta.width.max(meta.height) <= cfg.max_dimension);
+        || (meta.width > 0 && meta.height > 0 && meta.width.max(meta.height) <= cfg.max_dimension);
 
     // 尺寸、体积、格式全部达标且非动图：零损耗直传。
     if standard_format && !meta.is_animated && dim_ok && bytes.len() <= max_bytes {
@@ -421,7 +419,11 @@ fn decode_static_image(bytes: &[u8]) -> anyhow::Result<DynamicImage> {
     if u64::from(w) * u64::from(h) > MAX_INPUT_PIXELS {
         anyhow::bail!(
             "{}",
-            t!("web.playground.codec.pixels_exceeded", width = w, height = h)
+            t!(
+                "web.playground.codec.pixels_exceeded",
+                width = w,
+                height = h
+            )
         );
     }
     let orientation = decoder
@@ -489,17 +491,16 @@ fn collect_bounded_frames(
         if out.len() >= max_frames {
             anyhow::bail!(
                 "{}",
-                t!("web.playground.codec.anim_frames_exceeded", max = max_frames)
+                t!(
+                    "web.playground.codec.anim_frames_exceeded",
+                    max = max_frames
+                )
             );
         }
         let frame = frame_result
             .with_context(|| t!("web.playground.codec.anim_frame_read").into_owned())?;
         let (num, den) = frame.delay().numer_denom_ms();
-        let delay_ms = if den == 0 {
-            100
-        } else {
-            (num / den).max(20)
-        };
+        let delay_ms = if den == 0 { 100 } else { (num / den).max(20) };
         let buf: RgbaImage = frame.into_buffer();
         let (fw, fh) = (buf.width(), buf.height());
         if out.is_empty() {
@@ -617,9 +618,9 @@ fn encode_webp_static(img: &DynamicImage, quality: u8, lossless: bool) -> anyhow
     let encoder = WebpEncoder::new_rgba(rgba.as_raw(), rgba.width(), rgba.height())
         .lossless(lossless)
         .quality(f32::from(quality.clamp(1, 100)));
-    let bytes = encoder
-        .encode(Unstoppable)
-        .map_err(|error| anyhow::anyhow!("{}", t!("web.playground.codec.webp_encode", error = error)))?;
+    let bytes = encoder.encode(Unstoppable).map_err(|error| {
+        anyhow::anyhow!("{}", t!("web.playground.codec.webp_encode", error = error))
+    })?;
     Ok(bytes)
 }
 
@@ -629,21 +630,31 @@ fn encode_animated_webp(
     frames: &[AnimFrame],
     quality: u8,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut encoder = AnimationEncoder::new(width, height)
-        .map_err(|error| anyhow::anyhow!("{}", t!("web.playground.codec.webp_anim_init", error = error)))?;
+    let mut encoder = AnimationEncoder::new(width, height).map_err(|error| {
+        anyhow::anyhow!(
+            "{}",
+            t!("web.playground.codec.webp_anim_init", error = error)
+        )
+    })?;
     encoder.set_quality(f32::from(quality.clamp(1, 100)));
     let mut timestamp_ms: i32 = 0;
     for frame in frames {
         encoder
             .add_frame_rgba(&frame.rgba, timestamp_ms)
             .map_err(|error| {
-                anyhow::anyhow!("{}", t!("web.playground.codec.webp_anim_frame", error = error))
+                anyhow::anyhow!(
+                    "{}",
+                    t!("web.playground.codec.webp_anim_frame", error = error)
+                )
             })?;
         timestamp_ms = timestamp_ms.saturating_add(frame.delay_ms.min(60_000) as i32);
     }
-    encoder
-        .finish(timestamp_ms)
-        .map_err(|error| anyhow::anyhow!("{}", t!("web.playground.codec.webp_anim_finish", error = error)))
+    encoder.finish(timestamp_ms).map_err(|error| {
+        anyhow::anyhow!(
+            "{}",
+            t!("web.playground.codec.webp_anim_finish", error = error)
+        )
+    })
 }
 
 fn encode_apng(width: u32, height: u32, frames: &[AnimFrame]) -> anyhow::Result<Vec<u8>> {
@@ -713,7 +724,8 @@ fn encode_jpeg(img: &DynamicImage, quality: u8) -> anyhow::Result<Vec<u8>> {
 fn encode_png(img: &DynamicImage) -> anyhow::Result<Vec<u8>> {
     let rgba = img.to_rgba8();
     let mut out = Vec::new();
-    let encoder = PngEncoder::new_with_quality(&mut out, CompressionType::Best, FilterType::Adaptive);
+    let encoder =
+        PngEncoder::new_with_quality(&mut out, CompressionType::Best, FilterType::Adaptive);
     encoder
         .write_image(
             rgba.as_raw(),

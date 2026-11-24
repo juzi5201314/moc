@@ -580,7 +580,10 @@ mod tests {
                 .visible(engine, Mode::Default, false, false, &config)
                 .map(|tool| tool.name().to_owned())
                 .collect();
-            assert!(names.iter().any(|n| n == "bash"), "{engine:?} 必须保留 shell");
+            assert!(
+                names.iter().any(|n| n == "bash"),
+                "{engine:?} 必须保留 shell"
+            );
             assert!(
                 names.iter().any(|n| n == "mcp__demo__lookup"),
                 "{engine:?} 必须保留 MCP"

@@ -63,12 +63,9 @@ struct Counted<W> {
 impl<W: Write> Write for Counted<W> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let written = self.writer.write(bytes)?;
-        self.bytes = self
-            .bytes
-            .checked_add(written)
-            .ok_or_else(|| {
-                std::io::Error::other(moc_i18n::t!("core.err.frozen_body_overflow").into_owned())
-            })?;
+        self.bytes = self.bytes.checked_add(written).ok_or_else(|| {
+            std::io::Error::other(moc_i18n::t!("core.err.frozen_body_overflow").into_owned())
+        })?;
         Ok(written)
     }
     fn flush(&mut self) -> std::io::Result<()> {

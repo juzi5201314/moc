@@ -39,9 +39,8 @@ impl WorkflowManager {
     ) -> Result<Arc<RunHandle>, CoreError> {
         let run_id = meta.run_id.clone();
         let dir = self.run_dir(&run_id)?;
-        std::fs::create_dir_all(dir.join("artifacts")).map_err(|e| {
-            CoreError::Session(format!("failed to create run directory: {e}"))
-        })?;
+        std::fs::create_dir_all(dir.join("artifacts"))
+            .map_err(|e| CoreError::Session(format!("failed to create run directory: {e}")))?;
         // approve→launch 窗口内经 set_role_model 记下的覆盖合并进 meta
         // （"inherit" 表示移除该 role 的覆盖）。
         let mut meta = meta;
@@ -304,7 +303,9 @@ impl WorkflowManager {
                 .insert(role_id.to_string(), model.to_string());
             return Ok(());
         }
-        Err(CoreError::Session(format!("workflow run {run_id} not found")))
+        Err(CoreError::Session(format!(
+            "workflow run {run_id} not found"
+        )))
     }
 
     /// 丢弃 run 的待合并 role 覆盖（launch 审批被 Reject 后不留孤儿条目）。
@@ -385,9 +386,7 @@ impl WorkflowManager {
                             h["ordinal"].as_u64()? as u32,
                         ))
                     })
-                    .ok_or_else(|| {
-                        CoreError::Session(format!("hole '{name}' is not open"))
-                    })?
+                    .ok_or_else(|| CoreError::Session(format!("hole '{name}' is not open")))?
             };
             engine.fill_hole(&site_id, ordinal, code)
         };

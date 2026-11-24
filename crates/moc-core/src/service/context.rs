@@ -6,13 +6,13 @@ use crate::{
     compact,
     system_prompt::{PromptPiece, SystemPrompt},
 };
+use moc_i18n::t;
 use moc_llm::Message;
 use moc_protocol::methods::{
     ContextContentResult, ContextUsageResult, ContextUsageSection, SessionContextContentParams,
     SessionContextParams,
 };
 use moc_protocol::{RequestContext, RpcError};
-use moc_i18n::t;
 use std::path::PathBuf;
 use std::sync::Arc;
 pub(crate) use view::Views;

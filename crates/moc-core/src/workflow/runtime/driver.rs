@@ -286,7 +286,8 @@ impl WorkflowDriver {
                     if attempt == max_repairs {
                         return DriverOutcome::Failed {
                             code: "E_SCHEMA".into(),
-                            message: "ask output did not match output_schema after repair retries".into(),
+                            message: "ask output did not match output_schema after repair retries"
+                                .into(),
                         };
                     }
                     text = Some(format!(

@@ -18,7 +18,5 @@ pub use config::{
 };
 pub use content::{ImageData, ToolOutput};
 pub use error::McpError;
-pub use manager::{
-    McpManager, McpNotice, McpServerState, McpSnapshot, McpToolInfo, ServerStatus,
-};
+pub use manager::{McpManager, McpNotice, McpServerState, McpSnapshot, McpToolInfo, ServerStatus};
 pub use mrtr::{InputFulfiller, PendingInput};

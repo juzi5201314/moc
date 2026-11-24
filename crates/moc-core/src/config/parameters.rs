@@ -7,9 +7,9 @@
 
 use std::borrow::Cow;
 
+use moc_i18n::t;
 use moc_llm::{Protocol, ReasoningSummary, ThinkingWire};
 use moc_protocol::{ChoiceOption, ConfigField, FieldKind};
-use moc_i18n::t;
 use serde_json::{Map, Value};
 
 use super::model::ThinkingLevel;
@@ -465,7 +465,8 @@ mod tests {
                 .expect("每个模型都有参数入口");
             assert_eq!(field.label, name, "API 请求参数 label 应保持精确 wire 键名");
             assert!(
-                !field.description.is_empty() && !field.description.starts_with(&format!("`{name}`")),
+                !field.description.is_empty()
+                    && !field.description.starts_with(&format!("`{name}`")),
                 "API 请求参数描述应直接提供说明，不再重复键名前缀"
             );
             assert!(field.advanced, "请求参数默认收纳到高级选项");

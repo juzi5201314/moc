@@ -4,11 +4,11 @@ use super::entries;
 use super::persist_orphans;
 use super::stored::StoredEntry;
 use crate::error::CoreError;
+use moc_i18n::t;
 use moc_llm::Role;
 use moc_llm::ToolCall;
 use moc_protocol::methods::SessionLoadResult;
 use moc_protocol::methods::TranscriptEntry;
-use moc_i18n::t;
 use std::collections::BTreeSet;
 
 impl SessionTable {
@@ -153,9 +153,7 @@ impl SessionTable {
                 .is_some_and(|first| first.parent_id() == tip);
             if !chained {
                 stash.clear();
-                return Err(CoreError::Session(
-                    t!("core.err.redo_empty").into_owned(),
-                ));
+                return Err(CoreError::Session(t!("core.err.redo_empty").into_owned()));
             }
             let tail = stash.last().expect("栈顶已校验非空");
             let Some(pos) = tail.position(entry_id.as_str()) else {

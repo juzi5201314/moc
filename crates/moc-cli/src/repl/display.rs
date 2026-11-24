@@ -1,9 +1,9 @@
 use anyhow::bail;
+use moc_i18n::t;
 use moc_protocol::methods::ModelSwitchOverflow;
 use moc_protocol::methods::SessionAutonomy;
 use moc_protocol::methods::SessionEngine;
 use moc_protocol::methods::SessionInfo;
-use moc_i18n::t;
 
 pub(super) fn parse_engine(engine: &str) -> anyhow::Result<SessionEngine> {
     match engine {

@@ -14,12 +14,12 @@ use crate::error::PluginError;
 use crate::error::Result;
 use crate::manifest::valid_command_name;
 use crate::manifest::valid_tool_name;
+use moc_i18n::t;
 use rquickjs::Ctx;
 use rquickjs::Function;
 use rquickjs::Object;
 use rquickjs::Persistent;
 use rquickjs::Value as JsValue;
-use moc_i18n::t;
 use serde_json::Value;
 use std::collections::BTreeMap;
 

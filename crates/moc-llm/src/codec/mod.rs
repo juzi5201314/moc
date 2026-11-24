@@ -5,8 +5,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use reqwest::header::HeaderMap;
 use moc_i18n::t;
+use reqwest::header::HeaderMap;
 use serde_json::Value;
 
 use crate::config::{Auth, LlmConfig, Protocol};

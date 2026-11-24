@@ -17,7 +17,9 @@ pub(crate) async fn active_run(
         .get()
         .and_then(|manager| manager.running(run_id))
         .filter(|run| !run.cancel.is_cancelled() && run.view.lock().terminal.is_none())
-        .ok_or_else(|| super::invalid("workflow actor can only run within an active run of its parent session"))
+        .ok_or_else(|| {
+            super::invalid("workflow actor can only run within an active run of its parent session")
+        })
 }
 
 async fn run_id(inner: &CoreInner, session: &SessionInfo) -> Result<Option<String>, CoreError> {
@@ -80,7 +82,9 @@ pub(crate) async fn authorize_message(
         ));
     }
     if source_run.is_some() || driver_run.is_some() {
-        return Err(super::invalid("workflow messages cannot dispatch work across runs"));
+        return Err(super::invalid(
+            "workflow messages cannot dispatch work across runs",
+        ));
     }
     Ok(())
 }

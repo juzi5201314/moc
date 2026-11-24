@@ -258,7 +258,11 @@ mod tests {
         // 首行写 `1.04 s` 但列主导单位是 `ms` 时，factor 必须与主导单位 `ms`（0.001）对齐
         let mixed = table(
             &["场景", "启动耗时"],
-            &[&["大消息", "1.04 s"], &["百条", "339 ms"], &["万条", "488 ms"]],
+            &[
+                &["大消息", "1.04 s"],
+                &["百条", "339 ms"],
+                &["万条", "488 ms"],
+            ],
         );
         let mixed_spec = spec_of(&mixed);
         assert_eq!(mixed_spec.series[0].unit, "ms");

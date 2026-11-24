@@ -70,10 +70,7 @@ async fn running_jobs(inner: &CoreInner, state: &SessionState) -> Option<String>
     if lines.is_empty() {
         return None;
     }
-    Some(format!(
-        "## Running Background Tasks\n{}",
-        lines.join("\n")
-    ))
+    Some(format!("## Running Background Tasks\n{}", lines.join("\n")))
 }
 
 /// 未完成的 todo 项；已完成和已丢弃的只计数。

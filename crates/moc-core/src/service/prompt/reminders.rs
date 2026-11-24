@@ -83,7 +83,9 @@ pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError>
             drop(state);
             candidates.push(Reminder::once(
                 reminder::key::TODO_STALL,
-                format!("{open_items} todo items open. Mark finished tasks done now, or keep working."),
+                format!(
+                    "{open_items} todo items open. Mark finished tasks done now, or keep working."
+                ),
             ));
             update
                 .emit(

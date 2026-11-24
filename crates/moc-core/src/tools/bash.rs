@@ -37,7 +37,8 @@ enum BashLifecycle {
 }
 
 /// `description` 参数的模型可见说明。
-const DESCRIPTION_PARAM: &str = "Concise 5-10 word active-voice summary shown in the UI (e.g. \"Show working tree status\").";
+const DESCRIPTION_PARAM: &str =
+    "Concise 5-10 word active-voice summary shown in the UI (e.g. \"Show working tree status\").";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

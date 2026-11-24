@@ -168,8 +168,9 @@ pub fn load_index(storage_dir: &Path) -> anyhow::Result<PlaygroundIndex> {
             version: 1,
             ..Default::default()
         }),
-        Ok(text) => serde_json::from_str(&text)
-            .with_context(|| t!("web.playground.parse_file_failed", path = path.display()).into_owned()),
+        Ok(text) => serde_json::from_str(&text).with_context(|| {
+            t!("web.playground.parse_file_failed", path = path.display()).into_owned()
+        }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(PlaygroundIndex {
             version: 1,
             ..Default::default()
@@ -328,8 +329,7 @@ impl PlaygroundIndex {
         }
         match folder_id {
             Some(fid) => {
-                self.favorite_image_folders
-                    .insert(image_id.to_owned(), fid);
+                self.favorite_image_folders.insert(image_id.to_owned(), fid);
             }
             None => {
                 self.favorite_image_folders.remove(image_id);
@@ -345,7 +345,8 @@ impl PlaygroundIndex {
         if self.favorite_folders.len() == before {
             return false;
         }
-        self.favorite_image_folders.retain(|_, fid| fid != folder_id);
+        self.favorite_image_folders
+            .retain(|_, fid| fid != folder_id);
         for preset in &mut self.favorite_presets {
             if preset.folder_id.as_deref() == Some(folder_id) {
                 preset.folder_id = None;
@@ -371,7 +372,10 @@ impl PlaygroundIndex {
     }
 
     /// 清理不再被单图收藏、组合收藏或任何会话输入引用的 `UploadedFavorite` 晋升图片，返回待清理的 `(图片 ID, 磁盘路径)`。
-    pub fn prune_orphan_preset_uploads(&mut self, candidate_ids: &[String]) -> Vec<(String, PathBuf)> {
+    pub fn prune_orphan_preset_uploads(
+        &mut self,
+        candidate_ids: &[String],
+    ) -> Vec<(String, PathBuf)> {
         let mut to_trash = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for id in candidate_ids {
@@ -545,7 +549,10 @@ mod tests {
         let trashed = index.remove_session("s1", true);
         assert_eq!(trashed, vec![("img2".into(), f2)]);
         assert!(index.images.contains_key("img1"), "已收藏图片应保留");
-        assert!(index.images.contains_key("img3"), "被组合收藏引用的图片应保留");
+        assert!(
+            index.images.contains_key("img3"),
+            "被组合收藏引用的图片应保留"
+        );
         assert_eq!(index.images["img1"].session_id, None);
         assert_eq!(index.favorite_folder_of("img1").as_deref(), Some("fld1"));
 

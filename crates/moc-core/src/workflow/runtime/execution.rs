@@ -46,9 +46,7 @@ impl WorkflowManager {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| {
-                CoreError::Session(format!("failed to start workflow worker: {e}"))
-            })?;
+            .map_err(|e| CoreError::Session(format!("failed to start workflow worker: {e}")))?;
         let mut stdin = child
             .stdin
             .take()
@@ -128,7 +126,9 @@ impl WorkflowManager {
                 Ok(Some(line)) => line,
                 Ok(None) => break,
                 Err(e) => {
-                    return Err(CoreError::Session(format!("failed to read worker stdout: {e}")));
+                    return Err(CoreError::Session(format!(
+                        "failed to read worker stdout: {e}"
+                    )));
                 }
             };
             let message: WorkflowGuestMessage = match serde_json::from_str(&line) {
@@ -160,7 +160,10 @@ impl WorkflowManager {
             } else {
                 format!(": {stderr}")
             };
-            self.fail_run(handle, &format!("workflow worker exited unexpectedly{detail}"));
+            self.fail_run(
+                handle,
+                &format!("workflow worker exited unexpectedly{detail}"),
+            );
         }
         let _ = handle.to_worker.send(WorkflowHostMessage::Shutdown);
         let _ = child.kill().await;

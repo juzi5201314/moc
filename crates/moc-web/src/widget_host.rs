@@ -49,7 +49,10 @@ pub(crate) async fn handler() -> Response {
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static("frame-ancestors 'self'"),
     );
-    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
+    headers.insert(
+        header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("SAMEORIGIN"),
+    );
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

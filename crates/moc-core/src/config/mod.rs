@@ -5,10 +5,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use globset::GlobBuilder;
+use moc_i18n::t;
 use moc_llm::LlmConfig;
 use moc_protocol::SessionPermission;
 use moc_protocol::features::{FeatureFlag, FeatureStates};
-use moc_i18n::t;
 use toml::Value;
 
 use crate::CoreConfig;

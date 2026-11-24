@@ -2,6 +2,7 @@ use super::Input;
 use super::display::parse_engine;
 use super::rpc_io_error;
 use anyhow::bail;
+use moc_i18n::t;
 use moc_protocol::ClientHandle;
 use moc_protocol::RpcError;
 use moc_protocol::RpcErrorCode;
@@ -23,7 +24,6 @@ use moc_protocol::methods::SessionPrompt;
 use moc_protocol::methods::SessionRetry;
 use moc_protocol::methods::SessionRetryParams;
 use moc_protocol::methods::prompt::PromptMode;
-use moc_i18n::t;
 use std::io::Write;
 
 pub(super) async fn approve_plan(

@@ -4,8 +4,8 @@ use super::{
     ResolvedConfig, catalog, is_plugin_key, merge_optional_file, merge_required_file, merge_value,
 };
 use crate::{CoreConfig, CoreError};
-use moc_protocol::{ConfigScope, SettingsDocument};
 use moc_i18n::t;
+use moc_protocol::{ConfigScope, SettingsDocument};
 use serde_json::{Value as Json, json};
 use std::path::{Path, PathBuf};
 

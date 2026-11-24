@@ -8,12 +8,12 @@
 use std::collections::HashSet;
 use std::io::Write;
 
+use moc_i18n::t;
 use moc_protocol::methods::{
     PermissionOptionKind, PermissionRequestParams, PermissionResult, SessionUpdate,
     SessionUpdateParams, ToolStatus,
 };
 use moc_protocol::{PromptResult, Usage};
-use moc_i18n::t;
 use serde::Serialize;
 
 use crate::args::OutputFormat;

@@ -26,6 +26,7 @@ use crate::session::store::now_ms;
 use crate::system_prompt::build;
 use crate::system_prompt::reminder;
 use crate::tools::ToolCtx;
+use moc_i18n::t;
 use moc_llm::FinishReason;
 use moc_llm::Message;
 use moc_llm::Usage;
@@ -35,7 +36,6 @@ use moc_protocol::RpcErrorCode;
 use moc_protocol::methods::PromptResult;
 use moc_protocol::methods::SessionUpdate;
 use moc_protocol::methods::ToolStatus;
-use moc_i18n::t;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -328,15 +328,12 @@ pub(super) async fn run_prompt_locked(
                     .await
                     .map_err(to_rpc)?;
                 for notice in mcp.drain_notices().await {
-                    record
-                        .state
-                        .lock()
-                        .await
-                        .notices
-                        .push(crate::session::state::SessionNotice::new(format!(
+                    record.state.lock().await.notices.push(
+                        crate::session::state::SessionNotice::new(format!(
                             "MCP `{}`: {}",
                             notice.server, notice.message
-                        )));
+                        )),
+                    );
                 }
                 if catalog.absorb_pending() {
                     mcp_index = crate::tools::declarations::render_mcp_index(

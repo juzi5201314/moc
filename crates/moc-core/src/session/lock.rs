@@ -11,8 +11,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use moc_protocol::methods::SessionLockInfo;
 use moc_i18n::t;
+use moc_protocol::methods::SessionLockInfo;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;

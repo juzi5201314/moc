@@ -147,7 +147,10 @@ fn routes(state: AppState) -> Router {
             "/pty/{id}",
             delete(terminal::remove).route_layer(authed.clone()),
         )
-        .route("/pty/{id}/ws", get(terminal::attach).route_layer(authed.clone()))
+        .route(
+            "/pty/{id}/ws",
+            get(terminal::attach).route_layer(authed.clone()),
+        )
         .merge(image_playground::router().route_layer(authed))
         .fallback(get(static_handler))
         .layer(axum::middleware::from_fn(security_headers))

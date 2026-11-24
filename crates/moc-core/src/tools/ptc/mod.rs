@@ -84,12 +84,10 @@ impl Tool for ExecuteTool {
                 .unwrap_or(ctx.config.tools.ptc.default_timeout_secs)
                 .min(ctx.config.tools.ptc.max_timeout_secs);
             let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
-            let worker = ctx
-                .core
-                .boot
-                .ptc_worker
-                .clone()
-                .ok_or_else(|| ToolError::new("E_PTC_WORKER", "PTC worker is not configured"))?;
+            let worker =
+                ctx.core.boot.ptc_worker.clone().ok_or_else(|| {
+                    ToolError::new("E_PTC_WORKER", "PTC worker is not configured")
+                })?;
             let host = {
                 let mut slot = ctx.core.ptc_host.lock().await;
                 Arc::clone(slot.get_or_insert_with(|| Arc::new(PtcHost::new(worker))))

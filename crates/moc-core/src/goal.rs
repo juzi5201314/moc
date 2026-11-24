@@ -514,7 +514,10 @@ pub(crate) async fn apply_tool_create(
     .await
     .map_err(|error| {
         if error.message.starts_with("GOAL_NOT_SUPPORTED:") {
-            err("GOAL_NOT_SUPPORTED", "goals are not supported in subagent sessions")
+            err(
+                "GOAL_NOT_SUPPORTED",
+                "goals are not supported in subagent sessions",
+            )
         } else if error.message.starts_with("GOAL_INVALID_OBJECTIVE:") {
             err("GOAL_INVALID_OBJECTIVE", "objective must not be empty")
         } else if error.message.starts_with("GOAL_ALREADY_EXISTS:") {

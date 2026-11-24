@@ -98,9 +98,8 @@ fn collect_table(
                     ),
                 }
             }
-            let zh = zh.unwrap_or_else(|| {
-                panic!("{}: 键 `{full_key}` 缺少源语言 `zh`", path.display())
-            });
+            let zh =
+                zh.unwrap_or_else(|| panic!("{}: 键 `{full_key}` 缺少源语言 `zh`", path.display()));
             let en = en.unwrap_or("");
             if catalog
                 .insert(full_key.clone(), (zh.to_owned(), en.to_owned()))

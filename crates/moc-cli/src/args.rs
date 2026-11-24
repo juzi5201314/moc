@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
-use moc_protocol::methods::SessionEngine;
 use moc_i18n::t;
+use moc_protocol::methods::SessionEngine;
 
 #[derive(Debug, Parser)]
 #[command(name = "moc", version, about = t!("cli.args.about").into_owned())]

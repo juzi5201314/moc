@@ -1,11 +1,11 @@
 //! 前台技能摘要维护：隔离模型请求，完整验证后一次性发布，不写会话历史。
 
+use moc_i18n::t;
 use moc_llm::{FinishReason, Message};
 use moc_protocol::{
     RequestContext, SkillsCompactAction, SkillsCompactParams, SkillsCompactResult, SkillsProgress,
     SkillsProgressParams, SkillsProgressPhase,
 };
-use moc_i18n::t;
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::BTreeMap, path::Path, sync::Arc};

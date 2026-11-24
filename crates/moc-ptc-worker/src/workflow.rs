@@ -1,6 +1,7 @@
 //! workflow 模式：一个 run 独占一个 worker 进程；无墙钟超时，只有取消与关闭。
 
 use crate::Result;
+use moc_i18n::t;
 use moc_ptc_protocol::{
     WORKFLOW_PRELUDE,
     wire::{
@@ -9,7 +10,6 @@ use moc_ptc_protocol::{
     },
 };
 use rquickjs::{Context, Function, Object, Persistent, Runtime};
-use moc_i18n::t;
 use std::{
     io::{BufRead, Read, Write},
     sync::{Arc, Mutex, mpsc},

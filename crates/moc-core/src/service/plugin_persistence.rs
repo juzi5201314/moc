@@ -67,7 +67,9 @@ fn snapshot(
         .as_object()
         .ok_or_else(|| config_error(t!("core.err.plugin_cfg_item_table")))?;
     if entry.keys().any(|key| key != "config") {
-        return Err(config_error(t!("core.err.plugin_entry_only_config_generic")));
+        return Err(config_error(t!(
+            "core.err.plugin_entry_only_config_generic"
+        )));
     }
     match entry.get("config") {
         None => Ok(json!({})),

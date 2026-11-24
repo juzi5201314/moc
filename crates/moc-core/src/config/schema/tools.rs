@@ -93,7 +93,10 @@ pub(in super::super) fn validate_ptc(config: &PtcConfig) -> Result<(), crate::er
         )
     };
     if config.default_timeout_secs == 0 || config.default_timeout_secs > config.max_timeout_secs {
-        return Err(fail("default_timeout_secs", &t!("core.err.ptc_default_timeout")));
+        return Err(fail(
+            "default_timeout_secs",
+            &t!("core.err.ptc_default_timeout"),
+        ));
     }
     if config.max_timeout_secs == 0 {
         return Err(fail("max_timeout_secs", &t!("core.err.ptc_positive")));
@@ -119,7 +122,10 @@ pub(in super::super) fn validate_ptc(config: &PtcConfig) -> Result<(), crate::er
         return Err(fail("host_idle_timeout_secs", &t!("core.err.ptc_positive")));
     }
     if config.host_idle_timeout_secs > MAX_INSTANT_SECS {
-        return Err(fail("host_idle_timeout_secs", &t!("core.err.ptc_time_range")));
+        return Err(fail(
+            "host_idle_timeout_secs",
+            &t!("core.err.ptc_time_range"),
+        ));
     }
     if !(8 * 1024 * 1024..=u32::MAX as usize).contains(&config.memory_limit_bytes) {
         return Err(fail("memory_limit_bytes", &t!("core.err.ptc_memory_range")));
