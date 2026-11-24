@@ -451,7 +451,7 @@ fn legacy_roles_migrate_without_restoring_plan_model_behavior() {
     assert_eq!(config.require_last_model().unwrap().selector, "p/m:off");
     assert!(config.resolve_model("default").is_err());
     assert!(config.resolve_model("plan").is_err());
-    selection::save(&home, "p/other:off").unwrap();
+    selection::save(&home, "p/other:off", 0, str::to_owned).unwrap();
     let reloaded = ResolvedConfig::load(&boot).unwrap();
     assert_eq!(
         reloaded.require_last_model().unwrap().selector,
@@ -470,6 +470,52 @@ fn legacy_roles_migrate_without_restoring_plan_model_behavior() {
     )
     .unwrap();
     assert_eq!(ResolvedConfig::load(&boot).unwrap().roles.explore, "none");
+}
+
+#[test]
+fn recent_models_deduplicate_by_model_and_skip_unavailable() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let provider = "[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.a]\nreasoning=true\nthinking_levels=['low','high']\n[providers.p.models.b]\n[providers.p.models.c]\n";
+    fs::write(
+        home.join("config.toml"),
+        format!("[models]\nrecent=3\n{provider}"),
+    )
+    .unwrap();
+    let boot = core_config(&home, dir.path(), Vec::new());
+    let config = ResolvedConfig::load(&boot).unwrap();
+    for selector in ["p/a:high", "p/b", "fusion:p/a:low+p/b", "p/c", "p/a:low"] {
+        config
+            .remember_model(&config.resolve_model(selector).unwrap())
+            .unwrap();
+    }
+    let selectors = |config: &ResolvedConfig| {
+        config
+            .recent_models()
+            .unwrap()
+            .into_iter()
+            .map(|model| model.selector)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        selectors(&config),
+        ["p/a:low", "p/c:off", "fusion:p/a:low+p/b:off"]
+    );
+    assert_eq!(config.require_last_model().unwrap().selector, "p/a:low");
+    // 删掉的模型从列表里跳过，不占名额。
+    fs::write(
+        home.join("config.toml"),
+        format!(
+            "[models]\nrecent=3\n{}",
+            provider.replace("[providers.p.models.c]\n", "")
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        selectors(&ResolvedConfig::load(&boot).unwrap()),
+        ["p/a:low", "fusion:p/a:low+p/b:off"]
+    );
 }
 
 #[test]

@@ -19,7 +19,7 @@ fn explore_model_inherits_parent_and_never_updates_last_selection() {
         ..Default::default()
     })
     .unwrap();
-    crate::config::selection::save(root.path(), "p/a:off").unwrap();
+    crate::config::selection::save(root.path(), "p/a:off", 0, str::to_owned).unwrap();
     assert_eq!(
         resolve_model(&config, "p/b:off", &config.roles.explore).unwrap(),
         "p/b:off"

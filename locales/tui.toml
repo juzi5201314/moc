@@ -1044,7 +1044,6 @@ clm_notice = { zh = "CLM 实验模式已启用：model 将自主维护实时 con
 no_models_hint = { zh = "暂无可用 model，请先到 Settings 添加。", en = "No models available; add one in Settings first." }
 engine_locked_notice = { zh = "当前 session 引擎已锁定，切换引擎请新建 session。", en = "Session engine is locked; start a new session to switch." }
 no_perm_modes = { zh = "当前平台没有可切换的权限模式。", en = "No switchable permission modes on this platform." }
-recent_save_failed_fmt = { zh = "model 已生效，但保存最近使用记录失败：%{err}", en = "Model applied, but saving recent history failed: %{err}" }
 stopped = { zh = "Stopped", en = "Stopped" }
 
 [tui.steer]

@@ -247,13 +247,4 @@ impl App {
             state: crate::modal::RewindState::default(),
         }));
     }
-
-    /// 记录已生效模型，保存失败时显示反馈。
-    pub fn remember_model(&mut self, selector: &str) {
-        if let Err(error) = self.recent_models.record(selector) {
-            self.set_error_notice(
-                t!("tui.event.recent_save_failed_fmt", err = error.to_string()).into_owned(),
-            );
-        }
-    }
 }

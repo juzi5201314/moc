@@ -563,6 +563,7 @@ impl AgentService for ScriptedService {
         Ok(ConfigGetResult {
             models,
             default_model: state.default_model.clone(),
+            recent_models: Vec::new(),
             agents: state.agents.clone(),
             default_agent: state.default_agent.clone(),
             cwd: state.cwd.clone(),

@@ -1,9 +1,9 @@
-// 模型选择器：左侧详情卡 + 右侧可搜索列表。列表高亮项（悬停或方向键）决定详情卡内容；
+// 模型选择器：可搜索列表 + 锚在高亮项旁的详情卡。列表高亮项（悬停或方向键）决定详情卡内容；
 // 详情卡里改思考强度会直接切到该模型，Fast Mode 是会话级开关。
 // selector 形如 `provider/model[:level]`；规范 Fusion selector 经 Fusion 卡配置。
 
 import { CheckIcon, ChevronDownIcon, Settings2Icon } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,7 +14,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -38,13 +38,15 @@ import {
 } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import type { ModelInfo, ModelPricing } from "@/protocol/types";
-import { selectModels, useConnection } from "@/store/connection";
+import { selectModels, selectRecentModels, useConnection } from "@/store/connection";
 import { setSessionFastMode, setSessionModel } from "@/store/lifecycle";
 import { useTranscript } from "@/store/transcript";
 import { openSettings, useUi } from "@/store/ui";
 
 /** 列表里 Fusion 项的 cmdk value；模型 ID 都带 `provider/` 前缀，不会撞名。 */
 const FUSION_VALUE = "fusion";
+/** 「最近使用」项的 cmdk value 前缀：同一模型可同时出现在最近使用与供应商分组，value 不能相同。 */
+const RECENT_PREFIX = "recent:";
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -338,7 +340,8 @@ function FusionCard({
 
 /** 弹层内容：每次打开都重新挂载，草稿与高亮项随之按当前 selector 初始化。
  *  受控组件：`selector` 是当前值，`onPick` 收到新 selector；`sessionId` 仅
- *  会话目标需要（Fast Mode 行）。 */
+ *  会话目标需要（Fast Mode 行）。
+ *  详情卡是锚在高亮项上的子浮层：优先出现在列表右侧，放不下时翻到左侧。 */
 function PickerPanel({
   selector,
   sessionId,
@@ -352,6 +355,7 @@ function PickerPanel({
 }) {
   const t = useT();
   const models = useConnection(selectModels);
+  const recents = useConnection(selectRecentModels);
   const fusionDefaults = useConnection((state) => state.config?.fusion);
   const info = useTranscript((state) => (sessionId ? state.bySession[sessionId]?.info : undefined));
   const fast = Boolean(info?.fast_mode);
@@ -359,6 +363,27 @@ function PickerPanel({
   const fusion = parseFusion(selector);
   const parsed = parseSelector(selector, models);
   const [active, setActive] = useState(fusion ? FUSION_VALUE : parsed.id);
+  const [search, setSearch] = useState("");
+  // 只有高亮项挂这个 ref；换高亮时换成新的锚对象，Popper 据此重新定位。
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const anchorRef = useMemo(
+    () =>
+      anchor && {
+        current: {
+          // 横向取整张列表、纵向取高亮行：卡片间距不受行内边距与滚动条影响。
+          getBoundingClientRect: () => {
+            const row = anchor.getBoundingClientRect();
+            const box = (list.current ?? anchor).getBoundingClientRect();
+            return new DOMRect(box.left, row.top, box.width, row.height);
+          },
+          // floating-ui 据此找滚动祖先：列表滚动时卡片跟着行走。
+          contextElement: anchor,
+        },
+      },
+    [anchor],
+  );
+  const anchorFor = (value: string) => (value === active ? setAnchor : undefined);
   // 初始草稿：当前就是 Fusion 沿用两侧；否则取 models.fusion 默认；都没有就把当前值放进 lead。
   const [draft, setDraft] = useState<FusionDraft>(
     () => fusion ?? fusionDefaults ?? { lead: selector, sidekick: "" },
@@ -370,11 +395,14 @@ function PickerPanel({
     return parsed.level && model.thinking_levels?.includes(parsed.level) ? parsed.level : undefined;
   };
 
-  const pickModel = (model: ModelInfo) => {
+  const pick = (next: string) => {
     onClose();
-    const level = levelFor(model);
-    const next = level ? `${model.id}:${level}` : model.id;
     if (next !== selector) onPick(next);
+  };
+
+  const pickModel = (model: ModelInfo) => {
+    const level = levelFor(model);
+    pick(level ? `${model.id}:${level}` : model.id);
   };
 
   const pickLevel = (model: ModelInfo, level: string) => {
@@ -383,10 +411,7 @@ function PickerPanel({
   };
 
   const applyFusion = () => {
-    if (!draft.lead || !draft.sidekick) return;
-    const next = fusionSelector(draft.lead, draft.sidekick);
-    onClose();
-    if (next !== selector) onPick(next);
+    if (draft.lead && draft.sidekick) pick(fusionSelector(draft.lead, draft.sidekick));
   };
 
   const toggleFast = (next: boolean) => {
@@ -396,114 +421,181 @@ function PickerPanel({
     );
   };
 
-  const activeModel =
-    active === FUSION_VALUE ? undefined : models.find((model) => model.id === active);
+  /** 高亮到最近使用的 Fusion 组合时，详情卡的草稿换成该组合。 */
+  const highlight = (value: string) => {
+    setActive(value);
+    const pair = value.startsWith(RECENT_PREFIX)
+      ? parseFusion(value.slice(RECENT_PREFIX.length))
+      : null;
+    if (pair) setDraft(pair);
+  };
+
+  const recent = active.startsWith(RECENT_PREFIX) ? active.slice(RECENT_PREFIX.length) : null;
+  const fusionActive = active === FUSION_VALUE || Boolean(recent && parseFusion(recent));
+  const recentParsed = recent && !fusionActive ? parseSelector(recent, models) : null;
+  const activeModel = fusionActive
+    ? undefined
+    : models.find((model) => model.id === (recentParsed?.id ?? active));
 
   return (
-    // DOM 顺序先列表后详情，Tab 与初始焦点落在搜索框；桌面详情卡在左，窄屏在下。
-    <div className="flex w-[calc(100vw-2rem)] flex-col items-start gap-2 md:w-auto md:flex-row-reverse">
-      <div className="w-full shrink-0 overflow-hidden rounded-xl bg-popover shadow-[var(--elevation-popover)] md:w-72">
-        <Command
-          loop
-          value={active}
-          onValueChange={setActive}
-          filter={(value, search, keywords) => {
-            const query = search.toLowerCase();
-            return [value, ...(keywords ?? [])].some((text) => text.toLowerCase().includes(query))
-              ? 1
-              : 0;
-          }}
-        >
-          <CommandInput placeholder={t("mp.search")} className="h-10 text-ui" />
-          <CommandList className="max-h-80 p-1">
-            <CommandEmpty className="py-8 text-center text-xs text-text-tertiary">
-              {models.length === 0 ? t("mp.empty") : t("mp.no_match")}
-            </CommandEmpty>
-            <CommandGroup heading={t("mp.group_combo")} className="p-0 pb-1">
-              <CommandItem
-                value={FUSION_VALUE}
-                keywords={["lead", "sidekick", t("mp.fusion_kw")]}
-                onSelect={applyFusion}
-                className="gap-3 rounded-lg px-2 py-1.5"
-              >
-                <span className="min-w-0 flex-1 truncate text-ui text-foreground">
-                  Fusion
-                  {fusion && (
-                    <span className="text-text-tertiary">
-                      {" "}
-                      {shortName(fusion.lead, models)} + {shortName(fusion.sidekick, models)}
-                    </span>
-                  )}
-                </span>
-                <CheckIcon
-                  className={cn("size-3.5 text-muted-foreground", !fusion && "invisible")}
-                />
-              </CommandItem>
-            </CommandGroup>
-            {groupByProvider(models).map(([provider, list]) => (
-              <CommandGroup key={provider} heading={provider} className="p-0 pb-1">
-                {list.map((model) => {
-                  const selected = !fusion && model.id === parsed.id;
-                  return (
-                    <CommandItem
-                      key={model.id}
-                      value={model.id}
-                      onSelect={() => pickModel(model)}
-                      className="gap-3 rounded-lg px-2 py-1.5"
-                    >
-                      <span className="min-w-0 flex-1 truncate text-ui text-foreground">
-                        {modelName(model.id)}
-                        {selected && parsed.level && parsed.level !== "off" && (
-                          <span className="text-text-tertiary"> {parsed.level}</span>
-                        )}
+    <Popover open={Boolean(anchorRef && (fusionActive || activeModel))} onOpenChange={onClose}>
+      {anchorRef && <PopoverAnchor virtualRef={anchorRef} />}
+      <Command
+        ref={list}
+        loop
+        className="min-h-0 flex-1"
+        value={active}
+        onValueChange={highlight}
+        filter={(value, search, keywords) => {
+          const query = search.toLowerCase();
+          return [value, ...(keywords ?? [])].some((text) => text.toLowerCase().includes(query))
+            ? 1
+            : 0;
+        }}
+      >
+        <CommandInput
+          value={search}
+          onValueChange={setSearch}
+          placeholder={t("mp.search")}
+          className="h-10 text-ui"
+        />
+        <CommandList className="max-h-80 min-h-0 p-1">
+          <CommandEmpty className="py-8 text-center text-xs text-text-tertiary">
+            {models.length === 0 ? t("mp.empty") : t("mp.no_match")}
+          </CommandEmpty>
+          {/* 搜索时不列最近使用：同一模型会在两组各命中一次。 */}
+          {!search && recents.length > 0 && (
+            <CommandGroup heading={t("mp.group_recent")} className="p-0 pb-1">
+              {recents.map((item) => {
+                const value = `${RECENT_PREFIX}${item}`;
+                const pair = parseFusion(item);
+                const entry = parseSelector(item, models);
+                return (
+                  <CommandItem
+                    key={value}
+                    ref={anchorFor(value)}
+                    value={value}
+                    onSelect={() => pick(item)}
+                    className="gap-3 rounded-lg px-2 py-1.5"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-ui text-foreground">
+                      {pair ? "Fusion" : modelName(entry.id)}
+                      <span className="text-text-tertiary">
+                        {pair
+                          ? ` ${shortName(pair.lead, models)} + ${shortName(pair.sidekick, models)}`
+                          : entry.level && entry.level !== "off" && ` ${entry.level}`}
                       </span>
-                      <CheckIcon
-                        className={cn("size-3.5 text-muted-foreground", !selected && "invisible")}
-                      />
-                    </CommandItem>
-                  );
-                })}
-              </CommandGroup>
-            ))}
-          </CommandList>
-        </Command>
-        <button
-          type="button"
-          onClick={() => {
-            onClose();
-            openSettings("providers");
-          }}
-          className="flex h-9 w-full items-center gap-2 border-t border-border-subtle px-3 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <Settings2Icon className="size-3.5" />
-          {t("mp.manage")}
-        </button>
-      </div>
-
-      {(active === FUSION_VALUE || activeModel) && (
-        <div className="w-full shrink-0 overflow-hidden rounded-xl bg-popover pb-1 shadow-[var(--elevation-popover)] md:w-80">
-          {activeModel ? (
-            <ModelCard
-              model={activeModel}
-              level={levelFor(activeModel)}
-              fast={fast}
-              onLevel={(level) => pickLevel(activeModel, level)}
-              onFast={sessionId ? toggleFast : undefined}
-            />
-          ) : (
-            <FusionCard
-              draft={draft}
-              models={models}
-              current={selector}
-              fast={fast}
-              onDraft={setDraft}
-              onApply={applyFusion}
-              onFast={sessionId ? toggleFast : undefined}
-            />
+                    </span>
+                    {!pair && (
+                      <span className="shrink-0 text-xs text-text-tertiary">
+                        {providerOf(entry.id)}
+                      </span>
+                    )}
+                    <CheckIcon
+                      className={cn(
+                        "size-3.5 text-muted-foreground",
+                        item !== selector && "invisible",
+                      )}
+                    />
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
           )}
-        </div>
-      )}
-    </div>
+          <CommandGroup heading={t("mp.group_combo")} className="p-0 pb-1">
+            <CommandItem
+              ref={anchorFor(FUSION_VALUE)}
+              value={FUSION_VALUE}
+              keywords={["lead", "sidekick", t("mp.fusion_kw")]}
+              onSelect={applyFusion}
+              className="gap-3 rounded-lg px-2 py-1.5"
+            >
+              <span className="min-w-0 flex-1 truncate text-ui text-foreground">
+                Fusion
+                {fusion && (
+                  <span className="text-text-tertiary">
+                    {" "}
+                    {shortName(fusion.lead, models)} + {shortName(fusion.sidekick, models)}
+                  </span>
+                )}
+              </span>
+              <CheckIcon className={cn("size-3.5 text-muted-foreground", !fusion && "invisible")} />
+            </CommandItem>
+          </CommandGroup>
+          {groupByProvider(models).map(([provider, list]) => (
+            <CommandGroup key={provider} heading={provider} className="p-0 pb-1">
+              {list.map((model) => {
+                const selected = !fusion && model.id === parsed.id;
+                return (
+                  <CommandItem
+                    key={model.id}
+                    ref={anchorFor(model.id)}
+                    value={model.id}
+                    onSelect={() => pickModel(model)}
+                    className="gap-3 rounded-lg px-2 py-1.5"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-ui text-foreground">
+                      {modelName(model.id)}
+                      {selected && parsed.level && parsed.level !== "off" && (
+                        <span className="text-text-tertiary"> {parsed.level}</span>
+                      )}
+                    </span>
+                    <CheckIcon
+                      className={cn("size-3.5 text-muted-foreground", !selected && "invisible")}
+                    />
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+          ))}
+        </CommandList>
+      </Command>
+      <button
+        type="button"
+        onClick={() => {
+          onClose();
+          openSettings("providers");
+        }}
+        className="flex h-9 w-full items-center gap-2 border-t border-border-subtle px-3 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <Settings2Icon className="size-3.5" />
+        {t("mp.manage")}
+      </button>
+
+      {/* 列表区的点击不算「外部」：关闭交给外层弹层；Esc 先到这一层，直接关掉整个选择器。 */}
+      <PopoverContent
+        side="right"
+        align="start"
+        sideOffset={8}
+        alignOffset={-4}
+        collisionPadding={12}
+        hideWhenDetached
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => event.preventDefault()}
+        onInteractOutside={(event) => event.preventDefault()}
+        className="w-80 max-w-[calc(100vw-2rem)] overflow-hidden p-0 pb-1"
+      >
+        {activeModel ? (
+          <ModelCard
+            model={activeModel}
+            level={recentParsed ? recentParsed.level : levelFor(activeModel)}
+            fast={fast}
+            onLevel={(level) => pickLevel(activeModel, level)}
+            onFast={sessionId ? toggleFast : undefined}
+          />
+        ) : (
+          <FusionCard
+            draft={draft}
+            models={models}
+            current={selector}
+            fast={fast}
+            onDraft={setDraft}
+            onApply={applyFusion}
+            onFast={sessionId ? toggleFast : undefined}
+          />
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -543,12 +635,11 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
         </button>
       </PopoverTrigger>
 
-      {/* 外层透明：列表与详情卡各自是一张浮层卡片。 */}
       <PopoverContent
         align="end"
         side="top"
         sideOffset={8}
-        className="max-h-[var(--radix-popover-content-available-height)] w-auto overflow-y-auto rounded-none bg-transparent p-0 shadow-none md:max-h-none md:overflow-visible"
+        className="flex max-h-(--radix-popover-content-available-height) w-72 max-w-[calc(100vw-2rem)] flex-col overflow-hidden p-0"
       >
         <PickerPanel
           selector={selector}
@@ -601,7 +692,7 @@ export function ExecutionModelPicker({
         align="end"
         side="top"
         sideOffset={8}
-        className="w-auto rounded-none bg-transparent p-0 shadow-none"
+        className="flex max-h-(--radix-popover-content-available-height) w-72 max-w-[calc(100vw-2rem)] flex-col overflow-hidden p-0"
       >
         <PickerPanel selector={value} onPick={onChange} onClose={() => setOpen(false)} />
       </PopoverContent>

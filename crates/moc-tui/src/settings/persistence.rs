@@ -1,7 +1,6 @@
 use super::Job;
 use super::Store;
 use crate::app::App;
-use crate::protocol::AppEvent;
 use crate::protocol::EmbeddedConnection;
 use moc_protocol::ConfigReply;
 use moc_protocol::SettingsDocument;
@@ -123,23 +122,7 @@ pub(super) fn adopt(
             .take()
             .unwrap_or_else(|| t!("tui.persist.saved").into_owned()),
     );
-    let client = connection.client.clone();
-    let events = app.events.clone();
-    tokio::spawn(async move {
-        match client
-            .call::<moc_protocol::ConfigGet>(moc_protocol::ConfigGetParams {})
-            .await
-        {
-            Ok(config) => {
-                let _ = events.send(AppEvent::ConfigurationLoaded(config));
-            }
-            Err(error) => {
-                let _ = events.send(AppEvent::Notice(
-                    t!("tui.persist.models_refresh_failed", err = error.to_string()).into_owned(),
-                ));
-            }
-        }
-    });
+    crate::interaction::reload_configuration(app, connection);
 }
 
 /// 把共用模型选择器选中的角色值写回配置：与就地编辑同一条提交路径，撤回栈一并记录。

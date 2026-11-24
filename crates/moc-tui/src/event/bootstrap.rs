@@ -72,6 +72,8 @@ pub(super) async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOp
         // `--cwd` 的相对路径或符号链接影响。
         app.startup_cwd = config.cwd.clone();
         app.models = config.models;
+        app.recent_models =
+            crate::model_history::RecentModels::from_selectors(&config.recent_models);
         app.fusion_defaults = config.fusion.clone();
         app.features = config.features;
         if opts.resume.is_none() && config.default_model.is_none() && opts.model.is_none() {

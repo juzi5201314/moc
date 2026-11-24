@@ -65,7 +65,6 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     app.statusline_template = preferences.statusline.clone();
     app.keymap = crate::config::KeyMap::compile(&preferences)?;
     app.preferences = preferences;
-    app.recent_models = crate::model_history::RecentModels::load(&core.config_home())?;
     app.load_input_history(&core.config_home());
     app.tui_store = Some(tui_store);
     app.startup_engine = opts.engine;

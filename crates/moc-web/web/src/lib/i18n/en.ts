@@ -430,6 +430,7 @@ export const en: Record<MsgKey, string> = {
   "mp.search": "Search models",
   "mp.empty": "No models configured yet.",
   "mp.no_match": "No matching models.",
+  "mp.group_recent": "Recent",
   "mp.group_combo": "Combos",
   "mp.manage": "Manage providers",
   "mp.pick": "Select model",
@@ -888,7 +889,8 @@ export const en: Record<MsgKey, string> = {
   "sd.providers_desc":
     "Connect upstream model services, fetch model lists, and configure Context Window, thinking, and image input.",
   "sd.roles": "Roles",
-  "sd.roles_desc": "Configure fixed Explorer models and Fusion dual-model presets.",
+  "sd.roles_desc":
+    "Configure fixed Explorer models, Fusion dual-model presets, and how many recent models the picker pins.",
   "sd.sandbox": "Sandbox",
   "sd.sandbox_desc": "Default command isolation level and directory access grants.",
   "sd.save_failed": "Failed to save config: {error}",

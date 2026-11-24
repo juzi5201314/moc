@@ -422,6 +422,7 @@ export const zh = {
   "mp.search": "搜索 model",
   "mp.empty": "尚未配置任何 model。",
   "mp.no_match": "没有匹配的 model。",
+  "mp.group_recent": "Recent",
   "mp.group_combo": "Combos",
   "mp.manage": "Manage providers",
   "mp.pick": "Select model",
@@ -872,7 +873,8 @@ export const zh = {
   "sd.providers_desc":
     "接入上游 model 服务、拉取模型列表，并配置 Context Window、thinking 与图片输入能力。",
   "sd.roles": "Roles",
-  "sd.roles_desc": "配置 Explorer 专用 model，以及 Fusion 双模型协作组合。",
+  "sd.roles_desc":
+    "配置 Explorer 专用 model、Fusion 双模型协作组合，以及 model 选择器置顶的最近使用条数。",
   "sd.sandbox": "Sandbox",
   "sd.sandbox_desc": "command 执行的默认隔离级别与目录访问授权。",
   "sd.save_failed": "保存配置失败：{error}",

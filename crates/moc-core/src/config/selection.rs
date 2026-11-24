@@ -11,31 +11,53 @@ use moc_i18n::t;
 #[serde(deny_unknown_fields)]
 struct Selection {
     model: Option<String>,
+    /// 最近使用的完整 selector，新到旧；`[models] recent` 为 0 时不记录。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recent: Vec<String>,
+}
+
+fn read(home: &Path) -> Result<Selection, CoreError> {
+    let text = super::editor::contents(&home.join("model-selection.toml"))?;
+    toml::from_str(&text).map_err(|error| {
+        CoreError::Config(t!("core.err.selection_invalid", error = error).into_owned())
+    })
 }
 
 pub fn load(home: &Path) -> Result<Option<String>, CoreError> {
-    let text = super::editor::contents(&home.join("model-selection.toml"))?;
-    let selection: Selection = toml::from_str(&text).map_err(|error| {
-        CoreError::Config(t!("core.err.selection_invalid", error = error).into_owned())
-    })?;
-    Ok(selection.model)
+    Ok(read(home)?.model)
 }
 
-/// 单值文档原子替换；并发选择以最后完成的写入为准，不会出现半条 selector。
-pub fn save(home: &Path, selector: &str) -> Result<(), CoreError> {
+/// 最近使用列表（新到旧），未经可用性过滤。
+pub fn load_recent(home: &Path) -> Result<Vec<String>, CoreError> {
+    Ok(read(home)?.recent)
+}
+
+/// 记一次主动选择：`model` 换成本次；`recent` 先剔除与本次同 `key` 的旧条目
+/// （同一模型的不同思考等级算一条），再前插并截到 `limit` 条。
+///
+/// 读改写在同一把锁内完成后原子替换；并发选择以最后完成的写入为准。
+pub fn save(
+    home: &Path,
+    selector: &str,
+    limit: usize,
+    key: impl Fn(&str) -> String,
+) -> Result<(), CoreError> {
     std::fs::create_dir_all(home)?;
     let _guard = crate::session::lock::SessionLockGuard::acquire(
         home.join("model-selection.lock"),
         "model-selection",
     )?;
-    write(home, selector)
+    let mut selection = read(home)?;
+    let current = key(selector);
+    selection.recent.retain(|entry| key(entry) != current);
+    selection.recent.insert(0, selector.to_owned());
+    selection.recent.truncate(limit);
+    selection.model = Some(selector.to_owned());
+    write(home, &selection)
 }
 
-fn write(home: &Path, selector: &str) -> Result<(), CoreError> {
-    let text = toml::to_string(&Selection {
-        model: Some(selector.to_owned()),
-    })
-    .map_err(|error| CoreError::Config(error.to_string()))?;
+fn write(home: &Path, selection: &Selection) -> Result<(), CoreError> {
+    let text = toml::to_string(selection).map_err(|error| CoreError::Config(error.to_string()))?;
     super::editor::write_atomic(&home.join("model-selection.toml"), &text)
 }
 
@@ -46,8 +68,10 @@ pub(super) fn migrate(home: &Path, selector: &str) -> Result<(), CoreError> {
         home.join("model-selection.lock"),
         "model-selection",
     )?;
-    if load(home)?.is_none() {
-        write(home, selector)?;
+    let mut selection = read(home)?;
+    if selection.model.is_none() {
+        selection.model = Some(selector.to_owned());
+        write(home, &selection)?;
     }
     Ok(())
 }

@@ -50,9 +50,13 @@ export const useConnection = create<ConnectionState>()((set) => ({
 
 const NO_MODELS: ConfigGetResult["models"] = [];
 const NO_COMMANDS: CommandMeta[] = [];
+const NO_RECENT: string[] = [];
 
 /** 模型目录选择器：config 未加载时返回同一个空数组，避免 `?? []` 每次产生新引用导致无限重渲染。 */
 export const selectModels = (state: ConnectionState) => state.config?.models ?? NO_MODELS;
+/** 最近使用的完整 selector（新到旧）；同 `selectModels` 的稳定空数组理由。 */
+export const selectRecentModels = (state: ConnectionState) =>
+  state.config?.recent_models ?? NO_RECENT;
 /** 内置命令元数据选择器；同 `selectModels` 的稳定空数组理由。 */
 export const selectCommands = (state: ConnectionState) => state.commands ?? NO_COMMANDS;
 /** 特性开关快照选择器：config 未加载时为 undefined，消费方按「全部开启」处理。 */

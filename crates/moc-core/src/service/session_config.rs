@@ -285,7 +285,7 @@ pub(super) async fn session_set_model(
         && !session.is_subagent()
         && matches!(ctx.client().frontend.as_str(), "tui" | "webui" | "acp")
     {
-        crate::config::selection::save(&config.home, &model.selector).map_err(to_rpc)?;
+        config.remember_model(&model).map_err(to_rpc)?;
     }
     Ok(SessionSetModelResult {
         session,

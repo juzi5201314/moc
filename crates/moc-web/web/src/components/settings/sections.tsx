@@ -36,7 +36,7 @@ import { refreshSideData } from "@/store/lifecycle";
 import { type Theme, usePrefs } from "@/store/prefs";
 import { allSessions, useSessions } from "@/store/sessions";
 import { useTabs } from "@/store/tabs";
-import { fieldValues, SettingRow } from "./field";
+import { FieldRow, fieldValues, SettingRow } from "./field";
 import { useSettings, writeField } from "./settings-store";
 
 const INHERIT = "__inherit__";
@@ -374,16 +374,25 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
 }
 
 export function RolesSection({ doc }: { doc: SettingsDocument }) {
-  const roles = doc.fields.filter(
-    (field) =>
-      field.path[0] === "models" && (field.path[1] === "roles" || field.path[1] === "fusion"),
-  );
+  const roles = doc.fields.filter(isRoleField);
   return (
     <Card>
-      {roles.map((field) => (
-        <ModelSelectorRow key={field.path.join(".")} field={field} doc={doc} />
-      ))}
+      {roles.map((field) =>
+        field.path[1] === "recent" ? (
+          <FieldRow key={field.path.join(".")} field={field} doc={doc} />
+        ) : (
+          <ModelSelectorRow key={field.path.join(".")} field={field} doc={doc} />
+        ),
+      )}
     </Card>
+  );
+}
+
+/** 「模型」分页的字段：角色与 Fusion 的 selector，以及选择器置顶的最近使用条数。 */
+export function isRoleField(field: ConfigField): boolean {
+  return (
+    field.path[0] === "models" &&
+    (field.path[1] === "roles" || field.path[1] === "fusion" || field.path[1] === "recent")
   );
 }
 

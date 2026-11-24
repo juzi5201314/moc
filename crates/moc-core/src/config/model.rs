@@ -41,11 +41,23 @@ impl ProviderApi {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct ModelCatalog {
+    /// 模型选择器里置顶的最近使用条数；0 表示不记录也不显示。
+    pub recent: usize,
     pub roles: ModelRoles,
     pub fusion: FusionDefaults,
+}
+
+impl Default for ModelCatalog {
+    fn default() -> Self {
+        Self {
+            recent: 5,
+            roles: ModelRoles::default(),
+            fusion: FusionDefaults::default(),
+        }
+    }
 }
 
 /// 探索子代理选择器：沿用父会话当前模型。

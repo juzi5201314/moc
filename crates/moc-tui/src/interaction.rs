@@ -9,6 +9,27 @@ use crate::{
     protocol::{AppEvent, EmbeddedConnection},
 };
 
+/// 后台重读 `config/get`，结果经 `ConfigurationLoaded` 投回（模型目录、最近使用、Fusion 默认组合）。
+pub fn reload_configuration(app: &App, connection: &EmbeddedConnection) {
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        match client
+            .call::<moc_protocol::ConfigGet>(moc_protocol::ConfigGetParams {})
+            .await
+        {
+            Ok(config) => {
+                let _ = events.send(AppEvent::ConfigurationLoaded(config));
+            }
+            Err(error) => {
+                let _ = events.send(AppEvent::Notice(
+                    t!("tui.persist.models_refresh_failed", err = error.to_string()).into_owned(),
+                ));
+            }
+        }
+    });
+}
+
 pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEvent) {
     match event {
         AppEvent::SettingsResponse { panel, job, result } => {
@@ -16,6 +37,8 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
         }
         AppEvent::ConfigurationLoaded(config) => {
             app.models = config.models;
+            app.recent_models =
+                crate::model_history::RecentModels::from_selectors(&config.recent_models);
             app.fusion_defaults = config.fusion;
             if app.session.is_none() && config.default_model.is_some() {
                 if app.settings.is_some() && !app.saving_config() {

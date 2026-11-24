@@ -42,7 +42,6 @@ impl App {
     /// 会话范围的在飞记账（`inflight_prompts`/`inflight_session_ops`/`interrupt_pending`）
     /// 按会话保留：切回仍在运行的会话时，「运行中」的判定与排队派发才正确。
     pub fn switch_session(&mut self, info: SessionInfo, blocks: Vec<Entry>) {
-        self.remember_model(&info.model);
         if let Some(previous) = &self.session
             && previous.id != info.id
         {

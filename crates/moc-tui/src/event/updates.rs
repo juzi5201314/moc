@@ -172,7 +172,12 @@ pub(super) fn apply_update_and_refresh(
         }
         _ => None,
     };
+    // core 在用户主动切换模型时更新最近使用列表；重读配置让选择器的 Recent 分组跟上。
+    let model_changed = matches!(&update, SessionUpdate::ModelChanged { .. });
     apply_update(app, update);
+    if model_changed {
+        crate::interaction::reload_configuration(app, connection);
+    }
     if let Some(plan_id) = unattended_plan
         && let Some(session) = app.session.as_ref()
     {
@@ -454,7 +459,6 @@ pub(super) fn apply_update(app: &mut App, update: SessionUpdate) {
             }
         }
         SessionUpdate::ModelChanged { model } => {
-            app.remember_model(&model);
             if let Some(session) = app.session.as_mut() {
                 session.model = model;
             }

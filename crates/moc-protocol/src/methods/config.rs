@@ -37,6 +37,10 @@ pub struct ConfigGetResult {
     /// 最近主动选择且在当前配置可用的完整模型 selector；供新会话使用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    /// 最近主动选择且在当前配置可用的完整 selector，新到旧，至多 `[models] recent` 条；
+    /// 同一模型只保留最近一次的思考等级，Fusion 组合整体算一条。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_models: Vec<String>,
     /// 可用 agent。
     pub agents: Vec<AgentProfile>,
     /// 默认 agent ID。
@@ -162,6 +166,7 @@ mod tests {
                 fast_mode: true,
             }],
             default_model: Some("deepseek-flash".into()),
+            recent_models: vec!["deepseek-flash:max".into()],
             agents: vec![AgentProfile {
                 id: "build".into(),
                 display_name: "Build".into(),
@@ -181,6 +186,7 @@ mod tests {
             json!({
                 "models": [{ "id": "deepseek-flash", "display_name": "DeepSeek Flash", "context_window": 128000, "pricing": { "input": 0.27, "output": 1.1, "cache_read": 0.07 }, "inputs": ["text", "image"], "fast_mode": true }],
                 "default_model": "deepseek-flash",
+                "recent_models": ["deepseek-flash:max"],
                 "agents": [{ "id": "build", "display_name": "Build" }],
                 "default_agent": "build",
                 "cwd": "/home/soeur/project/moc",

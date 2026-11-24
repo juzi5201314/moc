@@ -89,6 +89,10 @@ desc = { zh = "启用 PTC（Programmatic Tool Calling）模式：model 通过 ex
 label = { zh = "Max Nesting Depth", en = "Max Nesting Depth" }
 desc = { zh = "允许 subagent 嵌套委托的最大层数；1 表示仅主 session 可派发 subagent。", en = "Maximum subagent delegation depth; 1 means only the main session may spawn subagents." }
 
+[core.config.fields.models_recent]
+label = { zh = "Recent Models", en = "Recent Models" }
+desc = { zh = "model 选择器顶部列出的最近使用条数；0 表示不记录也不显示。", en = "Number of recently used models pinned at the top of the model picker; 0 disables recording and display." }
+
 [core.config.fields.models_roles_default]
 label = { zh = "Default Model", en = "Default Model" }
 desc = { zh = "新 session 默认使用的 model（格式：provider/model[:level]）。", en = "Default model for new sessions (format: provider/model[:level])." }

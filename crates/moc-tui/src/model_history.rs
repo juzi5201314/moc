@@ -1,64 +1,34 @@
-//! TUI 最近使用的模型；只记录成功生效/恢复的会话模型，不记录悬停。
+//! TUI 模型选择器里的「最近使用」：数据来自 core 共享的最近选择列表
+//! （`config/get` 的 `recent_models`），本地只把完整 selector 投影成模型 ID 的排名。
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
-
-/// 仅保留最近五个模型，按最近使用顺序线性查找。
+/// 条数受 `[models] recent` 约束（core 已截断），按最近使用顺序线性查找。
 #[derive(Default)]
 pub struct RecentModels {
     ids: Vec<String>,
-    path: Option<PathBuf>,
 }
 
 impl RecentModels {
-    pub fn load(home: &Path) -> anyhow::Result<Self> {
-        let path = home.join("tui-model-history.json");
-        let ids = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str::<Vec<String>>(&text)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => return Err(error.into()),
-        };
-        let mut history = Self {
-            ids: Vec::new(),
-            path: Some(path),
-        };
-        for id in ids.into_iter().rev() {
-            history.touch(&id);
+    /// selector 去掉思考等级后按模型去重；Fusion 组合的 lead、sidekick 各算一个模型。
+    pub fn from_selectors(selectors: &[String]) -> Self {
+        let mut ids: Vec<String> = Vec::new();
+        for selector in selectors {
+            let sides = match crate::modal::parse_fusion(selector) {
+                Some((lead, sidekick)) => [Some(lead), Some(sidekick)],
+                None => [Some(selector.as_str()), None],
+            };
+            // core 存的是规范 selector，等级恒在末段，rsplit 不会切进带冒号的模型 ID。
+            for side in sides.into_iter().flatten() {
+                let id = side.rsplit_once(':').map_or(side, |(id, _)| id);
+                if !ids.iter().any(|candidate| candidate == id) {
+                    ids.push(id.to_owned());
+                }
+            }
         }
-        Ok(history)
+        Self { ids }
     }
 
     pub fn rank(&self, id: &str) -> Option<usize> {
         self.ids.iter().position(|candidate| candidate == id)
-    }
-
-    fn touch(&mut self, selector: &str) {
-        let id = selector.rsplit_once(':').map_or(selector, |(id, _)| id);
-        if !id.contains('/') {
-            return;
-        }
-        self.ids.retain(|candidate| candidate != id);
-        self.ids.insert(0, id.to_owned());
-        self.ids.truncate(5);
-        debug_assert!(self.ids.len() <= 5);
-    }
-
-    pub fn record(&mut self, selector: &str) -> anyhow::Result<()> {
-        if let Some((lead, sidekick)) = crate::modal::parse_fusion(selector) {
-            self.touch(sidekick);
-            self.touch(lead);
-        } else {
-            self.touch(selector);
-        }
-        if let Some(path) = &self.path {
-            let parent = path.parent().expect("历史文件位于配置目录");
-            std::fs::create_dir_all(parent)?;
-            let mut file = tempfile::NamedTempFile::new_in(parent)?;
-            serde_json::to_writer(&mut file, &self.ids)?;
-            file.flush()?;
-            file.persist(path)?;
-        }
-        Ok(())
     }
 }
 
@@ -67,15 +37,11 @@ mod tests {
     use super::RecentModels;
 
     #[test]
-    fn recent_models_persist_deduplicate_and_bound_history() {
-        let root = tempfile::tempdir().unwrap();
-        let mut history = RecentModels::load(root.path()).unwrap();
-        for id in 0..8 {
-            history.record(&format!("p/m{id}:high")).unwrap();
-        }
-        history.record("p/m6:low").unwrap();
-        history.record("fusion:p/m6:high+p/m7:off").unwrap();
-        let loaded = RecentModels::load(root.path()).unwrap();
-        assert_eq!(loaded.ids, ["p/m6", "p/m7", "p/m5", "p/m4", "p/m3"]);
+    fn recent_selectors_rank_models_and_expand_fusion_sides() {
+        let selectors = ["p/m6:low", "fusion:p/m6:high+p/m7:off", "p/m5:off"].map(String::from);
+        let recent = RecentModels::from_selectors(&selectors);
+        assert_eq!(recent.ids, ["p/m6", "p/m7", "p/m5"]);
+        assert_eq!(recent.rank("p/m7"), Some(1));
+        assert_eq!(recent.rank("p/other"), None);
     }
 }

@@ -333,7 +333,7 @@ pub(super) async fn manage(
         ConfigAction::SelectModel { cwd, selector } => {
             let config = inner.project_config(Path::new(&cwd))?;
             let model = config.resolve_model(&selector)?;
-            crate::config::selection::save(&config.home, &model.selector)?;
+            config.remember_model(&model)?;
             Ok(ConfigReply::Updated(model.selector))
         }
         ConfigAction::Maintenance { apply } => {

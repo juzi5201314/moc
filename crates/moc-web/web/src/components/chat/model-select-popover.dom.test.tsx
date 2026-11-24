@@ -4,12 +4,20 @@ import { useI18n } from "@/lib/i18n";
 import type { ModelInfo } from "@/protocol/types";
 import { useUi } from "@/store/ui";
 
-const state = vi.hoisted(() => ({ models: [] as ModelInfo[], selector: "provider/first" }));
+const state = vi.hoisted(() => ({
+  models: [] as ModelInfo[],
+  recent: [] as string[],
+  selector: "provider/first",
+}));
 
 vi.mock("@/store/connection", () => ({
   useConnection: (select: (value: unknown) => unknown) =>
-    select({ config: { models: state.models, default_model: state.selector } }),
+    select({
+      config: { models: state.models, recent_models: state.recent, default_model: state.selector },
+    }),
   selectModels: (value: { config: { models: ModelInfo[] } }) => value.config.models,
+  selectRecentModels: (value: { config: { recent_models: string[] } }) =>
+    value.config.recent_models,
 }));
 
 vi.mock("@/store/lifecycle", () => ({
@@ -39,6 +47,7 @@ beforeEach(() => {
   useI18n.setState({ locale: "zh" });
   useUi.setState({ modelPicker: "mobile-picker" });
   state.models = [{ id: "provider/first", display_name: "First", thinking_levels: [] }];
+  state.recent = [];
   state.selector = "provider/first";
 });
 
@@ -53,20 +62,14 @@ afterEach(() => {
   else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
 });
 
-it("窄屏列表占满视口内宽度、详情堆叠且可滚动，桌面保留双栏尺寸", () => {
+it("最近使用置顶；详情卡是独立浮层，不在列表弹层里留下遮挡区", () => {
+  state.recent = ["provider/first:high"];
   const view = render(<ModelPicker sessionId="mobile-picker" />);
-  const popup = view.getByRole("dialog");
-  expect(popup.className).toContain("overflow-y-auto");
-  expect(popup.className).toContain("md:overflow-visible");
-  const layout = popup.firstElementChild as HTMLElement;
-  expect(layout.className).toContain("w-[calc(100vw-2rem)]");
-  expect(layout.className).toContain("flex-col");
-  expect(layout.className).toContain("md:flex-row-reverse");
-  expect(layout.children[0].className).toContain("w-full");
-  expect(layout.children[0].className).toContain("md:w-72");
-  expect(layout.children[1].className).toContain("w-full");
-  expect(layout.children[1].className).toContain("md:w-80");
-  expect(view.getByRole("combobox")).toBeTruthy();
+  expect(view.getAllByRole("option")[0].textContent).toContain("high");
+  const [list, detail] = view.getAllByRole("dialog");
+  expect(list.className).toContain("max-w-[calc(100vw-2rem)]");
+  expect(list.contains(detail)).toBe(false);
+  expect(detail.textContent).toContain("first");
 });
 
 it("空模型列表仍显示搜索和模型管理入口", () => {

@@ -92,7 +92,7 @@ async fn startup_selects_then_remembers_model_and_resume_ignores_missing_prefere
     let mut next = App::new(Theme::global(), events.clone());
     bootstrap(&connection.client, &mut next, &TuiOptions::default()).await;
     assert_eq!(next.session.as_ref().unwrap().model, info.model);
-    moc_core::config::selection::save(root.path(), "p/deleted:off").unwrap();
+    moc_core::config::selection::save(root.path(), "p/deleted:off", 0, str::to_owned).unwrap();
     connection
         .client
         .call::<moc_protocol::SessionUnload>(moc_protocol::SessionUnloadParams {

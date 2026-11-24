@@ -67,6 +67,12 @@ pub(super) async fn config_get(
             .last_model()
             .map_err(to_rpc)?
             .map(|model| model.selector),
+        recent_models: config
+            .recent_models()
+            .map_err(to_rpc)?
+            .into_iter()
+            .map(|model| model.selector)
+            .collect(),
         agents: vec![AgentProfile {
             id: "moc".into(),
             display_name: "moc".into(),

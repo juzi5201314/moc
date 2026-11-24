@@ -81,6 +81,8 @@ pub struct ResolvedConfig {
     pub roles: ModelRoles,
     /// `[models.fusion]` 的默认组合；两侧都为空表示未配置。
     pub fusion: FusionDefaults,
+    /// `[models] recent`：最近使用模型最多保留几条；0 表示不记录。
+    pub recent_limit: usize,
     pub tools: ToolsConfig,
     pub sandbox: ResolvedSandboxConfig,
     pub compaction: CompactionConfig,
@@ -172,6 +174,28 @@ impl ResolvedConfig {
         Ok(selection::load(&self.home)?.and_then(|selector| self.resolve_model(&selector).ok()))
     }
 
+    /// 记一次用户主动选择：更新新会话默认模型，并按 `recent_limit` 维护最近使用列表。
+    pub fn remember_model(&self, model: &ResolvedModel) -> Result<(), CoreError> {
+        selection::save(
+            &self.home,
+            &model.selector,
+            self.recent_limit,
+            |selector| match self.resolve_model(selector) {
+                Ok(resolved) if resolved.fusion.is_none() => resolved.id,
+                _ => selector.to_owned(),
+            },
+        )
+    }
+
+    /// 最近使用且在当前配置下仍可解析的模型，新到旧，至多 `recent_limit` 条。
+    pub fn recent_models(&self) -> Result<Vec<ResolvedModel>, CoreError> {
+        Ok(selection::load_recent(&self.home)?
+            .iter()
+            .filter_map(|selector| self.resolve_model(selector).ok())
+            .take(self.recent_limit)
+            .collect())
+    }
+
     pub fn require_last_model(&self) -> Result<ResolvedModel, CoreError> {
         self.last_model()?
             .ok_or_else(|| CoreError::Config(t!("core.err.select_model_first").into_owned()))
@@ -239,6 +263,7 @@ impl ResolvedConfig {
             user_home,
             roles: document.models.roles,
             fusion: document.models.fusion,
+            recent_limit: document.models.recent,
             tools: document.tools,
             sandbox,
             compaction: document.compaction,

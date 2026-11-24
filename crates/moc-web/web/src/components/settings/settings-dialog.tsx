@@ -34,6 +34,7 @@ import { FieldList } from "./field";
 import { ProvidersSection } from "./providers";
 import {
   GeneralSection,
+  isRoleField,
   MaintenanceCard,
   PluginsOverview,
   RolesSection,
@@ -95,8 +96,7 @@ const NAV: { group: MsgKey; items: SectionMeta[] }[] = [
         label: "sd.roles",
         description: "sd.roles_desc",
         icon: <SparklesIcon />,
-        fields: (field) =>
-          field.path[0] === "models" && (field.path[1] === "roles" || field.path[1] === "fusion"),
+        fields: isRoleField,
       },
     ],
   },

@@ -1970,6 +1970,11 @@ export interface ConfigGetResult {
    * 可用模型。
    */
   models: ModelInfo[];
+  /**
+   * 最近主动选择且在当前配置可用的完整 selector，新到旧，至多 `[models] recent` 条；
+   * 同一模型只保留最近一次的思考等级，Fusion 组合整体算一条。
+   */
+  recent_models?: string[];
 }
 /**
  * Fusion 组合的两侧模型，均为规范 `供应商/模型:等级` selector。

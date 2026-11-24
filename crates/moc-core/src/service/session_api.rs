@@ -153,7 +153,7 @@ pub(super) async fn session_new(
         }
     }
     if params.model.is_some() && matches!(ctx.client().frontend.as_str(), "tui" | "webui" | "acp") {
-        crate::config::selection::save(&config.home, &model.selector).map_err(to_rpc)?;
+        config.remember_model(&model).map_err(to_rpc)?;
     }
     Ok(info)
 }
