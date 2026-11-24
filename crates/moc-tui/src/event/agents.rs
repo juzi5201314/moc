@@ -209,4 +209,6 @@ pub(super) fn apply_focus_loaded(
     refresh_context(app, connection);
     refresh_usage(app, connection, false);
     load_subagents(app, connection);
+    // 切换子代理或返回主会话还原草稿后，补查输入框里的引用 token。
+    crate::refs::request_inspection(app, connection);
 }

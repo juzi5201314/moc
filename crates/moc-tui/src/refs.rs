@@ -102,6 +102,10 @@ impl RefMap {
         let mut buffer = Vec::with_capacity(chips.len());
         let mut at = 0;
         for chip in chips {
+            debug_assert!(
+                chip.range.start >= at && chip.range.end <= text.len(),
+                "chips 必须按原文字节范围升序且互不重叠"
+            );
             out.push_str(&text[at..chip.range.start]);
             let start = out.len();
             out.push_str(&chip.display());
@@ -142,7 +146,7 @@ impl RefMap {
         (base.max(0) as usize).min(self.text.len())
     }
 
-    /// 显示字节偏移 → 原文字节偏移。
+    /// 显示字节偏移 → 原文字节偏移（点击定位：落在控件内部时吸附到较近边界）。
     pub fn to_buffer(&self, offset: usize) -> usize {
         let mut base = offset as isize;
         for (disp, buf) in self.display.iter().zip(&self.buffer) {
@@ -159,6 +163,28 @@ impl RefMap {
             base += buf.len() as isize - disp.len() as isize;
         }
         (base.max(0) as usize).min(self.buffer_len)
+    }
+
+    fn to_buffer_edge(&self, offset: usize, expand_end: bool) -> usize {
+        let mut base = offset as isize;
+        for (disp, buf) in self.display.iter().zip(&self.buffer) {
+            if offset <= disp.start {
+                break;
+            }
+            if offset < disp.end {
+                return if expand_end { buf.end } else { buf.start };
+            }
+            base += buf.len() as isize - disp.len() as isize;
+        }
+        (base.max(0) as usize).min(self.buffer_len)
+    }
+
+    /// 显示字节区间 → 原文字节区间：端点落在控件内部时向外扩到完整边界，使控件整体入选。
+    pub fn to_buffer_range(&self, range: Range<usize>) -> Range<usize> {
+        if range.start >= range.end {
+            return 0..0;
+        }
+        self.to_buffer_edge(range.start, false)..self.to_buffer_edge(range.end, true)
     }
 }
 
@@ -188,6 +214,18 @@ fn resource_tokens(text: &str) -> impl Iterator<Item = (Range<usize>, &str)> {
         })
 }
 
+/// 仅接受规范无符号十进制整数（排除 `+1`、`01` 等与 `format!("[image#{id}]")` 不一致的写法）。
+fn parse_canonical_id(digits: &str) -> Option<u32> {
+    let bytes = digits.as_bytes();
+    if bytes.is_empty()
+        || !bytes.iter().all(u8::is_ascii_digit)
+        || (bytes.len() > 1 && bytes[0] == b'0')
+    {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// `[image#N]` / `[paste#N]` 占位：返回 (范围, 类别, 序号)。
 fn placeholders(text: &str) -> Vec<(Range<usize>, RefKind, u32)> {
     let mut out = Vec::new();
@@ -195,7 +233,7 @@ fn placeholders(text: &str) -> Vec<(Range<usize>, RefKind, u32)> {
         for (start, _) in text.match_indices(marker) {
             let rest = &text[start + marker.len()..];
             let Some(end) = rest.find(']') else { continue };
-            if let Ok(id) = rest[..end].parse::<u32>() {
+            if let Some(id) = parse_canonical_id(&rest[..end]) {
                 out.push((start..start + marker.len() + end + 1, kind, id));
             }
         }
@@ -276,19 +314,29 @@ pub fn marker_refs(text: &str) -> Vec<RefChip> {
             let rest = &text[start + marker.len()..];
             let Some(end) = rest.find(']') else { continue };
             let body = &rest[..end];
+            if body.contains('\n') || body.trim().is_empty() {
+                continue;
+            }
             // `[#name 路径]` 显示引用名，`[file 路径]` / `[dir 路径]` 显示末段文件名。
             let label = if marker == "[#" {
-                let Some((name, _path)) = body.split_once(' ') else {
+                let Some((name, path)) = body.split_once(' ') else {
                     continue;
                 };
+                if path.trim().is_empty() {
+                    continue;
+                }
                 name.to_owned()
             } else {
                 let trimmed = body.trim_end_matches(['/', '\\']);
-                trimmed
-                    .rsplit(['/', '\\'])
-                    .next()
-                    .unwrap_or(trimmed)
-                    .to_owned()
+                if trimmed.is_empty() {
+                    body.to_owned()
+                } else {
+                    trimmed
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap_or(trimmed)
+                        .to_owned()
+                }
             };
             if label.is_empty() {
                 continue;
@@ -329,6 +377,13 @@ pub struct RefCache {
 }
 
 impl RefCache {
+    /// 清空全部缓存与在途记录（切换会话时释放旧会话缓存）。
+    pub fn clear(&mut self) {
+        self.session.clear();
+        self.entries.clear();
+        self.pending.clear();
+    }
+
     /// 当前会话里 token 的校验结果；`None` 表示还没有结果。会话串不符时视为空，
     /// 防止切换会话后、下一轮 `take_missing` 清场前读到旧会话的结论。
     pub fn get(&self, session: &str, token: &str) -> Option<&Option<ResourceRefInfo>> {
@@ -379,12 +434,30 @@ impl RefCache {
     }
 }
 
+/// 把当前输入框的引用控件范围同步到 [`crate::widgets::prompt::PromptState`]，
+/// 确保光标落在合法边界而非控件内部。
+pub fn sync_prompt_atomic(app: &mut App) {
+    if app.focus == crate::app::Focus::Prompt && app.modal.is_none() {
+        let ranges = prompt_refs(app)
+            .into_iter()
+            .map(|chip| chip.range)
+            .collect();
+        app.prompt.set_atomic(ranges);
+    }
+}
+
 /// 发出缺失 token 的 `resource/inspect` 查询；没有会话时不查（引用校验需要会话）。
 pub fn request_inspection(app: &mut App, connection: &crate::protocol::EmbeddedConnection) {
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
         return;
     };
-    let tokens = app.refs.take_missing(&session_id, &app.prompt.text);
+    // `!` 开头的手动 shell 命令不渲染引用控件，跳过 token 扫描以免多余查询。
+    let text = if app.prompt.text.starts_with('!') {
+        ""
+    } else {
+        app.prompt.text.as_str()
+    };
+    let tokens = app.refs.take_missing(&session_id, text);
     if tokens.is_empty() {
         return;
     }
@@ -413,7 +486,7 @@ mod tests {
 
     #[test]
     fn markers_become_chips_with_short_labels() {
-        let text = "看 @a.rs\n[file /w/src/a.rs] 与 [dir /w/pkg/] [#report.pdf /u/report.pdf] [image#2] [x]";
+        let text = "看 @a.rs\n[file /w/src/a.rs] 与 [dir /w/pkg/] [dir /] [#report.pdf /u/report.pdf] [image#2] [image#+1] [image#01] [#empty ] [file a\nb] [x]";
         let chips = marker_refs(text);
         let labels: Vec<_> = chips
             .iter()
@@ -424,6 +497,7 @@ mod tests {
             [
                 (RefKind::File, "a.rs"),
                 (RefKind::Dir, "pkg"),
+                (RefKind::Dir, "/"),
                 (RefKind::FileRef, "report.pdf"),
                 (RefKind::Image, "image 2"),
             ]
@@ -449,6 +523,12 @@ mod tests {
         assert_eq!(map.to_display(buf.end - 1), disp.end);
         assert_eq!(map.to_buffer(disp.start + 1), buf.start);
         assert_eq!(map.to_buffer(disp.end - 1), buf.end);
+        // 选区映射：只要触及控件内部就向外扩到完整边界，不误吞相邻外侧文本。
+        assert_eq!(map.to_buffer_range(0..disp.start), 0..buf.start);
+        assert_eq!(map.to_buffer_range(disp.end..map.text.len()), buf.end..text.len());
+        assert_eq!(map.to_buffer_range(0..disp.start + 2), 0..buf.end);
+        assert_eq!(map.to_buffer_range(disp.start + 2..disp.start + 5), buf.clone());
+        assert_eq!(map.to_buffer_range(disp.end - 2..map.text.len()), buf.start..text.len());
         // 段外偏移双向往返。
         for offset in [0usize, 2, text.len() - 1, text.len()] {
             assert_eq!(map.to_buffer(map.to_display(offset)), offset, "{offset}");

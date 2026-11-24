@@ -73,18 +73,30 @@ pub(super) fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnecti
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             let previous_revision = app.prompt_revision;
-            if app.focus == Focus::Prompt && app.modal.is_none() {
-                // 按键前把引用控件范围同步进输入框：移动、删除按控件整体作用。
-                let ranges = crate::refs::prompt_refs(app)
-                    .into_iter()
-                    .map(|chip| chip.range)
-                    .collect();
-                app.prompt.set_atomic(ranges);
-            }
+            let previous_history = app.prompt.history_cursor();
+            let previous_cursor = app.prompt.cursor;
+            let was_typing = app.prompt.typed_at == Some(previous_cursor);
+            // 按键前把引用控件范围同步进输入框：移动、删除按控件整体作用。
+            crate::refs::sync_prompt_atomic(app);
             handle_key(app, connection, key.modifiers, key.code);
             if app.focus == Focus::Prompt && app.prompt_revision != previous_revision {
                 request_resource_completion(app, connection);
                 crate::refs::request_inspection(app, connection);
+            } else if app.focus == Focus::Prompt && app.prompt.history_cursor() != previous_history
+            {
+                crate::refs::request_inspection(app, connection);
+            } else if app.focus == Focus::Prompt
+                && app.modal.is_none()
+                && was_typing
+                && app.prompt.cursor != previous_cursor
+            {
+                // 光标离开逐字输入位置后，原 token 立刻成形：沿移动方向推出控件内部。
+                let ranges = crate::refs::prompt_refs(app)
+                    .into_iter()
+                    .map(|chip| chip.range)
+                    .collect();
+                app.prompt
+                    .set_atomic_directed(ranges, app.prompt.cursor > previous_cursor);
             }
         }
         Event::Mouse(mouse) => {
@@ -122,6 +134,7 @@ pub(super) fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnecti
                     answer.cursor = pos + text.len();
                 }
             } else {
+                crate::refs::sync_prompt_atomic(app);
                 app.prompt.insert_text(&text);
                 app.prompt_changed();
                 request_resource_completion(app, connection);

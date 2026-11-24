@@ -1084,6 +1084,7 @@ pub(crate) fn apply_plan_execution_loaded(
             refresh_usage(app, connection, false);
             load_subagents_for_parent(app, &connection.client, Some(id));
             start_auto_prompt(app, connection, auto_prompt);
+            crate::refs::request_inspection(app, connection);
         }
         Err(error) => app
             .set_notice(t!("tui.plan.exec_load_failed_fmt", err = error.to_string()).into_owned()),

@@ -53,6 +53,31 @@ fn user_message_in_accent_frame_with_clock() {
     );
 }
 
+/// 转写用户消息里的附件控件在折行时不得从中间拆开（含空格、标点、CJK 与连续控件）。
+#[test]
+fn user_message_ref_chips_never_split_across_wrapped_lines() {
+    let theme = Theme::resolved(ColorLevel::TrueColor);
+    // 宽度 24 → 框宽 23，正文列宽 17；每个控件自身 ≤ 17 列，折行后必须完整落在单行。
+    let text = "请看 [image#2] 和 [file /w/需求文档.md]\n[file /w/src/a.rs][file /w/src/b.rs]";
+    let lines = user_message(text, None, 24, &theme);
+    for line in &lines {
+        assert!(line.width() <= 24, "行宽 {} 超出消息区域", line.width());
+    }
+    let rendered: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
+    for expected in [
+        "\u{a0}▣\u{a0}image 2\u{a0}",
+        "\u{a0}▤\u{a0}需求文档.md\u{a0}",
+        "\u{a0}▤\u{a0}a.rs\u{a0}",
+        "\u{a0}▤\u{a0}b.rs\u{a0}",
+    ] {
+        assert!(
+            rendered.iter().any(|row| row.contains(expected)),
+            "控件 {expected:?} 不得被折行拆开：\n{}",
+            rendered.join("\n")
+        );
+    }
+}
+
 #[test]
 fn thinking_block_and_rows_apply_thinking_and_grayscale_palette() {
     let (events, _) = tokio::sync::mpsc::unbounded_channel();

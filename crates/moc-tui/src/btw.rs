@@ -279,8 +279,12 @@ enum Submission {
 pub fn submit(app: &mut App, connection: &EmbeddedConnection) -> bool {
     match prepare_submission(app) {
         Submission::Unrecognized => false,
-        Submission::Handled => true,
+        Submission::Handled => {
+            crate::refs::request_inspection(app, connection);
+            true
+        }
         Submission::Request(params) => {
+            crate::refs::request_inspection(app, connection);
             let session_id = params.session_id.clone();
             let request_id = params.request_id;
             let client = connection.client.clone();

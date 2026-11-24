@@ -332,6 +332,7 @@ async fn event_loop(
                             app.set_notice(t!("tui.event.image_attached").into_owned());
                         }
                         Some(ClipboardPayload::Text(text)) => {
+                            crate::refs::sync_prompt_atomic(app);
                             app.prompt.insert_text(&text);
                             app.prompt_changed();
                             crate::refs::request_inspection(app, connection);
@@ -527,7 +528,10 @@ async fn event_loop(
                         session_id,
                         tokens,
                         infos,
-                    }) => app.refs.store(&session_id, tokens, infos),
+                    }) => {
+                        app.refs.store(&session_id, tokens, infos);
+                        crate::refs::sync_prompt_atomic(app);
+                    }
                     Some(AppEvent::Notice(message)) => app.set_notice(message),
                     Some(AppEvent::SkillsProgress(update)) => app.update_skills_compaction(&update),
                     Some(AppEvent::SkillsCompacted(result)) => {

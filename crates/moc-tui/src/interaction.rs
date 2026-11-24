@@ -190,7 +190,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                     if let Some(action) = pending.withdrawal {
                         if action == crate::queue::WithdrawAction::Edit {
                             if current {
-                                crate::queue::restore_or_requeue(app, &session, prompt);
+                                crate::queue::restore_or_requeue(app, connection, &session, prompt);
                             } else {
                                 app.queues.entry(session).or_default().push_front(prompt);
                             }
@@ -215,7 +215,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                     if let Some(action) = pending.withdrawal {
                         if action == crate::queue::WithdrawAction::Edit {
                             if current {
-                                crate::queue::restore_or_requeue(app, &session, prompt);
+                                crate::queue::restore_or_requeue(app, connection, &session, prompt);
                             } else {
                                 app.queues.entry(session).or_default().push_front(prompt);
                             }
@@ -259,7 +259,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                             mode: None,
                         };
                         if current {
-                            crate::queue::restore_or_requeue(app, &session, prompt);
+                            crate::queue::restore_or_requeue(app, connection, &session, prompt);
                         } else {
                             app.queues.entry(session).or_default().push_front(prompt);
                         }

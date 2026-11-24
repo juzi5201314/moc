@@ -14,6 +14,7 @@
 //! `Paragraph::wrap` 二次折行、命中几何错位。
 
 use std::borrow::Cow;
+use std::ops::Range;
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -90,11 +91,30 @@ fn can_break_before(chars: &[char], i: usize) -> Option<bool> {
     soft_break_after(prev).then_some(false) // 标点之后：次级断点
 }
 
+/// 包含字符位置 `index` 的原子段（`atomic` 升序不重叠）。
+fn atomic_containing(atomic: &[Range<usize>], index: usize) -> Option<&Range<usize>> {
+    let pos = atomic.partition_point(|range| range.end <= index);
+    atomic
+        .get(pos)
+        .filter(|range| range.start <= index && index < range.end)
+}
+
+/// 恰好结束于 `index` 的原子段（即 `index` 紧跟在某个原子段后面）。
+fn atomic_ending_at(atomic: &[Range<usize>], index: usize) -> bool {
+    let pos = atomic.partition_point(|range| range.end < index);
+    atomic.get(pos).is_some_and(|range| range.end == index)
+}
+
 /// 把一段（不含换行符）按宽度切成行区间 `(start, end)`，区间已裁掉首尾空格。
 ///
 /// 贪心：每行尽量装满，溢出时回退到最近的一级断点，没有再用次级断点，
 /// 都没有才逐字硬切。硬切也不让避头字符落到行首（连同前一个字一起换行）。
-fn break_rows(chars: &[char], width: usize) -> Vec<(usize, usize)> {
+/// `atomic` 标记不可拆分的整体段（字符下标、升序不重叠）：段内不设断点、
+/// 内部空格不视作行间空白，只有该段独占一行仍超宽时才硬切。
+fn break_rows(chars: &[char], width: usize, atomic: &[Range<usize>]) -> Vec<(usize, usize)> {
+    debug_assert!(atomic.iter().all(|range| range.start < range.end));
+    debug_assert!(atomic.windows(2).all(|pair| pair[0].end <= pair[1].start));
+    debug_assert!(atomic.last().is_none_or(|range| range.end <= chars.len()));
     let text: String = chars.iter().collect();
     let mut widths = vec![0; chars.len()];
     let mut boundaries = vec![false; chars.len() + 1];
@@ -120,21 +140,36 @@ fn break_rows(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     while i < chars.len() {
         let ch = chars[i];
         let w = widths[i];
-        if i > 0 && chars[i - 1] != ' ' {
+        let current_atomic = atomic_containing(atomic, i);
+        let inside_atomic = current_atomic.is_some_and(|range| i > range.start);
+        if i > 0 && (chars[i - 1] != ' ' || atomic_containing(atomic, i - 1).is_some()) {
             last_content = Some(i - 1);
         }
         // i 单调前进；最后一个非空格的位置足以判断本行是否已有内容。
-        if i > start && last_content.is_some_and(|index| index >= start) {
-            if ch == ' ' && chars[i - 1] != ' ' {
+        if !inside_atomic && i > start && last_content.is_some_and(|index| index >= start) {
+            let at_atomic_start = current_atomic.is_some();
+            let at_atomic_end = atomic_ending_at(atomic, i);
+            if ch == ' ' && !at_atomic_start && (chars[i - 1] != ' ' || at_atomic_end) {
                 // 空格串：本行在空格前结束，下一行从空格串之后开始
                 let mut resume = i;
-                while resume < chars.len() && chars[resume] == ' ' {
+                while resume < chars.len()
+                    && chars[resume] == ' '
+                    && atomic_containing(atomic, resume).is_none()
+                {
                     resume = next[resume];
                 }
                 let blocked = no_line_end(chars[i - 1])
                     || chars.get(resume).copied().is_some_and(no_line_start);
                 if !blocked {
                     primary = Some((i, resume));
+                }
+            } else if at_atomic_start {
+                if chars[i - 1] != ' ' && !no_line_end(chars[i - 1]) {
+                    primary = Some((i, i));
+                }
+            } else if at_atomic_end {
+                if ch != ' ' && !no_line_start(ch) {
+                    primary = Some((i, i));
                 }
             } else if let Some(is_primary) = can_break_before(chars, i) {
                 let slot = if is_primary {
@@ -145,19 +180,26 @@ fn break_rows(chars: &[char], width: usize) -> Vec<(usize, usize)> {
                 *slot = Some((i, i));
             }
         }
-        if used + w <= width || ch == ' ' {
-            // 空格永不触发溢出：它要么成为断点被吞掉，要么在行尾被裁掉
+        if used + w <= width || (ch == ' ' && current_atomic.is_none()) {
+            // 行间普通空格永不触发溢出；原子段内部的空格属于控件本身，照常计入溢出。
             used += w;
             i = next[i];
             continue;
         }
         let (end, resume) = match primary.or(secondary) {
             Some(point) => point,
-            None => hard_cut(chars, &boundaries, start, i),
+            None => match current_atomic {
+                // 原子段不是从当前行首开始时（如紧跟避尾符号 `(`），先在段首折行保完整。
+                Some(range) if range.start > start => (range.start, range.start),
+                _ => hard_cut(chars, &boundaries, start, i),
+            },
         };
         rows.push(trim_row(chars, start, end));
         start = resume;
-        while start < chars.len() && chars[start] == ' ' {
+        while start < chars.len()
+            && chars[start] == ' '
+            && atomic_containing(atomic, start).is_none()
+        {
             start = next[start];
         }
         used = widths[start..i.max(start)].iter().sum();
@@ -211,7 +253,7 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
             lines.push(segment.to_owned());
             continue;
         }
-        for (start, end) in break_rows(&chars, width) {
+        for (start, end) in break_rows(&chars, width, &[]) {
             lines.push(chars[start..end].iter().collect());
         }
     }
@@ -228,37 +270,73 @@ pub fn wrap_spans(spans: &[Span<'_>], width: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// 带样式与原子段保护的折行：`atomic == true` 的 span 视作不可拆分的整体控件
+/// （仅在控件独占一行仍超宽时逐格硬切）。
+pub fn wrap_spans_atomic(spans: &[(Span<'_>, bool)], width: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    wrap_styled_into(
+        spans.iter().map(|(span, atomic)| (span, *atomic)),
+        spans.len(),
+        width,
+        |line| out.push(line),
+    );
+    out
+}
+
 pub(super) fn wrap_spans_into(
     spans: &[Span<'_>],
+    width: usize,
+    emit: impl FnMut(Line<'static>),
+) {
+    wrap_styled_into(
+        spans.iter().map(|span| (span, false)),
+        spans.len(),
+        width,
+        emit,
+    );
+}
+
+fn wrap_styled_into<'a>(
+    spans: impl Iterator<Item = (&'a Span<'a>, bool)>,
+    len: usize,
     width: usize,
     mut emit: impl FnMut(Line<'static>),
 ) {
     let mut chars: Vec<char> = Vec::new();
     // 下标是段内字符位置，严格递增；样式只在变化时记录一次。
     let mut styles: Vec<(usize, Style)> = Vec::new();
-    let mut flush = |chars: &mut Vec<char>, styles: &mut Vec<(usize, Style)>| {
+    let mut atomic: Vec<Range<usize>> = Vec::new();
+    let mut flush = |chars: &mut Vec<char>,
+                     styles: &mut Vec<(usize, Style)>,
+                     atomic: &mut Vec<Range<usize>>| {
         let rows = if width == 0 {
             vec![(0, chars.len())]
         } else {
-            break_rows(chars, width)
+            break_rows(chars, width, atomic)
         };
         for (start, end) in rows {
             emit(styled_row(chars, styles, start, end));
         }
         chars.clear();
         styles.clear();
+        atomic.clear();
     };
-    let last = spans.len().saturating_sub(1);
-    for (index, span) in spans.iter().enumerate() {
+    let last = len.saturating_sub(1);
+    for (index, (span, is_atomic)) in spans.enumerate() {
         let content = span.content.as_ref();
         let content = if index == last {
             content.strip_suffix('\n').unwrap_or(content)
         } else {
             content
         };
+        let mut atom_start = chars.len();
         for ch in content.chars() {
             if ch == '\n' {
-                flush(&mut chars, &mut styles);
+                if is_atomic && chars.len() > atom_start {
+                    atomic.push(atom_start..chars.len());
+                }
+                flush(&mut chars, &mut styles, &mut atomic);
+                atom_start = 0;
             } else {
                 if styles.last().is_none_or(|(_, style)| *style != span.style) {
                     styles.push((chars.len(), span.style));
@@ -266,8 +344,11 @@ pub(super) fn wrap_spans_into(
                 chars.push(ch);
             }
         }
+        if is_atomic && chars.len() > atom_start {
+            atomic.push(atom_start..chars.len());
+        }
     }
-    flush(&mut chars, &mut styles);
+    flush(&mut chars, &mut styles, &mut atomic);
 }
 
 /// 一行字符按样式合并回 span。

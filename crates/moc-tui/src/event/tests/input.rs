@@ -713,3 +713,39 @@ async fn slash_command_with_image_keeps_input() {
     connection.shutdown().await;
     core.shutdown().await;
 }
+
+/// 逐字输入中的有效引用按 Left 离开输入点后立刻成形，光标顺势推出到控件左边界。
+#[tokio::test]
+async fn leaving_typed_ref_with_left_snaps_cursor_to_chip_start() {
+    let (core, connection, mut app) = setup_test_app().await;
+    let session_id = app.session.as_ref().unwrap().id.clone();
+    app.refs.take_missing(&session_id, "@src/main.rs");
+    app.refs.store(
+        &session_id,
+        vec!["@src/main.rs".to_owned()],
+        vec![Some(moc_protocol::ResourceRefInfo {
+            kind: "file".into(),
+            label: "main.rs".into(),
+            detail: None,
+        })],
+    );
+    for ch in "open @src/main.rs".chars() {
+        app.prompt.insert_char(ch);
+    }
+    assert!(
+        crate::refs::prompt_refs(&app).is_empty(),
+        "逐字键入中尚未成形"
+    );
+    handle_terminal_event(
+        &mut app,
+        &connection,
+        crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::NONE,
+        )),
+    );
+    assert_eq!(app.prompt.cursor, 5, "按 Left 成形后光标直接落在控件左边界");
+    assert_eq!(crate::refs::prompt_refs(&app).len(), 1);
+    connection.shutdown().await;
+    core.shutdown().await;
+}

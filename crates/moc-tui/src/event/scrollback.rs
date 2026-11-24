@@ -138,6 +138,7 @@ pub(super) fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                         position.1,
                     ) {
                         app.prompt.cursor = cursor;
+                        crate::refs::sync_prompt_atomic(app);
                     }
                     app.selection = None;
                     return;

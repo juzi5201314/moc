@@ -198,11 +198,23 @@ impl PromptState {
     }
 
     /// 同步引用控件范围（按当前文本计算）；同步后光标不允许停在控件内部——
-    /// 异步校验到达时，光标下的 token 可能恰好成形。
+    /// 异步校验到达时，光标下的 token 可能恰好成形，按较近边界吸附与显示层保持一致。
     pub fn set_atomic(&mut self, ranges: Vec<std::ops::Range<usize>>) {
         debug_assert!(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start));
         self.atomic = ranges;
-        self.cursor = self.snap(self.cursor, true);
+        self.cursor = self.snap_nearest(self.cursor);
+    }
+
+    /// 同步引用控件范围，并沿移动方向把落在控件内部的光标推出到外侧边界。
+    pub fn set_atomic_directed(&mut self, ranges: Vec<std::ops::Range<usize>>, forward: bool) {
+        debug_assert!(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start));
+        self.atomic = ranges;
+        self.cursor = self.snap(self.cursor, forward);
+    }
+
+    /// 当前历史浏览游标（用于判断上下翻历史是否切换了条目）。
+    pub fn history_cursor(&self) -> Option<usize> {
+        self.history_cursor
     }
 
     /// `[paste#id]` 占位对应正文的行数；占位已失效时返回 `None`。
@@ -236,6 +248,20 @@ impl PromptState {
                 position,
                 |range| if forward { range.end } else { range.start },
             )
+    }
+
+    /// 落在控件内部的位置吸附到较近边界（与 [`crate::refs::RefMap::to_display`] 同口径）。
+    fn snap_nearest(&self, position: usize) -> usize {
+        self.atomic
+            .iter()
+            .find(|range| range.start < position && position < range.end)
+            .map_or(position, |range| {
+                if position - range.start <= range.end - position {
+                    range.start
+                } else {
+                    range.end
+                }
+            })
     }
 
     /// 插入一段文本（bracketed paste 的文本分支在此判定 chip 化）。
@@ -296,6 +322,10 @@ impl PromptState {
             self.cursor += 1;
         }
         self.break_history_browse();
+        // 目录或 URI 命名空间等不补空格的补全仍处于继续输入中，不立即塌缩成控件。
+        if !append_space {
+            self.typed_at = Some(self.cursor);
+        }
     }
 
     /// 光标移到当前逻辑行行首。
@@ -329,6 +359,7 @@ impl PromptState {
         let end = position + placeholder.len();
         self.text.replace_range(start..end, &content);
         self.cursor = start + content.len();
+        self.break_history_browse();
         true
     }
 
@@ -342,14 +373,25 @@ impl PromptState {
             return;
         };
         let mut delete_start = start;
+        let mut deleted_chip = false;
         if let Some(range) = self.atomic_ending_at(self.cursor) {
             delete_start = range.start;
+            deleted_chip = true;
         } else if let Some(chip_end) = self.chip_ending_at(self.cursor) {
             delete_start = chip_end.0;
+            deleted_chip = true;
         }
+        // 删除普通字符且前后不紧贴已成形控件时保留键入态，避免 `@src/m` 退成 `@src/` 或
+        // `/help1` 退成 `/help` 时突然塌缩成原子控件；紧贴已有控件时不得让原控件解体。
+        let abuts_atomic = !deleted_chip
+            && (self.atomic_ending_at(delete_start).is_some()
+                || self.atomic_starting_at(self.cursor).is_some());
         self.text.replace_range(delete_start..self.cursor, "");
         self.cursor = delete_start;
         self.break_history_browse();
+        if !deleted_chip && !abuts_atomic {
+            self.typed_at = Some(self.cursor);
+        }
     }
 
     /// 删除光标处字符。
@@ -363,8 +405,13 @@ impl PromptState {
                 .nth(1)
                 .map(|(index, _)| self.cursor + index)
                 .unwrap_or(self.text.len());
+            let abuts_atomic = self.atomic_ending_at(self.cursor).is_some()
+                || self.atomic_starting_at(end).is_some();
             self.text.replace_range(self.cursor..end, "");
             self.break_history_browse();
+            if !abuts_atomic {
+                self.typed_at = Some(self.cursor);
+            }
         }
     }
 
@@ -574,6 +621,8 @@ impl PromptState {
         self.history_cursor = Some(next);
         self.text = self.adopt_history(text, entry.fingerprint());
         self.cursor = self.text.len();
+        self.atomic.clear();
+        self.typed_at = None;
         true
     }
 
@@ -597,6 +646,8 @@ impl PromptState {
             Some(index - 1)
         };
         self.cursor = self.text.len();
+        self.atomic.clear();
+        self.typed_at = None;
         true
     }
 
@@ -963,9 +1014,10 @@ mod tests {
     /// 引用控件是原子单位：光标落在内部被吸出、移动整体跨过、删除整体删掉。
     #[test]
     fn atomic_ranges_edit_and_traverse_as_one() {
+        let single = |range: std::ops::Range<usize>| std::iter::once(range).collect();
         let mut prompt = PromptState::default();
         prompt.insert_str_raw("see @a.rs end");
-        prompt.set_atomic(vec![4..9]);
+        prompt.set_atomic(single(4..9));
         prompt.cursor = 9;
         prompt.backspace();
         assert_eq!(prompt.text, "see  end");
@@ -973,7 +1025,7 @@ mod tests {
 
         prompt.clear();
         prompt.insert_str_raw("see @a.rs end");
-        prompt.set_atomic(vec![4..9]);
+        prompt.set_atomic(single(4..9));
         for expected in [12usize, 11, 10, 9, 4] {
             prompt.left();
             assert_eq!(prompt.cursor, expected, "逐格左移到控件前");
@@ -985,5 +1037,37 @@ mod tests {
         prompt.delete();
         assert_eq!(prompt.text, "see  end");
         assert_eq!(prompt.cursor, 4);
+
+        // `set_atomic` 与显示层采用同一套就近吸附口径：前半段吸左缘、后半段吸右缘。
+        prompt.clear();
+        prompt.insert_str_raw("open @src/main.rs");
+        prompt.cursor = 7;
+        prompt.set_atomic(single(5..17));
+        assert_eq!(prompt.cursor, 5, "前半段就近吸到控件左边界");
+        prompt.cursor = 15;
+        prompt.set_atomic(single(5..17));
+        assert_eq!(prompt.cursor, 17, "后半段就近吸到控件右边界");
+
+        // 退格编辑普通词时保留 `typed_at` 防中途塌缩；删空格紧贴已成形控件时不解体。
+        prompt.clear();
+        prompt.insert_str_raw("/help1");
+        prompt.backspace();
+        assert_eq!(prompt.text, "/help");
+        assert_eq!(prompt.typed_at, Some(5));
+
+        prompt.clear();
+        prompt.insert_str_raw("open @a.rs ");
+        prompt.set_atomic(single(5..10));
+        prompt.backspace();
+        assert_eq!(prompt.text, "open @a.rs");
+        assert_eq!(prompt.typed_at, None, "删掉控件后空格不得让原控件解体");
+
+        // 目录补全（append_space = false）保持编辑态，文件补全（true）立即成形。
+        prompt.clear();
+        prompt.insert_str_raw("@sr");
+        prompt.replace_range(0..3, "@src/", false);
+        assert_eq!(prompt.typed_at, Some(5));
+        prompt.replace_range(0..5, "@src/main.rs", true);
+        assert_eq!(prompt.typed_at, None);
     }
 }

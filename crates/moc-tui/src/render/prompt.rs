@@ -53,15 +53,13 @@ pub(super) fn prompt_rows<'a>(
             column = 0;
             continue;
         }
-        if column > 0
-            && span < atomic.len()
-            && atomic[span].start == offset
-            && str_width(&text[atomic[span].clone()]) <= width
-            && column + str_width(&text[atomic[span].clone()]) > width
-        {
-            rows.push((start, &text[start..offset]));
-            start = offset;
-            column = 0;
+        if column > 0 && span < atomic.len() && atomic[span].start == offset {
+            let chip_width = str_width(&text[atomic[span].clone()]);
+            if chip_width <= width && column + chip_width > width {
+                rows.push((start, &text[start..offset]));
+                start = offset;
+                column = 0;
+            }
         }
         let cells = str_width(grapheme);
         if column > 0 && column + cells > width {
@@ -311,9 +309,13 @@ pub(crate) fn prompt_selection_text(app: &App) -> &str {
         } else {
             prompt_cell_range(last_text, usize::from(end_col - left)).end
         };
-    // 显示偏移换算回原文；控件整体入选，边界吸附由 RefMap 保证。
-    let (from, to) = (map.to_buffer(from), map.to_buffer(to));
-    if from < to { &text[from..to] } else { "" }
+    // 显示偏移区间换算回原文；端点触及控件内部时向外扩到完整边界，使控件整体入选。
+    let range = map.to_buffer_range(from..to);
+    if range.start < range.end {
+        &text[range]
+    } else {
+        ""
+    }
 }
 
 /// 运行中且输入框有内容时，图例改为 queue 键位及其当前动作：默认排队（Enter 按偏好补充或中断），

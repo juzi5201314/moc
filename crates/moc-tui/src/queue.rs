@@ -79,6 +79,7 @@ pub fn submit(app: &mut App, connection: &EmbeddedConnection, alternate: bool) {
     enqueue(app, connection, session, draft, queued, None);
     if let Some(stash) = app.prompt_stash.take() {
         app.prompt.restore_draft(stash);
+        crate::refs::request_inspection(app, connection);
     }
 }
 
@@ -418,7 +419,12 @@ pub fn steering_applied(app: &mut App, session: &str, id: u64, text: &str, curre
 }
 
 /// 把撤回的草稿恢复到输入框；输入框已有待编辑草稿时排回队列，避免覆盖。
-pub fn restore_or_requeue(app: &mut App, session: &str, prompt: QueuedPrompt) {
+pub fn restore_or_requeue(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    session: &str,
+    prompt: QueuedPrompt,
+) {
     if app.prompt_stash.is_some() {
         app.set_notice(t!("tui.queue.draft_queued"));
         app.queues
@@ -432,6 +438,7 @@ pub fn restore_or_requeue(app: &mut App, session: &str, prompt: QueuedPrompt) {
     }
     app.prompt.restore_draft(prompt.draft);
     app.focus = Focus::Prompt;
+    crate::refs::request_inspection(app, connection);
 }
 
 pub fn edit(app: &mut App, connection: &EmbeddedConnection, id: u64) {
@@ -468,7 +475,7 @@ pub fn edit(app: &mut App, connection: &EmbeddedConnection, id: u64) {
         return;
     };
     let prompt = queue.remove(index).expect("已找到队列项");
-    restore_or_requeue(app, &session, prompt);
+    restore_or_requeue(app, connection, &session, prompt);
 }
 
 pub fn remove(app: &mut App, connection: &EmbeddedConnection, id: u64) {

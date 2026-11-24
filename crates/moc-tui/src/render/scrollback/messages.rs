@@ -9,7 +9,7 @@ use super::super::markdown::render_markdown_with;
 use super::super::wrap::clip_line;
 use super::super::wrap::line_width;
 use super::super::wrap::str_width;
-use super::super::wrap::wrap_spans;
+use super::super::wrap::wrap_spans_atomic;
 use super::super::wrap::wrap_text;
 use super::AGENT_MESSAGE_PREVIEW_ROWS;
 use super::BRIEF_THINKING_ROWS;
@@ -41,23 +41,26 @@ pub(super) fn user_message(
     let border = Style::new().fg(theme.accent_user);
     // 框从块标记列起：`│ ` + `❯ ` + 正文 + ` │`，正文列宽 = 框宽 − 6。
     let box_width = width.saturating_sub(TITLE_INDENT);
-    // 附件标记先替换成「图标 名称」控件再折行；控件里的不换行空格让它整段移动。
+    // 附件标记先替换成「图标 名称」控件再折行；控件作为原子段整体移动不拆开。
     let map = crate::refs::RefMap::new(text, &crate::refs::marker_refs(text));
     let plain = Style::new().fg(theme.text_primary);
     let chip = Style::new().fg(theme.accent_warning).bg(theme.bg_highlight);
-    let mut styled: Vec<Span> = Vec::new();
+    let mut styled: Vec<(Span, bool)> = Vec::new();
     let mut at = 0;
     for disp in map.display_spans() {
         if disp.start > at {
-            styled.push(Span::styled(map.text[at..disp.start].to_owned(), plain));
+            styled.push((
+                Span::styled(map.text[at..disp.start].to_owned(), plain),
+                false,
+            ));
         }
-        styled.push(Span::styled(map.text[disp.clone()].to_owned(), chip));
+        styled.push((Span::styled(map.text[disp.clone()].to_owned(), chip), true));
         at = disp.end;
     }
     if at < map.text.len() {
-        styled.push(Span::styled(map.text[at..].to_owned(), plain));
+        styled.push((Span::styled(map.text[at..].to_owned(), plain), false));
     }
-    let rows = wrap_spans(&styled, box_width.saturating_sub(6).max(1));
+    let rows = wrap_spans_atomic(&styled, box_width.saturating_sub(6).max(1));
     let last = rows.len().saturating_sub(1);
     let mut clock_pending = at_ms.and_then(format_clock);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 4);

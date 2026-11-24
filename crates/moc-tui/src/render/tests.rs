@@ -171,6 +171,13 @@ fn prompt_resource_refs_render_and_map_atomically() {
     // 点控件中部 → 光标落在控件首边界；点靠右缘 → 落在尾边界。
     assert_eq!(prompt_cursor_from_point(&app, area, 10, 1), Some(5));
     assert_eq!(prompt_cursor_from_point(&app, area, 18, 1), Some(17));
+    // 拖选只覆盖控件前半截时，控件依然整块进入选区原文。
+    app.prompt_area = area;
+    app.selection = Some(((4, 1), (11, 1)));
+    assert_eq!(prompt_selection_text(&app), "open @src/main.rs");
+    app.selection = Some(((10, 1), (11, 1)));
+    assert_eq!(prompt_selection_text(&app), "@src/main.rs");
+    app.selection = None;
     // token 无效则不成形：会话串不符时缓存视为空。
     app.refs.take_missing("other", "x");
     assert_eq!(
