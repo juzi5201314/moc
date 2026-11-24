@@ -30,7 +30,7 @@ export const SHORTCUTS: { keys: string; label: MsgKey }[] = [
   { keys: "Ctrl /", label: "keys.help" },
   { keys: "Enter", label: "keys.send" },
   { keys: "Ctrl Enter", label: "keys.queue" },
-  { keys: "Shift Enter", label: "keys.newline" },
+  { keys: "Shift/Alt Enter", label: "keys.newline" },
   { keys: "Esc", label: "keys.stop" },
 ];
 

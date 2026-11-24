@@ -8,6 +8,7 @@ import {
   FolderIcon,
   HistoryIcon,
   ImageIcon,
+  ListPlusIcon,
   LockIcon,
   PackageIcon,
   PaperclipIcon,
@@ -34,6 +35,7 @@ import {
 } from "@/components/ai-elements/attachments";
 import { ImagePreviewDialog } from "@/components/chat/image-preview-dialog";
 import { Button } from "@/components/ui/button";
+import { ButtonGroup } from "@/components/ui/button-group";
 import { Popover, PopoverAnchor } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { t, useT } from "@/lib/i18n";
@@ -526,7 +528,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         setActiveIndex((index) => (index + step + menuSize) % menuSize);
         return;
       }
-      if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+      if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey && !event.altKey)) {
         event.preventDefault();
         pick(activeIndex);
         return;
@@ -540,6 +542,13 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     if (event.key === "Escape" && running && !text) {
       event.preventDefault();
       stop();
+      return;
+    }
+    // Shift+Enter 走 textarea 原生换行；Alt+Enter 浏览器不插入换行，手动补上（与 TUI 的 newline 键位一致）
+    if (event.key === "Enter" && event.altKey && !event.shiftKey) {
+      event.preventDefault();
+      const { selectionStart, selectionEnd } = event.currentTarget;
+      setText(`${text.slice(0, selectionStart)}\n${text.slice(selectionEnd)}`, selectionStart + 1);
       return;
     }
     if (event.key === "Enter" && !event.shiftKey) {
@@ -785,16 +794,58 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     </TooltipTrigger>
                     <TooltipContent side="top">{t("cb.stop_esc")}</TooltipContent>
                   </Tooltip>
+                ) : running && !bashMode ? (
+                  // 运行中有草稿：左半排队（Ctrl+Enter），右半按偏好补充或中断（Enter）
+                  <ButtonGroup className="ml-1">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="secondary"
+                          size="icon-sm"
+                          onClick={() => send(true)}
+                          className="w-9 rounded-full pl-1 motion-safe:active:scale-95"
+                          aria-label={t("cb.queue_send")}
+                        >
+                          <ListPlusIcon className="size-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">{t("cb.queue_hint")}</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          size="icon-sm"
+                          onClick={() => send()}
+                          className="w-9 rounded-full pr-1 hover:bg-primary/85 motion-safe:active:scale-95"
+                          aria-label={
+                            runningEnter === "interrupt"
+                              ? t("cb.interrupt_send")
+                              : t("cb.steer_send")
+                          }
+                        >
+                          <ArrowUpIcon className="size-4" strokeWidth={2.4} />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        {runningEnter === "interrupt" ? t("cb.interrupt_hint") : t("cb.steer_hint")}
+                      </TooltipContent>
+                    </Tooltip>
+                  </ButtonGroup>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => send()}
-                    disabled={!canSend}
-                    className="ml-1 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/85 motion-safe:active:scale-95 disabled:bg-text-tertiary disabled:text-card"
-                    aria-label={running ? t("cb.steer_send") : t("cb.send")}
-                  >
-                    <ArrowUpIcon className="size-4" strokeWidth={2.4} />
-                  </button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => send()}
+                        disabled={!canSend}
+                        className="ml-1 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/85 motion-safe:active:scale-95 disabled:bg-text-tertiary disabled:text-card"
+                        aria-label={t("cb.send")}
+                      >
+                        <ArrowUpIcon className="size-4" strokeWidth={2.4} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">{t("cb.send_hint")}</TooltipContent>
+                  </Tooltip>
                 )}
               </div>
             </div>
