@@ -210,6 +210,7 @@ export const en: Record<MsgKey, string> = {
   "cp.files_n": "{n} files",
   "cp.files_changed": "{n} files changed",
   "cp.tips": "Tips:",
+  "cp.next_tip": "Next tip",
   "cp.options": "Configure session permission, autonomy, and engine",
   "cp.perm_default": "Default",
   "cp.perm_title": "Permission",

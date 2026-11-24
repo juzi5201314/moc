@@ -11,6 +11,7 @@ import {
   Loader2Icon,
   LockIcon,
   PencilIcon,
+  RefreshCwIcon,
   ShieldAlertIcon,
   ShieldCheckIcon,
   ShieldIcon,
@@ -22,6 +23,7 @@ import {
   type DragEvent,
   type ReactNode,
   type RefObject,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -30,6 +32,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { DiffStat, diffStats } from "@/components/panels/diff-file";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -142,7 +145,7 @@ function TipLine({ tip }: { tip: string }) {
     <p
       ref={box}
       className={cn(
-        "group/tip mx-1.5 min-w-0 overflow-hidden whitespace-nowrap animate-in fade-in-0 duration-300",
+        "group/tip ml-1.5 mr-1 min-w-0 overflow-hidden whitespace-nowrap animate-in fade-in-0 duration-300",
         overflow > 0 && "mask-r-from-[calc(100%-1.5rem)] hover:mask-none",
       )}
       title={tip.replaceAll("`", "")}
@@ -164,12 +167,22 @@ function TipLine({ tip }: { tip: string }) {
   );
 }
 
-/** 进入会话（含新会话）与每次开始运行时换一条，且不与上一条重复。 */
-function useTip(sessionId: string, running: boolean): string | undefined {
+function nextTipIndex(current: number, count: number): number {
+  return (current + 1 + Math.floor(Math.random() * (count - 1))) % count;
+}
+
+/** 进入会话（含新会话）、每次开始运行或手动刷新时随机换一条，且不与上一条重复。 */
+function useTip(sessionId: string, running: boolean) {
   const tips = useConnection((state) => state.server?.tips);
   const count = tips?.length ?? 0;
   const [index, setIndex] = useState(() => Math.floor(Math.random() * Math.max(count, 1)));
   const seen = useRef({ sessionId, running });
+
+  const refresh = useCallback(() => {
+    if (count > 1) {
+      setIndex((current) => nextTipIndex(current, count));
+    }
+  }, [count]);
 
   useEffect(() => {
     const previous = seen.current;
@@ -177,11 +190,15 @@ function useTip(sessionId: string, running: boolean): string | undefined {
     const entered = previous.sessionId !== sessionId;
     const started = running && !previous.running;
     if (count > 1 && (entered || started)) {
-      setIndex((current) => (current + 1 + Math.floor(Math.random() * (count - 1))) % count);
+      setIndex((current) => nextTipIndex(current, count));
     }
   }, [sessionId, running, count]);
 
-  return tips?.[index % Math.max(count, 1)];
+  return {
+    tip: tips?.[index % Math.max(count, 1)],
+    canRefresh: count > 1,
+    refresh,
+  };
 }
 
 /** 会话累计费用：进入会话与每轮结束后重读 `session/usage`；没有定价或没有调用时为 0。 */
@@ -221,7 +238,7 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
   const view = useTranscript((state) => state.bySession[sessionId]);
   const running = Boolean(view?.running);
   const [open, setOpen] = useState(false);
-  const tip = useTip(sessionId, running);
+  const { tip, canRefresh, refresh: refreshTip } = useTip(sessionId, running);
   const cost = useSessionCost(sessionId, running);
 
   const changes = useMemo(() => {
@@ -287,7 +304,28 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
               />
             </div>
           ) : (
-            tip && <TipLine key={tip} tip={tip} />
+            tip && (
+              <>
+                <TipLine key={tip} tip={tip} />
+                {canRefresh && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label={t("cp.next_tip")}
+                        onClick={refreshTip}
+                        className="text-text-tertiary hover:bg-accent hover:text-foreground dark:hover:bg-accent"
+                      >
+                        <RefreshCwIcon />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">{t("cp.next_tip")}</TooltipContent>
+                  </Tooltip>
+                )}
+              </>
+            )
           )}
         </div>
         {todos.length > 0 && changes.files > 0 && (

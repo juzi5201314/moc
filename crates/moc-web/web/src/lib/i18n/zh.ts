@@ -206,6 +206,7 @@ export const zh = {
   "cp.files_n": "{n} files",
   "cp.files_changed": "{n} files changed",
   "cp.tips": "Tips:",
+  "cp.next_tip": "Next tip",
   "cp.options": "配置 session 权限、自主程度与引擎",
   "cp.perm_default": "Default",
   "cp.perm_title": "Permission",

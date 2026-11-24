@@ -1,10 +1,16 @@
-import { cleanup, render } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { useI18n } from "@/lib/i18n";
 import { commandToken } from "@/lib/slash";
-import { ShellModeNotice } from "./composer-parts";
+import { useConnection } from "@/store/connection";
+import { ComposerStatus, ShellModeNotice } from "./composer-parts";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  useConnection.setState({ server: null });
+});
 
 it("命令范围只认开头的已知命令、别名和插件命令", () => {
   const commands = [
@@ -48,4 +54,54 @@ it("手动命令在非 full 权限下提示例外，普通文本和 full 模式�
   } finally {
     useI18n.setState({ locale: original });
   }
+});
+
+it("空闲态 tips 末尾提供刷新按钮，点击随机切到不同条目；仅 1 条时不显示按钮", () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
+  const tips = ["Tip alpha", "Tip beta", "Tip gamma"];
+  useConnection.setState({
+    server: {
+      protocol_version: "1.0",
+      server: { name: "moc-core", version: "0.0.0" },
+      tips,
+    },
+  });
+
+  const view = render(
+    <TooltipProvider>
+      <ComposerStatus sessionId="draft-session" todos={[]} />
+    </TooltipProvider>,
+  );
+
+  const button = view.getByRole("button", { name: "Next tip" });
+  const currentTip = () => tips.find((item) => view.queryByText(item) !== null);
+  let prev = currentTip();
+  expect(prev).toBeDefined();
+
+  // 连续点击多次，每次都必须切到不同于当前的一条。
+  for (let i = 0; i < 6; i += 1) {
+    fireEvent.click(button);
+    const next = currentTip();
+    expect(next).toBeDefined();
+    expect(next).not.toBe(prev);
+    prev = next;
+  }
+
+  // 只有一条 tip 时不显示无意义的刷新按钮。
+  act(() => {
+    useConnection.setState({
+      server: {
+        protocol_version: "1.0",
+        server: { name: "moc-core", version: "0.0.0" },
+        tips: ["Only tip"],
+      },
+    });
+  });
+  expect(view.queryByRole("button", { name: "Next tip" })).toBeNull();
 });
