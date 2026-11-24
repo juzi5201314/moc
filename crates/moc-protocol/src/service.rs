@@ -40,16 +40,17 @@ use crate::methods::{
     JobOutputResult, JobResult, JobTarget, McpListParams, McpReconnectParams, McpStatusSnapshot,
     PermissionRequestParams, PermissionResult, PluginListParams, PluginListResult,
     PluginReloadParams, PluginReloadResult, PluginRunCommandParams, PluginRunCommandResult,
-    PromptParams, PromptResult, ResourceCompleteParams, ResourceCompleteResult, ResourceListParams,
-    ResourceListResult, ResourceReadParams, ResourceReadResult, SessionCompactParams,
-    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionGoalParams,
-    SessionGoalResult, SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
-    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
-    SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
-    SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams, SessionPlanReviseResult,
-    SessionReaskParams, SessionRedoParams, SessionRenameParams, SessionRetryParams,
-    SessionRewindParams, SessionSearchParams, SessionSearchResult, SessionSetAutonomyParams,
-    SessionSetEngineParams, SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
+    PromptParams, PromptResult, ResourceCompleteParams, ResourceCompleteResult,
+    ResourceInspectParams, ResourceInspectResult, ResourceListParams, ResourceListResult,
+    ResourceReadParams, ResourceReadResult, SessionCompactParams, SessionContextContentParams,
+    SessionContextParams, SessionDeleteParams, SessionGoalParams, SessionGoalResult, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
+    SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
+    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams,
+    SessionPlanReviseParams, SessionPlanReviseResult, SessionReaskParams, SessionRedoParams,
+    SessionRenameParams, SessionRetryParams, SessionRewindParams, SessionSearchParams,
+    SessionSearchResult, SessionSetAutonomyParams, SessionSetEngineParams,
+    SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
     SessionUpdateParams, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
     WebStateDocument, WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams,
@@ -312,6 +313,15 @@ pub trait AgentService: Send + Sync + 'static {
         _ctx: RequestContext,
         _params: ResourceCompleteParams,
     ) -> impl Future<Output = Result<ResourceCompleteResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 批量校验输入框引用 token；无效项为 `None`。
+    fn resource_inspect(
+        &self,
+        _ctx: RequestContext,
+        _params: ResourceInspectParams,
+    ) -> impl Future<Output = Result<ResourceInspectResult, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 

@@ -63,6 +63,7 @@ pub(super) async fn steer(
     if message.content.is_empty() {
         return Err(CoreError::Config(t!("core.err.message_empty").into_owned()));
     }
+    super::prompt::request::grant_referenced_files(&message, &runtime.sandbox_grants);
     if !runtime.steering.lock().await.accepting {
         return Ok(SteerResult {
             accepted: false,

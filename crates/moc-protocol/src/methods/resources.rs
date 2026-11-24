@@ -1,6 +1,6 @@
 //! `resource/*`：会话虚拟空间的输入补全、结构化列举与读取。
 //!
-//! `resource/complete` 服务输入框补全；`resource/list` / `resource/read`
+//! `resource/complete` 服务输入框补全；`resource/inspect` 校验输入框里已成形的引用；`resource/list` / `resource/read`
 //! 服务 WebUI 文件管理器的虚拟空间分页，URI 命名空间与 core 的
 //! `ResourceRouter` 一致（`local://` / `artifact://` / `history://` / `skill://` / `tool://`）。
 
@@ -49,6 +49,48 @@ pub struct ResourceCandidate {
 #[serde(deny_unknown_fields)]
 pub struct ResourceCompleteResult {
     pub candidates: Vec<ResourceCandidate>,
+}
+
+/// `resource/inspect`：批量校验输入框里的引用 token（`@path` 与资源 URI），
+/// 有效的回展示信息，供前端把它们渲染成整体的引用控件。只读元数据，不读内容。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResourceInspect;
+
+impl Method for ResourceInspect {
+    const NAME: &'static str = "resource/inspect";
+    type Params = ResourceInspectParams;
+    type Result = ResourceInspectResult;
+    crate::method::json_codec!();
+}
+
+impl ClientRequest for ResourceInspect {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceInspectParams {
+    pub session_id: String,
+    /// 原样的引用 token，如 `@src/main.rs`、`skill://review`。
+    pub refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceInspectResult {
+    /// 与 `refs` 逐项对齐；无效引用为 `None`。
+    pub refs: Vec<Option<ResourceRefInfo>>,
+}
+
+/// 一个有效引用的展示信息。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceRefInfo {
+    /// `file` / `dir` / `skill` / `local` / `history` / `artifact` / `tool`。
+    pub kind: String,
+    /// 控件上显示的短名（文件名、skill 名等）。
+    pub label: String,
+    /// 悬停详情：绝对路径或说明。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// `resource/list`：结构化列举会话虚拟空间的一层。
@@ -150,6 +192,7 @@ mod tests {
     #[test]
     fn method_name_and_wire_shape_are_stable() {
         assert_eq!(<ResourceComplete as Method>::NAME, "resource/complete");
+        assert_eq!(<ResourceInspect as Method>::NAME, "resource/inspect");
         let params = serde_json::to_value(ResourceCompleteParams {
             session_id: "ses_1".into(),
             prefix: "local:/".into(),

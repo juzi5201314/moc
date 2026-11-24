@@ -2858,6 +2858,29 @@
             "source"
           ],
           "type": "object"
+        },
+        {
+          "description": "按路径引用的文件（上传到会话目录或从 core 所在机器选取）：core 不内联内容，\n只把绝对路径与大小告诉模型，由模型按需用工具读取；正文用 `#<name>` 指代它。",
+          "properties": {
+            "name": {
+              "description": "本条消息内的引用名（不含 `#`），正文以 `#<name>` 引用。",
+              "type": "string"
+            },
+            "path": {
+              "description": "core 所在机器上的绝对路径（可用 `~` 开头）。",
+              "type": "string"
+            },
+            "type": {
+              "const": "file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path",
+            "name"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -4373,6 +4396,49 @@
       ],
       "type": "object"
     },
+    "ResourceInspectParams": {
+      "additionalProperties": false,
+      "properties": {
+        "refs": {
+          "description": "原样的引用 token，如 `@src/main.rs`、`skill://review`。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "refs"
+      ],
+      "type": "object"
+    },
+    "ResourceInspectResult": {
+      "additionalProperties": false,
+      "properties": {
+        "refs": {
+          "description": "与 `refs` 逐项对齐；无效引用为 `None`。",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ResourceRefInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "refs"
+      ],
+      "type": "object"
+    },
     "ResourceListEntry": {
       "additionalProperties": false,
       "properties": {
@@ -4529,6 +4595,32 @@
         "size",
         "encoding",
         "truncated"
+      ],
+      "type": "object"
+    },
+    "ResourceRefInfo": {
+      "additionalProperties": false,
+      "description": "一个有效引用的展示信息。",
+      "properties": {
+        "detail": {
+          "description": "悬停详情：绝对路径或说明。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "`file` / `dir` / `skill` / `local` / `history` / `artifact` / `tool`。",
+          "type": "string"
+        },
+        "label": {
+          "description": "控件上显示的短名（文件名、skill 名等）。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "label"
       ],
       "type": "object"
     },
@@ -9549,6 +9641,15 @@
           "$ref": "#/$defs/ResourceCompleteResult"
         },
         "type": "ResourceComplete"
+      },
+      "resource/inspect": {
+        "params": {
+          "$ref": "#/$defs/ResourceInspectParams"
+        },
+        "result": {
+          "$ref": "#/$defs/ResourceInspectResult"
+        },
+        "type": "ResourceInspect"
       },
       "resource/list": {
         "params": {

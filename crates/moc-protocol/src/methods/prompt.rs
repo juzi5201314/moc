@@ -118,6 +118,14 @@ pub enum InputPart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<ImageDetail>,
     },
+    /// 按路径引用的文件（上传到会话目录或从 core 所在机器选取）：core 不内联内容，
+    /// 只把绝对路径与大小告诉模型，由模型按需用工具读取；正文用 `#<name>` 指代它。
+    File {
+        /// core 所在机器上的绝对路径（可用 `~` 开头）。
+        path: String,
+        /// 本条消息内的引用名（不含 `#`），正文以 `#<name>` 引用。
+        name: String,
+    },
 }
 
 /// 一次提示的终态。

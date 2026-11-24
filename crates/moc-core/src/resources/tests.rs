@@ -643,3 +643,42 @@ fn at_prefix_completes_workspace_files_and_skips_ignored() {
     let escaped = ResourceRouter::complete(&context, "@@", None).expect("转义候选");
     assert!(escaped.is_empty(), "{escaped:?}");
 }
+
+/// 输入框引用校验：存在的 `@` 路径与具体资源有效，缺失路径、`@@` 转义与命名空间根无效。
+#[test]
+fn inspect_accepts_concrete_references_only() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let cwd = root.path().join("repo");
+    fs::create_dir_all(cwd.join("src")).unwrap();
+    fs::write(cwd.join("src/main.rs"), "fn main() {}").unwrap();
+    fs::create_dir_all(paths.plans()).unwrap();
+    fs::write(paths.plans().join("plan.md"), "# plan").unwrap();
+    let sessions = SessionTable::new(root.path().join("sessions"), false);
+    let skills = SkillIndex::empty();
+    let context = context_of(&paths, &cwd, &skills, &sessions);
+
+    let file = ResourceRouter::inspect(&context, "@src/main.rs").unwrap();
+    assert_eq!((file.kind, file.label.as_str()), ("file", "main.rs"));
+    let dir = ResourceRouter::inspect(&context, "@src/").unwrap();
+    assert_eq!((dir.kind, dir.label.as_str()), ("dir", "src"));
+    let plan = ResourceRouter::inspect(&context, "local://plan.md").unwrap();
+    assert_eq!((plan.kind, plan.label.as_str()), ("local", "plan.md"));
+    assert_eq!(
+        ResourceRouter::inspect(&context, "history://transcript").map(|info| info.kind),
+        Some("history")
+    );
+    for invalid in [
+        "@missing.rs",
+        "@@src",
+        "local://",
+        "local://gone.md",
+        "skill://none",
+        "history://nope",
+    ] {
+        assert!(
+            ResourceRouter::inspect(&context, invalid).is_none(),
+            "{invalid}"
+        );
+    }
+}

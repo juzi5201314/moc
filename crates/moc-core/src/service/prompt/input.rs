@@ -66,6 +66,7 @@ pub(super) async fn prepare(
             if message.content.is_empty() {
                 return Err(RpcError::of(RpcErrorCode::InvalidParams));
             }
+            super::request::grant_referenced_files(&message, &runtime.sandbox_grants);
             Some(message)
         }
         PromptRun::Retry => {
@@ -232,8 +233,20 @@ pub(super) async fn prepare(
             "New session" | "新会话"
         ) && goal_meta.is_none()
         {
-            let title = user_message
-                .text()
+            // 标题只取用户正文：`@` 注入、按路径引用的文件与图片标签都不是用户写的字。
+            let text = user_message
+                .content
+                .iter()
+                .filter_map(|part| match part {
+                    moc_llm::ContentPart::Text(text)
+                        if !crate::resources::attach::is_attachment(text) =>
+                    {
+                        Some(text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect::<String>();
+            let title = text
                 .lines()
                 .next()
                 .unwrap_or_default()

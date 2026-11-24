@@ -217,10 +217,15 @@ pub fn blocks_from_entries_with_children(
     blocks
 }
 
-/// `@` 附件注入块还原成 chip 标记：`[file path]` / `[dir path]`。
+/// `@` 附件注入块还原成 chip 标记：`[file path]` / `[dir path]`，按路径引用的文件是
+/// `[#name path]`；图片标签块返回空串——紧随其后的图片块自己显示为 `[image#N]`。
 fn attachment_marker(text: &str) -> Option<String> {
-    let (path, kind, _body) = moc_core::resources::attach::parse_attachment(text)?;
-    Some(format!("[{kind} {path}]"))
+    let attachment = moc_core::resources::attach::parse_attachment(text)?;
+    Some(match (attachment.path, attachment.reference) {
+        (None, _) => String::new(),
+        (Some(path), Some(reference)) => format!("[{reference} {path}]"),
+        (Some(path), None) => format!("[{} {path}]", attachment.kind),
+    })
 }
 
 /// 用户消息正文还原成输入时的形态：图片块按顺序显示为 `[image#N]` 标记，
@@ -233,6 +238,9 @@ pub(crate) fn content_text(parts: &[ContentPart]) -> String {
         match part {
             ContentPart::Text(text) => {
                 if let Some(marker) = attachment_marker(text) {
+                    if marker.is_empty() {
+                        continue;
+                    }
                     if previous_text {
                         out.push('\n');
                     }

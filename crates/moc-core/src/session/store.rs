@@ -95,6 +95,11 @@ impl SessionPaths {
         self.sidecar.join("artifacts")
     }
 
+    /// WebUI 上传的文件：`<sidecar>/uploads/<sha256>/<文件名>`，按内容寻址去重。
+    pub fn uploads(&self) -> PathBuf {
+        self.sidecar.join("uploads")
+    }
+
     /// workflow run 目录：`<sidecar>/workflows/<run_id>/`（run.json/journal/script/artifacts）。
     pub fn workflows(&self) -> PathBuf {
         self.sidecar.join("workflows")

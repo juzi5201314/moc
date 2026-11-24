@@ -111,6 +111,11 @@ impl Core {
         self.inner.sandbox_support.clone()
     }
 
+    /// 会话的上传目录（[`crate::session::store::SessionPaths::uploads`]）；会话不存在时报错。
+    pub async fn session_uploads_dir(&self, session_id: &str) -> Result<PathBuf, crate::CoreError> {
+        Ok(self.inner.sessions.get(session_id).await?.paths.uploads())
+    }
+
     /// 特性开关有效状态（`[features]` 覆盖合成后）。
     pub fn features(&self) -> moc_protocol::features::FeatureStates {
         self.inner.config().features

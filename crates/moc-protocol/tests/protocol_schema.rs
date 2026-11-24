@@ -138,6 +138,7 @@ fn register_all(
     client::<SessionReask>(generator, client_map);
     // resources.rs
     client::<ResourceComplete>(generator, client_map);
+    client::<ResourceInspect>(generator, client_map);
     client::<ResourceList>(generator, client_map);
     client::<ResourceRead>(generator, client_map);
     // skills.rs

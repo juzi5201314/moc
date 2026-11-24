@@ -18,15 +18,16 @@ use moc_protocol::methods::{
     JobListResult, JobOutputParams, JobOutputResult, JobResult, JobTarget, McpListParams,
     McpReconnectParams, McpStatusSnapshot, PluginListParams, PluginListResult, PluginReloadParams,
     PluginReloadResult, PluginRunCommandParams, PluginRunCommandResult, PromptResult,
-    ResourceCompleteParams, ResourceCompleteResult, ResourceListParams, ResourceListResult,
-    ResourceReadParams, ResourceReadResult, ServerCapabilities, ServerInfo, SessionCompactParams,
-    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionGoalParams,
-    SessionGoalResult, SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
-    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
-    SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
-    SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult, SessionReaskParams,
-    SessionRedoParams, SessionRenameParams, SessionRetryParams, SessionRewindParams,
-    SessionSearchParams, SessionSearchResult, SessionSetAutonomyParams, SessionSetEngineParams,
+    ResourceCompleteParams, ResourceCompleteResult, ResourceInspectParams, ResourceInspectResult,
+    ResourceListParams, ResourceListResult, ResourceReadParams, ResourceReadResult,
+    ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextContentParams,
+    SessionContextParams, SessionDeleteParams, SessionGoalParams, SessionGoalResult, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
+    SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
+    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult,
+    SessionPlanReviseParams, SessionPlanReviseResult, SessionReaskParams, SessionRedoParams,
+    SessionRenameParams, SessionRetryParams, SessionRewindParams, SessionSearchParams,
+    SessionSearchResult, SessionSetAutonomyParams, SessionSetEngineParams,
     SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUsageParams,
     SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument, WebStateGetParams,
@@ -324,6 +325,14 @@ impl AgentService for Core {
         params: ResourceCompleteParams,
     ) -> Result<ResourceCompleteResult, RpcError> {
         resource_api::resource_complete(self, ctx, params).await
+    }
+
+    async fn resource_inspect(
+        &self,
+        ctx: RequestContext,
+        params: ResourceInspectParams,
+    ) -> Result<ResourceInspectResult, RpcError> {
+        resource_api::resource_inspect(self, ctx, params).await
     }
 
     async fn resource_list(

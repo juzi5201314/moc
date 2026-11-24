@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 8983e6d88d79266b
+// schema sha256: 03fb2fe526ef452a
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -409,6 +409,17 @@ export type InputPart =
             };
           };
       type: "image";
+    }
+  | {
+      /**
+       * 本条消息内的引用名（不含 `#`），正文以 `#<name>` 引用。
+       */
+      name: string;
+      /**
+       * core 所在机器上的绝对路径（可用 `~` 开头）。
+       */
+      path: string;
+      type: "file";
     };
 /**
  * 任务生命周期：monitored 会自然结束并回报；persistent 是常驻服务，只能被终止。
@@ -3454,6 +3465,47 @@ export interface ResourceCompleteParams {
  */
 export interface ResourceCompleteResult {
   candidates: ResourceCandidate[];
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ResourceInspectParams".
+ */
+export interface ResourceInspectParams {
+  /**
+   * 原样的引用 token，如 `@src/main.rs`、`skill://review`。
+   */
+  refs: string[];
+  session_id: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ResourceInspectResult".
+ */
+export interface ResourceInspectResult {
+  /**
+   * 与 `refs` 逐项对齐；无效引用为 `None`。
+   */
+  refs: (ResourceRefInfo | null)[];
+}
+/**
+ * 一个有效引用的展示信息。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ResourceRefInfo".
+ */
+export interface ResourceRefInfo {
+  /**
+   * 悬停详情：绝对路径或说明。
+   */
+  detail?: string | null;
+  /**
+   * `file` / `dir` / `skill` / `local` / `history` / `artifact` / `tool`。
+   */
+  kind: string;
+  /**
+   * 控件上显示的短名（文件名、skill 名等）。
+   */
+  label: string;
 }
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema

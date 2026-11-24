@@ -11,6 +11,8 @@ use moc_protocol::methods::FsEntryKind;
 use moc_protocol::methods::FsFileEncoding;
 use moc_protocol::methods::ResourceCompleteParams;
 use moc_protocol::methods::ResourceCompleteResult;
+use moc_protocol::methods::ResourceInspectParams;
+use moc_protocol::methods::ResourceInspectResult;
 use moc_protocol::methods::ResourceListParams;
 use moc_protocol::methods::ResourceListResult;
 use moc_protocol::methods::ResourceReadParams;
@@ -54,6 +56,47 @@ pub(super) async fn resource_complete(
     })
     .collect();
     Ok(ResourceCompleteResult { candidates })
+}
+
+pub(super) async fn resource_inspect(
+    core: &Core,
+    ctx: RequestContext,
+    params: ResourceInspectParams,
+) -> Result<ResourceInspectResult, RpcError> {
+    let (record, cwd, skills) = core.resource_context(&params.session_id).await?;
+    let tool_ref = params
+        .refs
+        .iter()
+        .find(|input| input.starts_with("tool://"))
+        .map_or("", String::as_str);
+    let tools = core.resource_tools(&ctx, &record, tool_ref).await?;
+    let sessions = core.inner.sessions.clone();
+    let refs = tokio::task::spawn_blocking(move || {
+        let context = crate::resources::ResourceContext {
+            session_id: &params.session_id,
+            cwd: &cwd,
+            paths: &record.paths,
+            skills: &skills,
+            sessions: &sessions,
+            tools,
+        };
+        params
+            .refs
+            .iter()
+            .map(|input| {
+                crate::resources::ResourceRouter::inspect(&context, input).map(|info| {
+                    moc_protocol::ResourceRefInfo {
+                        kind: info.kind.to_owned(),
+                        label: info.label,
+                        detail: info.detail,
+                    }
+                })
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?;
+    Ok(ResourceInspectResult { refs })
 }
 
 pub(super) async fn resource_list(

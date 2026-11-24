@@ -19,6 +19,8 @@ pub(in crate::service) async fn project_input(
     config: &crate::ResolvedConfig,
 ) -> Result<Message, crate::CoreError> {
     let mut content = Vec::with_capacity(input.len());
+    // 图片按出现顺序编号，标签紧挨图片前面：正文里的 `#N` 由此对上第 N 张图。
+    let mut images = 0;
     for part in input {
         match part {
             InputPart::Text { text } => {
@@ -32,16 +34,41 @@ pub(in crate::service) async fn project_input(
                 )
                 .await?;
             }
-            InputPart::Image { source, detail } if accepts_image => {
-                content.push(ContentPart::Image {
-                    source: normalize_image_source(source, cwd).await?,
-                    detail,
+            InputPart::Image { source, detail } => {
+                images += 1;
+                content.push(ContentPart::Text(
+                    crate::resources::attach::wrap_image_label(images),
+                ));
+                content.push(if accepts_image {
+                    ContentPart::Image {
+                        source: normalize_image_source(source, cwd).await?,
+                        detail,
+                    }
+                } else {
+                    ContentPart::Text(
+                        "[The user provided an image, but the current model does not support image input]"
+                            .into(),
+                    )
                 });
             }
-            InputPart::Image { .. } => content.push(ContentPart::Text(
-                "[The user provided an image, but the current model does not support image input]"
-                    .into(),
-            )),
+            InputPart::File { path, name } => {
+                let path = crate::tools::normalized(&resolve_reference_path(&path, cwd));
+                let metadata = tokio::fs::metadata(&path)
+                    .await
+                    .ok()
+                    .filter(std::fs::Metadata::is_file)
+                    .ok_or_else(|| {
+                        crate::CoreError::Tool(format!(
+                            "referenced file not found: {}",
+                            path.display()
+                        ))
+                    })?;
+                content.push(ContentPart::Text(crate::resources::attach::wrap_reference(
+                    &path.display().to_string(),
+                    &name,
+                    metadata.len(),
+                )));
+            }
         }
     }
     Ok(Message {
@@ -49,6 +76,25 @@ pub(in crate::service) async fn project_input(
         content: content.into(),
     })
 }
+
+/// 用户按路径引用的文件即是授权：给会话记一条读授权，受限权限下模型也能直接读取。
+pub(in crate::service) fn grant_referenced_files(
+    message: &Message,
+    grants: &parking_lot::RwLock<crate::sandbox::SandboxGrants>,
+) {
+    for part in message.content.iter() {
+        if let ContentPart::Text(text) = part
+            && let Some(attachment) = crate::resources::attach::parse_attachment(text)
+            && attachment.reference.is_some()
+            && let Some(path) = attachment.path
+        {
+            grants
+                .write()
+                .grant_path(Path::new(path), crate::sandbox::Access::Read);
+        }
+    }
+}
+
 async fn normalize_image_source(
     source: moc_llm::ImageSource,
     cwd: &Path,
@@ -631,14 +677,23 @@ mod tests {
         let unsupported = project_input(vec![image()], false, &cwd, &anchors, &config)
             .await
             .expect("图片投影成功");
-        assert_eq!(
-            unsupported.text(),
-            "[The user provided an image, but the current model does not support image input]"
-        );
-        let supported = project_input(vec![image()], true, &cwd, &anchors, &config)
+        // 每张图前面紧挨一个 `#N` 标签块，正文里的 `#N` 由此对上第 N 张图。
+        let label = crate::resources::attach::wrap_image_label(1);
+        assert!(matches!(&unsupported.content[0], ContentPart::Text(text) if *text == label));
+        assert!(matches!(
+            &unsupported.content[1],
+            ContentPart::Text(text)
+                if text == "[The user provided an image, but the current model does not support image input]"
+        ));
+        let supported = project_input(vec![image(), image()], true, &cwd, &anchors, &config)
             .await
             .expect("图片投影成功");
-        assert!(matches!(supported.content[0], ContentPart::Image { .. }));
+        assert!(matches!(&supported.content[0], ContentPart::Text(text) if *text == label));
+        assert!(matches!(supported.content[1], ContentPart::Image { .. }));
+        assert!(matches!(
+            &supported.content[2],
+            ContentPart::Text(text) if *text == crate::resources::attach::wrap_image_label(2)
+        ));
 
         tokio::fs::write(cwd.join("shot.png"), b"png-bytes")
             .await
@@ -728,15 +783,82 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(attachments.len(), 2, "{attachments:?}");
-        let (file_path, file_kind, file_body) = attachments[0];
+        let crate::resources::attach::Attachment {
+            path: Some(file_path),
+            kind: file_kind,
+            body: file_body,
+            ..
+        } = attachments[0]
+        else {
+            panic!("文件附件应带路径");
+        };
         assert_eq!(file_kind, "file");
         assert!(file_path.ends_with("note.txt"), "{file_path}");
         assert!(file_body.contains("note.txt"), "{file_body}");
         assert!(file_body.contains("hello"), "{file_body}");
-        let (dir_path, dir_kind, dir_body) = attachments[1];
+        let crate::resources::attach::Attachment {
+            path: Some(dir_path),
+            kind: dir_kind,
+            body: dir_body,
+            ..
+        } = attachments[1]
+        else {
+            panic!("目录附件应带路径");
+        };
         assert_eq!(dir_kind, "dir");
         assert!(dir_path.ends_with("pkg"), "{dir_path}");
         assert!(dir_body.contains("mod.rs"), "{dir_body}");
+    }
+
+    /// 按路径引用的文件：不内联内容，只给 `#name`、绝对路径与大小；路径不存在时报错。
+    #[tokio::test]
+    async fn file_parts_reference_path_and_size_without_content() {
+        let (dir, anchors, config) = attach_fixture();
+        let cwd = dir.path().join("repo");
+        let upload = dir.path().join("report.pdf");
+        std::fs::write(&upload, "secret body").expect("写文件");
+
+        let message = project_input(
+            vec![InputPart::File {
+                path: upload.display().to_string(),
+                name: "report.pdf".into(),
+            }],
+            false,
+            &cwd,
+            &anchors,
+            &config,
+        )
+        .await
+        .expect("投影成功");
+        let ContentPart::Text(text) = &message.content[0] else {
+            panic!("引用应是文本块");
+        };
+        let attachment = crate::resources::attach::parse_attachment(text).expect("注入块");
+        assert_eq!(attachment.reference, Some("#report.pdf"));
+        assert!(
+            attachment
+                .path
+                .is_some_and(|path| path.ends_with("report.pdf"))
+        );
+        assert!(
+            attachment.body.contains("(11 bytes)"),
+            "{}",
+            attachment.body
+        );
+        assert!(!text.contains("secret body"), "内容不能内联：{text}");
+
+        let missing = project_input(
+            vec![InputPart::File {
+                path: dir.path().join("gone.txt").display().to_string(),
+                name: "gone.txt".into(),
+            }],
+            false,
+            &cwd,
+            &anchors,
+            &config,
+        )
+        .await;
+        assert!(missing.is_err());
     }
 
     /// 含空格路径：token 只到第一个空格，向后按词贪心取最长可解析前缀；
@@ -768,7 +890,15 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(attachments.len(), 1, "{attachments:?}");
-        let (path, kind, body) = attachments[0];
+        let crate::resources::attach::Attachment {
+            path: Some(path),
+            kind,
+            body,
+            ..
+        } = attachments[0]
+        else {
+            panic!("文件附件应带路径");
+        };
         assert_eq!(kind, "file", "应命中文件而不是前缀目录：{path}");
         assert!(path.ends_with("design notes.md"), "{path}");
         assert!(body.contains("# notes"), "{body}");
@@ -802,7 +932,15 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(attachments.len(), 1, "{attachments:?}");
-        let (path, kind, body) = attachments[0];
+        let crate::resources::attach::Attachment {
+            path: Some(path),
+            kind,
+            body,
+            ..
+        } = attachments[0]
+        else {
+            panic!("文件附件应带路径");
+        };
         assert!(path.ends_with(filename), "{path}");
         assert_eq!(kind, "file");
         assert!(body.contains("many spaces"), "{body}");

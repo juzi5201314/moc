@@ -63,6 +63,14 @@ pub struct ResourceCandidate {
     pub matches: Vec<u32>,
 }
 
+/// 输入框里一个有效引用的展示信息（`resource/inspect`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceRef {
+    pub kind: &'static str,
+    pub label: String,
+    pub detail: Option<String>,
+}
+
 /// 资源解析所需的当前会话视图。
 pub struct ResourceContext<'ctx> {
     pub session_id: &'ctx str,
@@ -317,6 +325,88 @@ impl ResourceRouter {
         candidates.dedup_by(|left, right| left.uri == right.uri);
         candidates.truncate(20);
         Ok(candidates)
+    }
+
+    /// 校验输入框里的一个引用 token：`@path` 或资源 URI。只看元数据，不读内容，
+    /// 也不刷新 history 镜像；命名空间（`skill://` 这类根）不算具体引用。
+    pub fn inspect(context: &ResourceContext<'_>, input: &str) -> Option<ResourceRef> {
+        if input.starts_with('@') {
+            return attach::inspect(context.cwd, input);
+        }
+        let scheme = resource_scheme(input)?;
+        let uri = InternalUri::parse(input).ok()?;
+        let file = |kind: &'static str, path: PathBuf| {
+            path.is_file().then(|| ResourceRef {
+                kind,
+                label: uri.segments().last().map_or_else(
+                    || uri.authority().to_owned(),
+                    std::string::ToString::to_string,
+                ),
+                detail: Some(path.display().to_string()),
+            })
+        };
+        match scheme {
+            ResourceScheme::Skill => {
+                let skill = context.skills.get(uri.authority())?;
+                if uri.segments().is_empty() {
+                    return Some(ResourceRef {
+                        kind: "skill",
+                        label: skill.name.clone(),
+                        detail: Some(skill.description.clone()),
+                    });
+                }
+                match resolve_skill(context, input).ok()?.backing {
+                    ResourceBacking::File(path) => file("skill", path).map(|info| ResourceRef {
+                        label: format!("{}/{}", skill.name, uri.segments().join("/")),
+                        ..info
+                    }),
+                    _ => None,
+                }
+            }
+            ResourceScheme::Local => match resolve_local(context, input).ok()?.backing {
+                ResourceBacking::File(path) => file("local", path),
+                _ => None,
+            },
+            ResourceScheme::Artifact => {
+                match ArtifactStore::new(context.paths.clone())
+                    .resolve_uri(input)
+                    .ok()?
+                    .backing
+                {
+                    ResourceBacking::File(path) => file("artifact", path),
+                    _ => None,
+                }
+            }
+            ResourceScheme::History => {
+                let valid = match (uri.authority(), uri.segments()) {
+                    ("transcript", _) => history::Selection::parse(&uri).is_ok(),
+                    ("raw", []) => true,
+                    ("compaction", [name]) => {
+                        (name == "INDEX.md" || name.starts_with("segment-"))
+                            && context.paths.compaction().join(name).is_file()
+                    }
+                    _ => false,
+                };
+                valid.then(|| ResourceRef {
+                    kind: "history",
+                    label: input["history://".len()..].to_owned(),
+                    detail: None,
+                })
+            }
+            ResourceScheme::Tool => {
+                let name = uri.authority();
+                let (_, description) = context
+                    .tools
+                    .as_ref()?
+                    .topics()
+                    .find(|(topic, _)| *topic == name)?;
+                Some(ResourceRef {
+                    kind: "tool",
+                    label: name.to_owned(),
+                    detail: Some(description.to_owned()),
+                })
+            }
+        }
     }
 
     fn resolve_context(

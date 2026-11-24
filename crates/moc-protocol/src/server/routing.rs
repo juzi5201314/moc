@@ -32,6 +32,7 @@ use crate::methods::PluginList;
 use crate::methods::PluginReload;
 use crate::methods::PluginRunCommand;
 use crate::methods::ResourceComplete;
+use crate::methods::ResourceInspect;
 use crate::methods::ResourceList;
 use crate::methods::ResourceRead;
 use crate::methods::SessionBash;
@@ -216,6 +217,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     self.server
                         .service
                         .resource_complete(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <ResourceInspect as Method>::NAME => {
+                let params = params_from_value::<ResourceInspect>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .resource_inspect(self.context(client, cancel), params)
                         .await?,
                 )
             }

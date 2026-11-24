@@ -6,7 +6,8 @@
 //!
 //! 发送时 core 把被引用内容注入用户消息，正文段包在 `<moc-attachment …>`
 //! 外壳里（见 [`wrap_attachment`]）：转写把这段还原成附件 chip，模型读到的
-//! 是 read 格式的注入内容。
+//! 是 read 格式的注入内容。按路径引用的文件（[`wrap_reference`]）与图片标签
+//! （[`wrap_image_label`]）共用同一外壳，只给路径/序号，不注入内容。
 
 use std::path::Path;
 
@@ -19,20 +20,51 @@ use super::{ResourceCandidate, ResourceContext};
 pub const ATTACHMENT_OPEN: &str = "<moc-attachment";
 pub const ATTACHMENT_CLOSE: &str = "</moc-attachment>";
 
+/// 解析后的注入块。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Attachment<'a> {
+    /// 解析后的绝对路径；图片标签块没有路径。
+    pub path: Option<&'a str>,
+    /// `file` / `dir` / `image`。
+    pub kind: &'a str,
+    /// 本条消息内的 `#` 引用名：按路径引用的文件是 `#<name>`，图片标签是 `#<序号>`。
+    pub reference: Option<&'a str>,
+    pub body: &'a str,
+}
+
 /// 生成一个注入块：`path` 用解析后的绝对路径，`kind` 是 `file`/`dir`。
 pub fn wrap_attachment(path: &str, kind: &str, body: &str) -> String {
     let escaped = path.replace('"', "");
     format!("{ATTACHMENT_OPEN} path=\"{escaped}\" kind=\"{kind}\">\n{body}\n{ATTACHMENT_CLOSE}")
 }
 
-/// 剥掉注入块外壳；返回 `(path, kind, body)`，非注入块返回 `None`。
-pub fn parse_attachment(text: &str) -> Option<(&str, &str, &str)> {
+/// 按路径引用的文件：不内联内容，只告诉模型 `#name` 指向的路径与大小。
+pub fn wrap_reference(path: &str, name: &str, size: u64) -> String {
+    let path = path.replace('"', "");
+    let name = name.replace('"', "");
+    format!(
+        "{ATTACHMENT_OPEN} path=\"{path}\" kind=\"file\" ref=\"#{name}\">\n[#{name}] {path} ({size} bytes)\nAttached by reference and not inlined; read it with tools if needed.\n{ATTACHMENT_CLOSE}"
+    )
+}
+
+/// 图片标签：紧挨在第 `index` 张图片前面，让正文里的 `#index` 有明确指向。
+pub fn wrap_image_label(index: usize) -> String {
+    format!(
+        "{ATTACHMENT_OPEN} kind=\"image\" ref=\"#{index}\">\n[Image #{index}]\n{ATTACHMENT_CLOSE}"
+    )
+}
+
+/// 剥掉注入块外壳；非注入块返回 `None`。
+pub fn parse_attachment(text: &str) -> Option<Attachment<'_>> {
     let text = text.strip_prefix(ATTACHMENT_OPEN)?;
     let (header, rest) = text.split_once(">\n")?;
     let body = rest.strip_suffix(&format!("\n{ATTACHMENT_CLOSE}"))?;
-    let path = attr(header, "path")?;
-    let kind = attr(header, "kind")?;
-    Some((path, kind, body))
+    Some(Attachment {
+        path: attr(header, "path"),
+        kind: attr(header, "kind")?,
+        reference: attr(header, "ref"),
+        body,
+    })
 }
 
 /// 是不是注入块（不要求内容完整可解析）。
@@ -56,6 +88,29 @@ fn attr<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     let start = header.find(&key)? + key.len();
     let end = header[start..].find('"')? + start;
     Some(&header[start..end])
+}
+
+/// `@path` 引用的校验：与发送时同一套路径解析（`~` 展开、相对 cwd），只看是否存在。
+pub(super) fn inspect(cwd: &Path, token: &str) -> Option<super::ResourceRef> {
+    let raw = token.strip_prefix('@')?;
+    if raw.is_empty() || raw.starts_with('@') {
+        return None;
+    }
+    let path = crate::config::expand_user_path(raw.trim_end_matches('/'));
+    let path = crate::tools::normalized(&if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    });
+    let metadata = std::fs::metadata(&path).ok()?;
+    Some(super::ResourceRef {
+        kind: if metadata.is_dir() { "dir" } else { "file" },
+        label: path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        ),
+        detail: Some(path.display().to_string()),
+    })
 }
 
 /// 遍历收集的条目数上限；超出即停，保证补全始终快速返回。
