@@ -7,6 +7,7 @@ use super::wrap;
 use super::wrap::str_width;
 use crate::app::App;
 use crate::app::Focus;
+use moc_i18n::t;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -16,7 +17,6 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
-use moc_i18n::t;
 use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -282,7 +282,17 @@ pub(crate) fn prompt_selection_text(app: &App) -> &str {
     if from < to { &text[from..to] } else { "" }
 }
 
-/// 输入框下边框上的图例：运行时显示停止操作，否则显示快捷键键位。
+/// 运行中且输入框有内容时，图例改为排队键位（Enter 按偏好补充或中断）；
+/// 未绑定排队键时返回 `None`，仍显示停止。
+pub(crate) fn queue_legend(app: &App) -> Option<String> {
+    if !app.prompt_running || app.prompt.is_empty() {
+        return None;
+    }
+    let keys = app.preferences.keybindings.get("queue")?;
+    (!keys.is_empty()).then(|| labels::keys(keys))
+}
+
+/// 输入框下边框上的图例：运行时显示停止操作（输入框有内容时显示排队），否则显示快捷键键位。
 ///
 /// 图例直接写在边框行上，因此不额外占用终端行；空间不足时先让掉左侧提示，
 /// 右侧的当前模型与模式仍然保留。
@@ -319,6 +329,12 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
         (
             Cow::Borrowed(""),
             t!("tui.prompt.copied"),
+            theme.gray_bright,
+        )
+    } else if let Some(queue_key) = queue_legend(app) {
+        (
+            Cow::Owned(queue_key),
+            t!("tui.prompt.queue"),
             theme.gray_bright,
         )
     } else if app.prompt_running {

@@ -79,6 +79,7 @@ use prompt::prompt_content_rows;
 pub(crate) use prompt::prompt_cursor_from_point;
 pub(crate) use prompt::prompt_cursor_position;
 pub(crate) use prompt::prompt_selection_text;
+pub(crate) use prompt::queue_legend;
 mod status;
 pub(crate) use status::display_path;
 use status::draw_header;

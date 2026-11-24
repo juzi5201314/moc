@@ -262,9 +262,11 @@ pub(super) fn handle_mouse_with_connection(
             }
             return;
         }
-        // 输入框图例左端：运行中是「停止」，空闲是「快捷键」，点中与对应按键同义。
+        // 输入框图例左端：运行中是「停止」（有输入时是「排队」），空闲是「快捷键」，点中与对应按键同义。
         if app.legend_tip_area.contains(position.into()) {
-            if app.prompt_running {
+            if crate::render::queue_legend(app).is_some() {
+                crate::queue::submit(app, connection, true);
+            } else if app.prompt_running {
                 request_stop(app, connection);
             } else {
                 app.set_modal(Some(Modal::Help { scroll: 0 }));

@@ -1067,6 +1067,7 @@ copied = { zh = "Copied", en = "Copied" }
 copy_cancel = { zh = "Copy · Esc Cancel", en = "Copy · Esc Cancel" }
 cancel_hint = { zh = "Esc Cancel", en = "Esc Cancel" }
 stop = { zh = "Stop", en = "Stop" }
+queue = { zh = "Queue", en = "Queue" }
 stopping = { zh = "Stopping", en = "Stopping" }
 keys = { zh = "Keys", en = "Keys" }
 capsule_fmt = { zh = "⚙%{runs}run·%{approvals}review", en = "⚙%{runs}run·%{approvals}review" }
