@@ -354,6 +354,8 @@ pub struct App {
     pub sync_output: bool,
     /// kitty 键盘消歧义协商结果（`/doctor` 展示用）。
     pub keyboard_enhanced: bool,
+    /// 是否已切到 win32-input-mode（`/doctor` 展示用）。
+    pub win32_input: bool,
     /// 内联图片的解码 / 编码缓存（工具结果、markdown 图片、SVG 代码块共用）。
     pub images: crate::render::image::ImageStore,
     /// 本帧要贴的位图槽位（`ScrollbackView::paint` 填充，帧后由
@@ -668,6 +670,7 @@ impl App {
             graphics: None,
             sync_output: false,
             keyboard_enhanced: false,
+            win32_input: false,
             images,
             image_slots: Vec::new(),
             chart_hits: Vec::new(),

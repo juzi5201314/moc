@@ -42,6 +42,8 @@ pub fn report(app: &App) -> String {
     lines.push(
         if app.keyboard_enhanced {
             t!("tui.doctor.kbd_kitty")
+        } else if app.win32_input {
+            t!("tui.doctor.kbd_win32")
         } else {
             t!("tui.doctor.kbd_plain")
         }

@@ -623,6 +623,7 @@ color_256 = { zh = "256 色", en = "256 colors" }
 color_basic = { zh = "16 色（可设置 COLORTERM=truecolor 启用真彩色）", en = "16 colors (set COLORTERM=truecolor for truecolor)" }
 color_none = { zh = "无色彩支持（已设置 NO_COLOR 或缺失 TERM）", en = "No color support (NO_COLOR set or TERM missing)" }
 kbd_kitty = { zh = "Keyboard: 已协商 kitty 键位消歧义协议", en = "Keyboard: kitty disambiguation protocol negotiated" }
+kbd_win32 = { zh = "Keyboard: 已启用 win32-input-mode（ConPTY 按键记录，Shift/Ctrl+Enter 可区分）", en = "Keyboard: win32-input-mode enabled (ConPTY key records; Shift/Ctrl+Enter are distinct)" }
 kbd_plain = { zh = "Keyboard: 未协商增强协议（Ctrl+M / Ctrl+I 等组合会退化为 Enter / Tab）", en = "Keyboard: enhancement protocol not negotiated (Ctrl+M / Ctrl+I degrade to Enter / Tab)" }
 sync_on = { zh = "Sync output: On（DEC 2026 帧原子更新；若仍撕裂可设 MOC_FULL_REPAINT=1 排障）", en = "Sync output: On (DEC 2026 atomic frame updates; try MOC_FULL_REPAINT=1 if tearing persists)" }
 sync_tmux = { zh = "Sync output: Off（tmux<3.7 / tmux-CC 不透传 DEC 2026，已降级；若外层终端支持可设 MOC_SYNC_OUTPUT=1 强制启用）", en = "Sync output: Off (tmux<3.7 / tmux-CC do not pass through DEC 2026; set MOC_SYNC_OUTPUT=1 to force if supported)" }

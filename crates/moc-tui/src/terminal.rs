@@ -14,9 +14,9 @@ use crossterm::terminal::{
     Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
     enable_raw_mode, supports_keyboard_enhancement,
 };
+use moc_i18n::t;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use moc_i18n::t;
 use std::io::Write;
 
 /// 只申请「消歧义」这一位：它让 Ctrl+M、Ctrl+I 这类与旧式控制码撞车的
@@ -32,6 +32,8 @@ pub struct TerminalGuard {
     restored: bool,
     /// kitty 键盘消歧义协议协商结果（`/doctor` 展示用）。
     keyboard_enhanced: bool,
+    /// 是否已开启 win32-input-mode（`CSI ? 9001 h`），退出时据此关闭。
+    win32_input: bool,
     /// DEC 2026 同步输出开关；启动探测后由 `set_sync_output` 写入。
     sync_output: bool,
     /// 已写出的窗口标题：内容未变时不重发 OSC 序列。
@@ -79,6 +81,7 @@ impl TerminalGuard {
             terminal,
             restored: false,
             keyboard_enhanced: enhanced,
+            win32_input: false,
             sync_output: false,
             title: None,
         })
@@ -87,6 +90,42 @@ impl TerminalGuard {
     /// kitty 键盘协议协商结果：真 = 消歧义已生效（Ctrl+M/I 不再退化为 Enter/Tab）。
     pub fn keyboard_enhanced(&self) -> bool {
         self.keyboard_enhanced
+    }
+
+    /// kitty 协议未生效时，在 WSL 的 ConPTY 下改用 win32-input-mode，让
+    /// Shift/Ctrl+Enter 等组合可区分（对照 oh-my-pi 的协商顺序）。
+    ///
+    /// 必须在终端能力探测之后、输入线程启动之前调用：开启后终端应答也可能
+    /// 被拆成按键记录，探测解析不认识。SSH 与终端复用器不经 ConPTY 直达
+    /// 应用，不开；`MOC_WIN32_INPUT=0|1` 可强制。返回是否已开启。
+    pub fn enable_win32_input(&mut self) -> bool {
+        let env = |name: &str| std::env::var_os(name).is_some();
+        // 原生 Windows 由 crossterm 直接读控制台输入记录，本就能区分组合键
+        let wanted = cfg!(unix)
+            && match std::env::var("MOC_WIN32_INPUT").ok().as_deref() {
+                Some("1") | Some("on") | Some("true") => true,
+                Some("0") | Some("off") | Some("false") => false,
+                _ => {
+                    !self.keyboard_enhanced
+                        && (env("WSL_DISTRO_NAME") || env("WSL_INTEROP"))
+                        && ![
+                            "SSH_CONNECTION",
+                            "SSH_TTY",
+                            "SSH_CLIENT",
+                            "TMUX",
+                            "STY",
+                            "ZELLIJ",
+                        ]
+                        .into_iter()
+                        .any(env)
+                }
+            };
+        if wanted {
+            let backend = self.terminal.backend_mut();
+            self.win32_input = backend.write_all(b"\x1b[?9001h").is_ok() && backend.flush().is_ok();
+            tracing::info!(enabled = self.win32_input, "win32-input-mode");
+        }
+        self.win32_input
     }
 
     /// 按启动探测结果开关 DEC 2026 同步输出包裹。
@@ -158,6 +197,9 @@ impl TerminalGuard {
             .terminal
             .backend_mut()
             .write_all(b"\x1b[?2026l\x1b]0;\x1b\\");
+        if self.win32_input {
+            let _ = self.terminal.backend_mut().write_all(b"\x1b[?9001l");
+        }
         let _ = self.terminal.backend_mut().flush();
         let _ = crossterm::execute!(
             self.terminal.backend_mut(),

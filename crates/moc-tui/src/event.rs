@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use moc_core::Core;
-use moc_protocol::SessionEngine;
 use moc_i18n::t;
+use moc_protocol::SessionEngine;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::app::{App, Focus};
@@ -55,6 +55,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     app.graphics = caps.graphics;
     app.sync_output = caps.sync_output;
     app.keyboard_enhanced = guard.keyboard_enhanced();
+    app.win32_input = guard.enable_win32_input();
     guard.set_sync_output(caps.sync_output);
     app.thinking_detail = preferences.thinking_detail;
     app.tool_detail = preferences.tool_detail;
@@ -87,7 +88,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
         crate::queue::submit(&mut app, &connection, false);
     }
 
-    let mut input = InputThread::spawn();
+    let mut input = InputThread::spawn(app.win32_input);
     let result = event_loop(
         &mut guard,
         &mut app,
