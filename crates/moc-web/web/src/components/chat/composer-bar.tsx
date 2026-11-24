@@ -185,6 +185,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const draft = useComposer((state) => state.drafts[sessionId]);
   const pending = useComposer((state) => state.pending[sessionId] ?? EMPTY_PENDING);
   const runningEnter = usePrefs((state) => state.runningEnter);
+  const queueOnEnter = usePrefs((state) => state.queueOnEnter);
   const models = useConnection(selectModels);
   const builtinMetas = useConnection(selectCommands);
   const features = useConnection(selectFeatures);
@@ -391,7 +392,11 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const canSend =
     (text.trim().length > 0 || images.length > 0) && !readOnly && !reading && !skillsWorking;
 
-  const send = (forceQueue = false) => {
+  /** 运行中的投递方式：`queue` 排队，`active` 按「运行中回车」补充或中断；`alternate` 即 Ctrl+Enter。 */
+  const send = (
+    alternate = false,
+    mode: "queue" | "active" = alternate !== queueOnEnter ? "queue" : "active",
+  ) => {
     const trimmed = text.trim();
     if (!canSend) return;
 
@@ -418,7 +423,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       return;
     }
 
-    const queue = forceQueue || runningEnter === "interrupt";
+    const queue = mode === "queue" || runningEnter === "interrupt";
     const item: PendingItem = {
       key: nanoid(),
       kind: queue ? "queue" : "steer",
@@ -428,7 +433,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     useComposer.getState().pushPending(sessionId, item);
     if (queue) {
       dispatchNext(sessionId);
-      if (!forceQueue) {
+      if (mode === "active") {
         void rpc
           .call("session/cancel", { session_id: sessionId })
           .catch((error) => toast.error(t("cb.interrupt_failed", { error: errorText(error) })));
@@ -592,12 +597,15 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     );
   }
 
+  const queueKey = queueOnEnter ? "Enter" : "Ctrl+Enter";
+  const activeKey = queueOnEnter ? "Ctrl+Enter" : "Enter";
   const placeholder = skillsWorking
     ? t("cb.skills_busy")
     : running
-      ? runningEnter === "interrupt"
-        ? t("cb.ph_interrupt")
-        : t("cb.ph_steer")
+      ? t(runningEnter === "interrupt" ? "cb.ph_interrupt" : "cb.ph_steer", {
+          send: activeKey,
+          queue: queueKey,
+        })
       : inline
         ? t("cb.ph_draft")
         : "";
@@ -802,20 +810,22 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                         <Button
                           variant="secondary"
                           size="icon-sm"
-                          onClick={() => send(true)}
+                          onClick={() => send(false, "queue")}
                           className="w-9 rounded-full pl-1 motion-safe:active:scale-95"
                           aria-label={t("cb.queue_send")}
                         >
                           <ListPlusIcon className="size-4" />
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent side="top">{t("cb.queue_hint")}</TooltipContent>
+                      <TooltipContent side="top">
+                        {t("cb.queue_hint", { key: queueKey })}
+                      </TooltipContent>
                     </Tooltip>
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
                           size="icon-sm"
-                          onClick={() => send()}
+                          onClick={() => send(false, "active")}
                           className="w-9 rounded-full pr-1 hover:bg-primary/85 motion-safe:active:scale-95"
                           aria-label={
                             runningEnter === "interrupt"
@@ -827,7 +837,9 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                         </Button>
                       </TooltipTrigger>
                       <TooltipContent side="top">
-                        {runningEnter === "interrupt" ? t("cb.interrupt_hint") : t("cb.steer_hint")}
+                        {t(runningEnter === "interrupt" ? "cb.interrupt_hint" : "cb.steer_hint", {
+                          key: activeKey,
+                        })}
                       </TooltipContent>
                     </Tooltip>
                   </ButtonGroup>

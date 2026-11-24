@@ -18,7 +18,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useT } from "@/lib/i18n";
 import { groupByProvider, modelName, parseSelector } from "@/lib/models";
-import { SHORTCUTS } from "@/lib/shortcuts";
+import { SHORTCUTS, shortcutLabel } from "@/lib/shortcuts";
 import { type DetailLevel, LEVEL_LABEL } from "@/lib/tool-view";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
@@ -220,6 +220,14 @@ export function GeneralSection() {
               ]}
             />
           </SettingRow>
+          <SettingRow label={t("ss.queue_on_enter")} description={t("ss.queue_on_enter_desc")}>
+            <div className="flex justify-end">
+              <Switch
+                checked={prefs.queueOnEnter}
+                onCheckedChange={(queueOnEnter) => prefs.set({ queueOnEnter })}
+              />
+            </div>
+          </SettingRow>
           <SettingRow label={t("ss.notify")} description={t("ss.notify_desc")}>
             <div className="flex justify-end">
               <Switch
@@ -266,11 +274,12 @@ function InfoRow({ label, value, mono }: { label: string; value: string; mono?: 
 
 export function ShortcutsSection() {
   const t = useT();
+  const queueOnEnter = usePrefs((state) => state.queueOnEnter);
   return (
     <Card className="py-1">
       {SHORTCUTS.map((item) => (
         <div key={item.keys} className="flex items-center justify-between py-2.5 text-ui">
-          <span className="text-foreground">{t(item.label)}</span>
+          <span className="text-foreground">{t(shortcutLabel(item.label, queueOnEnter))}</span>
           <span className="flex gap-1">
             {item.keys.split(" ").map((key) => (
               <Kbd key={key} className="h-5 min-w-5 px-1.5 text-2xs">

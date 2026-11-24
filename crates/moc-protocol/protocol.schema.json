@@ -8422,6 +8422,11 @@
           "$ref": "#/$defs/WebDetailLevel",
           "default": "brief",
           "description": "工具块的显示档位：隐藏只留标题行，简略按工具给少量预览，完整显示全部输出。"
+        "queue_on_enter": {
+          "default": false,
+          "description": "运行中互换 Enter 与 Ctrl+Enter：`true` 时 Enter 排队，Ctrl+Enter 按 `active_submit` 发送。",
+          "type": "boolean"
+        },
         },
         "workspaces": {
           "default": [],

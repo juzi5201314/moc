@@ -41,6 +41,8 @@ notify_waiting = { zh = "Notify on Waiting", en = "Notify on Waiting" }
 notify_waiting_desc = { zh = "`notify_waiting`：终端不在前台时，需要授权或回答提问时发送桌面通知。", en = "`notify_waiting`: Send a desktop notification when authorization or an answer is needed while unfocused." }
 active_submit = { zh = "Active Submit", en = "Active Submit" }
 active_submit_desc = { zh = "`active_submit`：任务运行中按 Enter 的行为：steer 追加引导消息，或 interrupt 中断当前任务并重新提交。", en = "`active_submit`: Behavior of Enter while running: steer appends a steering message, or interrupt stops and resubmits." }
+queue_on_enter = { zh = "Queue on Enter", en = "Queue on Enter" }
+queue_on_enter_desc = { zh = "`queue_on_enter`：开启后任务运行中按 Enter 将消息排入队列，按 queue 键位（默认 Ctrl+Enter）则按 active_submit 补充或中断。", en = "`queue_on_enter`: When on, Enter queues the message while running and the queue key (Ctrl+Enter by default) steers or interrupts per active_submit." }
 history_scope = { zh = "History Scope", en = "History Scope" }
 history_scope_desc = { zh = "`history_scope`：↑/↓ 召回的输入历史范围：global 全局共享，或 project 仅限当前项目。", en = "`history_scope`: Scope of ↑/↓ input history recall: global across projects, or current project only." }
 statusline = { zh = "Statusline", en = "Statusline" }
@@ -819,6 +821,8 @@ help = { zh = "Shortcuts", en = "Shortcuts" }
 sec_input = { zh = "Input & Editing", en = "Input & Editing" }
 send = { zh = "Send message", en = "Send message" }
 queue = { zh = "Queue message", en = "Queue message" }
+send_queue = { zh = "Send message · queue while running", en = "Send message · queue while running" }
+send_active = { zh = "Steer / interrupt while running", en = "Steer / interrupt while running" }
 newline = { zh = "Insert newline", en = "Insert newline" }
 cancel = { zh = "Stop / Quit", en = "Stop / Quit" }
 focus = { zh = "Switch focus", en = "Switch focus" }
@@ -1068,6 +1072,8 @@ copy_cancel = { zh = "Copy · Esc Cancel", en = "Copy · Esc Cancel" }
 cancel_hint = { zh = "Esc Cancel", en = "Esc Cancel" }
 stop = { zh = "Stop", en = "Stop" }
 queue = { zh = "Queue", en = "Queue" }
+steer = { zh = "Steer", en = "Steer" }
+interrupt = { zh = "Interrupt", en = "Interrupt" }
 stopping = { zh = "Stopping", en = "Stopping" }
 keys = { zh = "Keys", en = "Keys" }
 capsule_fmt = { zh = "⚙%{runs}run·%{approvals}review", en = "⚙%{runs}run·%{approvals}review" }

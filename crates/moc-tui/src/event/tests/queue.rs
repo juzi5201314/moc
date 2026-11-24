@@ -220,6 +220,24 @@ async fn interrupt_submit_still_cancels_immediately() {
 }
 
 #[tokio::test]
+async fn queue_on_enter_swaps_send_and_queue_keys() {
+    let (core, connection, mut app) = setup_test_app().await;
+    let session = app.session.as_ref().expect("测试会话").id.clone();
+    app.preferences.queue_on_enter = true;
+    app.prompt_running = true;
+    app.prompt.insert_text("排队消息");
+    crate::queue::submit(&mut app, &connection, false);
+    assert_eq!(app.queues[&session].len(), 1, "Enter 应排队");
+    assert!(!app.cancel_requested && !app.steers.contains_key(&session));
+    app.prompt.insert_text("补充消息");
+    crate::queue::submit(&mut app, &connection, true);
+    assert_eq!(app.queues[&session].len(), 1, "queue 键应走补充");
+    assert_eq!(app.steers[&session].len(), 1);
+    connection.shutdown().await;
+    core.shutdown().await;
+}
+
+#[tokio::test]
 async fn steer_returned_keeps_message_pending_until_applied() {
     use crate::transcript::Block;
 

@@ -1,4 +1,4 @@
-//! Enter 补充当前提示（待发送区，安全边界注入），Ctrl+Enter 排队。
+//! Enter 补充当前提示（待发送区，安全边界注入），Ctrl+Enter 排队；`queue_on_enter` 互换两者。
 //!
 //! 补充消息只有 core 发来 `SteeringApplied` 后才移入转写；队列消息在真正发出
 //! `session/prompt` / `session/bash` 时才移出待发送区。`interrupt` 仍是用户
@@ -47,7 +47,8 @@ pub struct PendingSteer {
     pub withdrawal: Option<WithdrawAction>,
 }
 
-pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
+/// `alternate` 表示经 queue 键位（默认 Ctrl+Enter）提交：默认排队，`queue_on_enter` 时改为按偏好补充或中断。
+pub fn submit(app: &mut App, connection: &EmbeddedConnection, alternate: bool) {
     if app.skills_compacting {
         app.set_notice(t!("tui.queue.skills_busy"));
         return;
@@ -74,6 +75,7 @@ pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
     if let Some(text) = history {
         app.record_input_history(&text);
     }
+    let queued = alternate != app.preferences.queue_on_enter;
     enqueue(app, connection, session, draft, queued, None);
     if let Some(stash) = app.prompt_stash.take() {
         app.prompt.restore_draft(stash);

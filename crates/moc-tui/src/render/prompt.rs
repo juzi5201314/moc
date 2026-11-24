@@ -7,6 +7,7 @@ use super::wrap;
 use super::wrap::str_width;
 use crate::app::App;
 use crate::app::Focus;
+use crate::config::ActiveSubmit;
 use moc_i18n::t;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -282,14 +283,21 @@ pub(crate) fn prompt_selection_text(app: &App) -> &str {
     if from < to { &text[from..to] } else { "" }
 }
 
-/// 运行中且输入框有内容时，图例改为排队键位（Enter 按偏好补充或中断）；
-/// 未绑定排队键时返回 `None`，仍显示停止。
-pub(crate) fn queue_legend(app: &App) -> Option<String> {
+/// 运行中且输入框有内容时，图例改为 queue 键位及其当前动作：默认排队（Enter 按偏好补充或中断），
+/// `queue_on_enter` 时为补充或中断；未绑定 queue 键时返回 `None`，仍显示停止。
+pub(crate) fn queue_legend(app: &App) -> Option<(String, Cow<'static, str>)> {
     if !app.prompt_running || app.prompt.is_empty() {
         return None;
     }
     let keys = app.preferences.keybindings.get("queue")?;
-    (!keys.is_empty()).then(|| labels::keys(keys))
+    let tip = if !app.preferences.queue_on_enter {
+        t!("tui.prompt.queue")
+    } else if app.preferences.active_submit == ActiveSubmit::Interrupt {
+        t!("tui.prompt.interrupt")
+    } else {
+        t!("tui.prompt.steer")
+    };
+    (!keys.is_empty()).then(|| (labels::keys(keys), tip))
 }
 
 /// 输入框下边框上的图例：运行时显示停止操作（输入框有内容时显示排队），否则显示快捷键键位。
@@ -331,12 +339,8 @@ pub(super) fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) 
             t!("tui.prompt.copied"),
             theme.gray_bright,
         )
-    } else if let Some(queue_key) = queue_legend(app) {
-        (
-            Cow::Owned(queue_key),
-            t!("tui.prompt.queue"),
-            theme.gray_bright,
-        )
+    } else if let Some((queue_key, tip)) = queue_legend(app) {
+        (Cow::Owned(queue_key), tip, theme.gray_bright)
     } else if app.prompt_running {
         (
             Cow::Borrowed("Esc"),

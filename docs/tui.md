@@ -42,7 +42,7 @@
 | `Esc` | 取消选区 → 停止生成 → 清空输入 → 空输入框双击打开消息回退；聚焦子代理时返回主会话 |
 | `←` `←` | 聚焦子代理时连按两次返回主会话 |
 
-运行中输入框有内容时，输入框下边框左侧的提示从 `Esc Stop` 换成排队键位（如 `Ctrl+Enter Queue`），点击它与按键同义。
+运行中输入框有内容时，输入框下边框左侧的提示从 `Esc Stop` 换成排队键位（如 `Ctrl+Enter Queue`；开启 `queue_on_enter` 时显示为 `Ctrl+Enter Steer` / `Interrupt`），点击它与按键同义。
 
 > 部分终端无法区分 `Ctrl+Enter` 或 `Ctrl+M`（会视为普通 `Enter`），可在 Settings 的 `UI` 页签中重新绑定快捷键。WSL 经 ConPTY（Windows Terminal 等）运行且终端不支持 kitty 键盘协议时，moc 会开启 win32-input-mode，使 `Shift+Enter` / `Ctrl+Enter` 可区分；`/doctor` 的 Keyboard 一行显示当前协议，`MOC_WIN32_INPUT=0|1` 可强制关闭或开启。`tui.toml` 只保存改动过的键位，其余跟随内置默认。
 
@@ -84,6 +84,7 @@
   - 按 `Enter` 默认「插队」补充要求，等当前模型响应或工具批次收尾后、下一轮请求前自动合入。
   - 按 `Ctrl+Enter` 将消息排入「队列」，等本轮完整结束后依次发出。
   - 也可在 `Settings → UI` 中将 `Active Submit` 改为 `interrupt`（中断当前任务并重新提交）。
+  - 开启 `Queue on Enter`（`queue_on_enter = true`）后两者互换：`Enter` 排队，`Ctrl+Enter` 按 `Active Submit` 插队或中断；输入框图例与快捷键一览同步改写。
 - **原地回退与前滚**：输入框为空且会话空闲时连续按两次 `Esc`，可浏览消息时间线并原地截断到任意位置（不改会话 ID，选中用户消息时会把原文填回输入框便于修改）。刚截断的尾部会暂留在列表下方，按 `Enter` 可随时前滚接回；写入新消息后可前滚记录即清空。
 - **重答提问**：在回退列表选中含模型提问的条目按 `R`，会重新弹出原提问卡片，改选答案后继续推进。
 

@@ -20,6 +20,8 @@ export type DiffMode = "unified" | "split";
 export type Prefs = {
   theme: Theme;
   runningEnter: RunningEnter;
+  /** 运行中互换 Enter 与 Ctrl+Enter：Enter 排队，Ctrl+Enter 按 runningEnter 发送。 */
+  queueOnEnter: boolean;
   notify: boolean;
   diffMode: DiffMode;
   /** 思考块显示档位。 */
@@ -71,6 +73,7 @@ function toWire(prefs: Prefs, workspaces: string[]): WebState {
   return {
     theme: prefs.theme,
     active_submit: prefs.runningEnter === "steer" ? "steering" : "interrupt",
+    queue_on_enter: prefs.queueOnEnter,
     notify: prefs.notify,
     diff_mode: prefs.diffMode,
     thinking_detail: prefs.thinkingDetail,
@@ -84,6 +87,7 @@ function fromWire(state: WebState): Prefs {
     // 全字段 serde(default)：缺省键按 Rust `Default for WebState` 的同一组值兜底。
     theme: state.theme ?? "system",
     runningEnter: state.active_submit === "interrupt" ? "interrupt" : "steer",
+    queueOnEnter: state.queue_on_enter ?? false,
     notify: state.notify ?? false,
     diffMode: state.diff_mode ?? "unified",
     thinkingDetail: state.thinking_detail ?? "brief",
@@ -118,13 +122,21 @@ function adopt(doc: WebStateDocument): void {
 async function sync(): Promise<void> {
   if (revision === null) await read();
   if (revision === null) return;
-  const { workspaces, theme, runningEnter, notify, diffMode, thinkingDetail, toolDetail } =
-    usePrefs.getState();
+  const {
+    workspaces,
+    theme,
+    runningEnter,
+    queueOnEnter,
+    notify,
+    diffMode,
+    thinkingDetail,
+    toolDetail,
+  } = usePrefs.getState();
   try {
     const doc = await rpc.call<WebStateDocument>("web/state_save", {
       revision,
       state: toWire(
-        { theme, runningEnter, notify, diffMode, thinkingDetail, toolDetail },
+        { theme, runningEnter, queueOnEnter, notify, diffMode, thinkingDetail, toolDetail },
         workspaces,
       ),
     });
@@ -216,6 +228,7 @@ async function read(): Promise<void> {
 export const usePrefs = create<PrefsStore>()((set, get) => ({
   theme: "system",
   runningEnter: "steer",
+  queueOnEnter: false,
   notify: false,
   diffMode: "unified",
   thinkingDetail: "brief",

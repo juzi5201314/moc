@@ -34,6 +34,13 @@ export const SHORTCUTS: { keys: string; label: MsgKey }[] = [
   { keys: "Esc", label: "keys.stop" },
 ];
 
+/** 「Enter 排队」开启后，Enter 与 Ctrl+Enter 在运行中的含义互换，快捷键列表随之改写说明。 */
+export function shortcutLabel(label: MsgKey, queueOnEnter: boolean): MsgKey {
+  if (!queueOnEnter) return label;
+  if (label === "keys.send") return "keys.send_queue";
+  return label === "keys.queue" ? "keys.send_active" : label;
+}
+
 const ENGINE_CYCLE: SessionEngine[] = ["standard", "ptc", "clm_experimental"];
 const ENGINE_LABEL: Record<SessionEngine, MsgKey> = {
   standard: "engine.standard",

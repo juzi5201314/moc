@@ -62,6 +62,8 @@ pub struct WebState {
     pub theme: WebTheme,
     /// 会话运行中按 Enter：`steering` 并入当前提示，`interrupt` 先停下再提问。
     pub active_submit: WebSubmitAction,
+    /// 运行中互换 Enter 与 Ctrl+Enter：`true` 时 Enter 排队，Ctrl+Enter 按 `active_submit` 发送。
+    pub queue_on_enter: bool,
     /// 后台中弹出需要处理的授权/提问时，发一条系统通知。
     pub notify: bool,
     /// 内联 diff 的展示方式。
@@ -79,6 +81,7 @@ impl Default for WebState {
         Self {
             theme: WebTheme::System,
             active_submit: WebSubmitAction::Steering,
+            queue_on_enter: false,
             notify: false,
             diff_mode: WebDiffMode::Unified,
             thinking_detail: WebDetailLevel::Brief,
@@ -169,6 +172,7 @@ mod tests {
             state: WebState {
                 theme: WebTheme::Dark,
                 active_submit: WebSubmitAction::Interrupt,
+                queue_on_enter: true,
                 notify: true,
                 diff_mode: WebDiffMode::Split,
                 thinking_detail: WebDetailLevel::Full,
@@ -184,6 +188,7 @@ mod tests {
                 "state": {
                     "theme": "dark",
                     "active_submit": "interrupt",
+                    "queue_on_enter": true,
                     "notify": true,
                     "diff_mode": "split",
                     "thinking_detail": "full",

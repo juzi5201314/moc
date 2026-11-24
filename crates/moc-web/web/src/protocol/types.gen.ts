@@ -5962,6 +5962,10 @@ export interface WebState {
    */
   thinking_detail?: "hidden" | "brief" | "full";
   /**
+   * 运行中互换 Enter 与 Ctrl+Enter：`true` 时 Enter 排队，Ctrl+Enter 按 `active_submit` 发送。
+   */
+  queue_on_enter?: boolean;
+  /**
    * 工具块的显示档位：隐藏只留标题行，简略按工具给少量预览，完整显示全部输出。
    */
   tool_detail?: "hidden" | "brief" | "full";

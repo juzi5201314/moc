@@ -30,6 +30,8 @@ pub struct TuiConfig {
     pub notify_complete: bool,
     pub notify_waiting: bool,
     pub active_submit: ActiveSubmit,
+    /// 运行中互换 send 与 queue 键位的含义：`true` 时 Enter 排队，Ctrl+Enter 按 `active_submit` 发送。
+    pub queue_on_enter: bool,
     /// ↑/↓ 召回输入历史的范围：全局共享，或只看当前项目目录。
     pub history_scope: HistoryScope,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,6 +48,7 @@ impl Default for TuiConfig {
             notify_complete: true,
             notify_waiting: true,
             active_submit: ActiveSubmit::Steering,
+            queue_on_enter: false,
             history_scope: HistoryScope::Global,
             statusline: None,
             keybindings: actions()
@@ -364,6 +367,12 @@ pub fn fields() -> Vec<ConfigField> {
             ]),
         ),
         (
+            "queue_on_enter",
+            t!("tui.settings.queue_on_enter"),
+            t!("tui.settings.queue_on_enter_desc"),
+            FieldKind::Bool,
+        ),
+        (
             "history_scope",
             t!("tui.settings.history_scope"),
             t!("tui.settings.history_scope_desc"),
@@ -434,7 +443,7 @@ mod tests {
         store.save(&config).unwrap();
         let saved = std::fs::read_to_string(&store.path).unwrap();
         assert!(
-            saved.contains("send") && !saved.contains("queue"),
+            saved.contains("send = ") && !saved.contains("queue = "),
             "只落盘改动过的键位：{saved}"
         );
         let keys = KeyMap::compile(&config).unwrap();

@@ -31,6 +31,12 @@ pub(super) fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, us
     };
     let fixed_keys =
         |list: &[&str]| labels::keys(&list.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>());
+    // `queue_on_enter` 互换两键在运行中的含义，说明随之改写。
+    let (send_help, queue_help) = if app.preferences.queue_on_enter {
+        ("tui.help.send_queue", "tui.help.send_active")
+    } else {
+        ("tui.help.send", "tui.help.queue")
+    };
     let mut sections = vec![HelpSection {
         title: t!("tui.help.sec_general").into_owned(),
         rows: vec![
@@ -51,8 +57,8 @@ pub(super) fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, us
     sections.push(HelpSection {
         title: t!("tui.help.sec_input").into_owned(),
         rows: vec![
-            (get_key("send"), t!("tui.help.send").into_owned()),
-            (get_key("queue"), t!("tui.help.queue").into_owned()),
+            (get_key("send"), t!(send_help).into_owned()),
+            (get_key("queue"), t!(queue_help).into_owned()),
             (get_key("newline"), t!("tui.help.newline").into_owned()),
             (get_key("cancel"), t!("tui.help.cancel").into_owned()),
             (get_key("focus"), t!("tui.help.focus").into_owned()),
