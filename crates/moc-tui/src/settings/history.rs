@@ -11,7 +11,7 @@ use crate::protocol::EmbeddedConnection;
 use moc_protocol::ConfigAction;
 use moc_protocol::ConfigReply;
 use moc_protocol::ConfigScope;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 
 impl SettingsPanel {

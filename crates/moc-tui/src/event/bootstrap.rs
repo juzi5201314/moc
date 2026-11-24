@@ -1,6 +1,6 @@
 //! 终端日志、初始会话与环境加载。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::TuiOptions;
 use super::agents::load_subagents_for_parent;

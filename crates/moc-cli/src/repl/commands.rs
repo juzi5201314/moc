@@ -56,7 +56,7 @@ use moc_protocol::methods::SessionSetPermissionParams;
 use moc_protocol::methods::SessionUsage;
 use moc_protocol::methods::SessionUsageParams;
 use moc_protocol::methods::prompt::PromptMode;
-use rust_i18n::t;
+use moc_i18n::t;
 use std::io::Write;
 
 pub(super) async fn run_command(

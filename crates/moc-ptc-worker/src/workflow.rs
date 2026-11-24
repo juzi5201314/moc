@@ -9,7 +9,7 @@ use moc_ptc_protocol::{
     },
 };
 use rquickjs::{Context, Function, Object, Persistent, Runtime};
-use rust_i18n::t;
+use moc_i18n::t;
 use std::{
     io::{BufRead, Read, Write},
     sync::{Arc, Mutex, mpsc},

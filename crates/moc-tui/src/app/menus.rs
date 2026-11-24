@@ -1,6 +1,6 @@
 //! 引擎、权限菜单与模型选择显示。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::{App, LegendItem, LegendMenu, engine_label};
 use moc_protocol::methods::{SessionEngine, SessionPermission};

@@ -9,7 +9,7 @@ use crate::tools::ToolCtx;
 use crate::tools::ToolOutcome;
 use moc_protocol::methods::SessionUpdate;
 use moc_protocol::methods::ToolStatus;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 
 /// 授权被拒时的统一工具结果；调用方保证只传入非 `Allowed` 结果。

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 use moc_protocol::methods::SessionEngine;
-use rust_i18n::t;
+use moc_i18n::t;
 
 #[derive(Debug, Parser)]
 #[command(name = "moc", version, about = t!("cli.args.about").into_owned())]

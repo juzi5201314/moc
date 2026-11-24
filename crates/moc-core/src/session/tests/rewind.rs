@@ -258,7 +258,7 @@ async fn prepare_reask_keeps_call_drops_result_and_tail() {
 /// 重新作答只接受已收场的 ask 调用：非 ask、没有结果、不存在的调用都拒绝。
 #[tokio::test]
 async fn prepare_reask_rejects_non_ask_unsettled_and_unknown_calls() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let directory = tempfile::tempdir().expect("临时目录");
     let table = SessionTable::new(directory.path().join("sessions"), true);
     let info = table

@@ -33,7 +33,7 @@ fn merge_by_wire_role() {
 
 #[test]
 fn tool_use_arguments_become_object() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let req = ChatRequest {
         messages: vec![Message {
             role: Role::Assistant,

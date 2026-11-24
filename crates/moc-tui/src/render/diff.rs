@@ -8,7 +8,7 @@
 use moc_protocol::methods::{DiffLineKind, ToolDiff, ToolFileDiff};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::highlight;
 use crate::theme::Theme;

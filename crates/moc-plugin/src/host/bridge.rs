@@ -5,7 +5,7 @@ use crate::descriptor::ConfigDecl;
 use crate::error::PluginError;
 use crate::error::Result;
 use crate::runtime::HostRequest;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 use std::path::Path;
 

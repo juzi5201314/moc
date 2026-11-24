@@ -9,7 +9,7 @@ use std::borrow::Cow;
 
 use moc_llm::{Protocol, ReasoningSummary, ThinkingWire};
 use moc_protocol::{ChoiceOption, ConfigField, FieldKind};
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::{Map, Value};
 
 use super::model::ThinkingLevel;

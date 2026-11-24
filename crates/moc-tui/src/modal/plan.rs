@@ -2,7 +2,7 @@ use super::PlanAnnotationDraft;
 use super::PlanAnnotationEditor;
 use super::PlanReviewState;
 use super::truncate_chars;
-use rust_i18n::t;
+use moc_i18n::t;
 
 impl PlanReviewState {
     pub fn new(

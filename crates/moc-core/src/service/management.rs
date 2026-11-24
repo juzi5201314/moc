@@ -10,7 +10,7 @@ use moc_protocol::{
     SteerResult, UnsteerParams, UnsteerResult, UpdateSink, WebStateDocument, WebStateSaveParams,
     WebStateUpdated,
 };
-use rust_i18n::t;
+use moc_i18n::t;
 use std::{collections::VecDeque, path::Path, sync::Arc};
 
 /// 一条已接受、但还没在安全边界写入会话的补充消息。

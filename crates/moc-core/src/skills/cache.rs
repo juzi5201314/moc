@@ -1,6 +1,6 @@
 //! 手动生成的技能路由摘要；整份快照原子发布，读取不获取写锁。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;

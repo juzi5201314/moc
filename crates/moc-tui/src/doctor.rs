@@ -6,7 +6,7 @@
 use crate::app::App;
 use crate::render::graphics::GraphicsProto;
 use crate::theme::ColorLevel;
-use rust_i18n::t;
+use moc_i18n::t;
 
 /// 汇总当前终端能力：每行一项，可行的修复建议随附在对应行内。
 pub fn report(app: &App) -> String {
@@ -121,7 +121,7 @@ mod tests {
     /// 报告覆盖全部诊断分区；具体取值随环境变，不锁死。
     #[test]
     fn report_covers_every_section() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let app = App::new(crate::theme::Theme::global(), events);
         let text = report(&app);

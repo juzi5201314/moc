@@ -6,8 +6,6 @@
 //! TUI、web 打开，反之亦然。
 #![forbid(unsafe_code)]
 
-rust_i18n::i18n!("../../locales", fallback = "zh");
-
 mod agent;
 mod backend;
 mod bridge;
@@ -247,7 +245,7 @@ pub async fn serve(core: Arc<Core>, options: AcpOptions) -> anyhow::Result<()> {
     if handshake.server.name != "moc-core" {
         anyhow::bail!(
             "{}",
-            rust_i18n::t!("acp.err.not_core", name = handshake.server.name)
+            moc_i18n::t!("acp.err.not_core", name = handshake.server.name)
         );
     }
     bridge.attach_moc(client.clone());

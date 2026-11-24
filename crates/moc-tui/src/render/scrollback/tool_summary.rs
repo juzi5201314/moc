@@ -15,7 +15,7 @@ use crate::transcript::ToolCallBlock;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 use std::borrow::Cow;
 

@@ -11,7 +11,7 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
-use rust_i18n::t;
+use moc_i18n::t;
 
 /// 整行或整块被略去时的引导符（`⋯ 还有 3 行`）。
 pub const OMITTED: &str = "⋯";

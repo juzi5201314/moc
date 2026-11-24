@@ -139,7 +139,7 @@ fn request() -> ChatRequest {
 
 #[tokio::test]
 async fn image_524_reports_exact_body_and_obeys_timeout_retry_policy() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use base64::Engine as _;
     use moc_llm::{ContentPart, ImageSource, Role};
     let server = start().await;
@@ -207,7 +207,7 @@ async fn image_524_reports_exact_body_and_obeys_timeout_retry_policy() {
 
 #[tokio::test]
 async fn request_budget_rejection_never_reaches_the_gateway() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let server = start().await;
     let mut req = request();
     req.options.max_request_bytes = Some(1);
@@ -386,7 +386,7 @@ async fn error_body_and_metadata_are_preserved() {
 
 #[tokio::test]
 async fn gateway_status_display_preserves_metadata_and_raw_response() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     for (status, title) in [
         (407, "代理认证失败"),
         (431, "请求头过大"),

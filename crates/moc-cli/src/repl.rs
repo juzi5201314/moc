@@ -13,7 +13,7 @@ use moc_protocol::methods::{
     SessionSetModel, SessionSetModelParams, SessionUpdate, SessionUpdateMethod,
 };
 use moc_protocol::{ClientBuilder, ClientHandle, RpcError, RpcErrorCode, ServerOptions};
-use rust_i18n::t;
+use moc_i18n::t;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::args::CliArgs;

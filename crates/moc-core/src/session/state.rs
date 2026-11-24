@@ -6,7 +6,7 @@ use moc_protocol::methods::{
 };
 
 use crate::error::CoreError;
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::entries::Entry;
 use super::entries::PtcStateChange;

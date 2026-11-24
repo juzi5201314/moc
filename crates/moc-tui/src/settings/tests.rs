@@ -36,7 +36,7 @@ fn restore_keeps_the_other_stack() {
 /// 任何新增，Enter 却照常写入一条空改动。
 #[tokio::test]
 async fn clicking_an_added_model_keeps_the_selection_empty() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use crate::settings::{Hit, View};
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use moc_core::{Core, CoreConfig};
@@ -341,7 +341,7 @@ fn model_role_fields_carry_their_own_specials() {
 
 #[test]
 fn server_plugin_fields_survive_rebuild_with_defaults() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let path = vec![
         "plugins".into(),
         "foo".into(),
@@ -419,7 +419,7 @@ fn server_plugin_fields_survive_rebuild_with_defaults() {
 
 #[test]
 fn rebuilding_does_not_infer_plugin_field_metadata() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let path = vec![
         "plugins".into(),
         "foo".into(),
@@ -504,7 +504,7 @@ fn list_summaries_show_defaults_and_choices() {
 
 #[test]
 fn advanced_group_collapses_by_default_and_expands_on_filter() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let basic = ConfigField {
         path: vec!["limits".into(), "max_turns".into()],
         tab: "会话".into(),

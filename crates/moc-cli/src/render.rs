@@ -4,7 +4,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use moc_protocol::methods::{AssistantDelta, SessionUpdate, SessionUpdateParams, UpstreamField};
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 
 #[derive(Clone)]

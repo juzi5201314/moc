@@ -28,7 +28,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 
 /// 标签列宽：取整页最宽标签（含光标、缩进与自定义标记），夹在 24–44 列，

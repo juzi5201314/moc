@@ -1,6 +1,6 @@
 //! 模型选择与思考等级切换。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use crate::app::App;
 use crate::protocol::AppEvent;

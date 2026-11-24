@@ -3,7 +3,7 @@
 //! 普通会话是逐行 JSONL；开启 zstd 压缩的新会话是 `.jsonl.zst`，由独立的完整帧拼接。
 //! 两种格式的读写都封装在这里，上层只接触 [`Entry`]。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};

@@ -99,8 +99,6 @@
 
 #![forbid(unsafe_code)]
 
-rust_i18n::i18n!("../../locales", fallback = "zh");
-
 pub mod client;
 pub mod codec;
 pub mod config;

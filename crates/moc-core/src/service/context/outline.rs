@@ -4,7 +4,7 @@ use crate::compact;
 use crate::compact::replay::ContextOrigin;
 use moc_llm::{ChatRequest, ContentPart, Message, RequestInspection, Role};
 use moc_protocol::methods::{ContextContentSection, ContextUsageResult};
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 
 pub(super) fn build(

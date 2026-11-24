@@ -221,7 +221,7 @@ fn read_summary_never_expands_but_errors_remain_visible() {
 /// grep 始终只报计数和警告，不显示匹配正文。
 #[test]
 fn grep_summary_reports_counts_and_warnings() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_protocol::ToolResult;
     use moc_protocol::methods::ToolStatus;
 
@@ -315,7 +315,7 @@ fn grep_summary_reports_counts_and_warnings() {
 /// find 始终只报路径数和扫描警告。
 #[test]
 fn find_summary_reports_file_count_and_warnings() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_protocol::ToolResult;
     use moc_protocol::methods::ToolStatus;
 
@@ -720,7 +720,7 @@ fn execute_brief_shows_title_only_and_errors() {
 /// grep 简略档：计数内联进标题尾列，块只剩标题行和空行。
 #[test]
 fn grep_brief_inlines_count_into_title_tail() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_protocol::methods::ToolStatus;
 
     let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();

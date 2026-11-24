@@ -1,0 +1,11 @@
+[package]
+name = "moc-i18n"
+version = "0.1.0"
+edition = "2024"
+authors = ["soeur@soeur.dev@gmail.com"]
+
+[lib]
+doctest = false
+
+[build-dependencies]
+toml.workspace = true

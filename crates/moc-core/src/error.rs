@@ -1,11 +1,11 @@
 //! moc-core 的统一错误类型。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::io;
 
 /// core 内可映射到协议错误或诊断输出的错误。
 ///
-/// `Display` 手写而不用 `#[error]`：分类前缀要走 rust-i18n，attribute 只接受字面量。
+/// `Display` 手写而不用 `#[error]`：分类前缀要走 moc-i18n，attribute 只接受字面量。
 #[derive(Debug)]
 pub enum CoreError {
     /// 配置无效或无法解析。

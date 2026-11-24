@@ -14,7 +14,7 @@ use crate::render::markdown::widget_fence_title;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use rust_i18n::t;
+use moc_i18n::t;
 use std::path::PathBuf;
 
 impl<'a> MdRenderer<'a> {

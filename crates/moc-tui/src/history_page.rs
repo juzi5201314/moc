@@ -1,5 +1,5 @@
 //! 历史页读取：小页直返，大页在私有文件重组，避免完整 JSON 字符串与消息同时常驻。
-use rust_i18n::t;
+use moc_i18n::t;
 
 use moc_protocol::methods::{
     SessionHistory, SessionHistoryParams, SessionHistoryResult, SessionLoadPageParams,

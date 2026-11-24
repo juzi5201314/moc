@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn static_system_block_takes_its_own_cache_breakpoint() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let system = Message {
         role: Role::System,
         content: crate::message_content![
@@ -167,7 +167,7 @@ fn system_and_user_messages_keep_independent_cache_breakpoints() {
 
 #[test]
 fn cache_control_top_level_and_breakpoints() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     // 无断点：cache_control 落在顶层 system 的最后一块。
     let req = ChatRequest {
         messages: vec![Message::system("系统提示"), Message::user_text("hi")],
@@ -298,7 +298,7 @@ fn cache_control_top_level_and_breakpoints() {
 
 #[test]
 fn cache_breakpoint_on_hoisted_system_message_lands_on_system_boundary() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     // core 对 Anthropic 恒定给出 `[0, …]`，而 `messages[0]` 是系统提示：
     // 断点落在被上提的消息上时必须落在 `system` 边界，而不是报「没有对应的
     // 线上内容块」——否则每个请求都在本地编码阶段失败。

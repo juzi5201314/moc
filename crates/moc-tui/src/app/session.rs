@@ -1,4 +1,4 @@
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::App;
 use super::Focus;

@@ -20,7 +20,7 @@ use crate::modal::{Modal, RewindState};
 use crate::render::labels::KeyHit;
 use crate::render::wrap::{str_width, wrap_text};
 use crate::theme::Theme;
-use rust_i18n::t;
+use moc_i18n::t;
 
 /// 计算回退模态区域：宽屏下占据约 92% 宽、88% 高，留出舒适的边缘。
 fn modal_area(area: Rect) -> Rect {

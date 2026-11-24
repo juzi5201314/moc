@@ -3,7 +3,7 @@
 //! 参数全部来自 `[tools.bash.limits]`；0 表示该项不限。Linux 的 `memory.high` 依赖宿主
 //! swap 才能把匿名页换出并继续推进，无 swap 时自动跳过，避免进程无限期停等。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::ffi::OsString;
 use std::sync::LazyLock;
 
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn validation_names_the_field_and_rejects_empty_or_inverted_limits() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let mut config = BashLimitsConfig {
             enabled: true,
             ..Default::default()

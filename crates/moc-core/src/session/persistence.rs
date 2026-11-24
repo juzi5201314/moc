@@ -12,7 +12,7 @@ use crate::error::CoreError;
 use moc_llm::FinishReason;
 use moc_llm::Message;
 use moc_protocol::methods::ToolExecution;
-use rust_i18n::t;
+use moc_i18n::t;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 

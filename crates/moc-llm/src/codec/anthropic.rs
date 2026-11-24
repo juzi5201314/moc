@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::{Value, json};
 
 use crate::error::LlmError;

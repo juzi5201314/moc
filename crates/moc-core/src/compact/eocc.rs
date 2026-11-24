@@ -11,7 +11,7 @@ use super::{
 };
 use crate::error::CoreError;
 use crate::session::state::SessionState;
-use rust_i18n::t;
+use moc_i18n::t;
 
 const MAX_TASK_TOKENS: u64 = 8192;
 const MAX_REQUEST_TOKENS: u64 = 3072;

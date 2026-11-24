@@ -10,7 +10,7 @@
 //! 同名冲突取 rank 最小者并告警；SKILL.md 真实路径去重防 symlink 双载
 //! （skills.sh 等安装器以 symlink 方式分发）。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 

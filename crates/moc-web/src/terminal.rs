@@ -28,7 +28,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::{Deserialize, Serialize};
 
 use crate::{AppState, origin_allowed};

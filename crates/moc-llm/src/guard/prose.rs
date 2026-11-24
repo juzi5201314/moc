@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use rust_i18n::t;
+use moc_i18n::t;
 use xxhash_rust::xxh3::xxh3_64;
 
 use super::{SEGMENT_CHARS, SEGMENT_WINDOW};

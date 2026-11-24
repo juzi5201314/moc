@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::Deserialize;
 
 use crate::error::{PluginError, Result};

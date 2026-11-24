@@ -1,6 +1,6 @@
 //! moc 协议 DTO 与 ACP schema 之间的纯转换：不发起任何调用，只负责形状映射。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::path::PathBuf;
 
 use agent_client_protocol::schema::v1::{
@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn todos_become_plan() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let phases: Vec<TodoPhase> = serde_json::from_value(json!([{
             "phase": "实现", "items": [
                 {"status": "completed", "task": "建骨架"},

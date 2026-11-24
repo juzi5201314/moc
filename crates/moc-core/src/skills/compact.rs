@@ -5,7 +5,7 @@ use moc_protocol::{
     RequestContext, SkillsCompactAction, SkillsCompactParams, SkillsCompactResult, SkillsProgress,
     SkillsProgressParams, SkillsProgressPhase,
 };
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::BTreeMap, path::Path, sync::Arc};

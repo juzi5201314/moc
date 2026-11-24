@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{CoreConfig, CoreError};
 use moc_protocol::{ConfigScope, SettingsDocument};
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::{Value as Json, json};
 use std::path::{Path, PathBuf};
 

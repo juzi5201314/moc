@@ -8,7 +8,7 @@ use std::ops::Range;
 use moc_protocol::ResourceCandidate;
 use moc_protocol::commands::{ArgCompletion, CommandCandidate, CommandSpec, DynamicArg};
 use ratatui::layout::Rect;
-use rust_i18n::t;
+use moc_i18n::t;
 
 use crate::app::App;
 use crate::commands::CommandId;

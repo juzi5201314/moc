@@ -17,7 +17,7 @@ use moc_protocol::{
         SessionUpdateParams,
     },
 };
-use rust_i18n::t;
+use moc_i18n::t;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender, channel};
 use tokio_util::sync::CancellationToken;
 

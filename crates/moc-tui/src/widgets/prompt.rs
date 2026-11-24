@@ -9,7 +9,7 @@
 
 use moc_protocol::ImageSource;
 use moc_protocol::methods::InputPart;
-use rust_i18n::t;
+use moc_i18n::t;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::history::HISTORY_MAX;

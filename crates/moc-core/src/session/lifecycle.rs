@@ -13,7 +13,7 @@ use crate::ids;
 use moc_protocol::methods::SessionEngine;
 use moc_protocol::methods::SessionInfo;
 use moc_protocol::methods::SessionPermission;
-use rust_i18n::t;
+use moc_i18n::t;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::Path;

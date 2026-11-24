@@ -16,7 +16,7 @@ async fn read_only_model_picker_refuses_changes_before_requesting_core() {
     };
     assert_eq!(
         picker.error.as_deref(),
-        Some(rust_i18n::t!("tui.status.read_only").as_ref())
+        Some(moc_i18n::t!("tui.status.read_only").as_ref())
     );
     let session = app.session.clone();
     super::super::model::request_session_model(
@@ -39,7 +39,7 @@ async fn read_only_model_picker_refuses_changes_before_requesting_core() {
     assert!(detail.pending.is_none());
     assert_eq!(
         picker.error.as_deref(),
-        Some(rust_i18n::t!("tui.status.read_only").as_ref())
+        Some(moc_i18n::t!("tui.status.read_only").as_ref())
     );
     core.shutdown().await;
 }
@@ -47,7 +47,7 @@ async fn read_only_model_picker_refuses_changes_before_requesting_core() {
 /// 模型选择器回报容量缺口时渲染压缩确认卡片，确认后先切换再由新模型压缩。
 #[tokio::test]
 async fn model_picker_asks_before_compacting() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
     use moc_protocol::{PromptParams, SessionPrompt};
     use wiremock::{

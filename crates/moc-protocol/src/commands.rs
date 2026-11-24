@@ -43,7 +43,7 @@ pub enum CommandGroup {
 impl CommandGroup {
     /// 帮助/清单里的组标题。
     pub fn label(self) -> std::borrow::Cow<'static, str> {
-        use rust_i18n::t;
+        use moc_i18n::t;
         match self {
             Self::Session => t!("commands.group.session"),
             Self::Mode => t!("commands.group.mode"),
@@ -150,9 +150,9 @@ pub fn description_text(key: &'static str) -> std::borrow::Cow<'static, str> {
     try_translate(key).unwrap_or(std::borrow::Cow::Borrowed(key))
 }
 
-/// 本 crate catalog 的缺键探测（返回 `None` 而不是 `t!` 的 `locale.key` 兜底串）。
+/// 缺键探测（返回 `None` 而不是 `t!` 的 `locale.key` 兜底串）。
 pub fn try_translate(key: &str) -> Option<std::borrow::Cow<'static, str>> {
-    crate::_rust_i18n_try_translate(&rust_i18n::locale(), key)
+    moc_i18n::try_t(key)
 }
 
 impl<I> CommandSpec<I> {
@@ -336,7 +336,7 @@ impl<I: 'static> CommandRegistry<I> {
                     value: format!("/{}", command.name),
                     label: format!("/{}", command.name),
                     description: if command.description.is_empty() {
-                        rust_i18n::t!("commands.plugin_fallback").into_owned()
+                        moc_i18n::t!("commands.plugin_fallback").into_owned()
                     } else {
                         command.description.clone()
                     },

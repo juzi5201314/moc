@@ -8,7 +8,7 @@ use moc_llm::Role;
 use moc_llm::ToolCall;
 use moc_protocol::methods::SessionLoadResult;
 use moc_protocol::methods::TranscriptEntry;
-use rust_i18n::t;
+use moc_i18n::t;
 use std::collections::BTreeSet;
 
 impl SessionTable {

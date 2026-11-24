@@ -1,4 +1,4 @@
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::super::EncodedRequest;
 use super::super::common_headers;

@@ -5,7 +5,7 @@ use axum::extract::{Query, Request};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 

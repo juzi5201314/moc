@@ -1,6 +1,6 @@
 //! 模型选择的键盘交互。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::Actions;
 use crate::app::App;

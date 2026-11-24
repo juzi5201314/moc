@@ -1,6 +1,6 @@
 //! 工作流通知与面板入口。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use crate::app::App;
 use crate::modal::Modal;

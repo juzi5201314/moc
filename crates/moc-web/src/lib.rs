@@ -17,8 +17,6 @@ mod image_playground;
 mod terminal;
 mod widget_host;
 
-rust_i18n::i18n!("../../locales", fallback = "zh");
-
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -30,7 +28,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use moc_core::{Core, CoreServer};
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::Deserialize;
 use tokio::net::TcpListener;
 

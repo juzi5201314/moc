@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use moc_protocol::{ChoiceOption, ConfigField, FieldKind};
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,

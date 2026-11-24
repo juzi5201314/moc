@@ -6,7 +6,7 @@
 //! 新增实验特性 = 加一个 `FeatureFlag` 成员和一行 `FEATURES` 记录，而不是散落
 //! 各处的 ad-hoc `enabled` 判定。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::{Deserialize, Serialize};
 
 use crate::SessionEngine;

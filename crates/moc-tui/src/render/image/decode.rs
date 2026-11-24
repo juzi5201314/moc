@@ -48,7 +48,7 @@ pub enum DecodeError {
 
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use rust_i18n::t;
+        use moc_i18n::t;
         match self {
             Self::Base64(e) => {
                 write!(f, "{}", t!("tui.image_err.base64", err = e.to_string()))

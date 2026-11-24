@@ -21,7 +21,7 @@ use moc_protocol::{
     CatalogModel, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope, FieldKind,
     MaintenanceReport, SettingsDocument,
 };
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -61,7 +61,7 @@ fn tab_of(path: &[String]) -> &'static str {
 
 /// 选项卡的本地化显示名。
 pub fn tab_label(tab: &str) -> std::borrow::Cow<'static, str> {
-    rust_i18n::t!(format!("tui.tabs.{tab}")).into_owned().into()
+    moc_i18n::t!(format!("tui.tabs.{tab}")).into_owned().into()
 }
 
 pub struct SettingsPanel {

@@ -1,7 +1,5 @@
 //! 长期 PTC Host：统一路由 execution，每次执行创建并销毁独立的 QuickJS Runtime。
 
-rust_i18n::i18n!("../../locales", fallback = "zh");
-
 mod workflow;
 pub use workflow::{run_workflow, run_workflow_stdio};
 
@@ -10,7 +8,7 @@ use moc_ptc_protocol::wire::{
     StartRequest,
 };
 use rquickjs::{Context, Function, Object, Persistent, Runtime};
-use rust_i18n::t;
+use moc_i18n::t;
 use std::{
     collections::HashMap,
     io::{BufRead, Read, Write},

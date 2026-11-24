@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use rust_i18n::t;
+use moc_i18n::t;
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};

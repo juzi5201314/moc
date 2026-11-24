@@ -9,7 +9,7 @@ authors = ["soeur@soeur.dev@gmail.com"]
 doctest = false
 
 [dependencies]
-rust-i18n.workspace = true
+moc-i18n.workspace = true
 moc-llm = { path = "../moc-llm" }
 moc-mcp = { path = "../moc-mcp" }
 moc-plugin = { path = "../moc-plugin" }

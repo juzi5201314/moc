@@ -14,7 +14,7 @@
 use std::fmt::Write as _;
 
 use moc_core::chart::{ChartKind, ChartSpec, Point, Series};
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::ChartLayout;
 use super::fonts::Fonts;

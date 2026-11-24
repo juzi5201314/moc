@@ -1,6 +1,6 @@
 //! 用户手动执行的 Bash：会话加锁、结果持久化和前端事件；不触发模型请求。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use moc_llm::ToolResult;

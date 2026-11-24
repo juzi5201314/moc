@@ -4,7 +4,7 @@
 //! 不把代理转述的状态码当成已确认的厂商或故障根因。
 use std::borrow::Cow;
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::ApiErrorKind;
 
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn display_bounds_plain_text_and_hides_html_without_mutating_original() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let text = "中".repeat(600) + "\u{1b}[31m";
         let error = ApiError::new(
             Some(502),

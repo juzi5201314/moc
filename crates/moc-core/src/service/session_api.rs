@@ -32,7 +32,7 @@ use moc_protocol::methods::SessionRewindParams;
 use moc_protocol::methods::SessionUnloadParams;
 use moc_protocol::methods::SessionUnlockParams;
 use moc_protocol::methods::SessionUpdate;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::json;
 use std::path::PathBuf;
 

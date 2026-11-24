@@ -16,7 +16,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use rust_i18n::t;
+use moc_i18n::t;
 
 fn modal_area(area: Rect, detail: bool, rows: usize) -> Rect {
     let width = if detail {

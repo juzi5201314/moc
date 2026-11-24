@@ -12,7 +12,7 @@ use moc_protocol::methods::SessionLoadPageResult;
 use moc_protocol::methods::SessionLoadResult;
 use moc_protocol::methods::TranscriptChildCall;
 use moc_protocol::methods::TranscriptEntry;
-use rust_i18n::t;
+use moc_i18n::t;
 
 impl SessionTable {
     /// 加载可展示的消息；不进入 transcript 的 entry 只更新会话状态，不出现在列表里。

@@ -4,7 +4,7 @@
 //! 帧边界就是提交边界：崩溃只会撕裂最后一帧，读取时忽略它，写租约获取后截掉即可续写。
 //! 这里不保存会话元数据、帧索引或压缩上下文，读取始终是完整解码。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::cell::RefCell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};

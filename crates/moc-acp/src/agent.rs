@@ -1,6 +1,6 @@
 //! ACP agent 侧：方法处理器注册与 stdio 连接驱动。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::path::PathBuf;
 use std::sync::Arc;
 

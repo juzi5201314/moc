@@ -11,7 +11,7 @@ use super::server_address;
 use super::tool_subgroup_title;
 use super::tool_title;
 use moc_protocol::ConfigField;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 
 impl SettingsPanel {

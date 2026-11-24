@@ -3,7 +3,7 @@
 use super::{CoreInner, to_rpc};
 use crate::session::store::SessionPaths;
 use moc_protocol::{RpcError, SessionInfo};
-use rust_i18n::t;
+use moc_i18n::t;
 use std::fmt::Write;
 use std::fs;
 use std::io;

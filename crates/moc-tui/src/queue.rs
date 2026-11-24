@@ -15,7 +15,7 @@ use moc_protocol::{
     SessionRetry, SessionRetryParams, SessionSteer, SessionUnsteer, SteerParams, UnsteerParams,
     methods::PromptMode,
 };
-use rust_i18n::t;
+use moc_i18n::t;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub struct QueuedPrompt {

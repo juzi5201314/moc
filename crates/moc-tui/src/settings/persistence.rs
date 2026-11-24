@@ -5,7 +5,7 @@ use crate::protocol::AppEvent;
 use crate::protocol::EmbeddedConnection;
 use moc_protocol::ConfigReply;
 use moc_protocol::SettingsDocument;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::json;
 
 pub fn response(

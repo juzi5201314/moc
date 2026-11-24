@@ -8,7 +8,7 @@ use moc_protocol::methods::SessionEngine;
 use moc_protocol::methods::SessionInfo;
 use moc_protocol::methods::SessionPermission;
 use moc_protocol::methods::SessionRenameParams;
-use rust_i18n::t;
+use moc_i18n::t;
 
 impl SessionTable {
     /// 改名，并追加一条可重放的标题事件。

@@ -1,6 +1,6 @@
 //! 子代理名册与会话焦点切换。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::bootstrap::refresh_git_branch;
 use super::context::refresh_context;

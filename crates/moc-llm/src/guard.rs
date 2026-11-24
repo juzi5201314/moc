@@ -1,6 +1,6 @@
 //! 默认启用的流式循环检测；所有窗口都有固定上界，不保存整份生成历史。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::{Deserialize, Serialize};
 
 use crate::StreamEvent;

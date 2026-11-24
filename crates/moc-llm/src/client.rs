@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_core::Stream;
-use rust_i18n::t;
+use moc_i18n::t;
 
 use crate::codec::{self, EncodedRequest};
 use crate::config::LlmConfig;

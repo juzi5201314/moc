@@ -19,6 +19,7 @@ Rust 编写的终端 AI 编码助手（Cargo workspace，edition 2024，Rust 1.8
 ## Workspace 结构
 
 - `crates/moc-core` — Agent 内核：会话、提示调度、工具执行、循环保护
+- `crates/moc-i18n` — 全工作区共享本地化目录（构建期线性解析 `locales/*.toml`，零运行时依赖）
 - `crates/moc-llm` — LLM 传输与编解码（OpenAI / Anthropic / 兼容网关）
 - `crates/moc-protocol` — JSON-RPC 协议层与 schema
 - `crates/moc-mcp` — MCP 客户端（rmcp）

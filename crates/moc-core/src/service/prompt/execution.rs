@@ -35,7 +35,7 @@ use moc_protocol::RpcErrorCode;
 use moc_protocol::methods::PromptResult;
 use moc_protocol::methods::SessionUpdate;
 use moc_protocol::methods::ToolStatus;
-use rust_i18n::t;
+use moc_i18n::t;
 use std::sync::Arc;
 use std::time::Instant;
 

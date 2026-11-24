@@ -3,7 +3,7 @@ use super::*;
 /// 提问预览的滚轮键位：PgUp/PgDn 改预览偏移，切选项或切问题归零。
 #[tokio::test]
 async fn ask_preview_keys_scroll_and_reset_on_focus_change() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
 
     let root = tempfile::tempdir().unwrap();

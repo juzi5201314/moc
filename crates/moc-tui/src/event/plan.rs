@@ -1,6 +1,6 @@
 //! 计划阅读、批注与审批交互。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::agents::load_subagents_for_parent;
 use super::bootstrap::load_display_session;

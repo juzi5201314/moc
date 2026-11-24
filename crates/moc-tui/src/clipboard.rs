@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use base64::Engine as _;
-use rust_i18n::t;
+use moc_i18n::t;
 use tokio::process::Command;
 
 /// 一次成功的图片读取：MIME + 原始字节。

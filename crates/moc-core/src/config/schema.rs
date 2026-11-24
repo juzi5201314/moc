@@ -7,7 +7,7 @@ use serde::Deserialize;
 use super::model::ModelCatalog;
 use crate::error::CoreError;
 use moc_protocol::SessionPermission;
-use rust_i18n::t;
+use moc_i18n::t;
 
 #[derive(Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rquickjs::{Context, Ctx, Function, Module, Object, Persistent, Runtime, Value as JsValue};
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 
 use crate::descriptor::{AgentPresetDecl, ConfigDecl, Descriptor, HookKind};

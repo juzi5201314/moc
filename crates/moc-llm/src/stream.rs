@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use bytes::Bytes;
 use futures_core::Stream;

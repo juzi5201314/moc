@@ -416,7 +416,7 @@ fn abort_chart_encode(app: &mut App, entry: usize, table: usize, error: &std::io
     if let Some(block) = app.blocks.get_mut(entry) {
         block.set_table_chart(table, None);
     }
-    app.set_notice(rust_i18n::t!("tui.err.chart_start_fmt", err = error).into_owned());
+    app.set_notice(moc_i18n::t!("tui.err.chart_start_fmt", err = error).into_owned());
     let _ = app.events.send(AppEvent::LayoutReady);
 }
 

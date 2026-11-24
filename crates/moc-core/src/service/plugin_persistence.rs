@@ -3,7 +3,7 @@
 //! 不持有 CoreInner，避免宿主缓存和桥之间形成 Arc 环；插件配置补丁不获取
 //! config_epoch 写锁，否则插件在运行中保存自身配置会与提示持有的读锁死锁。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;

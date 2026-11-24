@@ -18,7 +18,7 @@
 
 use std::io;
 
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn error_object_shape_is_strict() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         // data 省略时不出现在线上形状里
         let error = RpcError::of(RpcErrorCode::MethodNotFound);
         assert_eq!(
@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn from_code_uses_default_message_for_known_and_generic_for_unknown() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         assert_eq!(
             RpcError::from_code(-32015).message,
             "会话被其它进程锁定，只读"

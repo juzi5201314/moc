@@ -11,7 +11,7 @@ use moc_protocol::SessionUpdate;
 
 #[tokio::test]
 async fn startup_selects_then_remembers_model_and_resume_ignores_missing_preference() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
     let upstream = MockServer::builder().start().await;
@@ -125,7 +125,7 @@ async fn startup_selects_then_remembers_model_and_resume_ignores_missing_prefere
 
 #[tokio::test]
 async fn config_model_role_picker_shares_the_searchable_picker() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use crate::settings::{History, RowKind, SettingsPanel, View};
     use moc_core::{Core, CoreConfig};
     use moc_protocol::methods::SettingsDocument;
@@ -312,7 +312,7 @@ async fn config_model_role_picker_shares_the_searchable_picker() {
 /// 会话模型选择器的 Fusion 组合复用两侧槽位选择器。
 #[tokio::test]
 async fn session_fusion_pair_flows_through_slot_pickers() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
 
     let root = tempfile::tempdir().unwrap();
@@ -412,7 +412,7 @@ async fn session_fusion_pair_flows_through_slot_pickers() {
 /// 会话模型经 SessionUpdate 推送变成规范组合串。
 #[tokio::test]
 async fn session_fusion_pair_applies_and_closes() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
 
     let root = tempfile::tempdir().unwrap();
@@ -526,7 +526,7 @@ async fn session_fusion_pair_applies_and_closes() {
 /// `current` 写回新 selector；换到别的模型同样生效。
 #[tokio::test]
 async fn session_level_pick_applies_inline_and_stays_open() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
 
     let root = tempfile::tempdir().unwrap();
@@ -646,7 +646,7 @@ async fn session_level_pick_applies_inline_and_stays_open() {
 /// Enter 发起 `session/set_fast_mode`，推送落地后写回会话状态。
 #[tokio::test]
 async fn fast_mode_row_only_for_fast_models_and_session_target() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
 
     let root = tempfile::tempdir().unwrap();
@@ -781,7 +781,7 @@ async fn fast_mode_row_only_for_fast_models_and_session_target() {
 /// 后代会话的用量行在 /usage 表上标出来源。
 #[test]
 fn usage_table_marks_descendant_sources() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_protocol::methods::UsageSource;
     use moc_protocol::{ModelUsageSummary, SessionUsageResult};
 

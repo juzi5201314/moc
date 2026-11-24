@@ -1,6 +1,6 @@
 //! 终端键盘路由与输入提交。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::agents::leave_focus;
 use super::agents::open_subagents;

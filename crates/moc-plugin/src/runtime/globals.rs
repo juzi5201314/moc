@@ -13,7 +13,7 @@ use crate::host::PersistenceOp;
 use rquickjs::Ctx;
 use rquickjs::Function;
 use rquickjs::Object;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 use std::cell::RefCell;
 use std::rc::Rc;

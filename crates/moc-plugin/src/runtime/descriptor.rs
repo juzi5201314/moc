@@ -19,7 +19,7 @@ use rquickjs::Function;
 use rquickjs::Object;
 use rquickjs::Persistent;
 use rquickjs::Value as JsValue;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 use std::collections::BTreeMap;
 

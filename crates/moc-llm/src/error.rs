@@ -6,7 +6,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 mod status;
 
@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn api_error_display_mentions_status_kind_and_code() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let mut err = ApiError::new(
             Some(429),
             ApiErrorKind::QuotaExceeded,
@@ -720,7 +720,7 @@ mod tests {
 
     #[test]
     fn llm_error_delegates_classification() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let api = LlmError::Api(Box::new(ApiError::new(
             Some(503),
             ApiErrorKind::ServerError,

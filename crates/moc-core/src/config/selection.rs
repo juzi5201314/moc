@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
-use rust_i18n::t;
+use moc_i18n::t;
 
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

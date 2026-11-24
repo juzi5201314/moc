@@ -7,7 +7,7 @@ use moc_llm::{
     Auth, Effort, EndpointStyle, LlmConfig, MaxTokensField, Protocol, ReasoningEcho,
     ResponseFormatDialect, RetryPolicy, ThinkingWire, ToolChoiceDialect, WireConfig,
 };
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::Deserialize;
 
 use crate::error::CoreError;

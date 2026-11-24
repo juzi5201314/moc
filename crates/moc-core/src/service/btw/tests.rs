@@ -27,7 +27,7 @@ struct Harness {
 
 impl Harness {
     async fn new(url: &str, api: &str, extra: &str) -> Self {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let root = tempfile::tempdir().expect("创建测试目录");
         let home = root.path().join("home");
         let cwd = root.path().join("work");

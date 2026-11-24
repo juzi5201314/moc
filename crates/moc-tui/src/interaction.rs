@@ -1,7 +1,7 @@
 //! 将异步管理操作的回执投影到 UI：配置、投递与模型切换回执；队列以 RPC 收尾而非
 //! PromptFinished 通知为边界。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use crate::{
     app::App,

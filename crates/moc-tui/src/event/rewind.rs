@@ -1,6 +1,6 @@
 //! 会话回退与重新作答。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::agents::load_subagents_for_parent;
 use super::context::refresh_context;

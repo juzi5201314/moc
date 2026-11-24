@@ -12,7 +12,7 @@ use moc_protocol::methods::{
     SessionContextParams,
 };
 use moc_protocol::{RequestContext, RpcError};
-use rust_i18n::t;
+use moc_i18n::t;
 use std::path::PathBuf;
 use std::sync::Arc;
 pub(crate) use view::Views;

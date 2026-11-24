@@ -16,7 +16,7 @@ use crate::modal::{Modal, PlanTab, SessionScope};
 use crate::render::wrap::{clip_line, fit, fit_line, str_width, truncate, truncate_head};
 use crate::render::{context_content, labels, overlay};
 use crate::theme::Theme;
-use rust_i18n::t;
+use moc_i18n::t;
 use std::borrow::Cow;
 
 mod menus;

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use anyhow::Context;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::{Deserialize, Serialize};
 
 use crate::retry::RetryPolicy;
@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn auth_from_env_reports_missing_variable_with_context() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let err = Auth::from_env("MOC_LLM_TEST_MISSING_KEY_7f3a").unwrap_err();
         let text = format!("{err:#}");
         assert!(text.contains("MOC_LLM_TEST_MISSING_KEY_7f3a"), "{text}");

@@ -1,6 +1,6 @@
 //! 模态键盘分派。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::model::request_session_model;
 use super::model::set_fast_mode;

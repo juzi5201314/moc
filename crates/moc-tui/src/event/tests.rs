@@ -62,7 +62,7 @@ async fn app_with_core() -> (
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     tempfile::TempDir,
 ) {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
 
     let root = tempfile::tempdir().unwrap();
@@ -146,7 +146,7 @@ struct SlowCompactionHarness {
 
 impl SlowCompactionHarness {
     async fn new() -> Self {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         use moc_core::{Core, CoreConfig};
         use wiremock::{
             Mock, MockServer, ResponseTemplate,
@@ -347,7 +347,7 @@ async fn setup_test_app_keeping_root() -> (
     App,
     tempfile::TempDir,
 ) {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
 
     let root = tempfile::tempdir().unwrap();

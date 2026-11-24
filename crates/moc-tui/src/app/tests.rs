@@ -124,7 +124,7 @@ fn engine_menu_hit_testing_skips_borders() {
 /// 没有活动会话就不开菜单，只提示（此时图例本身显示 `idle`）。
 #[test]
 fn engine_menu_requires_an_active_session() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut app = super::App::new(crate::theme::Theme::global(), events);
     app.open_engine_menu();
@@ -135,7 +135,7 @@ fn engine_menu_requires_an_active_session() {
 /// 权限菜单：无会话只提示；打开时按平台快照给出候选并高亮当前模式。
 #[test]
 fn permission_menu_highlights_current_mode() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_protocol::{SessionInfo, SessionPermission};
 
     let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -255,7 +255,7 @@ fn todo_hud_resets_only_when_todos_clear() {
 
 #[test]
 fn finish_turn_reports_stop_after_cancel_request() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut app = super::App::new(crate::theme::Theme::global(), events);
     app.prompt_running = true;

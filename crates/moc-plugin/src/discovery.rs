@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 /// 发现配置；`dirs` 已由调用方展开 `~`。
 #[derive(Debug, Clone, Default)]
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn ranks_project_over_config_over_user() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
         let home = temp.path().join("home");

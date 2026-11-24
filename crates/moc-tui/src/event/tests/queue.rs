@@ -39,7 +39,7 @@ async fn authentication_failure_does_not_leave_tui_prompt_running() {
 
 #[tokio::test]
 async fn closing_modal_resumes_queue_after_turn_finishes() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -140,7 +140,7 @@ async fn closing_modal_resumes_queue_after_turn_finishes() {
 /// `/ask <问题>`：本次提示带问答模式覆盖排队，不改变会话模式；缺参数只提示。
 #[tokio::test]
 async fn ask_command_queues_a_read_only_prompt() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
 
     let root = tempfile::tempdir().unwrap();

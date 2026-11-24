@@ -531,7 +531,7 @@ fn draw_chart_loading_indicators(
         let text = format!(
             "{} {}",
             spinner_since(started),
-            rust_i18n::t!("tui.md.rendering_chart")
+            moc_i18n::t!("tui.md.rendering_chart")
         );
         let line = Line::from(Span::styled(text, Style::new().fg(theme.accent_running)));
         buffer.set_line(start_x, hit.row, &line, avail);

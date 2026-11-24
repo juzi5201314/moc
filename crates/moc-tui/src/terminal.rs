@@ -16,7 +16,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use rust_i18n::t;
+use moc_i18n::t;
 use std::io::Write;
 
 /// 只申请「消歧义」这一位：它让 Ctrl+M、Ctrl+I 这类与旧式控制码撞车的

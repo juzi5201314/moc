@@ -11,7 +11,7 @@ pub mod state;
 pub mod store;
 pub mod stored;
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;

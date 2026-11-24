@@ -3,7 +3,7 @@ use super::RewindItem;
 use super::RewindState;
 use moc_protocol::Role;
 use moc_protocol::methods::TranscriptEntry;
-use rust_i18n::t;
+use moc_i18n::t;
 
 impl RewindState {
     pub fn set_entries(&mut self, entries: Vec<TranscriptEntry>, future: Vec<TranscriptEntry>) {

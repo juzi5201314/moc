@@ -8,7 +8,7 @@ use moc_protocol::{
     MAX_BTW_HISTORY_TURNS, SessionBtw, SessionBtwCancel, Usage,
 };
 use ratatui::layout::Rect;
-use rust_i18n::t;
+use moc_i18n::t;
 
 use crate::{
     app::{App, Focus},

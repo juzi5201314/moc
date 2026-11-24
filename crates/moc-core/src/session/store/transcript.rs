@@ -4,7 +4,7 @@ use super::INLINE_COMPRESS_LIMIT;
 use super::SessionFile;
 use crate::error::CoreError;
 use parking_lot::RwLock;
-use rust_i18n::t;
+use moc_i18n::t;
 use std::path::Path;
 use tokio::fs;
 use tokio::fs::OpenOptions;

@@ -9,7 +9,7 @@ use crate::compact::{self, replay::model_messages};
 use moc_llm::{ContentPart, FinishReason, Message, Role, StreamEvent, Usage};
 use moc_protocol::methods::{BtwExchange, BtwParams, BtwResult, BtwUpdate, MAX_BTW_HISTORY_TURNS};
 use moc_protocol::{RequestContext, RpcError, RpcErrorCode};
-use rust_i18n::t;
+use moc_i18n::t;
 
 pub(crate) async fn run(
     inner: Arc<CoreInner>,

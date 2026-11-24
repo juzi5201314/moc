@@ -3,7 +3,7 @@
 //! 解码刻意宽松：坏 YAML 或缺失必填字段交由上层决定跳过并告警，
 //! 不在本层 `deny_unknown_fields`——社区 skill 常带各家扩展键。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::collections::BTreeMap;
 
 use serde::Deserialize;

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use rust_i18n::t;
+use moc_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

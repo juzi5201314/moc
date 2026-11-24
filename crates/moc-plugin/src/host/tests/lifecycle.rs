@@ -42,7 +42,7 @@ async fn loads_a_project_plugin_and_exposes_every_surface() {
 
 #[tokio::test]
 async fn timeout_poisons_the_plugin_for_the_process() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let temp = tempfile::tempdir().unwrap();
     install(
         temp.path(),

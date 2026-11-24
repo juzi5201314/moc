@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use moc_core::Core;
 use moc_protocol::SessionEngine;
-use rust_i18n::t;
+use moc_i18n::t;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::app::{App, Focus};

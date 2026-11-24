@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 
 use crate::app::App;
 use crate::render::wrap::truncate;
-use rust_i18n::t;
+use moc_i18n::t;
 
 /// 侧栏卡片的状态符号与颜色。
 fn status_glyph(

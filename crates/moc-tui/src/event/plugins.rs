@@ -1,6 +1,6 @@
 //! 插件目录刷新与状态展示。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use crate::app::App;
 use crate::protocol::AppEvent;

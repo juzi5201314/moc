@@ -6,7 +6,7 @@ use super::compaction_running_prefix;
 use crate::transcript::Block;
 use crate::transcript::Entry;
 use crate::transcript::NoteTone;
-use rust_i18n::t;
+use moc_i18n::t;
 
 impl App {
     pub fn start_skills_compaction(&mut self, action: moc_protocol::SkillsCompactAction) {

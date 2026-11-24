@@ -4,7 +4,7 @@
 //! `additionalProperties`、`items`、`enum`。其余关键字按 JSON Schema 的注解语义忽略，
 //! 不猜它们的行为，也不把不认识的关键字当成错误。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 
 /// 校验 `value` 是否满足 `schema`；返回第一处不满足的说明。
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_required_and_wrong_types() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         assert!(
             validate(&schema(), &json!({}))
                 .unwrap_err()

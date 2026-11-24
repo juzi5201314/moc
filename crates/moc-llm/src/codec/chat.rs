@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::{Map, Value, json};
 
 use super::echo::{self, ReasoningEchoPlan};

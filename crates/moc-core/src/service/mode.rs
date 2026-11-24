@@ -12,7 +12,7 @@ use super::{CoreInner, protocol_to_rpc, to_rpc};
 use crate::compact;
 use crate::error::CoreError;
 use crate::session::entries::{EntryPayload, SessionOrigin};
-use rust_i18n::t;
+use moc_i18n::t;
 
 /// 执行模式：与引擎正交，只收紧工具许可。
 ///

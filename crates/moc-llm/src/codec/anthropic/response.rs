@@ -11,7 +11,7 @@ use crate::types::ReasoningBlock;
 use crate::types::Role;
 use crate::types::ToolCall;
 use crate::types::Usage;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 
 /// 非流式响应解码。

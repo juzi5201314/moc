@@ -16,7 +16,7 @@ use super::scrollback::todo_status_marker;
 use super::wrap::{display_window, str_width, wrap_text};
 use crate::app::App;
 use crate::theme::Theme;
-use rust_i18n::t;
+use moc_i18n::t;
 
 /// marquee 每前进一步的时间。
 pub const MARQUEE_TICK: Duration = Duration::from_millis(250);

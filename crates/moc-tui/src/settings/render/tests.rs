@@ -101,7 +101,7 @@ fn select_popup_is_opaque_and_modal() {
 
 /// 读入 `document` 并停在 `tab` 页的面板（字段目录由 core 补齐）。
 fn loaded(tab: &str, document: Value, fields: Vec<ConfigField>) -> SettingsPanel {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let mut panel = SettingsPanel {
         id: 1,
         cwd: "/tmp".into(),

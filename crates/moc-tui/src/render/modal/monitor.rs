@@ -1,4 +1,4 @@
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::MONITOR_CUR_W;
 use super::MONITOR_LABEL_W;

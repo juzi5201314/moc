@@ -364,7 +364,7 @@ fn plugin_notice_note_keeps_cause_and_recovery_hint() {
 
 #[tokio::test]
 async fn alt_m_cycles_the_session_engine() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
 
     let root = tempfile::tempdir().unwrap();
@@ -434,7 +434,7 @@ async fn alt_m_cycles_the_session_engine() {
 /// 点图例弹出就地菜单：悬停高亮、点条目切换引擎、再点图例关闭，键位同样可用。
 #[tokio::test]
 async fn engine_menu_switches_the_session_engine() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     use moc_core::{Core, CoreConfig};
 
     async fn wait_for_engine(

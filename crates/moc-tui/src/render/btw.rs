@@ -16,7 +16,7 @@ use crate::{
     app::{App, Focus},
     btw::Status,
 };
-use rust_i18n::t;
+use moc_i18n::t;
 
 /// 从主滚动区划出 dock；收起时留一行可点击状态条。
 pub fn split(app: &mut App, area: Rect) -> Rect {

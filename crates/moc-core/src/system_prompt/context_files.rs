@@ -1,6 +1,6 @@
 //! 加载项目和全局的 AGENTS.md，并展开其中的 `@` 导入（有大小上限）。
 
-use rust_i18n::t;
+use moc_i18n::t;
 use std::collections::HashSet;
 use std::fs;
 use std::io::Read;

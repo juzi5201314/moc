@@ -4,7 +4,7 @@ use super::*;
 use crate::modal::{
     DetailRow, FUSION_ENTRY_SELECTOR, MENU_PAGE, MenuItems, ModelEntry, filtered_entries,
 };
-use rust_i18n::t;
+use moc_i18n::t;
 
 /// 列表卡外宽（列）；窄屏夹到屏宽。
 const LIST_WIDTH: u16 = 52;

@@ -26,7 +26,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use rust_i18n::t;
+use moc_i18n::t;
 
 /// 弹窗编辑器：单选、清单、键值表与多行文本共用一张居中卡片；单行文本在字段行内编辑。
 pub(super) fn draw_edit_popup(

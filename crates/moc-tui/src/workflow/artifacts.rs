@@ -1,4 +1,4 @@
-use rust_i18n::t;
+use moc_i18n::t;
 
 use ratatui::style::Style;
 use ratatui::text::Line;

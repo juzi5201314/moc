@@ -1,5 +1,5 @@
 //! 把旧正文冻结到私有只读映射；是否仍属模型上下文与是否驻留堆相互独立。
-use rust_i18n::t;
+use moc_i18n::t;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufWriter, Write};
 use std::ops::Range;

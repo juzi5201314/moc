@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use reqwest::header::HeaderMap;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 
 use crate::config::{Auth, LlmConfig, Protocol};
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn missing_tool_result_reports_missing_names() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let messages = vec![
             Message::user_text("天气"),
             assistant_with_calls(&[("call_1", "get_weather"), ("call_2", "get_date")]),
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn stray_tool_result_is_rejected() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let messages = vec![
             Message::user_text("天气"),
             assistant_with_calls(&[("call_1", "get_weather")]),
@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn tool_message_without_result_block_is_rejected() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let messages = vec![
             assistant_with_calls(&[("call_1", "get_weather")]),
             Message {

@@ -408,7 +408,7 @@ pub fn registry() -> Registry {
 /// `/help` 文本：按组生成，命令与别名都成行；flag 关闭的命令仍列出并注明。
 pub fn help_text(features: &moc_protocol::features::FeatureStates) -> String {
     use moc_protocol::commands::{description_text, usage_text};
-    use rust_i18n::t;
+    use moc_i18n::t;
     use std::fmt::Write;
     let mut text = String::new();
     for group in [
@@ -508,7 +508,7 @@ mod tests {
     /// 帮助从注册表生成，天然不会漏命令；守住「每条可见命令与别名都有行」。
     #[test]
     fn help_lists_every_visible_command_and_alias() {
-        rust_i18n::set_locale("zh");
+        moc_i18n::set_locale("zh");
         let text = help_text(&moc_protocol::features::FeatureStates::defaults());
         for spec in COMMANDS.iter().filter(|spec| !spec.hidden) {
             assert!(

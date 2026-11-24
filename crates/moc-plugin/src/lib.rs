@@ -4,8 +4,6 @@
 //! `docs/plugins.md` 与 `js/moc.d.ts`。本 crate 不依赖 moc 的协议与工具类型，
 //! core 只需提供 [`host::CallContext`] 与一个 [`host::HostBridge`]。
 
-rust_i18n::i18n!("../../locales", fallback = "zh");
-
 pub mod descriptor;
 pub mod discovery;
 pub mod error;

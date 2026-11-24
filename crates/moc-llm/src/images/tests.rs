@@ -65,7 +65,7 @@ fn fifteen_images_keep_every_occurrence_and_original_history() {
 
 #[test]
 fn budget_counts_duplicates_and_reserves_text_tools_and_envelope() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let cache = ImageCache::default();
     let cfg = LlmConfig::default();
     let image = png(80, 120, true);
@@ -83,7 +83,7 @@ fn budget_counts_duplicates_and_reserves_text_tools_and_envelope() {
 
 #[test]
 fn small_gateway_does_not_silently_drop_even_the_latest_image() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let cache = ImageCache::default();
     let mut req = request(vec![png(180, 240, true)]);
     req.options.max_request_bytes = Some(400);
@@ -128,7 +128,7 @@ fn cache_reuses_variants_across_drifted_budgets() {
 
 #[test]
 fn malformed_image_fails_locally_instead_of_sending_original() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let req = request(vec![ImageSource::Base64 {
         media_type: "image/png".into(),
         data: STANDARD.encode(b"broken"),

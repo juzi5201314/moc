@@ -13,7 +13,7 @@ use crate::runtime::CallOp;
 use crate::runtime::CallRequest;
 use crate::runtime::HostOperation;
 use crate::runtime::HostRequest;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;

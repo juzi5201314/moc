@@ -332,7 +332,7 @@ async fn response(
 /// 只使用临时配置和本地 mock 服务，覆盖真实 RPC 保存/发现与键鼠操作链。
 #[tokio::test]
 async fn create_discover_filter_add_and_edit_in_one_page() {
-    rust_i18n::set_locale("zh");
+    moc_i18n::set_locale("zh");
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))

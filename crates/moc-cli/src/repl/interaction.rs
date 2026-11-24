@@ -23,7 +23,7 @@ use moc_protocol::methods::SessionPrompt;
 use moc_protocol::methods::SessionRetry;
 use moc_protocol::methods::SessionRetryParams;
 use moc_protocol::methods::prompt::PromptMode;
-use rust_i18n::t;
+use moc_i18n::t;
 use std::io::Write;
 
 pub(super) async fn approve_plan(

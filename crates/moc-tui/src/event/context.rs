@@ -1,6 +1,6 @@
 //! 上下文阅读与工具目录交互。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use crate::app::App;
 use crate::modal::ContextContentState;

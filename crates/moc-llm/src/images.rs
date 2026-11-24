@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
-use rust_i18n::t;
+use moc_i18n::t;
 use sha2::{Digest, Sha256};
 
 use crate::codec::{self, EncodedRequest};

@@ -3,7 +3,7 @@
 use super::{CoreInner, to_rpc};
 use crate::session::{entries::Entry, stored::StoredEntry};
 use moc_protocol::{RpcError, ToolStatus, TranscriptChildCall, TranscriptEntry};
-use rust_i18n::t;
+use moc_i18n::t;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;

@@ -28,7 +28,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use rust_i18n::t;
+use moc_i18n::t;
 
 /// 计划标签正文左侧的 gutter 宽度（列）：`▎`/`+`/空白。
 const GUTTER: usize = 2;

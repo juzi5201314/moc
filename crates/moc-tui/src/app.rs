@@ -69,12 +69,12 @@ pub struct CompactionProgress {
 
 /// 进行中提示的前缀；完成时按它找回同一条提示原位替换。
 fn compaction_running_prefix() -> std::borrow::Cow<'static, str> {
-    rust_i18n::t!("tui.compaction.running_prefix")
+    moc_i18n::t!("tui.compaction.running_prefix")
 }
 
 /// 进行中提示的文案。
 fn compaction_running_note(secs: u64) -> String {
-    rust_i18n::t!("tui.compaction.running_fmt", secs = secs).into_owned()
+    moc_i18n::t!("tui.compaction.running_fmt", secs = secs).into_owned()
 }
 
 /// 一次模型生成失败后的等待重试：警告便签的秒数原地倒数。

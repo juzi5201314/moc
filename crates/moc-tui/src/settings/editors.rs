@@ -5,7 +5,7 @@
 use super::controls::{Empty, Entry, ListSpec, Pick, PickAction, RecordSpec, current_pick};
 use super::*;
 use crate::widgets::prompt::edit_input;
-use rust_i18n::t;
+use moc_i18n::t;
 
 pub enum Editor {
     Text(TextEditor),

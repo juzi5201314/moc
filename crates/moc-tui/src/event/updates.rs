@@ -1,6 +1,6 @@
 //! 会话协议通知到界面状态的投影。
 
-use rust_i18n::t;
+use moc_i18n::t;
 
 use super::agents::load_subagents;
 use super::context::refresh_context;

@@ -1,5 +1,5 @@
 //! 完整历史页的冻结传输；大 JSON 写入私有临时文件，线上每块大小固定。
-use rust_i18n::t;
+use moc_i18n::t;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};

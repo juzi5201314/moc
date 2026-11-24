@@ -14,7 +14,7 @@ use crate::runtime::CallOp;
 use crate::runtime::Limits;
 use crate::runtime::spawn_unactivated;
 use parking_lot::Mutex;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;

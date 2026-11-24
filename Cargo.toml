@@ -1,12 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/moc-acp", "crates/moc-cli", "crates/moc-core", "crates/moc-llm", "crates/moc-mcp", "crates/moc-plugin", "crates/moc-protocol", "crates/moc-ptc-protocol", "crates/moc-ptc-worker", "crates/moc-tui", "crates/moc-web"]
+members = ["crates/moc-acp", "crates/moc-cli", "crates/moc-core", "crates/moc-i18n", "crates/moc-llm", "crates/moc-mcp", "crates/moc-plugin", "crates/moc-protocol", "crates/moc-ptc-protocol", "crates/moc-ptc-worker", "crates/moc-tui", "crates/moc-web"]
 default-members = ["crates/moc-cli", "crates/moc-tui"]
 
 [workspace.dependencies]
 tokio = { version = "1.53.1", features = ["full", "test-util"] }
-serde = { version = "1.0", features = ["serde_derive"] }
-serde_json = { version = "1.0" }
+# 统一 workspace 共享 feature 集合（与 moc-acp/axum 对齐），避免切换 -p / --workspace 触发全链重编。
+serde = { version = "1.0", features = ["serde_derive", "rc"] }
+serde_json = { version = "1.0", features = ["preserve_order", "raw_value"] }
 serde_yaml = "0.9"
 semver = "1"
 sha2 = "0.10"
@@ -16,7 +17,7 @@ anyhow = { version = "1.0.104" }
 clap = { version = "4.5", features = ["derive"] }
 futures-core = { version = "0.3.34" }
 bytes = { version = "1.12.1" }
-tracing = { version = "0.1.44" }
+tracing = { version = "0.1.44", features = ["log"] }
 tokio-util = { version = "0.7.19", features = ["io"] }
 wiremock = { version = "0.6.5" }
 toml = "1"
@@ -55,8 +56,8 @@ zstd = "0.13"
 rustix = { version = "1", features = ["event"] }
 # 插件运行时：与 PTC worker 共用同一份 QuickJS 构建（原生 C，无 WASM）；loader 提供 ESM 解析。
 rquickjs = { version = "=0.14.0", features = ["loader"] }
-# 用户面文案本地化：TOML catalog（locales/ 目录，_version = 2）编译期内嵌
-rust-i18n = "4.2.4"
+# 用户面文案本地化：workspace 单份静态排序目录（build.rs 线性解析 locales/*.toml）
+moc-i18n = { path = "crates/moc-i18n" }
 # 图像编解码（moc-llm / moc-tui / moc-web 统一 feature 集合，避免切换 -p 重编）
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "color_quant", "avif"] }
 png = "0.18.1"
@@ -70,6 +71,10 @@ trash = "=5.2.9"
 # 多个目标并行链接时峰值内存被放大。
 [profile.dev]
 debug = 1
+
+# 优化 proc-macro 与 build.rs（serde_derive、schemars_derive、moc-i18n/moc-web 构建脚本），显著加速增量展开。
+[profile.dev.build-override]
+opt-level = 2
 
 # 工作区自身 moc-* 保留 debug = 1 行号，外部依赖去除 DWARF 调试信息以加速代码生成与链接并降低峰值内存。
 [profile.dev.package."*"]

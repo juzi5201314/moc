@@ -13,7 +13,7 @@ use moc_protocol::methods::{
     SessionUpdateParams, ToolStatus,
 };
 use moc_protocol::{PromptResult, Usage};
-use rust_i18n::t;
+use moc_i18n::t;
 use serde::Serialize;
 
 use crate::args::OutputFormat;

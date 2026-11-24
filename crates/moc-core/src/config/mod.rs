@@ -8,7 +8,7 @@ use globset::GlobBuilder;
 use moc_llm::LlmConfig;
 use moc_protocol::SessionPermission;
 use moc_protocol::features::{FeatureFlag, FeatureStates};
-use rust_i18n::t;
+use moc_i18n::t;
 use toml::Value;
 
 use crate::CoreConfig;

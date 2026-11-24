@@ -16,7 +16,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
-use rust_i18n::t;
+use moc_i18n::t;
 use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 

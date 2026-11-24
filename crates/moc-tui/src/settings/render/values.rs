@@ -2,7 +2,7 @@ use super::short_bytes;
 use crate::settings::render::ELLIPSIS;
 use moc_protocol::ConfigField;
 use moc_protocol::FieldKind;
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::Value;
 
 /// 数字千分位格式化（200000 -> 200,000）。

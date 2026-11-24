@@ -3,7 +3,7 @@
 use super::model::{ProviderDocument, ResolvedProvider};
 use crate::CoreError;
 use moc_llm::{Auth, EndpointStyle, Protocol};
-use rust_i18n::t;
+use moc_i18n::t;
 
 pub async fn models(
     id: &str,

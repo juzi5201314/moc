@@ -6,7 +6,7 @@ use std::borrow::Cow;
 
 use moc_llm::Protocol;
 use moc_protocol::{ChoiceOption, ConfigField, FieldKind, SessionPermission};
-use rust_i18n::t;
+use moc_i18n::t;
 use serde_json::{Value, json};
 
 pub fn provider_template() -> Value {

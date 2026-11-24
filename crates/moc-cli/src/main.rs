@@ -1,8 +1,5 @@
-// bin crate 单独持有一份 catalog（t! 宏按 crate root 解析）。
-rust_i18n::i18n!("../../locales", fallback = "zh");
-
 use clap::Parser;
-use rust_i18n::t;
+use moc_i18n::t;
 
 fn main() -> anyhow::Result<()> {
     // 先用系统语言探测兜底：配置加载前的错误（含配置本身的错误）也能本地化；

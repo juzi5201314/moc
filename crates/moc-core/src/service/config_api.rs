@@ -70,7 +70,7 @@ pub(super) async fn config_get(
         agents: vec![AgentProfile {
             id: "moc".into(),
             display_name: "moc".into(),
-            description: Some(rust_i18n::t!("core.preset.agent_default").into_owned()),
+            description: Some(moc_i18n::t!("core.preset.agent_default").into_owned()),
         }],
         default_agent: Some("moc".into()),
         cwd: config.cwd.to_string_lossy().into_owned(),
