@@ -39,6 +39,7 @@ pub(super) fn namespace(uri: &str, description: &str, kind: &str) -> ResourceCan
         description: description.into(),
         kind: kind.into(),
         append_space: false,
+        matches: Vec::new(),
     }
 }
 
@@ -70,6 +71,7 @@ pub(super) fn tool_candidates(
                 description: description.to_owned(),
                 kind: "tool".into(),
                 append_space: true,
+                matches: Vec::new(),
             }
         })
         .filter(|candidate| candidate.uri.starts_with(prefix))
@@ -117,6 +119,7 @@ pub(super) fn skill_candidates(
                 description: skill.description.clone(),
                 kind: "skill".into(),
                 append_space: true,
+                matches: Vec::new(),
             });
         }
         let resource_prefix = format!("{root}/");
@@ -128,6 +131,7 @@ pub(super) fn skill_candidates(
                     description: "skill-bundled resource".into(),
                     kind: "file".into(),
                     append_space: true,
+                    matches: Vec::new(),
                 });
             }
         }
@@ -148,6 +152,7 @@ pub(super) fn local_candidates(
             description: "current session plan directory".into(),
             kind: "namespace".into(),
             append_space: false,
+            matches: Vec::new(),
         });
     }
     let Ok(entries) = fs::read_dir(context.paths.plans()) else {
@@ -171,6 +176,7 @@ pub(super) fn local_candidates(
             description: "read-only plan for the current session".into(),
             kind: "file".into(),
             append_space: true,
+            matches: Vec::new(),
         });
     }
     values
@@ -210,6 +216,7 @@ pub(super) fn history_candidates(
                 description: description.into(),
                 kind: "file".into(),
                 append_space: true,
+                matches: Vec::new(),
             });
         }
     }
@@ -221,6 +228,7 @@ pub(super) fn history_candidates(
             description: "pre-compaction history segment index".into(),
             kind: "file".into(),
             append_space: true,
+            matches: Vec::new(),
         });
     }
     values

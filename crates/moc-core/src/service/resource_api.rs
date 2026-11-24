@@ -26,6 +26,7 @@ pub(super) async fn resource_complete(
     let tools = core.resource_tools(&ctx, &record, &params.prefix).await?;
     let sessions = core.inner.sessions.clone();
     let prefix = params.prefix.clone();
+    let kind = params.kind.clone();
     let session_id = params.session_id.clone();
     // `@` 补全要遍历工作区，放到阻塞线程避免卡住执行器。
     let candidates = tokio::task::spawn_blocking(move || {
@@ -37,7 +38,7 @@ pub(super) async fn resource_complete(
             sessions: &sessions,
             tools,
         };
-        crate::resources::ResourceRouter::complete(&context, &prefix)
+        crate::resources::ResourceRouter::complete(&context, &prefix, kind.as_deref())
     })
     .await
     .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
@@ -49,6 +50,7 @@ pub(super) async fn resource_complete(
         description: candidate.description,
         kind: candidate.kind,
         append_space: candidate.append_space,
+        matches: candidate.matches,
     })
     .collect();
     Ok(ResourceCompleteResult { candidates })

@@ -120,16 +120,16 @@ fn completion_exposes_only_registered_schemes_and_normalizes_local_prefix() {
     let skills = SkillIndex::empty();
     let context = context_of(&paths, root.path(), &skills, &sessions);
 
-    let root_candidates = ResourceRouter::complete(&context, "//").expect("根候选");
+    let root_candidates = ResourceRouter::complete(&context, "//", None).expect("根候选");
     assert!(
         !root_candidates
             .iter()
             .any(|candidate| candidate.uri == "proc://")
     );
     assert!(root_candidates.len() <= 20);
-    let local = ResourceRouter::complete(&context, "local:/").expect("local 前缀");
+    let local = ResourceRouter::complete(&context, "local:/", None).expect("local 前缀");
     assert!(local.iter().any(|candidate| candidate.uri == "local://"));
-    let artifacts = ResourceRouter::complete(&context, "artifact://").expect("artifact 前缀");
+    let artifacts = ResourceRouter::complete(&context, "artifact://", None).expect("artifact 前缀");
     assert!(
         artifacts
             .iter()
@@ -145,7 +145,7 @@ fn completion_exposes_only_registered_schemes_and_normalizes_local_prefix() {
             .iter()
             .any(|candidate| candidate.uri == "artifact://jobs/job_1.log")
     );
-    let history = ResourceRouter::complete(&context, "history://").expect("history 前缀");
+    let history = ResourceRouter::complete(&context, "history://", None).expect("history 前缀");
     assert!(
         history
             .iter()
@@ -606,11 +606,12 @@ fn at_prefix_completes_workspace_files_and_skips_ignored() {
     fs::create_dir_all(root.path().join(".git")).expect(".git 目录");
     fs::write(root.path().join("src").join("main.rs"), "fn main() {}\n").expect("main.rs");
     fs::write(root.path().join("notes.txt"), "hi\n").expect("notes.txt");
+    fs::create_dir_all(root.path().join("crates")).expect("crates 目录");
     fs::write(root.path().join(".gitignore"), "secret.txt\n").expect(".gitignore");
     fs::write(root.path().join("secret.txt"), "s\n").expect("secret.txt");
     let context = context_of(&paths, root.path(), &skills, &sessions);
 
-    let all = ResourceRouter::complete(&context, "@").expect("@ 候选");
+    let all = ResourceRouter::complete(&context, "@", None).expect("@ 候选");
     let uris = all.iter().map(|c| c.uri.as_str()).collect::<Vec<_>>();
     assert!(uris.contains(&"@src/"), "{uris:?}");
     assert!(uris.contains(&"@src/main.rs"), "{uris:?}");
@@ -626,10 +627,19 @@ fn at_prefix_completes_workspace_files_and_skips_ignored() {
     assert_eq!(file.kind, "file");
     assert!(file.append_space);
 
-    let fuzzy = ResourceRouter::complete(&context, "@smr").expect("模糊候选");
+    let fuzzy = ResourceRouter::complete(&context, "@smr", None).expect("模糊候选");
     assert_eq!(fuzzy[0].uri, "@src/main.rs", "{fuzzy:?}");
+    // 文件名连续命中优先于目录名零散命中；高亮下标落在 basename 上。
+    let suffix = ResourceRouter::complete(&context, "@rs", None).expect("后缀候选");
+    assert_eq!(suffix[0].uri, "@src/main.rs", "{suffix:?}");
+    assert_eq!(suffix[0].matches, [9, 10]);
+    let dirs = ResourceRouter::complete(&context, "@", Some("dir")).expect("目录候选");
+    assert!(
+        dirs.iter().all(|c| c.kind == "dir") && !dirs.is_empty(),
+        "{dirs:?}"
+    );
 
     // `@@` 是字面转义，不补全。
-    let escaped = ResourceRouter::complete(&context, "@@").expect("转义候选");
+    let escaped = ResourceRouter::complete(&context, "@@", None).expect("转义候选");
     assert!(escaped.is_empty(), "{escaped:?}");
 }

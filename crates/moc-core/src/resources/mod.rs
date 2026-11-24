@@ -59,6 +59,8 @@ pub struct ResourceCandidate {
     pub description: String,
     pub kind: String,
     pub append_space: bool,
+    /// `label` 中被查询命中的字符下标（Unicode 标量序号、升序），供前端高亮。
+    pub matches: Vec<u32>,
 }
 
 /// 资源解析所需的当前会话视图。
@@ -215,6 +217,7 @@ impl ArtifactStore {
                 description: "read-only artifact for the current session".into(),
                 kind: "file".into(),
                 append_space: true,
+                matches: Vec::new(),
             })
             .collect()
     }
@@ -278,13 +281,15 @@ impl ResourceRouter {
             .ok_or_else(|| ResourceError::new("E_URI_INVALID", "unknown resource URI"))
     }
 
+    /// `kind` 只约束 `@` 工作区补全（`file` / `dir`），URI 补全忽略它。
     pub fn complete(
         context: &ResourceContext<'_>,
         prefix: &str,
+        kind: Option<&str>,
     ) -> Result<Vec<ResourceCandidate>, ResourceError> {
         let mut candidates = if prefix.starts_with('@') {
             // `@` 附件引用有独立的模糊排序，不走后面的字典序排序。
-            let candidates = attach::file_candidates(context, prefix);
+            let candidates = attach::file_candidates(context, prefix, kind);
             return Ok(candidates);
         } else if prefix.is_empty() || prefix == "//" {
             scheme_candidates(context)

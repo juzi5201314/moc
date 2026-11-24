@@ -4313,6 +4313,15 @@
         "label": {
           "type": "string"
         },
+        "matches": {
+          "description": "`label` 中被查询命中的字符下标（按 Unicode 标量计、升序），供前端高亮；无查询时为空。",
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
         "uri": {
           "type": "string"
         }
@@ -4329,6 +4338,13 @@
     "ResourceCompleteParams": {
       "additionalProperties": false,
       "properties": {
+        "kind": {
+          "description": "`@` 补全只返回这一类候选：`file` 或 `dir`；缺省两类都返回。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "prefix": {
           "type": "string"
         },

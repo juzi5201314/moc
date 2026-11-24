@@ -32,6 +32,7 @@ async fn resource_complete_is_session_scoped_and_exposes_canonical_schemes() {
         .call::<ResourceComplete>(ResourceCompleteParams {
             session_id: session_id.clone(),
             prefix: "//".into(),
+            kind: None,
         })
         .await
         .expect("scheme completion")
@@ -52,6 +53,7 @@ async fn resource_complete_is_session_scoped_and_exposes_canonical_schemes() {
         .call::<ResourceComplete>(ResourceCompleteParams {
             session_id: session_id.clone(),
             prefix: "local:/".into(),
+            kind: None,
         })
         .await
         .expect("local completion")
@@ -67,6 +69,7 @@ async fn resource_complete_is_session_scoped_and_exposes_canonical_schemes() {
         .call::<ResourceComplete>(ResourceCompleteParams {
             session_id: session_id.clone(),
             prefix: "artifact://artifacts/".into(),
+            kind: None,
         })
         .await
         .expect("artifact completion")

@@ -25,6 +25,7 @@ grep-matcher.workspace = true
 grep-regex.workspace = true
 grep-searcher.workspace = true
 ignore.workspace = true
+nucleo-matcher.workspace = true
 libc.workspace = true
 memchr.workspace = true
 memmap2.workspace = true

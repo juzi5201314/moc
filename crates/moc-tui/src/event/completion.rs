@@ -56,6 +56,7 @@ pub(super) fn request_resource_completion(app: &mut App, connection: &EmbeddedCo
             .call::<ResourceComplete>(ResourceCompleteParams {
                 session_id: session_id.clone(),
                 prefix: prefix.clone(),
+                kind: None,
             })
             .await
             .map(|result| result.candidates)

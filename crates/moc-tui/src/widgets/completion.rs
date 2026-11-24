@@ -293,6 +293,7 @@ mod tests {
                 description: "计划目录".into(),
                 kind: "namespace".into(),
                 append_space: false,
+                matches: Vec::new(),
             }],
             0..7,
         )

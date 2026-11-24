@@ -27,6 +27,9 @@ impl ClientRequest for ResourceComplete {}
 pub struct ResourceCompleteParams {
     pub session_id: String,
     pub prefix: String,
+    /// `@` 补全只返回这一类候选：`file` 或 `dir`；缺省两类都返回。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -37,6 +40,9 @@ pub struct ResourceCandidate {
     pub description: String,
     pub kind: String,
     pub append_space: bool,
+    /// `label` 中被查询命中的字符下标（按 Unicode 标量计、升序），供前端高亮；无查询时为空。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matches: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -147,6 +153,7 @@ mod tests {
         let params = serde_json::to_value(ResourceCompleteParams {
             session_id: "ses_1".into(),
             prefix: "local:/".into(),
+            kind: None,
         })
         .expect("参数可序列化");
         assert_eq!(
