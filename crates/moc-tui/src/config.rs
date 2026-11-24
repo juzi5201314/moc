@@ -1,8 +1,8 @@
 //! 前端偏好只保存在 tui.toml，不进入 core 配置或模型上下文。
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use moc_protocol::{ChoiceOption, ConfigField, FieldKind};
 use moc_i18n::t;
+use moc_protocol::{ChoiceOption, ConfigField, FieldKind};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -34,6 +34,8 @@ pub struct TuiConfig {
     pub history_scope: HistoryScope,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statusline: Option<String>,
+    /// 加载后是完整键位表；落盘时只写与默认不同的动作（见 [`TuiStore::save`]）。
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub keybindings: BTreeMap<String, Vec<String>>,
 }
 impl Default for TuiConfig {
@@ -278,7 +280,13 @@ impl TuiStore {
             "{}",
             t!("tui.err.settings_modified")
         );
-        let text = toml::to_string_pretty(config)?;
+        // 未改动的键位跟随内置默认：以后调整默认键位时，旧配置不会把它钉死
+        let defaults = TuiConfig::default().keybindings;
+        let mut stored = config.clone();
+        stored
+            .keybindings
+            .retain(|action, keys| defaults.get(action) != Some(keys));
+        let text = toml::to_string_pretty(&stored)?;
         let temp = parent.join(format!(".tui-{}.tmp", std::process::id()));
         use std::io::Write;
         let result = (|| {
@@ -422,7 +430,13 @@ mod tests {
             "[keybindings]\nsend=['ctrl+j']",
         )
         .unwrap();
-        let (_, mut config) = TuiStore::load(root.path()).unwrap();
+        let (mut store, mut config) = TuiStore::load(root.path()).unwrap();
+        store.save(&config).unwrap();
+        let saved = std::fs::read_to_string(&store.path).unwrap();
+        assert!(
+            saved.contains("send") && !saved.contains("queue"),
+            "只落盘改动过的键位：{saved}"
+        );
         let keys = KeyMap::compile(&config).unwrap();
         assert_eq!(
             keys.action(KeyModifiers::CONTROL, KeyCode::Char('j')),
