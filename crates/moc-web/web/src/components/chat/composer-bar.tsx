@@ -7,11 +7,9 @@ import {
   FileTextIcon,
   FolderIcon,
   HistoryIcon,
-  ImageIcon,
   ListPlusIcon,
   LockIcon,
   PackageIcon,
-  PaperclipIcon,
   SquareIcon,
   ZapIcon,
 } from "lucide-react";
@@ -57,9 +55,9 @@ import { usePrefs } from "@/store/prefs";
 import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
+import { AddContextMenu, type AttachKind } from "./add-context-menu";
 import { CommandTextarea } from "./command-textarea";
 import {
-  CHIP,
   ComposerStatus,
   ContextRing,
   PendingList,
@@ -133,6 +131,34 @@ const RESOURCE_ICON: Record<string, typeof FileTextIcon> = {
   dir: FolderIcon,
 };
 
+/**
+ * 资源候选 → 补全条目。工作区路径拆成文件名与所在目录：文件名完整显示并高亮命中字符，
+ * 目录从左侧省略；详情区给出完整路径，超长路径在那里折行可见。
+ */
+function resourceSuggestion(candidate: ResourceCandidate): Suggestion {
+  const Icon = RESOURCE_ICON[candidate.kind] ?? FileTextIcon;
+  const label = candidate.label || candidate.uri;
+  const matches = candidate.matches ?? [];
+  const base = {
+    key: candidate.uri,
+    detail: candidate.description || undefined,
+    icon: <Icon />,
+  };
+  if (candidate.kind !== "file" && candidate.kind !== "dir")
+    return { ...base, title: label, titleMatches: matches };
+  const slash = label.lastIndexOf("/");
+  // 命中下标按 Unicode 标量计，换算时用码点数而不是 UTF-16 下标
+  const offset = Array.from(label.slice(0, slash + 1)).length;
+  return {
+    ...base,
+    title: `${label.slice(slash + 1)}${candidate.kind === "dir" ? "/" : ""}`,
+    titleMatches: matches.filter((index) => index >= offset).map((index) => index - offset),
+    subtitle: slash > 0 ? label.slice(0, slash) : undefined,
+    subtitleMatches: matches.filter((index) => index < offset - 1),
+    signature: label,
+  };
+}
+
 /** 插件清单 → 斜杠命令；加载失败的插件不贡献命令。 */
 function pluginSlashCommands(plugins: PluginInfo[] | null | undefined): SlashCommand[] {
   return (plugins ?? []).flatMap((plugin) =>
@@ -166,10 +192,13 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const [activeIndex, setActiveIndex] = useState(0);
   /** Esc 关闭补全时记下当时的输入，内容变化前不再弹出。 */
   const [dismissedAt, setDismissedAt] = useState<string | null>(null);
-  const [resources, setResources] = useState<{ prefix: string; items: ResourceCandidate[] }>({
-    prefix: "",
-    items: [],
-  });
+  const [resources, setResources] = useState<{
+    prefix: string;
+    kind?: AttachKind;
+    items: ResourceCandidate[];
+  }>({ prefix: "", items: [] });
+  /** 「+」菜单插入的 `@` 带类型过滤；只对插入位置上的那个 token 生效。 */
+  const [attach, setAttach] = useState<{ start: number; kind: AttachKind } | null>(null);
   const plugins = useTranscript((state) => state.bySession[sessionId]?.plugins);
 
   const info = useTranscript((state) => state.bySession[sessionId]?.info);
@@ -204,6 +233,10 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
 
   const token = useMemo(() => resourceToken(text, cursor), [text, cursor]);
   const tokenPrefix = token?.prefix ?? "";
+  const attachKind =
+    attach && token?.start === attach.start && tokenPrefix.startsWith("@")
+      ? attach.kind
+      : undefined;
   // 插件清单由 refreshSideData 在会话打开时统一拉取；这里只做投影。
   const pluginCommands = useMemo(() => pluginSlashCommands(plugins), [plugins]);
   const commands = useMemo(() => {
@@ -221,17 +254,25 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         .call<{ candidates: ResourceCandidate[] }>("resource/complete", {
           session_id: sessionId,
           prefix: tokenPrefix,
+          kind: attachKind,
         })
-        .then((result) => alive && setResources({ prefix: tokenPrefix, items: result.candidates }))
-        .catch(() => alive && setResources({ prefix: tokenPrefix, items: [] }));
+        .then(
+          (result) =>
+            alive &&
+            setResources({ prefix: tokenPrefix, kind: attachKind, items: result.candidates }),
+        )
+        .catch(() => alive && setResources({ prefix: tokenPrefix, kind: attachKind, items: [] }));
     }, 120);
     return () => {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [isDraft, sessionId, tokenPrefix]);
+  }, [isDraft, sessionId, tokenPrefix, attachKind]);
 
-  const resourceItems = token && resources.prefix === tokenPrefix ? resources.items : [];
+  const resourceItems =
+    token && resources.prefix === tokenPrefix && resources.kind === attachKind
+      ? resources.items
+      : [];
   const menu: { heading: string; items: Suggestion[] } | null =
     dismissedAt === text
       ? null
@@ -251,15 +292,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         : resourceItems.length > 0
           ? {
               heading: t("cb.resources"),
-              items: resourceItems.map((candidate) => {
-                const Icon = RESOURCE_ICON[candidate.kind] ?? FileTextIcon;
-                return {
-                  key: candidate.uri,
-                  title: candidate.label || candidate.uri,
-                  detail: candidate.description,
-                  icon: <Icon />,
-                };
-              }),
+              items: resourceItems.map(resourceSuggestion),
             }
           : null;
   const menuSize = menu?.items.length ?? 0;
@@ -343,6 +376,23 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     const suffix = candidate.append_space ? " " : "";
     const next = `${text.slice(0, token.start)}${candidate.uri}${suffix}${text.slice(token.end)}`;
     setText(next, token.start + candidate.uri.length + suffix.length);
+  };
+
+  /** 「+」菜单：在光标处插入补全前缀，前后补空白使其成为独立 token；`/` 只在空输入框里插入。 */
+  const insertTrigger = (prefix: string, kind?: AttachKind) => {
+    if (prefix === "/") {
+      setText("/", 1);
+      return;
+    }
+    const at = Math.min(cursor, text.length);
+    const before = at > 0 && !/\s/.test(text[at - 1]) ? " " : "";
+    const after = at < text.length && !/\s/.test(text[at]) ? " " : "";
+    const start = at + before.length;
+    setAttach(kind ? { start, kind } : null);
+    setText(
+      `${text.slice(0, at)}${before}${prefix}${after}${text.slice(at)}`,
+      start + prefix.length,
+    );
   };
 
   // ---------- 图片 ----------
@@ -737,6 +787,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                 <SuggestionMenu
                   id={suggestionsId}
                   side={inline ? "bottom" : "top"}
+                  wide={menu.heading !== t("cb.cmds")}
                   heading={menu.heading}
                   items={menu.items}
                   active={activeIndex}
@@ -760,26 +811,18 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                   void addFiles(files);
                 }}
               />
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={!acceptsImages || reading}
-                    className={cn(CHIP, "w-8 justify-center px-0")}
-                    aria-label={t("cb.add_image")}
-                  >
-                    {acceptsImages ? (
-                      <PaperclipIcon className="size-4" />
-                    ) : (
-                      <ImageIcon className="size-4" />
-                    )}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top">
-                  {acceptsImages ? t("cb.add_image_hint") : t("cb.no_image_input")}
-                </TooltipContent>
-              </Tooltip>
+              <AddContextMenu
+                disabled={reading}
+                canCommand={!text.trim() && images.length === 0}
+                canReference={!isDraft}
+                onUpload={() =>
+                  acceptsImages
+                    ? fileInputRef.current?.click()
+                    : toast.error(t("cb.no_image_input"))
+                }
+                onInsert={insertTrigger}
+                onClose={() => textareaRef.current?.focus()}
+              />
               <SessionOptions sessionId={sessionId} />
               <PlanToggle sessionId={sessionId} />
 

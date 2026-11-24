@@ -702,14 +702,44 @@ export { ContextRing } from "./status-popovers";
 export type Suggestion = {
   key: string;
   title: string;
+  /** `title` 中命中查询的字符下标（码点序号），高亮显示。 */
+  titleMatches?: number[];
+  /** 标题后的次要信息（如文件所在目录），放不下时从左侧省略。 */
+  subtitle?: string;
+  subtitleMatches?: number[];
   detail?: string;
   hint?: string;
+  /** 详情区首行；缺省为 `title` + `hint`。 */
+  signature?: string;
   icon?: ReactNode;
 };
+
+/** 按码点下标高亮命中字符；无命中时原样返回文本。 */
+function Highlighted({ text, matches }: { text: string; matches?: number[] }) {
+  if (!matches?.length) return text;
+  const hit = new Set(matches);
+  const parts: { text: string; hit: boolean }[] = [];
+  Array.from(text).forEach((char, index) => {
+    const last = parts.at(-1);
+    if (last && last.hit === hit.has(index)) last.text += char;
+    else parts.push({ text: char, hit: hit.has(index) });
+  });
+  return parts.map((part, index) =>
+    part.hit ? (
+      // biome-ignore lint/suspicious/noArrayIndexKey: 片段按文本顺序生成，不会重排
+      <span key={index} className="text-brand">
+        {part.text}
+      </span>
+    ) : (
+      part.text
+    ),
+  );
+}
 
 export function SuggestionMenu({
   id,
   side,
+  wide = false,
   heading,
   items,
   active,
@@ -719,6 +749,8 @@ export function SuggestionMenu({
 }: {
   id: string;
   side: "bottom" | "top";
+  /** 路径类候选需要更宽的浮层。 */
+  wide?: boolean;
   heading: string;
   items: Suggestion[];
   active: number;
@@ -746,7 +778,10 @@ export function SuggestionMenu({
       onInteractOutside={(event) => {
         if (event.target === inputRef.current) event.preventDefault();
       }}
-      className="flex max-h-[var(--radix-popover-content-available-height)] w-[300px] max-w-[var(--radix-popover-content-available-width)] flex-col p-1.5"
+      className={cn(
+        "flex max-h-[var(--radix-popover-content-available-height)] max-w-[var(--radix-popover-content-available-width)] flex-col p-1.5",
+        wide ? "w-[36rem]" : "w-[300px]",
+      )}
     >
       <div className="px-2 py-1 text-2xs text-text-tertiary">{heading}</div>
       <div
@@ -779,7 +814,17 @@ export function SuggestionMenu({
               </span>
             )}
             {/* 标题优先完整显示，参数提示让出剩余宽度；两者全文都在下方详情区 */}
-            <span className="max-w-full shrink-0 truncate">{item.title}</span>
+            <span className="max-w-full shrink-0 truncate">
+              <Highlighted text={item.title} matches={item.titleMatches} />
+            </span>
+            {item.subtitle && (
+              // rtl 让省略号出现在左侧，保留离文件最近的几级目录；bdi 保持路径本身从左到右
+              <span dir="rtl" className="min-w-0 truncate text-left text-xs text-text-tertiary">
+                <bdi>
+                  <Highlighted text={item.subtitle} matches={item.subtitleMatches} />
+                </bdi>
+              </span>
+            )}
             {item.hint && (
               <span className="ml-auto min-w-0 truncate font-mono text-2xs text-text-tertiary">
                 {item.hint}
@@ -788,7 +833,7 @@ export function SuggestionMenu({
           </button>
         ))}
       </div>
-      {items.some((item) => item.detail || item.hint) && (
+      {items.some((item) => item.detail || item.hint || item.signature) && (
         // 所有条目的详情叠在同一格里、只显示当前项：高度取最高一条，切换焦点时不跳动
         <div className="mt-1 grid shrink-0 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
           {items.map((item, index) => (
@@ -798,7 +843,7 @@ export function SuggestionMenu({
               className={cn("col-start-1 row-start-1 min-w-0", index !== active && "invisible")}
             >
               <p className="break-all font-mono text-2xs text-foreground">
-                {item.title}
+                {item.signature ?? item.title}
                 {item.hint && <span className="text-text-tertiary"> {item.hint}</span>}
               </p>
               {item.detail && <p className="mt-0.5 break-words">{item.detail}</p>}

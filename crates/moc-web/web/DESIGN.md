@@ -102,12 +102,13 @@
 - 点击卡片空白处聚焦输入；拖拽文件时外层出现 `ring-brand/40`。
 - 发送按钮：`size-8` 圆形、`bg-foreground` 反色，禁用时降为 tertiary。会话运行中且有草稿时拉长为 `ButtonGroup` 分体胶囊：左半 secondary 浅灰底 + 列表加号图标，排队（Ctrl+Enter）；右半保持主色箭头，按「运行中发送」偏好补充或中断（Enter）。开启「Queue on Enter」后两键互换（Enter 排队、Ctrl+Enter 补充或中断），按钮位置不变，tooltip、占位文案与快捷键列表随之改写。两半与空闲发送按钮都用 tooltip 标注动作与快捷键。Shift/Alt+Enter 换行。
 - Plan chip（`bg-brand/10 text-brand`）只在 plan 模式下出现，点击退出；入口是 `/plan` 与 Alt+J。`/plan` 补全选中或其后键入空白即切换（再输一次退出），命令不留在输入框，其后文字保留为草稿。
+- 输入卡左下是「+」（`AddContextMenu`）：上传图片，以及 Files / Folders / Commands / Skills / Plans / Session history / Tool outputs。后者只向光标处插入 `@`（文件、目录各带类型过滤）、`/`（仅空输入框）或 `skill://` 等前缀并弹出现有补全，不另做搜索面板；插入在菜单完全关闭后执行，避免补全被当作外部点击关掉。
 - 图片附件：40px 方形缩略图（`object-cover` 铺满、`rounded-lg`、发丝 ring），点击放大；删除是 20px 灰阶浮起圆钮（`bg-popover` + `--elevation-popover`，muted 图标，悬停变正文色），骑在右上角外凸 6px，悬停、键盘聚焦或触屏时出现，缩略图间距 12px 保证徽标不压邻图。
 
 ### 浮层
 
 - 菜单、下拉、右键菜单、`/` 与 `@` 补全统一：`rounded-[10px] bg-popover/95 backdrop-blur-md p-1 shadow-[var(--elevation-popover)]`，无 border；菜单项 `rounded-md`，图标 muted。
-- 补全对齐输入文字一侧，欢迎页向下、会话页向上优先，空间不足时翻转；说明取当前高亮项，不夺取输入焦点。命令名不截断，参数提示让出剩余宽度；底部详情区给出完整的命令 + 参数与说明，各项叠放在同一格、高度取最高一项，切换高亮时不跳动。
+- 补全对齐输入文字一侧，欢迎页向下、会话页向上优先，空间不足时翻转；说明取当前高亮项，不夺取输入焦点。命令名不截断，参数提示让出剩余宽度；`@` 路径候选拆成文件名（命中字符 `text-brand`）+ 所在目录（tertiary，`dir=rtl` 从左侧省略保留近端目录），浮层加宽到 36rem，详情区给出完整路径并折行；底部详情区给出完整的命令 + 参数与说明，各项叠放在同一格、高度取最高一项，切换高亮时不跳动。
 - Context 模态的消息目录：每条前的小圆点按来源着色（用户输入 `chart-1`、模型输出 `chart-5`、工具结果与手动命令 `chart-6`、运行时注入等合成消息 `chart-7`、其余 `chart-3`），标题后跟线上 role 的等宽灰徽标；目录顶部有临时开关隐藏不可展开的工具结果。正文里的工具调用渲染为卡片（工具名、call id、逐项参数），不显示协议原始 JSON。
 - 分隔线 `bg-border-subtle`；分组标题 `text-xs font-medium text-muted-foreground`（补全里用 `text-2xs text-text-tertiary`）。
 - 选中标记用 `muted-foreground` 的勾，不用强调色。
