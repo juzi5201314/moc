@@ -54,7 +54,8 @@ fn tab_of(path: &[String]) -> &'static str {
         Some("skills") => "skills",
         Some("mcp") => "mcp",
         Some("plugins") => "plugins",
-        Some("tui") => "ui",
+        // 界面语言与 TUI 偏好同属「UI」页（Web 放在 General 的 Theme 下方）。
+        Some("tui" | "language") => "ui",
         _ => "session",
     }
 }

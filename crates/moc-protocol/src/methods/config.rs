@@ -54,7 +54,7 @@ pub struct ConfigGetResult {
     /// 特性开关快照（`[features]` 覆盖合成后的有效状态）；旧报文没有时按注册表默认。
     #[serde(default)]
     pub features: FeatureStates,
-    /// `[general] language` 原始值（`""`/`auto`/`zh`/`en`）；`auto` 的解析由前端自己定
+    /// 顶层 `language` 配置原始值（`""`/`auto`/`zh`/`en`）；`auto` 的解析由前端自己定
     /// （Web 按 navigator.language，TUI 按进程环境）。旧报文没有时按 `auto` 处理。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,

@@ -50,7 +50,12 @@ impl AgentService for Core {
         // 登记 MCP 状态扇出并预热启动目录的 MCP；其它目录在新建/打开会话或查询 `mcp/list` 时预热。
         self.inner
             .register_mcp_sink(ctx.connection_id(), ctx.updates());
-        let cwd = self.inner.config().cwd.clone();
+        let config = self.inner.config();
+        // 先定语言再生成 tips 等握手回执，Web 的 `auto` 与浏览器语言保持一致。
+        if let Some(locale) = &params.locale {
+            crate::i18n::set_client_locale(locale, &config.language);
+        }
+        let cwd = config.cwd.clone();
         self.inner.warm_mcp(&cwd).await;
         Ok(InitializeResult {
             protocol_version: moc_protocol::PROTOCOL_VERSION.into(),

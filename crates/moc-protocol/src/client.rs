@@ -200,6 +200,7 @@ impl ClientBuilder {
             protocol_version: PROTOCOL_VERSION.to_owned(),
             client: self.client,
             capabilities: self.capabilities,
+            locale: None,
         };
         let handshake = traffic
             .call::<Initialize>(params)

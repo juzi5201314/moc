@@ -296,6 +296,10 @@ pub(super) async fn manage(
             }))
             .await;
             inner.mcp_config_errors.write().clear();
+            // 改语言即时生效：此后 core 产出的用户面文案随新配置走，无需重启前端。
+            if inner.config().language != resolved.language {
+                crate::i18n::init(&resolved.language);
+            }
             *inner.config.write() = Arc::new(resolved);
             inner.project_configs.write().clear();
             inner.skill_indexes.write().clear();

@@ -16,6 +16,10 @@ pub struct InitializeParams {
     /// 前端能力；缺省视为「无任何能力」（core 不会向它发权限询问）。
     #[serde(default)]
     pub capabilities: ClientCapabilities,
+    /// 前端界面语言（BCP 47，如 `zh-CN`、`en-US`）。配置 `language = "auto"` 时 core
+    /// 的用户面文案跟随它（`zh*` 为中文，其余英文）；缺省按 core 进程环境变量探测。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
 }
 
 /// 前端自报家门。
@@ -146,6 +150,7 @@ mod tests {
                 permission_requests: true,
                 ask_requests: true,
             },
+            locale: None,
         };
         assert_eq!(
             serde_json::to_value(&params).expect("可序列化"),

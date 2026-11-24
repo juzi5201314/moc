@@ -185,6 +185,8 @@ export class RpcClient {
         protocol_version: PROTOCOL_VERSION,
         client: { name: "moc-web", version: this.options.clientVersion, frontend: "webui" },
         capabilities: { permission_requests: true, ask_requests: true },
+        // `language = "auto"` 时 core 的说明、tips 与命令文案跟随浏览器语言，与界面一致。
+        locale: navigator.language,
       });
       this.reconnectDelay = RECONNECT_INITIAL_MS;
       this.ready = true;

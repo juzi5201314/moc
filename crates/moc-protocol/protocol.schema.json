@@ -1303,7 +1303,7 @@
           "description": "`[models.fusion]` 配置的组合；两侧都配置时才有值。"
         },
         "language": {
-          "description": "`[general] language` 原始值（`\"\"`/`auto`/`zh`/`en`）；`auto` 的解析由前端自己定\n（Web 按 navigator.language，TUI 按进程环境）。旧报文没有时按 `auto` 处理。",
+          "description": "顶层 `language` 配置原始值（`\"\"`/`auto`/`zh`/`en`）；`auto` 的解析由前端自己定\n（Web 按 navigator.language，TUI 按进程环境）。旧报文没有时按 `auto` 处理。",
           "type": [
             "string",
             "null"
@@ -2740,6 +2740,13 @@
         "client": {
           "$ref": "#/$defs/ClientInfo",
           "description": "前端自报家门。"
+        },
+        "locale": {
+          "description": "前端界面语言（BCP 47，如 `zh-CN`、`en-US`）。配置 `language = \"auto\"` 时 core\n的用户面文案跟随它（`zh*` 为中文，其余英文）；缺省按 core 进程环境变量探测。",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "protocol_version": {
           "description": "前端声明的协议版本，形状 `major.minor`；major 参与协商。",

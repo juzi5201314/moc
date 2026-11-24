@@ -5,19 +5,42 @@
 //! 只覆盖给人看的文本：系统提示词、运行时提醒、工具描述按规则保持英文，不走这里。
 
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicU8, Ordering};
 
-/// 按 `language` 配置初始化进程语言：`auto`（或空值）跟随 `LC_ALL`/`LC_MESSAGES`/`LANG`
-/// 环境变量，`zh*` 进中文、其余进英文；显式 `zh`/`en` 直接生效。
-/// 前端进程在入口尽早调用；配置加载后可再以解析值调用一次覆盖 auto 探测。
+const HINT_NONE: u8 = 0;
+const HINT_ZH: u8 = 1;
+const HINT_EN: u8 = 2;
+
+/// 前端握手上报的界面语言（`initialize.locale`）；单字节原子，无则按环境变量探测。
+static CLIENT_HINT: AtomicU8 = AtomicU8::new(HINT_NONE);
+
+/// 按 `language` 配置初始化进程语言：显式 `zh`/`en` 直接生效；`auto`（或空值）先看
+/// 前端上报的界面语言，没有再跟随 `LC_ALL`/`LC_MESSAGES`/`LANG`，`zh*` 进中文、其余进英文。
+/// 前端进程在入口尽早调用；配置加载、握手上报或保存配置后再以配置值调用一次。
 pub fn init(language: &str) {
     moc_i18n::set_locale(resolve(language));
+}
+
+/// 记录前端上报的界面语言（BCP 47），随后按 `language` 配置重新生效。
+pub(crate) fn set_client_locale(locale: &str, language: &str) {
+    let hint = if locale.starts_with("zh") {
+        HINT_ZH
+    } else {
+        HINT_EN
+    };
+    CLIENT_HINT.store(hint, Ordering::Relaxed);
+    init(language);
 }
 
 pub(crate) fn resolve(language: &str) -> &'static str {
     match language {
         "zh" => "zh",
         "en" => "en",
-        _ => detect(),
+        _ => match CLIENT_HINT.load(Ordering::Relaxed) {
+            HINT_ZH => "zh",
+            HINT_EN => "en",
+            _ => detect(),
+        },
     }
 }
 

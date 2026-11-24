@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 0c6fdec813e03d63
+// schema sha256: 0843d28be7c06dc6
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -1962,7 +1962,7 @@ export interface ConfigGetResult {
    */
   fusion?: FusionPair | null;
   /**
-   * `[general] language` 原始值（`""`/`auto`/`zh`/`en`）；`auto` 的解析由前端自己定
+   * 顶层 `language` 配置原始值（`""`/`auto`/`zh`/`en`）；`auto` 的解析由前端自己定
    * （Web 按 navigator.language，TUI 按进程环境）。旧报文没有时按 `auto` 处理。
    */
   language?: string | null;
@@ -2587,6 +2587,11 @@ export interface GoalView {
 export interface InitializeParams {
   capabilities?: ClientCapabilities1;
   client: ClientInfo1;
+  /**
+   * 前端界面语言（BCP 47，如 `zh-CN`、`en-US`）。配置 `language = "auto"` 时 core
+   * 的用户面文案跟随它（`zh*` 为中文，其余英文）；缺省按 core 进程环境变量探测。
+   */
+  locale?: string | null;
   /**
    * 前端声明的协议版本，形状 `major.minor`；major 参与协商。
    */

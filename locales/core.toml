@@ -847,7 +847,7 @@ desc = { zh = "JSON 对象：合并到 thinking 开关对象中的附加字段�
 
 [core.config.keys.language]
 label = { zh = "Language", en = "Language" }
-desc = { zh = "auto 跟随系统环境；zh/en 强制指定界面语言，重启前端进程后生效。", en = "auto follows the system locale; zh/en force a language and apply after restarting the frontend." }
+desc = { zh = "界面显示语言。auto 时 Web 跟随浏览器语言、TUI 跟随系统环境；zh/en 固定为中文或英文，保存后立即生效。", en = "Interface language. auto follows the browser in Web and the system locale in the TUI; zh/en pin Chinese or English and apply immediately." }
 
 # ---- 请求参数（parameters.rs）：label 直接使用精确 wire API 键名，此处仅维护双语 desc ----
 

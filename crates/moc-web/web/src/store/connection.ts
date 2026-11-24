@@ -2,7 +2,7 @@
 
 import { toast } from "sonner";
 import { create } from "zustand";
-import { setLanguage, t } from "@/lib/i18n";
+import { resolveLocale, setLanguage, t } from "@/lib/i18n";
 import { clientListeners, rpc } from "@/protocol/client";
 import { ErrorCode, type RpcError } from "@/protocol/errors";
 import type { ConnectionStatus } from "@/protocol/rpc";
@@ -34,13 +34,15 @@ export const useConnection = create<ConnectionState>()((set) => ({
   handshakeError: null,
   everOnline: false,
   refreshConfig: async () => {
-    const prevLang = useConnection.getState().config?.language;
+    const prev = useConnection.getState().config;
     const config = await rpc.call<ConfigGetResult>("config/get", {});
+    // 有效语言变了：tips、命令、设置说明等 core 文案按握手与读取时的语言生成，整页重载让两端一并切换。
+    if (prev && resolveLocale(prev.language) !== resolveLocale(config.language)) {
+      window.location.reload();
+      return;
+    }
     setLanguage(config.language);
     set({ config });
-    if (prevLang !== undefined && prevLang !== config.language) {
-      void useConnection.getState().refreshCommands();
-    }
   },
   refreshCommands: async () => {
     const response = await fetch("/commands.json");
