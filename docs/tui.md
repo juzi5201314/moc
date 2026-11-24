@@ -42,7 +42,9 @@
 | `Esc` | 取消选区 → 停止生成 → 清空输入 → 空输入框双击打开消息回退；聚焦子代理时返回主会话 |
 | `←` `←` | 聚焦子代理时连按两次返回主会话 |
 
-> 部分终端无法区分 `Ctrl+Enter` 或 `Ctrl+M`（会视为普通 `Enter`），可在 Settings 的 `UI` 页签中重新绑定快捷键。
+运行中输入框有内容时，输入框下边框左侧的提示从 `Esc Stop` 换成排队键位（如 `Ctrl+Enter Queue`），点击它与按键同义。
+
+> 部分终端无法区分 `Ctrl+Enter` 或 `Ctrl+M`（会视为普通 `Enter`），可在 Settings 的 `UI` 页签中重新绑定快捷键。WSL 经 ConPTY（Windows Terminal 等）运行且终端不支持 kitty 键盘协议时，moc 会开启 win32-input-mode，使 `Shift+Enter` / `Ctrl+Enter` 可区分；`/doctor` 的 Keyboard 一行显示当前协议，`MOC_WIN32_INPUT=0|1` 可强制关闭或开启。`tui.toml` 只保存改动过的键位，其余跟随内置默认。
 
 ## 斜杠命令与手动命令
 
