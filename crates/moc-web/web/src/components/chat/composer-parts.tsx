@@ -44,7 +44,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { PopoverContent } from "@/components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AUTONOMY } from "@/lib/autonomy";
 import { type MsgKey, useT } from "@/lib/i18n";
@@ -747,10 +747,17 @@ export type Suggestion = {
   subtitleMatches?: number[];
   detail?: string;
   hint?: string;
-  /** 详情区首行；缺省为 `title` + `hint`。 */
+  /** 详情区首行；缺省为 `title`。 */
   signature?: string;
+  /** 来源元信息（如插件名），展示在详情区底部。 */
+  source?: string;
   icon?: ReactNode;
 };
+
+/** 侧边独立详情卡低于此宽度时，降级为列表远端内嵌详情栏。 */
+const SIDE_CARD_MIN_WIDTH = 220;
+/** 侧边卡片间距（sideOffset=8）与视口碰撞留白（collisionPadding=12）之和。 */
+const SIDE_CHROME_PX = 20;
 
 /** 按码点下标高亮命中字符；无命中时原样返回文本。 */
 function Highlighted({ text, matches }: { text: string; matches?: number[] }) {
@@ -772,6 +779,96 @@ function Highlighted({ text, matches }: { text: string; matches?: number[] }) {
       part.text
     ),
   );
+}
+
+/** 详情卡正文：完整折行展示命令名/路径、参数语法、说明与来源，不截断、不靠隐形占位撑高。 */
+function SuggestionDetailBody({ item }: { item: Suggestion }) {
+  return (
+    <div className="space-y-1.5 text-xs">
+      <p className="break-all font-mono text-xs font-medium text-foreground">
+        {item.signature ?? item.title}
+      </p>
+      {item.hint && (
+        <p className="rounded-md bg-[var(--inline-code-bg)] px-2 py-1 font-mono text-2xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
+          {item.hint}
+        </p>
+      )}
+      {item.detail && (
+        <p className="leading-relaxed break-words text-muted-foreground">{item.detail}</p>
+      )}
+      {item.source && <p className="text-2xs text-text-tertiary">{item.source}</p>}
+    </div>
+  );
+}
+
+type MenuLayout = {
+  placed: boolean;
+  actualSide: "top" | "bottom";
+  dockSide: boolean;
+  /** 外层定位 wrapper 每次变更 transform/尺寸时更新，用于触发侧边浮层同步重定位。 */
+  anchorKey: string;
+};
+
+/**
+ * 观测补全主浮层的真实定位方向与左右剩余空间：
+ * - 等外层 Radix Popper 结束 `translate(0, -200%)` 预测量后再挂载侧边浮层，避免首帧闪到屏外；
+ * - 任一侧可用宽度 ≥ 220px 时启用侧边独立详情卡，否则降级为远离输入框一端的内嵌栏。
+ */
+function useSuggestionLayout(
+  menuEl: HTMLDivElement | null,
+  preferredSide: "top" | "bottom",
+): MenuLayout {
+  const [layout, setLayout] = useState<MenuLayout>({
+    placed: false,
+    actualSide: preferredSide,
+    dockSide: true,
+    anchorKey: "",
+  });
+
+  useLayoutEffect(() => {
+    if (!menuEl) return;
+    const wrapper = menuEl.closest<HTMLElement>("[data-radix-popper-content-wrapper]");
+    const measure = () => {
+      const transform = wrapper?.style.transform ?? "";
+      // Radix Popper 尚未定位完时会把 wrapper 移到 -200%，此时不读取坐标。
+      if (transform.includes("-200%")) return;
+      const rect = menuEl.getBoundingClientRect();
+      const actualSide: "top" | "bottom" =
+        menuEl.dataset.side === "bottom"
+          ? "bottom"
+          : menuEl.dataset.side === "top"
+            ? "top"
+            : preferredSide;
+      const availableSide = Math.max(window.innerWidth - rect.right, rect.left) - SIDE_CHROME_PX;
+      const dockSide = availableSide >= SIDE_CARD_MIN_WIDTH;
+      const anchorKey = `${transform}|${Math.round(rect.width)}x${Math.round(rect.height)}|${actualSide}`;
+      setLayout((prev) =>
+        prev.placed &&
+        prev.actualSide === actualSide &&
+        prev.dockSide === dockSide &&
+        prev.anchorKey === anchorKey
+          ? prev
+          : { placed: true, actualSide, dockSide, anchorKey },
+      );
+    };
+
+    measure();
+    const resizeObserver = new ResizeObserver(measure);
+    resizeObserver.observe(menuEl);
+    const mutationObserver = new MutationObserver(measure);
+    if (wrapper) {
+      mutationObserver.observe(wrapper, { attributes: true, attributeFilter: ["style"] });
+    }
+    mutationObserver.observe(menuEl, { attributes: true, attributeFilter: ["data-side"] });
+    window.addEventListener("resize", measure);
+    return () => {
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [menuEl, preferredSide]);
+
+  return layout;
 }
 
 export function SuggestionMenu({
@@ -798,14 +895,74 @@ export function SuggestionMenu({
   inputRef: RefObject<HTMLElement | null>;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
+  const [menuEl, setMenuEl] = useState<HTMLDivElement | null>(null);
+  const [titleTruncated, setTitleTruncated] = useState(false);
+
+  const safeActive = Math.min(Math.max(active, 0), Math.max(items.length - 1, 0));
+  const current = items[safeActive];
+  const { placed, actualSide, dockSide, anchorKey } = useSuggestionLayout(menuEl, side);
+
   useEffect(() => {
     listRef.current
-      ?.querySelector(`[data-index="${active}"]`)
+      ?.querySelector(`[data-index="${safeActive}"]`)
       ?.scrollIntoView({ block: "nearest" });
-  }, [active]);
+  }, [safeActive]);
+
+  // 即使某项既无说明也无参数，若超长标题在行内被截断，仍在详情卡里展示完整文本。
+  const currentTitle = current?.title;
+  useLayoutEffect(() => {
+    if (!anchorKey || !currentTitle) {
+      setTitleTruncated(false);
+      return;
+    }
+    const titleEl = listRef.current?.querySelector<HTMLElement>(
+      `[data-index="${safeActive}"] [data-slot="suggestion-title"]`,
+    );
+    setTitleTruncated(Boolean(titleEl && titleEl.scrollWidth > titleEl.clientWidth + 1));
+  }, [safeActive, currentTitle, anchorKey]);
+
+  // 依赖 anchorKey：外层列表因过滤缩高/位移时刷新锚对象引用，使侧卡立即跟上。
+  const anchorRef = useMemo(
+    () =>
+      menuEl && anchorKey
+        ? {
+            current: {
+              getBoundingClientRect: () => menuEl.getBoundingClientRect(),
+              contextElement: menuEl,
+            },
+          }
+        : undefined,
+    [menuEl, anchorKey],
+  );
+
+  const hasDetail = Boolean(
+    current &&
+      (current.detail || current.hint || current.signature || current.source || titleTruncated),
+  );
+  const showSideDetail = Boolean(placed && dockSide && hasDetail && anchorRef);
+  const showInlineDetail = Boolean(placed && !dockSide && hasDetail);
+  // 窄屏降级时把详情放在远离输入框的一端（top 置顶、bottom 置底），避免列表位移动摇悬停焦点。
+  const inlineDetail = showInlineDetail && current && (
+    <div
+      ref={detailRef}
+      role="note"
+      data-slot="suggestion-detail"
+      data-placement={actualSide === "top" ? "inline-top" : "inline-bottom"}
+      className={cn(
+        "max-h-40 shrink-0 overflow-y-auto px-2",
+        actualSide === "top"
+          ? "mb-1 border-b border-border-subtle pt-1 pb-2"
+          : "mt-1 border-t border-border-subtle pt-2 pb-1",
+      )}
+    >
+      <SuggestionDetailBody item={current} />
+    </div>
+  );
 
   return (
     <PopoverContent
+      ref={setMenuEl}
       side={side}
       align="start"
       sideOffset={4}
@@ -815,13 +972,17 @@ export function SuggestionMenu({
       onOpenAutoFocus={(event) => event.preventDefault()}
       onCloseAutoFocus={(event) => event.preventDefault()}
       onInteractOutside={(event) => {
-        if (inputRef.current?.contains(event.target as Node | null)) event.preventDefault();
+        const target = event.target as Node | null;
+        if (inputRef.current?.contains(target) || detailRef.current?.contains(target)) {
+          event.preventDefault();
+        }
       }}
       className={cn(
         "flex max-h-[var(--radix-popover-content-available-height)] max-w-[var(--radix-popover-content-available-width)] flex-col p-1.5",
-        wide ? "w-[36rem]" : "w-[300px]",
+        wide ? "w-[28rem]" : "w-[22rem]",
       )}
     >
+      {actualSide === "top" && inlineDetail}
       <div className="px-2 py-1 text-2xs text-text-tertiary">{heading}</div>
       <div
         ref={listRef}
@@ -830,66 +991,79 @@ export function SuggestionMenu({
         role="listbox"
         aria-label={heading}
       >
-        {items.map((item, index) => (
-          <button
-            key={item.key}
-            type="button"
-            role="option"
-            id={`${id}-${index}`}
-            aria-selected={index === active}
-            data-index={index}
-            tabIndex={-1}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => onPick(index)}
-            onMouseMove={() => onHover(index)}
-            className={cn(
-              "flex h-[30px] w-full items-center gap-2 rounded-md px-2 text-left text-ui transition-colors",
-              index === active ? "bg-accent text-foreground" : "text-popover-foreground",
-            )}
-          >
-            {item.icon && (
-              <span className="flex size-4 shrink-0 items-center justify-center text-text-tertiary [&_svg]:size-3.5">
-                {item.icon}
-              </span>
-            )}
-            {/* 标题优先完整显示，参数提示让出剩余宽度；两者全文都在下方详情区 */}
-            <span className="max-w-full shrink-0 truncate">
-              <Highlighted text={item.title} matches={item.titleMatches} />
-            </span>
-            {item.subtitle && (
-              // rtl 让省略号出现在左侧，保留离文件最近的几级目录；bdi 保持路径本身从左到右
-              <span dir="rtl" className="min-w-0 truncate text-left text-xs text-text-tertiary">
-                <bdi>
-                  <Highlighted text={item.subtitle} matches={item.subtitleMatches} />
-                </bdi>
-              </span>
-            )}
-            {item.hint && (
-              <span className="ml-auto min-w-0 truncate font-mono text-2xs text-text-tertiary">
-                {item.hint}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
-      {items.some((item) => item.detail || item.hint || item.signature) && (
-        // 所有条目的详情叠在同一格里、只显示当前项：高度取最高一条，切换焦点时不跳动
-        <div className="mt-1 grid shrink-0 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
-          {items.map((item, index) => (
-            <div
+        {items.map((item, index) => {
+          const hasTrailing = Boolean(item.subtitle || item.hint);
+          return (
+            <button
               key={item.key}
-              aria-hidden={index !== active}
-              className={cn("col-start-1 row-start-1 min-w-0", index !== active && "invisible")}
+              type="button"
+              role="option"
+              id={`${id}-${index}`}
+              aria-selected={index === safeActive}
+              data-index={index}
+              tabIndex={-1}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => onPick(index)}
+              onMouseMove={() => onHover(index)}
+              className={cn(
+                "flex h-[30px] w-full items-center gap-2 rounded-md px-2 text-left text-ui transition-colors",
+                index === safeActive ? "bg-accent text-foreground" : "text-popover-foreground",
+              )}
             >
-              <p className="break-all font-mono text-2xs text-foreground">
-                {item.signature ?? item.title}
-                {item.hint && <span className="text-text-tertiary"> {item.hint}</span>}
-              </p>
-              {item.detail && <p className="mt-0.5 break-words">{item.detail}</p>}
-            </div>
-          ))}
-        </div>
-      )}
+              {item.icon && (
+                <span className="flex size-4 shrink-0 items-center justify-center text-text-tertiary [&_svg]:size-3.5">
+                  {item.icon}
+                </span>
+              )}
+              {/* 有尾随参数/目录时，标题优先不缩并在 72% 处优雅截断，避免挤掉尾随信息或溢出容器；无尾随项时可占满整行。 */}
+              <span
+                data-slot="suggestion-title"
+                className={cn("min-w-0 truncate", hasTrailing && "max-w-[72%] shrink-0")}
+              >
+                <Highlighted text={item.title} matches={item.titleMatches} />
+              </span>
+              {item.subtitle && (
+                // rtl 让省略号出现在左侧，保留离文件最近的几级目录；bdi 保持路径本身从左到右
+                <span dir="rtl" className="min-w-0 truncate text-left text-xs text-text-tertiary">
+                  <bdi>
+                    <Highlighted text={item.subtitle} matches={item.subtitleMatches} />
+                  </bdi>
+                </span>
+              )}
+              {item.hint && (
+                <span className="ml-auto min-w-0 truncate font-mono text-2xs text-text-tertiary">
+                  {item.hint}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      {actualSide === "bottom" && inlineDetail}
+
+      {/* 独立侧边详情卡：与列表几何解耦，主列表高度不随详情跳变；靠输入框一侧与列表齐平。 */}
+      <Popover open={showSideDetail}>
+        {anchorRef && <PopoverAnchor virtualRef={anchorRef} />}
+        {current && (
+          <PopoverContent
+            ref={detailRef}
+            role="note"
+            data-slot="suggestion-detail"
+            data-placement="side"
+            side="right"
+            align={actualSide === "top" ? "end" : "start"}
+            sideOffset={8}
+            collisionPadding={12}
+            onOpenAutoFocus={(event) => event.preventDefault()}
+            onCloseAutoFocus={(event) => event.preventDefault()}
+            onInteractOutside={(event) => event.preventDefault()}
+            onEscapeKeyDown={(event) => event.preventDefault()}
+            className="max-h-[min(22rem,var(--radix-popover-content-available-height))] w-72 max-w-[var(--radix-popover-content-available-width)] overflow-y-auto p-3"
+          >
+            <SuggestionDetailBody item={current} />
+          </PopoverContent>
+        )}
+      </Popover>
     </PopoverContent>
   );
 }

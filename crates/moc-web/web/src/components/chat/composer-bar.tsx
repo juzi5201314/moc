@@ -14,7 +14,6 @@ import {
   LockIcon,
   PackageIcon,
   SquareIcon,
-  ZapIcon,
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import { type DragEvent, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -368,10 +367,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               key: `/${command.name}`,
               title: `/${command.name}`,
               hint: command.usage,
-              detail: command.plugin
-                ? `${command.description} · ${command.plugin}`
-                : command.description,
-              icon: <ZapIcon />,
+              detail: command.description || undefined,
+              source: command.plugin,
             })),
           }
         : resourceItems.length > 0
