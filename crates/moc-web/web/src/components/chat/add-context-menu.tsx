@@ -1,5 +1,5 @@
-// 输入框左下的「+」：上传图片，或向输入框插入 @ / / / 资源 URI 前缀并弹出对应补全。
-// 只列 moc 已有的引用能力；选中后不另开搜索面板，统一复用输入框补全。
+// 输入框左下的「+」：上传本地文件、选取 core 所在机器上的文件，或向输入框插入
+// @ / / / 资源 URI 前缀并弹出对应补全。只列 moc 已有的引用能力；插入前缀后统一复用输入框补全。
 import {
   BookOpenIcon,
   ClipboardListIcon,
@@ -7,9 +7,10 @@ import {
   FolderIcon,
   HistoryIcon,
   PackageIcon,
-  PaperclipIcon,
   PlusIcon,
+  ServerIcon,
   SquareSlashIcon,
+  UploadIcon,
 } from "lucide-react";
 import { type ReactNode, useRef } from "react";
 import {
@@ -42,6 +43,7 @@ export function AddContextMenu({
   canCommand,
   canReference,
   onUpload,
+  onBrowseServer,
   onInsert,
   onClose,
 }: {
@@ -50,7 +52,10 @@ export function AddContextMenu({
   canCommand: boolean;
   /** 资源补全需要已建立的会话。 */
   canReference: boolean;
+  /** 浏览器文件框：选前端本地文件，上传到会话目录。 */
   onUpload: () => void;
+  /** 服务端文件选取器：直接引用 core 所在机器上的文件，不复制。 */
+  onBrowseServer: () => void;
   onInsert: (prefix: string, kind?: AttachKind) => void;
   /** 菜单关闭后把焦点还给输入框，插入前缀后可直接接着打字。 */
   onClose: () => void;
@@ -89,8 +94,16 @@ export function AddContextMenu({
         }}
       >
         <DropdownMenuItem onSelect={onUpload}>
-          <PaperclipIcon />
+          <UploadIcon />
           {t("ac.upload")}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => {
+            pending.current = onBrowseServer;
+          }}
+        >
+          <ServerIcon />
+          {t("ac.server")}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {ITEMS.map((item) => (

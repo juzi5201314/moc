@@ -690,7 +690,7 @@ export async function rewind(
   });
   await reopenWith(sessionId, result);
   if (restoreText !== undefined) {
-    useComposer.getState().restore(sessionId, { text: restoreText, images: [] });
+    useComposer.getState().restore(sessionId, { text: restoreText, images: [], files: [] });
   }
   // 回退结果不带可前滚的尾部，只有 load_page 返回；取一条就够拿到栈顶 id。
   const page = await loadHistoryPage(rpc, {

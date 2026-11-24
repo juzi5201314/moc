@@ -291,7 +291,7 @@ export function runSlash(
       const active = args ? true : !view?.info.plan_active;
       void togglePlanMode(sessionId, active)
         .then(() => {
-          if (args) void sendPrompt(sessionId, toInput(args, []));
+          if (args) void sendPrompt(sessionId, toInput(args, [], []));
           else toast(active ? t("slash.plan_on") : t("slash.plan_off"));
         })
         .catch((error) => toast.error(t("slash.plan_failed", { error: errorText(error) })));
@@ -372,10 +372,11 @@ export function runSlash(
           kind: "queue",
           text: args,
           images: [],
+          files: [],
           mode: "ask",
         });
       } else {
-        void sendPrompt(sessionId, toInput(args, []), { mode: "ask" });
+        void sendPrompt(sessionId, toInput(args, [], []), { mode: "ask" });
       }
       break;
     case "retry":
@@ -473,7 +474,7 @@ export function runSlash(
       // 激活后有指令就作为提示发送；失败（无审批能力/已禁用）显示 toast。
       void workflowActivate(sessionId)
         .then(() => {
-          if (args) void sendPrompt(sessionId, toInput(args, []));
+          if (args) void sendPrompt(sessionId, toInput(args, [], []));
           else toast(t("slash.wf_active"));
         })
         .catch((error) => toast.error(t("slash.wf_failed", { error: errorText(error) })));

@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
-import { cn } from "@/lib/utils";
+import { cn, formatBytes } from "@/lib/utils";
 import { rawFileUrl } from "@/lib/web-api";
 import type { PlanAction, PlanInfo, SessionEngine } from "@/protocol/types";
 import { approvePlan } from "@/store/actions";
@@ -424,12 +424,6 @@ function BinaryCard({ size, onOpen, pdf }: { size: number; onOpen?: () => void; 
       </div>
     </div>
   );
-}
-
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /** 计划文件：复用 PlanReview 的审阅能力（approve / revise 原逻辑）。 */

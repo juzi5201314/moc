@@ -1,73 +1,27 @@
-import { cleanup, fireEvent, render } from "@testing-library/react";
-import { createRef } from "react";
-import { afterEach, expect, it, vi } from "vitest";
+import { cleanup, render } from "@testing-library/react";
+import { afterEach, expect, it } from "vitest";
 import { useI18n } from "@/lib/i18n";
 import { commandToken } from "@/lib/slash";
-import { CommandTextarea } from "./command-textarea";
 import { ShellModeNotice } from "./composer-parts";
 
 afterEach(cleanup);
 
-it("镜像只突出已知命令、别名和插件命令，保留原生输入与滚动", () => {
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      observe() {}
-      disconnect() {}
-    },
-  );
-  const ref = createRef<HTMLTextAreaElement>();
-  const onChange = vi.fn();
+it("命令范围只认开头的已知命令、别名和插件命令", () => {
   const commands = [
     { name: "help", description: "帮助", aliases: ["h"] },
     { name: "deploy", description: "插件", plugin: "demo" },
   ];
-  const view = render(<CommandTextarea command={null} value="" ref={ref} onChange={onChange} />);
-  try {
-    for (const [text, token] of [
-      ["  /help 参数 /help", "/help"],
-      ["/h 参数", "/h"],
-      ["/deploy 参数", "/deploy"],
-      ["/unknown 参数", null],
-      ["//foo", null],
-      ["普通文本 /help", null],
-      ["", null],
-    ] as const) {
-      view.rerender(
-        <CommandTextarea
-          command={commandToken(text, commands)}
-          value={text}
-          ref={ref}
-          onChange={onChange}
-          className="text-foreground"
-        />,
-      );
-      const input = view.getByRole("textbox");
-      expect(ref.current).toBe(input);
-      expect(ref.current?.value).toBe(text);
-      const mirror = view.container.querySelector<HTMLElement>('[aria-hidden="true"]');
-      if (token) {
-        expect(mirror?.querySelector("span")?.textContent).toBe(token);
-        expect(mirror?.querySelector("span")?.classList.contains("text-brand")).toBe(true);
-        expect(mirror?.textContent).toBe(`${text}\u200b`);
-        expect(input.classList.contains("text-transparent")).toBe(true);
-        Object.defineProperty(input, "clientWidth", { value: 180, configurable: true });
-        Object.defineProperty(input, "clientHeight", { value: 72, configurable: true });
-        fireEvent.scroll(input, { target: { scrollTop: 24 } });
-        expect(mirror?.scrollTop).toBe(24);
-        expect(mirror?.style.width).toBe("180px");
-        expect(mirror?.style.height).toBe("72px");
-      } else {
-        expect(mirror).toBeNull();
-        expect(input.classList.contains("text-foreground")).toBe(true);
-        expect(input.classList.contains("text-transparent")).toBe(false);
-      }
-    }
-    fireEvent.change(view.getByRole("textbox"), { target: { value: "/typo" } });
-    expect(onChange).toHaveBeenCalledOnce();
-  } finally {
-    cleanup();
-    vi.unstubAllGlobals();
+  for (const [text, token] of [
+    ["  /help 参数 /help", "/help"],
+    ["/h 参数", "/h"],
+    ["/deploy 参数", "/deploy"],
+    ["/unknown 参数", null],
+    ["//foo", null],
+    ["普通文本 /help", null],
+    ["", null],
+  ] as const) {
+    const range = commandToken(text, commands);
+    expect(range ? text.slice(range.start, range.end) : null).toBe(token);
   }
 });
 

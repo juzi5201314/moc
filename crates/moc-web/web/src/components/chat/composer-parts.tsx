@@ -756,7 +756,8 @@ export function SuggestionMenu({
   active: number;
   onPick: (index: number) => void;
   onHover: (index: number) => void;
-  inputRef: RefObject<HTMLTextAreaElement | null>;
+  /** 输入框容器：在其中点击（移动光标）不算外部交互，不关闭补全。 */
+  inputRef: RefObject<HTMLElement | null>;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -776,7 +777,7 @@ export function SuggestionMenu({
       onOpenAutoFocus={(event) => event.preventDefault()}
       onCloseAutoFocus={(event) => event.preventDefault()}
       onInteractOutside={(event) => {
-        if (event.target === inputRef.current) event.preventDefault();
+        if (inputRef.current?.contains(event.target as Node | null)) event.preventDefault();
       }}
       className={cn(
         "flex max-h-[var(--radix-popover-content-available-height)] max-w-[var(--radix-popover-content-available-width)] flex-col p-1.5",

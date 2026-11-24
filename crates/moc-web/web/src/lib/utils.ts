@@ -5,3 +5,10 @@ import { createCn } from "cn/config";
 export const cn = createCn({
   extend: { classGroups: { "font-size": [{ text: ["ui", "chat", "title", "heading"] }] } },
 });
+
+/** 字节数的简短展示：B / KB / MB。 */
+export function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}

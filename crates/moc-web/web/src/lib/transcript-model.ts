@@ -62,8 +62,8 @@ export type Block =
       entryId?: string;
       text: string;
       images: ImageSource[];
-      /** `@` 文件/目录引用注入的附件。 */
-      attachments?: { path: string; kind: "file" | "dir" }[];
+      /** `@` 文件/目录引用注入的附件与按路径引用的文件。 */
+      attachments?: UserAttachment[];
       atMs: number;
     }
   | {
@@ -244,12 +244,15 @@ function isAttachmentPart(text: string): boolean {
   return text.startsWith(`${ATTACHMENT_OPEN} `) && text.endsWith(ATTACHMENT_CLOSE);
 }
 
-/** 剥 `<moc-attachment path="…" kind="…">` 外壳；返回 {path, kind} 或 null。 */
-export function parseAttachment(text: string): { path: string; kind: "file" | "dir" } | null {
+/** 用户消息附件：`@` 注入的文件/目录，或按路径引用的文件（`ref` 是正文里的 `#name`）。 */
+export type UserAttachment = { path: string; kind: "file" | "dir"; ref?: string };
+
+/** 剥 `<moc-attachment path="…" kind="…">` 外壳；图片标签块（没有路径）与非注入块返回 null。 */
+export function parseAttachment(text: string): UserAttachment | null {
   if (!isAttachmentPart(text)) return null;
   const header = text.slice(0, text.indexOf(">\n"));
   const attr = (name: string) => {
-    const key = `${name}="`;
+    const key = ` ${name}="`;
     const start = header.indexOf(key);
     if (start < 0) return null;
     const from = start + key.length;
@@ -259,11 +262,12 @@ export function parseAttachment(text: string): { path: string; kind: "file" | "d
   const path = attr("path");
   const kind = attr("kind");
   if (!path || (kind !== "file" && kind !== "dir")) return null;
-  return { path, kind };
+  const ref = attr("ref");
+  return ref ? { path, kind, ref } : { path, kind };
 }
 
-/** 用户消息里的 `@` 注入附件。 */
-export function messageAttachments(message: Message): { path: string; kind: "file" | "dir" }[] {
+/** 用户消息里的 `@` 注入附件与按路径引用的文件。 */
+export function messageAttachments(message: Message): UserAttachment[] {
   return message.content.flatMap((part) => {
     if (!("Text" in part)) return [];
     const attachment = parseAttachment(part.Text);
@@ -1291,8 +1295,13 @@ export function interruptLive(view: SessionView): void {
   pushStatus(view, "warn", t("tm.interrupted"));
 }
 
-export function appendLocalUser(view: SessionView, text: string, images: ImageSource[]): void {
-  view.blocks.push({ kind: "user", id: nextId(view), text, images, atMs: Date.now() });
+export function appendLocalUser(
+  view: SessionView,
+  text: string,
+  images: ImageSource[],
+  attachments: UserAttachment[] = [],
+): void {
+  view.blocks.push({ kind: "user", id: nextId(view), text, images, attachments, atMs: Date.now() });
 }
 
 export function appendLocalStatus(view: SessionView, tone: StatusTone, text: string): void {

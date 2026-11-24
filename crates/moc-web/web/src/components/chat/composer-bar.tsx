@@ -1,6 +1,8 @@
-// 输入区：多行输入 + 斜杠命令 / 资源 URI 补全 + `!` 手动命令 + 图片（选择 / 粘贴 / 拖放）
-// + 权限、引擎、计划、模型与上下文占用；运行中回车按偏好插队或中断，Ctrl+Enter 排队。
+// 输入区：多行输入 + 斜杠命令 / 资源 URI 补全 + `!` 手动命令 + 图片与文件（选择 / 粘贴 / 拖放 /
+// 服务端选取）+ 权限、引擎、计划、模型与上下文占用；运行中回车按偏好插队或中断，Ctrl+Enter 排队。
+// 有效引用（命令、`@` 路径、资源 URI、`#N` 图片、`#name` 文件）在输入框里渲染成整体控件。
 
+import type { EditorView } from "@codemirror/view";
 import {
   ArrowUpIcon,
   BookOpenIcon,
@@ -8,25 +10,18 @@ import {
   FolderIcon,
   HistoryIcon,
   ListPlusIcon,
+  Loader2Icon,
   LockIcon,
   PackageIcon,
   SquareIcon,
   ZapIcon,
 } from "lucide-react";
 import { nanoid } from "nanoid";
-import {
-  type ClipboardEvent,
-  type DragEvent,
-  type KeyboardEvent,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type DragEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Attachment,
+  AttachmentInfo,
   AttachmentPreview,
   AttachmentRemove,
   Attachments,
@@ -38,13 +33,18 @@ import { Popover, PopoverAnchor } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { t, useT } from "@/lib/i18n";
 import { leadSelector, parseSelector } from "@/lib/models";
+import { useRefInfo } from "@/lib/ref-inspect";
+import { insertToken, remapImageRefs, scanRefs, uniqueRefName } from "@/lib/refs";
 import { commandToken, fromMeta, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
-import { cn } from "@/lib/utils";
+import { cn, formatBytes } from "@/lib/utils";
+import { uploadSessionFile } from "@/lib/web-api";
 import { rpc } from "@/protocol/client";
 import type { ImageSource, PluginInfo, ResourceCandidate, SteerResult } from "@/protocol/types";
 import { dispatchNext, runBash, sendPrompt } from "@/store/actions";
 import {
+  absorbRefs,
   type Attachment as ComposerAttachment,
+  type ComposerFile,
   type PendingItem,
   toInput,
   useComposer,
@@ -56,7 +56,7 @@ import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 import { AddContextMenu, type AttachKind } from "./add-context-menu";
-import { CommandTextarea } from "./command-textarea";
+import { ComposerEditor, type ComposerEditorHandle, type EditorChip } from "./composer-editor";
 import {
   ComposerStatus,
   ContextRing,
@@ -70,7 +70,13 @@ import {
 import { ModelPicker } from "./model-select-popover";
 
 const EMPTY_PENDING: PendingItem[] = [];
+const EMPTY_FILES: ComposerFile[] = [];
 const MAX_HEIGHT = 320;
+/** 与服务端 `/uploads` 的体积上限一致。 */
+const UPLOAD_MAX_BYTES = 512 * 1024 * 1024;
+/** 输入框内复制时随文本带上的引用载荷：图片与文件附件，粘贴到任意输入框都指向原内容。 */
+const REFS_MIME = "application/x-moc-refs";
+type RefsPayload = { text: string; images: ComposerAttachment[]; files: ComposerFile[] };
 /** 输入以 `/plan` 加空白开头即视为确认命令；其后的文本留作 plan 模式下的草稿。 */
 const PLAN_PREFIX = /^\/plan\s+/;
 
@@ -182,10 +188,19 @@ type ComposerBarProps = {
 
 export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const t = useT();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<ComposerEditorHandle>(null);
+  const editorBoxRef = useRef<HTMLDivElement>(null);
   const suggestionsId = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [cursor, setCursor] = useState(0);
+  const [cursor, setCursorState] = useState(0);
+  /** 同步镜像：连续插入多个引用时不必等重渲染拿最新光标。 */
+  const cursorRef = useRef(0);
+  const setCursor = (value: number) => {
+    cursorRef.current = value;
+    setCursorState(value);
+  };
+  /** 逐字键入中的光标位置：覆盖它的引用还在输入，不成形为控件；移动光标或非键入改动即清除。 */
+  const [typingAt, setTypingAt] = useState<number | null>(null);
   const [previewImage, setPreviewImage] = useState<{ src: string; name: string } | null>(null);
   const [reading, setReading] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -221,6 +236,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
 
   const text = draft?.text ?? "";
   const images = draft?.images ?? [];
+  const files = draft?.files ?? EMPTY_FILES;
   const isDraft = sessionId === "draft-session";
   const bashMode = text.startsWith("!");
   const model = parseSelector(leadSelector(info?.model ?? ""), models).model;
@@ -228,6 +244,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const acceptsImages = !model?.inputs || model.inputs.includes("image");
 
   const todos = useMemo(() => (phases ?? []).flatMap((phase) => phase.items), [phases]);
+  const cwd = useTranscript((state) => state.bySession[sessionId]?.info.cwd);
+  const draftCwd = useSessions((state) => state.draftSession?.cwd);
 
   // ---------- 补全 ----------
 
@@ -245,6 +263,73 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     return [...builtinCommands, ...pluginCommands.filter((command) => !builtin.has(command.name))];
   }, [builtinMetas, pluginCommands]);
   const slashItems = slashMatches(text, commands, features);
+
+  // ---------- 引用控件 ----------
+
+  const command = useMemo(() => commandToken(text, commands), [text, commands]);
+  const fileNames = useMemo(() => files.map((file) => file.name), [files]);
+  const spans = useMemo(
+    () =>
+      bashMode
+        ? []
+        : scanRefs(text, { command, imageCount: images.length, fileNames }).filter(
+            (span) => typingAt === null || typingAt < span.from || typingAt > span.to,
+          ),
+    [bashMode, text, command, images.length, fileNames, typingAt],
+  );
+  const resourceTokens = useMemo(
+    () => [...new Set(spans.filter((span) => span.kind === "resource").map((span) => span.token))],
+    [spans],
+  );
+  const refInfo = useRefInfo(isDraft ? null : sessionId, resourceTokens);
+  const chips: EditorChip[] = spans.flatMap((span): EditorChip[] => {
+    const at = { from: span.from, to: span.to };
+    if (span.kind === "command") {
+      const meta = commands.find((entry) => `/${entry.name}` === span.token);
+      return [
+        { ...at, chip: { kind: "command", label: span.token.slice(1), detail: meta?.description } },
+      ];
+    }
+    if (span.kind === "image") {
+      const image = images[Number(span.token.slice(1)) - 1];
+      return image
+        ? [
+            {
+              ...at,
+              chip: {
+                kind: "image",
+                label: span.token,
+                detail: image.name,
+                thumb: imageUrl(image.source),
+              },
+            },
+          ]
+        : [];
+    }
+    if (span.kind === "file-ref") {
+      const file = files.find((entry) => entry.name === span.token.slice(1));
+      if (!file) return [];
+      const where = file.path ?? (file.uploading ? t("cb.uploading") : t("cb.file_pending"));
+      return [
+        {
+          ...at,
+          chip: {
+            kind: "file-ref",
+            label: file.name,
+            detail: `${where} · ${formatBytes(file.size)}`,
+          },
+        },
+      ];
+    }
+    const info = refInfo(span.token);
+    return info ? [{ ...at, chip: info }] : [];
+  });
+  // 指纹不含缩略图 data URL（可能几 MB），图片身份由 id 表达。
+  const chipsKey = `${chips
+    .map(({ from, to, chip }) => `${from}:${to}:${chip.kind}:${chip.label}:${chip.detail ?? ""}`)
+    .join("\n")}|${images.map((image) => image.id).join(",")}`;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: chipsKey 是 chips 的内容指纹，避免每次渲染都重建装饰
+  const stableChips = useMemo(() => chips, [chipsKey]);
 
   useEffect(() => {
     if (!tokenPrefix || isDraft) return;
@@ -305,16 +390,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   // ---------- 输入框 ----------
 
   useEffect(() => {
-    if (focusCount > 0) textareaRef.current?.focus();
+    if (focusCount > 0) editorRef.current?.focus();
   }, [focusCount]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 以 text 作为重测高度的信号
-  useEffect(() => {
-    const element = textareaRef.current;
-    if (!element) return;
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, MAX_HEIGHT)}px`;
-  }, [text]);
 
   // 插队被 core 吸收后从待发区移除。
   useEffect(
@@ -339,12 +416,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     useComposer.getState().setText(sessionId, value);
     if (caret !== undefined) {
       setCursor(caret);
-      requestAnimationFrame(() => {
-        const element = textareaRef.current;
-        if (!element) return;
-        element.focus();
-        element.setSelectionRange(caret, caret);
-      });
+      setTypingAt(null);
+      requestAnimationFrame(() => editorRef.current?.setCaret(caret));
     }
   };
 
@@ -395,21 +468,61 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     );
   };
 
-  // ---------- 图片 ----------
+  // ---------- 图片与文件 ----------
 
-  const addFiles = async (files: File[]) => {
-    const supported = files.filter((file) => file.type.startsWith("image/"));
-    if (supported.length < files.length) toast.error(t("cb.images_only"));
-    if (supported.length === 0) return;
-    if (!acceptsImages) {
-      toast.error(t("cb.no_image_input"));
-      return;
+  /** 在光标处插入一个引用 token（`#N` / `#name`），基于 store 里最新的文本，可连续调用。 */
+  const insertRef = (token: string) => {
+    const current = useComposer.getState().drafts[sessionId]?.text ?? "";
+    const next = insertToken(current, Math.min(cursorRef.current, current.length), token);
+    setText(next.text, next.caret);
+  };
+
+  /** 按路径引用的文件进草稿：引用名去重后在光标处插入 `#name`。 */
+  const addFileRef = (file: Omit<ComposerFile, "id" | "name">, fileName: string): string => {
+    const taken = (useComposer.getState().drafts[sessionId]?.files ?? []).map(
+      (entry) => entry.name,
+    );
+    const name = uniqueRefName(fileName, taken);
+    const id = nanoid();
+    useComposer.getState().addFile(sessionId, { ...file, id, name });
+    insertRef(`#${name}`);
+    return id;
+  };
+
+  /** 图片（模型支持时）作为图片输入并插入 `#N`；其余文件上传到会话目录、按路径引用。
+   * 草稿会话还没有会话目录，文件留在浏览器里，发送时建出会话后再上传。 */
+  const addFiles = async (selected: File[]) => {
+    const pictures = acceptsImages ? selected.filter((file) => file.type.startsWith("image/")) : [];
+    for (const file of selected) {
+      if (pictures.includes(file)) continue;
+      if (file.size > UPLOAD_MAX_BYTES) {
+        toast.error(t("cb.too_large", { name: file.name }));
+        continue;
+      }
+      if (isDraft) {
+        addFileRef({ size: file.size, blob: file }, file.name);
+        continue;
+      }
+      const id = addFileRef({ size: file.size, uploading: true }, file.name);
+      uploadSessionFile(sessionId, file)
+        .then((stored) =>
+          useComposer
+            .getState()
+            .updateFile(sessionId, id, { path: stored.path, size: stored.size, uploading: false }),
+        )
+        .catch((error) => {
+          useComposer.getState().removeFile(sessionId, id);
+          toast.error(t("cb.upload_failed", { name: file.name, error: errorText(error) }));
+        });
     }
+    if (pictures.length === 0) return;
     setReading(true);
     try {
-      const results = await Promise.allSettled(supported.map(readImage));
+      const results = await Promise.allSettled(pictures.map(readImage));
       for (const result of results) {
-        if (result.status === "fulfilled") useComposer.getState().addImage(sessionId, result.value);
+        if (result.status !== "fulfilled") continue;
+        useComposer.getState().addImage(sessionId, result.value);
+        insertRef(`#${useComposer.getState().drafts[sessionId]?.images.length ?? 1}`);
       }
       const failed = results.filter((result) => result.status === "rejected").length;
       if (failed > 0) toast.error(t("cb.read_failed", { n: failed }));
@@ -418,29 +531,98 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     }
   };
 
-  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = [...event.clipboardData.files];
-    if (files.length === 0) return;
-    // 图文混贴时保留文字原生插入；纯图片或文件管理器带上的同名文本（如 macOS Finder 复制文件）则拦截，避免把文件名贴进输入框。
-    const plain = event.clipboardData.getData("text/plain").replace(/\r\n/g, "\n").trim();
-    if (!plain || plain === files.map((file) => file.name).join("\n")) {
+  /** 服务端文件选取器：直接引用 core 所在机器上的文件，不复制。 */
+  const browseServer = () =>
+    useUi.getState().set({
+      folderPicker: {
+        open: true,
+        start: (isDraft ? draftCwd : cwd) || undefined,
+        onPickFiles: (entries) => {
+          for (const entry of entries)
+            addFileRef({ size: entry.size ?? 0, path: entry.path }, entry.name);
+        },
+      },
+    });
+
+  const onPaste = (event: ClipboardEvent, view: EditorView): boolean => {
+    const data = event.clipboardData;
+    if (!data) return false;
+    const raw = data.getData(REFS_MIME);
+    if (raw) {
+      const payload = JSON.parse(raw) as RefsPayload;
+      const composer = useComposer.getState();
+      const current = composer.drafts[sessionId] ?? { text: "", images: [], files: [] };
+      const absorbed = absorbRefs(current, payload);
+      composer.restore(sessionId, { ...current, images: absorbed.images, files: absorbed.files });
+      view.dispatch(view.state.replaceSelection(absorbed.text), {
+        userEvent: "input.paste",
+        scrollIntoView: true,
+      });
       event.preventDefault();
+      return true;
     }
-    void addFiles(files);
+    const pasted = [...data.files];
+    if (pasted.length === 0) return false;
+    void addFiles(pasted);
+    // 图文混贴时保留文字原生插入；纯文件或文件管理器带上的同名文本（如 macOS Finder 复制文件）则拦截，避免把文件名贴进输入框。
+    const plain = data.getData("text/plain").replace(/\r\n/g, "\n").trim();
+    if (plain && plain !== pasted.map((file) => file.name).join("\n")) return false;
+    event.preventDefault();
+    return true;
+  };
+
+  /** 复制带 `#N` / `#name` 引用的片段时附上被引用的附件，粘贴回任一输入框仍指向原内容。 */
+  const onCopy = (event: ClipboardEvent, view: EditorView, cut: boolean): boolean => {
+    const { from, to } = view.state.selection.main;
+    const slice = view.state.sliceDoc(from, to);
+    const refs = scanRefs(slice, { imageCount: images.length, fileNames }).filter(
+      (span) => span.kind === "image" || span.kind === "file-ref",
+    );
+    if (refs.length === 0 || !event.clipboardData) return false;
+    const picked: ComposerAttachment[] = [];
+    const order = new Map<number, number>();
+    for (const span of refs) {
+      const n = Number(span.token.slice(1));
+      if (span.kind !== "image" || order.has(n)) continue;
+      picked.push(images[n - 1]);
+      order.set(n, picked.length);
+    }
+    const names = new Set(
+      refs.filter((span) => span.kind === "file-ref").map((span) => span.token.slice(1)),
+    );
+    const payload: RefsPayload = {
+      text: remapImageRefs(slice, images.length, (n) => order.get(n) ?? n),
+      images: picked,
+      // 还没上传的浏览器文件无法跨输入框传递，只带有路径的文件。
+      files: files
+        .filter((file) => names.has(file.name) && file.path)
+        .map(({ id, name, size, path }) => ({ id, name, size, path })),
+    };
+    event.clipboardData.setData("text/plain", slice);
+    event.clipboardData.setData(REFS_MIME, JSON.stringify(payload));
+    event.preventDefault();
+    if (cut) view.dispatch(view.state.replaceSelection(""), { userEvent: "delete.cut" });
+    return true;
   };
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     setDragging(false);
-    const files = [...event.dataTransfer.files];
-    if (files.length === 0) return;
+    const dropped = [...event.dataTransfer.files];
+    if (dropped.length === 0) return;
     event.preventDefault();
-    void addFiles(files);
+    void addFiles(dropped);
   };
 
   // ---------- 发送 ----------
 
+  const attached = images.length > 0 || files.length > 0;
+  // 运行中投递的插队/排队项必须是完整输入：还在上传或尚未上传的文件先挡住。
   const canSend =
-    (text.trim().length > 0 || images.length > 0) && !readOnly && !reading && !skillsWorking;
+    (text.trim().length > 0 || attached) &&
+    !readOnly &&
+    !reading &&
+    !skillsWorking &&
+    !files.some((file) => file.uploading || (running && !file.path));
 
   /** 运行中的投递方式：`queue` 排队，`active` 按「运行中回车」补充或中断；`alternate` 即 Ctrl+Enter。 */
   const send = (
@@ -450,7 +632,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     const trimmed = text.trim();
     if (!canSend) return;
 
-    if (bashMode && images.length === 0) {
+    if (bashMode && !attached) {
       const exclude = trimmed.startsWith("!!");
       const command = trimmed.slice(exclude ? 2 : 1).trim();
       if (!command) return;
@@ -464,12 +646,17 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     }
     // `.` 独占整条输入时是 /retry 的快捷写法：转写成命令，走同一套门控。
     const dispatch = trimmed === "." ? "/retry" : trimmed;
-    if (images.length === 0 && runSlash(sessionId, dispatch, commands, features)) return;
+    if (!attached && runSlash(sessionId, dispatch, commands, features)) return;
 
-    const input = toInput(trimmed, images);
+    const input = toInput(trimmed, images, files);
     useComposer.getState().clearDraft(sessionId);
     if (!running) {
-      void sendPrompt(sessionId, input);
+      const uploads = files.filter((file) => !file.path);
+      void sendPrompt(
+        sessionId,
+        input,
+        uploads.length > 0 ? { uploads: { files: uploads, draft: { text, images, files } } } : {},
+      );
       return;
     }
 
@@ -479,6 +666,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       kind: queue ? "queue" : "steer",
       text: trimmed,
       images,
+      files,
     };
     useComposer.getState().pushPending(sessionId, item);
     if (queue) {
@@ -507,8 +695,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         if (composer.pending[sessionId]?.some((entry) => entry.key === item.key)) {
           composer.removePending(sessionId, item.key);
           const current = composer.drafts[sessionId];
-          if (!current?.text && !current?.images.length)
-            composer.restore(sessionId, { text: trimmed, images });
+          if (!current?.text && !current?.images.length && !current?.files.length)
+            composer.restore(sessionId, { text: trimmed, images, files });
         }
         toast.error(t("cb.steer_failed", { error: errorText(error) }));
       });
@@ -526,20 +714,23 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
    * 草稿非空时把待发内容追加进草稿一起编辑，不把未确认的草稿换进队列自动发出。 */
   const editPending = (item: PendingItem) => {
     const composer = useComposer.getState();
-    const current = composer.drafts[sessionId] ?? { text: "", images: [] };
+    const current = composer.drafts[sessionId] ?? { text: "", images: [], files: [] };
     // 斜杠 / ! 命令草稿不是普通消息：合并后回车会执行命令并吞掉待发正文，直接阻止取回
     if (current.text.startsWith("/") || current.text.startsWith("!")) {
       toast(t("q.edit_command_draft"));
       return;
     }
     composer.removePending(sessionId, item.key);
-    const text = item.mode === "ask" ? `/ask ${item.text}` : item.text;
-    const merged = current.text.trim() ? `${current.text}\n${text}` : text;
-    composer.restore(sessionId, {
-      text: merged,
-      images: [...current.images, ...item.images],
+    const absorbed = absorbRefs(current, {
+      text: item.mode === "ask" ? `/ask ${item.text}` : item.text,
+      images: item.images,
+      files: item.files,
     });
-    textareaRef.current?.focus();
+    composer.restore(sessionId, {
+      ...absorbed,
+      text: current.text.trim() ? `${current.text}\n${absorbed.text}` : absorbed.text,
+    });
+    editorRef.current?.focus();
   };
 
   /** 立即发送：空闲时直接发；运行中移到队首并中断当前轮，轮到后由 dispatchNext 发出。 */
@@ -547,7 +738,9 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     const composer = useComposer.getState();
     composer.removePending(sessionId, item.key);
     if (!running) {
-      void sendPrompt(sessionId, toInput(item.text, item.images), { mode: item.mode });
+      void sendPrompt(sessionId, toInput(item.text, item.images, item.files), {
+        mode: item.mode,
+      });
       return;
     }
     composer.pushPending(sessionId, item, true);
@@ -574,45 +767,58 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     }
   };
 
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing) return;
+  /** 编辑器按键：返回 true 表示已处理。输入法组字期间编辑器不会调用这里。 */
+  const onKeyDown = (event: KeyboardEvent, view: EditorView): boolean => {
+    const handled = () => {
+      event.preventDefault();
+      return true;
+    };
     if (menu && menuSize > 0) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
         const step = event.key === "ArrowDown" ? 1 : -1;
         setActiveIndex((index) => (index + step + menuSize) % menuSize);
-        return;
+        return handled();
       }
       if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey && !event.altKey)) {
-        event.preventDefault();
         pick(activeIndex);
-        return;
+        return handled();
       }
       if (event.key === "Escape") {
-        event.preventDefault();
         setDismissedAt(text);
-        return;
+        return handled();
       }
     }
     if (event.key === "Escape" && running && !text) {
-      event.preventDefault();
       stop();
-      return;
+      return handled();
     }
-    // Shift+Enter 走 textarea 原生换行；Alt+Enter 浏览器不插入换行，手动补上（与 TUI 的 newline 键位一致）
-    if (event.key === "Enter" && event.altKey && !event.shiftKey) {
-      event.preventDefault();
-      const { selectionStart, selectionEnd } = event.currentTarget;
-      setText(`${text.slice(0, selectionStart)}\n${text.slice(selectionEnd)}`, selectionStart + 1);
-      return;
+    // Shift+Enter / Alt+Enter 换行（与 TUI 的 newline 键位一致）
+    if (event.key === "Enter" && (event.shiftKey || event.altKey)) {
+      view.dispatch(view.state.replaceSelection("\n"), {
+        userEvent: "input",
+        scrollIntoView: true,
+      });
+      return handled();
     }
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
+    if (event.key === "Enter") {
       send(event.ctrlKey || event.metaKey);
+      return handled();
     }
+    return false;
   };
 
-  const syncCursor = () => setCursor(textareaRef.current?.selectionStart ?? 0);
+  const onEditorChange = (value: string, caret: number, typed: boolean) => {
+    const plan = PLAN_PREFIX.exec(value);
+    if (plan && consumePlan(value.slice(plan[0].length))) return;
+    setText(value);
+    setCursor(caret);
+    setTypingAt(typed ? caret : null);
+  };
+
+  const onEditorCursor = (caret: number) => {
+    setCursor(caret);
+    setTypingAt(null);
+  };
 
   // ---------- 渲染 ----------
 
@@ -702,7 +908,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: 键盘本就在输入框内 */}
           <div
             onClick={(event) => {
-              if (event.target === event.currentTarget) textareaRef.current?.focus();
+              if (event.target === event.currentTarget) editorRef.current?.focus();
             }}
             className={cn(
               "relative rounded-[16px] bg-card shadow-[var(--elevation-composer-inset)] transition-shadow",
@@ -716,7 +922,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
 
             {images.length > 0 && (
               <Attachments variant="grid" className="px-3 pt-3">
-                {images.map((image) => (
+                {images.map((image, index) => (
                   <Attachment
                     key={image.id}
                     data={{
@@ -739,7 +945,43 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     >
                       <AttachmentPreview />
                     </button>
+                    {/* 正文用 `#N` 指代这张图 */}
+                    <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded bg-background/85 px-1 text-[10px] leading-4 font-medium text-foreground tabular-nums">
+                      #{index + 1}
+                    </span>
                     <AttachmentRemove label={t("cb.remove_image", { name: image.name })} />
+                  </Attachment>
+                ))}
+              </Attachments>
+            )}
+
+            {files.length > 0 && (
+              <Attachments variant="inline" className="px-3 pt-3">
+                {files.map((file) => (
+                  <Attachment
+                    key={file.id}
+                    data={{
+                      id: file.id,
+                      type: "file",
+                      url: "",
+                      filename: `#${file.name}`,
+                      mediaType: "application/octet-stream",
+                    }}
+                    onRemove={() => useComposer.getState().removeFile(sessionId, file.id)}
+                    title={file.path ?? (file.uploading ? t("cb.uploading") : t("cb.file_pending"))}
+                  >
+                    <AttachmentPreview
+                      fallbackIcon={
+                        file.uploading ? (
+                          <Loader2Icon className="size-3 animate-spin text-muted-foreground" />
+                        ) : undefined
+                      }
+                    />
+                    <AttachmentInfo />
+                    <span className="shrink-0 text-2xs text-muted-foreground tabular-nums">
+                      {formatBytes(file.size)}
+                    </span>
+                    <AttachmentRemove label={t("cb.remove_file", { name: file.name })} />
                   </Attachment>
                 ))}
               </Attachments>
@@ -752,34 +994,28 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               }}
             >
               <PopoverAnchor asChild>
-                <div>
-                  <CommandTextarea
-                    command={commandToken(text, commands)}
-                    ref={textareaRef}
+                <div ref={editorBoxRef}>
+                  <ComposerEditor
+                    ref={editorRef}
                     value={text}
-                    rows={1}
-                    onChange={(event) => {
-                      const plan = PLAN_PREFIX.exec(event.target.value);
-                      if (plan && consumePlan(event.target.value.slice(plan[0].length))) return;
-                      setText(event.target.value);
-                      setCursor(event.target.selectionStart);
+                    chips={stableChips}
+                    placeholder={placeholder}
+                    className={cn("text-sm leading-6 text-foreground", bashMode && "font-mono")}
+                    minHeight={inline ? 76 : 64}
+                    maxHeight={MAX_HEIGHT}
+                    attributes={{
+                      "aria-label": t("cb.input"),
+                      "aria-autocomplete": "list",
+                      ...(menu ? { "aria-controls": suggestionsId } : {}),
+                      ...(menu?.items[activeIndex]
+                        ? { "aria-activedescendant": `${suggestionsId}-${activeIndex}` }
+                        : {}),
                     }}
-                    onSelect={syncCursor}
+                    onChange={onEditorChange}
+                    onCursor={onEditorCursor}
                     onKeyDown={onKeyDown}
                     onPaste={onPaste}
-                    placeholder={placeholder}
-                    aria-label={t("cb.input")}
-                    aria-autocomplete="list"
-                    aria-controls={menu ? suggestionsId : undefined}
-                    aria-activedescendant={
-                      menu?.items[activeIndex] ? `${suggestionsId}-${activeIndex}` : undefined
-                    }
-                    className={cn(
-                      "block w-full resize-none bg-transparent px-4 pt-4 pb-1.5 text-sm leading-6 text-foreground outline-none placeholder:text-text-tertiary",
-                      bashMode && "font-mono text-sm",
-                      inline ? "min-h-[76px]" : "min-h-[64px]",
-                    )}
-                    style={{ maxHeight: MAX_HEIGHT }}
+                    onCopy={onCopy}
                   />
                 </div>
               </PopoverAnchor>
@@ -793,7 +1029,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                   active={activeIndex}
                   onPick={pick}
                   onHover={setActiveIndex}
-                  inputRef={textareaRef}
+                  inputRef={editorBoxRef}
                 />
               )}
             </Popover>
@@ -802,7 +1038,6 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
                 multiple
                 hidden
                 onChange={(event) => {
@@ -813,15 +1048,12 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               />
               <AddContextMenu
                 disabled={reading}
-                canCommand={!text.trim() && images.length === 0}
+                canCommand={!text.trim() && !attached}
                 canReference={!isDraft}
-                onUpload={() =>
-                  acceptsImages
-                    ? fileInputRef.current?.click()
-                    : toast.error(t("cb.no_image_input"))
-                }
+                onUpload={() => fileInputRef.current?.click()}
+                onBrowseServer={browseServer}
                 onInsert={insertTrigger}
-                onClose={() => textareaRef.current?.focus()}
+                onClose={() => editorRef.current?.focus()}
               />
               <SessionOptions sessionId={sessionId} />
               <PlanToggle sessionId={sessionId} />

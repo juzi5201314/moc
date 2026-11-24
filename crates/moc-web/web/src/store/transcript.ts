@@ -14,6 +14,7 @@ import {
   createView,
   interruptLive,
   type SessionView,
+  type UserAttachment,
 } from "@/lib/transcript-model";
 import { invalidateGitBranch } from "@/lib/use-git-branch";
 import { rpc } from "@/protocol/client";
@@ -43,7 +44,12 @@ export type TranscriptState = {
   ensureView: (info: SessionInfo) => void;
   mutate: (sessionId: string, recipe: (view: SessionView) => void) => void;
   drop: (sessionId: string) => void;
-  localUser: (sessionId: string, text: string, images: ImageSource[]) => void;
+  localUser: (
+    sessionId: string,
+    text: string,
+    images: ImageSource[],
+    attachments?: UserAttachment[],
+  ) => void;
   localStatus: (sessionId: string, tone: "info" | "warn" | "error", text: string) => void;
   failPrompt: (sessionId: string) => void;
   /** 断线：收尾全部直播轮，清掉待处理的反向请求（core 已按拒绝处理）。 */
@@ -107,12 +113,12 @@ export const useTranscript = create<TranscriptState>()((set) => ({
       }),
     );
   },
-  localUser: (sessionId, text, images) => {
+  localUser: (sessionId, text, images, attachments) => {
     flushDeltas();
     set(
       withBlockChanges((state: TranscriptState) => {
         const view = state.bySession[sessionId];
-        if (view) appendLocalUser(view, text, images);
+        if (view) appendLocalUser(view, text, images, attachments);
       }),
     );
   },

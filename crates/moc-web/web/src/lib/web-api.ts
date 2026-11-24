@@ -111,3 +111,26 @@ export async function uploadFile(path: string, file: Blob, overwrite = false): P
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return true;
 }
+
+/**
+ * 输入框「上传文件」：先算 SHA-256 探测会话里有没有同内容文件，有就直接复用、不再传输；
+ * 没有再 `PUT` 上传。返回 core 所在机器上的绝对路径与大小。
+ */
+export async function uploadSessionFile(
+  sessionId: string,
+  file: Blob & { name?: string },
+): Promise<{ path: string; size: number }> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
+  const sha256 = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const failed = async (response: Response) =>
+    new Error((await response.text()) || `HTTP ${response.status}`);
+  const probe = await fetch(authedUrl("/uploads", { session_id: sessionId, sha256 }));
+  if (probe.ok) return (await probe.json()) as { path: string; size: number };
+  if (probe.status !== 404) throw await failed(probe);
+  const response = await fetch(
+    authedUrl("/uploads", { session_id: sessionId, sha256, name: file.name ?? "file" }),
+    { method: "PUT", body: file },
+  );
+  if (!response.ok) throw await failed(response);
+  return (await response.json()) as { path: string; size: number };
+}

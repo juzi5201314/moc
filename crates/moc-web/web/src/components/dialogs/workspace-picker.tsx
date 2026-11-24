@@ -2,10 +2,15 @@
 //
 // 交互对齐 deepseek-harness 的目录选择器：当前目录 + 重命名式路径跳转、逐级进入、
 // 新建文件夹、显示隐藏目录；只列目录，不列文件。
+//
+// 文件模式（`onPickFiles`）供输入框引用 core 所在机器上的文件：同时列出文件、可跨目录多选，
+// 前后端不在同一台机器时，浏览器的系统文件框只能选到前端本地文件，这里补上服务端一侧。
 
 import {
   ArrowUpIcon,
+  CheckIcon,
   ChevronRightIcon,
+  FileIcon,
   FolderIcon,
   FolderOpenIcon,
   FolderPlusIcon,
@@ -24,10 +29,10 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { t, useT } from "@/lib/i18n";
-import { cn } from "@/lib/utils";
+import { cn, formatBytes } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import { RpcError } from "@/protocol/errors";
-import type { FsCreateDirResult, FsListDirResult } from "@/protocol/types";
+import type { FsCreateDirResult, FsDirEntry, FsListDirResult } from "@/protocol/types";
 import { useUi } from "@/store/ui";
 
 /** 目录路径的展示名：主目录显示为「主目录」，其余取最后一段。 */
@@ -54,24 +59,31 @@ export function WorkspacePicker() {
   /** 非 `null` 时列表顶部是一行「新建文件夹」输入框。 */
   const [newName, setNewName] = useState<string | null>(null);
   const newNameRef = useRef<HTMLInputElement>(null);
+  const fileMode = picker.onPickFiles !== undefined;
+  /** 文件模式下已勾选的文件；跨目录保留，按勾选顺序添加。 */
+  const [selected, setSelected] = useState<ReadonlyMap<string, FsDirEntry>>(new Map());
 
-  const load = useCallback(async (path: string, hidden: boolean) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await rpc.call<FsListDirResult>("fs/list_dir", {
-        path,
-        show_hidden: hidden,
-      });
-      setListing(result);
-      setPathDraft(null);
-      setNewName(null);
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (path: string, hidden: boolean) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await rpc.call<FsListDirResult>("fs/list_dir", {
+          path,
+          show_hidden: hidden,
+          include_files: fileMode,
+        });
+        setListing(result);
+        setPathDraft(null);
+        setNewName(null);
+      } catch (err) {
+        setError(errorMessage(err));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [fileMode],
+  );
 
   // 只在打开时取起点（默认主目录），其余依赖变化由各交互自己触发重载。
   // biome-ignore lint/correctness/useExhaustiveDependencies: 只有打开瞬间需要初始化
@@ -80,6 +92,7 @@ export function WorkspacePicker() {
     setShowHidden(false);
     setPathDraft(null);
     setNewName(null);
+    setSelected(new Map());
     void load(picker.start ?? "~", false);
   }, [picker.open]);
 
@@ -90,10 +103,18 @@ export function WorkspacePicker() {
   const close = () => set({ folderPicker: { open: false } });
 
   const confirm = () => {
-    if (!listing) return;
-    picker.onPick?.(listing.path);
+    if (fileMode) picker.onPickFiles?.([...selected.values()]);
+    else if (listing) picker.onPick?.(listing.path);
+    else return;
     close();
   };
+
+  const toggleFile = (entry: FsDirEntry) =>
+    setSelected((current) => {
+      const next = new Map(current);
+      if (!next.delete(entry.path)) next.set(entry.path, entry);
+      return next;
+    });
 
   const toggleHidden = () => {
     const next = !showHidden;
@@ -127,7 +148,7 @@ export function WorkspacePicker() {
     <Dialog open={picker.open} onOpenChange={(open) => !open && close()}>
       <DialogContent className="gap-3 sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>{t("wsp.title")}</DialogTitle>
+          <DialogTitle>{fileMode ? t("wsp.files_title") : t("wsp.title")}</DialogTitle>
         </DialogHeader>
 
         {/* 当前目录：常驻显示，点铅笔改成手输路径 */}
@@ -211,20 +232,50 @@ export function WorkspacePicker() {
               <Loader2Icon className="size-4 animate-spin" />
             </div>
           ) : listing && listing.entries.length === 0 && newName === null ? (
-            <p className="py-10 text-center text-xs text-muted-foreground">{t("wsp.empty")}</p>
+            <p className="py-10 text-center text-xs text-muted-foreground">
+              {fileMode ? t("wsp.files_empty") : t("wsp.empty")}
+            </p>
           ) : (
-            listing?.entries.map((entry) => (
-              <button
-                key={entry.path}
-                type="button"
-                onClick={() => void load(entry.path, showHidden)}
-                className="group flex h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-ui text-foreground transition-colors hover:bg-accent"
-              >
-                <FolderIcon className="size-4 shrink-0 text-muted-foreground" />
-                <span className="truncate">{entry.name}</span>
-                <ChevronRightIcon className="ml-auto size-3.5 shrink-0 text-muted-foreground/40 group-hover:text-muted-foreground" />
-              </button>
-            ))
+            listing?.entries.map((entry) =>
+              entry.kind === "file" ? (
+                <button
+                  key={entry.path}
+                  type="button"
+                  aria-pressed={selected.has(entry.path)}
+                  onClick={() => toggleFile(entry)}
+                  title={entry.path}
+                  className={cn(
+                    "flex h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-ui text-foreground transition-colors hover:bg-accent",
+                    selected.has(entry.path) && "bg-accent",
+                  )}
+                >
+                  <FileIcon className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                  {entry.size != null && (
+                    <span className="shrink-0 text-2xs text-muted-foreground tabular-nums">
+                      {formatBytes(entry.size)}
+                    </span>
+                  )}
+                  <CheckIcon
+                    className={cn(
+                      "size-3.5 shrink-0 text-muted-foreground",
+                      !selected.has(entry.path) && "invisible",
+                    )}
+                  />
+                </button>
+              ) : (
+                <button
+                  key={entry.path}
+                  type="button"
+                  onClick={() => void load(entry.path, showHidden)}
+                  className="group flex h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-ui text-foreground transition-colors hover:bg-accent"
+                >
+                  <FolderIcon className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="truncate">{entry.name}</span>
+                  <ChevronRightIcon className="ml-auto size-3.5 shrink-0 text-muted-foreground/40 group-hover:text-muted-foreground" />
+                </button>
+              ),
+            )
           )}
         </div>
 
@@ -236,17 +287,19 @@ export function WorkspacePicker() {
 
         <DialogFooter className="items-center justify-between gap-2 sm:justify-between">
           <div className="flex items-center gap-1">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="text-xs"
-              disabled={!listing || newName !== null}
-              onClick={() => setNewName("")}
-            >
-              <PlusIcon className="size-3.5" />
-              {t("wsp.new")}
-            </Button>
+            {!fileMode && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-xs"
+                disabled={!listing || newName !== null}
+                onClick={() => setNewName("")}
+              >
+                <PlusIcon className="size-3.5" />
+                {t("wsp.new")}
+              </Button>
+            )}
             <Button
               type="button"
               variant="ghost"
@@ -266,10 +319,10 @@ export function WorkspacePicker() {
               type="button"
               size="sm"
               className="text-xs"
-              disabled={!listing || loading}
+              disabled={fileMode ? selected.size === 0 : !listing || loading}
               onClick={confirm}
             >
-              {t("wsp.open")}
+              {fileMode ? t("wsp.add_files", { n: selected.size }) : t("wsp.open")}
             </Button>
           </div>
         </DialogFooter>

@@ -5,6 +5,7 @@
 
 import { toast } from "sonner";
 import { t } from "@/lib/i18n";
+import { uploadSessionFile } from "@/lib/web-api";
 import { rpc } from "@/protocol/client";
 import { RpcError } from "@/protocol/errors";
 import type {
@@ -17,7 +18,7 @@ import type {
   SessionLoadResult,
   SessionPlanApproveResult,
 } from "@/protocol/types";
-import { toInput, useComposer } from "./composer";
+import { type ComposerFile, type Draft, toInput, useComposer } from "./composer";
 import {
   newSession,
   openSession,
@@ -31,7 +32,13 @@ import { useTabs } from "./tabs";
 import { useTranscript } from "./transcript";
 import { dispatchPaused, useUi } from "./ui";
 
-export type SendOptions = { mode?: PromptMode; echo?: boolean };
+export type SendOptions = {
+  mode?: PromptMode;
+  echo?: boolean;
+  /** 还没有服务端路径的文件（草稿会话里选的本地文件）：建出会话后先上传再发送；
+   * 上传失败时把 `draft` 恢复进输入框。 */
+  uploads?: { files: ComposerFile[]; draft: Draft };
+};
 
 function errorText(error: unknown): string {
   return error instanceof RpcError || error instanceof Error ? error.message : String(error);
@@ -108,7 +115,7 @@ export function dispatchNext(sessionId: string): void {
   );
   if (!next) return;
   useComposer.getState().removePending(sessionId, next.key);
-  void sendPrompt(sessionId, toInput(next.text, next.images), { mode: next.mode });
+  void sendPrompt(sessionId, toInput(next.text, next.images, next.files), { mode: next.mode });
 }
 
 /** 草稿会话首次发送时向 core 创建真实会话，返回可用的会话 id。 */
@@ -169,14 +176,15 @@ async function afterPrompt(sessionId: string): Promise<void> {
  */
 export async function sendPrompt(
   sessionId: string,
-  input: InputPart[],
+  prompt: InputPart[],
   options: SendOptions = {},
 ): Promise<void> {
   if (useUi.getState().skillsWorking) {
     toast(t("act.skills_busy_send"));
     return;
   }
-  if (input.length === 0) return;
+  if (prompt.length === 0 && !options.uploads?.files.length) return;
+  let input = prompt;
   let target: string;
   try {
     target = await materialize(sessionId);
@@ -187,10 +195,34 @@ export async function sendPrompt(
     return;
   }
 
+  if (options.uploads && options.uploads.files.length > 0) {
+    try {
+      const uploaded = await Promise.all(
+        options.uploads.files.map(async (file) => ({
+          type: "file" as const,
+          path: (await uploadSessionFile(target, file.blob ?? new Blob())).path,
+          name: file.name,
+        })),
+      );
+      input = [...input, ...uploaded];
+    } catch (error) {
+      useComposer.getState().restore(target, options.uploads.draft);
+      useTranscript
+        .getState()
+        .localStatus(target, "error", t("act.upload_failed", { error: errorText(error) }));
+      return;
+    }
+  }
+
   if (options.echo ?? true) {
     const text = input.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
     const images = input.flatMap((part) => (part.type === "image" ? [part.source] : []));
-    useTranscript.getState().localUser(target, text, images);
+    const attachments = input.flatMap((part) =>
+      part.type === "file"
+        ? [{ path: part.path, kind: "file" as const, ref: `#${part.name}` }]
+        : [],
+    );
+    useTranscript.getState().localUser(target, text, images, attachments);
   }
   await ownPrompt(target, async (reportError) => {
     try {

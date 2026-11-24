@@ -1,6 +1,7 @@
 // 全局浮层状态：对话框、命令面板、模型选择器。只在内存里，不持久化。
 
 import { create } from "zustand";
+import type { FsDirEntry } from "@/protocol/types";
 
 export type SettingsSection =
   | "general"
@@ -21,7 +22,13 @@ export type SettingsSection =
 export type UiState = {
   /** 技能维护占用前台；不写 transcript 或持久化状态。 */
   skillsWorking: string | null;
-  folderPicker: { open: boolean; start?: string; onPick?: (path: string) => void };
+  /** 浏览 core 所在机器：给 `onPickFiles` 时是多选文件模式，否则只选目录。 */
+  folderPicker: {
+    open: boolean;
+    start?: string;
+    onPick?: (path: string) => void;
+    onPickFiles?: (files: FsDirEntry[]) => void;
+  };
   settings: { open: boolean; section?: SettingsSection };
   palette: boolean;
   /** 打开模型选择器的会话；由 composer 渲染。 */

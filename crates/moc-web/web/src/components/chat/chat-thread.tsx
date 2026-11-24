@@ -42,6 +42,7 @@ import {
   turnDiffTotal,
 } from "@/components/chat/activity";
 import { ImagePreviewDialog } from "@/components/chat/image-preview-dialog";
+import { RefText } from "@/components/chat/ref-text";
 import { AskCard, PermissionCard } from "@/components/chat/requests";
 import { IconButton } from "@/components/common/icon-button";
 import { DiffStat } from "@/components/panels/diff-file";
@@ -428,7 +429,7 @@ const ImageThumbs = memo(function ImageThumbs({
             key={index}
             type="button"
             onClick={() => setPreview(imageSrc(image))}
-            className="overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-border-subtle transition-opacity hover:opacity-90"
+            className="relative overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-border-subtle transition-opacity hover:opacity-90"
           >
             <img
               src={imageSrc(image)}
@@ -437,6 +438,10 @@ const ImageThumbs = memo(function ImageThumbs({
               decoding="async"
               className="h-24 max-w-[200px] object-cover"
             />
+            {/* 正文用 `#N` 指代这张图（core 按同一顺序给模型编号） */}
+            <span className="pointer-events-none absolute bottom-1 left-1 rounded bg-background/85 px-1 text-[10px] leading-4 font-medium text-foreground tabular-nums">
+              #{index + 1}
+            </span>
           </button>
         ))}
       </div>
@@ -475,7 +480,7 @@ function UserMessage({
                 id: attachment.path,
                 type: "file",
                 url: "",
-                filename: attachment.path,
+                filename: attachment.ref ?? attachment.path,
                 mediaType: "text/plain",
               }}
               key={attachment.path}
@@ -509,7 +514,12 @@ function UserMessage({
                 "max-h-[280px] overflow-hidden [mask-image:linear-gradient(to_bottom,black_75%,transparent)]",
             )}
           >
-            {block.text}
+            <RefText
+              sessionId={context.sessionId}
+              text={block.text}
+              images={block.images}
+              attachments={block.attachments ?? []}
+            />
           </div>
           {long && (
             <button
