@@ -202,6 +202,8 @@ pub struct App {
     pub prompt_revision: u64,
     /// 当前资源补全请求的 prefix。
     pub completion_prefix: Option<String>,
+    /// 引用控件的 `resource/inspect` 校验缓存（按会话隔离、TTL 复验）。
+    pub refs: crate::refs::RefCache,
     /// 打开的模态；更换时统一使用 `set_modal` / `take_modal`。
     pub modal: Option<Modal>,
     /// 当前模态已在本帧实际绘制。
@@ -597,6 +599,7 @@ impl App {
             completion: None,
             prompt_revision: 0,
             completion_prefix: None,
+            refs: crate::refs::RefCache::default(),
             modal: None,
             modal_drawn: false,
             modal_frame_seen: false,

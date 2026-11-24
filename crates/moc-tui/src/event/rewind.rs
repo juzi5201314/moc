@@ -102,6 +102,8 @@ pub(super) fn apply_rewound(
         .into_owned(),
     );
     refresh_context(app, connection);
+    // 回填的用户消息可能带引用 token；会话也在此处切换，顺带清场旧缓存。
+    crate::refs::request_inspection(app, connection);
     // 回退会截断历史，重放出来的累计用量随之缩水，必须重新取一次。
     refresh_usage(app, connection, false);
     load_subagents_for_parent(

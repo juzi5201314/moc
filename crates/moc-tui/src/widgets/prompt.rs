@@ -88,6 +88,11 @@ pub struct PromptState {
     next_chip_id: u32,
     /// 最近一次粘贴的内容（再粘展开用）。
     last_paste: Option<std::sync::Arc<str>>,
+    /// 最近一次逐字键入后的光标：光标仍停在这里时，覆盖它的引用 token 还在输入中，不成形为控件。
+    pub typed_at: Option<usize>,
+    /// 当前文本里引用控件的字节范围（升序、不重叠）；光标整体跨过、删除整体删掉。
+    /// 由主输入框在处理按键前按最新文本同步（[`crate::refs::prompt_refs`]），文本一变即作废。
+    atomic: Vec<std::ops::Range<usize>>,
 }
 
 impl PromptState {
@@ -189,6 +194,48 @@ impl PromptState {
         self.text.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
         self.break_history_browse();
+        self.typed_at = Some(self.cursor);
+    }
+
+    /// 同步引用控件范围（按当前文本计算）；同步后光标不允许停在控件内部——
+    /// 异步校验到达时，光标下的 token 可能恰好成形。
+    pub fn set_atomic(&mut self, ranges: Vec<std::ops::Range<usize>>) {
+        debug_assert!(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start));
+        self.atomic = ranges;
+        self.cursor = self.snap(self.cursor, true);
+    }
+
+    /// `[paste#id]` 占位对应正文的行数；占位已失效时返回 `None`。
+    pub fn paste_lines(&self, id: u32) -> Option<usize> {
+        self.pastes
+            .iter()
+            .find(|chip| chip.id == id)
+            .map(|chip| chip.content.lines().count().max(1))
+    }
+
+    fn atomic_ending_at(&self, position: usize) -> Option<std::ops::Range<usize>> {
+        self.atomic
+            .iter()
+            .find(|range| range.end == position)
+            .cloned()
+    }
+
+    fn atomic_starting_at(&self, position: usize) -> Option<std::ops::Range<usize>> {
+        self.atomic
+            .iter()
+            .find(|range| range.start == position)
+            .cloned()
+    }
+
+    /// 落在控件内部的位置吸附到控件边界：`forward` 吸到末尾，否则吸到开头。
+    fn snap(&self, position: usize, forward: bool) -> usize {
+        self.atomic
+            .iter()
+            .find(|range| range.start < position && position < range.end)
+            .map_or(
+                position,
+                |range| if forward { range.end } else { range.start },
+            )
     }
 
     /// 插入一段文本（bracketed paste 的文本分支在此判定 chip 化）。
@@ -295,7 +342,9 @@ impl PromptState {
             return;
         };
         let mut delete_start = start;
-        if let Some(chip_end) = self.chip_ending_at(self.cursor) {
+        if let Some(range) = self.atomic_ending_at(self.cursor) {
+            delete_start = range.start;
+        } else if let Some(chip_end) = self.chip_ending_at(self.cursor) {
             delete_start = chip_end.0;
         }
         self.text.replace_range(delete_start..self.cursor, "");
@@ -305,7 +354,10 @@ impl PromptState {
 
     /// 删除光标处字符。
     pub fn delete(&mut self) {
-        if self.cursor < self.text.len() {
+        if let Some(range) = self.atomic_starting_at(self.cursor) {
+            self.text.replace_range(range, "");
+            self.break_history_browse();
+        } else if self.cursor < self.text.len() {
             let end = self.text[self.cursor..]
                 .char_indices()
                 .nth(1)
@@ -336,15 +388,26 @@ impl PromptState {
     }
 
     pub fn left(&mut self) {
-        self.cursor = cursor_prev(&self.text, self.cursor);
+        self.cursor = match self.atomic_ending_at(self.cursor) {
+            Some(range) => range.start,
+            None => self.snap(cursor_prev(&self.text, self.cursor), false),
+        };
     }
 
     pub fn right(&mut self) {
-        self.cursor = cursor_next(&self.text, self.cursor);
+        self.cursor = match self.atomic_starting_at(self.cursor) {
+            Some(range) => range.end,
+            None => self.snap(cursor_next(&self.text, self.cursor), true),
+        };
     }
 
-    /// 光标按词向前跳转（跳到前一个词的首部）。
+    /// 光标按词向前跳转（跳到前一个词的首部）；控件算作一个词。
     pub fn move_word_back(&mut self) {
+        self.word_back();
+        self.cursor = self.snap(self.cursor, false);
+    }
+
+    fn word_back(&mut self) {
         if self.cursor == 0 {
             return;
         }
@@ -379,8 +442,13 @@ impl PromptState {
         self.cursor = target;
     }
 
-    /// 光标按词向后跳转（跳到下一个词的尾部/下一个词首）。
+    /// 光标按词向后跳转（跳到下一个词的尾部/下一个词首）；控件算作一个词。
     pub fn move_word_forward(&mut self) {
+        self.word_forward();
+        self.cursor = self.snap(self.cursor, true);
+    }
+
+    fn word_forward(&mut self) {
         if self.cursor >= self.text.len() {
             return;
         }
@@ -479,7 +547,7 @@ impl PromptState {
             target_offset += grapheme.len();
         }
         let line_start: usize = lines[..target as usize].iter().map(|l| l.len() + 1).sum();
-        self.cursor = line_start + target_offset.min(target_line.len());
+        self.cursor = self.snap(line_start + target_offset.min(target_line.len()), delta > 0);
     }
 
     /// 历史：上一条。
@@ -576,7 +644,10 @@ impl PromptState {
         out
     }
 
+    /// 文本变更的公共收尾：退出历史浏览，作废引用控件范围与键入位置。
     fn break_history_browse(&mut self) {
+        self.atomic.clear();
+        self.typed_at = None;
         if self.history_cursor.is_some() {
             self.history_cursor = None;
             self.stash.clear();
@@ -736,6 +807,7 @@ impl PromptState {
         while position > 0 && !bytes[position - 1].is_ascii_whitespace() {
             position -= 1;
         }
+        let position = self.snap(position, false);
         self.text.replace_range(position..self.cursor, "");
         self.cursor = position;
         self.break_history_browse();
@@ -886,5 +958,32 @@ mod tests {
         assert!(prompt.text.is_empty());
         assert!(!prompt.has_attached_images(), "占位删掉后 chip 不算附件");
         assert!(prompt.is_empty(), "只剩陈旧 chip 的输入框算空");
+    }
+
+    /// 引用控件是原子单位：光标落在内部被吸出、移动整体跨过、删除整体删掉。
+    #[test]
+    fn atomic_ranges_edit_and_traverse_as_one() {
+        let mut prompt = PromptState::default();
+        prompt.insert_str_raw("see @a.rs end");
+        prompt.set_atomic(vec![4..9]);
+        prompt.cursor = 9;
+        prompt.backspace();
+        assert_eq!(prompt.text, "see  end");
+        assert_eq!(prompt.cursor, 4);
+
+        prompt.clear();
+        prompt.insert_str_raw("see @a.rs end");
+        prompt.set_atomic(vec![4..9]);
+        for expected in [12usize, 11, 10, 9, 4] {
+            prompt.left();
+            assert_eq!(prompt.cursor, expected, "逐格左移到控件前");
+        }
+        prompt.right();
+        assert_eq!(prompt.cursor, 9, "右移整体跨过控件");
+        prompt.left();
+        assert_eq!(prompt.cursor, 4, "左移从控件尾直接到首");
+        prompt.delete();
+        assert_eq!(prompt.text, "see  end");
+        assert_eq!(prompt.cursor, 4);
     }
 }

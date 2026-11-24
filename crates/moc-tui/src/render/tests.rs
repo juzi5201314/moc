@@ -45,11 +45,15 @@ fn prompt_preserves_spaces_after_deleting_arguments() {
         app.prompt.backspace();
     }
     assert_eq!(app.prompt.text, "/goal  ");
-    assert_eq!(prompt_lines(&app, area)[0].to_string(), " ❯ /goal  ");
-    assert_eq!(prompt_cursor_position(&app, area), (13, 4));
-    assert_eq!(prompt_cursor_from_point(&app, area, 13, 4), Some(7));
+    // `/goal` 已注册 → 渲染成「图标 名称」控件，光标位置经显示映射换算。
+    assert_eq!(
+        prompt_lines(&app, area)[0].to_string(),
+        " ❯ \u{a0}/\u{a0}goal\u{a0}  "
+    );
+    assert_eq!(prompt_cursor_position(&app, area), (16, 4));
+    assert_eq!(prompt_cursor_from_point(&app, area, 16, 4), Some(7));
     app.prompt.insert_char('x');
-    assert_eq!(prompt_cursor_position(&app, area), (14, 4));
+    assert_eq!(prompt_cursor_position(&app, area), (17, 4));
 }
 
 #[test]
@@ -66,9 +70,9 @@ fn prompt_only_highlights_registered_command_tokens() {
         }]);
     for width in [18, 80] {
         for (text, highlighted) in [
-            ("  /help 参数 /help", "/help"),
-            ("/exit 参数", "/exit"),
-            ("/deploy 参数", "/deploy"),
+            ("  /help 参数 /help", "\u{a0}/\u{a0}help\u{a0}"),
+            ("/exit 参数", "\u{a0}/\u{a0}exit\u{a0}"),
+            ("/deploy 参数", "\u{a0}/\u{a0}deploy\u{a0}"),
             ("/unknown-command 参数", ""),
             ("普通文本 /help", ""),
             ("", ""),
@@ -81,14 +85,14 @@ fn prompt_only_highlights_registered_command_tokens() {
                 .collect();
             let colored: String = body
                 .iter()
-                .filter(|span| span.style.fg == Some(app.theme.accent_tool))
+                .filter(|span| span.style.fg == Some(app.theme.accent_warning))
                 .map(|span| span.content.as_ref())
                 .collect();
-            assert_eq!(colored, highlighted);
+            assert_eq!(colored, highlighted, "{text} @ {width}");
             assert!(
                 body.iter()
                     .all(|span| span.style.fg == Some(app.theme.text_primary)
-                        || span.style.fg == Some(app.theme.accent_tool))
+                        || span.style.fg == Some(app.theme.accent_warning))
             );
         }
     }
@@ -117,6 +121,62 @@ fn prompt_wrap_keeps_spaces_and_cursor_mapping() {
     app.prompt.cursor = "中文ab  ".len();
     assert_eq!(prompt_cursor_position(&app, area), (4, 1));
     assert_eq!(prompt_lines(&app, area)[0].to_string(), "     cd");
+}
+
+/// 经 `resource/inspect` 确认的资源 token 渲染成控件：显示文本与光标、点击都按
+/// 控件边界换算，落点不进入控件内部。
+#[test]
+fn prompt_resource_refs_render_and_map_atomically() {
+    use moc_protocol::methods::SessionInfo;
+
+    let (events, _) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(Theme::global(), events);
+    app.session = Some(SessionInfo {
+        id: "ses_test".into(),
+        title: "t".into(),
+        model: "m".into(),
+        permission: moc_protocol::SessionPermission::Full,
+        engine: moc_protocol::SessionEngine::Standard,
+        autonomy: moc_protocol::SessionAutonomy::Default,
+        plan_active: false,
+        fast_mode: false,
+        engine_locked: false,
+        parent_session_id: None,
+        forked_from: None,
+        agent_preset: None,
+        delegation_depth: 0,
+        cwd: "/tmp".into(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        lock: None,
+    });
+    app.refs.take_missing("ses_test", "@src/main.rs");
+    app.refs.store(
+        "ses_test",
+        vec!["@src/main.rs".to_owned()],
+        vec![Some(moc_protocol::ResourceRefInfo {
+            kind: "file".into(),
+            label: "main.rs".into(),
+            detail: None,
+        })],
+    );
+    app.prompt.text = "open @src/main.rs".into();
+    app.prompt.cursor = app.prompt.text.len();
+    let area = Rect::new(0, 0, 40, 5);
+
+    let line = prompt_lines(&app, area)[0].to_string();
+    assert_eq!(line, " ❯ open \u{a0}▤\u{a0}main.rs\u{a0}", "{line:?}");
+    // 光标本在 token 末尾 → 显示在控件右缘之外（open ␣ = 5 列 + 控件 11 列）。
+    assert_eq!(prompt_cursor_position(&app, area), (20, 1));
+    // 点控件中部 → 光标落在控件首边界；点靠右缘 → 落在尾边界。
+    assert_eq!(prompt_cursor_from_point(&app, area, 10, 1), Some(5));
+    assert_eq!(prompt_cursor_from_point(&app, area, 18, 1), Some(17));
+    // token 无效则不成形：会话串不符时缓存视为空。
+    app.refs.take_missing("other", "x");
+    assert_eq!(
+        prompt_lines(&app, area)[0].to_string(),
+        " ❯ open @src/main.rs"
+    );
 }
 
 /// 窗口标题的状态选择：空闲留项目名，运行中上 spinner，等待人工置顶提示。

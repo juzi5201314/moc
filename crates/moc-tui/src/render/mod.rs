@@ -72,7 +72,6 @@ fn inset(area: Rect, margin: u16) -> Rect {
 
 mod prompt;
 use prompt::cell_width;
-pub(crate) use prompt::chip_spans;
 use prompt::draw_chip;
 use prompt::draw_prompt;
 use prompt::prompt_content_rows;

@@ -19,22 +19,49 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
 use std::borrow::Cow;
+use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
-/// 输入框按显示列硬折行，保留空白和原始字节偏移；额外留一格显示行尾光标。
-pub(super) fn prompt_rows(text: &str, width: u16) -> Vec<(usize, &str)> {
+/// 输入框的引用控件映射：显示文本与双向偏移；无控件时 `text` 与原文相同。
+fn prompt_ref_map(app: &App) -> crate::refs::RefMap {
+    crate::refs::RefMap::new(app.prompt_text(), &crate::refs::prompt_refs(app))
+}
+
+/// 输入框按显示列硬折行，保留空白和**显示文本**的字节偏移；额外留一格显示行尾光标。
+///
+/// `atomic` 段（引用控件的显示范围，升序不重叠）不拆开：整段放不下当前行就先折行；
+/// 段自身比行宽还长时照常逐格切，保证前进。
+pub(super) fn prompt_rows<'a>(
+    text: &'a str,
+    width: u16,
+    atomic: &[Range<usize>],
+) -> Vec<(usize, &'a str)> {
     let width = usize::from(width)
         .saturating_sub(2 + PROMPT_PAD + PROMPT_MARKER + 1)
         .max(1);
     let mut rows = Vec::new();
     let mut start = 0;
     let mut column = 0;
+    let mut span = 0;
     for (offset, grapheme) in text.grapheme_indices(true) {
+        while span < atomic.len() && atomic[span].start < offset {
+            span += 1;
+        }
         if grapheme.ends_with('\n') {
             rows.push((start, &text[start..offset + grapheme.len() - 1]));
             start = offset + grapheme.len();
             column = 0;
             continue;
+        }
+        if column > 0
+            && span < atomic.len()
+            && atomic[span].start == offset
+            && str_width(&text[atomic[span].clone()]) <= width
+            && column + str_width(&text[atomic[span].clone()]) > width
+        {
+            rows.push((start, &text[start..offset]));
+            start = offset;
+            column = 0;
         }
         let cells = str_width(grapheme);
         if column > 0 && column + cells > width {
@@ -55,7 +82,8 @@ pub(super) fn prompt_cursor_row(rows: &[(usize, &str)], cursor: usize) -> usize 
 
 /// 输入框正文行数：按当前输入换行所需行数（1 行起，上限 [`PROMPT_MAX_ROWS`]）。
 pub(super) fn prompt_content_rows(app: &App, width: u16) -> usize {
-    prompt_rows(app.prompt_text(), width)
+    let map = prompt_ref_map(app);
+    prompt_rows(&map.text, width, map.display_spans())
         .len()
         .clamp(1, PROMPT_MAX_ROWS)
 }
@@ -166,10 +194,12 @@ pub(super) fn prompt_scroll_offset(
 
 /// 输入框光标的屏幕坐标（贴图后把光标送回这里）。
 pub(crate) fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
-    let rows = prompt_rows(app.prompt_text(), area.width);
-    let visual_row = prompt_cursor_row(&rows, app.prompt.cursor);
+    let map = prompt_ref_map(app);
+    let rows = prompt_rows(&map.text, area.width, map.display_spans());
+    let cursor = map.to_display(app.prompt.cursor);
+    let visual_row = prompt_cursor_row(&rows, cursor);
     let (offset, text) = rows[visual_row];
-    let column = str_width(&text[..app.prompt.cursor - offset]);
+    let column = str_width(&text[..cursor - offset]);
     let total_rows = rows.len();
     let visible_rows = usize::from(area.height.saturating_sub(2)).max(1);
     let start = prompt_scroll_offset(visual_row, total_rows, visible_rows);
@@ -191,7 +221,7 @@ pub(crate) fn prompt_cursor_from_point(app: &App, area: Rect, col: u16, row: u16
     if area.width < 6 || area.height < 3 {
         return None;
     }
-    let text = app.prompt_text();
+    let map = prompt_ref_map(app);
     let top = area.y + 1;
     let visible_rows = usize::from(area.height.saturating_sub(2)).max(1);
     if row < top || row >= top + visible_rows as u16 {
@@ -199,14 +229,14 @@ pub(crate) fn prompt_cursor_from_point(app: &App, area: Rect, col: u16, row: u16
     }
     let left = area.x + 1 + PROMPT_PAD as u16 + PROMPT_MARKER as u16;
     let target_col = usize::from(col.saturating_sub(left));
-    let visual_rows = prompt_rows(text, area.width);
-    let visual_row = prompt_cursor_row(&visual_rows, app.prompt.cursor);
+    let visual_rows = prompt_rows(&map.text, area.width, map.display_spans());
+    let visual_row = prompt_cursor_row(&visual_rows, map.to_display(app.prompt.cursor));
     let start = prompt_scroll_offset(visual_row, visual_rows.len(), visible_rows);
     let clicked_visual_row = start + usize::from(row - top);
     if let Some((start_offset, sub_text)) = visual_rows.get(clicked_visual_row) {
-        Some(*start_offset + prompt_cell_range(sub_text, target_col).start)
+        Some(map.to_buffer(*start_offset + prompt_cell_range(sub_text, target_col).start))
     } else {
-        Some(text.len())
+        Some(app.prompt_text().len())
     }
 }
 
@@ -246,10 +276,11 @@ pub(crate) fn prompt_selection_text(app: &App) -> &str {
         return "";
     }
     let text = app.prompt_text();
-    let rows = prompt_rows(text, area.width);
+    let map = prompt_ref_map(app);
+    let rows = prompt_rows(&map.text, area.width, map.display_spans());
     let visible = usize::from(area.height - 2);
     let start = prompt_scroll_offset(
-        prompt_cursor_row(&rows, app.prompt.cursor),
+        prompt_cursor_row(&rows, map.to_display(app.prompt.cursor)),
         rows.len(),
         visible,
     );
@@ -280,6 +311,8 @@ pub(crate) fn prompt_selection_text(app: &App) -> &str {
         } else {
             prompt_cell_range(last_text, usize::from(end_col - left)).end
         };
+    // 显示偏移换算回原文；控件整体入选，边界吸附由 RefMap 保证。
+    let (from, to) = (map.to_buffer(from), map.to_buffer(to));
     if from < to { &text[from..to] } else { "" }
 }
 
@@ -546,20 +579,14 @@ pub(super) fn cell_width(text: &str) -> u16 {
     u16::try_from(str_width(text)).unwrap_or(u16::MAX)
 }
 
-/// 输入框内容行：`❯` 提示符、chip 占位高亮，空输入只有提示符。
+/// 输入框内容行：`❯` 提示符、引用控件高亮，空输入只有提示符。
 ///
 /// 首行 `❯ ` 起头，续行按提示符宽度悬挂对齐，与正文的缩进节奏一致。
+/// 文本先经 [`prompt_ref_map`] 把有效引用替换成「图标 名称」控件再折行。
 pub(super) fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let theme = app.theme;
-    let text = app.prompt_text();
-    let rows = prompt_rows(text, area.width);
-    let token = text.split_whitespace().next().unwrap_or_default();
-    let command = if token.starts_with('/') && app.commands.resolve(token).is_some() {
-        let start = text.len() - text.trim_start().len();
-        Some((start, start + token.len()))
-    } else {
-        None
-    };
+    let map = prompt_ref_map(app);
+    let rows = prompt_rows(&map.text, area.width, map.display_spans());
     let marker = || {
         Span::styled(
             "❯ ".to_owned(),
@@ -568,7 +595,7 @@ pub(super) fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )
     };
-    if text.is_empty() {
+    if map.text.is_empty() {
         return vec![Line::from(vec![Span::raw(" "), marker()])];
     }
     let lines: Vec<Line<'static>> = rows
@@ -585,66 +612,51 @@ pub(super) fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
             } else {
                 Span::styled(" ".repeat(PROMPT_MARKER), Style::new())
             });
-            if let Some((start, end)) = command
-                && start < offset + row.len()
-                && end > *offset
-            {
-                let start = start.saturating_sub(*offset).min(row.len());
-                let end = end.saturating_sub(*offset).min(row.len());
-                spans.extend(chip_spans(
-                    &row[..start],
-                    theme.text_primary,
-                    theme.accent_warning,
-                ));
-                spans.push(Span::styled(
-                    row[start..end].to_owned(),
-                    Style::new().fg(theme.accent_tool),
-                ));
-                spans.extend(chip_spans(
-                    &row[end..],
-                    theme.text_primary,
-                    theme.accent_warning,
-                ));
-            } else {
-                spans.extend(chip_spans(row, theme.text_primary, theme.accent_warning));
-            }
+            spans.extend(ref_row_spans(&map, *offset, row, theme));
             Line::from(spans)
         })
         .collect();
     let visible = usize::from(area.height.saturating_sub(2)).max(1);
-    let visual_row = prompt_cursor_row(&rows, app.prompt.cursor);
+    let visual_row = prompt_cursor_row(&rows, map.to_display(app.prompt.cursor));
     let start = prompt_scroll_offset(visual_row, lines.len().max(1), visible);
     lines.into_iter().skip(start).take(visible).collect()
 }
 
-/// 把一行文本按 chip 占位（`[paste#`、`[image#`）切分：占位用 accent 色，
-/// 其余用正文色。输入框与转写里的用户消息共用同一套标记样式。
-pub(crate) fn chip_spans(row: &str, plain: Color, accent: Color) -> Vec<Span<'static>> {
+/// 一显示行按控件显示段切 span：控件画成 accent 前景 + 抬升底色的整体块，其余正文色。
+fn ref_row_spans(
+    map: &crate::refs::RefMap,
+    offset: usize,
+    row: &str,
+    theme: &crate::theme::Theme,
+) -> Vec<Span<'static>> {
+    let end = offset + row.len();
     let mut spans = Vec::new();
-    let mut rest = row;
-    while let Some(index) = rest
-        .find("[paste#")
-        .into_iter()
-        .chain(rest.find("[image#"))
-        .min()
-    {
-        if index > 0 {
+    let mut at = offset;
+    for disp in map.display_spans() {
+        if disp.end <= offset {
+            continue;
+        }
+        if disp.start >= end {
+            break;
+        }
+        let (start, stop) = (disp.start.max(offset), disp.end.min(end));
+        if start > at {
             spans.push(Span::styled(
-                rest[..index].to_owned(),
-                Style::new().fg(plain),
+                map.text[at..start].to_owned(),
+                Style::new().fg(theme.text_primary),
             ));
         }
-        let end = rest[index..]
-            .find(']')
-            .map_or(rest.len(), |end| index + end + 1);
         spans.push(Span::styled(
-            rest[index..end].to_owned(),
-            Style::new().fg(accent),
+            map.text[start..stop].to_owned(),
+            Style::new().fg(theme.accent_warning).bg(theme.bg_highlight),
         ));
-        rest = &rest[end..];
+        at = stop;
     }
-    if !rest.is_empty() {
-        spans.push(Span::styled(rest.to_owned(), Style::new().fg(plain)));
+    if at < end {
+        spans.push(Span::styled(
+            map.text[at..end].to_owned(),
+            Style::new().fg(theme.text_primary),
+        ));
     }
     spans
 }

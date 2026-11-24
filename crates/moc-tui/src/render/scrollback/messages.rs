@@ -7,7 +7,9 @@ use super::super::markdown::RenderViews;
 use super::super::markdown::render_markdown;
 use super::super::markdown::render_markdown_with;
 use super::super::wrap::clip_line;
+use super::super::wrap::line_width;
 use super::super::wrap::str_width;
+use super::super::wrap::wrap_spans;
 use super::super::wrap::wrap_text;
 use super::AGENT_MESSAGE_PREVIEW_ROWS;
 use super::BRIEF_THINKING_ROWS;
@@ -39,7 +41,23 @@ pub(super) fn user_message(
     let border = Style::new().fg(theme.accent_user);
     // 框从块标记列起：`│ ` + `❯ ` + 正文 + ` │`，正文列宽 = 框宽 − 6。
     let box_width = width.saturating_sub(TITLE_INDENT);
-    let rows = wrap_text(text, box_width.saturating_sub(6).max(1));
+    // 附件标记先替换成「图标 名称」控件再折行；控件里的不换行空格让它整段移动。
+    let map = crate::refs::RefMap::new(text, &crate::refs::marker_refs(text));
+    let plain = Style::new().fg(theme.text_primary);
+    let chip = Style::new().fg(theme.accent_warning).bg(theme.bg_highlight);
+    let mut styled: Vec<Span> = Vec::new();
+    let mut at = 0;
+    for disp in map.display_spans() {
+        if disp.start > at {
+            styled.push(Span::styled(map.text[at..disp.start].to_owned(), plain));
+        }
+        styled.push(Span::styled(map.text[disp.clone()].to_owned(), chip));
+        at = disp.end;
+    }
+    if at < map.text.len() {
+        styled.push(Span::styled(map.text[at..].to_owned(), plain));
+    }
+    let rows = wrap_spans(&styled, box_width.saturating_sub(6).max(1));
     let last = rows.len().saturating_sub(1);
     let mut clock_pending = at_ms.and_then(format_clock);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 4);
@@ -69,12 +87,8 @@ pub(super) fn user_message(
             Span::raw("  ")
         });
         // 正文列右侧的余量：`│` 前的全部空位；时间戳要留至少两格间距加一格贴框。
-        let rest = box_width.saturating_sub(5 + str_width(&row));
-        spans.extend(crate::render::chip_spans(
-            &row,
-            theme.text_primary,
-            theme.accent_warning,
-        ));
+        let rest = box_width.saturating_sub(5 + line_width(&row));
+        spans.extend(row.spans);
         if index == last
             && let Some(clock) = clock_pending.take_if(|clock| str_width(clock) + 3 <= rest)
         {

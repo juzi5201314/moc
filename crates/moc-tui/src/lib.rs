@@ -25,6 +25,7 @@ pub mod modal;
 pub mod model_history;
 pub mod protocol;
 pub mod queue;
+pub mod refs;
 pub mod render;
 pub mod settings;
 pub mod subagent;

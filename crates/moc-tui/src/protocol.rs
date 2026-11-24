@@ -116,6 +116,12 @@ pub enum AppEvent {
         session_id: String,
         result: Result<String, moc_protocol::RpcCallError>,
     },
+    /// `resource/inspect` 回执：`tokens` 与 `infos` 逐项对齐；无效引用为 `None`。
+    RefInspection {
+        session_id: String,
+        tokens: Vec<String>,
+        infos: Vec<Option<moc_protocol::ResourceRefInfo>>,
+    },
     /// 当前会话的模型调用用量。
     Usage {
         /// 发起刷新时取的请求序号，用于丢弃乱序或跨会话迟到的旧回执。

@@ -37,6 +37,21 @@ pub mod title {
     pub const SIDEKICK: &str = "Sidekick";
 }
 
+/// 引用控件的类别图标（通用 Unicode，单格宽，不依赖 Nerd Font）。
+pub mod chip {
+    pub const COMMAND: &str = "/";
+    pub const IMAGE: &str = "▣";
+    pub const PASTE: &str = "≡";
+    pub const FILE: &str = "▤";
+    pub const DIR: &str = "▸";
+    pub const FILE_REF: &str = "▧";
+    pub const SKILL: &str = "✦";
+    pub const PLAN: &str = "◈";
+    pub const HISTORY: &str = "↺";
+    pub const ARTIFACT: &str = "◆";
+    pub const TOOL: &str = "◎";
+}
+
 /// 状态词（小写）。
 pub mod status {
     pub const QUEUED: &str = "queued";

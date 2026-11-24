@@ -73,12 +73,27 @@ pub(super) fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnecti
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             let previous_revision = app.prompt_revision;
+            if app.focus == Focus::Prompt && app.modal.is_none() {
+                // 按键前把引用控件范围同步进输入框：移动、删除按控件整体作用。
+                let ranges = crate::refs::prompt_refs(app)
+                    .into_iter()
+                    .map(|chip| chip.range)
+                    .collect();
+                app.prompt.set_atomic(ranges);
+            }
             handle_key(app, connection, key.modifiers, key.code);
             if app.focus == Focus::Prompt && app.prompt_revision != previous_revision {
                 request_resource_completion(app, connection);
+                crate::refs::request_inspection(app, connection);
             }
         }
-        Event::Mouse(mouse) => handle_mouse_with_connection(app, connection, mouse),
+        Event::Mouse(mouse) => {
+            let previous_revision = app.prompt_revision;
+            handle_mouse_with_connection(app, connection, mouse);
+            if app.focus == Focus::Prompt && app.prompt_revision != previous_revision {
+                crate::refs::request_inspection(app, connection);
+            }
+        }
         Event::Paste(text) if text.is_empty() => spawn_clipboard_paste(app.events.clone()),
         Event::Paste(text) => {
             // 提问的自定义答案正在编辑时，粘贴进那一行而不是主输入框——
@@ -110,6 +125,7 @@ pub(super) fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnecti
                 app.prompt.insert_text(&text);
                 app.prompt_changed();
                 request_resource_completion(app, connection);
+                crate::refs::request_inspection(app, connection);
             }
         }
         Event::Resize(_, _) => {

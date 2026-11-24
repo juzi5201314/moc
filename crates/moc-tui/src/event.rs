@@ -331,7 +331,11 @@ async fn event_loop(
                             app.prompt.insert_image(media_type, data);
                             app.set_notice(t!("tui.event.image_attached").into_owned());
                         }
-                        Some(ClipboardPayload::Text(text)) => app.prompt.insert_text(&text),
+                        Some(ClipboardPayload::Text(text)) => {
+                            app.prompt.insert_text(&text);
+                            app.prompt_changed();
+                            crate::refs::request_inspection(app, connection);
+                        }
                         None => {
                             app.set_notice(t!("tui.event.clipboard_empty").into_owned());
                         }
@@ -519,6 +523,11 @@ async fn event_loop(
                             }
                         }
                     }
+                    Some(AppEvent::RefInspection {
+                        session_id,
+                        tokens,
+                        infos,
+                    }) => app.refs.store(&session_id, tokens, infos),
                     Some(AppEvent::Notice(message)) => app.set_notice(message),
                     Some(AppEvent::SkillsProgress(update)) => app.update_skills_compaction(&update),
                     Some(AppEvent::SkillsCompacted(result)) => {
@@ -666,6 +675,8 @@ fn apply_loaded(app: &mut App, connection: &EmbeddedConnection, event: AppEvent)
         crate::queue::submit(app, connection, false);
     }
     crate::queue::dispatch(app, connection);
+    // 切会话后清场旧缓存并补查草稿里的引用 token。
+    crate::refs::request_inspection(app, connection);
 }
 
 /// 两类反向请求共用队列，按事件到达顺序保留答复权。
