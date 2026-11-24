@@ -778,7 +778,8 @@ export function SuggestionMenu({
                 {item.icon}
               </span>
             )}
-            <span className="min-w-0 truncate">{item.title}</span>
+            {/* 标题优先完整显示，参数提示让出剩余宽度；两者全文都在下方详情区 */}
+            <span className="max-w-full shrink-0 truncate">{item.title}</span>
             {item.hint && (
               <span className="ml-auto min-w-0 truncate font-mono text-2xs text-text-tertiary">
                 {item.hint}
@@ -787,13 +788,23 @@ export function SuggestionMenu({
           </button>
         ))}
       </div>
-      {items[active]?.detail && (
-        <p
-          className="mt-1 line-clamp-3 shrink-0 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground"
-          title={items[active].detail}
-        >
-          {items[active].detail}
-        </p>
+      {items.some((item) => item.detail || item.hint) && (
+        // 所有条目的详情叠在同一格里、只显示当前项：高度取最高一条，切换焦点时不跳动
+        <div className="mt-1 grid shrink-0 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
+          {items.map((item, index) => (
+            <div
+              key={item.key}
+              aria-hidden={index !== active}
+              className={cn("col-start-1 row-start-1 min-w-0", index !== active && "invisible")}
+            >
+              <p className="break-all font-mono text-2xs text-foreground">
+                {item.title}
+                {item.hint && <span className="text-text-tertiary"> {item.hint}</span>}
+              </p>
+              {item.detail && <p className="mt-0.5 break-words">{item.detail}</p>}
+            </div>
+          ))}
+        </div>
       )}
     </PopoverContent>
   );
